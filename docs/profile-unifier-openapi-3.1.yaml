@@ -1,0 +1,1372 @@
+openapi: 3.1.0
+info:
+  title: Profile Unifier API
+  version: 1.0.0-draft
+  summary: OpenAPI 3.1 contract for the profile unifier platform
+  description: >
+    Machine-readable representation of the main profile unifier API. This file
+    covers the primary ingestion, search, person read, review workflow, merge,
+    lock, and survivorship operations described in the companion API spec.
+servers:
+  - url: https://api.example.internal
+    description: Example internal deployment
+security:
+  - bearerAuth: []
+tags:
+  - name: Ingestion
+  - name: Persons
+  - name: Review
+  - name: Merge
+  - name: Locks
+  - name: Survivorship
+  - name: Admin
+paths:
+  /v1/ingest/{source_key}/records:
+    post:
+      tags: [Ingestion]
+      summary: Submit normalized source records for ingestion
+      operationId: ingestRecords
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/SourceKey'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/RequestId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/IngestRecordsRequest'
+      responses:
+        '200':
+          description: Records accepted for processing
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IngestRecordsResponseEnvelope'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /v1/ingest/{source_key}/runs:
+    post:
+      tags: [Ingestion]
+      summary: Create an ingest run
+      operationId: createIngestRun
+      parameters:
+        - $ref: '#/components/parameters/SourceKey'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/RequestId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateIngestRunRequest'
+      responses:
+        '200':
+          description: Ingest run created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IngestRunResponseEnvelope'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /v1/ingest/{source_key}/runs/{ingest_run_id}:
+    patch:
+      tags: [Ingestion]
+      summary: Update ingest run status
+      operationId: updateIngestRun
+      parameters:
+        - $ref: '#/components/parameters/SourceKey'
+        - $ref: '#/components/parameters/IngestRunId'
+        - $ref: '#/components/parameters/RequestId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateIngestRunRequest'
+      responses:
+        '200':
+          description: Ingest run updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IngestRunResponseEnvelope'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /v1/persons/search:
+    get:
+      tags: [Persons]
+      summary: Search canonical persons
+      operationId: searchPersons
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+        - name: identifier_type
+          in: query
+          schema:
+            $ref: '#/components/schemas/IdentifierType'
+        - name: value
+          in: query
+          schema:
+            type: string
+        - name: q
+          in: query
+          schema:
+            type: string
+        - name: source_system
+          in: query
+          schema:
+            type: string
+        - name: status
+          in: query
+          schema:
+            $ref: '#/components/schemas/PersonStatus'
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: Search results
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PersonSearchResponseEnvelope'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /v1/persons/{person_id}:
+    get:
+      tags: [Persons]
+      summary: Get canonical person detail
+      operationId: getPerson
+      parameters:
+        - $ref: '#/components/parameters/PersonId'
+        - $ref: '#/components/parameters/RequestId'
+        - name: include
+          in: query
+          description: Comma-separated expansions
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Person detail
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PersonDetailResponseEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/PersonNotFound'
+  /v1/persons/{person_id}/source-records:
+    get:
+      tags: [Persons]
+      summary: Get source records linked to a person
+      operationId: getPersonSourceRecords
+      parameters:
+        - $ref: '#/components/parameters/PersonId'
+        - $ref: '#/components/parameters/RequestId'
+      responses:
+        '200':
+          description: Source records for the person
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SourceRecordListResponseEnvelope'
+        '404':
+          $ref: '#/components/responses/PersonNotFound'
+  /v1/persons/{person_id}/audit:
+    get:
+      tags: [Persons]
+      summary: Get audit history for a person
+      operationId: getPersonAudit
+      parameters:
+        - $ref: '#/components/parameters/PersonId'
+        - $ref: '#/components/parameters/RequestId'
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: Audit history
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuditEventListResponseEnvelope'
+        '404':
+          $ref: '#/components/responses/PersonNotFound'
+  /v1/review-cases:
+    get:
+      tags: [Review]
+      summary: List review cases
+      operationId: listReviewCases
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+        - name: queue_state
+          in: query
+          schema:
+            $ref: '#/components/schemas/ReviewQueueState'
+        - name: assigned_to
+          in: query
+          schema:
+            type: string
+        - name: follow_up_before
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: priority_lte
+          in: query
+          schema:
+            type: integer
+        - name: source_system
+          in: query
+          schema:
+            type: string
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: Review cases
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReviewCaseListResponseEnvelope'
+  /v1/review-cases/{review_case_id}:
+    get:
+      tags: [Review]
+      summary: Get review case detail
+      operationId: getReviewCase
+      parameters:
+        - $ref: '#/components/parameters/ReviewCaseId'
+        - $ref: '#/components/parameters/RequestId'
+      responses:
+        '200':
+          description: Review case detail
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReviewCaseDetailResponseEnvelope'
+        '404':
+          $ref: '#/components/responses/ReviewCaseNotFound'
+  /v1/review-cases/{review_case_id}/assign:
+    post:
+      tags: [Review]
+      summary: Assign a review case
+      operationId: assignReviewCase
+      parameters:
+        - $ref: '#/components/parameters/ReviewCaseId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/RequestId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AssignReviewCaseRequest'
+      responses:
+        '200':
+          description: Review case assigned
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReviewCaseAssignResponseEnvelope'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /v1/review-cases/{review_case_id}/unassign:
+    post:
+      tags: [Review]
+      summary: Unassign a review case
+      operationId: unassignReviewCase
+      parameters:
+        - $ref: '#/components/parameters/ReviewCaseId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/RequestId'
+      responses:
+        '200':
+          description: Review case unassigned
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReviewCaseAssignResponseEnvelope'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /v1/review-cases/{review_case_id}/actions:
+    post:
+      tags: [Review]
+      summary: Submit a review action
+      operationId: createReviewAction
+      parameters:
+        - $ref: '#/components/parameters/ReviewCaseId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/RequestId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReviewActionRequest'
+      responses:
+        '200':
+          description: Review action applied
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReviewActionResponseEnvelope'
+        '404':
+          $ref: '#/components/responses/ReviewCaseNotFound'
+        '409':
+          $ref: '#/components/responses/MergeBlocked'
+  /v1/persons/manual-merge:
+    post:
+      tags: [Merge]
+      summary: Manually merge two canonical persons
+      operationId: manualMergePersons
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/RequestId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ManualMergeRequest'
+      responses:
+        '200':
+          description: Merge completed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ManualMergeResponseEnvelope'
+        '409':
+          $ref: '#/components/responses/MergeBlocked'
+  /v1/persons/unmerge:
+    post:
+      tags: [Merge]
+      summary: Undo a prior merge
+      operationId: unmergePersons
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/RequestId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UnmergeRequest'
+      responses:
+        '200':
+          description: Unmerge completed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UnmergeResponseEnvelope'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /v1/locks/person-pair:
+    post:
+      tags: [Locks]
+      summary: Create a persistent person-pair lock
+      operationId: createPersonPairLock
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/RequestId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreatePersonPairLockRequest'
+      responses:
+        '200':
+          description: Lock created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PersonPairLockResponseEnvelope'
+  /v1/locks/{lock_id}:
+    delete:
+      tags: [Locks]
+      summary: Remove an existing lock
+      operationId: deleteLock
+      parameters:
+        - $ref: '#/components/parameters/LockId'
+        - $ref: '#/components/parameters/RequestId'
+      responses:
+        '200':
+          description: Lock deleted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BasicSuccessEnvelope'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /v1/persons/{person_id}/golden-profile/recompute:
+    post:
+      tags: [Survivorship]
+      summary: Recompute golden profile for a person
+      operationId: recomputeGoldenProfile
+      parameters:
+        - $ref: '#/components/parameters/PersonId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/RequestId'
+      responses:
+        '200':
+          description: Recompute triggered or completed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BasicSuccessEnvelope'
+  /v1/persons/{person_id}/survivorship-overrides:
+    post:
+      tags: [Survivorship]
+      summary: Create or replace a survivorship override
+      operationId: createSurvivorshipOverride
+      parameters:
+        - $ref: '#/components/parameters/PersonId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/RequestId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SurvivorshipOverrideRequest'
+      responses:
+        '200':
+          description: Override stored
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BasicSuccessEnvelope'
+  /v1/ingest/runs/{ingest_run_id}:
+    get:
+      tags: [Admin]
+      summary: Get ingest run status
+      operationId: getIngestRun
+      parameters:
+        - $ref: '#/components/parameters/IngestRunId'
+        - $ref: '#/components/parameters/RequestId'
+      responses:
+        '200':
+          description: Ingest run detail
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IngestRunResponseEnvelope'
+  /v1/source-systems:
+    get:
+      tags: [Admin]
+      summary: List configured source systems
+      operationId: listSourceSystems
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+      responses:
+        '200':
+          description: Source systems
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SourceSystemListResponseEnvelope'
+  /v1/source-systems/{source_key}/field-trust:
+    get:
+      tags: [Admin]
+      summary: Get field-level trust for a source
+      operationId: getSourceFieldTrust
+      parameters:
+        - $ref: '#/components/parameters/SourceKey'
+        - $ref: '#/components/parameters/RequestId'
+      responses:
+        '200':
+          description: Field-level trust config
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FieldTrustListResponseEnvelope'
+    patch:
+      tags: [Admin]
+      summary: Update field-level trust for a source
+      operationId: patchSourceFieldTrust
+      parameters:
+        - $ref: '#/components/parameters/SourceKey'
+        - $ref: '#/components/parameters/RequestId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PatchFieldTrustRequest'
+      responses:
+        '200':
+          description: Field-level trust updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FieldTrustListResponseEnvelope'
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  parameters:
+    RequestId:
+      name: X-Request-Id
+      in: header
+      required: false
+      schema:
+        type: string
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      schema:
+        type: string
+    SourceKey:
+      name: source_key
+      in: path
+      required: true
+      schema:
+        type: string
+    PersonId:
+      name: person_id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    ReviewCaseId:
+      name: review_case_id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    IngestRunId:
+      name: ingest_run_id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    LockId:
+      name: lock_id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    Cursor:
+      name: cursor
+      in: query
+      required: false
+      schema:
+        type: string
+    Limit:
+      name: limit
+      in: query
+      required: false
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 20
+  responses:
+    BadRequest:
+      description: Invalid request
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponseEnvelope'
+    Unauthorized:
+      description: Missing or invalid authentication
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponseEnvelope'
+    Forbidden:
+      description: Caller does not have the required role
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponseEnvelope'
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponseEnvelope'
+    Conflict:
+      description: Request conflicts with current state
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponseEnvelope'
+    PersonNotFound:
+      description: Person was not found
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/ErrorResponseEnvelope'
+    ReviewCaseNotFound:
+      description: Review case was not found
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/ErrorResponseEnvelope'
+    MergeBlocked:
+      description: Merge blocked by lock or hard policy
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponseEnvelope'
+  schemas:
+    Meta:
+      type: object
+      properties:
+        request_id:
+          type: string
+        next_cursor:
+          type:
+            - string
+            - 'null'
+      required: [request_id]
+      additionalProperties: false
+    ErrorObject:
+      type: object
+      properties:
+        code:
+          type: string
+        message:
+          type: string
+        details:
+          type: object
+          additionalProperties: true
+      required: [code, message, details]
+      additionalProperties: false
+    ErrorResponseEnvelope:
+      type: object
+      properties:
+        error:
+          $ref: '#/components/schemas/ErrorObject'
+        meta:
+          $ref: '#/components/schemas/Meta'
+      required: [error, meta]
+      additionalProperties: false
+    IdentifierType:
+      type: string
+      enum:
+        - government_id_hash
+        - phone
+        - email
+        - external_customer_id
+        - membership_id
+        - crm_contact_id
+        - loyalty_id
+        - custom
+    PersonStatus:
+      type: string
+      enum: [active, under_review, merged, suppressed]
+    ReviewQueueState:
+      type: string
+      enum: [open, assigned, deferred, resolved, cancelled]
+    ReviewResolution:
+      type: string
+      enum: [merge, reject, manual_no_match, cancelled_superseded]
+    ReviewActionType:
+      type: string
+      enum: [merge, reject, defer, escalate, manual_no_match]
+    PersonSummary:
+      type: object
+      properties:
+        person_id:
+          type: string
+          format: uuid
+        status:
+          $ref: '#/components/schemas/PersonStatus'
+        is_high_value:
+          type: boolean
+        is_high_risk:
+          type: boolean
+        golden_profile:
+          $ref: '#/components/schemas/GoldenProfile'
+        source_record_count:
+          type: integer
+        identifier_counts:
+          type: object
+          additionalProperties:
+            type: integer
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+      required:
+        - person_id
+        - status
+        - is_high_value
+        - is_high_risk
+        - golden_profile
+        - source_record_count
+        - identifier_counts
+        - created_at
+        - updated_at
+      additionalProperties: false
+    GoldenProfile:
+      type: object
+      properties:
+        preferred_full_name:
+          type:
+            - string
+            - 'null'
+        preferred_phone:
+          type:
+            - string
+            - 'null'
+        preferred_email:
+          type:
+            - string
+            - 'null'
+          format: email
+        preferred_dob:
+          type:
+            - string
+            - 'null'
+          format: date
+      additionalProperties: true
+    SourceRecord:
+      type: object
+      properties:
+        source_record_pk:
+          type: string
+          format: uuid
+        source_system:
+          type: string
+        source_record_id:
+          type: string
+        source_record_version:
+          type:
+            - string
+            - 'null'
+        link_status:
+          type: string
+        linked_person_id:
+          type:
+            - string
+            - 'null'
+          format: uuid
+        observed_at:
+          type:
+            - string
+            - 'null'
+          format: date-time
+        ingested_at:
+          type: string
+          format: date-time
+      required:
+        - source_record_pk
+        - source_system
+        - source_record_id
+        - link_status
+        - ingested_at
+      additionalProperties: false
+    MatchDecision:
+      type: object
+      properties:
+        match_decision_id:
+          type: string
+          format: uuid
+        engine_type:
+          type: string
+        engine_version:
+          type: string
+        policy_version:
+          type: string
+        decision:
+          type: string
+          enum: [merge, review, no_match]
+        confidence:
+          type:
+            - number
+            - 'null'
+        reasons:
+          type: array
+          items:
+            type: string
+        blocking_conflicts:
+          type: array
+          items:
+            type: string
+      required:
+        - match_decision_id
+        - engine_type
+        - engine_version
+        - policy_version
+        - decision
+        - reasons
+        - blocking_conflicts
+      additionalProperties: false
+    ReviewCaseSummary:
+      type: object
+      properties:
+        review_case_id:
+          type: string
+          format: uuid
+        queue_state:
+          $ref: '#/components/schemas/ReviewQueueState'
+        priority:
+          type: integer
+        assigned_to:
+          type:
+            - string
+            - 'null'
+        follow_up_at:
+          type:
+            - string
+            - 'null'
+          format: date-time
+        sla_due_at:
+          type:
+            - string
+            - 'null'
+          format: date-time
+        resolution:
+          oneOf:
+            - $ref: '#/components/schemas/ReviewResolution'
+            - type: 'null'
+        match_decision:
+          $ref: '#/components/schemas/MatchDecision'
+      required:
+        - review_case_id
+        - queue_state
+        - priority
+        - assigned_to
+        - follow_up_at
+        - sla_due_at
+        - match_decision
+      additionalProperties: false
+    ReviewCaseDetail:
+      allOf:
+        - $ref: '#/components/schemas/ReviewCaseSummary'
+        - type: object
+          properties:
+            comparison:
+              type: object
+              additionalProperties: true
+          required: [comparison]
+    AuditEvent:
+      type: object
+      properties:
+        event_id:
+          type: string
+        event_type:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        actor_type:
+          type: string
+        actor_id:
+          type: string
+        metadata:
+          type: object
+          additionalProperties: true
+      required: [event_id, event_type, created_at, actor_type, actor_id, metadata]
+      additionalProperties: false
+    SourceSystem:
+      type: object
+      properties:
+        source_key:
+          type: string
+        display_name:
+          type: string
+        system_type:
+          type: string
+        is_active:
+          type: boolean
+      required: [source_key, display_name, system_type, is_active]
+      additionalProperties: false
+    FieldTrustEntry:
+      type: object
+      properties:
+        field_name:
+          type: string
+        trust_tier:
+          type: string
+          enum: [tier_1, tier_2, tier_3, tier_4]
+        notes:
+          type:
+            - string
+            - 'null'
+      required: [field_name, trust_tier, notes]
+      additionalProperties: false
+    SourceIdentifierInput:
+      type: object
+      properties:
+        type:
+          $ref: '#/components/schemas/IdentifierType'
+        value:
+          type: string
+        is_verified:
+          type: boolean
+      required: [type, value, is_verified]
+      additionalProperties: false
+    SourceRecordInput:
+      type: object
+      properties:
+        source_record_id:
+          type: string
+        source_record_version:
+          type:
+            - string
+            - 'null'
+        observed_at:
+          type:
+            - string
+            - 'null'
+          format: date-time
+        record_hash:
+          type: string
+        identifiers:
+          type: array
+          items:
+            $ref: '#/components/schemas/SourceIdentifierInput'
+        attributes:
+          type: object
+          additionalProperties: true
+        raw_payload:
+          type: object
+          additionalProperties: true
+      required:
+        - source_record_id
+        - record_hash
+        - identifiers
+        - attributes
+        - raw_payload
+      additionalProperties: false
+    IngestRecordsRequest:
+      type: object
+      properties:
+        ingest_type:
+          type: string
+        ingest_run_id:
+          type:
+            - string
+            - 'null'
+          format: uuid
+        records:
+          type: array
+          items:
+            $ref: '#/components/schemas/SourceRecordInput'
+      required: [ingest_type, records]
+      additionalProperties: false
+    CreateIngestRunRequest:
+      type: object
+      properties:
+        run_type:
+          type: string
+        metadata:
+          type: object
+          additionalProperties: true
+      required: [run_type]
+      additionalProperties: false
+    UpdateIngestRunRequest:
+      type: object
+      properties:
+        status:
+          type: string
+        finished_at:
+          type:
+            - string
+            - 'null'
+          format: date-time
+        metadata:
+          type: object
+          additionalProperties: true
+      required: [status]
+      additionalProperties: false
+    AssignReviewCaseRequest:
+      type: object
+      properties:
+        assigned_to:
+          type: string
+      required: [assigned_to]
+      additionalProperties: false
+    ReviewActionRequest:
+      type: object
+      properties:
+        action_type:
+          $ref: '#/components/schemas/ReviewActionType'
+        notes:
+          type:
+            - string
+            - 'null'
+        metadata:
+          type: object
+          additionalProperties: true
+      required: [action_type]
+      additionalProperties: false
+    ManualMergeRequest:
+      type: object
+      properties:
+        from_person_id:
+          type: string
+          format: uuid
+        to_person_id:
+          type: string
+          format: uuid
+        reason:
+          type: string
+        recompute_golden_profile:
+          type: boolean
+      required: [from_person_id, to_person_id, reason, recompute_golden_profile]
+      additionalProperties: false
+    UnmergeRequest:
+      type: object
+      properties:
+        merge_event_id:
+          type: string
+          format: uuid
+        reason:
+          type: string
+      required: [merge_event_id, reason]
+      additionalProperties: false
+    CreatePersonPairLockRequest:
+      type: object
+      properties:
+        left_person_id:
+          type: string
+          format: uuid
+        right_person_id:
+          type: string
+          format: uuid
+        lock_type:
+          type: string
+        reason:
+          type: string
+        expires_at:
+          type:
+            - string
+            - 'null'
+          format: date-time
+      required: [left_person_id, right_person_id, lock_type, reason]
+      additionalProperties: false
+    SurvivorshipOverrideRequest:
+      type: object
+      properties:
+        attribute_name:
+          type: string
+        selected_person_attribute_fact_id:
+          type: string
+          format: uuid
+        reason:
+          type: string
+      required: [attribute_name, selected_person_attribute_fact_id, reason]
+      additionalProperties: false
+    PatchFieldTrustRequest:
+      type: object
+      properties:
+        fields:
+          type: array
+          items:
+            $ref: '#/components/schemas/FieldTrustEntry'
+      required: [fields]
+      additionalProperties: false
+    BasicSuccessData:
+      type: object
+      additionalProperties: true
+    BasicSuccessEnvelope:
+      type: object
+      properties:
+        data:
+          $ref: '#/components/schemas/BasicSuccessData'
+        meta:
+          $ref: '#/components/schemas/Meta'
+      required: [data, meta]
+      additionalProperties: false
+    IngestRecordResult:
+      type: object
+      properties:
+        source_record_id:
+          type: string
+        status:
+          type: string
+      required: [source_record_id, status]
+      additionalProperties: false
+    IngestRecordsResponseData:
+      type: object
+      properties:
+        accepted_count:
+          type: integer
+        rejected_count:
+          type: integer
+        ingest_run_id:
+          type: string
+          format: uuid
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/IngestRecordResult'
+      required: [accepted_count, rejected_count, ingest_run_id, results]
+      additionalProperties: false
+    IngestRecordsResponseEnvelope:
+      type: object
+      properties:
+        data:
+          $ref: '#/components/schemas/IngestRecordsResponseData'
+        meta:
+          $ref: '#/components/schemas/Meta'
+      required: [data, meta]
+      additionalProperties: false
+    IngestRunData:
+      type: object
+      properties:
+        ingest_run_id:
+          type: string
+          format: uuid
+        status:
+          type: string
+        started_at:
+          type:
+            - string
+            - 'null'
+          format: date-time
+        finished_at:
+          type:
+            - string
+            - 'null'
+          format: date-time
+      required: [ingest_run_id, status]
+      additionalProperties: false
+    IngestRunResponseEnvelope:
+      type: object
+      properties:
+        data:
+          $ref: '#/components/schemas/IngestRunData'
+        meta:
+          $ref: '#/components/schemas/Meta'
+      required: [data, meta]
+      additionalProperties: false
+    PersonSearchResponseEnvelope:
+      type: object
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/PersonSummary'
+        meta:
+          $ref: '#/components/schemas/Meta'
+      required: [data, meta]
+      additionalProperties: false
+    PersonDetail:
+      allOf:
+        - $ref: '#/components/schemas/PersonSummary'
+        - type: object
+          properties:
+            identifiers:
+              type: array
+              items:
+                type: object
+                additionalProperties: true
+            attributes:
+              type: array
+              items:
+                type: object
+                additionalProperties: true
+            source_records:
+              type: array
+              items:
+                $ref: '#/components/schemas/SourceRecord'
+            locks:
+              type: array
+              items:
+                type: object
+                additionalProperties: true
+          required: [identifiers, attributes, source_records, locks]
+    PersonDetailResponseEnvelope:
+      type: object
+      properties:
+        data:
+          $ref: '#/components/schemas/PersonDetail'
+        meta:
+          $ref: '#/components/schemas/Meta'
+      required: [data, meta]
+      additionalProperties: false
+    SourceRecordListResponseEnvelope:
+      type: object
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/SourceRecord'
+        meta:
+          $ref: '#/components/schemas/Meta'
+      required: [data, meta]
+      additionalProperties: false
+    AuditEventListResponseEnvelope:
+      type: object
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/AuditEvent'
+        meta:
+          $ref: '#/components/schemas/Meta'
+      required: [data, meta]
+      additionalProperties: false
+    ReviewCaseListResponseEnvelope:
+      type: object
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/ReviewCaseSummary'
+        meta:
+          $ref: '#/components/schemas/Meta'
+      required: [data, meta]
+      additionalProperties: false
+    ReviewCaseDetailResponseEnvelope:
+      type: object
+      properties:
+        data:
+          $ref: '#/components/schemas/ReviewCaseDetail'
+        meta:
+          $ref: '#/components/schemas/Meta'
+      required: [data, meta]
+      additionalProperties: false
+    ReviewCaseAssignResponseEnvelope:
+      type: object
+      properties:
+        data:
+          type: object
+          properties:
+            review_case_id:
+              type: string
+              format: uuid
+            queue_state:
+              $ref: '#/components/schemas/ReviewQueueState'
+            assigned_to:
+              type:
+                - string
+                - 'null'
+          required: [review_case_id, queue_state, assigned_to]
+          additionalProperties: false
+        meta:
+          $ref: '#/components/schemas/Meta'
+      required: [data, meta]
+      additionalProperties: false
+    ReviewActionResponseEnvelope:
+      type: object
+      properties:
+        data:
+          type: object
+          properties:
+            review_case_id:
+              type: string
+              format: uuid
+            queue_state:
+              $ref: '#/components/schemas/ReviewQueueState'
+            resolution:
+              oneOf:
+                - $ref: '#/components/schemas/ReviewResolution'
+                - type: 'null'
+          required: [review_case_id, queue_state, resolution]
+          additionalProperties: false
+        meta:
+          $ref: '#/components/schemas/Meta'
+      required: [data, meta]
+      additionalProperties: false
+    ManualMergeResponseEnvelope:
+      type: object
+      properties:
+        data:
+          type: object
+          properties:
+            merge_event_id:
+              type: string
+              format: uuid
+            from_person_id:
+              type: string
+              format: uuid
+            to_person_id:
+              type: string
+              format: uuid
+            status:
+              type: string
+          required: [merge_event_id, from_person_id, to_person_id, status]
+          additionalProperties: false
+        meta:
+          $ref: '#/components/schemas/Meta'
+      required: [data, meta]
+      additionalProperties: false
+    UnmergeResponseEnvelope:
+      type: object
+      properties:
+        data:
+          type: object
+          properties:
+            merge_event_id:
+              type: string
+              format: uuid
+            status:
+              type: string
+          required: [merge_event_id, status]
+          additionalProperties: false
+        meta:
+          $ref: '#/components/schemas/Meta'
+      required: [data, meta]
+      additionalProperties: false
+    PersonPairLockResponseEnvelope:
+      type: object
+      properties:
+        data:
+          type: object
+          properties:
+            lock_id:
+              type: string
+              format: uuid
+            lock_type:
+              type: string
+            status:
+              type: string
+          required: [lock_id, lock_type, status]
+          additionalProperties: false
+        meta:
+          $ref: '#/components/schemas/Meta'
+      required: [data, meta]
+      additionalProperties: false
+    SourceSystemListResponseEnvelope:
+      type: object
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/SourceSystem'
+        meta:
+          $ref: '#/components/schemas/Meta'
+      required: [data, meta]
+      additionalProperties: false
+    FieldTrustListResponseEnvelope:
+      type: object
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/FieldTrustEntry'
+        meta:
+          $ref: '#/components/schemas/Meta'
+      required: [data, meta]
+      additionalProperties: false

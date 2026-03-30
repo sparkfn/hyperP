@@ -6,6 +6,9 @@ Build a centralized identity resolution platform that ingests customer records
 from multiple systems, resolves them into canonical persons, and exposes a
 trusted golden profile with full explainability, auditability, and rollback.
 
+Shared terminology used across the document set is defined in
+[profile-unifier-glossary.md](./profile-unifier-glossary.md).
+
 ## Goals
 
 - unify fragmented customer records across POS, Bitrix CRM, and third-party apps
@@ -664,9 +667,15 @@ The corresponding service contract for ingestion, search, person reads, review
 workflow, and merge operations is defined in
 [profile-unifier-api-spec.md](./profile-unifier-api-spec.md).
 
+A machine-readable OpenAPI 3.1 version of the main service contract is defined
+in [profile-unifier-openapi-3.1.yaml](./profile-unifier-openapi-3.1.yaml).
+
 The operational state machine for review handling, merge rejection, locks, and
 unmerge escalation is defined in
 [profile-unifier-reviewer-workflow.md](./profile-unifier-reviewer-workflow.md).
+
+Main runtime flows are illustrated in
+[profile-unifier-sequence-diagrams.md](./profile-unifier-sequence-diagrams.md).
 
 ## Recommendation
 
