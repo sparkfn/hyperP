@@ -655,6 +655,11 @@ These defaults currently recommend:
 - 12-month raw payload retention, longer retention for decision history
 - LLM assist-only operation during MVP and early production phases
 
+## Reference Implementation
+
+A concrete PostgreSQL-oriented schema for the architecture in this document is
+defined in [profile-unifier-sql-schema.md](./profile-unifier-sql-schema.md).
+
 ## Recommendation
 
 Ship deterministic plus heuristic matching first. Introduce the LLM in shadow

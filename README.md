@@ -9,6 +9,7 @@ third-party applications.
 - [Architecture](./docs/profile-unifier-architecture.md)
 - [Matching Spec](./docs/profile-unifier-matching-spec.md)
 - [Policy Decisions](./docs/profile-unifier-policy-decisions.md)
+- [SQL Schema](./docs/profile-unifier-sql-schema.md)
 - [PRD](./docs/profile-unifier-prd.md)
 - [Roadmap](./docs/profile-unifier-roadmap.md)
 
@@ -18,7 +19,8 @@ third-party applications.
 2. Architecture
 3. Matching Spec
 4. Policy Decisions
-5. Roadmap
+5. SQL Schema
+6. Roadmap
 
 ## Current Scope
 
