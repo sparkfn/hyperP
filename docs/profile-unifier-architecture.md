@@ -664,6 +664,10 @@ The corresponding service contract for ingestion, search, person reads, review
 workflow, and merge operations is defined in
 [profile-unifier-api-spec.md](./profile-unifier-api-spec.md).
 
+The operational state machine for review handling, merge rejection, locks, and
+unmerge escalation is defined in
+[profile-unifier-reviewer-workflow.md](./profile-unifier-reviewer-workflow.md).
+
 ## Recommendation
 
 Ship deterministic plus heuristic matching first. Introduce the LLM in shadow
