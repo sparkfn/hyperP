@@ -300,13 +300,28 @@ Owns ambiguous-case handling and quality feedback loops.
 
 Owns policy for sensitive identifiers and LLM usage boundaries.
 
+## Proposed Default Policy Decisions
+
+Until business or legal review overrides them, the default policy is:
+
+- use field-level source trust ranking rather than one trust level per system
+- allow deterministic auto-merge only for verified government ID, trusted
+  migration-map, or explicit manual merge cases
+- treat conflicting verified government IDs and manual no-match locks as hard
+  blockers
+- retain raw payloads for 12 months by default, with longer retention for
+  decision and audit history
+- keep the LLM in assist-only and review-band mode during MVP
+
+Detailed defaults are defined in
+[profile-unifier-policy-decisions.md](./profile-unifier-policy-decisions.md).
+
 ## Open Decisions
 
-- which identifiers qualify as hard blockers or hard merges
-- which source systems are trusted per field
-- whether the LLM path may ever auto-merge or remain review-only
 - whether the first reviewer tool is an internal UI or ops-driven workflow
-- retention policy for raw source payloads and engine snapshots
+- the exact legal-hold and deletion workflows for each deployment environment
+- whether manual no-match locks should expire by default or persist indefinitely
+- whether high-value profile policies require custom review routing
 
 ## Launch Criteria
 

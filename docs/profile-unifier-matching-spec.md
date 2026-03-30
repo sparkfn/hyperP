@@ -85,6 +85,9 @@ Optional operational states:
 
 Hard rules must execute before heuristic or LLM logic.
 
+The current proposed defaults for hard merges and hard blockers are documented
+in [profile-unifier-policy-decisions.md](./profile-unifier-policy-decisions.md).
+
 ## Heuristic Feature Catalog
 
 ### Positive Evidence
@@ -201,6 +204,7 @@ Illustrative only. Tune on labeled data.
 - should default to `review` when evidence is mixed
 - must return structured JSON only
 - must log prompt and model versions
+- during MVP, any LLM `merge` recommendation should still route to human review
 
 ## Benchmarking and Evaluation
 

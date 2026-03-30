@@ -641,6 +641,20 @@ Track:
   linkage table
 - whether review tooling is embedded in the app or built as an internal console
 
+## Default Policy Decisions
+
+The current proposed defaults for unresolved product and governance questions
+are documented in [profile-unifier-policy-decisions.md](./profile-unifier-policy-decisions.md).
+
+These defaults currently recommend:
+
+- field-level source trust ranking instead of source-wide trust
+- deterministic hard merges only for verified government ID, trusted migration
+  maps, and explicit manual merge
+- hard no-match on conflicting verified government IDs and manual no-match locks
+- 12-month raw payload retention, longer retention for decision history
+- LLM assist-only operation during MVP and early production phases
+
 ## Recommendation
 
 Ship deterministic plus heuristic matching first. Introduce the LLM in shadow

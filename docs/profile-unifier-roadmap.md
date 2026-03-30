@@ -221,6 +221,8 @@ Target: ongoing
 - review operations must exist before probabilistic rollout scales
 - security approval must precede any LLM testing with sensitive data
 - downstream API consumers should be onboarded before broad rollout
+- source trust ranking and hard-rule policy must be versioned before heuristic
+  rollout
 
 ## Critical Path
 
@@ -268,6 +270,7 @@ Target: ongoing
 - first source systems ingest successfully
 - normalized identifiers are searchable
 - canonical person graph can be queried
+- default policy decisions for trust, retention, and hard blockers are approved
 
 ### Matching Exit
 
