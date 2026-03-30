@@ -10,6 +10,7 @@ third-party applications.
 - [Matching Spec](./docs/profile-unifier-matching-spec.md)
 - [Policy Decisions](./docs/profile-unifier-policy-decisions.md)
 - [SQL Schema](./docs/profile-unifier-sql-schema.md)
+- [API Spec](./docs/profile-unifier-api-spec.md)
 - [PRD](./docs/profile-unifier-prd.md)
 - [Roadmap](./docs/profile-unifier-roadmap.md)
 
@@ -20,7 +21,8 @@ third-party applications.
 3. Matching Spec
 4. Policy Decisions
 5. SQL Schema
-6. Roadmap
+6. API Spec
+7. Roadmap
 
 ## Current Scope
 

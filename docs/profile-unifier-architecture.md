@@ -660,6 +660,10 @@ These defaults currently recommend:
 A concrete PostgreSQL-oriented schema for the architecture in this document is
 defined in [profile-unifier-sql-schema.md](./profile-unifier-sql-schema.md).
 
+The corresponding service contract for ingestion, search, person reads, review
+workflow, and merge operations is defined in
+[profile-unifier-api-spec.md](./profile-unifier-api-spec.md).
+
 ## Recommendation
 
 Ship deterministic plus heuristic matching first. Introduce the LLM in shadow
