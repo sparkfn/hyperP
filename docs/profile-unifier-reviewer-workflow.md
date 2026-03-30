@@ -137,10 +137,11 @@ When a case is resolved, the resolution should be one of:
 - `merge`
 - `reject`
 - `manual_no_match`
-- `escalated_to_admin`
 - `cancelled_superseded`
 
 `defer` should not be treated as a final resolution.
+`escalate` should be tracked as an action and assignment change, not as a final
+resolution value.
 
 ## State Machine
 
@@ -514,6 +515,7 @@ At minimum, operations should have runbooks for:
 ## Implementation Notes
 
 - queue state and resolution should be stored separately
+- deferred cases should support a nullable `follow_up_at`
 - every state transition should create a `review_action`
 - merge and lock side effects should be transactionally tied to final review submission
 - background recomputation should be idempotent if done asynchronously

@@ -111,6 +111,13 @@ create type review_queue_state as enum (
   'cancelled'
 );
 
+create type review_resolution_type as enum (
+  'merge',
+  'reject',
+  'manual_no_match',
+  'cancelled_superseded'
+);
+
 create type merge_event_type as enum (
   'auto_merge',
   'manual_merge',
@@ -132,6 +139,18 @@ create type lock_type as enum (
   'manual_no_match',
   'manual_merge_hint',
   'person_suppression'
+);
+
+create type review_action_type as enum (
+  'assign',
+  'unassign',
+  'merge',
+  'reject',
+  'manual_no_match',
+  'defer',
+  'escalate',
+  'cancel',
+  'reopen'
 );
 ```
 
@@ -467,8 +486,9 @@ create table review_case (
   priority integer not null default 100,
   queue_state review_queue_state not null default 'open',
   assigned_to text,
+  follow_up_at timestamptz,
   sla_due_at timestamptz,
-  resolution text,
+  resolution review_resolution_type,
   resolved_at timestamptz,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
@@ -481,7 +501,7 @@ create table review_case (
 create table review_action (
   review_action_id uuid primary key default gen_random_uuid(),
   review_case_id uuid not null references review_case(review_case_id),
-  action_type text not null,
+  action_type review_action_type not null,
   actor_type actor_type not null,
   actor_id text not null,
   notes text,

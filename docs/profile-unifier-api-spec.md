@@ -39,6 +39,7 @@ Recommended roles:
 
 - `ingest_service`
 - `read_service`
+- `service`
 - `support_agent`
 - `reviewer`
 - `admin`
@@ -47,6 +48,7 @@ Role expectations:
 
 - `ingest_service`: can call ingestion endpoints only
 - `read_service`: can read person and search endpoints
+- `service`: can execute internal platform operations such as recomputation jobs
 - `support_agent`: can search and view person details with PII restrictions
 - `reviewer`: can access review queue and submit review actions
 - `admin`: can manual merge, unmerge, and manage locks
@@ -184,6 +186,7 @@ Recommended standard error codes:
   "queue_state": "open",
   "priority": 100,
   "assigned_to": null,
+  "follow_up_at": null,
   "sla_due_at": "2026-04-01T00:00:00Z",
   "match_decision": {}
 }
@@ -302,6 +305,34 @@ Update run status after completion or failure.
 ### Authorization
 
 - `ingest_service`
+
+### Request
+
+```json
+{
+  "status": "completed",
+  "finished_at": "2026-03-31T01:00:00Z",
+  "metadata": {
+    "accepted_count": 1000,
+    "rejected_count": 12
+  }
+}
+```
+
+### Response
+
+```json
+{
+  "data": {
+    "ingest_run_id": "e2ac40fb-f508-44e8-8df1-1d23d40d4a75",
+    "status": "completed",
+    "finished_at": "2026-03-31T01:00:00Z"
+  },
+  "meta": {
+    "request_id": "..."
+  }
+}
+```
 
 ## Search and Person Read APIs
 
@@ -449,6 +480,7 @@ List review cases.
 
 - `queue_state`
 - `assigned_to`
+- `follow_up_before`
 - `priority_lte`
 - `source_system`
 - `cursor`
@@ -463,6 +495,7 @@ List review cases.
       "review_case_id": "8d0d1fa0-f5e5-47e6-85e5-c37aa6a4f6b6",
       "queue_state": "open",
       "priority": 100,
+      "follow_up_at": null,
       "sla_due_at": "2026-04-01T00:00:00Z",
       "match_decision": {
         "match_decision_id": "f3ee6977-846e-421e-baa4-6fe2b7ee33aa",
@@ -488,6 +521,38 @@ Return a single review case with its candidate comparison payload.
 - `reviewer`
 - `admin`
 
+### Response
+
+```json
+{
+  "data": {
+    "review_case_id": "8d0d1fa0-f5e5-47e6-85e5-c37aa6a4f6b6",
+    "queue_state": "assigned",
+    "priority": 100,
+    "assigned_to": "reviewer_123",
+    "follow_up_at": null,
+    "sla_due_at": "2026-04-01T00:00:00Z",
+    "match_decision": {
+      "match_decision_id": "f3ee6977-846e-421e-baa4-6fe2b7ee33aa",
+      "engine_type": "heuristic",
+      "decision": "review",
+      "confidence": 0.78,
+      "reasons": [
+        "same phone",
+        "same DOB"
+      ]
+    },
+    "comparison": {
+      "left_entity": {},
+      "right_entity": {}
+    }
+  },
+  "meta": {
+    "request_id": "..."
+  }
+}
+```
+
 ## POST /v1/review-cases/{review_case_id}/assign
 
 Assign a review case.
@@ -505,6 +570,40 @@ Assign a review case.
 }
 ```
 
+### Notes
+
+- repeated assignment to the same owner should be treated as idempotent
+- assignment should fail with `409 Conflict` if optimistic concurrency checks fail
+
+## POST /v1/review-cases/{review_case_id}/unassign
+
+Release ownership and return the case to the queue.
+
+### Authorization
+
+- `reviewer`
+- `admin`
+
+### Response
+
+```json
+{
+  "data": {
+    "review_case_id": "8d0d1fa0-f5e5-47e6-85e5-c37aa6a4f6b6",
+    "queue_state": "open",
+    "assigned_to": null
+  },
+  "meta": {
+    "request_id": "..."
+  }
+}
+```
+
+### Notes
+
+- repeated unassignment of an already-open case should be treated as idempotent
+- unassignment should fail with `409 Conflict` on stale ownership writes
+
 ## POST /v1/review-cases/{review_case_id}/actions
 
 Submit a review action.
@@ -521,7 +620,9 @@ Submit a review action.
   "action_type": "merge",
   "notes": "Phone and DOB align. Name variant is acceptable.",
   "metadata": {
-    "create_manual_lock": false
+    "create_manual_lock": false,
+    "follow_up_at": null,
+    "escalation_reason": null
   }
 }
 ```
@@ -705,6 +806,8 @@ The following endpoints should require `Idempotency-Key`:
 
 - `POST /v1/ingest/{source_key}/records`
 - `POST /v1/ingest/{source_key}/runs`
+- `POST /v1/review-cases/{review_case_id}/assign`
+- `POST /v1/review-cases/{review_case_id}/unassign`
 - `POST /v1/review-cases/{review_case_id}/actions`
 - `POST /v1/persons/manual-merge`
 - `POST /v1/persons/unmerge`
