@@ -1,14 +1,38 @@
 # HyperP
 
-Local planning workspace for a customer profile unification platform.
+Planning workspace for a customer profile unification platform that resolves
+the same real-world person across systems such as POS, Bitrix CRM, and
+third-party applications.
 
-## Documents
+## Document Map
 
 - [Architecture](./docs/profile-unifier-architecture.md)
+- [Matching Spec](./docs/profile-unifier-matching-spec.md)
 - [PRD](./docs/profile-unifier-prd.md)
 - [Roadmap](./docs/profile-unifier-roadmap.md)
 
-## Scope
+## Recommended Reading Order
 
-These documents cover a centralized identity resolution platform that unifies
-customer records across systems such as POS, Bitrix CRM, and third-party apps.
+1. PRD
+2. Architecture
+3. Matching Spec
+4. Roadmap
+
+## Current Scope
+
+The document set covers:
+
+- centralized identity resolution
+- deterministic and probabilistic matching
+- heuristic and LLM-based adjudication paths
+- manual review and unmerge workflows
+- golden profile generation
+- phased rollout planning
+
+## Principles
+
+- optimize for low false-merge rates
+- keep source facts immutable and auditable
+- make every decision explainable
+- treat NRIC and Singpass-linked data as highly sensitive
+- prefer controlled rollout over aggressive automation

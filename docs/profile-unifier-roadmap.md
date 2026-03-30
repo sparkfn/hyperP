@@ -1,81 +1,210 @@
 # Product Roadmap
 
+## Roadmap Goals
+
+- deliver a safe canonical identity platform in phases
+- establish a measurable baseline before adding LLM complexity
+- keep legal, operational, and engineering readiness aligned
+
+## Workstreams
+
+- source integration
+- identity resolution engine
+- golden profile API
+- review operations
+- security and compliance
+- analytics and observability
+
 ## Phase 0: Discovery and Data Audit
 
 Target: 2 to 3 weeks
 
-- inventory all source systems
-- document identifier fields and data quality
-- rank source trust by field
-- define sensitive-field handling rules
-- collect labeled examples of true matches and non-matches
+### Objectives
+
+- understand real source-system data quality
+- define the initial source scope
+- establish benchmark labeling
+
+### Deliverables
+
+- source inventory and field map
+- identifier taxonomy
+- trust ranking by source and field
+- sample labeled dataset of matches and non-matches
+- initial compliance notes for sensitive identifiers
+
+### Exit Criteria
+
+- at least 2 to 3 initial systems are selected
+- source schemas are documented
+- benchmark examples exist for major edge cases
 
 ## Phase 1: Data Foundation
 
 Target: 3 to 5 weeks
 
-- implement canonical schema
-- build raw ingestion pipeline
-- build normalization library
-- persist source records, identifiers, and attribute facts
-- add basic search and person retrieval API
+### Objectives
+
+- build the canonical data model
+- ingest raw records reliably
+- normalize identifiers consistently
+
+### Deliverables
+
+- canonical schema
+- ingestion framework for batch and incremental loads
+- normalization library
+- raw source record persistence
+- identifier and attribute fact persistence
+- person lookup API v1
+
+### Dependencies
+
+- source credentials or exports
+- infrastructure for storage and secrets
+
+### Exit Criteria
+
+- ingestion is idempotent
+- normalized identifiers are searchable
+- raw and normalized lineage is queryable
 
 ## Phase 2: Deterministic Matching
 
 Target: 2 to 3 weeks
 
-- implement trusted hard-match rules
-- implement hard conflict rules
-- link source records to person entities
-- store merge decisions and audit events
+### Objectives
+
+- implement safe hard rules first
+- establish auditability for automated decisions
+
+### Deliverables
+
+- hard-merge rules
+- hard-conflict rules
+- person linkage workflow
+- merge event logging
+- no-match lock support
+
+### Exit Criteria
+
+- deterministic merges are explainable
+- hard conflicts block unsafe merges
+- audit history exists for every deterministic decision
 
 ## Phase 3: Heuristic Matching v1
 
 Target: 3 to 4 weeks
 
-- implement candidate generation and blocking
-- implement feature extraction
-- implement weighted scoring engine
-- define thresholds for merge, review, and no-match
-- benchmark against labeled dataset
+### Objectives
+
+- add scalable candidate generation
+- implement a measurable probabilistic baseline
+
+### Deliverables
+
+- candidate generation and blocking service
+- feature extraction library
+- weighted scoring engine
+- threshold configuration
+- benchmark evaluation harness
+- confusion-matrix reporting by source and confidence band
+
+### Exit Criteria
+
+- auto-merge precision meets target on labeled benchmark
+- review volume is within expected operating capacity
+- poor-quality identifiers are penalized correctly
 
 ## Phase 4: Golden Profile and Review Operations
 
 Target: 2 to 4 weeks
 
-- implement survivorship logic
-- add reviewer queue and decision workflow
-- support manual override and unmerge
-- expose linked source record views
+### Objectives
+
+- expose usable canonical profiles
+- operationalize ambiguous-case handling
+
+### Deliverables
+
+- golden profile computation
+- reviewer queue and decision workflow
+- merge, reject, defer, and unmerge actions
+- linked source-record timeline
+- review SLA and prioritization rules
+
+### Exit Criteria
+
+- support teams can retrieve a unified person view
+- reviewers can safely resolve ambiguous cases
+- unmerge works without manual database fixes
 
 ## Phase 5: LLM Shadow Evaluation
 
 Target: 3 to 4 weeks
 
-- design structured prompt contract
-- redact or tokenize sensitive fields
-- run the LLM on review-band cases only
-- compare outputs against reviewer outcomes
-- measure precision, review acceptance, latency, and cost
+### Objectives
+
+- test whether the LLM adds value without taking production control
+- measure quality, cost, and privacy impact
+
+### Deliverables
+
+- structured prompt contract
+- redaction or tokenization policy for model input
+- shadow-run pipeline for review-band cases
+- benchmark comparison against reviewer outcomes
+- cost and latency report
+
+### Guardrails
+
+- no autonomous production merges
+- no override of hard conflict rules
+- model and prompt versions logged for every output
+
+### Exit Criteria
+
+- privacy controls are approved
+- LLM performance is at least complementary to heuristic review decisions
+- cost and latency fit the intended workflow
 
 ## Phase 6: Controlled LLM Assist
 
 Target: 2 to 3 weeks
 
-- use LLM to summarize ambiguous cases for reviewers
-- use LLM to recommend review priority
-- keep hard blockers outside the model
-- maintain shadow comparison against heuristic path
+### Objectives
+
+- reduce reviewer effort without increasing merge risk
+
+### Deliverables
+
+- reviewer summary generation
+- recommendation and triage support
+- ongoing shadow comparison against heuristic path
+- rollback switch for model disablement
+
+### Exit Criteria
+
+- reviewer productivity improves measurably
+- no increase in false-merge incidents
+- model rollout can be disabled quickly if quality regresses
 
 ## Phase 7: Operational Hardening
 
 Target: ongoing
 
-- add monitoring and alerting
-- add source drift detection
-- tune thresholds and source trust settings
-- build analyst dashboard for merge quality
-- prepare optional upstream synchronization
+### Objectives
+
+- make the platform resilient and governable
+
+### Deliverables
+
+- monitoring and alerting
+- source drift detection
+- threshold and source-trust tuning workflow
+- merge quality dashboard
+- runbooks for incident response and rollback
+- optional upstream synchronization strategy
 
 ## Milestones
 
@@ -86,22 +215,81 @@ Target: ongoing
 - M5: LLM path evaluated in shadow mode
 - M6: controlled LLM assist adopted if metrics justify it
 
+## Cross-Phase Dependencies
+
+- benchmark labeling must start early and continue throughout tuning
+- review operations must exist before probabilistic rollout scales
+- security approval must precede any LLM testing with sensitive data
+- downstream API consumers should be onboarded before broad rollout
+
+## Critical Path
+
+1. source inventory and benchmark creation
+2. ingestion and normalization
+3. deterministic rules and audit
+4. heuristic engine and review queue
+5. golden profile API
+6. LLM shadow evaluation
+
+## Suggested Team Shape
+
+- 1 product owner
+- 1 to 2 backend or platform engineers
+- 1 data engineer or analytics engineer
+- 1 reviewer or identity steward
+- part-time security and compliance support
+
+## Risks by Phase
+
+### Early Phases
+
+- source contract instability
+- underestimated data cleanup complexity
+
+### Matching Phases
+
+- threshold misconfiguration
+- shared identifiers causing bad candidate expansion
+
+### LLM Phases
+
+- privacy policy friction
+- weak incremental value relative to heuristic engine
+
+### Operational Phases
+
+- review backlog growth
+- downstream misuse of low-confidence identity links
+
 ## Exit Criteria by Stage
 
 ### Foundation Exit
 
 - first source systems ingest successfully
 - normalized identifiers are searchable
-- person graph can be queried
+- canonical person graph can be queried
 
 ### Matching Exit
 
 - false merges remain below target
-- reviewer queue volume is manageable
+- review queue volume is manageable
 - unmerge flow is operational
+
+### Consumer Exit
+
+- golden profile API is stable
+- support teams can find persons by major identifiers
+- lineage and audit data are available
 
 ### LLM Exit
 
 - privacy controls are approved
 - LLM quality exceeds or complements heuristic performance on ambiguous cases
 - cost and latency are acceptable for the intended review workflow
+
+## Post-Roadmap Backlog
+
+- upstream write-back where justified
+- household or relationship graphing
+- self-service quality dashboards for source-system owners
+- advanced rule simulation tooling
