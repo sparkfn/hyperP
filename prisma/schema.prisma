@@ -1,0 +1,506 @@
+generator client {
+  provider        = "prisma-client"
+  output          = "../src/generated/prisma"
+  previewFeatures = ["postgresqlExtensions"]
+}
+
+datasource db {
+  provider   = "postgresql"
+  url        = env("DATABASE_URL")
+  extensions = [pgcrypto, citext]
+}
+
+// ─── Enums ───────────────────────────────────────────────────────────
+
+enum PersonStatus {
+  active
+  merged
+  suppressed
+}
+
+enum RecordLinkStatus {
+  linked
+  pending_review
+  rejected
+  suppressed
+}
+
+enum IdentifierType {
+  government_id_hash
+  phone
+  email
+  external_customer_id
+  membership_id
+  crm_contact_id
+  loyalty_id
+  custom
+}
+
+enum TrustTier {
+  tier_1
+  tier_2
+  tier_3
+  tier_4
+}
+
+enum QualityFlag {
+  valid
+  invalid_format
+  placeholder_value
+  shared_identifier_suspected
+  stale
+  source_untrusted
+}
+
+enum MatchEngineType {
+  deterministic
+  heuristic
+  llm
+  manual
+}
+
+enum MatchDecisionType {
+  merge
+  review
+  no_match
+}
+
+enum ReviewQueueState {
+  open
+  assigned
+  deferred
+  resolved
+  cancelled
+}
+
+enum ReviewResolutionType {
+  merge
+  reject
+  manual_no_match
+  cancelled_superseded
+}
+
+enum MergeEventType {
+  person_created
+  auto_merge
+  manual_merge
+  review_reject
+  manual_no_match
+  unmerge
+  person_split
+  survivorship_override
+}
+
+enum ActorType {
+  system
+  reviewer
+  admin
+  service
+}
+
+enum LockType {
+  manual_no_match
+  manual_merge_hint
+  person_suppression
+}
+
+enum ReviewActionType {
+  assign
+  unassign
+  merge
+  reject
+  manual_no_match
+  defer
+  escalate
+  cancel
+  reopen
+}
+
+// ─── Core Reference Tables ──────────────────────────────────────────
+
+model SourceSystem {
+  sourceSystemId String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid @map("source_system_id")
+  sourceKey      String   @unique @map("source_key")
+  displayName    String   @map("display_name")
+  systemType     String   @map("system_type")
+  isActive       Boolean  @default(true) @map("is_active")
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt      DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+
+  fieldTrusts       SourceFieldTrust[]
+  ingestRuns        IngestRun[]
+  sourceRecords     SourceRecord[]
+  sourceRecordRejections SourceRecordRejection[]
+  personIdentifiers PersonIdentifier[]
+  personAttributeFacts PersonAttributeFact[]
+  persons           Person[]           @relation("PrimarySourceSystem")
+
+  @@map("source_system")
+}
+
+model SourceFieldTrust {
+  sourceFieldTrustId String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid @map("source_field_trust_id")
+  sourceSystemId     String    @db.Uuid @map("source_system_id")
+  fieldName          String    @map("field_name")
+  trustTier          TrustTier @map("trust_tier")
+  notes              String?
+  createdAt          DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt          DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+
+  sourceSystem SourceSystem @relation(fields: [sourceSystemId], references: [sourceSystemId])
+
+  @@unique([sourceSystemId, fieldName])
+  @@map("source_field_trust")
+}
+
+model IngestRun {
+  ingestRunId    String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid @map("ingest_run_id")
+  sourceSystemId String   @db.Uuid @map("source_system_id")
+  runType        String   @map("run_type")
+  status         String
+  startedAt      DateTime @default(now()) @map("started_at") @db.Timestamptz
+  finishedAt     DateTime? @map("finished_at") @db.Timestamptz
+  metadata       Json     @default("{}") @db.JsonB
+
+  sourceSystem  SourceSystem  @relation(fields: [sourceSystemId], references: [sourceSystemId])
+  sourceRecords SourceRecord[]
+
+  @@map("ingest_run")
+}
+
+// ─── Canonical Person Tables ────────────────────────────────────────
+
+model Person {
+  personId              String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid @map("person_id")
+  status                PersonStatus @default(active)
+  primarySourceSystemId String?      @db.Uuid @map("primary_source_system_id")
+  mergedIntoPersonId    String?      @db.Uuid @map("merged_into_person_id")
+  mergeLineage          String?      @map("merge_lineage")
+  isHighValue           Boolean      @default(false) @map("is_high_value")
+  isHighRisk            Boolean      @default(false) @map("is_high_risk")
+  suppressionReason     String?      @map("suppression_reason")
+  createdAt             DateTime     @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt             DateTime     @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+
+  primarySourceSystem SourceSystem? @relation("PrimarySourceSystem", fields: [primarySourceSystemId], references: [sourceSystemId])
+  mergedIntoPerson    Person?       @relation("MergeChain", fields: [mergedIntoPersonId], references: [personId])
+  absorbedPersons     Person[]      @relation("MergeChain")
+
+  aliases             PersonAlias[]
+  sourceRecords       SourceRecord[]
+  identifiers         PersonIdentifier[]
+  attributeFacts      PersonAttributeFact[]
+  survivorshipOverrides SurvivorshipOverride[]
+  goldenProfile       GoldenProfile?
+  goldenProfileLineages GoldenProfileLineage[]
+
+  mergeEventsFrom     MergeEvent[] @relation("MergeFrom")
+  mergeEventsTo       MergeEvent[] @relation("MergeTo")
+
+  leftPairLocks       PersonPairLock[] @relation("LeftPerson")
+  rightPairLocks      PersonPairLock[] @relation("RightPerson")
+
+  @@map("person")
+}
+
+model PersonAlias {
+  personAliasId  String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid @map("person_alias_id")
+  personId       String   @db.Uuid @map("person_id")
+  aliasNamespace String   @map("alias_namespace")
+  aliasValue     String   @map("alias_value")
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  person Person @relation(fields: [personId], references: [personId])
+
+  @@unique([aliasNamespace, aliasValue])
+  @@map("person_alias")
+}
+
+// ─── Source Record Tables ───────────────────────────────────────────
+
+model SourceRecord {
+  sourceRecordPk      String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid @map("source_record_pk")
+  sourceSystemId      String           @db.Uuid @map("source_system_id")
+  sourceRecordId      String           @map("source_record_id")
+  sourceRecordVersion String?          @map("source_record_version")
+  ingestRunId         String?          @db.Uuid @map("ingest_run_id")
+  linkedPersonId      String?          @db.Uuid @map("linked_person_id")
+  linkStatus          RecordLinkStatus @default(pending_review) @map("link_status")
+  observedAt          DateTime?        @map("observed_at") @db.Timestamptz
+  ingestedAt          DateTime         @default(now()) @map("ingested_at") @db.Timestamptz
+  recordHash          String           @map("record_hash")
+  rawPayload          Json             @map("raw_payload") @db.JsonB
+  normalizedPayload   Json             @default("{}") @map("normalized_payload") @db.JsonB
+  metadata            Json             @default("{}") @db.JsonB
+  retentionExpiresAt  DateTime?        @map("retention_expires_at") @db.Timestamptz
+
+  sourceSystem       SourceSystem       @relation(fields: [sourceSystemId], references: [sourceSystemId])
+  ingestRun          IngestRun?         @relation(fields: [ingestRunId], references: [ingestRunId])
+  linkedPerson       Person?            @relation(fields: [linkedPersonId], references: [personId])
+  personIdentifiers  PersonIdentifier[]
+  personAttributeFacts PersonAttributeFact[]
+
+  mergeEventSourceRecords MergeEventSourceRecord[]
+
+  leftPairLocks  PersonPairLock[] @relation("LeftSourceRecord")
+  rightPairLocks PersonPairLock[] @relation("RightSourceRecord")
+
+  @@unique([sourceSystemId, sourceRecordId, recordHash])
+  @@map("source_record")
+}
+
+model SourceRecordRejection {
+  sourceRecordRejectionId String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid @map("source_record_rejection_id")
+  sourceSystemId          String   @db.Uuid @map("source_system_id")
+  sourceRecordId          String?  @map("source_record_id")
+  ingestRunId             String?  @db.Uuid @map("ingest_run_id")
+  rejectionReason         String   @map("rejection_reason")
+  rawPayload              Json?    @map("raw_payload") @db.JsonB
+  createdAt               DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  sourceSystem SourceSystem @relation(fields: [sourceSystemId], references: [sourceSystemId])
+
+  @@map("source_record_rejection")
+}
+
+// ─── Identifier and Attribute Tables ────────────────────────────────
+
+model PersonIdentifier {
+  personIdentifierId String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid @map("person_identifier_id")
+  personId           String        @db.Uuid @map("person_id")
+  sourceRecordPk     String?       @db.Uuid @map("source_record_pk")
+  sourceSystemId     String        @db.Uuid @map("source_system_id")
+  identifierType     IdentifierType @map("identifier_type")
+  rawValue           String?       @map("raw_value")
+  normalizedValue    String?       @map("normalized_value")
+  hashedValue        String?       @map("hashed_value")
+  isVerified         Boolean       @default(false) @map("is_verified")
+  verificationMethod String?       @map("verification_method")
+  isActive           Boolean       @default(true) @map("is_active")
+  qualityFlag        QualityFlag   @default(valid) @map("quality_flag")
+  firstSeenAt        DateTime      @default(now()) @map("first_seen_at") @db.Timestamptz
+  lastSeenAt         DateTime      @default(now()) @map("last_seen_at") @db.Timestamptz
+  lastConfirmedAt    DateTime      @default(now()) @map("last_confirmed_at") @db.Timestamptz
+  metadata           Json          @default("{}") @db.JsonB
+
+  person       Person        @relation(fields: [personId], references: [personId])
+  sourceRecord SourceRecord? @relation(fields: [sourceRecordPk], references: [sourceRecordPk])
+  sourceSystem SourceSystem  @relation(fields: [sourceSystemId], references: [sourceSystemId])
+
+  goldenProfileLineages GoldenProfileLineage[]
+
+  @@map("person_identifier")
+}
+
+model PersonAttributeFact {
+  personAttributeFactId String      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid @map("person_attribute_fact_id")
+  personId              String      @db.Uuid @map("person_id")
+  sourceRecordPk        String?     @db.Uuid @map("source_record_pk")
+  sourceSystemId        String      @db.Uuid @map("source_system_id")
+  attributeName         String      @map("attribute_name")
+  attributeValue        Json        @map("attribute_value") @db.JsonB
+  sourceTrustTier       TrustTier   @map("source_trust_tier")
+  confidence            Decimal     @default(1.0) @db.Decimal(5, 4)
+  qualityFlag           QualityFlag @default(valid) @map("quality_flag")
+  isCurrentHint         Boolean     @default(false) @map("is_current_hint")
+  observedAt            DateTime    @map("observed_at") @db.Timestamptz
+  createdAt             DateTime    @default(now()) @map("created_at") @db.Timestamptz
+
+  person       Person        @relation(fields: [personId], references: [personId])
+  sourceRecord SourceRecord? @relation(fields: [sourceRecordPk], references: [sourceRecordPk])
+  sourceSystem SourceSystem  @relation(fields: [sourceSystemId], references: [sourceSystemId])
+
+  survivorshipOverrides SurvivorshipOverride[]
+  goldenProfileLineages GoldenProfileLineage[]
+
+  @@map("person_attribute_fact")
+}
+
+model SurvivorshipOverride {
+  survivorshipOverrideId       String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid @map("survivorship_override_id")
+  personId                     String    @db.Uuid @map("person_id")
+  attributeName                String    @map("attribute_name")
+  selectedPersonAttributeFactId String   @db.Uuid @map("selected_person_attribute_fact_id")
+  reason                       String
+  actorType                    ActorType @map("actor_type")
+  actorId                      String    @map("actor_id")
+  createdAt                    DateTime  @default(now()) @map("created_at") @db.Timestamptz
+
+  person        Person              @relation(fields: [personId], references: [personId])
+  selectedFact  PersonAttributeFact @relation(fields: [selectedPersonAttributeFactId], references: [personAttributeFactId])
+
+  @@unique([personId, attributeName])
+  @@map("survivorship_override")
+}
+
+// ─── Golden Profile Tables ──────────────────────────────────────────
+
+model GoldenProfile {
+  personId                 String   @id @db.Uuid @map("person_id")
+  preferredFullName        String?  @map("preferred_full_name")
+  preferredPhone           String?  @map("preferred_phone")
+  preferredEmail           String?  @map("preferred_email")
+  preferredDob             DateTime? @map("preferred_dob") @db.Date
+  preferredAddress         Json?    @map("preferred_address") @db.JsonB
+  profileCompletenessScore Decimal  @default(0) @map("profile_completeness_score") @db.Decimal(5, 4)
+  computedAt               DateTime @default(now()) @map("computed_at") @db.Timestamptz
+  computationVersion       String   @map("computation_version")
+
+  person Person @relation(fields: [personId], references: [personId])
+
+  @@map("golden_profile")
+}
+
+model GoldenProfileLineage {
+  goldenProfileLineageId String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid @map("golden_profile_lineage_id")
+  personId               String   @db.Uuid @map("person_id")
+  fieldName              String   @map("field_name")
+  personAttributeFactId  String?  @db.Uuid @map("person_attribute_fact_id")
+  personIdentifierId     String?  @db.Uuid @map("person_identifier_id")
+  createdAt              DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  person              Person               @relation(fields: [personId], references: [personId])
+  personAttributeFact PersonAttributeFact?  @relation(fields: [personAttributeFactId], references: [personAttributeFactId])
+  personIdentifier    PersonIdentifier?     @relation(fields: [personIdentifierId], references: [personIdentifierId])
+
+  @@unique([personId, fieldName])
+  @@map("golden_profile_lineage")
+}
+
+// ─── Matching Tables ────────────────────────────────────────────────
+
+model CandidatePair {
+  candidatePairId String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid @map("candidate_pair_id")
+  leftEntityType  String   @map("left_entity_type")
+  leftEntityId    String   @map("left_entity_id")
+  rightEntityType String   @map("right_entity_type")
+  rightEntityId   String   @map("right_entity_id")
+  blockingReason  String   @map("blocking_reason")
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  matchDecisions MatchDecision[]
+
+  @@unique([leftEntityType, leftEntityId, rightEntityType, rightEntityId, blockingReason])
+  @@map("candidate_pair")
+}
+
+model MatchDecision {
+  matchDecisionId    String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid @map("match_decision_id")
+  leftEntityType     String            @map("left_entity_type")
+  leftEntityId       String            @map("left_entity_id")
+  rightEntityType    String            @map("right_entity_type")
+  rightEntityId      String            @map("right_entity_id")
+  candidatePairId    String?           @db.Uuid @map("candidate_pair_id")
+  engineType         MatchEngineType   @map("engine_type")
+  engineVersion      String            @map("engine_version")
+  decision           MatchDecisionType
+  confidence         Decimal?          @db.Decimal(5, 4)
+  reasons            Json              @default("[]") @db.JsonB
+  blockingConflicts  Json              @default("[]") @map("blocking_conflicts") @db.JsonB
+  featureSnapshot    Json              @default("{}") @map("feature_snapshot") @db.JsonB
+  promptSnapshot     Json?             @map("prompt_snapshot") @db.JsonB
+  policyVersion      String            @map("policy_version")
+  createdAt          DateTime          @default(now()) @map("created_at") @db.Timestamptz
+  retentionExpiresAt DateTime?         @map("retention_expires_at") @db.Timestamptz
+
+  candidatePair CandidatePair? @relation(fields: [candidatePairId], references: [candidatePairId])
+  reviewCases   ReviewCase[]
+  mergeEvents   MergeEvent[]
+
+  @@map("match_decision")
+}
+
+model PersonPairLock {
+  personPairLockId   String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid @map("person_pair_lock_id")
+  leftPersonId       String?   @db.Uuid @map("left_person_id")
+  rightPersonId      String?   @db.Uuid @map("right_person_id")
+  leftSourceRecordPk String?   @db.Uuid @map("left_source_record_pk")
+  rightSourceRecordPk String?  @db.Uuid @map("right_source_record_pk")
+  lockType           LockType  @map("lock_type")
+  reason             String
+  expiresAt          DateTime? @map("expires_at") @db.Timestamptz
+  actorType          ActorType @map("actor_type")
+  actorId            String    @map("actor_id")
+  createdAt          DateTime  @default(now()) @map("created_at") @db.Timestamptz
+
+  leftPerson        Person?       @relation("LeftPerson", fields: [leftPersonId], references: [personId])
+  rightPerson       Person?       @relation("RightPerson", fields: [rightPersonId], references: [personId])
+  leftSourceRecord  SourceRecord? @relation("LeftSourceRecord", fields: [leftSourceRecordPk], references: [sourceRecordPk])
+  rightSourceRecord SourceRecord? @relation("RightSourceRecord", fields: [rightSourceRecordPk], references: [sourceRecordPk])
+
+  @@map("person_pair_lock")
+}
+
+// ─── Review Workflow Tables ─────────────────────────────────────────
+
+model ReviewCase {
+  reviewCaseId    String                @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid @map("review_case_id")
+  matchDecisionId String                @db.Uuid @map("match_decision_id")
+  priority        Int                   @default(100)
+  queueState      ReviewQueueState      @default(open) @map("queue_state")
+  assignedTo      String?               @map("assigned_to")
+  followUpAt      DateTime?             @map("follow_up_at") @db.Timestamptz
+  slaDueAt        DateTime?             @map("sla_due_at") @db.Timestamptz
+  resolution      ReviewResolutionType?
+  resolvedAt      DateTime?             @map("resolved_at") @db.Timestamptz
+  createdAt       DateTime              @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt       DateTime              @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+
+  matchDecision MatchDecision  @relation(fields: [matchDecisionId], references: [matchDecisionId])
+  actions       ReviewAction[]
+
+  @@map("review_case")
+}
+
+model ReviewAction {
+  reviewActionId     String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid @map("review_action_id")
+  reviewCaseId       String           @db.Uuid @map("review_case_id")
+  actionType         ReviewActionType @map("action_type")
+  actorType          ActorType        @map("actor_type")
+  actorId            String           @map("actor_id")
+  notes              String?
+  metadata           Json             @default("{}") @db.JsonB
+  createdAt          DateTime         @default(now()) @map("created_at") @db.Timestamptz
+  retentionExpiresAt DateTime?        @map("retention_expires_at") @db.Timestamptz
+
+  reviewCase ReviewCase @relation(fields: [reviewCaseId], references: [reviewCaseId])
+
+  @@map("review_action")
+}
+
+// ─── Merge Audit Tables ─────────────────────────────────────────────
+
+model MergeEvent {
+  mergeEventId       String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid @map("merge_event_id")
+  eventType          MergeEventType @map("event_type")
+  fromPersonId       String?        @db.Uuid @map("from_person_id")
+  toPersonId         String?        @db.Uuid @map("to_person_id")
+  matchDecisionId    String?        @db.Uuid @map("match_decision_id")
+  actorType          ActorType      @map("actor_type")
+  actorId            String         @map("actor_id")
+  reason             String
+  metadata           Json           @default("{}") @db.JsonB
+  createdAt          DateTime       @default(now()) @map("created_at") @db.Timestamptz
+  retentionExpiresAt DateTime?      @map("retention_expires_at") @db.Timestamptz
+
+  fromPerson    Person?        @relation("MergeFrom", fields: [fromPersonId], references: [personId])
+  toPerson      Person?        @relation("MergeTo", fields: [toPersonId], references: [personId])
+  matchDecision MatchDecision? @relation(fields: [matchDecisionId], references: [matchDecisionId])
+
+  sourceRecords MergeEventSourceRecord[]
+
+  @@map("merge_event")
+}
+
+model MergeEventSourceRecord {
+  mergeEventSourceRecordId String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid @map("merge_event_source_record_id")
+  mergeEventId             String   @db.Uuid @map("merge_event_id")
+  sourceRecordPk           String   @db.Uuid @map("source_record_pk")
+  createdAt                DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  mergeEvent   MergeEvent   @relation(fields: [mergeEventId], references: [mergeEventId])
+  sourceRecord SourceRecord @relation(fields: [sourceRecordPk], references: [sourceRecordPk])
+
+  @@unique([mergeEventId, sourceRecordPk])
+  @@map("merge_event_source_record")
+}

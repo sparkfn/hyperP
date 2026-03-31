@@ -17,6 +17,7 @@ third-party applications.
 - [Sequence Diagrams](./docs/profile-unifier-sequence-diagrams.md)
 - [PRD](./docs/profile-unifier-prd.md)
 - [Roadmap](./docs/profile-unifier-roadmap.md)
+- [Scaffold Plan](./docs/profile-unifier-scaffold-plan.md)
 
 ## Recommended Reading Order
 
