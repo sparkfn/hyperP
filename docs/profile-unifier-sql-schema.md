@@ -29,6 +29,18 @@ The schema covers:
   write where policy requires it.
 - The schema is normalized first. Read models or materialized views can be
   added later for performance.
+- The `review_action_type` enum includes both API-submitted actions (`merge`,
+  `reject`, `defer`, `escalate`, `manual_no_match`) and system-recorded actions
+  (`assign`, `unassign`, `cancel`, `reopen`). The API layer exposes only the
+  API-submitted subset; system-recorded actions are created internally.
+- Entity pair tables (`candidate_pair`, `match_decision`, `person_pair_lock`)
+  enforce left < right ordering to prevent duplicates and simplify lookups.
+- Tables with retention requirements include a `retention_expires_at` column.
+  Legal holds override by setting this to NULL. A background job handles
+  periodic cleanup of expired rows.
+- `merge_lineage` on `person` stores an append-only delimited string of merge
+  history for single-column trace reads. Format:
+  `absorbed_person_id|merge_event_id|actor|timestamp;...`
 
 ## PostgreSQL Assumptions
 
@@ -51,7 +63,6 @@ set search_path = profile_unifier, public;
 ```sql
 create type person_status as enum (
   'active',
-  'under_review',
   'merged',
   'suppressed'
 );
@@ -119,6 +130,7 @@ create type review_resolution_type as enum (
 );
 
 create type merge_event_type as enum (
+  'person_created',
   'auto_merge',
   'manual_merge',
   'review_reject',
@@ -215,6 +227,7 @@ create table person (
   status person_status not null default 'active',
   primary_source_system_id uuid references source_system(source_system_id),
   merged_into_person_id uuid references person(person_id),
+  merge_lineage text,
   is_high_value boolean not null default false,
   is_high_risk boolean not null default false,
   suppression_reason text,
@@ -263,6 +276,7 @@ create table source_record (
   raw_payload jsonb not null,
   normalized_payload jsonb not null default '{}'::jsonb,
   metadata jsonb not null default '{}'::jsonb,
+  retention_expires_at timestamptz,
   unique (source_system_id, source_record_id, record_hash)
 );
 ```
@@ -305,6 +319,7 @@ create table person_identifier (
   quality_flag quality_flag not null default 'valid',
   first_seen_at timestamptz not null default now(),
   last_seen_at timestamptz not null default now(),
+  last_confirmed_at timestamptz not null default now(),
   metadata jsonb not null default '{}'::jsonb,
   check (
     normalized_value is not null or hashed_value is not null
@@ -418,7 +433,8 @@ create table candidate_pair (
   right_entity_id text not null,
   blocking_reason text not null,
   created_at timestamptz not null default now(),
-  unique (left_entity_type, left_entity_id, right_entity_type, right_entity_id, blocking_reason)
+  unique (left_entity_type, left_entity_id, right_entity_type, right_entity_id, blocking_reason),
+  check (left_entity_id < right_entity_id)
 );
 ```
 
@@ -443,7 +459,8 @@ create table match_decision (
   feature_snapshot jsonb not null default '{}'::jsonb,
   prompt_snapshot jsonb,
   policy_version text not null,
-  created_at timestamptz not null default now()
+  created_at timestamptz not null default now(),
+  retention_expires_at timestamptz
 );
 ```
 
@@ -471,6 +488,10 @@ create table person_pair_lock (
   check (
     right_person_id is not null
     or right_source_record_pk is not null
+  ),
+  check (
+    left_person_id is null or right_person_id is null
+    or left_person_id < right_person_id
   )
 );
 ```
@@ -506,7 +527,8 @@ create table review_action (
   actor_id text not null,
   notes text,
   metadata jsonb not null default '{}'::jsonb,
-  created_at timestamptz not null default now()
+  created_at timestamptz not null default now(),
+  retention_expires_at timestamptz
 );
 ```
 
@@ -525,7 +547,8 @@ create table merge_event (
   actor_id text not null,
   reason text not null,
   metadata jsonb not null default '{}'::jsonb,
-  created_at timestamptz not null default now()
+  created_at timestamptz not null default now(),
+  retention_expires_at timestamptz
 );
 ```
 
@@ -629,16 +652,27 @@ order by rc.priority asc, rc.sla_due_at asc nulls last, rc.created_at asc;
 3. insert `merge_event` of type `manual_no_match`
 4. close `review_case`
 
+### New Person Creation (No Candidates)
+
+1. create `person`
+2. insert `merge_event` of type `person_created`
+3. insert `source_record` linked to the new person
+4. insert `person_identifier` and `person_attribute_fact` rows
+5. compute initial `golden_profile`
+
 ### Unmerge
 
 1. insert `merge_event` of type `unmerge`
 2. restore or create affected `person` rows
 3. relink `source_record`
 4. rebuild `person_identifier` and `person_attribute_fact` associations if needed
-5. recompute impacted `golden_profile` rows
+5. flag post-merge source records for review if their match confidence may have changed
+6. recompute impacted `golden_profile` rows
 
 ## Data Integrity Notes
 
+- `merged_into_person_id` must always use path compression: when B merges into
+  C, all records pointing to B are updated to point to C
 - `person.status = 'merged'` must always imply `merged_into_person_id` is set
 - hard uniqueness should be conservative to avoid blocking legitimate shared
   phone and email cases

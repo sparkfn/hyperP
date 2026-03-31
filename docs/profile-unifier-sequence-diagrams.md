@@ -48,6 +48,31 @@ sequenceDiagram
     API-->>Source: Accepted response
 ```
 
+## Flow 1b: New Person Creation (No Candidates)
+
+```mermaid
+sequenceDiagram
+    participant Source as Source System
+    participant API as PU API
+    participant Norm as Normalizer
+    participant Resolver as Resolver
+    participant Store as Person Graph Store
+
+    Source->>API: POST /v1/ingest/{source}/records
+    API->>Store: Persist source_record and ingest metadata
+    API->>Norm: Normalize identifiers and attributes
+    Norm-->>API: Normalized payload + quality flags
+    API->>Resolver: Generate candidates
+    Resolver->>Store: Read identifiers by blocking keys
+    Resolver-->>API: Zero candidates found
+    API->>Store: Create new person
+    API->>Store: Link source_record to new person
+    API->>Store: Persist identifiers and attribute facts
+    API->>Store: Create merge_event(person_created)
+    API->>Store: Compute initial golden_profile
+    API-->>Source: Accepted response
+```
+
 ## Flow 2: Deterministic or High-Confidence Auto-Merge
 
 ```mermaid

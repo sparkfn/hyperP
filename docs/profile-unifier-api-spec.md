@@ -386,6 +386,10 @@ At least one of `identifier_type + value` or `q` should be provided.
 
 - support-agent role may receive redacted sensitive fields
 - government-ID-derived lookups should be exact-match only
+- rate limiting is enforced per caller role, with stricter limits for
+  `support_agent`
+- free-text `q` requires a minimum of 3 characters
+- all search queries are logged with caller identity for audit
 
 ## GET /v1/persons/{person_id}
 
@@ -627,13 +631,18 @@ Submit a review action.
 }
 ```
 
-Supported `action_type` values:
+Supported `action_type` values for this endpoint:
 
 - `merge`
 - `reject`
 - `defer`
 - `escalate`
 - `manual_no_match`
+
+Note: The `review_action_type` enum also includes `assign`, `unassign`,
+`cancel`, and `reopen`. These are system-recorded actions created internally by
+the assign, unassign, and cancel endpoints rather than submitted through this
+actions endpoint.
 
 ### Response
 
@@ -763,6 +772,61 @@ Create or replace a field-level survivorship override.
 }
 ```
 
+## Downstream Event APIs
+
+## GET /v1/events
+
+Poll for identity change events since a given timestamp.
+
+### Authorization
+
+- `read_service`
+- `admin`
+
+### Query Parameters
+
+- `since`: required, ISO 8601 timestamp
+- `event_type`: optional filter
+- `cursor`: optional pagination cursor
+- `limit`: optional result size, default 50, max 200
+
+### Response
+
+```json
+{
+  "data": [
+    {
+      "event_id": "a1b2c3d4-...",
+      "event_type": "person_merged",
+      "affected_person_ids": [
+        "7af4b5f5-34c1-4f22-9e2d-95ea8ff3b8c7",
+        "4aa7d8f2-d8ff-4db2-8d20-842111ab22ad"
+      ],
+      "metadata": {},
+      "created_at": "2026-03-31T00:00:00Z"
+    }
+  ],
+  "meta": {
+    "request_id": "...",
+    "next_cursor": "..."
+  }
+}
+```
+
+### Event Types
+
+- `person_created`
+- `person_merged`
+- `person_unmerged`
+- `golden_profile_updated`
+- `review_case_resolved`
+
+### Notes
+
+- event schema is designed for future migration to a push-based delivery
+  mechanism such as webhooks or message queues
+- ordering must be stable by `created_at`
+
 ## Operational and Admin APIs
 
 ## GET /v1/ingest/runs/{ingest_run_id}
@@ -834,6 +898,20 @@ The following endpoints should require `Idempotency-Key`:
 - `unmerge` must fail with `conflict` if referenced merge event is invalid
 - review action `merge` should create an audit event and close the review case
 - review action `manual_no_match` should create a persistent lock
+
+## Source Record Link Status Side Effects
+
+When a review case is resolved or cancelled, the linked source record's
+`link_status` must be updated:
+
+- review resolved as `merge`: set `link_status = linked`
+- review resolved as `reject` or `manual_no_match`: create a new person for
+  the source record and set `link_status = linked`, or flag for manual triage
+- review cancelled: re-run matching to find a new home, or flag for manual
+  triage
+
+Source records must not remain in `pending_review` after their review case is
+no longer active.
 
 ## Suggested HTTP Status Codes
 

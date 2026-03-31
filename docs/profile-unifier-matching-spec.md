@@ -57,6 +57,21 @@ Never compare every record with every other record.
 - suppress cases blocked by manual no-match history
 - penalize identifiers observed on many persons
 
+### Cardinality Caps
+
+If a blocking key matches more than a configurable threshold of existing
+persons, skip that key for that record and rely on other blocking keys.
+Thresholds must be configurable per identifier type. Skipped keys must be
+logged. Default thresholds are defined in
+[profile-unifier-policy-decisions.md](./profile-unifier-policy-decisions.md).
+
+### No-Candidate Path
+
+When candidate generation produces zero candidates for a source record, the
+match engine is not invoked. A new person is created directly. No
+`match_decision` row is created. A `merge_event` of type `person_created`
+provides the audit trail.
+
 ## Decision States
 
 - `merge`
@@ -138,7 +153,12 @@ in [profile-unifier-policy-decisions.md](./profile-unifier-policy-decisions.md).
 
 ## Example Heuristic Scoring Model
 
-Illustrative only. Tune on labeled data.
+Illustrative only. Tune on labeled data. The weights below are simple additive
+examples for readability. The production implementation should use conditional
+weighting (unverified identifiers worth less than verified), capping (multiple
+identifier matches should not stack linearly to exceed auto-merge threshold),
+or a proper probabilistic framework such as Fellegi-Sunter. Simple addition of
+weak signals must not produce auto-merge confidence.
 
 ### Positive Weights
 

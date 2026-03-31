@@ -1,0 +1,63 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## Project Overview
+
+HyperP is a **planning workspace** for a customer profile unification platform. It resolves the same real-world person across systems (POS, Bitrix CRM, third-party apps). The repository currently contains **only design documentation** — no implementation code exists yet.
+
+## Repository Structure
+
+All documents live in `docs/` and follow the naming convention `profile-unifier-*.md` (plus one `.yaml`).
+
+**Recommended reading order**: PRD → Glossary → Architecture → Matching Spec → Policy Decisions → SQL Schema → API Spec → OpenAPI 3.1 → Reviewer Workflow → Sequence Diagrams → Roadmap
+
+## Key Design Decisions
+
+- **Database**: PostgreSQL (decided). Not a graph DB — the "person graph" is shallow (1-2 hops), and the priority is transactional consistency.
+- **Precision over recall**: optimize for low false-merge rates; false merges have high operational cost.
+- **Immutable source facts**: source records are never modified after ingestion — all changes create new records.
+- **Explainable decisions**: every merge/no-match must have traceable reasons.
+- **4-layer matching**: Deterministic rules → Heuristic scoring → LLM adjudication (shadow-only in MVP) → Human review.
+- **Confidence bands**: ≥0.90 auto-merge, 0.60–0.89 human review, <0.60 no-match (thresholds to be calibrated).
+- **Sensitive data**: NRIC and Singpass-linked data require special handling; govt IDs stored as salted hashes.
+- **Controlled rollout**: LLM starts in shadow/assist mode only — no autonomous production merges in MVP.
+- **Merge lineage**: `merge_lineage` text column on `person` stores append-only delimited merge history. Path compression on `merged_into_person_id` guarantees max 1 hop.
+- **Unmerge**: post-merge source records stay with the surviving person but are flagged for review.
+- **Concurrency**: ingestion partitioned by blocking key to prevent race conditions.
+- **Cardinality caps**: blocking keys with too many matches are skipped; configurable per identifier type.
+- **Pair ordering**: all pair tables enforce `left < right` to prevent duplicates.
+- **Golden profile recomputation**: synchronous within the merge transaction.
+- **Downstream events**: polling endpoint (`GET /v1/events?since=`) for now, designed for future push migration.
+- **Identifier aging**: time-based deactivation via `last_confirmed_at`, configurable per type.
+- **Retention**: `retention_expires_at` column on relevant tables; NULL for legal holds.
+- **Scoring model**: must use conditional weighting or capping, not simple additive weights.
+
+## Architecture Summary
+
+Ingestion → Normalization → Candidate Generation (blocking keys) → Match Engine → Person Graph (PostgreSQL) → Golden Profile → Review Operations → APIs
+
+Core data entities: `person`, `source_record`, `person_identifier`, `person_attribute_fact`, `golden_profile`, `match_decision`, `merge_event`, `review_case`, `person_pair_lock`.
+
+Person statuses: `active`, `merged`, `suppressed` (no `under_review` — review state is tracked on `review_case`).
+
+## Implementation Roadmap
+
+- Phase 0: Source inventory, benchmark labeling
+- Phase 1: Schema, ingestion framework, normalization library
+- Phase 2: Deterministic matching, basic golden profile, basic review UI
+- Phase 3: Heuristic matching, candidate generation, scoring engine
+- Phase 4: Full review operations, unmerge
+- Phase 5: LLM shadow evaluation
+- Phase 6: LLM assist mode
+- Phase 7: Monitoring, alerting, observability
+
+## Working with This Repo
+
+When editing or adding documentation:
+- Follow the existing `profile-unifier-*.md` naming convention.
+- Use the glossary terms consistently (Person, Source Record, Person Identifier, Match Decision, Golden Profile, Merge Lineage, etc.).
+- Keep the README document map and reading order in sync with any new files.
+- Sequence diagrams use Mermaid syntax.
+- The API contract is defined in both prose (`api-spec.md`) and machine-readable (`openapi-3.1.yaml`) — keep them consistent.
+- The `review_action_type` enum includes both API-submitted actions and system-recorded actions — the API layer exposes only the API-submitted subset.

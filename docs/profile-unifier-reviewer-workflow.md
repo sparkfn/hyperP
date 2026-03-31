@@ -455,16 +455,16 @@ The reviewer UI should display:
 
 ## Side-Effect Matrix
 
-| Action | Review Action | Merge Event | Lock | Golden Profile Recompute | Downstream Event |
-| --- | --- | --- | --- | --- | --- |
-| assign | yes | no | no | no | no |
-| unassign | yes | no | no | no | no |
-| merge | yes | yes | no | yes | yes |
-| reject | yes | optional | no | no | optional |
-| manual_no_match | yes | yes | yes | no | optional |
-| defer | yes | no | no | no | no |
-| escalate | yes | no | no | no | optional |
-| cancel | yes | no | no | no | no |
+| Action | Review Action | Merge Event | Lock | Golden Profile Recompute | Link Status Update | Downstream Event |
+| --- | --- | --- | --- | --- | --- | --- |
+| assign | yes | no | no | no | no | no |
+| unassign | yes | no | no | no | no | no |
+| merge | yes | yes | no | yes | linked | yes |
+| reject | yes | optional | no | no | create new person or triage | optional |
+| manual_no_match | yes | yes | yes | no | create new person or triage | optional |
+| defer | yes | no | no | no | no | no |
+| escalate | yes | no | no | no | no | optional |
+| cancel | yes | no | no | no | re-match or triage | no |
 
 ## Interaction With Unmerge
 
@@ -477,7 +477,10 @@ Recommended path:
 2. reviewer escalates with evidence
 3. admin reviews merge history and impact
 4. admin executes unmerge through admin flow
-5. affected review cases are cancelled or recreated as needed
+5. source records that arrived after the original merge and are still linked to
+   the surviving person stay in place but are flagged for review, since their
+   match confidence may have changed without the unmerged person's signals
+6. affected review cases are cancelled or recreated as needed
 
 ## Reopen Policy
 
@@ -514,6 +517,14 @@ At minimum, operations should have runbooks for:
 
 ## Implementation Notes
 
+- the `review_action_type` enum includes both API-submitted actions (`merge`,
+  `reject`, `defer`, `escalate`, `manual_no_match`) and system-recorded actions
+  (`assign`, `unassign`, `cancel`, `reopen`). The API actions endpoint accepts
+  only the API-submitted subset; system-recorded actions are created internally
+  by their respective endpoints.
+- source record `link_status` must be updated when a review case is resolved or
+  cancelled. Records must not remain in `pending_review` after their case is no
+  longer active.
 - queue state and resolution should be stored separately
 - deferred cases should support a nullable `follow_up_at`
 - every state transition should create a `review_action`

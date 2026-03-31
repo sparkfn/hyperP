@@ -69,14 +69,15 @@ Target: 3 to 5 weeks
 - normalized identifiers are searchable
 - raw and normalized lineage is queryable
 
-## Phase 2: Deterministic Matching
+## Phase 2: Deterministic Matching and Basic Golden Profile
 
-Target: 2 to 3 weeks
+Target: 3 to 4 weeks
 
 ### Objectives
 
 - implement safe hard rules first
 - establish auditability for automated decisions
+- expose a basic golden profile so stakeholders see visible output early
 
 ### Deliverables
 
@@ -85,12 +86,17 @@ Target: 2 to 3 weeks
 - person linkage workflow
 - merge event logging
 - no-match lock support
+- basic golden profile computation
+- basic person lookup and golden profile API
+- minimal review UI for deterministic edge cases
 
 ### Exit Criteria
 
 - deterministic merges are explainable
 - hard conflicts block unsafe merges
 - audit history exists for every deterministic decision
+- support teams can retrieve a basic unified person view
+- golden profile API returns preferred fields for resolved persons
 
 ## Phase 3: Heuristic Matching v1
 
@@ -116,28 +122,29 @@ Target: 3 to 4 weeks
 - review volume is within expected operating capacity
 - poor-quality identifiers are penalized correctly
 
-## Phase 4: Golden Profile and Review Operations
+## Phase 4: Full Review Operations and Unmerge
 
 Target: 2 to 4 weeks
 
 ### Objectives
 
-- expose usable canonical profiles
-- operationalize ambiguous-case handling
+- operationalize full ambiguous-case handling
+- implement unmerge and advanced review workflows
 
 ### Deliverables
 
-- golden profile computation
-- reviewer queue and decision workflow
-- merge, reject, defer, and unmerge actions
+- full reviewer queue and decision workflow
+- merge, reject, defer, escalate, and unmerge actions
+- manual no-match locks
 - linked source-record timeline
 - review SLA and prioritization rules
+- unmerge with post-merge record flagging for review
 
 ### Exit Criteria
 
-- support teams can retrieve a unified person view
 - reviewers can safely resolve ambiguous cases
 - unmerge works without manual database fixes
+- post-merge source records are flagged for review after unmerge
 
 ## Phase 5: LLM Shadow Evaluation
 

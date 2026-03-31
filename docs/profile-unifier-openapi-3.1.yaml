@@ -513,6 +513,42 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/FieldTrustListResponseEnvelope'
+  /v1/events:
+    get:
+      tags: [Admin]
+      summary: Poll for identity change events
+      operationId: listEvents
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+        - name: since
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date-time
+        - name: event_type
+          in: query
+          schema:
+            type: string
+            enum:
+              - person_created
+              - person_merged
+              - person_unmerged
+              - golden_profile_updated
+              - review_case_resolved
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: Events since the given timestamp
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BasicSuccessEnvelope'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
 components:
   securitySchemes:
     bearerAuth:
@@ -678,7 +714,7 @@ components:
         - custom
     PersonStatus:
       type: string
-      enum: [active, under_review, merged, suppressed]
+      enum: [active, merged, suppressed]
     ReviewQueueState:
       type: string
       enum: [open, assigned, deferred, resolved, cancelled]

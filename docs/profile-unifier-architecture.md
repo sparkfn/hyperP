@@ -155,14 +155,33 @@ Suggested fields:
 - `created_at`
 - `updated_at`
 - `merged_into_person_id`
+- `merge_lineage`
 - `manual_lock_state`
+
+### Merge Lineage
+
+`merge_lineage` is a compact text column on the canonical person that records the
+full merge chain as an append-only delimited string. Each merge appends a
+segment; unmerge removes it and re-encodes. Format:
+
+```
+absorbed_person_id|merge_event_id|actor|timestamp;...
+```
+
+This allows reading the full merge history of a person in a single column
+without joining the `merge_event` table. The `merge_event` table remains the
+authoritative audit record. The lineage column is a denormalized convenience
+trace that can be rebuilt from `merge_event` if corrupted.
+
+Path compression is enforced on `merged_into_person_id`: when B merges into C,
+all records pointing to B are updated to point to C. This guarantees max depth
+of one hop for canonical person lookups.
 
 Recommended statuses:
 
 - `active`
 - `merged`
 - `suppressed`
-- `under_review`
 
 ### SourceRecord
 
@@ -179,7 +198,7 @@ Suggested fields:
 - `record_hash`
 - `ingested_at`
 
-### Identifier
+### PersonIdentifier
 
 Typed identity evidence associated with a person and source record.
 
@@ -208,7 +227,7 @@ Suggested fields:
 - `first_seen_at`
 - `last_seen_at`
 
-### AttributeFact
+### PersonAttributeFact
 
 Observed profile field with source and provenance.
 
@@ -266,6 +285,7 @@ Suggested event types:
 - `status`
 - `primary_source`
 - `merged_into_person_id`
+- `merge_lineage`
 - `created_at`
 - `updated_at`
 
@@ -279,9 +299,9 @@ Suggested event types:
 - `record_hash`
 - `ingested_at`
 
-### identifier
+### person_identifier
 
-- `identifier_id`
+- `person_identifier_id`
 - `person_id`
 - `source_system`
 - `source_record_id`
@@ -294,10 +314,11 @@ Suggested event types:
 - `is_active`
 - `first_seen_at`
 - `last_seen_at`
+- `last_confirmed_at`
 
-### attribute_fact
+### person_attribute_fact
 
-- `attribute_fact_id`
+- `person_attribute_fact_id`
 - `person_id`
 - `attribute_name`
 - `attribute_value`
@@ -371,17 +392,19 @@ Suggested event types:
 ### Person Lifecycle
 
 1. `active`: current canonical entity.
-2. `under_review`: ambiguous linkage exists.
-3. `merged`: absorbed into another person.
-4. `suppressed`: hidden from normal search if bad or test data.
+2. `merged`: absorbed into another person.
+3. `suppressed`: hidden from normal search if bad or test data.
 
 ### Unmerge Workflow
 
 1. Reviewer or admin marks a bad merge.
 2. Merge history and source links are replayed.
 3. A new or restored person entity is created.
-4. Golden profiles are recomputed for affected persons.
-5. Audit events and downstream notifications are emitted.
+4. Source records that arrived after the original merge and are still linked to
+   the surviving person stay in place but are flagged for review. Their match
+   confidence may have changed without the unmerged person's signals.
+5. Golden profiles are recomputed for affected persons.
+6. Audit events and downstream notifications are emitted.
 
 ## Normalization Layer
 
@@ -431,11 +454,30 @@ Candidate generation must prevent full pairwise comparison.
 - down-rank identifiers known to be shared
 - suppress comparison if a previous manual no-match lock exists
 
+### Cardinality Caps
+
+If a blocking key matches more than a configurable threshold of existing
+persons, skip that key for that record and rely on other blocking keys. This
+prevents explosion from shared business phones or generic emails. The threshold
+must be configurable per identifier type. Skipped keys should be logged for
+observability as they flag data quality issues.
+
 ### Performance Notes
 
 - maintain inverted indexes on normalized identifiers
 - partition candidate generation by source namespace
 - support backfill and incremental modes separately
+
+## Ingestion Concurrency Model
+
+Ingestion should be partitioned by the primary blocking key so that records that
+could potentially match always land on the same worker. Records with unrelated
+blocking keys can be processed concurrently. This prevents race conditions where
+two concurrent ingestions both create a new person for what should be the same
+individual.
+
+When a record matches on multiple blocking keys pointing to different partitions,
+a tie-breaking rule must determine which partition owns evaluation.
 
 ## Match Engine Contract
 
@@ -478,6 +520,13 @@ All decision engines should implement the same interface.
   "engine_version": "v1.0.0"
 }
 ```
+
+## New Person Creation
+
+When candidate generation returns zero candidates for a source record, the
+match engine is not invoked. A new person is created directly and the source
+record is linked to it. No `match_decision` row is created. A `merge_event` of
+type `person_created` provides the audit trail.
 
 ## Deterministic Rules
 
@@ -535,6 +584,11 @@ Guardrails:
 
 ## Golden Profile Computation
 
+Golden profile recomputation is synchronous within the merge or review
+transaction. This ensures downstream consumers never read a stale golden profile
+after a merge. The recomputation logic should be encapsulated in a standalone
+function so it can be extracted into an async worker later if scale demands it.
+
 The golden profile should compute preferred values without discarding source
 facts.
 
@@ -575,6 +629,23 @@ Priority should consider:
 - presence of sensitive conflicts
 - customer-service recency
 
+## Identifier Aging
+
+Identifiers that have not been re-confirmed by any source within a configurable
+window should be marked `is_active = false` by a background job.
+`last_confirmed_at` on `person_identifier` tracks the most recent confirmation.
+Deactivated identifiers remain in the table for audit but stop participating in
+candidate generation and scoring. If a fresh source record later re-confirms the
+identifier, it is reactivated automatically. The aging window must be
+configurable per identifier type.
+
+## Pair Ordering Convention
+
+All tables that store entity pairs (`person_pair_lock`, `candidate_pair`,
+`match_decision`) must enforce a canonical ordering where the left entity ID is
+lexicographically less than the right entity ID. This eliminates duplicate pairs
+and ensures lock checks only need to query one ordering.
+
 ## API Surface
 
 Recommended initial APIs:
@@ -587,6 +658,7 @@ Recommended initial APIs:
 - `POST /matches/review/{match_decision_id}`
 - `POST /persons/manual-merge`
 - `POST /persons/unmerge`
+- `GET /events`
 
 ### Search API Requirements
 
@@ -594,6 +666,18 @@ Recommended initial APIs:
 - partial match support where allowed
 - exact-match mode for sensitive identifiers
 - access-controlled filtering by role
+- rate limiting per caller role
+- minimum query length for free-text search
+- all search queries logged with caller identity for audit
+
+### Downstream Event Polling
+
+Downstream consumers that need to react to identity changes should poll
+`GET /events?since=<timestamp>` with cursor-based pagination. The event schema
+should include event type, affected entity IDs, timestamp, and metadata. This
+avoids the need for webhook or message queue infrastructure during early phases.
+The event schema should be designed so it can be migrated to a push-based
+delivery mechanism later.
 
 ## Security and Compliance
 
@@ -636,12 +720,18 @@ Track:
 - unmerge must be supported without manual database surgery
 - failed downstream writes must not corrupt canonical state
 
+## Resolved Technical Decisions
+
+- OLTP database: PostgreSQL
+- source records map to persons directly via foreign key on `source_record`
+- merge history uses path compression on `merged_into_person_id` with a
+  `merge_lineage` text column for quick trace reads
+- golden profile recomputation is synchronous within the merge transaction
+- ingestion concurrency is partitioned by blocking key
+
 ## Open Technical Decisions
 
-- OLTP database selection for person graph storage
 - whether to use event sourcing for merge replay
-- whether source records map to persons directly or through an intermediate
-  linkage table
 - whether review tooling is embedded in the app or built as an internal console
 
 ## Default Policy Decisions

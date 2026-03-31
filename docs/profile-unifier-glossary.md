@@ -181,7 +181,14 @@ identifiers, and source links.
 ### Merge Event
 
 An immutable audit event that records merge-related lifecycle changes such as
-manual merge, review reject, manual no-match, or unmerge.
+person creation, manual merge, review reject, manual no-match, or unmerge.
+
+### Merge Lineage
+
+A compact append-only text column on the canonical person that records the full
+merge chain as a delimited string. Each merge appends a segment; unmerge removes
+it and re-encodes. Used for single-column trace reads without joining the merge
+event table.
 
 ## Data Governance Terms
 

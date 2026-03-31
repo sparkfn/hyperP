@@ -272,6 +272,55 @@ defined:
 4. retention classification
 5. benchmark samples including true matches and true non-matches
 
+## Policy 8: Candidate Generation Cardinality Caps
+
+If a blocking key matches more than a configurable threshold of existing
+persons, that key must be skipped for that record. The system should fall back
+to other blocking keys. Skipped keys must be logged for observability.
+
+### Recommended Default Thresholds
+
+These are starting values and must be tuned per deployment:
+
+- phone: 50 persons
+- email: 100 persons
+- government ID hash: 5 persons
+- DOB plus name: 200 persons
+
+## Policy 9: Identifier Aging
+
+Identifiers that have not been re-confirmed by any source within a configurable
+window should be deactivated. A background job periodically marks stale
+identifiers as `is_active = false`. Identifiers reactivate automatically if a
+fresh source record re-confirms them.
+
+Deactivated identifiers remain in the database for audit but stop participating
+in candidate generation and scoring.
+
+Aging windows must be configurable per identifier type. Government ID hashes
+should not be subject to time-based aging.
+
+## Policy 10: Batch Reprocessing
+
+When thresholds are tuned or scoring logic changes, historical decisions may
+need re-evaluation. Reprocessing must respect prior human decisions:
+
+- skip any pair with an existing resolved review case or active lock
+- new candidates that were never previously evaluated go through the normal
+  pipeline
+- previously auto-merged pairs that now fall below threshold are flagged for
+  review, not auto-unmerged
+- every reprocessing run must be tracked for observability and rollback
+
+## Policy 11: Search API Protection
+
+The search API must enforce:
+
+- rate limiting per caller role, with stricter limits for `support_agent`
+- minimum query length for free-text search
+- exact-match-only mode for government ID lookups
+- all search queries logged with caller identity for audit
+
 ## Final Recommendation
 
 Adopt these defaults now so implementation can proceed without waiting on
