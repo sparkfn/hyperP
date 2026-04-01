@@ -186,6 +186,55 @@ paths:
                 $ref: '#/components/schemas/SourceRecordListResponseEnvelope'
         '404':
           $ref: '#/components/responses/PersonNotFound'
+  /v1/persons/{person_id}/connections:
+    get:
+      tags: [Persons]
+      summary: Get persons connected through shared identifiers
+      operationId: getPersonConnections
+      parameters:
+        - $ref: '#/components/parameters/PersonId'
+        - $ref: '#/components/parameters/RequestId'
+        - name: identifier_type
+          in: query
+          schema:
+            $ref: '#/components/schemas/IdentifierType'
+        - name: max_hops
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 3
+            default: 1
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: Connected persons via shared identifiers
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PersonConnectionsResponseEnvelope'
+        '404':
+          $ref: '#/components/responses/PersonNotFound'
+  /v1/persons/{person_id}/relationships:
+    get:
+      tags: [Persons]
+      summary: Get explicit typed relationships for a person (post-MVP)
+      operationId: getPersonRelationships
+      parameters:
+        - $ref: '#/components/parameters/PersonId'
+        - $ref: '#/components/parameters/RequestId'
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: Explicit relationships for the person
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BasicSuccessEnvelope'
+        '404':
+          $ref: '#/components/responses/PersonNotFound'
   /v1/persons/{person_id}/audit:
     get:
       tags: [Persons]
@@ -1237,6 +1286,48 @@ components:
       properties:
         data:
           $ref: '#/components/schemas/PersonDetail'
+        meta:
+          $ref: '#/components/schemas/Meta'
+      required: [data, meta]
+      additionalProperties: false
+    SharedIdentifier:
+      type: object
+      properties:
+        identifier_type:
+          $ref: '#/components/schemas/IdentifierType'
+        normalized_value:
+          type:
+            - string
+            - 'null'
+      required: [identifier_type]
+      additionalProperties: false
+    PersonConnection:
+      type: object
+      properties:
+        person_id:
+          type: string
+          format: uuid
+        status:
+          $ref: '#/components/schemas/PersonStatus'
+        preferred_full_name:
+          type:
+            - string
+            - 'null'
+        hops:
+          type: integer
+        shared_identifiers:
+          type: array
+          items:
+            $ref: '#/components/schemas/SharedIdentifier'
+      required: [person_id, status, hops, shared_identifiers]
+      additionalProperties: false
+    PersonConnectionsResponseEnvelope:
+      type: object
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/PersonConnection'
         meta:
           $ref: '#/components/schemas/Meta'
       required: [data, meta]

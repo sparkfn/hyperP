@@ -9,9 +9,11 @@ Unified Customer Profile Platform
 Customer identity data is fragmented across POS, Bitrix CRM, and multiple
 third-party systems. The same real-world person may appear under different
 phones, emails, external IDs, or partially conflicting profile fields. The
-platform will create a centralized person graph that resolves those records
-into a canonical profile, supports human review, and exposes a reliable golden
-profile to downstream systems.
+platform will create a centralized person graph (Neo4j) that resolves those
+records into a canonical profile, supports human review, and exposes a reliable
+golden profile to downstream systems. Beyond identity resolution, the graph
+database enables complex relationship use cases such as contact tracing and
+multi-hop network analysis. The initial use case is sales.
 
 ## Problem Statement
 
@@ -27,8 +29,10 @@ share a universal person identifier. As a result:
 ## Product Vision
 
 Create a durable identity foundation that becomes the system of record for
-customer identity linkage, while allowing source systems to continue owning
-their original records.
+customer identity linkage and relationship intelligence, while allowing source
+systems to continue owning their original records. The graph-native storage
+(Neo4j) enables future use cases such as contact tracing, referral network
+analysis, and multi-hop relationship queries.
 
 ## Product Goals
 
@@ -44,9 +48,16 @@ their original records.
 - replacing all CRMs or POS systems
 - becoming the full customer engagement platform
 - supporting unrestricted autonomous LLM merging in MVP
-- solving family, household, or company-account graphing in phase 1
+- solving family, household, or company-account graphing in MVP (planned for later phases)
 
 ## Primary Users
+
+### Sales Teams
+
+Need deduplicated leads, a complete view of a prospect's history across
+systems, and visibility into relationship networks (referrals, shared
+accounts, overlapping contacts) to prioritize outreach and avoid duplicate
+pitches.
 
 ### Customer Support and Operations
 
@@ -70,6 +81,9 @@ Need clear metrics on match quality, duplicate reduction, and review workload.
 
 ## User Problems to Solve
 
+- sales reps waste time pursuing duplicate leads or prospects already owned by another rep
+- sales cannot see a prospect's full interaction history across POS, CRM, and third-party apps
+- sales has no visibility into relationship networks (who referred whom, shared contacts)
 - agents cannot confidently identify a person across systems
 - duplicate records create inconsistent support outcomes
 - identifiers such as phone or email are reused, stale, or partially missing
@@ -83,17 +97,47 @@ Need clear metrics on match quality, duplicate reduction, and review workload.
 - ambiguous cases are queued rather than guessed
 - false merges are rare and recoverable
 - downstream teams can rely on the golden profile API
+- sales teams have a deduplicated prospect view from day one
+- the graph structure supports future relationship and contact-tracing queries
+  without re-architecture
 
 ## Core User Stories
 
+### Sales (MVP)
+
+- As a sales rep, I can search for a prospect and see a deduplicated profile
+  with full contact details and linked source records across all systems.
+- As a sales rep, I can see which other persons share identifiers with my
+  prospect (e.g. same phone, same email) to understand potential relationships.
+- As a sales manager, I can trust that two reps are not independently pursuing
+  the same person under different source IDs.
+
+### Support and Operations
+
 - As an agent, I can search a person by phone, email, or external ID and see a
   unified view of linked records.
+
+### Review and Admin
+
 - As a reviewer, I can approve or reject a suggested merge with clear evidence.
 - As an admin, I can unmerge an incorrect match and restore history.
+
+### Integration and Analytics
+
 - As an integration consumer, I can fetch a golden profile and linked source
   records by canonical person ID.
 - As a product owner, I can compare heuristic and LLM matching performance on
   ambiguous cases.
+
+### Relationship Intelligence (Post-MVP)
+
+- As a sales rep, I can view the relationship network around a person — who
+  referred them, who they share contacts or identifiers with, and how they are
+  connected to other known persons.
+- As an ops analyst, I can trace the contact chain from one person to another
+  through shared identifiers, interactions, or explicit relationships.
+- As a compliance officer, I can query the N-degree contact graph around a
+  flagged person for risk assessment.
 
 ## Scope
 
@@ -113,7 +157,7 @@ Need clear metrics on match quality, duplicate reduction, and review workload.
 ### Out of Scope
 
 - immediate write-back to every upstream system
-- household and family graph resolution
+- household and family graph resolution in MVP
 - full customer 360 marketing workflows
 - recommendation engines
 - unrestricted real-time LLM-based autonomous merging
@@ -232,6 +276,8 @@ Need clear metrics on match quality, duplicate reduction, and review workload.
 - deterministic and heuristic logic meet benchmark precision targets
 - manual review and unmerge workflows are operational
 - golden profile API returns canonical person and source links
+- sales teams can search, view deduplicated profiles, and see shared-identifier
+  connections between persons
 - audit trail exists for every merge and review action
 - security controls for sensitive identifiers are in place
 
@@ -249,6 +295,7 @@ Need clear metrics on match quality, duplicate reduction, and review workload.
 
 - LLM shadow evaluation
 - LLM reviewer assist
+- contact tracing and relationship graph queries
 - operational dashboards
 - optional upstream write-back
 - source trust and rule tuning workflows

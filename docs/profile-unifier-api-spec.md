@@ -772,6 +772,104 @@ Create or replace a field-level survivorship override.
 }
 ```
 
+## Graph and Relationship APIs
+
+## GET /v1/persons/{person_id}/connections
+
+Return persons connected to the given person through shared identifiers.
+This is the primary graph query for sales (shared-identifier visibility)
+and the foundation for contact-tracing queries.
+
+### Authorization
+
+- `read_service`
+- `support_agent`
+- `reviewer`
+- `admin`
+
+### Query Parameters
+
+- `identifier_type`: optional filter by identifier type
+- `max_hops`: optional, default 1, max 3. Number of hops through shared
+  identifiers. 1 = direct shared identifier. 2+ = multi-hop contact tracing.
+- `cursor`: optional pagination cursor
+- `limit`: optional result size, default 20, max 100
+
+### Response
+
+```json
+{
+  "data": [
+    {
+      "person_id": "4aa7d8f2-d8ff-4db2-8d20-842111ab22ad",
+      "status": "active",
+      "preferred_full_name": "Bob Lee",
+      "hops": 1,
+      "shared_identifiers": [
+        {
+          "identifier_type": "phone",
+          "normalized_value": "+6591234567"
+        }
+      ]
+    }
+  ],
+  "meta": {
+    "request_id": "...",
+    "next_cursor": null
+  }
+}
+```
+
+### Notes
+
+- at `max_hops = 1`, this returns persons who directly share an identifier
+  with the target — the most common sales use case
+- at `max_hops > 1`, this performs multi-hop traversal for contact tracing;
+  apply rate limiting and result caps to prevent runaway queries
+- support-agent role may receive redacted identifier values
+- sensitive identifiers (government ID) should be excluded from the
+  `shared_identifiers` response unless the caller has admin role
+
+## GET /v1/persons/{person_id}/relationships
+
+Return explicit typed relationships for a person (post-MVP). These are
+declared relationships like `REFERRED_BY`, `WORKS_WITH`, `FAMILY_OF` — not
+identity links.
+
+### Authorization
+
+- `read_service`
+- `reviewer`
+- `admin`
+
+### Response
+
+```json
+{
+  "data": [
+    {
+      "relationship_type": "REFERRED_BY",
+      "direction": "outgoing",
+      "related_person_id": "7af4b5f5-34c1-4f22-9e2d-95ea8ff3b8c7",
+      "related_person_name": "Alice Tan",
+      "source_system": "loyalty_app",
+      "confidence": 1.0,
+      "created_at": "2026-03-31T00:00:00Z"
+    }
+  ],
+  "meta": {
+    "request_id": "..."
+  }
+}
+```
+
+### Notes
+
+- this endpoint is a placeholder for post-MVP; return empty array until
+  explicit relationship types are implemented
+- designing the endpoint now ensures downstream clients can integrate
+  proactively
+
 ## Downstream Event APIs
 
 ## GET /v1/events
@@ -820,6 +918,12 @@ Poll for identity change events since a given timestamp.
 - `person_unmerged`
 - `golden_profile_updated`
 - `review_case_resolved`
+- `shared_identifier_detected` — emitted when a new `IDENTIFIED_BY`
+  relationship connects a person to an Identifier node that already has other
+  persons linked. Includes the identifier type and the set of affected person
+  IDs. Enables downstream systems to react to newly discovered connections.
+- `relationship_created` (post-MVP) — emitted when an explicit relationship
+  is created between two persons
 
 ### Notes
 
@@ -941,10 +1045,12 @@ Implement read and workflow APIs first:
 
 1. `GET /persons/search`
 2. `GET /persons/{person_id}`
-3. `GET /review-cases`
-4. `POST /review-cases/{review_case_id}/actions`
-5. `POST /persons/manual-merge`
-6. `POST /persons/unmerge`
+3. `GET /persons/{person_id}/connections` (sales MVP — shared identifiers)
+4. `GET /review-cases`
+5. `POST /review-cases/{review_case_id}/actions`
+6. `POST /persons/manual-merge`
+7. `POST /persons/unmerge`
 
-These endpoints unlock review operations and downstream consumption without
-forcing all ingestion or admin surfaces to be production-complete on day one.
+These endpoints unlock review operations, sales lookup, and downstream
+consumption without forcing all ingestion or admin surfaces to be
+production-complete on day one.

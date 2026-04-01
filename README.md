@@ -1,8 +1,10 @@
 # HyperP
 
-Planning workspace for a customer profile unification platform that resolves
-the same real-world person across systems such as POS, Bitrix CRM, and
-third-party applications.
+Planning workspace for a customer profile unification and relationship
+intelligence platform that resolves the same real-world person across systems
+such as POS, Bitrix CRM, and third-party applications. Designed to support
+complex relationship use cases including contact tracing. The initial use case
+is sales. Built on Neo4j for native graph traversal.
 
 ## Document Map
 
@@ -10,7 +12,7 @@ third-party applications.
 - [Architecture](./docs/profile-unifier-architecture.md)
 - [Matching Spec](./docs/profile-unifier-matching-spec.md)
 - [Policy Decisions](./docs/profile-unifier-policy-decisions.md)
-- [SQL Schema](./docs/profile-unifier-sql-schema.md)
+- [Graph Schema](./docs/profile-unifier-graph-schema.md)
 - [API Spec](./docs/profile-unifier-api-spec.md)
 - [OpenAPI 3.1](./docs/profile-unifier-openapi-3.1.yaml)
 - [Reviewer Workflow](./docs/profile-unifier-reviewer-workflow.md)
@@ -25,7 +27,7 @@ third-party applications.
 3. Architecture
 4. Matching Spec
 5. Policy Decisions
-6. SQL Schema
+6. Graph Schema
 7. API Spec
 8. OpenAPI 3.1
 9. Reviewer Workflow
@@ -41,6 +43,7 @@ The document set covers:
 - heuristic and LLM-based adjudication paths
 - manual review and unmerge workflows
 - golden profile generation
+- contact tracing and complex relationship queries
 - phased rollout planning
 
 ## Principles

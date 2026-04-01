@@ -294,8 +294,8 @@ window should be deactivated. A background job periodically marks stale
 identifiers as `is_active = false`. Identifiers reactivate automatically if a
 fresh source record re-confirms them.
 
-Deactivated identifiers remain in the database for audit but stop participating
-in candidate generation and scoring.
+Deactivated identifiers remain in the graph for audit but stop participating in
+candidate generation and scoring.
 
 Aging windows must be configurable per identifier type. Government ID hashes
 should not be subject to time-based aging.
@@ -320,6 +320,56 @@ The search API must enforce:
 - minimum query length for free-text search
 - exact-match-only mode for government ID lookups
 - all search queries logged with caller identity for audit
+
+## Policy 12: Data Deletion and Right to Erasure
+
+Graph deletion is more complex than relational deletion. Removing a Person
+node requires detaching all relationships first. The platform must support
+both automated retention-based cleanup and on-demand erasure requests.
+
+### Deletion Workflow
+
+1. validate the person is eligible for deletion (no active legal hold, no
+   active review cases)
+2. detach and delete all `IDENTIFIED_BY` relationships from the person
+3. delete orphaned Identifier nodes that have no remaining `IDENTIFIED_BY`
+   relationships from other persons
+4. detach and delete all `HAS_FACT` relationships from the person
+5. detach and delete all `LINKED_TO` relationships pointing to the person
+   from SourceRecord nodes
+6. handle SourceRecord nodes: anonymize `raw_payload` and
+   `normalized_payload` or delete entirely per retention policy
+7. handle MergeEvent nodes: retain with anonymized references if audit
+   retention requires it, or delete if retention has expired
+8. delete the Person node itself
+9. log the deletion as an audit event (with minimal identifying data)
+
+### Cascade Rules
+
+- Identifier nodes are deleted only when no other person links to them;
+  shared identifiers survive individual person deletion
+- MergeEvent nodes are retained for audit unless both the absorbed and
+  surviving persons are deleted and retention has expired
+- ReviewCase nodes associated with the deleted person should be closed
+  with resolution `cancelled_superseded` and reason `data_erasure`
+- MatchDecision nodes are retained with anonymized entity references for
+  the audit retention period
+
+### Legal Hold Override
+
+A person with `retention_expires_at = null` (legal hold) must not be
+deleted by automated cleanup. Legal holds must be explicitly lifted before
+deletion can proceed.
+
+### On-Demand Erasure
+
+On-demand erasure requests (e.g. GDPR right to erasure) must:
+
+- be logged with requestor identity and timestamp
+- complete within the SLA defined by applicable regulation
+- produce a confirmation record that erasure was performed
+- not delete data that must be retained for legal or regulatory compliance
+  (the conflict must be surfaced to the compliance team)
 
 ## Final Recommendation
 
