@@ -64,13 +64,23 @@ This replaces index-based blocking-key lookups for strong identifiers.
 - exact government-ID hash → traverse shared Identifier node
 - source-side known cross-reference IDs → traverse shared Identifier node
 
+### Address Traversal
+
+- exact normalized address → traverse shared Address node
+
+```cypher
+MATCH (addr:Address {country_code: $cc, postal_code: $postal,
+  street_name: $street, street_number: $num, unit_number: $unit})
+  <-[:LIVES_AT]-(candidate:Person {status: 'active'})
+RETURN candidate.person_id
+```
+
 ### Composite Blocking (Secondary)
 
 For weaker signals that require combining multiple fields, fall back to
-index-based queries since these are not modeled as shared nodes:
+index-based queries:
 
 - exact DOB plus fuzzy name
-- postal code plus fuzzy name
 
 ### Candidate Filtering
 
@@ -134,6 +144,7 @@ in [profile-unifier-policy-decisions.md](./profile-unifier-policy-decisions.md).
 - DOB exact match
 - high full-name similarity
 - high address similarity
+- same Address node (shared `LIVES_AT` relationship)
 - repeated co-occurrence across source updates
 - same trusted external ID family
 

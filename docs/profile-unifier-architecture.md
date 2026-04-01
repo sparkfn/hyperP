@@ -333,7 +333,7 @@ Golden profile fields are stored directly on the Person node in Neo4j (always
 - `preferred_full_name`
 - `preferred_phone`
 - `preferred_email`
-- `preferred_address`
+- `preferred_address_id` (reference to the preferred Address node)
 - `preferred_dob`
 - `profile_completeness_score`
 - `golden_profile_computed_at`
@@ -416,10 +416,25 @@ Golden profile fields are stored directly on the Person node in Neo4j (always
 - Standardize DOB to ISO date.
 - Encrypt or hash highly sensitive identifiers.
 
+### Address Normalization
+
+Addresses must be decomposed into structured components during ingestion so
+they can be stored as shared Address nodes in the graph:
+
+- parse raw address into: unit number, street number, street name, building
+  name, city, state/province, postal code, country code
+- lowercase and trim all string components
+- standardize country codes to ISO 3166-1 alpha-2
+- standardize postal codes to canonical format per country
+- compute a `normalized_full` concatenation for display and full-text search
+- optionally geocode to lat/lon for proximity queries
+
+Addresses that cannot be parsed into structured components should be stored
+as `HAS_FACT` relationships with a `quality_flag` of `invalid_format` until
+manual correction or a better parser is available.
+
 ### Attribute Normalization
 
-- split full addresses into components where possible
-- standardize country codes and postal codes
 - normalize honorifics and common placeholders
 - detect null-like values such as `NA`, `Unknown`, or `-`
 
@@ -457,6 +472,18 @@ This replaces traditional blocking-key index scans. The Identifier node is
 the blocking key — if two persons share an Identifier node, they are
 candidates. No value comparison is needed; the graph edge is the evidence.
 
+### Address Traversal
+
+Addresses are shared nodes, so "same address" candidate generation is also
+graph traversal:
+
+```cypher
+MATCH (addr:Address {country_code: $cc, postal_code: $postal,
+  street_name: $street, street_number: $num, unit_number: $unit})
+  <-[:LIVES_AT]-(candidate:Person {status: 'active'})
+RETURN candidate.person_id
+```
+
 ### Composite Blocking (Multiple Signals)
 
 For weaker signals that require combination (e.g. DOB plus similar name),
@@ -464,7 +491,6 @@ the system falls back to index-based lookups since these are not modeled as
 shared nodes:
 
 - same DOB plus similar name (full-text index on Person.preferred_full_name)
-- same last name plus same postal code
 
 ### Candidate Suppression Rules
 
@@ -638,7 +664,8 @@ facts.
   high-trust source
 - phone: allow multiple active phones, but choose one preferred contact number
 - email: allow multiple active emails, but choose one preferred primary email
-- address: prefer most recent verified address
+- address: prefer most recent verified `LIVES_AT` relationship; the preferred
+  Address node ID is stored on the Person golden profile
 - DOB: prefer verified onboarding or KYC source
 
 ## Reviewer Workflow

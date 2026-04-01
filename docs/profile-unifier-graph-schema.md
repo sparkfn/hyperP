@@ -78,7 +78,7 @@ CREATE (p:Person {
   preferred_phone: null,
   preferred_email: null,
   preferred_dob: null,
-  preferred_address: null,
+  preferred_address_id: null,       // reference to preferred Address node
   profile_completeness_score: 0.0,
   golden_profile_computed_at: null,
   golden_profile_version: null,
@@ -119,6 +119,44 @@ Why a node and not a property: identifiers are shared across persons, and
 querying "who else shares this phone" is a core traversal. Making identifiers
 nodes means contact tracing is a single `MATCH` hop through shared Identifier
 nodes rather than a cross-join on property values.
+
+### Address
+
+Normalized, structured addresses are shared nodes — the same pattern as
+Identifier. Two persons at the same normalized address are implicitly linked,
+enabling "who else lives here?" traversal for household detection and contact
+tracing.
+
+```cypher
+CREATE (addr:Address {
+  address_id: randomUUID(),
+  unit_number: null,              // apartment, suite, unit
+  street_number: '10',
+  street_name: 'Example Street',
+  building_name: null,
+  city: 'Singapore',
+  state_province: null,
+  postal_code: '123456',
+  country_code: 'SG',
+  normalized_full: '10 example street, singapore 123456, sg',
+  geo_lat: null,                  // optional geocoded latitude
+  geo_lon: null,                  // optional geocoded longitude
+  created_at: datetime()
+})
+```
+
+Addresses are stored in structured, normalized components — not as free-text
+strings. The normalization pipeline decomposes raw addresses during ingestion.
+
+**Deduplication key**: `(country_code, postal_code, street_name, street_number,
+unit_number)`. Use `MERGE` on this composite key to prevent duplicate Address
+nodes. `normalized_full` is a lowercased, whitespace-normalized concatenation
+for display and full-text search.
+
+Why a node and not a `HAS_FACT` property: addresses are shared across persons.
+"Who else lives at this address?" is a core traversal for household detection,
+contact tracing, and sales territory analysis. A shared Address node makes
+this a single hop — the same pattern that makes Identifier nodes powerful.
 
 ### SourceSystem
 
@@ -273,17 +311,17 @@ CREATE (me:MergeEvent {
 | Relationship | From | To | Properties | Purpose |
 | --- | --- | --- | --- | --- |
 | `IDENTIFIED_BY` | Person | Identifier | `is_verified`, `verification_method`, `is_active`, `quality_flag`, `first_seen_at`, `last_seen_at`, `last_confirmed_at`, `source_system_key`, `source_record_pk` | Links a person to an identity signal. Rich properties track verification, aging, and provenance. |
+| `LIVES_AT` | Person | Address | `is_active`, `is_verified`, `source_system_key`, `source_record_pk`, `first_seen_at`, `last_seen_at`, `last_confirmed_at`, `quality_flag` | Links a person to a normalized address. Same aging and verification model as `IDENTIFIED_BY`. |
 | `LINKED_TO` | SourceRecord | Person | `linked_at` | Associates an ingested record with its resolved person. |
 | `FROM_SOURCE` | SourceRecord / IngestRun | SourceSystem | — | Provenance. |
 | `PART_OF_RUN` | SourceRecord | IngestRun | — | Groups records by ingestion batch. |
-| `HAS_FACT` | Person | — (inline) | see below | Attribute facts. |
+| `HAS_FACT` | Person | — (inline) | see below | Attribute facts (for non-address, non-identifier attributes: name, DOB, etc.). |
 
 ### Attribute Facts
 
-Attribute facts (name, DOB, address observations) are stored as `HAS_FACT`
-relationships from Person to SourceRecord, with the fact data as relationship
-properties. This avoids a PersonAttributeFact node that only ever connects
-one person to one source record.
+Non-address, non-identifier attributes (name, DOB, etc.) are stored as
+`HAS_FACT` relationships from Person to SourceRecord, with the fact data as
+relationship properties.
 
 ```cypher
 CREATE (p)-[:HAS_FACT {
@@ -300,8 +338,12 @@ CREATE (p)-[:HAS_FACT {
 
 Why a relationship: a fact is always "Person observed this value from this
 source record." It is never queried independently — always in the context
-of a person or a source record. Keeping it as a relationship eliminates
-a node label and simplifies traversal.
+of a person or a source record.
+
+**Note**: Addresses are modeled as shared `Address` nodes (not `HAS_FACT`
+relationships) because "who else lives here?" is a core traversal. Identifiers
+are similarly shared `Identifier` nodes. `HAS_FACT` is reserved for attributes
+that are not shared or traversed across persons (name, DOB, etc.).
 
 ### Merge and Lifecycle
 
@@ -458,6 +500,9 @@ CREATE CONSTRAINT review_case_id_unique IF NOT EXISTS
 CREATE CONSTRAINT merge_event_id_unique IF NOT EXISTS
   FOR (me:MergeEvent) REQUIRE me.merge_event_id IS UNIQUE;
 
+CREATE CONSTRAINT address_id_unique IF NOT EXISTS
+  FOR (addr:Address) REQUIRE addr.address_id IS UNIQUE;
+
 // Identifier lookups — the hot path
 CREATE INDEX idx_identifier_type_norm IF NOT EXISTS
   FOR (id:Identifier)
@@ -477,10 +522,23 @@ CREATE INDEX idx_review_case_queue IF NOT EXISTS
   FOR (rc:ReviewCase)
   ON (rc.queue_state, rc.priority);
 
-// Full-text search for person name
+// Address lookup by postal code + street
+CREATE INDEX idx_address_postal IF NOT EXISTS
+  FOR (addr:Address)
+  ON (addr.country_code, addr.postal_code);
+
+CREATE INDEX idx_address_composite IF NOT EXISTS
+  FOR (addr:Address)
+  ON (addr.country_code, addr.postal_code, addr.street_name, addr.street_number);
+
+// Full-text search for person name and address
 CREATE FULLTEXT INDEX person_name_search IF NOT EXISTS
   FOR (p:Person)
   ON EACH [p.preferred_full_name];
+
+CREATE FULLTEXT INDEX address_full_search IF NOT EXISTS
+  FOR (addr:Address)
+  ON EACH [addr.normalized_full];
 ```
 
 ## Example Queries
@@ -543,6 +601,27 @@ ORDER BY degrees
 LIMIT 50
 ```
 
+### Who Else Lives at This Person's Address?
+
+```cypher
+MATCH (p:Person {person_id: $pid})-[:LIVES_AT]->(addr:Address)
+  <-[:LIVES_AT]-(other:Person {status: 'active'})
+WHERE other.person_id <> p.person_id
+RETURN DISTINCT other.person_id, other.preferred_full_name,
+       addr.normalized_full, addr.postal_code
+```
+
+Same pattern as shared Identifier traversal — pure graph hop, no value
+comparison. Enables household detection and same-address contact tracing.
+
+### Find Persons by Postal Code
+
+```cypher
+MATCH (addr:Address {country_code: 'SG', postal_code: $postal})
+  <-[:LIVES_AT]-(p:Person {status: 'active'})
+RETURN p.person_id, p.preferred_full_name, addr.normalized_full
+```
+
 ### Check for No-Match Lock Between Two Persons
 
 ```cypher
@@ -601,7 +680,30 @@ CREATE (p)-[:IDENTIFIED_BY {
   last_confirmed_at: datetime()
 }]->(id)
 
-// 5. Create attribute facts as relationships
+// 5. Create or merge Address node, create LIVES_AT relationship
+MERGE (addr:Address {
+  country_code: 'SG',
+  postal_code: '123456',
+  street_name: 'example street',
+  street_number: '10',
+  unit_number: null
+})
+  ON CREATE SET addr.address_id = randomUUID(),
+    addr.normalized_full = '10 example street, singapore 123456, sg',
+    addr.city = 'Singapore',
+    addr.created_at = datetime()
+CREATE (p)-[:LIVES_AT {
+  is_active: true,
+  is_verified: false,
+  quality_flag: 'valid',
+  source_system_key: $source_key,
+  source_record_pk: sr.source_record_pk,
+  first_seen_at: datetime(),
+  last_seen_at: datetime(),
+  last_confirmed_at: datetime()
+}]->(addr)
+
+// 6. Create attribute facts as relationships (name, DOB, etc.)
 CREATE (p)-[:HAS_FACT {
   attribute_name: 'full_name',
   attribute_value: 'Alice Tan',
@@ -612,7 +714,7 @@ CREATE (p)-[:HAS_FACT {
   created_at: datetime()
 }]->(sr)
 
-// 6. Recompute golden profile (update Person properties in place)
+// 7. Recompute golden profile (update Person properties in place)
 SET p.preferred_full_name = ...,
     p.golden_profile_computed_at = datetime(),
     p.updated_at = datetime()
@@ -647,6 +749,11 @@ CREATE (me)-[:AFFECTED_RECORD]->(sr)
 MATCH (absorbed)-[old_id:IDENTIFIED_BY]->(id:Identifier)
 DELETE old_id
 CREATE (survivor)-[:IDENTIFIED_BY { ... copy props ... }]->(id)
+
+// 3b. Rewire address relationships
+MATCH (absorbed)-[old_addr:LIVES_AT]->(addr:Address)
+DELETE old_addr
+CREATE (survivor)-[:LIVES_AT { ... copy props ... }]->(addr)
 
 // 4. Mark absorbed
 SET absorbed.status = 'merged', absorbed.updated_at = datetime()
@@ -692,6 +799,7 @@ CREATE (a)-[:NO_MATCH_LOCK {
 | --- | --- | --- |
 | Person | millions | core entity |
 | Identifier | millions | shared across persons — the graph backbone |
+| Address | hundreds of thousands–millions | shared across persons at same location |
 | SourceRecord | millions | immutable, grows with ingestion |
 | SourceSystem | tens | rarely changes |
 | IngestRun | thousands | operational, can be pruned |
@@ -787,8 +895,9 @@ become traversal bottlenecks and write contention points:
 | Identifier nodes | 2–3M | ~2–3 identifiers per person on average |
 | SourceRecord nodes | 2–5M | ~2–5 source records per person |
 | IDENTIFIED_BY rels | 3–6M | multiple persons may share identifiers |
+| LIVES_AT rels | 1–3M | ~1–3 addresses per person |
 | LINKED_TO rels | 2–5M | 1:1 with SourceRecord |
-| HAS_FACT rels | 5–15M | ~5–15 attribute facts per person |
+| HAS_FACT rels | 3–10M | ~3–10 non-address attribute facts per person |
 | MergeEvent nodes | 100K–500K | depends on merge rate |
 | Total relationships | 15–30M | plan page cache accordingly |
 
@@ -812,8 +921,9 @@ Page cache should be sized to hold this entirely in memory.
 2. create SourceSystem nodes with field trust maps
 3. create Person nodes
 4. create Identifier nodes, then `IDENTIFIED_BY` relationships
-5. create SourceRecord nodes with `LINKED_TO` and `FROM_SOURCE` relationships
-6. create `HAS_FACT` relationships for attribute observations
+5. create Address nodes, then `LIVES_AT` relationships
+6. create SourceRecord nodes with `LINKED_TO` and `FROM_SOURCE` relationships
+7. create `HAS_FACT` relationships for non-address attribute observations
 7. create MatchDecision, ReviewCase, and MergeEvent nodes with relationships
 8. create `NO_MATCH_LOCK` relationships
 9. recompute golden profile properties on all active Person nodes

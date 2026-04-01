@@ -293,6 +293,15 @@ An event node (post-MVP) that connects one or more persons to a time, place,
 or activity. Examples: transactions, appointments, service calls. Used for
 contact tracing and sales analytics.
 
+### Address (Node)
+
+A shared, structured graph node representing a normalized physical address.
+Persons connect to Address nodes via `LIVES_AT` relationships. Two persons
+sharing the same Address node are implicitly linked, enabling "who else lives
+here?" traversal for household detection and contact tracing. Addresses are
+decomposed into structured components (street number, street name, postal code,
+country code, etc.) during ingestion normalization.
+
 ### Supernode
 
 An Identifier node with an unusually high number of `IDENTIFIED_BY`
