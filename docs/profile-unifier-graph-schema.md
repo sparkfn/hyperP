@@ -677,65 +677,65 @@ Always max 1 hop due to path compression.
 
 ```cypher
 // Within a single transaction:
-// 1. Create or find the source system
+
+// 1. Find source system
 MATCH (ss:SourceSystem {source_key: $source_key})
 
 // 2. Create source record
 CREATE (sr:SourceRecord { ... })-[:FROM_SOURCE]->(ss)
 
-// 3. After matching resolves to a person:
-MATCH (p:Person {person_id: $resolved_person_id})
-CREATE (sr)-[:LINKED_TO]->(p)
-
-// 4. Create or merge Identifier nodes, create IDENTIFIED_BY relationships
+// 3. Upsert Identifier and Address nodes (needed for candidate generation)
 MERGE (id:Identifier {identifier_type: 'phone', normalized_value: $phone})
   ON CREATE SET id.identifier_id = randomUUID(), id.created_at = datetime()
-CREATE (p)-[:IDENTIFIED_BY {
-  is_verified: $verified,
-  is_active: true,
-  quality_flag: 'valid',
-  source_system_key: $source_key,
-  source_record_pk: sr.source_record_pk,
-  first_seen_at: datetime(),
-  last_seen_at: datetime(),
-  last_confirmed_at: datetime()
-}]->(id)
 
-// 5. Create or merge Address node, create LIVES_AT relationship
 MERGE (addr:Address {
-  country_code: 'SG',
-  postal_code: '123456',
-  street_name: 'example street',
-  street_number: '10',
-  unit_number: null
+  country_code: 'SG', postal_code: '123456',
+  street_name: 'example street', street_number: '10', unit_number: null
 })
   ON CREATE SET addr.address_id = randomUUID(),
     addr.normalized_full = '10 example street, singapore 123456, sg',
-    addr.city = 'Singapore',
-    addr.created_at = datetime()
+    addr.city = 'Singapore', addr.created_at = datetime()
+
+// 4. Find candidates via graph traversal
+// (application code traverses shared Identifier/Address nodes)
+
+// 5. Match engine decides: merge into existing person or create new
+// (application code — not a single Cypher statement)
+
+// 6. If new person:
+CREATE (p:Person {
+  person_id: randomUUID(), status: 'active',
+  created_at: datetime(), updated_at: datetime()
+})
+// + CREATE MergeEvent(person_created)
+
+// 7. Link source record to resolved person
+CREATE (sr)-[:LINKED_TO]->(p)
+
+// 8. Create IDENTIFIED_BY relationships
+CREATE (p)-[:IDENTIFIED_BY {
+  is_verified: $verified, is_active: true, quality_flag: 'valid',
+  source_system_key: $source_key, source_record_pk: sr.source_record_pk,
+  first_seen_at: datetime(), last_seen_at: datetime(),
+  last_confirmed_at: datetime()
+}]->(id)
+
+// 9. Create LIVES_AT relationship
 CREATE (p)-[:LIVES_AT {
-  is_active: true,
-  is_verified: false,
-  quality_flag: 'valid',
-  source_system_key: $source_key,
-  source_record_pk: sr.source_record_pk,
-  first_seen_at: datetime(),
-  last_seen_at: datetime(),
+  is_active: true, is_verified: false, quality_flag: 'valid',
+  source_system_key: $source_key, source_record_pk: sr.source_record_pk,
+  first_seen_at: datetime(), last_seen_at: datetime(),
   last_confirmed_at: datetime()
 }]->(addr)
 
-// 6. Create attribute facts as relationships (name, DOB, etc.)
+// 10. Create attribute facts (name, DOB, etc.)
 CREATE (p)-[:HAS_FACT {
-  attribute_name: 'full_name',
-  attribute_value: 'Alice Tan',
-  source_trust_tier: 'tier_2',
-  confidence: 1.0,
-  quality_flag: 'valid',
-  observed_at: datetime(),
-  created_at: datetime()
+  attribute_name: 'full_name', attribute_value: 'Alice Tan',
+  source_trust_tier: 'tier_2', confidence: 1.0, quality_flag: 'valid',
+  observed_at: datetime(), created_at: datetime()
 }]->(sr)
 
-// 7. Recompute golden profile (update Person properties in place)
+// 11. Recompute golden profile
 SET p.preferred_full_name = ...,
     p.golden_profile_computed_at = datetime(),
     p.updated_at = datetime()

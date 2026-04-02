@@ -19,6 +19,8 @@ is sales. Built on Neo4j for native graph traversal.
 - [Sequence Diagrams](./docs/profile-unifier-sequence-diagrams.md)
 - [PRD](./docs/profile-unifier-prd.md)
 - [Roadmap](./docs/profile-unifier-roadmap.md)
+- [Graph Model Diagram](./docs/profile-unifier-graph-model-diagram.md)
+- [Scaffold Architecture](./docs/profile-unifier-scaffold.md)
 
 ## Recommended Reading Order
 
@@ -28,11 +30,13 @@ is sales. Built on Neo4j for native graph traversal.
 4. Matching Spec
 5. Policy Decisions
 6. Graph Schema
-7. API Spec
-8. OpenAPI 3.1
-9. Reviewer Workflow
-10. Sequence Diagrams
-11. Roadmap
+7. Graph Model Diagram
+8. API Spec
+9. OpenAPI 3.1
+10. Reviewer Workflow
+11. Sequence Diagrams
+12. Roadmap
+13. Scaffold Architecture
 
 ## Current Scope
 

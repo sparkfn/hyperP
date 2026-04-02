@@ -10,7 +10,7 @@ HyperP is a **planning workspace** for a customer profile unification and relati
 
 All documents live in `docs/` and follow the naming convention `profile-unifier-*.md` (plus one `.yaml`).
 
-**Recommended reading order**: PRD → Glossary → Architecture → Matching Spec → Policy Decisions → Graph Schema → API Spec → OpenAPI 3.1 → Reviewer Workflow → Sequence Diagrams → Roadmap
+**Recommended reading order**: PRD → Glossary → Architecture → Matching Spec → Policy Decisions → Graph Schema → Graph Model Diagram → API Spec → OpenAPI 3.1 → Reviewer Workflow → Sequence Diagrams → Roadmap → Scaffold Architecture
 
 ## Key Design Decisions
 
