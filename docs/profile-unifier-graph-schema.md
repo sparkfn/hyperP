@@ -42,19 +42,20 @@ native datetime and list types.
 ## Graph Overview
 
 ```
-(Identifier)-[:IDENTIFIED_BY]->(Person)
+(Identifier)<-[:IDENTIFIED_BY]-(Person)-[:LIVES_AT]->(Address)
                                   ^
 (SourceRecord)-[:LINKED_TO]-------+
-                                  |
-(Person)-[:MERGED_INTO]->(Person) |
-                                  |
 (SourceRecord)-[:FROM_SOURCE]->(SourceSystem)
-                                  |
-(MatchDecision)-[:ABOUT]--------->+-- left/right entities
+
+(Person)-[:MERGED_INTO]->(Person)
+(Person)-[:NO_MATCH_LOCK {props}]->(Person)
+(Person)-[:HAS_FACT {props}]->(SourceRecord)
+
+(MatchDecision)-[:ABOUT_LEFT]--->( Person | SourceRecord )
+(MatchDecision)-[:ABOUT_RIGHT]-->( Person | SourceRecord )
 (ReviewCase)-[:FOR_DECISION]->(MatchDecision)
 (MergeEvent)-[:ABSORBED]->(Person)
 (MergeEvent)-[:SURVIVOR]->(Person)
-(Person)-[:NO_MATCH_LOCK {props}]->(Person)
 ```
 
 ## Node Labels
@@ -303,6 +304,26 @@ CREATE (me:MergeEvent {
   retention_expires_at: null
 })
 ```
+
+## Canonical Enums
+
+### Quality Flag
+
+A single canonical set of quality flags used on all `IDENTIFIED_BY`, `LIVES_AT`,
+and `HAS_FACT` relationships. Implementations must use these values exactly.
+
+| Value | Meaning |
+| --- | --- |
+| `valid` | Normalized successfully, passes format validation |
+| `invalid_format` | Could not parse or normalize (e.g. malformed phone, unparseable address) |
+| `placeholder_value` | Detected as a placeholder: NA, Unknown, -, test, etc. |
+| `shared_suspected` | Identifier or address appears on many persons — likely shared |
+| `stale` | Not re-confirmed within the aging window |
+| `source_untrusted` | Source system is tier_4 or flagged as unreliable |
+| `partial_parse` | Address or name partially parsed — usable but incomplete |
+
+Normalizers should return one of these values. Application code should treat
+this as a closed enum.
 
 ## Relationship Types
 
@@ -883,7 +904,7 @@ become traversal bottlenecks and write contention points:
 
 - cardinality caps in the application layer limit how many persons can link
   to a single Identifier
-- the `shared_identifier_suspected` quality flag signals hot nodes
+- the `shared_suspected` quality flag signals hot nodes
 - for extreme cases (100+ IDENTIFIED_BY relationships), consider excluding
   the Identifier from traversal queries or marking it as `is_active = false`
 

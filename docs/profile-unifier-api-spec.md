@@ -132,7 +132,17 @@ Recommended standard error codes:
     "preferred_full_name": "Alice Tan",
     "preferred_phone": "+6591234567",
     "preferred_email": "alice@example.com",
-    "preferred_dob": "1989-10-01"
+    "preferred_dob": "1989-10-01",
+    "preferred_address": {
+      "address_id": "b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e",
+      "unit_number": null,
+      "street_number": "10",
+      "street_name": "Example Street",
+      "city": "Singapore",
+      "postal_code": "123456",
+      "country_code": "SG",
+      "normalized_full": "10 example street, singapore 123456, sg"
+    }
   },
   "source_record_count": 4,
   "identifier_counts": {
@@ -143,6 +153,11 @@ Recommended standard error codes:
   "updated_at": "2026-03-31T00:00:00Z"
 }
 ```
+
+Note: `preferred_address` is resolved from the `preferred_address_id` stored
+on the Person node by traversing to the Address node at read time. The API
+always returns the full structured address — consumers should never need to
+resolve `address_id` themselves.
 
 ## Source Record
 
@@ -767,18 +782,24 @@ Create or replace a field-level survivorship override.
 ```json
 {
   "attribute_name": "preferred_email",
-  "selected_person_attribute_fact_id": "35f78013-2347-4347-9226-4f94cbf6780d",
+  "selected_source_record_pk": "35f78013-2347-4347-9226-4f94cbf6780d",
   "reason": "Customer manually confirmed preferred email."
 }
 ```
+
+Note: `selected_source_record_pk` identifies the SourceRecord whose `HAS_FACT`
+relationship value should be preferred. In the graph model, attribute facts
+are `HAS_FACT` relationships (not nodes), so the SourceRecord is the
+addressable entity that pins the preferred value.
 
 ## Graph and Relationship APIs
 
 ## GET /v1/persons/{person_id}/connections
 
-Return persons connected to the given person through shared identifiers.
-This is the primary graph query for sales (shared-identifier visibility)
-and the foundation for contact-tracing queries.
+Return persons connected to the given person through shared identifiers
+and/or shared addresses. This is the primary graph query for sales
+(shared-identifier visibility), household detection (shared-address), and
+contact tracing.
 
 ### Authorization
 
@@ -789,9 +810,13 @@ and the foundation for contact-tracing queries.
 
 ### Query Parameters
 
-- `identifier_type`: optional filter by identifier type
+- `connection_type`: optional, one of `identifier`, `address`, `all`.
+  Default `all`. Controls which shared nodes to traverse.
+- `identifier_type`: optional filter by identifier type (only applies when
+  `connection_type` is `identifier` or `all`)
 - `max_hops`: optional, default 1, max 3. Number of hops through shared
-  identifiers. 1 = direct shared identifier. 2+ = multi-hop contact tracing.
+  nodes. 1 = direct shared identifier/address. 2+ = multi-hop contact
+  tracing.
 - `cursor`: optional pagination cursor
 - `limit`: optional result size, default 20, max 100
 
@@ -810,6 +835,12 @@ and the foundation for contact-tracing queries.
           "identifier_type": "phone",
           "normalized_value": "+6591234567"
         }
+      ],
+      "shared_addresses": [
+        {
+          "address_id": "b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e",
+          "normalized_full": "10 example street, singapore 123456, sg"
+        }
       ]
     }
   ],
@@ -823,12 +854,16 @@ and the foundation for contact-tracing queries.
 ### Notes
 
 - at `max_hops = 1`, this returns persons who directly share an identifier
-  with the target — the most common sales use case
+  or address with the target — the most common sales use case
 - at `max_hops > 1`, this performs multi-hop traversal for contact tracing;
   apply rate limiting and result caps to prevent runaway queries
+- `shared_addresses` enables household detection: persons sharing the same
+  normalized address are likely co-located
 - support-agent role may receive redacted identifier values
 - sensitive identifiers (government ID) should be excluded from the
   `shared_identifiers` response unless the caller has admin role
+- `shared_addresses` and `shared_identifiers` arrays may both be populated
+  for the same connected person if they share both
 
 ## GET /v1/persons/{person_id}/relationships
 

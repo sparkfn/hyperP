@@ -39,7 +39,7 @@ All documents live in `docs/` and follow the naming convention `profile-unifier-
 
 ## Architecture Summary
 
-Ingestion → Normalization → Candidate Generation (blocking keys) → Match Engine → Person Graph (Neo4j) → Golden Profile → Review Operations → APIs
+Ingestion → Normalization → Candidate Generation (graph traversal through shared Identifier and Address nodes) → Match Engine → Person Graph (Neo4j) → Golden Profile → Review Operations → APIs
 
 Core graph nodes: `Person` (with golden profile properties inline), `Identifier` (shared across persons — the graph backbone for contact tracing), `Address` (shared across persons — enables "who else lives here?" traversal), `SourceRecord`, `MatchDecision`, `MergeEvent`, `ReviewCase`, `SourceSystem`, `IngestRun`. Many relational concepts are modeled as relationships: `IDENTIFIED_BY`, `LIVES_AT`, `LINKED_TO`, `MERGED_INTO`, `NO_MATCH_LOCK`, `HAS_FACT`, `FOR_DECISION`.
 
@@ -60,7 +60,7 @@ Person statuses: `active`, `merged`, `suppressed` (no `under_review` — review 
 
 When editing or adding documentation:
 - Follow the existing `profile-unifier-*.md` naming convention.
-- Use the glossary terms consistently (Person, Source Record, Person Identifier, Match Decision, Golden Profile, Merge Lineage, etc.).
+- Use the glossary terms consistently (Person, Source Record, Identifier, Address, Match Decision, Golden Profile, Merge Lineage, etc.).
 - Keep the README document map and reading order in sync with any new files.
 - Sequence diagrams use Mermaid syntax.
 - The API contract is defined in both prose (`api-spec.md`) and machine-readable (`openapi-3.1.yaml`) — keep them consistent.

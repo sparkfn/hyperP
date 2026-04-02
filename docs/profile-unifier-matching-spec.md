@@ -87,7 +87,7 @@ index-based queries:
 - skip `IDENTIFIED_BY` relationships where `is_active = false`
 - drop placeholders and invalid values (check `quality_flag`)
 - suppress cases blocked by `NO_MATCH_LOCK` relationships
-- penalize identifiers with high fan-out (`shared_identifier_suspected`)
+- penalize identifiers with high fan-out (`shared_suspected`)
 
 ### Cardinality Caps
 
@@ -101,7 +101,7 @@ be logged. Default thresholds are defined in
 
 When candidate generation produces zero candidates for a source record, the
 match engine is not invoked. A new person is created directly. No
-`match_decision` row is created. A `merge_event` of type `person_created`
+`MatchDecision` node is created. A `MergeEvent` of type `person_created`
 provides the audit trail.
 
 ## Decision States
