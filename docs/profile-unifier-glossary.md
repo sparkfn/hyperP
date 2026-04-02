@@ -185,10 +185,10 @@ person creation, manual merge, review reject, manual no-match, or unmerge.
 
 ### Merge Lineage
 
-A compact append-only text column on the canonical person that records the full
-merge chain as a delimited string. Each merge appends a segment; unmerge removes
-it and re-encodes. Used for single-column trace reads without joining the merge
-event table.
+The chain of `MERGED_INTO` relationships between Person nodes in Neo4j that
+records the full merge history. Each merge creates a relationship; unmerge
+removes it. The merge chain is traversable via Cypher queries without
+additional joins.
 
 ## Data Governance Terms
 
@@ -247,6 +247,67 @@ constraints used when a decision was made.
 
 The version of the deterministic ruleset, heuristic scorer, or LLM prompt/model
 combination used to create a match decision.
+
+## Graph and Storage Terms
+
+### Neo4j
+
+The graph database used to store the person graph, relationships, and all
+platform entities. Chosen for native graph traversal to support contact
+tracing and complex relationship use cases.
+
+### Node
+
+A Neo4j graph entity. Core node labels include `Person` (with golden profile
+inline), `Identifier` (shared across persons), `SourceRecord`, `MatchDecision`,
+`MergeEvent`, `ReviewCase`, `SourceSystem`, and `IngestRun`. Many relational
+concepts are modeled as relationships rather than separate nodes.
+
+### Relationship
+
+A typed, directed connection between two nodes in Neo4j. Relationships are
+first-class citizens with their own properties. Examples: `IDENTIFIED_BY`,
+`LINKED_TO`, `MERGED_INTO`, `NO_MATCH_LOCK`, `HAS_FACT`, `FOR_DECISION`.
+
+### Cypher
+
+Neo4j's declarative graph query language used for all reads and writes.
+
+### Contact Tracing
+
+A multi-hop graph traversal use case that identifies people connected through
+shared identifiers, interactions, or relationships. Enabled by Neo4j's native
+graph storage and traversal engine.
+
+### Explicit Relationship
+
+A typed, directed connection between two Person nodes that represents a
+semantic relationship (e.g. `REFERRED_BY`, `WORKS_WITH`, `FAMILY_OF`). Unlike
+implicit connections through shared Identifier nodes, explicit relationships
+are declared by source systems or created manually. They do not affect identity
+resolution decisions. Planned for post-MVP.
+
+### Interaction
+
+An event node (post-MVP) that connects one or more persons to a time, place,
+or activity. Examples: transactions, appointments, service calls. Used for
+contact tracing and sales analytics.
+
+### Address (Node)
+
+A shared, structured graph node representing a normalized physical address.
+Persons connect to Address nodes via `LIVES_AT` relationships. Two persons
+sharing the same Address node are implicitly linked, enabling "who else lives
+here?" traversal for household detection and contact tracing. Addresses are
+decomposed into structured components (street number, street name, postal code,
+country code, etc.) during ingestion normalization.
+
+### Supernode
+
+An Identifier node with an unusually high number of `IDENTIFIED_BY`
+relationships (e.g. a shared business phone number). Supernodes can cause
+traversal bottlenecks and write contention. Managed through cardinality caps
+and quality flags.
 
 ## Recommended Usage Rules
 
