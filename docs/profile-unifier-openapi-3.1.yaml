@@ -186,6 +186,61 @@ paths:
                 $ref: '#/components/schemas/SourceRecordListResponseEnvelope'
         '404':
           $ref: '#/components/responses/PersonNotFound'
+  /v1/persons/{person_id}/connections:
+    get:
+      tags: [Persons]
+      summary: Get persons connected through shared identifiers and addresses
+      operationId: getPersonConnections
+      parameters:
+        - $ref: '#/components/parameters/PersonId'
+        - $ref: '#/components/parameters/RequestId'
+        - name: connection_type
+          in: query
+          schema:
+            type: string
+            enum: [identifier, address, all]
+            default: all
+        - name: identifier_type
+          in: query
+          schema:
+            $ref: '#/components/schemas/IdentifierType'
+        - name: max_hops
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 3
+            default: 1
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: Connected persons via shared identifiers and/or addresses
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PersonConnectionsResponseEnvelope'
+        '404':
+          $ref: '#/components/responses/PersonNotFound'
+  /v1/persons/{person_id}/relationships:
+    get:
+      tags: [Persons]
+      summary: Get explicit typed relationships for a person (post-MVP)
+      operationId: getPersonRelationships
+      parameters:
+        - $ref: '#/components/parameters/PersonId'
+        - $ref: '#/components/parameters/RequestId'
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: Explicit relationships for the person
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BasicSuccessEnvelope'
+        '404':
+          $ref: '#/components/responses/PersonNotFound'
   /v1/persons/{person_id}/audit:
     get:
       tags: [Persons]
@@ -203,6 +258,25 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/AuditEventListResponseEnvelope'
+        '404':
+          $ref: '#/components/responses/PersonNotFound'
+  /v1/persons/{person_id}/matches:
+    get:
+      tags: [Persons]
+      summary: Get recent match decisions related to a person
+      operationId: getPersonMatches
+      parameters:
+        - $ref: '#/components/parameters/PersonId'
+        - $ref: '#/components/parameters/RequestId'
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: Match decisions for the person
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MatchDecisionListResponseEnvelope'
         '404':
           $ref: '#/components/responses/PersonNotFound'
   /v1/review-cases:
@@ -761,6 +835,52 @@ components:
         - created_at
         - updated_at
       additionalProperties: false
+    AddressSummary:
+      type: object
+      properties:
+        address_id:
+          type: string
+          format: uuid
+        unit_number:
+          type:
+            - string
+            - 'null'
+        street_number:
+          type:
+            - string
+            - 'null'
+        street_name:
+          type:
+            - string
+            - 'null'
+        city:
+          type:
+            - string
+            - 'null'
+        postal_code:
+          type:
+            - string
+            - 'null'
+        country_code:
+          type:
+            - string
+            - 'null'
+        normalized_full:
+          type:
+            - string
+            - 'null'
+      required: [address_id]
+      additionalProperties: false
+    QualityFlag:
+      type: string
+      enum:
+        - valid
+        - invalid_format
+        - placeholder_value
+        - shared_suspected
+        - stale
+        - source_untrusted
+        - partial_parse
     GoldenProfile:
       type: object
       properties:
@@ -782,6 +902,10 @@ components:
             - string
             - 'null'
           format: date
+        preferred_address:
+          oneOf:
+            - $ref: '#/components/schemas/AddressSummary'
+            - type: 'null'
       additionalProperties: true
     SourceRecord:
       type: object
@@ -1105,12 +1229,12 @@ components:
       properties:
         attribute_name:
           type: string
-        selected_person_attribute_fact_id:
+        selected_source_record_pk:
           type: string
           format: uuid
         reason:
           type: string
-      required: [attribute_name, selected_person_attribute_fact_id, reason]
+      required: [attribute_name, selected_source_record_pk, reason]
       additionalProperties: false
     PatchFieldTrustRequest:
       type: object
@@ -1241,6 +1365,64 @@ components:
           $ref: '#/components/schemas/Meta'
       required: [data, meta]
       additionalProperties: false
+    SharedIdentifier:
+      type: object
+      properties:
+        identifier_type:
+          $ref: '#/components/schemas/IdentifierType'
+        normalized_value:
+          type:
+            - string
+            - 'null'
+      required: [identifier_type]
+      additionalProperties: false
+    SharedAddress:
+      type: object
+      properties:
+        address_id:
+          type: string
+          format: uuid
+        normalized_full:
+          type:
+            - string
+            - 'null'
+      required: [address_id]
+      additionalProperties: false
+    PersonConnection:
+      type: object
+      properties:
+        person_id:
+          type: string
+          format: uuid
+        status:
+          $ref: '#/components/schemas/PersonStatus'
+        preferred_full_name:
+          type:
+            - string
+            - 'null'
+        hops:
+          type: integer
+        shared_identifiers:
+          type: array
+          items:
+            $ref: '#/components/schemas/SharedIdentifier'
+        shared_addresses:
+          type: array
+          items:
+            $ref: '#/components/schemas/SharedAddress'
+      required: [person_id, status, hops, shared_identifiers, shared_addresses]
+      additionalProperties: false
+    PersonConnectionsResponseEnvelope:
+      type: object
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/PersonConnection'
+        meta:
+          $ref: '#/components/schemas/Meta'
+      required: [data, meta]
+      additionalProperties: false
     SourceRecordListResponseEnvelope:
       type: object
       properties:
@@ -1259,6 +1441,17 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/AuditEvent'
+        meta:
+          $ref: '#/components/schemas/Meta'
+      required: [data, meta]
+      additionalProperties: false
+    MatchDecisionListResponseEnvelope:
+      type: object
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/MatchDecision'
         meta:
           $ref: '#/components/schemas/Meta'
       required: [data, meta]

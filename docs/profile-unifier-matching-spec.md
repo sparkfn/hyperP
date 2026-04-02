@@ -42,34 +42,66 @@ Final fallback for high-risk, low-confidence, or policy-sensitive decisions.
 
 Never compare every record with every other record.
 
-### Blocking Keys
+### Graph-Native Candidate Generation
 
-- exact normalized phone
-- exact normalized email
-- exact government-ID token or hash
+With Neo4j, the primary candidate generation strategy is traversal through
+shared Identifier nodes. When a source record is ingested, its identifiers
+are matched to existing Identifier nodes. Any Person connected to the same
+Identifier is a candidate:
+
+```cypher
+MATCH (id:Identifier {identifier_type: $type, normalized_value: $value})
+  <-[:IDENTIFIED_BY]-(candidate:Person {status: 'active'})
+RETURN candidate.person_id
+```
+
+This replaces index-based blocking-key lookups for strong identifiers.
+
+### Strong Identifier Traversal (Primary)
+
+- exact normalized phone → traverse shared Identifier node
+- exact normalized email → traverse shared Identifier node
+- exact government-ID hash → traverse shared Identifier node
+- source-side known cross-reference IDs → traverse shared Identifier node
+
+### Address Traversal
+
+- exact normalized address → traverse shared Address node
+
+```cypher
+MATCH (addr:Address {country_code: $cc, postal_code: $postal,
+  street_name: $street, street_number: $num, unit_number: $unit})
+  <-[:LIVES_AT]-(candidate:Person {status: 'active'})
+RETURN candidate.person_id
+```
+
+### Composite Blocking (Secondary)
+
+For weaker signals that require combining multiple fields, fall back to
+index-based queries:
+
 - exact DOB plus fuzzy name
-- postal code plus fuzzy name
-- source-side known cross-reference IDs
 
 ### Candidate Filtering
 
-- drop placeholders and invalid values
-- suppress cases blocked by manual no-match history
-- penalize identifiers observed on many persons
+- skip `IDENTIFIED_BY` relationships where `is_active = false`
+- drop placeholders and invalid values (check `quality_flag`)
+- suppress cases blocked by `NO_MATCH_LOCK` relationships
+- penalize identifiers with high fan-out (`shared_suspected`)
 
 ### Cardinality Caps
 
-If a blocking key matches more than a configurable threshold of existing
-persons, skip that key for that record and rely on other blocking keys.
-Thresholds must be configurable per identifier type. Skipped keys must be
-logged. Default thresholds are defined in
+If an Identifier node has more active `IDENTIFIED_BY` relationships than a
+configurable threshold, skip that identifier for candidate generation.
+Thresholds must be configurable per identifier type. Skipped identifiers must
+be logged. Default thresholds are defined in
 [profile-unifier-policy-decisions.md](./profile-unifier-policy-decisions.md).
 
 ### No-Candidate Path
 
 When candidate generation produces zero candidates for a source record, the
 match engine is not invoked. A new person is created directly. No
-`match_decision` row is created. A `merge_event` of type `person_created`
+`MatchDecision` node is created. A `MergeEvent` of type `person_created`
 provides the audit trail.
 
 ## Decision States
@@ -112,6 +144,7 @@ in [profile-unifier-policy-decisions.md](./profile-unifier-policy-decisions.md).
 - DOB exact match
 - high full-name similarity
 - high address similarity
+- same Address node (shared `LIVES_AT` relationship)
 - repeated co-occurrence across source updates
 - same trusted external ID family
 
@@ -256,6 +289,20 @@ Include:
 - auto-merge precision above target threshold
 - false merges near zero
 - review volume within team capacity
+
+### Graph Performance Targets
+
+These must be baselined during Phase 1 and tracked continuously:
+
+- candidate generation (traversal through shared Identifier nodes): p95 < 50ms
+  for a single source record at projected graph size
+- person-by-identifier lookup: p95 < 10ms
+- merge transaction (rewire relationships + recompute golden profile):
+  p95 < 200ms
+- contact-tracing query (1-hop shared identifiers): p95 < 100ms
+- multi-hop traversal (2–3 hops): p95 < 500ms at projected graph density
+- ingestion throughput: sustained rate sufficient for the largest batch sync
+  without exceeding Neo4j write leader capacity
 
 ## Review Queue Policy
 

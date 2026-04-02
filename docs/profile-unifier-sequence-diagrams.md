@@ -11,7 +11,7 @@ clear across teams.
 - diagrams use Mermaid sequence syntax
 - `PU API` represents the application API layer
 - `Resolver` represents deterministic and probabilistic matching logic
-- `Store` represents the OLTP persistence layer
+- `Store` represents the Neo4j graph persistence layer
 - `Reviewer UI` represents the internal review tool
 
 ## Flow 1: Source Record Ingestion and Candidate Evaluation
@@ -22,7 +22,7 @@ sequenceDiagram
     participant API as PU API
     participant Norm as Normalizer
     participant Resolver as Resolver
-    participant Store as Person Graph Store
+    participant Store as Person Graph Store (Neo4j)
 
     Source->>API: POST /v1/ingest/{source}/records
     API->>Store: Persist source_record and ingest metadata
@@ -56,7 +56,7 @@ sequenceDiagram
     participant API as PU API
     participant Norm as Normalizer
     participant Resolver as Resolver
-    participant Store as Person Graph Store
+    participant Store as Person Graph Store (Neo4j)
 
     Source->>API: POST /v1/ingest/{source}/records
     API->>Store: Persist source_record and ingest metadata
@@ -79,7 +79,7 @@ sequenceDiagram
 sequenceDiagram
     participant API as PU API
     participant Resolver as Resolver
-    participant Store as Person Graph Store
+    participant Store as Person Graph Store (Neo4j)
     participant Events as Domain Events
 
     API->>Resolver: Evaluate candidate pair
@@ -99,7 +99,7 @@ sequenceDiagram
 sequenceDiagram
     participant Reviewer as Reviewer UI
     participant API as PU API
-    participant Store as Person Graph Store
+    participant Store as Person Graph Store (Neo4j)
     participant Events as Domain Events
 
     Reviewer->>API: POST /v1/review-cases/{id}/assign
@@ -123,7 +123,7 @@ sequenceDiagram
 sequenceDiagram
     participant Reviewer as Reviewer UI
     participant API as PU API
-    participant Store as Person Graph Store
+    participant Store as Person Graph Store (Neo4j)
 
     Reviewer->>API: POST /v1/review-cases/{id}/actions { action_type: manual_no_match }
     API->>Store: Create review_action(manual_no_match)
@@ -139,7 +139,7 @@ sequenceDiagram
 sequenceDiagram
     participant Reviewer as Reviewer UI
     participant API as PU API
-    participant Store as Person Graph Store
+    participant Store as Person Graph Store (Neo4j)
     participant Scheduler as Job or Trigger
 
     Reviewer->>API: POST /v1/review-cases/{id}/actions { action_type: defer }
@@ -158,7 +158,7 @@ sequenceDiagram
 sequenceDiagram
     participant Admin as Admin UI
     participant API as PU API
-    participant Store as Person Graph Store
+    participant Store as Person Graph Store (Neo4j)
     participant Events as Domain Events
 
     Admin->>API: POST /v1/persons/unmerge
@@ -178,7 +178,7 @@ sequenceDiagram
     participant ReviewerA as Reviewer A
     participant ReviewerB as Reviewer B
     participant API as PU API
-    participant Store as Person Graph Store
+    participant Store as Person Graph Store (Neo4j)
 
     ReviewerA->>API: POST /v1/review-cases/{id}/assign
     API->>Store: Assign case to Reviewer A
@@ -196,7 +196,7 @@ sequenceDiagram
 sequenceDiagram
     participant Reviewer as Reviewer UI
     participant API as PU API
-    participant Store as Person Graph Store
+    participant Store as Person Graph Store (Neo4j)
 
     Reviewer->>API: POST /v1/review-cases/{id}/actions { action_type: merge }
     API->>Store: Re-read locks and hard blockers
@@ -209,7 +209,7 @@ sequenceDiagram
 For implementation discussions, read these together:
 
 1. [profile-unifier-architecture.md](./profile-unifier-architecture.md)
-2. [profile-unifier-sql-schema.md](./profile-unifier-sql-schema.md)
+2. [profile-unifier-graph-schema.md](./profile-unifier-graph-schema.md)
 3. [profile-unifier-api-spec.md](./profile-unifier-api-spec.md)
 4. [profile-unifier-reviewer-workflow.md](./profile-unifier-reviewer-workflow.md)
 5. this sequence-diagram document

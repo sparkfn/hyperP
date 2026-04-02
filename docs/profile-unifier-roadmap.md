@@ -5,6 +5,8 @@
 - deliver a safe canonical identity platform in phases
 - establish a measurable baseline before adding LLM complexity
 - keep legal, operational, and engineering readiness aligned
+- leverage Neo4j graph database for future complex relationship use cases (contact tracing, referral networks)
+- initial use case is sales
 
 ## Workstreams
 
@@ -51,23 +53,28 @@ Target: 3 to 5 weeks
 
 ### Deliverables
 
-- canonical schema
+- canonical Neo4j graph schema
 - ingestion framework for batch and incremental loads
 - normalization library
 - raw source record persistence
 - identifier and attribute fact persistence
 - person lookup API v1
+- Neo4j performance baseline: ingestion throughput, person-lookup latency,
+  page-cache hit ratio
 
 ### Dependencies
 
 - source credentials or exports
 - infrastructure for storage and secrets
+- Neo4j instance with sizing per graph schema operational guidance
 
 ### Exit Criteria
 
 - ingestion is idempotent
 - normalized identifiers are searchable
 - raw and normalized lineage is queryable
+- ingestion throughput meets target at projected data volume
+- person-lookup latency is under target SLA
 
 ## Phase 2: Deterministic Matching and Basic Golden Profile
 
@@ -276,7 +283,7 @@ Target: ongoing
 
 - first source systems ingest successfully
 - normalized identifiers are searchable
-- canonical person graph can be queried
+- canonical person graph can be queried (Neo4j)
 - default policy decisions for trust, retention, and hard blockers are approved
 
 ### Matching Exit
@@ -300,6 +307,12 @@ Target: ongoing
 ## Post-Roadmap Backlog
 
 - upstream write-back where justified
-- household or relationship graphing
+- contact tracing and multi-hop relationship queries
+- explicit relationship types (REFERRED_BY, WORKS_WITH, FAMILY_OF, etc.)
+- interaction/touchpoint model for event-based contact tracing
+- household and family graph resolution
+- referral network analysis
+- graph visualization for sales and ops teams
+- data erasure workflow (GDPR right-to-erasure)
 - self-service quality dashboards for source-system owners
 - advanced rule simulation tooling

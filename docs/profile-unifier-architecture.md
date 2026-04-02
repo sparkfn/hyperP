@@ -2,9 +2,12 @@
 
 ## Objective
 
-Build a centralized identity resolution platform that ingests customer records
-from multiple systems, resolves them into canonical persons, and exposes a
-trusted golden profile with full explainability, auditability, and rollback.
+Build a centralized identity resolution and relationship intelligence platform
+that ingests customer records from multiple systems, resolves them into
+canonical persons, and exposes a trusted golden profile with full
+explainability, auditability, and rollback. The graph-native storage (Neo4j)
+enables complex relationship use cases such as contact tracing and multi-hop
+network analysis. The initial use case is sales.
 
 Shared terminology used across the document set is defined in
 [profile-unifier-glossary.md](./profile-unifier-glossary.md).
@@ -17,12 +20,13 @@ Shared terminology used across the document set is defined in
 - preserve source lineage for every identifier and attribute
 - support human review and unmerge
 - provide a stable profile API for downstream systems
+- enable complex relationship queries such as contact tracing and referral networks
 
 ## Non-Goals
 
 - replace all source CRMs in phase 1
 - write back every profile update to every source system
-- solve householding or family graph resolution in MVP
+- solve householding or family graph resolution in MVP (planned for later phases)
 - perform unrestricted autonomous LLM-based merging
 
 ## Key Principles
@@ -87,10 +91,12 @@ Supports multiple adjudication strategies behind a single interface:
 - heuristic scoring
 - LLM-assisted adjudication
 
-### Person Graph Store
+### Person Graph Store (Neo4j)
 
 Stores canonical persons, linked identifiers, source records, facts, and merge
-history.
+history as a native property graph. Neo4j's Cypher query language enables
+efficient multi-hop traversals for contact tracing and relationship analysis
+beyond what identity resolution alone requires.
 
 ### Golden Profile Service
 
@@ -142,133 +148,64 @@ Every ingested source record should be translated into a common envelope:
 }
 ```
 
-## Domain Model
+## Graph Data Model
 
-### Person
+The data model is graph-native. Entities are Neo4j nodes; associations are
+relationships with properties. The authoritative field-level schema is in
+[profile-unifier-graph-schema.md](./profile-unifier-graph-schema.md). This
+section describes the model at a conceptual level.
 
-Canonical internal entity identified by `person_id`.
+### Nodes
 
-Suggested fields:
+| Node | Purpose | Key properties |
+| --- | --- | --- |
+| **Person** | Canonical identity entity. Golden profile fields stored inline. | `person_id`, `status`, `preferred_full_name`, `preferred_phone`, `preferred_email`, `preferred_address_id`, `preferred_dob`, `profile_completeness_score`, `golden_profile_computed_at` |
+| **Identifier** | Shared identity signal (phone, email, govt ID hash, etc.). Multiple persons may connect to the same Identifier — this is the graph backbone for contact tracing. | `identifier_id`, `identifier_type`, `normalized_value`, `hashed_value` |
+| **Address** | Shared normalized address. Multiple persons may connect to the same Address — enables "who else lives here?" traversal. | `address_id`, `unit_number`, `street_number`, `street_name`, `city`, `postal_code`, `country_code`, `normalized_full` |
+| **SourceRecord** | Immutable raw input record from an upstream system. | `source_record_pk`, `source_record_id`, `source_record_version`, `link_status`, `record_hash`, `raw_payload`, `observed_at`, `ingested_at` |
+| **SourceSystem** | Registered upstream system with field-level trust config. | `source_key`, `display_name`, `system_type`, `field_trust` (map) |
+| **MatchDecision** | Immutable decision from any engine path. | `match_decision_id`, `engine_type`, `engine_version`, `decision`, `confidence`, `reasons`, `blocking_conflicts`, `feature_snapshot`, `policy_version` |
+| **ReviewCase** | Human review queue item. Review actions stored as ordered list property. | `review_case_id`, `priority`, `queue_state`, `assigned_to`, `resolution`, `actions` (list of maps) |
+| **MergeEvent** | Immutable audit record for lifecycle changes. | `merge_event_id`, `event_type`, `actor_type`, `actor_id`, `reason`, `metadata` |
+| **IngestRun** | Batch/backfill execution group. | `ingest_run_id`, `run_type`, `status`, `started_at`, `finished_at` |
 
-- `person_id`
-- `status`
-- `created_at`
-- `updated_at`
-- `merged_into_person_id`
-- `merge_lineage`
-- `manual_lock_state`
+### Relationships
+
+| Relationship | From → To | Properties | Purpose |
+| --- | --- | --- | --- |
+| `IDENTIFIED_BY` | Person → Identifier | `is_verified`, `is_active`, `quality_flag`, `source_system_key`, `source_record_pk`, `first_seen_at`, `last_seen_at`, `last_confirmed_at` | Links person to identity signal. Carries verification, aging, and provenance. |
+| `LIVES_AT` | Person → Address | `is_active`, `is_verified`, `quality_flag`, `source_system_key`, `source_record_pk`, `first_seen_at`, `last_seen_at`, `last_confirmed_at` | Links person to normalized address. Same aging model as `IDENTIFIED_BY`. |
+| `HAS_FACT` | Person → SourceRecord | `attribute_name`, `attribute_value`, `source_trust_tier`, `confidence`, `quality_flag`, `observed_at` | Non-address, non-identifier attributes (name, DOB, etc.). |
+| `LINKED_TO` | SourceRecord → Person | `linked_at` | Associates ingested record with resolved person. |
+| `FROM_SOURCE` | SourceRecord / IngestRun → SourceSystem | — | Provenance. |
+| `MERGED_INTO` | Person → Person | `merge_event_id`, `actor`, `timestamp` | Merge lineage. Path compression enforced: max 1 hop. |
+| `NO_MATCH_LOCK` | Person → Person | `lock_id`, `lock_type`, `reason`, `expires_at`, `actor_type`, `actor_id` | Suppression lock. Always `left.person_id < right.person_id`. |
+| `ABOUT_LEFT` / `ABOUT_RIGHT` | MatchDecision → Person or SourceRecord | `entity_type` | Links decision to the compared entities. |
+| `FOR_DECISION` | ReviewCase → MatchDecision | — | Links review to its triggering decision. |
+| `ABSORBED` / `SURVIVOR` | MergeEvent → Person | — | Audit pointers for merge. |
+| `TRIGGERED_BY` | MergeEvent → MatchDecision | — | Links audit to decision. |
+| `AFFECTED_RECORD` | MergeEvent → SourceRecord | — | For unmerge replay. |
 
 ### Merge Lineage
 
-`merge_lineage` is a compact text column on the canonical person that records the
-full merge chain as an append-only delimited string. Each merge appends a
-segment; unmerge removes it and re-encodes. Format:
+Merge lineage is stored as native `MERGED_INTO` relationships. Each merge
+creates a relationship from the absorbed Person to the surviving Person with
+properties for `merge_event_id`, `actor`, and `timestamp`. The `MergeEvent`
+node remains the authoritative audit record.
 
-```
-absorbed_person_id|merge_event_id|actor|timestamp;...
-```
+Path compression is enforced: when B merges into C, all `MERGED_INTO`
+relationships pointing to B are rewired to point to C. This guarantees max
+depth of one hop for canonical person lookups.
 
-This allows reading the full merge history of a person in a single column
-without joining the `merge_event` table. The `merge_event` table remains the
-authoritative audit record. The lineage column is a denormalized convenience
-trace that can be rebuilt from `merge_event` if corrupted.
+### Person Statuses
 
-Path compression is enforced on `merged_into_person_id`: when B merges into C,
-all records pointing to B are updated to point to C. This guarantees max depth
-of one hop for canonical person lookups.
+- `active`: current canonical entity
+- `merged`: absorbed into another person (must have `MERGED_INTO` relationship)
+- `suppressed`: hidden from normal search
 
-Recommended statuses:
+### MergeEvent Types
 
-- `active`
-- `merged`
-- `suppressed`
-
-### SourceRecord
-
-Immutable representation of an upstream record.
-
-Suggested fields:
-
-- `source_system`
-- `source_record_id`
-- `source_record_version`
-- `person_id`
-- `ingest_run_id`
-- `raw_payload`
-- `record_hash`
-- `ingested_at`
-
-### PersonIdentifier
-
-Typed identity evidence associated with a person and source record.
-
-Examples:
-
-- `nric_hash`
-- `phone`
-- `email`
-- `pos_member_id`
-- `bitrix_contact_id`
-- `external_customer_id`
-
-Suggested fields:
-
-- `identifier_id`
-- `person_id`
-- `source_system`
-- `source_record_id`
-- `identifier_type`
-- `raw_value`
-- `normalized_value`
-- `hashed_value`
-- `is_verified`
-- `verification_method`
-- `is_active`
-- `first_seen_at`
-- `last_seen_at`
-
-### PersonAttributeFact
-
-Observed profile field with source and provenance.
-
-Suggested fields:
-
-- `attribute_fact_id`
-- `person_id`
-- `source_system`
-- `source_record_id`
-- `attribute_name`
-- `attribute_value`
-- `confidence`
-- `observed_at`
-- `is_current_hint`
-
-### MatchDecision
-
-Decision record returned by the engine.
-
-Suggested fields:
-
-- `match_decision_id`
-- `left_entity_type`
-- `left_entity_id`
-- `right_entity_type`
-- `right_entity_id`
-- `engine_type`
-- `engine_version`
-- `decision`
-- `confidence`
-- `reasons`
-- `blocking_conflicts`
-- `feature_snapshot`
-- `created_at`
-
-### MergeEvent
-
-Immutable audit record for lifecycle changes.
-
-Suggested event types:
-
+- `person_created`
 - `auto_merge`
 - `manual_merge`
 - `review_reject`
@@ -277,106 +214,21 @@ Suggested event types:
 - `person_split`
 - `survivorship_override`
 
-## Logical Data Model
+### Golden Profile
 
-### person
+Golden profile fields are stored directly on the Person node (always 1:1,
+always co-fetched). The API resolves `preferred_address_id` to a full
+structured Address object at read time:
 
-- `person_id`
-- `status`
-- `primary_source`
-- `merged_into_person_id`
-- `merge_lineage`
-- `created_at`
-- `updated_at`
+```cypher
+MATCH (p:Person {person_id: $pid})
+OPTIONAL MATCH (addr:Address {address_id: p.preferred_address_id})
+RETURN p, addr
+```
 
-### source_record
-
-- `source_system`
-- `source_record_id`
-- `source_record_version`
-- `person_id`
-- `raw_payload`
-- `record_hash`
-- `ingested_at`
-
-### person_identifier
-
-- `person_identifier_id`
-- `person_id`
-- `source_system`
-- `source_record_id`
-- `identifier_type`
-- `raw_value`
-- `normalized_value`
-- `hashed_value`
-- `is_verified`
-- `verification_method`
-- `is_active`
-- `first_seen_at`
-- `last_seen_at`
-- `last_confirmed_at`
-
-### person_attribute_fact
-
-- `person_attribute_fact_id`
-- `person_id`
-- `attribute_name`
-- `attribute_value`
-- `source_system`
-- `source_record_id`
-- `confidence`
-- `observed_at`
-- `is_current_hint`
-
-### golden_profile
-
-- `person_id`
-- `preferred_full_name`
-- `preferred_phone`
-- `preferred_email`
-- `preferred_address`
-- `preferred_dob`
-- `profile_completeness_score`
-- `computed_at`
-
-### match_decision
-
-- `match_decision_id`
-- `left_entity_type`
-- `left_entity_id`
-- `right_entity_type`
-- `right_entity_id`
-- `engine_type`
-- `engine_version`
-- `decision`
-- `confidence`
-- `reasons`
-- `blocking_conflicts`
-- `feature_snapshot`
-- `created_at`
-
-### merge_event
-
-- `merge_event_id`
-- `event_type`
-- `from_person_id`
-- `to_person_id`
-- `actor_type`
-- `actor_id`
-- `reason`
-- `metadata`
-- `created_at`
-
-### review_case
-
-- `review_case_id`
-- `match_decision_id`
-- `priority`
-- `queue_state`
-- `assigned_to`
-- `sla_due_at`
-- `created_at`
-- `updated_at`
+If the preferred Address node has been deleted (e.g. data erasure), the API
+returns `preferred_address: null`. The golden profile recomputation should
+detect and clear stale `preferred_address_id` references.
 
 ## Identity and Record Lifecycle
 
@@ -417,56 +269,112 @@ Suggested event types:
 - Standardize DOB to ISO date.
 - Encrypt or hash highly sensitive identifiers.
 
+### Address Normalization
+
+Addresses must be decomposed into structured components during ingestion so
+they can be stored as shared Address nodes in the graph:
+
+- parse raw address into: unit number, street number, street name, building
+  name, city, state/province, postal code, country code
+- lowercase and trim all string components
+- standardize country codes to ISO 3166-1 alpha-2
+- standardize postal codes to canonical format per country
+- compute a `normalized_full` concatenation for display and full-text search
+- optionally geocode to lat/lon for proximity queries
+
+Addresses that cannot be parsed into structured components should be stored
+as `HAS_FACT` relationships with a `quality_flag` of `invalid_format` until
+manual correction or a better parser is available.
+
 ### Attribute Normalization
 
-- split full addresses into components where possible
-- standardize country codes and postal codes
 - normalize honorifics and common placeholders
 - detect null-like values such as `NA`, `Unknown`, or `-`
 
 ### Data Quality Flags
 
-Each normalized field should carry quality indicators:
+Each normalized field should carry a quality flag from the canonical enum
+defined in the [graph schema](./profile-unifier-graph-schema.md):
 
-- `valid`
-- `invalid_format`
-- `placeholder_value`
-- `shared_identifier_suspected`
-- `stale`
-- `source_untrusted`
+`valid` | `invalid_format` | `placeholder_value` | `shared_suspected` |
+`stale` | `source_untrusted` | `partial_parse`
 
 ## Candidate Generation
 
-Candidate generation must prevent full pairwise comparison.
+Candidate generation must prevent full pairwise comparison. With Neo4j, the
+primary strategy is graph traversal through shared Identifier nodes rather than
+index-based blocking-key lookups.
 
-### Blocking Keys
+### Graph-Native Candidate Generation
 
-- same normalized phone
-- same normalized email
-- same government identifier hash
-- same DOB plus similar name
-- same last name plus same postal code
-- same loyalty or membership namespace plus close name
+When a new source record is ingested, its identifiers are normalized and
+matched to existing Identifier nodes. Candidate persons are found by
+traversing from those Identifier nodes:
+
+```cypher
+// For each identifier on the incoming record:
+MATCH (id:Identifier {identifier_type: $type, normalized_value: $value})
+  <-[:IDENTIFIED_BY]-(candidate:Person {status: 'active'})
+RETURN candidate.person_id
+```
+
+This replaces traditional blocking-key index scans. The Identifier node is
+the blocking key — if two persons share an Identifier node, they are
+candidates. No value comparison is needed; the graph edge is the evidence.
+
+### Address Traversal
+
+Addresses are shared nodes, so "same address" candidate generation is also
+graph traversal:
+
+```cypher
+MATCH (addr:Address {country_code: $cc, postal_code: $postal,
+  street_name: $street, street_number: $num, unit_number: $unit})
+  <-[:LIVES_AT]-(candidate:Person {status: 'active'})
+RETURN candidate.person_id
+```
+
+### Composite Blocking (Multiple Signals)
+
+For weaker signals that require combination (e.g. DOB plus similar name),
+the system falls back to index-based lookups since these are not modeled as
+shared nodes:
+
+- same DOB plus similar name (full-text index on Person.preferred_full_name)
 
 ### Candidate Suppression Rules
 
-- ignore placeholders and invalid identifiers
-- down-rank identifiers known to be shared
-- suppress comparison if a previous manual no-match lock exists
+- ignore placeholders and invalid identifiers (check `quality_flag` on the
+  `IDENTIFIED_BY` relationship)
+- down-rank identifiers known to be shared (check `shared_suspected`
+  quality flag)
+- suppress comparison if a `NO_MATCH_LOCK` relationship exists between the
+  candidate and any person the source record is already linked to
+- skip `IDENTIFIED_BY` relationships where `is_active = false`
 
 ### Cardinality Caps
 
-If a blocking key matches more than a configurable threshold of existing
-persons, skip that key for that record and rely on other blocking keys. This
+If an Identifier node has more `IDENTIFIED_BY` relationships than a
+configurable threshold, skip that identifier for candidate generation. This
 prevents explosion from shared business phones or generic emails. The threshold
-must be configurable per identifier type. Skipped keys should be logged for
-observability as they flag data quality issues.
+must be configurable per identifier type. Skipped identifiers should be logged
+for observability as they flag data quality issues.
+
+Check with:
+
+```cypher
+MATCH (id:Identifier {identifier_type: $type, normalized_value: $value})
+WITH id, size([(id)<-[:IDENTIFIED_BY]-(:Person {status: 'active'}) | 1]) AS fan_out
+WHERE fan_out <= $cap
+```
 
 ### Performance Notes
 
-- maintain inverted indexes on normalized identifiers
-- partition candidate generation by source namespace
+- composite indexes on `Identifier(identifier_type, normalized_value)` are
+  the hot path — these must be in page cache
+- partition candidate generation by blocking key for write concurrency
 - support backfill and incremental modes separately
+- use `PROFILE` to verify candidate queries use index lookups, not label scans
 
 ## Ingestion Concurrency Model
 
@@ -525,7 +433,7 @@ All decision engines should implement the same interface.
 
 When candidate generation returns zero candidates for a source record, the
 match engine is not invoked. A new person is created directly and the source
-record is linked to it. No `match_decision` row is created. A `merge_event` of
+record is linked to it. No `MatchDecision` node is created. A `MergeEvent` of
 type `person_created` provides the audit trail.
 
 ## Deterministic Rules
@@ -606,7 +514,8 @@ facts.
   high-trust source
 - phone: allow multiple active phones, but choose one preferred contact number
 - email: allow multiple active emails, but choose one preferred primary email
-- address: prefer most recent verified address
+- address: prefer most recent verified `LIVES_AT` relationship; the preferred
+  Address node ID is stored on the Person golden profile
 - DOB: prefer verified onboarding or KYC source
 
 ## Reviewer Workflow
@@ -632,19 +541,21 @@ Priority should consider:
 ## Identifier Aging
 
 Identifiers that have not been re-confirmed by any source within a configurable
-window should be marked `is_active = false` by a background job.
-`last_confirmed_at` on `person_identifier` tracks the most recent confirmation.
-Deactivated identifiers remain in the table for audit but stop participating in
-candidate generation and scoring. If a fresh source record later re-confirms the
-identifier, it is reactivated automatically. The aging window must be
-configurable per identifier type.
+window should be marked `is_active = false` on their `IDENTIFIED_BY`
+relationship by a background job. `last_confirmed_at` on the relationship
+tracks the most recent confirmation. Deactivated identifiers remain in the
+graph for audit but stop participating in candidate generation and scoring. If
+a fresh source record later re-confirms the identifier, the relationship is
+reactivated automatically. The aging window must be configurable per identifier
+type. The same aging model applies to `LIVES_AT` relationships on Address
+nodes.
 
 ## Pair Ordering Convention
 
-All tables that store entity pairs (`person_pair_lock`, `candidate_pair`,
-`match_decision`) must enforce a canonical ordering where the left entity ID is
-lexicographically less than the right entity ID. This eliminates duplicate pairs
-and ensures lock checks only need to query one ordering.
+Lock relationships (`NO_MATCH_LOCK`) between Person nodes must enforce a
+canonical ordering where the left person ID is lexicographically less than the
+right person ID. This eliminates duplicate locks and ensures checks only need
+to query one direction.
 
 ## API Surface
 
@@ -654,6 +565,8 @@ Recommended initial APIs:
 - `GET /persons/{person_id}`
 - `GET /persons/search`
 - `GET /persons/{person_id}/source-records`
+- `GET /persons/{person_id}/connections` (shared-identifier graph traversal)
+- `GET /persons/{person_id}/relationships` (explicit typed relationships, post-MVP)
 - `GET /persons/{person_id}/audit`
 - `POST /matches/review/{match_decision_id}`
 - `POST /persons/manual-merge`
@@ -702,6 +615,8 @@ delivery mechanism later.
 
 ## Observability
 
+### Application Metrics
+
 Track:
 
 - ingestion success and failure rates
@@ -713,26 +628,121 @@ Track:
 - source drift indicators
 - golden profile recomputation failures
 
+### Graph Metrics
+
+Track:
+
+- total node and relationship counts by label/type (growth over time)
+- query latency percentiles (p50, p95, p99) for key patterns: person lookup,
+  candidate generation traversal, contact-tracing queries
+- Neo4j page cache hit ratio (target ≥ 98%)
+- transaction throughput (transactions/sec) and average duration
+- hot Identifier node detection: fan-out distribution, nodes exceeding
+  cardinality cap thresholds
+- write contention: lock wait times, deadlock frequency
+- heap usage and garbage collection pressure
+
 ## Failure and Recovery
 
 - ingestion must be idempotent
 - merge decisions must be replayable
-- unmerge must be supported without manual database surgery
+- unmerge must be supported without manual graph surgery
 - failed downstream writes must not corrupt canonical state
+
+## Explicit Relationship Model (Post-MVP)
+
+Beyond implicit connections through shared Identifier nodes, the platform must
+support explicit, typed relationships between persons. These are not identity
+links — they are semantic connections discovered or declared by the business.
+
+### Planned Relationship Types
+
+- `REFERRED_BY` — one person referred another (sales, loyalty programs)
+- `WORKS_WITH` — shared employer or business context
+- `FAMILY_OF` — declared or inferred household/family connection
+- `SAME_HOUSEHOLD` — shared address with corroborating signals
+- `SAME_ACCOUNT` — linked under a shared business or service account
+
+### Design
+
+Explicit relationships are modeled as typed Neo4j relationships between Person
+nodes with properties for source, confidence, and provenance:
+
+```cypher
+CREATE (a:Person)-[:REFERRED_BY {
+  source_system_key: 'loyalty_app',
+  confidence: 1.0,
+  declared_by: 'customer',
+  created_at: datetime()
+}]->(b:Person)
+```
+
+### Rules
+
+- explicit relationships must never be auto-created by the matching engine;
+  they require either a source-system declaration or a manual action
+- they do not affect identity resolution decisions (merge/no-match)
+- they participate in graph traversal queries (contact tracing, network views)
+- they must carry provenance (who declared it, when, from which source)
+
+### MVP Scope
+
+In MVP, the only person-to-person connection is implicit — through shared
+Identifier nodes. Explicit relationship types are deferred to post-MVP but
+the graph schema is designed to accommodate them without migration.
+
+## Interaction and Touchpoint Model (Post-MVP)
+
+For sales, contact tracing, and relationship analysis, the platform must
+eventually capture interactions — events that connect a person to a time,
+place, or another person. Examples: transactions, appointments, service calls,
+co-attendance.
+
+### Design Direction
+
+Interactions will be modeled as nodes (not relationship properties) because
+they connect multiple entities (person, location, time, other persons) and
+need independent querying:
+
+```
+(Person)-[:PARTICIPATED_IN]->(Interaction)<-[:PARTICIPATED_IN]-(Person)
+(Interaction)-[:AT_LOCATION]->(Location)
+```
+
+### MVP Scope
+
+No interaction model in MVP. The current SourceRecord already captures "this
+person did something in this system at this time" — enough for basic sales
+timeline views. Dedicated interaction nodes are planned for the contact-tracing
+phase.
+
+### Design Constraint
+
+The interaction model must not be bolted on later as a separate system. It
+must connect to the same Person nodes in the same Neo4j graph so that
+traversal queries can cross identity, relationship, and interaction data in
+a single query.
 
 ## Resolved Technical Decisions
 
-- OLTP database: PostgreSQL
-- source records map to persons directly via foreign key on `source_record`
-- merge history uses path compression on `merged_into_person_id` with a
-  `merge_lineage` text column for quick trace reads
-- golden profile recomputation is synchronous within the merge transaction
+- graph database: Neo4j (supports contact tracing, multi-hop relationship queries, and complex graph use cases beyond simple identity resolution)
+- source records map to persons via `LINKED_TO` relationships in Neo4j
+- merge history uses path compression on `MERGED_INTO` relationships for max 1-hop canonical lookups
+- golden profile recomputation is synchronous within the merge transaction (Neo4j ACID transactions)
 - ingestion concurrency is partitioned by blocking key
 
 ## Open Technical Decisions
 
 - whether to use event sourcing for merge replay
 - whether review tooling is embedded in the app or built as an internal console
+- deployment topology: single shared Neo4j graph for all business units vs.
+  separate graph databases per tenant. Single graph enables cross-tenant
+  relationship queries but complicates access control and data isolation.
+  Separate graphs simplify compliance but prevent cross-tenant contact tracing.
+  Decision depends on whether contact tracing and relationship queries need to
+  span business boundaries.
+- whether Interaction nodes (post-MVP) live in the same Neo4j instance or in a
+  separate time-series store with graph references
 
 ## Default Policy Decisions
 
@@ -750,8 +760,8 @@ These defaults currently recommend:
 
 ## Reference Implementation
 
-A concrete PostgreSQL-oriented schema for the architecture in this document is
-defined in [profile-unifier-sql-schema.md](./profile-unifier-sql-schema.md).
+A concrete Neo4j graph schema for the architecture in this document is defined
+in [profile-unifier-graph-schema.md](./profile-unifier-graph-schema.md).
 
 The corresponding service contract for ingestion, search, person reads, review
 workflow, and merge operations is defined in
