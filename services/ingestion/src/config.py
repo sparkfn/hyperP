@@ -28,6 +28,26 @@ class Settings(BaseSettings):
     # Ingestion tuning --------------------------------------------------------
     batch_size: int = 500
 
+    # Celery / queue ----------------------------------------------------------
+    celery_broker_url: str = "redis://redis:6379/0"
+    celery_result_backend: str = "redis://redis:6379/1"
+    celery_worker_concurrency: int = 1
+    # How many ingestion tasks may run concurrently across the entire cluster.
+    # Enforced via a Redis-backed semaphore inside the task itself, independent
+    # of `celery_worker_concurrency` (which controls per-worker process count).
+    max_concurrent_ingestions: int = 1
+    # Beat schedule for periodic Fundbox ingestion. Empty string disables.
+    fundbox_ingest_cron: str = ""  # e.g. "0 */6 * * *"
+
+    # Fundbox source DB -------------------------------------------------------
+    fundbox_db_host: str = "localhost"
+    fundbox_db_port: int = 3306
+    fundbox_db_user: str = "root"
+    fundbox_db_password: str = ""
+    fundbox_db_name: str = "fundbox-dev"
+    # Streaming chunk size for connector queries (rows per fetch).
+    fundbox_chunk_size: int = 1000
+
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:

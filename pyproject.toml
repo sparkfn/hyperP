@@ -1,0 +1,52 @@
+# Repo-root uv workspace. Each Python service under services/ is a workspace
+# member with its own pyproject.toml. The lockfile (uv.lock) lives here so all
+# members resolve against the same dependency versions.
+#
+# Usage:
+#   uv sync                           # install everything
+#   uv sync --package profile-unifier-api
+#   uv run --package profile-unifier-api python -m src.main
+#   uv add --package profile-unifier-api <pkg>
+
+[project]
+name = "hyperp-workspace"
+version = "0.0.0"
+description = "HyperP profile-unifier monorepo workspace root"
+requires-python = ">=3.12"
+# The root project itself ships no code; only dev tooling lives here.
+dependencies = []
+
+[dependency-groups]
+dev = [
+    "ruff>=0.4,<1",
+    "mypy>=1.10,<2",
+    "pytest>=8.0,<9",
+]
+
+[tool.uv]
+package = false
+
+[tool.uv.workspace]
+members = ["services/api", "services/ingestion"]
+
+# --- Shared tool config ----------------------------------------------------
+# Both services inherit these settings; per-service overrides go in the
+# member pyproject.toml under [tool.<name>].
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B", "ANN", "RET"]
+ignore = ["ANN401"]
+
+[tool.mypy]
+strict = true
+python_version = "3.12"
+disallow_any_explicit = true
+disallow_any_generics = true
+warn_unused_ignores = true
+
+[tool.pytest.ini_options]
+testpaths = ["services/api/tests", "services/ingestion/tests"]
