@@ -8,3 +8,6 @@ __pycache__/
 *.egg-info/
 .venv/
 data/
+
+# Claude Code local session/cache
+.claude/
