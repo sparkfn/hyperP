@@ -57,7 +57,7 @@ extend-immutable-calls = [
 # Embedded multi-line Cypher constants are easier to read at full width
 # than artificially wrapped. Splitting collect()/RETURN clauses across
 # Python source lines hurts query readability without buying anything.
-"**/graph/queries.py" = ["E501"]
+"**/graph/queries/*.py" = ["E501"]
 
 [tool.mypy]
 strict = true
