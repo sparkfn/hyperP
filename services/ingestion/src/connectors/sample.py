@@ -1,3 +1,6 @@
+"""DISABLED — sample connector commented out; see fundbox.py for the active connector."""
+
+_DISABLED = '''
 """Sample connector that yields hardcoded test records.
 
 Designed to exercise the full pipeline: normalization, candidate generation
@@ -105,3 +108,4 @@ class SampleConnector(SourceConnector):
                 **record,
                 "record_hash": _compute_hash(record),
             }
+'''
