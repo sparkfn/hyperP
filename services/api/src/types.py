@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 from enum import StrEnum
-from typing import Generic, TypeVar
+from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 # --- Enums ---
 
@@ -90,15 +90,13 @@ class TrustTier(StrEnum):
 
 # --- Response envelope ---
 
-DataT = TypeVar("DataT")
-
 
 class ResponseMeta(BaseModel):
     request_id: str
     next_cursor: str | None = None
 
 
-class ApiResponse(BaseModel, Generic[DataT]):
+class ApiResponse[DataT](BaseModel):
     data: DataT
     meta: ResponseMeta
 
@@ -151,6 +149,8 @@ class SourceRecord(BaseModel):
     source_system: str
     source_record_id: str
     source_record_version: str | None = None
+    record_type: Literal["system", "conversation"] = "system"
+    extraction_confidence: float | None = None
     link_status: str
     linked_person_id: str | None = None
     observed_at: str
@@ -309,11 +309,46 @@ class IngestIdentifier(BaseModel):
 class IngestRecord(BaseModel):
     source_record_id: str
     source_record_version: str | None = None
+    record_type: Literal["system", "conversation"] = "system"
+    extraction_confidence: float | None = None
+    extraction_method: str | None = None
+    conversation_ref: dict[str, str | int | float | bool | None] | None = None
     observed_at: str
     record_hash: str
     identifiers: list[IngestIdentifier] = Field(default_factory=list)
     attributes: dict[str, str | int | float | bool | None] = Field(default_factory=dict)
     raw_payload: dict[str, str | int | float | bool | None] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _check_record_type_invariants(self) -> IngestRecord:
+        """Mirror of ``SourceRecordEnvelope._check_record_type_invariants``.
+
+        Conversation records must declare extraction provenance; system
+        records must leave the conversation-only fields unset so that the
+        downstream graph schema invariants hold.
+        """
+        if self.record_type == "conversation":
+            if self.extraction_confidence is None or self.extraction_method is None:
+                raise ValueError(
+                    "conversation source records require extraction_confidence "
+                    "and extraction_method"
+                )
+            if not 0.0 <= self.extraction_confidence <= 1.0:
+                raise ValueError(
+                    f"extraction_confidence must be in [0.0, 1.0], "
+                    f"got {self.extraction_confidence}"
+                )
+        else:
+            if (
+                self.extraction_confidence is not None
+                or self.extraction_method is not None
+                or self.conversation_ref is not None
+            ):
+                raise ValueError(
+                    "extraction_confidence / extraction_method / conversation_ref "
+                    "are only valid on record_type='conversation'"
+                )
+        return self
 
 
 class IngestRecordsRequest(BaseModel):

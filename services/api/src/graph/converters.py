@@ -7,21 +7,20 @@ from __future__ import annotations
 
 import base64
 from datetime import datetime
-from typing import TypeAlias
 
 from neo4j.time import DateTime as Neo4jDateTime
 
 # Neo4j returns a heterogeneous mix of primitives, so we constrain to a tagged
 # union of the value shapes we accept and emit. We deliberately exclude `Any`.
-GraphScalar: TypeAlias = str | int | float | bool | None
-GraphValue: TypeAlias = (
+type GraphScalar = str | int | float | bool | None
+type GraphValue = (
     GraphScalar
     | Neo4jDateTime
     | datetime
-    | list["GraphValue"]
-    | dict[str, "GraphValue"]
+    | list[GraphValue]
+    | dict[str, GraphValue]
 )
-GraphRecord: TypeAlias = dict[str, GraphValue]
+type GraphRecord = dict[str, GraphValue]
 
 
 def to_iso_or_none(value: GraphValue) -> str | None:

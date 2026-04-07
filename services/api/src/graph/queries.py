@@ -56,6 +56,7 @@ MATCH (sr:SourceRecord)-[:LINKED_TO]->(p:Person {person_id: $person_id})
 MATCH (sr)-[:FROM_SOURCE]->(ss:SourceSystem)
 RETURN sr {
   .source_record_pk, .source_record_id, .source_record_version,
+  .record_type, .extraction_confidence,
   .link_status, .observed_at, .ingested_at
 } AS source_record,
 ss.source_key AS source_system,
@@ -326,6 +327,50 @@ FOREACH (_ IN CASE WHEN old_addr IS NOT NULL THEN [1] ELSE [] END |
 )
 
 WITH absorbed, survivor, me
+OPTIONAL MATCH (absorbed)-[old_k_out:KNOWS]->(k_other:Person)
+WHERE k_other.person_id <> survivor.person_id
+FOREACH (_ IN CASE WHEN old_k_out IS NOT NULL THEN [1] ELSE [] END |
+  CREATE (survivor)-[:KNOWS {
+    knows_id: old_k_out.knows_id,
+    relationship_label: old_k_out.relationship_label,
+    relationship_category: old_k_out.relationship_category,
+    source_system_key: old_k_out.source_system_key,
+    source_record_pk: old_k_out.source_record_pk,
+    declared_by_person_id: survivor.person_id,
+    status: old_k_out.status,
+    approved_at: old_k_out.approved_at,
+    first_seen_at: old_k_out.first_seen_at,
+    last_seen_at: old_k_out.last_seen_at,
+    last_confirmed_at: old_k_out.last_confirmed_at,
+    created_at: old_k_out.created_at,
+    updated_at: datetime()
+  }]->(k_other)
+  DELETE old_k_out
+)
+
+WITH absorbed, survivor, me
+OPTIONAL MATCH (k_other2:Person)-[old_k_in:KNOWS]->(absorbed)
+WHERE k_other2.person_id <> survivor.person_id
+FOREACH (_ IN CASE WHEN old_k_in IS NOT NULL THEN [1] ELSE [] END |
+  CREATE (k_other2)-[:KNOWS {
+    knows_id: old_k_in.knows_id,
+    relationship_label: old_k_in.relationship_label,
+    relationship_category: old_k_in.relationship_category,
+    source_system_key: old_k_in.source_system_key,
+    source_record_pk: old_k_in.source_record_pk,
+    declared_by_person_id: old_k_in.declared_by_person_id,
+    status: old_k_in.status,
+    approved_at: old_k_in.approved_at,
+    first_seen_at: old_k_in.first_seen_at,
+    last_seen_at: old_k_in.last_seen_at,
+    last_confirmed_at: old_k_in.last_confirmed_at,
+    created_at: old_k_in.created_at,
+    updated_at: datetime()
+  }]->(survivor)
+  DELETE old_k_in
+)
+
+WITH absorbed, survivor, me
 OPTIONAL MATCH (absorbed)-[old_fact:HAS_FACT]->(sr_fact:SourceRecord)
 FOREACH (_ IN CASE WHEN old_fact IS NOT NULL THEN [1] ELSE [] END |
   CREATE (survivor)-[:HAS_FACT {
@@ -544,6 +589,10 @@ CREATE (sr:SourceRecord {
   source_record_pk: randomUUID(),
   source_record_id: $source_record_id,
   source_record_version: $source_record_version,
+  record_type: $record_type,
+  extraction_confidence: $extraction_confidence,
+  extraction_method: $extraction_method,
+  conversation_ref: $conversation_ref,
   link_status: 'pending_review',
   observed_at: datetime($observed_at),
   ingested_at: datetime(),

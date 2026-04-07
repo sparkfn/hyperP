@@ -27,7 +27,22 @@ identity key exposed to downstream systems.
 
 A raw or normalized record originating from one upstream system such as POS,
 Bitrix CRM, or a third-party app. A source record is source-scoped and is not
-itself the canonical identity.
+itself the canonical identity. Every source record carries a `record_type` of
+either `system` or `conversation` (see below).
+
+### Source Record Type
+
+The provenance class of a source record, which dictates how its identifiers
+and attributes are trusted by the matching engine:
+
+- **`system`** — extracted deterministically from another service's structured
+  system of record. Identifiers and attributes are taken at face value and may
+  participate in deterministic merge rules.
+- **`conversation`** — extracted heuristically from chat or voice transcripts
+  (e.g. by an LLM extractor). Identifiers and attributes are noisy and carry
+  an `extraction_confidence`. Conversation records are never eligible for
+  deterministic auto-merge — they always pass through heuristic scoring and,
+  if ambiguous, human review.
 
 ### Source Record ID
 
@@ -282,10 +297,21 @@ graph storage and traversal engine.
 ### Explicit Relationship
 
 A typed, directed connection between two Person nodes that represents a
-semantic relationship (e.g. `REFERRED_BY`, `WORKS_WITH`, `FAMILY_OF`). Unlike
-implicit connections through shared Identifier nodes, explicit relationships
-are declared by source systems or created manually. They do not affect identity
-resolution decisions. Planned for post-MVP.
+semantic relationship. Unlike implicit connections through shared Identifier
+nodes, explicit relationships are declared by source systems or created
+manually. They do not affect identity resolution decisions. The MVP edge is
+`KNOWS` (see below); narrower relationship types may be added post-MVP.
+
+### KNOWS (Social Relationship)
+
+A directed `(:Person)-[:KNOWS]->(:Person)` edge that captures a declared
+social tie between two persons — for example an emergency contact, next-of-kin,
+spouse, or referrer, mirroring the Fundbox `contacts` table. Properties
+include a free-text `relationship_label` and a coarser
+`relationship_category` (`family`, `household`, `professional`, `referral`,
+`other`). `KNOWS` is sourced from systems of record, never inferred by the
+matching engine, and is consumed by traversal queries (contact tracing,
+household detection, referral graphs).
 
 ### Interaction
 

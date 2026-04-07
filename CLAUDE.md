@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-HyperP is a **planning workspace** for a customer profile unification and relationship intelligence platform. It resolves the same real-world person across systems (POS, Bitrix CRM, third-party apps) and supports complex relationship use cases such as contact tracing. The initial use case is sales. The repository currently contains **only design documentation** — no implementation code exists yet.
+HyperP is a customer profile unification and relationship intelligence platform. It resolves the same real-world person across systems (POS, Bitrix CRM, third-party apps) and supports complex relationship use cases such as contact tracing. The initial use case is sales. The repository contains both design documentation (`docs/`) and implementation services (`services/api/`, `services/ingestion/`).
 
 ## Repository Structure
 
@@ -33,7 +33,8 @@ All documents live in `docs/` and follow the naming convention `profile-unifier-
 - **Retention**: `retention_expires_at` property on relevant nodes (SourceRecord, MatchDecision, MergeEvent); NULL for legal holds.
 - **Scoring model**: must use conditional weighting or capping, not simple additive weights.
 - **Graph-native candidate generation**: candidate persons are found by traversing shared Identifier nodes in Neo4j, not by index-based blocking-key lookups. Composite blocking (DOB + name) falls back to index queries.
-- **Explicit relationships** (post-MVP): typed Person-to-Person relationships (`REFERRED_BY`, `WORKS_WITH`, `FAMILY_OF`) are planned but do not affect identity resolution.
+- **Source record types**: every `SourceRecord` carries `record_type` of either `system` (deterministic extract from another service's system of record) or `conversation` (heuristic extract from chat / voice transcripts, with `extraction_confidence`, `extraction_method`, `conversation_ref`). Conversation-sourced evidence is never eligible for deterministic auto-merge — it always flows through Layer 2 scoring and at most reaches the review band. Hard NO_MATCH rules (locks, conflicting govt IDs) still fire for conversation records as blockers.
+- **Social Person-to-Person relationship** (`KNOWS`): a directed `(:Person)-[:KNOWS]->(:Person)` edge mirrors the Fundbox `contacts` table (emergency contact / next-of-kin / referrer). Properties include `relationship_label`, `relationship_category`, source provenance, and `status`/`approved_at`. `KNOWS` is sourced, never inferred by the matching engine, and does not affect identity resolution. It supersedes the previously post-MVP `REFERRED_BY` / `WORKS_WITH` / `FAMILY_OF` proposal — narrower types may be added later if a use case needs them.
 - **Interaction model** (post-MVP): Interaction nodes for contact tracing will connect to Person nodes in the same Neo4j graph.
 - **Data deletion**: graph deletion requires detaching all relationships before removing a Person node. Shared Identifier nodes survive individual person deletion.
 

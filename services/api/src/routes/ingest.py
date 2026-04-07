@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
+from fastapi import APIRouter, Request
 from neo4j import AsyncManagedTransaction
 from pydantic import BaseModel
-
-from fastapi import APIRouter, Request
 
 from src.graph.client import get_session
 from src.graph.converters import to_str
@@ -135,6 +134,10 @@ async def _persist_records(
                 ingest_run_id=run_id,
                 source_record_id=record.source_record_id,
                 source_record_version=record.source_record_version,
+                record_type=record.record_type,
+                extraction_confidence=record.extraction_confidence,
+                extraction_method=record.extraction_method,
+                conversation_ref=record.conversation_ref,
                 observed_at=record.observed_at,
                 record_hash=record.record_hash,
                 raw_payload=record.raw_payload,

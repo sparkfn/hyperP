@@ -5,10 +5,11 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import Callable
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from neo4j import ManagedTransaction
 
+from src.golden_profile import compute_golden_profile
 from src.graph import queries
 from src.graph.client import Neo4jClient
 from src.matching.engine import MatchEngine
@@ -17,13 +18,14 @@ from src.models import (
     IngestResult,
     MatchDecision,
     MatchResult,
-    NormalizedAddress as NormalizedAddressModel,
     NormalizedAttribute,
     NormalizedIdentifier,
     QualityFlag,
     SourceRecordEnvelope,
 )
-from src.golden_profile import compute_golden_profile
+from src.models import (
+    NormalizedAddress as NormalizedAddressModel,
+)
 from src.normalizers.address import normalize_address
 from src.normalizers.email import normalize_email
 from src.normalizers.name import normalize_name
@@ -249,6 +251,7 @@ class IngestPipeline:
         # 5. Match engine chain (deterministic → heuristic → LLM-shadow)
         match_result = self._match_engine.evaluate(
             tx, candidates, identifiers, address, attributes,
+            record_type=envelope.record_type,
         )
 
         # 6. Resolve to a Person — create new or pick from candidates
@@ -492,6 +495,14 @@ class IngestPipeline:
             source_system=envelope.source_system,
             source_record_id=envelope.source_record_id,
             source_record_version=envelope.source_record_version,
+            record_type=envelope.record_type.value,
+            extraction_confidence=envelope.extraction_confidence,
+            extraction_method=envelope.extraction_method,
+            conversation_ref=(
+                json.dumps(envelope.conversation_ref, default=str)
+                if envelope.conversation_ref is not None
+                else None
+            ),
             link_status=link_status,
             observed_at=envelope.observed_at,
             record_hash=envelope.record_hash,
@@ -554,7 +565,7 @@ class IngestPipeline:
         """Step 7d: create a ReviewCase when the engine returns REVIEW."""
         if match_result.decision != MatchDecision.REVIEW:
             return None
-        sla_due_at = (datetime.now(timezone.utc) + timedelta(days=7)).isoformat()
+        sla_due_at = (datetime.now(UTC) + timedelta(days=7)).isoformat()
         rc_result = tx.run(
             queries.CREATE_REVIEW_CASE,
             match_decision_id=match_decision_id,

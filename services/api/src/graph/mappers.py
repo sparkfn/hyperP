@@ -82,6 +82,12 @@ def map_source_record(record: GraphRecord) -> SourceRecord:
         source_system=to_str(record.get("source_system")),
         source_record_id=to_str(sr.get("source_record_id")),
         source_record_version=to_optional_str(sr.get("source_record_version")),
+        record_type="conversation" if to_str(sr.get("record_type")) == "conversation" else "system",
+        extraction_confidence=(
+            to_float(sr.get("extraction_confidence"))
+            if sr.get("extraction_confidence") is not None
+            else None
+        ),
         link_status=to_str(sr.get("link_status")),
         linked_person_id=to_optional_str(record.get("linked_person_id")),
         observed_at=to_iso_or_empty(sr.get("observed_at")),

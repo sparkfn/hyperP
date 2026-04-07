@@ -66,21 +66,6 @@ services:
       neo4j:
         condition: service_healthy
 
-  ingestion:
-    build:
-      context: .
-      dockerfile: services/ingestion/Dockerfile
-    environment: *ingestion-env
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    depends_on:
-      neo4j:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    profiles: ["cli"]   # only started on demand via `docker compose run`
-    command: ["python", "-m", "src.main", "--source-key", "fundbox", "--mode", "batch"]
-
   worker:
     build:
       context: .

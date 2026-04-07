@@ -4,10 +4,9 @@ from __future__ import annotations
 
 from typing import LiteralString
 
+from fastapi import APIRouter, Query, Request
 from neo4j import AsyncManagedTransaction
 from pydantic import BaseModel
-
-from fastapi import APIRouter, Query, Request
 
 from src.graph.client import get_session
 from src.graph.converters import GraphRecord, GraphValue, to_str

@@ -23,12 +23,14 @@ from src.matching.similarity import jaro_winkler_similarity
 from src.models import (
     CandidateResult,
     EngineType,
+    JsonValue,
     MatchDecision,
     MatchResult,
     NormalizedAddress,
     NormalizedAttribute,
     NormalizedIdentifier,
     QualityFlag,
+    RecordType,
 )
 
 logger = logging.getLogger(__name__)
@@ -121,8 +123,17 @@ class MatchEngine:
         identifiers: list[NormalizedIdentifier],
         address: NormalizedAddress | None,
         attributes: list[NormalizedAttribute],
+        record_type: RecordType = RecordType.SYSTEM,
     ) -> MatchResult:
-        """Run the full match chain and return the final result."""
+        """Run the full match chain and return the final result.
+
+        ``record_type`` carries the incoming envelope's provenance class. When
+        the incoming record is a ``conversation`` extract, the deterministic
+        merge layer is suppressed (Layer 1 hard-merge rules cannot fire on
+        heuristically-extracted evidence). Hard NO_MATCH rules (locks,
+        conflicting government IDs) still apply because they are blockers,
+        not merges.
+        """
         if not candidates:
             return self._no_candidates_result()
 
@@ -131,7 +142,7 @@ class MatchEngine:
 
         for person_id in unique_candidates:
             per_candidate = self._evaluate_one(
-                tx, person_id, identifiers, address, attributes,
+                tx, person_id, identifiers, address, attributes, record_type,
             )
             if per_candidate is None:
                 continue
@@ -152,10 +163,11 @@ class MatchEngine:
         identifiers: list[NormalizedIdentifier],
         address: NormalizedAddress | None,
         attributes: list[NormalizedAttribute],
+        record_type: RecordType,
     ) -> MatchResult | None:
         """Run one candidate through deterministic → heuristic → LLM."""
         det = self._evaluate_deterministic(
-            tx, candidate_person_id, identifiers, address, attributes,
+            tx, candidate_person_id, identifiers, address, attributes, record_type,
         )
         if det is not None:
             # Hard NO_MATCH: drop the candidate without falling through.
@@ -227,12 +239,32 @@ class MatchEngine:
         identifiers: list[NormalizedIdentifier],
         address: NormalizedAddress | None,
         attributes: list[NormalizedAttribute],
+        record_type: RecordType,
     ) -> MatchResult | None:
-        """Apply hard rules. Returns a result or ``None`` to fall through."""
+        """Apply hard rules. Returns a result or ``None`` to fall through.
+
+        Hard NO_MATCH rules (NO_MATCH_LOCK, conflicting government IDs) always
+        run regardless of ``record_type`` — they are blockers, not merges.
+        Hard MERGE rules (exact government ID, trusted external ID) are
+        suppressed when the incoming record is a ``conversation`` extract:
+        heuristically-extracted identifiers are never sufficient on their own
+        for an auto-merge. Conversation pairs always fall through to Layer 2.
+
+        TODO: also gate on candidate-side evidence type — if the candidate's
+        only support for the matching identifier is a conversation source
+        record, the deterministic merge should likewise be suppressed.
+        """
         if (locked := self._check_no_match_lock(tx, candidate_person_id, identifiers)):
             return locked
         if (govt := self._check_government_id(tx, candidate_person_id, identifiers)):
-            return govt
+            # Conflicting govt IDs (hard NO_MATCH) still apply for conversation
+            # records; only the MERGE branch is suppressed below.
+            if govt.decision == MatchDecision.NO_MATCH:
+                return govt
+            if record_type == RecordType.SYSTEM:
+                return govt
+        if record_type != RecordType.SYSTEM:
+            return None
         if (trusted := self._check_trusted_id(tx, candidate_person_id, identifiers)):
             return trusted
         return None
@@ -592,7 +624,7 @@ class MatchEngine:
         snapshot: _CandidateSnapshot,
         ident_evidence: float,
         raw_score: float,
-    ) -> dict[str, object]:
+    ) -> dict[str, JsonValue]:
         had_names = any(
             a.attribute_name in ("full_name", "preferred_name", "legal_name")
             for a in attributes
@@ -615,7 +647,7 @@ class MatchEngine:
         confidence: float,
         reasons: list[str],
         candidate_person_id: str,
-        features: dict[str, object],
+        features: dict[str, JsonValue],
     ) -> MatchResult:
         if confidence >= CONFIDENCE_AUTO_MERGE:
             decision = MatchDecision.MERGE

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
+from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.engine import Connection
@@ -24,6 +25,7 @@ from src.connectors.fundbox.schema import (
     social_accounts,
     users,
 )
+from src.models import JsonValue
 
 
 class FundboxConnector(FundboxConnectorBase):
@@ -38,7 +40,7 @@ class FundboxConnector(FundboxConnectorBase):
     def get_source_key(self) -> str:
         return "fundbox"
 
-    def build_records(self, conn: Connection) -> Iterator[dict]:
+    def build_records(self, conn: Connection) -> Iterator[dict[str, JsonValue]]:
         primary_stmt = (
             select(
                 users.c.id.label("user_id"),
@@ -86,12 +88,12 @@ class FundboxConnector(FundboxConnectorBase):
 
     @staticmethod
     def _build_one(
-        row,
-        user_addresses: list,
-        user_socials: list,
-        user_devices: list,
+        row: Any,
+        user_addresses: list[Any],
+        user_socials: list[Any],
+        user_devices: list[Any],
         last_login: str | None,
-    ) -> dict:
+    ) -> dict[str, JsonValue]:
         ids = IdentifierBag()
         ids.add("nric", row.nric, verified=True)
         ids.add("email", row.user_email, last_confirmed_at=last_login)

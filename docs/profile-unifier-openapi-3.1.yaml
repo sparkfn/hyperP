@@ -921,6 +921,15 @@ components:
           type:
             - string
             - 'null'
+        record_type:
+          type: string
+          enum: [system, conversation]
+        extraction_confidence:
+          type:
+            - number
+            - 'null'
+          minimum: 0
+          maximum: 1
         link_status:
           type: string
         linked_person_id:
@@ -940,6 +949,7 @@ components:
         - source_record_pk
         - source_system
         - source_record_id
+        - record_type
         - link_status
         - ingested_at
       additionalProperties: false
@@ -1093,6 +1103,31 @@ components:
           type:
             - string
             - 'null'
+        record_type:
+          type: string
+          enum: [system, conversation]
+          default: system
+          description: |
+            `system` records are deterministic extracts from another system of
+            record. `conversation` records are heuristic extracts from chat or
+            voice transcripts and are never eligible for deterministic
+            auto-merge.
+        extraction_confidence:
+          type:
+            - number
+            - 'null'
+          minimum: 0
+          maximum: 1
+          description: Required when `record_type` is `conversation`; null otherwise.
+        extraction_method:
+          type:
+            - string
+            - 'null'
+        conversation_ref:
+          type:
+            - object
+            - 'null'
+          additionalProperties: true
         observed_at:
           type:
             - string
@@ -1112,6 +1147,7 @@ components:
           additionalProperties: true
       required:
         - source_record_id
+        - record_type
         - record_hash
         - identifiers
         - attributes
