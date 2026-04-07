@@ -1,25 +1,21 @@
 [project]
-name = "profile-unifier-ingestion"
+name = "profile-unifier-api"
 version = "0.1.0"
-description = "Ingestion service for the profile unification platform"
+description = "Profile unifier HTTP API service (FastAPI + Neo4j)"
 requires-python = ">=3.12"
 dependencies = [
+    "fastapi>=0.115,<1",
+    "uvicorn[standard]>=0.30,<1",
     "neo4j>=5.20,<6",
     "pydantic>=2.6,<3",
     "pydantic-settings>=2.2,<3",
-    "httpx>=0.27,<1",
-    "phonenumbers>=8.13,<9",
     "python-dotenv>=1.0,<2",
-    "pymysql>=1.1,<2",
-    "sqlalchemy>=2.0,<3",
-    "celery[redis]>=5.4,<6",
-    "redis>=5.0,<6",
 ]
 
 [tool.uv]
 # Virtual workspace member: uv locks our deps but does not build/install the
-# project itself. This avoids a collision with services/api, which also uses
-# a top-level `src` package. Source is imported by setting PYTHONPATH or
+# project itself. This avoids a collision with services/ingestion, which also
+# uses a top-level `src` package. Source is imported by setting PYTHONPATH or
 # running from the service directory.
 package = false
 

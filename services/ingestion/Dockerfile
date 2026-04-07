@@ -11,23 +11,27 @@ COPY --from=ghcr.io/astral-sh/uv:0.10 /uv /usr/local/bin/uv
 
 WORKDIR /app
 
-# Install dependencies first for layer caching. Build context is the repo
-# root (see docker-compose.yml) so the canonical init.cypher is reachable.
-COPY services/ingestion/pyproject.toml services/ingestion/uv.lock ./
+# uv workspace layout: lockfile lives at the repo root and resolves all
+# members. Build context must be the repo root (see docker-compose.yml).
+COPY pyproject.toml uv.lock ./
+COPY services/api/pyproject.toml services/api/pyproject.toml
+COPY services/ingestion/pyproject.toml services/ingestion/pyproject.toml
+
+# Install only the ingestion member and its transitive deps. Members are
+# virtual (package = false), so this only materialises third-party deps.
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --frozen --no-install-project --no-dev
+    uv sync --frozen --no-dev --package profile-unifier-ingestion
 
 # Bake the Neo4j init script into the image so every ingestion run can
 # re-apply schema (idempotent — see src/graph/schema_init.py).
 COPY infra/neo4j/init.cypher ./infra/neo4j/init.cypher
 
-# Now copy the source and install the project itself.
-COPY services/ingestion/src/ ./src/
-RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --frozen --no-dev
+COPY services/ingestion/src/ services/ingestion/src/
 
 RUN groupadd --gid 1000 appuser \
     && useradd --uid 1000 --gid 1000 --no-create-home appuser
 USER appuser
+
+WORKDIR /app/services/ingestion
 
 CMD ["python", "-m", "src.main", "--source-key", "fundbox", "--mode", "batch"]
