@@ -35,9 +35,23 @@ md {
   .match_decision_id, .engine_type, .engine_version, .policy_version,
   .decision, .confidence, .reasons, .blocking_conflicts, .created_at
 } AS match_decision,
-left { .person_id, .status, .preferred_full_name, .preferred_phone, .preferred_email, .preferred_dob } AS left_entity,
+CASE WHEN left:Person THEN 'person'
+     WHEN left:SourceRecord THEN 'source_record'
+     ELSE null END AS left_kind,
+CASE WHEN left:Person
+     THEN left { .person_id, .status, .preferred_full_name, .preferred_phone, .preferred_email, .preferred_dob }
+     WHEN left:SourceRecord
+     THEN left { .source_record_pk, .source_record_id, .normalized_payload, .observed_at }
+     ELSE null END AS left_entity,
 left_addr { .address_id, .unit_number, .street_number, .street_name, .city, .postal_code, .country_code, .normalized_full } AS left_address,
-right { .person_id, .status, .preferred_full_name, .preferred_phone, .preferred_email, .preferred_dob } AS right_entity,
+CASE WHEN right:Person THEN 'person'
+     WHEN right:SourceRecord THEN 'source_record'
+     ELSE null END AS right_kind,
+CASE WHEN right:Person
+     THEN right { .person_id, .status, .preferred_full_name, .preferred_phone, .preferred_email, .preferred_dob }
+     WHEN right:SourceRecord
+     THEN right { .source_record_pk, .source_record_id, .normalized_payload, .observed_at }
+     ELSE null END AS right_entity,
 right_addr { .address_id, .unit_number, .street_number, .street_name, .city, .postal_code, .country_code, .normalized_full } AS right_address
 """
 

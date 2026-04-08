@@ -189,7 +189,10 @@ class ReviewCaseSummary(BaseModel):
 
 
 class PersonComparisonEntity(BaseModel):
+    entity_kind: Literal["person", "source_record"] = "person"
     person_id: str | None = None
+    source_record_pk: str | None = None
+    source_record_id: str | None = None
     status: str | None = None
     preferred_full_name: str | None = None
     preferred_phone: str | None = None

@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import json
+from typing import Literal
+
 from src.graph.converters import (
     GraphRecord,
     GraphValue,
@@ -197,12 +200,16 @@ def map_review_case_summary(record: GraphRecord) -> ReviewCaseSummary:
 
 
 def _map_comparison_entity(
-    entity: GraphValue, address: GraphValue
+    kind: GraphValue, entity: GraphValue, address: GraphValue
 ) -> PersonComparisonEntity | None:
     e = _as_dict(entity)
     if not e:
         return None
+    kind_str = to_optional_str(kind)
+    if kind_str == "source_record":
+        return _map_source_record_comparison(e)
     return PersonComparisonEntity(
+        entity_kind="person",
         person_id=to_optional_str(e.get("person_id")),
         status=to_optional_str(e.get("status")),
         preferred_full_name=to_optional_str(e.get("preferred_full_name")),
@@ -210,6 +217,87 @@ def _map_comparison_entity(
         preferred_email=to_optional_str(e.get("preferred_email")),
         preferred_dob=to_optional_str(e.get("preferred_dob")),
         preferred_address=map_address(address),
+    )
+
+
+def _map_source_record_comparison(e: GraphRecord) -> PersonComparisonEntity:
+    """Project a SourceRecord side of a MatchDecision into the comparison shape.
+
+    Inbound source records carry their parsed contents in ``normalized_payload``
+    (a JSON string) — we lift the human-relevant fields out so reviewers can
+    compare them against the candidate Person on the other side.
+    """
+    payload = _parse_normalized_payload(e.get("normalized_payload"))
+    full_name = _attribute_value(payload, "full_name")
+    dob = _attribute_value(payload, "dob")
+    phone = _identifier_value(payload, "phone")
+    email = _identifier_value(payload, "email")
+    address = _source_record_address(payload)
+    return PersonComparisonEntity(
+        entity_kind="source_record",
+        source_record_pk=to_optional_str(e.get("source_record_pk")),
+        source_record_id=to_optional_str(e.get("source_record_id")),
+        status=None,
+        preferred_full_name=full_name,
+        preferred_phone=phone,
+        preferred_email=email,
+        preferred_dob=dob,
+        preferred_address=address,
+    )
+
+
+def _parse_normalized_payload(value: GraphValue) -> GraphRecord:
+    if not isinstance(value, str):
+        return {}
+    try:
+        parsed: object = json.loads(value)
+    except json.JSONDecodeError:
+        return {}
+    if isinstance(parsed, dict):
+        return parsed
+    return {}
+
+
+def _attribute_value(payload: GraphRecord, name: Literal["full_name", "dob"]) -> str | None:
+    attrs = payload.get("attributes")
+    if not isinstance(attrs, list):
+        return None
+    for raw in attrs:
+        item = _as_dict(raw)
+        if item.get("attribute_name") == name:
+            return to_optional_str(item.get("attribute_value"))
+    return None
+
+
+def _identifier_value(
+    payload: GraphRecord, identifier_type: Literal["phone", "email"]
+) -> str | None:
+    ids = payload.get("identifiers")
+    if not isinstance(ids, list):
+        return None
+    for raw in ids:
+        item = _as_dict(raw)
+        if item.get("identifier_type") == identifier_type:
+            return to_optional_str(item.get("normalized_value"))
+    return None
+
+
+def _source_record_address(payload: GraphRecord) -> AddressSummary | None:
+    addr = _as_dict(payload.get("address"))
+    if not addr:
+        return None
+    normalized = to_optional_str(addr.get("normalized_full"))
+    if normalized is None:
+        return None
+    return AddressSummary(
+        address_id="",
+        unit_number=to_optional_str(addr.get("unit_number")),
+        street_number=to_optional_str(addr.get("street_number")),
+        street_name=to_optional_str(addr.get("street_name")),
+        city=to_optional_str(addr.get("city")),
+        postal_code=to_optional_str(addr.get("postal_code")),
+        country_code=to_optional_str(addr.get("country_code")),
+        normalized_full=normalized,
     )
 
 
@@ -233,10 +321,10 @@ def map_review_case_detail(record: GraphRecord) -> ReviewCaseDetail:
         actions=actions,
         match_decision=map_match_decision(record),
         comparison_left=_map_comparison_entity(
-            record.get("left_entity"), record.get("left_address")
+            record.get("left_kind"), record.get("left_entity"), record.get("left_address")
         ),
         comparison_right=_map_comparison_entity(
-            record.get("right_entity"), record.get("right_address")
+            record.get("right_kind"), record.get("right_entity"), record.get("right_address")
         ),
         created_at=to_iso_or_empty(rc.get("created_at")),
         updated_at=to_iso_or_empty(rc.get("updated_at")),
