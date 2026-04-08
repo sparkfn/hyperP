@@ -132,9 +132,13 @@ Every ingested source record should be translated into a common envelope:
 {
   "source_system": "bitrix",
   "source_record_id": "12345",
+  "record_type": "system",
   "ingest_type": "batch",
   "observed_at": "2026-03-31T00:00:00Z",
   "record_hash": "sha256:...",
+  "extraction_confidence": null,
+  "extraction_method": null,
+  "conversation_ref": null,
   "identifiers": [
     { "type": "phone", "value": "+6591234567", "is_verified": false },
     { "type": "email", "value": "alice@example.com", "is_verified": false }
@@ -162,7 +166,7 @@ section describes the model at a conceptual level.
 | **Person** | Canonical identity entity. Golden profile fields stored inline. | `person_id`, `status`, `preferred_full_name`, `preferred_phone`, `preferred_email`, `preferred_address_id`, `preferred_dob`, `profile_completeness_score`, `golden_profile_computed_at` |
 | **Identifier** | Shared identity signal (phone, email, govt ID hash, etc.). Multiple persons may connect to the same Identifier — this is the graph backbone for contact tracing. | `identifier_id`, `identifier_type`, `normalized_value`, `hashed_value` |
 | **Address** | Shared normalized address. Multiple persons may connect to the same Address — enables "who else lives here?" traversal. | `address_id`, `unit_number`, `street_number`, `street_name`, `city`, `postal_code`, `country_code`, `normalized_full` |
-| **SourceRecord** | Immutable raw input record from an upstream system. | `source_record_pk`, `source_record_id`, `source_record_version`, `link_status`, `record_hash`, `raw_payload`, `observed_at`, `ingested_at` |
+| **SourceRecord** | Immutable raw input record from an upstream system. `record_type` is `system` (deterministic extract from a system of record) or `conversation` (heuristic extract from chat / voice transcripts). | `source_record_pk`, `source_record_id`, `source_record_version`, `record_type`, `link_status`, `record_hash`, `raw_payload`, `observed_at`, `ingested_at`, `extraction_confidence`, `extraction_method`, `conversation_ref` |
 | **SourceSystem** | Registered upstream system with field-level trust config. | `source_key`, `display_name`, `system_type`, `field_trust` (map) |
 | **MatchDecision** | Immutable decision from any engine path. | `match_decision_id`, `engine_type`, `engine_version`, `decision`, `confidence`, `reasons`, `blocking_conflicts`, `feature_snapshot`, `policy_version` |
 | **ReviewCase** | Human review queue item. Review actions stored as ordered list property. | `review_case_id`, `priority`, `queue_state`, `assigned_to`, `resolution`, `actions` (list of maps) |
@@ -180,6 +184,7 @@ section describes the model at a conceptual level.
 | `FROM_SOURCE` | SourceRecord / IngestRun → SourceSystem | — | Provenance. |
 | `MERGED_INTO` | Person → Person | `merge_event_id`, `actor`, `timestamp` | Merge lineage. Path compression enforced: max 1 hop. |
 | `NO_MATCH_LOCK` | Person → Person | `lock_id`, `lock_type`, `reason`, `expires_at`, `actor_type`, `actor_id` | Suppression lock. Always `left.person_id < right.person_id`. |
+| `KNOWS` | Person → Person | `relationship_label`, `relationship_category`, `source_system_key`, `source_record_pk`, `declared_by_person_id`, `status`, `approved_at`, `first_seen_at`, `last_seen_at`, `last_confirmed_at` | Declared social tie (emergency contact, next-of-kin, referrer, etc.). Sourced, never inferred. Does not affect identity resolution. |
 | `ABOUT_LEFT` / `ABOUT_RIGHT` | MatchDecision → Person or SourceRecord | `entity_type` | Links decision to the compared entities. |
 | `FOR_DECISION` | ReviewCase → MatchDecision | — | Links review to its triggering decision. |
 | `ABSORBED` / `SURVIVOR` | MergeEvent → Person | — | Audit pointers for merge. |

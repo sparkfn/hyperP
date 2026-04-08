@@ -81,8 +81,11 @@ async def search_persons(
             raise http_error(
                 400, "invalid_request", "Free-text query q requires at least 3 characters.", request
             )
+        # Pass the fulltext query via a parameters dict to avoid colliding
+        # with `session.run(query=...)`'s first positional argument name.
         result = await session.run(
-            SEARCH_PERSONS, query=q, status=status, skip=skip, limit=page_limit + 1
+            SEARCH_PERSONS,
+            {"query": q, "status": status, "skip": skip, "limit": page_limit + 1},
         )
         records = [_record_to_dict(r.keys(), list(r.values())) async for r in result]
         has_more = len(records) > page_limit

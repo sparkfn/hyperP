@@ -15,6 +15,7 @@ from src.connectors.fundbox.builders import (
     to_iso,
 )
 from src.connectors.fundbox.schema import contacts
+from src.models import JsonValue
 
 
 class FundboxContactsConnector(FundboxConnectorBase):
@@ -29,7 +30,7 @@ class FundboxContactsConnector(FundboxConnectorBase):
     def get_source_key(self) -> str:
         return "fundbox:contacts"
 
-    def build_records(self, conn: Connection) -> Iterator[dict]:
+    def build_records(self, conn: Connection) -> Iterator[dict[str, JsonValue]]:
         stmt = select(contacts).order_by(contacts.c.id)
         for row in self._stream(conn, stmt):
             ids = IdentifierBag()

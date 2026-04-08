@@ -4,10 +4,9 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
+from fastapi import APIRouter, Request
 from neo4j import AsyncManagedTransaction
 from pydantic import BaseModel
-
-from fastapi import APIRouter, Request
 
 from src.graph.client import get_session
 from src.graph.converters import GraphValue, to_optional_str, to_str

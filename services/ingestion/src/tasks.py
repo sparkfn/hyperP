@@ -62,10 +62,15 @@ def _acquire_ingestion_slot(max_slots: int) -> Iterator[str]:
             try:
                 pipe.watch(_INGEST_SEMAPHORE_KEY)
                 pipe.zremrangebyscore(_INGEST_SEMAPHORE_KEY, 0, now)
-                live = pipe.zcard(_INGEST_SEMAPHORE_KEY)
+                # redis-py's pipeline stub annotates the return as
+                # Awaitable[Any] | Any to cover the async client. We use the
+                # sync client, so the value is always an int.
+                zcard_result = pipe.zcard(_INGEST_SEMAPHORE_KEY)
+                assert isinstance(zcard_result, int)
+                live: int = zcard_result
                 if live >= max_slots:
                     pipe.unwatch()
-                    raise _SlotUnavailable(live=live, cap=max_slots)
+                    raise _SlotUnavailableError(live=live, cap=max_slots)
                 pipe.multi()
                 pipe.zadd(_INGEST_SEMAPHORE_KEY, {member_key: expiry})
                 pipe.expire(_INGEST_SEMAPHORE_KEY, _LOCK_LEASE_SECONDS + 60)
@@ -87,7 +92,7 @@ def _acquire_ingestion_slot(max_slots: int) -> Iterator[str]:
             logger.exception("Failed to release ingestion slot %s", slot_id)
 
 
-class _SlotUnavailable(Exception):
+class _SlotUnavailableError(Exception):
     def __init__(self, live: int, cap: int) -> None:
         super().__init__(f"All ingestion slots in use ({live}/{cap})")
         self.live = live
@@ -97,7 +102,7 @@ class _SlotUnavailable(Exception):
 @celery_app.task(
     name="src.tasks.run_ingestion_task",
     bind=True,
-    autoretry_for=(_SlotUnavailable,),
+    autoretry_for=(_SlotUnavailableError,),
     retry_backoff=True,
     retry_backoff_max=300,
     retry_jitter=True,
@@ -111,7 +116,7 @@ def run_ingestion_task(self: Task, source_key: str, mode: str = "batch") -> Inge
     try:
         with _acquire_ingestion_slot(settings.max_concurrent_ingestions):
             return run_ingestion(source_key, mode)
-    except _SlotUnavailable as exc:
+    except _SlotUnavailableError as exc:
         logger.warning(
             "Ingestion slot unavailable (%d/%d), retrying...", exc.live, exc.cap
         )

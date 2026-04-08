@@ -15,6 +15,7 @@ from src.connectors.fundbox.builders import (
     to_iso,
 )
 from src.connectors.fundbox.schema import merged_users
+from src.models import JsonValue
 
 
 class FundboxMergedUsersConnector(FundboxConnectorBase):
@@ -29,7 +30,7 @@ class FundboxMergedUsersConnector(FundboxConnectorBase):
     def get_source_key(self) -> str:
         return "fundbox:merged"
 
-    def build_records(self, conn: Connection) -> Iterator[dict]:
+    def build_records(self, conn: Connection) -> Iterator[dict[str, JsonValue]]:
         stmt = select(merged_users).order_by(merged_users.c.id)
         for row in self._stream(conn, stmt):
             ids = IdentifierBag()

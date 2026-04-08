@@ -25,6 +25,14 @@ Examples:
 - trusted upstream migration-map match
 - explicit manual merge override
 
+**Source-record-type gate**: Layer 1 only fires when *both* sides of the
+candidate pair have evidence sourced from `record_type = 'system'` source
+records. If either side's supporting evidence comes from a
+`record_type = 'conversation'` source record, the pair skips Layer 1 and is
+handed directly to Layer 2 (heuristic scoring). Conversation-extracted
+identifiers — even if they look like a verified government ID — are never
+sufficient on their own for an auto-merge.
+
 ### Layer 2: Heuristic Scoring
 
 Use for structured probabilistic adjudication when no hard rule applies.
@@ -160,10 +168,21 @@ in [profile-unifier-policy-decisions.md](./profile-unifier-policy-decisions.md).
 ### Contextual Factors
 
 - source trust level
+- source record type (`system` vs `conversation`)
+- extraction confidence (for `conversation` records)
 - verification status
 - identifier recency
 - whether the identifier was manually confirmed
 - whether the profile already has many linked source systems
+
+**Conversation-record handling**: when a feature is supported by a
+`conversation` source record, multiply its contribution by the record's
+`extraction_confidence` (0.0–1.0) and downgrade its effective trust tier by
+one level. A pair whose evidence is *exclusively* conversation-sourced
+cannot exceed the auto-merge threshold; the scoring engine must cap such
+pairs at the top of the review band. Two independent conversation records
+that corroborate the same identifier are treated as a single, slightly
+stronger conversation observation — never as deterministic confirmation.
 
 ## Example Feature Vector
 

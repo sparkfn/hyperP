@@ -19,6 +19,7 @@ from src.connectors.fundbox.schema import (
     log_legacy_profile_addresses,
     log_legacy_profiles,
 )
+from src.models import JsonValue
 
 
 class FundboxLegacyConnector(FundboxConnectorBase):
@@ -31,7 +32,7 @@ class FundboxLegacyConnector(FundboxConnectorBase):
     def get_source_key(self) -> str:
         return "fundbox:legacy"
 
-    def build_records(self, conn: Connection) -> Iterator[dict]:
+    def build_records(self, conn: Connection) -> Iterator[dict[str, JsonValue]]:
         primary_stmt = select(log_legacy_profiles).order_by(log_legacy_profiles.c.id)
         for chunk in self._chunked(
             self._stream(conn, primary_stmt), self._resolved_chunk_size()

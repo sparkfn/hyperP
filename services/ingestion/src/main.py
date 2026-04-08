@@ -8,6 +8,8 @@ import logging
 import sys
 from typing import TypedDict
 
+from neo4j import ManagedTransaction
+
 from src.config import get_settings
 from src.connectors.base import SourceConnector
 from src.connectors.fundbox import (
@@ -16,8 +18,6 @@ from src.connectors.fundbox import (
     FundboxLegacyConnector,
     FundboxMergedUsersConnector,
 )
-from neo4j import ManagedTransaction
-
 from src.graph import queries
 from src.graph.client import Neo4jClient
 from src.graph.schema_init import apply_schema
@@ -139,7 +139,9 @@ def run_ingestion(source_key: str, mode: str = "batch") -> IngestionSummary:
             )
             record = result.single()
             assert record is not None, "CREATE_INGEST_RUN must return a row"
-            return record["ingest_run_id"]
+            run_id_value = record["ingest_run_id"]
+            assert isinstance(run_id_value, str)
+            return run_id_value
 
         with client.session() as session:
             ingest_run_id = session.execute_write(_create_run)
@@ -147,9 +149,8 @@ def run_ingestion(source_key: str, mode: str = "batch") -> IngestionSummary:
 
         success = errors = skipped = 0
         for raw_record in connector.fetch_records():
-            envelope = SourceRecordEnvelope(
-                source_system=connector.get_source_key(),
-                **raw_record,
+            envelope = SourceRecordEnvelope.model_validate(
+                {"source_system": connector.get_source_key(), **raw_record},
             )
             result = pipeline.ingest(envelope, ingest_run_id=ingest_run_id)
             if result.skipped_duplicate:

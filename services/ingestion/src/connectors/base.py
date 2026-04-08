@@ -5,6 +5,8 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from collections.abc import Iterator
 
+from src.models import JsonValue
+
 
 class SourceConnector(ABC):
     """Contract that every ingestion connector must implement.
@@ -15,7 +17,7 @@ class SourceConnector(ABC):
     """
 
     @abstractmethod
-    def fetch_records(self) -> Iterator[dict]:
+    def fetch_records(self) -> Iterator[dict[str, JsonValue]]:
         """Yield raw source records one at a time.
 
         Each dictionary should contain at minimum:

@@ -11,6 +11,7 @@ from sqlalchemy.engine import Connection
 from src.config import get_settings
 from src.connectors.base import SourceConnector
 from src.connectors.fundbox.db import get_engine
+from src.models import JsonValue
 
 
 class FundboxConnectorBase(SourceConnector):
@@ -33,10 +34,10 @@ class FundboxConnectorBase(SourceConnector):
     def get_source_key(self) -> str:  # pragma: no cover - subclass contract
         raise NotImplementedError
 
-    def build_records(self, conn: Connection) -> Iterator[dict]:  # pragma: no cover
+    def build_records(self, conn: Connection) -> Iterator[dict[str, JsonValue]]:  # pragma: no cover
         raise NotImplementedError
 
-    def fetch_records(self) -> Iterator[dict]:
+    def fetch_records(self) -> Iterator[dict[str, JsonValue]]:
         # Two connections: one streams the primary entity, the other handles
         # sidecar batch lookups. This avoids interleaving queries on a single
         # streaming cursor (which pymysql/MySQL refuses).
@@ -47,7 +48,7 @@ class FundboxConnectorBase(SourceConnector):
             try:
                 yield from self.build_records(primary_conn)
             finally:
-                self._sidecar_conn = None  # type: ignore[assignment]
+                self._sidecar_conn = None
 
     # ---- helpers shared by subclasses --------------------------------------
 
@@ -57,8 +58,7 @@ class FundboxConnectorBase(SourceConnector):
     def _stream(self, conn: Connection, stmt: Select) -> Iterator[Any]:
         """Yield rows from a SELECT in server-side chunks (bounded memory)."""
         result = conn.execute(stmt).yield_per(self._resolved_chunk_size())
-        for row in result:
-            yield row
+        yield from result
 
     def _fetch_grouped(
         self,
