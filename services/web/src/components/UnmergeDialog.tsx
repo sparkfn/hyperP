@@ -5,38 +5,32 @@ import { useRouter } from "next/navigation";
 
 import Alert from "@mui/material/Alert";
 import Button from "@mui/material/Button";
-import Checkbox from "@mui/material/Checkbox";
 import Dialog from "@mui/material/Dialog";
 import DialogActions from "@mui/material/DialogActions";
 import DialogContent from "@mui/material/DialogContent";
 import DialogTitle from "@mui/material/DialogTitle";
-import FormControlLabel from "@mui/material/FormControlLabel";
 import Stack from "@mui/material/Stack";
 import TextField from "@mui/material/TextField";
+import Typography from "@mui/material/Typography";
 
 import { useToast } from "@/components/ToastProvider";
 import { BffError, bffFetch } from "@/lib/api-client";
-import type {
-  ManualMergeRequestBody,
-  ManualMergeResponseBody,
-} from "@/lib/api-types-person";
+import type { UnmergeRequestBody, UnmergeResponseBody } from "@/lib/api-types-person";
 
 interface Props {
   open: boolean;
-  fromPersonId: string;
+  mergeEventId: string;
+  summary?: string;
   onClose: () => void;
-  onMerged?: (response: ManualMergeResponseBody) => void;
 }
 
-export default function ManualMergeDialog({
+export default function UnmergeDialog({
   open,
-  fromPersonId,
+  mergeEventId,
+  summary,
   onClose,
-  onMerged,
 }: Props): ReactElement {
-  const [toPersonId, setToPersonId] = useState<string>("");
   const [reason, setReason] = useState<string>("");
-  const [recompute, setRecompute] = useState<boolean>(true);
   const [submitting, setSubmitting] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
   const router = useRouter();
@@ -46,26 +40,21 @@ export default function ManualMergeDialog({
     setSubmitting(true);
     setError(null);
     try {
-      const body: ManualMergeRequestBody = {
-        from_person_id: fromPersonId,
-        to_person_id: toPersonId.trim(),
+      const body: UnmergeRequestBody = {
+        merge_event_id: mergeEventId,
         reason: reason.trim(),
-        recompute_golden_profile: recompute,
       };
-      const result: ManualMergeResponseBody = await bffFetch<ManualMergeResponseBody>(
-        "/api/persons/manual-merge",
-        {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify(body),
-        },
-      );
-      if (onMerged) onMerged(result);
-      showToast(`Merged into ${result.to_person_id}`, "success");
+      const result: UnmergeResponseBody = await bffFetch<UnmergeResponseBody>("/api/persons/unmerge", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      showToast(`Unmerged — survivor ${result.survivor_person_id}`, "success");
       onClose();
+      setReason("");
       router.refresh();
     } catch (err: unknown) {
-      const message: string = err instanceof BffError ? err.message : "Merge failed.";
+      const message: string = err instanceof BffError ? err.message : "Unmerge failed.";
       setError(message);
       showToast(message, "error");
     } finally {
@@ -73,21 +62,23 @@ export default function ManualMergeDialog({
     }
   };
 
-  const canSubmit: boolean = toPersonId.trim().length > 0 && reason.trim().length > 0 && !submitting;
+  const canSubmit: boolean = reason.trim().length > 0 && !submitting;
 
   return (
     <Dialog open={open} onClose={onClose} fullWidth maxWidth="sm">
-      <DialogTitle>Merge into another person</DialogTitle>
+      <DialogTitle>Unmerge</DialogTitle>
       <DialogContent>
         <Stack spacing={2} sx={{ mt: 1 }}>
           {error !== null ? <Alert severity="error">{error}</Alert> : null}
-          <TextField
-            label="Target person id"
-            value={toPersonId}
-            onChange={(e) => setToPersonId(e.target.value)}
-            fullWidth
-            required
-          />
+          <Typography variant="body2" color="text.secondary">
+            Reverses the merge recorded by event <code>{mergeEventId}</code>. The absorbed person
+            will be restored as a separate Person node. This action is audited.
+          </Typography>
+          {summary !== undefined ? (
+            <Typography variant="caption" color="text.secondary">
+              {summary}
+            </Typography>
+          ) : null}
           <TextField
             label="Reason"
             value={reason}
@@ -96,15 +87,7 @@ export default function ManualMergeDialog({
             minRows={2}
             fullWidth
             required
-          />
-          <FormControlLabel
-            control={
-              <Checkbox
-                checked={recompute}
-                onChange={(e) => setRecompute(e.target.checked)}
-              />
-            }
-            label="Recompute golden profile after merge"
+            helperText="Required. Visible in the audit log."
           />
         </Stack>
       </DialogContent>
@@ -112,8 +95,8 @@ export default function ManualMergeDialog({
         <Button onClick={onClose} disabled={submitting}>
           Cancel
         </Button>
-        <Button onClick={handleSubmit} variant="contained" disabled={!canSubmit}>
-          Merge
+        <Button onClick={handleSubmit} variant="contained" color="warning" disabled={!canSubmit}>
+          Unmerge
         </Button>
       </DialogActions>
     </Dialog>

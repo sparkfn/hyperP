@@ -14,6 +14,7 @@ import Typography from "@mui/material/Typography";
 import { ThemeProvider } from "@mui/material/styles";
 
 import HealthIndicator from "@/components/HealthIndicator";
+import { ToastProvider } from "@/components/ToastProvider";
 import theme from "@/theme";
 
 export const metadata: Metadata = {
@@ -32,40 +33,42 @@ export default function RootLayout({ children }: RootLayoutProps): ReactElement 
         <AppRouterCacheProvider>
           <ThemeProvider theme={theme}>
             <CssBaseline />
-            <AppBar position="static" color="primary" elevation={0}>
-              <Toolbar>
-                <Typography variant="h6" component="div" sx={{ fontWeight: 600 }}>
-                  HyperP
-                </Typography>
-                <Typography variant="body2" sx={{ ml: 2, opacity: 0.85 }}>
-                  Profile Unifier
-                </Typography>
-                <Box sx={{ flexGrow: 1 }} />
-                <Stack direction="row" spacing={1}>
-                  <Button component={Link} href="/" color="inherit" size="small">
-                    Search
-                  </Button>
-                  <Button component={Link} href="/review" color="inherit" size="small">
-                    Review Queue
-                  </Button>
-                  <Button component={Link} href="/ingestion" color="inherit" size="small">
-                    Ingestion
-                  </Button>
-                  <Button component={Link} href="/events" color="inherit" size="small">
-                    Events
-                  </Button>
-                  <Button component={Link} href="/admin" color="inherit" size="small">
-                    Admin
-                  </Button>
-                  <Box sx={{ ml: 1, display: "flex", alignItems: "center" }}>
-                    <HealthIndicator />
-                  </Box>
-                </Stack>
-              </Toolbar>
-            </AppBar>
-            <Container maxWidth="lg" sx={{ py: 4 }}>
-              <Box>{children}</Box>
-            </Container>
+            <ToastProvider>
+              <AppBar position="static" color="primary" elevation={0}>
+                <Toolbar>
+                  <Typography variant="h6" component="div" sx={{ fontWeight: 600 }}>
+                    HyperP
+                  </Typography>
+                  <Typography variant="body2" sx={{ ml: 2, opacity: 0.85 }}>
+                    Profile Unifier
+                  </Typography>
+                  <Box sx={{ flexGrow: 1 }} />
+                  <Stack direction="row" spacing={1}>
+                    <Button component={Link} href="/" color="inherit" size="small">
+                      Search
+                    </Button>
+                    <Button component={Link} href="/review" color="inherit" size="small">
+                      Review Queue
+                    </Button>
+                    <Button component={Link} href="/ingestion" color="inherit" size="small">
+                      Ingestion
+                    </Button>
+                    <Button component={Link} href="/events" color="inherit" size="small">
+                      Events
+                    </Button>
+                    <Button component={Link} href="/admin" color="inherit" size="small">
+                      Admin
+                    </Button>
+                    <Box sx={{ ml: 1, display: "flex", alignItems: "center" }}>
+                      <HealthIndicator />
+                    </Box>
+                  </Stack>
+                </Toolbar>
+              </AppBar>
+              <Container maxWidth="lg" sx={{ py: 4 }}>
+                <Box>{children}</Box>
+              </Container>
+            </ToastProvider>
           </ThemeProvider>
         </AppRouterCacheProvider>
       </body>

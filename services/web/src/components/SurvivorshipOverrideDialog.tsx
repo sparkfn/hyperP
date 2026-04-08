@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, type ReactElement } from "react";
+import { useRouter } from "next/navigation";
 
 import Alert from "@mui/material/Alert";
 import Button from "@mui/material/Button";
@@ -12,6 +13,7 @@ import MenuItem from "@mui/material/MenuItem";
 import Stack from "@mui/material/Stack";
 import TextField from "@mui/material/TextField";
 
+import { useToast } from "@/components/ToastProvider";
 import { BffError, bffFetch } from "@/lib/api-client";
 import type {
   SurvivorshipOverrideRequestBody,
@@ -44,6 +46,8 @@ export default function SurvivorshipOverrideDialog({
   const [reason, setReason] = useState<string>("");
   const [submitting, setSubmitting] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
+  const router = useRouter();
+  const { showToast } = useToast();
 
   const handleSubmit = async (): Promise<void> => {
     setSubmitting(true);
@@ -64,9 +68,13 @@ export default function SurvivorshipOverrideDialog({
           },
         );
       if (onSaved) onSaved(result);
+      showToast(`Override saved for ${result.attribute_name}`, "success");
       onClose();
+      router.refresh();
     } catch (err: unknown) {
-      setError(err instanceof BffError ? err.message : "Override failed.");
+      const message: string = err instanceof BffError ? err.message : "Override failed.";
+      setError(message);
+      showToast(message, "error");
     } finally {
       setSubmitting(false);
     }

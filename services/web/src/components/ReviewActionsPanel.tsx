@@ -12,6 +12,7 @@ import Stack from "@mui/material/Stack";
 import TextField from "@mui/material/TextField";
 import Typography from "@mui/material/Typography";
 
+import { useToast } from "@/components/ToastProvider";
 import { BffError, bffFetch } from "@/lib/api-client";
 import {
   REVIEW_ACTION_TYPES,
@@ -38,6 +39,7 @@ export default function ReviewActionsPanel({
   assignedTo,
 }: Props): ReactElement {
   const router = useRouter();
+  const { showToast } = useToast();
 
   const [assignee, setAssignee] = useState<string>(assignedTo ?? "");
   const [assignBusy, setAssignBusy] = useState<boolean>(false);
@@ -71,9 +73,13 @@ export default function ReviewActionsPanel({
         },
       );
       setSuccess(`Assigned to ${result.assigned_to}.`);
+      showToast(`Assigned to ${result.assigned_to}`, "success");
       router.refresh();
     } catch (err: unknown) {
-      setError(err instanceof BffError || err instanceof Error ? err.message : "Assign failed.");
+      const message: string =
+        err instanceof BffError || err instanceof Error ? err.message : "Assign failed.";
+      setError(message);
+      showToast(message, "error");
     } finally {
       setAssignBusy(false);
     }
@@ -99,16 +105,19 @@ export default function ReviewActionsPanel({
           body: JSON.stringify(body),
         },
       );
-      setSuccess(
-        `Action submitted. New state: ${result.queue_state}${
-          result.resolution !== null ? ` (${result.resolution})` : ""
-        }.`,
-      );
+      const summary: string = `Action submitted. New state: ${result.queue_state}${
+        result.resolution !== null ? ` (${result.resolution})` : ""
+      }.`;
+      setSuccess(summary);
+      showToast(summary, "success");
       setNotes("");
       setFollowUpAt("");
       router.refresh();
     } catch (err: unknown) {
-      setError(err instanceof BffError || err instanceof Error ? err.message : "Action failed.");
+      const message: string =
+        err instanceof BffError || err instanceof Error ? err.message : "Action failed.";
+      setError(message);
+      showToast(message, "error");
     } finally {
       setActionBusy(false);
     }
