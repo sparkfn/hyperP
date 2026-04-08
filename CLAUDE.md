@@ -79,3 +79,24 @@ These rules apply to all Python code in the repository (`services/api/`, `servic
 - **Project standards**: follow PEP 8, PEP 257 (docstrings on public APIs), and PEP 484/695 typing. Format with `ruff format`, lint with `ruff check`, and prefer `from __future__ import annotations` only when needed for forward refs.
 - **FastAPI specifics**: request and response bodies must be Pydantic models (not raw `dict`). Path/query parameters must be typed. Dependencies (`Depends(...)`) must have annotated return types. Routers should be split per resource and registered in a single `app` factory.
 - **Package manager — uv**: every Python service uses [uv](https://github.com/astral-sh/uv) for dependency management. Each service has its own `pyproject.toml` + committed `uv.lock`. Use `uv add` / `uv remove` (never `pip install`), `uv sync` to install, and `uv run <cmd>` to execute. Do not introduce `requirements.txt`, `poetry.lock`, `Pipfile`, or any other manager's metadata. Dockerfiles install uv from `ghcr.io/astral-sh/uv` and use `uv sync --frozen --no-dev`.
+
+## TypeScript / Next.js Coding Standards
+
+These rules apply to all TypeScript code in the repository (`services/web/`, etc.):
+
+- **Strict TypeScript**: `tsconfig.json` must enable `strict`, `noUncheckedIndexedAccess`, `noImplicitOverride`, and `noFallthroughCasesInSwitch`. Code must compile clean under `tsc --noEmit`.
+- **No `any`, no unsafe casts**: never use `any`, `as any`, or `as unknown as T`. Parse external data (fetch responses, `JSON.parse`, route params) through type guards or schema validators (e.g. zod) before narrowing. A bare `as` cast on an `unknown` value is acceptable only when immediately preceded by a type guard.
+- **Explicit return types**: every exported function, React component, route handler, and Server Action must declare its return type. Use `ReactElement` (not `React.JSX.Element` or implicit) for component returns; `Promise<NextResponse>` for route handlers; `Promise<void>` for handlers with no return value.
+- **Discriminated unions over enums**: prefer `type X = "a" | "b"` plus a type guard (`isX`) over TS `enum`. Define option lists as `readonly` tuples and derive types from them.
+- **No `Record<string, unknown>` escape hatches**: model payloads with `interface`s mirroring the API contract in `src/lib/api-types.ts`. Hand-mirroring is the interim approach; long term, generate types from `docs/profile-unifier-openapi-3.1.yaml` via `openapi-typescript`.
+- **Server / client boundary discipline** (App Router):
+  - Server-only modules (`src/lib/api-server.ts`, anything reading secret env vars, anything calling FastAPI directly) **must** import `"server-only"` at the top.
+  - Client components must declare `"use client"` on the first line and **must not** import server-only modules. Browser code talks to the BFF via `src/lib/api-client.ts`.
+  - Secrets (internal service URLs, tokens, DB credentials) are server-side env vars **without** the `NEXT_PUBLIC_` prefix. Anything `NEXT_PUBLIC_*` is shipped to the browser — treat it as public.
+- **BFF pattern is mandatory**: the browser must never call FastAPI directly. All upstream traffic flows through Next.js Route Handlers under `src/app/api/*`, which use `proxyToApi` from `src/lib/proxy.ts`. This keeps the API URL, future auth tokens, and CORS surface server-side.
+- **Route handler shape**: each route handler exports typed `GET`/`POST`/etc. returning `Promise<NextResponse>`, declares `export const dynamic = "force-dynamic"` when it must not be cached, and types Next 15 async params as `{ params: Promise<{ ... }> }`. Keep handlers thin — delegate to `proxyToApi` or a service module.
+- **Data fetching in Server Components**: prefer Server Components for read-only pages and call `apiFetch` directly (no client round-trip). Parallelize independent fetches with `Promise.all`. Translate upstream 404s to `notFound()`.
+- **Component / module size**: keep React components under ~150 lines and modules under ~300 lines. Extract subcomponents (e.g. `PersonHeader`, `ConnectionsCard`) rather than letting a single page balloon. Extract pure helpers (`statusColor`, `buildSearchParams`) out of components.
+- **MUI usage**: import from per-component paths (`@mui/material/Button`) not the barrel (`@mui/material`) to keep bundles tight. Use the `sx` prop for one-off styling, the theme for shared tokens. Wrap the App Router with `AppRouterCacheProvider` from `@mui/material-nextjs/v15-appRouter` exactly once in `layout.tsx`.
+- **Project standards**: format with Prettier, lint with `next lint`. Imports ordered: node/external → `next/*` and `@mui/*` → `@/*` aliases → relative. Use the `@/` path alias instead of long relative paths.
+- **Package manager — npm**: `services/web/` uses npm. Always use `npm install` (locally and in Docker) — do not use `npm ci`. Do not introduce `pnpm-lock.yaml` or `yarn.lock`.

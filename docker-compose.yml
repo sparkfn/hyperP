@@ -66,6 +66,21 @@ services:
       neo4j:
         condition: service_healthy
 
+  web:
+    build:
+      context: .
+      dockerfile: services/web/Dockerfile
+    ports:
+      - "3001:3001"
+    environment:
+      # Server-side only — Next.js Route Handlers proxy to FastAPI on the
+      # docker network using the service name.
+      API_BASE_URL: ${API_BASE_URL:-http://api:3000/v1}
+      NODE_ENV: production
+      PORT: 3001
+    depends_on:
+      - api
+
   worker:
     build:
       context: .

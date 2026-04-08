@@ -116,6 +116,8 @@ CALL db.index.fulltext.queryNodes('person_name_search', $query) YIELD node AS p,
 WHERE p.status <> 'merged'
   AND ($status IS NULL OR p.status = $status)
 OPTIONAL MATCH (addr:Address {address_id: p.preferred_address_id})
+OPTIONAL MATCH (sr:SourceRecord)-[:LINKED_TO]->(p)
+WITH p, addr, score, count(sr) AS source_record_count
 RETURN p {
   .person_id, .status, .is_high_value, .is_high_risk,
   .preferred_full_name, .preferred_phone, .preferred_email, .preferred_dob,
@@ -126,6 +128,7 @@ addr {
   .address_id, .unit_number, .street_number, .street_name,
   .city, .postal_code, .country_code, .normalized_full
 } AS preferred_address,
+source_record_count,
 score
 ORDER BY score DESC
 SKIP $skip LIMIT $limit
