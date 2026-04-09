@@ -1,0 +1,121 @@
+# Repo-root uv workspace. Each Python service under services/ is a workspace
+# member with its own pyproject.toml. The lockfile (uv.lock) lives here so all
+# members resolve against the same dependency versions.
+#
+# Usage:
+#   uv sync                           # install everything
+#   uv sync --package profile-unifier-api
+#   uv run --package profile-unifier-api python -m src.main
+#   uv add --package profile-unifier-api <pkg>
+
+[project]
+name = "hyperp-workspace"
+version = "0.0.0"
+description = "HyperP profile-unifier monorepo workspace root"
+requires-python = ">=3.12"
+# The root project itself ships no code; only dev tooling lives here.
+dependencies = []
+
+[dependency-groups]
+dev = [
+    "ruff>=0.4,<1",
+    "mypy>=1.10,<2",
+    "pytest>=8.0,<9",
+]
+
+[tool.uv]
+package = false
+
+[tool.uv.workspace]
+members = ["services/api", "services/ingestion"]
+
+# --- Shared tool config ----------------------------------------------------
+# Both services inherit these settings; per-service overrides go in the
+# member pyproject.toml under [tool.<name>].
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B", "ANN", "RET"]
+ignore = ["ANN401"]
+
+[tool.ruff.lint.flake8-bugbear]
+# FastAPI's idiomatic pattern uses Query/Depends/Path/Body/Header/Cookie
+# in argument defaults — these are factory calls, not mutable state.
+extend-immutable-calls = [
+    "fastapi.Query",
+    "fastapi.Depends",
+    "fastapi.Path",
+    "fastapi.Body",
+    "fastapi.Header",
+    "fastapi.Cookie",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Embedded multi-line Cypher constants are easier to read at full width
+# than artificially wrapped. Splitting collect()/RETURN clauses across
+# Python source lines hurts query readability without buying anything.
+"**/graph/queries/*.py" = ["E501"]
+
+[tool.mypy]
+strict = true
+python_version = "3.12"
+disallow_any_explicit = true
+disallow_any_generics = true
+warn_unused_ignores = true
+
+# --- Per-module mypy overrides --------------------------------------------
+# Modules below sit at I/O boundaries where the third-party library returns
+# inherently dynamic values (SQLAlchemy `Row`, Neo4j `Record`). We allow
+# `Any` in those modules so the boundary collapses to typed values for the
+# rest of the codebase, instead of leaking through every caller.
+
+[[tool.mypy.overrides]]
+module = [
+    # Pydantic model modules — pydantic v2's BaseModel metaclass surfaces
+    # `Any` in subclass bodies under `disallow_any_explicit`. The Any is in
+    # the library's type stubs, not our code; relaxing here keeps the rest
+    # of the codebase strict.
+    "src.models",
+    "src.connectors.fundbox.base",
+    "src.connectors.fundbox.builders",
+    "src.connectors.fundbox.users",
+    "src.connectors.fundbox.legacy",
+    "src.connectors.fundbox.merged",
+    "src.connectors.fundbox.contacts",
+    "src.connectors.fundbox.junk",
+    "src.connectors.fundbox.schema",
+    "src.connectors.fundbox.db",
+    "src.graph.client",
+    "src.golden_profile",
+    "src.config",
+    "src.celery_app",
+    "src.tasks",
+    # API service: pydantic-heavy modules + FastAPI route modules where the
+    # framework injects `Any` through decorators and path params.
+    "src.types",
+    "src.http_utils",
+    "src.routes.*",
+    "src.graph.client",
+    "src.graph.converters",
+]
+disallow_any_explicit = false
+disallow_any_generics = false
+disallow_untyped_calls = false
+disallow_untyped_decorators = false
+warn_return_any = false
+
+# Untyped third-party libraries.
+[[tool.mypy.overrides]]
+module = [
+    "celery.*",
+    "redis.*",
+    "neo4j.*",
+    "sqlalchemy.*",
+]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["services/api/tests", "services/ingestion/tests"]

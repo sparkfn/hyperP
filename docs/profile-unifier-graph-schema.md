@@ -49,6 +49,7 @@ native datetime and list types.
 
 (Person)-[:MERGED_INTO]->(Person)
 (Person)-[:NO_MATCH_LOCK {props}]->(Person)
+(Person)-[:KNOWS {props}]->(Person)
 (Person)-[:HAS_FACT {props}]->(SourceRecord)
 
 (MatchDecision)-[:ABOUT_LEFT]--->( Person | SourceRecord )
@@ -195,6 +196,7 @@ CREATE (sr:SourceRecord {
   source_record_pk: randomUUID(),
   source_record_id: '12345',
   source_record_version: null,
+  record_type: 'system',           // system | conversation
   link_status: 'pending_review',   // linked | pending_review | rejected | suppressed
   observed_at: datetime(),
   ingested_at: datetime(),
@@ -202,9 +204,28 @@ CREATE (sr:SourceRecord {
   raw_payload: {},                 // native map, not a JSON string
   normalized_payload: {},
   metadata: {},
+  extraction_confidence: null,     // 0.0–1.0; required when record_type='conversation', null for 'system'
+  extraction_method: null,         // e.g. 'llm_extractor_v1', 'regex_v2'; null for 'system'
+  conversation_ref: null,          // map: {channel, thread_id, message_id, ...} for 'conversation'
   retention_expires_at: null
 })
 ```
+
+`record_type` distinguishes the provenance of the record's identifiers and
+attributes:
+
+- **`system`** — extracted deterministically from another service's structured
+  system of record (e.g. Bitrix CRM row, POS transaction, Fundbox `users`
+  table). Identifiers and attributes are taken at face value and may participate
+  in deterministic merge rules.
+- **`conversation`** — extracted heuristically from free-text chat or voice
+  transcripts. Identifiers and attributes are model-extracted and inherently
+  noisy. These records are **never eligible for deterministic auto-merge**
+  (Layer 1) — they always flow through heuristic scoring (Layer 2) and, if
+  ambiguous, human review. Trust-tier resolution should treat conversation
+  facts as a downgraded tier regardless of source-system trust, and the
+  matching engine should multiply per-feature confidence by
+  `extraction_confidence`.
 
 ### IngestRun
 
@@ -337,6 +358,7 @@ this as a closed enum.
 | `FROM_SOURCE` | SourceRecord / IngestRun | SourceSystem | — | Provenance. |
 | `PART_OF_RUN` | SourceRecord | IngestRun | — | Groups records by ingestion batch. |
 | `HAS_FACT` | Person | — (inline) | see below | Attribute facts (for non-address, non-identifier attributes: name, DOB, etc.). |
+| `KNOWS` | Person (declarer) | Person (contact) | `relationship_label`, `relationship_category`, `source_system_key`, `source_record_pk`, `declared_by_person_id`, `status`, `approved_at`, `first_seen_at`, `last_seen_at`, `last_confirmed_at` | Declared social tie (e.g. emergency contact, next-of-kin, referrer). Never used as identity-resolution evidence. |
 
 ### Attribute Facts
 
@@ -426,6 +448,63 @@ SET p.survivorship_overrides = {
 Why on Person: overrides are per-person per-field and only read during golden
 profile recomputation. They don't need independent querying.
 
+### Social Person-to-Person (`KNOWS`)
+
+A typed, directed Person-to-Person relationship that captures a declared social
+tie between two persons — mirroring the Fundbox `contacts` table, where one
+user lists another individual as an emergency / next-of-kin / referrer
+contact. Unlike implicit links through shared Identifier or Address nodes,
+`KNOWS` is an *explicit declaration* sourced from a system of record.
+
+```cypher
+CREATE (a:Person)-[:KNOWS {
+  knows_id: randomUUID(),
+  relationship_label: 'mother',     // free-text label as declared by source (e.g. 'mother', 'spouse', 'friend', 'employer')
+  relationship_category: 'family',  // family | household | professional | referral | other
+  source_system_key: 'fundbox',
+  source_record_pk: '<uuid>',       // SourceRecord that declared the relationship
+  source_table: 'contacts',         // optional, for relational sources
+  declared_by_person_id: '<uuid>',  // which side of the pair declared it (the referrer)
+  status: 'active',                 // active | unapproved | superseded | revoked
+  approved_at: null,
+  first_seen_at: datetime(),
+  last_seen_at: datetime(),
+  last_confirmed_at: datetime(),
+  created_at: datetime(),
+  updated_at: datetime()
+}]->(b:Person)
+```
+
+Notes:
+
+- **Directional**: `(referrer)-[:KNOWS]->(contact)`. The relationship is
+  asymmetric because the declaration itself is asymmetric — A listed B as a
+  contact, not the other way around. Mutual relationships are represented by
+  two `KNOWS` edges, one in each direction.
+- **Resolution timing**: when a `contacts`-style row is ingested, the listed
+  contact becomes its own `SourceRecord` and is resolved to a Person through
+  the normal matching pipeline. The `KNOWS` edge is only created once both
+  endpoints have resolved Persons. Until then, the pending link is held on the
+  contact's SourceRecord (`raw_payload.linked_to_source_record_id` per the
+  Fundbox connector convention).
+- **Does not affect identity resolution**: `KNOWS` is never used as evidence
+  by the match engine. It is a social/relationship signal only, consumed by
+  graph traversal queries (contact tracing, household detection, referral
+  graphs).
+- **Unapproved contacts**: Fundbox `contacts.status` and `approved_at` map to
+  the relationship's `status` and `approved_at`. Unapproved declarations
+  remain on the graph but are filterable by status.
+- **Survives merge**: when either endpoint Person is merged into a survivor,
+  `KNOWS` edges are rewired to the survivor (same pattern as `IDENTIFIED_BY`).
+- **Deduplication**: a `MERGE` on
+  `(declared_by_person_id, target_person_id, source_system_key, source_table)`
+  prevents duplicate edges from re-ingestion of the same source row.
+
+`KNOWS` supersedes the previously post-MVP `FAMILY_OF` / `WORKS_WITH` /
+`SAME_HOUSEHOLD` proposal: those semantics are now captured by
+`relationship_category` on a single edge type, which keeps traversal queries
+uniform.
+
 ### Aliases
 
 ```cypher
@@ -440,27 +519,13 @@ Self-relationship on Person. Only needed during migration.
 
 ## Planned Extensions (Post-MVP)
 
-### Explicit Person-to-Person Relationships
+### Additional Person-to-Person Relationship Types
 
-Beyond shared Identifier nodes, the graph will support typed, directed
-relationships between persons for relationship intelligence:
-
-```cypher
-CREATE (a:Person)-[:REFERRED_BY {
-  source_system_key: 'loyalty_app',
-  confidence: 1.0,
-  declared_by: 'customer',
-  created_at: datetime()
-}]->(b:Person)
-```
-
-Planned types: `REFERRED_BY`, `WORKS_WITH`, `FAMILY_OF`, `SAME_HOUSEHOLD`,
-`SAME_ACCOUNT`. These are never auto-created by the matching engine — they
-require source-system declarations or manual actions. They do not affect
-identity resolution but participate in graph traversal queries.
-
-No schema migration required — these are new relationship types on existing
-Person nodes.
+The MVP `KNOWS` edge covers declared social ties. Future relationship-
+intelligence work may add narrower edge types (e.g. `REFERRED_BY`,
+`SAME_ACCOUNT`) when a use case needs queryability that
+`relationship_category` cannot satisfy. None of these will be auto-created
+by the matching engine.
 
 ### Interaction Nodes
 
@@ -775,6 +840,14 @@ CREATE (survivor)-[:IDENTIFIED_BY { ... copy props ... }]->(id)
 MATCH (absorbed)-[old_addr:LIVES_AT]->(addr:Address)
 DELETE old_addr
 CREATE (survivor)-[:LIVES_AT { ... copy props ... }]->(addr)
+
+// 3c. Rewire KNOWS edges (both directions)
+MATCH (absorbed)-[old_k:KNOWS]->(other:Person)
+DELETE old_k
+CREATE (survivor)-[:KNOWS { ... copy props ... }]->(other)
+MATCH (other:Person)-[old_k:KNOWS]->(absorbed)
+DELETE old_k
+CREATE (other)-[:KNOWS { ... copy props ... }]->(survivor)
 
 // 4. Mark absorbed
 SET absorbed.status = 'merged', absorbed.updated_at = datetime()

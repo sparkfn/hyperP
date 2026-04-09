@@ -3,10 +3,16 @@
 from __future__ import annotations
 
 from enum import StrEnum
-from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
+from pydantic.types import JsonValue
 
+# Re-export pydantic's recursive ``JsonValue`` (str | int | float | bool |
+# None | list[JsonValue] | dict[str, JsonValue]) so the rest of the codebase
+# can import it from one place. Using pydantic's alias rather than rolling
+# our own avoids PEP 695 / pydantic schema-resolution friction with custom
+# recursive ``type`` statements.
+__all__ = ["JsonValue"]
 
 # ---------------------------------------------------------------------------
 # Enums
@@ -37,6 +43,18 @@ class EngineType(StrEnum):
     MANUAL = "manual"
 
 
+class RecordType(StrEnum):
+    """Provenance class of a SourceRecord.
+
+    ``system`` — deterministic extract from another service's system of record.
+    ``conversation`` — heuristic extract from chat / voice transcripts.
+    Conversation records are never eligible for deterministic auto-merge.
+    """
+
+    SYSTEM = "system"
+    CONVERSATION = "conversation"
+
+
 # ---------------------------------------------------------------------------
 # Source record envelope (common contract from architecture doc)
 # ---------------------------------------------------------------------------
@@ -59,12 +77,51 @@ class SourceRecordEnvelope(BaseModel):
     source_system: str
     source_record_id: str
     source_record_version: str | None = None
+    record_type: RecordType = RecordType.SYSTEM
     ingest_type: str = "batch"
     observed_at: str  # ISO-8601 datetime string
     record_hash: str
     identifiers: list[RawIdentifier] = Field(default_factory=list)
-    attributes: dict[str, Any] = Field(default_factory=dict)
-    raw_payload: dict[str, Any] = Field(default_factory=dict)
+    attributes: dict[str, JsonValue] = Field(default_factory=dict)
+    raw_payload: dict[str, JsonValue] = Field(default_factory=dict)
+    # Conversation-only provenance fields. Required when record_type ==
+    # CONVERSATION; ignored otherwise.
+    extraction_confidence: float | None = None
+    extraction_method: str | None = None
+    conversation_ref: dict[str, JsonValue] | None = None
+
+    @model_validator(mode="after")
+    def _check_record_type_invariants(self) -> SourceRecordEnvelope:
+        """Conversation records must declare extraction provenance; system records must not.
+
+        - ``conversation`` envelopes require ``extraction_confidence`` (in
+          ``[0.0, 1.0]``) and ``extraction_method``.
+        - ``system`` envelopes must leave all three conversation-only fields
+          unset, so that downstream code can rely on them being ``None``
+          whenever ``record_type == SYSTEM``.
+        """
+        if self.record_type == RecordType.CONVERSATION:
+            if self.extraction_confidence is None or self.extraction_method is None:
+                raise ValueError(
+                    "conversation source records require extraction_confidence "
+                    "and extraction_method"
+                )
+            if not 0.0 <= self.extraction_confidence <= 1.0:
+                raise ValueError(
+                    f"extraction_confidence must be in [0.0, 1.0], "
+                    f"got {self.extraction_confidence}"
+                )
+        else:
+            if (
+                self.extraction_confidence is not None
+                or self.extraction_method is not None
+                or self.conversation_ref is not None
+            ):
+                raise ValueError(
+                    "extraction_confidence / extraction_method / conversation_ref "
+                    "are only valid on record_type='conversation'"
+                )
+        return self
 
 
 # ---------------------------------------------------------------------------
@@ -124,7 +181,7 @@ class MatchResult(BaseModel):
     engine_version: str = "v0.1.0"
     matched_person_id: str | None = None
     is_new_person: bool = False
-    feature_snapshot: dict[str, Any] = Field(default_factory=dict)
+    feature_snapshot: dict[str, JsonValue] = Field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------

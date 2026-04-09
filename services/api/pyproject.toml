@@ -1,0 +1,22 @@
+[project]
+name = "profile-unifier-api"
+version = "0.1.0"
+description = "Profile unifier HTTP API service (FastAPI + Neo4j)"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115,<1",
+    "uvicorn[standard]>=0.30,<1",
+    "neo4j>=5.20,<6",
+    "pydantic>=2.6,<3",
+    "pydantic-settings>=2.2,<3",
+    "python-dotenv>=1.0,<2",
+]
+
+[tool.uv]
+# Virtual workspace member: uv locks our deps but does not build/install the
+# project itself. This avoids a collision with services/ingestion, which also
+# uses a top-level `src` package. Source is imported by setting PYTHONPATH or
+# running from the service directory.
+package = false
+
+# Shared ruff/mypy/pytest config inherited from the workspace root pyproject.toml.

@@ -48,6 +48,9 @@ CREATE INDEX idx_address_composite IF NOT EXISTS
 CREATE INDEX idx_source_record_source IF NOT EXISTS
   FOR (sr:SourceRecord) ON (sr.source_record_id);
 
+CREATE INDEX idx_source_record_type IF NOT EXISTS
+  FOR (sr:SourceRecord) ON (sr.record_type);
+
 // Review queue
 CREATE INDEX idx_review_case_queue IF NOT EXISTS
   FOR (rc:ReviewCase) ON (rc.queue_state, rc.priority);
