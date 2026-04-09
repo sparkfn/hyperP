@@ -134,6 +134,17 @@ RETURN addr.address_id AS address_id,
        rel.last_confirmed_at AS last_confirmed_at
 """
 
+FIND_BIRTHDAY_PERSONS = """
+MATCH (p:Person)
+WHERE p.status = 'active'
+  AND p.preferred_dob IS NOT NULL
+  AND p.preferred_phone IS NOT NULL
+  AND substring(p.preferred_dob, 5, 5) = $mmdd
+RETURN p.person_id          AS person_id,
+       p.preferred_phone    AS phone,
+       p.preferred_full_name AS full_name
+"""
+
 UPDATE_GOLDEN_PROFILE = """
 MATCH (p:Person {person_id: $person_id})
 SET p.preferred_full_name = $preferred_full_name,

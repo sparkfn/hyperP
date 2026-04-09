@@ -20,6 +20,7 @@ import redis
 from celery import Task
 from celery.exceptions import Reject
 
+from src.birthday import BirthdayRunSummary, run_birthday_greetings
 from src.celery_app import celery_app
 from src.config import get_settings
 from src.main import IngestionSummary, run_ingestion, setup_logging
@@ -124,4 +125,20 @@ def run_ingestion_task(self: Task, source_key: str, mode: str = "batch") -> Inge
     except Exception as exc:
         logger.exception("Ingestion task failed for %s", source_key)
         # Don't retry on real errors — surface them to the caller.
+        raise Reject(str(exc), requeue=False) from exc
+
+
+@celery_app.task(
+    name="src.tasks.send_birthday_messages_task",
+    bind=True,
+    max_retries=0,
+)
+def send_birthday_messages_task(self: Task) -> BirthdayRunSummary:
+    """Send a birthday WhatsApp message to every person whose DOB is today."""
+    settings = get_settings()
+    setup_logging(settings.log_level)
+    try:
+        return run_birthday_greetings()
+    except Exception as exc:
+        logger.exception("Birthday greeting task failed")
         raise Reject(str(exc), requeue=False) from exc

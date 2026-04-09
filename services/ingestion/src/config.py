@@ -48,6 +48,28 @@ class Settings(BaseSettings):
     # Streaming chunk size for connector queries (rows per fetch).
     fundbox_chunk_size: int = 1000
 
+    # WhatsApp API (chrishubert/whatsapp-api compatible) ----------------------
+    # Multi-tenant WhatsApp Web REST API. Endpoints are session-scoped via
+    # `sessionId` and authenticated with a static API key header.
+    whatsapp_api_base_url: str = "https://whatsapi.ada.asia"
+    whatsapp_api_key: str = ""
+    whatsapp_api_default_session: str = "default"
+    whatsapp_api_timeout_seconds: float = 30.0
+
+    # Birthday greeting task -------------------------------------------------
+    # Daily Celery beat job that sends a WhatsApp birthday message to every
+    # active person whose `preferred_dob` (MM-DD) matches today. Disabled by
+    # default — flip ``BIRTHDAY_TASK_ENABLED=true`` to schedule it.
+    birthday_task_enabled: bool = False
+    birthday_task_hour: int = 8  # local hour-of-day, interpreted in TZ below
+    birthday_task_minute: int = 0
+    # The WhatsApp session to send from. In chrishubert/whatsapp-api the
+    # session name typically encodes the source phone number / tenant.
+    whatsapp_source_number: str = ""
+    # Message template. ``{name}`` is replaced with the person's preferred
+    # full name (or "there" if unknown).
+    birthday_message_template: str = "Happy birthday, {name}! 🎉"
+
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:

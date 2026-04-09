@@ -50,13 +50,26 @@ def _parse_cron(expr: str) -> crontab | None:
     )
 
 
-# Beat schedule — only registered if a cron expression is configured.
+# Beat schedule — entries are only registered when their feature flag is on.
+_beat_schedule: dict[str, dict[str, object]] = {}
+
 _fundbox_cron = _parse_cron(settings.fundbox_ingest_cron)
 if _fundbox_cron is not None:
-    celery_app.conf.beat_schedule = {
-        "fundbox-ingest": {
-            "task": "src.tasks.run_ingestion_task",
-            "schedule": _fundbox_cron,
-            "args": ("fundbox", "batch"),
-        },
+    _beat_schedule["fundbox-ingest"] = {
+        "task": "src.tasks.run_ingestion_task",
+        "schedule": _fundbox_cron,
+        "args": ("fundbox", "batch"),
     }
+
+if settings.birthday_task_enabled:
+    _beat_schedule["birthday-greetings"] = {
+        "task": "src.tasks.send_birthday_messages_task",
+        "schedule": crontab(
+            minute=str(settings.birthday_task_minute),
+            hour=str(settings.birthday_task_hour),
+        ),
+        "args": (),
+    }
+
+if _beat_schedule:
+    celery_app.conf.beat_schedule = _beat_schedule
