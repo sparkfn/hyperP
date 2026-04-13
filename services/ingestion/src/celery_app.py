@@ -28,7 +28,7 @@ celery_app.conf.update(
     task_reject_on_worker_lost=True,
     worker_prefetch_multiplier=1,
     worker_concurrency=settings.celery_worker_concurrency,
-    task_time_limit=60 * 60 * 6,         # 6h hard limit per ingestion
+    task_time_limit=60 * 60 * 6,  # 6h hard limit per ingestion
     task_soft_time_limit=60 * 60 * 6 - 60,
     timezone="UTC",
     enable_utc=True,
@@ -59,6 +59,14 @@ if _fundbox_cron is not None:
         "task": "src.tasks.run_ingestion_task",
         "schedule": _fundbox_cron,
         "args": ("fundbox", "batch"),
+    }
+
+_speedzone_cron = _parse_cron(settings.speedzone_ingest_cron)
+if _speedzone_cron is not None:
+    _beat_schedule["speedzone-ingest"] = {
+        "task": "src.tasks.run_ingestion_task",
+        "schedule": _speedzone_cron,
+        "args": ("speedzone", "batch"),
     }
 
 if settings.birthday_task_enabled:

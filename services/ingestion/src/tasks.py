@@ -80,9 +80,7 @@ def _acquire_ingestion_slot(max_slots: int) -> Iterator[str]:
             except redis.WatchError:
                 continue
 
-    logger.info(
-        "Acquired ingestion slot %s (cap=%d)", slot_id, max_slots
-    )
+    logger.info("Acquired ingestion slot %s (cap=%d)", slot_id, max_slots)
     try:
         yield slot_id
     finally:
@@ -118,9 +116,7 @@ def run_ingestion_task(self: Task, source_key: str, mode: str = "batch") -> Inge
         with _acquire_ingestion_slot(settings.max_concurrent_ingestions):
             return run_ingestion(source_key, mode)
     except _SlotUnavailableError as exc:
-        logger.warning(
-            "Ingestion slot unavailable (%d/%d), retrying...", exc.live, exc.cap
-        )
+        logger.warning("Ingestion slot unavailable (%d/%d), retrying...", exc.live, exc.cap)
         raise
     except Exception as exc:
         logger.exception("Ingestion task failed for %s", source_key)

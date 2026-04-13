@@ -18,6 +18,7 @@ from src.connectors.fundbox import (
     FundboxLegacyConnector,
     FundboxMergedUsersConnector,
 )
+from src.connectors.speedzone import SpeedZoneConnector
 from src.graph import queries
 from src.graph.client import Neo4jClient
 from src.graph.schema_init import apply_schema
@@ -34,6 +35,7 @@ _CONNECTOR_REGISTRY: dict[str, type[SourceConnector]] = {
     "fundbox:contacts": FundboxContactsConnector,
     "fundbox:legacy": FundboxLegacyConnector,
     "fundbox:merged": FundboxMergedUsersConnector,
+    "speedzone": SpeedZoneConnector,
 }
 
 
@@ -51,9 +53,7 @@ def get_connector(source_key: str) -> SourceConnector:
         return _CONNECTOR_REGISTRY[source_key]()
     except KeyError as exc:
         available = ", ".join(sorted(_CONNECTOR_REGISTRY))
-        raise ValueError(
-            f"Unknown source key: {source_key!r}. Available: {available}"
-        ) from exc
+        raise ValueError(f"Unknown source key: {source_key!r}. Available: {available}") from exc
 
 
 def _seed_source_system(client: Neo4jClient, source_key: str) -> None:
@@ -185,7 +185,9 @@ def run_ingestion(source_key: str, mode: str = "batch") -> IngestionSummary:
         logger.info("Updated IngestRun %s -> %s", ingest_run_id, final_status)
         logger.info(
             "Ingestion complete: %d succeeded, %d errors, %d skipped duplicates",
-            success, errors, skipped,
+            success,
+            errors,
+            skipped,
         )
 
         return {

@@ -48,6 +48,16 @@ class Settings(BaseSettings):
     # Streaming chunk size for connector queries (rows per fetch).
     fundbox_chunk_size: int = 1000
 
+    # SpeedZone POS source DB (MySQL) -----------------------------------------
+    speedzone_db_host: str = "localhost"
+    speedzone_db_port: int = 3306
+    speedzone_db_user: str = "root"
+    speedzone_db_password: str = ""
+    speedzone_db_name: str = "pos_sz"
+    speedzone_chunk_size: int = 1000
+    # Beat schedule for periodic SpeedZone ingestion (5-field cron, empty = disabled).
+    speedzone_ingest_cron: str = ""
+
     # WhatsApp API (chrishubert/whatsapp-api compatible) ----------------------
     # Multi-tenant WhatsApp Web REST API. Endpoints are session-scoped via
     # `sessionId` and authenticated with a static API key header.
