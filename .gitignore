@@ -1,13 +1,31 @@
 node_modules/
 dist/
 .env
+.env.local
 __pycache__/
 *.pyc
 .ruff_cache/
 .pytest_cache/
+.mypy_cache/
 *.egg-info/
 .venv/
 data/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Docker
+data/neo4j/
+data/redis/
+data/celerybeat/
 
 # Claude Code local session/cache
 .claude/
