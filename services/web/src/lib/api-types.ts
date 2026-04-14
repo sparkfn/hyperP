@@ -85,3 +85,22 @@ export interface PersonConnection {
   shared_identifiers: SharedIdentifier[];
   shared_addresses: SharedAddress[];
 }
+
+export interface GraphNode {
+  id: string;
+  label: string;
+  properties: Record<string, string | number | boolean | null>;
+}
+
+export interface GraphEdge {
+  id: string;
+  source: string;
+  target: string;
+  type: string;
+  properties: Record<string, string | number | boolean | null>;
+}
+
+export interface PersonGraph {
+  nodes: GraphNode[];
+  edges: GraphEdge[];
+}

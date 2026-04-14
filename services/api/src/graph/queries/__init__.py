@@ -21,6 +21,13 @@ from src.graph.queries.admin import (
     UPDATE_FIELD_TRUST,
 )
 from src.graph.queries.events import LIST_EVENTS
+from src.graph.queries.graph import (
+    DEFAULT_HOPS,
+    MAX_HOPS,
+    MIN_HOPS,
+    get_graph_query,
+    get_node_graph_query,
+)
 from src.graph.queries.ingestion import (
     CHECK_SOURCE_SYSTEM,
     CREATE_INGEST_RUN,
@@ -88,6 +95,7 @@ __all__ = [
     "CREATE_RECOMPUTE_AUDIT",
     "CREATE_SOURCE_RECORD",
     "CREATE_UNMERGE_AUDIT",
+    "DEFAULT_HOPS",
     "DELETE_LOCK",
     "EXECUTE_MANUAL_MERGE",
     "FIND_PERSON_BY_IDENTIFIER",
@@ -96,7 +104,11 @@ __all__ = [
     "GET_FACT_VALUE",
     "GET_FIELD_TRUST",
     "GET_INGEST_RUN",
+    "MAX_HOPS",
+    "MIN_HOPS",
     "GET_PERSON_AUDIT",
+    "get_graph_query",
+    "get_node_graph_query",
     "GET_PERSON_BY_ID",
     "GET_PERSON_CONNECTIONS_ADDRESS",
     "GET_PERSON_CONNECTIONS_ALL",

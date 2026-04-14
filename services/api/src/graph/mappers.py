@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from typing import Literal
+
+from neo4j.time import DateTime as Neo4jDateTime
 
 from src.graph.converters import (
     GraphRecord,
@@ -20,11 +23,14 @@ from src.types import (
     AddressSummary,
     AuditEvent,
     DownstreamEvent,
+    GraphEdge,
+    GraphNode,
     MatchDecision,
     MatchDecisionSummary,
     Person,
     PersonComparisonEntity,
     PersonConnection,
+    PersonGraph,
     PersonStatus,
     ReviewCaseDetail,
     ReviewCaseSummary,
@@ -329,6 +335,65 @@ def map_review_case_detail(record: GraphRecord) -> ReviewCaseDetail:
         created_at=to_iso_or_empty(rc.get("created_at")),
         updated_at=to_iso_or_empty(rc.get("updated_at")),
     )
+
+
+def _sanitize_properties(raw: GraphValue) -> dict[str, str | int | float | bool | None]:
+    """Flatten a Neo4j properties map to JSON-safe scalars."""
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, str | int | float | bool | None] = {}
+    for key, val in raw.items():
+        if isinstance(val, bool):
+            out[key] = val
+        elif isinstance(val, int):
+            out[key] = val
+        elif isinstance(val, float):
+            out[key] = val
+        elif isinstance(val, str):
+            out[key] = val
+        elif isinstance(val, Neo4jDateTime):
+            out[key] = val.to_native().isoformat()
+        elif isinstance(val, datetime):
+            out[key] = val.isoformat()
+        elif val is None:
+            out[key] = None
+        else:
+            out[key] = str(val)
+    return out
+
+
+def map_person_graph(record: GraphRecord) -> PersonGraph:
+    """Map a graph traversal result to a PersonGraph model."""
+    raw_nodes = record.get("nodes")
+    raw_edges = record.get("edges")
+    nodes: list[GraphNode] = []
+    edges: list[GraphEdge] = []
+
+    if isinstance(raw_nodes, list):
+        for item in raw_nodes:
+            n = _as_dict(item)
+            nodes.append(
+                GraphNode(
+                    id=to_str(n.get("id")),
+                    label=to_str(n.get("label")),
+                    properties=_sanitize_properties(n.get("properties")),
+                )
+            )
+
+    if isinstance(raw_edges, list):
+        for item in raw_edges:
+            e = _as_dict(item)
+            edges.append(
+                GraphEdge(
+                    id=to_str(e.get("id")),
+                    source=to_str(e.get("source")),
+                    target=to_str(e.get("target")),
+                    type=to_str(e.get("type")),
+                    properties=_sanitize_properties(e.get("properties")),
+                )
+            )
+
+    return PersonGraph(nodes=nodes, edges=edges)
 
 
 def map_downstream_event(record: GraphRecord) -> DownstreamEvent:

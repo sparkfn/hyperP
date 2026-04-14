@@ -250,6 +250,25 @@ class AuditEvent(BaseModel):
     triggered_by_decision_id: str | None = None
 
 
+class GraphNode(BaseModel):
+    id: str
+    label: str
+    properties: dict[str, str | int | float | bool | None] = Field(default_factory=dict)
+
+
+class GraphEdge(BaseModel):
+    id: str
+    source: str
+    target: str
+    type: str
+    properties: dict[str, str | int | float | bool | None] = Field(default_factory=dict)
+
+
+class PersonGraph(BaseModel):
+    nodes: list[GraphNode] = Field(default_factory=list)
+    edges: list[GraphEdge] = Field(default_factory=list)
+
+
 class DownstreamEvent(BaseModel):
     event_id: str
     event_type: str
