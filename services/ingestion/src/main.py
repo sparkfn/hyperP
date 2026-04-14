@@ -12,6 +12,7 @@ from neo4j import ManagedTransaction
 
 from src.config import get_settings
 from src.connectors.base import SourceConnector
+from src.connectors.eko import EkoConnector
 from src.connectors.fundbox import (
     FundboxConnector,
     FundboxContactsConnector,
@@ -36,6 +37,7 @@ _CONNECTOR_REGISTRY: dict[str, type[SourceConnector]] = {
     "fundbox:legacy": FundboxLegacyConnector,
     "fundbox:merged": FundboxMergedUsersConnector,
     "speedzone": SpeedZoneConnector,
+    "eko": EkoConnector,
 }
 
 

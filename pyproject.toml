@@ -87,7 +87,8 @@ module = [
     "src.connectors.fundbox.contacts",
     "src.connectors.fundbox.junk",
     "src.connectors.fundbox.schema",
-    "src.connectors.fundbox.db",
+    "src.connectors.db_factory",
+    "src.connectors.eko.connector",
     "src.graph.client",
     "src.golden_profile",
     "src.config",
@@ -114,6 +115,7 @@ module = [
     "redis.*",
     "neo4j.*",
     "sqlalchemy.*",
+    "sshtunnel",
 ]
 ignore_missing_imports = true
 

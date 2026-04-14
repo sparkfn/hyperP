@@ -5,6 +5,7 @@ from __future__ import annotations
 from functools import lru_cache
 from typing import Literal
 
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -16,6 +17,12 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         case_sensitive=False,
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _drop_empty_strings(cls, values: dict[str, object]) -> dict[str, object]:
+        """Drop empty-string env vars so field defaults apply."""
+        return {k: v for k, v in values.items() if v != ""}
 
     # Neo4j connection --------------------------------------------------------
     neo4j_uri: str = "bolt://localhost:7687"
@@ -39,24 +46,46 @@ class Settings(BaseSettings):
     # Beat schedule for periodic Fundbox ingestion. Empty string disables.
     fundbox_ingest_cron: str = ""  # e.g. "0 */6 * * *"
 
-    # Fundbox source DB -------------------------------------------------------
-    fundbox_db_host: str = "localhost"
+    # Fundbox source DB (MySQL, optionally via SSH tunnel) --------------------
+    # Set FUNDBOX_SSH_HOST to enable SSH tunnelling; leave empty for direct connect.
+    fundbox_ssh_host: str = ""
+    fundbox_ssh_port: int = 22
+    fundbox_ssh_user: str = ""
+    fundbox_ssh_password: str = ""
+    fundbox_db_host: str = "mysql-fundbox"
     fundbox_db_port: int = 3306
     fundbox_db_user: str = "root"
     fundbox_db_password: str = ""
-    fundbox_db_name: str = "fundbox-dev"
-    # Streaming chunk size for connector queries (rows per fetch).
+    fundbox_db_name: str = "dev"
     fundbox_chunk_size: int = 1000
 
-    # SpeedZone POS source DB (MySQL) -----------------------------------------
-    speedzone_db_host: str = "localhost"
+    # SpeedZone POS source DB (MySQL, optionally via SSH tunnel) ---------------
+    # Set SPEEDZONE_SSH_HOST to enable SSH tunnelling; leave empty for direct connect.
+    speedzone_ssh_host: str = ""
+    speedzone_ssh_port: int = 22
+    speedzone_ssh_user: str = ""
+    speedzone_ssh_password: str = ""
+    speedzone_db_host: str = "mysql-sz"
     speedzone_db_port: int = 3306
     speedzone_db_user: str = "root"
     speedzone_db_password: str = ""
-    speedzone_db_name: str = "pos_sz"
+    speedzone_db_name: str = "pos"
     speedzone_chunk_size: int = 1000
-    # Beat schedule for periodic SpeedZone ingestion (5-field cron, empty = disabled).
     speedzone_ingest_cron: str = ""
+
+    # Eko POS source DB (MySQL, optionally via SSH tunnel) ----------------------
+    # Set EKO_SSH_HOST to enable SSH tunnelling; leave empty for direct connect.
+    eko_ssh_host: str = ""
+    eko_ssh_port: int = 22
+    eko_ssh_user: str = ""
+    eko_ssh_password: str = ""
+    eko_db_host: str = "mysql-eko"
+    eko_db_port: int = 3306
+    eko_db_user: str = "root"
+    eko_db_password: str = ""
+    eko_db_name: str = "mysql"
+    eko_chunk_size: int = 1000
+    eko_ingest_cron: str = ""
 
     # WhatsApp API (chrishubert/whatsapp-api compatible) ----------------------
     # Multi-tenant WhatsApp Web REST API. Endpoints are session-scoped via

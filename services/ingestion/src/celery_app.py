@@ -69,6 +69,14 @@ if _speedzone_cron is not None:
         "args": ("speedzone", "batch"),
     }
 
+_eko_cron = _parse_cron(settings.eko_ingest_cron)
+if _eko_cron is not None:
+    _beat_schedule["eko-ingest"] = {
+        "task": "src.tasks.run_ingestion_task",
+        "schedule": _eko_cron,
+        "args": ("eko", "batch"),
+    }
+
 if settings.birthday_task_enabled:
     _beat_schedule["birthday-greetings"] = {
         "task": "src.tasks.send_birthday_messages_task",
