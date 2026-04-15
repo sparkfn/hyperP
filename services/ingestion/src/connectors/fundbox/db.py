@@ -12,4 +12,4 @@ from src.connectors.db_factory import create_mysql_engine
 @lru_cache(maxsize=1)
 def get_engine() -> Engine:
     """Return a process-wide SQLAlchemy engine for the Fundbox source DB."""
-    return create_mysql_engine("fundbox")
+    return create_mysql_engine("fundbox_consumer_backend")

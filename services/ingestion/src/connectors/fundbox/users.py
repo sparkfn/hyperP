@@ -1,4 +1,4 @@
-"""Connector for current Fundbox users (``source_key=fundbox``)."""
+"""Connector for current Fundbox users (``source_key=fundbox_consumer_backend``)."""
 
 from __future__ import annotations
 
@@ -38,7 +38,7 @@ class FundboxConnector(FundboxConnectorBase):
     """
 
     def get_source_key(self) -> str:
-        return "fundbox"
+        return "fundbox_consumer_backend"
 
     def build_records(self, conn: Connection) -> Iterator[dict[str, JsonValue]]:
         primary_stmt = (
@@ -114,7 +114,7 @@ class FundboxConnector(FundboxConnectorBase):
         primary_address = format_address(user_addresses[0]) if user_addresses else None
 
         return build_envelope(
-            source_record_id=f"fundbox-user-{row.user_id}",
+            source_record_id=f"fundbox_consumer_backend-user-{row.user_id}",
             observed_at=to_iso(row.user_updated_at or row.user_created_at),
             identifiers=ids.items,
             attributes={

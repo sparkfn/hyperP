@@ -2,7 +2,8 @@
 
 Each connector's ``db.py`` calls :func:`create_mysql_engine` with a
 ``prefix`` that maps to environment variables. For example, prefix
-``"fundbox"`` reads ``FUNDBOX_SSH_HOST``, ``FUNDBOX_DB_HOST``, etc.
+``"fundbox_consumer_backend"`` reads ``FUNDBOX_CONSUMER_BACKEND_SSH_HOST``,
+``FUNDBOX_CONSUMER_BACKEND_DB_HOST``, etc.
 
 When the ``*_SSH_HOST`` variable is non-empty the connection is tunnelled
 through SSH.  Otherwise the engine connects directly.

@@ -6,9 +6,10 @@ to enable SSH tunnelling.  See :mod:`src.config`.
 
 Public connectors:
 
-- :class:`EkoConnector` (``source_key=eko``) — POS customers.
+- :class:`EkoConnector` (``source_key=eko_phppos``) — POS customers.
 """
 
 from src.connectors.eko.connector import EkoConnector
+from src.connectors.eko.sales import EkoSalesConnector
 
-__all__ = ["EkoConnector"]
+__all__ = ["EkoConnector", "EkoSalesConnector"]

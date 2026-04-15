@@ -1,12 +1,22 @@
-"""Connector for Eko POS customers (``source_key=eko``)."""
+"""Connector for Eko POS customers (``source_key=eko_phppos``).
+
+Preferred extraction: ``phppos_customers`` joined with ``phppos_people``.
+
+Fallback ladder, same policy as SpeedZone:
+- customers + people present → full extraction (NRIC, bitrix, external id, DOB).
+- people only → identifier-only extraction (phone/email/name/address).
+- people also absent → log warning + skip entirely.
+"""
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Iterator
 from datetime import UTC, datetime
+from typing import Any
 
-from sqlalchemy import select
-from sqlalchemy.engine import Connection, Row
+from sqlalchemy import inspect, select
+from sqlalchemy.engine import Connection
 
 from src.config import get_settings
 from src.connectors.base import SourceConnector
@@ -19,6 +29,8 @@ from src.connectors.fundbox.builders import (
     to_iso,
 )
 from src.models import JsonValue
+
+logger = logging.getLogger(__name__)
 
 
 def _epoch_to_iso(epoch_str: str | None) -> str | None:
@@ -52,14 +64,55 @@ class EkoConnector(SourceConnector):
     """
 
     def get_source_key(self) -> str:
-        return "eko"
+        return "eko_phppos"
 
     def fetch_records(self) -> Iterator[dict[str, JsonValue]]:
         engine = get_engine()
-        chunk_size = get_settings().eko_chunk_size
+        chunk_size = get_settings().eko_phppos_chunk_size
+        existing_tables = set(inspect(engine).get_table_names())
+
+        if "phppos_people" not in existing_tables:
+            logger.warning(
+                "Eko: phppos_people table missing — skipping identity ingestion."
+            )
+            return
+
+        use_customers = "phppos_customers" in existing_tables
+        if not use_customers:
+            logger.warning(
+                "Eko: phppos_customers table missing — ingesting from "
+                "phppos_people only; custom fields (NRIC, bitrix, DOB) absent."
+            )
+
         with engine.connect() as conn:
             conn = conn.execution_options(stream_results=True)
-            yield from self._build_records(conn, chunk_size)
+            if use_customers:
+                yield from self._build_records(conn, chunk_size)
+            else:
+                yield from self._build_records_people_only(conn, chunk_size)
+
+    def _build_records_people_only(
+        self, conn: Connection, chunk_size: int
+    ) -> Iterator[dict[str, JsonValue]]:
+        stmt = select(people).order_by(people.c.person_id)
+        result = conn.execute(stmt).yield_per(chunk_size)
+        for row in result:
+            ids = IdentifierBag()
+            ids.add("email", row.email)
+            ids.add("phone", row.phone_number)
+            address_parts: list[object] = [
+                row.address_1, row.address_2, row.city, row.state, row.zip, row.country,
+            ]
+            address = ", ".join(
+                str(p).strip() for p in address_parts if p and str(p).strip()
+            ) or None
+            yield build_envelope(
+                source_record_id=f"eko_phppos-person-{row.person_id}",
+                observed_at=to_iso(row.last_modified or row.create_date),
+                identifiers=ids.items,
+                attributes={"full_name": row.full_name, "address": address},
+                raw_payload={"person": serialize_row(row)},
+            )
 
     def _build_records(self, conn: Connection, chunk_size: int) -> Iterator[dict[str, JsonValue]]:
         stmt = (
@@ -99,7 +152,7 @@ class EkoConnector(SourceConnector):
             yield self._build_one(row)
 
     @staticmethod
-    def _build_one(row: Row[tuple[object, ...]]) -> dict[str, JsonValue]:
+    def _build_one(row: Any) -> dict[str, JsonValue]:
         ids = IdentifierBag()
         ids.add("nric", row.nric_passport, verified=True)
         ids.add("email", row.email)
@@ -124,7 +177,7 @@ class EkoConnector(SourceConnector):
         dob = _epoch_to_iso(row.dob_epoch)
 
         return build_envelope(
-            source_record_id=f"eko-customer-{row.customer_id}",
+            source_record_id=f"eko_phppos-customer-{row.customer_id}",
             observed_at=to_iso(row.last_modified or row.create_date),
             identifiers=ids.items,
             attributes={

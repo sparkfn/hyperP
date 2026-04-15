@@ -34,4 +34,4 @@ USER appuser
 
 WORKDIR /app/services/ingestion
 
-CMD ["python", "-m", "src.main", "--source-key", "fundbox", "--mode", "batch"]
+CMD ["python", "-m", "src.main", "--source-key", "fundbox_consumer_backend", "--mode", "batch"]

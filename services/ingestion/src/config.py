@@ -44,48 +44,48 @@ class Settings(BaseSettings):
     # of `celery_worker_concurrency` (which controls per-worker process count).
     max_concurrent_ingestions: int = 1
     # Beat schedule for periodic Fundbox ingestion. Empty string disables.
-    fundbox_ingest_cron: str = ""  # e.g. "0 */6 * * *"
+    fundbox_consumer_backend_ingest_cron: str = ""  # e.g. "0 */6 * * *"
 
-    # Fundbox source DB (MySQL, optionally via SSH tunnel) --------------------
-    # Set FUNDBOX_SSH_HOST to enable SSH tunnelling; leave empty for direct connect.
-    fundbox_ssh_host: str = ""
-    fundbox_ssh_port: int = 22
-    fundbox_ssh_user: str = ""
-    fundbox_ssh_password: str = ""
-    fundbox_db_host: str = "mysql-fundbox"
-    fundbox_db_port: int = 3306
-    fundbox_db_user: str = "root"
-    fundbox_db_password: str = ""
-    fundbox_db_name: str = "dev"
-    fundbox_chunk_size: int = 1000
+    # Fundbox Consumer Backend source DB (MySQL, optionally via SSH tunnel) ---
+    # Set FUNDBOX_CONSUMER_BACKEND_SSH_HOST to enable SSH tunnelling.
+    fundbox_consumer_backend_ssh_host: str = ""
+    fundbox_consumer_backend_ssh_port: int = 22
+    fundbox_consumer_backend_ssh_user: str = ""
+    fundbox_consumer_backend_ssh_password: str = ""
+    fundbox_consumer_backend_db_host: str = "mysql-fundbox"
+    fundbox_consumer_backend_db_port: int = 3306
+    fundbox_consumer_backend_db_user: str = "root"
+    fundbox_consumer_backend_db_password: str = ""
+    fundbox_consumer_backend_db_name: str = "dev"
+    fundbox_consumer_backend_chunk_size: int = 1000
 
-    # SpeedZone POS source DB (MySQL, optionally via SSH tunnel) ---------------
-    # Set SPEEDZONE_SSH_HOST to enable SSH tunnelling; leave empty for direct connect.
-    speedzone_ssh_host: str = ""
-    speedzone_ssh_port: int = 22
-    speedzone_ssh_user: str = ""
-    speedzone_ssh_password: str = ""
-    speedzone_db_host: str = "mysql-sz"
-    speedzone_db_port: int = 3306
-    speedzone_db_user: str = "root"
-    speedzone_db_password: str = ""
-    speedzone_db_name: str = "pos"
-    speedzone_chunk_size: int = 1000
-    speedzone_ingest_cron: str = ""
+    # SpeedZone phppos source DB (MySQL, optionally via SSH tunnel) ----------
+    # Set SPEEDZONE_PHPPOS_SSH_HOST to enable SSH tunnelling.
+    speedzone_phppos_ssh_host: str = ""
+    speedzone_phppos_ssh_port: int = 22
+    speedzone_phppos_ssh_user: str = ""
+    speedzone_phppos_ssh_password: str = ""
+    speedzone_phppos_db_host: str = "mariadb-sz"
+    speedzone_phppos_db_port: int = 3306
+    speedzone_phppos_db_user: str = "root"
+    speedzone_phppos_db_password: str = ""
+    speedzone_phppos_db_name: str = "phppos_db"
+    speedzone_phppos_chunk_size: int = 1000
+    speedzone_phppos_ingest_cron: str = ""
 
-    # Eko POS source DB (MySQL, optionally via SSH tunnel) ----------------------
-    # Set EKO_SSH_HOST to enable SSH tunnelling; leave empty for direct connect.
-    eko_ssh_host: str = ""
-    eko_ssh_port: int = 22
-    eko_ssh_user: str = ""
-    eko_ssh_password: str = ""
-    eko_db_host: str = "mysql-eko"
-    eko_db_port: int = 3306
-    eko_db_user: str = "root"
-    eko_db_password: str = ""
-    eko_db_name: str = "mysql"
-    eko_chunk_size: int = 1000
-    eko_ingest_cron: str = ""
+    # Eko phppos source DB (MySQL, optionally via SSH tunnel) ----------------
+    # Set EKO_PHPPOS_SSH_HOST to enable SSH tunnelling.
+    eko_phppos_ssh_host: str = ""
+    eko_phppos_ssh_port: int = 22
+    eko_phppos_ssh_user: str = ""
+    eko_phppos_ssh_password: str = ""
+    eko_phppos_db_host: str = "mariadb-eko"
+    eko_phppos_db_port: int = 3306
+    eko_phppos_db_user: str = "root"
+    eko_phppos_db_password: str = ""
+    eko_phppos_db_name: str = "phppos_db"
+    eko_phppos_chunk_size: int = 1000
+    eko_phppos_ingest_cron: str = ""
 
     # WhatsApp API (chrishubert/whatsapp-api compatible) ----------------------
     # Multi-tenant WhatsApp Web REST API. Endpoints are session-scoped via

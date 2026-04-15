@@ -12,4 +12,4 @@ from src.connectors.db_factory import create_mysql_engine
 @lru_cache(maxsize=1)
 def get_engine() -> Engine:
     """Return a process-wide SQLAlchemy engine for the SpeedZone POS DB."""
-    return create_mysql_engine("speedzone")
+    return create_mysql_engine("speedzone_phppos")

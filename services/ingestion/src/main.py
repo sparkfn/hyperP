@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import json
 import logging
 import sys
 from typing import TypedDict
@@ -12,19 +11,23 @@ from neo4j import ManagedTransaction
 
 from src.config import get_settings
 from src.connectors.base import SourceConnector
-from src.connectors.eko import EkoConnector
+from src.connectors.eko import EkoConnector, EkoSalesConnector
 from src.connectors.fundbox import (
     FundboxConnector,
     FundboxContactsConnector,
     FundboxLegacyConnector,
     FundboxMergedUsersConnector,
+    FundboxSalesConnector,
 )
-from src.connectors.speedzone import SpeedZoneConnector
+from src.connectors.speedzone import SpeedZoneConnector, SpeedZoneSalesConnector
 from src.graph import queries
+from src.graph.bootstrap import bootstrap_entities_and_sources
 from src.graph.client import Neo4jClient
 from src.graph.schema_init import apply_schema
-from src.models import SourceRecordEnvelope
+from src.models import RecordType, SourceRecordEnvelope
 from src.pipeline import IngestPipeline
+from src.pipeline_knows import materialize_knows_from_contacts
+from src.pipeline_sales import drain_pending_customer_sales, ingest_sales_record
 
 logger = logging.getLogger(__name__)
 
@@ -32,13 +35,44 @@ logger = logging.getLogger(__name__)
 # Registry of available connectors keyed by source_key. New sources only need
 # to add an entry here; the CLI and the Celery task share the same registry.
 _CONNECTOR_REGISTRY: dict[str, type[SourceConnector]] = {
-    "fundbox": FundboxConnector,
-    "fundbox:contacts": FundboxContactsConnector,
-    "fundbox:legacy": FundboxLegacyConnector,
-    "fundbox:merged": FundboxMergedUsersConnector,
-    "speedzone": SpeedZoneConnector,
-    "eko": EkoConnector,
+    "fundbox_consumer_backend": FundboxConnector,
+    "fundbox_consumer_backend:contacts": FundboxContactsConnector,
+    "fundbox_consumer_backend:legacy": FundboxLegacyConnector,
+    "fundbox_consumer_backend:merged": FundboxMergedUsersConnector,
+    "fundbox_consumer_backend:sales": FundboxSalesConnector,
+    "speedzone_phppos": SpeedZoneConnector,
+    "speedzone_phppos:sales": SpeedZoneSalesConnector,
+    "eko_phppos": EkoConnector,
+    "eko_phppos:sales": EkoSalesConnector,
 }
+
+
+def _mark_run_failed(
+    client: Neo4jClient,
+    ingest_run_id: str,
+    record_count: int,
+    rejected_count: int,
+) -> None:
+    """Best-effort finaliser that records a run as ``completed_with_errors``.
+
+    Swallows any secondary failure so the original exception propagates to
+    the Celery task handler.
+    """
+    try:
+        def _work(tx: ManagedTransaction) -> None:
+            tx.run(
+                queries.UPDATE_INGEST_RUN,
+                ingest_run_id=ingest_run_id,
+                status="completed_with_errors",
+                record_count=record_count,
+                rejected_count=rejected_count,
+            )
+
+        with client.session() as session:
+            session.execute_write(_work)
+        logger.warning("Marked IngestRun %s -> completed_with_errors", ingest_run_id)
+    except Exception:
+        logger.exception("Failed to mark IngestRun %s as failed", ingest_run_id)
 
 
 def setup_logging(level: str) -> None:
@@ -56,40 +90,6 @@ def get_connector(source_key: str) -> SourceConnector:
     except KeyError as exc:
         available = ", ".join(sorted(_CONNECTOR_REGISTRY))
         raise ValueError(f"Unknown source key: {source_key!r}. Available: {available}") from exc
-
-
-def _seed_source_system(client: Neo4jClient, source_key: str) -> None:
-    """Ensure the SourceSystem node exists in Neo4j."""
-    trust = json.dumps(
-        {
-            "phone": "tier_2",
-            "email": "tier_3",
-            "full_name": "tier_3",
-            "dob": "tier_4",
-            "address": "tier_4",
-        }
-    )
-
-    def _work(tx: ManagedTransaction) -> None:
-        tx.run(
-            """
-            MERGE (ss:SourceSystem {source_key: $source_key})
-            ON CREATE SET
-                ss.source_system_id = randomUUID(),
-                ss.display_name = $display_name,
-                ss.system_type = 'pos',
-                ss.is_active = true,
-                ss.field_trust = $field_trust,
-                ss.created_at = datetime(),
-                ss.updated_at = datetime()
-            """,
-            source_key=source_key,
-            display_name=source_key.replace("_", " ").title(),
-            field_trust=trust,
-        )
-
-    with client.session() as session:
-        session.execute_write(_work)
 
 
 class IngestionSummary(TypedDict):
@@ -127,7 +127,7 @@ def run_ingestion(source_key: str, mode: str = "batch") -> IngestionSummary:
         # generation into a full label scan that gets linearly slower).
         apply_schema(client)
 
-        _seed_source_system(client, source_key)
+        bootstrap_entities_and_sources(client)
 
         pipeline = IngestPipeline(client)
         connector = get_connector(source_key)
@@ -150,26 +150,47 @@ def run_ingestion(source_key: str, mode: str = "batch") -> IngestionSummary:
         logger.info("Created IngestRun %s", ingest_run_id)
 
         success = errors = skipped = 0
-        for raw_record in connector.fetch_records():
-            envelope = SourceRecordEnvelope.model_validate(
-                {"source_system": connector.get_source_key(), **raw_record},
+        try:
+            for raw_record in connector.fetch_records():
+                envelope = SourceRecordEnvelope.model_validate(
+                    {"source_system": connector.get_source_key(), **raw_record},
+                )
+                if envelope.record_type == RecordType.SALES:
+                    result = ingest_sales_record(
+                        client, envelope, ingest_run_id=ingest_run_id
+                    )
+                else:
+                    result = pipeline.ingest(envelope, ingest_run_id=ingest_run_id)
+                if result.skipped_duplicate:
+                    skipped += 1
+                elif result.errors:
+                    errors += 1
+                else:
+                    success += 1
+                logger.info(
+                    "  %s -> person=%s new=%s decision=%s candidates=%d%s",
+                    result.source_record_id,
+                    result.person_id,
+                    result.is_new_person,
+                    result.match_decision,
+                    result.candidate_count,
+                    " (DUPLICATE)" if result.skipped_duplicate else "",
+                )
+
+            drained = drain_pending_customer_sales(client)
+            if drained:
+                logger.info("Drained %d pending sales records", drained)
+
+            knows_linked = materialize_knows_from_contacts(client)
+            if knows_linked:
+                logger.info(
+                    "Materialized %d KNOWS edges from contacts", knows_linked
+                )
+        except Exception:
+            _mark_run_failed(
+                client, ingest_run_id, success + errors + skipped, errors
             )
-            result = pipeline.ingest(envelope, ingest_run_id=ingest_run_id)
-            if result.skipped_duplicate:
-                skipped += 1
-            elif result.errors:
-                errors += 1
-            else:
-                success += 1
-            logger.info(
-                "  %s -> person=%s new=%s decision=%s candidates=%d%s",
-                result.source_record_id,
-                result.person_id,
-                result.is_new_person,
-                result.match_decision,
-                result.candidate_count,
-                " (DUPLICATE)" if result.skipped_duplicate else "",
-            )
+            raise
 
         final_status = "completed" if errors == 0 else "completed_with_errors"
 

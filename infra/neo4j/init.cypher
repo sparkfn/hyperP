@@ -14,6 +14,18 @@ CREATE CONSTRAINT address_id_unique IF NOT EXISTS
 CREATE CONSTRAINT source_system_key_unique IF NOT EXISTS
   FOR (ss:SourceSystem) REQUIRE ss.source_key IS UNIQUE;
 
+CREATE CONSTRAINT entity_key_unique IF NOT EXISTS
+  FOR (e:Entity) REQUIRE e.entity_key IS UNIQUE;
+
+CREATE CONSTRAINT order_dedup_unique IF NOT EXISTS
+  FOR (o:Order) REQUIRE (o.source_system_key, o.source_order_id) IS UNIQUE;
+
+CREATE CONSTRAINT line_item_dedup_unique IF NOT EXISTS
+  FOR (li:LineItem) REQUIRE (li.source_system_key, li.source_line_item_id) IS UNIQUE;
+
+CREATE CONSTRAINT product_dedup_unique IF NOT EXISTS
+  FOR (p:Product) REQUIRE (p.source_system_key, p.source_product_id) IS UNIQUE;
+
 CREATE CONSTRAINT source_record_pk_unique IF NOT EXISTS
   FOR (sr:SourceRecord) REQUIRE sr.source_record_pk IS UNIQUE;
 
@@ -51,6 +63,9 @@ CREATE INDEX idx_source_record_source IF NOT EXISTS
 CREATE INDEX idx_source_record_type IF NOT EXISTS
   FOR (sr:SourceRecord) ON (sr.record_type);
 
+CREATE INDEX idx_source_record_link_state IF NOT EXISTS
+  FOR (sr:SourceRecord) ON (sr.record_type, sr.link_status);
+
 // Review queue
 CREATE INDEX idx_review_case_queue IF NOT EXISTS
   FOR (rc:ReviewCase) ON (rc.queue_state, rc.priority);
@@ -62,6 +77,19 @@ CREATE INDEX idx_match_decision_created IF NOT EXISTS
 // Person status
 CREATE INDEX idx_person_status IF NOT EXISTS
   FOR (p:Person) ON (p.status);
+
+// Sales lookups
+CREATE INDEX idx_order_ordered_at IF NOT EXISTS
+  FOR (o:Order) ON (o.ordered_at);
+
+CREATE INDEX idx_order_status IF NOT EXISTS
+  FOR (o:Order) ON (o.status);
+
+CREATE INDEX idx_product_sku IF NOT EXISTS
+  FOR (p:Product) ON (p.sku);
+
+CREATE INDEX idx_product_category IF NOT EXISTS
+  FOR (p:Product) ON (p.category);
 
 // Full-text search
 CREATE FULLTEXT INDEX person_name_search IF NOT EXISTS

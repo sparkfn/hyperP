@@ -49,10 +49,14 @@ class RecordType(StrEnum):
     ``system`` — deterministic extract from another service's system of record.
     ``conversation`` — heuristic extract from chat / voice transcripts.
     Conversation records are never eligible for deterministic auto-merge.
+    ``sales`` — order/line-item/product extract from a commerce system. Linked
+    to a Person indirectly via FOR_CUSTOMER_RECORD; sales records never force
+    identity resolution on their own and never auto-merge.
     """
 
     SYSTEM = "system"
     CONVERSATION = "conversation"
+    SALES = "sales"
 
 
 # ---------------------------------------------------------------------------

@@ -1,4 +1,4 @@
-"""Connector for emergency-contact people (``source_key=fundbox:contacts``)."""
+"""Connector for emergency-contact people (``source_key=fundbox_consumer_backend:contacts``)."""
 
 from __future__ import annotations
 
@@ -28,7 +28,7 @@ class FundboxContactsConnector(FundboxConnectorBase):
     """
 
     def get_source_key(self) -> str:
-        return "fundbox:contacts"
+        return "fundbox_consumer_backend:contacts"
 
     def build_records(self, conn: Connection) -> Iterator[dict[str, JsonValue]]:
         stmt = select(contacts).order_by(contacts.c.id)
@@ -36,7 +36,7 @@ class FundboxContactsConnector(FundboxConnectorBase):
             ids = IdentifierBag()
             ids.add("phone", row.mobile_number)
             yield build_envelope(
-                source_record_id=f"fundbox-contact-{row.id}",
+                source_record_id=f"fundbox_consumer_backend-contact-{row.id}",
                 observed_at=to_iso(row.updated_at or row.created_at),
                 identifiers=ids.items,
                 attributes={
@@ -45,7 +45,7 @@ class FundboxContactsConnector(FundboxConnectorBase):
                 },
                 raw_payload={
                     "contact": serialize_row(row),
-                    "linked_to_source_record_id": f"fundbox-user-{row.user_id}",
+                    "linked_to_source_record_id": f"fundbox_consumer_backend-user-{row.user_id}",
                     "link_type": row.relationship,
                 },
             )
