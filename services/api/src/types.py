@@ -83,22 +83,18 @@ class ResponseMeta(BaseModel):
     request_id: str
     next_cursor: str | None = None
 
-
 class ApiResponse[DataT](BaseModel):
     data: DataT
     meta: ResponseMeta
-
 
 class ApiErrorBody(BaseModel):
     code: str
     message: str
     details: dict[str, str] | None = None
 
-
 class ApiError(BaseModel):
     error: ApiErrorBody
     meta: ResponseMeta
-
 
 # --- Domain models ---
 
@@ -271,6 +267,18 @@ class DownstreamEvent(BaseModel):
     created_at: str
 
 
+class EntitySummary(BaseModel):
+    entity_key: str
+    display_name: str | None = None
+    entity_type: str | None = None
+    country_code: str | None = None
+    is_active: bool = True
+    person_count: int = 0
+
+class EntityPerson(Person):
+    phone_confidence: float | None = None
+
+
 class SalesProduct(BaseModel):
     display_name: str | None = None
     sku: str | None = None
@@ -291,7 +299,6 @@ class SalesOrder(BaseModel):
     source_system: str | None = None
     entity_name: str | None = None
     line_items: list[SalesLineItem] = Field(default_factory=list)
-
 
 # --- Request bodies ---
 
@@ -329,7 +336,6 @@ class SurvivorshipOverrideRequest(BaseModel):
     attribute_name: str
     selected_source_record_pk: str
     reason: str
-
 
 class IngestIdentifier(BaseModel):
     type: str
@@ -375,7 +381,6 @@ class IngestRecord(BaseModel):
                 )
         return self
 
-
 class IngestRecordsRequest(BaseModel):
     ingest_type: str
     ingest_run_id: str | None = None
@@ -389,7 +394,6 @@ class IngestRunUpdateRequest(BaseModel):
     status: str
     finished_at: str | None = None
     metadata: dict[str, str] | None = None
-
 
 class FieldTrustUpdateRequest(BaseModel):
     updates: dict[str, TrustTier]

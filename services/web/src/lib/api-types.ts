@@ -117,6 +117,19 @@ export interface SalesOrder {
   line_items: SalesLineItem[];
 }
 
+export interface EntitySummary {
+  entity_key: string;
+  display_name: string | null;
+  entity_type: string | null;
+  country_code: string | null;
+  is_active: boolean;
+  person_count: number;
+}
+
+export interface EntityPerson extends Person {
+  phone_confidence: number | null;
+}
+
 export interface GraphNode {
   id: string;
   label: string;

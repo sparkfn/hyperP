@@ -15,7 +15,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from src.config import config
 from src.graph.client import close_driver
 from src.http_utils import request_id
-from src.routes import admin, events, health, ingest, merge, persons, review, survivorship
+from src.routes import admin, entities, events, health, ingest, merge, persons, review, survivorship
 from src.types import ApiError, ApiErrorBody, ResponseMeta
 
 logger = logging.getLogger("profile_unifier_api")
@@ -42,6 +42,7 @@ def build_app() -> FastAPI:
     )
 
     app.include_router(health.router)
+    app.include_router(entities.router)
     app.include_router(persons.router)
     app.include_router(review.router)
     app.include_router(merge.router)

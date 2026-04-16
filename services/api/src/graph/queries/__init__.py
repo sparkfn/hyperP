@@ -20,6 +20,7 @@ from src.graph.queries.admin import (
     LIST_SOURCE_SYSTEMS,
     UPDATE_FIELD_TRUST,
 )
+from src.graph.queries.entities import LIST_ENTITIES, get_entity_persons_query
 from src.graph.queries.events import LIST_EVENTS
 from src.graph.queries.graph import (
     DEFAULT_HOPS,
@@ -106,11 +107,7 @@ __all__ = [
     "GET_FACT_VALUE",
     "GET_FIELD_TRUST",
     "GET_INGEST_RUN",
-    "MAX_HOPS",
-    "MIN_HOPS",
     "GET_PERSON_AUDIT",
-    "get_graph_query",
-    "get_node_graph_query",
     "GET_PERSON_BY_ID",
     "GET_PERSON_CONNECTIONS_ADDRESS",
     "GET_PERSON_CONNECTIONS_ALL",
@@ -124,9 +121,12 @@ __all__ = [
     "GET_PERSON_SOURCE_RECORDS",
     "GET_REVIEW_CASE",
     "GET_UNMERGE_TARGET",
+    "LIST_ENTITIES",
     "LIST_EVENTS",
     "LIST_REVIEW_CASES",
     "LIST_SOURCE_SYSTEMS",
+    "MAX_HOPS",
+    "MIN_HOPS",
     "REVERT_MERGE",
     "SEARCH_PERSONS",
     "UPDATE_FIELD_TRUST",
@@ -135,4 +135,7 @@ __all__ = [
     "UPDATE_INGEST_RUN",
     "UPDATE_INGEST_RUN_COUNTERS",
     "UPDATE_OVERRIDES",
+    "get_entity_persons_query",
+    "get_graph_query",
+    "get_node_graph_query",
 ]
