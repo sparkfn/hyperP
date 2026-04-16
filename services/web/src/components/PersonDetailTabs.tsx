@@ -25,6 +25,7 @@ import { statusColor } from "@/lib/display";
 import AuditTab from "./AuditTab";
 import ManualMergeDialog from "./ManualMergeDialog";
 import MatchesTab from "./MatchesTab";
+import SalesCard from "./SalesCard";
 import SourceRecordsTab from "./SourceRecordsTab";
 import SurvivorshipOverrideDialog from "./SurvivorshipOverrideDialog";
 
@@ -59,6 +60,7 @@ export default function PersonDetailTabs({ person, connections }: Props): ReactE
             onOverrideClick={() => setOverrideOpen(true)}
           />
           <ConnectionsCard connections={connections} />
+          <SalesCard personId={person.person_id} />
         </Stack>
       ) : null}
       {tab === 1 ? <SourceRecordsTab personId={person.person_id} /> : null}

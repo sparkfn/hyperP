@@ -67,6 +67,7 @@ from src.graph.queries.review import (
     GET_REVIEW_CASE,
     LIST_REVIEW_CASES,
 )
+from src.graph.queries.sales import GET_PERSON_SALES
 from src.graph.queries.survivorship import (
     CHECK_PERSON_ACTIVE,
     CHECK_SOURCE_RECORD_LINKED,
@@ -119,6 +120,7 @@ __all__ = [
     "GET_PERSON_MATCHES",
     "GET_PERSON_OVERRIDES",
     "GET_PERSON_OVERRIDES_FULL",
+    "GET_PERSON_SALES",
     "GET_PERSON_SOURCE_RECORDS",
     "GET_REVIEW_CASE",
     "GET_UNMERGE_TARGET",

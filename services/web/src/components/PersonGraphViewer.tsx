@@ -3,7 +3,6 @@
 import {
   useCallback,
   useEffect,
-  useMemo,
   useRef,
   useState,
   type ReactElement,
@@ -23,6 +22,8 @@ import { BffError, bffFetch } from "@/lib/api-client";
 import type { PersonGraph } from "@/lib/api-types";
 import {
   colorForLabel,
+  paintNode,
+  paintNodePointerArea,
   toForceGraphData,
   type FGGraphData,
   type FGLink,
@@ -66,12 +67,19 @@ interface PersonGraphViewerProps {
   personId?: string;
   elementId?: string;
   onNavigateNode: (elementId: string, label: string, displayName: string) => void;
+  onNodeContextMenu?: (
+    elementId: string,
+    label: string,
+    displayName: string,
+    position: { x: number; y: number },
+  ) => void;
 }
 
 export default function PersonGraphViewer({
   personId,
   elementId,
   onNavigateNode,
+  onNodeContextMenu,
 }: PersonGraphViewerProps): ReactElement {
   const [maxHops, setMaxHops] = useState<number>(2);
   const [graphData, setGraphData] = useState<FGGraphData | null>(null);
@@ -141,57 +149,20 @@ export default function PersonGraphViewer({
     setSelected({ kind: "edge", data: raw as unknown as FGLink });
   }, []);
 
-  const uniqueLabels = useMemo(() => {
-    if (!graphData) return [];
-    return [...new Set(graphData.nodes.map((n) => n.label))].sort();
-  }, [graphData]);
-
-  const nodeCanvasObject = useCallback(
-    (raw: AnyNode, ctx: CanvasRenderingContext2D, globalScale: number) => {
-      const node = raw as unknown as FGNode & { x?: number; y?: number };
-      const fontSize = 12 / globalScale;
-      const nodeSize = 6;
-      const x = node.x ?? 0;
-      const y = node.y ?? 0;
-
-      if (node.isFocus) {
-        ctx.beginPath();
-        ctx.arc(x, y, nodeSize + 4, 0, 2 * Math.PI);
-        ctx.strokeStyle = "#ff9800";
-        ctx.lineWidth = 2.5 / globalScale;
-        ctx.stroke();
-        ctx.beginPath();
-        ctx.arc(x, y, nodeSize + 7, 0, 2 * Math.PI);
-        ctx.strokeStyle = "rgba(255, 152, 0, 0.3)";
-        ctx.lineWidth = 3 / globalScale;
-        ctx.stroke();
-      }
-
-      ctx.beginPath();
-      ctx.arc(x, y, nodeSize, 0, 2 * Math.PI);
-      ctx.fillStyle = node.color;
-      ctx.fill();
-
-      ctx.font = `${fontSize}px Inter, sans-serif`;
-      ctx.textAlign = "center";
-      ctx.textBaseline = "top";
-      ctx.fillStyle = "#333";
-      const text = node.displayName.length > 24 ? node.displayName.slice(0, 22) + "..." : node.displayName;
-      ctx.fillText(text, x, y + nodeSize + 2);
+  const handleNodeRightClick = useCallback(
+    (raw: AnyNode, evt: unknown) => {
+      if (!onNodeContextMenu) return;
+      const event = evt as globalThis.MouseEvent;
+      event.preventDefault();
+      const node = raw as unknown as FGNode;
+      onNodeContextMenu(node.id, node.label, node.displayName, { x: event.clientX, y: event.clientY });
     },
-    [],
+    [onNodeContextMenu],
   );
 
-  const nodePointerAreaPaint = useCallback(
-    (raw: AnyNode, color: string, ctx: CanvasRenderingContext2D) => {
-      const node = raw as unknown as FGNode & { x?: number; y?: number };
-      ctx.beginPath();
-      ctx.arc(node.x ?? 0, node.y ?? 0, 10, 0, 2 * Math.PI);
-      ctx.fillStyle = color;
-      ctx.fill();
-    },
-    [],
-  );
+  const uniqueLabels = graphData
+    ? [...new Set(graphData.nodes.map((n) => n.label))].sort()
+    : [];
 
   return (
     <Stack spacing={2} sx={{ height: "100%" }}>
@@ -247,15 +218,16 @@ export default function PersonGraphViewer({
               nodeId="id"
               linkSource="source"
               linkTarget="target"
-              nodeCanvasObject={nodeCanvasObject}
+              nodeCanvasObject={paintNode}
               nodeCanvasObjectMode={() => "replace"}
-              nodePointerAreaPaint={nodePointerAreaPaint}
+              nodePointerAreaPaint={paintNodePointerArea}
               linkLabel={(raw: AnyLink) => (raw as unknown as FGLink).type}
               linkColor={() => "#b0bec5"}
               linkWidth={1.5}
               linkDirectionalArrowLength={4}
               linkDirectionalArrowRelPos={1}
               onNodeClick={handleNodeClick}
+              onNodeRightClick={handleNodeRightClick}
               onLinkClick={handleLinkClick}
               enableNodeDrag
               cooldownTicks={100}

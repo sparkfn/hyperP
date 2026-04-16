@@ -69,6 +69,16 @@ def to_float(value: GraphValue, default: float = 0.0) -> float:
     return default
 
 
+def to_optional_int(value: GraphValue) -> int | None:
+    """Convert a graph value to int, returning None for None."""
+    return to_int(value) if value is not None else None
+
+
+def to_optional_float(value: GraphValue) -> float | None:
+    """Convert a graph value to float, returning None for None."""
+    return to_float(value) if value is not None else None
+
+
 def to_str(value: GraphValue, default: str = "") -> str:
     """Convert a graph value to str with a safe default."""
     if value is None:

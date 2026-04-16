@@ -47,8 +47,8 @@ export default function RootLayout({ children }: RootLayoutProps): ReactElement 
                     <Button component={Link} href="/" color="inherit" size="small">
                       Search
                     </Button>
-                    <Button component={Link} href="/explore" color="inherit" size="small">
-                      Explore
+                    <Button component={Link} href="/graph" color="inherit" size="small">
+                      Graph
                     </Button>
                     <Button component={Link} href="/review" color="inherit" size="small">
                       Review Queue

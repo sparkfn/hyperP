@@ -80,6 +80,7 @@ def map_person(record: GraphRecord, address_key: str = "preferred_address") -> P
         golden_profile_computed_at=to_iso_or_none(p.get("golden_profile_computed_at")),
         golden_profile_version=to_optional_str(p.get("golden_profile_version")),
         source_record_count=to_int(record.get("source_record_count")),
+        connection_count=to_int(record.get("connection_count")),
         created_at=to_iso_or_empty(p.get("created_at")),
         updated_at=to_iso_or_empty(p.get("updated_at")),
     )
@@ -233,7 +234,6 @@ def _map_comparison_entity(
 
 
 def _map_source_record_comparison(e: GraphRecord) -> PersonComparisonEntity:
-    """Project a SourceRecord into the comparison shape for reviewers."""
     payload = _parse_normalized_payload(e.get("normalized_payload"))
     return PersonComparisonEntity(
         entity_kind="source_record",
@@ -332,7 +332,6 @@ def map_review_case_detail(record: GraphRecord) -> ReviewCaseDetail:
 
 
 def _sanitize_properties(raw: GraphValue) -> dict[str, str | int | float | bool | None]:
-    """Flatten a Neo4j properties map to JSON-safe scalars."""
     if not isinstance(raw, dict):
         return {}
     out: dict[str, str | int | float | bool | None] = {}
@@ -379,7 +378,6 @@ def _map_graph_edges(raw_edges: GraphValue) -> list[GraphEdge]:
 
 
 def map_person_graph(record: GraphRecord) -> PersonGraph:
-    """Map a graph traversal result to a PersonGraph model."""
     return PersonGraph(
         nodes=_map_graph_nodes(record.get("nodes")),
         edges=_map_graph_edges(record.get("edges")),

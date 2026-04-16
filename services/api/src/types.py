@@ -9,12 +9,10 @@ from pydantic import BaseModel, Field, model_validator
 
 # --- Enums ---
 
-
 class PersonStatus(StrEnum):
     ACTIVE = "active"
     MERGED = "merged"
     SUPPRESSED = "suppressed"
-
 
 class QualityFlag(StrEnum):
     VALID = "valid"
@@ -24,7 +22,6 @@ class QualityFlag(StrEnum):
     STALE = "stale"
     SOURCE_UNTRUSTED = "source_untrusted"
     PARTIAL_PARSE = "partial_parse"
-
 
 class IdentifierType(StrEnum):
     PHONE = "phone"
@@ -36,19 +33,16 @@ class IdentifierType(StrEnum):
     LOYALTY_ID = "loyalty_id"
     CUSTOM = "custom"
 
-
 class EngineType(StrEnum):
     DETERMINISTIC = "deterministic"
     HEURISTIC = "heuristic"
     LLM = "llm"
     MANUAL = "manual"
 
-
 class MatchDecisionOutcome(StrEnum):
     MERGE = "merge"
     REVIEW = "review"
     NO_MATCH = "no_match"
-
 
 class QueueState(StrEnum):
     OPEN = "open"
@@ -57,23 +51,19 @@ class QueueState(StrEnum):
     RESOLVED = "resolved"
     CANCELLED = "cancelled"
 
-
 class LinkStatus(StrEnum):
     LINKED = "linked"
     PENDING_REVIEW = "pending_review"
     REJECTED = "rejected"
     SUPPRESSED = "suppressed"
 
-
 class ApiReviewActionType(StrEnum):
     """Action types submittable via the review actions API endpoint."""
-
     MERGE = "merge"
     REJECT = "reject"
     DEFER = "defer"
     ESCALATE = "escalate"
     MANUAL_NO_MATCH = "manual_no_match"
-
 
 class ConnectionType(StrEnum):
     IDENTIFIER = "identifier"
@@ -81,13 +71,11 @@ class ConnectionType(StrEnum):
     KNOWS = "knows"
     ALL = "all"
 
-
 class TrustTier(StrEnum):
     TIER_1 = "tier_1"
     TIER_2 = "tier_2"
     TIER_3 = "tier_3"
     TIER_4 = "tier_4"
-
 
 # --- Response envelope ---
 
@@ -114,7 +102,6 @@ class ApiError(BaseModel):
 
 # --- Domain models ---
 
-
 class AddressSummary(BaseModel):
     address_id: str
     unit_number: str | None = None
@@ -140,6 +127,7 @@ class Person(BaseModel):
     golden_profile_computed_at: str | None = None
     golden_profile_version: str | None = None
     source_record_count: int = 0
+    connection_count: int = 0
     created_at: str = ""
     updated_at: str = ""
 
@@ -283,24 +271,42 @@ class DownstreamEvent(BaseModel):
     created_at: str
 
 
-# --- Request bodies ---
+class SalesProduct(BaseModel):
+    display_name: str | None = None
+    sku: str | None = None
 
+class SalesLineItem(BaseModel):
+    line_no: int | None = None
+    quantity: float | None = None
+    unit_price: float | None = None
+    subtotal: float | None = None
+    product: SalesProduct | None = None
+
+class SalesOrder(BaseModel):
+    order_no: str | None = None
+    source_order_id: str | None = None
+    order_date: str | None = None
+    total_amount: float | None = None
+    currency: str | None = None
+    source_system: str | None = None
+    entity_name: str | None = None
+    line_items: list[SalesLineItem] = Field(default_factory=list)
+
+
+# --- Request bodies ---
 
 class AssignReviewRequest(BaseModel):
     assigned_to: str
-
 
 class ReviewActionMetadata(BaseModel):
     create_manual_lock: bool = False
     follow_up_at: str | None = None
     escalation_reason: str | None = None
 
-
 class ReviewActionRequest(BaseModel):
     action_type: ApiReviewActionType
     notes: str | None = None
     metadata: ReviewActionMetadata = Field(default_factory=ReviewActionMetadata)
-
 
 class ManualMergeRequest(BaseModel):
     from_person_id: str
@@ -308,11 +314,9 @@ class ManualMergeRequest(BaseModel):
     reason: str
     recompute_golden_profile: bool = True
 
-
 class UnmergeRequest(BaseModel):
     merge_event_id: str
     reason: str
-
 
 class LockRequest(BaseModel):
     left_person_id: str
@@ -320,7 +324,6 @@ class LockRequest(BaseModel):
     lock_type: str
     reason: str
     expires_at: str | None = None
-
 
 class SurvivorshipOverrideRequest(BaseModel):
     attribute_name: str
@@ -332,7 +335,6 @@ class IngestIdentifier(BaseModel):
     type: str
     value: str
     is_verified: bool = False
-
 
 class IngestRecord(BaseModel):
     source_record_id: str
@@ -349,12 +351,7 @@ class IngestRecord(BaseModel):
 
     @model_validator(mode="after")
     def _check_record_type_invariants(self) -> IngestRecord:
-        """Mirror of ``SourceRecordEnvelope._check_record_type_invariants``.
-
-        Conversation records must declare extraction provenance; system
-        records must leave the conversation-only fields unset so that the
-        downstream graph schema invariants hold.
-        """
+        """Validate conversation vs system record field constraints."""
         if self.record_type == "conversation":
             if self.extraction_confidence is None or self.extraction_method is None:
                 raise ValueError(
@@ -384,11 +381,9 @@ class IngestRecordsRequest(BaseModel):
     ingest_run_id: str | None = None
     records: list[IngestRecord]
 
-
 class IngestRunCreateRequest(BaseModel):
     run_type: str
     metadata: dict[str, str] = Field(default_factory=dict)
-
 
 class IngestRunUpdateRequest(BaseModel):
     status: str

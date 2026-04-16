@@ -50,6 +50,7 @@ export interface Person {
   golden_profile_computed_at: string | null;
   golden_profile_version: string | null;
   source_record_count: number;
+  connection_count: number;
   created_at: string;
   updated_at: string;
 }
@@ -90,6 +91,30 @@ export interface PersonConnection {
   shared_identifiers: SharedIdentifier[];
   shared_addresses: SharedAddress[];
   knows_relationships: KnowsRelationship[];
+}
+
+export interface SalesProduct {
+  display_name: string | null;
+  sku: string | null;
+}
+
+export interface SalesLineItem {
+  line_no: number | null;
+  quantity: number | null;
+  unit_price: number | null;
+  subtotal: number | null;
+  product: SalesProduct | null;
+}
+
+export interface SalesOrder {
+  order_no: string | null;
+  source_order_id: string | null;
+  order_date: string | null;
+  total_amount: number | null;
+  currency: string | null;
+  source_system: string | null;
+  entity_name: string | null;
+  line_items: SalesLineItem[];
 }
 
 export interface GraphNode {

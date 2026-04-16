@@ -14,6 +14,7 @@ from src.graph.mappers import (
     map_person_graph,
     map_source_record,
 )
+from src.graph.mappers_sales import map_sales_order
 from src.graph.queries import (
     DEFAULT_HOPS,
     FIND_PERSON_BY_IDENTIFIER,
@@ -24,6 +25,7 @@ from src.graph.queries import (
     GET_PERSON_CONNECTIONS_IDENTIFIER,
     GET_PERSON_CONNECTIONS_KNOWS,
     GET_PERSON_MATCHES,
+    GET_PERSON_SALES,
     GET_PERSON_SOURCE_RECORDS,
     MAX_HOPS,
     MIN_HOPS,
@@ -40,6 +42,7 @@ from src.types import (
     Person,
     PersonConnection,
     PersonGraph,
+    SalesOrder,
     SourceRecord,
 )
 
@@ -156,6 +159,25 @@ async def get_person_connections(
         records = [_record_to_dict(r.keys(), list(r.values())) async for r in result]
     has_more = len(records) > page_limit
     items = [map_connection(rec) for rec in records[:page_limit]]
+    return envelope(items, request, next_cursor(skip, page_limit, has_more))
+
+
+@router.get("/{person_id}/sales", response_model=ApiResponse[list[SalesOrder]])
+async def get_person_sales(
+    person_id: str,
+    request: Request,
+    cursor: str | None = Query(default=None),
+    limit: int | None = Query(default=None),
+) -> ApiResponse[list[SalesOrder]]:
+    """Return sales orders for a person with line items and products."""
+    skip, page_limit = page_window(cursor, limit)
+    async with get_session() as session:
+        result = await session.run(
+            GET_PERSON_SALES, person_id=person_id, skip=skip, limit=page_limit + 1
+        )
+        records = [_record_to_dict(r.keys(), list(r.values())) async for r in result]
+    has_more = len(records) > page_limit
+    items = [map_sales_order(rec) for rec in records[:page_limit]]
     return envelope(items, request, next_cursor(skip, page_limit, has_more))
 
 

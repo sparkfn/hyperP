@@ -101,6 +101,53 @@ function displayNameForNode(node: GraphNode): string {
 
 // --- Data conversion ---
 
+// --- Canvas rendering callbacks for ForceGraph2D ---
+
+type AnyNode = Record<string, unknown>;
+
+export function paintNode(raw: AnyNode, ctx: CanvasRenderingContext2D, globalScale: number): void {
+  const node = raw as unknown as FGNode & { x?: number; y?: number };
+  const fontSize = 12 / globalScale;
+  const nodeSize = 6;
+  const x = node.x ?? 0;
+  const y = node.y ?? 0;
+
+  if (node.isFocus) {
+    ctx.beginPath();
+    ctx.arc(x, y, nodeSize + 4, 0, 2 * Math.PI);
+    ctx.strokeStyle = "#ff9800";
+    ctx.lineWidth = 2.5 / globalScale;
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(x, y, nodeSize + 7, 0, 2 * Math.PI);
+    ctx.strokeStyle = "rgba(255, 152, 0, 0.3)";
+    ctx.lineWidth = 3 / globalScale;
+    ctx.stroke();
+  }
+
+  ctx.beginPath();
+  ctx.arc(x, y, nodeSize, 0, 2 * Math.PI);
+  ctx.fillStyle = node.color;
+  ctx.fill();
+
+  ctx.font = `${fontSize}px Inter, sans-serif`;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "top";
+  ctx.fillStyle = "#333";
+  const text = node.displayName.length > 24 ? node.displayName.slice(0, 22) + "..." : node.displayName;
+  ctx.fillText(text, x, y + nodeSize + 2);
+}
+
+export function paintNodePointerArea(raw: AnyNode, color: string, ctx: CanvasRenderingContext2D): void {
+  const node = raw as unknown as FGNode & { x?: number; y?: number };
+  ctx.beginPath();
+  ctx.arc(node.x ?? 0, node.y ?? 0, 10, 0, 2 * Math.PI);
+  ctx.fillStyle = color;
+  ctx.fill();
+}
+
+// --- Data conversion ---
+
 export function toForceGraphData(
   graph: PersonGraph,
   focusPersonId?: string,
