@@ -25,6 +25,7 @@ from src.types import (
     DownstreamEvent,
     GraphEdge,
     GraphNode,
+    KnowsRelationship,
     MatchDecision,
     MatchDecisionSummary,
     Person,
@@ -107,35 +108,37 @@ def map_source_record(record: GraphRecord) -> SourceRecord:
 def _map_shared_identifiers(value: GraphValue) -> list[SharedIdentifier]:
     if not isinstance(value, list):
         return []
-    out: list[SharedIdentifier] = []
-    for raw in value:
-        item = _as_dict(raw)
-        if not item.get("identifier_type"):
-            continue
-        out.append(
-            SharedIdentifier(
-                identifier_type=to_str(item.get("identifier_type")),
-                normalized_value=to_str(item.get("normalized_value")),
-            )
+    return [
+        SharedIdentifier(
+            identifier_type=to_str(d.get("identifier_type")),
+            normalized_value=to_str(d.get("normalized_value")),
         )
-    return out
+        for raw in value if (d := _as_dict(raw)).get("identifier_type")
+    ]
 
 
 def _map_shared_addresses(value: GraphValue) -> list[SharedAddress]:
     if not isinstance(value, list):
         return []
-    out: list[SharedAddress] = []
-    for raw in value:
-        item = _as_dict(raw)
-        if not item.get("address_id"):
-            continue
-        out.append(
-            SharedAddress(
-                address_id=to_str(item.get("address_id")),
-                normalized_full=to_optional_str(item.get("normalized_full")),
-            )
+    return [
+        SharedAddress(
+            address_id=to_str(d.get("address_id")),
+            normalized_full=to_optional_str(d.get("normalized_full")),
         )
-    return out
+        for raw in value if (d := _as_dict(raw)).get("address_id")
+    ]
+
+
+def _map_knows_relationships(value: GraphValue) -> list[KnowsRelationship]:
+    if not isinstance(value, list):
+        return []
+    return [
+        KnowsRelationship(
+            relationship_label=to_optional_str(d.get("relationship_label")),
+            relationship_category=to_str(d.get("relationship_category")),
+        )
+        for raw in value if (d := _as_dict(raw)).get("relationship_category")
+    ]
 
 
 def map_connection(record: GraphRecord) -> PersonConnection:
@@ -146,6 +149,9 @@ def map_connection(record: GraphRecord) -> PersonConnection:
         hops=to_int(record.get("hops")),
         shared_identifiers=_map_shared_identifiers(record.get("shared_identifiers")),
         shared_addresses=_map_shared_addresses(record.get("shared_addresses")),
+        knows_relationships=_map_knows_relationships(
+            record.get("knows_relationships")
+        ),
     )
 
 

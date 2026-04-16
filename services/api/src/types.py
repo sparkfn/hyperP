@@ -78,6 +78,7 @@ class ApiReviewActionType(StrEnum):
 class ConnectionType(StrEnum):
     IDENTIFIER = "identifier"
     ADDRESS = "address"
+    KNOWS = "knows"
     ALL = "all"
 
 
@@ -89,7 +90,6 @@ class TrustTier(StrEnum):
 
 
 # --- Response envelope ---
-
 
 class ResponseMeta(BaseModel):
     request_id: str
@@ -228,6 +228,11 @@ class SharedAddress(BaseModel):
     normalized_full: str | None = None
 
 
+class KnowsRelationship(BaseModel):
+    relationship_label: str | None = None
+    relationship_category: str
+
+
 class PersonConnection(BaseModel):
     person_id: str
     status: str
@@ -235,6 +240,7 @@ class PersonConnection(BaseModel):
     hops: int
     shared_identifiers: list[SharedIdentifier] = Field(default_factory=list)
     shared_addresses: list[SharedAddress] = Field(default_factory=list)
+    knows_relationships: list[KnowsRelationship] = Field(default_factory=list)
 
 
 class AuditEvent(BaseModel):

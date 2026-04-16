@@ -3,30 +3,45 @@
 from __future__ import annotations
 
 # Labels to exclude from traversal — too noisy for interactive exploration.
-_EXCLUDED_LABELS = ("IngestRun", "SourceSystem")
+_EXCLUDED_LABELS = ("IngestRun", "SourceSystem", "Entity")
 
 _LABEL_FILTER = " AND ".join(f"NOT n:{label}" for label in _EXCLUDED_LABELS)
 
 # Relationship types the traversal must never follow.
-# FROM_SOURCE: SourceRecord -> SourceSystem fan-out to every record in that system.
-# HAS_FACT: Person -> SourceRecord fan-out floods the graph at multi-hop depth.
-# PART_OF_RUN: SourceRecord -> IngestRun -> SourceRecord fan-out across all
-#   records in the same ingestion run.
-_EXCLUDED_REL_TYPES = ("FROM_SOURCE", "HAS_FACT", "PART_OF_RUN")
+# FROM_SOURCE: SourceRecord -> SourceSystem fan-out.
+# HAS_FACT: Person -> SourceRecord fan-out at multi-hop depth.
+# PART_OF_RUN: SourceRecord -> IngestRun -> SourceRecord cross-run fan-out.
+# SOLD_THROUGH: Order -> SourceSystem fan-out (all orders share the same SS).
+# OPERATED_BY: Entity -> SourceSystem.
+# SOLD_BY: Product -> Entity.
+_EXCLUDED_REL_TYPES = (
+    "FROM_SOURCE", "HAS_FACT", "PART_OF_RUN",
+    "SOLD_THROUGH", "OPERATED_BY", "SOLD_BY",
+)
 
 _REL_FILTER = " AND ".join(f"type(r) <> '{rt}'" for rt in _EXCLUDED_REL_TYPES)
+
+# Dead-end labels: these nodes can appear at the END of a path but must not
+# be intermediate waypoints. This prevents fan-out through shared nodes
+# (e.g. the same Product referenced by many LineItems across different Orders).
+_DEAD_END_LABELS = ("Product",)
+
+_DEAD_END_FILTER = (
+    "NONE(mid IN nodes(path)[1..-1] WHERE "
+    + " OR ".join(f"mid:{label}" for label in _DEAD_END_LABELS)
+    + ")"
+)
 
 # Cap on total nodes returned to prevent browser overload and query blow-up.
 _NODE_CAP = 200
 
-# Shared query body: collect distinct neighbor nodes with a cap, then discover
-# all relationships between the collected nodes.
 _QUERY_BODY = """
 CALL {{
   WITH start
   MATCH path = (start)-[*1..{max_hops}]-(n)
   WHERE {label_filter}
     AND ALL(r IN relationships(path) WHERE {rel_filter})
+    AND {dead_end_filter}
   WITH start, collect(DISTINCT n)[0..{node_cap}] AS neighbors
   RETURN neighbors + [start] AS raw_nodes
 }}
@@ -64,6 +79,7 @@ _NODE_START = "MATCH (start) WHERE elementId(start) = $element_id\n"
 _FMT: dict[str, str | int] = {
     "label_filter": _LABEL_FILTER,
     "rel_filter": _REL_FILTER,
+    "dead_end_filter": _DEAD_END_FILTER,
     "node_cap": _NODE_CAP,
 }
 
@@ -89,12 +105,16 @@ def get_graph_query(max_hops: int) -> str:
     Raises ``ValueError`` if *max_hops* is outside the allowed range.
     """
     if max_hops not in _DEPTH_QUERIES:
-        raise ValueError(f"max_hops must be between {MIN_HOPS} and {MAX_HOPS}, got {max_hops}")
+        raise ValueError(
+            f"max_hops must be between {MIN_HOPS} and {MAX_HOPS}, got {max_hops}"
+        )
     return _DEPTH_QUERIES[max_hops]
 
 
 def get_node_graph_query(max_hops: int) -> str:
     """Return the pre-built Cypher query for generic node traversal by elementId."""
     if max_hops not in _NODE_DEPTH_QUERIES:
-        raise ValueError(f"max_hops must be between {MIN_HOPS} and {MAX_HOPS}, got {max_hops}")
+        raise ValueError(
+            f"max_hops must be between {MIN_HOPS} and {MAX_HOPS}, got {max_hops}"
+        )
     return _NODE_DEPTH_QUERIES[max_hops]

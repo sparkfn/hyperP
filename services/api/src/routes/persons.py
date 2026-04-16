@@ -22,6 +22,7 @@ from src.graph.queries import (
     GET_PERSON_CONNECTIONS_ADDRESS,
     GET_PERSON_CONNECTIONS_ALL,
     GET_PERSON_CONNECTIONS_IDENTIFIER,
+    GET_PERSON_CONNECTIONS_KNOWS,
     GET_PERSON_MATCHES,
     GET_PERSON_SOURCE_RECORDS,
     MAX_HOPS,
@@ -54,6 +55,8 @@ def _connection_query(connection_type: ConnectionType) -> str:
         return GET_PERSON_CONNECTIONS_IDENTIFIER
     if connection_type is ConnectionType.ADDRESS:
         return GET_PERSON_CONNECTIONS_ADDRESS
+    if connection_type is ConnectionType.KNOWS:
+        return GET_PERSON_CONNECTIONS_KNOWS
     return GET_PERSON_CONNECTIONS_ALL
 
 

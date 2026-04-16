@@ -77,6 +77,11 @@ export interface SharedAddress {
   normalized_full: string | null;
 }
 
+export interface KnowsRelationship {
+  relationship_label: string | null;
+  relationship_category: string;
+}
+
 export interface PersonConnection {
   person_id: string;
   status: string;
@@ -84,6 +89,7 @@ export interface PersonConnection {
   hops: number;
   shared_identifiers: SharedIdentifier[];
   shared_addresses: SharedAddress[];
+  knows_relationships: KnowsRelationship[];
 }
 
 export interface GraphNode {

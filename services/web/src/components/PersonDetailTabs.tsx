@@ -143,7 +143,7 @@ function ConnectionsCard({ connections }: { connections: PersonConnection[] }): 
       </Typography>
       {connections.length === 0 ? (
         <Typography variant="body2" color="text.secondary">
-          No connected persons via shared identifiers or addresses.
+          No connected persons via shared identifiers, addresses, or relationships.
         </Typography>
       ) : (
         <Table size="small">
@@ -154,6 +154,7 @@ function ConnectionsCard({ connections }: { connections: PersonConnection[] }): 
               <TableCell align="right">Hops</TableCell>
               <TableCell>Shared identifiers</TableCell>
               <TableCell>Shared addresses</TableCell>
+              <TableCell>Relationships</TableCell>
             </TableRow>
           </TableHead>
           <TableBody>
@@ -174,6 +175,11 @@ function ConnectionsCard({ connections }: { connections: PersonConnection[] }): 
                 <TableCell>
                   {c.shared_addresses.map((a) => a.normalized_full ?? a.address_id).join(", ") ||
                     "—"}
+                </TableCell>
+                <TableCell>
+                  {c.knows_relationships
+                    .map((k) => k.relationship_label ?? k.relationship_category)
+                    .join(", ") || "—"}
                 </TableCell>
               </TableRow>
             ))}
