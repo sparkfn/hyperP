@@ -24,7 +24,7 @@ from src.graph import queries
 from src.graph.bootstrap import bootstrap_entities_and_sources
 from src.graph.client import Neo4jClient
 from src.graph.schema_init import apply_schema
-from src.models import RecordType, SourceRecordEnvelope
+from src.models import IngestResult, RecordType, SourceRecordEnvelope
 from src.pipeline import IngestPipeline
 from src.pipeline_knows import materialize_knows_from_contacts
 from src.pipeline_sales import drain_pending_customer_sales, ingest_sales_record
@@ -104,123 +104,131 @@ class IngestionSummary(TypedDict):
     mode: str
 
 
-def run_ingestion(source_key: str, mode: str = "batch") -> IngestionSummary:
-    """Execute one ingestion run end-to-end.
+def _create_ingest_run(
+    client: Neo4jClient, source_key: str, mode: str
+) -> str:
+    """Create an IngestRun node and return its ID."""
 
-    Shared by both the CLI entry point and the Celery task.
-    """
+    def _tx(tx: ManagedTransaction) -> str:
+        result = tx.run(
+            queries.CREATE_INGEST_RUN,
+            source_key=source_key,
+            run_type=mode,
+        )
+        record = result.single()
+        assert record is not None, "CREATE_INGEST_RUN must return a row"
+        run_id_value = record["ingest_run_id"]
+        assert isinstance(run_id_value, str)
+        return run_id_value
+
+    with client.session() as session:
+        return session.execute_write(_tx)
+
+
+def _finalize_ingest_run(
+    client: Neo4jClient,
+    ingest_run_id: str,
+    status: str,
+    record_count: int,
+    rejected_count: int,
+) -> None:
+    """Update the IngestRun with final status and counts."""
+
+    def _tx(tx: ManagedTransaction) -> None:
+        tx.run(
+            queries.UPDATE_INGEST_RUN,
+            ingest_run_id=ingest_run_id,
+            status=status,
+            record_count=record_count,
+            rejected_count=rejected_count,
+        )
+
+    with client.session() as session:
+        session.execute_write(_tx)
+
+
+def _process_record(
+    client: Neo4jClient,
+    pipeline: IngestPipeline,
+    envelope: SourceRecordEnvelope,
+    ingest_run_id: str,
+) -> IngestResult:
+    """Route a single envelope to the sales or identity pipeline."""
+    if envelope.record_type == RecordType.SALES:
+        return ingest_sales_record(client, envelope, ingest_run_id=ingest_run_id)
+    return pipeline.ingest(envelope, ingest_run_id=ingest_run_id)
+
+
+def _ingest_all_records(
+    client: Neo4jClient,
+    pipeline: IngestPipeline,
+    connector: SourceConnector,
+    ingest_run_id: str,
+) -> tuple[int, int, int]:
+    """Process every record from the connector. Returns (success, errors, skipped)."""
+    success = errors = skipped = 0
+    for raw_record in connector.fetch_records():
+        envelope = SourceRecordEnvelope.model_validate(
+            {"source_system": connector.get_source_key(), **raw_record},
+        )
+        result = _process_record(client, pipeline, envelope, ingest_run_id)
+        if result.skipped_duplicate:
+            skipped += 1
+        elif result.errors:
+            errors += 1
+        else:
+            success += 1
+        logger.info(
+            "  %s -> person=%s new=%s decision=%s candidates=%d%s",
+            result.source_record_id, result.person_id, result.is_new_person,
+            result.match_decision, result.candidate_count,
+            " (DUPLICATE)" if result.skipped_duplicate else "",
+        )
+    return success, errors, skipped
+
+
+def run_ingestion(source_key: str, mode: str = "batch") -> IngestionSummary:
+    """Execute one ingestion run end-to-end."""
     settings = get_settings()
-    logger.info("Starting ingestion run")
-    logger.info("  source-key : %s", source_key)
-    logger.info("  mode       : %s", mode)
-    logger.info("  batch-size : %d", settings.batch_size)
-    logger.info("  neo4j-uri  : %s", settings.neo4j_uri)
+    logger.info("Starting ingestion: source=%s mode=%s", source_key, mode)
 
     client = Neo4jClient(settings)
     try:
         client.verify_connectivity()
-        logger.info("Neo4j connection verified")
-
-        # Apply constraints + indexes before any data work. Idempotent — every
-        # statement is `IF NOT EXISTS`, so this is a no-op on warm databases
-        # and a critical fix on cold ones (missing indexes turn candidate
-        # generation into a full label scan that gets linearly slower).
         apply_schema(client)
-
         bootstrap_entities_and_sources(client)
 
         pipeline = IngestPipeline(client)
         connector = get_connector(source_key)
-        logger.info("Using connector: %s", type(connector).__name__)
+        ingest_run_id = _create_ingest_run(client, source_key, mode)
+        logger.info("IngestRun %s created, connector=%s", ingest_run_id, type(connector).__name__)
 
-        def _create_run(tx: ManagedTransaction) -> str:
-            result = tx.run(
-                queries.CREATE_INGEST_RUN,
-                source_key=source_key,
-                run_type=mode,
-            )
-            record = result.single()
-            assert record is not None, "CREATE_INGEST_RUN must return a row"
-            run_id_value = record["ingest_run_id"]
-            assert isinstance(run_id_value, str)
-            return run_id_value
-
-        with client.session() as session:
-            ingest_run_id = session.execute_write(_create_run)
-        logger.info("Created IngestRun %s", ingest_run_id)
-
-        success = errors = skipped = 0
         try:
-            for raw_record in connector.fetch_records():
-                envelope = SourceRecordEnvelope.model_validate(
-                    {"source_system": connector.get_source_key(), **raw_record},
-                )
-                if envelope.record_type == RecordType.SALES:
-                    result = ingest_sales_record(
-                        client, envelope, ingest_run_id=ingest_run_id
-                    )
-                else:
-                    result = pipeline.ingest(envelope, ingest_run_id=ingest_run_id)
-                if result.skipped_duplicate:
-                    skipped += 1
-                elif result.errors:
-                    errors += 1
-                else:
-                    success += 1
-                logger.info(
-                    "  %s -> person=%s new=%s decision=%s candidates=%d%s",
-                    result.source_record_id,
-                    result.person_id,
-                    result.is_new_person,
-                    result.match_decision,
-                    result.candidate_count,
-                    " (DUPLICATE)" if result.skipped_duplicate else "",
-                )
-
+            success, errors, skipped = _ingest_all_records(
+                client, pipeline, connector, ingest_run_id,
+            )
             drained = drain_pending_customer_sales(client)
             if drained:
                 logger.info("Drained %d pending sales records", drained)
-
             knows_linked = materialize_knows_from_contacts(client)
             if knows_linked:
-                logger.info(
-                    "Materialized %d KNOWS edges from contacts", knows_linked
-                )
+                logger.info("Materialized %d KNOWS edges from contacts", knows_linked)
         except Exception:
-            _mark_run_failed(
-                client, ingest_run_id, success + errors + skipped, errors
-            )
+            _mark_run_failed(client, ingest_run_id, 0, 0)
             raise
 
         final_status = "completed" if errors == 0 else "completed_with_errors"
-
-        def _update_run(tx: ManagedTransaction) -> None:
-            tx.run(
-                queries.UPDATE_INGEST_RUN,
-                ingest_run_id=ingest_run_id,
-                status=final_status,
-                record_count=success + errors + skipped,
-                rejected_count=errors,
-            )
-
-        with client.session() as session:
-            session.execute_write(_update_run)
-        logger.info("Updated IngestRun %s -> %s", ingest_run_id, final_status)
-        logger.info(
-            "Ingestion complete: %d succeeded, %d errors, %d skipped duplicates",
-            success,
-            errors,
-            skipped,
+        _finalize_ingest_run(
+            client, ingest_run_id, final_status, success + errors + skipped, errors,
         )
-
+        logger.info(
+            "Ingestion complete: %d succeeded, %d errors, %d skipped",
+            success, errors, skipped,
+        )
         return {
-            "ingest_run_id": ingest_run_id,
-            "status": final_status,
-            "succeeded": success,
-            "errors": errors,
-            "skipped": skipped,
-            "source_key": source_key,
-            "mode": mode,
+            "ingest_run_id": ingest_run_id, "status": final_status,
+            "succeeded": success, "errors": errors, "skipped": skipped,
+            "source_key": source_key, "mode": mode,
         }
     finally:
         client.close()

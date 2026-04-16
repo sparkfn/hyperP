@@ -42,6 +42,51 @@ class NormalizedAddress:
     normalized_full: str
 
 
+_PLACEHOLDER_VALUES: frozenset[str] = frozenset(
+    {"na", "n/a", "-", "unknown", "nil", "none", "test", "tbc", "tba"}
+)
+
+
+def _partial_parse(
+    raw: str, default_country: str, default_city: str
+) -> tuple[NormalizedAddress | None, QualityFlag]:
+    """Fallback: extract a 6-digit postal code from an otherwise unparseable address."""
+    postal_match = re.search(r"\b(\d{6})\b", raw)
+    if not postal_match:
+        return None, QualityFlag.INVALID_FORMAT
+    postal = postal_match.group(1)
+    full = re.sub(r"\s+", " ", raw).strip().lower()
+    return NormalizedAddress(
+        unit_number=None, street_number="", street_name=full, building_name=None,
+        city=default_city.lower(), state_province=None, postal_code=postal,
+        country_code=default_country.upper(), normalized_full=full,
+    ), QualityFlag.PARTIAL_PARSE
+
+
+def _full_parse(
+    match: re.Match[str], default_country: str, default_city: str
+) -> NormalizedAddress:
+    """Build a NormalizedAddress from a successful SG regex match."""
+    unit = match.group("unit")
+    street_num = match.group("street_num").strip().lower()
+    street_name = re.sub(r"\s+", " ", match.group("street_name")).strip().lower()
+    postal = match.group("postal")
+    city = default_city.lower()
+    country = default_country.upper()
+
+    parts = [street_num, street_name]
+    if unit:
+        parts.insert(0, f"#{unit}")
+    parts.append(f"{city} {postal}")
+    parts.append(country.lower())
+
+    return NormalizedAddress(
+        unit_number=unit, street_number=street_num, street_name=street_name,
+        building_name=None, city=city, state_province=None, postal_code=postal,
+        country_code=country, normalized_full=", ".join(parts),
+    )
+
+
 def normalize_address(
     raw: str,
     *,
@@ -56,58 +101,10 @@ def normalize_address(
     stripped = raw.strip()
     if not stripped:
         return None, QualityFlag.INVALID_FORMAT
-
-    # Detect obvious placeholders
-    lowered = stripped.lower()
-    if lowered in {"na", "n/a", "-", "unknown", "nil", "none", "test", "tbc", "tba"}:
+    if stripped.lower() in _PLACEHOLDER_VALUES:
         return None, QualityFlag.PLACEHOLDER_VALUE
 
     match = _SG_ADDRESS_RE.match(stripped)
     if not match:
-        # Attempt minimal parse: just extract postal code if present
-        postal_match = re.search(r"\b(\d{6})\b", stripped)
-        if postal_match:
-            postal = postal_match.group(1)
-            full = re.sub(r"\s+", " ", stripped).strip().lower()
-            addr = NormalizedAddress(
-                unit_number=None,
-                street_number="",
-                street_name=full,
-                building_name=None,
-                city=default_city.lower(),
-                state_province=None,
-                postal_code=postal,
-                country_code=default_country.upper(),
-                normalized_full=full,
-            )
-            return addr, QualityFlag.PARTIAL_PARSE
-
-        return None, QualityFlag.INVALID_FORMAT
-
-    unit = match.group("unit")
-    street_num = match.group("street_num").strip().lower()
-    street_name = re.sub(r"\s+", " ", match.group("street_name")).strip().lower()
-    postal = match.group("postal")
-
-    city = default_city.lower()
-    country = default_country.upper()
-
-    parts = [street_num, street_name]
-    if unit:
-        parts.insert(0, f"#{unit}")
-    parts.append(f"{city} {postal}")
-    parts.append(country.lower())
-    normalized_full = ", ".join(parts)
-
-    addr = NormalizedAddress(
-        unit_number=unit,
-        street_number=street_num,
-        street_name=street_name,
-        building_name=None,
-        city=city,
-        state_province=None,
-        postal_code=postal,
-        country_code=country,
-        normalized_full=normalized_full,
-    )
-    return addr, QualityFlag.VALID
+        return _partial_parse(stripped, default_country, default_city)
+    return _full_parse(match, default_country, default_city), QualityFlag.VALID

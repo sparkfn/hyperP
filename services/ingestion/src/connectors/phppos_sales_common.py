@@ -54,22 +54,29 @@ def sales_tables_present(engine: Engine) -> bool:
     return True
 
 
+def _fetch_sale_items(
+    sidecar: Connection,
+    items_t: Table,
+    item_t: Table,
+    sale_id: int,
+) -> tuple[list[Any], dict[int, Any]]:
+    """Fetch line items and their product records for one sale."""
+    line_rows = list(sidecar.execute(select(items_t).where(items_t.c.sale_id == sale_id)))
+    item_ids = [r.item_id for r in line_rows if r.item_id is not None]
+    items_by_id: dict[int, Any] = {}
+    if item_ids:
+        stmt = select(item_t).where(item_t.c.item_id.in_(list(set(item_ids))))
+        items_by_id = {r.item_id: r for r in sidecar.execute(stmt)}
+    return line_rows, items_by_id
+
+
 def fetch_phppos_sales(
-    engine: Engine,
-    conn: Connection,
-    source_system_key: str,
-    chunk_size: int,
+    engine: Engine, conn: Connection, source_system_key: str, chunk_size: int,
 ) -> Iterator[dict[str, JsonValue]]:
     """Yield one sales envelope per phppos_sales row.
 
-    Uses reflection against the live DB rather than a hand-maintained
-    schema module — the phppos installation may carry local column
-    additions and we only read a known subset by name.
-
-    A separate sidecar connection is opened for per-sale line-item and
-    item lookups. Running those on the same connection as the primary
-    streaming cursor aborts the stream after the first yield under
-    pymysql (``Previous unbuffered result was left incomplete``).
+    A sidecar connection handles per-sale lookups to avoid aborting
+    the primary streaming cursor (pymysql unbuffered result limitation).
     """
     if not sales_tables_present(engine):
         return
@@ -78,35 +85,17 @@ def fetch_phppos_sales(
     sales_t = Table("phppos_sales", md, autoload_with=engine)
     items_t = Table("phppos_sales_items", md, autoload_with=engine)
     item_t = Table("phppos_items", md, autoload_with=engine)
-
     sales_cols = {c.name for c in sales_t.columns}
     items_cols = {c.name for c in items_t.columns}
     item_cols = {c.name for c in item_t.columns}
 
-    primary_stmt = select(sales_t).order_by(sales_t.c.sale_id)
-    result = conn.execute(primary_stmt).yield_per(chunk_size)
-
-    with engine.connect() as sidecar_conn:
+    result = conn.execute(select(sales_t).order_by(sales_t.c.sale_id)).yield_per(chunk_size)
+    with engine.connect() as sidecar:
         for sale in result:
-            sale_id: int = sale.sale_id
-            line_stmt = select(items_t).where(items_t.c.sale_id == sale_id)
-            line_rows = list(sidecar_conn.execute(line_stmt))
-
-            item_ids = [r.item_id for r in line_rows if r.item_id is not None]
-            items_by_id: dict[int, Any] = {}
-            if item_ids:
-                item_stmt = select(item_t).where(
-                    item_t.c.item_id.in_(list(set(item_ids)))
-                )
-                items_by_id = {r.item_id: r for r in sidecar_conn.execute(item_stmt)}
-
+            line_rows, items_by_id = _fetch_sale_items(sidecar, items_t, item_t, sale.sale_id)
             yield _build_envelope(
-                sale=sale,
-                line_rows=line_rows,
-                items_by_id=items_by_id,
-                sales_cols=sales_cols,
-                items_cols=items_cols,
-                item_cols=item_cols,
+                sale=sale, line_rows=line_rows, items_by_id=items_by_id,
+                sales_cols=sales_cols, items_cols=items_cols, item_cols=item_cols,
                 source_system_key=source_system_key,
             )
 
@@ -127,60 +116,15 @@ def _build_envelope(
     line_items_payload: list[JsonValue] = []
     for idx, line in enumerate(line_rows, start=1):
         item = items_by_id.get(line.item_id) if line.item_id is not None else None
-        unit_price = _decimal_to_float(getattr(line, "item_unit_price", None))
-        qty_raw = getattr(line, "quantity_purchased", None)
-        qty = float(qty_raw) if qty_raw is not None else None
-        discount = _decimal_to_float(getattr(line, "discount", None)) or 0.0
-        line_total_value: float | None = None
-        if unit_price is not None and qty is not None:
-            line_total_value = unit_price * qty - discount
-            total += Decimal(str(line_total_value))
-
-        line_items_payload.append(
-            {
-                "source_line_item_id": f"{source_order_id}:{getattr(line, 'line', idx)}",
-                "line_no": getattr(line, "line", idx),
-                "quantity": qty,
-                "unit_price": unit_price,
-                "line_total": line_total_value,
-                "discount_amount": discount,
-                "tax_amount": None,
-                "metadata": {
-                    "item_id": getattr(line, "item_id", None),
-                    "item_variation_id": (
-                        getattr(line, "item_variation_id", None)
-                        if "item_variation_id" in items_cols
-                        else None
-                    ),
-                    "serialnumber": (
-                        getattr(line, "serialnumber", None)
-                        if "serialnumber" in items_cols
-                        else None
-                    ),
-                    "description": (
-                        getattr(line, "description", None)
-                        if "description" in items_cols
-                        else None
-                    ),
-                },
-                "product": _product_payload(item, source_system_key, item_cols)
-                if item is not None
-                else None,
-            }
+        line_payload, line_total_value = _build_line_item(
+            line, idx, source_order_id, item, items_cols, item_cols, source_system_key,
         )
+        if line_total_value is not None:
+            total += Decimal(str(line_total_value))
+        line_items_payload.append(line_payload)
 
     ordered_at = to_iso(getattr(sale, "sale_time", None))
-    status_value: str | None = None
-    if "sale_status" in sales_cols:
-        status_value = str(sale.sale_status) if sale.sale_status is not None else None
-    elif "suspended" in sales_cols:
-        status_value = "suspended" if sale.suspended else "completed"
-
     customer_id = getattr(sale, "customer_id", None)
-
-    order_no = (
-        getattr(sale, "invoice_number", None) if "invoice_number" in sales_cols else None
-    ) or source_order_id
 
     return build_envelope(
         source_record_id=f"{source_system_key}-sale-{source_order_id}",
@@ -189,44 +133,9 @@ def _build_envelope(
         attributes={},
         record_type="sales",
         raw_payload={
-            "order": {
-                "source_order_id": source_order_id,
-                "order_no": order_no,
-                "ordered_at": ordered_at,
-                "status": status_value,
-                "total_amount": float(total),
-                "currency": "SGD",
-                "item_count": len(line_rows),
-                "metadata": {
-                    "customer_id": customer_id,
-                    "employee_id": (
-                        getattr(sale, "employee_id", None)
-                        if "employee_id" in sales_cols
-                        else None
-                    ),
-                    "register_id": (
-                        getattr(sale, "register_id", None)
-                        if "register_id" in sales_cols
-                        else None
-                    ),
-                    "payment_type": (
-                        getattr(sale, "payment_type", None)
-                        if "payment_type" in sales_cols
-                        else None
-                    ),
-                    "sale_type_id": (
-                        getattr(sale, "sale_type_id", None)
-                        if "sale_type_id" in sales_cols
-                        else None
-                    ),
-                    "comment": (
-                        getattr(sale, "comment", None)
-                        if "comment" in sales_cols
-                        else None
-                    ),
-                },
-                "raw": serialize_row(sale),
-            },
+            "order": _build_order_payload(
+                sale, source_order_id, ordered_at, sales_cols, line_rows, total,
+            ),
             "line_items": line_items_payload,
             "customer_link": {
                 "identity_source_record_id": (
@@ -238,6 +147,91 @@ def _build_envelope(
             },
         },
     )
+
+
+def _build_line_item(
+    line: Any,
+    idx: int,
+    source_order_id: str,
+    item: Any | None,
+    items_cols: set[str],
+    item_cols: set[str],
+    source_system_key: str,
+) -> tuple[dict[str, JsonValue], float | None]:
+    """Build a single line-item payload. Returns ``(payload, line_total)``."""
+    unit_price = _decimal_to_float(getattr(line, "item_unit_price", None))
+    qty_raw = getattr(line, "quantity_purchased", None)
+    qty = float(qty_raw) if qty_raw is not None else None
+    discount = _decimal_to_float(getattr(line, "discount", None)) or 0.0
+    line_total_value: float | None = None
+    if unit_price is not None and qty is not None:
+        line_total_value = unit_price * qty - discount
+
+    payload: dict[str, JsonValue] = {
+        "source_line_item_id": f"{source_order_id}:{getattr(line, 'line', idx)}",
+        "line_no": getattr(line, "line", idx),
+        "quantity": qty,
+        "unit_price": unit_price,
+        "line_total": line_total_value,
+        "discount_amount": discount,
+        "tax_amount": None,
+        "metadata": {
+            "item_id": getattr(line, "item_id", None),
+            "item_variation_id": _col_or_none(line, "item_variation_id", items_cols),
+            "serialnumber": _col_or_none(line, "serialnumber", items_cols),
+            "description": _col_or_none(line, "description", items_cols),
+        },
+        "product": _product_payload(item, source_system_key, item_cols)
+        if item is not None
+        else None,
+    }
+    return payload, line_total_value
+
+
+def _build_order_payload(
+    sale: Any,
+    source_order_id: str,
+    ordered_at: str | None,
+    sales_cols: set[str],
+    line_rows: list[Any],
+    total: Decimal,
+) -> dict[str, JsonValue]:
+    """Build the ``order`` section of a phppos sales envelope."""
+    status_value: str | None = None
+    if "sale_status" in sales_cols:
+        status_value = str(sale.sale_status) if sale.sale_status is not None else None
+    elif "suspended" in sales_cols:
+        status_value = "suspended" if sale.suspended else "completed"
+
+    order_no = (
+        getattr(sale, "invoice_number", None) if "invoice_number" in sales_cols else None
+    ) or source_order_id
+
+    return {
+        "source_order_id": source_order_id,
+        "order_no": order_no,
+        "ordered_at": ordered_at,
+        "status": status_value,
+        "total_amount": float(total),
+        "currency": "SGD",
+        "item_count": len(line_rows),
+        "metadata": {
+            "customer_id": getattr(sale, "customer_id", None),
+            "employee_id": _col_or_none(sale, "employee_id", sales_cols),
+            "register_id": _col_or_none(sale, "register_id", sales_cols),
+            "payment_type": _col_or_none(sale, "payment_type", sales_cols),
+            "sale_type_id": _col_or_none(sale, "sale_type_id", sales_cols),
+            "comment": _col_or_none(sale, "comment", sales_cols),
+        },
+        "raw": serialize_row(sale),
+    }
+
+
+def _col_or_none(row: Any, attr: str, available_cols: set[str]) -> JsonValue:
+    """Return an attribute value if the column exists, else None."""
+    if attr not in available_cols:
+        return None
+    return getattr(row, attr, None)
 
 
 def _product_payload(

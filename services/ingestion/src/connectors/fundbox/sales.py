@@ -59,6 +59,59 @@ def _decimal_to_float(value: object) -> float | None:
     return None
 
 
+def _variant_to_product(variant: Any, product: Any | None) -> dict[str, JsonValue]:
+    """Build a product payload from a variant + optional parent product."""
+    return {
+        "source_product_id": f"variant-{variant.id}",
+        "sku": variant.sku,
+        "name": variant.name,
+        "display_name": product.name if product else variant.name,
+        "category": product.category if product else None,
+        "subcategory": product.sub_category if product else None,
+        "manufacturer": product.make if product else None,
+        "is_active": bool(variant.active),
+        "attributes": {
+            "variant_attributes": variant.attributes,
+            "type": product.type if product else None,
+            "sub_type": product.sub_type if product else None,
+            "model": product.model if product else None,
+        },
+    }
+
+
+def _build_line_items(
+    line_rows: list[Any],
+    source_order_id: str,
+    product_info: dict[int, dict[str, JsonValue]],
+) -> list[JsonValue]:
+    """Build the line_items list for a Fundbox sales envelope."""
+    items: list[JsonValue] = []
+    for idx, line in enumerate(line_rows, start=1):
+        product = product_info.get(line.merchant_product_id)
+        unit_price = _decimal_to_float(line.price)
+        line_total = (
+            unit_price * line.quantity
+            if unit_price is not None and line.quantity is not None
+            else None
+        )
+        items.append({
+            "source_line_item_id": f"{source_order_id}:{line.id}",
+            "line_no": idx,
+            "quantity": line.quantity,
+            "unit_price": unit_price,
+            "line_total": line_total,
+            "discount_amount": None,
+            "tax_amount": None,
+            "metadata": {
+                "lta_tag": line.lta_tag,
+                "serial_no": line.serial_no,
+                "merchant_product_id": line.merchant_product_id,
+            },
+            "product": product,
+        })
+    return items
+
+
 class FundboxSalesConnector(FundboxConnectorBase):
     """Yields one sales SourceRecord per Fundbox order (filtered by status)."""
 
@@ -116,11 +169,7 @@ class FundboxSalesConnector(FundboxConnectorBase):
     def _fetch_product_info(
         self, conn: Connection, merchant_product_ids: set[int]
     ) -> dict[int, dict[str, JsonValue]]:
-        """Resolve merchant_product_id → {variant, product} bundle.
-
-        merchant_products.product_variant_id → product_variants.id
-        product_variants.product_id           → products.id
-        """
+        """Resolve merchant_product_id → {variant, product} bundle."""
         if not merchant_product_ids:
             return {}
         target = self._sidecar_conn or conn
@@ -134,9 +183,7 @@ class FundboxSalesConnector(FundboxConnectorBase):
         if not variant_ids:
             return {}
 
-        variant_stmt = select(product_variants).where(
-            product_variants.c.id.in_(variant_ids)
-        )
+        variant_stmt = select(product_variants).where(product_variants.c.id.in_(variant_ids))
         variants: dict[int, Any] = {r.id: r for r in target.execute(variant_stmt)}
 
         product_ids = [v.product_id for v in variants.values() if v.product_id]
@@ -151,22 +198,7 @@ class FundboxSalesConnector(FundboxConnectorBase):
             if variant is None:
                 continue
             product = products_map.get(variant.product_id)
-            bundle[mp.merchant_product_id] = {
-                "source_product_id": f"variant-{variant.id}",
-                "sku": variant.sku,
-                "name": variant.name,
-                "display_name": product.name if product else variant.name,
-                "category": product.category if product else None,
-                "subcategory": product.sub_category if product else None,
-                "manufacturer": product.make if product else None,
-                "is_active": bool(variant.active),
-                "attributes": {
-                    "variant_attributes": variant.attributes,
-                    "type": product.type if product else None,
-                    "sub_type": product.sub_type if product else None,
-                    "model": product.model if product else None,
-                },
-            }
+            bundle[mp.merchant_product_id] = _variant_to_product(variant, product)
         return bundle
 
     def _build_one(
@@ -177,29 +209,6 @@ class FundboxSalesConnector(FundboxConnectorBase):
         product_info: dict[int, dict[str, JsonValue]],
     ) -> dict[str, JsonValue]:
         source_order_id = str(row.id)
-        line_items_payload: list[JsonValue] = []
-        for idx, line in enumerate(line_rows, start=1):
-            product = product_info.get(line.merchant_product_id)
-            line_items_payload.append(
-                {
-                    "source_line_item_id": f"{source_order_id}:{line.id}",
-                    "line_no": idx,
-                    "quantity": line.quantity,
-                    "unit_price": _decimal_to_float(line.price),
-                    "line_total": _decimal_to_float(line.price) * line.quantity
-                    if line.price is not None and line.quantity is not None
-                    else None,
-                    "discount_amount": None,
-                    "tax_amount": None,
-                    "metadata": {
-                        "lta_tag": line.lta_tag,
-                        "serial_no": line.serial_no,
-                        "merchant_product_id": line.merchant_product_id,
-                    },
-                    "product": product,
-                }
-            )
-
         return build_envelope(
             source_record_id=f"fundbox_consumer_backend-order-{row.id}",
             observed_at=to_iso(row.updated_at or row.created_at),
@@ -225,7 +234,7 @@ class FundboxSalesConnector(FundboxConnectorBase):
                     },
                     "raw": serialize_row(row),
                 },
-                "line_items": line_items_payload,
+                "line_items": _build_line_items(line_rows, source_order_id, product_info),
                 "customer_link": {
                     "identity_source_record_id": (
                         f"fundbox_consumer_backend-user-{row.user_id}"

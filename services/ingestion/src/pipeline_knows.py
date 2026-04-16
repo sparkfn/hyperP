@@ -25,6 +25,67 @@ from src.graph.client import Neo4jClient
 logger = logging.getLogger(__name__)
 
 
+def _parse_contact_payload(raw_payload_str: object) -> dict[str, object] | None:
+    """Parse raw_payload JSON; return None on failure."""
+    try:
+        if isinstance(raw_payload_str, str):
+            parsed: object = json.loads(raw_payload_str)
+            return parsed if isinstance(parsed, dict) else None
+        if isinstance(raw_payload_str, dict):
+            return raw_payload_str
+        return None
+    except (TypeError, ValueError):
+        return None
+
+
+def _resolve_both_persons(
+    tx: ManagedTransaction, declarer_sr_id: object, contact_pk: str,
+) -> tuple[str, str] | None:
+    """Resolve declarer and contact person IDs. Returns None if either is missing or same."""
+    declarer = tx.run(
+        queries.RESOLVE_PERSON_FROM_SOURCE_RECORD_ID, source_record_id=declarer_sr_id,
+    ).single()
+    contact = tx.run(
+        queries.RESOLVE_PERSON_FROM_SOURCE_RECORD_PK, source_record_pk=contact_pk,
+    ).single()
+    if declarer is None or contact is None:
+        return None
+    d_id: str = declarer["person_id"]
+    c_id: str = contact["person_id"]
+    return (d_id, c_id) if d_id != c_id else None
+
+
+def _link_one_contact(
+    tx: ManagedTransaction, contact_source_record_pk: str, raw_payload: dict[str, object],
+) -> bool:
+    """Resolve both sides of a contact record and MERGE the KNOWS edge."""
+    declarer_sr_id = raw_payload.get("linked_to_source_record_id")
+    if not declarer_sr_id:
+        return False
+    pair = _resolve_both_persons(tx, declarer_sr_id, contact_source_record_pk)
+    if pair is None:
+        return False
+    declarer_person_id, contact_person_id = pair
+
+    cp = raw_payload.get("contact") or {}
+    cp_dict = cp if isinstance(cp, dict) else {}
+    raw_label = raw_payload.get("link_type") or cp_dict.get("relationship")
+    relationship_label = str(raw_label) if raw_label is not None else None
+
+    tx.run(
+        queries.LINK_PERSON_KNOWS,
+        declarer_person_id=declarer_person_id,
+        contact_person_id=contact_person_id,
+        source_system_key="fundbox_consumer_backend",
+        source_record_pk=contact_source_record_pk,
+        relationship_label=relationship_label,
+        relationship_category=_category_for(relationship_label),
+        status=cp_dict.get("status") or "declared",
+        approved_at=cp_dict.get("approved_at"),
+    )
+    return True
+
+
 def materialize_knows_from_contacts(
     client: Neo4jClient, *, batch_size: int = 500
 ) -> int:
@@ -32,8 +93,7 @@ def materialize_knows_from_contacts(
 
     Paginates through contact records using a source_record_pk cursor so
     arbitrarily large contact sets are fully processed. Returns the number
-    of KNOWS edges created. Idempotent — LINK_PERSON_KNOWS is a MERGE on
-    ``(source_system_key, source_record_pk)``.
+    of KNOWS edges created.
     """
     total_linked = 0
     cursor = ""
@@ -53,60 +113,13 @@ def materialize_knows_from_contacts(
             newly_linked = 0
             last_pk: str = cursor_param
             for row in rows:
-                contact_source_record_pk: str = row["source_record_pk"]
-                last_pk = contact_source_record_pk
-                raw_payload_str = row["raw_payload"]
-                try:
-                    raw_payload = (
-                        json.loads(raw_payload_str)
-                        if isinstance(raw_payload_str, str)
-                        else raw_payload_str or {}
-                    )
-                except (TypeError, ValueError):
+                pk: str = row["source_record_pk"]
+                last_pk = pk
+                raw = _parse_contact_payload(row["raw_payload"])
+                if raw is None:
                     continue
-
-                declarer_source_record_id = raw_payload.get(
-                    "linked_to_source_record_id"
-                )
-                if not declarer_source_record_id:
-                    continue
-
-                declarer = tx.run(
-                    queries.RESOLVE_PERSON_FROM_SOURCE_RECORD_ID,
-                    source_record_id=declarer_source_record_id,
-                ).single()
-                contact = tx.run(
-                    queries.RESOLVE_PERSON_FROM_SOURCE_RECORD_PK,
-                    source_record_pk=contact_source_record_pk,
-                ).single()
-                if declarer is None or contact is None:
-                    continue
-
-                declarer_person_id: str = declarer["person_id"]
-                contact_person_id: str = contact["person_id"]
-                if declarer_person_id == contact_person_id:
-                    continue
-
-                contact_payload = raw_payload.get("contact") or {}
-                relationship_label = (
-                    raw_payload.get("link_type")
-                    or contact_payload.get("relationship")
-                )
-                status = contact_payload.get("status") or "declared"
-                approved_at = contact_payload.get("approved_at")
-
-                tx.run(
-                    queries.LINK_PERSON_KNOWS,
-                    declarer_person_id=declarer_person_id,
-                    contact_person_id=contact_person_id,
-                    source_system_key="fundbox_consumer_backend",
-                    source_record_pk=contact_source_record_pk,
-                    relationship_label=relationship_label,
-                    relationship_category=_category_for(relationship_label),
-                    status=status,
-                    approved_at=approved_at,
-                )
-                newly_linked += 1
+                if _link_one_contact(tx, pk, raw):
+                    newly_linked += 1
             return newly_linked, last_pk
 
         with client.session() as session:

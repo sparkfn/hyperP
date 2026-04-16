@@ -99,12 +99,22 @@ module = [
     "src.config",
     "src.celery_app",
     "src.tasks",
-    # API service: pydantic-heavy modules + FastAPI route modules where the
-    # framework injects `Any` through decorators and path params.
+    "src.external.whatsapp_api",
+    "src.birthday",
+]
+disallow_any_explicit = false
+disallow_any_generics = false
+disallow_untyped_calls = false
+disallow_untyped_decorators = false
+warn_return_any = false
+
+# API service: pydantic-heavy modules + FastAPI route modules where the
+# framework injects `Any` through decorators and path params.
+[[tool.mypy.overrides]]
+module = [
     "src.types",
     "src.http_utils",
     "src.routes.*",
-    "src.graph.client",
     "src.graph.converters",
 ]
 disallow_any_explicit = false

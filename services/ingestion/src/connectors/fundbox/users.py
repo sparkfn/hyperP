@@ -87,13 +87,12 @@ class FundboxConnector(FundboxConnectorBase):
                 )
 
     @staticmethod
-    def _build_one(
+    def _collect_identifiers(
         row: Any,
-        user_addresses: list[Any],
         user_socials: list[Any],
         user_devices: list[Any],
         last_login: str | None,
-    ) -> dict[str, JsonValue]:
+    ) -> IdentifierBag:
         ids = IdentifierBag()
         ids.add("nric", row.nric, verified=True)
         ids.add("email", row.user_email, last_confirmed_at=last_login)
@@ -102,17 +101,26 @@ class FundboxConnector(FundboxConnectorBase):
         ids.add("phone", row.profile_mobile, last_confirmed_at=last_login)
         ids.add("phone", row.whatsapp_phone, last_confirmed_at=last_login)
         ids.add("social:facebook", row.facebook_id)
-
         for social in user_socials:
             provider = (social._mapping.get("provider") or "").strip().lower()
             if provider:
                 ids.add(f"social:{provider}", social._mapping.get("provider_id"))
-
         for device in user_devices:
             ids.add("device_id", device._mapping.get("device_id"))
+        return ids
 
+    @staticmethod
+    def _build_one(
+        row: Any,
+        user_addresses: list[Any],
+        user_socials: list[Any],
+        user_devices: list[Any],
+        last_login: str | None,
+    ) -> dict[str, JsonValue]:
+        ids = FundboxConnector._collect_identifiers(
+            row, user_socials, user_devices, last_login,
+        )
         primary_address = format_address(user_addresses[0]) if user_addresses else None
-
         return build_envelope(
             source_record_id=f"fundbox_consumer_backend-user-{row.user_id}",
             observed_at=to_iso(row.user_updated_at or row.user_created_at),
