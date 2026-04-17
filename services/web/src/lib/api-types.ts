@@ -130,6 +130,38 @@ export interface EntityPerson extends Person {
   phone_confidence: number | null;
 }
 
+// --- Reports (stretchy reports) ---
+
+export type ReportParamType = "string" | "integer" | "float" | "date" | "boolean";
+
+export interface ReportParameterDef {
+  name: string;
+  label: string;
+  param_type: ReportParamType;
+  required: boolean;
+  default_value: string | null;
+}
+
+export interface ReportSummary {
+  report_key: string;
+  display_name: string;
+  description: string | null;
+  category: string | null;
+}
+
+export interface ReportDetail extends ReportSummary {
+  cypher_query: string;
+  parameters: ReportParameterDef[];
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ReportResult {
+  columns: string[];
+  rows: Record<string, string | number | boolean | null>[];
+  row_count: number;
+}
+
 export interface GraphNode {
   id: string;
   label: string;
