@@ -47,18 +47,24 @@ def serialize_row(row: Any) -> dict[str, JsonValue]:
 
 
 def format_address(row: Any) -> str | None:
-    """Format an address row into a single normalized string."""
+    """Format an address row into a single normalized string.
+
+    Handles both the Fundbox schema (address_line_1/2, street, building,
+    block/floor/unit) and the phppos schema (address_1/2, state, zip). Any
+    missing key resolves to None via ``.get()``.
+    """
     if row is None:
         return None
     m = row._mapping if hasattr(row, "_mapping") else row
     parts: list[object] = [
-        m.get("address_line_1"),
-        m.get("address_line_2"),
+        m.get("address_line_1") or m.get("address_1"),
+        m.get("address_line_2") or m.get("address_2"),
         m.get("street"),
         m.get("building"),
         " ".join(p for p in (m.get("block"), m.get("floor"), m.get("unit")) if p) or None,
         m.get("city"),
-        m.get("postal_code"),
+        m.get("state"),
+        m.get("postal_code") or m.get("zip"),
         m.get("country"),
     ]
     cleaned = [str(p).strip() for p in parts if p]
@@ -111,7 +117,7 @@ def build_envelope(
     identifiers: list[dict[str, JsonValue]],
     attributes: dict[str, JsonValue],
     raw_payload: dict[str, JsonValue],
-    record_type: Literal["system", "conversation"] = "system",
+    record_type: Literal["system", "conversation", "sales"] = "system",
     extraction_confidence: float | None = None,
     extraction_method: str | None = None,
     conversation_ref: dict[str, JsonValue] | None = None,

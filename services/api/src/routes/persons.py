@@ -11,18 +11,27 @@ from src.graph.mappers import (
     map_connection,
     map_match_decision,
     map_person,
+    map_person_graph,
     map_source_record,
 )
+from src.graph.mappers_sales import map_sales_order
 from src.graph.queries import (
+    DEFAULT_HOPS,
     FIND_PERSON_BY_IDENTIFIER,
     GET_PERSON_AUDIT,
     GET_PERSON_BY_ID,
     GET_PERSON_CONNECTIONS_ADDRESS,
     GET_PERSON_CONNECTIONS_ALL,
     GET_PERSON_CONNECTIONS_IDENTIFIER,
+    GET_PERSON_CONNECTIONS_KNOWS,
     GET_PERSON_MATCHES,
+    GET_PERSON_SALES,
     GET_PERSON_SOURCE_RECORDS,
+    MAX_HOPS,
+    MIN_HOPS,
     SEARCH_PERSONS,
+    get_graph_query,
+    get_node_graph_query,
 )
 from src.http_utils import envelope, http_error, next_cursor, page_window
 from src.types import (
@@ -32,6 +41,8 @@ from src.types import (
     MatchDecision,
     Person,
     PersonConnection,
+    PersonGraph,
+    SalesOrder,
     SourceRecord,
 )
 
@@ -47,6 +58,8 @@ def _connection_query(connection_type: ConnectionType) -> str:
         return GET_PERSON_CONNECTIONS_IDENTIFIER
     if connection_type is ConnectionType.ADDRESS:
         return GET_PERSON_CONNECTIONS_ADDRESS
+    if connection_type is ConnectionType.KNOWS:
+        return GET_PERSON_CONNECTIONS_KNOWS
     return GET_PERSON_CONNECTIONS_ALL
 
 
@@ -147,6 +160,59 @@ async def get_person_connections(
     has_more = len(records) > page_limit
     items = [map_connection(rec) for rec in records[:page_limit]]
     return envelope(items, request, next_cursor(skip, page_limit, has_more))
+
+
+@router.get("/{person_id}/sales", response_model=ApiResponse[list[SalesOrder]])
+async def get_person_sales(
+    person_id: str,
+    request: Request,
+    cursor: str | None = Query(default=None),
+    limit: int | None = Query(default=None),
+) -> ApiResponse[list[SalesOrder]]:
+    """Return sales orders for a person with line items and products."""
+    skip, page_limit = page_window(cursor, limit)
+    async with get_session() as session:
+        result = await session.run(
+            GET_PERSON_SALES, person_id=person_id, skip=skip, limit=page_limit + 1
+        )
+        records = [_record_to_dict(r.keys(), list(r.values())) async for r in result]
+    has_more = len(records) > page_limit
+    items = [map_sales_order(rec) for rec in records[:page_limit]]
+    return envelope(items, request, next_cursor(skip, page_limit, has_more))
+
+
+@router.get("/graph/node", response_model=ApiResponse[PersonGraph])
+async def get_node_graph(
+    request: Request,
+    element_id: str = Query(),
+    max_hops: int = Query(default=DEFAULT_HOPS, ge=MIN_HOPS, le=MAX_HOPS),
+) -> ApiResponse[PersonGraph]:
+    """Return the subgraph around any node identified by its Neo4j elementId."""
+    query = get_node_graph_query(max_hops)
+    async with get_session() as session:
+        result = await session.run(query, element_id=element_id)
+        record = await result.single()
+    if record is None:
+        raise http_error(404, "node_not_found", "Node not found.", request)
+    graph = map_person_graph(_record_to_dict(record.keys(), list(record.values())))
+    return envelope(graph, request)
+
+
+@router.get("/{person_id}/graph", response_model=ApiResponse[PersonGraph])
+async def get_person_graph(
+    person_id: str,
+    request: Request,
+    max_hops: int = Query(default=DEFAULT_HOPS, ge=MIN_HOPS, le=MAX_HOPS),
+) -> ApiResponse[PersonGraph]:
+    """Return the subgraph around a person up to *max_hops* hops away."""
+    query = get_graph_query(max_hops)
+    async with get_session() as session:
+        result = await session.run(query, person_id=person_id)
+        record = await result.single()
+    if record is None:
+        raise http_error(404, "person_not_found", "Person not found.", request)
+    graph = map_person_graph(_record_to_dict(record.keys(), list(record.values())))
+    return envelope(graph, request)
 
 
 @router.get("/{person_id}/relationships", response_model=ApiResponse[list[dict[str, str]]])

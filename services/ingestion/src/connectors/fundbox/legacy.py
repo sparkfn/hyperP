@@ -1,4 +1,4 @@
-"""Connector for legacy/migrated profiles (``source_key=fundbox:legacy``)."""
+"""Connector for legacy/migrated profiles (``source_key=fundbox_consumer_backend:legacy``)."""
 
 from __future__ import annotations
 
@@ -30,7 +30,7 @@ class FundboxLegacyConnector(FundboxConnectorBase):
     """
 
     def get_source_key(self) -> str:
-        return "fundbox:legacy"
+        return "fundbox_consumer_backend:legacy"
 
     def build_records(self, conn: Connection) -> Iterator[dict[str, JsonValue]]:
         primary_stmt = select(log_legacy_profiles).order_by(log_legacy_profiles.c.id)
@@ -51,7 +51,7 @@ class FundboxLegacyConnector(FundboxConnectorBase):
                 ids.add("social:facebook", row.facebook_id)
 
                 yield build_envelope(
-                    source_record_id=f"fundbox-legacy-{row.id}",
+                    source_record_id=f"fundbox_consumer_backend-legacy-{row.id}",
                     observed_at=to_iso(row.updated_at or row.created_at),
                     identifiers=ids.items,
                     attributes={

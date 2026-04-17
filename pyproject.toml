@@ -85,20 +85,36 @@ module = [
     "src.connectors.fundbox.legacy",
     "src.connectors.fundbox.merged",
     "src.connectors.fundbox.contacts",
+    "src.connectors.fundbox.sales",
     "src.connectors.fundbox.junk",
     "src.connectors.fundbox.schema",
-    "src.connectors.fundbox.db",
+    "src.connectors.phppos_sales_common",
+    "src.connectors.db_factory",
+    "src.connectors.eko.connector",
+    "src.connectors.eko.sales",
+    "src.connectors.speedzone.connector",
+    "src.connectors.speedzone.sales",
     "src.graph.client",
     "src.golden_profile",
     "src.config",
     "src.celery_app",
     "src.tasks",
-    # API service: pydantic-heavy modules + FastAPI route modules where the
-    # framework injects `Any` through decorators and path params.
+    "src.external.whatsapp_api",
+    "src.birthday",
+]
+disallow_any_explicit = false
+disallow_any_generics = false
+disallow_untyped_calls = false
+disallow_untyped_decorators = false
+warn_return_any = false
+
+# API service: pydantic-heavy modules + FastAPI route modules where the
+# framework injects `Any` through decorators and path params.
+[[tool.mypy.overrides]]
+module = [
     "src.types",
     "src.http_utils",
     "src.routes.*",
-    "src.graph.client",
     "src.graph.converters",
 ]
 disallow_any_explicit = false
@@ -114,6 +130,7 @@ module = [
     "redis.*",
     "neo4j.*",
     "sqlalchemy.*",
+    "sshtunnel",
 ]
 ignore_missing_imports = true
 

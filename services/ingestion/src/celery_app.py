@@ -28,7 +28,7 @@ celery_app.conf.update(
     task_reject_on_worker_lost=True,
     worker_prefetch_multiplier=1,
     worker_concurrency=settings.celery_worker_concurrency,
-    task_time_limit=60 * 60 * 6,         # 6h hard limit per ingestion
+    task_time_limit=60 * 60 * 6,  # 6h hard limit per ingestion
     task_soft_time_limit=60 * 60 * 6 - 60,
     timezone="UTC",
     enable_utc=True,
@@ -53,12 +53,48 @@ def _parse_cron(expr: str) -> crontab | None:
 # Beat schedule — entries are only registered when their feature flag is on.
 _beat_schedule: dict[str, dict[str, object]] = {}
 
-_fundbox_cron = _parse_cron(settings.fundbox_ingest_cron)
+_fundbox_cron = _parse_cron(settings.fundbox_consumer_backend_ingest_cron)
 if _fundbox_cron is not None:
     _beat_schedule["fundbox-ingest"] = {
         "task": "src.tasks.run_ingestion_task",
         "schedule": _fundbox_cron,
-        "args": ("fundbox", "batch"),
+        "args": ("fundbox_consumer_backend", "batch"),
+    }
+    _beat_schedule["fundbox-contacts-ingest"] = {
+        "task": "src.tasks.run_ingestion_task",
+        "schedule": _fundbox_cron,
+        "args": ("fundbox_consumer_backend:contacts", "batch"),
+    }
+    _beat_schedule["fundbox-sales-ingest"] = {
+        "task": "src.tasks.run_ingestion_task",
+        "schedule": _fundbox_cron,
+        "args": ("fundbox_consumer_backend:sales", "batch"),
+    }
+
+_speedzone_cron = _parse_cron(settings.speedzone_phppos_ingest_cron)
+if _speedzone_cron is not None:
+    _beat_schedule["speedzone-ingest"] = {
+        "task": "src.tasks.run_ingestion_task",
+        "schedule": _speedzone_cron,
+        "args": ("speedzone_phppos", "batch"),
+    }
+    _beat_schedule["speedzone-sales-ingest"] = {
+        "task": "src.tasks.run_ingestion_task",
+        "schedule": _speedzone_cron,
+        "args": ("speedzone_phppos:sales", "batch"),
+    }
+
+_eko_cron = _parse_cron(settings.eko_phppos_ingest_cron)
+if _eko_cron is not None:
+    _beat_schedule["eko-ingest"] = {
+        "task": "src.tasks.run_ingestion_task",
+        "schedule": _eko_cron,
+        "args": ("eko_phppos", "batch"),
+    }
+    _beat_schedule["eko-sales-ingest"] = {
+        "task": "src.tasks.run_ingestion_task",
+        "schedule": _eko_cron,
+        "args": ("eko_phppos:sales", "batch"),
     }
 
 if settings.birthday_task_enabled:

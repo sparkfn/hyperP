@@ -215,6 +215,17 @@ async def create_survivorship_override(
     )
 
 
+def _parse_overrides(raw: object) -> dict[str, dict[str, str]]:
+    """Parse existing overrides map from a Neo4j property."""
+    if not isinstance(raw, dict):
+        return {}
+    return {
+        to_str(k): {to_str(ik): to_str(iv) for ik, iv in v.items()}
+        for k, v in raw.items()
+        if isinstance(v, dict)
+    }
+
+
 async def _override_tx(
     tx: AsyncManagedTransaction,
     person_id: str,
@@ -222,52 +233,38 @@ async def _override_tx(
     source_record_pk: str,
     reason: str,
 ) -> str:
-    person_check = await tx.run(GET_PERSON_OVERRIDES_FULL, person_id=person_id)
-    person_record = await person_check.single()
+    person_record = await (await tx.run(GET_PERSON_OVERRIDES_FULL, person_id=person_id)).single()
     if person_record is None:
         return "person_not_found"
 
-    sr_check = await tx.run(
-        CHECK_SOURCE_RECORD_LINKED, source_record_pk=source_record_pk, person_id=person_id
-    )
-    if await sr_check.single() is None:
+    if await (await tx.run(
+        CHECK_SOURCE_RECORD_LINKED, source_record_pk=source_record_pk, person_id=person_id,
+    )).single() is None:
         return "sr_not_found"
 
     bare_attr = attribute_name.removeprefix("preferred_")
-    fact_check = await tx.run(
-        GET_FACT_VALUE,
-        person_id=person_id,
-        attribute_name=bare_attr,
-        source_record_pk=source_record_pk,
-    )
-    fact_record = await fact_check.single()
+    fact_record = await (await tx.run(
+        GET_FACT_VALUE, person_id=person_id,
+        attribute_name=bare_attr, source_record_pk=source_record_pk,
+    )).single()
     if fact_record is None:
         return "fact_not_found"
 
-    selected_value = _fact_value_to_str(fact_record["value"])
-    existing_overrides_raw = person_record["overrides"]
-    existing_overrides: dict[str, dict[str, str]] = {}
-    if isinstance(existing_overrides_raw, dict):
-        for k, v in existing_overrides_raw.items():
-            if isinstance(v, dict):
-                existing_overrides[to_str(k)] = {
-                    to_str(ik): to_str(iv) for ik, iv in v.items()
-                }
-
-    existing_overrides[attribute_name] = {
-        "source_record_pk": source_record_pk,
-        "reason": reason,
-        "actor_type": "reviewer",
-        "actor_id": "current_user",
+    overrides = _parse_overrides(person_record["overrides"])
+    overrides[attribute_name] = {
+        "source_record_pk": source_record_pk, "reason": reason,
+        "actor_type": "reviewer", "actor_id": "current_user",
         "created_at": datetime.now(UTC).isoformat(),
     }
-
-    await tx.run(UPDATE_OVERRIDES, person_id=person_id, overrides=existing_overrides)
+    await tx.run(UPDATE_OVERRIDES, person_id=person_id, overrides=overrides)
 
     field_name = (
-        attribute_name if attribute_name.startswith("preferred_") else f"preferred_{attribute_name}"
+        attribute_name if attribute_name.startswith("preferred_")
+        else f"preferred_{attribute_name}"
     )
+    selected_value = _fact_value_to_str(fact_record["value"])
     await tx.run(
-        UPDATE_GOLDEN_FIELD, person_id=person_id, field_name=field_name, value=selected_value
+        UPDATE_GOLDEN_FIELD, person_id=person_id,
+        field_name=field_name, value=selected_value,
     )
     return "ok"

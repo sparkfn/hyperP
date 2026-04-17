@@ -156,16 +156,10 @@ def run_birthday_greetings(today: date | None = None) -> BirthdayRunSummary:
     run_date = today or date.today()
 
     if not settings.whatsapp_source_number:
-        logger.warning(
-            "Birthday task skipped: WHATSAPP_SOURCE_NUMBER is not configured"
-        )
+        logger.warning("Birthday task skipped: WHATSAPP_SOURCE_NUMBER is not configured")
         return BirthdayRunSummary(
-            run_date=run_date,
-            candidates_found=0,
-            unique_phones=0,
-            sent=0,
-            failed=0,
-            skipped_no_source=True,
+            run_date=run_date, candidates_found=0, unique_phones=0,
+            sent=0, failed=0, skipped_no_source=True,
         )
 
     graph = Neo4jClient(settings)
@@ -177,27 +171,18 @@ def run_birthday_greetings(today: date | None = None) -> BirthdayRunSummary:
     unique = _dedupe_by_phone(candidates)
     logger.info(
         "Birthday run %s: %d candidates, %d unique phones",
-        run_date.isoformat(),
-        len(candidates),
-        len(unique),
+        run_date.isoformat(), len(candidates), len(unique),
     )
 
     if not unique:
         return BirthdayRunSummary(
-            run_date=run_date,
-            candidates_found=len(candidates),
-            unique_phones=0,
-            sent=0,
-            failed=0,
+            run_date=run_date, candidates_found=len(candidates),
+            unique_phones=0, sent=0, failed=0,
         )
 
     results = asyncio.run(_send_all(unique, settings=settings))
     sent = sum(1 for r in results if r.success)
-    failed = len(results) - sent
     return BirthdayRunSummary(
-        run_date=run_date,
-        candidates_found=len(candidates),
-        unique_phones=len(unique),
-        sent=sent,
-        failed=failed,
+        run_date=run_date, candidates_found=len(candidates),
+        unique_phones=len(unique), sent=sent, failed=len(results) - sent,
     )

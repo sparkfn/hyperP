@@ -43,6 +43,12 @@ and attributes are trusted by the matching engine:
   an `extraction_confidence`. Conversation records are never eligible for
   deterministic auto-merge — they always pass through heuristic scoring and,
   if ambiguous, human review.
+- **`sales`** — order / line-item / product extract from a commerce system
+  (Fundbox orders, phppos sales). Carries no identity signals that
+  participate in matching. Linked to a Person indirectly by
+  `FOR_CUSTOMER_RECORD` to the identity record whose Person owns the
+  purchase. If the identity side is not yet ingested, the record is parked
+  with `link_status='pending_customer'` and retried at end-of-run.
 
 ### Source Record ID
 
@@ -52,7 +58,36 @@ unique within the source namespace.
 ### Source System
 
 An upstream system that produces or owns customer-related records, such as POS,
-Bitrix CRM, onboarding app, or third-party operational app.
+Bitrix CRM, onboarding app, or third-party operational app. Each SourceSystem
+belongs to exactly one **Entity** via `OPERATED_BY`.
+
+### Entity
+
+A business — e.g. Fundbox, SpeedZone, Eko — that operates one or more source
+systems. Grouping above SourceSystem makes entity-level reporting (per-entity
+revenue) and governance (deactivate every source system under Eko) a single
+hop. Keyed by a stable slug (`entity_key`) plus a human-readable
+`display_name`.
+
+### Order
+
+A commerce transaction — one per upstream order / invoice / sale row. Linked
+to the customer Person via `PURCHASED`, to its booking SourceSystem via
+`SOLD_THROUGH`, and to its lines via `CONTAINS`. Deduplicated by
+`(source_system_key, source_order_id)`.
+
+### LineItem
+
+A single line within an Order — one Product at one quantity/price/discount.
+Linked to the Order via `CONTAINS` and to the Product via `OF_PRODUCT`.
+Deduplicated by `(source_system_key, source_line_item_id)`.
+
+### Product
+
+A SKU / catalogue entry from one source system. Products are **entity-scoped**:
+a Product belongs to one Entity via `SOLD_BY`. Cross-entity product
+resolution is explicitly deferred. Deduplicated by
+`(source_system_key, source_product_id)`.
 
 ### Identifier
 

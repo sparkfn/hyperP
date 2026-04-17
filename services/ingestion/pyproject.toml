@@ -14,6 +14,8 @@ dependencies = [
     "sqlalchemy>=2.0,<3",
     "celery[redis]>=5.4,<6",
     "redis>=5.0,<6",
+    "sshtunnel>=0.4,<1",
+    "paramiko>=3.4,<4",
 ]
 
 [tool.uv]

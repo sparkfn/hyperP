@@ -36,42 +36,22 @@ def _redis_client() -> redis.Redis:
     return redis.Redis.from_url(settings.celery_broker_url)
 
 
-@contextmanager
-def _acquire_ingestion_slot(max_slots: int) -> Iterator[str]:
-    """Reserve one ingestion slot in Redis or raise if the cluster is full.
-
-    Implemented as a Redis SET of run-IDs with per-member TTLs:
-    - Each task adds a unique member with EXPIRE so a crashed worker's slot
-      auto-releases after ``_LOCK_LEASE_SECONDS``.
-    - Cardinality of live members must stay <= ``max_slots``.
-
-    The check-and-add is performed inside a WATCH/MULTI transaction to make it
-    atomic against other workers contending for the last slot.
-    """
-    client = _redis_client()
-    slot_id = uuid.uuid4().hex
-    member_key = f"{_INGEST_SEMAPHORE_KEY}:{slot_id}"
-
-    # Use a sorted set whose score is the lease expiry epoch; expired entries
-    # are evicted on each acquire so a crashed worker can never permanently
-    # poison the semaphore.
+def _try_acquire_slot(
+    client: redis.Redis, member_key: str, max_slots: int
+) -> None:
+    """Atomically reserve a semaphore slot via WATCH/MULTI or raise."""
     now = int(time.time())
     expiry = now + _LOCK_LEASE_SECONDS
-
     with client.pipeline() as pipe:
         while True:
             try:
                 pipe.watch(_INGEST_SEMAPHORE_KEY)
                 pipe.zremrangebyscore(_INGEST_SEMAPHORE_KEY, 0, now)
-                # redis-py's pipeline stub annotates the return as
-                # Awaitable[Any] | Any to cover the async client. We use the
-                # sync client, so the value is always an int.
                 zcard_result = pipe.zcard(_INGEST_SEMAPHORE_KEY)
                 assert isinstance(zcard_result, int)
-                live: int = zcard_result
-                if live >= max_slots:
+                if zcard_result >= max_slots:
                     pipe.unwatch()
-                    raise _SlotUnavailableError(live=live, cap=max_slots)
+                    raise _SlotUnavailableError(live=zcard_result, cap=max_slots)
                 pipe.multi()
                 pipe.zadd(_INGEST_SEMAPHORE_KEY, {member_key: expiry})
                 pipe.expire(_INGEST_SEMAPHORE_KEY, _LOCK_LEASE_SECONDS + 60)
@@ -80,9 +60,16 @@ def _acquire_ingestion_slot(max_slots: int) -> Iterator[str]:
             except redis.WatchError:
                 continue
 
-    logger.info(
-        "Acquired ingestion slot %s (cap=%d)", slot_id, max_slots
-    )
+
+@contextmanager
+def _acquire_ingestion_slot(max_slots: int) -> Iterator[str]:
+    """Reserve one ingestion slot in Redis or raise if the cluster is full."""
+    client = _redis_client()
+    slot_id = uuid.uuid4().hex
+    member_key = f"{_INGEST_SEMAPHORE_KEY}:{slot_id}"
+    _try_acquire_slot(client, member_key, max_slots)
+
+    logger.info("Acquired ingestion slot %s (cap=%d)", slot_id, max_slots)
     try:
         yield slot_id
     finally:
@@ -118,9 +105,7 @@ def run_ingestion_task(self: Task, source_key: str, mode: str = "batch") -> Inge
         with _acquire_ingestion_slot(settings.max_concurrent_ingestions):
             return run_ingestion(source_key, mode)
     except _SlotUnavailableError as exc:
-        logger.warning(
-            "Ingestion slot unavailable (%d/%d), retrying...", exc.live, exc.cap
-        )
+        logger.warning("Ingestion slot unavailable (%d/%d), retrying...", exc.live, exc.cap)
         raise
     except Exception as exc:
         logger.exception("Ingestion task failed for %s", source_key)

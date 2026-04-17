@@ -1,4 +1,4 @@
-"""Connector for pre-existing merge lineage (``source_key=fundbox:merged``)."""
+"""Connector for pre-existing merge lineage (``source_key=fundbox_consumer_backend:merged``)."""
 
 from __future__ import annotations
 
@@ -28,7 +28,7 @@ class FundboxMergedUsersConnector(FundboxConnectorBase):
     """
 
     def get_source_key(self) -> str:
-        return "fundbox:merged"
+        return "fundbox_consumer_backend:merged"
 
     def build_records(self, conn: Connection) -> Iterator[dict[str, JsonValue]]:
         stmt = select(merged_users).order_by(merged_users.c.id)
@@ -39,7 +39,7 @@ class FundboxMergedUsersConnector(FundboxConnectorBase):
             ids.add("phone", row.mobile_number)
 
             yield build_envelope(
-                source_record_id=f"fundbox-merged-{row.id}",
+                source_record_id=f"fundbox_consumer_backend-merged-{row.id}",
                 observed_at=to_iso(row.updated_at or row.created_at),
                 identifiers=ids.items,
                 attributes={},
@@ -47,7 +47,9 @@ class FundboxMergedUsersConnector(FundboxConnectorBase):
                     "merged_user": serialize_row(row),
                     "merge_hint": {
                         "merged_into_source_record_id": (
-                            f"fundbox-user-{row.new_user_id}" if row.new_user_id else None
+                            f"fundbox_consumer_backend-user-{row.new_user_id}"
+                            if row.new_user_id
+                            else None
                         ),
                         "surviving_identifiers": {
                             "nric": row.new_nric,

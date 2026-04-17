@@ -7,6 +7,20 @@ MATCH (id:Identifier {identifier_type: $identifier_type, normalized_value: $valu
   <-[:IDENTIFIED_BY]-(p:Person)
 WHERE p.status <> 'merged'
 OPTIONAL MATCH (addr:Address {address_id: p.preferred_address_id})
+OPTIONAL MATCH (sr:SourceRecord)-[:LINKED_TO]->(p)
+WITH p, addr, count(sr) AS source_record_count
+CALL {
+  WITH p
+  OPTIONAL MATCH (p)-[:IDENTIFIED_BY]->(:Identifier)<-[:IDENTIFIED_BY]-(ci:Person)
+    WHERE ci.person_id <> p.person_id AND ci.status <> 'merged'
+  OPTIONAL MATCH (p)-[:LIVES_AT]->(:Address)<-[:LIVES_AT]-(ca:Person)
+    WHERE ca.person_id <> p.person_id AND ca.status <> 'merged'
+  OPTIONAL MATCH (p)-[:KNOWS]-(ck:Person)
+    WHERE ck.person_id <> p.person_id AND ck.status <> 'merged'
+  WITH collect(DISTINCT ci) + collect(DISTINCT ca) + collect(DISTINCT ck) AS all_conn
+  UNWIND all_conn AS c
+  RETURN count(DISTINCT c) AS connection_count
+}
 RETURN p {
   .person_id, .status, .is_high_value, .is_high_risk,
   .preferred_full_name, .preferred_phone, .preferred_email, .preferred_dob,
@@ -16,7 +30,9 @@ RETURN p {
 addr {
   .address_id, .unit_number, .street_number, .street_name,
   .city, .postal_code, .country_code, .normalized_full
-} AS preferred_address
+} AS preferred_address,
+source_record_count,
+connection_count
 ORDER BY p.updated_at DESC
 """
 
@@ -27,6 +43,18 @@ WITH coalesce(canonical, p) AS person
 OPTIONAL MATCH (addr:Address {address_id: person.preferred_address_id})
 OPTIONAL MATCH (sr:SourceRecord)-[:LINKED_TO]->(person)
 WITH person, addr, count(sr) AS source_record_count
+CALL {
+  WITH person
+  OPTIONAL MATCH (person)-[:IDENTIFIED_BY]->(:Identifier)<-[:IDENTIFIED_BY]-(ci:Person)
+    WHERE ci.person_id <> person.person_id AND ci.status <> 'merged'
+  OPTIONAL MATCH (person)-[:LIVES_AT]->(:Address)<-[:LIVES_AT]-(ca:Person)
+    WHERE ca.person_id <> person.person_id AND ca.status <> 'merged'
+  OPTIONAL MATCH (person)-[:KNOWS]-(ck:Person)
+    WHERE ck.person_id <> person.person_id AND ck.status <> 'merged'
+  WITH collect(DISTINCT ci) + collect(DISTINCT ca) + collect(DISTINCT ck) AS all_conn
+  UNWIND all_conn AS c
+  RETURN count(DISTINCT c) AS connection_count
+}
 RETURN person {
   .person_id, .status, .is_high_value, .is_high_risk,
   .preferred_full_name, .preferred_phone, .preferred_email, .preferred_dob,
@@ -37,7 +65,8 @@ addr {
   .address_id, .unit_number, .street_number, .street_name,
   .city, .postal_code, .country_code, .normalized_full
 } AS preferred_address,
-source_record_count
+source_record_count,
+connection_count
 """
 
 GET_PERSON_SOURCE_RECORDS = """
@@ -66,7 +95,8 @@ RETURN other.person_id AS person_id,
        other.preferred_full_name AS preferred_full_name,
        1 AS hops,
        shared_identifiers,
-       [] AS shared_addresses
+       [] AS shared_addresses,
+       [] AS knows_relationships
 ORDER BY other.preferred_full_name
 SKIP $skip LIMIT $limit
 """
@@ -82,7 +112,28 @@ RETURN other.person_id AS person_id,
        other.preferred_full_name AS preferred_full_name,
        1 AS hops,
        [] AS shared_identifiers,
-       shared_addresses
+       shared_addresses,
+       [] AS knows_relationships
+ORDER BY other.preferred_full_name
+SKIP $skip LIMIT $limit
+"""
+
+GET_PERSON_CONNECTIONS_KNOWS = """
+MATCH (p:Person {person_id: $person_id})-[k:KNOWS]-(other:Person)
+WHERE other.person_id <> p.person_id
+  AND other.status <> 'merged'
+WITH other,
+  collect(DISTINCT {
+    relationship_label: k.relationship_label,
+    relationship_category: k.relationship_category
+  }) AS knows_rels
+RETURN other.person_id AS person_id,
+       other.status AS status,
+       other.preferred_full_name AS preferred_full_name,
+       1 AS hops,
+       [] AS shared_identifiers,
+       [] AS shared_addresses,
+       knows_rels AS knows_relationships
 ORDER BY other.preferred_full_name
 SKIP $skip LIMIT $limit
 """
@@ -94,19 +145,24 @@ OPTIONAL MATCH (p)-[:IDENTIFIED_BY]->(id:Identifier)<-[:IDENTIFIED_BY]-(oi:Perso
     AND ($identifier_type IS NULL OR id.identifier_type = $identifier_type)
 OPTIONAL MATCH (p)-[:LIVES_AT]->(addr:Address)<-[:LIVES_AT]-(oa:Person)
   WHERE oa.person_id <> p.person_id AND oa.status <> 'merged'
+OPTIONAL MATCH (p)-[k:KNOWS]-(ok:Person)
+  WHERE ok.person_id <> p.person_id AND ok.status <> 'merged'
 WITH p,
   collect(DISTINCT CASE WHEN oi IS NOT NULL THEN {person_id: oi.person_id, status: oi.status, preferred_full_name: oi.preferred_full_name, identifier_type: id.identifier_type, normalized_value: id.normalized_value} END) AS id_links,
-  collect(DISTINCT CASE WHEN oa IS NOT NULL THEN {person_id: oa.person_id, status: oa.status, preferred_full_name: oa.preferred_full_name, address_id: addr.address_id, normalized_full: addr.normalized_full} END) AS addr_links
-UNWIND (id_links + addr_links) AS link
+  collect(DISTINCT CASE WHEN oa IS NOT NULL THEN {person_id: oa.person_id, status: oa.status, preferred_full_name: oa.preferred_full_name, address_id: addr.address_id, normalized_full: addr.normalized_full} END) AS addr_links,
+  collect(DISTINCT CASE WHEN ok IS NOT NULL THEN {person_id: ok.person_id, status: ok.status, preferred_full_name: ok.preferred_full_name, relationship_label: k.relationship_label, relationship_category: k.relationship_category} END) AS knows_links
+UNWIND (id_links + addr_links + knows_links) AS link
 WITH link WHERE link IS NOT NULL
 WITH link.person_id AS person_id,
      link.status AS status,
      link.preferred_full_name AS preferred_full_name,
      collect(DISTINCT CASE WHEN link.identifier_type IS NOT NULL THEN {identifier_type: link.identifier_type, normalized_value: link.normalized_value} END) AS shared_identifiers_raw,
-     collect(DISTINCT CASE WHEN link.address_id IS NOT NULL THEN {address_id: link.address_id, normalized_full: link.normalized_full} END) AS shared_addresses_raw
+     collect(DISTINCT CASE WHEN link.address_id IS NOT NULL THEN {address_id: link.address_id, normalized_full: link.normalized_full} END) AS shared_addresses_raw,
+     collect(DISTINCT CASE WHEN link.relationship_category IS NOT NULL THEN {relationship_label: link.relationship_label, relationship_category: link.relationship_category} END) AS knows_raw
 RETURN person_id, status, preferred_full_name, 1 AS hops,
        [x IN shared_identifiers_raw WHERE x IS NOT NULL] AS shared_identifiers,
-       [x IN shared_addresses_raw WHERE x IS NOT NULL] AS shared_addresses
+       [x IN shared_addresses_raw WHERE x IS NOT NULL] AS shared_addresses,
+       [x IN knows_raw WHERE x IS NOT NULL] AS knows_relationships
 ORDER BY preferred_full_name
 SKIP $skip LIMIT $limit
 """
@@ -118,6 +174,18 @@ WHERE p.status <> 'merged'
 OPTIONAL MATCH (addr:Address {address_id: p.preferred_address_id})
 OPTIONAL MATCH (sr:SourceRecord)-[:LINKED_TO]->(p)
 WITH p, addr, score, count(sr) AS source_record_count
+CALL {
+  WITH p
+  OPTIONAL MATCH (p)-[:IDENTIFIED_BY]->(:Identifier)<-[:IDENTIFIED_BY]-(ci:Person)
+    WHERE ci.person_id <> p.person_id AND ci.status <> 'merged'
+  OPTIONAL MATCH (p)-[:LIVES_AT]->(:Address)<-[:LIVES_AT]-(ca:Person)
+    WHERE ca.person_id <> p.person_id AND ca.status <> 'merged'
+  OPTIONAL MATCH (p)-[:KNOWS]-(ck:Person)
+    WHERE ck.person_id <> p.person_id AND ck.status <> 'merged'
+  WITH collect(DISTINCT ci) + collect(DISTINCT ca) + collect(DISTINCT ck) AS all_conn
+  UNWIND all_conn AS c
+  RETURN count(DISTINCT c) AS connection_count
+}
 RETURN p {
   .person_id, .status, .is_high_value, .is_high_risk,
   .preferred_full_name, .preferred_phone, .preferred_email, .preferred_dob,
@@ -129,6 +197,7 @@ addr {
   .city, .postal_code, .country_code, .normalized_full
 } AS preferred_address,
 source_record_count,
+connection_count,
 score
 ORDER BY score DESC
 SKIP $skip LIMIT $limit

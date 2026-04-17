@@ -157,15 +157,15 @@ def persist_source_record(
     ingest_run_id: str | None,
 ) -> str:
     """Step 7 + 7b: persist SourceRecord and link to IngestRun."""
-    normalized_payload = {
+    normalized = {
         "identifiers": [i.model_dump() for i in identifiers],
         "address": address.model_dump() if address else None,
         "attributes": [a.model_dump() for a in attributes],
     }
-    link_status = (
-        "linked"
-        if match_result.decision == MatchDecision.MERGE or is_new_person
-        else "pending_review"
+    is_linked = match_result.decision == MatchDecision.MERGE or is_new_person
+    conv_ref = (
+        json.dumps(envelope.conversation_ref, default=str)
+        if envelope.conversation_ref is not None else None
     )
     sr_result = tx.run(
         queries.CREATE_SOURCE_RECORD,
@@ -175,28 +175,19 @@ def persist_source_record(
         record_type=envelope.record_type.value,
         extraction_confidence=envelope.extraction_confidence,
         extraction_method=envelope.extraction_method,
-        conversation_ref=(
-            json.dumps(envelope.conversation_ref, default=str)
-            if envelope.conversation_ref is not None
-            else None
-        ),
-        link_status=link_status,
+        conversation_ref=conv_ref,
+        link_status="linked" if is_linked else "pending_review",
         observed_at=envelope.observed_at,
         record_hash=envelope.record_hash,
         raw_payload=json.dumps(envelope.raw_payload, default=str),
-        normalized_payload=json.dumps(normalized_payload, default=str),
+        normalized_payload=json.dumps(normalized, default=str),
     )
     sr_record = sr_result.single()
     assert sr_record is not None, "CREATE_SOURCE_RECORD must return a row"
-    source_record_pk: str = sr_record["source_record_pk"]
-
+    pk: str = sr_record["source_record_pk"]
     if ingest_run_id is not None:
-        tx.run(
-            queries.LINK_SOURCE_RECORD_TO_RUN,
-            source_record_pk=source_record_pk,
-            ingest_run_id=ingest_run_id,
-        )
-    return source_record_pk
+        tx.run(queries.LINK_SOURCE_RECORD_TO_RUN, source_record_pk=pk, ingest_run_id=ingest_run_id)
+    return pk
 
 
 def persist_match_decision(
@@ -262,25 +253,14 @@ def create_review_case_if_needed(
 # --- Steps 8–11: wire the source record into the Person subgraph ----------
 
 
-def link_record_to_graph(
+def _link_identifiers(
     tx: ManagedTransaction,
-    *,
-    envelope: SourceRecordEnvelope,
     identifiers: list[NormalizedIdentifier],
-    address: NormalizedAddressModel | None,
-    attributes: list[NormalizedAttribute],
     person_id: str,
+    source_system_key: str,
     source_record_pk: str,
 ) -> None:
-    """Steps 8–11: wire the source record into the Person subgraph."""
-    # 8. SourceRecord -> Person
-    tx.run(
-        queries.LINK_SOURCE_RECORD_TO_PERSON,
-        source_record_pk=source_record_pk,
-        person_id=person_id,
-    )
-
-    # 9. Person -> Identifier (IDENTIFIED_BY)
+    """Step 9: create IDENTIFIED_BY edges for usable identifiers."""
     for ident in identifiers:
         if not is_usable(ident.quality_flag):
             continue
@@ -292,27 +272,54 @@ def link_record_to_graph(
             is_verified=ident.is_verified,
             verification_method=None,
             quality_flag=ident.quality_flag.value,
-            source_system_key=envelope.source_system,
+            source_system_key=source_system_key,
             source_record_pk=source_record_pk,
         )
 
-    # 10. Person -> Address (LIVES_AT)
+
+def _link_address(
+    tx: ManagedTransaction,
+    address: NormalizedAddressModel,
+    person_id: str,
+    source_system_key: str,
+    source_record_pk: str,
+) -> None:
+    """Step 10: create LIVES_AT edge for a usable address."""
+    tx.run(
+        queries.LINK_PERSON_TO_ADDRESS,
+        person_id=person_id,
+        country_code=address.country_code,
+        postal_code=address.postal_code,
+        street_name=address.street_name,
+        street_number=address.street_number,
+        unit_number=address.unit_number or "",
+        is_verified=False,
+        quality_flag=address.quality_flag.value,
+        source_system_key=source_system_key,
+        source_record_pk=source_record_pk,
+    )
+
+
+def link_record_to_graph(
+    tx: ManagedTransaction,
+    *,
+    envelope: SourceRecordEnvelope,
+    identifiers: list[NormalizedIdentifier],
+    address: NormalizedAddressModel | None,
+    attributes: list[NormalizedAttribute],
+    person_id: str,
+    source_record_pk: str,
+) -> None:
+    """Steps 8–11: wire the source record into the Person subgraph."""
+    tx.run(
+        queries.LINK_SOURCE_RECORD_TO_PERSON,
+        source_record_pk=source_record_pk,
+        person_id=person_id,
+    )
+    _link_identifiers(tx, identifiers, person_id, envelope.source_system, source_record_pk)
     if address and is_usable(address.quality_flag):
-        tx.run(
-            queries.LINK_PERSON_TO_ADDRESS,
-            person_id=person_id,
-            country_code=address.country_code,
-            postal_code=address.postal_code,
-            street_name=address.street_name,
-            street_number=address.street_number,
-            unit_number=address.unit_number or "",
-            is_verified=False,
-            quality_flag=address.quality_flag.value,
-            source_system_key=envelope.source_system,
-            source_record_pk=source_record_pk,
-        )
+        _link_address(tx, address, person_id, envelope.source_system, source_record_pk)
 
-    # 11. Person -> SourceRecord HAS_FACT (one per attribute)
     for attr in attributes:
         tx.run(
             queries.CREATE_ATTRIBUTE_FACT,
@@ -320,7 +327,6 @@ def link_record_to_graph(
             source_record_pk=source_record_pk,
             attribute_name=attr.attribute_name,
             attribute_value=attr.attribute_value,
-            # default tier; production looks this up from SourceSystem.
             source_trust_tier="tier_3",
             confidence=1.0,
             quality_flag=attr.quality_flag.value,

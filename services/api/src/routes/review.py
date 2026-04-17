@@ -171,16 +171,11 @@ async def submit_review_action(
     )
 
 
-async def _action_tx(
-    tx: AsyncManagedTransaction,
-    review_case_id: str,
-    action_type: str,
-    new_state: str,
-    resolution: str | None,
-    notes: str | None,
-    follow_up_at: str | None,
-) -> GraphRecord | None:
-    set_clauses: list[LiteralString] = [
+def _build_action_cypher(
+    resolution: str | None, follow_up_at: str | None,
+) -> LiteralString:
+    """Build the SET clause for a review-case action."""
+    clauses: list[LiteralString] = [
         "rc.queue_state = $new_state",
         "rc.updated_at = datetime()",
         "rc.actions = rc.actions + [{"
@@ -188,37 +183,34 @@ async def _action_tx(
         " notes: $notes, created_at: toString(datetime())}]",
     ]
     if resolution is not None:
-        set_clauses.append("rc.resolution = $resolution")
-        set_clauses.append("rc.resolved_at = datetime()")
+        clauses.append("rc.resolution = $resolution")
+        clauses.append("rc.resolved_at = datetime()")
     if follow_up_at is not None:
-        set_clauses.append("rc.follow_up_at = datetime($follow_up_at)")
-
-    joined: LiteralString = ", ".join(set_clauses)
-    cypher: LiteralString = (
+        clauses.append("rc.follow_up_at = datetime($follow_up_at)")
+    joined: LiteralString = ", ".join(clauses)
+    return (
         "MATCH (rc:ReviewCase {review_case_id: $review_case_id}) "
         "WHERE rc.queue_state IN ['open', 'assigned', 'deferred'] "
         "SET " + joined + " "
         "RETURN rc {.review_case_id, .queue_state, .resolution} AS review_case"
     )
 
+
+async def _action_tx(
+    tx: AsyncManagedTransaction, review_case_id: str, action_type: str,
+    new_state: str, resolution: str | None, notes: str | None, follow_up_at: str | None,
+) -> GraphRecord | None:
+    cypher = _build_action_cypher(resolution, follow_up_at)
     result = await tx.run(
-        cypher,
-        review_case_id=review_case_id,
-        new_state=new_state,
-        action_type=action_type,
-        notes=notes,
-        resolution=resolution,
-        follow_up_at=follow_up_at,
+        cypher, review_case_id=review_case_id, new_state=new_state,
+        action_type=action_type, notes=notes, resolution=resolution, follow_up_at=follow_up_at,
     )
     record = await result.single()
     if record is None:
         return None
-
     if action_type == ApiReviewActionType.MANUAL_NO_MATCH.value:
         await tx.run(
             CREATE_NO_MATCH_LOCK_FROM_REVIEW,
-            review_case_id=review_case_id,
-            notes=notes or "Manual no-match from review",
+            review_case_id=review_case_id, notes=notes or "Manual no-match from review",
         )
-
     return dict(record["review_case"])

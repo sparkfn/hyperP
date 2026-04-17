@@ -1,13 +1,15 @@
 "use client";
 
-import { useState, type FormEvent, type ReactElement } from "react";
-import Link from "next/link";
+import { useState, type FormEvent, type MouseEvent, type ReactElement } from "react";
+import { useRouter } from "next/navigation";
 
 import Alert from "@mui/material/Alert";
 import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
 import Chip from "@mui/material/Chip";
 import CircularProgress from "@mui/material/CircularProgress";
+import IconButton from "@mui/material/IconButton";
+import Menu from "@mui/material/Menu";
 import MenuItem from "@mui/material/MenuItem";
 import Paper from "@mui/material/Paper";
 import Stack from "@mui/material/Stack";
@@ -17,7 +19,9 @@ import TableCell from "@mui/material/TableCell";
 import TableHead from "@mui/material/TableHead";
 import TableRow from "@mui/material/TableRow";
 import TextField from "@mui/material/TextField";
+import Tooltip from "@mui/material/Tooltip";
 import Typography from "@mui/material/Typography";
+import AccountTreeIcon from "@mui/icons-material/AccountTree";
 
 import { BffError, bffFetch } from "@/lib/api-client";
 import type { Person } from "@/lib/api-types";
@@ -62,6 +66,12 @@ function buildSearchParams(input: SearchInput): URLSearchParams | string {
   params.set("identifier_type", input.identifierType);
   params.set("value", input.value.trim());
   return params;
+}
+
+function openGraphInNewTab(person: Person): void {
+  const params = new URLSearchParams({ person_id: person.person_id });
+  if (person.preferred_full_name) params.set("name", person.preferred_full_name);
+  window.open(`/graph?${params.toString()}`, "_blank");
 }
 
 export default function HomePage(): ReactElement {
@@ -178,40 +188,102 @@ interface ResultsTableProps {
   persons: Person[];
 }
 
+interface RowContextMenu {
+  mouseX: number;
+  mouseY: number;
+  person: Person;
+}
+
 function ResultsTable({ persons }: ResultsTableProps): ReactElement {
+  const router = useRouter();
+  const [contextMenu, setContextMenu] = useState<RowContextMenu | null>(null);
+
   if (persons.length === 0) {
     return <Alert severity="info">No persons matched.</Alert>;
   }
+
+  function handleRowClick(personId: string): void {
+    router.push(`/persons/${personId}`);
+  }
+
+  function handleContextMenu(event: MouseEvent<HTMLTableRowElement>, person: Person): void {
+    event.preventDefault();
+    setContextMenu({ mouseX: event.clientX, mouseY: event.clientY, person });
+  }
+
+  function openPersonNewTab(): void {
+    if (!contextMenu) return;
+    window.open(`/persons/${contextMenu.person.person_id}`, "_blank");
+    setContextMenu(null);
+  }
+
+  function openGraphFromMenu(): void {
+    if (!contextMenu) return;
+    openGraphInNewTab(contextMenu.person);
+    setContextMenu(null);
+  }
+
   return (
-    <Paper elevation={0} variant="outlined">
-      <Table size="small">
-        <TableHead>
-          <TableRow>
-            <TableCell>Name</TableCell>
-            <TableCell>Status</TableCell>
-            <TableCell>Phone</TableCell>
-            <TableCell>Email</TableCell>
-            <TableCell align="right">Sources</TableCell>
-          </TableRow>
-        </TableHead>
-        <TableBody>
-          {persons.map((p) => (
-            <TableRow key={p.person_id} hover>
-              <TableCell>
-                <Link href={`/persons/${p.person_id}`} style={{ textDecoration: "none" }}>
-                  {p.preferred_full_name ?? p.person_id}
-                </Link>
-              </TableCell>
-              <TableCell>
-                <Chip label={p.status} size="small" color={statusColor(p.status)} />
-              </TableCell>
-              <TableCell>{p.preferred_phone ?? "—"}</TableCell>
-              <TableCell>{p.preferred_email ?? "—"}</TableCell>
-              <TableCell align="right">{p.source_record_count}</TableCell>
+    <>
+      <Paper elevation={0} variant="outlined">
+        <Table size="small">
+          <TableHead>
+            <TableRow>
+              <TableCell>Name</TableCell>
+              <TableCell>Status</TableCell>
+              <TableCell>Phone</TableCell>
+              <TableCell>Email</TableCell>
+              <TableCell align="right">Sources</TableCell>
+              <TableCell align="right">Connections</TableCell>
+              <TableCell align="center">Graph</TableCell>
             </TableRow>
-          ))}
-        </TableBody>
-      </Table>
-    </Paper>
+          </TableHead>
+          <TableBody>
+            {persons.map((p) => (
+              <TableRow
+                key={p.person_id}
+                hover
+                sx={{ cursor: "pointer" }}
+                onClick={() => handleRowClick(p.person_id)}
+                onContextMenu={(e) => handleContextMenu(e, p)}
+              >
+                <TableCell>{p.preferred_full_name ?? p.person_id}</TableCell>
+                <TableCell>
+                  <Chip label={p.status} size="small" color={statusColor(p.status)} />
+                </TableCell>
+                <TableCell>{p.preferred_phone ?? "—"}</TableCell>
+                <TableCell>{p.preferred_email ?? "—"}</TableCell>
+                <TableCell align="right">{p.source_record_count}</TableCell>
+                <TableCell align="right">{p.connection_count}</TableCell>
+                <TableCell align="center">
+                  <Tooltip title="Open graph in new tab">
+                    <IconButton
+                      size="small"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        openGraphInNewTab(p);
+                      }}
+                    >
+                      <AccountTreeIcon fontSize="small" />
+                    </IconButton>
+                  </Tooltip>
+                </TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      </Paper>
+      <Menu
+        open={contextMenu !== null}
+        onClose={() => setContextMenu(null)}
+        anchorReference="anchorPosition"
+        anchorPosition={
+          contextMenu !== null ? { top: contextMenu.mouseY, left: contextMenu.mouseX } : undefined
+        }
+      >
+        <MenuItem onClick={openPersonNewTab}>Open person in new tab</MenuItem>
+        <MenuItem onClick={openGraphFromMenu}>Open graph in new tab</MenuItem>
+      </Menu>
+    </>
   );
 }

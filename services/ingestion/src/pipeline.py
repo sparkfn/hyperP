@@ -126,81 +126,42 @@ class IngestPipeline:
         ingest_run_id: str | None = None,
     ) -> IngestResult:
         """Orchestrate steps 3–13 of the ingest flow inside one write tx."""
-        # 3. Upsert Identifier + Address graph nodes
         upsert_nodes(tx, identifiers, address)
-
-        # 4. Candidate generation (graph traversal with cardinality caps)
         candidates = find_candidates(tx, identifiers, address)
-
-        # 5. Match engine chain (deterministic → heuristic → LLM-shadow)
         match_result = self._match_engine.evaluate(
             tx, candidates, identifiers, address, attributes,
             record_type=envelope.record_type,
         )
-
-        # 6. Resolve to a Person — create new or pick from candidates
-        person_id, is_new_person = self._resolve_person(
-            tx, match_result, candidates,
-        )
-
-        # 7. Persist SourceRecord, MatchDecision, optional ReviewCase
+        person_id, is_new_person = self._resolve_person(tx, match_result, candidates)
         source_record_pk = persist_source_record(
-            tx,
-            envelope=envelope,
-            identifiers=identifiers,
-            address=address,
-            attributes=attributes,
-            match_result=match_result,
-            is_new_person=is_new_person,
-            ingest_run_id=ingest_run_id,
+            tx, envelope=envelope, identifiers=identifiers, address=address,
+            attributes=attributes, match_result=match_result,
+            is_new_person=is_new_person, ingest_run_id=ingest_run_id,
         )
         match_decision_id = persist_match_decision(tx, match_result, source_record_pk)
-        review_case_id = create_review_case_if_needed(
-            tx, match_result, match_decision_id,
-        )
-
-        # 8–11. Link the source record into the Person's subgraph
+        review_case_id = create_review_case_if_needed(tx, match_result, match_decision_id)
         link_record_to_graph(
-            tx,
-            envelope=envelope,
-            identifiers=identifiers,
-            address=address,
-            attributes=attributes,
-            person_id=person_id,
+            tx, envelope=envelope, identifiers=identifiers, address=address,
+            attributes=attributes, person_id=person_id,
             source_record_pk=source_record_pk,
         )
-
-        # 12. Recompute golden profile for the touched Person
         compute_golden_profile(tx, person_id)
-
-        # 13. Auto-merge bookkeeping if the engine returned MERGE
         if match_result.decision == MatchDecision.MERGE and not is_new_person:
             record_auto_merge_event(
-                tx,
-                match_result=match_result,
-                match_decision_id=match_decision_id,
-                person_id=person_id,
-                source_record_pk=source_record_pk,
+                tx, match_result=match_result, match_decision_id=match_decision_id,
+                person_id=person_id, source_record_pk=source_record_pk,
             )
-
         logger.info(
-            "Ingested record %s -> person %s (new=%s, decision=%s, candidates=%d)",
-            envelope.source_record_id,
-            person_id,
-            is_new_person,
-            match_result.decision.value,
-            len(candidates),
+            "Ingested %s -> person %s (new=%s, decision=%s, candidates=%d)",
+            envelope.source_record_id, person_id, is_new_person,
+            match_result.decision.value, len(candidates),
         )
-
         return IngestResult(
             source_record_id=envelope.source_record_id,
             source_record_pk=source_record_pk,
-            person_id=person_id,
-            is_new_person=is_new_person,
-            candidate_count=len(candidates),
-            match_decision=match_result.decision,
-            ingest_run_id=ingest_run_id,
-            match_decision_id=match_decision_id,
+            person_id=person_id, is_new_person=is_new_person,
+            candidate_count=len(candidates), match_decision=match_result.decision,
+            ingest_run_id=ingest_run_id, match_decision_id=match_decision_id,
             review_case_id=review_case_id,
         )
 

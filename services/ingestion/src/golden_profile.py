@@ -28,101 +28,66 @@ _TRUST_TIER_RANK: dict[str, int] = {
 _GOLDEN_PROFILE_VERSION = "v0.1.0"
 
 
-def compute_golden_profile(
-    tx: ManagedTransaction,
-    person_id: str,
+def _fetch_person_evidence(
+    tx: ManagedTransaction, person_id: str
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    """Fetch facts, identifiers, and addresses for survivorship."""
+    facts: list[dict[str, Any]] = [
+        dict(r) for r in tx.run(queries.FETCH_PERSON_FACTS, person_id=person_id)
+    ]
+    identifiers: list[dict[str, Any]] = [
+        dict(r) for r in tx.run(queries.FETCH_PERSON_IDENTIFIERS, person_id=person_id)
+    ]
+    addresses: list[dict[str, Any]] = [
+        dict(r) for r in tx.run(queries.FETCH_PERSON_ADDRESSES, person_id=person_id)
+    ]
+    return facts, identifiers, addresses
+
+
+def _apply_survivorship(
+    facts: list[dict[str, Any]],
+    identifiers: list[dict[str, Any]],
+    addresses: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    """Compute and persist the golden profile for *person_id*.
-
-    Parameters
-    ----------
-    tx:
-        Active Neo4j write transaction.
-    person_id:
-        The person whose golden profile should be (re)computed.
-
-    Returns
-    -------
-    dict
-        The computed golden profile fields.
-    """
-
-    # ------------------------------------------------------------------
-    # 1. Fetch attribute facts
-    # ------------------------------------------------------------------
-    facts_result = tx.run(queries.FETCH_PERSON_FACTS, person_id=person_id)
-    facts: list[dict[str, Any]] = [dict(r) for r in facts_result]
-
-    # ------------------------------------------------------------------
-    # 2. Fetch identifiers (phone, email)
-    # ------------------------------------------------------------------
-    idents_result = tx.run(queries.FETCH_PERSON_IDENTIFIERS, person_id=person_id)
-    identifiers: list[dict[str, Any]] = [dict(r) for r in idents_result]
-
-    # ------------------------------------------------------------------
-    # 3. Fetch addresses
-    # ------------------------------------------------------------------
-    addrs_result = tx.run(queries.FETCH_PERSON_ADDRESSES, person_id=person_id)
-    addresses: list[dict[str, Any]] = [dict(r) for r in addrs_result]
-
-    # ------------------------------------------------------------------
-    # 4. Apply survivorship rules per attribute
-    # ------------------------------------------------------------------
+    """Apply survivorship rules and return golden profile fields."""
     preferred_full_name = _pick_best_fact(facts, "full_name")
-    # Fallback to preferred_name or legal_name if full_name is absent
     if preferred_full_name is None:
         preferred_full_name = (
             _pick_best_fact(facts, "preferred_name")
             or _pick_best_fact(facts, "legal_name")
         )
 
-    preferred_dob = _pick_best_fact(facts, "dob")
-    preferred_phone = _pick_best_identifier(identifiers, "phone")
-    preferred_email = _pick_best_identifier(identifiers, "email")
-    preferred_address_id = _pick_best_address(addresses)
+    fields: dict[str, Any] = {
+        "preferred_full_name": preferred_full_name,
+        "preferred_dob": _pick_best_fact(facts, "dob"),
+        "preferred_phone": _pick_best_identifier(identifiers, "phone"),
+        "preferred_email": _pick_best_identifier(identifiers, "email"),
+        "preferred_address_id": _pick_best_address(addresses),
+    }
+    filled = sum(1 for v in fields.values() if v is not None)
+    fields["profile_completeness_score"] = round(filled / len(fields), 2)
+    fields["golden_profile_version"] = _GOLDEN_PROFILE_VERSION
+    return fields
 
-    # ------------------------------------------------------------------
-    # 5. Compute completeness score (0.0 – 1.0)
-    # ------------------------------------------------------------------
-    completeness_fields = [
-        preferred_full_name,
-        preferred_phone,
-        preferred_email,
-        preferred_dob,
-        preferred_address_id,
-    ]
-    filled = sum(1 for f in completeness_fields if f is not None)
-    profile_completeness_score = round(filled / len(completeness_fields), 2)
 
-    # ------------------------------------------------------------------
-    # 6. Persist to Person node
-    # ------------------------------------------------------------------
+def compute_golden_profile(
+    tx: ManagedTransaction,
+    person_id: str,
+) -> dict[str, Any]:
+    """Compute and persist the golden profile for *person_id*."""
+    facts, identifiers, addresses = _fetch_person_evidence(tx, person_id)
+    profile = _apply_survivorship(facts, identifiers, addresses)
+    profile["person_id"] = person_id
+
     tx.run(
         queries.UPDATE_GOLDEN_PROFILE,
         person_id=person_id,
-        preferred_full_name=preferred_full_name,
-        preferred_phone=preferred_phone,
-        preferred_email=preferred_email,
-        preferred_dob=preferred_dob,
-        preferred_address_id=preferred_address_id,
-        profile_completeness_score=profile_completeness_score,
-        golden_profile_version=_GOLDEN_PROFILE_VERSION,
+        **{k: v for k, v in profile.items() if k != "person_id"},
     )
-
-    profile = {
-        "person_id": person_id,
-        "preferred_full_name": preferred_full_name,
-        "preferred_phone": preferred_phone,
-        "preferred_email": preferred_email,
-        "preferred_dob": preferred_dob,
-        "preferred_address_id": preferred_address_id,
-        "profile_completeness_score": profile_completeness_score,
-        "golden_profile_version": _GOLDEN_PROFILE_VERSION,
-    }
 
     logger.info(
         "Golden profile computed for person %s (completeness=%.2f)",
-        person_id, profile_completeness_score,
+        person_id, profile["profile_completeness_score"],
     )
     return profile
 

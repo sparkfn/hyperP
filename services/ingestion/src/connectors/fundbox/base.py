@@ -53,7 +53,7 @@ class FundboxConnectorBase(SourceConnector):
     # ---- helpers shared by subclasses --------------------------------------
 
     def _resolved_chunk_size(self) -> int:
-        return self.chunk_size or get_settings().fundbox_chunk_size
+        return self.chunk_size or get_settings().fundbox_consumer_backend_chunk_size
 
     def _stream(self, conn: Connection, stmt: Select) -> Iterator[Any]:
         """Yield rows from a SELECT in server-side chunks (bounded memory)."""

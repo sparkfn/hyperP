@@ -160,14 +160,41 @@ Why a node and not a `HAS_FACT` property: addresses are shared across persons.
 contact tracing, and sales territory analysis. A shared Address node makes
 this a single hop — the same pattern that makes Identifier nodes powerful.
 
+### Entity
+
+A business — e.g. Fundbox, SpeedZone, Eko — that operates one or more
+SourceSystems. Grouping above SourceSystem makes entity-level reporting
+and governance (per-entity revenue roll-ups, contract metadata, global
+deactivation) a single hop.
+
+```cypher
+CREATE (e:Entity {
+  entity_id: randomUUID(),
+  entity_key: 'fundbox',           // slug, unique
+  display_name: 'Fundbox',
+  entity_type: 'lender',           // lender | retailer | ...
+  country_code: 'SG',
+  is_active: true,
+  created_at: datetime(),
+  updated_at: datetime()
+})
+```
+
+Seed entities for the current environment: `fundbox` (lender),
+`speedzone` (retailer), `eko` (retailer). See
+[`profile-unifier-entity-and-sales.md`](profile-unifier-entity-and-sales.md)
+for the full rollout.
+
 ### SourceSystem
+
+Each SourceSystem is owned by exactly one Entity via `OPERATED_BY`.
 
 ```cypher
 CREATE (ss:SourceSystem {
   source_system_id: randomUUID(),
-  source_key: 'bitrix',
-  display_name: 'Bitrix CRM',
-  system_type: 'crm',
+  source_key: 'fundbox_consumer_backend',
+  display_name: 'Fundbox Consumer Backend',
+  system_type: 'consumer_backend',
   is_active: true,
   // field-level trust as a native map — no separate node needed
   field_trust: {
@@ -187,6 +214,24 @@ Why field trust is a map: it is always read together with the source system,
 never queried independently, and changes infrequently. A separate node per
 field-trust row is relational thinking.
 
+### Order / LineItem / Product (sales sub-graph)
+
+See [`profile-unifier-entity-and-sales.md`](profile-unifier-entity-and-sales.md)
+for the full design. Summary:
+
+- `Order` — dedup key `(source_system_key, source_order_id)`. Carries
+  `total_amount`, `currency`, `ordered_at`, `status`, `item_count`,
+  `metadata` map.
+- `LineItem` — dedup key `(source_system_key, source_line_item_id)`.
+  Attached to an Order via `CONTAINS` and to a Product via `OF_PRODUCT`.
+- `Product` — dedup key `(source_system_key, source_product_id)`.
+  Entity-scoped via `SOLD_BY`; cross-entity product resolution is not
+  attempted. Name, SKU, category, manufacturer, free-form `attributes` map.
+
+Sales data is linked to persons via `(Person)-[:PURCHASED]->(Order)`. The
+`PURCHASED` edge is rewired on merge in the same way as `IDENTIFIED_BY` /
+`LIVES_AT` / `KNOWS`.
+
 ### SourceRecord
 
 Immutable raw input records.
@@ -196,8 +241,8 @@ CREATE (sr:SourceRecord {
   source_record_pk: randomUUID(),
   source_record_id: '12345',
   source_record_version: null,
-  record_type: 'system',           // system | conversation
-  link_status: 'pending_review',   // linked | pending_review | rejected | suppressed
+  record_type: 'system',           // system | conversation | sales
+  link_status: 'pending_review',   // linked | pending_review | pending_customer | rejected | suppressed
   observed_at: datetime(),
   ingested_at: datetime(),
   record_hash: 'sha256:abc123',
@@ -226,6 +271,13 @@ attributes:
   facts as a downgraded tier regardless of source-system trust, and the
   matching engine should multiply per-feature confidence by
   `extraction_confidence`.
+- **`sales`** — order / line-item / product extract from a commerce system.
+  Never carries identity signals that participate in matching. Linked to
+  a Person indirectly via `FOR_CUSTOMER_RECORD` to an already-resolved
+  identity `SourceRecord`; if the identity side is not yet ingested, the
+  sales record is parked with `link_status='pending_customer'` and
+  retried at end-of-run. See
+  [`profile-unifier-entity-and-sales.md`](profile-unifier-entity-and-sales.md).
 
 ### IngestRun
 
@@ -359,6 +411,13 @@ this as a closed enum.
 | `PART_OF_RUN` | SourceRecord | IngestRun | — | Groups records by ingestion batch. |
 | `HAS_FACT` | Person | — (inline) | see below | Attribute facts (for non-address, non-identifier attributes: name, DOB, etc.). |
 | `KNOWS` | Person (declarer) | Person (contact) | `relationship_label`, `relationship_category`, `source_system_key`, `source_record_pk`, `declared_by_person_id`, `status`, `approved_at`, `first_seen_at`, `last_seen_at`, `last_confirmed_at` | Declared social tie (e.g. emergency contact, next-of-kin, referrer). Never used as identity-resolution evidence. |
+| `OPERATED_BY` | SourceSystem | Entity | — | SourceSystem belongs to an owning Entity (Fundbox, SpeedZone, Eko, …). |
+| `PURCHASED` | Person | Order | `source_system_key`, `source_record_pk`, `first_seen_at`, `last_seen_at`, `last_confirmed_at` | The resolved customer placed this order. Rewired on merge. |
+| `CONTAINS` | Order | LineItem | — | Order → its line items. |
+| `OF_PRODUCT` | LineItem | Product | — | Which Product a line purchased. |
+| `SOLD_BY` | Product | Entity | — | Entity-scoped product catalogue ownership. |
+| `SOLD_THROUGH` | Order | SourceSystem | — | Which system booked the order; cheap provenance hop. |
+| `FOR_CUSTOMER_RECORD` | SourceRecord (sales) | SourceRecord (identity) | — | Links a sales SourceRecord to the identity record whose Person owns the purchase. |
 
 ### Attribute Facts
 
@@ -588,6 +647,18 @@ CREATE CONSTRAINT merge_event_id_unique IF NOT EXISTS
 
 CREATE CONSTRAINT address_id_unique IF NOT EXISTS
   FOR (addr:Address) REQUIRE addr.address_id IS UNIQUE;
+
+CREATE CONSTRAINT entity_key_unique IF NOT EXISTS
+  FOR (e:Entity) REQUIRE e.entity_key IS UNIQUE;
+
+CREATE CONSTRAINT order_dedup_unique IF NOT EXISTS
+  FOR (o:Order) REQUIRE (o.source_system_key, o.source_order_id) IS UNIQUE;
+
+CREATE CONSTRAINT line_item_dedup_unique IF NOT EXISTS
+  FOR (li:LineItem) REQUIRE (li.source_system_key, li.source_line_item_id) IS UNIQUE;
+
+CREATE CONSTRAINT product_dedup_unique IF NOT EXISTS
+  FOR (p:Product) REQUIRE (p.source_system_key, p.source_product_id) IS UNIQUE;
 
 // Identifier lookups — the hot path
 CREATE INDEX idx_identifier_type_norm IF NOT EXISTS
@@ -896,10 +967,14 @@ CREATE (a)-[:NO_MATCH_LOCK {
 | Address | hundreds of thousands–millions | shared across persons at same location |
 | SourceRecord | millions | immutable, grows with ingestion |
 | SourceSystem | tens | rarely changes |
+| Entity | dozens | businesses operating the source systems |
 | IngestRun | thousands | operational, can be pruned |
 | MatchDecision | millions | immutable audit |
 | ReviewCase | thousands–millions | depends on review-band volume |
 | MergeEvent | thousands–millions | immutable audit |
+| Order | millions | one per upstream order/invoice/sale |
+| LineItem | tens of millions | roughly `orders × avg_basket_size` |
+| Product | tens of thousands | entity-scoped catalogue, dedup by `(source_system_key, source_product_id)` |
 
 **Not nodes** (and why):
 - ~~GoldenProfile~~ → properties on Person (always 1:1, always co-fetched)

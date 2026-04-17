@@ -68,6 +68,37 @@ ON CREATE SET rel += props, rel.declared_by_person_id = $survivor_id
 RETURN count(other) AS rewired_count
 """
 
+#: Find contact SourceRecords from the Fundbox contacts feed, paginated by
+#: source_record_pk cursor. Backed by the source_record_pk_unique constraint
+#: so the range scan is indexed.
+SCAN_CONTACT_SOURCE_RECORDS = """
+MATCH (sr:SourceRecord)
+      -[:FROM_SOURCE]->(:SourceSystem {source_key: 'fundbox_consumer_backend:contacts'})
+WHERE sr.source_record_pk > $cursor
+RETURN sr.source_record_pk AS source_record_pk,
+       sr.raw_payload       AS raw_payload
+ORDER BY sr.source_record_pk
+LIMIT $batch_size
+"""
+
+#: Resolve the Person attached to a SourceRecord looked up by its human-readable
+#: source_record_id (e.g. "fundbox_consumer_backend-user-12345"). Used by the
+#: KNOWS materializer to resolve the declarer side of a contact link.
+RESOLVE_PERSON_FROM_SOURCE_RECORD_ID = """
+MATCH (sr:SourceRecord {source_record_id: $source_record_id})
+      -[:LINKED_TO]->(p:Person {status: 'active'})
+RETURN p.person_id AS person_id
+LIMIT 1
+"""
+
+#: Resolve the Person attached to a SourceRecord by its graph-local pk.
+RESOLVE_PERSON_FROM_SOURCE_RECORD_PK = """
+MATCH (sr:SourceRecord {source_record_pk: $source_record_pk})
+      -[:LINKED_TO]->(p:Person {status: 'active'})
+RETURN p.person_id AS person_id
+LIMIT 1
+"""
+
 REWIRE_KNOWS_IN = """
 MATCH (other:Person)-[old:KNOWS]->(absorbed:Person {person_id: $absorbed_id})
 WHERE other.person_id <> $survivor_id
