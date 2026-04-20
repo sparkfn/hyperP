@@ -1,7 +1,7 @@
 "use client";
 
-import { Suspense, useCallback, useMemo, useState, type ReactElement } from "react";
-import { useSearchParams } from "next/navigation";
+import { Suspense, useCallback, useEffect, useMemo, useState, type ReactElement } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 
 import Alert from "@mui/material/Alert";
 import Box from "@mui/material/Box";
@@ -20,7 +20,7 @@ import PersonsListTable, {
 } from "@/components/PersonsListTable";
 
 import { usePersonSelection, usePersonsFetch, useEntitiesList } from "./hooks";
-import { countActiveFilters } from "./query";
+import { countActiveFilters, parseStateFromParams, serializeStateToParams } from "./query";
 
 const ROWS_PER_PAGE_OPTIONS: readonly number[] = [10, 25, 50, 100] as const;
 
@@ -33,17 +33,26 @@ export default function PersonsListPage(): ReactElement {
 }
 
 function PersonsListPageInner(): ReactElement {
+  const router = useRouter();
   const searchParams = useSearchParams();
-  const initialEntityKey: string = searchParams.get("entity_key") ?? "";
 
-  const [filters, setFilters] = useState<PersonsFilters>({
-    ...DEFAULT_FILTERS,
-    entity_key: initialEntityKey,
-  });
-  const [sortBy, setSortBy] = useState<SortField>("updated_at");
-  const [sortOrder, setSortOrder] = useState<SortOrder>("desc");
-  const [pageIndex, setPageIndex] = useState<number>(0);
-  const [rowsPerPage, setRowsPerPage] = useState<number>(25);
+  const initialState = useMemo(
+    () => parseStateFromParams(searchParams, { validRowsPerPage: ROWS_PER_PAGE_OPTIONS }),
+    // Parse only on mount; state is the source of truth afterwards.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [],
+  );
+
+  const [filters, setFilters] = useState<PersonsFilters>(initialState.filters);
+  const [sortBy, setSortBy] = useState<SortField>(initialState.sortBy);
+  const [sortOrder, setSortOrder] = useState<SortOrder>(initialState.sortOrder);
+  const [pageIndex, setPageIndex] = useState<number>(initialState.pageIndex);
+  const [rowsPerPage, setRowsPerPage] = useState<number>(initialState.rowsPerPage);
+
+  useEffect(() => {
+    const qs = serializeStateToParams({ filters, sortBy, sortOrder, pageIndex, rowsPerPage });
+    router.replace(qs.length > 0 ? `/persons?${qs}` : "/persons", { scroll: false });
+  }, [filters, sortBy, sortOrder, pageIndex, rowsPerPage, router]);
 
   const entities = useEntitiesList();
   const fetch = usePersonsFetch(filters, sortBy, sortOrder, pageIndex, rowsPerPage);

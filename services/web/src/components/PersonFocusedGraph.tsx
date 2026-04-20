@@ -16,6 +16,7 @@ interface NodeContextMenu {
   elementId: string;
   label: string;
   displayName: string;
+  personId: string | null;
 }
 
 interface PersonFocusedGraphProps {
@@ -55,8 +56,18 @@ export default function PersonFocusedGraph({
       label: string,
       displayName: string,
       position: { x: number; y: number },
+      properties: Record<string, string | number | boolean | null>,
     ): void => {
-      setContextMenu({ mouseX: position.x, mouseY: position.y, elementId, label, displayName });
+      const rawPersonId = properties["person_id"];
+      const personId = typeof rawPersonId === "string" && rawPersonId.length > 0 ? rawPersonId : null;
+      setContextMenu({
+        mouseX: position.x,
+        mouseY: position.y,
+        elementId,
+        label,
+        displayName,
+        personId,
+      });
     },
     [],
   );
@@ -64,6 +75,12 @@ export default function PersonFocusedGraph({
   function handleOpenInNewTab(): void {
     if (!contextMenu) return;
     openGraphTab(contextMenu.elementId, contextMenu.label, contextMenu.displayName);
+    setContextMenu(null);
+  }
+
+  function handleOpenPersonPage(): void {
+    if (!contextMenu?.personId) return;
+    window.open(`/persons/${encodeURIComponent(contextMenu.personId)}`, "_blank");
     setContextMenu(null);
   }
 
@@ -92,6 +109,9 @@ export default function PersonFocusedGraph({
         }
       >
         <MenuItem onClick={handleOpenInNewTab}>Open graph in new tab</MenuItem>
+        {contextMenu?.personId ? (
+          <MenuItem onClick={handleOpenPersonPage}>Open person page in new tab</MenuItem>
+        ) : null}
       </Menu>
     </Stack>
   );

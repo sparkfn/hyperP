@@ -1,11 +1,10 @@
 import type { ReactElement } from "react";
-import Link from "next/link";
 import { notFound } from "next/navigation";
 
 import Box from "@mui/material/Box";
-import Button from "@mui/material/Button";
 import Stack from "@mui/material/Stack";
 
+import BackButton from "@/components/BackButton";
 import PersonDetailTabs from "@/components/PersonDetailTabs";
 import { UpstreamError, apiFetch } from "@/lib/api-server";
 import type { Person, PersonConnection } from "@/lib/api-types";
@@ -46,9 +45,7 @@ export default async function PersonDetailPage({ params }: PageProps): Promise<R
   return (
     <Stack spacing={3}>
       <Box>
-        <Button component={Link} href="/" size="small">
-          ← Back to search
-        </Button>
+        <BackButton label="← Back to persons" />
       </Box>
 
       <PersonDetailTabs person={person} connections={connections} />
