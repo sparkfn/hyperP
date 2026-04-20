@@ -7,6 +7,7 @@ export type PersonStatus = "active" | "merged" | "suppressed";
 export interface ResponseMeta {
   request_id: string;
   next_cursor: string | null;
+  total_count?: number | null;
 }
 
 export interface ApiResponse<T> {
@@ -124,10 +125,26 @@ export interface EntitySummary {
   country_code: string | null;
   is_active: boolean;
   person_count: number;
+  source_record_count: number;
+  last_ingested_at: string | null;
+  active_review_cases: number;
+}
+
+export interface PersonEntitySummary {
+  entity_key: string;
+  display_name: string | null;
+  entity_type: string | null;
+  country_code: string | null;
+  is_active: boolean;
+  source_record_count: number;
 }
 
 export interface EntityPerson extends Person {
   phone_confidence: number | null;
+}
+
+export interface ListedPerson extends EntityPerson {
+  entities: PersonEntitySummary[];
 }
 
 // --- Reports (stretchy reports) ---

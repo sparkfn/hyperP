@@ -24,6 +24,10 @@ function isApiError(value: unknown): value is ApiError {
 }
 
 export async function bffFetch<T>(path: string, init?: RequestInit): Promise<T> {
+  return (await bffFetchEnvelope<T>(path, init)).data;
+}
+
+export async function bffFetchEnvelope<T>(path: string, init?: RequestInit): Promise<ApiResponse<T>> {
   const response: Response = await fetch(path, init);
   const json: unknown = await response.json();
 
@@ -33,5 +37,5 @@ export async function bffFetch<T>(path: string, init?: RequestInit): Promise<T> 
     }
     throw new BffError(response.status, "unknown_error", response.statusText);
   }
-  return (json as ApiResponse<T>).data;
+  return json as ApiResponse<T>;
 }

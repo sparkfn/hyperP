@@ -32,11 +32,20 @@ def next_cursor(skip: int, limit: int, has_more: bool) -> str | None:
     return encode_cursor(skip + limit) if has_more else None
 
 
-def envelope[T](data: T, request: Request, cursor: str | None = None) -> ApiResponse[T]:
+def envelope[T](
+    data: T,
+    request: Request,
+    cursor: str | None = None,
+    total_count: int | None = None,
+) -> ApiResponse[T]:
     """Wrap a payload in the standard response envelope."""
     return ApiResponse[T](
         data=data,
-        meta=ResponseMeta(request_id=request_id(request), next_cursor=cursor),
+        meta=ResponseMeta(
+            request_id=request_id(request),
+            next_cursor=cursor,
+            total_count=total_count,
+        ),
     )
 
 

@@ -67,10 +67,12 @@ from src.graph.queries.persons import (
     GET_PERSON_CONNECTIONS_ALL,
     GET_PERSON_CONNECTIONS_IDENTIFIER,
     GET_PERSON_CONNECTIONS_KNOWS,
+    GET_PERSON_ENTITIES,
     GET_PERSON_MATCHES,
     GET_PERSON_SOURCE_RECORDS,
     SEARCH_PERSONS,
 )
+from src.graph.queries.persons_list import build_count_persons_query, build_list_persons_query
 from src.graph.queries.review import (
     ASSIGN_REVIEW_CASE,
     CREATE_NO_MATCH_LOCK_FROM_REVIEW,
@@ -124,6 +126,7 @@ __all__ = [
     "GET_PERSON_CONNECTIONS_ALL",
     "GET_PERSON_CONNECTIONS_IDENTIFIER",
     "GET_PERSON_CONNECTIONS_KNOWS",
+    "GET_PERSON_ENTITIES",
     "GET_PERSON_FACTS",
     "GET_PERSON_MATCHES",
     "GET_PERSON_OVERRIDES",
@@ -151,6 +154,8 @@ __all__ = [
     "UPDATE_INGEST_RUN_COUNTERS",
     "UPDATE_OVERRIDES",
     "UPDATE_REPORT",
+    "build_count_persons_query",
+    "build_list_persons_query",
     "get_entity_persons_query",
     "get_graph_query",
     "get_node_graph_query",

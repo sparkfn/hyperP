@@ -82,6 +82,7 @@ class TrustTier(StrEnum):
 class ResponseMeta(BaseModel):
     request_id: str
     next_cursor: str | None = None
+    total_count: int | None = None
 
 class ApiResponse[DataT](BaseModel):
     data: DataT
@@ -274,9 +275,28 @@ class EntitySummary(BaseModel):
     country_code: str | None = None
     is_active: bool = True
     person_count: int = 0
+    source_record_count: int = 0
+    last_ingested_at: str | None = None
+    active_review_cases: int = 0
+
+
+class PersonEntitySummary(BaseModel):
+    """Entity a person is linked to, with that person's source-record count."""
+    entity_key: str
+    display_name: str | None = None
+    entity_type: str | None = None
+    country_code: str | None = None
+    is_active: bool = True
+    source_record_count: int = 0
+
 
 class EntityPerson(Person):
     phone_confidence: float | None = None
+
+
+class ListedPerson(EntityPerson):
+    """Person row in the /v1/persons listing, with inline entity memberships."""
+    entities: list[PersonEntitySummary] = Field(default_factory=list)
 
 
 class SalesProduct(BaseModel):
