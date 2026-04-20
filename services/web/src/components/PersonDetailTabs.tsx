@@ -25,6 +25,7 @@ import { statusColor } from "@/lib/display";
 import AuditTab from "./AuditTab";
 import ManualMergeDialog from "./ManualMergeDialog";
 import MatchesTab from "./MatchesTab";
+import PersonFocusedGraph from "./PersonFocusedGraph";
 import SalesCard from "./SalesCard";
 import SourceRecordsTab from "./SourceRecordsTab";
 import SurvivorshipOverrideDialog from "./SurvivorshipOverrideDialog";
@@ -61,6 +62,7 @@ export default function PersonDetailTabs({ person, connections }: Props): ReactE
           />
           <ConnectionsCard connections={connections} />
           <SalesCard personId={person.person_id} />
+          <PersonGraphCard person={person} />
         </Stack>
       ) : null}
       {tab === 1 ? <SourceRecordsTab personId={person.person_id} /> : null}
@@ -133,6 +135,24 @@ function PersonHeader({ person, onMergeClick, onOverrideClick }: HeaderProps): R
         <Field label="Updated" value={person.updated_at} />
         <Field label="Address" value={person.preferred_address?.normalized_full ?? null} full />
       </Grid>
+    </Paper>
+  );
+}
+
+function PersonGraphCard({ person }: { person: Person }): ReactElement {
+  const title = person.preferred_full_name ?? person.person_id;
+  return (
+    <Paper elevation={0} variant="outlined" sx={{ p: 3 }}>
+      <Typography variant="h6" sx={{ mb: 2 }}>
+        Graph
+      </Typography>
+      <Box sx={{ height: 600 }}>
+        <PersonFocusedGraph
+          initialPersonId={person.person_id}
+          initialTitle={title}
+          height="100%"
+        />
+      </Box>
     </Paper>
   );
 }

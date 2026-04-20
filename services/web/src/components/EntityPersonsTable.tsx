@@ -21,6 +21,7 @@ import AccountTreeIcon from "@mui/icons-material/AccountTree";
 
 import type { EntityPerson } from "@/lib/api-types";
 import { confidenceColor, statusColor } from "@/lib/display";
+import PersonGraphDialog from "@/components/PersonGraphDialog";
 
 export type SortField =
   | "preferred_full_name"
@@ -74,12 +75,25 @@ function openGraphInNewTab(person: EntityPerson): void {
   window.open(`/graph?${params.toString()}`, "_blank");
 }
 
+interface GraphDialogState {
+  personId: string;
+  title: string;
+}
+
 export default function EntityPersonsTable({
   persons, totalCount, page, rowsPerPage,
   sortBy, sortOrder, loading, onSortChange, onPageChange, onRowsPerPageChange,
 }: EntityPersonsTableProps): ReactElement {
   const router = useRouter();
   const [contextMenu, setContextMenu] = useState<RowContextMenu | null>(null);
+  const [graphDialog, setGraphDialog] = useState<GraphDialogState | null>(null);
+
+  function openGraphDialog(person: EntityPerson): void {
+    setGraphDialog({
+      personId: person.person_id,
+      title: person.preferred_full_name ?? person.person_id,
+    });
+  }
 
   function handleRowClick(personId: string): void {
     router.push(`/persons/${personId}`);
@@ -153,12 +167,12 @@ export default function EntityPersonsTable({
               <TableCell align="right">{p.source_record_count}</TableCell>
               <TableCell align="right">{p.connection_count}</TableCell>
               <TableCell align="center">
-                <Tooltip title="Open graph in new tab">
+                <Tooltip title="Open graph">
                   <IconButton
                     size="small"
                     onClick={(e) => {
                       e.stopPropagation();
-                      openGraphInNewTab(p);
+                      openGraphDialog(p);
                     }}
                   >
                     <AccountTreeIcon fontSize="small" />
@@ -189,6 +203,12 @@ export default function EntityPersonsTable({
         <MenuItem onClick={openPersonNewTab}>Open person in new tab</MenuItem>
         <MenuItem onClick={openGraphFromMenu}>Open graph in new tab</MenuItem>
       </Menu>
+      <PersonGraphDialog
+        open={graphDialog !== null}
+        personId={graphDialog?.personId}
+        title={graphDialog?.title ?? ""}
+        onClose={() => setGraphDialog(null)}
+      />
     </Paper>
   );
 }

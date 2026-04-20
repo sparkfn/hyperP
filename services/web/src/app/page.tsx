@@ -26,6 +26,7 @@ import AccountTreeIcon from "@mui/icons-material/AccountTree";
 import { BffError, bffFetch } from "@/lib/api-client";
 import type { Person } from "@/lib/api-types";
 import { statusColor } from "@/lib/display";
+import PersonGraphDialog from "@/components/PersonGraphDialog";
 
 type SearchMode = "freetext" | "identifier";
 
@@ -194,12 +195,25 @@ interface RowContextMenu {
   person: Person;
 }
 
+interface GraphDialogState {
+  personId: string;
+  title: string;
+}
+
 function ResultsTable({ persons }: ResultsTableProps): ReactElement {
   const router = useRouter();
   const [contextMenu, setContextMenu] = useState<RowContextMenu | null>(null);
+  const [graphDialog, setGraphDialog] = useState<GraphDialogState | null>(null);
 
   if (persons.length === 0) {
     return <Alert severity="info">No persons matched.</Alert>;
+  }
+
+  function openGraphDialog(person: Person): void {
+    setGraphDialog({
+      personId: person.person_id,
+      title: person.preferred_full_name ?? person.person_id,
+    });
   }
 
   function handleRowClick(personId: string): void {
@@ -256,12 +270,12 @@ function ResultsTable({ persons }: ResultsTableProps): ReactElement {
                 <TableCell align="right">{p.source_record_count}</TableCell>
                 <TableCell align="right">{p.connection_count}</TableCell>
                 <TableCell align="center">
-                  <Tooltip title="Open graph in new tab">
+                  <Tooltip title="Open graph">
                     <IconButton
                       size="small"
                       onClick={(e) => {
                         e.stopPropagation();
-                        openGraphInNewTab(p);
+                        openGraphDialog(p);
                       }}
                     >
                       <AccountTreeIcon fontSize="small" />
@@ -284,6 +298,12 @@ function ResultsTable({ persons }: ResultsTableProps): ReactElement {
         <MenuItem onClick={openPersonNewTab}>Open person in new tab</MenuItem>
         <MenuItem onClick={openGraphFromMenu}>Open graph in new tab</MenuItem>
       </Menu>
+      <PersonGraphDialog
+        open={graphDialog !== null}
+        personId={graphDialog?.personId}
+        title={graphDialog?.title ?? ""}
+        onClose={() => setGraphDialog(null)}
+      />
     </>
   );
 }
