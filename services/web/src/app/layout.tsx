@@ -35,37 +35,37 @@ export default function RootLayout({ children }: RootLayoutProps): ReactElement 
             <CssBaseline />
             <ToastProvider>
               <AppBar position="static" color="primary" elevation={0}>
-                <Toolbar>
-                  <Typography variant="h6" component="div" sx={{ fontWeight: 600 }}>
+                <Toolbar variant="dense" sx={{ gap: 1 }}>
+                  <Typography variant="subtitle1" component="div" sx={{ fontWeight: 700, letterSpacing: 0.3 }}>
                     HyperP
                   </Typography>
-                  <Typography variant="body2" sx={{ ml: 2, opacity: 0.85 }}>
+                  <Typography variant="caption" sx={{ ml: 1, opacity: 0.8 }}>
                     Profile Unifier
                   </Typography>
                   <Box sx={{ flexGrow: 1 }} />
-                  <Stack direction="row" spacing={1}>
-                    <Button component={Link} href="/" color="inherit" size="small">
-                      Search
+                  <Stack direction="row" spacing={0.5}>
+                    <Button component={Link} href="/persons" color="inherit">
+                      Persons
                     </Button>
-                    <Button component={Link} href="/entities" color="inherit" size="small">
+                    <Button component={Link} href="/entities" color="inherit">
                       Entities
                     </Button>
-                    <Button component={Link} href="/reports" color="inherit" size="small">
+                    <Button component={Link} href="/reports" color="inherit">
                       Reports
                     </Button>
-                    <Button component={Link} href="/graph" color="inherit" size="small">
+                    <Button component={Link} href="/graph" color="inherit">
                       Graph
                     </Button>
-                    <Button component={Link} href="/review" color="inherit" size="small">
-                      Review Queue
+                    <Button component={Link} href="/review" color="inherit">
+                      Review
                     </Button>
-                    <Button component={Link} href="/ingestion" color="inherit" size="small">
+                    <Button component={Link} href="/ingestion" color="inherit">
                       Ingestion
                     </Button>
-                    <Button component={Link} href="/events" color="inherit" size="small">
+                    <Button component={Link} href="/events" color="inherit">
                       Events
                     </Button>
-                    <Button component={Link} href="/admin" color="inherit" size="small">
+                    <Button component={Link} href="/admin" color="inherit">
                       Admin
                     </Button>
                     <Box sx={{ ml: 1, display: "flex", alignItems: "center" }}>
@@ -74,7 +74,7 @@ export default function RootLayout({ children }: RootLayoutProps): ReactElement 
                   </Stack>
                 </Toolbar>
               </AppBar>
-              <Container maxWidth="lg" sx={{ py: 4 }}>
+              <Container maxWidth="xl" sx={{ py: 2 }}>
                 <Box>{children}</Box>
               </Container>
             </ToastProvider>

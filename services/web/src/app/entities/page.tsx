@@ -1,198 +1,156 @@
 "use client";
 
-import { useCallback, useEffect, useState, type ReactElement } from "react";
+import { useEffect, useState, type ReactElement } from "react";
+import Link from "next/link";
+import type { UrlObject } from "url";
 
-import Accordion from "@mui/material/Accordion";
-import AccordionDetails from "@mui/material/AccordionDetails";
-import AccordionSummary from "@mui/material/AccordionSummary";
 import Alert from "@mui/material/Alert";
 import Box from "@mui/material/Box";
+import Button from "@mui/material/Button";
 import Chip from "@mui/material/Chip";
 import CircularProgress from "@mui/material/CircularProgress";
+import Divider from "@mui/material/Divider";
+import Paper from "@mui/material/Paper";
 import Stack from "@mui/material/Stack";
 import Typography from "@mui/material/Typography";
-import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 
 import { BffError, bffFetch } from "@/lib/api-client";
-import type { EntityPerson, EntitySummary } from "@/lib/api-types";
-
-import EntityPersonsTable, {
-  type SortField,
-  type SortOrder,
-} from "@/components/EntityPersonsTable";
+import type { EntitySummary } from "@/lib/api-types";
 
 export default function EntitiesPage(): ReactElement {
   const [entities, setEntities] = useState<EntitySummary[] | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
-  const [expandedKey, setExpandedKey] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
-    async function load(): Promise<void> {
+    (async (): Promise<void> => {
       try {
         const data = await bffFetch<EntitySummary[]>("/api/entities");
         if (!cancelled) setEntities(data);
       } catch (err: unknown) {
         if (!cancelled) {
-          const msg = err instanceof BffError || err instanceof Error
-            ? err.message : "Failed to load entities.";
+          const msg =
+            err instanceof BffError || err instanceof Error
+              ? err.message
+              : "Failed to load entities.";
           setError(msg);
         }
       } finally {
         if (!cancelled) setLoading(false);
       }
-    }
-    void load();
-    return () => { cancelled = true; };
+    })();
+    return (): void => {
+      cancelled = true;
+    };
   }, []);
 
-  if (loading) {
-    return (
-      <Box sx={{ display: "flex", justifyContent: "center", py: 6 }}>
-        <CircularProgress />
-      </Box>
-    );
-  }
-  if (error) return <Alert severity="error">{error}</Alert>;
-  if (!entities || entities.length === 0) {
-    return <Alert severity="info">No entities found.</Alert>;
-  }
-
   return (
-    <Stack spacing={3}>
-      <Box>
-        <Typography variant="h4" fontWeight={600}>
-          Entities
+    <Stack spacing={1.5}>
+      <Stack direction="row" alignItems="baseline" spacing={1}>
+        <Typography variant="h5">Entities</Typography>
+        <Typography variant="caption" color="text.secondary">
+          Business units owning source systems.
         </Typography>
-        <Typography variant="body2" color="text.secondary">
-          Persons grouped by business entity.
-        </Typography>
-      </Box>
-      {entities.map((entity) => (
-        <EntityAccordion
-          key={entity.entity_key}
-          entity={entity}
-          expanded={expandedKey === entity.entity_key}
-          onToggle={(isExpanded) =>
-            setExpandedKey(isExpanded ? entity.entity_key : null)
-          }
-        />
-      ))}
+      </Stack>
+      {loading ? (
+        <Box sx={{ display: "flex", justifyContent: "center", py: 4 }}>
+          <CircularProgress size={24} />
+        </Box>
+      ) : error ? (
+        <Alert severity="error">{error}</Alert>
+      ) : !entities || entities.length === 0 ? (
+        <Alert severity="info">No entities found.</Alert>
+      ) : (
+        <Box
+          sx={{
+            display: "grid",
+            gap: 1.5,
+            gridTemplateColumns: {
+              xs: "1fr",
+              sm: "repeat(2, 1fr)",
+              md: "repeat(3, 1fr)",
+              lg: "repeat(4, 1fr)",
+            },
+          }}
+        >
+          {entities.map((e) => (
+            <EntityCard key={e.entity_key} entity={e} />
+          ))}
+        </Box>
+      )}
     </Stack>
   );
 }
 
-interface EntityAccordionProps {
-  entity: EntitySummary;
-  expanded: boolean;
-  onToggle: (isExpanded: boolean) => void;
+function EntityCard({ entity }: { entity: EntitySummary }): ReactElement {
+  return (
+    <Paper variant="outlined" sx={{ p: 1.5, display: "flex", flexDirection: "column", gap: 1 }}>
+      <Stack direction="row" alignItems="center" spacing={0.5} flexWrap="wrap" useFlexGap>
+        <Typography variant="subtitle1" sx={{ flexGrow: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+          {entity.display_name ?? entity.entity_key}
+        </Typography>
+        {entity.is_active ? null : <Chip label="inactive" color="warning" />}
+      </Stack>
+      <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap>
+        {entity.entity_type ? <Chip label={entity.entity_type} variant="outlined" /> : null}
+        {entity.country_code ? <Chip label={entity.country_code} variant="outlined" /> : null}
+      </Stack>
+      <Divider />
+      <Stack spacing={0.25}>
+        <Metric
+          label="Persons"
+          value={String(entity.person_count)}
+          href={{ pathname: "/persons", query: { entity_key: entity.entity_key } }}
+        />
+        <Metric label="Source records" value={String(entity.source_record_count)} />
+        <Metric label="Active review cases" value={String(entity.active_review_cases)} />
+        <Metric label="Last ingested" value={formatDate(entity.last_ingested_at)} />
+      </Stack>
+      <Box sx={{ flexGrow: 1 }} />
+      <Link
+        href={{ pathname: "/persons", query: { entity_key: entity.entity_key } }}
+        style={{ textDecoration: "none" }}
+      >
+        <Button variant="outlined" fullWidth>
+          View persons
+        </Button>
+      </Link>
+    </Paper>
+  );
 }
 
-function EntityAccordion({ entity, expanded, onToggle }: EntityAccordionProps): ReactElement {
-  const [persons, setPersons] = useState<EntityPerson[]>([]);
-  const [loading, setLoading] = useState<boolean>(false);
-  const [error, setError] = useState<string | null>(null);
-  const [page, setPage] = useState<number>(0);
-  const [rowsPerPage, setRowsPerPage] = useState<number>(20);
-  const [sortBy, setSortBy] = useState<SortField>("preferred_full_name");
-  const [sortOrder, setSortOrder] = useState<SortOrder>("asc");
+interface MetricProps {
+  label: string;
+  value: string;
+  href?: UrlObject;
+}
 
-  const fetchPage = useCallback(
-    async (pg: number, rpp: number, sb: SortField, so: SortOrder): Promise<void> => {
-      setLoading(true);
-      setError(null);
-      try {
-        const params = new URLSearchParams({
-          limit: String(rpp),
-          sort_by: sb,
-          sort_order: so,
-        });
-        const offset = pg * rpp;
-        if (offset > 0) {
-          params.set("cursor", btoa(String(offset)));
-        }
-        const url = `/api/entities/${encodeURIComponent(entity.entity_key)}/persons?${params.toString()}`;
-        const data = await bffFetch<EntityPerson[]>(url);
-        setPersons(data);
-      } catch (err: unknown) {
-        const msg = err instanceof BffError || err instanceof Error
-          ? err.message : "Failed to load persons.";
-        setError(msg);
-      } finally {
-        setLoading(false);
-      }
-    },
-    [entity.entity_key],
-  );
-
-  function handleExpand(_: React.SyntheticEvent, isExpanded: boolean): void {
-    onToggle(isExpanded);
-    if (isExpanded && persons.length === 0 && !loading) {
-      void fetchPage(0, rowsPerPage, sortBy, sortOrder);
-    }
-  }
-
-  function handlePageChange(newPage: number): void {
-    setPage(newPage);
-    void fetchPage(newPage, rowsPerPage, sortBy, sortOrder);
-  }
-
-  function handleRowsPerPageChange(newRowsPerPage: number): void {
-    setRowsPerPage(newRowsPerPage);
-    setPage(0);
-    void fetchPage(0, newRowsPerPage, sortBy, sortOrder);
-  }
-
-  function handleSortChange(field: SortField): void {
-    const newOrder: SortOrder =
-      sortBy === field && sortOrder === "asc" ? "desc" : "asc";
-    setSortBy(field);
-    setSortOrder(newOrder);
-    setPage(0);
-    void fetchPage(0, rowsPerPage, field, newOrder);
-  }
-
+function Metric({ label, value, href }: MetricProps): ReactElement {
   return (
-    <Accordion expanded={expanded} onChange={handleExpand}>
-      <AccordionSummary expandIcon={<ExpandMoreIcon />}>
-        <Stack direction="row" spacing={2} alignItems="center">
-          <Typography variant="h6" fontWeight={600}>
-            {entity.display_name ?? entity.entity_key}
-          </Typography>
-          {entity.entity_type ? (
-            <Chip label={entity.entity_type} size="small" variant="outlined" />
-          ) : null}
-          {entity.country_code ? (
-            <Chip label={entity.country_code} size="small" variant="outlined" />
-          ) : null}
-          <Chip label={`${entity.person_count} persons`} size="small" color="primary" />
-        </Stack>
-      </AccordionSummary>
-      <AccordionDetails>
-        {!expanded ? null : loading && persons.length === 0 ? (
-          <Box sx={{ display: "flex", justifyContent: "center", py: 3 }}>
-            <CircularProgress size={24} />
-          </Box>
-        ) : error ? (
-          <Alert severity="error">{error}</Alert>
-        ) : persons.length === 0 ? (
-          <Alert severity="info">No persons found.</Alert>
-        ) : (
-          <EntityPersonsTable
-            persons={persons}
-            totalCount={entity.person_count}
-            page={page}
-            rowsPerPage={rowsPerPage}
-            sortBy={sortBy}
-            sortOrder={sortOrder}
-            loading={loading}
-            onSortChange={handleSortChange}
-            onPageChange={handlePageChange}
-            onRowsPerPageChange={handleRowsPerPageChange}
-          />
-        )}
-      </AccordionDetails>
-    </Accordion>
+    <Stack direction="row" justifyContent="space-between" alignItems="center">
+      <Typography variant="caption" color="text.secondary">
+        {label}
+      </Typography>
+      {href ? (
+        <Link
+          href={href}
+          style={{ fontWeight: 600, fontSize: "0.85rem", textDecoration: "none", color: "#1f4e9e" }}
+        >
+          {value}
+        </Link>
+      ) : (
+        <Typography variant="body2" sx={{ fontWeight: 600 }}>
+          {value}
+        </Typography>
+      )}
+    </Stack>
   );
+}
+
+function formatDate(value: string | null): string {
+  if (!value) return "\u2014";
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return value;
+  return parsed.toISOString().slice(0, 10);
 }

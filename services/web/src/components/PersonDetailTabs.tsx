@@ -25,6 +25,7 @@ import { statusColor } from "@/lib/display";
 import AuditTab from "./AuditTab";
 import ManualMergeDialog from "./ManualMergeDialog";
 import MatchesTab from "./MatchesTab";
+import PersonFocusedGraph from "./PersonFocusedGraph";
 import SalesCard from "./SalesCard";
 import SourceRecordsTab from "./SourceRecordsTab";
 import SurvivorshipOverrideDialog from "./SurvivorshipOverrideDialog";
@@ -47,25 +48,28 @@ export default function PersonDetailTabs({ person, connections }: Props): ReactE
     <Box>
       <Tabs value={tab} onChange={handleChange} sx={{ mb: 2 }}>
         <Tab label="Profile" />
-        <Tab label="Source Records" />
-        <Tab label="Audit" />
         <Tab label="Matches" />
       </Tabs>
 
       {tab === 0 ? (
-        <Stack spacing={3}>
+        <Stack spacing={2}>
           <PersonHeader
             person={person}
             onMergeClick={() => setMergeOpen(true)}
             onOverrideClick={() => setOverrideOpen(true)}
           />
           <ConnectionsCard connections={connections} />
+          <PersonSection title="Source Records">
+            <SourceRecordsTab personId={person.person_id} />
+          </PersonSection>
           <SalesCard personId={person.person_id} />
+          <PersonSection title="Audit">
+            <AuditTab personId={person.person_id} />
+          </PersonSection>
+          <PersonGraphCard person={person} />
         </Stack>
       ) : null}
-      {tab === 1 ? <SourceRecordsTab personId={person.person_id} /> : null}
-      {tab === 2 ? <AuditTab personId={person.person_id} /> : null}
-      {tab === 3 ? <MatchesTab personId={person.person_id} /> : null}
+      {tab === 1 ? <MatchesTab personId={person.person_id} /> : null}
 
       <ManualMergeDialog
         open={mergeOpen}
@@ -89,7 +93,7 @@ interface HeaderProps {
 
 function PersonHeader({ person, onMergeClick, onOverrideClick }: HeaderProps): ReactElement {
   return (
-    <Paper elevation={0} variant="outlined" sx={{ p: 3 }}>
+    <Paper variant="outlined" sx={{ p: 2 }}>
       <Stack
         direction="row"
         spacing={2}
@@ -137,10 +141,39 @@ function PersonHeader({ person, onMergeClick, onOverrideClick }: HeaderProps): R
   );
 }
 
+function PersonGraphCard({ person }: { person: Person }): ReactElement {
+  const title = person.preferred_full_name ?? person.person_id;
+  return (
+    <Paper variant="outlined" sx={{ p: 2 }}>
+      <Typography variant="subtitle1" sx={{ mb: 1 }}>
+        Graph
+      </Typography>
+      <Box sx={{ height: 520 }}>
+        <PersonFocusedGraph
+          initialPersonId={person.person_id}
+          initialTitle={title}
+          height="100%"
+        />
+      </Box>
+    </Paper>
+  );
+}
+
+function PersonSection({ title, children }: { title: string; children: ReactElement }): ReactElement {
+  return (
+    <Paper variant="outlined" sx={{ p: 2 }}>
+      <Typography variant="subtitle1" sx={{ mb: 1 }}>
+        {title}
+      </Typography>
+      {children}
+    </Paper>
+  );
+}
+
 function ConnectionsCard({ connections }: { connections: PersonConnection[] }): ReactElement {
   return (
-    <Paper elevation={0} variant="outlined" sx={{ p: 3 }}>
-      <Typography variant="h6" sx={{ mb: 2 }}>
+    <Paper variant="outlined" sx={{ p: 2 }}>
+      <Typography variant="subtitle1" sx={{ mb: 1 }}>
         Connections
       </Typography>
       {connections.length === 0 ? (

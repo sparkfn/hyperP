@@ -221,6 +221,17 @@ ORDER BY me.created_at DESC
 SKIP $skip LIMIT $limit
 """
 
+GET_PERSON_ENTITIES = """
+MATCH (sr:SourceRecord)-[:LINKED_TO]->(p:Person {person_id: $person_id})
+MATCH (sr)-[:FROM_SOURCE]->(:SourceSystem)-[:OPERATED_BY]->(e:Entity)
+WITH e, count(DISTINCT sr) AS source_record_count
+RETURN e {
+  .entity_key, .display_name, .entity_type, .country_code, .is_active
+} AS entity,
+source_record_count
+ORDER BY e.display_name
+"""
+
 GET_PERSON_MATCHES = """
 MATCH (md:MatchDecision)
 WHERE (md)-[:ABOUT_LEFT]->(:Person {person_id: $person_id})

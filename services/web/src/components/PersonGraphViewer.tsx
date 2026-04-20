@@ -72,6 +72,7 @@ interface PersonGraphViewerProps {
     label: string,
     displayName: string,
     position: { x: number; y: number },
+    properties: Record<string, string | number | boolean | null>,
   ) => void;
 }
 
@@ -155,7 +156,13 @@ export default function PersonGraphViewer({
       const event = evt as globalThis.MouseEvent;
       event.preventDefault();
       const node = raw as unknown as FGNode;
-      onNodeContextMenu(node.id, node.label, node.displayName, { x: event.clientX, y: event.clientY });
+      onNodeContextMenu(
+        node.id,
+        node.label,
+        node.displayName,
+        { x: event.clientX, y: event.clientY },
+        node.properties,
+      );
     },
     [onNodeContextMenu],
   );

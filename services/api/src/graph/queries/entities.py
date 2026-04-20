@@ -4,13 +4,19 @@ from __future__ import annotations
 
 LIST_ENTITIES = """
 MATCH (e:Entity)
-OPTIONAL MATCH (e)<-[:OPERATED_BY]-(ss:SourceSystem)<-[:FROM_SOURCE]-(sr:SourceRecord)
-    <-[:HAS_FACT]-(p:Person)
-WHERE p.status <> 'merged'
-WITH e, count(DISTINCT p) AS person_count
+CALL {
+  WITH e
+  OPTIONAL MATCH (e)<-[:OPERATED_BY]-(:SourceSystem)<-[:FROM_SOURCE]-(sr:SourceRecord)
+    -[:LINKED_TO]->(p:Person)
+  WHERE p.status <> 'merged'
+  RETURN count(DISTINCT p) AS person_count,
+         count(DISTINCT sr) AS source_record_count,
+         max(sr.ingested_at) AS last_ingested_at
+}
 RETURN e {
   .entity_key, .display_name, .entity_type, .country_code, .is_active
-} AS entity, person_count
+} AS entity,
+person_count, source_record_count, last_ingested_at, 0 AS active_review_cases
 ORDER BY e.display_name
 """
 
