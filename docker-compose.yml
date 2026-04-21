@@ -86,6 +86,10 @@ services:
       NEO4J_PASSWORD: ${NEO4J_PASSWORD:-changeme}
       PORT: 3000
       LOG_LEVEL: info
+      AUTH_ENABLED: ${AUTH_ENABLED:-true}
+      AUTH_GOOGLE_ID: ${AUTH_GOOGLE_ID:-}
+      AUTH_GOOGLE_HOSTED_DOMAIN: ${AUTH_GOOGLE_HOSTED_DOMAIN:-}
+      BOOTSTRAP_ADMIN_EMAILS: ${BOOTSTRAP_ADMIN_EMAILS:-}
     depends_on:
       neo4j:
         condition: service_healthy
@@ -102,6 +106,13 @@ services:
       API_BASE_URL: ${API_BASE_URL:-http://api:3000/v1}
       NODE_ENV: production
       PORT: 3001
+      AUTH_SECRET: ${AUTH_SECRET:-}
+      AUTH_GOOGLE_ID: ${AUTH_GOOGLE_ID:-}
+      AUTH_GOOGLE_SECRET: ${AUTH_GOOGLE_SECRET:-}
+      NEXTAUTH_URL: ${NEXTAUTH_URL:-http://localhost:3001}
+      # `AUTH_TRUST_HOST=true` lets Auth.js accept the forwarded host when
+      # running behind Docker's port-mapping.
+      AUTH_TRUST_HOST: "true"
     depends_on:
       - api
 

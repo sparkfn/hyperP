@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends, Request
 from neo4j import AsyncManagedTransaction
 from pydantic import BaseModel
 
+from src.auth.deps import require_mutator_for_source
+from src.auth.models import AuthUser
 from src.graph.client import get_session
 from src.graph.converters import to_str
 from src.graph.queries import (
@@ -63,7 +65,10 @@ class IngestRunDetailResponse(BaseModel):
     "/v1/ingest/{source_key}/records", response_model=ApiResponse[IngestRecordsResponse]
 )
 async def ingest_records(
-    source_key: str, body: IngestRecordsRequest, request: Request
+    source_key: str,
+    body: IngestRecordsRequest,
+    request: Request,
+    _user: AuthUser = Depends(require_mutator_for_source),
 ) -> ApiResponse[IngestRecordsResponse]:
     """Persist a batch of source records linked to an ingest run."""
     if not body.records:
@@ -161,7 +166,10 @@ async def _persist_records(
     status_code=201,
 )
 async def create_ingest_run(
-    source_key: str, body: IngestRunCreateRequest, request: Request
+    source_key: str,
+    body: IngestRunCreateRequest,
+    request: Request,
+    _user: AuthUser = Depends(require_mutator_for_source),
 ) -> ApiResponse[IngestRunResponse]:
     """Create a new ingest run for a bulk sync."""
     async with get_session(write=True) as session:
@@ -203,6 +211,7 @@ async def update_ingest_run(
     ingest_run_id: str,
     body: IngestRunUpdateRequest,
     request: Request,
+    _user: AuthUser = Depends(require_mutator_for_source),
 ) -> ApiResponse[IngestRunResponse]:
     """Update an ingest run with status and counters."""
     async with get_session(write=True) as session:

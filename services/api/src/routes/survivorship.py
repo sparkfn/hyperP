@@ -4,10 +4,12 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends, Request
 from neo4j import AsyncManagedTransaction
 from pydantic import BaseModel
 
+from src.auth.deps import require_admin
+from src.auth.models import AuthUser
 from src.graph.client import get_session
 from src.graph.converters import GraphValue, to_optional_str, to_str
 from src.graph.queries import (
@@ -79,7 +81,9 @@ def _empty_fact() -> _BestFact:
     response_model=ApiResponse[RecomputeResponse],
 )
 async def recompute_golden_profile(
-    person_id: str, request: Request
+    person_id: str,
+    request: Request,
+    _user: AuthUser = Depends(require_admin),
 ) -> ApiResponse[RecomputeResponse]:
     """Recompute a person's golden profile from HAS_FACT and LIVES_AT relationships."""
     async with get_session(write=True) as session:
@@ -178,7 +182,10 @@ def _completeness_score(best_by_field: dict[str, _BestFact], has_address: bool) 
     response_model=ApiResponse[OverrideResponse],
 )
 async def create_survivorship_override(
-    person_id: str, body: SurvivorshipOverrideRequest, request: Request
+    person_id: str,
+    body: SurvivorshipOverrideRequest,
+    request: Request,
+    user: AuthUser = Depends(require_admin),
 ) -> ApiResponse[OverrideResponse]:
     """Pin a golden-profile field value to a specific source record."""
     async with get_session(write=True) as session:
@@ -188,6 +195,7 @@ async def create_survivorship_override(
             body.attribute_name,
             body.selected_source_record_pk,
             body.reason,
+            user.email,
         )
 
     if outcome == "person_not_found":
@@ -232,6 +240,7 @@ async def _override_tx(
     attribute_name: str,
     source_record_pk: str,
     reason: str,
+    actor_id: str,
 ) -> str:
     person_record = await (await tx.run(GET_PERSON_OVERRIDES_FULL, person_id=person_id)).single()
     if person_record is None:
@@ -253,7 +262,7 @@ async def _override_tx(
     overrides = _parse_overrides(person_record["overrides"])
     overrides[attribute_name] = {
         "source_record_pk": source_record_pk, "reason": reason,
-        "actor_type": "reviewer", "actor_id": "current_user",
+        "actor_type": "admin", "actor_id": actor_id,
         "created_at": datetime.now(UTC).isoformat(),
     }
     await tx.run(UPDATE_OVERRIDES, person_id=person_id, overrides=overrides)

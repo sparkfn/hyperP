@@ -21,6 +21,7 @@ import { BffError, bffFetch } from "@/lib/api-client";
 import type { ReportDetail } from "@/lib/api-types";
 import ReportExecutePanel from "@/components/ReportExecutePanel";
 import ReportForm, { type ReportFormPayload } from "@/components/ReportForm";
+import Gate from "@/components/auth/Gate";
 
 type PageMode = "view" | "edit";
 
@@ -165,19 +166,21 @@ export default function ReportDetailPage(): ReactElement {
             ) : null}
           </Stack>
         </Box>
-        <Stack direction="row" spacing={1}>
-          <Button variant="outlined" size="small" onClick={() => setMode("edit")}>
-            Edit
-          </Button>
-          <Button
-            variant="outlined"
-            size="small"
-            color="error"
-            onClick={() => setDeleteOpen(true)}
-          >
-            Delete
-          </Button>
-        </Stack>
+        <Gate mode="admin">
+          <Stack direction="row" spacing={1}>
+            <Button variant="outlined" size="small" onClick={() => setMode("edit")}>
+              Edit
+            </Button>
+            <Button
+              variant="outlined"
+              size="small"
+              color="error"
+              onClick={() => setDeleteOpen(true)}
+            >
+              Delete
+            </Button>
+          </Stack>
+        </Gate>
       </Box>
 
       {error !== null ? <Alert severity="error">{error}</Alert> : null}

@@ -21,6 +21,7 @@ import Typography from "@mui/material/Typography";
 
 import type { Person, PersonConnection } from "@/lib/api-types";
 import { statusColor } from "@/lib/display";
+import Gate from "./auth/Gate";
 
 import AuditTab from "./AuditTab";
 import ManualMergeDialog from "./ManualMergeDialog";
@@ -110,12 +111,16 @@ function PersonHeader({ person, onMergeClick, onOverrideClick }: HeaderProps): R
           {person.is_high_risk ? <Chip label="high risk" size="small" color="error" /> : null}
         </Stack>
         <Stack direction="row" spacing={1}>
-          <Button size="small" variant="outlined" onClick={onOverrideClick}>
-            Override field
-          </Button>
-          <Button size="small" variant="contained" onClick={onMergeClick}>
-            Merge into…
-          </Button>
+          <Gate mode="admin">
+            <Button size="small" variant="outlined" onClick={onOverrideClick}>
+              Override field
+            </Button>
+          </Gate>
+          <Gate mode="admin">
+            <Button size="small" variant="contained" onClick={onMergeClick}>
+              Merge into…
+            </Button>
+          </Gate>
         </Stack>
       </Stack>
 

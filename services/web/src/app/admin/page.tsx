@@ -8,6 +8,9 @@ import Stack from "@mui/material/Stack";
 import Typography from "@mui/material/Typography";
 
 import FieldTrustEditorDialog from "@/components/FieldTrustEditorDialog";
+import Gate from "@/components/auth/Gate";
+import Link from "next/link";
+import Button from "@mui/material/Button";
 import { apiFetch } from "@/lib/api-server";
 import type { SourceSystemInfo } from "@/lib/api-types-ops";
 
@@ -17,14 +20,21 @@ export default async function AdminPage(): Promise<ReactElement> {
 
   return (
     <Stack spacing={3}>
-      <Box>
-        <Typography variant="h4" fontWeight={600}>
-          Admin
-        </Typography>
-        <Typography variant="body2" color="text.secondary">
-          Manage source system configuration and field trust tiers.
-        </Typography>
-      </Box>
+      <Stack direction="row" alignItems="center" justifyContent="space-between">
+        <Box>
+          <Typography variant="h4" fontWeight={600}>
+            Admin
+          </Typography>
+          <Typography variant="body2" color="text.secondary">
+            Manage source system configuration and field trust tiers.
+          </Typography>
+        </Box>
+        <Gate mode="admin">
+          <Button component={Link} href="/admin/users" variant="contained" size="small">
+            Users
+          </Button>
+        </Gate>
+      </Stack>
 
       {systems.length === 0 ? (
         <Typography variant="body2" color="text.secondary">
@@ -58,7 +68,9 @@ export default async function AdminPage(): Promise<ReactElement> {
                       {fieldCount} field trust entries
                     </Typography>
                     <Box>
-                      <FieldTrustEditorDialog sourceKey={s.source_key} />
+                      <Gate mode="admin" disableInsteadOfHide>
+                        <FieldTrustEditorDialog sourceKey={s.source_key} />
+                      </Gate>
                     </Box>
                   </Stack>
                 </Paper>

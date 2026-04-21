@@ -8,6 +8,7 @@ import Stack from "@mui/material/Stack";
 import Typography from "@mui/material/Typography";
 
 import StartIngestionRunDialog from "@/components/StartIngestionRunDialog";
+import Gate from "@/components/auth/Gate";
 import { apiFetch } from "@/lib/api-server";
 import type { SourceSystemInfo } from "@/lib/api-types-ops";
 
@@ -53,7 +54,9 @@ export default async function IngestionPage(): Promise<ReactElement> {
                     </Typography>
                   ) : null}
                   <Box>
-                    <StartIngestionRunDialog sourceKey={s.source_key} />
+                    <Gate mode="mutator" entityKey={s.entity_key} disableInsteadOfHide>
+                      <StartIngestionRunDialog sourceKey={s.source_key} />
+                    </Gate>
                   </Box>
                 </Stack>
               </Paper>

@@ -4,10 +4,12 @@ from __future__ import annotations
 
 from typing import LiteralString
 
-from fastapi import APIRouter, Query, Request
+from fastapi import APIRouter, Depends, Query, Request
 from neo4j import AsyncManagedTransaction
 from pydantic import BaseModel
 
+from src.auth.deps import require_mutator_for_review_case
+from src.auth.models import AuthUser
 from src.graph.client import get_session
 from src.graph.converters import GraphRecord, GraphValue, to_str
 from src.graph.mappers import map_review_case_detail, map_review_case_summary
@@ -104,7 +106,10 @@ async def get_review_case(
 
 @router.post("/{review_case_id}/assign", response_model=ApiResponse[AssignResponse])
 async def assign_review_case(
-    review_case_id: str, body: AssignReviewRequest, request: Request
+    review_case_id: str,
+    body: AssignReviewRequest,
+    request: Request,
+    _user: AuthUser = Depends(require_mutator_for_review_case),
 ) -> ApiResponse[AssignResponse]:
     """Assign a review case to a reviewer."""
     async with get_session(write=True) as session:
@@ -140,7 +145,10 @@ async def _assign_tx(
 
 @router.post("/{review_case_id}/actions", response_model=ApiResponse[ActionResponse])
 async def submit_review_action(
-    review_case_id: str, body: ReviewActionRequest, request: Request
+    review_case_id: str,
+    body: ReviewActionRequest,
+    request: Request,
+    user: AuthUser = Depends(require_mutator_for_review_case),
 ) -> ApiResponse[ActionResponse]:
     """Submit a review action (merge / reject / defer / escalate / manual_no_match)."""
     new_state, resolution = _resolve_action(body.action_type)
@@ -153,6 +161,7 @@ async def submit_review_action(
             resolution,
             body.notes,
             body.metadata.follow_up_at,
+            user.email,
         )
     if record is None:
         raise http_error(
@@ -179,7 +188,7 @@ def _build_action_cypher(
         "rc.queue_state = $new_state",
         "rc.updated_at = datetime()",
         "rc.actions = rc.actions + [{"
-        " action_type: $action_type, actor_type: 'reviewer', actor_id: 'current_user',"
+        " action_type: $action_type, actor_type: 'reviewer', actor_id: $actor_id,"
         " notes: $notes, created_at: toString(datetime())}]",
     ]
     if resolution is not None:
@@ -199,11 +208,13 @@ def _build_action_cypher(
 async def _action_tx(
     tx: AsyncManagedTransaction, review_case_id: str, action_type: str,
     new_state: str, resolution: str | None, notes: str | None, follow_up_at: str | None,
+    actor_id: str,
 ) -> GraphRecord | None:
     cypher = _build_action_cypher(resolution, follow_up_at)
     result = await tx.run(
         cypher, review_case_id=review_case_id, new_state=new_state,
         action_type=action_type, notes=notes, resolution=resolution, follow_up_at=follow_up_at,
+        actor_id=actor_id,
     )
     record = await result.single()
     if record is None:
@@ -211,6 +222,8 @@ async def _action_tx(
     if action_type == ApiReviewActionType.MANUAL_NO_MATCH.value:
         await tx.run(
             CREATE_NO_MATCH_LOCK_FROM_REVIEW,
-            review_case_id=review_case_id, notes=notes or "Manual no-match from review",
+            review_case_id=review_case_id,
+            notes=notes or "Manual no-match from review",
+            actor_id=actor_id,
         )
     return dict(record["review_case"])

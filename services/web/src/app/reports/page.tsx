@@ -14,6 +14,7 @@ import CircularProgress from "@mui/material/CircularProgress";
 import Stack from "@mui/material/Stack";
 import Typography from "@mui/material/Typography";
 
+import Gate from "@/components/auth/Gate";
 import { BffError, bffFetch } from "@/lib/api-client";
 import type { ReportSummary } from "@/lib/api-types";
 
@@ -80,23 +81,25 @@ export default function ReportsPage(): ReactElement {
             Custom Cypher reports for tabular data queries.
           </Typography>
         </Box>
-        <Stack direction="row" spacing={1}>
-          <Button
-            variant="contained"
-            size="small"
-            onClick={() => router.push("/reports/new")}
-          >
-            Create Report
-          </Button>
-          <Button
-            variant="outlined"
-            size="small"
-            disabled={seeding}
-            onClick={() => void handleSeed()}
-          >
-            {seeding ? <CircularProgress size={18} /> : "Seed Samples"}
-          </Button>
-        </Stack>
+        <Gate mode="admin">
+          <Stack direction="row" spacing={1}>
+            <Button
+              variant="contained"
+              size="small"
+              onClick={() => router.push("/reports/new")}
+            >
+              Create Report
+            </Button>
+            <Button
+              variant="outlined"
+              size="small"
+              disabled={seeding}
+              onClick={() => void handleSeed()}
+            >
+              {seeding ? <CircularProgress size={18} /> : "Seed Samples"}
+            </Button>
+          </Stack>
+        </Gate>
       </Box>
 
       {error !== null ? <Alert severity="error">{error}</Alert> : null}

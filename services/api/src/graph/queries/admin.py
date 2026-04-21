@@ -4,11 +4,13 @@ from __future__ import annotations
 
 LIST_SOURCE_SYSTEMS = """
 MATCH (ss:SourceSystem)
+OPTIONAL MATCH (ss)-[:OPERATED_BY]->(e:Entity)
 RETURN ss {
   .source_system_id, .source_key, .display_name,
   .system_type, .is_active, .field_trust,
   .created_at, .updated_at
-} AS source_system
+} AS source_system,
+e.entity_key AS entity_key
 ORDER BY ss.source_key
 """
 

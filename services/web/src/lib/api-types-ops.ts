@@ -94,6 +94,7 @@ export interface SourceSystemInfo {
   system_type: string | null;
   is_active: boolean;
   field_trust: Record<string, string>;
+  entity_key: string | null;
   created_at: string | null;
   updated_at: string | null;
 }
