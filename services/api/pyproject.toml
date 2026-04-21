@@ -22,4 +22,11 @@ dependencies = [
 # running from the service directory.
 package = false
 
+[dependency-groups]
+dev = [
+    "mypy>=1.20.0",
+    "ruff>=0.15.9",
+    "types-cachetools>=6.2.0.20260408",
+]
+
 # Shared ruff/mypy/pytest config inherited from the workspace root pyproject.toml.

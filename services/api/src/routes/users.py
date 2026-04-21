@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Literal, cast
+from typing import Literal
 
 from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel
@@ -56,7 +56,7 @@ async def patch_user(
     _admin: AuthUser = Depends(require_admin),
 ) -> ApiResponse[UserResponse]:
     """Update a user's role and/or entity assignment. Admin only."""
-    new_role: Role | None = cast(Role, body.role) if body.role is not None else None
+    new_role: Role | None = body.role
 
     # Enforce invariants: employees require an entity; admins must not be scoped.
     effective_role: Role | None = new_role

@@ -9,6 +9,7 @@ from contextlib import asynccontextmanager
 from fastapi import Depends, FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.params import Depends as DependsMarker
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
@@ -19,7 +20,6 @@ from src.graph.queries.users import CREATE_USER_CONSTRAINT
 from src.http_utils import request_id
 from src.routes import (
     admin,
-    auth as auth_routes,
     entities,
     events,
     health,
@@ -29,6 +29,11 @@ from src.routes import (
     reports,
     review,
     survivorship,
+)
+from src.routes import (
+    auth as auth_routes,
+)
+from src.routes import (
     users as users_routes,
 )
 from src.types import ApiError, ApiErrorBody, ResponseMeta
@@ -74,7 +79,7 @@ def build_app() -> FastAPI:
     app.include_router(users_routes.router)
 
     # All other routes require an active (non-first_time) user by default.
-    active: list[Depends] = [Depends(require_active_user)]
+    active: list[DependsMarker] = [Depends(require_active_user)]
     app.include_router(entities.router, dependencies=active)
     app.include_router(reports.router, dependencies=active)
     app.include_router(persons.router, dependencies=active)

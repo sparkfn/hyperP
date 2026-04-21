@@ -78,6 +78,9 @@ module = [
     # `Any` in subclass bodies under `disallow_any_explicit`. The Any is in
     # the library's type stubs, not our code; relaxing here keeps the rest
     # of the codebase strict.
+    "src.auth.models",
+    "src.auth.verify",
+    "src.types_reports",
     "src.models",
     "src.connectors.fundbox.base",
     "src.connectors.fundbox.builders",
@@ -131,6 +134,7 @@ module = [
     "neo4j.*",
     "sqlalchemy.*",
     "sshtunnel",
+    "google.*",
 ]
 ignore_missing_imports = true
 

@@ -50,7 +50,7 @@ def verify_google_id_token(token: str) -> GoogleClaims:
     if not client_id:
         raise ValueError("GOOGLE_OAUTH_CLIENT_ID is not configured")
     # google-auth returns dict[str, Any]; typed as our narrowed payload shape
-    data: _IdTokenPayload = google_id_token.verify_oauth2_token(  # type: ignore[assignment]
+    data: _IdTokenPayload = google_id_token.verify_oauth2_token(
         token, _get_request(), audience=client_id
     )
     if not data.get("email_verified"):

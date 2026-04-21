@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+from typing import Any
 
 from fastapi import APIRouter, Depends, Request
 
@@ -154,9 +155,10 @@ async def execute_report(
         raise http_error(404, "not_found", f"Report '{report_key}' not found.", request)
 
     params = _coerce_params(detail, body.parameters)
+    params_any: dict[str, Any] = dict(params)
 
     async with get_session() as session:
-        result = await session.run(detail.cypher_query, **params)
+        result = await session.run(detail.cypher_query, **params_any)
         columns: list[str] = []
         rows: list[dict[str, str | int | float | bool | None]] = []
         async for record in result:
@@ -187,7 +189,8 @@ async def seed_reports(
     seeded: list[str] = []
     async with get_session(write=True) as session:
         for seed in SEED_REPORTS:
-            await session.run(SEED_REPORT_QUERY, **seed)
+            seed_any: dict[str, Any] = dict(seed)
+            await session.run(SEED_REPORT_QUERY, **seed_any)
             seeded.append(seed["report_key"])
     return envelope(seeded, request)
 

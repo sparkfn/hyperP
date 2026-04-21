@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from neo4j import AsyncDriver, AsyncGraphDatabase, AsyncSession
+from neo4j import AsyncDriver, AsyncGraphDatabase, AsyncSession, NotificationMinimumSeverity
 
 from src.config import config
 
@@ -18,6 +18,7 @@ def get_driver() -> AsyncDriver:
             auth=(config.neo4j_user, config.neo4j_password),
             max_connection_pool_size=50,
             connection_acquisition_timeout=30.0,
+            notifications_min_severity=NotificationMinimumSeverity.WARNING,
         )
     return _driver
 

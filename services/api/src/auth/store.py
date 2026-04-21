@@ -7,7 +7,7 @@ from typing import cast
 from src.auth.models import AuthUser, Role
 from src.config import config
 from src.graph.client import get_session
-from src.graph.converters import to_optional_str, to_str
+from src.graph.converters import GraphValue, to_optional_str, to_str
 from src.graph.queries.users import (
     GET_ENTITIES_FOR_REVIEW_CASE,
     GET_ENTITY_FOR_ENTITY_KEY,
@@ -21,7 +21,7 @@ from src.graph.queries.users import (
 _VALID_ROLES: frozenset[str] = frozenset({"admin", "employee", "first_time"})
 
 
-def _role_from_value(value: object) -> Role:
+def _role_from_value(value: GraphValue) -> Role:
     raw = to_str(value, "first_time")
     if raw not in _VALID_ROLES:
         return "first_time"
