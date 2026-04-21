@@ -86,7 +86,7 @@ CREATE (a)-[:NO_MATCH_LOCK {
   lock_type: 'manual_no_match',
   reason: $notes,
   actor_type: 'reviewer',
-  actor_id: 'current_user',
+  actor_id: $actor_id,
   expires_at: null,
   created_at: datetime()
 }]->(b)

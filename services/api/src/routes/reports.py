@@ -5,8 +5,11 @@ from __future__ import annotations
 import json
 import logging
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends, Request
+from pydantic import BaseModel
 
+from src.auth.deps import require_admin
+from src.auth.models import AuthUser
 from src.graph.client import get_session
 from src.graph.converters import GraphRecord, GraphValue
 from src.graph.mappers_reports import map_report_detail, map_report_summary
@@ -71,7 +74,9 @@ async def get_report(report_key: str, request: Request) -> ApiResponse[ReportDet
 
 @router.post("", response_model=ApiResponse[ReportDetail], status_code=201)
 async def create_report(
-    body: CreateReportRequest, request: Request,
+    body: CreateReportRequest,
+    request: Request,
+    _user: AuthUser = Depends(require_admin),
 ) -> ApiResponse[ReportDetail]:
     """Create a new stored report definition."""
     params_json = json.dumps([p.model_dump() for p in body.parameters])
@@ -90,7 +95,10 @@ async def create_report(
 
 @router.patch("/{report_key}", response_model=ApiResponse[ReportDetail])
 async def update_report(
-    report_key: str, body: UpdateReportRequest, request: Request,
+    report_key: str,
+    body: UpdateReportRequest,
+    request: Request,
+    _user: AuthUser = Depends(require_admin),
 ) -> ApiResponse[ReportDetail]:
     """Update an existing report definition. Merges only supplied fields."""
     existing = await _fetch_detail(report_key)
@@ -117,10 +125,17 @@ async def update_report(
     return await get_report(report_key, request)
 
 
-@router.delete("/{report_key}", response_model=ApiResponse[dict[str, str]])
+class DeleteReportResponse(BaseModel):
+    status: str
+    report_key: str
+
+
+@router.delete("/{report_key}", response_model=ApiResponse[DeleteReportResponse])
 async def delete_report(
-    report_key: str, request: Request,
-) -> ApiResponse[dict[str, str]]:
+    report_key: str,
+    request: Request,
+    _user: AuthUser = Depends(require_admin),
+) -> ApiResponse[DeleteReportResponse]:
     """Delete a stored report definition."""
     async with get_session(write=True) as session:
         result = await session.run(DELETE_REPORT, report_key=report_key)
@@ -128,7 +143,7 @@ async def delete_report(
     deleted = record["deleted_count"] if record else 0
     if deleted == 0:
         raise http_error(404, "not_found", f"Report '{report_key}' not found.", request)
-    return envelope({"status": "deleted", "report_key": report_key}, request)
+    return envelope(DeleteReportResponse(status="deleted", report_key=report_key), request)
 
 
 # ---------------------------------------------------------------------------
@@ -147,7 +162,7 @@ async def execute_report(
     params = _coerce_params(detail, body.parameters)
 
     async with get_session() as session:
-        result = await session.run(detail.cypher_query, **params)
+        result = await session.run(detail.cypher_query, **params)  # type: ignore[arg-type]  # neo4j driver accepts dict[str, Any]
         columns: list[str] = []
         rows: list[dict[str, str | int | float | bool | None]] = []
         async for record in result:
@@ -170,12 +185,15 @@ async def execute_report(
 # ---------------------------------------------------------------------------
 
 @router.post("/seed", response_model=ApiResponse[list[str]], status_code=201)
-async def seed_reports(request: Request) -> ApiResponse[list[str]]:
+async def seed_reports(
+    request: Request,
+    _user: AuthUser = Depends(require_admin),
+) -> ApiResponse[list[str]]:
     """Insert sample report definitions (idempotent via MERGE)."""
     seeded: list[str] = []
     async with get_session(write=True) as session:
         for seed in SEED_REPORTS:
-            await session.run(SEED_REPORT_QUERY, **seed)
+            await session.run(SEED_REPORT_QUERY, **seed)  # type: ignore[arg-type]  # neo4j driver accepts dict[str, Any]
             seeded.append(seed["report_key"])
     return envelope(seeded, request)
 

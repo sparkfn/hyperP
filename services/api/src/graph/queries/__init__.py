@@ -22,15 +22,6 @@ from src.graph.queries.admin import (
 )
 from src.graph.queries.entities import LIST_ENTITIES, get_entity_persons_query
 from src.graph.queries.events import LIST_EVENTS
-from src.graph.queries.reports import (
-    CREATE_REPORT,
-    DELETE_REPORT,
-    GET_REPORT,
-    LIST_REPORTS,
-    SEED_REPORT_QUERY,
-    SEED_REPORTS,
-    UPDATE_REPORT,
-)
 from src.graph.queries.graph import (
     DEFAULT_HOPS,
     MAX_HOPS,
@@ -73,6 +64,15 @@ from src.graph.queries.persons import (
     SEARCH_PERSONS,
 )
 from src.graph.queries.persons_list import build_count_persons_query, build_list_persons_query
+from src.graph.queries.reports import (
+    CREATE_REPORT,
+    DELETE_REPORT,
+    GET_REPORT,
+    LIST_REPORTS,
+    SEED_REPORT_QUERY,
+    SEED_REPORTS,
+    UPDATE_REPORT,
+)
 from src.graph.queries.review import (
     ASSIGN_REVIEW_CASE,
     CREATE_NO_MATCH_LOCK_FROM_REVIEW,

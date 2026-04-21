@@ -23,7 +23,7 @@ CREATE (me:MergeEvent {
   merge_event_id: randomUUID(),
   event_type: 'manual_merge',
   actor_type: 'admin',
-  actor_id: 'current_user',
+  actor_id: $actor_id,
   reason: $reason,
   metadata: {},
   created_at: datetime()
@@ -136,7 +136,7 @@ WITH absorbed, survivor, me
 SET absorbed.status = 'merged', absorbed.updated_at = datetime()
 CREATE (absorbed)-[:MERGED_INTO {
   merge_event_id: me.merge_event_id,
-  actor: 'current_user',
+  actor: $actor_id,
   timestamp: datetime()
 }]->(survivor)
 
@@ -177,7 +177,7 @@ CREATE (ume:MergeEvent {
   merge_event_id: randomUUID(),
   event_type: 'unmerge',
   actor_type: 'admin',
-  actor_id: 'current_user',
+  actor_id: $actor_id,
   reason: $reason,
   metadata: {original_merge_event_id: $original_merge_event_id},
   created_at: datetime()
@@ -205,7 +205,7 @@ CREATE (a)-[lock:NO_MATCH_LOCK {
   lock_type: $lock_type,
   reason: $reason,
   actor_type: 'admin',
-  actor_id: 'current_user',
+  actor_id: $actor_id,
   expires_at: CASE WHEN $expires_at IS NOT NULL THEN datetime($expires_at) ELSE null END,
   created_at: datetime()
 }]->(b)

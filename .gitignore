@@ -29,6 +29,7 @@ desktop.ini
 data/neo4j/
 data/redis/
 data/celerybeat/
+.docker/
 
 # Claude Code local session/cache
 .claude/

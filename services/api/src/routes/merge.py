@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends, Request
 from neo4j import AsyncManagedTransaction
 from pydantic import BaseModel
 
+from src.auth.deps import require_admin
+from src.auth.models import AuthUser
 from src.graph.client import get_session
 from src.graph.converters import to_str
 from src.graph.queries import (
@@ -64,12 +66,18 @@ def _ordered_pair(left: str, right: str) -> tuple[str, str]:
 
 @router.post("/v1/persons/manual-merge", response_model=ApiResponse[ManualMergeResponse])
 async def manual_merge(
-    body: ManualMergeRequest, request: Request
+    body: ManualMergeRequest,
+    request: Request,
+    user: AuthUser = Depends(require_admin),
 ) -> ApiResponse[ManualMergeResponse]:
     """Manually merge two canonical persons inside a single Neo4j transaction."""
     async with get_session(write=True) as session:
         outcome = await session.execute_write(
-            _manual_merge_tx, body.from_person_id, body.to_person_id, body.reason
+            _manual_merge_tx,
+            body.from_person_id,
+            body.to_person_id,
+            body.reason,
+            user.email,
         )
 
     if outcome.blocked:
@@ -93,7 +101,7 @@ async def manual_merge(
 
 
 async def _manual_merge_tx(
-    tx: AsyncManagedTransaction, from_id: str, to_id: str, reason: str
+    tx: AsyncManagedTransaction, from_id: str, to_id: str, reason: str, actor_id: str
 ) -> _MergeOutcome:
     left, right = _ordered_pair(from_id, to_id)
     lock_result = await tx.run(CHECK_NO_MATCH_LOCK, left=left, right=right)
@@ -106,7 +114,11 @@ async def _manual_merge_tx(
         return _MergeOutcome(not_found=True)
 
     merge_result = await tx.run(
-        EXECUTE_MANUAL_MERGE, from_id=from_id, to_id=to_id, reason=reason
+        EXECUTE_MANUAL_MERGE,
+        from_id=from_id,
+        to_id=to_id,
+        reason=reason,
+        actor_id=actor_id,
     )
     record = await merge_result.single()
     if record is None:
@@ -115,10 +127,16 @@ async def _manual_merge_tx(
 
 
 @router.post("/v1/persons/unmerge", response_model=ApiResponse[UnmergeResponse])
-async def unmerge(body: UnmergeRequest, request: Request) -> ApiResponse[UnmergeResponse]:
+async def unmerge(
+    body: UnmergeRequest,
+    request: Request,
+    user: AuthUser = Depends(require_admin),
+) -> ApiResponse[UnmergeResponse]:
     """Undo a prior merge event."""
     async with get_session(write=True) as session:
-        result = await session.execute_write(_unmerge_tx, body.merge_event_id, body.reason)
+        result = await session.execute_write(
+            _unmerge_tx, body.merge_event_id, body.reason, user.email
+        )
     if result is None:
         raise http_error(404, "not_found", "Merge event not found or already unmerged.", request)
     absorbed_id, survivor_id = result
@@ -134,7 +152,7 @@ async def unmerge(body: UnmergeRequest, request: Request) -> ApiResponse[Unmerge
 
 
 async def _unmerge_tx(
-    tx: AsyncManagedTransaction, merge_event_id: str, reason: str
+    tx: AsyncManagedTransaction, merge_event_id: str, reason: str, actor_id: str
 ) -> tuple[str, str] | None:
     target_result = await tx.run(GET_UNMERGE_TARGET, merge_event_id=merge_event_id)
     target = await target_result.single()
@@ -150,6 +168,7 @@ async def _unmerge_tx(
         survivor_id=survivor_id,
         reason=reason,
         original_merge_event_id=merge_event_id,
+        actor_id=actor_id,
     )
     await tx.run(FLAG_AFFECTED_RECORDS_FOR_REVIEW, merge_event_id=merge_event_id)
     return absorbed_id, survivor_id
@@ -157,13 +176,21 @@ async def _unmerge_tx(
 
 @router.post("/v1/locks/person-pair", response_model=ApiResponse[LockResponse], status_code=201)
 async def create_person_pair_lock(
-    body: LockRequest, request: Request
+    body: LockRequest,
+    request: Request,
+    user: AuthUser = Depends(require_admin),
 ) -> ApiResponse[LockResponse]:
     """Create a persistent lock to prevent repeated merge suggestions."""
     left, right = _ordered_pair(body.left_person_id, body.right_person_id)
     async with get_session(write=True) as session:
         outcome = await session.execute_write(
-            _create_lock_tx, left, right, body.lock_type, body.reason, body.expires_at
+            _create_lock_tx,
+            left,
+            right,
+            body.lock_type,
+            body.reason,
+            body.expires_at,
+            user.email,
         )
 
     status, lock_id = outcome
@@ -196,6 +223,7 @@ async def _create_lock_tx(
     lock_type: str,
     reason: str,
     expires_at: str | None,
+    actor_id: str,
 ) -> tuple[str, str | None]:
     existing = await tx.run(CHECK_EXISTING_LOCK, left=left, right=right)
     existing_record = await existing.single()
@@ -209,6 +237,7 @@ async def _create_lock_tx(
         lock_type=lock_type,
         reason=reason,
         expires_at=expires_at,
+        actor_id=actor_id,
     )
     record = await result.single()
     if record is None:
@@ -217,7 +246,11 @@ async def _create_lock_tx(
 
 
 @router.delete("/v1/locks/{lock_id}", response_model=ApiResponse[LockDeletedResponse])
-async def delete_lock(lock_id: str, request: Request) -> ApiResponse[LockDeletedResponse]:
+async def delete_lock(
+    lock_id: str,
+    request: Request,
+    _user: AuthUser = Depends(require_admin),
+) -> ApiResponse[LockDeletedResponse]:
     """Remove an existing person-pair lock."""
     async with get_session(write=True) as session:
         deleted = await session.execute_write(_delete_lock_tx, lock_id)

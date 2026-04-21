@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends, Request
 from neo4j import AsyncManagedTransaction
 from pydantic import BaseModel
 
+from src.auth.deps import require_admin
+from src.auth.models import AuthUser
 from src.graph.client import get_session
 from src.graph.converters import to_optional_str, to_str
 from src.graph.queries import GET_FIELD_TRUST, LIST_SOURCE_SYSTEMS, UPDATE_FIELD_TRUST
@@ -22,6 +24,7 @@ class SourceSystemInfo(BaseModel):
     system_type: str | None
     is_active: bool
     field_trust: dict[str, str]
+    entity_key: str | None = None
     created_at: str | None
     updated_at: str | None
 
@@ -54,6 +57,7 @@ async def list_source_systems(request: Request) -> ApiResponse[list[SourceSystem
                     system_type=to_optional_str(ss.get("system_type")),
                     is_active=bool(ss.get("is_active")),
                     field_trust=field_trust,
+                    entity_key=to_optional_str(record["entity_key"]),
                     created_at=to_optional_str(ss.get("created_at")),
                     updated_at=to_optional_str(ss.get("updated_at")),
                 )
@@ -93,7 +97,10 @@ async def get_field_trust(source_key: str, request: Request) -> ApiResponse[Fiel
     response_model=ApiResponse[FieldTrustResponse],
 )
 async def update_field_trust(
-    source_key: str, body: FieldTrustUpdateRequest, request: Request
+    source_key: str,
+    body: FieldTrustUpdateRequest,
+    request: Request,
+    _user: AuthUser = Depends(require_admin),
 ) -> ApiResponse[FieldTrustResponse]:
     """Update trust tiers for one or more fields on a source system."""
     if not body.updates:

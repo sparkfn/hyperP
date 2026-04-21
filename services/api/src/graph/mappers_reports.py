@@ -3,10 +3,17 @@
 from __future__ import annotations
 
 import json
+from typing import cast
 
 from src.graph.converters import GraphRecord, to_iso_or_empty, to_optional_str, to_str
 from src.graph.mappers import _as_dict
-from src.types_reports import ReportDetail, ReportParameterDef, ReportSummary
+from src.types_reports import ReportDetail, ReportParameterDef, ReportParamType, ReportSummary
+
+_VALID_PARAM_TYPES: frozenset[str] = frozenset({"string", "integer", "float", "date", "boolean"})
+
+
+def _coerce_param_type(raw: str) -> ReportParamType:
+    return cast(ReportParamType, raw) if raw in _VALID_PARAM_TYPES else "string"
 
 
 def map_report_summary(record: GraphRecord) -> ReportSummary:
@@ -29,7 +36,7 @@ def map_report_detail(record: GraphRecord) -> ReportDetail:
         ReportParameterDef(
             name=str(p.get("name", "")),
             label=str(p.get("label", "")),
-            param_type=str(p.get("param_type", "string")),
+            param_type=_coerce_param_type(str(p.get("param_type", "string"))),
             required=bool(p.get("required", False)),
             default_value=str(p["default_value"]) if p.get("default_value") is not None else None,
         )

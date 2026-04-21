@@ -6,24 +6,54 @@ import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.params import Depends as DependsMarker
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from src.auth.deps import require_active_user
 from src.config import config
-from src.graph.client import close_driver
+from src.graph.client import close_driver, get_session
+from src.graph.queries.users import CREATE_USER_CONSTRAINT
 from src.http_utils import request_id
-from src.routes import admin, entities, events, health, ingest, merge, persons, reports, review, survivorship
+from src.routes import (
+    admin,
+    entities,
+    events,
+    health,
+    ingest,
+    merge,
+    persons,
+    reports,
+    review,
+    survivorship,
+)
+from src.routes import (
+    auth as auth_routes,
+)
+from src.routes import (
+    users as users_routes,
+)
 from src.types import ApiError, ApiErrorBody, ResponseMeta
 
 logger = logging.getLogger("profile_unifier_api")
 
 
+async def _ensure_user_constraint() -> None:
+    """Create the :User uniqueness constraint if it does not exist."""
+    try:
+        async with get_session(write=True) as session:
+            await session.run(CREATE_USER_CONSTRAINT)
+    except Exception:  # noqa: BLE001 — constraint setup is best-effort at startup
+        logger.exception("Failed to create :User uniqueness constraint")
+
+
 @asynccontextmanager
 async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
     """Manage the Neo4j driver lifecycle alongside the FastAPI process."""
+    await _ensure_user_constraint()
     yield
     await close_driver()
 
@@ -41,16 +71,24 @@ def build_app() -> FastAPI:
         allow_headers=["*"],
     )
 
+    # Health and auth endpoints are not behind require_active_user (auth endpoints
+    # must tolerate first-time users so they can see their pending status).
     app.include_router(health.router)
-    app.include_router(entities.router)
-    app.include_router(reports.router)
-    app.include_router(persons.router)
-    app.include_router(review.router)
-    app.include_router(merge.router)
-    app.include_router(survivorship.router)
-    app.include_router(ingest.router)
-    app.include_router(admin.router)
-    app.include_router(events.router)
+    app.include_router(auth_routes.router)
+    # The users router is admin-only via its handlers.
+    app.include_router(users_routes.router)
+
+    # All other routes require an active (non-first_time) user by default.
+    active: list[DependsMarker] = [Depends(require_active_user)]
+    app.include_router(entities.router, dependencies=active)
+    app.include_router(reports.router, dependencies=active)
+    app.include_router(persons.router, dependencies=active)
+    app.include_router(review.router, dependencies=active)
+    app.include_router(merge.router, dependencies=active)
+    app.include_router(survivorship.router, dependencies=active)
+    app.include_router(ingest.router, dependencies=active)
+    app.include_router(admin.router, dependencies=active)
+    app.include_router(events.router, dependencies=active)
 
     _register_error_handlers(app)
     return app
