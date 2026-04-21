@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any
 
 from fastapi import APIRouter, Depends, Request
+from pydantic import BaseModel
 
 from src.auth.deps import require_admin
 from src.auth.models import AuthUser
@@ -125,12 +125,17 @@ async def update_report(
     return await get_report(report_key, request)
 
 
-@router.delete("/{report_key}", response_model=ApiResponse[dict[str, str]])
+class DeleteReportResponse(BaseModel):
+    status: str
+    report_key: str
+
+
+@router.delete("/{report_key}", response_model=ApiResponse[DeleteReportResponse])
 async def delete_report(
     report_key: str,
     request: Request,
     _user: AuthUser = Depends(require_admin),
-) -> ApiResponse[dict[str, str]]:
+) -> ApiResponse[DeleteReportResponse]:
     """Delete a stored report definition."""
     async with get_session(write=True) as session:
         result = await session.run(DELETE_REPORT, report_key=report_key)
@@ -138,7 +143,7 @@ async def delete_report(
     deleted = record["deleted_count"] if record else 0
     if deleted == 0:
         raise http_error(404, "not_found", f"Report '{report_key}' not found.", request)
-    return envelope({"status": "deleted", "report_key": report_key}, request)
+    return envelope(DeleteReportResponse(status="deleted", report_key=report_key), request)
 
 
 # ---------------------------------------------------------------------------
@@ -155,10 +160,9 @@ async def execute_report(
         raise http_error(404, "not_found", f"Report '{report_key}' not found.", request)
 
     params = _coerce_params(detail, body.parameters)
-    params_any: dict[str, Any] = dict(params)
 
     async with get_session() as session:
-        result = await session.run(detail.cypher_query, **params_any)
+        result = await session.run(detail.cypher_query, **params)  # type: ignore[arg-type]  # neo4j driver accepts dict[str, Any]
         columns: list[str] = []
         rows: list[dict[str, str | int | float | bool | None]] = []
         async for record in result:
@@ -189,8 +193,7 @@ async def seed_reports(
     seeded: list[str] = []
     async with get_session(write=True) as session:
         for seed in SEED_REPORTS:
-            seed_any: dict[str, Any] = dict(seed)
-            await session.run(SEED_REPORT_QUERY, **seed_any)
+            await session.run(SEED_REPORT_QUERY, **seed)  # type: ignore[arg-type]  # neo4j driver accepts dict[str, Any]
             seeded.append(seed["report_key"])
     return envelope(seeded, request)
 

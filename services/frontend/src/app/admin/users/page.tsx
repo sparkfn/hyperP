@@ -73,7 +73,7 @@ export default function UsersAdminPage(): ReactElement {
     [entities],
   );
 
-  async function patchUser(email: string, updates: { role?: Role; entity_key?: string | null }): Promise<void> {
+  const patchUser = useCallback(async (email: string, updates: { role?: Role; entity_key?: string | null }): Promise<void> => {
     setBusy(email);
     setErr(null);
     try {
@@ -88,7 +88,7 @@ export default function UsersAdminPage(): ReactElement {
     } finally {
       setBusy(null);
     }
-  }
+  }, [loadUsers]);
 
   return (
     <Stack spacing={2}>

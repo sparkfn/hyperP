@@ -27,7 +27,7 @@ _DEV_BYPASS_USER: AuthUser = AuthUser(
 
 
 def _bearer_token(request: Request) -> str | None:
-    header = request.headers.get("authorization") or request.headers.get("Authorization")
+    header = request.headers.get("authorization")
     if not header:
         return None
     parts = header.split(None, 1)

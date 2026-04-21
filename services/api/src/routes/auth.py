@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel
 
 from src.auth.deps import get_current_user
-from src.auth.models import AuthUser
+from src.auth.models import AuthUser, Role
 from src.http_utils import envelope
 from src.types import ApiResponse
 
@@ -16,7 +16,7 @@ router = APIRouter(prefix="/v1/auth")
 class MeResponse(BaseModel):
     email: str
     google_sub: str
-    role: str
+    role: Role
     entity_key: str | None = None
     display_name: str | None = None
 

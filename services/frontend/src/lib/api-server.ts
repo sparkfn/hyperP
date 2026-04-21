@@ -77,5 +77,8 @@ export async function apiFetch<T>(path: string, options: RequestOptions = {}): P
     throw new UpstreamError(response.status, errBody, errBody?.error.message ?? response.statusText);
   }
 
+  if (parsed === null || typeof parsed !== "object" || !("data" in (parsed as Record<string, unknown>))) {
+    throw new UpstreamError(response.status, null, "Unexpected response shape from API.");
+  }
   return parsed as ApiResponse<T>;
 }

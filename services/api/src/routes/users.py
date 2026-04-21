@@ -19,7 +19,7 @@ router = APIRouter(prefix="/v1/users")
 class UserResponse(BaseModel):
     email: str
     google_sub: str
-    role: str
+    role: Role
     entity_key: str | None = None
     display_name: str | None = None
 
