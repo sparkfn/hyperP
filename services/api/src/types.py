@@ -26,7 +26,7 @@ class QualityFlag(StrEnum):
 class IdentifierType(StrEnum):
     PHONE = "phone"
     EMAIL = "email"
-    GOVERNMENT_ID_HASH = "government_id_hash"
+    NRIC = "nric"
     EXTERNAL_CUSTOMER_ID = "external_customer_id"
     MEMBERSHIP_ID = "membership_id"
     CRM_CONTACT_ID = "crm_contact_id"
@@ -120,6 +120,7 @@ class Person(BaseModel):
     preferred_email: str | None = None
     preferred_dob: str | None = None
     preferred_address: AddressSummary | None = None
+    preferred_nric: str | None = None
     profile_completeness_score: float = 0.0
     golden_profile_computed_at: str | None = None
     golden_profile_version: str | None = None
@@ -329,6 +330,7 @@ class ReviewActionMetadata(BaseModel):
     create_manual_lock: bool = False
     follow_up_at: str | None = None
     escalation_reason: str | None = None
+    survivor_person_id: str | None = None
 
 class ReviewActionRequest(BaseModel):
     action_type: ApiReviewActionType

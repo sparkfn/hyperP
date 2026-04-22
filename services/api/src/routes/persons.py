@@ -72,7 +72,7 @@ def _connection_query(connection_type: ConnectionType) -> str:
 _ALLOWED_SORT: frozenset[str] = frozenset(
     {
         "preferred_full_name", "status", "preferred_phone", "preferred_email",
-        "preferred_dob", "source_record_count", "connection_count",
+        "preferred_dob", "preferred_nric", "source_record_count", "connection_count",
         "phone_confidence", "updated_at", "profile_completeness_score", "relevance",
     }
 )
@@ -95,11 +95,11 @@ async def list_persons(
     cursor: str | None = Query(default=None),
     limit: int | None = Query(default=None),
 ) -> ApiResponse[list[ListedPerson]]:
-    """Generalized person listing with multi-filter + single-column sort."""
+    """Generalized person listing with multi-filter + single-column sort. q searches name, NRIC, email, and phone."""
     q_clean: str | None = q.strip() if q else None
     if q_clean is not None and len(q_clean) < 3:
         raise http_error(
-            400, "invalid_request", "Free-text query q requires at least 3 characters.", request
+            400, "invalid_request", "Search query q requires at least 3 characters (matches name, NRIC, email, phone).", request
         )
     if sort_by is not None and sort_by not in _ALLOWED_SORT:
         raise http_error(400, "invalid_request", f"Unknown sort_by: {sort_by}", request)
@@ -170,7 +170,7 @@ async def search_persons(
             return envelope([], request)
         if len(q) < 3:
             raise http_error(
-                400, "invalid_request", "Free-text query q requires at least 3 characters.", request
+                400, "invalid_request", "Search query q requires at least 3 characters (matches name, NRIC, email, phone).", request
             )
         # Pass the fulltext query via a parameters dict to avoid colliding
         # with `session.run(query=...)`'s first positional argument name.

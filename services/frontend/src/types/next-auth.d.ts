@@ -15,6 +15,8 @@ declare module "next-auth" {
 declare module "next-auth/jwt" {
   interface JWT {
     googleIdToken?: string;
+    googleRefreshToken?: string;
+    googleIdTokenExpiresAt?: number;
     role?: Role;
     entityKey?: string | null;
     displayName?: string | null;

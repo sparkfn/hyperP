@@ -91,9 +91,9 @@ CREATE INDEX idx_product_sku IF NOT EXISTS
 CREATE INDEX idx_product_category IF NOT EXISTS
   FOR (p:Product) ON (p.category);
 
-// Full-text search
+// Full-text search — name, NRIC, email, phone
 CREATE FULLTEXT INDEX person_name_search IF NOT EXISTS
-  FOR (p:Person) ON EACH [p.preferred_full_name];
+  FOR (p:Person) ON EACH [p.preferred_full_name, p.preferred_nric, p.preferred_email, p.preferred_phone];
 
 CREATE FULLTEXT INDEX address_full_search IF NOT EXISTS
   FOR (addr:Address) ON EACH [addr.normalized_full];

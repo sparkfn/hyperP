@@ -27,6 +27,7 @@ export type SortField =
   | "preferred_phone"
   | "preferred_email"
   | "preferred_dob"
+  | "preferred_nric"
   | "source_record_count"
   | "connection_count"
   | "updated_at"
@@ -34,12 +35,23 @@ export type SortField =
 
 export type SortOrder = "asc" | "desc";
 
-interface ColumnDef {
-  field: SortField | "__address" | "__entities";
+interface SortableCol {
+  field: SortField;
   label: string;
   align?: "left" | "right" | "center";
-  sortable: boolean;
+  sortable: true;
+  mono?: boolean;
 }
+
+interface NonSortableCol {
+  field: "__address" | "__entities";
+  label: string;
+  align?: "left" | "right" | "center";
+  sortable: false;
+  mono?: boolean;
+}
+
+type ColumnDef = SortableCol | NonSortableCol;
 
 const COLUMNS: readonly ColumnDef[] = [
   { field: "preferred_full_name", label: "Name", sortable: true },
@@ -48,6 +60,7 @@ const COLUMNS: readonly ColumnDef[] = [
   { field: "profile_completeness_score", label: "Profile", align: "right", sortable: true },
   { field: "preferred_email", label: "Email", sortable: true },
   { field: "preferred_dob", label: "DOB", sortable: true },
+  { field: "preferred_nric", label: "NRIC", sortable: true, mono: true },
   { field: "__address", label: "Address", sortable: false },
   { field: "connection_count", label: "Connections", align: "center", sortable: true },
   { field: "source_record_count", label: "Sources", align: "center", sortable: true },
@@ -161,12 +174,16 @@ export default function PersonsListTable({
               />
             </TableCell>
             {COLUMNS.map((col) => (
-              <TableCell key={col.field} align={col.align}>
+              <TableCell
+                key={col.field}
+                align={col.align}
+                sx={col.mono ? { fontFamily: "monospace" } : undefined}
+              >
                 {col.sortable ? (
                   <TableSortLabel
                     active={sortBy === col.field}
                     direction={sortBy === col.field ? sortOrder : "asc"}
-                    onClick={() => onSortChange(col.field as SortField)}
+                    onClick={() => onSortChange(col.field)}
                   >
                     {col.label}
                   </TableSortLabel>

@@ -74,6 +74,13 @@ RETURN rc {
 } AS review_case
 """
 
+GET_PERSONS_FOR_REVIEW_MERGE = """
+MATCH (rc:ReviewCase {review_case_id: $review_case_id})-[:FOR_DECISION]->(md:MatchDecision)
+MATCH (md)-[:ABOUT_LEFT]->(left:Person)
+MATCH (md)-[:ABOUT_RIGHT]->(right:Person)
+RETURN left.person_id AS left_person_id, right.person_id AS right_person_id
+"""
+
 CREATE_NO_MATCH_LOCK_FROM_REVIEW = """
 MATCH (rc:ReviewCase {review_case_id: $review_case_id})-[:FOR_DECISION]->(md:MatchDecision)
 MATCH (md)-[:ABOUT_LEFT]->(left:Person)

@@ -66,6 +66,8 @@ def _apply_survivorship(
     }
     filled = sum(1 for v in fields.values() if v is not None)
     fields["profile_completeness_score"] = round(filled / len(fields), 2)
+    # NRIC is optional; not counted in completeness (not universally present)
+    fields["preferred_nric"] = _pick_best_identifier(identifiers, "nric")
     fields["golden_profile_version"] = _GOLDEN_PROFILE_VERSION
     return fields
 

@@ -100,10 +100,10 @@ export default function PersonsFilterPanel({
           }}
         >
           <TextField
-            label="Name contains"
+            label="Search"
             value={draft.q}
             onChange={(e) => update("q", e.target.value)}
-            placeholder="≥3 chars"
+            placeholder="Name, NRIC, email or phone (≥3 chars)"
             fullWidth
           />
           <TextField

@@ -47,6 +47,7 @@ export interface Person {
   preferred_email: string | null;
   preferred_dob: string | null;
   preferred_address: AddressSummary | null;
+  preferred_nric: string | null;
   profile_completeness_score: number;
   golden_profile_computed_at: string | null;
   golden_profile_version: string | null;

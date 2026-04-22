@@ -23,7 +23,7 @@ CALL {
 }
 RETURN p {
   .person_id, .status, .is_high_value, .is_high_risk,
-  .preferred_full_name, .preferred_phone, .preferred_email, .preferred_dob,
+  .preferred_full_name, .preferred_phone, .preferred_email, .preferred_dob, .preferred_nric,
   .profile_completeness_score, .golden_profile_computed_at, .golden_profile_version,
   .created_at, .updated_at
 } AS person,
@@ -57,7 +57,7 @@ CALL {
 }
 RETURN person {
   .person_id, .status, .is_high_value, .is_high_risk,
-  .preferred_full_name, .preferred_phone, .preferred_email, .preferred_dob,
+  .preferred_full_name, .preferred_phone, .preferred_email, .preferred_dob, .preferred_nric,
   .profile_completeness_score, .golden_profile_computed_at, .golden_profile_version,
   .created_at, .updated_at
 } AS person,
@@ -188,7 +188,7 @@ CALL {
 }
 RETURN p {
   .person_id, .status, .is_high_value, .is_high_risk,
-  .preferred_full_name, .preferred_phone, .preferred_email, .preferred_dob,
+  .preferred_full_name, .preferred_phone, .preferred_email, .preferred_dob, .preferred_nric,
   .profile_completeness_score, .golden_profile_computed_at, .golden_profile_version,
   .created_at, .updated_at
 } AS person,

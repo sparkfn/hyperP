@@ -8,6 +8,7 @@ function isSortField(v: string | null): v is SortField {
     case "preferred_phone":
     case "preferred_email":
     case "preferred_dob":
+    case "preferred_nric":
     case "source_record_count":
     case "connection_count":
     case "updated_at":
@@ -46,7 +47,7 @@ export interface PersonsListState {
 
 export const DEFAULT_STATE: PersonsListState = {
   filters: DEFAULT_FILTERS,
-  sortBy: "updated_at",
+  sortBy: "profile_completeness_score",
   sortOrder: "desc",
   pageIndex: 0,
   rowsPerPage: 25,

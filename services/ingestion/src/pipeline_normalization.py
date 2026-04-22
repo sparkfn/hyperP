@@ -50,7 +50,7 @@ _DEFAULT_SOCIAL_FANOUT_CAP = 25
 _FANOUT_CAPS: dict[str, int] = {
     "phone": 50,
     "email": 100,
-    "government_id_hash": 5,
+    "nric": 5,
     "device_id": 25,
     "social:facebook": _DEFAULT_SOCIAL_FANOUT_CAP,
     "social:google": _DEFAULT_SOCIAL_FANOUT_CAP,

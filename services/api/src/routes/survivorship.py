@@ -11,34 +11,19 @@ from pydantic import BaseModel
 from src.auth.deps import require_admin
 from src.auth.models import AuthUser
 from src.graph.client import get_session
-from src.graph.converters import GraphValue, to_optional_str, to_str
+from src.graph.converters import to_str
+from src.graph.golden_profile import recompute_golden_profile_tx
 from src.graph.queries import (
-    CHECK_PERSON_ACTIVE,
     CHECK_SOURCE_RECORD_LINKED,
-    CREATE_RECOMPUTE_AUDIT,
-    GET_BEST_ADDRESS,
     GET_FACT_VALUE,
-    GET_PERSON_FACTS,
-    GET_PERSON_OVERRIDES,
     GET_PERSON_OVERRIDES_FULL,
     UPDATE_GOLDEN_FIELD,
-    UPDATE_GOLDEN_PROFILE,
     UPDATE_OVERRIDES,
 )
 from src.http_utils import envelope, http_error
 from src.types import ApiResponse, SurvivorshipOverrideRequest
 
 router = APIRouter()
-
-GOLDEN_FIELDS: tuple[str, ...] = ("full_name", "phone", "email", "dob")
-TRUST_RANK: dict[str, int] = {"tier_1": 1, "tier_2": 2, "tier_3": 3, "tier_4": 4}
-INVALID_QUALITY_FLAGS: frozenset[str] = frozenset({"invalid_format", "placeholder_value"})
-
-
-class _BestFact(BaseModel):
-    value: str | None
-    trust_rank: int
-    observed_at: str
 
 
 class RecomputeResponse(BaseModel):
@@ -54,28 +39,6 @@ class OverrideResponse(BaseModel):
     status: str
 
 
-def _select_best_fact(current: _BestFact | None, candidate: _BestFact) -> _BestFact:
-    if current is None:
-        return candidate
-    if candidate.trust_rank < current.trust_rank:
-        return candidate
-    if candidate.trust_rank == current.trust_rank and candidate.observed_at > current.observed_at:
-        return candidate
-    return current
-
-
-def _fact_value_to_str(value: GraphValue) -> str | None:
-    if value is None:
-        return None
-    if isinstance(value, str):
-        return value
-    return str(value)
-
-
-def _empty_fact() -> _BestFact:
-    return _BestFact(value=None, trust_rank=99, observed_at="")
-
-
 @router.post(
     "/v1/persons/{person_id}/golden-profile/recompute",
     response_model=ApiResponse[RecomputeResponse],
@@ -85,9 +48,9 @@ async def recompute_golden_profile(
     request: Request,
     _user: AuthUser = Depends(require_admin),
 ) -> ApiResponse[RecomputeResponse]:
-    """Recompute a person's golden profile from HAS_FACT and LIVES_AT relationships."""
+    """Recompute a person's golden profile from HAS_FACT, IDENTIFIED_BY, and LIVES_AT."""
     async with get_session(write=True) as session:
-        completeness = await session.execute_write(_recompute_tx, person_id)
+        completeness = await session.execute_write(recompute_golden_profile_tx, person_id)
     if completeness is None:
         raise http_error(404, "person_not_found", "Person not found or not active.", request)
     return envelope(
@@ -96,85 +59,6 @@ async def recompute_golden_profile(
         ),
         request,
     )
-
-
-async def _recompute_tx(tx: AsyncManagedTransaction, person_id: str) -> float | None:
-    person_check = await tx.run(CHECK_PERSON_ACTIVE, person_id=person_id)
-    if await person_check.single() is None:
-        return None
-
-    best_by_field = await _gather_best_facts(tx, person_id)
-    preferred_address_id = await _resolve_best_address(tx, person_id)
-
-    completeness = _completeness_score(best_by_field, preferred_address_id is not None)
-    version = f"computed-{datetime.now(UTC).isoformat()}"
-    await tx.run(
-        UPDATE_GOLDEN_PROFILE,
-        person_id=person_id,
-        full_name=best_by_field.get("full_name", _empty_fact()).value,
-        phone=best_by_field.get("phone", _empty_fact()).value,
-        email=best_by_field.get("email", _empty_fact()).value,
-        dob=best_by_field.get("dob", _empty_fact()).value,
-        address_id=preferred_address_id,
-        completeness=completeness,
-        version=version,
-    )
-    await tx.run(CREATE_RECOMPUTE_AUDIT, person_id=person_id)
-    return completeness
-
-
-async def _gather_best_facts(
-    tx: AsyncManagedTransaction, person_id: str
-) -> dict[str, _BestFact]:
-    facts_result = await tx.run(GET_PERSON_FACTS, person_id=person_id)
-    overrides_result = await tx.run(GET_PERSON_OVERRIDES, person_id=person_id)
-    overrides_record = await overrides_result.single()
-    overrides_raw = overrides_record["overrides"] if overrides_record else None
-    overrides: dict[str, dict[str, str]] = {}
-    if isinstance(overrides_raw, dict):
-        for k, v in overrides_raw.items():
-            if isinstance(v, dict):
-                overrides[to_str(k)] = {to_str(ik): to_str(iv) for ik, iv in v.items()}
-
-    best: dict[str, _BestFact] = {}
-    async for record in facts_result:
-        attr_name = to_str(record["attribute_name"])
-        attr_value = _fact_value_to_str(record["attribute_value"])
-        quality_flag = to_str(record["quality_flag"], "valid")
-        trust_tier = to_str(record["trust_tier"], "tier_4")
-        source_pk = to_str(record["source_record_pk"])
-        observed_at = to_str(record["observed_at"], "")
-
-        if quality_flag in INVALID_QUALITY_FLAGS:
-            continue
-
-        override = overrides.get(f"preferred_{attr_name}")
-        if override is not None and override.get("source_record_pk") == source_pk:
-            best[attr_name] = _BestFact(value=attr_value, trust_rank=0, observed_at=observed_at)
-            continue
-
-        rank = TRUST_RANK.get(trust_tier, 4)
-        best[attr_name] = _select_best_fact(
-            best.get(attr_name),
-            _BestFact(value=attr_value, trust_rank=rank, observed_at=observed_at),
-        )
-    return best
-
-
-async def _resolve_best_address(tx: AsyncManagedTransaction, person_id: str) -> str | None:
-    address_result = await tx.run(GET_BEST_ADDRESS, person_id=person_id)
-    record = await address_result.single()
-    if record is None:
-        return None
-    return to_optional_str(record["address_id"])
-
-
-def _completeness_score(best_by_field: dict[str, _BestFact], has_address: bool) -> float:
-    filled = sum(
-        1 for f in GOLDEN_FIELDS if best_by_field.get(f) and best_by_field[f].value is not None
-    )
-    bonus = 1 if has_address else 0
-    return (filled + bonus) / (len(GOLDEN_FIELDS) + 1)
 
 
 @router.post(
@@ -232,6 +116,14 @@ def _parse_overrides(raw: object) -> dict[str, dict[str, str]]:
         for k, v in raw.items()
         if isinstance(v, dict)
     }
+
+
+def _fact_value_to_str(value: object) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return value
+    return str(value)
 
 
 async def _override_tx(
