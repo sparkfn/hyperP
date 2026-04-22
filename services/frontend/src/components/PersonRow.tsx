@@ -13,8 +13,8 @@ import Typography from "@mui/material/Typography";
 import AccountTreeIcon from "@mui/icons-material/AccountTree";
 
 import type { ListedPerson, PersonConnection, SourceRecord } from "@/lib/api-types";
-import { confidenceColor, statusColor } from "@/lib/display";
-import CountCardsCell, { type CountCardItem } from "@/components/CountCardsCell";
+import { confidenceColor, connectionsToItems, formatDate, sourcesToItems, statusColor } from "@/lib/display";
+import CountCardsCell from "@/components/CountCardsCell";
 
 interface PersonRowProps {
   person: ListedPerson;
@@ -73,7 +73,7 @@ export default function PersonRow({
       <TableCell>
         <Chip label={p.status} color={statusColor(p.status)} />
       </TableCell>
-      <TableCell>{p.preferred_phone ?? "\u2014"}</TableCell>
+      <TableCell>{p.preferred_phone ?? "—"}</TableCell>
       <TableCell align="right">
         <Tooltip title={`Profile completeness: ${(p.profile_completeness_score * 100).toFixed(0)}%`}>
           <Chip
@@ -84,8 +84,22 @@ export default function PersonRow({
           />
         </Tooltip>
       </TableCell>
-      <TableCell>{p.preferred_email ?? "\u2014"}</TableCell>
-      <TableCell>{p.preferred_dob ?? "\u2014"}</TableCell>
+      <TableCell>{p.preferred_email ?? "—"}</TableCell>
+      <TableCell>{p.preferred_dob ?? "—"}</TableCell>
+      <TableCell
+        sx={{
+          maxWidth: 160,
+          fontFamily: "monospace",
+          fontSize: "0.72rem",
+          whiteSpace: "nowrap",
+          overflow: "hidden",
+          textOverflow: "ellipsis",
+        }}
+      >
+        <Tooltip title={p.preferred_nric ?? ""}>
+          <span>{p.preferred_nric ?? "—"}</span>
+        </Tooltip>
+      </TableCell>
       <TableCell
         sx={{
           maxWidth: 220,
@@ -95,7 +109,7 @@ export default function PersonRow({
         }}
       >
         <Tooltip title={p.preferred_address?.normalized_full ?? ""}>
-          <span>{p.preferred_address?.normalized_full ?? "\u2014"}</span>
+          <span>{p.preferred_address?.normalized_full ?? "—"}</span>
         </Tooltip>
       </TableCell>
       <TableCell align="center" onClick={(e) => e.stopPropagation()}>
@@ -142,41 +156,3 @@ export default function PersonRow({
   );
 }
 
-function connectionsToItems(data: PersonConnection[] | undefined): CountCardItem[] | undefined {
-  if (data === undefined) return undefined;
-  return data.map((c) => ({
-    primary: c.preferred_full_name ?? c.person_id,
-    secondary: describeConnection(c),
-    color: "info",
-  }));
-}
-
-function describeConnection(c: PersonConnection): string {
-  const parts: string[] = [];
-  for (const si of c.shared_identifiers) {
-    parts.push(`${si.identifier_type}:${si.normalized_value}`);
-  }
-  for (const sa of c.shared_addresses) {
-    parts.push(`address:${sa.normalized_full ?? sa.address_id}`);
-  }
-  for (const kr of c.knows_relationships) {
-    parts.push(`knows:${kr.relationship_label ?? kr.relationship_category}`);
-  }
-  return parts.join(" · ");
-}
-
-function sourcesToItems(data: SourceRecord[] | undefined): CountCardItem[] | undefined {
-  if (data === undefined) return undefined;
-  return data.map((r) => ({
-    primary: r.source_system,
-    secondary: `${r.source_record_id} · ${r.record_type} · ${formatDate(r.ingested_at)}`,
-    color: r.record_type === "conversation" ? "warning" : "default",
-  }));
-}
-
-function formatDate(value: string): string {
-  if (!value) return "\u2014";
-  const parsed = new Date(value);
-  if (Number.isNaN(parsed.getTime())) return value;
-  return parsed.toISOString().slice(0, 10);
-}

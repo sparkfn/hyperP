@@ -52,7 +52,7 @@ LIMIT 1
 _PERSON_HAS_CONFLICTING_GOVT_ID = """
 MATCH (p:Person {person_id: $person_id})
       -[rel:IDENTIFIED_BY]->(id:Identifier {
-          identifier_type: 'government_id_hash'
+          identifier_type: 'nric'
       })
 WHERE rel.is_active = true
   AND id.normalized_value <> $normalized_value
@@ -145,14 +145,14 @@ def _check_government_id(
     """Government ID hash: exact match → hard MERGE; conflict → hard NO_MATCH."""
     govt_ids = [
         i for i in identifiers
-        if i.identifier_type == "government_id_hash"
+        if i.identifier_type == "nric"
         and i.quality_flag == QualityFlag.VALID
     ]
     for govt_id in govt_ids:
         if tx.run(
             _PERSON_HAS_IDENTIFIER,
             person_id=candidate_person_id,
-            identifier_type="government_id_hash",
+            identifier_type="nric",
             normalized_value=govt_id.normalized_value,
         ).single():
             logger.info(

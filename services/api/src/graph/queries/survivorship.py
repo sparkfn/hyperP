@@ -36,6 +36,16 @@ ORDER BY ss.field_trust['address'], la.last_seen_at DESC
 LIMIT 1
 """
 
+GET_BEST_IDENTIFIER = """
+MATCH (p:Person {person_id: $person_id})-[rel:IDENTIFIED_BY]->(id:Identifier {identifier_type: $identifier_type})
+WHERE rel.is_active = true
+RETURN id.normalized_value AS normalized_value,
+       rel.is_verified AS is_verified,
+       rel.last_confirmed_at AS last_confirmed_at
+ORDER BY rel.is_verified DESC, rel.last_confirmed_at DESC
+LIMIT 1
+"""
+
 UPDATE_GOLDEN_PROFILE = """
 MATCH (p:Person {person_id: $person_id})
 SET p.preferred_full_name = $full_name,
@@ -43,6 +53,7 @@ SET p.preferred_full_name = $full_name,
     p.preferred_email = $email,
     p.preferred_dob = $dob,
     p.preferred_address_id = $address_id,
+    p.preferred_nric = $nric,
     p.profile_completeness_score = $completeness,
     p.golden_profile_computed_at = datetime(),
     p.golden_profile_version = $version,

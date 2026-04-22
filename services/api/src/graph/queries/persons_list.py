@@ -3,6 +3,9 @@
 Powers ``GET /v1/persons``. Supports fulltext (``q``) or structured-only mode,
 plus optional filters: status, entity_key, is_high_value, is_high_risk,
 has_phone, has_email, updated_after, updated_before.
+
+The ``q`` parameter searches across preferred_full_name, preferred_nric,
+preferred_email, and preferred_phone via the ``person_name_search`` fulltext index.
 """
 
 from __future__ import annotations
@@ -86,7 +89,7 @@ CALL {
 }
 RETURN p {
   .person_id, .status, .is_high_value, .is_high_risk,
-  .preferred_full_name, .preferred_phone, .preferred_email, .preferred_dob,
+  .preferred_full_name, .preferred_phone, .preferred_email, .preferred_dob, .preferred_nric,
   .profile_completeness_score, .golden_profile_computed_at, .golden_profile_version,
   .created_at, .updated_at
 } AS person,
@@ -103,6 +106,7 @@ _SORT_COLUMNS: dict[str, str] = {
     "preferred_phone": "p.preferred_phone",
     "preferred_email": "p.preferred_email",
     "preferred_dob": "p.preferred_dob",
+    "preferred_nric": "p.preferred_nric",
     "source_record_count": "source_record_count",
     "connection_count": "connection_count",
     "phone_confidence": "phone_confidence",
@@ -112,7 +116,7 @@ _SORT_COLUMNS: dict[str, str] = {
 }
 
 _DEFAULT_SORT_WITH_Q = "relevance"
-_DEFAULT_SORT_WITHOUT_Q = "updated_at"
+_DEFAULT_SORT_WITHOUT_Q = "profile_completeness_score"
 _DEFAULT_ORDER_WITH_Q = "DESC"
 _DEFAULT_ORDER_WITHOUT_Q = "DESC"
 
