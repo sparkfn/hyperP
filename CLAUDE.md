@@ -6,6 +6,121 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 HyperP is a customer profile unification and relationship intelligence platform. It resolves the same real-world person across systems (POS, Bitrix CRM, third-party apps) and supports complex relationship use cases such as contact tracing. The initial use case is sales. The repository contains both design documentation (`docs/`) and implementation services (`services/api/`, `services/ingestion/`).
 
+## Development Commands
+
+### Docker (primary workflow)
+```bash
+docker compose up -d                          # start all services
+docker compose up -d --build api frontend     # rebuild and restart specific services
+docker compose logs -f api                    # stream logs from a service
+docker compose down                           # stop all services
+```
+
+### Python — linting and type-checking
+Run from the repo root. The `uv` workspace resolves both services from the single root `uv.lock`.
+```bash
+# API service
+uv run --package profile-unifier-api ruff check services/api/src
+uv run --package profile-unifier-api ruff format services/api/src
+uv run --package profile-unifier-api mypy --strict services/api/src
+
+# Ingestion service
+uv run --package profile-unifier-ingestion ruff check services/ingestion/src
+uv run --package profile-unifier-ingestion ruff format services/ingestion/src
+uv run --package profile-unifier-ingestion mypy --strict services/ingestion/src
+```
+
+### Python — tests
+```bash
+uv run pytest                                        # all tests
+uv run pytest services/api/tests                    # API tests only
+uv run pytest services/ingestion/tests              # ingestion tests only
+uv run pytest services/api/tests/test_foo.py        # single file
+```
+No test suite exists yet; test paths are configured in the root `pyproject.toml`.
+
+### Frontend
+```bash
+cd services/frontend
+npm install
+npm run dev        # dev server on http://localhost:3001
+npm run typecheck  # tsc --noEmit
+npm run lint       # next lint
+npm run build      # production build (runs in Docker for deployment)
+```
+
+---
+
+## Service Topology
+
+Seven Docker containers defined in `docker-compose.yml`:
+
+| Service | Image / Build | Internal address | Notes |
+|---|---|---|---|
+| `neo4j` | `neo4j:5-community` | `bolt://neo4j:7687` | HTTP browser at `:7474` |
+| `redis` | `redis:7-alpine` | `redis://redis:6379` | Celery broker (db 0) + results (db 1) |
+| `api` | `services/api/Dockerfile` | `http://api:3000` | FastAPI/uvicorn; not exposed directly |
+| `frontend` | `services/frontend/Dockerfile` | `http://frontend:3001` | Next.js; not exposed directly |
+| `web` | `nginx:1.27-alpine` | exposed on `:80` | Reverse proxy; routes `/v1/*` → api, rest → frontend |
+| `worker` | `services/ingestion/Dockerfile` | — | Celery worker; `celery -A src.celery_app worker` |
+| `beat` | `services/ingestion/Dockerfile` | — | Celery beat scheduler; cron schedules from env vars |
+
+Auth flow: browser → next-auth (Google OAuth) → `googleIdToken` stored in JWT session → Next.js BFF attaches as `Authorization: Bearer` → FastAPI verifies via `require_active_user` dependency.
+
+---
+
+## Recurring Code Patterns
+
+### Response envelope
+All FastAPI endpoints return `ApiResponse[T]`. Use `envelope()` from `src/http_utils.py`:
+```python
+return envelope(data, request, cursor=next_cur, total_count=count)
+```
+`ResponseMeta` carries `request_id`, `next_cursor`, and `total_count`. Frontend reads these via `bffFetchEnvelope` in `src/lib/api-client.ts`.
+
+### Cursor-based pagination (backend)
+`page_window(cursor, raw_limit)` in `src/http_utils.py` decodes the base64 cursor to a skip offset. Pattern for every list endpoint:
+```python
+skip, limit = page_window(cursor, raw_limit)
+rows = fetch_rows(skip, limit + 1)          # fetch one extra to detect has_more
+has_more = len(rows) > limit
+return envelope(rows[:limit], request,
+                cursor=next_cursor(skip, limit, has_more),
+                total_count=_to_total(count_record))
+```
+
+### Cursor-based pagination (frontend)
+Use `usePaginatedFetch<T>(basePath)` from `src/lib/usePaginatedFetch.ts`. It manages `cursor`/`prevStack`/`nextCursor` state and exposes `{ rows, loading, error, from, to, total, hasPrev, hasNext, goNext, goPrev }`. BFF route handlers must forward `limit`/`cursor` from `searchParams` using `searchParamsToQuery(searchParams)` from `src/lib/proxy.ts`.
+
+### BFF proxy
+Every browser→API call goes through a Next.js route handler. Standard thin handler:
+```typescript
+export async function GET(request: Request, context: RouteContext): Promise<NextResponse> {
+  const { personId } = await context.params;
+  const { searchParams } = new URL(request.url);
+  return proxyToApi<SomeType[]>(
+    `/persons/${encodeURIComponent(personId)}/endpoint`,
+    { query: searchParamsToQuery(searchParams) },
+  );
+}
+```
+
+### Graph query modules
+All Cypher strings live as module-level string constants in `services/api/src/graph/queries/` and `services/ingestion/src/graph/queries/`. The `E501` line-length rule is disabled for these files so queries aren't artificially wrapped. Routes import query constants by name; they never embed Cypher inline.
+
+### Mappers vs converters
+- `graph/converters.py`: primitive type coercions (`to_str`, `to_int`, `to_iso_or_none`, `encode_cursor`/`decode_cursor`). Used by mappers.
+- `graph/mappers*.py`: Neo4j `Record` → Pydantic model. One mapper file per domain (persons, entities, sales, reports).
+
+### Ingestion dispatch
+Always dispatch via Celery — never call `run_ingestion()` directly:
+```python
+run_ingestion_task.delay(source_key, mode="batch")
+```
+The task enforces a Redis-backed cluster-wide concurrency cap (`MAX_CONCURRENT_INGESTIONS`, default 1) and retries automatically if a slot is busy.
+
+---
+
 ## Repository Structure
 
 All documents live in `docs/` and follow the naming convention `profile-unifier-*.md` (plus one `.yaml`).
@@ -82,7 +197,7 @@ These rules apply to all Python code in the repository (`services/api/`, `servic
 
 ## TypeScript / Next.js Coding Standards
 
-These rules apply to all TypeScript code in the repository (`services/web/`, etc.):
+These rules apply to all TypeScript code in the repository (`services/frontend/`, etc.):
 
 - **Strict TypeScript**: `tsconfig.json` must enable `strict`, `noUncheckedIndexedAccess`, `noImplicitOverride`, and `noFallthroughCasesInSwitch`. Code must compile clean under `tsc --noEmit`.
 - **No `any`, no unsafe casts**: never use `any`, `as any`, or `as unknown as T`. Parse external data (fetch responses, `JSON.parse`, route params) through type guards or schema validators (e.g. zod) before narrowing. A bare `as` cast on an `unknown` value is acceptable only when immediately preceded by a type guard.
@@ -99,4 +214,4 @@ These rules apply to all TypeScript code in the repository (`services/web/`, etc
 - **Component / module size**: keep React components under ~150 lines and modules under ~300 lines. Extract subcomponents (e.g. `PersonHeader`, `ConnectionsCard`) rather than letting a single page balloon. Extract pure helpers (`statusColor`, `buildSearchParams`) out of components.
 - **MUI usage**: import from per-component paths (`@mui/material/Button`) not the barrel (`@mui/material`) to keep bundles tight. Use the `sx` prop for one-off styling, the theme for shared tokens. Wrap the App Router with `AppRouterCacheProvider` from `@mui/material-nextjs/v15-appRouter` exactly once in `layout.tsx`.
 - **Project standards**: format with Prettier, lint with `next lint`. Imports ordered: node/external → `next/*` and `@mui/*` → `@/*` aliases → relative. Use the `@/` path alias instead of long relative paths.
-- **Package manager — npm**: `services/web/` uses npm. Always use `npm install` (locally and in Docker) — do not use `npm ci`. Do not introduce `pnpm-lock.yaml` or `yarn.lock`.
+- **Package manager — npm**: `services/frontend/` uses npm. Always use `npm install` (locally and in Docker) — do not use `npm ci`. Do not introduce `pnpm-lock.yaml` or `yarn.lock`.
