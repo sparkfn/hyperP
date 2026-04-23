@@ -15,8 +15,12 @@ _LABEL_FILTER = " AND ".join(f"NOT n:{label}" for label in _EXCLUDED_LABELS)
 # OPERATED_BY: Entity -> SourceSystem.
 # SOLD_BY: Product -> Entity.
 _EXCLUDED_REL_TYPES = (
-    "FROM_SOURCE", "HAS_FACT", "PART_OF_RUN",
-    "SOLD_THROUGH", "OPERATED_BY", "SOLD_BY",
+    "FROM_SOURCE",
+    "HAS_FACT",
+    "PART_OF_RUN",
+    "SOLD_THROUGH",
+    "OPERATED_BY",
+    "SOLD_BY",
 )
 
 _REL_FILTER = " AND ".join(f"type(r) <> '{rt}'" for rt in _EXCLUDED_REL_TYPES)
@@ -85,13 +89,11 @@ _FMT: dict[str, str | int] = {
 
 # Pre-built queries for allowed depths (1 – 4).
 _DEPTH_QUERIES: dict[int, str] = {
-    depth: _PERSON_START + _QUERY_BODY.format(max_hops=depth, **_FMT)
-    for depth in range(1, 5)
+    depth: _PERSON_START + _QUERY_BODY.format(max_hops=depth, **_FMT) for depth in range(1, 5)
 }
 
 _NODE_DEPTH_QUERIES: dict[int, str] = {
-    depth: _NODE_START + _QUERY_BODY.format(max_hops=depth, **_FMT)
-    for depth in range(1, 5)
+    depth: _NODE_START + _QUERY_BODY.format(max_hops=depth, **_FMT) for depth in range(1, 5)
 }
 
 MIN_HOPS: int = 1
@@ -105,16 +107,12 @@ def get_graph_query(max_hops: int) -> str:
     Raises ``ValueError`` if *max_hops* is outside the allowed range.
     """
     if max_hops not in _DEPTH_QUERIES:
-        raise ValueError(
-            f"max_hops must be between {MIN_HOPS} and {MAX_HOPS}, got {max_hops}"
-        )
+        raise ValueError(f"max_hops must be between {MIN_HOPS} and {MAX_HOPS}, got {max_hops}")
     return _DEPTH_QUERIES[max_hops]
 
 
 def get_node_graph_query(max_hops: int) -> str:
     """Return the pre-built Cypher query for generic node traversal by elementId."""
     if max_hops not in _NODE_DEPTH_QUERIES:
-        raise ValueError(
-            f"max_hops must be between {MIN_HOPS} and {MAX_HOPS}, got {max_hops}"
-        )
+        raise ValueError(f"max_hops must be between {MIN_HOPS} and {MAX_HOPS}, got {max_hops}")
     return _NODE_DEPTH_QUERIES[max_hops]

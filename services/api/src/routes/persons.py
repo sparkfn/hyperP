@@ -16,7 +16,6 @@ from src.graph.mappers import (
     map_source_record,
 )
 from src.graph.mappers_entities import map_listed_person, map_person_entity
-from src.graph.mappers_sales import map_sales_order
 from src.graph.queries import (
     COUNT_PERSON_AUDIT,
     COUNT_PERSON_CONNECTIONS_ADDRESS,
@@ -24,7 +23,6 @@ from src.graph.queries import (
     COUNT_PERSON_CONNECTIONS_IDENTIFIER,
     COUNT_PERSON_CONNECTIONS_KNOWS,
     COUNT_PERSON_IDENTIFIERS,
-    COUNT_PERSON_SALES,
     COUNT_PERSON_SOURCE_RECORDS,
     DEFAULT_HOPS,
     FIND_PERSON_BY_IDENTIFIER,
@@ -37,7 +35,6 @@ from src.graph.queries import (
     GET_PERSON_ENTITIES,
     GET_PERSON_IDENTIFIERS,
     GET_PERSON_MATCHES,
-    GET_PERSON_SALES,
     GET_PERSON_SOURCE_RECORDS,
     MAX_HOPS,
     MIN_HOPS,
@@ -59,7 +56,6 @@ from src.types import (
     PersonEntitySummary,
     PersonGraph,
     PersonIdentifier,
-    SalesOrder,
     SourceRecord,
 )
 
@@ -102,10 +98,21 @@ def _to_total(record: object | None) -> int:
 
 _ALLOWED_SORT: frozenset[str] = frozenset(
     {
-        "preferred_full_name", "status", "preferred_phone", "preferred_email",
-        "preferred_dob", "preferred_nric", "source_record_count", "connection_count",
-        "entity_count", "identifier_count",
-        "phone_confidence", "updated_at", "profile_completeness_score", "relevance",
+        "preferred_full_name",
+        "status",
+        "preferred_phone",
+        "preferred_email",
+        "preferred_dob",
+        "preferred_nric",
+        "source_record_count",
+        "connection_count",
+        "entity_count",
+        "identifier_count",
+        "order_count",
+        "phone_confidence",
+        "updated_at",
+        "profile_completeness_score",
+        "relevance",
     }
 )
 
@@ -127,11 +134,17 @@ async def list_persons(
     cursor: str | None = Query(default=None),
     limit: int | None = Query(default=None),
 ) -> ApiResponse[list[ListedPerson]]:
-    """Generalized person listing with multi-filter + single-column sort. q searches name, NRIC, email, and phone."""
+    """Generalized person listing with multi-filter + single-column sort.
+
+    ``q`` searches preferred_full_name, preferred_nric, preferred_email, and preferred_phone.
+    """
     q_clean: str | None = q.strip() if q else None
     if q_clean is not None and len(q_clean) < 3:
         raise http_error(
-            400, "invalid_request", "Search query q requires at least 3 characters (matches name, NRIC, email, phone).", request
+            400,
+            "invalid_request",
+            "Search query q requires at least 3 characters (matches name, NRIC, email, phone).",
+            request,
         )
     if sort_by is not None and sort_by not in _ALLOWED_SORT:
         raise http_error(400, "invalid_request", f"Unknown sort_by: {sort_by}", request)
@@ -168,9 +181,7 @@ async def list_persons(
     )
     has_more = len(records) > page_limit
     items = [map_listed_person(rec) for rec in records[:page_limit]]
-    return envelope(
-        items, request, next_cursor(skip, page_limit, has_more), total_count=total
-    )
+    return envelope(items, request, next_cursor(skip, page_limit, has_more), total_count=total)
 
 
 @router.get("/search", response_model=ApiResponse[list[Person]])
@@ -202,7 +213,10 @@ async def search_persons(
             return envelope([], request)
         if len(q) < 3:
             raise http_error(
-                400, "invalid_request", "Search query q requires at least 3 characters (matches name, NRIC, email, phone).", request
+                400,
+                "invalid_request",
+                "Search query q requires at least 3 characters (matches name, NRIC, email, phone).",
+                request,
             )
         # Pass the fulltext query via a parameters dict to avoid colliding
         # with `session.run(query=...)`'s first positional argument name.
@@ -245,7 +259,9 @@ async def get_person_source_records(
         count_record = await count_result.single()
     has_more = len(records) > page_limit
     items = [map_source_record(rec) for rec in records[:page_limit]]
-    return envelope(items, request, next_cursor(skip, page_limit, has_more), total_count=_to_total(count_record))
+    return envelope(
+        items, request, next_cursor(skip, page_limit, has_more), total_count=_to_total(count_record)
+    )
 
 
 @router.get("/{person_id}/identifiers", response_model=ApiResponse[list[PersonIdentifier]])
@@ -266,7 +282,9 @@ async def get_person_identifiers(
         count_record = await count_result.single()
     has_more = len(records) > page_limit
     items = [map_person_identifier(rec) for rec in records[:page_limit]]
-    return envelope(items, request, next_cursor(skip, page_limit, has_more), total_count=_to_total(count_record))
+    return envelope(
+        items, request, next_cursor(skip, page_limit, has_more), total_count=_to_total(count_record)
+    )
 
 
 @router.get("/{person_id}/connections", response_model=ApiResponse[list[PersonConnection]])
@@ -297,7 +315,9 @@ async def get_person_connections(
         count_record = await count_result.single()
     has_more = len(records) > page_limit
     items = [map_connection(rec) for rec in records[:page_limit]]
-    return envelope(items, request, next_cursor(skip, page_limit, has_more), total_count=_to_total(count_record))
+    return envelope(
+        items, request, next_cursor(skip, page_limit, has_more), total_count=_to_total(count_record)
+    )
 
 
 @router.get("/{person_id}/entities", response_model=ApiResponse[list[PersonEntitySummary]])
@@ -310,27 +330,6 @@ async def get_person_entities(
         records = [_record_to_dict(r.keys(), list(r.values())) async for r in result]
     items = [map_person_entity(rec) for rec in records]
     return envelope(items, request)
-
-
-@router.get("/{person_id}/sales", response_model=ApiResponse[list[SalesOrder]])
-async def get_person_sales(
-    person_id: str,
-    request: Request,
-    cursor: str | None = Query(default=None),
-    limit: int | None = Query(default=None),
-) -> ApiResponse[list[SalesOrder]]:
-    """Return sales orders for a person with line items and products."""
-    skip, page_limit = page_window(cursor, limit)
-    async with get_session() as session:
-        result = await session.run(
-            GET_PERSON_SALES, person_id=person_id, skip=skip, limit=page_limit + 1
-        )
-        records = [_record_to_dict(r.keys(), list(r.values())) async for r in result]
-        count_result = await session.run(COUNT_PERSON_SALES, person_id=person_id)
-        count_record = await count_result.single()
-    has_more = len(records) > page_limit
-    items = [map_sales_order(rec) for rec in records[:page_limit]]
-    return envelope(items, request, next_cursor(skip, page_limit, has_more), total_count=_to_total(count_record))
 
 
 @router.get("/graph/node", response_model=ApiResponse[PersonGraph])
@@ -394,7 +393,9 @@ async def get_person_audit(
         count_record = await count_result.single()
     has_more = len(records) > page_limit
     items = [map_audit_event(rec) for rec in records[:page_limit]]
-    return envelope(items, request, next_cursor(skip, page_limit, has_more), total_count=_to_total(count_record))
+    return envelope(
+        items, request, next_cursor(skip, page_limit, has_more), total_count=_to_total(count_record)
+    )
 
 
 @router.get("/{person_id}/matches", response_model=ApiResponse[list[MatchDecision]])

@@ -15,6 +15,7 @@ ReportParamType = Literal["string", "integer", "float", "date", "boolean"]
 
 class ReportParameterDef(BaseModel):
     """Schema for a single named parameter accepted by a report query."""
+
     name: str
     label: str
     param_type: ReportParamType = "string"

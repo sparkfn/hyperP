@@ -12,9 +12,9 @@ import Tooltip from "@mui/material/Tooltip";
 import Typography from "@mui/material/Typography";
 import AccountTreeIcon from "@mui/icons-material/AccountTree";
 
-import type { ListedPerson, PersonConnection, SourceRecord } from "@/lib/api-types";
+import type { ListedPerson, PersonConnection, SalesOrder, SourceRecord } from "@/lib/api-types";
 import type { PersonIdentifier } from "@/lib/api-types-person";
-import { confidenceColor, connectionsToItems, formatDate, identifiersToItems, sourcesToItems, statusColor } from "@/lib/display";
+import { confidenceColor, connectionsToItems, formatDate, identifiersToItems, ordersToItems, sourcesToItems, statusColor } from "@/lib/display";
 import CountCardsCell from "@/components/CountCardsCell";
 
 interface PersonRowProps {
@@ -33,6 +33,9 @@ interface PersonRowProps {
   identifiers: PersonIdentifier[] | undefined;
   identifiersLoading: boolean;
   onRequestIdentifiers: () => void;
+  orders: SalesOrder[] | undefined;
+  ordersLoading: boolean;
+  onRequestOrders: () => void;
 }
 
 export default function PersonRow({
@@ -51,6 +54,9 @@ export default function PersonRow({
   identifiers,
   identifiersLoading,
   onRequestIdentifiers,
+  orders,
+  ordersLoading,
+  onRequestOrders,
 }: PersonRowProps): ReactElement {
   return (
     <TableRow
@@ -68,12 +74,8 @@ export default function PersonRow({
           <Typography variant="body2" sx={{ fontWeight: 500 }}>
             {person.preferred_full_name ?? person.person_id}
           </Typography>
-          {person.is_high_value ? (
-            <Chip label="HV" color="primary" sx={{ height: 16, fontSize: "0.65rem" }} />
-          ) : null}
-          {person.is_high_risk ? (
-            <Chip label="HR" color="error" sx={{ height: 16, fontSize: "0.65rem" }} />
-          ) : null}
+          {person.is_high_value && <Chip label="HV" color="primary" sx={{ height: 16, fontSize: "0.65rem" }} />}
+          {person.is_high_risk && <Chip label="HR" color="error" sx={{ height: 16, fontSize: "0.65rem" }} />}
         </Stack>
       </TableCell>
       <TableCell>
@@ -81,39 +83,18 @@ export default function PersonRow({
       </TableCell>
       <TableCell>{person.preferred_phone ?? "—"}</TableCell>
       <TableCell align="right">
-        <Tooltip title={`Profile completeness: ${(person.profile_completeness_score * 100).toFixed(0)}%`}>
-          <Chip
-            label={`${Math.round(person.profile_completeness_score * 100)}%`}
-            color={confidenceColor(person.profile_completeness_score)}
-            variant="outlined"
-            sx={{ minWidth: 42, height: 18, fontSize: "0.7rem" }}
-          />
+        <Tooltip title={`Profile completeness: ${Math.round(person.profile_completeness_score * 100)}%`}>
+          <Chip label={`${Math.round(person.profile_completeness_score * 100)}%`} color={confidenceColor(person.profile_completeness_score)} variant="outlined" sx={{ minWidth: 42, height: 18, fontSize: "0.7rem" }} />
         </Tooltip>
       </TableCell>
       <TableCell>{person.preferred_email ?? "—"}</TableCell>
       <TableCell>{person.preferred_dob ?? "—"}</TableCell>
-      <TableCell
-        sx={{
-          maxWidth: 160,
-          fontFamily: "monospace",
-          fontSize: "0.72rem",
-          whiteSpace: "nowrap",
-          overflow: "hidden",
-          textOverflow: "ellipsis",
-        }}
-      >
+      <TableCell sx={{ maxWidth: 160, fontFamily: "monospace", fontSize: "0.72rem", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
         <Tooltip title={person.preferred_nric ?? ""}>
           <span>{person.preferred_nric ?? "—"}</span>
         </Tooltip>
       </TableCell>
-      <TableCell
-        sx={{
-          maxWidth: 220,
-          whiteSpace: "nowrap",
-          overflow: "hidden",
-          textOverflow: "ellipsis",
-        }}
-      >
+      <TableCell sx={{ maxWidth: 220, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
         <Tooltip title={person.preferred_address?.normalized_full ?? ""}>
           <span>{person.preferred_address?.normalized_full ?? "—"}</span>
         </Tooltip>
@@ -126,6 +107,16 @@ export default function PersonRow({
           loading={connectionsLoading}
           items={connectionsToItems(connections)}
           onOpen={onRequestConnections}
+        />
+      </TableCell>
+      <TableCell align="center" onClick={(e) => e.stopPropagation()}>
+        <CountCardsCell
+          count={person.order_count}
+          label="orders"
+          emptyText="No orders"
+          loading={ordersLoading}
+          items={ordersToItems(orders)}
+          onOpen={onRequestOrders}
         />
       </TableCell>
       <TableCell align="center" onClick={(e) => e.stopPropagation()}>

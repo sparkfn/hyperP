@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
-
 from dataclasses import dataclass
+from datetime import UTC, datetime
 
 from neo4j import AsyncManagedTransaction
 
@@ -55,16 +54,13 @@ def _empty_fact() -> _BestFact:
 
 def _completeness_score(best_by_field: dict[str, _BestFact], has_address: bool) -> float:
     filled = sum(
-        1 for f in GOLDEN_FACT_FIELDS
-        if best_by_field.get(f) and best_by_field[f].value is not None
+        1 for f in GOLDEN_FACT_FIELDS if best_by_field.get(f) and best_by_field[f].value is not None
     )
     bonus = 1 if has_address else 0
     return (filled + bonus) / (len(GOLDEN_FACT_FIELDS) + 1)
 
 
-async def _gather_best_facts(
-    tx: AsyncManagedTransaction, person_id: str
-) -> dict[str, _BestFact]:
+async def _gather_best_facts(tx: AsyncManagedTransaction, person_id: str) -> dict[str, _BestFact]:
     facts_result = await tx.run(GET_PERSON_FACTS, person_id=person_id)
     overrides_result = await tx.run(GET_PERSON_OVERRIDES, person_id=person_id)
     overrides_record = await overrides_result.single()
@@ -111,18 +107,14 @@ async def _resolve_best_address(tx: AsyncManagedTransaction, person_id: str) -> 
 async def _resolve_best_identifier(
     tx: AsyncManagedTransaction, person_id: str, identifier_type: str
 ) -> str | None:
-    result = await tx.run(
-        GET_BEST_IDENTIFIER, person_id=person_id, identifier_type=identifier_type
-    )
+    result = await tx.run(GET_BEST_IDENTIFIER, person_id=person_id, identifier_type=identifier_type)
     record = await result.single()
     if record is None:
         return None
     return to_optional_str(record["normalized_value"])
 
 
-async def recompute_golden_profile_tx(
-    tx: AsyncManagedTransaction, person_id: str
-) -> float | None:
+async def recompute_golden_profile_tx(tx: AsyncManagedTransaction, person_id: str) -> float | None:
     """Recompute golden profile for person_id within a write transaction.
 
     Returns completeness score, or None if the person is not found / not active.

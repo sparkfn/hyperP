@@ -46,6 +46,7 @@ def _record_to_dict(keys: list[str], values: list[GraphValue]) -> GraphRecord:
 # List / Get
 # ---------------------------------------------------------------------------
 
+
 @router.get("", response_model=ApiResponse[list[ReportSummary]])
 async def list_reports(request: Request) -> ApiResponse[list[ReportSummary]]:
     """Return all stored report definitions (summary only)."""
@@ -71,6 +72,7 @@ async def get_report(report_key: str, request: Request) -> ApiResponse[ReportDet
 # ---------------------------------------------------------------------------
 # Create / Update / Delete
 # ---------------------------------------------------------------------------
+
 
 @router.post("", response_model=ApiResponse[ReportDetail], status_code=201)
 async def create_report(
@@ -150,9 +152,12 @@ async def delete_report(
 # Execute
 # ---------------------------------------------------------------------------
 
+
 @router.post("/{report_key}/execute", response_model=ApiResponse[ReportResult])
 async def execute_report(
-    report_key: str, body: ExecuteReportRequest, request: Request,
+    report_key: str,
+    body: ExecuteReportRequest,
+    request: Request,
 ) -> ApiResponse[ReportResult]:
     """Execute a stored report with the supplied parameters."""
     detail = await _fetch_detail(report_key)
@@ -184,6 +189,7 @@ async def execute_report(
 # Seed
 # ---------------------------------------------------------------------------
 
+
 @router.post("/seed", response_model=ApiResponse[list[str]], status_code=201)
 async def seed_reports(
     request: Request,
@@ -201,6 +207,7 @@ async def seed_reports(
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 async def _fetch_detail(report_key: str) -> ReportDetail | None:
     """Fetch a full report detail by key, returning None if missing."""

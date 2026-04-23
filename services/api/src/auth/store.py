@@ -40,9 +40,7 @@ def _auth_user_from_record(user_map: object) -> AuthUser:
     )
 
 
-async def upsert_user_on_login(
-    email: str, google_sub: str, display_name: str | None
-) -> AuthUser:
+async def upsert_user_on_login(email: str, google_sub: str, display_name: str | None) -> AuthUser:
     """MERGE a :User node on sign-in, returning the resolved principal."""
     lowered = email.lower()
     is_bootstrap_admin = lowered in config.bootstrap_admin_email_set
@@ -80,9 +78,7 @@ async def list_users() -> list[AuthUser]:
     return users
 
 
-async def update_user(
-    email: str, new_role: Role | None, entity_key: str | None
-) -> AuthUser | None:
+async def update_user(email: str, new_role: Role | None, entity_key: str | None) -> AuthUser | None:
     """Set role and/or entity_key on a user; returns updated record or None if not found."""
     async with get_session(write=True) as session:
         result = await session.run(
@@ -110,9 +106,7 @@ async def get_entity_for_source(source_key: str) -> str | None:
 async def get_entities_for_review_case(review_case_id: str) -> list[str]:
     """Return the set of entity keys a review case's comparison touches."""
     async with get_session() as session:
-        result = await session.run(
-            GET_ENTITIES_FOR_REVIEW_CASE, review_case_id=review_case_id
-        )
+        result = await session.run(GET_ENTITIES_FOR_REVIEW_CASE, review_case_id=review_case_id)
         record = await result.single()
     if record is None:
         return []

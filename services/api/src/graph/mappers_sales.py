@@ -10,7 +10,7 @@ from src.graph.converters import (
     to_optional_int,
     to_optional_str,
 )
-from src.types import SalesLineItem, SalesOrder, SalesProduct
+from src.types_sales import SalesLineItem, SalesOrder, SalesProduct
 
 
 def _as_dict(value: GraphValue) -> GraphRecord:
@@ -33,14 +33,17 @@ def map_sales_order(record: GraphRecord) -> SalesOrder:
                 product=SalesProduct(
                     display_name=to_optional_str(d.get("product_display_name")),
                     sku=to_optional_str(d.get("product_sku")),
+                    category=to_optional_str(d.get("product_category")),
                 ),
             )
-            for raw in raw_items if (d := _as_dict(raw))
+            for raw in raw_items
+            if (d := _as_dict(raw))
         ]
     return SalesOrder(
         order_no=to_optional_str(record.get("order_no")),
         source_order_id=to_optional_str(record.get("source_order_id")),
         order_date=to_iso_or_none(record.get("order_date")),
+        release_date=to_iso_or_none(record.get("release_date")),
         total_amount=to_optional_float(record.get("total_amount")),
         currency=to_optional_str(record.get("currency")),
         source_system=to_optional_str(record.get("source_system")),

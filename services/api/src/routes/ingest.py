@@ -20,8 +20,8 @@ from src.graph.queries import (
     UPDATE_INGEST_RUN_COUNTERS,
 )
 from src.http_utils import envelope, http_error
-from src.types import (
-    ApiResponse,
+from src.types import ApiResponse
+from src.types_requests import (
     IngestRecord,
     IngestRecordsRequest,
     IngestRunCreateRequest,
@@ -61,9 +61,7 @@ class IngestRunDetailResponse(BaseModel):
     source_key: str | None
 
 
-@router.post(
-    "/v1/ingest/{source_key}/records", response_model=ApiResponse[IngestRecordsResponse]
-)
+@router.post("/v1/ingest/{source_key}/records", response_model=ApiResponse[IngestRecordsResponse])
 async def ingest_records(
     source_key: str,
     body: IngestRecordsRequest,
@@ -245,9 +243,7 @@ async def _update_run_tx(
     )
 
 
-@router.get(
-    "/v1/ingest/runs/{ingest_run_id}", response_model=ApiResponse[IngestRunDetailResponse]
-)
+@router.get("/v1/ingest/runs/{ingest_run_id}", response_model=ApiResponse[IngestRunDetailResponse])
 async def get_ingest_run(
     ingest_run_id: str, request: Request
 ) -> ApiResponse[IngestRunDetailResponse]:

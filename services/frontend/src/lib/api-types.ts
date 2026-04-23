@@ -98,6 +98,7 @@ export interface PersonConnection {
 export interface SalesProduct {
   display_name: string | null;
   sku: string | null;
+  category: string | null;
 }
 
 export interface SalesLineItem {
@@ -112,6 +113,7 @@ export interface SalesOrder {
   order_no: string | null;
   source_order_id: string | null;
   order_date: string | null;
+  release_date: string | null;
   total_amount: number | null;
   currency: string | null;
   source_system: string | null;
@@ -148,6 +150,7 @@ export interface ListedPerson extends EntityPerson {
   entities: PersonEntitySummary[];
   entity_count: number;
   identifier_count: number;
+  order_count: number;
 }
 
 // --- Reports (stretchy reports) ---

@@ -13,13 +13,7 @@ from neo4j.time import DateTime as Neo4jDateTime
 # Neo4j returns a heterogeneous mix of primitives, so we constrain to a tagged
 # union of the value shapes we accept and emit. We deliberately exclude `Any`.
 type GraphScalar = str | int | float | bool | None
-type GraphValue = (
-    GraphScalar
-    | Neo4jDateTime
-    | datetime
-    | list[GraphValue]
-    | dict[str, GraphValue]
-)
+type GraphValue = GraphScalar | Neo4jDateTime | datetime | list[GraphValue] | dict[str, GraphValue]
 type GraphRecord = dict[str, GraphValue]
 
 

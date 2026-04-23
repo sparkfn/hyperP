@@ -127,7 +127,8 @@ def _map_shared_identifiers(value: GraphValue) -> list[SharedIdentifier]:
             identifier_type=to_str(d.get("identifier_type")),
             normalized_value=to_str(d.get("normalized_value")),
         )
-        for raw in value if (d := _as_dict(raw)).get("identifier_type")
+        for raw in value
+        if (d := _as_dict(raw)).get("identifier_type")
     ]
 
 
@@ -139,7 +140,8 @@ def _map_shared_addresses(value: GraphValue) -> list[SharedAddress]:
             address_id=to_str(d.get("address_id")),
             normalized_full=to_optional_str(d.get("normalized_full")),
         )
-        for raw in value if (d := _as_dict(raw)).get("address_id")
+        for raw in value
+        if (d := _as_dict(raw)).get("address_id")
     ]
 
 
@@ -151,7 +153,8 @@ def _map_knows_relationships(value: GraphValue) -> list[KnowsRelationship]:
             relationship_label=to_optional_str(d.get("relationship_label")),
             relationship_category=to_str(d.get("relationship_category")),
         )
-        for raw in value if (d := _as_dict(raw)).get("relationship_category")
+        for raw in value
+        if (d := _as_dict(raw)).get("relationship_category")
     ]
 
 
@@ -163,9 +166,7 @@ def map_connection(record: GraphRecord) -> PersonConnection:
         hops=to_int(record.get("hops")),
         shared_identifiers=_map_shared_identifiers(record.get("shared_identifiers")),
         shared_addresses=_map_shared_addresses(record.get("shared_addresses")),
-        knows_relationships=_map_knows_relationships(
-            record.get("knows_relationships")
-        ),
+        knows_relationships=_map_knows_relationships(record.get("knows_relationships")),
     )
 
 

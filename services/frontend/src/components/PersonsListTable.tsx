@@ -17,7 +17,7 @@ import TableRow from "@mui/material/TableRow";
 import TableSortLabel from "@mui/material/TableSortLabel";
 import Typography from "@mui/material/Typography";
 
-import type { ListedPerson, PersonConnection, SourceRecord } from "@/lib/api-types";
+import type { ListedPerson, PersonConnection, SalesOrder, SourceRecord } from "@/lib/api-types";
 import type { PersonIdentifier } from "@/lib/api-types-person";
 import { bffFetch } from "@/lib/api-client";
 import PersonGraphDialog from "@/components/PersonGraphDialog";
@@ -34,6 +34,7 @@ export type SortField =
   | "connection_count"
   | "entity_count"
   | "identifier_count"
+  | "order_count"
   | "updated_at"
   | "profile_completeness_score";
 
@@ -67,6 +68,7 @@ const COLUMNS: readonly ColumnDef[] = [
   { field: "preferred_nric", label: "NRIC", sortable: true, mono: true },
   { field: "__address", label: "Address", sortable: false },
   { field: "connection_count", label: "Connections", align: "center", sortable: true },
+  { field: "order_count", label: "Orders", align: "center", sortable: true },
   { field: "source_record_count", label: "Sources", align: "center", sortable: true },
   { field: "identifier_count", label: "Identifiers", align: "center", sortable: true },
   { field: "entity_count", label: "Entities", align: "center", sortable: true },
@@ -155,6 +157,9 @@ export default function PersonsListTable({
   const identifiersFetch = useLazyPersonFetch<PersonIdentifier>(
     (id) => `/api/persons/${encodeURIComponent(id)}/identifiers?limit=50`,
   );
+  const ordersFetch = useLazyPersonFetch<SalesOrder>(
+    (id) => `/api/persons/${encodeURIComponent(id)}/sales?limit=50`,
+  );
 
   const allSelected: boolean = persons.length > 0 && persons.every((p) => selected.has(p.person_id));
   const someSelected: boolean = !allSelected && persons.some((p) => selected.has(p.person_id));
@@ -240,6 +245,9 @@ export default function PersonsListTable({
               identifiers={identifiersFetch.cache.data[p.person_id]}
               identifiersLoading={identifiersFetch.cache.loading.has(p.person_id)}
               onRequestIdentifiers={() => identifiersFetch.request(p.person_id)}
+              orders={ordersFetch.cache.data[p.person_id]}
+              ordersLoading={ordersFetch.cache.loading.has(p.person_id)}
+              onRequestOrders={() => ordersFetch.request(p.person_id)}
             />
           ))}
         </TableBody>

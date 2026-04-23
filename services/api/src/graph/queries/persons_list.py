@@ -92,6 +92,10 @@ CALL {
   OPTIONAL MATCH (p)-[:IDENTIFIED_BY]->(idc:Identifier)
   RETURN count(idc) AS identifier_count
 }
+CALL {
+  WITH p
+  RETURN count{ (p)-[:PURCHASED]->(:Order) } AS order_count
+}
 RETURN p {
   .person_id, .status, .is_high_value, .is_high_risk,
   .preferred_full_name, .preferred_phone, .preferred_email, .preferred_dob, .preferred_nric,
@@ -103,7 +107,7 @@ addr {
   .city, .postal_code, .country_code, .normalized_full
 } AS preferred_address,
 source_record_count, connection_count, phone_confidence, entities,
-size(entities) AS entity_count, identifier_count, score
+size(entities) AS entity_count, identifier_count, order_count, score
 """
 
 _SORT_COLUMNS: dict[str, str] = {
@@ -117,6 +121,7 @@ _SORT_COLUMNS: dict[str, str] = {
     "connection_count": "connection_count",
     "entity_count": "entity_count",
     "identifier_count": "identifier_count",
+    "order_count": "order_count",
     "phone_confidence": "phone_confidence",
     "updated_at": "p.updated_at",
     "profile_completeness_score": "p.profile_completeness_score",
@@ -139,9 +144,7 @@ def _resolve_sort(sort_by: str | None, sort_order: str | None, *, has_q: bool) -
     return _SORT_COLUMNS[col_key], direction
 
 
-def build_list_persons_query(
-    sort_by: str | None, sort_order: str | None, *, has_q: bool
-) -> str:
+def build_list_persons_query(sort_by: str | None, sort_order: str | None, *, has_q: bool) -> str:
     """Build the list query for ``GET /v1/persons``.
 
     When ``has_q`` is true, prefixes a fulltext index match; otherwise scans
@@ -170,7 +173,6 @@ def build_count_persons_query(*, has_q: bool) -> str:
 def _head(*, has_q: bool) -> str:
     if has_q:
         return (
-            "CALL db.index.fulltext.queryNodes('person_name_search', $q) "
-            "YIELD node AS p, score\n"
+            "CALL db.index.fulltext.queryNodes('person_name_search', $q) YIELD node AS p, score\n"
         )
     return "MATCH (p:Person)\nWITH p, null AS score\n"

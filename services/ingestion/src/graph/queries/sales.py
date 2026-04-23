@@ -63,6 +63,7 @@ ON CREATE SET
 SET
     o.order_no     = $order_no,
     o.ordered_at   = $ordered_at,
+    o.release_date = $release_date,
     o.status       = $status,
     o.total_amount = $total_amount,
     o.currency     = $currency,

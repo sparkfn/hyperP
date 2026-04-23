@@ -61,13 +61,14 @@ function OrderRow({ order }: OrderRowProps): ReactElement {
         </TableCell>
         <TableCell>{order.order_no ?? order.source_order_id ?? "—"}</TableCell>
         <TableCell>{formatDate(order.order_date)}</TableCell>
+        <TableCell>{formatDate(order.release_date)}</TableCell>
         <TableCell>{order.entity_name ?? order.source_system ?? "—"}</TableCell>
         <TableCell align="right">{formatCurrency(order.total_amount, order.currency)}</TableCell>
         <TableCell align="right">{order.line_items.length} items</TableCell>
       </TableRow>
       {hasItems ? (
         <TableRow>
-          <TableCell colSpan={6} sx={{ py: 0, borderBottom: open ? undefined : "none" }}>
+          <TableCell colSpan={7} sx={{ py: 0, borderBottom: open ? undefined : "none" }}>
             <Collapse in={open} timeout="auto" unmountOnExit>
               <Box sx={{ py: 1, pl: 4 }}>
                 <Table size="small">
@@ -75,6 +76,7 @@ function OrderRow({ order }: OrderRowProps): ReactElement {
                     <TableRow>
                       <TableCell>Line #</TableCell>
                       <TableCell>Product</TableCell>
+                      <TableCell>Category</TableCell>
                       <TableCell>SKU</TableCell>
                       <TableCell align="right">Qty</TableCell>
                       <TableCell align="right">Unit Price</TableCell>
@@ -86,6 +88,13 @@ function OrderRow({ order }: OrderRowProps): ReactElement {
                       <TableRow key={li.line_no ?? idx}>
                         <TableCell>{li.line_no ?? "—"}</TableCell>
                         <TableCell>{li.product?.display_name ?? "—"}</TableCell>
+                        <TableCell>
+                          {li.product?.category ? (
+                            <Typography variant="body2" color="text.secondary" fontSize="0.75rem">
+                              {li.product.category}
+                            </Typography>
+                          ) : "—"}
+                        </TableCell>
                         <TableCell>{li.product?.sku ?? "—"}</TableCell>
                         <TableCell align="right">{li.quantity ?? "—"}</TableCell>
                         <TableCell align="right">
@@ -136,7 +145,8 @@ export default function SalesCard({ personId }: SalesCardProps): ReactElement {
               <TableRow>
                 <TableCell />
                 <TableCell>Order #</TableCell>
-                <TableCell>Date</TableCell>
+                <TableCell>Ordered</TableCell>
+                <TableCell>Released</TableCell>
                 <TableCell>Source</TableCell>
                 <TableCell align="right">Total</TableCell>
                 <TableCell align="right">Items</TableCell>

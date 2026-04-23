@@ -12,7 +12,8 @@ from src.graph.client import get_session
 from src.graph.converters import to_optional_str, to_str
 from src.graph.queries import GET_FIELD_TRUST, LIST_SOURCE_SYSTEMS, UPDATE_FIELD_TRUST
 from src.http_utils import envelope, http_error
-from src.types import ApiResponse, FieldTrustUpdateRequest, TrustTier
+from src.types import ApiResponse, TrustTier
+from src.types_requests import FieldTrustUpdateRequest
 
 router = APIRouter()
 

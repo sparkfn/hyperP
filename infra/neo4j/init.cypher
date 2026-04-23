@@ -82,6 +82,9 @@ CREATE INDEX idx_person_status IF NOT EXISTS
 CREATE INDEX idx_order_ordered_at IF NOT EXISTS
   FOR (o:Order) ON (o.ordered_at);
 
+CREATE INDEX idx_order_release_date IF NOT EXISTS
+  FOR (o:Order) ON (o.release_date);
+
 CREATE INDEX idx_order_status IF NOT EXISTS
   FOR (o:Order) ON (o.status);
 

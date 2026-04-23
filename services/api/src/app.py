@@ -25,6 +25,7 @@ from src.routes import (
     health,
     ingest,
     merge,
+    person_sales,
     persons,
     reports,
     review,
@@ -83,6 +84,7 @@ def build_app() -> FastAPI:
     app.include_router(entities.router, dependencies=active)
     app.include_router(reports.router, dependencies=active)
     app.include_router(persons.router, dependencies=active)
+    app.include_router(person_sales.router, dependencies=active)
     app.include_router(review.router, dependencies=active)
     app.include_router(merge.router, dependencies=active)
     app.include_router(survivorship.router, dependencies=active)
@@ -96,9 +98,7 @@ def build_app() -> FastAPI:
 
 def _register_error_handlers(app: FastAPI) -> None:
     @app.exception_handler(StarletteHTTPException)
-    async def http_exception_handler(
-        request: Request, exc: StarletteHTTPException
-    ) -> JSONResponse:
+    async def http_exception_handler(request: Request, exc: StarletteHTTPException) -> JSONResponse:
         if isinstance(exc.detail, dict):
             return JSONResponse(exc.detail, status_code=exc.status_code)
         body = ApiError(
@@ -108,9 +108,7 @@ def _register_error_handlers(app: FastAPI) -> None:
         return JSONResponse(body.model_dump(), status_code=exc.status_code)
 
     @app.exception_handler(RequestValidationError)
-    async def validation_handler(
-        request: Request, exc: RequestValidationError
-    ) -> JSONResponse:
+    async def validation_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
         body = ApiError(
             error=ApiErrorBody(code="invalid_request", message=str(exc.errors())),
             meta=ResponseMeta(request_id=request_id(request)),

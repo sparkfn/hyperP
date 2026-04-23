@@ -41,9 +41,7 @@ async def list_entity_persons(
     skip, page_limit = page_window(cursor, limit)
     query = get_entity_persons_query(sort_by, sort_order)
     async with get_session() as session:
-        result = await session.run(
-            query, entity_key=entity_key, skip=skip, limit=page_limit + 1
-        )
+        result = await session.run(query, entity_key=entity_key, skip=skip, limit=page_limit + 1)
         records = [_record_to_dict(r.keys(), list(r.values())) async for r in result]
     has_more = len(records) > page_limit
     persons = [map_entity_person(rec) for rec in records[:page_limit]]
