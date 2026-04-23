@@ -32,6 +32,7 @@ from src.types import (
     PersonComparisonEntity,
     PersonConnection,
     PersonGraph,
+    PersonIdentifier,
     PersonStatus,
     ReviewCaseDetail,
     ReviewCaseSummary,
@@ -104,6 +105,17 @@ def map_source_record(record: GraphRecord) -> SourceRecord:
         linked_person_id=to_optional_str(record.get("linked_person_id")),
         observed_at=to_iso_or_empty(sr.get("observed_at")),
         ingested_at=to_iso_or_empty(sr.get("ingested_at")),
+    )
+
+
+def map_person_identifier(record: GraphRecord) -> PersonIdentifier:
+    return PersonIdentifier(
+        identifier_type=to_str(record.get("identifier_type")),
+        normalized_value=to_str(record.get("normalized_value")),
+        is_active=bool(record.get("is_active", True)),
+        is_verified=bool(record.get("is_verified", False)),
+        last_confirmed_at=to_iso_or_none(record.get("last_confirmed_at")),
+        source_system_key=to_optional_str(record.get("source_system_key")),
     )
 
 

@@ -1,9 +1,9 @@
 "use client";
 
-import { useEffect, useState, type ReactElement } from "react";
+import { useState, type ReactElement } from "react";
 
+import Alert from "@mui/material/Alert";
 import Box from "@mui/material/Box";
-import Chip from "@mui/material/Chip";
 import CircularProgress from "@mui/material/CircularProgress";
 import Collapse from "@mui/material/Collapse";
 import IconButton from "@mui/material/IconButton";
@@ -18,7 +18,8 @@ import Typography from "@mui/material/Typography";
 import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import ExpandLessIcon from "@mui/icons-material/ExpandLess";
 
-import { bffFetch } from "@/lib/api-client";
+import PaginationBar from "@/components/PaginationBar";
+import { usePaginatedFetch } from "@/lib/usePaginatedFetch";
 import type { SalesOrder } from "@/lib/api-types";
 
 function formatCurrency(amount: number | null, currency: string | null): string {
@@ -46,7 +47,11 @@ function OrderRow({ order }: OrderRowProps): ReactElement {
 
   return (
     <>
-      <TableRow hover sx={{ cursor: hasItems ? "pointer" : "default" }} onClick={() => { if (hasItems) setOpen(!open); }}>
+      <TableRow
+        hover
+        sx={{ cursor: hasItems ? "pointer" : "default" }}
+        onClick={() => { if (hasItems) setOpen(!open); }}
+      >
         <TableCell sx={{ width: 40 }}>
           {hasItems ? (
             <IconButton size="small">
@@ -58,9 +63,7 @@ function OrderRow({ order }: OrderRowProps): ReactElement {
         <TableCell>{formatDate(order.order_date)}</TableCell>
         <TableCell>{order.entity_name ?? order.source_system ?? "—"}</TableCell>
         <TableCell align="right">{formatCurrency(order.total_amount, order.currency)}</TableCell>
-        <TableCell align="right">
-          <Chip label={`${order.line_items.length} items`} size="small" variant="outlined" />
-        </TableCell>
+        <TableCell align="right">{order.line_items.length} items</TableCell>
       </TableRow>
       {hasItems ? (
         <TableRow>
@@ -85,8 +88,12 @@ function OrderRow({ order }: OrderRowProps): ReactElement {
                         <TableCell>{li.product?.display_name ?? "—"}</TableCell>
                         <TableCell>{li.product?.sku ?? "—"}</TableCell>
                         <TableCell align="right">{li.quantity ?? "—"}</TableCell>
-                        <TableCell align="right">{li.unit_price !== null ? li.unit_price.toFixed(2) : "—"}</TableCell>
-                        <TableCell align="right">{li.subtotal !== null ? li.subtotal.toFixed(2) : "—"}</TableCell>
+                        <TableCell align="right">
+                          {li.unit_price !== null ? li.unit_price.toFixed(2) : "—"}
+                        </TableCell>
+                        <TableCell align="right">
+                          {li.subtotal !== null ? li.subtotal.toFixed(2) : "—"}
+                        </TableCell>
                       </TableRow>
                     ))}
                   </TableBody>
@@ -105,26 +112,10 @@ interface SalesCardProps {
 }
 
 export default function SalesCard({ personId }: SalesCardProps): ReactElement {
-  const [orders, setOrders] = useState<SalesOrder[] | null>(null);
-  const [loading, setLoading] = useState<boolean>(true);
-
-  useEffect(() => {
-    let cancelled = false;
-    async function load(): Promise<void> {
-      try {
-        const data = await bffFetch<SalesOrder[]>(
-          `/api/persons/${encodeURIComponent(personId)}/sales`,
-        );
-        if (!cancelled) setOrders(data);
-      } catch {
-        if (!cancelled) setOrders([]);
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    }
-    void load();
-    return () => { cancelled = true; };
-  }, [personId]);
+  const { rows: orders, error, loading, from, to, total, hasPrev, hasNext, goNext, goPrev } =
+    usePaginatedFetch<SalesOrder>(
+      `/api/persons/${encodeURIComponent(personId)}/sales`,
+    );
 
   return (
     <Paper elevation={0} variant="outlined" sx={{ p: 3 }}>
@@ -132,30 +123,43 @@ export default function SalesCard({ personId }: SalesCardProps): ReactElement {
         <Typography variant="h6">Sales History</Typography>
         {loading ? <CircularProgress size={18} /> : null}
       </Stack>
-      {!loading && orders !== null && orders.length === 0 ? (
+      {error !== null ? (
+        <Alert severity="error">{error}</Alert>
+      ) : orders === null ? null : orders.length === 0 ? (
         <Typography variant="body2" color="text.secondary">
           No purchase history found.
         </Typography>
-      ) : null}
-      {orders !== null && orders.length > 0 ? (
-        <Table size="small">
-          <TableHead>
-            <TableRow>
-              <TableCell />
-              <TableCell>Order #</TableCell>
-              <TableCell>Date</TableCell>
-              <TableCell>Source</TableCell>
-              <TableCell align="right">Total</TableCell>
-              <TableCell align="right">Items</TableCell>
-            </TableRow>
-          </TableHead>
-          <TableBody>
-            {orders.map((o, idx) => (
-              <OrderRow key={o.order_no ?? o.source_order_id ?? idx} order={o} />
-            ))}
-          </TableBody>
-        </Table>
-      ) : null}
+      ) : (
+        <>
+          <Table size="small">
+            <TableHead>
+              <TableRow>
+                <TableCell />
+                <TableCell>Order #</TableCell>
+                <TableCell>Date</TableCell>
+                <TableCell>Source</TableCell>
+                <TableCell align="right">Total</TableCell>
+                <TableCell align="right">Items</TableCell>
+              </TableRow>
+            </TableHead>
+            <TableBody>
+              {orders.map((o, idx) => (
+                <OrderRow key={o.order_no ?? o.source_order_id ?? idx} order={o} />
+              ))}
+            </TableBody>
+          </Table>
+          <PaginationBar
+            from={from}
+            to={to}
+            total={total}
+            hasPrev={hasPrev}
+            hasNext={hasNext}
+            loading={loading}
+            onPrev={goPrev}
+            onNext={goNext}
+          />
+        </>
+      )}
     </Paper>
   );
 }

@@ -1,4 +1,5 @@
 import type { PersonConnection, PersonStatus, SourceRecord } from "./api-types";
+import type { PersonIdentifier } from "./api-types-person";
 import type { CountCardItem } from "@/components/CountCardsCell";
 
 export function statusColor(status: PersonStatus | string): "success" | "default" | "warning" {
@@ -27,6 +28,19 @@ export function connectionsToItems(data: PersonConnection[] | undefined): CountC
     primary: c.preferred_full_name ?? c.person_id,
     secondary: describeConnection(c),
     color: "info",
+  }));
+}
+
+export function identifiersToItems(data: PersonIdentifier[] | undefined): CountCardItem[] | undefined {
+  if (data === undefined) return undefined;
+  return data.map((id) => ({
+    primary: `${id.identifier_type}: ${id.normalized_value}`,
+    secondary: [
+      id.is_active ? "active" : "inactive",
+      id.is_verified ? "verified" : "unverified",
+      id.source_system_key ?? "",
+    ].filter(Boolean).join(" · "),
+    color: id.is_active ? "default" : "warning",
   }));
 }
 

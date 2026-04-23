@@ -46,6 +46,15 @@ export interface PersonMatchDecision {
   right_person_id: string | null;
 }
 
+export interface PersonIdentifier {
+  identifier_type: string;
+  normalized_value: string;
+  is_active: boolean;
+  is_verified: boolean;
+  last_confirmed_at: string | null;
+  source_system_key: string | null;
+}
+
 // --- Request bodies ---
 
 export interface ManualMergeRequestBody {

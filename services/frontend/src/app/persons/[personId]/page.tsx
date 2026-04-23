@@ -7,7 +7,7 @@ import Stack from "@mui/material/Stack";
 import BackButton from "@/components/BackButton";
 import PersonDetailTabs from "@/components/PersonDetailTabs";
 import { UpstreamError, apiFetch } from "@/lib/api-server";
-import type { Person, PersonConnection } from "@/lib/api-types";
+import type { Person } from "@/lib/api-types";
 
 interface PageProps {
   params: Promise<{ personId: string }>;
@@ -25,22 +25,9 @@ async function loadPerson(personId: string): Promise<Person> {
   }
 }
 
-async function loadConnections(personId: string): Promise<PersonConnection[]> {
-  try {
-    const res = await apiFetch<PersonConnection[]>(
-      `/persons/${encodeURIComponent(personId)}/connections`,
-      { query: { connection_type: "all" } },
-    );
-    return res.data;
-  } catch {
-    // Connections are best-effort; the page still renders without them.
-    return [];
-  }
-}
-
 export default async function PersonDetailPage({ params }: PageProps): Promise<ReactElement> {
   const { personId } = await params;
-  const [person, connections] = await Promise.all([loadPerson(personId), loadConnections(personId)]);
+  const person = await loadPerson(personId);
 
   return (
     <Stack spacing={3}>
@@ -48,7 +35,7 @@ export default async function PersonDetailPage({ params }: PageProps): Promise<R
         <BackButton label="← Back to persons" />
       </Box>
 
-      <PersonDetailTabs person={person} connections={connections} />
+      <PersonDetailTabs person={person} />
     </Stack>
   );
 }

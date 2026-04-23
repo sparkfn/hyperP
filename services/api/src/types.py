@@ -130,6 +130,15 @@ class Person(BaseModel):
     updated_at: str = ""
 
 
+class PersonIdentifier(BaseModel):
+    identifier_type: str
+    normalized_value: str
+    is_active: bool = True
+    is_verified: bool = False
+    last_confirmed_at: str | None = None
+    source_system_key: str | None = None
+
+
 class SourceRecord(BaseModel):
     source_record_pk: str
     source_system: str
@@ -298,6 +307,8 @@ class EntityPerson(Person):
 class ListedPerson(EntityPerson):
     """Person row in the /v1/persons listing, with inline entity memberships."""
     entities: list[PersonEntitySummary] = Field(default_factory=list)
+    entity_count: int = 0
+    identifier_count: int = 0
 
 
 class SalesProduct(BaseModel):

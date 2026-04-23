@@ -1,6 +1,6 @@
 import type { NextResponse } from "next/server";
 
-import type { PersonSourceRecord } from "@/lib/api-types-person";
+import type { PersonIdentifier } from "@/lib/api-types-person";
 import { proxyToApi, searchParamsToQuery } from "@/lib/proxy";
 
 export const dynamic = "force-dynamic";
@@ -12,8 +12,8 @@ interface RouteContext {
 export async function GET(request: Request, context: RouteContext): Promise<NextResponse> {
   const { personId } = await context.params;
   const { searchParams } = new URL(request.url);
-  return proxyToApi<PersonSourceRecord[]>(
-    `/persons/${encodeURIComponent(personId)}/source-records`,
+  return proxyToApi<PersonIdentifier[]>(
+    `/persons/${encodeURIComponent(personId)}/identifiers`,
     { query: searchParamsToQuery(searchParams) },
   );
 }

@@ -87,6 +87,11 @@ CALL {
     ELSE null
   END AS phone_confidence
 }
+CALL {
+  WITH p
+  OPTIONAL MATCH (p)-[:IDENTIFIED_BY]->(idc:Identifier)
+  RETURN count(idc) AS identifier_count
+}
 RETURN p {
   .person_id, .status, .is_high_value, .is_high_risk,
   .preferred_full_name, .preferred_phone, .preferred_email, .preferred_dob, .preferred_nric,
@@ -97,7 +102,8 @@ addr {
   .address_id, .unit_number, .street_number, .street_name,
   .city, .postal_code, .country_code, .normalized_full
 } AS preferred_address,
-source_record_count, connection_count, phone_confidence, entities, score
+source_record_count, connection_count, phone_confidence, entities,
+size(entities) AS entity_count, identifier_count, score
 """
 
 _SORT_COLUMNS: dict[str, str] = {
@@ -109,6 +115,8 @@ _SORT_COLUMNS: dict[str, str] = {
     "preferred_nric": "p.preferred_nric",
     "source_record_count": "source_record_count",
     "connection_count": "connection_count",
+    "entity_count": "entity_count",
+    "identifier_count": "identifier_count",
     "phone_confidence": "phone_confidence",
     "updated_at": "p.updated_at",
     "profile_completeness_score": "p.profile_completeness_score",

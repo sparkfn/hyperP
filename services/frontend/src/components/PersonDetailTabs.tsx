@@ -1,7 +1,6 @@
 "use client";
 
 import { useState, type ReactElement, type SyntheticEvent } from "react";
-import Link from "next/link";
 
 import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
@@ -11,32 +10,29 @@ import Grid from "@mui/material/Grid2";
 import Paper from "@mui/material/Paper";
 import Stack from "@mui/material/Stack";
 import Tab from "@mui/material/Tab";
-import Table from "@mui/material/Table";
-import TableBody from "@mui/material/TableBody";
-import TableCell from "@mui/material/TableCell";
-import TableHead from "@mui/material/TableHead";
-import TableRow from "@mui/material/TableRow";
 import Tabs from "@mui/material/Tabs";
+import Tooltip from "@mui/material/Tooltip";
 import Typography from "@mui/material/Typography";
 
-import type { Person, PersonConnection } from "@/lib/api-types";
+import type { Person } from "@/lib/api-types";
 import { statusColor } from "@/lib/display";
-import Gate from "./auth/Gate";
-
 import AuditTab from "./AuditTab";
+import ConnectionsCard from "./ConnectionsCard";
+import Gate from "./auth/Gate";
+import IdentifiersSection from "./IdentifiersSection";
 import ManualMergeDialog from "./ManualMergeDialog";
 import MatchesTab from "./MatchesTab";
 import PersonFocusedGraph from "./PersonFocusedGraph";
+import PersonSection from "./PersonSection";
 import SalesCard from "./SalesCard";
 import SourceRecordsTab from "./SourceRecordsTab";
 import SurvivorshipOverrideDialog from "./SurvivorshipOverrideDialog";
 
 interface Props {
   person: Person;
-  connections: PersonConnection[];
 }
 
-export default function PersonDetailTabs({ person, connections }: Props): ReactElement {
+export default function PersonDetailTabs({ person }: Props): ReactElement {
   const [tab, setTab] = useState<number>(0);
   const [mergeOpen, setMergeOpen] = useState<boolean>(false);
   const [overrideOpen, setOverrideOpen] = useState<boolean>(false);
@@ -59,7 +55,10 @@ export default function PersonDetailTabs({ person, connections }: Props): ReactE
             onMergeClick={() => setMergeOpen(true)}
             onOverrideClick={() => setOverrideOpen(true)}
           />
-          <ConnectionsCard connections={connections} />
+          <ConnectionsCard personId={person.person_id} />
+          <PersonSection title="Identifiers">
+            <IdentifiersSection personId={person.person_id} />
+          </PersonSection>
           <PersonSection title="Source Records">
             <SourceRecordsTab personId={person.person_id} />
           </PersonSection>
@@ -131,16 +130,17 @@ function PersonHeader({ person, onMergeClick, onOverrideClick }: HeaderProps): R
       <Divider sx={{ my: 2 }} />
 
       <Grid container spacing={2}>
+        <Field label="NRIC" value={person.preferred_nric} mono />
+        <Field label="Date of Birth" value={person.preferred_dob} />
         <Field label="Phone" value={person.preferred_phone} />
         <Field label="Email" value={person.preferred_email} />
-        <Field label="Date of Birth" value={person.preferred_dob} />
+        <Field label="Address" value={person.preferred_address?.normalized_full ?? null} />
         <Field
           label="Profile Completeness"
           value={`${(person.profile_completeness_score * 100).toFixed(0)}%`}
         />
         <Field label="Source Records" value={String(person.source_record_count)} />
         <Field label="Updated" value={person.updated_at} />
-        <Field label="Address" value={person.preferred_address?.normalized_full ?? null} full />
       </Grid>
     </Paper>
   );
@@ -164,85 +164,36 @@ function PersonGraphCard({ person }: { person: Person }): ReactElement {
   );
 }
 
-function PersonSection({ title, children }: { title: string; children: ReactElement }): ReactElement {
-  return (
-    <Paper variant="outlined" sx={{ p: 2 }}>
-      <Typography variant="subtitle1" sx={{ mb: 1 }}>
-        {title}
-      </Typography>
-      {children}
-    </Paper>
-  );
-}
-
-function ConnectionsCard({ connections }: { connections: PersonConnection[] }): ReactElement {
-  return (
-    <Paper variant="outlined" sx={{ p: 2 }}>
-      <Typography variant="subtitle1" sx={{ mb: 1 }}>
-        Connections
-      </Typography>
-      {connections.length === 0 ? (
-        <Typography variant="body2" color="text.secondary">
-          No connected persons via shared identifiers, addresses, or relationships.
-        </Typography>
-      ) : (
-        <Table size="small">
-          <TableHead>
-            <TableRow>
-              <TableCell>Name</TableCell>
-              <TableCell>Status</TableCell>
-              <TableCell align="right">Hops</TableCell>
-              <TableCell>Shared identifiers</TableCell>
-              <TableCell>Shared addresses</TableCell>
-              <TableCell>Relationships</TableCell>
-            </TableRow>
-          </TableHead>
-          <TableBody>
-            {connections.map((c) => (
-              <TableRow key={c.person_id} hover>
-                <TableCell>
-                  <Link href={`/persons/${c.person_id}`} style={{ textDecoration: "none" }}>
-                    {c.preferred_full_name ?? c.person_id}
-                  </Link>
-                </TableCell>
-                <TableCell>{c.status}</TableCell>
-                <TableCell align="right">{c.hops}</TableCell>
-                <TableCell>
-                  {c.shared_identifiers
-                    .map((s) => `${s.identifier_type}:${s.normalized_value}`)
-                    .join(", ") || "—"}
-                </TableCell>
-                <TableCell>
-                  {c.shared_addresses.map((a) => a.normalized_full ?? a.address_id).join(", ") ||
-                    "—"}
-                </TableCell>
-                <TableCell>
-                  {c.knows_relationships
-                    .map((k) => k.relationship_label ?? k.relationship_category)
-                    .join(", ") || "—"}
-                </TableCell>
-              </TableRow>
-            ))}
-          </TableBody>
-        </Table>
-      )}
-    </Paper>
-  );
-}
-
 interface FieldProps {
   label: string;
   value: string | null;
-  full?: boolean;
+  cols?: 1 | 2 | 3;
+  mono?: boolean;
 }
 
-function Field({ label, value, full = false }: FieldProps): ReactElement {
+function Field({ label, value, cols = 1, mono = false }: FieldProps): ReactElement {
+  const mdSpan = cols === 3 ? 12 : cols === 2 ? 6 : 3;
+  const smSpan = cols === 1 ? 6 : 12;
   return (
-    <Grid size={{ xs: 12, sm: full ? 12 : 6, md: full ? 12 : 4 }}>
+    <Grid size={{ xs: 12, sm: smSpan, md: mdSpan }}>
       <Typography variant="caption" color="text.secondary" display="block">
         {label}
       </Typography>
-      <Typography variant="body2">{value ?? "—"}</Typography>
+      <Tooltip title={value ?? ""} enterDelay={400} enterTouchDelay={500}>
+        <Typography
+          variant="body2"
+          fontFamily={mono ? "monospace" : undefined}
+          sx={{
+            display: "-webkit-box",
+            WebkitLineClamp: 3,
+            WebkitBoxOrient: "vertical",
+            overflow: "hidden",
+            wordBreak: "break-word",
+          }}
+        >
+          {value ?? "—"}
+        </Typography>
+      </Tooltip>
     </Grid>
   );
 }

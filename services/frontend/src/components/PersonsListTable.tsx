@@ -4,6 +4,7 @@ import { useCallback, useState, type ReactElement } from "react";
 import { useRouter } from "next/navigation";
 
 import Checkbox from "@mui/material/Checkbox";
+import Box from "@mui/material/Box";
 import LinearProgress from "@mui/material/LinearProgress";
 import Menu from "@mui/material/Menu";
 import MenuItem from "@mui/material/MenuItem";
@@ -17,6 +18,7 @@ import TableSortLabel from "@mui/material/TableSortLabel";
 import Typography from "@mui/material/Typography";
 
 import type { ListedPerson, PersonConnection, SourceRecord } from "@/lib/api-types";
+import type { PersonIdentifier } from "@/lib/api-types-person";
 import { bffFetch } from "@/lib/api-client";
 import PersonGraphDialog from "@/components/PersonGraphDialog";
 import PersonRow from "@/components/PersonRow";
@@ -30,6 +32,8 @@ export type SortField =
   | "preferred_nric"
   | "source_record_count"
   | "connection_count"
+  | "entity_count"
+  | "identifier_count"
   | "updated_at"
   | "profile_completeness_score";
 
@@ -44,7 +48,7 @@ interface SortableCol {
 }
 
 interface NonSortableCol {
-  field: "__address" | "__entities";
+  field: "__address";
   label: string;
   align?: "left" | "right" | "center";
   sortable: false;
@@ -64,7 +68,8 @@ const COLUMNS: readonly ColumnDef[] = [
   { field: "__address", label: "Address", sortable: false },
   { field: "connection_count", label: "Connections", align: "center", sortable: true },
   { field: "source_record_count", label: "Sources", align: "center", sortable: true },
-  { field: "__entities", label: "Entities", align: "center", sortable: false },
+  { field: "identifier_count", label: "Identifiers", align: "center", sortable: true },
+  { field: "entity_count", label: "Entities", align: "center", sortable: true },
   { field: "updated_at", label: "Updated", sortable: true },
 ] as const;
 
@@ -147,6 +152,9 @@ export default function PersonsListTable({
   const sourcesFetch = useLazyPersonFetch<SourceRecord>(
     (id) => `/api/persons/${encodeURIComponent(id)}/source-records?limit=50`,
   );
+  const identifiersFetch = useLazyPersonFetch<PersonIdentifier>(
+    (id) => `/api/persons/${encodeURIComponent(id)}/identifiers?limit=50`,
+  );
 
   const allSelected: boolean = persons.length > 0 && persons.every((p) => selected.has(p.person_id));
   const someSelected: boolean = !allSelected && persons.some((p) => selected.has(p.person_id));
@@ -162,10 +170,11 @@ export default function PersonsListTable({
       {loading ? (
         <LinearProgress sx={{ position: "absolute", top: 0, left: 0, right: 0, zIndex: 1 }} />
       ) : null}
-      <Table sx={{ opacity: loading ? 0.6 : 1 }}>
-        <TableHead>
+      <Box sx={{ overflow: "auto", maxHeight: "70vh" }}>
+      <Table stickyHeader sx={{ opacity: loading ? 0.6 : 1, minWidth: 1600 }}>
+        <TableHead sx={{ "& th": { bgcolor: "background.paper" } }}>
           <TableRow>
-            <TableCell padding="checkbox">
+            <TableCell padding="checkbox" sx={{ position: "sticky", left: 0, zIndex: 5, bgcolor: "background.paper" }}>
               <Checkbox
                 size="small"
                 indeterminate={someSelected}
@@ -192,7 +201,7 @@ export default function PersonsListTable({
                 )}
               </TableCell>
             ))}
-            <TableCell align="center">Graph</TableCell>
+            <TableCell align="center" sx={{ position: "sticky", right: 0, zIndex: 5, bgcolor: "background.paper" }}>Graph</TableCell>
           </TableRow>
         </TableHead>
         <TableBody>
@@ -228,10 +237,14 @@ export default function PersonsListTable({
               sources={sourcesFetch.cache.data[p.person_id]}
               sourcesLoading={sourcesFetch.cache.loading.has(p.person_id)}
               onRequestSources={() => sourcesFetch.request(p.person_id)}
+              identifiers={identifiersFetch.cache.data[p.person_id]}
+              identifiersLoading={identifiersFetch.cache.loading.has(p.person_id)}
+              onRequestIdentifiers={() => identifiersFetch.request(p.person_id)}
             />
           ))}
         </TableBody>
       </Table>
+      </Box>
       <Menu
         open={contextMenu !== null}
         onClose={() => setContextMenu(null)}

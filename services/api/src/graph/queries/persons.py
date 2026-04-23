@@ -232,6 +232,76 @@ source_record_count
 ORDER BY e.display_name
 """
 
+GET_PERSON_IDENTIFIERS = """
+MATCH (p:Person {person_id: $person_id})-[rel:IDENTIFIED_BY]->(id:Identifier)
+RETURN id.identifier_type AS identifier_type,
+       id.normalized_value AS normalized_value,
+       rel.is_active AS is_active,
+       rel.is_verified AS is_verified,
+       rel.last_confirmed_at AS last_confirmed_at,
+       rel.source_system_key AS source_system_key
+ORDER BY rel.is_active DESC, id.identifier_type, id.normalized_value
+SKIP $skip LIMIT $limit
+"""
+
+COUNT_PERSON_SOURCE_RECORDS = """
+MATCH (sr:SourceRecord)-[:LINKED_TO]->(p:Person {person_id: $person_id})
+RETURN count(sr) AS total
+"""
+
+COUNT_PERSON_IDENTIFIERS = """
+MATCH (p:Person {person_id: $person_id})-[:IDENTIFIED_BY]->(id:Identifier)
+RETURN count(id) AS total
+"""
+
+COUNT_PERSON_AUDIT = """
+MATCH (me:MergeEvent)
+WHERE (me)-[:ABSORBED]->(:Person {person_id: $person_id})
+   OR (me)-[:SURVIVOR]->(:Person {person_id: $person_id})
+RETURN count(me) AS total
+"""
+
+COUNT_PERSON_CONNECTIONS_IDENTIFIER = """
+MATCH (p:Person {person_id: $person_id})-[:IDENTIFIED_BY]->(id:Identifier)
+  <-[:IDENTIFIED_BY]-(other:Person)
+WHERE other.person_id <> p.person_id
+  AND other.status <> 'merged'
+  AND ($identifier_type IS NULL OR id.identifier_type = $identifier_type)
+RETURN count(DISTINCT other) AS total
+"""
+
+COUNT_PERSON_CONNECTIONS_ADDRESS = """
+MATCH (p:Person {person_id: $person_id})-[:LIVES_AT]->(:Address)
+  <-[:LIVES_AT]-(other:Person)
+WHERE other.person_id <> p.person_id
+  AND other.status <> 'merged'
+RETURN count(DISTINCT other) AS total
+"""
+
+COUNT_PERSON_CONNECTIONS_KNOWS = """
+MATCH (p:Person {person_id: $person_id})-[:KNOWS]-(other:Person)
+WHERE other.person_id <> p.person_id
+  AND other.status <> 'merged'
+RETURN count(DISTINCT other) AS total
+"""
+
+COUNT_PERSON_CONNECTIONS_ALL = """
+MATCH (p:Person {person_id: $person_id})
+CALL {
+  WITH p
+  OPTIONAL MATCH (p)-[:IDENTIFIED_BY]->(:Identifier)<-[:IDENTIFIED_BY]-(ci:Person)
+    WHERE ci.person_id <> p.person_id AND ci.status <> 'merged'
+  OPTIONAL MATCH (p)-[:LIVES_AT]->(:Address)<-[:LIVES_AT]-(ca:Person)
+    WHERE ca.person_id <> p.person_id AND ca.status <> 'merged'
+  OPTIONAL MATCH (p)-[:KNOWS]-(ck:Person)
+    WHERE ck.person_id <> p.person_id AND ck.status <> 'merged'
+  WITH collect(DISTINCT ci) + collect(DISTINCT ca) + collect(DISTINCT ck) AS all_conn
+  UNWIND all_conn AS c
+  RETURN count(DISTINCT c) AS total
+}
+RETURN total
+"""
+
 GET_PERSON_MATCHES = """
 MATCH (md:MatchDecision)
 WHERE (md)-[:ABOUT_LEFT]->(:Person {person_id: $person_id})

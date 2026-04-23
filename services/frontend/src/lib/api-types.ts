@@ -146,6 +146,8 @@ export interface EntityPerson extends Person {
 
 export interface ListedPerson extends EntityPerson {
   entities: PersonEntitySummary[];
+  entity_count: number;
+  identifier_count: number;
 }
 
 // --- Reports (stretchy reports) ---

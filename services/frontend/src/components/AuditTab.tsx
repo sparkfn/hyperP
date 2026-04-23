@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, type ReactElement } from "react";
+import { useState, type ReactElement } from "react";
 
 import Alert from "@mui/material/Alert";
 import Box from "@mui/material/Box";
@@ -11,8 +11,9 @@ import Paper from "@mui/material/Paper";
 import Stack from "@mui/material/Stack";
 import Typography from "@mui/material/Typography";
 
+import PaginationBar from "@/components/PaginationBar";
 import UnmergeDialog from "@/components/UnmergeDialog";
-import { BffError, bffFetch } from "@/lib/api-client";
+import { usePaginatedFetch } from "@/lib/usePaginatedFetch";
 import type { PersonAuditEvent } from "@/lib/api-types-person";
 
 interface Props {
@@ -20,28 +21,11 @@ interface Props {
 }
 
 export default function AuditTab({ personId }: Props): ReactElement {
-  const [events, setEvents] = useState<PersonAuditEvent[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const { rows: events, error, loading, from, to, total, hasPrev, hasNext, goNext, goPrev } =
+    usePaginatedFetch<PersonAuditEvent>(
+      `/api/persons/${encodeURIComponent(personId)}/audit`,
+    );
   const [unmergeTarget, setUnmergeTarget] = useState<PersonAuditEvent | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    const run = async (): Promise<void> => {
-      try {
-        const data: PersonAuditEvent[] = await bffFetch<PersonAuditEvent[]>(
-          `/api/persons/${encodeURIComponent(personId)}/audit`,
-        );
-        if (!cancelled) setEvents(data);
-      } catch (err: unknown) {
-        if (cancelled) return;
-        setError(err instanceof BffError ? err.message : "Failed to load audit events.");
-      }
-    };
-    void run();
-    return () => {
-      cancelled = true;
-    };
-  }, [personId]);
 
   if (error !== null) return <Alert severity="error">{error}</Alert>;
   if (events === null) {
@@ -92,6 +76,16 @@ export default function AuditTab({ personId }: Props): ReactElement {
           ))}
         </Stack>
       </Paper>
+      <PaginationBar
+        from={from}
+        to={to}
+        total={total}
+        hasPrev={hasPrev}
+        hasNext={hasNext}
+        loading={loading}
+        onPrev={goPrev}
+        onNext={goNext}
+      />
       {unmergeTarget !== null ? (
         <UnmergeDialog
           open={true}

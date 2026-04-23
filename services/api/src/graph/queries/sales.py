@@ -26,3 +26,8 @@ RETURN o.order_no AS order_no,
 ORDER BY o.order_date DESC
 SKIP $skip LIMIT $limit
 """
+
+COUNT_PERSON_SALES = """
+MATCH (p:Person {person_id: $person_id})-[:PURCHASED]->(o:Order)
+RETURN count(o) AS total
+"""
