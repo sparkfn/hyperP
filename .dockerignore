@@ -13,8 +13,12 @@ __pycache__/
 *.egg-info/
 
 # Node
-node_modules/
+**/node_modules/
+**/.next/
 .next/
+node_modules/
+out
+*.tsbuildinfo
 
 # IDE
 .idea/

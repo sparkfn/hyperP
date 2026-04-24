@@ -1,6 +1,6 @@
 FROM node:22-alpine AS deps
 WORKDIR /app
-COPY services/frontend/package.json ./
+COPY services/frontend/package.json services/frontend/package-lock.json ./
 RUN npm install
 
 FROM node:22-alpine AS builder
