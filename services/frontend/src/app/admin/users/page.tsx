@@ -18,15 +18,11 @@ import TextField from "@mui/material/TextField";
 import Typography from "@mui/material/Typography";
 
 import { bffFetch, BffError } from "@/lib/api-client";
+import type { UserResponse } from "@/lib/api-types-ops";
 import type { Role } from "@/lib/permissions";
+import { isRole } from "@/lib/permissions";
 
-interface UserRow {
-  email: string;
-  google_sub: string;
-  role: Role;
-  entity_key: string | null;
-  display_name: string | null;
-}
+type UserRow = UserResponse;
 
 interface EntityRow {
   entity_key: string;
@@ -45,7 +41,7 @@ export default function UsersAdminPage(): ReactElement {
   const loadUsers = useCallback(async (): Promise<void> => {
     try {
       setLoading(true);
-      const rows = await bffFetch<UserRow[]>("/api/users");
+      const rows = await bffFetch<UserRow[]>("/bff/users");
       setUsers(rows);
     } catch (e: unknown) {
       setErr(e instanceof BffError ? e.message : "Failed to load users");
@@ -56,7 +52,7 @@ export default function UsersAdminPage(): ReactElement {
 
   const loadEntities = useCallback(async (): Promise<void> => {
     try {
-      const rows = await bffFetch<EntityRow[]>("/api/entities");
+      const rows = await bffFetch<EntityRow[]>("/bff/entities");
       setEntities(rows);
     } catch {
       // non-fatal; entity selector just won't suggest.
@@ -77,7 +73,7 @@ export default function UsersAdminPage(): ReactElement {
     setBusy(email);
     setErr(null);
     try {
-      await bffFetch<UserRow>(`/api/users/${encodeURIComponent(email)}`, {
+      await bffFetch<UserRow>(`/bff/users/${encodeURIComponent(email)}`, {
         method: "PATCH",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(updates),
@@ -166,7 +162,10 @@ function UserRowEditor(props: RowEditorProps): ReactElement {
           size="small"
           select
           value={role}
-          onChange={(e) => setRole(e.target.value as Role)}
+          onChange={(e) => {
+            const nextRole: string = e.target.value;
+            if (isRole(nextRole)) setRole(nextRole);
+          }}
           sx={{ minWidth: 130 }}
         >
           {ROLE_OPTIONS.map((r) => (

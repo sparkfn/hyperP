@@ -149,16 +149,16 @@ export default function PersonsListTable({
   const [graphDialog, setGraphDialog] = useState<GraphDialogState | null>(null);
 
   const connectionsFetch = useLazyPersonFetch<PersonConnection>(
-    (id) => `/api/persons/${encodeURIComponent(id)}/connections?connection_type=all&limit=50`,
+    (id) => `/bff/persons/${encodeURIComponent(id)}/connections?connection_type=all&limit=50`,
   );
   const sourcesFetch = useLazyPersonFetch<SourceRecord>(
-    (id) => `/api/persons/${encodeURIComponent(id)}/source-records?limit=50`,
+    (id) => `/bff/persons/${encodeURIComponent(id)}/source-records?limit=50`,
   );
   const identifiersFetch = useLazyPersonFetch<PersonIdentifier>(
-    (id) => `/api/persons/${encodeURIComponent(id)}/identifiers?limit=50`,
+    (id) => `/bff/persons/${encodeURIComponent(id)}/identifiers?limit=50`,
   );
   const ordersFetch = useLazyPersonFetch<SalesOrder>(
-    (id) => `/api/persons/${encodeURIComponent(id)}/sales?limit=50`,
+    (id) => `/bff/persons/${encodeURIComponent(id)}/sales?limit=50`,
   );
 
   const allSelected: boolean = persons.length > 0 && persons.every((p) => selected.has(p.person_id));

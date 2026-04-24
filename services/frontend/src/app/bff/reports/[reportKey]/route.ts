@@ -1,6 +1,6 @@
 import type { NextResponse } from "next/server";
 
-import type { ReportDetail } from "@/lib/api-types";
+import type { DeleteReportResponse, ReportDetail } from "@/lib/api-types";
 import { proxyToApi } from "@/lib/proxy";
 
 export const dynamic = "force-dynamic";
@@ -25,7 +25,7 @@ export async function PATCH(request: Request, context: RouteContext): Promise<Ne
 
 export async function DELETE(_request: Request, context: RouteContext): Promise<NextResponse> {
   const { reportKey } = await context.params;
-  return proxyToApi<Record<string, string>>(`/reports/${encodeURIComponent(reportKey)}`, {
+  return proxyToApi<DeleteReportResponse>(`/reports/${encodeURIComponent(reportKey)}`, {
     method: "DELETE",
   });
 }

@@ -25,7 +25,7 @@ interface Props {
 export default function IdentifiersSection({ personId }: Props): ReactElement {
   const { rows, error, loading, from, to, total, hasPrev, hasNext, goNext, goPrev } =
     usePaginatedFetch<PersonIdentifier>(
-      `/api/persons/${encodeURIComponent(personId)}/identifiers`,
+      `/bff/persons/${encodeURIComponent(personId)}/identifiers`,
     );
 
   if (error !== null) return <Alert severity="error">{error}</Alert>;

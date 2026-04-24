@@ -113,8 +113,8 @@ export default function PersonGraphViewer({
       setSelected(null);
       try {
         const url = personId
-          ? `/api/persons/${encodeURIComponent(personId)}/graph?max_hops=${maxHops}`
-          : `/api/persons/graph/node?element_id=${encodeURIComponent(elementId ?? "")}&max_hops=${maxHops}`;
+          ? `/bff/persons/${encodeURIComponent(personId)}/graph?max_hops=${maxHops}`
+          : `/bff/persons/graph/node?element_id=${encodeURIComponent(elementId ?? "")}&max_hops=${maxHops}`;
         const graph = await bffFetch<PersonGraph>(url);
         if (!cancelled) setGraphData(toForceGraphData(graph, personId, elementId));
       } catch (err: unknown) {

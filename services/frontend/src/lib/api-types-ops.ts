@@ -1,3 +1,13 @@
+import type { Role } from "./permissions";
+
+export interface UserResponse {
+  email: string;
+  google_sub: string;
+  role: Role;
+  entity_key: string | null;
+  display_name: string | null;
+}
+
 // Hand-mirrored TS interfaces for ingestion / admin / events / health payloads.
 // Kept separate from api-types.ts so the core domain types stay untouched.
 // Mirrors services/api/src/types.py and the response models defined inline in

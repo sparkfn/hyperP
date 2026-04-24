@@ -44,7 +44,7 @@ export default function UnmergeDialog({
         merge_event_id: mergeEventId,
         reason: reason.trim(),
       };
-      const result: UnmergeResponseBody = await bffFetch<UnmergeResponseBody>("/api/persons/unmerge", {
+      const result: UnmergeResponseBody = await bffFetch<UnmergeResponseBody>("/bff/persons/unmerge", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(body),

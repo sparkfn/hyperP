@@ -3,6 +3,8 @@
 import type { ReactElement, ReactNode } from "react";
 import { SessionProvider } from "next-auth/react";
 
+import { BFF_AUTH_BASE_PATH } from "@/lib/route-paths";
+
 interface SessionProviderClientProps {
   children: ReactNode;
 }
@@ -10,5 +12,5 @@ interface SessionProviderClientProps {
 export default function SessionProviderClient(
   props: SessionProviderClientProps,
 ): ReactElement {
-  return <SessionProvider>{props.children}</SessionProvider>;
+  return <SessionProvider basePath={BFF_AUTH_BASE_PATH}>{props.children}</SessionProvider>;
 }

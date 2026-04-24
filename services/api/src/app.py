@@ -62,7 +62,12 @@ async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
 def build_app() -> FastAPI:
     """Construct and configure the FastAPI application."""
     logging.basicConfig(level=config.log_level.upper())
-    app = FastAPI(title="Profile Unifier API", version="0.1.0", lifespan=_lifespan)
+    app = FastAPI(
+        title="Profile Unifier API",
+        version="0.1.0",
+        lifespan=_lifespan,
+        root_path=config.root_path,
+    )
 
     app.add_middleware(
         CORSMiddleware,

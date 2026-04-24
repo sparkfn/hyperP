@@ -26,7 +26,7 @@ export default function EntitiesPage(): ReactElement {
     let cancelled = false;
     (async (): Promise<void> => {
       try {
-        const data = await bffFetch<EntitySummary[]>("/api/entities");
+        const data = await bffFetch<EntitySummary[]>("/bff/entities");
         if (!cancelled) setEntities(data);
       } catch (err: unknown) {
         if (!cancelled) {

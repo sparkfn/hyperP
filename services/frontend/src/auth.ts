@@ -4,6 +4,8 @@ import NextAuth, { type NextAuthConfig, type Session } from "next-auth";
 import Google from "next-auth/providers/google";
 import type { JWT } from "next-auth/jwt";
 
+import { BFF_AUTH_BASE_PATH, BFF_ME_PATH } from "@/lib/route-paths";
+import { buildApiUrl } from "@/lib/api-url";
 import type { Role } from "@/lib/permissions";
 
 interface MeResponseBody {
@@ -15,8 +17,6 @@ interface MeResponseBody {
     display_name: string | null;
   };
 }
-
-const API_BASE_URL: string = process.env.API_BASE_URL ?? "http://localhost:3000/v1";
 
 interface GoogleRefreshResponse {
   id_token: string;
@@ -55,7 +55,7 @@ async function refreshGoogleIdToken(
 
 async function fetchMe(idToken: string): Promise<MeResponseBody["data"] | null> {
   try {
-    const res: Response = await fetch(`${API_BASE_URL}/auth/me`, {
+    const res: Response = await fetch(buildApiUrl("/auth/me"), {
       method: "GET",
       headers: {
         authorization: `Bearer ${idToken}`,
@@ -72,6 +72,7 @@ async function fetchMe(idToken: string): Promise<MeResponseBody["data"] | null> 
 }
 
 export const authConfig: NextAuthConfig = {
+  basePath: BFF_AUTH_BASE_PATH,
   // Auth.js auto-reads AUTH_GOOGLE_ID / AUTH_GOOGLE_SECRET from env.
   providers: [Google],
   session: { strategy: "jwt", maxAge: 60 * 60 },
@@ -135,7 +136,7 @@ export const authConfig: NextAuthConfig = {
     },
     authorized({ auth: sess, request }): boolean | Response {
       const { pathname } = request.nextUrl;
-      if (pathname.startsWith("/api/auth")) return true;
+      if (pathname.startsWith(BFF_AUTH_BASE_PATH)) return true;
       if (pathname === "/login") return true;
       if (pathname === "/api/health") return true;
       if (!sess || !sess.googleIdToken) return false;
@@ -143,7 +144,7 @@ export const authConfig: NextAuthConfig = {
       const role: string | undefined = sess.user?.role;
       if (role === "first_time") {
         if (pathname.startsWith("/pending")) return true;
-        if (pathname === "/api/auth/me") return true;
+        if (pathname === BFF_ME_PATH) return true;
         const url = request.nextUrl.clone();
         url.pathname = "/pending";
         return Response.redirect(url);

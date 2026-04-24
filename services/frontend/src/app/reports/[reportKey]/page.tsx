@@ -18,7 +18,7 @@ import Stack from "@mui/material/Stack";
 import Typography from "@mui/material/Typography";
 
 import { BffError, bffFetch } from "@/lib/api-client";
-import type { ReportDetail } from "@/lib/api-types";
+import type { DeleteReportResponse, ReportDetail } from "@/lib/api-types";
 import ReportExecutePanel from "@/components/ReportExecutePanel";
 import ReportForm, { type ReportFormPayload } from "@/components/ReportForm";
 import Gate from "@/components/auth/Gate";
@@ -45,7 +45,7 @@ export default function ReportDetailPage(): ReactElement {
     setError(null);
     try {
       const data = await bffFetch<ReportDetail>(
-        `/api/reports/${encodeURIComponent(reportKey)}`,
+        `/bff/reports/${encodeURIComponent(reportKey)}`,
       );
       setReport(data);
     } catch (err: unknown) {
@@ -72,7 +72,7 @@ export default function ReportDetailPage(): ReactElement {
     setSaveError(null);
     try {
       await bffFetch<ReportDetail>(
-        `/api/reports/${encodeURIComponent(reportKey)}`,
+        `/bff/reports/${encodeURIComponent(reportKey)}`,
         {
           method: "PATCH",
           headers: { "content-type": "application/json" },
@@ -95,8 +95,8 @@ export default function ReportDetailPage(): ReactElement {
   async function handleDelete(): Promise<void> {
     setDeleting(true);
     try {
-      await bffFetch<Record<string, string>>(
-        `/api/reports/${encodeURIComponent(reportKey)}`,
+      await bffFetch<DeleteReportResponse>(
+        `/bff/reports/${encodeURIComponent(reportKey)}`,
         { method: "DELETE" },
       );
       router.push("/reports");

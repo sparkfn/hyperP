@@ -23,7 +23,7 @@ interface Props {
 export default function AuditTab({ personId }: Props): ReactElement {
   const { rows: events, error, loading, from, to, total, hasPrev, hasNext, goNext, goPrev } =
     usePaginatedFetch<PersonAuditEvent>(
-      `/api/persons/${encodeURIComponent(personId)}/audit`,
+      `/bff/persons/${encodeURIComponent(personId)}/audit`,
     );
   const [unmergeTarget, setUnmergeTarget] = useState<PersonAuditEvent | null>(null);
 

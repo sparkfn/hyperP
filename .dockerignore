@@ -7,6 +7,7 @@ __pycache__/
 *.pyc
 *.pyo
 .venv/
+**/.venv*/
 .ruff_cache/
 .pytest_cache/
 .mypy_cache/

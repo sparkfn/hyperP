@@ -71,7 +71,7 @@ export default function StartIngestionRunDialog({ sourceKey }: Props): ReactElem
     setSubmitting(true);
     try {
       const result: IngestRunResponse = await bffFetch<IngestRunResponse>(
-        `/api/ingest/${encodeURIComponent(sourceKey)}/runs`,
+        `/bff/ingest/${encodeURIComponent(sourceKey)}/runs`,
         {
           method: "POST",
           headers: { "content-type": "application/json" },

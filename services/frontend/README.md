@@ -4,12 +4,12 @@ Next.js 15 (App Router) frontend for HyperP. TypeScript strict, MUI v6.
 
 ## Architecture
 
-Browser → Next.js Route Handlers (`/api/*`) → FastAPI service.
+Browser → Next.js Route Handlers (`/bff/*`) → FastAPI service.
 
-The browser never talks to FastAPI directly. All upstream calls go through
-server-side route handlers in `src/app/api/`, which use the server-only client
-in `src/lib/api-server.ts`. This keeps the API URL and any future credentials
-out of the browser bundle.
+The browser never talks to FastAPI directly for app UI data. UI calls go through
+server-side route handlers in `src/app/bff/`, which use the server-only client
+in `src/lib/api-server.ts`. The public `/api/*` namespace is reserved for nginx
+to expose FastAPI directly for external services.
 
 ## Setup
 
@@ -31,7 +31,7 @@ src/
     layout.tsx                    # MUI theme + AppBar shell
     page.tsx                      # Person search (client component)
     persons/[personId]/page.tsx   # Person detail (server component)
-    api/persons/                  # BFF route handlers → FastAPI
+    bff/persons/                  # BFF route handlers → FastAPI
   lib/
     api-server.ts                 # server-only fetch wrapper
     api-types.ts                  # TS mirror of services/api/src/types.py

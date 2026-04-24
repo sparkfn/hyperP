@@ -65,7 +65,7 @@ export default function ReviewActionsPanel({
     try {
       const body: AssignReviewRequestBody = { assigned_to: assignee.trim() };
       const result: ReviewAssignResponse = await bffFetch<ReviewAssignResponse>(
-        `/api/review-cases/${encodeURIComponent(reviewCaseId)}/assign`,
+        `/bff/review-cases/${encodeURIComponent(reviewCaseId)}/assign`,
         {
           method: "POST",
           headers: { "content-type": "application/json" },
@@ -98,7 +98,7 @@ export default function ReviewActionsPanel({
         },
       };
       const result: ReviewActionResponse = await bffFetch<ReviewActionResponse>(
-        `/api/review-cases/${encodeURIComponent(reviewCaseId)}/actions`,
+        `/bff/review-cases/${encodeURIComponent(reviewCaseId)}/actions`,
         {
           method: "POST",
           headers: { "content-type": "application/json" },

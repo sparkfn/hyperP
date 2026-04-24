@@ -185,6 +185,11 @@ export interface ReportResult {
   row_count: number;
 }
 
+export interface DeleteReportResponse {
+  status: string;
+  report_key: string;
+}
+
 export interface GraphNode {
   id: string;
   label: string;

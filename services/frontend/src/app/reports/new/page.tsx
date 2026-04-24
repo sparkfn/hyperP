@@ -25,7 +25,7 @@ export default function NewReportPage(): ReactElement {
     setSaving(true);
     setError(null);
     try {
-      await bffFetch<ReportDetail>("/api/reports", {
+      await bffFetch<ReportDetail>("/bff/reports", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(payload),

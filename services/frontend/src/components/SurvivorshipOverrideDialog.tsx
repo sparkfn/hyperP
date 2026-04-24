@@ -60,7 +60,7 @@ export default function SurvivorshipOverrideDialog({
       };
       const result: SurvivorshipOverrideResponseBody =
         await bffFetch<SurvivorshipOverrideResponseBody>(
-          `/api/persons/${encodeURIComponent(personId)}/survivorship-overrides`,
+          `/bff/persons/${encodeURIComponent(personId)}/survivorship-overrides`,
           {
             method: "POST",
             headers: { "content-type": "application/json" },

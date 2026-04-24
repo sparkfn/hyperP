@@ -36,7 +36,7 @@ export function usePersonsFetch(
     (async (): Promise<void> => {
       try {
         const qs = buildQuery(filters, sortBy, sortOrder, pageIndex, rowsPerPage);
-        const env = await bffFetchEnvelope<ListedPerson[]>(`/api/persons?${qs}`);
+        const env = await bffFetchEnvelope<ListedPerson[]>(`/bff/persons?${qs}`);
         if (cancelled) return;
         setState({
           persons: env.data,
@@ -64,7 +64,7 @@ export function useEntitiesList(): EntitySummary[] {
   useEffect(() => {
     (async (): Promise<void> => {
       try {
-        setEntities(await bffFetch<EntitySummary[]>("/api/entities"));
+        setEntities(await bffFetch<EntitySummary[]>("/bff/entities"));
       } catch {
         setEntities([]);
       }
