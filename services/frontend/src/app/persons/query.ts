@@ -11,6 +11,9 @@ function isSortField(v: string | null): v is SortField {
     case "preferred_nric":
     case "source_record_count":
     case "connection_count":
+    case "entity_count":
+    case "identifier_count":
+    case "order_count":
     case "updated_at":
     case "profile_completeness_score":
       return true;

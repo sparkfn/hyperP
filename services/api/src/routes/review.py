@@ -25,14 +25,8 @@ from src.graph.queries import (
     LIST_REVIEW_CASES,
 )
 from src.http_utils import envelope, http_error, next_cursor, page_window
-from src.types import (
-    ApiResponse,
-    ApiReviewActionType,
-    AssignReviewRequest,
-    ReviewActionRequest,
-    ReviewCaseDetail,
-    ReviewCaseSummary,
-)
+from src.types import ApiResponse, ApiReviewActionType, ReviewCaseDetail, ReviewCaseSummary
+from src.types_requests import AssignReviewRequest, ReviewActionRequest
 
 router = APIRouter(prefix="/v1/review-cases")
 
@@ -95,9 +89,7 @@ async def list_review_cases(
 
 
 @router.get("/{review_case_id}", response_model=ApiResponse[ReviewCaseDetail])
-async def get_review_case(
-    review_case_id: str, request: Request
-) -> ApiResponse[ReviewCaseDetail]:
+async def get_review_case(review_case_id: str, request: Request) -> ApiResponse[ReviewCaseDetail]:
     """Return a single review case with comparison payload."""
     async with get_session() as session:
         result = await session.run(GET_REVIEW_CASE, review_case_id=review_case_id)
@@ -203,7 +195,8 @@ async def submit_review_action(
 
 
 def _build_action_cypher(
-    resolution: str | None, follow_up_at: str | None,
+    resolution: str | None,
+    follow_up_at: str | None,
 ) -> LiteralString:
     """Build the SET clause for a review-case action."""
     clauses: list[LiteralString] = [
@@ -242,9 +235,7 @@ async def _action_tx(
     survivor_id: str | None = None
 
     if action_type == ApiReviewActionType.MERGE.value:
-        persons_result = await tx.run(
-            GET_PERSONS_FOR_REVIEW_MERGE, review_case_id=review_case_id
-        )
+        persons_result = await tx.run(GET_PERSONS_FOR_REVIEW_MERGE, review_case_id=review_case_id)
         persons_record = await persons_result.single()
         if persons_record is None:
             return {"merge_not_applicable": True}
@@ -267,8 +258,7 @@ async def _action_tx(
 
         # Check for no-match lock (pair is ordered by person_id)
         lock_left, lock_right = (
-            (absorbed_id, survivor_id) if absorbed_id < survivor_id
-            else (survivor_id, absorbed_id)
+            (absorbed_id, survivor_id) if absorbed_id < survivor_id else (survivor_id, absorbed_id)
         )
         lock_result = await tx.run(CHECK_NO_MATCH_LOCK, left=lock_left, right=lock_right)
         lock_record = await lock_result.single()

@@ -1,4 +1,5 @@
-import type { PersonConnection, PersonStatus, SourceRecord } from "./api-types";
+import type { PersonConnection, PersonStatus, SalesOrder, SourceRecord } from "./api-types";
+import type { PersonIdentifier } from "./api-types-person";
 import type { CountCardItem } from "@/components/CountCardsCell";
 
 export function statusColor(status: PersonStatus | string): "success" | "default" | "warning" {
@@ -30,12 +31,39 @@ export function connectionsToItems(data: PersonConnection[] | undefined): CountC
   }));
 }
 
+export function identifiersToItems(data: PersonIdentifier[] | undefined): CountCardItem[] | undefined {
+  if (data === undefined) return undefined;
+  return data.map((id) => ({
+    primary: `${id.identifier_type}: ${id.normalized_value}`,
+    secondary: [
+      id.is_active ? "active" : "inactive",
+      id.is_verified ? "verified" : "unverified",
+      id.source_system_key ?? "",
+    ].filter(Boolean).join(" · "),
+    color: id.is_active ? "default" : "warning",
+  }));
+}
+
 export function sourcesToItems(data: SourceRecord[] | undefined): CountCardItem[] | undefined {
   if (data === undefined) return undefined;
   return data.map((r) => ({
     primary: r.source_system,
     secondary: `${r.source_record_id} · ${r.record_type} · ${formatDate(r.ingested_at)}`,
     color: r.record_type === "conversation" ? "warning" : "default",
+  }));
+}
+
+export function ordersToItems(data: SalesOrder[] | undefined): CountCardItem[] | undefined {
+  if (data === undefined) return undefined;
+  return data.map((o) => ({
+    primary: o.order_no ?? o.source_order_id ?? "—",
+    secondary: [
+      o.release_date ? formatDate(o.release_date) : null,
+      o.total_amount !== null ? `${o.currency ?? "SGD"} ${o.total_amount.toFixed(2)}` : null,
+      o.line_items.length > 0 ? `${o.line_items.length} item${o.line_items.length !== 1 ? "s" : ""}` : null,
+      o.entity_name ?? o.source_system ?? null,
+    ].filter(Boolean).join(" · "),
+    color: "info",
   }));
 }
 

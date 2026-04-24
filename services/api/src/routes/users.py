@@ -75,9 +75,7 @@ async def patch_user(
         target_entity = None
 
     if target_entity is not None and not await entity_exists(target_entity):
-        raise http_error(
-            404, "not_found", f"Entity '{target_entity}' does not exist.", request
-        )
+        raise http_error(404, "not_found", f"Entity '{target_entity}' does not exist.", request)
 
     updated = await update_user(email=email, new_role=effective_role, entity_key=target_entity)
     if updated is None:

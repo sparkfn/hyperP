@@ -23,7 +23,8 @@ from src.graph.queries import (
     REVERT_MERGE,
 )
 from src.http_utils import envelope, http_error
-from src.types import ApiResponse, LockRequest, ManualMergeRequest, UnmergeRequest
+from src.types import ApiResponse
+from src.types_requests import LockRequest, ManualMergeRequest, UnmergeRequest
 
 router = APIRouter()
 

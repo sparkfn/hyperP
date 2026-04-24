@@ -83,9 +83,7 @@ async def require_active_user(
     return user
 
 
-async def require_admin(
-    request: Request, user: AuthUser = Depends(get_current_user)
-) -> AuthUser:
+async def require_admin(request: Request, user: AuthUser = Depends(get_current_user)) -> AuthUser:
     """Admin-only gate."""
     if user.role != "admin":
         raise http_error(
@@ -111,9 +109,7 @@ async def require_mutator_for_source(
         )
     target_entity = await get_entity_for_source(source_key)
     if target_entity is None:
-        raise http_error(
-            404, "not_found", f"Source system '{source_key}' not found.", request
-        )
+        raise http_error(404, "not_found", f"Source system '{source_key}' not found.", request)
     if user.entity_key != target_entity:
         raise http_error(
             403,

@@ -32,6 +32,7 @@ from src.types import (
     PersonComparisonEntity,
     PersonConnection,
     PersonGraph,
+    PersonIdentifier,
     PersonStatus,
     ReviewCaseDetail,
     ReviewCaseSummary,
@@ -107,6 +108,17 @@ def map_source_record(record: GraphRecord) -> SourceRecord:
     )
 
 
+def map_person_identifier(record: GraphRecord) -> PersonIdentifier:
+    return PersonIdentifier(
+        identifier_type=to_str(record.get("identifier_type")),
+        normalized_value=to_str(record.get("normalized_value")),
+        is_active=bool(record.get("is_active", True)),
+        is_verified=bool(record.get("is_verified", False)),
+        last_confirmed_at=to_iso_or_none(record.get("last_confirmed_at")),
+        source_system_key=to_optional_str(record.get("source_system_key")),
+    )
+
+
 def _map_shared_identifiers(value: GraphValue) -> list[SharedIdentifier]:
     if not isinstance(value, list):
         return []
@@ -115,7 +127,8 @@ def _map_shared_identifiers(value: GraphValue) -> list[SharedIdentifier]:
             identifier_type=to_str(d.get("identifier_type")),
             normalized_value=to_str(d.get("normalized_value")),
         )
-        for raw in value if (d := _as_dict(raw)).get("identifier_type")
+        for raw in value
+        if (d := _as_dict(raw)).get("identifier_type")
     ]
 
 
@@ -127,7 +140,8 @@ def _map_shared_addresses(value: GraphValue) -> list[SharedAddress]:
             address_id=to_str(d.get("address_id")),
             normalized_full=to_optional_str(d.get("normalized_full")),
         )
-        for raw in value if (d := _as_dict(raw)).get("address_id")
+        for raw in value
+        if (d := _as_dict(raw)).get("address_id")
     ]
 
 
@@ -139,7 +153,8 @@ def _map_knows_relationships(value: GraphValue) -> list[KnowsRelationship]:
             relationship_label=to_optional_str(d.get("relationship_label")),
             relationship_category=to_str(d.get("relationship_category")),
         )
-        for raw in value if (d := _as_dict(raw)).get("relationship_category")
+        for raw in value
+        if (d := _as_dict(raw)).get("relationship_category")
     ]
 
 
@@ -151,9 +166,7 @@ def map_connection(record: GraphRecord) -> PersonConnection:
         hops=to_int(record.get("hops")),
         shared_identifiers=_map_shared_identifiers(record.get("shared_identifiers")),
         shared_addresses=_map_shared_addresses(record.get("shared_addresses")),
-        knows_relationships=_map_knows_relationships(
-            record.get("knows_relationships")
-        ),
+        knows_relationships=_map_knows_relationships(record.get("knows_relationships")),
     )
 
 

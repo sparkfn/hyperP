@@ -20,9 +20,7 @@ class AppConfig(BaseSettings):
     auth_enabled: bool = Field(default=True, alias="AUTH_ENABLED")
     # Same OAuth client the frontend uses via Auth.js (AUTH_GOOGLE_ID).
     google_oauth_client_id: str | None = Field(default=None, alias="AUTH_GOOGLE_ID")
-    google_oauth_hosted_domain: str | None = Field(
-        default=None, alias="AUTH_GOOGLE_HOSTED_DOMAIN"
-    )
+    google_oauth_hosted_domain: str | None = Field(default=None, alias="AUTH_GOOGLE_HOSTED_DOMAIN")
     bootstrap_admin_emails: str = Field(default="", alias="BOOTSTRAP_ADMIN_EMAILS")
 
     @property

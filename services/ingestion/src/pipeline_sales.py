@@ -55,6 +55,7 @@ class _OrderPayload(TypedDict, total=False):
     source_order_id: str
     order_no: str | None
     ordered_at: str | None
+    release_date: str | None
     status: str | None
     total_amount: float | None
     currency: str
@@ -104,7 +105,13 @@ def _parse_sales_envelope(
     order_raw = raw.get("order")
     if not isinstance(order_raw, dict):
         raise ValueError("sales envelope missing 'order' payload")
-    order = cast(_OrderPayload, order_raw)
+    order: _OrderPayload = cast(_OrderPayload, order_raw)
+
+    # Fundbox stores release_date inside metadata; lift it to top-level.
+    if "release_date" not in order and isinstance(order_raw.get("metadata"), dict):
+        fundbox_release = order_raw["metadata"].get("release_date")
+        if isinstance(fundbox_release, str):
+            order["release_date"] = fundbox_release
 
     line_items_raw = raw.get("line_items")
     line_items = (
@@ -225,6 +232,7 @@ def _merge_order(
         source_system_key=source_system_key,
         source_order_id=str(order.get("source_order_id", "")),
         order_no=order.get("order_no"), ordered_at=order.get("ordered_at"),
+        release_date=order.get("release_date"),
         status=order.get("status"), total_amount=order.get("total_amount"),
         currency=order.get("currency", "SGD"), item_count=order.get("item_count"),
         metadata=json.dumps(order.get("metadata", {}), default=str),

@@ -72,4 +72,10 @@ def map_listed_person(record: GraphRecord) -> ListedPerson:
     entities: list[PersonEntitySummary] = (
         [_map_person_entity_dict(e) for e in raw_entities] if isinstance(raw_entities, list) else []
     )
-    return ListedPerson(**ep.model_dump(), entities=entities)
+    return ListedPerson(
+        **ep.model_dump(),
+        entities=entities,
+        entity_count=to_int(record.get("entity_count", len(entities))),
+        identifier_count=to_int(record.get("identifier_count")),
+        order_count=to_int(record.get("order_count")),
+    )
