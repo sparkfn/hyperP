@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Iterator
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from typing import Any
 
 from sqlalchemy import inspect, select
@@ -33,17 +33,23 @@ from src.models import JsonValue
 logger = logging.getLogger(__name__)
 
 
+_DOB_YEAR_MIN = 1900
+
+
 def _epoch_to_iso(epoch_str: str | None) -> str | None:
     """Convert a DOB epoch string (e.g. '-100310400') to an ISO date.
 
     The Eko POS stores dates of birth as Unix epoch seconds in a string column.
     Negative values represent dates before 1970-01-01.  Returns ``None`` for
-    unparseable or missing values.
+    unparseable, missing, or out-of-range values (pre-1900 or future dates are
+    not valid customer DOBs — they indicate overflow or garbage source data).
     """
     if not epoch_str or not epoch_str.strip().lstrip("-").isdigit():
         return None
     try:
         dt = datetime.fromtimestamp(int(epoch_str), tz=UTC)
+        if not (_DOB_YEAR_MIN <= dt.year <= date.today().year):
+            return None
         return dt.strftime("%Y-%m-%d")
     except (ValueError, OSError, OverflowError):
         return None

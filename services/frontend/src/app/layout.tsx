@@ -103,7 +103,7 @@ export default async function RootLayout({
                     </Toolbar>
                   </AppBar>
                 ) : null}
-                <Container maxWidth="xl" sx={{ py: 2 }}>
+                <Container maxWidth={false} sx={{ px: "5%", py: 2 }}>
                   <Box>{children}</Box>
                 </Container>
               </ToastProvider>

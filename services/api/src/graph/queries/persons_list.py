@@ -12,7 +12,6 @@ from __future__ import annotations
 
 _COMMON_FILTER_CLAUSE = """
 WHERE p.status <> 'merged'
-  AND ($status IS NULL OR p.status = $status)
   AND ($is_high_value IS NULL OR p.is_high_value = $is_high_value)
   AND ($is_high_risk IS NULL OR p.is_high_risk = $is_high_risk)
   AND ($has_phone IS NULL
@@ -23,18 +22,31 @@ WHERE p.status <> 'merged'
        OR ($has_email = false AND p.preferred_email IS NULL))
   AND ($updated_after  IS NULL OR p.updated_at >= datetime($updated_after))
   AND ($updated_before IS NULL OR p.updated_at <= datetime($updated_before))
+  AND ($has_dob IS NULL
+       OR ($has_dob = true  AND p.preferred_dob IS NOT NULL)
+       OR ($has_dob = false AND p.preferred_dob IS NULL))
+  AND ($dob_from IS NULL OR p.preferred_dob >= $dob_from)
+  AND ($dob_to   IS NULL OR p.preferred_dob <= $dob_to)
+  AND ($has_address IS NULL
+       OR ($has_address = true  AND p.preferred_address_id IS NOT NULL)
+       OR ($has_address = false AND p.preferred_address_id IS NULL))
+  AND ($addr_street IS NULL  OR toLower(addr.street_name)     CONTAINS toLower($addr_street))
+  AND ($addr_unit   IS NULL   OR toLower(addr.unit_number)    CONTAINS toLower($addr_unit))
+  AND ($addr_city   IS NULL   OR toLower(addr.city)           CONTAINS toLower($addr_city))
+  AND ($addr_postal IS NULL   OR toLower(addr.postal_code)    CONTAINS toLower($addr_postal))
+  AND ($addr_country IS NULL  OR toLower(addr.country_code)   CONTAINS toLower($addr_country))
 """
 
 _ENTITY_FILTER_CLAUSE = """
-WITH p, score WHERE $entity_key IS NULL OR EXISTS {
+WITH p, score, addr WHERE $entity_key IS NULL OR EXISTS {
   MATCH (sr_e:SourceRecord)-[:LINKED_TO]->(p)
   MATCH (sr_e)-[:FROM_SOURCE]->(:SourceSystem)-[:OPERATED_BY]->(:Entity {entity_key: $entity_key})
 }
 WITH DISTINCT p, score
+OPTIONAL MATCH (p)-[:LIVES_AT]->(addr:Address {address_id: p.preferred_address_id})
 """
 
 _ENRICH_AND_RETURN = """
-OPTIONAL MATCH (addr:Address {address_id: p.preferred_address_id})
 CALL {
   WITH p
   OPTIONAL MATCH (sr:SourceRecord)-[:LINKED_TO]->(p)
@@ -111,20 +123,19 @@ size(entities) AS entity_count, identifier_count, order_count, score
 """
 
 _SORT_COLUMNS: dict[str, str] = {
-    "preferred_full_name": "p.preferred_full_name",
-    "status": "p.status",
-    "preferred_phone": "p.preferred_phone",
-    "preferred_email": "p.preferred_email",
-    "preferred_dob": "p.preferred_dob",
-    "preferred_nric": "p.preferred_nric",
+    "preferred_full_name": "person.preferred_full_name",
+    "preferred_phone": "person.preferred_phone",
+    "preferred_email": "person.preferred_email",
+    "preferred_dob": "person.preferred_dob",
+    "preferred_nric": "person.preferred_nric",
     "source_record_count": "source_record_count",
     "connection_count": "connection_count",
     "entity_count": "entity_count",
     "identifier_count": "identifier_count",
     "order_count": "order_count",
     "phone_confidence": "phone_confidence",
-    "updated_at": "p.updated_at",
-    "profile_completeness_score": "p.profile_completeness_score",
+    "updated_at": "person.updated_at",
+    "profile_completeness_score": "person.profile_completeness_score",
     "relevance": "score",
 }
 
@@ -174,5 +185,10 @@ def _head(*, has_q: bool) -> str:
     if has_q:
         return (
             "CALL db.index.fulltext.queryNodes('person_name_search', $q) YIELD node AS p, score\n"
+            "OPTIONAL MATCH (p)-[:LIVES_AT]->(addr:Address)\n"
         )
-    return "MATCH (p:Person)\nWITH p, null AS score\n"
+    return (
+        "MATCH (p:Person)\n"
+        "OPTIONAL MATCH (p)-[:LIVES_AT]->(addr:Address)\n"
+        "WITH p, addr, null AS score\n"
+    )

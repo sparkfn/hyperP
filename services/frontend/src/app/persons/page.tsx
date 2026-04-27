@@ -113,6 +113,21 @@ function PersonsListPageInner(): ReactElement {
         onClear={handleClearFilters}
       />
       {fetch.error ? <Alert severity="error">{fetch.error}</Alert> : null}
+      <PersonsListPager
+        firstRow={firstRow}
+        lastRow={lastRow}
+        totalCount={fetch.totalCount}
+        pageIndex={pageIndex}
+        totalPages={totalPages}
+        rowsPerPage={rowsPerPage}
+        rowsPerPageOptions={ROWS_PER_PAGE_OPTIONS}
+        loading={fetch.loading}
+        onGoTo={(p) => setPageIndex(Math.min(Math.max(0, p), totalPages - 1))}
+        onRowsPerPageChange={(n) => {
+          setRowsPerPage(n);
+          setPageIndex(0);
+        }}
+      />
       <PersonsListTable
         persons={fetch.persons}
         loading={fetch.loading}

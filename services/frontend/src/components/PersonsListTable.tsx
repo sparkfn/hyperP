@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useState, type ReactElement } from "react";
+import { useCallback, useRef, useState, type ReactElement } from "react";
 import { useRouter } from "next/navigation";
 
 import Checkbox from "@mui/material/Checkbox";
@@ -25,7 +25,6 @@ import PersonRow from "@/components/PersonRow";
 
 export type SortField =
   | "preferred_full_name"
-  | "status"
   | "preferred_phone"
   | "preferred_email"
   | "preferred_dob"
@@ -60,7 +59,6 @@ type ColumnDef = SortableCol | NonSortableCol;
 
 const COLUMNS: readonly ColumnDef[] = [
   { field: "preferred_full_name", label: "Name", sortable: true },
-  { field: "status", label: "Status", sortable: true },
   { field: "preferred_phone", label: "Phone", sortable: true },
   { field: "profile_completeness_score", label: "Profile", align: "right", sortable: true },
   { field: "preferred_email", label: "Email", sortable: true },
@@ -147,6 +145,8 @@ export default function PersonsListTable({
   const router = useRouter();
   const [contextMenu, setContextMenu] = useState<RowContextMenu | null>(null);
   const [graphDialog, setGraphDialog] = useState<GraphDialogState | null>(null);
+  const tableScrollRef = useRef<HTMLDivElement>(null);
+  const topScrollRef = useRef<HTMLDivElement>(null);
 
   const connectionsFetch = useLazyPersonFetch<PersonConnection>(
     (id) => `/bff/persons/${encodeURIComponent(id)}/connections?connection_type=all&limit=50`,
@@ -175,7 +175,26 @@ export default function PersonsListTable({
       {loading ? (
         <LinearProgress sx={{ position: "absolute", top: 0, left: 0, right: 0, zIndex: 1 }} />
       ) : null}
-      <Box sx={{ overflow: "auto", maxHeight: "70vh" }}>
+      <Box
+        ref={topScrollRef}
+        onScroll={() => {
+          if (tableScrollRef.current && topScrollRef.current) {
+            tableScrollRef.current.scrollLeft = topScrollRef.current.scrollLeft;
+          }
+        }}
+        sx={{ overflowX: "auto", overflowY: "hidden" }}
+      >
+        <Box sx={{ minWidth: 1600, height: "1px" }} />
+      </Box>
+      <Box
+        ref={tableScrollRef}
+        onScroll={() => {
+          if (tableScrollRef.current && topScrollRef.current) {
+            topScrollRef.current.scrollLeft = tableScrollRef.current.scrollLeft;
+          }
+        }}
+        sx={{ overflow: "auto" }}
+      >
       <Table stickyHeader sx={{ opacity: loading ? 0.6 : 1, minWidth: 1600 }}>
         <TableHead sx={{ "& th": { bgcolor: "background.paper" } }}>
           <TableRow>

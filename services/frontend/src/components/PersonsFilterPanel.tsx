@@ -2,43 +2,72 @@
 
 import { useEffect, useState, type ReactElement } from "react";
 
+import AddIcon from "@mui/icons-material/Add";
 import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
+import Collapse from "@mui/material/Collapse";
+import Divider from "@mui/material/Divider";
+import FormControl from "@mui/material/FormControl";
+import IconButton from "@mui/material/IconButton";
+import InputLabel from "@mui/material/InputLabel";
 import MenuItem from "@mui/material/MenuItem";
 import Paper from "@mui/material/Paper";
+import Select from "@mui/material/Select";
 import Stack from "@mui/material/Stack";
 import TextField from "@mui/material/TextField";
-import ToggleButton from "@mui/material/ToggleButton";
-import ToggleButtonGroup from "@mui/material/ToggleButtonGroup";
 import Typography from "@mui/material/Typography";
 
 import type { EntitySummary } from "@/lib/api-types";
-
-export type TriState = "any" | "true" | "false";
+import PersonsFilterAddressSection from "@/components/PersonsFilterAddressSection";
+import PersonsFilterDobSection from "@/components/PersonsFilterDobSection";
 
 export interface PersonsFilters {
   q: string;
-  status: string;
   entity_key: string;
-  is_high_value: TriState;
-  is_high_risk: TriState;
-  has_phone: TriState;
-  has_email: TriState;
+  has_address: "" | "true" | "false";
+  addr_street: string;
+  addr_unit: string;
+  addr_city: string;
+  addr_postal: string;
+  addr_country: string;
   updated_after: string;
   updated_before: string;
+  has_dob: "" | "true" | "false";
+  dob_from: string;
+  dob_to: string;
 }
 
 export const DEFAULT_FILTERS: PersonsFilters = {
   q: "",
-  status: "",
   entity_key: "",
-  is_high_value: "any",
-  is_high_risk: "any",
-  has_phone: "any",
-  has_email: "any",
+  has_address: "",
+  addr_street: "",
+  addr_unit: "",
+  addr_city: "",
+  addr_postal: "",
+  addr_country: "",
   updated_after: "",
   updated_before: "",
+  has_dob: "",
+  dob_from: "",
+  dob_to: "",
 };
+
+function hasAdvancedFilters(f: PersonsFilters): boolean {
+  return (
+    f.has_address !== "" ||
+    f.addr_street !== "" ||
+    f.addr_unit !== "" ||
+    f.addr_city !== "" ||
+    f.addr_postal !== "" ||
+    f.addr_country !== "" ||
+    f.updated_after !== "" ||
+    f.updated_before !== "" ||
+    f.has_dob !== "" ||
+    f.dob_from !== "" ||
+    f.dob_to !== ""
+  );
+}
 
 interface PersonsFilterPanelProps {
   value: PersonsFilters;
@@ -54,13 +83,14 @@ export default function PersonsFilterPanel({
   onClear,
 }: PersonsFilterPanelProps): ReactElement {
   const [draft, setDraft] = useState<PersonsFilters>(value);
+  const [expanded, setExpanded] = useState(() => hasAdvancedFilters(value));
 
   useEffect(() => {
     setDraft(value);
   }, [value]);
 
-  function update<K extends keyof PersonsFilters>(key: K, v: PersonsFilters[K]): void {
-    setDraft((prev) => ({ ...prev, [key]: v }));
+  function patch(update: Partial<PersonsFilters>): void {
+    setDraft((prev) => ({ ...prev, ...update }));
   }
 
   function handleApply(): void {
@@ -72,137 +102,97 @@ export default function PersonsFilterPanel({
     onClear();
   }
 
+  const hasActiveFilters: boolean =
+    draft.q.trim().length > 0 || draft.entity_key !== "" || hasAdvancedFilters(draft);
+
   return (
-    <Paper variant="outlined" sx={{ p: 1.5 }}>
-      <Stack spacing={1.25}>
-        <Stack direction="row" alignItems="center" spacing={1}>
-          <Typography variant="subtitle1">Filters</Typography>
-          <Box sx={{ flexGrow: 1 }} />
-          <Button onClick={handleClear} color="inherit">
-            Clear
-          </Button>
-          <Button onClick={handleApply} variant="contained">
-            Apply
-          </Button>
-        </Stack>
-        <Box
-          sx={{
-            display: "grid",
-            gap: 1,
-            alignItems: "end",
-            gridTemplateColumns: {
-              xs: "repeat(1, 1fr)",
-              sm: "repeat(2, 1fr)",
-              md: "repeat(3, 1fr)",
-              lg: "repeat(4, 1fr)",
-              xl: "repeat(6, 1fr)",
-            },
+    <Paper variant="outlined" sx={{ px: 2, py: 1.5 }}>
+      {/* Primary row: search + entity + quick apply */}
+      <Stack direction="row" alignItems="center" spacing={1.5} sx={{ mb: expanded ? 1.5 : 0 }}>
+        <TextField
+          size="small"
+          placeholder="Search by name, NRIC, email or phone..."
+          value={draft.q}
+          onChange={(e) => patch({ q: e.target.value })}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") handleApply();
           }}
-        >
-          <TextField
-            label="Search"
-            value={draft.q}
-            onChange={(e) => update("q", e.target.value)}
-            placeholder="Name, NRIC, email or phone (≥3 chars)"
-            fullWidth
-          />
-          <TextField
-            select
-            label="Status"
-            value={draft.status}
-            onChange={(e) => update("status", e.target.value)}
-            fullWidth
-          >
-            <MenuItem value="">Any</MenuItem>
-            <MenuItem value="active">Active</MenuItem>
-            <MenuItem value="suppressed">Suppressed</MenuItem>
-          </TextField>
-          <TextField
-            select
+          sx={{ flex: 1, minWidth: 240 }}
+          InputProps={{ sx: { fontSize: "0.875rem" } }}
+        />
+        <FormControl size="small" sx={{ minWidth: 180 }}>
+          <InputLabel>Entity</InputLabel>
+          <Select
             label="Entity"
             value={draft.entity_key}
-            onChange={(e) => update("entity_key", e.target.value)}
-            fullWidth
+            onChange={(e) => patch({ entity_key: e.target.value })}
+            sx={{ fontSize: "0.875rem" }}
           >
-            <MenuItem value="">Any</MenuItem>
+            <MenuItem value="">All entities</MenuItem>
             {entities.map((ent) => (
               <MenuItem key={ent.entity_key} value={ent.entity_key}>
                 {ent.display_name ?? ent.entity_key}
               </MenuItem>
             ))}
-          </TextField>
+          </Select>
+        </FormControl>
+        {hasActiveFilters && (
+          <Button size="small" color="inherit" onClick={handleClear} sx={{ whiteSpace: "nowrap" }}>
+            Clear all
+          </Button>
+        )}
+        <Button size="small" variant="contained" onClick={handleApply}>
+          Search
+        </Button>
+        <Divider orientation="vertical" flexItem />
+        <Button
+          size="small"
+          color="inherit"
+          onClick={() => setExpanded((v) => !v)}
+          endIcon={
+            <IconButton size="small" sx={{ p: 0 }}>
+              <AddIcon
+                sx={{
+                  fontSize: "1rem",
+                  transform: expanded ? "rotate(45deg)" : "none",
+                  transition: "transform 0.2s",
+                }}
+              />
+            </IconButton>
+          }
+        >
+          {expanded ? "Fewer filters" : "More filters"}
+        </Button>
+      </Stack>
+
+      {/* Collapsible advanced filters */}
+      <Collapse in={expanded}>
+        <Divider sx={{ my: 1 }} />
+        <PersonsFilterAddressSection filters={draft} onChange={patch} />
+        <PersonsFilterDobSection filters={draft} onChange={patch} />
+
+        <Typography variant="caption" color="text.secondary" sx={{ mt: 2, mb: 1, display: "block", px: 0.5 }}>
+          LAST UPDATED
+        </Typography>
+        <Box sx={{ display: "grid", gap: 1.5, gridTemplateColumns: { xs: "repeat(2, 1fr)", md: "repeat(4, 1fr)" } }}>
           <TextField
-            label="Updated after"
+            size="small"
+            label="After"
             type="date"
             value={draft.updated_after}
-            onChange={(e) => update("updated_after", e.target.value)}
+            onChange={(e) => patch({ updated_after: e.target.value })}
             InputLabelProps={{ shrink: true }}
-            fullWidth
           />
           <TextField
-            label="Updated before"
+            size="small"
+            label="Before"
             type="date"
             value={draft.updated_before}
-            onChange={(e) => update("updated_before", e.target.value)}
+            onChange={(e) => patch({ updated_before: e.target.value })}
             InputLabelProps={{ shrink: true }}
-            fullWidth
-          />
-          <Box />
-          <TriStateFilter
-            label="High value"
-            value={draft.is_high_value}
-            onChange={(v) => update("is_high_value", v)}
-          />
-          <TriStateFilter
-            label="High risk"
-            value={draft.is_high_risk}
-            onChange={(v) => update("is_high_risk", v)}
-          />
-          <TriStateFilter
-            label="Has phone"
-            value={draft.has_phone}
-            onChange={(v) => update("has_phone", v)}
-          />
-          <TriStateFilter
-            label="Has email"
-            value={draft.has_email}
-            onChange={(v) => update("has_email", v)}
           />
         </Box>
-      </Stack>
+      </Collapse>
     </Paper>
-  );
-}
-
-interface TriStateFilterProps {
-  label: string;
-  value: TriState;
-  onChange: (v: TriState) => void;
-}
-
-function TriStateFilter({ label, value, onChange }: TriStateFilterProps): ReactElement {
-  return (
-    <Box sx={{ display: "flex", flexDirection: "column", gap: 0.25 }}>
-      <Typography variant="caption" color="text.secondary">
-        {label}
-      </Typography>
-      <ToggleButtonGroup
-        size="small"
-        exclusive
-        fullWidth
-        value={value}
-        onChange={(_, v: TriState | null) => onChange(v ?? "any")}
-      >
-        <ToggleButton value="any" sx={{ py: 0.4, fontSize: "0.72rem" }}>
-          Any
-        </ToggleButton>
-        <ToggleButton value="true" sx={{ py: 0.4, fontSize: "0.72rem" }}>
-          Yes
-        </ToggleButton>
-        <ToggleButton value="false" sx={{ py: 0.4, fontSize: "0.72rem" }}>
-          No
-        </ToggleButton>
-      </ToggleButtonGroup>
-    </Box>
   );
 }

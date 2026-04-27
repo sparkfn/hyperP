@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { signOut } from "next-auth/react";
 
 import { BffError, bffFetch, bffFetchEnvelope } from "@/lib/api-client";
 import type { EntitySummary, ListedPerson } from "@/lib/api-types";
@@ -46,6 +47,10 @@ export function usePersonsFetch(
         });
       } catch (err: unknown) {
         if (cancelled) return;
+        if (err instanceof BffError && err.status === 401) {
+          void signOut({ callbackUrl: "/login", redirect: true });
+          return;
+        }
         const message: string =
           err instanceof BffError || err instanceof Error ? err.message : "Failed to load persons.";
         setState({ persons: [], totalCount: 0, loading: false, error: message });

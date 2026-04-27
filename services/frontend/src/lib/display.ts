@@ -19,7 +19,25 @@ export function formatDate(value: string): string {
   if (!value) return "—";
   const parsed = new Date(value);
   if (Number.isNaN(parsed.getTime())) return value;
-  return parsed.toISOString().slice(0, 10);
+  return parsed.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
+}
+
+export function formatDob(value: string | null): string {
+  if (!value) return "—";
+  if (/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    const parsed = new Date(value + "T00:00:00");
+    if (!Number.isNaN(parsed.getTime())) {
+      return parsed.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
+    }
+  }
+  if (/^\d{2}-\d{2}-\d{2}$/.test(value)) {
+    const [yy, mm, dd] = value.split("-");
+    const parsed = new Date(`19${yy}-${mm}-${dd}T00:00:00`);
+    if (!Number.isNaN(parsed.getTime())) {
+      return parsed.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
+    }
+  }
+  return value;
 }
 
 export function connectionsToItems(data: PersonConnection[] | undefined): CountCardItem[] | undefined {
