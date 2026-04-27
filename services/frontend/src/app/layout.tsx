@@ -17,7 +17,7 @@ import { auth } from "@/auth";
 import HealthIndicator from "@/components/HealthIndicator";
 import { ToastProvider } from "@/components/ToastProvider";
 import SessionProviderClient from "@/components/auth/SessionProviderClient";
-import UserMenu from "@/components/auth/UserMenu";
+import { UserMenu } from "@/components/auth/UserMenu";
 import theme from "@/theme";
 
 export const metadata: Metadata = {
@@ -96,6 +96,7 @@ export default async function RootLayout({
                             displayName={session?.user?.displayName ?? null}
                             role={role === "admin" || role === "employee" ? role : "first_time"}
                             entityKey={session?.user?.entityKey ?? null}
+                            sessionError={session?.error}
                           />
                         ) : null}
                       </Stack>

@@ -2,7 +2,6 @@
 
 import { useState, type FormEvent, type ReactElement } from "react";
 
-import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
 import CircularProgress from "@mui/material/CircularProgress";
 import Paper from "@mui/material/Paper";

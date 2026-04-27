@@ -9,6 +9,7 @@ from fastapi import Depends, Request, Security
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from src.auth.models import AuthUser
+from src.auth.revoke import decode_jwt_claims, is_token_revoked
 from src.auth.store import (
     get_entities_for_review_case,
     get_entity_for_source,
@@ -20,7 +21,9 @@ from src.http_utils import http_error
 
 log = logging.getLogger(__name__)
 
-_USER_CACHE: TTLCache[str, AuthUser] = TTLCache(maxsize=1024, ttl=30.0)
+# Keyed by jti so we can evict on logout. Value is the raw token so we can
+# also evict on raw-token lookup (token rotation etc.).
+_USER_CACHE: TTLCache[str, tuple[str, AuthUser]] = TTLCache(maxsize=1024, ttl=30.0)
 _BEARER_AUTH = HTTPBearer(auto_error=False)
 _BEARER_CREDENTIALS = Security(_BEARER_AUTH)
 
@@ -31,6 +34,12 @@ _DEV_BYPASS_USER: AuthUser = AuthUser(
     entity_key=None,
     display_name="Dev Bypass",
 )
+
+
+def evict_user_cache(jti: str | None) -> None:
+    """Remove a user's cached entry by jti so revocation takes effect immediately."""
+    if jti is not None:
+        _USER_CACHE.pop(jti, None)
 
 
 async def get_current_user(
@@ -49,9 +58,13 @@ async def get_current_user(
         raise http_error(401, "unauthorized", "Missing Bearer token.", request)
 
     token: str = credentials.credentials
-    cached = _USER_CACHE.get(token)
+    jti, exp = decode_jwt_claims(token)
+    if jti is not None and await is_token_revoked(jti):
+        raise http_error(401, "token_revoked", "Token has been revoked.", request)
+
+    cached = _USER_CACHE.get(jti if jti is not None else token)
     if cached is not None:
-        return cached
+        return cached[1]
 
     try:
         claims = verify_google_id_token(token)
@@ -65,7 +78,7 @@ async def get_current_user(
     user = await upsert_user_on_login(
         email=claims.email, google_sub=claims.sub, display_name=claims.name
     )
-    _USER_CACHE[token] = user
+    _USER_CACHE[jti if jti is not None else token] = (token, user)
     return user
 
 

@@ -13,6 +13,8 @@ dependencies = [
     "google-auth>=2.29,<3",
     "cachetools>=5.3,<6",
     "requests>=2.31,<3",
+    "redis[hiredis]>=5.0,<6",
+    "httpx>=0.27,<1",
 ]
 
 [tool.uv]
@@ -27,6 +29,7 @@ dev = [
     "mypy>=1.20.0",
     "ruff>=0.15.9",
     "types-cachetools>=6.2.0.20260408",
+    "types-requests>=2.31.0.0",
 ]
 
 # Shared ruff/mypy/pytest config inherited from the workspace root pyproject.toml.

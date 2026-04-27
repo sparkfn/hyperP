@@ -21,7 +21,15 @@ class AppConfig(BaseSettings):
     auth_enabled: bool = Field(default=True, alias="AUTH_ENABLED")
     # Same OAuth client the frontend uses via Auth.js (AUTH_GOOGLE_ID).
     google_oauth_client_id: str | None = Field(default=None, alias="AUTH_GOOGLE_ID")
+    google_oauth_client_secret: str | None = Field(default=None, alias="AUTH_GOOGLE_SECRET")
     google_oauth_hosted_domain: str | None = Field(default=None, alias="AUTH_GOOGLE_HOSTED_DOMAIN")
+    redis_url: str = Field(default="redis://redis:6379", alias="REDIS_URL")
+    # Minutes before a Google access token is considered expired for revocation purposes.
+    # Google issues tokens with a 1-hour expiry; set this to match or slightly above.
+    access_token_expiry_minutes: int = Field(default=60, alias="ACCESS_TOKEN_EXPIRY_MINUTES")
+    # Minutes before a Google refresh token is considered expired.
+    # Google refresh tokens do not expire but may be revoked; 30 days is a safe default.
+    refresh_token_expiry_minutes: int = Field(default=43200, alias="REFRESH_TOKEN_EXPIRY_MINUTES")
     bootstrap_admin_emails: str = Field(default="", alias="BOOTSTRAP_ADMIN_EMAILS")
 
     @property

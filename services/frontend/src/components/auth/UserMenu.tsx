@@ -1,6 +1,12 @@
 "use client";
 
-import { useState, type ReactElement, type MouseEvent } from "react";
+import {
+  type MouseEvent,
+  type ReactElement,
+  useCallback,
+  useEffect,
+  useState,
+} from "react";
 import { signOut } from "next-auth/react";
 
 import Avatar from "@mui/material/Avatar";
@@ -12,6 +18,7 @@ import ListItemText from "@mui/material/ListItemText";
 import Menu from "@mui/material/Menu";
 import MenuItem from "@mui/material/MenuItem";
 import Stack from "@mui/material/Stack";
+import Tooltip from "@mui/material/Tooltip";
 import Typography from "@mui/material/Typography";
 
 import type { Role } from "@/lib/permissions";
@@ -21,38 +28,40 @@ interface UserMenuProps {
   displayName: string | null;
   role: Role;
   entityKey: string | null;
+  sessionError?: string;
 }
 
-function roleColor(role: Role): "success" | "info" | "warning" {
-  if (role === "admin") return "success";
-  if (role === "employee") return "info";
-  return "warning";
-}
-
-export default function UserMenu(props: UserMenuProps): ReactElement {
+export function UserMenu(props: UserMenuProps): ReactElement {
   const [anchor, setAnchor] = useState<HTMLElement | null>(null);
-  const initial: string =
-    (props.displayName ?? props.email).trim().slice(0, 1).toUpperCase() || "?";
+  const close = useCallback(() => setAnchor(null), []);
 
-  function open(e: MouseEvent<HTMLButtonElement>): void {
-    setAnchor(e.currentTarget);
-  }
-  function close(): void {
-    setAnchor(null);
+  // When NextAuth detects a refresh-token failure it sets session.error.
+  // Redirect to login immediately rather than leaving the user on a stale UI.
+  useEffect(() => {
+    if (props.sessionError === "RefreshTokenError") {
+      void signOut({ callbackUrl: "/login", redirect: true });
+    }
+  }, [props.sessionError]);
+
+  function open(event: MouseEvent<HTMLElement>): void {
+    setAnchor(event.currentTarget);
   }
 
+  const initial: string = (props.displayName ?? props.email).slice(0, 2).toUpperCase();
   return (
-    <Box sx={{ ml: 1 }}>
-      <Stack direction="row" spacing={1} alignItems="center">
+    <Box>
+      <Stack direction="row" alignItems="center" gap={1}>
         <Chip
+          label={props.role}
           size="small"
-          color={roleColor(props.role)}
-          label={props.role === "first_time" ? "pending" : props.role}
-          sx={{ textTransform: "uppercase", fontWeight: 600, letterSpacing: 0.5 }}
+          color={props.role === "admin" ? "error" : "primary"}
+          variant="outlined"
         />
-        <IconButton size="small" onClick={open} aria-label="account menu">
-          <Avatar sx={{ width: 28, height: 28, fontSize: 14 }}>{initial}</Avatar>
-        </IconButton>
+        <Tooltip title="Account menu">
+          <IconButton onClick={open} size="small" sx={{ p: 0 }}>
+            <Avatar sx={{ width: 28, height: 28, fontSize: 14 }}>{initial}</Avatar>
+          </IconButton>
+        </Tooltip>
       </Stack>
       <Menu anchorEl={anchor} open={Boolean(anchor)} onClose={close}>
         <MenuItem disabled>

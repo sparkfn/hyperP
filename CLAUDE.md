@@ -34,20 +34,21 @@ uv run --package profile-unifier-ingestion mypy --strict services/ingestion/src
 ```bash
 uv run pytest                                        # all tests
 uv run pytest services/api/tests                    # API tests only
-uv run pytest services/ingestion/tests              # ingestion tests only
+uv run pytest services/ingestion/tests             # ingestion tests only
 uv run pytest services/api/tests/test_foo.py        # single file
 ```
-No test suite exists yet; test paths are configured in the root `pyproject.toml`.
+Test paths are configured in the root `pyproject.toml`.
 
 ### Frontend
 ```bash
 cd services/frontend
-npm install
-npm run dev        # dev server on http://localhost:3001
-npm run typecheck  # tsc --noEmit
-npm run lint       # next lint
+npm install          # already done in Docker; run locally for typecheck/lint only
+npm run dev         # dev server on http://localhost:3001
+npm run typecheck   # tsc --noEmit
+npm run lint       # eslint src (ESLint 9 flat config, max-warnings 9)
 npm run build      # production build (runs in Docker for deployment)
 ```
+**Note:** `next lint` was removed in Next.js 15 and replaced with direct ESLint. If `npm run lint` fails, check that `eslint` and `eslint-config-next` are in `devDependencies` and that `eslint.config.mjs` exists.
 
 ---
 
@@ -58,7 +59,7 @@ Seven Docker containers defined in `docker-compose.yml`:
 | Service | Image / Build | Internal address | Notes |
 |---|---|---|---|
 | `neo4j` | `neo4j:5-community` | `bolt://neo4j:7687` | HTTP browser at `:7474` |
-| `redis` | `redis:7-alpine` | `redis://redis:6379` | Celery broker (db 0) + results (db 1) |
+| `redis` | `redis:7-alpine` | `redis://redis:6379` | Celery broker (db 0) + results (db 1) + token revocation store (TTL auto-cleanup) |
 | `api` | `services/api/Dockerfile` | `http://api:3000` | FastAPI/uvicorn; not exposed directly |
 | `frontend` | `services/frontend/Dockerfile` | `http://frontend:3001` | Next.js; not exposed directly |
 | `web` | `nginx:1.27-alpine` | exposed on `:80` | Reverse proxy; routes `/v1/*` → api, rest → frontend |
@@ -67,7 +68,7 @@ Seven Docker containers defined in `docker-compose.yml`:
 
 **Startup:** `logging.basicConfig(level=...)` in `src/app.py` also silences the `neo4j.notifications` logger (Cypher deprecation warnings) so they don't flood the API container logs. Real Neo4j errors at ERROR level are unaffected.
 
-Auth flow: browser → next-auth (Google OAuth) → `googleIdToken` stored in JWT session → Next.js BFF attaches as `Authorization: Bearer` → FastAPI verifies via `require_active_user` dependency.
+Auth flow: browser → next-auth (Google OAuth) → `googleIdToken` stored in JWT session → Next.js BFF attaches as `Authorization: Bearer` → FastAPI verifies via `require_active_user` dependency. Token revocation is backed by Redis: `POST /v1/auth/logout` adds the token's `jti` to a Redis SET (TTL auto-cleanup), and the in-process user cache is also evicted immediately. Google refresh tokens are revoked via Google's revocation endpoint. If the refresh token expires, NextAuth sets `session.error = "RefreshTokenError"` and auto-redirects to `/login`.
 
 ---
 
@@ -116,6 +117,7 @@ All Cypher strings live as module-level string constants in `services/api/src/gr
 
 ### JWT / Google ID token verification
 `services/api/src/auth/verify.py` uses a **self-contained** RS256 verifier with a 300-second clock-skew tolerance (absorb drift between our server and Google's token-issuing servers). It does NOT use `google-auth`'s `verify_oauth2_token` directly — that library has a strict `nbf` check that causes spurious 401s. Signature is verified against Google's public cert endpoint.
+Token revocation is handled in `auth/revoke.py`: the raw JWT is decoded (no verification) to extract `jti` and `exp`, then checked against Redis before hitting the signature verifier. The in-process user cache (`auth/deps.py:_USER_CACHE`) is keyed by `jti` and evicted immediately on `POST /v1/auth/logout` so revoked tokens cannot be served from a warm cache.
 
 ### Ingestion dispatch
 Always dispatch via Celery — never call `run_ingestion()` directly:
@@ -214,9 +216,9 @@ These rules apply to all TypeScript code in the repository (`services/frontend/`
   - Client components must declare `"use client"` on the first line and **must not** import server-only modules. Browser code talks to the BFF via `src/lib/api-client.ts`.
   - Secrets (internal service URLs, tokens, DB credentials) are server-side env vars **without** the `NEXT_PUBLIC_` prefix. Anything `NEXT_PUBLIC_*` is shipped to the browser — treat it as public.
 - **BFF pattern is mandatory**: the browser must never call FastAPI directly for app UI data. All UI upstream traffic flows through Next.js Route Handlers under `src/app/bff/*`, which use `proxyToApi` from `src/lib/proxy.ts`. The public `/api/*` namespace is reserved for nginx to expose FastAPI directly for external services.
-- **Route handler shape**: each route handler exports typed `GET`/`POST`/etc. returning `Promise<NextResponse>`, declares `export const dynamic = "force-dynamic"` when it must not be cached, and types Next 15 async params as `{ params: Promise<{ ... }> }`. Keep handlers thin — delegate to `proxyToApi` or a service module.
+- **Route handler shape**: each route handler exports typed `GET`/`POST`/etc. returning `Promise<NextResponse>`, declares `export const dynamic = "force-dynamic"` when it must not be cached, and types Next 15 async params as `{ params: Promise<{ ... }> }`. Keep handlers thin — delegate to `proxyToApi` or a service module. The logout BFF handler at `src/app/bff/auth/logout/route.ts` calls `apiFetch` to revoke the token server-side before returning.
 - **Data fetching in Server Components**: prefer Server Components for read-only pages and call `apiFetch` directly (no client round-trip). Parallelize independent fetches with `Promise.all`. Translate upstream 404s to `notFound()`.
 - **Component / module size**: keep React components under ~150 lines and modules under ~300 lines. Extract subcomponents (e.g. `PersonHeader`, `ConnectionsCard`) rather than letting a single page balloon. Extract pure helpers (`statusColor`, `buildSearchParams`) out of components.
 - **MUI usage**: import from per-component paths (`@mui/material/Button`) not the barrel (`@mui/material`) to keep bundles tight. Use the `sx` prop for one-off styling, the theme for shared tokens. Wrap the App Router with `AppRouterCacheProvider` from `@mui/material-nextjs/v15-appRouter` exactly once in `layout.tsx`.
-- **Project standards**: format with Prettier, lint with `next lint`. Imports ordered: node/external → `next/*` and `@mui/*` → `@/*` aliases → relative. Use the `@/` path alias instead of long relative paths.
+- **Project standards**: format with Prettier, lint with `eslint src` (ESLint 9 flat config). Imports ordered: node/external → `next/*` and `@mui/*` → `@/*` aliases → relative. Use the `@/` path alias instead of long relative paths.
 - **Package manager — npm**: `services/frontend/` uses npm. Always use `npm install` (locally and in Docker) — do not use `npm ci`. Do not introduce `pnpm-lock.yaml` or `yarn.lock`.
