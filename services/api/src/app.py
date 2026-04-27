@@ -61,6 +61,7 @@ async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
 
 def build_app() -> FastAPI:
     """Construct and configure the FastAPI application."""
+    logging.getLogger("neo4j.notifications").setLevel(logging.ERROR)
     logging.basicConfig(level=config.log_level.upper())
     app = FastAPI(
         title="Profile Unifier API",

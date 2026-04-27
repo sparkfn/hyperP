@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import logging
+
 from cachetools import TTLCache
-from fastapi import Depends, Request
+from fastapi import Depends, Request, Security
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from src.auth.models import AuthUser
 from src.auth.store import (
@@ -15,7 +18,11 @@ from src.auth.verify import verify_google_id_token
 from src.config import config
 from src.http_utils import http_error
 
+log = logging.getLogger(__name__)
+
 _USER_CACHE: TTLCache[str, AuthUser] = TTLCache(maxsize=1024, ttl=30.0)
+_BEARER_AUTH = HTTPBearer(auto_error=False)
+_BEARER_CREDENTIALS = Security(_BEARER_AUTH)
 
 _DEV_BYPASS_USER: AuthUser = AuthUser(
     email="dev-bypass@local",
@@ -26,18 +33,10 @@ _DEV_BYPASS_USER: AuthUser = AuthUser(
 )
 
 
-def _bearer_token(request: Request) -> str | None:
-    header = request.headers.get("authorization")
-    if not header:
-        return None
-    parts = header.split(None, 1)
-    if len(parts) != 2 or parts[0].lower() != "bearer":
-        return None
-    token = parts[1].strip()
-    return token or None
-
-
-async def get_current_user(request: Request) -> AuthUser:
+async def get_current_user(
+    request: Request,
+    credentials: HTTPAuthorizationCredentials | None = _BEARER_CREDENTIALS,
+) -> AuthUser:
     """Resolve the authenticated principal from the Bearer ID token.
 
     Allows first-time users through — enforcement against unassigned accounts
@@ -46,10 +45,10 @@ async def get_current_user(request: Request) -> AuthUser:
     if not config.auth_enabled:
         return _DEV_BYPASS_USER
 
-    token = _bearer_token(request)
-    if token is None:
+    if credentials is None:
         raise http_error(401, "unauthorized", "Missing Bearer token.", request)
 
+    token: str = credentials.credentials
     cached = _USER_CACHE.get(token)
     if cached is not None:
         return cached
@@ -57,6 +56,7 @@ async def get_current_user(request: Request) -> AuthUser:
     try:
         claims = verify_google_id_token(token)
     except ValueError as exc:
+        log.warning("Token verification failed: %s", exc)
         raise http_error(401, "unauthorized", f"Invalid token: {exc}", request) from exc
 
     # Upsert is idempotent: ON CREATE sets role based on bootstrap admin list,

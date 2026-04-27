@@ -65,6 +65,8 @@ Seven Docker containers defined in `docker-compose.yml`:
 | `worker` | `services/ingestion/Dockerfile` | — | Celery worker; `celery -A src.celery_app worker` |
 | `beat` | `services/ingestion/Dockerfile` | — | Celery beat scheduler; cron schedules from env vars |
 
+**Startup:** `logging.basicConfig(level=...)` in `src/app.py` also silences the `neo4j.notifications` logger (Cypher deprecation warnings) so they don't flood the API container logs. Real Neo4j errors at ERROR level are unaffected.
+
 Auth flow: browser → next-auth (Google OAuth) → `googleIdToken` stored in JWT session → Next.js BFF attaches as `Authorization: Bearer` → FastAPI verifies via `require_active_user` dependency.
 
 ---
@@ -111,6 +113,9 @@ All Cypher strings live as module-level string constants in `services/api/src/gr
 ### Mappers vs converters
 - `graph/converters.py`: primitive type coercions (`to_str`, `to_int`, `to_iso_or_none`, `encode_cursor`/`decode_cursor`). Used by mappers.
 - `graph/mappers*.py`: Neo4j `Record` → Pydantic model. One mapper file per domain (persons, entities, sales, reports).
+
+### JWT / Google ID token verification
+`services/api/src/auth/verify.py` uses a **self-contained** RS256 verifier with a 300-second clock-skew tolerance (absorb drift between our server and Google's token-issuing servers). It does NOT use `google-auth`'s `verify_oauth2_token` directly — that library has a strict `nbf` check that causes spurious 401s. Signature is verified against Google's public cert endpoint.
 
 ### Ingestion dispatch
 Always dispatch via Celery — never call `run_ingestion()` directly:
