@@ -59,16 +59,18 @@ Seven Docker containers defined in `docker-compose.yml`:
 | Service | Image / Build | Internal address | Notes |
 |---|---|---|---|
 | `neo4j` | `neo4j:5-community` | `bolt://neo4j:7687` | HTTP browser at `:7474` |
-| `redis` | `redis:7-alpine` | `redis://redis:6379` | Celery broker (db 0) + results (db 1) + token revocation store (TTL auto-cleanup) |
+| `redis` | `redis:7-alpine` | `redis://redis:6379` | Celery broker (db 0) + results (db 1) + token revocation store + public share-link tokens (TTL auto-cleanup) |
 | `api` | `services/api/Dockerfile` | `http://api:3000` | FastAPI/uvicorn; not exposed directly |
 | `frontend` | `services/frontend/Dockerfile` | `http://frontend:3001` | Next.js; not exposed directly |
-| `web` | `nginx:1.27-alpine` | exposed on `:80` | Reverse proxy; routes `/v1/*` → api, rest → frontend |
+| `web` | `nginx:1.27-alpine` | exposed on `:80` | Reverse proxy; routes `/api/*` → FastAPI (strips `/api` prefix, FastAPI root_path is `/api`), rest → frontend |
 | `worker` | `services/ingestion/Dockerfile` | — | Celery worker; `celery -A src.celery_app worker` |
 | `beat` | `services/ingestion/Dockerfile` | — | Celery beat scheduler; cron schedules from env vars |
 
 **Startup:** `logging.basicConfig(level=...)` in `src/app.py` also silences the `neo4j.notifications` logger (Cypher deprecation warnings) so they don't flood the API container logs. Real Neo4j errors at ERROR level are unaffected.
 
 Auth flow: browser → next-auth (Google OAuth) → `googleIdToken` stored in JWT session → Next.js BFF attaches as `Authorization: Bearer` → FastAPI verifies via `require_active_user` dependency. Token revocation is backed by Redis: `POST /v1/auth/logout` adds the token's `jti` to a Redis SET (TTL auto-cleanup), and the in-process user cache is also evicted immediately. Google refresh tokens are revoked via Google's revocation endpoint. If the refresh token expires, NextAuth sets `session.error = "RefreshTokenError"` and auto-redirects to `/login`.
+
+**Auth bypass**: routes under `/public/**` and `/login`, `/api/health`, and `/bff/auth/**` are explicitly allowed through the NextAuth middleware without a session. The public person pages (`/public/persons/[token]`) are served entirely unauthenticated — they call `apiFetch` with `authToken: null` so no Bearer header is sent.
 
 ---
 
@@ -118,6 +120,24 @@ All Cypher strings live as module-level string constants in `services/api/src/gr
 ### JWT / Google ID token verification
 `services/api/src/auth/verify.py` uses a **self-contained** RS256 verifier with a 300-second clock-skew tolerance (absorb drift between our server and Google's token-issuing servers). It does NOT use `google-auth`'s `verify_oauth2_token` directly — that library has a strict `nbf` check that causes spurious 401s. Signature is verified against Google's public cert endpoint.
 Token revocation is handled in `auth/revoke.py`: the raw JWT is decoded (no verification) to extract `jti` and `exp`, then checked against Redis before hitting the signature verifier. The in-process user cache (`auth/deps.py:_USER_CACHE`) is keyed by `jti` and evicted immediately on `POST /v1/auth/logout` so revoked tokens cannot be served from a warm cache.
+
+### Public (unauthenticated) API endpoints
+When an endpoint must be publicly accessible (no Bearer token), register it on a separate router that is included in `app.py` **without** the `active` dependency list. The auth-gated action that produces the public resource (e.g. generating a share link) uses the normal `person_links_router` registered with `require_active_user`. Example from `src/routes/public_pages.py`:
+```python
+public_router = APIRouter(prefix="/v1/public")      # no auth — included bare
+person_links_router = APIRouter(prefix="/v1/persons")  # included with active deps
+
+# In app.py:
+app.include_router(public_router)                          # no auth
+app.include_router(person_links_router, dependencies=active)
+```
+Public share-link tokens are UUID strings stored in Redis with a TTL (`public_link:{token}` → `person_id`). The expiry is controlled by `PUBLIC_PAGE_EXPIRY_MINUTES` (default 30, set in `config.py` and passed via `docker-compose.yml`).
+
+On the frontend, a Server Component page under `/public/**` fetches directly from the API with `authToken: null`:
+```typescript
+const res = await apiFetch<Person>(`/public/persons/${token}`, { authToken: null });
+```
+`authToken: null` skips the `auth()` call in `apiFetch` and sends no Authorization header. The client component for interactive sections (e.g. expandable sales rows) must be extracted to a separate `"use client"` file since the page itself is a Server Component.
 
 ### Ingestion dispatch
 Always dispatch via Celery — never call `run_ingestion()` directly:
@@ -210,7 +230,7 @@ These rules apply to all TypeScript code in the repository (`services/frontend/`
 - **No `any`, no unsafe casts**: never use `any`, `as any`, or `as unknown as T`. Parse external data (fetch responses, `JSON.parse`, route params) through type guards or schema validators (e.g. zod) before narrowing. A bare `as` cast on an `unknown` value is acceptable only when immediately preceded by a type guard.
 - **Explicit return types**: every exported function, React component, route handler, and Server Action must declare its return type. Use `ReactElement` (not `React.JSX.Element` or implicit) for component returns; `Promise<NextResponse>` for route handlers; `Promise<void>` for handlers with no return value.
 - **Discriminated unions over enums**: prefer `type X = "a" | "b"` plus a type guard (`isX`) over TS `enum`. Define option lists as `readonly` tuples and derive types from them.
-- **No `Record<string, unknown>` escape hatches**: model payloads with `interface`s mirroring the API contract in `src/lib/api-types.ts`. Hand-mirroring is the interim approach; long term, generate types from `docs/profile-unifier-openapi-3.1.yaml` via `openapi-typescript`.
+- **No `Record<string, unknown>` escape hatches**: model payloads with `interface`s mirroring the API contract. Types live in two files — `src/lib/api-types.ts` (main contract: `Person`, `PersonConnection`, `SalesOrder`, etc.) and `src/lib/api-types-person.ts` (person-detail sub-types: `PersonIdentifier`, `PersonSourceRecord`, merge/unmerge request/response bodies). Hand-mirroring is the interim approach; long term, generate types from `docs/profile-unifier-openapi-3.1.yaml` via `openapi-typescript`.
 - **Server / client boundary discipline** (App Router):
   - Server-only modules (`src/lib/api-server.ts`, anything reading secret env vars, anything calling FastAPI directly) **must** import `"server-only"` at the top.
   - Client components must declare `"use client"` on the first line and **must not** import server-only modules. Browser code talks to the BFF via `src/lib/api-client.ts`.
