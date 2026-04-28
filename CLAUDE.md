@@ -10,11 +10,13 @@ HyperP is a customer profile unification and relationship intelligence platform.
 
 ### Docker (primary workflow)
 ```bash
-docker compose up -d                          # start all services
-docker compose up -d --build api frontend     # rebuild and restart specific services
-docker compose logs -f api                    # stream logs from a service
-docker compose down                           # stop all services
+docker compose up -d                                        # start all services
+docker compose build --no-cache api frontend               # rebuild images (always use --no-cache for code changes)
+docker compose up -d api frontend                          # restart after rebuild
+docker compose logs -f api                                 # stream logs from a service
+docker compose down                                        # stop all services
 ```
+Always pass `--no-cache` when rebuilding after Python or TypeScript changes — Docker layer caching can serve stale source even when files change.
 
 ### Python — linting and type-checking
 Run from the repo root. The `uv` workspace resolves both services from the single root `uv.lock`.
@@ -50,6 +52,7 @@ npm run build      # production build (runs in Docker for deployment)
 ```
 **Note:** `next lint` was removed in Next.js 15 and replaced with direct ESLint. If `npm run lint` fails, check that `eslint` and `eslint-config-next` are in `devDependencies` and that `eslint.config.mjs` exists.
 The frontend Dockerfile uses `npm install --legacy-peer-deps` because `@mui/x-date-pickers@7` has a peer dependency range that conflicts with `@mui/material@6`. Do not remove this flag.
+**ESLint warning budget**: `--max-warnings 9` is enforced. The budget is currently fully consumed by pre-existing `react-hooks/set-state-in-effect` warnings in existing pages. Any new `"use client"` page that follows the `useEffect(() => { void loadX(); }, [loadX])` data-fetching pattern must add `// eslint-disable-next-line react-hooks/set-state-in-effect` on the `void loadX()` line to avoid exceeding the limit.
 
 ---
 
@@ -84,6 +87,11 @@ return envelope(data, request, cursor=next_cur, total_count=count)
 ```
 `ResponseMeta` carries `request_id`, `next_cursor`, and `total_count`. Frontend reads these via `bffFetchEnvelope` in `src/lib/api-client.ts`.
 
+**Exception — bare responses**: Admin management endpoints (e.g. `GET /v1/admin/api-keys`) return bare `list[T]` or bare objects without `envelope()`. This is intentional for machine-to-machine callers. `apiFetch` in `api-server.ts` handles all three non-envelope shapes automatically:
+- `null` body (HTTP 204 No Content) → `{ data: null, meta: ... }`
+- bare array → `{ data: [...], meta: ... }`
+- bare object with no `"data"` key → `{ data: {...}, meta: ... }`
+
 ### Cursor-based pagination (backend)
 `page_window(cursor, raw_limit)` in `src/http_utils.py` decodes the base64 cursor to a skip offset. Pattern for every list endpoint:
 ```python
@@ -115,12 +123,19 @@ export async function GET(request: Request, context: RouteContext): Promise<Next
 All Cypher strings live as module-level string constants in `services/api/src/graph/queries/` and `services/ingestion/src/graph/queries/`. The `E501` line-length rule is disabled for these files so queries aren't artificially wrapped. Routes import query constants by name; they never embed Cypher inline.
 
 ### Mappers vs converters
-- `graph/converters.py`: primitive type coercions (`to_str`, `to_int`, `to_iso_or_none`, `encode_cursor`/`decode_cursor`). Used by mappers.
+- `graph/converters.py`: primitive type coercions (`to_str`, `to_int`, `to_float`, `to_optional_*`, `to_iso_or_none`, `to_datetime`, `to_str_list`, `encode_cursor`/`decode_cursor`). Also exports type aliases `GraphScalar`, `GraphValue`, `GraphRecord` — use these instead of `Any` when typing raw Neo4j records. Used by mappers.
 - `graph/mappers*.py`: Neo4j `Record` → Pydantic model. One mapper file per domain (persons, entities, sales, reports).
 
 ### JWT / Google ID token verification
 `services/api/src/auth/verify.py` uses a **self-contained** RS256 verifier with a 300-second clock-skew tolerance (absorb drift between our server and Google's token-issuing servers). It does NOT use `google-auth`'s `verify_oauth2_token` directly — that library has a strict `nbf` check that causes spurious 401s. Signature is verified against Google's public cert endpoint.
 Token revocation is handled in `auth/revoke.py`: the raw JWT is decoded (no verification) to extract `jti` and `exp`, then checked against Redis before hitting the signature verifier. The in-process user cache (`auth/deps.py:_USER_CACHE`) is keyed by `jti` and evicted immediately on `POST /v1/auth/logout` so revoked tokens cannot be served from a warm cache.
+
+### Server-to-server API keys
+API keys are enabled when `API_KEYS_ENABLED=true`. They are HMAC-SHA256 hashed (using `API_KEY_SECRET`) and stored on `(:ApiKey)` nodes in Neo4j. A Redis set (`revoked_api_keys`) provides a fast-path rejection before hitting Neo4j.
+
+`auth/deps.py` defines `ApiKeyUser(AuthUser)` — a subclass that carries `key_scopes: list[str]`. All `require_*` dependency functions accept `AuthUser | ApiKeyUser`. The `X-Api-Key` header is checked first (when enabled); on a missing or invalid key it falls back to Bearer token auth. Scopes are checked with `check_scope(scopes, required)` — the `"admin"` scope is a superset of all others.
+
+Admin routes that manage keys (`src/routes/api_keys.py`) are registered with the standard `active` dependency list (requires an authenticated user), not a separate public router.
 
 ### Public (unauthenticated) API endpoints
 When an endpoint must be publicly accessible (no Bearer token), register it on a separate router that is included in `app.py` **without** the `active` dependency list. The auth-gated action that produces the public resource (e.g. generating a share link) uses the normal `person_links_router` registered with `require_active_user`. Example from `src/routes/public_pages.py`:
@@ -219,7 +234,7 @@ These rules apply to all Python code in the repository (`services/api/`, `servic
 
 - **Strict typing**: every variable, parameter, and attribute must have an explicit, concrete type. No untyped bindings, no implicit `Any`, no `typing.Any`. Use `TypedDict`, `pydantic.BaseModel`, `dataclass`, `Literal`, `Protocol`, generics, or unions instead.
 - **Return types required**: every function and method that returns a value must declare a return type annotation. Functions that return nothing must be annotated `-> None`.
-- **Type checker**: code must pass `mypy --strict` (or `pyright` in strict mode). `# type: ignore` is only acceptable with a narrow code and a comment explaining why.
+- **Type checker**: code must pass `mypy --strict` (or `pyright` in strict mode). `# type: ignore` is only acceptable with a narrow code and a comment explaining why. **Known pre-existing failures**: `types_sales.py` and `types_requests.py` contain `Any` annotations that predate strict enforcement — mypy reports them but they are not regressions introduced by new code.
 - **No `Any` escape hatches**: do not use `Any`, `cast(Any, …)`, `object` as a placeholder, or untyped `dict`/`list`. Prefer `dict[str, SomeModel]`, `list[Person]`, `Mapping[str, str | int]`, etc.
 - **Module / function size**: keep modules under ~400 lines and functions under ~50 lines. Refactor longer ones by extracting cohesive helpers, splitting routers by resource, and moving Cypher/SQL into dedicated query modules.
 - **Project standards**: follow PEP 8, PEP 257 (docstrings on public APIs), and PEP 484/695 typing. Format with `ruff format`, lint with `ruff check`, and prefer `from __future__ import annotations` only when needed for forward refs.
@@ -234,7 +249,7 @@ These rules apply to all TypeScript code in the repository (`services/frontend/`
 - **No `any`, no unsafe casts**: never use `any`, `as any`, or `as unknown as T`. Parse external data (fetch responses, `JSON.parse`, route params) through type guards or schema validators (e.g. zod) before narrowing. A bare `as` cast on an `unknown` value is acceptable only when immediately preceded by a type guard.
 - **Explicit return types**: every exported function, React component, route handler, and Server Action must declare its return type. Use `ReactElement` (not `React.JSX.Element` or implicit) for component returns; `Promise<NextResponse>` for route handlers; `Promise<void>` for handlers with no return value.
 - **Discriminated unions over enums**: prefer `type X = "a" | "b"` plus a type guard (`isX`) over TS `enum`. Define option lists as `readonly` tuples and derive types from them.
-- **No `Record<string, unknown>` escape hatches**: model payloads with `interface`s mirroring the API contract. Types live in two files — `src/lib/api-types.ts` (main contract: `Person`, `PersonConnection`, `SalesOrder`, etc.) and `src/lib/api-types-person.ts` (person-detail sub-types: `PersonIdentifier`, `PersonSourceRecord`, merge/unmerge request/response bodies). Hand-mirroring is the interim approach; long term, generate types from `docs/profile-unifier-openapi-3.1.yaml` via `openapi-typescript`.
+- **No `Record<string, unknown>` escape hatches**: model payloads with `interface`s mirroring the API contract. Types live in three files — `src/lib/api-types.ts` (main contract: `Person`, `PersonConnection`, `SalesOrder`, etc.), `src/lib/api-types-person.ts` (person-detail sub-types: `PersonIdentifier`, `PersonSourceRecord`, merge/unmerge request/response bodies), and `src/lib/api-types-ops.ts` (admin/ops/ingestion/review payloads: `ApiKey`, `ReviewCaseDetail`, `IngestRunResponse`, etc.). Hand-mirroring is the interim approach; long term, generate types from `docs/profile-unifier-openapi-3.1.yaml` via `openapi-typescript`.
 - **Server / client boundary discipline** (App Router):
   - Server-only modules (`src/lib/api-server.ts`, anything reading secret env vars, anything calling FastAPI directly) **must** import `"server-only"` at the top.
   - Client components must declare `"use client"` on the first line and **must not** import server-only modules. Browser code talks to the BFF via `src/lib/api-client.ts`.

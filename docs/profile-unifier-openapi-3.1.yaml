@@ -10,8 +10,11 @@ info:
 servers:
   - url: https://api.example.internal
     description: Example internal deployment
+  - url: http://localhost:3000
+    description: Local development (disable auth via AUTH_ENABLED=false)
 security:
   - bearerAuth: []
+  - apiKeyAuth: []
 tags:
   - name: Ingestion
   - name: Persons
@@ -20,6 +23,7 @@ tags:
   - name: Locks
   - name: Survivorship
   - name: Admin
+  - name: "API Keys"
 paths:
   /v1/ingest/{source_key}/records:
     post:
@@ -108,43 +112,161 @@ paths:
   /v1/persons/search:
     get:
       tags: [Persons]
-      summary: Search canonical persons
+      summary: List / search canonical persons
       operationId: searchPersons
+      description: |
+        Returns a paginated list of canonical persons with cursor-based pagination.
+        All filters are applied as AND conditions. Results are sorted by
+        `created_at DESC` unless `sort_by` is specified.
+
+        **MCP tool call example:**
+
+        ```python
+        result = await client.tools.call("hyperP_search_persons", {
+          "limit": 20,
+          "status": "active",
+          "q": "Tan Wei Ming",
+          "sort_by": "preferred_full_name",
+          "sort_order": "asc"
+        })
+        # Returns: { data: [ListedPerson], meta: { total_count: N, next_cursor: "MTA=" } }
+        ```
+      security:
+        - bearerAuth: []
+        - apiKeyAuth: []
       parameters:
-        - $ref: '#/components/parameters/RequestId'
         - name: identifier_type
           in: query
+          description: |
+            Filter by identifier type. When combined with `value`, resolves to a
+            specific person with that exact identifier.
           schema:
             $ref: '#/components/schemas/IdentifierType'
+          example: phone
         - name: value
           in: query
+          description: |
+            Filter by exact identifier value. Requires `identifier_type`.
+            Case-insensitive exact match on the normalized identifier value.
           schema:
             type: string
+          example: "+65 9123 4567"
         - name: q
           in: query
+          description: |
+            Full-text search across `preferred_full_name`, `preferred_nric`,
+            `preferred_email`, and `preferred_phone`. Minimum 3 characters.
+            Matches are returned regardless of position in string.
           schema:
             type: string
+          example: "Tan Wei"
         - name: source_system
           in: query
+          description: Filter to persons with at least one source record from this source.
           schema:
             type: string
+          example: "fundbox-pos"
+        - name: entity_key
+          in: query
+          description: Filter to persons associated with this entity key.
+          schema:
+            type: string
+          example: "fundbox-sg"
         - name: status
           in: query
+          description: Filter by canonical person status.
           schema:
             $ref: '#/components/schemas/PersonStatus'
-        - $ref: '#/components/parameters/Cursor'
-        - $ref: '#/components/parameters/Limit'
+          example: active
+        - name: has_dob
+          in: query
+          description: Filter persons by presence of a date of birth.
+          schema:
+            type: boolean
+        - name: dob_from
+          in: query
+          description: Inclusive lower bound on date of birth (YYYY-MM-DD).
+          schema:
+            type: string
+            format: date
+          example: "1980-01-01"
+        - name: dob_to
+          in: query
+          description: Inclusive upper bound on date of birth (YYYY-MM-DD).
+          schema:
+            type: string
+            format: date
+          example: "1999-12-31"
+        - name: sort_by
+          in: query
+          description: |
+            Sort column. Supported values: `preferred_full_name`, `created_at`,
+            `updated_at`, `identifier_count`, `order_count`.
+          schema:
+            type: string
+            enum: [preferred_full_name, created_at, updated_at, identifier_count, order_count]
+        - name: sort_order
+          in: query
+          description: Sort direction. Defaults to `desc`.
+          schema:
+            type: string
+            enum: [asc, desc]
+          example: asc
+        - name: cursor
+          in: query
+          description: |
+            Opaque pagination cursor returned in `meta.next_cursor` of the
+            previous response. Omit for the first page.
+          schema:
+            type: string
+          example: "MTA="
+        - name: limit
+          in: query
+          description: |
+            Number of results per page (1–100). Defaults to 20.
+            Request one extra row to detect `has_more`.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+          example: 20
       responses:
         '200':
-          description: Search results
+          description: Paginated list of persons matching the query.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/PersonSearchResponseEnvelope'
+              example:
+                data:
+                  - id: "c9f2e8d1-4b3a-4f5e-8c7d-2a6b9e4f8c1a"
+                    display_name: "Tan Wei Ming"
+                    preferred_full_name: "Tan Wei Ming"
+                    preferred_email: "tan.weiming@example.com"
+                    preferred_phone: "+65 9123 4567"
+                    preferred_nric: null
+                    status: "active"
+                    entity_count: 1
+                    identifier_count: 2
+                    order_count: 0
+                    entities:
+                      - entity_key: "fundbox-sg"
+                        display_name: "Fundbox Singapore"
+                        entity_type: "pos"
+                        country_code: "SG"
+                        is_active: true
+                        source_record_count: 14
+                meta:
+                  request_id: "req_abc123"
+                  total_count: 47
+                  next_cursor: "MTA="
         '400':
           $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
   /v1/persons/{person_id}:
     get:
       tags: [Persons]
@@ -279,6 +401,117 @@ paths:
                 $ref: '#/components/schemas/MatchDecisionListResponseEnvelope'
         '404':
           $ref: '#/components/responses/PersonNotFound'
+  # ── API key management (admin only) ─────────────────────────────────────────
+  /v1/admin/api-keys:
+    get:
+      tags: ["API Keys"]
+      summary: List API keys
+      operationId: listApiKeys
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: List of active (non-revoked) API keys.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiKeyListResponseEnvelope"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+    post:
+      tags: ["API Keys"]
+      summary: Create an API key
+      operationId: createApiKey
+      description: |
+        Creates a new server-to-server API key. The **full secret is returned
+        once only** — copy and store it immediately. It is never stored by the
+        server and cannot be retrieved again.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateApiKeyRequest"
+            example:
+              name: "Fundbox Integration"
+              scopes: ["persons:read"]
+              expires_in_days: 365
+      responses:
+        "201":
+          description: API key created. The `key` field is the full secret.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiKeyCreatedResponseEnvelope"
+              example:
+                id: "550e8400-e29b-41d4-a716-446655440000"
+                key: "hp_a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6"
+                key_prefix: "hp_a1b2c3d4"
+                name: "Fundbox Integration"
+                scopes: ["persons:read"]
+                expires_at: "2027-04-28T00:00:00Z"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+  /v1/admin/api-keys/{key_id}:
+    delete:
+      tags: ["API Keys"]
+      summary: Delete an API key
+      operationId: deleteApiKey
+      description: Permanently deletes an API key node. Prefer **revocation** for audit trails.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: key_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          example: "550e8400-e29b-41d4-a716-446655440000"
+      responses:
+        "204":
+          description: API key deleted.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /v1/admin/api-keys/{key_id}/revoke:
+    post:
+      tags: ["API Keys"]
+      summary: Revoke an API key
+      operationId: revokeApiKey
+      description: |
+        Soft-revokes an API key. Validation immediately fails for this key.
+        Adds the key prefix to the Redis revocation set for fast-path rejection.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: key_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          example: "550e8400-e29b-41d4-a716-446655440000"
+      responses:
+        "204":
+          description: API key revoked.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
   /v1/review-cases:
     get:
       tags: [Review]
@@ -1635,3 +1868,145 @@ components:
           $ref: '#/components/schemas/Meta'
       required: [data, meta]
       additionalProperties: false
+    ApiKeyListResponseEnvelope:
+      type: object
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/ApiKey'
+        meta:
+          $ref: '#/components/schemas/Meta'
+      required: [data, meta]
+      additionalProperties: false
+    ApiKeyCreatedResponseEnvelope:
+      type: object
+      properties:
+        data:
+          $ref: '#/components/schemas/ApiKeyCreated'
+        meta:
+          $ref: '#/components/schemas/Meta'
+      required: [data, meta]
+      additionalProperties: false
+    CreateApiKeyRequest:
+      type: object
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 128
+          example: Fundbox Integration
+        entity_key:
+          type: string
+          nullable: true
+          description: Scope key operations to this entity. Null = cross-entity admin.
+          example: fundbox-sg
+        scopes:
+          type: array
+          items:
+            type: string
+            enum: [persons:read, persons:write, ingest:write, admin]
+          minItems: 1
+          example: [persons:read]
+        expires_in_days:
+          type: integer
+          nullable: true
+          minimum: 1
+          maximum: 730
+          description: Key expiry in days. Null = no expiry.
+          example: 365
+      required: [name, scopes]
+      additionalProperties: false
+    ApiKey:
+      type: object
+      description: Server-to-server API key. The plain secret is never stored or returned after creation.
+      properties:
+        id:
+          type: string
+          format: uuid
+        key_prefix:
+          type: string
+          description: First 10 characters of the key. Use for identification — the secret itself is not stored.
+          example: hp_a1b2c3d4
+        name:
+          type: string
+          example: Fundbox Integration
+        entity_key:
+          type: string
+          nullable: true
+          description: If set, key is scoped to this entity.
+        scopes:
+          type: array
+          items:
+            type: string
+            enum: [persons:read, persons:write, ingest:write, admin]
+        created_by:
+          type: string
+          format: email
+          description: Email of the admin who created this key.
+        created_at:
+          type: string
+          format: date-time
+          description: ISO 8601 creation timestamp.
+        expires_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: ISO 8601 expiry timestamp. Null = no expiry.
+        last_used_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: ISO 8601 timestamp of last successful validation.
+        is_revoked:
+          type: boolean
+          default: false
+      required: [id, key_prefix, name, scopes, created_by, created_at, is_revoked]
+      additionalProperties: false
+    ApiKeyCreated:
+      type: object
+      description: |
+        **Shown once immediately after key creation.** The `key` field is the full
+        secret — store it securely. It will never be returned again.
+      properties:
+        id:
+          type: string
+          format: uuid
+        key:
+          type: string
+          description: The full API key secret. Store this immediately — it will never be shown again.
+          example: hp_a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6
+        key_prefix:
+          type: string
+          description: First 10 characters for human identification.
+          example: hp_a1b2c3d4
+        name:
+          type: string
+        scopes:
+          type: array
+          items:
+            type: string
+        expires_at:
+          type: string
+          format: date-time
+          nullable: true
+      required: [id, key, key_prefix, name, scopes]
+      additionalProperties: false
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        Google OAuth 2.0 ID token. Obtain via NextAuth `/api/auth/signin` flow.
+        Pass as `Authorization: Bearer <token>`.
+    apiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-Api-Key
+      description: |
+        Server-to-server API key for machine-to-machine authentication.
+        Generate keys via `POST /v1/admin/api-keys` (admin only).
+        Format: `hp_<base64url>` — the secret is shown once only at creation time.
+        Prefix `hp_` is always required. Configure via `API_KEYS_ENABLED=true`
+        and `API_KEY_SECRET=<your-secret>` in the environment.

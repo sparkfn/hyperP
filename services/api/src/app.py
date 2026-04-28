@@ -13,6 +13,7 @@ from fastapi.params import Depends as DependsMarker
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from src.auth.api_keys import ensure_api_key_constraint
 from src.auth.deps import require_active_user
 from src.config import config
 from src.graph.client import close_driver, get_session
@@ -32,6 +33,7 @@ from src.routes import (
     review,
     survivorship,
 )
+from src.routes import api_keys as api_keys_routes
 from src.routes import auth as auth_routes
 from src.routes import users as users_routes
 from src.routes.public_pages import person_links_router, public_router
@@ -49,10 +51,19 @@ async def _ensure_user_constraint() -> None:
         logger.exception("Failed to create :User uniqueness constraint")
 
 
+async def _ensure_api_key_constraint() -> None:
+    """Create the :ApiKey uniqueness constraint if it does not exist."""
+    try:
+        await ensure_api_key_constraint()
+    except Exception:  # noqa: BLE001
+        logger.exception("Failed to create :ApiKey uniqueness constraint")
+
+
 @asynccontextmanager
 async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
     """Manage the Neo4j driver lifecycle alongside the FastAPI process."""
     await _ensure_user_constraint()
+    await _ensure_api_key_constraint()
     yield
     await close_driver()
     await close_redis()
@@ -96,6 +107,7 @@ def build_app() -> FastAPI:
     app.include_router(survivorship.router, dependencies=active)
     app.include_router(ingest.router, dependencies=active)
     app.include_router(admin.router, dependencies=active)
+    app.include_router(api_keys_routes.router, dependencies=active)
     app.include_router(events.router, dependencies=active)
 
     _register_error_handlers(app)

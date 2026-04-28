@@ -32,6 +32,9 @@ class AppConfig(BaseSettings):
     refresh_token_expiry_minutes: int = Field(default=43200, alias="REFRESH_TOKEN_EXPIRY_MINUTES")
     bootstrap_admin_emails: str = Field(default="", alias="BOOTSTRAP_ADMIN_EMAILS")
     public_page_expiry_minutes: int = Field(default=30, alias="PUBLIC_PAGE_EXPIRY_MINUTES")
+    api_keys_enabled: bool = Field(default=False, alias="API_KEYS_ENABLED")
+    api_key_secret: str | None = Field(default=None, alias="API_KEY_SECRET")
+    api_key_header_name: str = Field(default="X-Api-Key", alias="API_KEY_HEADER_NAME")
 
     @property
     def bootstrap_admin_email_set(self) -> frozenset[str]:
