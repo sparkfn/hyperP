@@ -35,7 +35,7 @@ export default function EventsPage(): ReactElement {
     try {
       const iso: string = toIsoOrEmpty(since);
       const path: string =
-        iso.length > 0 ? `/api/events?since=${encodeURIComponent(iso)}` : "/api/events";
+        iso.length > 0 ? `/bff/events?since=${encodeURIComponent(iso)}` : "/bff/events";
       const res: DownstreamEvent[] = await bffFetch<DownstreamEvent[]>(path);
       setEvents(res);
     } catch (err: unknown) {

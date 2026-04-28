@@ -58,7 +58,7 @@ export default function ReportExecutePanel({ report }: ReportExecutePanelProps):
 
     try {
       const data = await bffFetch<ReportResult>(
-        `/api/reports/${encodeURIComponent(report.report_key)}/execute`,
+        `/bff/reports/${encodeURIComponent(report.report_key)}/execute`,
         {
           method: "POST",
           headers: { "content-type": "application/json" },

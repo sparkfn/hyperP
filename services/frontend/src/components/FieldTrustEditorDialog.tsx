@@ -53,7 +53,7 @@ export default function FieldTrustEditorDialog({ sourceKey }: Props): ReactEleme
     setLoading(true);
     try {
       const res: FieldTrustResponse = await bffFetch<FieldTrustResponse>(
-        `/api/source-systems/${encodeURIComponent(sourceKey)}/field-trust`,
+        `/bff/source-systems/${encodeURIComponent(sourceKey)}/field-trust`,
       );
       setTrust(coerceTiers(res.field_trust));
     } catch (err: unknown) {
@@ -79,7 +79,7 @@ export default function FieldTrustEditorDialog({ sourceKey }: Props): ReactEleme
     setError(null);
     try {
       await bffFetch<FieldTrustResponse>(
-        `/api/source-systems/${encodeURIComponent(sourceKey)}/field-trust`,
+        `/bff/source-systems/${encodeURIComponent(sourceKey)}/field-trust`,
         {
           method: "PATCH",
           headers: { "content-type": "application/json" },

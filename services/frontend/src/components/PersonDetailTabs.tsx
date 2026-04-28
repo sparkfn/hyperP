@@ -5,16 +5,23 @@ import { useState, type ReactElement, type SyntheticEvent } from "react";
 import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
 import Chip from "@mui/material/Chip";
+import Dialog from "@mui/material/Dialog";
+import DialogActions from "@mui/material/DialogActions";
+import DialogContent from "@mui/material/DialogContent";
+import DialogTitle from "@mui/material/DialogTitle";
 import Divider from "@mui/material/Divider";
 import Grid from "@mui/material/Grid2";
+import IconButton from "@mui/material/IconButton";
+import InputAdornment from "@mui/material/InputAdornment";
 import Paper from "@mui/material/Paper";
 import Stack from "@mui/material/Stack";
 import Tab from "@mui/material/Tab";
 import Tabs from "@mui/material/Tabs";
+import TextField from "@mui/material/TextField";
 import Tooltip from "@mui/material/Tooltip";
 import Typography from "@mui/material/Typography";
 
-import type { Person } from "@/lib/api-types";
+import type { ApiResponse, Person, PublicLink } from "@/lib/api-types";
 import { statusColor } from "@/lib/display";
 import AuditTab from "./AuditTab";
 import ConnectionsCard from "./ConnectionsCard";
@@ -36,10 +43,27 @@ export default function PersonDetailTabs({ person }: Props): ReactElement {
   const [tab, setTab] = useState<number>(0);
   const [mergeOpen, setMergeOpen] = useState<boolean>(false);
   const [overrideOpen, setOverrideOpen] = useState<boolean>(false);
+  const [shareLink, setShareLink] = useState<PublicLink | null>(null);
+  const [shareLoading, setShareLoading] = useState<boolean>(false);
 
   const handleChange = (_e: SyntheticEvent, value: number): void => {
     setTab(value);
   };
+
+  async function handleShare(): Promise<void> {
+    setShareLoading(true);
+    try {
+      const res = await fetch(
+        `/bff/persons/${encodeURIComponent(person.person_id)}/public-link`,
+        { method: "POST" },
+      );
+      if (!res.ok) return;
+      const json = (await res.json()) as ApiResponse<PublicLink>;
+      setShareLink(json.data);
+    } finally {
+      setShareLoading(false);
+    }
+  }
 
   return (
     <Box>
@@ -54,6 +78,8 @@ export default function PersonDetailTabs({ person }: Props): ReactElement {
             person={person}
             onMergeClick={() => setMergeOpen(true)}
             onOverrideClick={() => setOverrideOpen(true)}
+            onShareClick={() => void handleShare()}
+            shareLoading={shareLoading}
           />
           <ConnectionsCard personId={person.person_id} />
           <PersonSection title="Identifiers">
@@ -81,6 +107,7 @@ export default function PersonDetailTabs({ person }: Props): ReactElement {
         personId={person.person_id}
         onClose={() => setOverrideOpen(false)}
       />
+      <ShareLinkDialog link={shareLink} onClose={() => setShareLink(null)} />
     </Box>
   );
 }
@@ -89,9 +116,17 @@ interface HeaderProps {
   person: Person;
   onMergeClick: () => void;
   onOverrideClick: () => void;
+  onShareClick: () => void;
+  shareLoading: boolean;
 }
 
-function PersonHeader({ person, onMergeClick, onOverrideClick }: HeaderProps): ReactElement {
+function PersonHeader({
+  person,
+  onMergeClick,
+  onOverrideClick,
+  onShareClick,
+  shareLoading,
+}: HeaderProps): ReactElement {
   return (
     <Paper variant="outlined" sx={{ p: 2 }}>
       <Stack
@@ -110,6 +145,9 @@ function PersonHeader({ person, onMergeClick, onOverrideClick }: HeaderProps): R
           {person.is_high_risk ? <Chip label="high risk" size="small" color="error" /> : null}
         </Stack>
         <Stack direction="row" spacing={1}>
+          <Button size="small" variant="text" onClick={onShareClick} disabled={shareLoading}>
+            {shareLoading ? "Generating…" : "Share"}
+          </Button>
           <Gate mode="admin">
             <Button size="small" variant="outlined" onClick={onOverrideClick}>
               Override field
@@ -161,6 +199,63 @@ function PersonGraphCard({ person }: { person: Person }): ReactElement {
         />
       </Box>
     </Paper>
+  );
+}
+
+interface ShareLinkDialogProps {
+  link: PublicLink | null;
+  onClose: () => void;
+}
+
+function ShareLinkDialog({ link, onClose }: ShareLinkDialogProps): ReactElement {
+  const [copied, setCopied] = useState<boolean>(false);
+  const url =
+    link !== null && typeof window !== "undefined"
+      ? `${window.location.origin}/public/persons/${link.token}`
+      : "";
+
+  function handleCopy(): void {
+    void navigator.clipboard.writeText(url).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    });
+  }
+
+  return (
+    <Dialog open={link !== null} onClose={onClose} maxWidth="sm" fullWidth>
+      <DialogTitle>Share profile link</DialogTitle>
+      <DialogContent>
+        <Stack spacing={2}>
+          <TextField
+            value={url}
+            fullWidth
+            size="small"
+            slotProps={{
+              input: {
+                readOnly: true,
+                endAdornment: (
+                  <InputAdornment position="end">
+                    <Tooltip title={copied ? "Copied!" : "Copy"}>
+                      <IconButton size="small" onClick={handleCopy} edge="end">
+                        <Typography variant="caption">{copied ? "✓" : "Copy"}</Typography>
+                      </IconButton>
+                    </Tooltip>
+                  </InputAdornment>
+                ),
+              },
+            }}
+          />
+          {link !== null ? (
+            <Typography variant="caption" color="text.secondary">
+              Expires: {new Date(link.expires_at).toLocaleString()}
+            </Typography>
+          ) : null}
+        </Stack>
+      </DialogContent>
+      <DialogActions>
+        <Button onClick={onClose}>Close</Button>
+      </DialogActions>
+    </Dialog>
   );
 }
 

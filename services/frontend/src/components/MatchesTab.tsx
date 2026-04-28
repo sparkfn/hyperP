@@ -39,7 +39,7 @@ export default function MatchesTab({ personId }: Props): ReactElement {
     const run = async (): Promise<void> => {
       try {
         const data: PersonMatchDecision[] = await bffFetch<PersonMatchDecision[]>(
-          `/api/persons/${encodeURIComponent(personId)}/matches`,
+          `/bff/persons/${encodeURIComponent(personId)}/matches`,
         );
         if (!cancelled) setRows(data);
       } catch (err: unknown) {

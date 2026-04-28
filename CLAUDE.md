@@ -34,20 +34,22 @@ uv run --package profile-unifier-ingestion mypy --strict services/ingestion/src
 ```bash
 uv run pytest                                        # all tests
 uv run pytest services/api/tests                    # API tests only
-uv run pytest services/ingestion/tests              # ingestion tests only
+uv run pytest services/ingestion/tests             # ingestion tests only
 uv run pytest services/api/tests/test_foo.py        # single file
 ```
-No test suite exists yet; test paths are configured in the root `pyproject.toml`.
+Test paths are configured in the root `pyproject.toml`.
 
 ### Frontend
 ```bash
 cd services/frontend
-npm install
-npm run dev        # dev server on http://localhost:3001
-npm run typecheck  # tsc --noEmit
-npm run lint       # next lint
+npm install          # already done in Docker; run locally for typecheck/lint only
+npm run dev         # dev server on http://localhost:3001
+npm run typecheck   # tsc --noEmit
+npm run lint       # eslint src (ESLint 9 flat config, max-warnings 9)
 npm run build      # production build (runs in Docker for deployment)
 ```
+**Note:** `next lint` was removed in Next.js 15 and replaced with direct ESLint. If `npm run lint` fails, check that `eslint` and `eslint-config-next` are in `devDependencies` and that `eslint.config.mjs` exists.
+The frontend Dockerfile uses `npm install --legacy-peer-deps` because `@mui/x-date-pickers@7` has a peer dependency range that conflicts with `@mui/material@6`. Do not remove this flag.
 
 ---
 
@@ -58,14 +60,18 @@ Seven Docker containers defined in `docker-compose.yml`:
 | Service | Image / Build | Internal address | Notes |
 |---|---|---|---|
 | `neo4j` | `neo4j:5-community` | `bolt://neo4j:7687` | HTTP browser at `:7474` |
-| `redis` | `redis:7-alpine` | `redis://redis:6379` | Celery broker (db 0) + results (db 1) |
+| `redis` | `redis:7-alpine` | `redis://redis:6379` | Celery broker (db 0) + results (db 1) + token revocation store + public share-link tokens (TTL auto-cleanup) |
 | `api` | `services/api/Dockerfile` | `http://api:3000` | FastAPI/uvicorn; not exposed directly |
 | `frontend` | `services/frontend/Dockerfile` | `http://frontend:3001` | Next.js; not exposed directly |
-| `web` | `nginx:1.27-alpine` | exposed on `:80` | Reverse proxy; routes `/v1/*` → api, rest → frontend |
+| `web` | `nginx:1.27-alpine` | exposed on `:80` | Reverse proxy; routes `/api/*` → FastAPI (strips `/api` prefix, FastAPI root_path is `/api`), rest → frontend |
 | `worker` | `services/ingestion/Dockerfile` | — | Celery worker; `celery -A src.celery_app worker` |
 | `beat` | `services/ingestion/Dockerfile` | — | Celery beat scheduler; cron schedules from env vars |
 
-Auth flow: browser → next-auth (Google OAuth) → `googleIdToken` stored in JWT session → Next.js BFF attaches as `Authorization: Bearer` → FastAPI verifies via `require_active_user` dependency.
+**Startup:** `logging.basicConfig(level=...)` in `src/app.py` also silences the `neo4j.notifications` logger (Cypher deprecation warnings) so they don't flood the API container logs. Real Neo4j errors at ERROR level are unaffected.
+
+Auth flow: browser → next-auth (Google OAuth) → `googleIdToken` stored in JWT session → Next.js BFF attaches as `Authorization: Bearer` → FastAPI verifies via `require_active_user` dependency. Token revocation is backed by Redis: `POST /v1/auth/logout` adds the token's `jti` to a Redis SET (TTL auto-cleanup), and the in-process user cache is also evicted immediately. Google refresh tokens are revoked via Google's revocation endpoint. If the refresh token expires, NextAuth sets `session.error = "RefreshTokenError"` and auto-redirects to `/login`.
+
+**Auth bypass**: routes under `/public/**` and `/login`, `/api/health`, and `/bff/auth/**` are explicitly allowed through the NextAuth middleware without a session. The public person pages (`/public/persons/[token]`) are served entirely unauthenticated — they call `apiFetch` with `authToken: null` so no Bearer header is sent.
 
 ---
 
@@ -112,12 +118,37 @@ All Cypher strings live as module-level string constants in `services/api/src/gr
 - `graph/converters.py`: primitive type coercions (`to_str`, `to_int`, `to_iso_or_none`, `encode_cursor`/`decode_cursor`). Used by mappers.
 - `graph/mappers*.py`: Neo4j `Record` → Pydantic model. One mapper file per domain (persons, entities, sales, reports).
 
+### JWT / Google ID token verification
+`services/api/src/auth/verify.py` uses a **self-contained** RS256 verifier with a 300-second clock-skew tolerance (absorb drift between our server and Google's token-issuing servers). It does NOT use `google-auth`'s `verify_oauth2_token` directly — that library has a strict `nbf` check that causes spurious 401s. Signature is verified against Google's public cert endpoint.
+Token revocation is handled in `auth/revoke.py`: the raw JWT is decoded (no verification) to extract `jti` and `exp`, then checked against Redis before hitting the signature verifier. The in-process user cache (`auth/deps.py:_USER_CACHE`) is keyed by `jti` and evicted immediately on `POST /v1/auth/logout` so revoked tokens cannot be served from a warm cache.
+
+### Public (unauthenticated) API endpoints
+When an endpoint must be publicly accessible (no Bearer token), register it on a separate router that is included in `app.py` **without** the `active` dependency list. The auth-gated action that produces the public resource (e.g. generating a share link) uses the normal `person_links_router` registered with `require_active_user`. Example from `src/routes/public_pages.py`:
+```python
+public_router = APIRouter(prefix="/v1/public")      # no auth — included bare
+person_links_router = APIRouter(prefix="/v1/persons")  # included with active deps
+
+# In app.py:
+app.include_router(public_router)                          # no auth
+app.include_router(person_links_router, dependencies=active)
+```
+Public share-link tokens are UUID strings stored in Redis with a TTL (`public_link:{token}` → `person_id`). The expiry is controlled by `PUBLIC_PAGE_EXPIRY_MINUTES` (default 30, set in `config.py` and passed via `docker-compose.yml`).
+
+On the frontend, a Server Component page under `/public/**` fetches directly from the API with `authToken: null`:
+```typescript
+const res = await apiFetch<Person>(`/public/persons/${token}`, { authToken: null });
+```
+`authToken: null` skips the `auth()` call in `apiFetch` and sends no Authorization header. The client component for interactive sections (e.g. expandable sales rows) must be extracted to a separate `"use client"` file since the page itself is a Server Component.
+
 ### Ingestion dispatch
 Always dispatch via Celery — never call `run_ingestion()` directly:
 ```python
 run_ingestion_task.delay(source_key, mode="batch")
 ```
 The task enforces a Redis-backed cluster-wide concurrency cap (`MAX_CONCURRENT_INGESTIONS`, default 1) and retries automatically if a slot is busy.
+
+### Date picker fields
+Date range filters use `DatePickerField` (a wrapper around `@mui/x-date-pickers@7` `DatePicker` + `dayjs` adapter with `en-gb` locale). The display format is `DD MMM YYYY` (e.g. "28 Apr 2026"), matching `formatDob`/`formatDate` from `display.ts`. The component stores values internally as ISO `YYYY-MM-DD` strings for API compatibility. Use `DatePickerField` for any date input that should match the table row date format — do not fall back to `<TextField type="date">`.
 
 ---
 
@@ -203,15 +234,24 @@ These rules apply to all TypeScript code in the repository (`services/frontend/`
 - **No `any`, no unsafe casts**: never use `any`, `as any`, or `as unknown as T`. Parse external data (fetch responses, `JSON.parse`, route params) through type guards or schema validators (e.g. zod) before narrowing. A bare `as` cast on an `unknown` value is acceptable only when immediately preceded by a type guard.
 - **Explicit return types**: every exported function, React component, route handler, and Server Action must declare its return type. Use `ReactElement` (not `React.JSX.Element` or implicit) for component returns; `Promise<NextResponse>` for route handlers; `Promise<void>` for handlers with no return value.
 - **Discriminated unions over enums**: prefer `type X = "a" | "b"` plus a type guard (`isX`) over TS `enum`. Define option lists as `readonly` tuples and derive types from them.
-- **No `Record<string, unknown>` escape hatches**: model payloads with `interface`s mirroring the API contract in `src/lib/api-types.ts`. Hand-mirroring is the interim approach; long term, generate types from `docs/profile-unifier-openapi-3.1.yaml` via `openapi-typescript`.
+- **No `Record<string, unknown>` escape hatches**: model payloads with `interface`s mirroring the API contract. Types live in two files — `src/lib/api-types.ts` (main contract: `Person`, `PersonConnection`, `SalesOrder`, etc.) and `src/lib/api-types-person.ts` (person-detail sub-types: `PersonIdentifier`, `PersonSourceRecord`, merge/unmerge request/response bodies). Hand-mirroring is the interim approach; long term, generate types from `docs/profile-unifier-openapi-3.1.yaml` via `openapi-typescript`.
 - **Server / client boundary discipline** (App Router):
   - Server-only modules (`src/lib/api-server.ts`, anything reading secret env vars, anything calling FastAPI directly) **must** import `"server-only"` at the top.
   - Client components must declare `"use client"` on the first line and **must not** import server-only modules. Browser code talks to the BFF via `src/lib/api-client.ts`.
   - Secrets (internal service URLs, tokens, DB credentials) are server-side env vars **without** the `NEXT_PUBLIC_` prefix. Anything `NEXT_PUBLIC_*` is shipped to the browser — treat it as public.
-- **BFF pattern is mandatory**: the browser must never call FastAPI directly. All upstream traffic flows through Next.js Route Handlers under `src/app/api/*`, which use `proxyToApi` from `src/lib/proxy.ts`. This keeps the API URL, future auth tokens, and CORS surface server-side.
-- **Route handler shape**: each route handler exports typed `GET`/`POST`/etc. returning `Promise<NextResponse>`, declares `export const dynamic = "force-dynamic"` when it must not be cached, and types Next 15 async params as `{ params: Promise<{ ... }> }`. Keep handlers thin — delegate to `proxyToApi` or a service module.
+- **BFF pattern is mandatory**: the browser must never call FastAPI directly for app UI data. All UI upstream traffic flows through Next.js Route Handlers under `src/app/bff/*`, which use `proxyToApi` from `src/lib/proxy.ts`. The public `/api/*` namespace is reserved for nginx to expose FastAPI directly for external services.
+- **Route handler shape**: each route handler exports typed `GET`/`POST`/etc. returning `Promise<NextResponse>`, declares `export const dynamic = "force-dynamic"` when it must not be cached, and types Next 15 async params as `{ params: Promise<{ ... }> }`. Keep handlers thin — delegate to `proxyToApi` or a service module. The logout BFF handler at `src/app/bff/auth/logout/route.ts` calls `apiFetch` to revoke the token server-side before returning.
 - **Data fetching in Server Components**: prefer Server Components for read-only pages and call `apiFetch` directly (no client round-trip). Parallelize independent fetches with `Promise.all`. Translate upstream 404s to `notFound()`.
 - **Component / module size**: keep React components under ~150 lines and modules under ~300 lines. Extract subcomponents (e.g. `PersonHeader`, `ConnectionsCard`) rather than letting a single page balloon. Extract pure helpers (`statusColor`, `buildSearchParams`) out of components.
 - **MUI usage**: import from per-component paths (`@mui/material/Button`) not the barrel (`@mui/material`) to keep bundles tight. Use the `sx` prop for one-off styling, the theme for shared tokens. Wrap the App Router with `AppRouterCacheProvider` from `@mui/material-nextjs/v15-appRouter` exactly once in `layout.tsx`.
-- **Project standards**: format with Prettier, lint with `next lint`. Imports ordered: node/external → `next/*` and `@mui/*` → `@/*` aliases → relative. Use the `@/` path alias instead of long relative paths.
+- **Project standards**: format with Prettier, lint with `eslint src` (ESLint 9 flat config). Imports ordered: node/external → `next/*` and `@mui/*` → `@/*` aliases → relative. Use the `@/` path alias instead of long relative paths.
 - **Package manager — npm**: `services/frontend/` uses npm. Always use `npm install` (locally and in Docker) — do not use `npm ci`. Do not introduce `pnpm-lock.yaml` or `yarn.lock`.
+
+### Interactive graph viewer
+
+The person/relationship graph uses `react-force-graph-2d` (dynamically imported, SSR-disabled). Key patterns:
+
+- **Module split**: types, colors, icon paths, and canvas callbacks live in `graph-utils.ts` (~300 lines); the viewer component and legend stay in `PersonGraphViewer.tsx`; the detail panel is in `GraphDetailPanel.tsx`.
+- **Canvas icons**: Node icons use `Path2D(svgPathString)` constructed from MUI icon SVG path data (24×24 viewBox). Icons are drawn in world coordinates inside `paintNode()` — they scale with the graph zoom, not in screen pixels. The legend uses actual MUI icon React components in `Chip` elements.
+- **Force configuration**: `nodeVal` is set to `NODE_SIZE * 3` so the simulation respects node area for collision. `d3Force("link").distance()` and `d3Force("charge").strength()` are configured via ref callback after mount to prevent overlap while keeping the graph compact.
+- **Detail panel**: Person nodes show a rich profile card (name, status chips, key fields grid, "More" link to person page). Non-Person nodes show generic key-value properties. Both panels include an "Expand in graph" link.

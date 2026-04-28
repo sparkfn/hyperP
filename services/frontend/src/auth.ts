@@ -1,10 +1,40 @@
 import "server-only";
 
-import NextAuth, { type NextAuthConfig, type Session } from "next-auth";
+import NextAuth, {
+  type NextAuthConfig,
+  type Session,
+} from "next-auth";
 import Google from "next-auth/providers/google";
 import type { JWT } from "next-auth/jwt";
 
+import { BFF_AUTH_BASE_PATH, BFF_ME_PATH } from "@/lib/route-paths";
+import { buildApiUrl } from "@/lib/api-url";
 import type { Role } from "@/lib/permissions";
+
+declare module "next-auth" {
+  interface Session {
+    googleIdToken?: string;
+    error?: string;
+    user: {
+      role: Role;
+      entityKey: string | null;
+      displayName: string | null;
+    } & {
+      id?: string;
+      name?: string | null;
+      email?: string | null;
+      image?: string | null;
+    };
+  }
+}
+
+declare module "next-auth/jwt" {
+  interface JWT {
+    googleIdToken?: string;
+    googleRefreshToken?: string;
+    googleIdTokenExpiresAt?: number;
+  }
+}
 
 interface MeResponseBody {
   data: {
@@ -15,8 +45,6 @@ interface MeResponseBody {
     display_name: string | null;
   };
 }
-
-const API_BASE_URL: string = process.env.API_BASE_URL ?? "http://localhost:3000/v1";
 
 interface GoogleRefreshResponse {
   id_token: string;
@@ -55,7 +83,7 @@ async function refreshGoogleIdToken(
 
 async function fetchMe(idToken: string): Promise<MeResponseBody["data"] | null> {
   try {
-    const res: Response = await fetch(`${API_BASE_URL}/auth/me`, {
+    const res: Response = await fetch(buildApiUrl("/auth/me"), {
       method: "GET",
       headers: {
         authorization: `Bearer ${idToken}`,
@@ -72,16 +100,26 @@ async function fetchMe(idToken: string): Promise<MeResponseBody["data"] | null> 
 }
 
 export const authConfig: NextAuthConfig = {
-  // Auth.js auto-reads AUTH_GOOGLE_ID / AUTH_GOOGLE_SECRET from env.
+  basePath: BFF_AUTH_BASE_PATH,
   providers: [Google],
   session: { strategy: "jwt", maxAge: 60 * 60 },
   pages: { signIn: "/login" },
+  cookies: {
+    sessionToken: {
+      name: "hyperP_refresh",
+      options: {
+        httpOnly: true,
+        sameSite: "lax",
+        path: "/",
+        secure: process.env.NODE_ENV === "production",
+      },
+    },
+  },
   callbacks: {
     async jwt({ token, account, trigger }): Promise<JWT> {
       if (account?.id_token) {
         token.googleIdToken = account.id_token;
         token.googleRefreshToken = account.refresh_token ?? undefined;
-        // account.expires_at is the access-token expiry in seconds (also ~1h for Google ID tokens).
         token.googleIdTokenExpiresAt = account.expires_at ?? undefined;
         const me = await fetchMe(account.id_token);
         if (me) {
@@ -95,7 +133,7 @@ export const authConfig: NextAuthConfig = {
         return token;
       }
 
-      // 60s early to avoid delivering an already-expired token on the next API call.
+      // Refresh the access token if it is within 60 s of expiry.
       const expiresAt = token.googleIdTokenExpiresAt;
       const refreshToken = token.googleRefreshToken;
       if (
@@ -108,13 +146,12 @@ export const authConfig: NextAuthConfig = {
           token.googleIdToken = refreshed.idToken;
           token.googleIdTokenExpiresAt = refreshed.expiresAt;
         } else {
-          // Refresh failed — clear tokens so the middleware forces re-login.
-          token.googleIdToken = undefined;
+          // Refresh token is expired or invalid — signal NextAuth to sign out.
+          token.error = "RefreshTokenError";
         }
       }
 
       if (trigger === "update" && typeof token.googleIdToken === "string") {
-        // Refresh role/entity_key from backend on explicit session.update().
         const me = await fetchMe(token.googleIdToken);
         if (me) {
           token.role = me.role;
@@ -131,19 +168,20 @@ export const authConfig: NextAuthConfig = {
         session.user.displayName = token.displayName ?? null;
       }
       session.googleIdToken = token.googleIdToken;
+      session.error = typeof token.error === "string" ? token.error : undefined;
       return session;
     },
     authorized({ auth: sess, request }): boolean | Response {
       const { pathname } = request.nextUrl;
-      if (pathname.startsWith("/api/auth")) return true;
+      if (pathname.startsWith(BFF_AUTH_BASE_PATH)) return true;
       if (pathname === "/login") return true;
       if (pathname === "/api/health") return true;
+      if (pathname.startsWith("/public/")) return true;
       if (!sess || !sess.googleIdToken) return false;
-      // First-time users may only reach the pending screen and the me endpoint.
       const role: string | undefined = sess.user?.role;
       if (role === "first_time") {
         if (pathname.startsWith("/pending")) return true;
-        if (pathname === "/api/auth/me") return true;
+        if (pathname === BFF_ME_PATH) return true;
         const url = request.nextUrl.clone();
         url.pathname = "/pending";
         return Response.redirect(url);

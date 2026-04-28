@@ -4,9 +4,8 @@
 import "server-only";
 
 import { auth } from "@/auth";
+import { buildApiUrl } from "./api-url";
 import type { ApiError, ApiResponse } from "./api-types";
-
-const API_BASE_URL: string = process.env.API_BASE_URL ?? "http://localhost:3000/v1";
 
 export class UpstreamError extends Error {
   public readonly status: number;
@@ -30,7 +29,7 @@ export interface RequestOptions {
 }
 
 function buildUrl(path: string, query: RequestOptions["query"]): string {
-  const url = new URL(`${API_BASE_URL}${path}`);
+  const url: URL = buildApiUrl(path);
   if (query) {
     for (const [key, value] of Object.entries(query)) {
       if (value === null || value === undefined) continue;

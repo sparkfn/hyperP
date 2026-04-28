@@ -14,7 +14,7 @@ import AccountTreeIcon from "@mui/icons-material/AccountTree";
 
 import type { ListedPerson, PersonConnection, SalesOrder, SourceRecord } from "@/lib/api-types";
 import type { PersonIdentifier } from "@/lib/api-types-person";
-import { confidenceColor, connectionsToItems, formatDate, identifiersToItems, ordersToItems, sourcesToItems, statusColor } from "@/lib/display";
+import { confidenceColor, connectionsToItems, formatDate, formatDob, identifiersToItems, ordersToItems, sourcesToItems } from "@/lib/display";
 import CountCardsCell from "@/components/CountCardsCell";
 
 interface PersonRowProps {
@@ -78,9 +78,6 @@ export default function PersonRow({
           {person.is_high_risk && <Chip label="HR" color="error" sx={{ height: 16, fontSize: "0.65rem" }} />}
         </Stack>
       </TableCell>
-      <TableCell>
-        <Chip label={person.status} color={statusColor(person.status)} />
-      </TableCell>
       <TableCell>{person.preferred_phone ?? "—"}</TableCell>
       <TableCell align="right">
         <Tooltip title={`Profile completeness: ${Math.round(person.profile_completeness_score * 100)}%`}>
@@ -88,7 +85,7 @@ export default function PersonRow({
         </Tooltip>
       </TableCell>
       <TableCell>{person.preferred_email ?? "—"}</TableCell>
-      <TableCell>{person.preferred_dob ?? "—"}</TableCell>
+      <TableCell sx={{ whiteSpace: "nowrap" }}>{formatDob(person.preferred_dob ?? null)}</TableCell>
       <TableCell sx={{ maxWidth: 160, fontFamily: "monospace", fontSize: "0.72rem", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
         <Tooltip title={person.preferred_nric ?? ""}>
           <span>{person.preferred_nric ?? "—"}</span>
@@ -151,7 +148,7 @@ export default function PersonRow({
           }))}
         />
       </TableCell>
-      <TableCell>{formatDate(person.updated_at)}</TableCell>
+      <TableCell sx={{ whiteSpace: "nowrap" }}>{formatDate(person.updated_at)}</TableCell>
       <TableCell align="center" onClick={(e) => e.stopPropagation()} sx={{ position: "sticky", right: 0, zIndex: 2, bgcolor: "background.paper" }}>
         <Tooltip title="Open graph">
           <IconButton onClick={onOpenGraph}>

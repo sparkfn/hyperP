@@ -29,7 +29,7 @@ export default function ReportsPage(): ReactElement {
     setLoading(true);
     setError(null);
     try {
-      const data = await bffFetch<ReportSummary[]>("/api/reports");
+      const data = await bffFetch<ReportSummary[]>("/bff/reports");
       setReports(data);
     } catch (err: unknown) {
       const msg =
@@ -49,7 +49,7 @@ export default function ReportsPage(): ReactElement {
   async function handleSeed(): Promise<void> {
     setSeeding(true);
     try {
-      await bffFetch<string[]>("/api/reports/seed", { method: "POST" });
+      await bffFetch<string[]>("/bff/reports/seed", { method: "POST" });
       await loadReports();
     } catch (err: unknown) {
       const msg =

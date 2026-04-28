@@ -33,6 +33,16 @@ def to_iso(value: object) -> str | None:
         return value.isoformat() + ("Z" if value.tzinfo is None else "")
     if isinstance(value, date):
         return value.isoformat()
+    if isinstance(value, str):
+        stripped = value.strip()
+        try:
+            d = date.fromisoformat(stripped)
+        except ValueError:
+            return stripped
+        # Discard dates outside the plausible range for stored data.
+        if not (1900 <= d.year <= 2100):
+            return None
+        return d.isoformat()
     return str(value)
 
 

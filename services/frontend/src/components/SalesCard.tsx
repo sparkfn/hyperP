@@ -123,7 +123,7 @@ interface SalesCardProps {
 export default function SalesCard({ personId }: SalesCardProps): ReactElement {
   const { rows: orders, error, loading, from, to, total, hasPrev, hasNext, goNext, goPrev } =
     usePaginatedFetch<SalesOrder>(
-      `/api/persons/${encodeURIComponent(personId)}/sales`,
+      `/bff/persons/${encodeURIComponent(personId)}/sales`,
     );
 
   return (

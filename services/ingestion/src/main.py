@@ -81,6 +81,7 @@ def setup_logging(level: str) -> None:
         format="%(asctime)s  %(levelname)-8s  %(name)s  %(message)s",
         datefmt="%Y-%m-%dT%H:%M:%S",
     )
+    logging.getLogger("neo4j.notifications").setLevel(logging.ERROR)
 
 
 def get_connector(source_key: str) -> SourceConnector:

@@ -7,14 +7,19 @@ __pycache__/
 *.pyc
 *.pyo
 .venv/
+**/.venv*/
 .ruff_cache/
 .pytest_cache/
 .mypy_cache/
 *.egg-info/
 
 # Node
-node_modules/
+**/node_modules/
+**/.next/
 .next/
+node_modules/
+out
+*.tsbuildinfo
 
 # IDE
 .idea/

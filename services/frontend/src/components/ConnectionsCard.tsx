@@ -25,7 +25,7 @@ interface Props {
 export default function ConnectionsCard({ personId }: Props): ReactElement {
   const { rows: connections, error, loading, from, to, total, hasPrev, hasNext, goNext, goPrev } =
     usePaginatedFetch<PersonConnection>(
-      `/api/persons/${encodeURIComponent(personId)}/connections?connection_type=all`,
+      `/bff/persons/${encodeURIComponent(personId)}/connections?connection_type=all`,
     );
 
   return (

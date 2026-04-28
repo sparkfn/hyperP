@@ -25,7 +25,7 @@ interface Props {
 export default function SourceRecordsTab({ personId }: Props): ReactElement {
   const { rows, error, loading, from, to, total, hasPrev, hasNext, goNext, goPrev } =
     usePaginatedFetch<PersonSourceRecord>(
-      `/api/persons/${encodeURIComponent(personId)}/source-records`,
+      `/bff/persons/${encodeURIComponent(personId)}/source-records`,
     );
 
   if (error !== null) return <Alert severity="error">{error}</Alert>;

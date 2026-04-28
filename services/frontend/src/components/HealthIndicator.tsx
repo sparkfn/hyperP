@@ -5,7 +5,7 @@ import { useEffect, useState, type ReactElement } from "react";
 import Box from "@mui/material/Box";
 import Tooltip from "@mui/material/Tooltip";
 
-import { bffFetch } from "@/lib/api-client";
+import { API_HEALTH_PATH } from "@/lib/route-paths";
 import type { HealthResponse } from "@/lib/api-types-ops";
 
 type Status = "ok" | "down" | "loading";
@@ -22,6 +22,15 @@ function labelFor(status: Status): string {
   return "Checking API...";
 }
 
+function isHealthResponse(value: unknown): value is HealthResponse {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "status" in value &&
+    typeof value.status === "string"
+  );
+}
+
 export default function HealthIndicator(): ReactElement {
   const [status, setStatus] = useState<Status>("loading");
 
@@ -30,7 +39,10 @@ export default function HealthIndicator(): ReactElement {
 
     async function check(): Promise<void> {
       try {
-        const res: HealthResponse = await bffFetch<HealthResponse>("/api/health");
+        const response: Response = await fetch(API_HEALTH_PATH);
+        const parsed: unknown = await response.json();
+        if (!response.ok || !isHealthResponse(parsed)) throw new Error("Health check failed.");
+        const res: HealthResponse = parsed;
         if (cancelled) return;
         setStatus(res.status === "ok" ? "ok" : "down");
       } catch {

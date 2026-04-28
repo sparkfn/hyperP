@@ -53,7 +53,7 @@ export default function ManualMergeDialog({
         recompute_golden_profile: recompute,
       };
       const result: ManualMergeResponseBody = await bffFetch<ManualMergeResponseBody>(
-        "/api/persons/manual-merge",
+        "/bff/persons/manual-merge",
         {
           method: "POST",
           headers: { "content-type": "application/json" },

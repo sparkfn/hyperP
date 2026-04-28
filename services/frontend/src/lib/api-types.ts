@@ -26,6 +26,11 @@ export interface ApiError {
   meta: ResponseMeta;
 }
 
+export interface PublicLink {
+  token: string;
+  expires_at: string;
+}
+
 export interface AddressSummary {
   address_id: string;
   unit_number: string | null;
@@ -183,6 +188,11 @@ export interface ReportResult {
   columns: string[];
   rows: Record<string, string | number | boolean | null>[];
   row_count: number;
+}
+
+export interface DeleteReportResponse {
+  status: string;
+  report_key: string;
 }
 
 export interface GraphNode {

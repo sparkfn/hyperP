@@ -18,6 +18,7 @@ from src.config import config
 from src.graph.client import close_driver, get_session
 from src.graph.queries.users import CREATE_USER_CONSTRAINT
 from src.http_utils import request_id
+from src.redis_client import close_redis
 from src.routes import (
     admin,
     entities,
@@ -31,12 +32,9 @@ from src.routes import (
     review,
     survivorship,
 )
-from src.routes import (
-    auth as auth_routes,
-)
-from src.routes import (
-    users as users_routes,
-)
+from src.routes import auth as auth_routes
+from src.routes import users as users_routes
+from src.routes.public_pages import person_links_router, public_router
 from src.types import ApiError, ApiErrorBody, ResponseMeta
 
 logger = logging.getLogger("profile_unifier_api")
@@ -57,12 +55,19 @@ async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
     await _ensure_user_constraint()
     yield
     await close_driver()
+    await close_redis()
 
 
 def build_app() -> FastAPI:
     """Construct and configure the FastAPI application."""
+    logging.getLogger("neo4j.notifications").setLevel(logging.ERROR)
     logging.basicConfig(level=config.log_level.upper())
-    app = FastAPI(title="Profile Unifier API", version="0.1.0", lifespan=_lifespan)
+    app = FastAPI(
+        title="Profile Unifier API",
+        version="0.1.0",
+        lifespan=_lifespan,
+        root_path=config.root_path,
+    )
 
     app.add_middleware(
         CORSMiddleware,
@@ -72,15 +77,16 @@ def build_app() -> FastAPI:
         allow_headers=["*"],
     )
 
-    # Health and auth endpoints are not behind require_active_user (auth endpoints
-    # must tolerate first-time users so they can see their pending status).
+    # Health, auth, and public (share-link) endpoints — no auth required.
     app.include_router(health.router)
     app.include_router(auth_routes.router)
+    app.include_router(public_router)
     # The users router is admin-only via its handlers.
     app.include_router(users_routes.router)
 
     # All other routes require an active (non-first_time) user by default.
     active: list[DependsMarker] = [Depends(require_active_user)]
+    app.include_router(person_links_router, dependencies=active)
     app.include_router(entities.router, dependencies=active)
     app.include_router(reports.router, dependencies=active)
     app.include_router(persons.router, dependencies=active)

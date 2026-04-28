@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import logging
+
 from cachetools import TTLCache
-from fastapi import Depends, Request
+from fastapi import Depends, Request, Security
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from src.auth.models import AuthUser
+from src.auth.revoke import decode_jwt_claims, is_token_revoked
 from src.auth.store import (
     get_entities_for_review_case,
     get_entity_for_source,
@@ -15,7 +19,13 @@ from src.auth.verify import verify_google_id_token
 from src.config import config
 from src.http_utils import http_error
 
-_USER_CACHE: TTLCache[str, AuthUser] = TTLCache(maxsize=1024, ttl=30.0)
+log = logging.getLogger(__name__)
+
+# Keyed by jti so we can evict on logout. Value is the raw token so we can
+# also evict on raw-token lookup (token rotation etc.).
+_USER_CACHE: TTLCache[str, tuple[str, AuthUser]] = TTLCache(maxsize=1024, ttl=30.0)
+_BEARER_AUTH = HTTPBearer(auto_error=False)
+_BEARER_CREDENTIALS = Security(_BEARER_AUTH)
 
 _DEV_BYPASS_USER: AuthUser = AuthUser(
     email="dev-bypass@local",
@@ -26,18 +36,16 @@ _DEV_BYPASS_USER: AuthUser = AuthUser(
 )
 
 
-def _bearer_token(request: Request) -> str | None:
-    header = request.headers.get("authorization")
-    if not header:
-        return None
-    parts = header.split(None, 1)
-    if len(parts) != 2 or parts[0].lower() != "bearer":
-        return None
-    token = parts[1].strip()
-    return token or None
+def evict_user_cache(jti: str | None) -> None:
+    """Remove a user's cached entry by jti so revocation takes effect immediately."""
+    if jti is not None:
+        _USER_CACHE.pop(jti, None)
 
 
-async def get_current_user(request: Request) -> AuthUser:
+async def get_current_user(
+    request: Request,
+    credentials: HTTPAuthorizationCredentials | None = _BEARER_CREDENTIALS,
+) -> AuthUser:
     """Resolve the authenticated principal from the Bearer ID token.
 
     Allows first-time users through — enforcement against unassigned accounts
@@ -46,17 +54,22 @@ async def get_current_user(request: Request) -> AuthUser:
     if not config.auth_enabled:
         return _DEV_BYPASS_USER
 
-    token = _bearer_token(request)
-    if token is None:
+    if credentials is None:
         raise http_error(401, "unauthorized", "Missing Bearer token.", request)
 
-    cached = _USER_CACHE.get(token)
+    token: str = credentials.credentials
+    jti, exp = decode_jwt_claims(token)
+    if jti is not None and await is_token_revoked(jti):
+        raise http_error(401, "token_revoked", "Token has been revoked.", request)
+
+    cached = _USER_CACHE.get(jti if jti is not None else token)
     if cached is not None:
-        return cached
+        return cached[1]
 
     try:
         claims = verify_google_id_token(token)
     except ValueError as exc:
+        log.warning("Token verification failed: %s", exc)
         raise http_error(401, "unauthorized", f"Invalid token: {exc}", request) from exc
 
     # Upsert is idempotent: ON CREATE sets role based on bootstrap admin list,
@@ -65,7 +78,7 @@ async def get_current_user(request: Request) -> AuthUser:
     user = await upsert_user_on_login(
         email=claims.email, google_sub=claims.sub, display_name=claims.name
     )
-    _USER_CACHE[token] = user
+    _USER_CACHE[jti if jti is not None else token] = (token, user)
     return user
 
 

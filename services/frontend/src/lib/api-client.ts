@@ -1,4 +1,4 @@
-// Browser-safe API client. Talks to the Next.js BFF (`/api/*`), never to
+// Browser-safe API client. Talks to the Next.js BFF (`/bff/*`), never to
 // FastAPI directly. Server-side code should use `lib/api-server` instead.
 
 import type { ApiError, ApiResponse } from "./api-types";
