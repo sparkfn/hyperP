@@ -49,6 +49,7 @@ npm run lint       # eslint src (ESLint 9 flat config, max-warnings 9)
 npm run build      # production build (runs in Docker for deployment)
 ```
 **Note:** `next lint` was removed in Next.js 15 and replaced with direct ESLint. If `npm run lint` fails, check that `eslint` and `eslint-config-next` are in `devDependencies` and that `eslint.config.mjs` exists.
+The frontend Dockerfile uses `npm install --legacy-peer-deps` because `@mui/x-date-pickers@7` has a peer dependency range that conflicts with `@mui/material@6`. Do not remove this flag.
 
 ---
 
@@ -146,6 +147,9 @@ run_ingestion_task.delay(source_key, mode="batch")
 ```
 The task enforces a Redis-backed cluster-wide concurrency cap (`MAX_CONCURRENT_INGESTIONS`, default 1) and retries automatically if a slot is busy.
 
+### Date picker fields
+Date range filters use `DatePickerField` (a wrapper around `@mui/x-date-pickers@7` `DatePicker` + `dayjs` adapter with `en-gb` locale). The display format is `DD MMM YYYY` (e.g. "28 Apr 2026"), matching `formatDob`/`formatDate` from `display.ts`. The component stores values internally as ISO `YYYY-MM-DD` strings for API compatibility. Use `DatePickerField` for any date input that should match the table row date format — do not fall back to `<TextField type="date">`.
+
 ---
 
 ## Repository Structure
@@ -242,3 +246,12 @@ These rules apply to all TypeScript code in the repository (`services/frontend/`
 - **MUI usage**: import from per-component paths (`@mui/material/Button`) not the barrel (`@mui/material`) to keep bundles tight. Use the `sx` prop for one-off styling, the theme for shared tokens. Wrap the App Router with `AppRouterCacheProvider` from `@mui/material-nextjs/v15-appRouter` exactly once in `layout.tsx`.
 - **Project standards**: format with Prettier, lint with `eslint src` (ESLint 9 flat config). Imports ordered: node/external → `next/*` and `@mui/*` → `@/*` aliases → relative. Use the `@/` path alias instead of long relative paths.
 - **Package manager — npm**: `services/frontend/` uses npm. Always use `npm install` (locally and in Docker) — do not use `npm ci`. Do not introduce `pnpm-lock.yaml` or `yarn.lock`.
+
+### Interactive graph viewer
+
+The person/relationship graph uses `react-force-graph-2d` (dynamically imported, SSR-disabled). Key patterns:
+
+- **Module split**: types, colors, icon paths, and canvas callbacks live in `graph-utils.ts` (~300 lines); the viewer component and legend stay in `PersonGraphViewer.tsx`; the detail panel is in `GraphDetailPanel.tsx`.
+- **Canvas icons**: Node icons use `Path2D(svgPathString)` constructed from MUI icon SVG path data (24×24 viewBox). Icons are drawn in world coordinates inside `paintNode()` — they scale with the graph zoom, not in screen pixels. The legend uses actual MUI icon React components in `Chip` elements.
+- **Force configuration**: `nodeVal` is set to `NODE_SIZE * 3` so the simulation respects node area for collision. `d3Force("link").distance()` and `d3Force("charge").strength()` are configured via ref callback after mount to prevent overlap while keeping the graph compact.
+- **Detail panel**: Person nodes show a rich profile card (name, status chips, key fields grid, "More" link to person page). Non-Person nodes show generic key-value properties. Both panels include an "Expand in graph" link.

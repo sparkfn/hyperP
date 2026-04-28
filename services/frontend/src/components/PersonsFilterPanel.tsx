@@ -18,6 +18,7 @@ import TextField from "@mui/material/TextField";
 import Typography from "@mui/material/Typography";
 
 import type { EntitySummary } from "@/lib/api-types";
+import DatePickerField from "@/components/DatePickerField";
 import PersonsFilterAddressSection from "@/components/PersonsFilterAddressSection";
 import PersonsFilterDobSection from "@/components/PersonsFilterDobSection";
 
@@ -175,21 +176,15 @@ export default function PersonsFilterPanel({
           LAST UPDATED
         </Typography>
         <Box sx={{ display: "grid", gap: 1.5, gridTemplateColumns: { xs: "repeat(2, 1fr)", md: "repeat(4, 1fr)" } }}>
-          <TextField
-            size="small"
+          <DatePickerField
             label="After"
-            type="date"
             value={draft.updated_after}
-            onChange={(e) => patch({ updated_after: e.target.value })}
-            InputLabelProps={{ shrink: true }}
+            onChange={(v) => patch({ updated_after: v })}
           />
-          <TextField
-            size="small"
+          <DatePickerField
             label="Before"
-            type="date"
             value={draft.updated_before}
-            onChange={(e) => patch({ updated_before: e.target.value })}
-            InputLabelProps={{ shrink: true }}
+            onChange={(v) => patch({ updated_before: v })}
           />
         </Box>
       </Collapse>

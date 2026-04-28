@@ -16,18 +16,34 @@ import Paper from "@mui/material/Paper";
 import Stack from "@mui/material/Stack";
 import TextField from "@mui/material/TextField";
 import Typography from "@mui/material/Typography";
+import PersonIcon from "@mui/icons-material/Person";
+import HomeIcon from "@mui/icons-material/Home";
+import DescriptionIcon from "@mui/icons-material/Description";
+import VpnKeyIcon from "@mui/icons-material/VpnKey";
+import ChangeHistoryIcon from "@mui/icons-material/ChangeHistory";
+import AssignmentIcon from "@mui/icons-material/Assignment";
+import MergeTypeIcon from "@mui/icons-material/MergeType";
+import ReceiptIcon from "@mui/icons-material/Receipt";
+import InventoryIcon from "@mui/icons-material/Inventory";
+import CircleIcon from "@mui/icons-material/Circle";
+import StorageIcon from "@mui/icons-material/Storage";
+import StorefrontIcon from "@mui/icons-material/Storefront";
 import dynamic from "next/dynamic";
+import type { ForceGraphMethods } from "react-force-graph-2d";
 
 import { BffError, bffFetch } from "@/lib/api-client";
 import type { PersonGraph } from "@/lib/api-types";
 import {
   colorForLabel,
+  iconForLabel,
   paintNode,
   paintNodePointerArea,
   toForceGraphData,
+  NODE_SIZE,
   type FGGraphData,
   type FGLink,
   type FGNode,
+  type NodeIcon,
   type SelectedItem,
 } from "@/components/graph-utils";
 import GraphDetailPanel from "@/components/GraphDetailPanel";
@@ -43,6 +59,21 @@ type AnyLink = Record<string, unknown>;
 
 const DOUBLE_CLICK_MS = 300;
 
+const ICON_COMPONENTS: Record<NodeIcon, ReactElement> = {
+  person: <PersonIcon />,
+  home: <HomeIcon />,
+  description: <DescriptionIcon />,
+  vpnKey: <VpnKeyIcon />,
+  diamond: <ChangeHistoryIcon />,
+  assignment: <AssignmentIcon />,
+  mergeType: <MergeTypeIcon />,
+  receipt: <ReceiptIcon />,
+  inventory: <InventoryIcon />,
+  bullet: <CircleIcon sx={{ fontSize: 12 }} />,
+  dataSource: <StorageIcon />,
+  storefront: <StorefrontIcon />,
+};
+
 function Legend({ labels }: { labels: string[] }): ReactElement {
   return (
     <Paper
@@ -53,9 +84,15 @@ function Legend({ labels }: { labels: string[] }): ReactElement {
         {labels.map((label) => (
           <Chip
             key={label}
+            icon={ICON_COMPONENTS[iconForLabel(label)]}
             label={label}
             size="small"
-            sx={{ bgcolor: colorForLabel(label), color: "#fff", fontSize: "0.7rem" }}
+            sx={{
+              bgcolor: colorForLabel(label),
+              color: "#fff",
+              fontSize: "0.7rem",
+              "& .MuiChip-icon": { color: "#fff", ml: "4px" },
+            }}
           />
         ))}
       </Stack>
@@ -88,8 +125,22 @@ export default function PersonGraphViewer({
   const [error, setError] = useState<string | null>(null);
   const [selected, setSelected] = useState<SelectedItem | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  const graphRef = useRef<ForceGraphMethods>(undefined);
   const [dimensions, setDimensions] = useState({ width: 800, height: 600 });
   const lastClickRef = useRef<{ nodeId: string; time: number }>({ nodeId: "", time: 0 });
+
+  // Configure d3 forces for proper spacing once graph is loaded
+  useEffect(() => {
+    if (!graphData) return;
+    const timer = setTimeout(() => {
+      const fg = graphRef.current;
+      if (!fg) return;
+      fg.d3Force("link")?.distance(35);
+      fg.d3Force("charge")?.strength(-120);
+      fg.d3ReheatSimulation();
+    }, 100);
+    return () => clearTimeout(timer);
+  }, [graphData]);
 
   useEffect(() => {
     const el = containerRef.current;
@@ -218,6 +269,7 @@ export default function PersonGraphViewer({
         {graphData !== null && !loading ? (
           <>
             <ForceGraph2D
+              ref={graphRef}
               graphData={graphData}
               backgroundColor="rgba(0,0,0,0)"
               width={dimensions.width}
@@ -225,6 +277,7 @@ export default function PersonGraphViewer({
               nodeId="id"
               linkSource="source"
               linkTarget="target"
+              nodeVal={() => NODE_SIZE * 3}
               nodeCanvasObject={paintNode}
               nodeCanvasObjectMode={() => "replace"}
               nodePointerAreaPaint={paintNodePointerArea}
@@ -237,7 +290,10 @@ export default function PersonGraphViewer({
               onNodeRightClick={handleNodeRightClick}
               onLinkClick={handleLinkClick}
               enableNodeDrag
-              cooldownTicks={100}
+              cooldownTicks={300}
+              d3AlphaDecay={0.01}
+              d3VelocityDecay={0.3}
+              warmupTicks={100}
             />
             <Legend labels={uniqueLabels} />
             {selected !== null ? (

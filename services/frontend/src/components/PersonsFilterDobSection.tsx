@@ -4,11 +4,11 @@ import type { ReactElement } from "react";
 
 import Box from "@mui/material/Box";
 import Stack from "@mui/material/Stack";
-import TextField from "@mui/material/TextField";
 import ToggleButton from "@mui/material/ToggleButton";
 import ToggleButtonGroup from "@mui/material/ToggleButtonGroup";
 import Typography from "@mui/material/Typography";
 
+import DatePickerField from "@/components/DatePickerField";
 import type { PersonsFilters } from "@/components/PersonsFilterPanel";
 
 const TOGGLE_SX = {
@@ -66,22 +66,16 @@ export default function PersonsFilterDobSection({
           gridTemplateColumns: { xs: "repeat(2, 1fr)", md: "repeat(4, 1fr)" },
         }}
       >
-        <TextField
-          size="small"
+        <DatePickerField
           label="From"
-          type="date"
           value={filters.dob_from}
-          onChange={(e) => onChange({ dob_from: e.target.value })}
-          InputLabelProps={{ shrink: true }}
+          onChange={(v) => onChange({ dob_from: v })}
           disabled={disabled}
         />
-        <TextField
-          size="small"
+        <DatePickerField
           label="To"
-          type="date"
           value={filters.dob_to}
-          onChange={(e) => onChange({ dob_to: e.target.value })}
-          InputLabelProps={{ shrink: true }}
+          onChange={(v) => onChange({ dob_to: v })}
           disabled={disabled}
         />
       </Box>
