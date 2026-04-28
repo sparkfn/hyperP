@@ -176,6 +176,7 @@ export const authConfig: NextAuthConfig = {
       if (pathname.startsWith(BFF_AUTH_BASE_PATH)) return true;
       if (pathname === "/login") return true;
       if (pathname === "/api/health") return true;
+      if (pathname.startsWith("/public/")) return true;
       if (!sess || !sess.googleIdToken) return false;
       const role: string | undefined = sess.user?.role;
       if (role === "first_time") {

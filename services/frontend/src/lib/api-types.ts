@@ -26,6 +26,11 @@ export interface ApiError {
   meta: ResponseMeta;
 }
 
+export interface PublicLink {
+  token: string;
+  expires_at: string;
+}
+
 export interface AddressSummary {
   address_id: string;
   unit_number: string | null;

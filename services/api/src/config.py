@@ -31,6 +31,7 @@ class AppConfig(BaseSettings):
     # Google refresh tokens do not expire but may be revoked; 30 days is a safe default.
     refresh_token_expiry_minutes: int = Field(default=43200, alias="REFRESH_TOKEN_EXPIRY_MINUTES")
     bootstrap_admin_emails: str = Field(default="", alias="BOOTSTRAP_ADMIN_EMAILS")
+    public_page_expiry_minutes: int = Field(default=30, alias="PUBLIC_PAGE_EXPIRY_MINUTES")
 
     @property
     def bootstrap_admin_email_set(self) -> frozenset[str]:
