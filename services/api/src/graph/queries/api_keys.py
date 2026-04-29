@@ -45,10 +45,9 @@ RETURN k {
 } AS key
 """
 
-# List all keys for admin UI.
+# List all keys for admin UI (including revoked, for audit trail).
 GET_API_KEYS_FOR_ADMIN = """
 MATCH (k:ApiKey)
-WHERE k.is_revoked = false
 RETURN k {
     .id, .prefix, .name, .entity_key, .scopes,
     .created_by, .created_at, .expires_at, .last_used_at, .is_revoked

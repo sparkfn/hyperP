@@ -303,6 +303,7 @@ function ApiKeyRow(props: ApiKeyRowProps): ReactElement {
     ? new Date(props.keyData.expires_at)
     : null;
   const isExpired = expiresDate && expiresDate < new Date();
+  const isRevoked = props.keyData.is_revoked;
 
   async function revoke(): Promise<void> {
     setBusy(true);
@@ -327,10 +328,11 @@ function ApiKeyRow(props: ApiKeyRowProps): ReactElement {
         <Stack direction="row" alignItems="center" justifyContent="space-between" spacing={2}>
           <Box>
             <Stack direction="row" alignItems="center" spacing={1}>
-              <Typography variant="body2" fontWeight={600} fontFamily="monospace">
+              <Typography variant="body2" fontWeight={600} fontFamily="monospace" sx={isRevoked ? { opacity: 0.5 } : undefined}>
                 {props.keyData.key_prefix}{"*".repeat(20)}
               </Typography>
-              {isExpired && <Chip label="expired" size="small" color="error" />}
+              {isRevoked && <Chip label="revoked" size="small" color="default" />}
+              {!isRevoked && isExpired && <Chip label="expired" size="small" color="error" />}
             </Stack>
             <Typography variant="caption" color="text.secondary">
               {props.keyData.name} &mdash; created by {props.keyData.created_by}
@@ -356,11 +358,13 @@ function ApiKeyRow(props: ApiKeyRowProps): ReactElement {
                 </>
               ) : (
                 <>
-                  <Tooltip title="Soft-revoke: key stops validating immediately">
-                    <Button size="small" color="warning" onClick={() => void revoke()} disabled={busy}>
-                      Revoke
-                    </Button>
-                  </Tooltip>
+                  {!isRevoked && (
+                    <Tooltip title="Soft-revoke: key stops validating immediately but stays visible for audit">
+                      <Button size="small" color="warning" onClick={() => void revoke()} disabled={busy}>
+                        Revoke
+                      </Button>
+                    </Tooltip>
+                  )}
                   <Button
                     size="small"
                     color="error"

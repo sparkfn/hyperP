@@ -63,7 +63,7 @@ def _api_key_from_record(record: object) -> ApiKey:
         created_at=to_datetime(record.get("created_at")),
         expires_at=to_datetime(record.get("expires_at")),
         last_used_at=to_datetime(record.get("last_used_at")),
-        is_revoked=to_str(record.get("is_revoked", "false")) == "true",
+        is_revoked=bool(record.get("is_revoked", False)),
     )
 
 
@@ -140,8 +140,11 @@ async def revoke_api_key(key_id: str) -> bool:
     await redis.sadd(_REVOKED_SET_KEY, key_obj.key_prefix)  # type: ignore[misc]
     # TTL = key expiry or 1 year fallback
     if key_obj.expires_at:
+        expires_at = key_obj.expires_at
+        if expires_at.tzinfo is not None:
+            expires_at = expires_at.replace(tzinfo=None)
         now = datetime.now(UTC).replace(tzinfo=None)
-        ttl = int((key_obj.expires_at - now).total_seconds())
+        ttl = int((expires_at - now).total_seconds())
         if ttl > 0:
             await redis.expire(_REVOKED_SET_KEY, ttl)
     else:

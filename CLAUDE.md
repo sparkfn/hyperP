@@ -126,6 +126,10 @@ All Cypher strings live as module-level string constants in `services/api/src/gr
 - `graph/converters.py`: primitive type coercions (`to_str`, `to_int`, `to_float`, `to_optional_*`, `to_iso_or_none`, `to_datetime`, `to_str_list`, `encode_cursor`/`decode_cursor`). Also exports type aliases `GraphScalar`, `GraphValue`, `GraphRecord` — use these instead of `Any` when typing raw Neo4j records. Used by mappers.
 - `graph/mappers*.py`: Neo4j `Record` → Pydantic model. One mapper file per domain (persons, entities, sales, reports).
 
+**Neo4j type gotchas** (apply to all mapper code):
+- **Booleans**: Cypher map projections return Python `bool`, not a string. Use `bool(record.get("field", False))` directly — never `to_str(record.get("field", "false")) == "true"`, which produces `"False"` / `"True"` and the comparison always fails.
+- **Datetimes**: `datetime()` in Cypher stores with timezone and `.to_native()` may return a timezone-aware Python `datetime`. When doing arithmetic against a naive `now`, strip timezone first: `expires_at.replace(tzinfo=None) if expires_at.tzinfo else expires_at`. The reference pattern is `validate_api_key` in `auth/api_keys.py`.
+
 ### JWT / Google ID token verification
 `services/api/src/auth/verify.py` uses a **self-contained** RS256 verifier with a 300-second clock-skew tolerance (absorb drift between our server and Google's token-issuing servers). It does NOT use `google-auth`'s `verify_oauth2_token` directly — that library has a strict `nbf` check that causes spurious 401s. Signature is verified against Google's public cert endpoint.
 Token revocation is handled in `auth/revoke.py`: the raw JWT is decoded (no verification) to extract `jti` and `exp`, then checked against Redis before hitting the signature verifier. The in-process user cache (`auth/deps.py:_USER_CACHE`) is keyed by `jti` and evicted immediately on `POST /v1/auth/logout` so revoked tokens cannot be served from a warm cache.
@@ -136,6 +140,8 @@ API keys are enabled when `API_KEYS_ENABLED=true`. They are HMAC-SHA256 hashed (
 `auth/deps.py` defines `ApiKeyUser(AuthUser)` — a subclass that carries `key_scopes: list[str]`. All `require_*` dependency functions accept `AuthUser | ApiKeyUser`. The `X-Api-Key` header is checked first (when enabled); on a missing or invalid key it falls back to Bearer token auth. Scopes are checked with `check_scope(scopes, required)` — the `"admin"` scope is a superset of all others.
 
 Admin routes that manage keys (`src/routes/api_keys.py`) are registered with the standard `active` dependency list (requires an authenticated user), not a separate public router.
+
+**Revoke vs delete**: `POST /{key_id}/revoke` is a soft-revoke — sets `is_revoked = true` in Neo4j and adds the key prefix to the Redis `revoked_api_keys` set for immediate fast-path rejection, but keeps the node for audit. `DELETE /{key_id}` permanently removes the Neo4j node. The admin list (`GET /v1/admin/api-keys`) returns **all** keys including revoked ones so the audit trail is visible; the frontend shows revoked keys with a "revoked" badge and hides the Revoke button on keys that are already revoked.
 
 ### Public (unauthenticated) API endpoints
 When an endpoint must be publicly accessible (no Bearer token), register it on a separate router that is included in `app.py` **without** the `active` dependency list. The auth-gated action that produces the public resource (e.g. generating a share link) uses the normal `person_links_router` registered with `require_active_user`. Example from `src/routes/public_pages.py`:
