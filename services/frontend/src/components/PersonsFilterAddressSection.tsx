@@ -2,14 +2,17 @@
 
 import type { ReactElement } from "react";
 
+import ClearIcon from "@mui/icons-material/Clear";
 import Box from "@mui/material/Box";
+import IconButton from "@mui/material/IconButton";
+import InputAdornment from "@mui/material/InputAdornment";
 import Stack from "@mui/material/Stack";
 import TextField from "@mui/material/TextField";
 import ToggleButton from "@mui/material/ToggleButton";
 import ToggleButtonGroup from "@mui/material/ToggleButtonGroup";
 import Typography from "@mui/material/Typography";
 
-import type { PersonsFilters } from "@/components/PersonsFilterPanel";
+import type { FilterChangeHandler, PersonsFilters } from "@/components/PersonsFilterPanel";
 
 const TOGGLE_SX = {
   flexShrink: 0,
@@ -27,7 +30,18 @@ interface AddressSectionProps {
     PersonsFilters,
     "has_address" | "addr_street" | "addr_unit" | "addr_city" | "addr_postal" | "addr_country"
   >;
-  onChange: (patch: Partial<PersonsFilters>) => void;
+  onChange: FilterChangeHandler;
+}
+
+function clearAdornment(value: string, onClear: () => void): ReactElement | null {
+  if (!value) return null;
+  return (
+    <InputAdornment position="end">
+      <IconButton size="small" edge="end" onClick={onClear}>
+        <ClearIcon sx={{ fontSize: "1rem" }} />
+      </IconButton>
+    </InputAdornment>
+  );
 }
 
 export default function PersonsFilterAddressSection({
@@ -89,6 +103,9 @@ export default function PersonsFilterAddressSection({
           onChange={(e) => onChange({ addr_street: e.target.value })}
           placeholder="Partial match"
           disabled={disabled}
+          InputProps={{
+            endAdornment: clearAdornment(filters.addr_street, () => onChange({ addr_street: "" }, true)),
+          }}
         />
         <TextField
           size="small"
@@ -97,6 +114,9 @@ export default function PersonsFilterAddressSection({
           onChange={(e) => onChange({ addr_unit: e.target.value })}
           placeholder="Partial match"
           disabled={disabled}
+          InputProps={{
+            endAdornment: clearAdornment(filters.addr_unit, () => onChange({ addr_unit: "" }, true)),
+          }}
         />
         <TextField
           size="small"
@@ -105,6 +125,9 @@ export default function PersonsFilterAddressSection({
           onChange={(e) => onChange({ addr_city: e.target.value })}
           placeholder="Partial match"
           disabled={disabled}
+          InputProps={{
+            endAdornment: clearAdornment(filters.addr_city, () => onChange({ addr_city: "" }, true)),
+          }}
         />
         <TextField
           size="small"
@@ -113,6 +136,9 @@ export default function PersonsFilterAddressSection({
           onChange={(e) => onChange({ addr_postal: e.target.value })}
           placeholder="Partial match"
           disabled={disabled}
+          InputProps={{
+            endAdornment: clearAdornment(filters.addr_postal, () => onChange({ addr_postal: "" }, true)),
+          }}
         />
         <TextField
           size="small"
@@ -121,6 +147,9 @@ export default function PersonsFilterAddressSection({
           onChange={(e) => onChange({ addr_country: e.target.value })}
           placeholder="e.g. SG"
           disabled={disabled}
+          InputProps={{
+            endAdornment: clearAdornment(filters.addr_country, () => onChange({ addr_country: "" }, true)),
+          }}
         />
       </Box>
     </>
