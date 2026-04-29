@@ -5,7 +5,7 @@ import "server-only";
 
 import { auth } from "@/auth";
 import { buildApiUrl } from "./api-url";
-import type { ApiError, ApiResponse } from "./api-types";
+import type { ApiError, ApiResponse, ResponseMeta } from "./api-types";
 
 export class UpstreamError extends Error {
   public readonly status: number;
@@ -60,7 +60,9 @@ export async function apiFetch<T>(path: string, options: RequestOptions = {}): P
   const init: RequestInit & { next?: { revalidate: number | false } } = {
     method: options.method ?? "GET",
     headers,
-    body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
+    body: options.body !== undefined
+      ? typeof options.body === "string" ? options.body : JSON.stringify(options.body)
+      : undefined,
     next: { revalidate: options.revalidate ?? 0 },
   };
 
@@ -76,8 +78,21 @@ export async function apiFetch<T>(path: string, options: RequestOptions = {}): P
     throw new UpstreamError(response.status, errBody, errBody?.error.message ?? response.statusText);
   }
 
-  if (parsed === null || typeof parsed !== "object" || !("data" in (parsed as Record<string, unknown>))) {
+  // 204 No Content — return a null payload without requiring a body.
+  if (parsed === null) {
+    return { data: null as T, meta: { request_id: "", next_cursor: null } as ResponseMeta };
+  }
+
+  // Auto-wrap bare arrays (e.g. admin endpoints that return list[T] without envelope()).
+  if (Array.isArray(parsed)) {
+    return { data: parsed as T, meta: { request_id: "", next_cursor: null } as ResponseMeta };
+  }
+  if (typeof parsed !== "object") {
     throw new UpstreamError(response.status, null, "Unexpected response shape from API.");
+  }
+  // Auto-wrap bare object responses for endpoints that skip the envelope() wrapper.
+  if (!("data" in parsed)) {
+    return { data: parsed as T, meta: { request_id: "", next_cursor: null } as ResponseMeta };
   }
   return parsed as ApiResponse<T>;
 }

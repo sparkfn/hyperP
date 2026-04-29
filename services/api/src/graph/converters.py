@@ -91,6 +91,26 @@ def to_optional_str(value: GraphValue) -> str | None:
     return str(value)
 
 
+def to_datetime(value: GraphValue) -> datetime | None:
+    """Convert a graph value to datetime, returning None for None.
+
+    Handles Neo4j temporal types and ISO strings produced by Neo4j datetime().isoformat().
+    """
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value
+    if hasattr(value, "to_native") and callable(value.to_native):  # neo4j.time types
+        native = value.to_native()
+        return native if isinstance(native, datetime) else None
+    if isinstance(value, str) and value:
+        try:
+            return datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    return None
+
+
 def to_str_list(value: GraphValue) -> list[str]:
     """Convert a graph value to a list of strings."""
     if value is None:

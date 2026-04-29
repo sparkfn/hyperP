@@ -14,7 +14,7 @@ async def get_redis() -> redis.Redis:
         from src.config import config
 
         url = config.redis_url
-        _client = redis.from_url(url, decode_responses=True)  # type: ignore[no-untyped-call]
+        _client = redis.from_url(url, decode_responses=True)
     return _client
 
 

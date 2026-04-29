@@ -186,6 +186,7 @@ def _head(*, has_q: bool) -> str:
         return (
             "CALL db.index.fulltext.queryNodes('person_name_search', $q) YIELD node AS p, score\n"
             "OPTIONAL MATCH (p)-[:LIVES_AT]->(addr:Address)\n"
+            "WITH p, addr, score\n"
         )
     return (
         "MATCH (p:Person)\n"

@@ -9,7 +9,7 @@ import ToggleButtonGroup from "@mui/material/ToggleButtonGroup";
 import Typography from "@mui/material/Typography";
 
 import DatePickerField from "@/components/DatePickerField";
-import type { PersonsFilters } from "@/components/PersonsFilterPanel";
+import type { FilterChangeHandler, PersonsFilters } from "@/components/PersonsFilterPanel";
 
 const TOGGLE_SX = {
   flexShrink: 0,
@@ -24,7 +24,7 @@ const TOGGLE_SX = {
 
 interface DobSectionProps {
   filters: Pick<PersonsFilters, "has_dob" | "dob_from" | "dob_to">;
-  onChange: (patch: Partial<PersonsFilters>) => void;
+  onChange: FilterChangeHandler;
 }
 
 export default function PersonsFilterDobSection({
