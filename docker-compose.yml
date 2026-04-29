@@ -44,7 +44,7 @@ x-ingestion-env: &ingestion-env
 
 services:
   neo4j:
-    image: neo4j:5-community
+    image: neo4j:5.26-community
     ports:
       - "${NEO4J_HTTP_PORT:-7474}:7474"
       - "${NEO4J_BOLT_PORT:-7687}:7687"
@@ -54,6 +54,8 @@ services:
       NEO4J_server_memory_heap_initial__size: 512m
       NEO4J_server_memory_heap_max__size: 1g
       NEO4J_server_memory_pagecache_size: 512m
+      NEO4J_server_memory_off__heap_transaction__max__size: 512m
+      NEO4J_server_jvm_additional: --add-modules jdk.incubator.vector
     volumes:
       - ./data/neo4j/data:/data
       - ./data/neo4j/logs:/logs

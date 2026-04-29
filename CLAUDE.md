@@ -62,7 +62,7 @@ Seven Docker containers defined in `docker-compose.yml`:
 
 | Service | Image / Build | Internal address | Notes |
 |---|---|---|---|
-| `neo4j` | `neo4j:5-community` | `bolt://neo4j:7687` | HTTP browser at `:7474` |
+| `neo4j` | `neo4j:5.26-community` | `bolt://neo4j:7687` | HTTP browser at `:7474`; 5.11+ required for vector index support |
 | `redis` | `redis:7-alpine` | `redis://redis:6379` | Celery broker (db 0) + results (db 1) + token revocation store + public share-link tokens (TTL auto-cleanup) |
 | `api` | `services/api/Dockerfile` | `http://api:3000` | FastAPI/uvicorn; not exposed directly |
 | `frontend` | `services/frontend/Dockerfile` | `http://frontend:3001` | Next.js; not exposed directly |
@@ -274,6 +274,9 @@ Person statuses: `active`, `merged`, `suppressed` (no `under_review` — review 
 - Phase 7: Monitoring, alerting, observability
 
 ## Working with This Repo
+
+### docker-compose.yml sync rule
+Any commit that modifies the root `docker-compose.yml` **must** also apply the equivalent change to every counterpart in `.docker/[environment]/docker-compose.yml`. Currently: `.docker/staging/docker-compose.yml`. The environment files differ only in build context paths (`../../`), project name (`name:`), and environment-specific volume paths — service definitions, image versions, and environment variables must stay in sync. Apply changes to both files in the same commit.
 
 When editing or adding documentation:
 - Follow the existing `profile-unifier-*.md` naming convention.
