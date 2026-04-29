@@ -37,3 +37,6 @@ data/celerybeat/
 
 # Claude Code local session/cache
 .claude/
+
+# Dump files
+.dumps/

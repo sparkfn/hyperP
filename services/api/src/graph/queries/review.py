@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import LiteralString
+
 LIST_REVIEW_CASES = """
 MATCH (rc:ReviewCase)-[:FOR_DECISION]->(md:MatchDecision)
 WHERE ($queue_state IS NULL OR rc.queue_state = $queue_state)
@@ -98,3 +100,29 @@ CREATE (a)-[:NO_MATCH_LOCK {
   created_at: datetime()
 }]->(b)
 """
+
+
+def build_review_action_cypher(
+    resolution: str | None,
+    follow_up_at: str | None,
+) -> LiteralString:
+    """Build the SET clause for a review-case action."""
+    clauses: list[LiteralString] = [
+        "rc.queue_state = $new_state",
+        "rc.updated_at = datetime()",
+        "rc.actions = rc.actions + [{"
+        " action_type: $action_type, actor_type: 'reviewer', actor_id: $actor_id,"
+        " notes: $notes, created_at: toString(datetime())}]",
+    ]
+    if resolution is not None:
+        clauses.append("rc.resolution = $resolution")
+        clauses.append("rc.resolved_at = datetime()")
+    if follow_up_at is not None:
+        clauses.append("rc.follow_up_at = datetime($follow_up_at)")
+    joined: LiteralString = ", ".join(clauses)
+    return (
+        "MATCH (rc:ReviewCase {review_case_id: $review_case_id}) "
+        "WHERE rc.queue_state IN ['open', 'assigned', 'deferred'] "
+        "SET " + joined + " "
+        "RETURN rc {.review_case_id, .queue_state, .resolution} AS review_case"
+    )

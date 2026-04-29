@@ -2,49 +2,11 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Query, Request
+from fastapi import APIRouter, Depends, Query, Request
 
-from src.graph.client import get_session
-from src.graph.converters import GraphRecord, GraphValue
-from src.graph.mappers import (
-    map_audit_event,
-    map_connection,
-    map_match_decision,
-    map_person,
-    map_person_graph,
-    map_person_identifier,
-    map_source_record,
-)
-from src.graph.mappers_entities import map_listed_person, map_person_entity
-from src.graph.queries import (
-    COUNT_PERSON_AUDIT,
-    COUNT_PERSON_CONNECTIONS_ADDRESS,
-    COUNT_PERSON_CONNECTIONS_ALL,
-    COUNT_PERSON_CONNECTIONS_IDENTIFIER,
-    COUNT_PERSON_CONNECTIONS_KNOWS,
-    COUNT_PERSON_IDENTIFIERS,
-    COUNT_PERSON_SOURCE_RECORDS,
-    DEFAULT_HOPS,
-    FIND_PERSON_BY_IDENTIFIER,
-    GET_PERSON_AUDIT,
-    GET_PERSON_BY_ID,
-    GET_PERSON_CONNECTIONS_ADDRESS,
-    GET_PERSON_CONNECTIONS_ALL,
-    GET_PERSON_CONNECTIONS_IDENTIFIER,
-    GET_PERSON_CONNECTIONS_KNOWS,
-    GET_PERSON_ENTITIES,
-    GET_PERSON_IDENTIFIERS,
-    GET_PERSON_MATCHES,
-    GET_PERSON_SOURCE_RECORDS,
-    MAX_HOPS,
-    MIN_HOPS,
-    SEARCH_PERSONS,
-    build_count_persons_query,
-    build_list_persons_query,
-    get_graph_query,
-    get_node_graph_query,
-)
 from src.http_utils import envelope, http_error, next_cursor, page_window
+from src.repositories.deps import get_person_repo
+from src.repositories.protocols.person import PersonListFilters, PersonRepository
 from src.types import (
     ApiResponse,
     AuditEvent,
@@ -60,41 +22,6 @@ from src.types import (
 )
 
 router = APIRouter(prefix="/v1/persons")
-
-
-def _record_to_dict(keys: list[str], values: list[GraphValue]) -> GraphRecord:
-    return dict(zip(keys, values, strict=True))
-
-
-def _connection_query(connection_type: ConnectionType) -> str:
-    if connection_type is ConnectionType.IDENTIFIER:
-        return GET_PERSON_CONNECTIONS_IDENTIFIER
-    if connection_type is ConnectionType.ADDRESS:
-        return GET_PERSON_CONNECTIONS_ADDRESS
-    if connection_type is ConnectionType.KNOWS:
-        return GET_PERSON_CONNECTIONS_KNOWS
-    return GET_PERSON_CONNECTIONS_ALL
-
-
-def _connection_count_query(connection_type: ConnectionType) -> str:
-    if connection_type is ConnectionType.IDENTIFIER:
-        return COUNT_PERSON_CONNECTIONS_IDENTIFIER
-    if connection_type is ConnectionType.ADDRESS:
-        return COUNT_PERSON_CONNECTIONS_ADDRESS
-    if connection_type is ConnectionType.KNOWS:
-        return COUNT_PERSON_CONNECTIONS_KNOWS
-    return COUNT_PERSON_CONNECTIONS_ALL
-
-
-def _to_total(record: object | None) -> int:
-    if record is None:
-        return 0
-    try:
-        val = record["total"]  # type: ignore[index]  # neo4j Record supports subscript but is typed as object here
-        return int(val) if val is not None else 0
-    except (KeyError, TypeError, ValueError):
-        return 0
-
 
 _ALLOWED_SORT: frozenset[str] = frozenset(
     {
@@ -140,11 +67,9 @@ async def list_persons(
     sort_order: str | None = Query(default=None),
     cursor: str | None = Query(default=None),
     limit: int | None = Query(default=None),
+    repo: PersonRepository = Depends(get_person_repo),
 ) -> ApiResponse[list[ListedPerson]]:
-    """Generalized person listing with multi-filter + single-column sort.
-
-    ``q`` searches preferred_full_name, preferred_nric, preferred_email, and preferred_phone.
-    """
+    """Generalized person listing with multi-filter + single-column sort."""
     q_clean: str | None = q.strip() if q else None
     if q_clean is not None and len(q_clean) < 3:
         raise http_error(
@@ -157,10 +82,7 @@ async def list_persons(
         raise http_error(400, "invalid_request", f"Unknown sort_by: {sort_by}", request)
 
     skip, page_limit = page_window(cursor, limit)
-    has_q: bool = q_clean is not None
-    list_query = build_list_persons_query(sort_by, sort_order, has_q=has_q)
-    count_query = build_count_persons_query(has_q=has_q)
-    list_params: dict[str, str | int | bool | None] = {
+    filters: PersonListFilters = {
         "q": q_clean,
         "entity_key": entity_key,
         "is_high_value": is_high_value,
@@ -178,24 +100,11 @@ async def list_persons(
         "has_dob": has_dob,
         "dob_from": dob_from,
         "dob_to": dob_to,
-        "skip": skip,
-        "limit": page_limit + 1,
+        "sort_by": sort_by,
+        "sort_order": sort_order,
     }
-    count_params: dict[str, str | int | bool | None] = {
-        k: v for k, v in list_params.items() if k not in ("skip", "limit")
-    }
-    async with get_session() as session:
-        list_result = await session.run(list_query, list_params)
-        records = [_record_to_dict(r.keys(), list(r.values())) async for r in list_result]
-        count_result = await session.run(count_query, count_params)
-        count_record = await count_result.single()
-    total: int = (
-        int(count_record["total"])
-        if count_record is not None and count_record["total"] is not None
-        else 0
-    )
-    has_more = len(records) > page_limit
-    items = [map_listed_person(rec) for rec in records[:page_limit]]
+    items, total = await repo.get_page(filters, skip, page_limit)
+    has_more = skip + page_limit < total
     return envelope(items, request, next_cursor(skip, page_limit, has_more), total_count=total)
 
 
@@ -208,6 +117,7 @@ async def search_persons(
     status: str | None = Query(default=None),
     cursor: str | None = Query(default=None),
     limit: int | None = Query(default=None),
+    repo: PersonRepository = Depends(get_person_repo),
 ) -> ApiResponse[list[Person]]:
     """Operational person search by identifier or free-text."""
     if not identifier_type and not value and not q:
@@ -215,45 +125,34 @@ async def search_persons(
 
     skip, page_limit = page_window(cursor, limit)
 
-    async with get_session() as session:
-        if identifier_type and value:
-            result = await session.run(
-                FIND_PERSON_BY_IDENTIFIER, identifier_type=identifier_type, value=value
-            )
-            records = [_record_to_dict(r.keys(), list(r.values())) async for r in result]
-            persons = [map_person(rec) for rec in records]
-            return envelope(persons, request)
+    if identifier_type and value:
+        persons = await repo.search_by_identifier(identifier_type, value)
+        return envelope(persons, request)
 
-        if q is None:
-            return envelope([], request)
-        if len(q) < 3:
-            raise http_error(
-                400,
-                "invalid_request",
-                "Search query q requires at least 3 characters (matches name, NRIC, email, phone).",
-                request,
-            )
-        # Pass the fulltext query via a parameters dict to avoid colliding
-        # with `session.run(query=...)`'s first positional argument name.
-        result = await session.run(
-            SEARCH_PERSONS,
-            {"query": q, "status": status, "skip": skip, "limit": page_limit + 1},
+    if q is None:
+        return envelope([], request)
+    if len(q) < 3:
+        raise http_error(
+            400,
+            "invalid_request",
+            "Search query q requires at least 3 characters (matches name, NRIC, email, phone).",
+            request,
         )
-        records = [_record_to_dict(r.keys(), list(r.values())) async for r in result]
-        has_more = len(records) > page_limit
-        persons = [map_person(rec) for rec in records[:page_limit]]
-        return envelope(persons, request, next_cursor(skip, page_limit, has_more))
+    persons, has_more = await repo.search_by_query(q, status, skip, page_limit)
+    return envelope(persons, request, next_cursor(skip, page_limit, has_more))
 
 
 @router.get("/{person_id}", response_model=ApiResponse[Person])
-async def get_person(person_id: str, request: Request) -> ApiResponse[Person]:
+async def get_person(
+    person_id: str,
+    request: Request,
+    repo: PersonRepository = Depends(get_person_repo),
+) -> ApiResponse[Person]:
     """Return the canonical person view, resolving merge chain and address."""
-    async with get_session() as session:
-        result = await session.run(GET_PERSON_BY_ID, person_id=person_id)
-        record = await result.single()
-    if record is None:
+    person = await repo.get_by_id(person_id)
+    if person is None:
         raise http_error(404, "person_not_found", "Person not found.", request)
-    return envelope(map_person(_record_to_dict(record.keys(), list(record.values()))), request)
+    return envelope(person, request)
 
 
 @router.get("/{person_id}/source-records", response_model=ApiResponse[list[SourceRecord]])
@@ -262,21 +161,13 @@ async def get_person_source_records(
     request: Request,
     cursor: str | None = Query(default=None),
     limit: int | None = Query(default=None),
+    repo: PersonRepository = Depends(get_person_repo),
 ) -> ApiResponse[list[SourceRecord]]:
     """List source records linked to a person."""
     skip, page_limit = page_window(cursor, limit)
-    async with get_session() as session:
-        result = await session.run(
-            GET_PERSON_SOURCE_RECORDS, person_id=person_id, skip=skip, limit=page_limit + 1
-        )
-        records = [_record_to_dict(r.keys(), list(r.values())) async for r in result]
-        count_result = await session.run(COUNT_PERSON_SOURCE_RECORDS, person_id=person_id)
-        count_record = await count_result.single()
-    has_more = len(records) > page_limit
-    items = [map_source_record(rec) for rec in records[:page_limit]]
-    return envelope(
-        items, request, next_cursor(skip, page_limit, has_more), total_count=_to_total(count_record)
-    )
+    items, total = await repo.get_source_records(person_id, skip, page_limit)
+    has_more = skip + page_limit < total
+    return envelope(items, request, next_cursor(skip, page_limit, has_more), total_count=total)
 
 
 @router.get("/{person_id}/identifiers", response_model=ApiResponse[list[PersonIdentifier]])
@@ -285,21 +176,13 @@ async def get_person_identifiers(
     request: Request,
     cursor: str | None = Query(default=None),
     limit: int | None = Query(default=None),
+    repo: PersonRepository = Depends(get_person_repo),
 ) -> ApiResponse[list[PersonIdentifier]]:
     """Return all identifiers linked to a person, ordered by active status then type."""
     skip, page_limit = page_window(cursor, limit)
-    async with get_session() as session:
-        result = await session.run(
-            GET_PERSON_IDENTIFIERS, person_id=person_id, skip=skip, limit=page_limit + 1
-        )
-        records = [_record_to_dict(r.keys(), list(r.values())) async for r in result]
-        count_result = await session.run(COUNT_PERSON_IDENTIFIERS, person_id=person_id)
-        count_record = await count_result.single()
-    has_more = len(records) > page_limit
-    items = [map_person_identifier(rec) for rec in records[:page_limit]]
-    return envelope(
-        items, request, next_cursor(skip, page_limit, has_more), total_count=_to_total(count_record)
-    )
+    items, total = await repo.get_identifiers(person_id, skip, page_limit)
+    has_more = skip + page_limit < total
+    return envelope(items, request, next_cursor(skip, page_limit, has_more), total_count=total)
 
 
 @router.get("/{person_id}/connections", response_model=ApiResponse[list[PersonConnection]])
@@ -310,40 +193,25 @@ async def get_person_connections(
     identifier_type: str | None = Query(default=None),
     cursor: str | None = Query(default=None),
     limit: int | None = Query(default=None),
+    repo: PersonRepository = Depends(get_person_repo),
 ) -> ApiResponse[list[PersonConnection]]:
     """Return persons connected through shared identifiers and/or addresses."""
     skip, page_limit = page_window(cursor, limit)
-    query = _connection_query(connection_type)
-    count_query = _connection_count_query(connection_type)
-    async with get_session() as session:
-        result = await session.run(
-            query,
-            person_id=person_id,
-            identifier_type=identifier_type,
-            skip=skip,
-            limit=page_limit + 1,
-        )
-        records = [_record_to_dict(r.keys(), list(r.values())) async for r in result]
-        count_result = await session.run(
-            count_query, person_id=person_id, identifier_type=identifier_type
-        )
-        count_record = await count_result.single()
-    has_more = len(records) > page_limit
-    items = [map_connection(rec) for rec in records[:page_limit]]
-    return envelope(
-        items, request, next_cursor(skip, page_limit, has_more), total_count=_to_total(count_record)
+    items, total = await repo.get_connections(
+        person_id, connection_type, identifier_type, skip, page_limit
     )
+    has_more = skip + page_limit < total
+    return envelope(items, request, next_cursor(skip, page_limit, has_more), total_count=total)
 
 
 @router.get("/{person_id}/entities", response_model=ApiResponse[list[PersonEntitySummary]])
 async def get_person_entities(
-    person_id: str, request: Request
+    person_id: str,
+    request: Request,
+    repo: PersonRepository = Depends(get_person_repo),
 ) -> ApiResponse[list[PersonEntitySummary]]:
     """Return entities a person is linked to via source-record provenance."""
-    async with get_session() as session:
-        result = await session.run(GET_PERSON_ENTITIES, person_id=person_id)
-        records = [_record_to_dict(r.keys(), list(r.values())) async for r in result]
-    items = [map_person_entity(rec) for rec in records]
+    items = await repo.get_entities(person_id)
     return envelope(items, request)
 
 
@@ -351,16 +219,13 @@ async def get_person_entities(
 async def get_node_graph(
     request: Request,
     element_id: str = Query(),
-    max_hops: int = Query(default=DEFAULT_HOPS, ge=MIN_HOPS, le=MAX_HOPS),
+    max_hops: int = Query(default=2, ge=1, le=4),
+    repo: PersonRepository = Depends(get_person_repo),
 ) -> ApiResponse[PersonGraph]:
-    """Return the subgraph around any node identified by its Neo4j elementId."""
-    query = get_node_graph_query(max_hops)
-    async with get_session() as session:
-        result = await session.run(query, element_id=element_id)
-        record = await result.single()
-    if record is None:
+    """Return the subgraph around any node identified by its element ID."""
+    graph = await repo.get_node_graph(element_id, max_hops)
+    if graph is None:
         raise http_error(404, "node_not_found", "Node not found.", request)
-    graph = map_person_graph(_record_to_dict(record.keys(), list(record.values())))
     return envelope(graph, request)
 
 
@@ -368,16 +233,13 @@ async def get_node_graph(
 async def get_person_graph(
     person_id: str,
     request: Request,
-    max_hops: int = Query(default=DEFAULT_HOPS, ge=MIN_HOPS, le=MAX_HOPS),
+    max_hops: int = Query(default=2, ge=1, le=4),
+    repo: PersonRepository = Depends(get_person_repo),
 ) -> ApiResponse[PersonGraph]:
     """Return the subgraph around a person up to *max_hops* hops away."""
-    query = get_graph_query(max_hops)
-    async with get_session() as session:
-        result = await session.run(query, person_id=person_id)
-        record = await result.single()
-    if record is None:
+    graph = await repo.get_graph(person_id, max_hops)
+    if graph is None:
         raise http_error(404, "person_not_found", "Person not found.", request)
-    graph = map_person_graph(_record_to_dict(record.keys(), list(record.values())))
     return envelope(graph, request)
 
 
@@ -396,21 +258,13 @@ async def get_person_audit(
     request: Request,
     cursor: str | None = Query(default=None),
     limit: int | None = Query(default=None),
+    repo: PersonRepository = Depends(get_person_repo),
 ) -> ApiResponse[list[AuditEvent]]:
     """Return merge/unmerge audit events for a person."""
     skip, page_limit = page_window(cursor, limit)
-    async with get_session() as session:
-        result = await session.run(
-            GET_PERSON_AUDIT, person_id=person_id, skip=skip, limit=page_limit + 1
-        )
-        records = [_record_to_dict(r.keys(), list(r.values())) async for r in result]
-        count_result = await session.run(COUNT_PERSON_AUDIT, person_id=person_id)
-        count_record = await count_result.single()
-    has_more = len(records) > page_limit
-    items = [map_audit_event(rec) for rec in records[:page_limit]]
-    return envelope(
-        items, request, next_cursor(skip, page_limit, has_more), total_count=_to_total(count_record)
-    )
+    items, total = await repo.get_audit(person_id, skip, page_limit)
+    has_more = skip + page_limit < total
+    return envelope(items, request, next_cursor(skip, page_limit, has_more), total_count=total)
 
 
 @router.get("/{person_id}/matches", response_model=ApiResponse[list[MatchDecision]])
@@ -419,14 +273,9 @@ async def get_person_matches(
     request: Request,
     cursor: str | None = Query(default=None),
     limit: int | None = Query(default=None),
+    repo: PersonRepository = Depends(get_person_repo),
 ) -> ApiResponse[list[MatchDecision]]:
     """Return recent match decisions involving a person."""
     skip, page_limit = page_window(cursor, limit)
-    async with get_session() as session:
-        result = await session.run(
-            GET_PERSON_MATCHES, person_id=person_id, skip=skip, limit=page_limit + 1
-        )
-        records = [_record_to_dict(r.keys(), list(r.values())) async for r in result]
-    has_more = len(records) > page_limit
-    items = [map_match_decision(rec) for rec in records[:page_limit]]
+    items, has_more = await repo.get_matches(person_id, skip, page_limit)
     return envelope(items, request, next_cursor(skip, page_limit, has_more))

@@ -80,6 +80,49 @@ Auth flow: browser → next-auth (Google OAuth) → `googleIdToken` stored in JW
 
 ## Recurring Code Patterns
 
+### Repository layer (database abstraction)
+
+All database access goes through a repository layer at `services/api/src/repositories/`. Routes **never** call `get_session()` or import from `src.graph.*` directly — only the Neo4j implementations do.
+
+```
+repositories/
+  protocols/    # typing.Protocol definitions — the contracts
+  neo4j/        # Neo4j implementations of each protocol
+  deps.py       # FastAPI Depends() wiring — one singleton per domain
+```
+
+**Route pattern** — inject via `Depends`, depend only on the Protocol type:
+```python
+from src.repositories.deps import get_person_repo
+from src.repositories.protocols.person import PersonRepository
+
+@router.get("/{person_id}")
+async def get_person(
+    person_id: str,
+    request: Request,
+    repo: PersonRepository = Depends(get_person_repo),
+) -> ApiResponse[Person]:
+    person = await repo.get_by_id(person_id)
+    if person is None:
+        raise http_error(404, "person_not_found", "Person not found.", request)
+    return envelope(person, request)
+```
+
+**To swap the database backend**: write a new implementation class in `repositories/postgres/` (or similar) and change the singleton assignment in `deps.py`. Route code stays untouched.
+
+**Protocol method naming**: avoid naming Protocol methods `list` — it shadows the `list` builtin in the class body, causing mypy `valid-type` errors. Use `get_page` (paginated) or `get_all` (non-paginated) instead.
+
+**Protocol types**: protocols use `dataclass` and `TypedDict` for domain types, not Pydantic `BaseModel`. `BaseModel.__init__` uses `Any` internally, which fails `mypy --strict` outside the `src.routes.*` override list. Key domain types defined in protocols:
+- `protocols/person.py` — `PersonListFilters` (TypedDict)
+- `protocols/merge.py` — `MergeOutcome` (dataclass)
+- `protocols/review.py` — `ReviewListFilters`, `AssignResult`, `ActionResult` (TypedDict)
+- `protocols/admin.py` — `SourceSystemInfo`, `FieldTrustResponse` (dataclass)
+- `protocols/ingest.py` — `IngestRecordsResponse`, `IngestRunResponse`, `IngestRunDetailResponse`, `IngestRecordResult` (dataclass)
+
+**Pagination return conventions** (enforced across all implementations):
+- Methods with a count query return `tuple[list[T], int]` — (items, total). Route computes `has_more = skip + limit < total`.
+- Methods without a count query return `tuple[list[T], bool]` — (items, has_more). The implementation fetches `limit + 1` internally.
+
 ### Response envelope
 All FastAPI endpoints return `ApiResponse[T]`. Use `envelope()` from `src/http_utils.py`:
 ```python
@@ -95,12 +138,14 @@ return envelope(data, request, cursor=next_cur, total_count=count)
 ### Cursor-based pagination (backend)
 `page_window(cursor, raw_limit)` in `src/http_utils.py` decodes the base64 cursor to a skip offset. Pattern for every list endpoint:
 ```python
-skip, limit = page_window(cursor, raw_limit)
-rows = fetch_rows(skip, limit + 1)          # fetch one extra to detect has_more
-has_more = len(rows) > limit
-return envelope(rows[:limit], request,
-                cursor=next_cursor(skip, limit, has_more),
-                total_count=_to_total(count_record))
+skip, page_limit = page_window(cursor, limit)
+items, total = await repo.get_page(filters, skip, page_limit)   # count-based
+has_more = skip + page_limit < total
+return envelope(items, request, next_cursor(skip, page_limit, has_more), total_count=total)
+
+# OR for non-count methods (search, matches):
+items, has_more = await repo.get_page(q, status, skip, page_limit)
+return envelope(items, request, next_cursor(skip, page_limit, has_more))
 ```
 
 ### Cursor-based pagination (frontend)
@@ -120,11 +165,14 @@ export async function GET(request: Request, context: RouteContext): Promise<Next
 ```
 
 ### Graph query modules
-All Cypher strings live as module-level string constants in `services/api/src/graph/queries/` and `services/ingestion/src/graph/queries/`. The `E501` line-length rule is disabled for these files so queries aren't artificially wrapped. Routes import query constants by name; they never embed Cypher inline.
+All Cypher strings live as module-level string constants **or dynamic builder functions** in `services/api/src/graph/queries/` and `services/ingestion/src/graph/queries/`. The `E501` line-length rule is disabled for these files so queries aren't artificially wrapped. Neither routes nor repository implementations embed Cypher inline — implementations import query constants and builders by name from `src.graph.queries`.
+
+Dynamic builders (e.g. `build_list_persons_query`, `build_review_action_cypher`) live in the same `queries/` modules and are exported via `__init__.py`. Use a builder only when the query structure itself varies by input; parameterised values always go through Cypher parameters, not string interpolation.
 
 ### Mappers vs converters
 - `graph/converters.py`: primitive type coercions (`to_str`, `to_int`, `to_float`, `to_optional_*`, `to_iso_or_none`, `to_datetime`, `to_str_list`, `encode_cursor`/`decode_cursor`). Also exports type aliases `GraphScalar`, `GraphValue`, `GraphRecord` — use these instead of `Any` when typing raw Neo4j records. Used by mappers.
 - `graph/mappers*.py`: Neo4j `Record` → Pydantic model. One mapper file per domain (persons, entities, sales, reports).
+- `repositories/neo4j/_utils.py`: shared `record_to_dict` and `to_total` helpers used by all Neo4j implementations.
 
 **Neo4j type gotchas** (apply to all mapper code):
 - **Booleans**: Cypher map projections return Python `bool`, not a string. Use `bool(record.get("field", False))` directly — never `to_str(record.get("field", "false")) == "true"`, which produces `"False"` / `"True"` and the comparison always fails.
@@ -182,6 +230,7 @@ All documents live in `docs/` and follow the naming convention `profile-unifier-
 ## Key Design Decisions
 
 - **Database**: Neo4j (decided). The platform must support contact tracing and complex multi-hop relationship queries beyond simple identity resolution. Neo4j's native graph storage and Cypher query language are the right fit. ACID transactions are available in Neo4j 4+.
+- **Database abstraction**: a `repositories/` layer sits between routes and Neo4j. Protocols (`typing.Protocol`) define the contracts; Neo4j implementations live in `repositories/neo4j/`. To migrate databases, write a new implementation and change `deps.py` — routes are unaffected.
 - **Precision over recall**: optimize for low false-merge rates; false merges have high operational cost.
 - **Immutable source facts**: source records are never modified after ingestion — all changes create new records.
 - **Explainable decisions**: every merge/no-match must have traceable reasons.

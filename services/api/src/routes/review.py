@@ -2,29 +2,14 @@
 
 from __future__ import annotations
 
-from typing import LiteralString
-
 from fastapi import APIRouter, Depends, Query, Request
-from neo4j import AsyncManagedTransaction
 from pydantic import BaseModel
 
 from src.auth.deps import require_mutator_for_review_case
 from src.auth.models import AuthUser
-from src.graph.client import get_session
-from src.graph.converters import GraphRecord, GraphValue, to_optional_str, to_str
-from src.graph.golden_profile import recompute_golden_profile_tx
-from src.graph.mappers import map_review_case_detail, map_review_case_summary
-from src.graph.queries import (
-    ASSIGN_REVIEW_CASE,
-    CHECK_BOTH_PERSONS_ACTIVE,
-    CHECK_NO_MATCH_LOCK,
-    CREATE_NO_MATCH_LOCK_FROM_REVIEW,
-    EXECUTE_MANUAL_MERGE,
-    GET_PERSONS_FOR_REVIEW_MERGE,
-    GET_REVIEW_CASE,
-    LIST_REVIEW_CASES,
-)
 from src.http_utils import envelope, http_error, next_cursor, page_window
+from src.repositories.deps import get_review_repo
+from src.repositories.protocols.review import ReviewListFilters, ReviewRepository
 from src.types import ApiResponse, ApiReviewActionType, ReviewCaseDetail, ReviewCaseSummary
 from src.types_requests import AssignReviewRequest, ReviewActionRequest
 
@@ -41,10 +26,6 @@ class ActionResponse(BaseModel):
     review_case_id: str
     queue_state: str
     resolution: str | None = None
-
-
-def _record_to_dict(keys: list[str], values: list[GraphValue]) -> GraphRecord:
-    return dict(zip(keys, values, strict=True))
 
 
 def _resolve_action(action_type: ApiReviewActionType) -> tuple[str, str | None]:
@@ -70,35 +51,30 @@ async def list_review_cases(
     priority_lte: int | None = Query(default=None),
     cursor: str | None = Query(default=None),
     limit: int | None = Query(default=None),
+    repo: ReviewRepository = Depends(get_review_repo),
 ) -> ApiResponse[list[ReviewCaseSummary]]:
     """List review cases with optional filters."""
     skip, page_limit = page_window(cursor, limit)
-    async with get_session() as session:
-        result = await session.run(
-            LIST_REVIEW_CASES,
-            queue_state=queue_state,
-            assigned_to=assigned_to,
-            priority_lte=priority_lte,
-            skip=skip,
-            limit=page_limit + 1,
-        )
-        records = [_record_to_dict(r.keys(), list(r.values())) async for r in result]
-    has_more = len(records) > page_limit
-    items = [map_review_case_summary(rec) for rec in records[:page_limit]]
+    filters: ReviewListFilters = {
+        "queue_state": queue_state,
+        "assigned_to": assigned_to,
+        "priority_lte": priority_lte,
+    }
+    items, has_more = await repo.get_page(filters, skip, page_limit)
     return envelope(items, request, next_cursor(skip, page_limit, has_more))
 
 
 @router.get("/{review_case_id}", response_model=ApiResponse[ReviewCaseDetail])
-async def get_review_case(review_case_id: str, request: Request) -> ApiResponse[ReviewCaseDetail]:
+async def get_review_case(
+    review_case_id: str,
+    request: Request,
+    repo: ReviewRepository = Depends(get_review_repo),
+) -> ApiResponse[ReviewCaseDetail]:
     """Return a single review case with comparison payload."""
-    async with get_session() as session:
-        result = await session.run(GET_REVIEW_CASE, review_case_id=review_case_id)
-        record = await result.single()
-    if record is None:
+    case = await repo.get_by_id(review_case_id)
+    if case is None:
         raise http_error(404, "review_case_not_found", "Review case was not found.", request)
-    return envelope(
-        map_review_case_detail(_record_to_dict(record.keys(), list(record.values()))), request
-    )
+    return envelope(case, request)
 
 
 @router.post("/{review_case_id}/assign", response_model=ApiResponse[AssignResponse])
@@ -107,11 +83,11 @@ async def assign_review_case(
     body: AssignReviewRequest,
     request: Request,
     _user: AuthUser = Depends(require_mutator_for_review_case),
+    repo: ReviewRepository = Depends(get_review_repo),
 ) -> ApiResponse[AssignResponse]:
     """Assign a review case to a reviewer."""
-    async with get_session(write=True) as session:
-        record = await session.execute_write(_assign_tx, review_case_id, body.assigned_to)
-    if record is None:
+    result = await repo.assign(review_case_id, body.assigned_to)
+    if result is None:
         raise http_error(
             404,
             "review_case_not_found",
@@ -120,24 +96,12 @@ async def assign_review_case(
         )
     return envelope(
         AssignResponse(
-            review_case_id=to_str(record.get("review_case_id")),
-            queue_state=to_str(record.get("queue_state")),
-            assigned_to=to_str(record.get("assigned_to")),
+            review_case_id=result["review_case_id"],
+            queue_state=result["queue_state"],
+            assigned_to=result["assigned_to"],
         ),
         request,
     )
-
-
-async def _assign_tx(
-    tx: AsyncManagedTransaction, review_case_id: str, assigned_to: str
-) -> GraphRecord | None:
-    result = await tx.run(
-        ASSIGN_REVIEW_CASE, review_case_id=review_case_id, assigned_to=assigned_to
-    )
-    record = await result.single()
-    if record is None:
-        return None
-    return dict(record["review_case"])
 
 
 @router.post("/{review_case_id}/actions", response_model=ApiResponse[ActionResponse])
@@ -146,21 +110,20 @@ async def submit_review_action(
     body: ReviewActionRequest,
     request: Request,
     user: AuthUser = Depends(require_mutator_for_review_case),
+    repo: ReviewRepository = Depends(get_review_repo),
 ) -> ApiResponse[ActionResponse]:
     """Submit a review action (merge / reject / defer / escalate / manual_no_match)."""
     new_state, resolution = _resolve_action(body.action_type)
-    async with get_session(write=True) as session:
-        result = await session.execute_write(
-            _action_tx,
-            review_case_id,
-            body.action_type.value,
-            new_state,
-            resolution,
-            body.notes,
-            body.metadata.follow_up_at,
-            user.email,
-            body.metadata.survivor_person_id,
-        )
+    result = await repo.submit_action(
+        review_case_id,
+        body.action_type.value,
+        new_state,
+        resolution,
+        body.notes,
+        body.metadata.follow_up_at,
+        user.email,
+        body.metadata.survivor_person_id,
+    )
 
     if result is None:
         raise http_error(
@@ -178,126 +141,11 @@ async def submit_review_action(
             request,
         )
 
-    # Recompute golden profile for the surviving person after a merge
-    survivor_id = to_optional_str(result.get("survivor_person_id"))
-    if body.action_type is ApiReviewActionType.MERGE and survivor_id:
-        async with get_session(write=True) as session:
-            await session.execute_write(recompute_golden_profile_tx, survivor_id)
-
     return envelope(
         ActionResponse(
-            review_case_id=to_str(result.get("review_case_id")),
-            queue_state=to_str(result.get("queue_state")),
+            review_case_id=result.get("review_case_id", ""),
+            queue_state=result.get("queue_state", ""),
             resolution=resolution,
         ),
         request,
     )
-
-
-def _build_action_cypher(
-    resolution: str | None,
-    follow_up_at: str | None,
-) -> LiteralString:
-    """Build the SET clause for a review-case action."""
-    clauses: list[LiteralString] = [
-        "rc.queue_state = $new_state",
-        "rc.updated_at = datetime()",
-        "rc.actions = rc.actions + [{"
-        " action_type: $action_type, actor_type: 'reviewer', actor_id: $actor_id,"
-        " notes: $notes, created_at: toString(datetime())}]",
-    ]
-    if resolution is not None:
-        clauses.append("rc.resolution = $resolution")
-        clauses.append("rc.resolved_at = datetime()")
-    if follow_up_at is not None:
-        clauses.append("rc.follow_up_at = datetime($follow_up_at)")
-    joined: LiteralString = ", ".join(clauses)
-    return (
-        "MATCH (rc:ReviewCase {review_case_id: $review_case_id}) "
-        "WHERE rc.queue_state IN ['open', 'assigned', 'deferred'] "
-        "SET " + joined + " "
-        "RETURN rc {.review_case_id, .queue_state, .resolution} AS review_case"
-    )
-
-
-async def _action_tx(
-    tx: AsyncManagedTransaction,
-    review_case_id: str,
-    action_type: str,
-    new_state: str,
-    resolution: str | None,
-    notes: str | None,
-    follow_up_at: str | None,
-    actor_id: str,
-    survivor_person_id: str | None,
-) -> GraphRecord | None:
-    absorbed_id: str | None = None
-    survivor_id: str | None = None
-
-    if action_type == ApiReviewActionType.MERGE.value:
-        persons_result = await tx.run(GET_PERSONS_FOR_REVIEW_MERGE, review_case_id=review_case_id)
-        persons_record = await persons_result.single()
-        if persons_record is None:
-            return {"merge_not_applicable": True}
-
-        left_id = to_str(persons_record["left_person_id"])
-        right_id = to_str(persons_record["right_person_id"])
-
-        # Caller may specify which person survives; default to left
-        if survivor_person_id == right_id:
-            survivor_id, absorbed_id = right_id, left_id
-        else:
-            survivor_id, absorbed_id = left_id, right_id
-
-        # Validate both persons are still active
-        active_result = await tx.run(
-            CHECK_BOTH_PERSONS_ACTIVE, from_id=absorbed_id, to_id=survivor_id
-        )
-        if await active_result.single() is None:
-            return {"merge_not_applicable": True}
-
-        # Check for no-match lock (pair is ordered by person_id)
-        lock_left, lock_right = (
-            (absorbed_id, survivor_id) if absorbed_id < survivor_id else (survivor_id, absorbed_id)
-        )
-        lock_result = await tx.run(CHECK_NO_MATCH_LOCK, left=lock_left, right=lock_right)
-        lock_record = await lock_result.single()
-        if lock_record is not None and bool(lock_record["is_locked"]):
-            return {"merge_blocked": True}
-
-    # Update review case state
-    cypher = _build_action_cypher(resolution, follow_up_at)
-    result = await tx.run(
-        cypher,
-        review_case_id=review_case_id,
-        new_state=new_state,
-        action_type=action_type,
-        notes=notes,
-        resolution=resolution,
-        follow_up_at=follow_up_at,
-        actor_id=actor_id,
-    )
-    record = await result.single()
-    if record is None:
-        return None
-
-    review_case_data: GraphRecord = dict(record["review_case"])
-
-    if action_type == ApiReviewActionType.MANUAL_NO_MATCH.value:
-        await tx.run(
-            CREATE_NO_MATCH_LOCK_FROM_REVIEW,
-            review_case_id=review_case_id,
-            notes=notes or "Manual no-match from review",
-            actor_id=actor_id,
-        )
-    elif action_type == ApiReviewActionType.MERGE.value and absorbed_id and survivor_id:
-        await tx.run(
-            EXECUTE_MANUAL_MERGE,
-            from_id=absorbed_id,
-            to_id=survivor_id,
-            reason=notes or "Review merge",
-            actor_id=actor_id,
-        )
-        review_case_data["survivor_person_id"] = survivor_id
-
-    return review_case_data

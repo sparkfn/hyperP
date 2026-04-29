@@ -87,6 +87,7 @@ from src.graph.queries.review import (
     GET_PERSONS_FOR_REVIEW_MERGE,
     GET_REVIEW_CASE,
     LIST_REVIEW_CASES,
+    build_review_action_cypher,
 )
 from src.graph.queries.sales import COUNT_PERSON_SALES, GET_PERSON_SALES
 from src.graph.queries.survivorship import (
@@ -106,6 +107,7 @@ from src.graph.queries.survivorship import (
 
 __all__ = [
     "ASSIGN_REVIEW_CASE",
+    "build_review_action_cypher",
     "COUNT_PERSON_AUDIT",
     "COUNT_PERSON_CONNECTIONS_ADDRESS",
     "COUNT_PERSON_CONNECTIONS_ALL",

@@ -36,10 +36,7 @@ async def post_api_key(
     "",
     response_model=list[ApiKey],
     summary="List API keys",
-    description=(
-        "Returns all non-revoked API keys (without secrets). "
-        "Revoked keys are not shown."
-    ),
+    description=("Returns all non-revoked API keys (without secrets). Revoked keys are not shown."),
 )
 async def get_api_keys(
     request: Request,
