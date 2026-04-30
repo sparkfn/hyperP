@@ -19,6 +19,7 @@ from src.config import config
 from src.graph.client import close_driver, get_session
 from src.graph.queries.users import CREATE_USER_CONSTRAINT
 from src.http_utils import request_id
+from src.llm.service import close_llm_service
 from src.redis_client import close_redis
 from src.routes import (
     admin,
@@ -67,6 +68,7 @@ async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
     yield
     await close_driver()
     await close_redis()
+    await close_llm_service()
 
 
 def build_app() -> FastAPI:

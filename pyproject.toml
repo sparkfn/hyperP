@@ -126,6 +126,7 @@ module = [
     "src.http_utils",
     "src.routes.*",
     "src.graph.converters",
+    "src.llm.*",
 ]
 disallow_any_explicit = false
 disallow_any_generics = false
@@ -147,3 +148,4 @@ ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["services/api/tests", "services/ingestion/tests"]
+pythonpath = ["services/api/src"]

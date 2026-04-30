@@ -35,6 +35,13 @@ class AppConfig(BaseSettings):
     api_keys_enabled: bool = Field(default=False, alias="API_KEYS_ENABLED")
     api_key_secret: str | None = Field(default=None, alias="API_KEY_SECRET")
     api_key_header_name: str = Field(default="X-Api-Key", alias="API_KEY_HEADER_NAME")
+    # LLM service (OpenAI-compatible endpoint)
+    llm_api_base_url: str = Field(
+        default="https://api.openai.com",
+        alias="LLM_API_BASE_URL",
+    )
+    llm_api_key: str | None = Field(default=None, alias="LLM_API_KEY")
+    llm_default_model: str | None = Field(default=None, alias="LLM_DEFAULT_MODEL")
 
     @property
     def bootstrap_admin_email_set(self) -> frozenset[str]:
