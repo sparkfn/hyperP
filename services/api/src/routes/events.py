@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Query, Request
 
+from src.auth.deps import require_scope
 from src.http_utils import envelope, http_error, next_cursor, page_window
 from src.repositories.deps import get_event_repo
 from src.repositories.protocols.event import EventRepository
@@ -12,7 +13,11 @@ from src.types import ApiResponse, DownstreamEvent
 router = APIRouter()
 
 
-@router.get("/v1/events", response_model=ApiResponse[list[DownstreamEvent]])
+@router.get(
+    "/v1/events",
+    response_model=ApiResponse[list[DownstreamEvent]],
+    dependencies=[Depends(require_scope("persons:read"))],
+)
 async def list_events(
     request: Request,
     since: str | None = Query(default=None),

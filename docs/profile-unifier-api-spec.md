@@ -30,28 +30,118 @@ Base path:
 
 ## Authentication and Authorization
 
-The API should require authenticated callers. Recommended auth choices:
+The API requires authenticated callers for every non-public endpoint. HyperP
+accepts `Authorization: Bearer <token>` with either:
 
-- service-to-service JWT or mTLS for system integrations
-- session or JWT-based auth for internal reviewer tools
+- Google ID tokens for human users authenticated through the browser UI.
+- HyperP-issued OAuth2 client-credentials JWTs for machine callers.
 
-Recommended roles:
+Human authorization is role-based. Machine authorization is scope-based. OAuth
+client access tokens carry a space-delimited `scope` claim and may include an
+`entity_key` claim for entity-scoped integrations.
 
-- `ingest_service`
-- `read_service`
-- `service`
+Recommended human roles:
+
 - `support_agent`
 - `reviewer`
 - `admin`
 
-Role expectations:
+Recommended machine scopes:
 
-- `ingest_service`: can call ingestion endpoints only
-- `read_service`: can read person and search endpoints
-- `service`: can execute internal platform operations such as recomputation jobs
-- `support_agent`: can search and view person details with PII restrictions
-- `reviewer`: can access review queue and submit review actions
-- `admin`: can manual merge, unmerge, and manage locks
+- `persons:read`: can read person and search endpoints.
+- `persons:write`: can execute person write operations intended for machine callers.
+- `ingest:write`: can call ingestion endpoints.
+- `admin`: can manage admin-only resources and is a superset of all machine scopes.
+
+Role and scope expectations:
+
+- `support_agent`: can search and view person details with PII restrictions.
+- `reviewer`: can access review queue and submit review actions.
+- `admin`: can manual merge, unmerge, manage locks, and administer OAuth clients.
+- OAuth clients must request only scopes assigned to the client; omitted token
+  request scope defaults to the client's assigned scopes.
+
+## Server-to-server authentication
+
+Machine callers use OAuth2 client credentials. Admins create OAuth clients under
+`/v1/admin/oauth-clients`, assign scopes, and receive a one-time `client_secret`.
+Client secrets are not retrievable after creation or rotation.
+
+Token request:
+
+```http
+POST /v1/oauth/token
+Content-Type: application/x-www-form-urlencoded
+
+grant_type=client_credentials&client_id=hpc_...&client_secret=hps_...&scope=persons:read
+```
+
+Required form fields:
+
+- `grant_type`: must be `client_credentials`.
+- `client_id`: OAuth client identifier.
+- `client_secret`: one active secret for the client.
+- `scope`: optional space-delimited subset of the client's assigned scopes.
+
+Successful token response:
+
+```json
+{
+  "access_token": "eyJ...",
+  "token_type": "Bearer",
+  "expires_in": 900,
+  "scope": "persons:read"
+}
+```
+
+Successful token responses include `Cache-Control: no-store` and
+`Pragma: no-cache` headers. Token endpoint errors are top-level OAuth JSON, not
+the standard HyperP response envelope:
+
+```json
+{
+  "error": "invalid_client",
+  "error_description": "Invalid client credentials."
+}
+```
+
+Supported token errors are `invalid_request`, `invalid_client`,
+`invalid_scope`, and `unsupported_grant_type`.
+
+Use the access token on API calls:
+
+```http
+Authorization: Bearer eyJ...
+```
+
+Public signing keys for HyperP-issued machine JWTs are available at
+`GET /v1/oauth/jwks`.
+
+## Admin OAuth client management
+
+Admin users manage machine clients through `/v1/admin/oauth-clients`:
+
+- `GET /v1/admin/oauth-clients`: list clients, including disabled clients and
+  non-secret metadata for all secrets.
+- `POST /v1/admin/oauth-clients`: create a client with assigned scopes and an
+  optional `entity_key`; returns the initial `client_secret` once.
+- `POST /v1/admin/oauth-clients/{client_id}/secrets`: rotate credentials by
+  adding another active secret; returns the new `client_secret` once.
+- `POST /v1/admin/oauth-clients/{client_id}/secrets/{secret_id}/revoke`: revoke
+  one secret so it can no longer mint new access tokens.
+- `POST /v1/admin/oauth-clients/{client_id}/disable`: disable the client so no
+  secret for that client can mint new access tokens.
+- `DELETE /v1/admin/oauth-clients/{client_id}`: permanently delete the client
+  and all of its secrets.
+
+Full client secrets are shown only in create and rotation responses. HyperP
+stores hashed secret values and never returns a full secret from list or read
+operations; those responses expose only metadata such as secret ID, prefix,
+creation, expiry, revocation, and last-used timestamps. Rotation creates an
+additional active secret so integrations can deploy the new credential before
+revoking the old one. Secret revocation and client disabling stop future token
+issuance but do not revoke already issued access tokens before their normal
+expiry.
 
 ## Standard Headers
 

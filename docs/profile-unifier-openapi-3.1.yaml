@@ -14,7 +14,6 @@ servers:
     description: Local development (disable auth via AUTH_ENABLED=false)
 security:
   - bearerAuth: []
-  - apiKeyAuth: []
 tags:
   - name: Ingestion
   - name: Persons
@@ -22,8 +21,8 @@ tags:
   - name: Merge
   - name: Locks
   - name: Survivorship
+  - name: OAuth
   - name: Admin
-  - name: "API Keys"
 paths:
   /v1/ingest/{source_key}/records:
     post:
@@ -133,7 +132,6 @@ paths:
         ```
       security:
         - bearerAuth: []
-        - apiKeyAuth: []
       parameters:
         - name: identifier_type
           in: query
@@ -401,33 +399,127 @@ paths:
                 $ref: '#/components/schemas/MatchDecisionListResponseEnvelope'
         '404':
           $ref: '#/components/responses/PersonNotFound'
-  # ── API key management (admin only) ─────────────────────────────────────────
-  /v1/admin/api-keys:
-    get:
-      tags: ["API Keys"]
-      summary: List API keys
-      operationId: listApiKeys
-      security:
-        - bearerAuth: []
+  # ── OAuth client credentials ────────────────────────────────────────────────
+  /v1/oauth/token:
+    post:
+      tags: [OAuth]
+      summary: Issue an OAuth2 client-credentials access token
+      operationId: createOAuthToken
+      description: |
+        Exchanges an OAuth client ID and one active client secret for a short-lived
+        HyperP-issued RS256 JWT access token. This endpoint uses OAuth-compatible
+        top-level JSON responses rather than the standard HyperP response envelope.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/OAuthTokenRequest'
+            encoding:
+              grant_type:
+                style: form
+              client_id:
+                style: form
+              client_secret:
+                style: form
+              scope:
+                style: form
+            example:
+              grant_type: client_credentials
+              client_id: hpc_2VhJd9uLS2wK8f3P
+              client_secret: hps_Yh7j...redacted
+              scope: persons:read
       responses:
-        "200":
-          description: List of active (non-revoked) API keys.
+        '200':
+          description: |
+            Access token issued. Response includes `Cache-Control: no-store` and
+            `Pragma: no-cache` headers.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                const: no-store
+            Pragma:
+              schema:
+                type: string
+                const: no-cache
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/ApiKeyListResponseEnvelope"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "403":
-          $ref: "#/components/responses/Forbidden"
+                $ref: '#/components/schemas/OAuthTokenResponse'
+        '400':
+          description: OAuth token request failed with `invalid_request`, `invalid_scope`, or `unsupported_grant_type`.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                const: no-store
+            Pragma:
+              schema:
+                type: string
+                const: no-cache
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthErrorResponse'
+        '401':
+          description: OAuth token request failed with `invalid_client`.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                const: no-store
+            Pragma:
+              schema:
+                type: string
+                const: no-cache
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthErrorResponse'
+  /v1/oauth/jwks:
+    get:
+      tags: [OAuth]
+      summary: Return public signing keys for HyperP-issued access tokens
+      operationId: getOAuthJwks
+      security: []
+      responses:
+        '200':
+          description: JSON Web Key Set containing active OAuth signing keys.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JsonWebKeySet'
+  # ── OAuth client management (admin only) ────────────────────────────────────
+  /v1/admin/oauth-clients:
+    get:
+      tags: [Admin]
+      summary: List OAuth clients
+      operationId: listOAuthClients
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: OAuth clients, including disabled clients and secret metadata.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/OAuthClient'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
     post:
-      tags: ["API Keys"]
-      summary: Create an API key
-      operationId: createApiKey
+      tags: [Admin]
+      summary: Create an OAuth client
+      operationId: createOAuthClient
       description: |
-        Creates a new server-to-server API key. The **full secret is returned
-        once only** — copy and store it immediately. It is never stored by the
-        server and cannot be retrieved again.
+        Creates a machine OAuth client and returns the first `client_secret` once.
+        Store the secret immediately; HyperP stores only a hashed secret value and
+        returns only secret metadata after creation.
       security:
         - bearerAuth: []
       requestBody:
@@ -435,83 +527,121 @@ paths:
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/CreateApiKeyRequest"
+              $ref: '#/components/schemas/CreateOAuthClientRequest'
             example:
-              name: "Fundbox Integration"
-              scopes: ["persons:read"]
-              expires_in_days: 365
+              name: Fundbox Integration
+              entity_key: fundbox-sg
+              scopes: [persons:read]
+              secret_expires_in_days: 365
       responses:
-        "201":
-          description: API key created. The `key` field is the full secret.
+        '201':
+          description: OAuth client created. The `client_secret` field is shown once only.
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/ApiKeyCreatedResponseEnvelope"
-              example:
-                id: "550e8400-e29b-41d4-a716-446655440000"
-                key: "hp_a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6"
-                key_prefix: "hp_a1b2c3d4"
-                name: "Fundbox Integration"
-                scopes: ["persons:read"]
-                expires_at: "2027-04-28T00:00:00Z"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "403":
-          $ref: "#/components/responses/Forbidden"
-        "422":
-          $ref: "#/components/responses/UnprocessableEntity"
-  /v1/admin/api-keys/{key_id}:
+                $ref: '#/components/schemas/OAuthClientCreated'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+  /v1/admin/oauth-clients/{client_id}:
     delete:
-      tags: ["API Keys"]
-      summary: Delete an API key
-      operationId: deleteApiKey
-      description: Permanently deletes an API key node. Prefer **revocation** for audit trails.
+      tags: [Admin]
+      summary: Delete an OAuth client
+      operationId: deleteOAuthClient
+      description: Permanently deletes an OAuth client and its secrets.
       security:
         - bearerAuth: []
       parameters:
-        - name: key_id
-          in: path
-          required: true
-          schema:
-            type: string
-            format: uuid
-          example: "550e8400-e29b-41d4-a716-446655440000"
+        - $ref: '#/components/parameters/OAuthClientId'
       responses:
-        "204":
-          description: API key deleted.
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "403":
-          $ref: "#/components/responses/Forbidden"
-        "404":
-          $ref: "#/components/responses/NotFound"
-  /v1/admin/api-keys/{key_id}/revoke:
+        '204':
+          description: OAuth client deleted.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /v1/admin/oauth-clients/{client_id}/disable:
     post:
-      tags: ["API Keys"]
-      summary: Revoke an API key
-      operationId: revokeApiKey
-      description: |
-        Soft-revokes an API key. Validation immediately fails for this key.
-        Adds the key prefix to the Redis revocation set for fast-path rejection.
+      tags: [Admin]
+      summary: Disable an OAuth client
+      operationId: disableOAuthClient
+      description: Disables an OAuth client so no secret for that client can obtain new tokens.
       security:
         - bearerAuth: []
       parameters:
-        - name: key_id
+        - $ref: '#/components/parameters/OAuthClientId'
+      responses:
+        '204':
+          description: OAuth client disabled.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /v1/admin/oauth-clients/{client_id}/secrets:
+    post:
+      tags: [Admin]
+      summary: Create an OAuth client secret
+      operationId: createOAuthClientSecret
+      description: Rotates credentials by creating an additional one-time `client_secret` for an OAuth client.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/OAuthClientId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateOAuthClientSecretRequest'
+            example:
+              expires_in_days: 365
+      responses:
+        '201':
+          description: OAuth client secret created. The `client_secret` field is shown once only.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthClientSecretCreated'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+  /v1/admin/oauth-clients/{client_id}/secrets/{secret_id}/revoke:
+    post:
+      tags: [Admin]
+      summary: Revoke an OAuth client secret
+      operationId: revokeOAuthClientSecret
+      description: Revokes one OAuth client secret so it can no longer obtain new tokens.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/OAuthClientId'
+        - name: secret_id
           in: path
           required: true
           schema:
             type: string
-            format: uuid
-          example: "550e8400-e29b-41d4-a716-446655440000"
+          example: sec_2VhJd9uLS2wK8f3P
       responses:
-        "204":
-          description: API key revoked.
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "403":
-          $ref: "#/components/responses/Forbidden"
-        "404":
-          $ref: "#/components/responses/NotFound"
+        '204':
+          description: OAuth client secret revoked.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
   /v1/review-cases:
     get:
       tags: [Review]
@@ -862,6 +992,11 @@ components:
       type: http
       scheme: bearer
       bearerFormat: JWT
+      description: |
+        Bearer JWT accepted by HyperP APIs. Human users send Google OAuth 2.0 ID
+        tokens obtained through the browser/NextAuth flow. Machine callers send
+        HyperP-issued OAuth2 client-credentials access tokens from
+        `POST /v1/oauth/token`.
   parameters:
     RequestId:
       name: X-Request-Id
@@ -909,6 +1044,13 @@ components:
       schema:
         type: string
         format: uuid
+    OAuthClientId:
+      name: client_id
+      in: path
+      required: true
+      schema:
+        type: string
+      example: hpc_2VhJd9uLS2wK8f3P
     Cursor:
       name: cursor
       in: query
@@ -927,6 +1069,12 @@ components:
   responses:
     BadRequest:
       description: Invalid request
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponseEnvelope'
+    UnprocessableEntity:
+      description: Request body or parameters failed validation
       content:
         application/json:
           schema:
@@ -1868,27 +2016,168 @@ components:
           $ref: '#/components/schemas/Meta'
       required: [data, meta]
       additionalProperties: false
-    ApiKeyListResponseEnvelope:
+    OAuthScope:
+      type: string
+      enum:
+        - persons:read
+        - persons:write
+        - ingest:write
+        - admin
+    OAuthTokenRequest:
       type: object
       properties:
-        data:
+        grant_type:
+          type: string
+          const: client_credentials
+        client_id:
+          type: string
+          example: hpc_2VhJd9uLS2wK8f3P
+        client_secret:
+          type: string
+          format: password
+          example: hps_Yh7j...redacted
+        scope:
+          type: string
+          description: Optional space-delimited subset of scopes assigned to the client.
+          example: persons:read
+      required: [grant_type, client_id, client_secret]
+      additionalProperties: false
+    OAuthTokenResponse:
+      type: object
+      properties:
+        access_token:
+          type: string
+          description: HyperP-issued RS256 JWT access token.
+        token_type:
+          type: string
+          const: Bearer
+        expires_in:
+          type: integer
+          minimum: 1
+          description: Access token lifetime in seconds.
+          example: 900
+        scope:
+          type: string
+          description: Space-delimited scopes granted to the access token.
+          example: persons:read
+      required: [access_token, token_type, expires_in, scope]
+      additionalProperties: false
+    OAuthErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+          enum:
+            - invalid_request
+            - invalid_client
+            - invalid_scope
+            - unsupported_grant_type
+        error_description:
+          type: string
+      required: [error, error_description]
+      additionalProperties: false
+    JsonWebKey:
+      type: object
+      properties:
+        kty:
+          type: string
+          const: RSA
+        use:
+          type: string
+          const: sig
+        kid:
+          type: string
+        alg:
+          type: string
+          const: RS256
+        n:
+          type: string
+        e:
+          type: string
+      required: [kty, use, kid, alg, n, e]
+      additionalProperties: false
+    JsonWebKeySet:
+      type: object
+      properties:
+        keys:
           type: array
           items:
-            $ref: '#/components/schemas/ApiKey'
-        meta:
-          $ref: '#/components/schemas/Meta'
-      required: [data, meta]
+            $ref: '#/components/schemas/JsonWebKey'
+      required: [keys]
       additionalProperties: false
-    ApiKeyCreatedResponseEnvelope:
+    OAuthClientSecret:
       type: object
+      description: Stored metadata for one OAuth client secret; the plain secret is never stored or returned after creation.
       properties:
-        data:
-          $ref: '#/components/schemas/ApiKeyCreated'
-        meta:
-          $ref: '#/components/schemas/Meta'
-      required: [data, meta]
+        secret_id:
+          type: string
+          example: sec_2VhJd9uLS2wK8f3P
+        secret_prefix:
+          type: string
+          description: Non-secret prefix used for human identification.
+          example: hps_Yh7j
+        created_at:
+          type: string
+          format: date-time
+          nullable: true
+        expires_at:
+          type: string
+          format: date-time
+          nullable: true
+        revoked_at:
+          type: string
+          format: date-time
+          nullable: true
+        last_used_at:
+          type: string
+          format: date-time
+          nullable: true
+      required: [secret_id, secret_prefix]
       additionalProperties: false
-    CreateApiKeyRequest:
+    OAuthClient:
+      type: object
+      description: Machine OAuth client metadata.
+      properties:
+        client_id:
+          type: string
+          example: hpc_2VhJd9uLS2wK8f3P
+        name:
+          type: string
+          example: Fundbox Integration
+        entity_key:
+          type: string
+          nullable: true
+          description: If set, tokens for this client are scoped to this entity.
+          example: fundbox-sg
+        scopes:
+          type: array
+          items:
+            $ref: '#/components/schemas/OAuthScope'
+          minItems: 1
+          example: [persons:read]
+        created_by:
+          type: string
+          format: email
+          description: Email of the admin who created this client.
+        created_at:
+          type: string
+          format: date-time
+          nullable: true
+        disabled_at:
+          type: string
+          format: date-time
+          nullable: true
+        last_used_at:
+          type: string
+          format: date-time
+          nullable: true
+        secrets:
+          type: array
+          items:
+            $ref: '#/components/schemas/OAuthClientSecret'
+      required: [client_id, name, scopes, created_by, secrets]
+      additionalProperties: false
+    CreateOAuthClientRequest:
       type: object
       properties:
         name:
@@ -1899,114 +2188,88 @@ components:
         entity_key:
           type: string
           nullable: true
-          description: Scope key operations to this entity. Null = cross-entity admin.
+          description: Scope token claims and authorization checks to this entity. Null = cross-entity.
           example: fundbox-sg
         scopes:
           type: array
           items:
-            type: string
-            enum: [persons:read, persons:write, ingest:write, admin]
+            $ref: '#/components/schemas/OAuthScope'
           minItems: 1
           example: [persons:read]
+        secret_expires_in_days:
+          type: integer
+          nullable: true
+          minimum: 1
+          maximum: 730
+          default: 365
+          description: Initial secret expiry in days. Null = no expiry.
+          example: 365
+      required: [name, scopes]
+      additionalProperties: false
+    OAuthClientCreated:
+      type: object
+      description: OAuth client creation response; the `client_secret` is shown once only.
+      properties:
+        client_id:
+          type: string
+          example: hpc_2VhJd9uLS2wK8f3P
+        client_secret:
+          type: string
+          description: The full client secret. Store this immediately; it will never be shown again.
+          example: hps_Yh7j...redacted
+        secret_id:
+          type: string
+          example: sec_2VhJd9uLS2wK8f3P
+        secret_prefix:
+          type: string
+          description: Non-secret prefix used for human identification.
+          example: hps_Yh7j
+        name:
+          type: string
+          example: Fundbox Integration
+        scopes:
+          type: array
+          items:
+            $ref: '#/components/schemas/OAuthScope'
+        secret_expires_at:
+          type: string
+          format: date-time
+          nullable: true
+      required: [client_id, client_secret, secret_id, secret_prefix, name, scopes]
+      additionalProperties: false
+    CreateOAuthClientSecretRequest:
+      type: object
+      properties:
         expires_in_days:
           type: integer
           nullable: true
           minimum: 1
           maximum: 730
-          description: Key expiry in days. Null = no expiry.
+          default: 365
+          description: Secret expiry in days. Null = no expiry.
           example: 365
-      required: [name, scopes]
       additionalProperties: false
-    ApiKey:
+    OAuthClientSecretCreated:
       type: object
-      description: Server-to-server API key. The plain secret is never stored or returned after creation.
+      description: Secret rotation response; the `client_secret` is shown once only.
       properties:
-        id:
+        client_id:
           type: string
-          format: uuid
-        key_prefix:
+          example: hpc_2VhJd9uLS2wK8f3P
+        client_secret:
           type: string
-          description: First 10 characters of the key. Use for identification — the secret itself is not stored.
-          example: hp_a1b2c3d4
-        name:
+          description: The full client secret. Store this immediately; it will never be shown again.
+          example: hps_B3bQ...redacted
+        secret_id:
           type: string
-          example: Fundbox Integration
-        entity_key:
+          example: sec_7QaLd9uLS2wK8f3P
+        secret_prefix:
           type: string
-          nullable: true
-          description: If set, key is scoped to this entity.
-        scopes:
-          type: array
-          items:
-            type: string
-            enum: [persons:read, persons:write, ingest:write, admin]
-        created_by:
-          type: string
-          format: email
-          description: Email of the admin who created this key.
-        created_at:
-          type: string
-          format: date-time
-          description: ISO 8601 creation timestamp.
+          description: Non-secret prefix used for human identification.
+          example: hps_B3bQ
         expires_at:
           type: string
           format: date-time
           nullable: true
-          description: ISO 8601 expiry timestamp. Null = no expiry.
-        last_used_at:
-          type: string
-          format: date-time
-          nullable: true
-          description: ISO 8601 timestamp of last successful validation.
-        is_revoked:
-          type: boolean
-          default: false
-      required: [id, key_prefix, name, scopes, created_by, created_at, is_revoked]
+      required: [client_id, client_secret, secret_id, secret_prefix]
       additionalProperties: false
-    ApiKeyCreated:
-      type: object
-      description: |
-        **Shown once immediately after key creation.** The `key` field is the full
-        secret — store it securely. It will never be returned again.
-      properties:
-        id:
-          type: string
-          format: uuid
-        key:
-          type: string
-          description: The full API key secret. Store this immediately — it will never be shown again.
-          example: hp_a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6
-        key_prefix:
-          type: string
-          description: First 10 characters for human identification.
-          example: hp_a1b2c3d4
-        name:
-          type: string
-        scopes:
-          type: array
-          items:
-            type: string
-        expires_at:
-          type: string
-          format: date-time
-          nullable: true
-      required: [id, key, key_prefix, name, scopes]
-      additionalProperties: false
-  securitySchemes:
-    bearerAuth:
-      type: http
-      scheme: bearer
-      bearerFormat: JWT
-      description: |
-        Google OAuth 2.0 ID token. Obtain via NextAuth `/api/auth/signin` flow.
-        Pass as `Authorization: Bearer <token>`.
-    apiKeyAuth:
-      type: apiKey
-      in: header
-      name: X-Api-Key
-      description: |
-        Server-to-server API key for machine-to-machine authentication.
-        Generate keys via `POST /v1/admin/api-keys` (admin only).
-        Format: `hp_<base64url>` — the secret is shown once only at creation time.
-        Prefix `hp_` is always required. Configure via `API_KEYS_ENABLED=true`
-        and `API_KEY_SECRET=<your-secret>` in the environment.

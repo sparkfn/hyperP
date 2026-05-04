@@ -15,7 +15,11 @@ from src.types_requests import FieldTrustUpdateRequest
 router = APIRouter()
 
 
-@router.get("/v1/source-systems", response_model=ApiResponse[list[SourceSystemInfo]])
+@router.get(
+    "/v1/source-systems",
+    response_model=ApiResponse[list[SourceSystemInfo]],
+    dependencies=[Depends(require_admin)],
+)
 async def list_source_systems(
     request: Request,
     repo: AdminRepository = Depends(get_admin_repo),
@@ -28,6 +32,7 @@ async def list_source_systems(
 @router.get(
     "/v1/source-systems/{source_key}/field-trust",
     response_model=ApiResponse[FieldTrustResponse],
+    dependencies=[Depends(require_admin)],
 )
 async def get_field_trust(
     source_key: str,

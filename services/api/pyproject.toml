@@ -15,6 +15,8 @@ dependencies = [
     "requests>=2.31,<3",
     "redis[hiredis]>=5.0,<6",
     "httpx>=0.27,<1",
+    "cryptography>=42,<47",
+    "python-multipart>=0.0.9,<1",
 ]
 
 [tool.uv]

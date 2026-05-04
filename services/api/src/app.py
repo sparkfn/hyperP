@@ -13,8 +13,9 @@ from fastapi.params import Depends as DependsMarker
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from src.auth.api_keys import ensure_api_key_constraint
 from src.auth.deps import require_active_user
+from src.auth.oauth_clients import ensure_oauth_client_constraints
+from src.auth.oauth_tokens import validate_oauth_runtime_config
 from src.config import config
 from src.graph.client import close_driver, get_session
 from src.graph.queries.users import CREATE_USER_CONSTRAINT
@@ -28,14 +29,15 @@ from src.routes import (
     health,
     ingest,
     merge,
+    oauth,
     person_sales,
     persons,
     reports,
     review,
     survivorship,
 )
-from src.routes import api_keys as api_keys_routes
 from src.routes import auth as auth_routes
+from src.routes import oauth_clients as oauth_client_routes
 from src.routes import users as users_routes
 from src.routes.public_pages import person_links_router, public_router
 from src.types import ApiError, ApiErrorBody, ResponseMeta
@@ -52,19 +54,18 @@ async def _ensure_user_constraint() -> None:
         logger.exception("Failed to create :User uniqueness constraint")
 
 
-async def _ensure_api_key_constraint() -> None:
-    """Create the :ApiKey uniqueness constraint if it does not exist."""
-    try:
-        await ensure_api_key_constraint()
-    except Exception:  # noqa: BLE001
-        logger.exception("Failed to create :ApiKey uniqueness constraint")
+
+async def _ensure_oauth_client_constraints() -> None:
+    """Create OAuth client uniqueness constraints if they do not exist."""
+    await ensure_oauth_client_constraints()
 
 
 @asynccontextmanager
 async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
     """Manage the Neo4j driver lifecycle alongside the FastAPI process."""
+    validate_oauth_runtime_config()
     await _ensure_user_constraint()
-    await _ensure_api_key_constraint()
+    await _ensure_oauth_client_constraints()
     yield
     await close_driver()
     await close_redis()
@@ -93,6 +94,7 @@ def build_app() -> FastAPI:
     # Health, auth, and public (share-link) endpoints — no auth required.
     app.include_router(health.router)
     app.include_router(auth_routes.router)
+    app.include_router(oauth.router)
     app.include_router(public_router)
     # The users router is admin-only via its handlers.
     app.include_router(users_routes.router)
@@ -109,7 +111,7 @@ def build_app() -> FastAPI:
     app.include_router(survivorship.router, dependencies=active)
     app.include_router(ingest.router, dependencies=active)
     app.include_router(admin.router, dependencies=active)
-    app.include_router(api_keys_routes.router, dependencies=active)
+    app.include_router(oauth_client_routes.router, dependencies=active)
     app.include_router(events.router, dependencies=active)
 
     _register_error_handlers(app)

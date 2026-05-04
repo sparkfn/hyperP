@@ -3,15 +3,20 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 
 from cachetools import TTLCache
 from fastapi import Depends, Request, Security
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from pydantic import Field
 
-from src.auth.api_keys import check_scope, validate_api_key
-from src.auth.models import AuthUser
+from src.auth.models import AuthUser, Role
+from src.auth.oauth_client_models import (
+    ALLOWED_OAUTH_CLIENT_SCOPES,
+    OAuthClient,
+    OAuthClientUser,
+)
+from src.auth.oauth_clients import check_scope, get_oauth_client_by_id
+from src.auth.oauth_tokens import verify_client_access_token
 from src.auth.revoke import decode_jwt_claims, is_token_revoked
 from src.auth.store import (
     get_entities_for_review_case,
@@ -56,11 +61,6 @@ def _extract_bearer_token(
     return credentials.credentials
 
 
-def _get_api_key_header(request: Request) -> str | None:
-    """Read X-Api-Key from the raw request (avoids HTTPBearer consuming headers)."""
-    return request.headers.get(config.api_key_header_name) or None
-
-
 async def get_current_user(
     request: Request,
     credentials: HTTPAuthorizationCredentials | None = _BEARER_CREDENTIALS,
@@ -98,56 +98,102 @@ async def get_current_user(
     return user
 
 
-# --- API key (server-to-server) auth ---
+# --- OAuth client (server-to-server) auth ---
 
 
-class ApiKeyUser(AuthUser):
-    """AuthUser subclass for API-key-authenticated callers."""
+def _reconciled_oauth_scopes(
+    token_scopes: list[str], client: OAuthClient, request: Request
+) -> list[str]:
+    token_scope_set = set(token_scopes)
+    if len(token_scope_set) != len(token_scopes):
+        raise http_error(403, "forbidden", "OAuth token scopes are invalid.", request)
+    if any(scope not in ALLOWED_OAUTH_CLIENT_SCOPES for scope in token_scopes):
+        raise http_error(403, "forbidden", "OAuth token scopes are invalid.", request)
 
-    source: str = "api_key"
-    key_scopes: list[str] = Field(default_factory=list)
+    persisted_scope_set = set(client.scopes)
+    if "admin" in persisted_scope_set:
+        return client.scopes
+    if any(scope not in persisted_scope_set for scope in token_scopes):
+        raise http_error(
+            403,
+            "forbidden",
+            "OAuth token scopes are no longer assigned to this client.",
+            request,
+        )
+    return token_scopes
 
 
-async def get_current_user_or_api_key(
+def _reconciled_oauth_entity_key(
+    token_entity_key: str | None, client: OAuthClient, request: Request
+) -> str | None:
+    if token_entity_key != client.entity_key:
+        raise http_error(
+            403,
+            "forbidden",
+            "OAuth token entity scope no longer matches this client.",
+            request,
+        )
+    return client.entity_key
+
+
+async def get_current_user_or_oauth_client(
     request: Request,
     credentials: HTTPAuthorizationCredentials | None = _BEARER_CREDENTIALS,
-) -> AuthUser | ApiKeyUser:
-    """Resolve principal from either a Bearer token or an API key.
-
-    API key is attempted first when enabled; falls back to Bearer on a missing
-    or invalid header. Human Bearer users get a 401 for missing tokens.
-    """
+) -> AuthUser | OAuthClientUser:
+    """Authenticate either a Google ID token or a HyperP OAuth client token."""
     if not config.auth_enabled:
         return _DEV_BYPASS_USER
 
-    # Read X-Api-Key from raw request headers so HTTPBearer doesn't consume it.
-    api_key_header = _get_api_key_header(request)
-    if config.api_keys_enabled and api_key_header is not None:
-        result = await validate_api_key(api_key_header)
-        if result is not None:
-            key_obj, scopes = result
-            user = ApiKeyUser(
-                email=f"apikey:{key_obj.key_prefix}@api",
-                google_sub=key_obj.id,
-                role="admin",
-                entity_key=key_obj.entity_key,
-                display_name=key_obj.name,
-            )
-            user.key_scopes = scopes
-            request.state.api_key_scopes = scopes
-            return user
+    if credentials is None:
+        raise http_error(401, "unauthorized", "Missing Authorization bearer token.", request)
+    token = credentials.credentials
 
-    # Fall back to Bearer — raises 401 for missing token
-    return await get_current_user(request, credentials)
+    try:
+        claims = verify_client_access_token(token)
+    except ValueError:
+        return await get_current_user(request, credentials)
+
+    if await is_token_revoked(claims.jti):
+        raise http_error(401, "token_revoked", "Token has been revoked.", request)
+
+    client = await get_oauth_client_by_id(claims.client_id)
+    if client is None:
+        raise http_error(
+            401,
+            "unauthorized",
+            "OAuth client no longer exists or has been revoked.",
+            request,
+        )
+    if client.disabled_at is not None:
+        raise http_error(
+            403,
+            "forbidden",
+            "OAuth client is disabled.",
+            request,
+        )
+
+    reconciled_scopes = _reconciled_oauth_scopes(claims.scopes, client, request)
+    reconciled_entity_key = _reconciled_oauth_entity_key(claims.entity_key, client, request)
+    role: Role = "admin" if "admin" in reconciled_scopes else "employee"
+    return OAuthClientUser(
+        email=f"oauth:{claims.client_id}",
+        google_sub=claims.client_id,
+        role=role,
+        entity_key=reconciled_entity_key,
+        display_name=claims.client_id,
+        source="oauth_client",
+        client_id=claims.client_id,
+        key_scopes=reconciled_scopes,
+    )
 
 
-# All require_* functions use get_current_user_or_api_key so they accept
-# both Bearer users and API-key users. role checks are safe for both types.
+# All require_* functions use get_current_user_or_oauth_client so they accept
+# both Bearer users and OAuth-client users. role checks are safe for both types.
 
 
 async def require_active_user(
-    request: Request, user: AuthUser | ApiKeyUser = Depends(get_current_user_or_api_key)
-) -> AuthUser | ApiKeyUser:
+    request: Request, user: AuthUser | OAuthClientUser = Depends(get_current_user_or_oauth_client)
+) -> AuthUser | OAuthClientUser:
     """Allow only users who have been assigned an entity (or are admins)."""
     if user.role == "first_time":
         raise http_error(
@@ -159,10 +205,35 @@ async def require_active_user(
     return user
 
 
+async def require_human_user(
+    request: Request, user: AuthUser | OAuthClientUser = Depends(get_current_user_or_oauth_client)
+) -> AuthUser:
+    """Allow browser/human users only; reject OAuth client credentials."""
+    if isinstance(user, OAuthClientUser):
+        raise http_error(
+            403,
+            "forbidden",
+            "OAuth clients cannot access human workflow routes.",
+            request,
+        )
+    return user
+
+
 async def require_admin(
-    request: Request, user: AuthUser | ApiKeyUser = Depends(get_current_user_or_api_key)
-) -> AuthUser | ApiKeyUser:
+    request: Request, user: AuthUser | OAuthClientUser = Depends(get_current_user_or_oauth_client)
+) -> AuthUser | OAuthClientUser:
     """Admin-only gate."""
+    if user.role != "admin":
+        raise http_error(
+            403, "forbidden", "This action requires administrator privileges.", request
+        )
+    return user
+
+
+async def require_human_admin(
+    request: Request, user: AuthUser = Depends(require_human_user)
+) -> AuthUser:
+    """Allow human administrator users only."""
     if user.role != "admin":
         raise http_error(
             403, "forbidden", "This action requires administrator privileges.", request
@@ -173,8 +244,8 @@ async def require_admin(
 async def require_mutator_for_source(
     source_key: str,
     request: Request,
-    user: AuthUser | ApiKeyUser = Depends(get_current_user_or_api_key),
-) -> AuthUser | ApiKeyUser:
+    user: AuthUser | OAuthClientUser = Depends(get_current_user_or_oauth_client),
+) -> AuthUser | OAuthClientUser:
     """Allow admin unconditionally; allow employee iff source_key → their entity."""
     if user.role == "admin":
         return user
@@ -201,8 +272,8 @@ async def require_mutator_for_source(
 async def require_mutator_for_review_case(
     review_case_id: str,
     request: Request,
-    user: AuthUser | ApiKeyUser = Depends(get_current_user_or_api_key),
-) -> AuthUser | ApiKeyUser:
+    user: AuthUser | OAuthClientUser = Depends(get_current_user_or_oauth_client),
+) -> AuthUser | OAuthClientUser:
     """Allow admin; allow employee iff at least one side of the case is their entity."""
     if user.role == "admin":
         return user
@@ -227,8 +298,8 @@ async def require_mutator_for_review_case(
 async def require_mutator_for_entity(
     entity_key: str,
     request: Request,
-    user: AuthUser | ApiKeyUser = Depends(get_current_user_or_api_key),
-) -> AuthUser | ApiKeyUser:
+    user: AuthUser | OAuthClientUser = Depends(get_current_user_or_oauth_client),
+) -> AuthUser | OAuthClientUser:
     """Direct entity-key mutator check (admin or matching employee)."""
     if user.role == "admin":
         return user
@@ -249,17 +320,22 @@ async def require_mutator_for_entity(
     return user
 
 
-def require_scope(required: str) -> Callable[..., AuthUser | ApiKeyUser]:
-    """Return a FastAPI dependency that checks for a specific API key scope."""
+def require_scope(
+    required: str,
+) -> Callable[
+    [Request, AuthUser | OAuthClientUser], Awaitable[AuthUser | OAuthClientUser]
+]:
+    """Return a dependency that checks OAuth scopes for OAuth clients only."""
     async def _dep(
         request: Request,
-        user: AuthUser | ApiKeyUser = Depends(get_current_user_or_api_key),
-    ) -> AuthUser | ApiKeyUser:
-        scopes = getattr(user, "key_scopes", None) or []
-        if not check_scope(scopes, required):
+        user: AuthUser | OAuthClientUser = Depends(get_current_user_or_oauth_client),
+    ) -> AuthUser | OAuthClientUser:
+        if not isinstance(user, OAuthClientUser):
+            return user
+        if not check_scope(user.key_scopes, required):
             raise http_error(
-                403, "forbidden", f"API key lacks required scope: {required}", request
+                403, "forbidden", f"OAuth client lacks required scope: {required}", request
             )
         return user
 
-    return _dep  # type: ignore[return-value]
+    return _dep

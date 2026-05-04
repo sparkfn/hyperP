@@ -4,13 +4,17 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Query, Request
 
+from src.auth.deps import require_scope
 from src.http_utils import envelope, next_cursor, page_window
 from src.repositories.deps import get_sales_repo
 from src.repositories.protocols.sales import SalesRepository
 from src.types import ApiResponse
 from src.types_sales import SalesOrder
 
-router = APIRouter(prefix="/v1/persons")
+router = APIRouter(
+    prefix="/v1/persons",
+    dependencies=[Depends(require_scope("persons:read"))],
+)
 
 
 @router.get("/{person_id}/sales", response_model=ApiResponse[list[SalesOrder]])

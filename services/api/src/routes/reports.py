@@ -8,7 +8,7 @@ import logging
 from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel
 
-from src.auth.deps import require_admin
+from src.auth.deps import require_admin, require_scope
 from src.auth.models import AuthUser
 from src.http_utils import envelope, http_error
 from src.repositories.deps import get_report_repo
@@ -28,7 +28,11 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/v1/reports")
 
 
-@router.get("", response_model=ApiResponse[list[ReportSummary]])
+@router.get(
+    "",
+    response_model=ApiResponse[list[ReportSummary]],
+    dependencies=[Depends(require_scope("persons:read"))],
+)
 async def list_reports(
     request: Request,
     repo: ReportRepository = Depends(get_report_repo),
@@ -38,7 +42,11 @@ async def list_reports(
     return envelope(reports, request)
 
 
-@router.get("/{report_key}", response_model=ApiResponse[ReportDetail])
+@router.get(
+    "/{report_key}",
+    response_model=ApiResponse[ReportDetail],
+    dependencies=[Depends(require_scope("persons:read"))],
+)
 async def get_report(
     report_key: str,
     request: Request,
@@ -121,7 +129,11 @@ async def delete_report(
     return envelope(DeleteReportResponse(status="deleted", report_key=report_key), request)
 
 
-@router.post("/{report_key}/execute", response_model=ApiResponse[ReportResult])
+@router.post(
+    "/{report_key}/execute",
+    response_model=ApiResponse[ReportResult],
+    dependencies=[Depends(require_scope("persons:read"))],
+)
 async def execute_report(
     report_key: str,
     body: ExecuteReportRequest,

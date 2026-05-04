@@ -32,9 +32,18 @@ class AppConfig(BaseSettings):
     refresh_token_expiry_minutes: int = Field(default=43200, alias="REFRESH_TOKEN_EXPIRY_MINUTES")
     bootstrap_admin_emails: str = Field(default="", alias="BOOTSTRAP_ADMIN_EMAILS")
     public_page_expiry_minutes: int = Field(default=30, alias="PUBLIC_PAGE_EXPIRY_MINUTES")
-    api_keys_enabled: bool = Field(default=False, alias="API_KEYS_ENABLED")
-    api_key_secret: str | None = Field(default=None, alias="API_KEY_SECRET")
-    api_key_header_name: str = Field(default="X-Api-Key", alias="API_KEY_HEADER_NAME")
+    oauth_issuer: str = Field(default="http://localhost/api", alias="OAUTH_ISSUER")
+    oauth_audience: str = Field(default="hyperp-api", alias="OAUTH_AUDIENCE")
+    oauth_access_token_expiry_minutes: int = Field(
+        default=15, alias="OAUTH_ACCESS_TOKEN_EXPIRY_MINUTES"
+    )
+    oauth_max_access_token_expiry_minutes: int = Field(
+        default=60, alias="OAUTH_MAX_ACCESS_TOKEN_EXPIRY_MINUTES"
+    )
+    oauth_active_key_id: str = Field(default="local-dev", alias="OAUTH_ACTIVE_KEY_ID")
+    oauth_private_key_pem: str = Field(default="", alias="OAUTH_PRIVATE_KEY_PEM")
+    oauth_public_key_pem: str = Field(default="", alias="OAUTH_PUBLIC_KEY_PEM")
+    oauth_secret_hash_key: str = Field(default="", alias="OAUTH_SECRET_HASH_KEY")
     # LLM service (OpenAI-compatible endpoint)
     llm_api_base_url: str = Field(
         default="https://api.openai.com",

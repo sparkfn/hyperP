@@ -80,9 +80,7 @@ module = [
     # of the codebase strict.
     "src.auth.models",
     "src.auth.verify",
-    "src.auth.api_key_models",
-    "src.auth.api_keys",
-    "src.auth.deps",
+    "src.auth.oauth_client_models",
     "src.types_reports",
     "src.models",
     "src.connectors.fundbox.base",
@@ -107,9 +105,6 @@ module = [
     "src.tasks",
     "src.external.whatsapp_api",
     "src.birthday",
-    "src.auth.api_key_models",
-    "src.auth.api_keys",
-    "src.auth.deps",
     "src.redis_client",
 ]
 disallow_any_explicit = false
