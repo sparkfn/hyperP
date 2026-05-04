@@ -2,10 +2,34 @@ import type { Role } from "./permissions";
 
 export interface UserResponse {
   email: string;
-  google_sub: string;
+  google_sub: string | null;
   role: Role;
   entity_key: string | null;
   display_name: string | null;
+}
+
+export interface UserBulkCreateRow {
+  email: string;
+  role: Role;
+  entity_key?: string | null;
+}
+
+export type UserBulkCreateStatus = "created" | "error";
+
+export interface UserBulkCreateResult {
+  email: string;
+  status: UserBulkCreateStatus;
+  code: string | null;
+  message: string | null;
+  user: UserResponse | null;
+}
+
+export interface UserBulkCreateResponse {
+  results: UserBulkCreateResult[];
+}
+
+export interface UserBulkCreateRequest {
+  users: UserBulkCreateRow[];
 }
 
 // Hand-mirrored TS interfaces for ingestion / admin / events / health payloads.
