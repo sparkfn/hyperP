@@ -37,6 +37,7 @@ data/celerybeat/
 
 # Claude Code local session/cache
 .claude/
+.worktrees/
 
 # Dump files
 .dumps/
