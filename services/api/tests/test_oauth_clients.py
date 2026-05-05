@@ -33,6 +33,10 @@ from src.auth.oauth_clients import (
     verify_client_secret,
 )
 from src.graph.converters import GraphValue
+from src.graph.queries.oauth_clients import (
+    GET_OAUTH_CLIENT_BY_ID,
+    GET_OAUTH_CLIENTS_FOR_ADMIN,
+)
 
 TEST_HASH_KEY = "test-oauth-secret-hash-key"
 
@@ -271,6 +275,24 @@ def _admin_user() -> AuthUser:
         display_name="Admin",
         first_time=False,
     )
+
+
+def test_admin_oauth_clients_query_orders_before_projection() -> None:
+    query = GET_OAUTH_CLIENTS_FOR_ADMIN
+
+    assert "WITH c, secrets ORDER BY c.created_at DESC" in query
+    assert "ORDER BY client.created_at DESC" not in query
+    assert "ORDER BY c.created_at DESC" not in query.rsplit("RETURN", maxsplit=1)[-1]
+
+
+@pytest.mark.parametrize(
+    "query",
+    [GET_OAUTH_CLIENTS_FOR_ADMIN, GET_OAUTH_CLIENT_BY_ID],
+)
+def test_oauth_client_queries_aggregate_secrets_before_projection(query: str) -> None:
+    assert "WITH c, collect(s {" in query
+    assert "secrets: secrets" in query
+    assert "secrets: collect(s {" not in query
 
 
 @pytest.mark.asyncio

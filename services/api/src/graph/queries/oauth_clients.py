@@ -38,15 +38,16 @@ GET_OAUTH_CLIENTS_FOR_ADMIN = """
 MATCH (c:OAuthClient)
 OPTIONAL MATCH (c)-[:HAS_SECRET]->(s:OAuthClientSecret)
 WITH c, s ORDER BY s.created_at DESC
+WITH c, collect(s {
+  .secret_id, .secret_prefix, .created_at, .expires_at,
+  .revoked_at, .last_used_at
+}) AS secrets
+WITH c, secrets ORDER BY c.created_at DESC
 RETURN c {
   .client_id, .name, .entity_key, .scopes, .created_by,
   .created_at, .disabled_at, .last_used_at,
-  secrets: collect(s {
-    .secret_id, .secret_prefix, .created_at, .expires_at,
-    .revoked_at, .last_used_at
-  })
+  secrets: secrets
 } AS client
-ORDER BY c.created_at DESC
 """
 
 GET_OAUTH_CLIENT_FOR_VALIDATION = """
@@ -65,13 +66,14 @@ GET_OAUTH_CLIENT_BY_ID = """
 MATCH (c:OAuthClient {client_id: $client_id})
 OPTIONAL MATCH (c)-[:HAS_SECRET]->(s:OAuthClientSecret)
 WITH c, s ORDER BY s.created_at DESC
+WITH c, collect(s {
+  .secret_id, .secret_prefix, .created_at, .expires_at,
+  .revoked_at, .last_used_at
+}) AS secrets
 RETURN c {
   .client_id, .name, .entity_key, .scopes, .created_by,
   .created_at, .disabled_at, .last_used_at,
-  secrets: collect(s {
-    .secret_id, .secret_prefix, .created_at, .expires_at,
-    .revoked_at, .last_used_at
-  })
+  secrets: secrets
 } AS client
 """
 
