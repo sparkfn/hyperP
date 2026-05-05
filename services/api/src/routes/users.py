@@ -7,7 +7,7 @@ from typing import Literal, cast
 from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel
 
-from src.auth.deps import ApiKeyUser, require_admin
+from src.auth.deps import require_human_admin
 from src.auth.models import AuthUser, Role
 from src.auth.store import (
     PreRegisterUserInput,
@@ -130,7 +130,7 @@ def _row_error(email: str, code: str, message: str) -> UserBulkCreateResult:
 
 @router.get("", response_model=ApiResponse[list[UserResponse]])
 async def list_all_users(
-    request: Request, _admin: AuthUser | ApiKeyUser = Depends(require_admin)
+    request: Request, _admin: AuthUser = Depends(require_human_admin)
 ) -> ApiResponse[list[UserResponse]]:
     """Return every known user. Admin only."""
     users = await list_users()
@@ -141,7 +141,7 @@ async def list_all_users(
 async def bulk_create_users(
     body: UserBulkCreateRequest,
     request: Request,
-    _admin: AuthUser | ApiKeyUser = Depends(require_admin),
+    _admin: AuthUser = Depends(require_human_admin),
 ) -> ApiResponse[UserBulkCreateResponse]:
     """Pre-register multiple users before their first Google login. Admin only."""
     normalized_emails = [normalize_email(row.email) for row in body.users]
@@ -219,7 +219,7 @@ async def patch_user(
     email: str,
     body: UserUpdateRequest,
     request: Request,
-    _admin: AuthUser | ApiKeyUser = Depends(require_admin),
+    _admin: AuthUser = Depends(require_human_admin),
 ) -> ApiResponse[UserResponse]:
     """Update a user's role and/or entity assignment. Admin only."""
     new_role: Role | None = body.role
