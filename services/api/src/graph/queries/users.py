@@ -21,10 +21,36 @@ ON CREATE SET
 ON MATCH SET
   u.google_sub = $google_sub,
   u.display_name = coalesce($display_name, u.display_name),
+  u.role = coalesce(u.role, CASE WHEN $bootstrap_admin THEN 'admin' ELSE 'first_time' END),
+  u.entity_key = u.entity_key,
   u.last_login_at = datetime()
 RETURN u {
   .email, .google_sub, .role, .entity_key, .display_name
 } AS user
+"""
+
+EXISTING_USER_EMAILS = """
+MATCH (u:User)
+WHERE u.email IN $emails
+RETURN u.email AS email
+"""
+
+CREATE_PRE_REGISTERED_USER = """
+CREATE (u:User {
+  email: $email,
+  google_sub: null,
+  display_name: null,
+  role: $role,
+  entity_key: $entity_key,
+  created_at: datetime(),
+  updated_at: datetime()
+})
+WITH u, $entity_key AS ek
+OPTIONAL MATCH (e:Entity {entity_key: ek})
+FOREACH (_ IN CASE WHEN e IS NOT NULL THEN [1] ELSE [] END |
+  CREATE (u)-[:EMPLOYEE_OF]->(e)
+)
+RETURN u {.email, .google_sub, .role, .entity_key, .display_name} AS user
 """
 
 GET_USER_BY_EMAIL = """
