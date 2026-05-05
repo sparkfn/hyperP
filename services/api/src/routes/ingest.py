@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Request
 
-from src.auth.deps import require_mutator_for_source
+from src.auth.deps import require_mutator_for_source, require_scope
 from src.auth.models import AuthUser
 from src.http_utils import envelope, http_error
 from src.repositories.deps import get_ingest_repo
@@ -24,7 +24,11 @@ from src.types_requests import (
 router = APIRouter()
 
 
-@router.post("/v1/ingest/{source_key}/records", response_model=ApiResponse[IngestRecordsResponse])
+@router.post(
+    "/v1/ingest/{source_key}/records",
+    response_model=ApiResponse[IngestRecordsResponse],
+    dependencies=[Depends(require_scope("ingest:write"))],
+)
 async def ingest_records(
     source_key: str,
     body: IngestRecordsRequest,
@@ -50,6 +54,7 @@ async def ingest_records(
     "/v1/ingest/{source_key}/runs",
     response_model=ApiResponse[IngestRunResponse],
     status_code=201,
+    dependencies=[Depends(require_scope("ingest:write"))],
 )
 async def create_ingest_run(
     source_key: str,
@@ -70,6 +75,7 @@ async def create_ingest_run(
 @router.patch(
     "/v1/ingest/{source_key}/runs/{ingest_run_id}",
     response_model=ApiResponse[IngestRunResponse],
+    dependencies=[Depends(require_scope("ingest:write"))],
 )
 async def update_ingest_run(
     source_key: str,
@@ -86,7 +92,11 @@ async def update_ingest_run(
     return envelope(result, request)
 
 
-@router.get("/v1/ingest/runs/{ingest_run_id}", response_model=ApiResponse[IngestRunDetailResponse])
+@router.get(
+    "/v1/ingest/runs/{ingest_run_id}",
+    response_model=ApiResponse[IngestRunDetailResponse],
+    dependencies=[Depends(require_scope("ingest:write"))],
+)
 async def get_ingest_run(
     ingest_run_id: str,
     request: Request,

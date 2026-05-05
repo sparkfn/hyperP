@@ -27,9 +27,14 @@ _MIN_ENV = {
     "REDIS_URL": "redis://localhost:6379",
     "ACCESS_TOKEN_EXPIRY_MINUTES": "60",
     "REFRESH_TOKEN_EXPIRY_MINUTES": "43200",
-    "API_KEYS_ENABLED": "false",
-    "API_KEY_SECRET": "",
-    "API_KEY_HEADER_NAME": "X-Api-Key",
+    "OAUTH_ISSUER": "http://testserver/api",
+    "OAUTH_AUDIENCE": "hyperp-api-test",
+    "OAUTH_ACCESS_TOKEN_EXPIRY_MINUTES": "15",
+    "OAUTH_MAX_ACCESS_TOKEN_EXPIRY_MINUTES": "60",
+    "OAUTH_ACTIVE_KEY_ID": "test-key",
+    "OAUTH_PRIVATE_KEY_PEM": "dummy-private-pem",
+    "OAUTH_PUBLIC_KEY_PEM": "dummy-public-pem",
+    "OAUTH_SECRET_HASH_KEY": "test-secret-hash-key",
     "LLM_API_BASE_URL": "https://api.openai.com",
 }
 for key, val in _MIN_ENV.items():

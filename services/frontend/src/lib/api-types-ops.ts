@@ -2,10 +2,34 @@ import type { Role } from "./permissions";
 
 export interface UserResponse {
   email: string;
-  google_sub: string;
+  google_sub: string | null;
   role: Role;
   entity_key: string | null;
   display_name: string | null;
+}
+
+export interface UserBulkCreateRow {
+  email: string;
+  role: Role;
+  entity_key?: string | null;
+}
+
+export type UserBulkCreateStatus = "created" | "error";
+
+export interface UserBulkCreateResult {
+  email: string;
+  status: UserBulkCreateStatus;
+  code: string | null;
+  message: string | null;
+  user: UserResponse | null;
+}
+
+export interface UserBulkCreateResponse {
+  results: UserBulkCreateResult[];
+}
+
+export interface UserBulkCreateRequest {
+  users: UserBulkCreateRow[];
 }
 
 // Hand-mirrored TS interfaces for ingestion / admin / events / health payloads.
@@ -278,40 +302,60 @@ export interface HealthResponse {
   error: string | null;
 }
 
-// --- API Keys (server-to-server auth) ---
-// Mirrors services/api/src/auth/api_key_models.py
+// --- OAuth clients (server-to-server auth) ---
+// Mirrors services/api/src/auth/oauth_client_models.py
 
-export interface ApiKey {
-  id: string;
-  key_prefix: string;
+export interface OAuthClientSecret {
+  secret_id: string;
+  secret_prefix: string;
+  created_at: string | null;
+  expires_at: string | null;
+  revoked_at: string | null;
+  last_used_at: string | null;
+}
+
+export interface OAuthClient {
+  client_id: string;
   name: string;
   entity_key: string | null;
   scopes: string[];
   created_by: string;
   created_at: string | null;
-  expires_at: string | null;
+  disabled_at: string | null;
   last_used_at: string | null;
-  is_revoked: boolean;
+  secrets: OAuthClientSecret[];
 }
 
-/** Shown once immediately after creation — the secret is never stored or shown again. */
-export interface ApiKeyCreated {
-  id: string;
-  key: string;
-  key_prefix: string;
+export interface OAuthClientCreated {
+  client_id: string;
+  client_secret: string;
+  secret_id: string;
+  secret_prefix: string;
   name: string;
   scopes: string[];
-  expires_at: string | null;
+  secret_expires_at: string | null;
 }
 
-export interface CreateApiKeyRequest {
+export interface CreateOAuthClientRequest {
   name: string;
   entity_key: string | null;
   scopes: string[];
+  secret_expires_in_days: number | null;
+}
+
+export interface CreateOAuthClientSecretRequest {
   expires_in_days: number | null;
 }
 
-export const API_KEY_SCOPES: readonly string[] = [
+export interface OAuthClientSecretCreated {
+  client_id: string;
+  client_secret: string;
+  secret_id: string;
+  secret_prefix: string;
+  expires_at: string | null;
+}
+
+export const OAUTH_CLIENT_SCOPES: readonly string[] = [
   "persons:read",
   "persons:write",
   "ingest:write",

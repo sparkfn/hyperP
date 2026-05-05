@@ -9,6 +9,8 @@ from datetime import UTC, datetime
 from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel
 
+from src.auth.deps import require_human_user
+from src.auth.models import AuthUser
 from src.config import config
 from src.http_utils import envelope, http_error
 from src.redis_client import get_redis
@@ -55,6 +57,7 @@ async def _resolve_person_id(token: str, request: Request) -> str:
 async def create_public_link(
     person_id: str,
     request: Request,
+    _user: AuthUser = Depends(require_human_user),
     repo: PersonRepository = Depends(get_person_repo),
 ) -> ApiResponse[PublicLinkResponse]:
     """Generate a time-limited public share token for a person profile."""

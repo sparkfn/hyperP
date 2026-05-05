@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Query, Request
 
+from src.auth.deps import require_scope
 from src.http_utils import envelope, next_cursor, page_window
 from src.repositories.deps import get_entity_repo
 from src.repositories.protocols.entity import EntityRepository
@@ -12,7 +13,11 @@ from src.types import ApiResponse, EntityPerson, EntitySummary
 router = APIRouter(prefix="/v1/entities")
 
 
-@router.get("", response_model=ApiResponse[list[EntitySummary]])
+@router.get(
+    "",
+    response_model=ApiResponse[list[EntitySummary]],
+    dependencies=[Depends(require_scope("persons:read"))],
+)
 async def list_entities(
     request: Request,
     repo: EntityRepository = Depends(get_entity_repo),
@@ -22,7 +27,11 @@ async def list_entities(
     return envelope(entities, request)
 
 
-@router.get("/{entity_key}/persons", response_model=ApiResponse[list[EntityPerson]])
+@router.get(
+    "/{entity_key}/persons",
+    response_model=ApiResponse[list[EntityPerson]],
+    dependencies=[Depends(require_scope("persons:read"))],
+)
 async def list_entity_persons(
     entity_key: str,
     request: Request,

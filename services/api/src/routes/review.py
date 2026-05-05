@@ -5,7 +5,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, Query, Request
 from pydantic import BaseModel
 
-from src.auth.deps import require_mutator_for_review_case
+from src.auth.deps import require_human_user, require_mutator_for_review_case
 from src.auth.models import AuthUser
 from src.http_utils import envelope, http_error, next_cursor, page_window
 from src.repositories.deps import get_review_repo
@@ -51,6 +51,7 @@ async def list_review_cases(
     priority_lte: int | None = Query(default=None),
     cursor: str | None = Query(default=None),
     limit: int | None = Query(default=None),
+    _user: AuthUser = Depends(require_human_user),
     repo: ReviewRepository = Depends(get_review_repo),
 ) -> ApiResponse[list[ReviewCaseSummary]]:
     """List review cases with optional filters."""
@@ -68,6 +69,7 @@ async def list_review_cases(
 async def get_review_case(
     review_case_id: str,
     request: Request,
+    _user: AuthUser = Depends(require_human_user),
     repo: ReviewRepository = Depends(get_review_repo),
 ) -> ApiResponse[ReviewCaseDetail]:
     """Return a single review case with comparison payload."""
@@ -77,12 +79,21 @@ async def get_review_case(
     return envelope(case, request)
 
 
+async def require_human_review_case_mutator(
+    user: AuthUser = Depends(require_human_user),
+    review_user: AuthUser = Depends(require_mutator_for_review_case),
+) -> AuthUser:
+    """Require both a human principal and review-case mutation permission."""
+    _ = user
+    return review_user
+
+
 @router.post("/{review_case_id}/assign", response_model=ApiResponse[AssignResponse])
 async def assign_review_case(
     review_case_id: str,
     body: AssignReviewRequest,
     request: Request,
-    _user: AuthUser = Depends(require_mutator_for_review_case),
+    _user: AuthUser = Depends(require_human_review_case_mutator),
     repo: ReviewRepository = Depends(get_review_repo),
 ) -> ApiResponse[AssignResponse]:
     """Assign a review case to a reviewer."""
@@ -109,7 +120,7 @@ async def submit_review_action(
     review_case_id: str,
     body: ReviewActionRequest,
     request: Request,
-    user: AuthUser = Depends(require_mutator_for_review_case),
+    user: AuthUser = Depends(require_human_review_case_mutator),
     repo: ReviewRepository = Depends(get_review_repo),
 ) -> ApiResponse[ActionResponse]:
     """Submit a review action (merge / reject / defer / escalate / manual_no_match)."""

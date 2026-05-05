@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Query, Request
 
+from src.auth.deps import require_scope
 from src.http_utils import envelope, http_error, next_cursor, page_window
 from src.repositories.deps import get_person_repo
 from src.repositories.protocols.person import PersonListFilters, PersonRepository
@@ -21,7 +22,10 @@ from src.types import (
     SourceRecord,
 )
 
-router = APIRouter(prefix="/v1/persons")
+router = APIRouter(
+    prefix="/v1/persons",
+    dependencies=[Depends(require_scope("persons:read"))],
+)
 
 _ALLOWED_SORT: frozenset[str] = frozenset(
     {
