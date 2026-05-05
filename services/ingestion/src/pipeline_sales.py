@@ -29,6 +29,7 @@ class _CustomerLink(TypedDict):
     identity_source_record_id: str | None
     source_system_key: str
 
+
 class _ProductPayload(TypedDict, total=False):
     source_product_id: str
     sku: str | None
@@ -40,6 +41,7 @@ class _ProductPayload(TypedDict, total=False):
     is_active: bool
     attributes: dict[str, JsonValue]
 
+
 class _LineItemPayload(TypedDict, total=False):
     source_line_item_id: str
     line_no: int
@@ -50,6 +52,7 @@ class _LineItemPayload(TypedDict, total=False):
     tax_amount: float | None
     metadata: dict[str, JsonValue]
     product: _ProductPayload | None
+
 
 class _OrderPayload(TypedDict, total=False):
     source_order_id: str
@@ -79,21 +82,28 @@ def _check_idempotency(client: Neo4jClient, envelope: SourceRecordEnvelope) -> s
             record_hash=envelope.record_hash,
         ).single()
         return rec["source_record_pk"] if rec else None
+
     return client.execute_read(_read)
 
 
 def ingest_sales_record(
-    client: Neo4jClient, envelope: SourceRecordEnvelope, *, ingest_run_id: str | None,
+    client: Neo4jClient,
+    envelope: SourceRecordEnvelope,
+    *,
+    ingest_run_id: str | None,
 ) -> IngestResult:
     """Full sales-record ingestion in a single write transaction."""
     existing_pk = _check_idempotency(client, envelope)
     if existing_pk is not None:
         return IngestResult(
             source_record_id=envelope.source_record_id,
-            source_record_pk=existing_pk, skipped_duplicate=True,
+            source_record_pk=existing_pk,
+            skipped_duplicate=True,
         )
+
     def _work(tx: ManagedTransaction) -> IngestResult:
         return _execute(tx, envelope, ingest_run_id=ingest_run_id)
+
     with client.session() as session:
         return session.execute_write(_work)
 
@@ -108,8 +118,9 @@ def _parse_sales_envelope(
     order: _OrderPayload = cast(_OrderPayload, order_raw)
 
     # Fundbox stores release_date inside metadata; lift it to top-level.
-    if "release_date" not in order and isinstance(order_raw.get("metadata"), dict):
-        fundbox_release = order_raw["metadata"].get("release_date")
+    metadata_raw = order_raw.get("metadata")
+    if "release_date" not in order and isinstance(metadata_raw, dict):
+        fundbox_release = metadata_raw.get("release_date")
         if isinstance(fundbox_release, str):
             order["release_date"] = fundbox_release
 
@@ -139,7 +150,9 @@ def _resolve_and_link_customer(
     if customer_link is None or not customer_link.get("identity_source_record_id"):
         return None
     _link_sales_to_identity_record(
-        tx, source_record_pk=source_record_pk, customer_link=customer_link,
+        tx,
+        source_record_pk=source_record_pk,
+        customer_link=customer_link,
     )
     person_id = _resolve_customer_person(tx, sales_source_record_pk=source_record_pk)
     if person_id is not None:
@@ -166,7 +179,9 @@ def _execute(
     entity_key = _entity_key_for(source_system_key)
 
     source_record_pk = _create_sales_source_record(
-        tx, envelope=envelope, link_status="pending_customer",
+        tx,
+        envelope=envelope,
+        link_status="pending_customer",
     )
     if ingest_run_id is not None:
         tx.run(
@@ -178,19 +193,28 @@ def _execute(
     _merge_order(tx, source_system_key=source_system_key, order=order)
     for line in line_items:
         _merge_line_item(
-            tx, source_system_key=source_system_key,
-            source_order_id=source_order_id, entity_key=entity_key, line=line,
+            tx,
+            source_system_key=source_system_key,
+            source_order_id=source_order_id,
+            entity_key=entity_key,
+            line=line,
         )
 
     person_id = _resolve_and_link_customer(
-        tx, source_record_pk=source_record_pk, customer_link=customer_link,
-        source_system_key=source_system_key, source_order_id=source_order_id,
+        tx,
+        source_record_pk=source_record_pk,
+        customer_link=customer_link,
+        source_system_key=source_system_key,
+        source_order_id=source_order_id,
     )
 
     logger.info(
         "Ingested sales record %s -> order %s (person=%s, lines=%d, status=%s)",
-        envelope.source_record_id, source_order_id, person_id,
-        len(line_items), "linked" if person_id is not None else "pending_customer",
+        envelope.source_record_id,
+        source_order_id,
+        person_id,
+        len(line_items),
+        "linked" if person_id is not None else "pending_customer",
     )
 
     return IngestResult(
@@ -205,7 +229,10 @@ def _execute(
 
 
 def _create_sales_source_record(
-    tx: ManagedTransaction, *, envelope: SourceRecordEnvelope, link_status: str,
+    tx: ManagedTransaction,
+    *,
+    envelope: SourceRecordEnvelope,
+    link_status: str,
 ) -> str:
     rec = tx.run(
         queries.CREATE_SOURCE_RECORD,
@@ -213,8 +240,11 @@ def _create_sales_source_record(
         source_record_id=envelope.source_record_id,
         source_record_version=envelope.source_record_version,
         record_type=envelope.record_type.value,
-        extraction_confidence=None, extraction_method=None, conversation_ref=None,
-        link_status=link_status, observed_at=envelope.observed_at,
+        extraction_confidence=None,
+        extraction_method=None,
+        conversation_ref=None,
+        link_status=link_status,
+        observed_at=envelope.observed_at,
         record_hash=envelope.record_hash,
         raw_payload=json.dumps(envelope.raw_payload, default=str),
         normalized_payload=json.dumps({}, default=str),
@@ -225,16 +255,22 @@ def _create_sales_source_record(
 
 
 def _merge_order(
-    tx: ManagedTransaction, *, source_system_key: str, order: _OrderPayload,
+    tx: ManagedTransaction,
+    *,
+    source_system_key: str,
+    order: _OrderPayload,
 ) -> None:
     tx.run(
         queries.MERGE_ORDER,
         source_system_key=source_system_key,
         source_order_id=str(order.get("source_order_id", "")),
-        order_no=order.get("order_no"), ordered_at=order.get("ordered_at"),
+        order_no=order.get("order_no"),
+        ordered_at=order.get("ordered_at"),
         release_date=order.get("release_date"),
-        status=order.get("status"), total_amount=order.get("total_amount"),
-        currency=order.get("currency", "SGD"), item_count=order.get("item_count"),
+        status=order.get("status"),
+        total_amount=order.get("total_amount"),
+        currency=order.get("currency", "SGD"),
+        item_count=order.get("item_count"),
         metadata=json.dumps(order.get("metadata", {}), default=str),
     )
 
@@ -314,9 +350,7 @@ def _link_sales_to_identity_record(
     )
 
 
-def _resolve_customer_person(
-    tx: ManagedTransaction, *, sales_source_record_pk: str
-) -> str | None:
+def _resolve_customer_person(tx: ManagedTransaction, *, sales_source_record_pk: str) -> str | None:
     result = tx.run(
         queries.RESOLVE_SALES_CUSTOMER,
         sales_source_record_pk=sales_source_record_pk,
@@ -337,8 +371,7 @@ def _drain_one_pending_sale(
     """Try to resolve and link a single pending-customer sales record."""
     customer_link = raw_payload.get("customer_link") or {}
     identity_source_record_id = (
-        customer_link.get("identity_source_record_id")
-        if isinstance(customer_link, dict) else None
+        customer_link.get("identity_source_record_id") if isinstance(customer_link, dict) else None
     )
     if identity_source_record_id is None:
         return False
@@ -349,9 +382,7 @@ def _drain_one_pending_sale(
         identity_source_record_id=identity_source_record_id,
         source_system_key=source_system_key,
     )
-    resolved = tx.run(
-        queries.RESOLVE_SALES_CUSTOMER, sales_source_record_pk=sales_pk
-    ).single()
+    resolved = tx.run(queries.RESOLVE_SALES_CUSTOMER, sales_source_record_pk=sales_pk).single()
     if resolved is None:
         return False
     person_id: str = resolved["person_id"]
@@ -374,12 +405,11 @@ def _drain_one_pending_sale(
     return True
 
 
-def drain_pending_customer_sales(
-    client: Neo4jClient, *, batch_size: int = 200
-) -> int:
+def drain_pending_customer_sales(client: Neo4jClient, *, batch_size: int = 200) -> int:
     """Re-attempt customer resolution for parked sales SourceRecords."""
     linked_count = 0
     while True:
+
         def _work(tx: ManagedTransaction) -> int:
             rows = list(tx.run(queries.FIND_PENDING_CUSTOMER_SALES, limit=batch_size))
             if not rows:
@@ -391,7 +421,10 @@ def drain_pending_customer_sales(
                 except (TypeError, ValueError):
                     continue
                 if _drain_one_pending_sale(
-                    tx, row["source_record_pk"], row["source_system_key"], raw_payload,
+                    tx,
+                    row["source_record_pk"],
+                    row["source_system_key"],
+                    raw_payload,
                 ):
                     newly_linked += 1
             return newly_linked

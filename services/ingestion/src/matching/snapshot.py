@@ -73,31 +73,33 @@ class CandidateSnapshot:
     def dobs(self) -> list[str]:
         if self._dobs is None:
             self._dobs = [
-                str(f["attribute_value"])
-                for f in self.facts
-                if f.get("attribute_name") == "dob"
+                str(f["attribute_value"]) for f in self.facts if f.get("attribute_name") == "dob"
             ]
         return self._dobs
 
 
 def fetch_candidate_snapshot(
-    tx: ManagedTransaction, candidate_person_id: str,
+    tx: ManagedTransaction,
+    candidate_person_id: str,
 ) -> CandidateSnapshot:
     """Pull all candidate-side rows the heuristic scorer needs in one shot."""
     idents: list[RecordDict] = [
-        dict(r) for r in tx.run(
+        dict(r)
+        for r in tx.run(
             queries.FETCH_PERSON_IDENTIFIERS,
             person_id=candidate_person_id,
         )
     ]
     facts: list[RecordDict] = [
-        dict(r) for r in tx.run(
+        dict(r)
+        for r in tx.run(
             queries.FETCH_PERSON_FACTS,
             person_id=candidate_person_id,
         )
     ]
     addrs: list[RecordDict] = [
-        dict(r) for r in tx.run(
+        dict(r)
+        for r in tx.run(
             queries.FETCH_PERSON_ADDRESSES,
             person_id=candidate_person_id,
         )

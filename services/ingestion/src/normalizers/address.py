@@ -16,12 +16,12 @@ from src.models import QualityFlag
 #   "10 Example Street, Singapore 123456"
 #   "Blk 10 Example Street #05-123 Singapore 123456"
 _SG_ADDRESS_RE = re.compile(
-    r"(?:#?(?P<unit>\d{1,3}-\d{1,4})\s+)?"       # optional unit e.g. #05-123
-    r"(?:(?:Blk|Block)\s+)?"                        # optional Blk/Block prefix
-    r"(?P<street_num>\d+[A-Za-z]?)\s+"              # street number
-    r"(?P<street_name>.+?)"                          # street name (non-greedy)
-    r"(?:\s*,?\s*(?:Singapore|SG))?"                 # optional city marker
-    r"\s+(?P<postal>\d{6})"                          # 6-digit postal code
+    r"(?:#?(?P<unit>\d{1,3}-\d{1,4})\s+)?"  # optional unit e.g. #05-123
+    r"(?:(?:Blk|Block)\s+)?"  # optional Blk/Block prefix
+    r"(?P<street_num>\d+[A-Za-z]?)\s+"  # street number
+    r"(?P<street_name>.+?)"  # street name (non-greedy)
+    r"(?:\s*,?\s*(?:Singapore|SG))?"  # optional city marker
+    r"\s+(?P<postal>\d{6})"  # 6-digit postal code
     r"\s*$",
     re.IGNORECASE,
 )
@@ -57,15 +57,19 @@ def _partial_parse(
     postal = postal_match.group(1)
     full = re.sub(r"\s+", " ", raw).strip().lower()
     return NormalizedAddress(
-        unit_number=None, street_number="", street_name=full, building_name=None,
-        city=default_city.lower(), state_province=None, postal_code=postal,
-        country_code=default_country.upper(), normalized_full=full,
+        unit_number=None,
+        street_number="",
+        street_name=full,
+        building_name=None,
+        city=default_city.lower(),
+        state_province=None,
+        postal_code=postal,
+        country_code=default_country.upper(),
+        normalized_full=full,
     ), QualityFlag.PARTIAL_PARSE
 
 
-def _full_parse(
-    match: re.Match[str], default_country: str, default_city: str
-) -> NormalizedAddress:
+def _full_parse(match: re.Match[str], default_country: str, default_city: str) -> NormalizedAddress:
     """Build a NormalizedAddress from a successful SG regex match."""
     unit = match.group("unit")
     street_num = match.group("street_num").strip().lower()
@@ -81,9 +85,15 @@ def _full_parse(
     parts.append(country.lower())
 
     return NormalizedAddress(
-        unit_number=unit, street_number=street_num, street_name=street_name,
-        building_name=None, city=city, state_province=None, postal_code=postal,
-        country_code=country, normalized_full=", ".join(parts),
+        unit_number=unit,
+        street_number=street_num,
+        street_name=street_name,
+        building_name=None,
+        city=city,
+        state_province=None,
+        postal_code=postal,
+        country_code=country,
+        normalized_full=", ".join(parts),
     )
 
 

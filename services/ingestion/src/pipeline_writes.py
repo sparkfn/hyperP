@@ -81,9 +81,7 @@ def find_candidates(
             normalized_value=ident.normalized_value,
         )
         for record in result:
-            candidates.append(
-                CandidateResult(person_id=record["person_id"], source="identifier")
-            )
+            candidates.append(CandidateResult(person_id=record["person_id"], source="identifier"))
 
     if address and is_usable(address.quality_flag):
         result = tx.run(
@@ -95,9 +93,7 @@ def find_candidates(
             unit_number=address.unit_number or "",
         )
         for record in result:
-            candidates.append(
-                CandidateResult(person_id=record["person_id"], source="address")
-            )
+            candidates.append(CandidateResult(person_id=record["person_id"], source="address"))
 
     return candidates
 
@@ -165,7 +161,8 @@ def persist_source_record(
     is_linked = match_result.decision == MatchDecision.MERGE or is_new_person
     conv_ref = (
         json.dumps(envelope.conversation_ref, default=str)
-        if envelope.conversation_ref is not None else None
+        if envelope.conversation_ref is not None
+        else None
     )
     sr_result = tx.run(
         queries.CREATE_SOURCE_RECORD,
@@ -245,7 +242,8 @@ def create_review_case_if_needed(
     review_case_id: str = rc_record["review_case_id"]
     logger.info(
         "Created ReviewCase %s for MatchDecision %s",
-        review_case_id, match_decision_id,
+        review_case_id,
+        match_decision_id,
     )
     return review_case_id
 
@@ -377,5 +375,7 @@ def record_auto_merge_event(
     )
     logger.info(
         "Merge event %s: TRIGGERED_BY %s, AFFECTED_RECORD %s",
-        merge_event_id, match_decision_id, source_record_pk,
+        merge_event_id,
+        match_decision_id,
+        source_record_pk,
     )

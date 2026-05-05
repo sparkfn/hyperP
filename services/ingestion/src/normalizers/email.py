@@ -11,14 +11,16 @@ _EMAIL_RE = re.compile(
     r"^[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-zA-Z0-9-]+(?:\.[a-zA-Z0-9-]+)*\.[a-zA-Z]{2,}$"
 )
 
-_PLACEHOLDER_PATTERNS = frozenset({
-    "test@test.com",
-    "na@na.com",
-    "noreply@noreply.com",
-    "unknown@unknown.com",
-    "test@example.com",
-    "null@null.com",
-})
+_PLACEHOLDER_PATTERNS = frozenset(
+    {
+        "test@test.com",
+        "na@na.com",
+        "noreply@noreply.com",
+        "unknown@unknown.com",
+        "test@example.com",
+        "null@null.com",
+    }
+)
 
 
 def normalize_email(raw: str) -> tuple[str | None, QualityFlag]:

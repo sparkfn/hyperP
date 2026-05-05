@@ -28,7 +28,14 @@ from src.main import IngestionSummary, run_ingestion, setup_logging
 logger = logging.getLogger(__name__)
 
 _INGEST_SEMAPHORE_KEY = "profile_unifier:ingestion:active"
+_SOURCE_LOCK_PREFIX = "profile_unifier:ingestion:source"
 _LOCK_LEASE_SECONDS = 60 * 60 * 6  # match Celery hard time limit
+_SOURCE_LOCK_RELEASE_SCRIPT = """
+if redis.call('get', KEYS[1]) == ARGV[1] then
+    return redis.call('del', KEYS[1])
+end
+return 0
+"""
 
 
 def _redis_client() -> redis.Redis:
@@ -36,9 +43,7 @@ def _redis_client() -> redis.Redis:
     return redis.Redis.from_url(settings.celery_broker_url)
 
 
-def _try_acquire_slot(
-    client: redis.Redis, member_key: str, max_slots: int
-) -> None:
+def _try_acquire_slot(client: redis.Redis, member_key: str, max_slots: int) -> None:
     """Atomically reserve a semaphore slot via WATCH/MULTI or raise."""
     now = int(time.time())
     expiry = now + _LOCK_LEASE_SECONDS
@@ -80,11 +85,38 @@ def _acquire_ingestion_slot(max_slots: int) -> Iterator[str]:
             logger.exception("Failed to release ingestion slot %s", slot_id)
 
 
+@contextmanager
+def _acquire_source_lock(source_key: str) -> Iterator[str]:
+    """Reserve a source-specific lock or raise if that source is already running."""
+    client = _redis_client()
+    lock_id = uuid.uuid4().hex
+    lock_key = f"{_SOURCE_LOCK_PREFIX}:{source_key}"
+    lock_acquired = client.set(lock_key, lock_id, nx=True, ex=_LOCK_LEASE_SECONDS)
+    if not lock_acquired:
+        raise _SourceAlreadyRunningError(source_key=source_key)
+
+    logger.info("Acquired ingestion source lock for %s", source_key)
+    try:
+        yield lock_id
+    finally:
+        try:
+            client.eval(_SOURCE_LOCK_RELEASE_SCRIPT, 1, lock_key, lock_id)
+            logger.info("Released ingestion source lock for %s", source_key)
+        except Exception:
+            logger.exception("Failed to release ingestion source lock for %s", source_key)
+
+
 class _SlotUnavailableError(Exception):
     def __init__(self, live: int, cap: int) -> None:
         super().__init__(f"All ingestion slots in use ({live}/{cap})")
         self.live = live
         self.cap = cap
+
+
+class _SourceAlreadyRunningError(Exception):
+    def __init__(self, source_key: str) -> None:
+        super().__init__(f"Ingestion source already running: {source_key}")
+        self.source_key = source_key
 
 
 @celery_app.task(
@@ -102,8 +134,17 @@ def run_ingestion_task(self: Task, source_key: str, mode: str = "batch") -> Inge
     setup_logging(settings.log_level)
 
     try:
-        with _acquire_ingestion_slot(settings.max_concurrent_ingestions):
+        with (
+            _acquire_source_lock(source_key),
+            _acquire_ingestion_slot(settings.max_concurrent_ingestions),
+        ):
             return run_ingestion(source_key, mode)
+    except _SourceAlreadyRunningError as exc:
+        logger.warning(
+            "Ingestion source %s is already running; skipping duplicate",
+            exc.source_key,
+        )
+        raise Reject(str(exc), requeue=False) from exc
     except _SlotUnavailableError as exc:
         logger.warning("Ingestion slot unavailable (%d/%d), retrying...", exc.live, exc.cap)
         raise

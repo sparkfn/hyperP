@@ -59,8 +59,7 @@ class FundboxConnector(FundboxConnectorBase):
                 basic_plus_profiles.c.facebook_id,
             )
             .select_from(
-                users.outerjoin(basic_profiles, basic_profiles.c.user_id == users.c.id)
-                .outerjoin(
+                users.outerjoin(basic_profiles, basic_profiles.c.user_id == users.c.id).outerjoin(
                     basic_plus_profiles,
                     basic_plus_profiles.c.user_id == users.c.id,
                 )
@@ -118,7 +117,10 @@ class FundboxConnector(FundboxConnectorBase):
         last_login: str | None,
     ) -> dict[str, JsonValue]:
         ids = FundboxConnector._collect_identifiers(
-            row, user_socials, user_devices, last_login,
+            row,
+            user_socials,
+            user_devices,
+            last_login,
         )
         primary_address = format_address(user_addresses[0]) if user_addresses else None
         return build_envelope(

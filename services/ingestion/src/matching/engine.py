@@ -64,7 +64,12 @@ class MatchEngine:
 
         for person_id in unique_candidates:
             per_candidate = self._evaluate_one(
-                tx, person_id, identifiers, address, attributes, record_type,
+                tx,
+                person_id,
+                identifiers,
+                address,
+                attributes,
+                record_type,
             )
             if per_candidate is None:
                 continue
@@ -89,7 +94,10 @@ class MatchEngine:
     ) -> MatchResult | None:
         """Run one candidate through deterministic → heuristic → LLM."""
         det = evaluate_deterministic(
-            tx, candidate_person_id, identifiers, record_type,
+            tx,
+            candidate_person_id,
+            identifiers,
+            record_type,
         )
         if det is not None:
             # Hard NO_MATCH: drop the candidate without falling through.
@@ -98,13 +106,20 @@ class MatchEngine:
             return det
 
         heur = evaluate_heuristic(
-            tx, candidate_person_id, identifiers, address, attributes,
+            tx,
+            candidate_person_id,
+            identifiers,
+            address,
+            attributes,
         )
         if heur.decision != MatchDecision.NO_MATCH:
             return heur
 
         return self._evaluate_llm(
-            candidate_person_id, identifiers, address, attributes,
+            candidate_person_id,
+            identifiers,
+            address,
+            attributes,
         )
 
     @staticmethod

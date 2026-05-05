@@ -44,9 +44,7 @@ from src.connectors.fundbox.schema import (
 )
 from src.models import JsonValue
 
-_INGESTED_STATUSES: frozenset[str] = frozenset(
-    {"acknowledged", "to release", "completed"}
-)
+_INGESTED_STATUSES: frozenset[str] = frozenset({"acknowledged", "to release", "completed"})
 
 
 def _decimal_to_float(value: object) -> float | None:
@@ -94,21 +92,23 @@ def _build_line_items(
             if unit_price is not None and line.quantity is not None
             else None
         )
-        items.append({
-            "source_line_item_id": f"{source_order_id}:{line.id}",
-            "line_no": idx,
-            "quantity": line.quantity,
-            "unit_price": unit_price,
-            "line_total": line_total,
-            "discount_amount": None,
-            "tax_amount": None,
-            "metadata": {
-                "lta_tag": line.lta_tag,
-                "serial_no": line.serial_no,
-                "merchant_product_id": line.merchant_product_id,
-            },
-            "product": product,
-        })
+        items.append(
+            {
+                "source_line_item_id": f"{source_order_id}:{line.id}",
+                "line_no": idx,
+                "quantity": line.quantity,
+                "unit_price": unit_price,
+                "line_total": line_total,
+                "discount_amount": None,
+                "tax_amount": None,
+                "metadata": {
+                    "lta_tag": line.lta_tag,
+                    "serial_no": line.serial_no,
+                    "merchant_product_id": line.merchant_product_id,
+                },
+                "product": product,
+            }
+        )
     return items
 
 
@@ -126,21 +126,15 @@ class FundboxSalesConnector(FundboxConnectorBase):
             .order_by(orders.c.id)
         )
 
-        for chunk in self._chunked(
-            self._stream(conn, primary_stmt), self._resolved_chunk_size()
-        ):
+        for chunk in self._chunked(self._stream(conn, primary_stmt), self._resolved_chunk_size()):
             order_ids = [row.id for row in chunk]
-            items_by_order = self._fetch_grouped(
-                conn, order_items, "order_id", order_ids
-            )
+            items_by_order = self._fetch_grouped(conn, order_items, "order_id", order_ids)
             merchant_names = self._fetch_merchant_names(
                 conn, [row.merchant_id for row in chunk if row.merchant_id]
             )
 
             variant_ids = {
-                item.merchant_product_id
-                for items in items_by_order.values()
-                for item in items
+                item.merchant_product_id for items in items_by_order.values() for item in items
             }
             product_info = self._fetch_product_info(conn, variant_ids)
 
@@ -152,9 +146,7 @@ class FundboxSalesConnector(FundboxConnectorBase):
                     product_info,
                 )
 
-    def _fetch_merchant_names(
-        self, conn: Connection, merchant_ids: list[int]
-    ) -> dict[int, str]:
+    def _fetch_merchant_names(self, conn: Connection, merchant_ids: list[int]) -> dict[int, str]:
         if not merchant_ids:
             return {}
         target = self._sidecar_conn or conn

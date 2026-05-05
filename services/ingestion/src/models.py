@@ -18,6 +18,7 @@ __all__ = ["JsonValue"]
 # Enums
 # ---------------------------------------------------------------------------
 
+
 class QualityFlag(StrEnum):
     """Canonical quality flags — closed enum per graph schema."""
 
@@ -62,6 +63,7 @@ class RecordType(StrEnum):
 # ---------------------------------------------------------------------------
 # Source record envelope (common contract from architecture doc)
 # ---------------------------------------------------------------------------
+
 
 class RawIdentifier(BaseModel):
     """A single identifier as it arrives from the source system."""
@@ -112,8 +114,7 @@ class SourceRecordEnvelope(BaseModel):
                 )
             if not 0.0 <= self.extraction_confidence <= 1.0:
                 raise ValueError(
-                    f"extraction_confidence must be in [0.0, 1.0], "
-                    f"got {self.extraction_confidence}"
+                    f"extraction_confidence must be in [0.0, 1.0], got {self.extraction_confidence}"
                 )
         else:
             if (
@@ -131,6 +132,7 @@ class SourceRecordEnvelope(BaseModel):
 # ---------------------------------------------------------------------------
 # Normalized intermediates
 # ---------------------------------------------------------------------------
+
 
 class NormalizedIdentifier(BaseModel):
     """An identifier after normalization."""
@@ -168,6 +170,7 @@ class NormalizedAttribute(BaseModel):
 # Matching results
 # ---------------------------------------------------------------------------
 
+
 class CandidateResult(BaseModel):
     """A candidate person discovered during graph traversal."""
 
@@ -191,6 +194,7 @@ class MatchResult(BaseModel):
 # ---------------------------------------------------------------------------
 # Pipeline output
 # ---------------------------------------------------------------------------
+
 
 class IngestResult(BaseModel):
     """Summary returned after processing a single source record."""

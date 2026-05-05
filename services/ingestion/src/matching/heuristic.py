@@ -84,7 +84,10 @@ def evaluate_heuristic(
 
     logger.info(
         "Heuristic score for candidate %s: %.2f (raw=%.2f, reasons=%s)",
-        candidate_person_id, confidence, score, reasons,
+        candidate_person_id,
+        confidence,
+        score,
+        reasons,
     )
     return _band(confidence, reasons, candidate_person_id, features)
 
@@ -120,8 +123,7 @@ def _score_identifiers(
                 weight = PHONE_VERIFIED_WEIGHT if verified else PHONE_UNVERIFIED_WEIGHT
                 evidence += weight
                 reasons.append(
-                    f"Phone match ({'verified' if verified else 'unverified'}: "
-                    f"+{weight:.2f})"
+                    f"Phone match ({'verified' if verified else 'unverified'}: +{weight:.2f})"
                 )
 
         elif ident.identifier_type == "email" and ident.normalized_value in cand_emails:
@@ -130,8 +132,7 @@ def _score_identifiers(
             weight = EMAIL_VERIFIED_WEIGHT if verified else EMAIL_UNVERIFIED_WEIGHT
             evidence += weight
             reasons.append(
-                f"Email match ({'verified' if verified else 'unverified'}: "
-                f"+{weight:.2f})"
+                f"Email match ({'verified' if verified else 'unverified'}: +{weight:.2f})"
             )
     return evidence
 
@@ -139,9 +140,7 @@ def _score_identifiers(
 def _cap_identifier_evidence(raw: float, reasons: list[str]) -> float:
     capped = min(raw, IDENTIFIER_EVIDENCE_CAP)
     if raw > IDENTIFIER_EVIDENCE_CAP:
-        reasons.append(
-            f"Identifier evidence capped from {raw:.2f} to {IDENTIFIER_EVIDENCE_CAP}"
-        )
+        reasons.append(f"Identifier evidence capped from {raw:.2f} to {IDENTIFIER_EVIDENCE_CAP}")
     return capped
 
 
@@ -159,8 +158,7 @@ def _score_dob(
         reasons.append(f"DOB exact match (+{DOB_MATCH_WEIGHT:.2f})")
         return DOB_MATCH_WEIGHT
     reasons.append(
-        f"DOB conflict: incoming={incoming}, candidate={cand_dobs[0]} "
-        f"({DOB_CONFLICT_PENALTY:+.2f})"
+        f"DOB conflict: incoming={incoming}, candidate={cand_dobs[0]} ({DOB_CONFLICT_PENALTY:+.2f})"
     )
     return DOB_CONFLICT_PENALTY
 
@@ -171,7 +169,8 @@ def _score_name(
 ) -> float:
     """Return the best name similarity in [0, 1]; reasons appended by _score_name_band."""
     incoming = [
-        a.attribute_value for a in attributes
+        a.attribute_value
+        for a in attributes
         if a.attribute_name in ("full_name", "preferred_name", "legal_name")
     ]
     cand_names = snapshot.names()
@@ -192,8 +191,7 @@ def _score_name_band(
 ) -> float:
     # Only apply when both sides actually had names — otherwise best_sim is 0.
     has_incoming = any(
-        a.attribute_name in ("full_name", "preferred_name", "legal_name")
-        for a in attributes
+        a.attribute_name in ("full_name", "preferred_name", "legal_name") for a in attributes
     )
     if not has_incoming or not snapshot.names():
         return 0.0
@@ -204,9 +202,7 @@ def _score_name_band(
         reasons.append(f"Medium name similarity ({best_sim:.2f}: +{NAME_MEDIUM_WEIGHT:.2f})")
         return NAME_MEDIUM_WEIGHT
     if best_sim < NAME_MISMATCH_THRESHOLD:
-        reasons.append(
-            f"Strong name mismatch ({best_sim:.2f}: {NAME_MISMATCH_PENALTY:+.2f})"
-        )
+        reasons.append(f"Strong name mismatch ({best_sim:.2f}: {NAME_MISMATCH_PENALTY:+.2f})")
         return NAME_MISMATCH_PENALTY
     return 0.0
 
@@ -240,8 +236,7 @@ def _build_feature_snapshot(
     raw_score: float,
 ) -> dict[str, JsonValue]:
     had_names = any(
-        a.attribute_name in ("full_name", "preferred_name", "legal_name")
-        for a in attributes
+        a.attribute_name in ("full_name", "preferred_name", "legal_name") for a in attributes
     ) and bool(snapshot.names())
     return {
         "candidate_person_id": candidate_person_id,

@@ -52,11 +52,7 @@ def jaro_similarity(s1: str, s2: str) -> float:
             transpositions += 1
         k += 1
 
-    return (
-        matches / len_s1
-        + matches / len_s2
-        + (matches - transpositions / 2) / matches
-    ) / 3.0
+    return (matches / len_s1 + matches / len_s2 + (matches - transpositions / 2) / matches) / 3.0
 
 
 def jaro_winkler_similarity(s1: str, s2: str, prefix_weight: float = 0.1) -> float:

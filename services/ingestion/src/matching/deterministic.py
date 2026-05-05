@@ -80,9 +80,9 @@ def evaluate_deterministic(
     only support for the matching identifier is a conversation source
     record, the deterministic merge should likewise be suppressed.
     """
-    if (locked := _check_no_match_lock(tx, candidate_person_id, identifiers)):
+    if locked := _check_no_match_lock(tx, candidate_person_id, identifiers):
         return locked
-    if (govt := _check_government_id(tx, candidate_person_id, identifiers)):
+    if govt := _check_government_id(tx, candidate_person_id, identifiers):
         # Conflicting govt IDs (hard NO_MATCH) still apply for conversation
         # records; only the MERGE branch is suppressed below.
         if govt.decision == MatchDecision.NO_MATCH:
@@ -91,7 +91,7 @@ def evaluate_deterministic(
             return govt
     if record_type != RecordType.SYSTEM:
         return None
-    if (trusted := _check_trusted_id(tx, candidate_person_id, identifiers)):
+    if trusted := _check_trusted_id(tx, candidate_person_id, identifiers):
         return trusted
     return None
 
@@ -122,7 +122,8 @@ def _check_no_match_lock(
             if lock_rec and lock_rec["is_locked"]:
                 logger.info(
                     "NO_MATCH_LOCK between %s and candidate %s — hard no-match",
-                    owner_pid, candidate_person_id,
+                    owner_pid,
+                    candidate_person_id,
                 )
                 return MatchResult(
                     decision=MatchDecision.NO_MATCH,
@@ -144,9 +145,9 @@ def _check_government_id(
 ) -> MatchResult | None:
     """Government ID hash: exact match → hard MERGE; conflict → hard NO_MATCH."""
     govt_ids = [
-        i for i in identifiers
-        if i.identifier_type == "nric"
-        and i.quality_flag == QualityFlag.VALID
+        i
+        for i in identifiers
+        if i.identifier_type == "nric" and i.quality_flag == QualityFlag.VALID
     ]
     for govt_id in govt_ids:
         if tx.run(
@@ -193,9 +194,9 @@ def _check_trusted_id(
 ) -> MatchResult | None:
     """Trusted migration-map IDs: exact match → namespace-scoped hard MERGE."""
     trusted_ids = [
-        i for i in identifiers
-        if i.identifier_type in TRUSTED_ID_TYPES
-        and i.quality_flag == QualityFlag.VALID
+        i
+        for i in identifiers
+        if i.identifier_type in TRUSTED_ID_TYPES and i.quality_flag == QualityFlag.VALID
     ]
     for tid in trusted_ids:
         if tx.run(
@@ -206,15 +207,14 @@ def _check_trusted_id(
         ).single():
             logger.info(
                 "Deterministic hard merge: candidate %s shares trusted ID %s=%s",
-                candidate_person_id, tid.identifier_type, tid.normalized_value,
+                candidate_person_id,
+                tid.identifier_type,
+                tid.normalized_value,
             )
             return MatchResult(
                 decision=MatchDecision.MERGE,
                 confidence=1.0,
-                reasons=[
-                    f"Exact trusted {tid.identifier_type} match: "
-                    f"{tid.normalized_value}"
-                ],
+                reasons=[f"Exact trusted {tid.identifier_type} match: {tid.normalized_value}"],
                 engine_type=EngineType.DETERMINISTIC,
                 matched_person_id=candidate_person_id,
             )

@@ -33,6 +33,13 @@ celery_app.conf.update(
     timezone="UTC",
     enable_utc=True,
     broker_connection_retry_on_startup=True,
+    broker_transport_options={
+        "visibility_timeout": settings.celery_broker_visibility_timeout,
+    },
+    result_backend_transport_options={
+        "visibility_timeout": settings.celery_broker_visibility_timeout,
+    },
+    visibility_timeout=settings.celery_broker_visibility_timeout,
 )
 
 

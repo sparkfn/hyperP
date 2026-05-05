@@ -16,6 +16,7 @@ from src.graph.client import Neo4jClient
 
 logger = logging.getLogger(__name__)
 
+
 # init.cypher is copied into the image at /app/infra/neo4j/init.cypher by the
 # Dockerfile. In local development we fall back to the repo path so the same
 # code works under `uv run`.
@@ -45,8 +46,7 @@ def _find_init_cypher() -> Path:
         if candidate.is_file():
             return candidate
     raise FileNotFoundError(
-        "init.cypher not found in any of: "
-        + ", ".join(str(p) for p in candidates)
+        "init.cypher not found in any of: " + ", ".join(str(p) for p in candidates)
     )
 
 
