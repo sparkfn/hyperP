@@ -6,6 +6,7 @@ from enum import StrEnum
 from typing import Literal
 
 from pydantic import BaseModel, Field
+from pydantic.types import JsonValue
 
 # --- Enums ---
 
@@ -168,6 +169,7 @@ class SourceRecord(BaseModel):
     linked_person_id: str | None = None
     observed_at: str
     ingested_at: str
+    normalized_payload: dict[str, JsonValue] | None = None
 
 
 class MatchDecisionSummary(BaseModel):
@@ -306,6 +308,15 @@ class EntitySummary(BaseModel):
     source_record_count: int = 0
     last_ingested_at: str | None = None
     active_review_cases: int = 0
+
+
+class SourceSystemSummary(BaseModel):
+    source_key: str
+    display_name: str | None = None
+    system_type: str | None = None
+    is_active: bool = True
+    source_record_count: int = 0
+    last_ingested_at: str | None = None
 
 
 class PersonEntitySummary(BaseModel):

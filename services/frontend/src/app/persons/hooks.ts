@@ -4,7 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { signOut } from "next-auth/react";
 
 import { BffError, bffFetch, bffFetchEnvelope } from "@/lib/api-client";
-import type { EntitySummary, ListedPerson } from "@/lib/api-types";
+import type { EntitySummary, ListedPerson, SourceSystemSummary } from "@/lib/api-types";
 import type { PersonsFilters } from "@/components/PersonsFilterPanel";
 import type { SortField, SortOrder } from "@/components/PersonsListTable";
 
@@ -76,6 +76,20 @@ export function useEntitiesList(): EntitySummary[] {
     })();
   }, []);
   return entities;
+}
+
+export function useSourceSystemsList(): SourceSystemSummary[] {
+  const [sourceSystems, setSourceSystems] = useState<SourceSystemSummary[]>([]);
+  useEffect(() => {
+    (async (): Promise<void> => {
+      try {
+        setSourceSystems(await bffFetch<SourceSystemSummary[]>("/bff/entities/source-systems"));
+      } catch {
+        setSourceSystems([]);
+      }
+    })();
+  }, []);
+  return sourceSystems;
 }
 
 export interface PersonSelection {

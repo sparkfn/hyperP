@@ -40,6 +40,21 @@ function parsePositiveInt(v: string | null, fallback: number): number {
   return Number.isFinite(n) && n > 0 ? n : fallback;
 }
 
+interface SearchParamReader {
+  get: (k: string) => string | null;
+  getAll?: (k: string) => string[];
+}
+
+function getAllParams(sp: SearchParamReader, key: string): string[] {
+  return sp.getAll?.(key).filter((value) => value.trim().length > 0) ?? [];
+}
+
+function appendRepeated(params: URLSearchParams, key: string, values: readonly string[]): void {
+  values.forEach((value) => {
+    if (value.trim()) params.append(key, value.trim());
+  });
+}
+
 export interface PersonsListState {
   filters: PersonsFilters;
   sortBy: SortField;
@@ -61,7 +76,7 @@ interface ParseOptions {
 }
 
 export function parseStateFromParams(
-  sp: URLSearchParams | { get: (k: string) => string | null },
+  sp: SearchParamReader,
   opts: ParseOptions,
 ): PersonsListState {
   const rowsRaw = parsePositiveInt(sp.get("rows"), DEFAULT_STATE.rowsPerPage);
@@ -74,7 +89,8 @@ export function parseStateFromParams(
   return {
     filters: {
       q: sp.get("q") ?? "",
-      entity_key: sp.get("entity_key") ?? "",
+      entity_keys: getAllParams(sp, "entity_key"),
+      source_keys: getAllParams(sp, "source_key"),
       has_address: parsePresence(sp.get("has_address")),
       addr_street: sp.get("addr_street") ?? "",
       addr_unit: sp.get("addr_unit") ?? "",
@@ -98,7 +114,8 @@ export function serializeStateToParams(state: PersonsListState): string {
   const params = new URLSearchParams();
   const f = state.filters;
   if (f.q.trim()) params.set("q", f.q.trim());
-  if (f.entity_key) params.set("entity_key", f.entity_key);
+  appendRepeated(params, "entity_key", f.entity_keys);
+  appendRepeated(params, "source_key", f.source_keys);
   if (f.has_address) params.set("has_address", f.has_address);
   if (f.addr_street.trim()) params.set("addr_street", f.addr_street.trim());
   if (f.addr_unit.trim()) params.set("addr_unit", f.addr_unit.trim());
@@ -132,7 +149,8 @@ export function buildQuery(
 ): string {
   const params = new URLSearchParams();
   if (filters.q.trim().length >= 3) params.set("q", filters.q.trim());
-  if (filters.entity_key) params.set("entity_key", filters.entity_key);
+  appendRepeated(params, "entity_key", filters.entity_keys);
+  appendRepeated(params, "source_key", filters.source_keys);
   if (filters.has_address) params.set("has_address", filters.has_address);
   if (filters.addr_street.trim()) params.set("addr_street", filters.addr_street.trim());
   if (filters.addr_unit.trim()) params.set("addr_unit", filters.addr_unit.trim());
@@ -155,7 +173,8 @@ export function buildQuery(
 export function countActiveFilters(f: PersonsFilters): number {
   let count = 0;
   if (f.q.trim().length >= 3) count++;
-  if (f.entity_key) count++;
+  if (f.entity_keys.length > 0) count++;
+  if (f.source_keys.length > 0) count++;
   if (f.has_address) count++;
   if (f.addr_street.trim()) count++;
   if (f.addr_unit.trim()) count++;

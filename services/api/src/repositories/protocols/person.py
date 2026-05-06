@@ -20,7 +20,8 @@ from src.types import (
 
 class PersonListFilters(TypedDict, total=False):
     q: str | None
-    entity_key: str | None
+    entity_keys: list[str] | None
+    source_keys: list[str] | None
     is_high_value: bool | None
     is_high_risk: bool | None
     has_phone: bool | None

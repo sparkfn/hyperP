@@ -31,6 +31,8 @@ Return a JSON object with these top-level keys:
     - "currency": currency code (default SGD)
     - "status": status mentioned (e.g. pending, paid, completed, cancelled)
     - "notes": any other relevant context
+- "summary": concise factual summary of the conversation, including customer intent,
+  products/orders discussed, and any follow-up state
 - "confidence": your overall confidence (0.0-1.0) in this extraction
 
 Conversation (newest messages last):

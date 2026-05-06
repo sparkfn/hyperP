@@ -17,19 +17,20 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import datetime
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.engine import Connection
 
 from src.connectors.base import SourceConnector
 from src.connectors.chat_helpers import (
     ExtractionResult,
+    extraction_method_label,
     identifiers_from_extraction,
     latest_timestamp,
     run_extraction_batch,
     transactions_payload,
 )
 from src.connectors.whatsapp.db import get_engine
-from src.connectors.whatsapp.schema import chats, messages, orgs, sessions
+from src.connectors.whatsapp.schema import chats, contacts, messages, orgs, sessions
 from src.models import JsonValue
 
 logger = logging.getLogger(__name__)
@@ -39,13 +40,24 @@ LLM_BATCH_SIZE = 20
 
 
 @dataclass
+class _Participant:
+    jid: str
+    phone: str | None
+    name: str | None
+    role: str
+
+
+@dataclass
 class _ChatBundle:
     chat_id: str
+    chat_name: str
     session_id: str
     whatsapp_user_id: str
     tenant: str
     msg_text: str
     observed_at: str
+    participants: list[_Participant]
+    message_endpoints: list[JsonValue]
 
 
 #: Map org name → entity_key (from graph bootstrap).
@@ -100,18 +112,22 @@ class WhatsAppChatConnector(SourceConnector):
 
             chat_stmt = select(chats).where(chats.c.whatsapp_user_id == whatsapp_uid)
             for chat in conn.execute(chat_stmt):
-                msgs = self._fetch_messages(conn, chat.id)
+                msgs = self._fetch_messages(conn, chat.id, whatsapp_uid)
                 if not msgs:
                     continue
+                participants = self._fetch_participants(conn, chat.id, whatsapp_uid, msgs)
 
                 all_bundles.append(
                     _ChatBundle(
                         chat_id=str(chat.id),
+                        chat_name=str(chat.name or ""),
                         session_id=str(session.id),
                         whatsapp_user_id=whatsapp_uid,
                         tenant=tenant,
                         msg_text=_format_messages(msgs),
                         observed_at=_latest_message_timestamp(msgs),
+                        participants=participants,
+                        message_endpoints=_message_endpoints(msgs),
                     )
                 )
 
@@ -141,10 +157,16 @@ class WhatsAppChatConnector(SourceConnector):
 
             yield _build_envelope(bundle=bundle, extraction=extraction)
 
-    def _fetch_messages(self, conn: Connection, chat_id: str) -> list[dict[str, object]]:
+    def _fetch_messages(
+        self,
+        conn: Connection,
+        chat_id: str,
+        whatsapp_user_id: str,
+    ) -> list[dict[str, object]]:
         stmt = (
             select(messages)
             .where(messages.c.chat_id == chat_id)
+            .where(messages.c.whatsapp_user_id == whatsapp_user_id)
             .where(messages.c.body.isnot(None))
             .where(messages.c.body != "")
             .order_by(messages.c.timestamp)
@@ -153,6 +175,7 @@ class WhatsAppChatConnector(SourceConnector):
         return [
             {
                 "from_id": r.from_id,
+                "to_id": r.to_id,
                 "author_id": r.author_id,
                 "body": r.body,
                 "timestamp": r.timestamp,
@@ -160,6 +183,53 @@ class WhatsAppChatConnector(SourceConnector):
             }
             for r in rows
         ]
+
+    def _fetch_participants(
+        self,
+        conn: Connection,
+        chat_id: str,
+        whatsapp_user_id: str,
+        msgs: list[dict[str, object]],
+    ) -> list[_Participant]:
+        jids = _participant_jids(chat_id, msgs)
+        if not jids:
+            return []
+        stmt = select(contacts).where(
+            contacts.c.whatsapp_user_id == whatsapp_user_id,
+            or_(
+                contacts.c.jid.in_(jids),
+                contacts.c.lid_id.in_(jids),
+                contacts.c.cus_id.in_(jids),
+            ),
+        )
+        rows = list(conn.execute(stmt))
+        result: list[_Participant] = []
+        seen: set[str] = set()
+        for row in rows:
+            jid = str(row.jid or "")
+            phone = _first_str(row.phone_number, row.number)
+            name = _first_str(row.name, row.pushname, row.short_name)
+            for candidate in (row.jid, row.lid_id, row.cus_id):
+                candidate_jid = str(candidate or "")
+                if candidate_jid in jids and candidate_jid not in seen:
+                    result.append(
+                        _Participant(
+                            jid=candidate_jid,
+                            phone=phone,
+                            name=name,
+                            role="chat" if candidate_jid == chat_id else "member",
+                        )
+                    )
+                    seen.add(candidate_jid)
+            if jid and jid not in seen and (row.lid_id in jids or row.cus_id in jids):
+                result.append(_Participant(jid=jid, phone=phone, name=name, role="member"))
+                seen.add(jid)
+        for jid in jids:
+            if jid not in seen:
+                result.append(
+                    _Participant(jid=jid, phone=_phone_from_jid(jid), name=None, role="member")
+                )
+        return result
 
 
 def _build_envelope(
@@ -170,7 +240,7 @@ def _build_envelope(
     from src.connectors.fundbox.builders import build_envelope
 
     chat_id = bundle.chat_id
-    chat_name = ""  # not available from bundle alone
+    chat_name = bundle.chat_name
     whatsapp_uid = bundle.whatsapp_user_id
     session_id = bundle.session_id
     tenant = bundle.tenant
@@ -178,10 +248,18 @@ def _build_envelope(
     observed_at = bundle.observed_at
 
     identifiers = identifiers_from_extraction(extraction)
+    for participant in bundle.participants:
+        if participant.role == "chat" and participant.phone:
+            identifiers.append({"type": "phone", "value": participant.phone, "is_verified": False})
+            break
 
     attributes: dict[str, JsonValue] = {}
     if extraction["persons"] and extraction["persons"][0].get("name"):
         attributes["full_name"] = extraction["persons"][0]["name"]
+    elif bundle.participants:
+        chat_participant = next((p for p in bundle.participants if p.role == "chat"), None)
+        if chat_participant and chat_participant.name:
+            attributes["full_name"] = chat_participant.name
 
     tx_payload = transactions_payload(extraction)
 
@@ -192,6 +270,9 @@ def _build_envelope(
         "whatsapp_user_id": whatsapp_uid,
         "tenant": tenant,
         "messages_text": msg_text,
+        "summary": extraction.get("summary"),
+        "participants": _participants_payload(bundle.participants),
+        "message_endpoints": bundle.message_endpoints,
         "transactions": tx_payload,
     }
     conversation_ref: dict[str, JsonValue] = {
@@ -209,9 +290,53 @@ def _build_envelope(
         raw_payload=raw_payload,
         record_type="conversation",
         extraction_confidence=extraction["confidence"],
-        extraction_method="llm_gpt4o",
+        extraction_method=extraction_method_label(),
         conversation_ref=conversation_ref,
     )
+
+
+def _participants_payload(participants: list[_Participant]) -> list[JsonValue]:
+    return [{"jid": p.jid, "phone": p.phone, "name": p.name, "role": p.role} for p in participants]
+
+
+def _message_endpoints(msgs: list[dict[str, object]]) -> list[JsonValue]:
+    endpoints: list[JsonValue] = []
+    seen: set[tuple[str, str]] = set()
+    for msg in msgs:
+        for role, key in (("sender", "from_id"), ("recipient", "to_id"), ("author", "author_id")):
+            jid = str(msg.get(key) or "")
+            if not jid or (role, jid) in seen:
+                continue
+            endpoints.append({"role": role, "jid": jid, "phone": _phone_from_jid(jid)})
+            seen.add((role, jid))
+    return endpoints
+
+
+def _participant_jids(chat_id: str, msgs: list[dict[str, object]]) -> set[str]:
+    jids = {chat_id}
+    for msg in msgs:
+        for key in ("from_id", "to_id", "author_id"):
+            value = str(msg.get(key) or "")
+            if value:
+                jids.add(value)
+    return jids
+
+
+def _first_str(*values: object) -> str | None:
+    for value in values:
+        text = str(value or "").strip()
+        if text:
+            return text
+    return None
+
+
+def _phone_from_jid(jid: str) -> str | None:
+    if not jid.endswith("@c.us"):
+        return None
+    digits = "".join(ch for ch in jid.split("@", 1)[0] if ch.isdigit())
+    if not digits:
+        return None
+    return f"+{digits}"
 
 
 def _format_messages(msgs: list[dict[str, object]]) -> str:

@@ -8,7 +8,7 @@ from src.auth.deps import require_scope
 from src.http_utils import envelope, next_cursor, page_window
 from src.repositories.deps import get_entity_repo
 from src.repositories.protocols.entity import EntityRepository
-from src.types import ApiResponse, EntityPerson, EntitySummary
+from src.types import ApiResponse, EntityPerson, EntitySummary, SourceSystemSummary
 
 router = APIRouter(prefix="/v1/entities")
 
@@ -25,6 +25,20 @@ async def list_entities(
     """Return all entities with person counts."""
     entities = await repo.get_all()
     return envelope(entities, request)
+
+
+@router.get(
+    "/source-systems",
+    response_model=ApiResponse[list[SourceSystemSummary]],
+    dependencies=[Depends(require_scope("persons:read"))],
+)
+async def list_entity_source_systems(
+    request: Request,
+    repo: EntityRepository = Depends(get_entity_repo),
+) -> ApiResponse[list[SourceSystemSummary]]:
+    """Return source systems available for person list filtering."""
+    source_systems = await repo.get_source_systems()
+    return envelope(source_systems, request)
 
 
 @router.get(

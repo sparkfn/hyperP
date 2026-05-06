@@ -12,7 +12,13 @@ from src.graph.converters import (
     to_str,
 )
 from src.graph.mappers import _as_dict, map_person
-from src.types import EntityPerson, EntitySummary, ListedPerson, PersonEntitySummary
+from src.types import (
+    EntityPerson,
+    EntitySummary,
+    ListedPerson,
+    PersonEntitySummary,
+    SourceSystemSummary,
+)
 
 
 def map_entity_summary(record: GraphRecord) -> EntitySummary:
@@ -28,6 +34,19 @@ def map_entity_summary(record: GraphRecord) -> EntitySummary:
         source_record_count=to_int(record.get("source_record_count")),
         last_ingested_at=to_iso_or_none(record.get("last_ingested_at")),
         active_review_cases=to_int(record.get("active_review_cases")),
+    )
+
+
+def map_source_system_summary(record: GraphRecord) -> SourceSystemSummary:
+    """Map a raw source-system record to a SourceSystemSummary."""
+    ss = _as_dict(record.get("source_system"))
+    return SourceSystemSummary(
+        source_key=to_str(ss.get("source_key")),
+        display_name=to_optional_str(ss.get("display_name")),
+        system_type=to_optional_str(ss.get("system_type")),
+        is_active=bool(ss.get("is_active", True)),
+        source_record_count=to_int(record.get("source_record_count")),
+        last_ingested_at=to_iso_or_none(record.get("last_ingested_at")),
     )
 
 

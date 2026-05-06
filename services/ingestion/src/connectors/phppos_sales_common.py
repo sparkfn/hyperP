@@ -87,9 +87,9 @@ def fetch_phppos_sales(
         return
 
     md = MetaData()
-    sales_t = Table("phppos_sales", md, autoload_with=engine)
-    items_t = Table("phppos_sales_items", md, autoload_with=engine)
-    item_t = Table("phppos_items", md, autoload_with=engine)
+    sales_t = Table("phppos_sales", md, autoload_with=engine, resolve_fks=False)
+    items_t = Table("phppos_sales_items", md, autoload_with=engine, resolve_fks=False)
+    item_t = Table("phppos_items", md, autoload_with=engine, resolve_fks=False)
     sales_cols = {c.name for c in sales_t.columns}
     items_cols = {c.name for c in items_t.columns}
     item_cols = {c.name for c in item_t.columns}

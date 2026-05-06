@@ -8,14 +8,19 @@ HyperP is a customer profile unification and relationship intelligence platform.
 
 ## Development Commands
 
+### Shell
+Use Bash as the default shell/terminal for Claude Code commands in this project.
+
 ### Docker (primary workflow)
 ```bash
 docker compose up -d                                        # start all services
 docker compose build --no-cache api frontend               # rebuild images (always use --no-cache for code changes)
 docker compose up -d api frontend                          # restart after rebuild
 docker compose logs -f api                                 # stream logs from a service
-docker compose down                                        # stop all services
+docker compose stop                                        # stop containers while preserving them for log inspection
+docker compose down                                        # remove containers and network only when explicitly requested
 ```
+If the user says "stop containers", run `docker compose stop`, not `docker compose down`. Only remove containers when the user explicitly says to remove containers.
 Always pass `--no-cache` when rebuilding after Python or TypeScript changes — Docker layer caching can serve stale source even when files change.
 
 ### Python — linting and type-checking

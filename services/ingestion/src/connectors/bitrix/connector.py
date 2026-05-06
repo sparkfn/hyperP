@@ -26,14 +26,18 @@ from sqlalchemy.engine import Connection
 from src.connectors.base import SourceConnector
 from src.connectors.bitrix.db import get_engine
 from src.connectors.bitrix.schema import (
+    agent_chat,
+    agents,
     categories,
     chats,
     deals,
     personalize_message_logs,
     sent_message_logs,
+    templates,
 )
 from src.connectors.chat_helpers import (
     ExtractionResult,
+    extraction_method_label,
     identifiers_from_extraction,
     latest_timestamp,
     run_extraction_batch,
@@ -48,13 +52,21 @@ BITRIX_SOURCE_KEY = "bitrix_chat"
 # LLM batch size — how many conversations to send in parallel.
 LLM_BATCH_SIZE = 20
 
-#: Map category name → entity_key.
+#: Map CRM category name → entity_key.
 CATEGORY_TO_ENTITY: dict[str, str] = {
     "EkoSG": "eko",
     "EkoLife SG": "eko",
     "EkoLife MY": "eko",
+    "EKO MY": "eko",
     "Speedzone": "speedzone",
 }
+
+
+@dataclass
+class _AgentMember:
+    bitrix_agent_id: str
+    name: str
+    active: bool
 
 
 @dataclass
@@ -68,6 +80,19 @@ class _ChatBundle:
     entity: str
     conv_text: str
     deal: dict[str, object] | None
+    agents: list[_AgentMember]
+
+
+def _agents_payload(agents_: list[_AgentMember]) -> list[JsonValue]:
+    return [
+        {
+            "bitrix_agent_id": agent.bitrix_agent_id,
+            "name": agent.name,
+            "active": agent.active,
+            "role": "agent",
+        }
+        for agent in agents_
+    ]
 
 
 class BitrixChatConnector(SourceConnector):
@@ -111,8 +136,11 @@ class BitrixChatConnector(SourceConnector):
                 if category is None:
                     continue
                 cat_name = getattr(category, "name", "") or ""
-                entity = CATEGORY_TO_ENTITY.get(cat_name, cat_name)
+                entity = CATEGORY_TO_ENTITY.get(cat_name)
+                if entity is None:
+                    continue
                 conv_text = self._build_conversation(conn, chat.id, deal)
+                agent_members = self._load_agents(conn, chat.id)
 
                 all_bundles.append(
                     _ChatBundle(
@@ -125,6 +153,7 @@ class BitrixChatConnector(SourceConnector):
                         entity=entity,
                         conv_text=conv_text,
                         deal=deal,
+                        agents=agent_members,
                     )
                 )
             rows = list(chat_result.fetchmany(self.chunk_size))
@@ -171,6 +200,22 @@ class BitrixChatConnector(SourceConnector):
             "category_id": getattr(row, "category_id", None),
         }
 
+    def _load_agents(self, conn: Connection, chat_id: int) -> list[_AgentMember]:
+        stmt = (
+            select(agents)
+            .select_from(agent_chat.join(agents, agent_chat.c.agent_id == agents.c.id))
+            .where(agent_chat.c.chat_id == chat_id)
+            .order_by(agents.c.id)
+        )
+        return [
+            _AgentMember(
+                bitrix_agent_id=str(row.bitrix_agent_id or ""),
+                name=str(row.name or ""),
+                active=bool(row.active),
+            )
+            for row in conn.execute(stmt)
+        ]
+
     def _build_conversation(
         self,
         conn: Connection,
@@ -193,12 +238,23 @@ class BitrixChatConnector(SourceConnector):
             ts = ""
             if row.created_at:
                 ts = row.created_at.strftime("%Y-%m-%d %H:%M:%S")
-            body = str(getattr(row, "llm_message", "") or "").strip()
+            client_name = str(getattr(row, "client_name", "") or "").strip()
+            if client_name:
+                lines.append(f"[{ts}] Client: {client_name}")
+            body = str(
+                getattr(row, "message_sent", "") or getattr(row, "llm_message", "") or ""
+            ).strip()
             if body:
-                lines.append(f"[{ts}] AI: {body}")
+                lines.append(f"[{ts}] Sent: {body}")
 
         s_stmt = (
-            select(sent_message_logs)
+            select(sent_message_logs, templates.c.content.label("template_content"))
+            .select_from(
+                sent_message_logs.outerjoin(
+                    templates,
+                    sent_message_logs.c.template_id == templates.c.id,
+                )
+            )
             .where(sent_message_logs.c.chat_id == chat_id)
             .order_by(sent_message_logs.c.created_at)
         )
@@ -206,9 +262,9 @@ class BitrixChatConnector(SourceConnector):
             ts = ""
             if row.created_at:
                 ts = row.created_at.strftime("%Y-%m-%d %H:%M:%S")
-            body = str(getattr(row, "message", "") or "").strip()
+            body = str(getattr(row, "template_content", "") or "").strip()
             if body:
-                lines.append(f"[{ts}] Sent: {body}")
+                lines.append(f"[{ts}] Template: {body}")
 
         return "\n".join(lines)
 
@@ -254,6 +310,8 @@ class BitrixChatConnector(SourceConnector):
             "deal_opened": bool(d.get("opened", False)),
             "deal_closed": bool(d.get("closed", False)),
             "conversation_text": bundle.conv_text,
+            "summary": extraction.get("summary"),
+            "chat_members": _agents_payload(bundle.agents),
             "transactions": tx_payload,
         }
         conversation_ref: dict[str, JsonValue] = {
@@ -271,6 +329,6 @@ class BitrixChatConnector(SourceConnector):
             raw_payload=raw_payload,
             record_type="conversation",
             extraction_confidence=extraction["confidence"],
-            extraction_method="llm_gpt4o",
+            extraction_method=extraction_method_label(),
             conversation_ref=conversation_ref,
         )

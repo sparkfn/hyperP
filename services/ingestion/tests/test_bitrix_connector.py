@@ -4,9 +4,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Protocol
+from typing import Protocol, cast
 
 from pytest import MonkeyPatch
+from sqlalchemy.engine import Connection
 from src.connectors.bitrix.connector import BitrixChatConnector
 
 
@@ -78,15 +79,21 @@ def test_bitrix_fetch_uses_one_cursor_for_chunked_chat_scan(
         lambda conn, deal_id: {"title": f"deal {deal_id}", "category_id": 1},
     )
     monkeypatch.setattr(connector, "_build_conversation", lambda conn, chat_id, deal: "hello")
+    monkeypatch.setattr(connector, "_load_agents", lambda conn, chat_id: [])
     monkeypatch.setattr(
-        "src.connectors.bitrix.connector._run_extraction_batch",
+        "src.connectors.bitrix.connector.run_extraction_batch",
         lambda texts: [
-            {"persons": [{"name": f"person {index}"}], "transactions": [], "confidence": 0.9}
+            {
+                "persons": [{"name": f"person {index}"}],
+                "transactions": [],
+                "summary": None,
+                "confidence": 0.9,
+            }
             for index, _ in enumerate(texts)
         ],
     )
 
-    records = list(connector._fetch_chats(conn))
+    records = list(connector._fetch_chats(cast("Connection", conn)))
 
     assert conn.chat_select_count == 1
     assert [record["source_record_id"] for record in records] == [
@@ -94,3 +101,29 @@ def test_bitrix_fetch_uses_one_cursor_for_chunked_chat_scan(
         "bitrix-chat-2",
         "bitrix-chat-3",
     ]
+
+
+def test_bitrix_fetch_skips_chats_for_unmapped_crm_categories(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    conn = _Connection([_Chat(id=1, deal_id=101, bitrix_chat_id="b1")])
+    connector = BitrixChatConnector()
+
+    monkeypatch.setattr(
+        connector,
+        "_load_deal",
+        lambda conn, deal_id: {"title": f"deal {deal_id}", "category_id": 99},
+    )
+    monkeypatch.setattr(connector, "_build_conversation", lambda conn, chat_id, deal: "hello")
+    monkeypatch.setattr(connector, "_load_agents", lambda conn, chat_id: [])
+    monkeypatch.setattr(
+        "src.connectors.bitrix.connector.run_extraction_batch",
+        lambda texts: [
+            {"persons": [], "transactions": [], "summary": None, "confidence": 0.0}
+            for _ in texts
+        ],
+    )
+
+    records = list(connector._fetch_chats(cast("Connection", conn)))
+
+    assert records == []

@@ -73,6 +73,8 @@ contacts = Table(
     Column("phone_number", String(50)),
     Column("country_code", String(10)),
     Column("about", Text),
+    Column("lid_id", String(255)),
+    Column("cus_id", String(255)),
     Column("is_me", Boolean),
     Column("is_user", Boolean),
     Column("is_group", Boolean),

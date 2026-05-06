@@ -53,12 +53,6 @@ _ENTITIES: tuple[_EntitySeed, ...] = (
         "entity_type": "retailer",
         "country_code": "SG",
     },
-    {
-        "entity_key": "bitrix",
-        "display_name": "Bitrix24",
-        "entity_type": "crm",
-        "country_code": "SG",
-    },
 )
 
 
@@ -165,9 +159,9 @@ _SOURCE_SYSTEMS: tuple[_SourceSystemSeed, ...] = (
     },
     {
         "source_key": "bitrix_chat",
-        "display_name": "Bitrix24 Chat",
+        "display_name": "Bitrix24 Chat (CRM-routed)",
         "system_type": "chat",
-        "entity_key": "bitrix",
+        "entity_key": "fundbox",
         "field_trust": _CHAT_TRUST,
     },
 )

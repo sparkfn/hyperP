@@ -23,12 +23,13 @@ from celery.exceptions import Reject
 from src.birthday import BirthdayRunSummary, run_birthday_greetings
 from src.celery_app import celery_app
 from src.config import get_settings
-from src.main import IngestionSummary, run_ingestion, setup_logging
+from src.main import IngestionSummary, initialize_ingestion_graph, run_ingestion, setup_logging
 
 logger = logging.getLogger(__name__)
 
 _INGEST_SEMAPHORE_KEY = "profile_unifier:ingestion:active"
 _SOURCE_LOCK_PREFIX = "profile_unifier:ingestion:source"
+_INIT_LOCK_KEY = "profile_unifier:ingestion:init"
 _LOCK_LEASE_SECONDS = 60 * 60 * 6  # match Celery hard time limit
 _SOURCE_LOCK_RELEASE_SCRIPT = """
 if redis.call('get', KEYS[1]) == ARGV[1] then
@@ -106,6 +107,28 @@ def _acquire_source_lock(source_key: str) -> Iterator[str]:
             logger.exception("Failed to release ingestion source lock for %s", source_key)
 
 
+@contextmanager
+def _acquire_init_lock() -> Iterator[str]:
+    client = _redis_client()
+    lock_id = uuid.uuid4().hex
+    while True:
+        lock_acquired = client.set(_INIT_LOCK_KEY, lock_id, nx=True, ex=_LOCK_LEASE_SECONDS)
+        if lock_acquired:
+            break
+        logger.info("Waiting for ingestion graph initialization lock")
+        time.sleep(1.0)
+
+    logger.info("Acquired ingestion graph initialization lock")
+    try:
+        yield lock_id
+    finally:
+        try:
+            client.eval(_SOURCE_LOCK_RELEASE_SCRIPT, 1, _INIT_LOCK_KEY, lock_id)
+            logger.info("Released ingestion graph initialization lock")
+        except Exception:
+            logger.exception("Failed to release ingestion graph initialization lock")
+
+
 class _SlotUnavailableError(Exception):
     def __init__(self, live: int, cap: int) -> None:
         super().__init__(f"All ingestion slots in use ({live}/{cap})")
@@ -134,11 +157,13 @@ def run_ingestion_task(self: Task, source_key: str, mode: str = "batch") -> Inge
     setup_logging(settings.log_level)
 
     try:
+        with _acquire_init_lock():
+            initialize_ingestion_graph()
         with (
             _acquire_source_lock(source_key),
             _acquire_ingestion_slot(settings.max_concurrent_ingestions),
         ):
-            return run_ingestion(source_key, mode)
+            return run_ingestion(source_key, mode, initialize_graph=False)
     except _SourceAlreadyRunningError as exc:
         logger.warning(
             "Ingestion source %s is already running; skipping duplicate",

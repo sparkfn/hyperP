@@ -111,6 +111,7 @@ class MatchEngine:
             identifiers,
             address,
             attributes,
+            record_type,
         )
         if heur.decision != MatchDecision.NO_MATCH:
             return heur

@@ -1,12 +1,20 @@
 "use client";
 
-import type { ReactElement } from "react";
+import { useState, type ReactElement } from "react";
 
 import Alert from "@mui/material/Alert";
 import Box from "@mui/material/Box";
+import Button from "@mui/material/Button";
 import Chip from "@mui/material/Chip";
 import CircularProgress from "@mui/material/CircularProgress";
+import Dialog from "@mui/material/Dialog";
+import DialogActions from "@mui/material/DialogActions";
+import DialogContent from "@mui/material/DialogContent";
+import DialogTitle from "@mui/material/DialogTitle";
+import Divider from "@mui/material/Divider";
+import Grid from "@mui/material/Grid2";
 import Paper from "@mui/material/Paper";
+import Stack from "@mui/material/Stack";
 import Table from "@mui/material/Table";
 import TableBody from "@mui/material/TableBody";
 import TableCell from "@mui/material/TableCell";
@@ -15,14 +23,20 @@ import TableRow from "@mui/material/TableRow";
 import Typography from "@mui/material/Typography";
 
 import PaginationBar from "@/components/PaginationBar";
+import type {
+  PersonSourceRecord,
+  SourceRecordAddressPayload,
+  SourceRecordAttributePayload,
+  SourceRecordIdentifierPayload,
+} from "@/lib/api-types-person";
 import { usePaginatedFetch } from "@/lib/usePaginatedFetch";
-import type { PersonSourceRecord } from "@/lib/api-types-person";
 
 interface Props {
   personId: string;
 }
 
 export default function SourceRecordsTab({ personId }: Props): ReactElement {
+  const [selectedRecord, setSelectedRecord] = useState<PersonSourceRecord | null>(null);
   const { rows, error, loading, from, to, total, hasPrev, hasNext, goNext, goPrev } =
     usePaginatedFetch<PersonSourceRecord>(
       `/bff/persons/${encodeURIComponent(personId)}/source-records`,
@@ -59,32 +73,43 @@ export default function SourceRecordsTab({ personId }: Props): ReactElement {
             </TableRow>
           </TableHead>
           <TableBody>
-            {rows.map((r) => {
-              const isConversation: boolean = r.record_type === "conversation";
+            {rows.map((record) => {
+              const isConversation: boolean = record.record_type === "conversation";
               return (
                 <TableRow
-                  key={r.source_record_pk}
+                  key={record.source_record_pk}
                   hover
-                  sx={isConversation ? { bgcolor: "warning.light", opacity: 0.95 } : undefined}
+                  tabIndex={0}
+                  onClick={() => setSelectedRecord(record)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" || event.key === " ") {
+                      event.preventDefault();
+                      setSelectedRecord(record);
+                    }
+                  }}
+                  sx={{ cursor: "pointer" }}
                 >
-                  <TableCell>{r.source_system}</TableCell>
-                  <TableCell>{r.source_record_id}</TableCell>
+                  <TableCell>{record.source_system}</TableCell>
+                  <TableCell>{record.source_record_id}</TableCell>
                   <TableCell>
                     <Chip
-                      label={r.record_type}
+                      label={record.record_type}
                       size="small"
                       color={isConversation ? "warning" : "default"}
                     />
                   </TableCell>
-                  <TableCell>{r.link_status}</TableCell>
-                  <TableCell>{r.observed_at}</TableCell>
-                  <TableCell>{r.ingested_at}</TableCell>
+                  <TableCell>{record.link_status}</TableCell>
+                  <TableCell>{record.observed_at}</TableCell>
+                  <TableCell>{record.ingested_at}</TableCell>
                 </TableRow>
               );
             })}
           </TableBody>
         </Table>
       </Paper>
+      <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 1 }}>
+        Click a record to view normalized payload fields.
+      </Typography>
       <PaginationBar
         from={from}
         to={to}
@@ -95,6 +120,202 @@ export default function SourceRecordsTab({ personId }: Props): ReactElement {
         onPrev={goPrev}
         onNext={goNext}
       />
+      <RecordPayloadDialog record={selectedRecord} onClose={() => setSelectedRecord(null)} />
     </>
   );
+}
+
+function RecordPayloadDialog({
+  record,
+  onClose,
+}: {
+  record: PersonSourceRecord | null;
+  onClose: () => void;
+}): ReactElement {
+  const payload = record?.normalized_payload ?? null;
+  const identifiers = payload?.identifiers ?? [];
+  const attributes = payload?.attributes ?? [];
+  const address = payload?.address ?? null;
+  const summary = payload?.summary?.trim() ? payload.summary : null;
+
+  return (
+    <Dialog open={record !== null} onClose={onClose} fullWidth maxWidth="md">
+      <DialogTitle>Normalized payload</DialogTitle>
+      <DialogContent dividers>
+        {record === null ? null : (
+          <Stack spacing={3}>
+            <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
+              <Chip label={record.source_system} size="small" />
+              <Chip label={record.record_type} size="small" color={record.record_type === "conversation" ? "warning" : "default"} />
+              <Chip label={record.link_status} size="small" variant="outlined" />
+            </Stack>
+            <Grid container spacing={2}>
+              <PayloadMeta label="Source record id" value={record.source_record_id} />
+              <PayloadMeta label="Observed" value={record.observed_at} />
+              <PayloadMeta label="Ingested" value={record.ingested_at} />
+              <PayloadMeta
+                label="Extraction confidence"
+                value={record.extraction_confidence?.toFixed(2) ?? "—"}
+              />
+            </Grid>
+            <Divider />
+            {payload === null ? (
+              <Typography variant="body2" color="text.secondary">
+                No normalized payload was stored for this source record.
+              </Typography>
+            ) : (
+              <Stack spacing={2.5}>
+                {summary !== null ? <PayloadSection title="Summary" body={summary} /> : null}
+                <IdentifierSection identifiers={identifiers} />
+                <AddressSection address={address} />
+                <AttributeSection attributes={attributes} />
+              </Stack>
+            )}
+          </Stack>
+        )}
+      </DialogContent>
+      <DialogActions>
+        <Button onClick={onClose}>Close</Button>
+      </DialogActions>
+    </Dialog>
+  );
+}
+
+function PayloadMeta({ label, value }: { label: string; value: string }): ReactElement {
+  return (
+    <Grid size={{ xs: 12, sm: 6, md: 3 }}>
+      <Typography variant="caption" color="text.secondary" display="block">
+        {label}
+      </Typography>
+      <Typography variant="body2" sx={{ wordBreak: "break-word" }}>
+        {value || "—"}
+      </Typography>
+    </Grid>
+  );
+}
+
+function PayloadSection({ title, body }: { title: string; body: string }): ReactElement {
+  return (
+    <Box>
+      <Typography variant="subtitle2" gutterBottom>
+        {title}
+      </Typography>
+      <Paper variant="outlined" sx={{ p: 1.5, bgcolor: "grey.50" }}>
+        <Typography variant="body2">{body}</Typography>
+      </Paper>
+    </Box>
+  );
+}
+
+function IdentifierSection({
+  identifiers,
+}: {
+  identifiers: SourceRecordIdentifierPayload[];
+}): ReactElement {
+  return (
+    <Box>
+      <Typography variant="subtitle2" gutterBottom>
+        Identifiers
+      </Typography>
+      {identifiers.length === 0 ? (
+        <EmptyPayloadText>No normalized identifiers.</EmptyPayloadText>
+      ) : (
+        <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
+          {identifiers.map((identifier, index) => (
+            <Chip
+              key={`${identifier.identifier_type ?? "identifier"}-${identifier.normalized_value ?? index}`}
+              label={`${labelize(identifier.identifier_type)}: ${identifier.normalized_value ?? "—"}`}
+              size="small"
+              color={identifier.is_verified === true ? "success" : "default"}
+              variant={identifier.is_verified === true ? "filled" : "outlined"}
+            />
+          ))}
+        </Stack>
+      )}
+    </Box>
+  );
+}
+
+function AddressSection({
+  address,
+}: {
+  address: SourceRecordAddressPayload | null;
+}): ReactElement {
+  if (address === null) {
+    return (
+      <Box>
+        <Typography variant="subtitle2" gutterBottom>
+          Address
+        </Typography>
+        <EmptyPayloadText>No normalized address.</EmptyPayloadText>
+      </Box>
+    );
+  }
+
+  const fields = [
+    ["Full address", address.normalized_full],
+    ["Unit", address.unit_number],
+    ["Street number", address.street_number],
+    ["Street", address.street_name],
+    ["City", address.city],
+    ["Postal code", address.postal_code],
+    ["Country", address.country_code],
+    ["Quality", address.quality_flag],
+  ] as const;
+
+  return (
+    <Box>
+      <Typography variant="subtitle2" gutterBottom>
+        Address
+      </Typography>
+      <Grid container spacing={1.5}>
+        {fields.map(([label, value]) => (
+          <PayloadMeta key={label} label={label} value={value ?? "—"} />
+        ))}
+      </Grid>
+    </Box>
+  );
+}
+
+function AttributeSection({
+  attributes,
+}: {
+  attributes: SourceRecordAttributePayload[];
+}): ReactElement {
+  return (
+    <Box>
+      <Typography variant="subtitle2" gutterBottom>
+        Attributes
+      </Typography>
+      {attributes.length === 0 ? (
+        <EmptyPayloadText>No normalized attributes.</EmptyPayloadText>
+      ) : (
+        <Grid container spacing={1.5}>
+          {attributes.map((attribute, index) => (
+            <PayloadMeta
+              key={`${attribute.attribute_name ?? "attribute"}-${index}`}
+              label={labelize(attribute.attribute_name)}
+              value={attribute.attribute_value ?? "—"}
+            />
+          ))}
+        </Grid>
+      )}
+    </Box>
+  );
+}
+
+function EmptyPayloadText({ children }: { children: string }): ReactElement {
+  return (
+    <Typography variant="body2" color="text.secondary">
+      {children}
+    </Typography>
+  );
+}
+
+function labelize(value: string | undefined): string {
+  if (value === undefined || value.length === 0) return "Unknown";
+  return value
+    .split("_")
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
 }

@@ -50,7 +50,8 @@ _ALLOWED_SORT: frozenset[str] = frozenset(
 @router.get("", response_model=ApiResponse[list[ListedPerson]])
 async def list_persons(
     request: Request,
-    entity_key: str | None = Query(default=None),
+    entity_key: list[str] | None = Query(default=None),
+    source_key: list[str] | None = Query(default=None),
     is_high_value: bool | None = Query(default=None),
     is_high_risk: bool | None = Query(default=None),
     has_phone: bool | None = Query(default=None),
@@ -88,7 +89,8 @@ async def list_persons(
     skip, page_limit = page_window(cursor, limit)
     filters: PersonListFilters = {
         "q": q_clean,
-        "entity_key": entity_key,
+        "entity_keys": entity_key or None,
+        "source_keys": source_key or None,
         "is_high_value": is_high_value,
         "is_high_risk": is_high_risk,
         "has_phone": has_phone,

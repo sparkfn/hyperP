@@ -3,6 +3,37 @@
 
 export type SourceRecordType = "system" | "conversation";
 
+export interface SourceRecordIdentifierPayload {
+  identifier_type?: string;
+  normalized_value?: string;
+  is_verified?: boolean;
+  quality_flag?: string;
+}
+
+export interface SourceRecordAddressPayload {
+  normalized_full?: string;
+  unit_number?: string;
+  street_number?: string;
+  street_name?: string;
+  city?: string;
+  postal_code?: string;
+  country_code?: string;
+  quality_flag?: string;
+}
+
+export interface SourceRecordAttributePayload {
+  attribute_name?: string;
+  attribute_value?: string;
+  quality_flag?: string;
+}
+
+export interface SourceRecordNormalizedPayload {
+  identifiers?: SourceRecordIdentifierPayload[];
+  address?: SourceRecordAddressPayload | null;
+  attributes?: SourceRecordAttributePayload[];
+  summary?: string;
+}
+
 export interface PersonSourceRecord {
   source_record_pk: string;
   source_system: string;
@@ -14,6 +45,7 @@ export interface PersonSourceRecord {
   linked_person_id: string | null;
   observed_at: string;
   ingested_at: string;
+  normalized_payload: SourceRecordNormalizedPayload | null;
 }
 
 export interface PersonAuditEvent {

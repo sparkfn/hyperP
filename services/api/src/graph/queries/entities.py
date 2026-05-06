@@ -20,6 +20,21 @@ person_count, source_record_count, last_ingested_at, 0 AS active_review_cases
 ORDER BY e.display_name
 """
 
+LIST_FILTER_SOURCE_SYSTEMS = """
+MATCH (ss:SourceSystem)
+CALL {
+  WITH ss
+  OPTIONAL MATCH (ss)<-[:FROM_SOURCE]-(sr:SourceRecord)
+  RETURN count(sr) AS source_record_count,
+         max(sr.ingested_at) AS last_ingested_at
+}
+RETURN ss {
+  .source_key, .display_name, .system_type, .is_active
+} AS source_system,
+source_record_count, last_ingested_at
+ORDER BY ss.display_name
+"""
+
 # Allowlisted sort columns for entity persons query.
 _SORT_COLUMNS: dict[str, str] = {
     "preferred_full_name": "p.preferred_full_name",

@@ -7,10 +7,14 @@ as the API service.
 
 from __future__ import annotations
 
+import asyncio
+import random
 from typing import Literal, TypedDict
 
 import httpx
 from pydantic import BaseModel, ConfigDict
+
+from src.config import get_settings
 
 
 class Usage(TypedDict, total=False):
@@ -98,21 +102,28 @@ class LLMService:
                 max_tokens=max_tokens,
                 response_format=response_format,
             )
+            return await self._post_chat_completion(client, req)
+
+    async def _post_chat_completion(
+        self,
+        client: httpx.AsyncClient,
+        req: ChatCompletionRequest,
+    ) -> ChatCompletionResponse:
+        settings = get_settings()
+        max_retries = max(settings.llm_max_retries, 0)
+        for attempt in range(max_retries + 1):
             response = await client.post(
                 "/chat/completions",
                 json=req.model_dump(),
                 headers=self._headers,
             )
-            try:
-                response.raise_for_status()
-            except httpx.HTTPStatusError as err:
-                body = response.text[:500]
-                raise httpx.HTTPStatusError(
-                    f"{response.status_code} {response.reason_phrase}: {body}",
-                    request=response.request,
-                    response=response,
-                ) from err
-            return ChatCompletionResponse.model_validate(response.json())
+            if response.status_code < 400:
+                return ChatCompletionResponse.model_validate(response.json())
+            if not _should_retry(response.status_code) or attempt == max_retries:
+                _raise_http_status(response)
+            delay = _retry_delay(response, attempt)
+            await asyncio.sleep(delay)
+        raise RuntimeError("unreachable LLM retry state")
 
     async def chat_json(
         self,
@@ -132,6 +143,37 @@ class LLMService:
         if not resp.choices:
             return ""
         return resp.choices[0].message.content or ""
+
+
+def _should_retry(status_code: int) -> bool:
+    return status_code == 429 or 500 <= status_code <= 599
+
+
+def _retry_delay(response: httpx.Response, attempt: int) -> float:
+    retry_after = response.headers.get("Retry-After")
+    if retry_after is not None:
+        try:
+            return max(float(retry_after), 0.0)
+        except ValueError:
+            pass
+    settings = get_settings()
+    capped = min(
+        settings.llm_retry_base_delay_seconds * (2**attempt),
+        settings.llm_retry_max_delay_seconds,
+    )
+    return random.uniform(capped * 0.5, capped)
+
+
+def _raise_http_status(response: httpx.Response) -> None:
+    try:
+        response.raise_for_status()
+    except httpx.HTTPStatusError as err:
+        body = response.text[:500]
+        raise httpx.HTTPStatusError(
+            f"{response.status_code} {response.reason_phrase}: {body}",
+            request=response.request,
+            response=response,
+        ) from err
 
 
 # Module-level lazy singleton — instantiated fresh per-task to avoid

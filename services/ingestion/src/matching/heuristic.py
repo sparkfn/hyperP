@@ -23,6 +23,7 @@ from src.models import (
     NormalizedAddress,
     NormalizedAttribute,
     NormalizedIdentifier,
+    RecordType,
 )
 
 logger = logging.getLogger(__name__)
@@ -49,6 +50,8 @@ ADDRESS_MATCH_WEIGHT = 0.10
 
 CONFIDENCE_AUTO_MERGE = 0.90
 CONFIDENCE_REVIEW = 0.60
+CONVERSATION_PROMOTED_CONFIDENCE = 0.91
+CONVERSATION_PROMOTION_NAME_THRESHOLD = 0.80
 
 
 def evaluate_heuristic(
@@ -57,6 +60,7 @@ def evaluate_heuristic(
     identifiers: list[NormalizedIdentifier],
     address: NormalizedAddress | None,
     attributes: list[NormalizedAttribute],
+    record_type: RecordType = RecordType.SYSTEM,
 ) -> MatchResult:
     """Conditional-weight heuristic scoring across phone/email/DOB/name/address."""
     snapshot = fetch_candidate_snapshot(tx, candidate_person_id)
@@ -81,6 +85,7 @@ def evaluate_heuristic(
         ident_evidence=ident_evidence,
         raw_score=score,
     )
+    confidence = _promote_conversation_confidence(record_type, confidence, reasons, features)
 
     logger.info(
         "Heuristic score for candidate %s: %.2f (raw=%.2f, reasons=%s)",
@@ -241,6 +246,7 @@ def _build_feature_snapshot(
     return {
         "candidate_person_id": candidate_person_id,
         "phone_exact_match": any(r.startswith("Phone match") for r in reasons),
+        "phone_high_fanout": any(r.startswith("Phone ") and "seen on" in r for r in reasons),
         "email_exact_match": any(r.startswith("Email match") for r in reasons),
         "dob_exact_match": any(r.startswith("DOB exact") for r in reasons),
         "dob_conflict": any(r.startswith("DOB conflict") for r in reasons),
@@ -249,7 +255,49 @@ def _build_feature_snapshot(
         "identifier_evidence_raw": ident_evidence,
         "identifier_evidence_capped": min(ident_evidence, IDENTIFIER_EVIDENCE_CAP),
         "raw_score": raw_score,
+        "conversation_promotion": False,
     }
+
+
+def _promote_conversation_confidence(
+    record_type: RecordType,
+    confidence: float,
+    reasons: list[str],
+    features: dict[str, JsonValue],
+) -> float:
+    if record_type != RecordType.CONVERSATION:
+        return confidence
+    if confidence >= CONFIDENCE_AUTO_MERGE:
+        return confidence
+    if not _can_promote_conversation(features):
+        return confidence
+    features["conversation_promotion"] = True
+    features["pre_promotion_confidence"] = confidence
+    reasons.append("Conversation evidence promoted to merge")
+    return CONVERSATION_PROMOTED_CONFIDENCE
+
+
+def _can_promote_conversation(features: dict[str, JsonValue]) -> bool:
+    phone_exact = features["phone_exact_match"] is True
+    email_exact = features["email_exact_match"] is True
+    high_name = (
+        _float_feature(features.get("name_similarity")) >= CONVERSATION_PROMOTION_NAME_THRESHOLD
+    )
+    address_match = features["address_match"] is True
+    dob_exact = features["dob_exact_match"] is True
+    dob_conflict = features["dob_conflict"] is True
+    high_fanout_phone = features["phone_high_fanout"] is True
+    has_identifier = phone_exact or email_exact
+    corroborated = (phone_exact and email_exact) or (
+        has_identifier and (high_name or address_match or dob_exact)
+    )
+    return corroborated and not dob_conflict and not high_fanout_phone
+
+
+def _float_feature(value: JsonValue | None) -> float:
+    if isinstance(value, int | float):
+        return float(value)
+    return 0.0
 
 
 def _band(

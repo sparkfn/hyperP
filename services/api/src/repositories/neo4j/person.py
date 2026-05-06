@@ -85,7 +85,7 @@ class Neo4jPersonRepository:
         list_query = build_list_persons_query(sort_by, sort_order, has_q=has_q)
         count_query = build_count_persons_query(has_q=has_q)
         # sort_by/sort_order are used to build the query string, not as Cypher params
-        cypher_params: dict[str, str | int | bool | None] = {
+        cypher_params: dict[str, str | int | bool | list[str] | None] = {
             k: v  # type: ignore[misc]  # TypedDict values are object; known-safe filter keys
             for k, v in filters.items()
             if k not in ("sort_by", "sort_order")

@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 from src.graph.client import get_session
-from src.graph.mappers_entities import map_entity_person, map_entity_summary
-from src.graph.queries import LIST_ENTITIES, get_entity_persons_query
-from src.types import EntityPerson, EntitySummary
+from src.graph.mappers_entities import (
+    map_entity_person,
+    map_entity_summary,
+    map_source_system_summary,
+)
+from src.graph.queries import LIST_ENTITIES, LIST_FILTER_SOURCE_SYSTEMS, get_entity_persons_query
+from src.types import EntityPerson, EntitySummary, SourceSystemSummary
 
 from ._utils import record_to_dict
 
@@ -16,6 +20,12 @@ class Neo4jEntityRepository:
             result = await session.run(LIST_ENTITIES)
             records = [record_to_dict(r.keys(), list(r.values())) async for r in result]
         return [map_entity_summary(rec) for rec in records]
+
+    async def get_source_systems(self) -> list[SourceSystemSummary]:
+        async with get_session() as session:
+            result = await session.run(LIST_FILTER_SOURCE_SYSTEMS)
+            records = [record_to_dict(r.keys(), list(r.values())) async for r in result]
+        return [map_source_system_summary(rec) for rec in records]
 
     async def list_persons(
         self,

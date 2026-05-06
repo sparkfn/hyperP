@@ -138,6 +138,15 @@ export interface EntitySummary {
   active_review_cases: number;
 }
 
+export interface SourceSystemSummary {
+  source_key: string;
+  display_name: string | null;
+  system_type: string | null;
+  is_active: boolean;
+  source_record_count: number;
+  last_ingested_at: string | null;
+}
+
 export interface PersonEntitySummary {
   entity_key: string;
   display_name: string | null;

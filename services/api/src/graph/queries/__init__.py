@@ -20,7 +20,7 @@ from src.graph.queries.admin import (
     LIST_SOURCE_SYSTEMS,
     UPDATE_FIELD_TRUST,
 )
-from src.graph.queries.entities import LIST_ENTITIES, get_entity_persons_query
+from src.graph.queries.entities import LIST_ENTITIES, LIST_FILTER_SOURCE_SYSTEMS, get_entity_persons_query
 from src.graph.queries.events import LIST_EVENTS
 from src.graph.queries.graph import (
     DEFAULT_HOPS,
@@ -160,7 +160,7 @@ __all__ = [
     "GET_REVIEW_CASE",
     "GET_UNMERGE_TARGET",
     "LIST_ENTITIES",
-    "LIST_EVENTS",
+    "LIST_FILTER_SOURCE_SYSTEMS",
     "LIST_REPORTS",
     "LIST_REVIEW_CASES",
     "LIST_SOURCE_SYSTEMS",

@@ -194,16 +194,31 @@ def _ingest_all_records(
     return success, errors, skipped
 
 
-def run_ingestion(source_key: str, mode: str = "batch") -> IngestionSummary:
-    """Execute one ingestion run end-to-end."""
+def initialize_ingestion_graph() -> None:
     settings = get_settings()
-    logger.info("Starting ingestion: source=%s mode=%s", source_key, mode)
-
     client = Neo4jClient(settings)
     try:
         client.verify_connectivity()
         apply_schema(client)
         bootstrap_entities_and_sources(client)
+    finally:
+        client.close()
+
+
+def run_ingestion(
+    source_key: str, mode: str = "batch", *, initialize_graph: bool = True
+) -> IngestionSummary:
+    """Execute one ingestion run end-to-end."""
+    settings = get_settings()
+    logger.info("Starting ingestion: source=%s mode=%s", source_key, mode)
+
+    if initialize_graph:
+        initialize_ingestion_graph()
+
+    client = Neo4jClient(settings)
+    try:
+        if not initialize_graph:
+            client.verify_connectivity()
 
         pipeline = IngestPipeline(client)
         connector = get_connector(source_key)

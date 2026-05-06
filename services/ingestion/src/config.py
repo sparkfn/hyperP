@@ -126,6 +126,9 @@ class Settings(BaseSettings):
     # LLM service -------------------------------------------------------------
     llm_default_model: str = "Qwen/Qwen2.5-72B-Instruct"
     llm_request_delay_seconds: float = 0.5
+    llm_max_retries: int = 6
+    llm_retry_base_delay_seconds: float = 1.0
+    llm_retry_max_delay_seconds: float = 30.0
 
     # Birthday greeting task -------------------------------------------------
     # Daily Celery beat job that sends a WhatsApp birthday message to every

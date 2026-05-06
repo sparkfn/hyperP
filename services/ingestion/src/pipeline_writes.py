@@ -15,6 +15,7 @@ from neo4j import ManagedTransaction
 from src.graph import queries
 from src.models import (
     CandidateResult,
+    JsonValue,
     MatchDecision,
     MatchResult,
     NormalizedAttribute,
@@ -153,11 +154,18 @@ def persist_source_record(
     ingest_run_id: str | None,
 ) -> str:
     """Step 7 + 7b: persist SourceRecord and link to IngestRun."""
-    normalized = {
+    normalized: dict[str, JsonValue] = {
         "identifiers": [i.model_dump() for i in identifiers],
         "address": address.model_dump() if address else None,
         "attributes": [a.model_dump() for a in attributes],
     }
+    summary = envelope.raw_payload.get("summary")
+    if (
+        envelope.record_type.value == "conversation"
+        and isinstance(summary, str)
+        and summary.strip()
+    ):
+        normalized["summary"] = summary.strip()
     is_linked = match_result.decision == MatchDecision.MERGE or is_new_person
     conv_ref = (
         json.dumps(envelope.conversation_ref, default=str)
