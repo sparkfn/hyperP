@@ -104,6 +104,7 @@ def test_bitrix_fetch_uses_one_cursor_for_chunked_chat_scan(
         "bitrix-chat-3",
     ]
 
+
 def test_bitrix_chat_envelope_keeps_agent_identity_raw_only(monkeypatch: MonkeyPatch) -> None:
     monkeypatch.setattr(connector_module, "extraction_method_label", lambda: "llm:test")
 
@@ -121,9 +122,7 @@ def test_bitrix_chat_envelope_keeps_agent_identity_raw_only(monkeypatch: MonkeyP
         agents=[connector_module._AgentMember("agent-1", "Tonni", True)],
     )
     extraction = {
-        "persons": [
-            {"name": "Ada Customer", "phone": "+6591234567", "email": "ada@example.com"}
-        ],
+        "persons": [{"name": "Ada Customer", "phone": "+6591234567", "email": "ada@example.com"}],
         "transactions": [
             {
                 "order_id": "ORD-1",
@@ -169,8 +168,7 @@ def test_bitrix_chat_envelope_keeps_agent_identity_raw_only(monkeypatch: MonkeyP
     monkeypatch.setattr(
         "src.connectors.bitrix.connector.run_extraction_batch",
         lambda texts: [
-            {"persons": [], "transactions": [], "summary": None, "confidence": 0.0}
-            for _ in texts
+            {"persons": [], "transactions": [], "summary": None, "confidence": 0.0} for _ in texts
         ],
     )
 

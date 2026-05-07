@@ -58,7 +58,7 @@ COPY public.contacts (jid, phone_number, name) FROM stdin;
     assert records[0]["record_type"] == "conversation"
     assert records[0]["observed_at"] == "2026-05-06T10:00:00Z"
     assert records[0]["attributes"] == {"full_name": "Ada Lovelace"}
-    assert {item["value"] for item in records[0]["identifiers"]} >= {"+6599990000"}
+    assert records[0]["identifiers"] == []
 
 
 def test_bitrix_dump_connector_yields_conversation_envelope(

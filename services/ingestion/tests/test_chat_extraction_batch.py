@@ -17,6 +17,19 @@ class _FakeLlmService:
             {
                 "persons": [{"name": "Ada", "phone": "+6512345678"}],
                 "transactions": [],
+                "chat_members": [
+                    {"name": "Ben", "phone": "+6588880000", "role": "agent", "notes": "Sales rep"}
+                ],
+                "inquiries": [
+                    {
+                        "machine_product": "Forklift X",
+                        "unit": "Unit 7",
+                        "lta_tag": "LTA123",
+                        "serial_number": "SN-9",
+                        "notes": "Customer asked about availability",
+                    }
+                ],
+                "customer_sentiment": "positive",
                 "confidence": 0.9,
             }
         )
@@ -47,6 +60,13 @@ def test_chat_extraction_batch_runs_async_gather_inside_event_loop(
     assert results[0] is not None
     assert results[0]["confidence"] == 0.9
     assert results[0]["persons"][0]["name"] == "Ada"
+    assert results[0]["chat_members"][0]["name"] == "Ben"
+    assert results[0]["chat_members"][0]["phone"] == "+6588880000"
+    assert results[0]["inquiries"][0]["machine_product"] == "Forklift X"
+    assert results[0]["inquiries"][0]["unit"] == "Unit 7"
+    assert results[0]["inquiries"][0]["lta_tag"] == "LTA123"
+    assert results[0]["inquiries"][0]["serial_number"] == "SN-9"
+    assert results[0]["customer_sentiment"] == "positive"
 
 
 def test_chat_extraction_prompt_keeps_persons_customer_only() -> None:
@@ -63,5 +83,11 @@ def test_chat_extraction_prompt_keeps_persons_customer_only() -> None:
     assert "message senders acting" in prompt
     assert "on behalf of the business" in prompt
     assert "transactions" in prompt
+    assert "chat_members" in prompt
+    assert "Do not use chat_members as customer identifiers" in prompt
+    assert "customer_sentiment" in prompt
+    assert "machine_product" in prompt
+    assert "lta_tag" in prompt
+    assert "serial_number" in prompt
     assert "summary" in prompt
     assert "full conversation" in prompt

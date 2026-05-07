@@ -37,10 +37,28 @@ class ExtractedTransaction(TypedDict, total=False):
     notes: str | None
 
 
+class ExtractedChatMember(TypedDict, total=False):
+    name: str | None
+    phone: str | None
+    role: str | None
+    notes: str | None
+
+
+class ExtractedInquiry(TypedDict, total=False):
+    machine_product: str | None
+    unit: str | None
+    lta_tag: str | None
+    serial_number: str | None
+    notes: str | None
+
+
 class ExtractionResult(TypedDict):
     persons: list[ExtractedPerson]
     transactions: list[ExtractedTransaction]
+    chat_members: list[ExtractedChatMember]
+    inquiries: list[ExtractedInquiry]
     summary: str | None
+    customer_sentiment: str | None
     confidence: float
 
 
@@ -84,7 +102,10 @@ def run_extraction_batch(texts: list[str]) -> list[ExtractionResult | None]:
                 results.append(None)
                 continue
             transactions_raw = parsed.get("transactions")
+            chat_members_raw = parsed.get("chat_members")
+            inquiries_raw = parsed.get("inquiries")
             summary_raw = parsed.get("summary")
+            sentiment_raw = parsed.get("customer_sentiment")
             confidence_raw = parsed.get("confidence")
             persons: list[ExtractedPerson] = []
             for person_raw in persons_raw:
@@ -135,11 +156,26 @@ def run_extraction_batch(texts: list[str]) -> list[ExtractionResult | None]:
                         elif amount is None:
                             transaction["amount"] = None
                         transactions.append(transaction)
+            chat_members: list[ExtractedChatMember] = []
+            if isinstance(chat_members_raw, list):
+                for member_raw in chat_members_raw:
+                    member = _parse_chat_member(member_raw)
+                    if member is not None:
+                        chat_members.append(member)
+            inquiries: list[ExtractedInquiry] = []
+            if isinstance(inquiries_raw, list):
+                for inquiry_raw in inquiries_raw:
+                    inquiry = _parse_inquiry(inquiry_raw)
+                    if inquiry is not None:
+                        inquiries.append(inquiry)
             results.append(
                 ExtractionResult(
                     persons=persons,
                     transactions=transactions,
+                    chat_members=chat_members,
+                    inquiries=inquiries,
                     summary=summary_raw if isinstance(summary_raw, str) else None,
+                    customer_sentiment=sentiment_raw if isinstance(sentiment_raw, str) else None,
                     confidence=(
                         float(confidence_raw) if isinstance(confidence_raw, int | float) else 0.0
                     ),
@@ -170,6 +206,64 @@ def identifiers_from_extraction(extraction: ExtractionResult) -> list[dict[str, 
             if normalized_email is not None and email_quality == QualityFlag.VALID:
                 identifiers.add("email", normalized_email, verified=False)
     return identifiers.items
+
+
+def _optional_str(value: object) -> str | None:
+    if isinstance(value, str) or value is None:
+        return value
+    return None
+
+
+def _parse_chat_member(member_raw: object) -> ExtractedChatMember | None:
+    if not isinstance(member_raw, dict):
+        return None
+    return ExtractedChatMember(
+        name=_optional_str(member_raw.get("name")),
+        phone=_optional_str(member_raw.get("phone")),
+        role=_optional_str(member_raw.get("role")),
+        notes=_optional_str(member_raw.get("notes")),
+    )
+
+
+def _parse_inquiry(inquiry_raw: object) -> ExtractedInquiry | None:
+    if not isinstance(inquiry_raw, dict):
+        return None
+    return ExtractedInquiry(
+        machine_product=_optional_str(inquiry_raw.get("machine_product")),
+        unit=_optional_str(inquiry_raw.get("unit")),
+        lta_tag=_optional_str(inquiry_raw.get("lta_tag")),
+        serial_number=_optional_str(inquiry_raw.get("serial_number")),
+        notes=_optional_str(inquiry_raw.get("notes")),
+    )
+
+
+def chat_members_payload(extraction: ExtractionResult) -> list[JsonValue]:
+    payload: list[JsonValue] = []
+    for member in extraction.get("chat_members", []):
+        payload.append(
+            {
+                "name": member.get("name"),
+                "phone": member.get("phone"),
+                "role": member.get("role"),
+                "notes": member.get("notes"),
+            }
+        )
+    return payload
+
+
+def inquiries_payload(extraction: ExtractionResult) -> list[JsonValue]:
+    payload: list[JsonValue] = []
+    for inquiry in extraction.get("inquiries", []):
+        payload.append(
+            {
+                "machine_product": inquiry.get("machine_product"),
+                "unit": inquiry.get("unit"),
+                "lta_tag": inquiry.get("lta_tag"),
+                "serial_number": inquiry.get("serial_number"),
+                "notes": inquiry.get("notes"),
+            }
+        )
+    return payload
 
 
 def transactions_payload(extraction: ExtractionResult) -> list[JsonValue]:

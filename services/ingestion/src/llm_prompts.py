@@ -35,6 +35,19 @@ Return a JSON object with these top-level keys:
     - "currency": currency code (default SGD)
     - "status": status mentioned (e.g. pending, paid, completed, cancelled)
     - "notes": any other relevant context
+- "chat_members": array of non-customer chat participants, agents, staff, senders, or
+  business representatives. Do not use chat_members as customer identifiers. Each has:
+    - "name": full name if stated
+    - "phone": phone number if stated
+    - "role": role in the conversation (e.g. agent, staff, sender, member)
+    - "notes": relevant context about this chat member
+- "inquiries": array of machines, products, or units the customer asked about. Each has:
+    - "machine_product": machine/product model, product name, or description if stated
+    - "unit": unit identifier, unit number, or stock/unit reference if stated
+    - "lta_tag": LTA tag if stated
+    - "serial_number": serial number if stated
+    - "notes": any other relevant context
+- "customer_sentiment": concise customer sentiment label or phrase if evident
 - "summary": concise factual summary of the full conversation, including customer intent,
   products/orders discussed, agent-provided order details, and any follow-up state
 - "confidence": your overall confidence (0.0-1.0) in this extraction

@@ -156,9 +156,7 @@ class FundboxDumpConnector(SourceConnector):
             row = _join_fundbox_user(user, profiles.get(user_id), plus_profiles.get(user_id))
             last_login = last_logins.get(user_id)
             last_login_value = (
-                str(last_login.last_logged_in)
-                if last_login and last_login.last_logged_in
-                else None
+                str(last_login.last_logged_in) if last_login and last_login.last_logged_in else None
             )
             yield FundboxConnector._build_one(
                 row,
@@ -192,9 +190,7 @@ class FundboxLegacyDumpConnector(SourceConnector):
     def fetch_records(self) -> Iterator[dict[str, JsonValue]]:
         tables = load_dump_tables(self._dump_path, FUNDBOX_TABLES)
         addresses = _group_by_int(tables.rows("log_legacy_profile_addresses"), "user_id")
-        profiles = sorted(
-            tables.rows("log_legacy_profiles"), key=lambda item: _row_int(item, "id")
-        )
+        profiles = sorted(tables.rows("log_legacy_profiles"), key=lambda item: _row_int(item, "id"))
         for row in profiles:
             yield _build_fundbox_legacy(row, addresses.get(_row_int(row, "user_id"), []))
 
@@ -664,9 +660,7 @@ def _build_fundbox_merged(row: DumpRow) -> dict[str, JsonValue]:
             "merged_user": serialize_row(row),
             "merge_hint": {
                 "merged_into_source_record_id": (
-                    f"fundbox_consumer_backend-user-{row.new_user_id}"
-                    if row.new_user_id
-                    else None
+                    f"fundbox_consumer_backend-user-{row.new_user_id}" if row.new_user_id else None
                 ),
                 "surviving_identifiers": {
                     "nric": row.new_nric,
@@ -768,6 +762,7 @@ def _phppos_product_payload(item: DumpRow, source_system_key: str) -> dict[str, 
         },
     }
 
+
 def _join_eko_row(person: DumpRow, customer: DumpRow) -> DumpRow:
     return DumpRow(
         {
@@ -817,6 +812,7 @@ def _float_value(value: JsonValue) -> float:
         except ValueError:
             return 0.0
     return 0.0
+
 
 def _object_mapping(values: Mapping[str, JsonValue]) -> dict[str, object]:
     return dict(values)

@@ -74,6 +74,7 @@ def test_whatsapp_fetch_participants_resolves_lid_chat_to_cus_phone() -> None:
     assert participants[0].phone == "+6599990000"
     assert participants[0].name == "Ada Lovelace"
 
+
 def test_whatsapp_chat_envelope_keeps_agent_identity_raw_only(monkeypatch: MonkeyPatch) -> None:
     monkeypatch.setattr(whatsapp_module, "extraction_method_label", lambda: "llm:test")
 
@@ -106,9 +107,7 @@ def test_whatsapp_chat_envelope_keeps_agent_identity_raw_only(monkeypatch: Monke
         ],
     )
     extraction = {
-        "persons": [
-            {"name": "Ada Customer", "phone": "+6591234567", "email": "ada@example.com"}
-        ],
+        "persons": [{"name": "Ada Customer", "phone": "+6591234567", "email": "ada@example.com"}],
         "transactions": [
             {
                 "order_id": "ORD-1",
