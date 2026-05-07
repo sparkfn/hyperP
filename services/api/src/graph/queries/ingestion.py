@@ -57,6 +57,8 @@ MATCH (ss:SourceSystem {source_key: $source_key, is_active: true})
 CREATE (ir:IngestRun {
   ingest_run_id: randomUUID(),
   run_type: $run_type,
+  mode: $mode,
+  dump_path: $dump_path,
   status: 'started',
   started_at: datetime(),
   finished_at: null,
@@ -67,6 +69,8 @@ CREATE (ir:IngestRun {
 CREATE (ir)-[:FROM_SOURCE]->(ss)
 RETURN ir.ingest_run_id AS ingest_run_id,
        ir.status AS status,
+       ir.mode AS mode,
+       ir.dump_path AS dump_path,
        toString(ir.started_at) AS started_at
 """
 
@@ -77,6 +81,8 @@ SET ir.status = $status,
     ir.metadata = CASE WHEN $metadata IS NOT NULL THEN $metadata ELSE ir.metadata END
 RETURN ir.ingest_run_id AS ingest_run_id,
        ir.status AS status,
+       ir.mode AS mode,
+       ir.dump_path AS dump_path,
        toString(ir.finished_at) AS finished_at
 """
 
@@ -84,7 +90,7 @@ GET_INGEST_RUN = """
 MATCH (ir:IngestRun {ingest_run_id: $ingest_run_id})
 OPTIONAL MATCH (ir)-[:FROM_SOURCE]->(ss:SourceSystem)
 RETURN ir {
-  .ingest_run_id, .run_type, .status,
+  .ingest_run_id, .run_type, .mode, .dump_path, .status,
   .record_count, .rejected_count, .metadata
 } AS run,
 toString(ir.started_at) AS started_at,

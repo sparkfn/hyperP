@@ -126,6 +126,9 @@ services:
       OAUTH_PUBLIC_KEY_PEM: ${OAUTH_PUBLIC_KEY_PEM:-}
       OAUTH_SECRET_HASH_KEY: ${OAUTH_SECRET_HASH_KEY:-}
       ROOT_PATH: /api
+      DUMPS_ROOT: ${DUMPS_ROOT:-/app/dumps}
+    volumes:
+      - ./dumps:/app/dumps:ro
     depends_on:
       neo4j:
         condition: service_healthy
@@ -167,6 +170,8 @@ services:
     environment: *ingestion-env
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    volumes:
+      - ./dumps:/app/dumps:ro
     depends_on:
       neo4j:
         condition: service_healthy

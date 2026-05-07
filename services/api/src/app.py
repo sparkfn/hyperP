@@ -24,6 +24,7 @@ from src.llm.service import close_llm_service
 from src.redis_client import close_redis
 from src.routes import (
     admin,
+    dumps,
     entities,
     events,
     health,
@@ -52,7 +53,6 @@ async def _ensure_user_constraint() -> None:
             await session.run(CREATE_USER_CONSTRAINT)
     except Exception:  # noqa: BLE001 — constraint setup is best-effort at startup
         logger.exception("Failed to create :User uniqueness constraint")
-
 
 
 async def _ensure_oauth_client_constraints() -> None:
@@ -110,6 +110,7 @@ def build_app() -> FastAPI:
     app.include_router(merge.router, dependencies=active)
     app.include_router(survivorship.router, dependencies=active)
     app.include_router(ingest.router, dependencies=active)
+    app.include_router(dumps.router, dependencies=active)
     app.include_router(admin.router, dependencies=active)
     app.include_router(oauth_client_routes.router, dependencies=active)
     app.include_router(events.router, dependencies=active)

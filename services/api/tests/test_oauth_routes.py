@@ -403,10 +403,12 @@ class _IngestRouteRepo:
         self,
         source_key: str,
         run_type: str,
+        mode: str,
+        dump_path: str | None,
         metadata: dict[str, str],
     ) -> IngestRunResponse | None:
-        _ = source_key, run_type, metadata
-        return IngestRunResponse(ingest_run_id="run-1", status="running")
+        _ = source_key, run_type, mode, dump_path, metadata
+        return IngestRunResponse(ingest_run_id="run-1", status="running", mode="batch")
 
     async def update_run(
         self,
@@ -415,13 +417,15 @@ class _IngestRouteRepo:
         body: IngestRunUpdateRequest,
     ) -> IngestRunResponse | None:
         _ = source_key, ingest_run_id, body
-        return IngestRunResponse(ingest_run_id="run-1", status="completed")
+        return IngestRunResponse(ingest_run_id="run-1", status="completed", mode="batch")
 
     async def get_run(self, ingest_run_id: str) -> IngestRunDetailResponse | None:
         _ = ingest_run_id
         return IngestRunDetailResponse(
             ingest_run_id="run-1",
             run_type="batch",
+            mode="batch",
+            dump_path=None,
             status="running",
             record_count=0,
             rejected_count=0,
@@ -689,7 +693,6 @@ def test_source_systems_route_allows_oauth_admin_client_with_mocked_repo() -> No
     ]
     assert _ADMIN_REPO.get_all_source_systems_calls == 1
 
-
     app = build_app()
     app.dependency_overrides[require_active_user] = _override_oauth_ingest_writer
     app.dependency_overrides[get_current_user_or_oauth_client] = _override_oauth_ingest_writer
@@ -728,6 +731,7 @@ def test_entities_route_allows_oauth_client_with_persons_read_scope() -> None:
     ]
     assert _ENTITY_REPO.get_all_calls == 1
 
+
 def test_persons_read_route_allows_human_user_with_mocked_repo() -> None:
     app = build_app()
     app.dependency_overrides[require_active_user] = _override_employee
@@ -754,7 +758,6 @@ def test_entities_route_rejects_oauth_client_without_persons_read_scope_before_r
     assert res.status_code == 403
     assert res.json()["error"]["message"] == "OAuth client lacks required scope: persons:read"
     assert _ENTITY_REPO.get_all_calls == 0
-
 
     app = build_app()
     app.dependency_overrides[require_active_user] = _override_oauth_persons_reader
@@ -795,7 +798,6 @@ def test_ingest_run_detail_route_rejects_oauth_client_without_ingest_write_scope
     assert res.status_code == 403
     assert res.json()["error"]["message"] == "OAuth client lacks required scope: ingest:write"
 
-
     app = build_app()
     app.dependency_overrides[require_active_user] = _override_oauth_ingest_writer
     app.dependency_overrides[get_current_user_or_oauth_client] = _override_oauth_ingest_writer
@@ -819,7 +821,6 @@ def test_reports_metadata_route_rejects_oauth_client_without_persons_read_scope(
 
     assert res.status_code == 403
     assert res.json()["error"]["message"] == "OAuth client lacks required scope: persons:read"
-
 
     app = build_app()
     app.dependency_overrides[require_active_user] = _override_oauth_persons_reader
