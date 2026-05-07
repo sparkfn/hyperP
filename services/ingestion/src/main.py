@@ -12,6 +12,8 @@ from neo4j import ManagedTransaction
 from src.config import get_settings
 from src.connectors.base import SourceConnector
 from src.connectors.bitrix import BitrixChatConnector
+from src.connectors.dumps.connectors import get_dump_connector
+from src.connectors.dumps.reader import resolve_dump_path
 from src.connectors.eko import EkoConnector, EkoSalesConnector
 from src.connectors.fundbox import (
     FundboxConnector,
@@ -89,8 +91,12 @@ def setup_logging(level: str) -> None:
     logging.getLogger("neo4j.notifications").setLevel(logging.ERROR)
 
 
-def get_connector(source_key: str) -> SourceConnector:
+def get_connector(source_key: str, dump_path: str | None = None) -> SourceConnector:
     """Return the appropriate connector for the given source key."""
+    if dump_path is not None:
+        settings = get_settings()
+        resolved_dump_path = resolve_dump_path(dump_path, settings.dumps_root)
+        return get_dump_connector(source_key, resolved_dump_path)
     try:
         return _CONNECTOR_REGISTRY[source_key]()
     except KeyError as exc:
@@ -108,6 +114,7 @@ class IngestionSummary(TypedDict):
     skipped: int
     source_key: str
     mode: str
+    dump_path: str | None
 
 
 def _create_ingest_run(client: Neo4jClient, source_key: str, mode: str) -> str:
@@ -206,10 +213,18 @@ def initialize_ingestion_graph() -> None:
 
 
 def run_ingestion(
-    source_key: str, mode: str = "batch", *, initialize_graph: bool = True
+    source_key: str,
+    mode: str = "batch",
+    dump_path: str | None = None,
+    *,
+    initialize_graph: bool = True,
 ) -> IngestionSummary:
     """Execute one ingestion run end-to-end."""
     settings = get_settings()
+    if mode == "dump" and dump_path is None:
+        raise ValueError("dump_path is required when mode='dump'")
+    if mode != "dump" and dump_path is not None:
+        raise ValueError("dump_path is only valid when mode='dump'")
     logger.info("Starting ingestion: source=%s mode=%s", source_key, mode)
 
     if initialize_graph:
@@ -221,7 +236,7 @@ def run_ingestion(
             client.verify_connectivity()
 
         pipeline = IngestPipeline(client)
-        connector = get_connector(source_key)
+        connector = get_connector(source_key, dump_path if mode == "dump" else None)
         ingest_run_id = _create_ingest_run(client, source_key, mode)
         logger.info("IngestRun %s created, connector=%s", ingest_run_id, type(connector).__name__)
 
@@ -264,6 +279,7 @@ def run_ingestion(
             "skipped": skipped,
             "source_key": source_key,
             "mode": mode,
+            "dump_path": dump_path,
         }
     finally:
         client.close()
@@ -275,12 +291,13 @@ def main(argv: list[str] | None = None) -> None:
         description="Ingestion service for the profile unification platform",
     )
     parser.add_argument("--source-key", required=True)
-    parser.add_argument("--mode", choices=["batch", "backfill"], default="batch")
+    parser.add_argument("--mode", choices=["batch", "backfill", "dump"], default="batch")
+    parser.add_argument("--dump-path", default=None)
     args = parser.parse_args(argv)
 
     setup_logging(get_settings().log_level)
     try:
-        run_ingestion(args.source_key, args.mode)
+        run_ingestion(args.source_key, args.mode, args.dump_path)
     except Exception:
         logger.exception("Fatal error during ingestion")
         sys.exit(1)

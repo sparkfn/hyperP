@@ -3,6 +3,7 @@ x-ingestion-env: &ingestion-env
   NEO4J_USER: neo4j
   NEO4J_PASSWORD: ${NEO4J_PASSWORD:-changeme}
   LOG_LEVEL: ${LOG_LEVEL:-INFO}
+  DUMPS_ROOT: /app/dumps
   BATCH_SIZE: ${BATCH_SIZE:-1000}
   CELERY_BROKER_URL: redis://redis:6379/0
   CELERY_RESULT_BACKEND: redis://redis:6379/1
@@ -126,9 +127,9 @@ services:
       OAUTH_PUBLIC_KEY_PEM: ${OAUTH_PUBLIC_KEY_PEM:-}
       OAUTH_SECRET_HASH_KEY: ${OAUTH_SECRET_HASH_KEY:-}
       ROOT_PATH: /api
-      DUMPS_ROOT: ${DUMPS_ROOT:-/app/dumps}
+      DUMPS_ROOT: /app/dumps
     volumes:
-      - ./dumps:/app/dumps:ro
+      - ./.dumps:/app/dumps:ro
     depends_on:
       neo4j:
         condition: service_healthy
@@ -168,10 +169,10 @@ services:
       context: .
       dockerfile: services/ingestion/Dockerfile
     environment: *ingestion-env
+    volumes:
+      - ./.dumps:/app/dumps:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"
-    volumes:
-      - ./dumps:/app/dumps:ro
     depends_on:
       neo4j:
         condition: service_healthy
