@@ -15,24 +15,28 @@ Always output valid JSON.\
 
 #: User prompt template for identity + transaction extraction.
 EXTRACTION_TEMPLATE = """\
-Extract from the following conversation all identity and transaction information.
+Extract customer identity and transaction information from the following conversation.
 Return a JSON object with these top-level keys:
-- "persons": array of persons mentioned. Each person has:
+- "persons": array of customers, clients, prospects, or other external people whose
+  identity should be attached to the customer profile. Do not include sales agents,
+  staff, internal users, tenant or business representatives, or message senders acting
+  on behalf of the business. Each person has:
     - "name": full name if stated
     - "phone": phone number if stated (Singapore format like +65 or 8-digit local)
     - "email": email address if stated
     - "address": full address if stated
     - "nric": NRIC/FIN number if stated
-    - "notes": any other relevant context about this person
-- "transactions": array of orders/invoices mentioned. Each has:
+    - "notes": any other relevant context about this customer
+- "transactions": array of orders/invoices mentioned anywhere in the full conversation.
+  Include order details stated by customers or business representatives. Each has:
     - "order_id": order/invoice reference number if stated
     - "product": product name or description if stated
     - "amount": numerical amount if stated
     - "currency": currency code (default SGD)
     - "status": status mentioned (e.g. pending, paid, completed, cancelled)
     - "notes": any other relevant context
-- "summary": concise factual summary of the conversation, including customer intent,
-  products/orders discussed, and any follow-up state
+- "summary": concise factual summary of the full conversation, including customer intent,
+  products/orders discussed, agent-provided order details, and any follow-up state
 - "confidence": your overall confidence (0.0-1.0) in this extraction
 
 Conversation (newest messages last):
