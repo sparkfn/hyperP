@@ -7,6 +7,7 @@ from collections.abc import Sequence
 
 from pytest import MonkeyPatch
 from src.llm import ChatMessage
+from src.llm_prompts import build_extraction_prompt
 
 
 class _FakeLlmService:
@@ -46,3 +47,21 @@ def test_chat_extraction_batch_runs_async_gather_inside_event_loop(
     assert results[0] is not None
     assert results[0]["confidence"] == 0.9
     assert results[0]["persons"][0]["name"] == "Ada"
+
+
+def test_chat_extraction_prompt_keeps_persons_customer_only() -> None:
+    prompt = build_extraction_prompt(
+        "[2026-05-07 10:00:00] Tonni: Customer Ada ordered item A\n"
+        "[2026-05-07 10:01:00] Ada: My phone is +6512345678"
+    )
+
+    assert "customers, clients, prospects" in prompt
+    assert "Do not include sales agents" in prompt
+    assert "staff" in prompt
+    assert "internal users" in prompt
+    assert "tenant or business representatives" in prompt
+    assert "message senders acting" in prompt
+    assert "on behalf of the business" in prompt
+    assert "transactions" in prompt
+    assert "summary" in prompt
+    assert "full conversation" in prompt

@@ -248,18 +248,10 @@ def _build_envelope(
     observed_at = bundle.observed_at
 
     identifiers = identifiers_from_extraction(extraction)
-    for participant in bundle.participants:
-        if participant.role == "chat" and participant.phone:
-            identifiers.append({"type": "phone", "value": participant.phone, "is_verified": False})
-            break
 
     attributes: dict[str, JsonValue] = {}
     if extraction["persons"] and extraction["persons"][0].get("name"):
         attributes["full_name"] = extraction["persons"][0]["name"]
-    elif bundle.participants:
-        chat_participant = next((p for p in bundle.participants if p.role == "chat"), None)
-        if chat_participant and chat_participant.name:
-            attributes["full_name"] = chat_participant.name
 
     tx_payload = transactions_payload(extraction)
 
