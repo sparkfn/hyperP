@@ -56,43 +56,61 @@ export default function IdentifiersSection({ personId }: Props): ReactElement {
               <TableCell>Active</TableCell>
               <TableCell>Verified</TableCell>
               <TableCell>Source system</TableCell>
+              <TableCell>Source record id/s</TableCell>
               <TableCell>Last confirmed</TableCell>
             </TableRow>
           </TableHead>
           <TableBody>
-            {rows.map((id) => (
-              <TableRow key={`${id.identifier_type}:${id.normalized_value}`} hover>
-                <TableCell>{id.identifier_type}</TableCell>
-                <TableCell>
-                  <Tooltip title={id.normalized_value}>
-                    <Typography
-                      variant="body2"
-                      fontFamily="monospace"
-                      sx={{ maxWidth: 220, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
-                    >
-                      {id.normalized_value}
-                    </Typography>
-                  </Tooltip>
-                </TableCell>
-                <TableCell>
-                  <Chip
-                    label={id.is_active ? "active" : "inactive"}
-                    size="small"
-                    color={id.is_active ? "success" : "default"}
-                  />
-                </TableCell>
-                <TableCell>
-                  <Chip
-                    label={id.is_verified ? "verified" : "unverified"}
-                    size="small"
-                    color={id.is_verified ? "success" : "default"}
-                    variant="outlined"
-                  />
-                </TableCell>
-                <TableCell>{id.source_system_key ?? "—"}</TableCell>
-                <TableCell>{id.last_confirmed_at?.slice(0, 10) ?? "—"}</TableCell>
-              </TableRow>
-            ))}
+            {rows.map((id) => {
+              const sourceRecordRefs: string =
+                id.source_record_ids.length > 0
+                  ? id.source_record_ids.join(", ")
+                  : id.source_record_pks.join(", ");
+              return (
+                <TableRow key={`${id.identifier_type}:${id.normalized_value}`} hover>
+                  <TableCell>{id.identifier_type}</TableCell>
+                  <TableCell>
+                    <Tooltip title={id.normalized_value}>
+                      <Typography
+                        variant="body2"
+                        fontFamily="monospace"
+                        sx={{ maxWidth: 220, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+                      >
+                        {id.normalized_value}
+                      </Typography>
+                    </Tooltip>
+                  </TableCell>
+                  <TableCell>
+                    <Chip
+                      label={id.is_active ? "active" : "inactive"}
+                      size="small"
+                      color={id.is_active ? "success" : "default"}
+                    />
+                  </TableCell>
+                  <TableCell>
+                    <Chip
+                      label={id.is_verified ? "verified" : "unverified"}
+                      size="small"
+                      color={id.is_verified ? "success" : "default"}
+                      variant="outlined"
+                    />
+                  </TableCell>
+                  <TableCell>{id.source_system_key ?? "—"}</TableCell>
+                  <TableCell>
+                    <Tooltip title={sourceRecordRefs || "—"}>
+                      <Typography
+                        variant="body2"
+                        fontFamily="monospace"
+                        sx={{ maxWidth: 240, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+                      >
+                        {sourceRecordRefs || "—"}
+                      </Typography>
+                    </Tooltip>
+                  </TableCell>
+                  <TableCell>{id.last_confirmed_at?.slice(0, 10) ?? "—"}</TableCell>
+                </TableRow>
+              );
+            })}
           </TableBody>
         </Table>
       </TableContainer>

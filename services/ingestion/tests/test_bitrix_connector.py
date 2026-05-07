@@ -8,6 +8,7 @@ from typing import Protocol, cast
 
 from pytest import MonkeyPatch
 from sqlalchemy.engine import Connection
+from src.connectors.bitrix import connector as connector_module
 from src.connectors.bitrix.connector import BitrixChatConnector
 
 
@@ -73,6 +74,7 @@ def test_bitrix_fetch_uses_one_cursor_for_chunked_chat_scan(
     connector = BitrixChatConnector()
     connector.chunk_size = 2
 
+    monkeypatch.setattr(connector_module, "extraction_method_label", lambda: "llm:test")
     monkeypatch.setattr(
         connector,
         "_load_deal",
@@ -103,9 +105,56 @@ def test_bitrix_fetch_uses_one_cursor_for_chunked_chat_scan(
     ]
 
 
-def test_bitrix_fetch_skips_chats_for_unmapped_crm_categories(
-    monkeypatch: MonkeyPatch,
-) -> None:
+def test_bitrix_chat_envelope_keeps_agent_identity_raw_only(monkeypatch: MonkeyPatch) -> None:
+    monkeypatch.setattr(connector_module, "extraction_method_label", lambda: "llm:test")
+
+    connector = BitrixChatConnector()
+    bundle = connector_module._ChatBundle(
+        chat_id=1,
+        deal_id=101,
+        bitrix_chat_id="chat-1",
+        last_message_at=datetime(2026, 5, 7, 10, 1, 0),
+        created_at=datetime(2026, 5, 7, 10, 0, 0),
+        category_name="Fundbox",
+        entity="fundbox",
+        conv_text="Tonni: Ada ordered product A. Ada: My phone is +6591234567.",
+        deal={"title": "Ada order", "stage_id": "NEW", "opened": True, "closed": False},
+        agents=[connector_module._AgentMember("agent-1", "Tonni", True)],
+    )
+    extraction = {
+        "persons": [{"name": "Ada Customer", "phone": "+6591234567", "email": "ada@example.com"}],
+        "transactions": [
+            {
+                "order_id": "ORD-1",
+                "product": "product A",
+                "amount": 25.0,
+                "currency": "SGD",
+                "status": "pending",
+                "notes": "Tonni confirmed the order details",
+            }
+        ],
+        "summary": "Ada ordered product A; Tonni confirmed follow-up state.",
+        "confidence": 0.95,
+    }
+
+    record = connector._build_envelope(bundle=bundle, extraction=extraction)
+
+    assert record["attributes"]["full_name"] == "Ada Customer"
+    assert {item["value"] for item in record["identifiers"]} == {
+        "+6591234567",
+        "ada@example.com",
+    }
+    assert "+6599990000" not in {item["value"] for item in record["identifiers"]}
+    assert record["raw_payload"]["chat_members"] == [
+        {"bitrix_agent_id": "agent-1", "name": "Tonni", "active": True, "role": "agent"}
+    ]
+    assert record["raw_payload"]["transactions"][0]["notes"] == (
+        "Tonni confirmed the order details"
+    )
+    assert record["raw_payload"]["summary"] == (
+        "Ada ordered product A; Tonni confirmed follow-up state."
+    )
+
     conn = _Connection([_Chat(id=1, deal_id=101, bitrix_chat_id="b1")])
     connector = BitrixChatConnector()
 
@@ -119,8 +168,7 @@ def test_bitrix_fetch_skips_chats_for_unmapped_crm_categories(
     monkeypatch.setattr(
         "src.connectors.bitrix.connector.run_extraction_batch",
         lambda texts: [
-            {"persons": [], "transactions": [], "summary": None, "confidence": 0.0}
-            for _ in texts
+            {"persons": [], "transactions": [], "summary": None, "confidence": 0.0} for _ in texts
         ],
     )
 

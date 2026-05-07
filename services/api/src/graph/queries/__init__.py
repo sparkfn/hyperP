@@ -20,7 +20,11 @@ from src.graph.queries.admin import (
     LIST_SOURCE_SYSTEMS,
     UPDATE_FIELD_TRUST,
 )
-from src.graph.queries.entities import LIST_ENTITIES, LIST_FILTER_SOURCE_SYSTEMS, get_entity_persons_query
+from src.graph.queries.entities import (
+    LIST_ENTITIES,
+    LIST_FILTER_SOURCE_SYSTEMS,
+    get_entity_persons_query,
+)
 from src.graph.queries.events import LIST_EVENTS
 from src.graph.queries.graph import (
     DEFAULT_HOPS,
@@ -71,7 +75,10 @@ from src.graph.queries.persons import (
     GET_PERSON_SOURCE_RECORDS,
     SEARCH_PERSONS,
 )
-from src.graph.queries.persons_list import build_count_persons_query, build_list_persons_query
+from src.graph.queries.persons_list import (
+    build_count_persons_query,
+    build_list_persons_query,
+)
 from src.graph.queries.reports import (
     CREATE_REPORT,
     DELETE_REPORT,
@@ -160,6 +167,7 @@ __all__ = [
     "GET_REVIEW_CASE",
     "GET_UNMERGE_TARGET",
     "LIST_ENTITIES",
+    "LIST_EVENTS",
     "LIST_FILTER_SOURCE_SYSTEMS",
     "LIST_REPORTS",
     "LIST_REVIEW_CASES",

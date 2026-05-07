@@ -17,6 +17,7 @@ class AppConfig(BaseSettings):
     port: int = Field(default=3000, alias="PORT")
     log_level: str = Field(default="info", alias="LOG_LEVEL")
     root_path: str = Field(default="", alias="ROOT_PATH")
+    dumps_root: str = Field(default="/app/dumps", alias="DUMPS_ROOT")
 
     auth_enabled: bool = Field(default=True, alias="AUTH_ENABLED")
     # Same OAuth client the frontend uses via Auth.js (AUTH_GOOGLE_ID).

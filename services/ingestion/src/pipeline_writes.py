@@ -166,6 +166,11 @@ def persist_source_record(
         and summary.strip()
     ):
         normalized["summary"] = summary.strip()
+    if envelope.record_type.value == "conversation":
+        for key in ("customer_sentiment", "chat_members", "inquiries"):
+            value = envelope.raw_payload.get(key)
+            if value is not None:
+                normalized[key] = value
     is_linked = match_result.decision == MatchDecision.MERGE or is_new_person
     conv_ref = (
         json.dumps(envelope.conversation_ref, default=str)

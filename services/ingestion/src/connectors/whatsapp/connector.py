@@ -23,8 +23,10 @@ from sqlalchemy.engine import Connection
 from src.connectors.base import SourceConnector
 from src.connectors.chat_helpers import (
     ExtractionResult,
+    chat_members_payload,
     extraction_method_label,
     identifiers_from_extraction,
+    inquiries_payload,
     latest_timestamp,
     run_extraction_batch,
     transactions_payload,
@@ -248,18 +250,10 @@ def _build_envelope(
     observed_at = bundle.observed_at
 
     identifiers = identifiers_from_extraction(extraction)
-    for participant in bundle.participants:
-        if participant.role == "chat" and participant.phone:
-            identifiers.append({"type": "phone", "value": participant.phone, "is_verified": False})
-            break
 
     attributes: dict[str, JsonValue] = {}
     if extraction["persons"] and extraction["persons"][0].get("name"):
         attributes["full_name"] = extraction["persons"][0]["name"]
-    elif bundle.participants:
-        chat_participant = next((p for p in bundle.participants if p.role == "chat"), None)
-        if chat_participant and chat_participant.name:
-            attributes["full_name"] = chat_participant.name
 
     tx_payload = transactions_payload(extraction)
 
@@ -271,6 +265,9 @@ def _build_envelope(
         "tenant": tenant,
         "messages_text": msg_text,
         "summary": extraction.get("summary"),
+        "customer_sentiment": extraction.get("customer_sentiment"),
+        "chat_members": chat_members_payload(extraction),
+        "inquiries": inquiries_payload(extraction),
         "participants": _participants_payload(bundle.participants),
         "message_endpoints": bundle.message_endpoints,
         "transactions": tx_payload,

@@ -37,8 +37,10 @@ from src.connectors.bitrix.schema import (
 )
 from src.connectors.chat_helpers import (
     ExtractionResult,
+    chat_members_payload,
     extraction_method_label,
     identifiers_from_extraction,
+    inquiries_payload,
     latest_timestamp,
     run_extraction_batch,
     transactions_payload,
@@ -298,6 +300,8 @@ class BitrixChatConnector(SourceConnector):
 
         tx_payload = transactions_payload(extraction)
 
+        chat_members = chat_members_payload(extraction) or _agents_payload(bundle.agents)
+
         d = bundle.deal or {}
         raw_payload: dict[str, JsonValue] = {
             "chat_id": chat_id,
@@ -311,7 +315,9 @@ class BitrixChatConnector(SourceConnector):
             "deal_closed": bool(d.get("closed", False)),
             "conversation_text": bundle.conv_text,
             "summary": extraction.get("summary"),
-            "chat_members": _agents_payload(bundle.agents),
+            "customer_sentiment": extraction.get("customer_sentiment"),
+            "chat_members": chat_members,
+            "inquiries": inquiries_payload(extraction),
             "transactions": tx_payload,
         }
         conversation_ref: dict[str, JsonValue] = {

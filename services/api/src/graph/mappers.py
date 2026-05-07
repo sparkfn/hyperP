@@ -96,17 +96,22 @@ def map_source_record(record: GraphRecord) -> SourceRecord:
         source_system=to_str(record.get("source_system")),
         source_record_id=to_str(sr.get("source_record_id")),
         source_record_version=to_optional_str(sr.get("source_record_version")),
+        entity_key=to_optional_str(record.get("entity_key")),
+        entity_display_name=to_optional_str(record.get("entity_display_name")),
         record_type="conversation" if to_str(sr.get("record_type")) == "conversation" else "system",
         extraction_confidence=(
             to_float(sr.get("extraction_confidence"))
             if sr.get("extraction_confidence") is not None
             else None
         ),
+        extraction_method=to_optional_str(sr.get("extraction_method")),
         link_status=to_str(sr.get("link_status")),
         linked_person_id=to_optional_str(record.get("linked_person_id")),
         observed_at=to_iso_or_empty(sr.get("observed_at")),
         ingested_at=to_iso_or_empty(sr.get("ingested_at")),
-        normalized_payload=_parse_normalized_payload(sr.get("normalized_payload")),
+        conversation_ref=_parse_json_object(sr.get("conversation_ref")) or None,
+        raw_payload=_parse_json_object(sr.get("raw_payload")) or None,
+        normalized_payload=_parse_json_object(sr.get("normalized_payload")),
     )
 
 
@@ -118,6 +123,8 @@ def map_person_identifier(record: GraphRecord) -> PersonIdentifier:
         is_verified=bool(record.get("is_verified", False)),
         last_confirmed_at=to_iso_or_none(record.get("last_confirmed_at")),
         source_system_key=to_optional_str(record.get("source_system_key")),
+        source_record_pks=to_str_list(record.get("source_record_pks")),
+        source_record_ids=to_str_list(record.get("source_record_ids")),
     )
 
 
@@ -265,18 +272,49 @@ def _map_source_record_comparison(e: GraphRecord) -> PersonComparisonEntity:
 
 
 def _parse_normalized_payload(value: GraphValue) -> dict[str, JsonValue]:
-    if not isinstance(value, str):
-        return {}
-    try:
-        parsed: object = json.loads(value)
-    except json.JSONDecodeError:
-        return {}
-    if not isinstance(parsed, dict):
-        return {}
+    return _parse_json_object(value)
+
+
+def _parse_json_object(value: GraphValue) -> dict[str, JsonValue]:
+    if isinstance(value, dict):
+        return _json_graph_dict(value)
+    if isinstance(value, str):
+        try:
+            parsed: object = json.loads(value)
+        except json.JSONDecodeError:
+            return {}
+        if not isinstance(parsed, dict):
+            return {}
+        payload: dict[str, JsonValue] = {}
+        for key, item in parsed.items():
+            if isinstance(key, str) and _is_json_value(item):
+                payload[key] = item
+        return payload
+    return {}
+
+
+def _json_graph_value(value: GraphValue) -> JsonValue | None:
+    if isinstance(value, str | int | float | bool) or value is None:
+        return value
+    if isinstance(value, list):
+        payload: list[JsonValue] = []
+        for item in value:
+            json_item = _json_graph_value(item)
+            if json_item is None and item is not None:
+                return None
+            payload.append(json_item)
+        return payload
+    if isinstance(value, dict):
+        return _json_graph_dict(value)
+    return None
+
+
+def _json_graph_dict(value: dict[str, GraphValue]) -> dict[str, JsonValue]:
     payload: dict[str, JsonValue] = {}
-    for key, item in parsed.items():
-        if isinstance(key, str) and _is_json_value(item):
-            payload[key] = item
+    for key, item in value.items():
+        json_item = _json_graph_value(item)
+        if json_item is not None or item is None:
+            payload[key] = json_item
     return payload
 
 

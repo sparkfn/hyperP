@@ -27,11 +27,55 @@ export interface SourceRecordAttributePayload {
   quality_flag?: string;
 }
 
+export interface SourceRecordChatMemberPayload {
+  name?: string | null;
+  phone?: string | null;
+  role?: string | null;
+  notes?: string | null;
+}
+
+export interface SourceRecordInquiryPayload {
+  machine_product?: string | null;
+  unit?: string | null;
+  lta_tag?: string | null;
+  serial_number?: string | null;
+  notes?: string | null;
+}
+
 export interface SourceRecordNormalizedPayload {
   identifiers?: SourceRecordIdentifierPayload[];
   address?: SourceRecordAddressPayload | null;
   attributes?: SourceRecordAttributePayload[];
   summary?: string;
+  customer_sentiment?: string;
+  chat_members?: SourceRecordChatMemberPayload[];
+  inquiries?: SourceRecordInquiryPayload[];
+}
+
+export interface SourceRecordConversationRef {
+  platform?: string;
+  tenant?: string;
+  chat_id?: string;
+  deal_id?: string;
+  bitrix_chat_id?: string;
+  whatsapp_user_id?: string;
+  session_id?: string;
+}
+
+export interface SourceRecordRawPayload {
+  conversation_text?: string;
+  messages_text?: string;
+  summary?: string;
+  customer_sentiment?: string;
+  chat_members?: SourceRecordChatMemberPayload[];
+  inquiries?: SourceRecordInquiryPayload[];
+  tenant?: string;
+  category?: string;
+  chat_id?: string;
+  deal_id?: string;
+  bitrix_chat_id?: string;
+  whatsapp_user_id?: string;
+  session_id?: string;
 }
 
 export interface PersonSourceRecord {
@@ -39,12 +83,17 @@ export interface PersonSourceRecord {
   source_system: string;
   source_record_id: string;
   source_record_version: string | null;
+  entity_key: string | null;
+  entity_display_name: string | null;
   record_type: SourceRecordType;
   extraction_confidence: number | null;
+  extraction_method: string | null;
   link_status: string;
   linked_person_id: string | null;
   observed_at: string;
   ingested_at: string;
+  conversation_ref: SourceRecordConversationRef | null;
+  raw_payload: SourceRecordRawPayload | null;
   normalized_payload: SourceRecordNormalizedPayload | null;
 }
 
@@ -85,6 +134,8 @@ export interface PersonIdentifier {
   is_verified: boolean;
   last_confirmed_at: string | null;
   source_system_key: string | null;
+  source_record_pks: string[];
+  source_record_ids: string[];
 }
 
 // --- Request bodies ---

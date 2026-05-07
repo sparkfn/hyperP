@@ -45,6 +45,8 @@ export default async function IngestRunDetailPage({ params }: PageProps): Promis
 
   const metadata: Record<string, unknown> = {
     run_type: run.run_type,
+    mode: run.mode,
+    dump_path: run.dump_path,
     source_key: run.source_key,
     record_count: run.record_count,
     rejected_count: run.rejected_count,
@@ -68,6 +70,8 @@ export default async function IngestRunDetailPage({ params }: PageProps): Promis
           <Stack direction="row" spacing={2} alignItems="center">
             <Chip label={run.status} color={statusColor(run.status)} />
             <Chip label={run.run_type} variant="outlined" />
+            <Chip label={run.mode} variant="outlined" />
+            {run.dump_path !== null ? <Chip label={run.dump_path} variant="outlined" /> : null}
             {run.source_key !== null ? (
               <Chip label={run.source_key} variant="outlined" />
             ) : null}

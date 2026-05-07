@@ -26,6 +26,8 @@ class IngestRecordsResponse:
 class IngestRunResponse:
     ingest_run_id: str
     status: str
+    mode: str
+    dump_path: str | None = None
     started_at: str | None = None
     finished_at: str | None = None
 
@@ -34,6 +36,8 @@ class IngestRunResponse:
 class IngestRunDetailResponse:
     ingest_run_id: str
     run_type: str
+    mode: str
+    dump_path: str | None
     status: str
     record_count: int
     rejected_count: int
@@ -57,6 +61,8 @@ class IngestRepository(Protocol):
         self,
         source_key: str,
         run_type: str,
+        mode: str,
+        dump_path: str | None,
         metadata: dict[str, str],
     ) -> IngestRunResponse | None:
         """Returns None if the source system is not found or inactive."""

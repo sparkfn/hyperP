@@ -34,6 +34,7 @@ class Settings(BaseSettings):
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
 
     # Ingestion tuning --------------------------------------------------------
+    dumps_root: str = "/app/dumps"
     batch_size: int = 500
 
     # Celery / queue ----------------------------------------------------------

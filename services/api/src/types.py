@@ -156,6 +156,8 @@ class PersonIdentifier(BaseModel):
     is_verified: bool = False
     last_confirmed_at: str | None = None
     source_system_key: str | None = None
+    source_record_pks: list[str] = Field(default_factory=list)
+    source_record_ids: list[str] = Field(default_factory=list)
 
 
 class SourceRecord(BaseModel):
@@ -163,12 +165,17 @@ class SourceRecord(BaseModel):
     source_system: str
     source_record_id: str
     source_record_version: str | None = None
+    entity_key: str | None = None
+    entity_display_name: str | None = None
     record_type: Literal["system", "conversation"] = "system"
     extraction_confidence: float | None = None
+    extraction_method: str | None = None
     link_status: str
     linked_person_id: str | None = None
     observed_at: str
     ingested_at: str
+    conversation_ref: dict[str, JsonValue] | None = None
+    raw_payload: dict[str, JsonValue] | None = None
     normalized_payload: dict[str, JsonValue] | None = None
 
 
