@@ -6,6 +6,7 @@ import AddIcon from "@mui/icons-material/Add";
 import ClearIcon from "@mui/icons-material/Clear";
 import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
+import Chip from "@mui/material/Chip";
 import Collapse from "@mui/material/Collapse";
 import Divider from "@mui/material/Divider";
 import FormControl from "@mui/material/FormControl";
@@ -14,19 +15,20 @@ import InputAdornment from "@mui/material/InputAdornment";
 import InputLabel from "@mui/material/InputLabel";
 import MenuItem from "@mui/material/MenuItem";
 import Paper from "@mui/material/Paper";
-import Select from "@mui/material/Select";
+import Select, { type SelectChangeEvent } from "@mui/material/Select";
 import Stack from "@mui/material/Stack";
 import TextField from "@mui/material/TextField";
 import Typography from "@mui/material/Typography";
 
-import type { EntitySummary } from "@/lib/api-types";
+import type { EntitySummary, SourceSystemSummary } from "@/lib/api-types";
 import DatePickerField from "@/components/DatePickerField";
 import PersonsFilterAddressSection from "@/components/PersonsFilterAddressSection";
 import PersonsFilterDobSection from "@/components/PersonsFilterDobSection";
 
 export interface PersonsFilters {
   q: string;
-  entity_key: string;
+  entity_keys: string[];
+  source_keys: string[];
   has_address: "" | "true" | "false";
   addr_street: string;
   addr_unit: string;
@@ -42,7 +44,8 @@ export interface PersonsFilters {
 
 export const DEFAULT_FILTERS: PersonsFilters = {
   q: "",
-  entity_key: "",
+  entity_keys: [],
+  source_keys: [],
   has_address: "",
   addr_street: "",
   addr_unit: "",
@@ -74,7 +77,8 @@ function hasAdvancedFilters(f: PersonsFilters): boolean {
 
 // Non-text inputs trigger an immediate fetch on change
 const IMMEDIATE_KEYS = new Set<keyof PersonsFilters>([
-  "entity_key",
+  "entity_keys",
+  "source_keys",
   "has_address",
   "has_dob",
   "updated_after",
@@ -93,6 +97,7 @@ export interface FilterChangeHandler {
 interface PersonsFilterPanelProps {
   value: PersonsFilters;
   entities: EntitySummary[];
+  sourceSystems: SourceSystemSummary[];
   onApply: (next: PersonsFilters) => void;
   onClear: () => void;
 }
@@ -100,6 +105,7 @@ interface PersonsFilterPanelProps {
 export default function PersonsFilterPanel({
   value,
   entities,
+  sourceSystems,
   onApply,
   onClear,
 }: PersonsFilterPanelProps): ReactElement {
@@ -137,7 +143,6 @@ export default function PersonsFilterPanel({
     return () => {
       if (debounceTimer.current) clearTimeout(debounceTimer.current);
     };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [draft.q, draft.addr_street, draft.addr_unit, draft.addr_city, draft.addr_postal, draft.addr_country]);
 
   function handleChange(update: Partial<PersonsFilters>, immediate = false): void {
@@ -167,8 +172,24 @@ export default function PersonsFilterPanel({
     onClear();
   }
 
+  function handleMultiSelectChange(
+    field: "entity_keys" | "source_keys",
+    event: SelectChangeEvent<string[]>,
+  ): void {
+    const value = event.target.value;
+    handleChange({ [field]: typeof value === "string" ? value.split(",") : value });
+  }
+
+  function entityLabel(entityKey: string): string {
+    return entities.find((ent) => ent.entity_key === entityKey)?.display_name ?? entityKey;
+  }
+
+  function sourceLabel(sourceKey: string): string {
+    return sourceSystems.find((source) => source.source_key === sourceKey)?.display_name ?? sourceKey;
+  }
+
   const hasActiveFilters: boolean =
-    draft.q.trim().length > 0 || draft.entity_key !== "" || hasAdvancedFilters(draft);
+    draft.q.trim().length > 0 || draft.entity_keys.length > 0 || draft.source_keys.length > 0 || hasAdvancedFilters(draft);
 
   return (
     <Paper variant="outlined" sx={{ px: 2, py: 1.5 }}>
@@ -191,27 +212,64 @@ export default function PersonsFilterPanel({
             ) : null,
           }}
         />
-        <FormControl size="small" sx={{ minWidth: 180 }}>
+        <FormControl size="small" sx={{ width: 220, maxWidth: 220 }}>
           <InputLabel>Entity</InputLabel>
           <Select
+            multiple
             label="Entity"
-            value={draft.entity_key}
-            onChange={(e) => handleChange({ entity_key: e.target.value })}
-            sx={{ fontSize: "0.875rem" }}
+            value={draft.entity_keys}
+            onChange={(e) => handleMultiSelectChange("entity_keys", e)}
+            renderValue={(selected) => (
+              <Box sx={{ display: "flex", flexWrap: "nowrap", gap: 0.5, overflow: "hidden" }}>
+                {selected[0] ? <Chip label={entityLabel(selected[0])} size="small" sx={{ maxWidth: 140 }} /> : null}
+                {selected.length > 1 ? <Chip label={`+${selected.length - 1}`} size="small" /> : null}
+              </Box>
+            )}
             endAdornment={
-              draft.entity_key ? (
+              draft.entity_keys.length > 0 ? (
                 <InputAdornment position="end" sx={{ mr: 2 }}>
-                  <IconButton size="small" onClick={() => handleChange({ entity_key: "" })}>
+                  <IconButton size="small" onClick={() => handleChange({ entity_keys: [] })}>
                     <ClearIcon sx={{ fontSize: "1rem" }} />
                   </IconButton>
                 </InputAdornment>
               ) : null
             }
+            sx={{ fontSize: "0.875rem" }}
           >
-            <MenuItem value="">All entities</MenuItem>
             {entities.map((ent) => (
               <MenuItem key={ent.entity_key} value={ent.entity_key}>
                 {ent.display_name ?? ent.entity_key}
+              </MenuItem>
+            ))}
+          </Select>
+        </FormControl>
+        <FormControl size="small" sx={{ width: 220, maxWidth: 220 }}>
+          <InputLabel>Source</InputLabel>
+          <Select
+            multiple
+            label="Source"
+            value={draft.source_keys}
+            onChange={(e) => handleMultiSelectChange("source_keys", e)}
+            renderValue={(selected) => (
+              <Box sx={{ display: "flex", flexWrap: "nowrap", gap: 0.5, overflow: "hidden" }}>
+                {selected[0] ? <Chip label={sourceLabel(selected[0])} size="small" sx={{ maxWidth: 140 }} /> : null}
+                {selected.length > 1 ? <Chip label={`+${selected.length - 1}`} size="small" /> : null}
+              </Box>
+            )}
+            endAdornment={
+              draft.source_keys.length > 0 ? (
+                <InputAdornment position="end" sx={{ mr: 2 }}>
+                  <IconButton size="small" onClick={() => handleChange({ source_keys: [] })}>
+                    <ClearIcon sx={{ fontSize: "1rem" }} />
+                  </IconButton>
+                </InputAdornment>
+              ) : null
+            }
+            sx={{ fontSize: "0.875rem" }}
+          >
+            {sourceSystems.map((source) => (
+              <MenuItem key={source.source_key} value={source.source_key}>
+                {source.display_name ?? source.source_key}
               </MenuItem>
             ))}
           </Select>

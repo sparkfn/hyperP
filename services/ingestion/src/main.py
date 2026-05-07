@@ -11,6 +11,7 @@ from neo4j import ManagedTransaction
 
 from src.config import get_settings
 from src.connectors.base import SourceConnector
+from src.connectors.bitrix import BitrixChatConnector
 from src.connectors.eko import EkoConnector, EkoSalesConnector
 from src.connectors.fundbox import (
     FundboxConnector,
@@ -20,6 +21,7 @@ from src.connectors.fundbox import (
     FundboxSalesConnector,
 )
 from src.connectors.speedzone import SpeedZoneConnector, SpeedZoneSalesConnector
+from src.connectors.whatsapp import WhatsAppChatConnector
 from src.graph import queries
 from src.graph.bootstrap import bootstrap_entities_and_sources
 from src.graph.client import Neo4jClient
@@ -44,6 +46,8 @@ _CONNECTOR_REGISTRY: dict[str, type[SourceConnector]] = {
     "speedzone_phppos:sales": SpeedZoneSalesConnector,
     "eko_phppos": EkoConnector,
     "eko_phppos:sales": EkoSalesConnector,
+    "whatsapp_chat": WhatsAppChatConnector,
+    "bitrix_chat": BitrixChatConnector,
 }
 
 
@@ -59,6 +63,7 @@ def _mark_run_failed(
     the Celery task handler.
     """
     try:
+
         def _work(tx: ManagedTransaction) -> None:
             tx.run(
                 queries.UPDATE_INGEST_RUN,
@@ -105,9 +110,7 @@ class IngestionSummary(TypedDict):
     mode: str
 
 
-def _create_ingest_run(
-    client: Neo4jClient, source_key: str, mode: str
-) -> str:
+def _create_ingest_run(client: Neo4jClient, source_key: str, mode: str) -> str:
     """Create an IngestRun node and return its ID."""
 
     def _tx(tx: ManagedTransaction) -> str:
@@ -181,23 +184,41 @@ def _ingest_all_records(
             success += 1
         logger.info(
             "  %s -> person=%s new=%s decision=%s candidates=%d%s",
-            result.source_record_id, result.person_id, result.is_new_person,
-            result.match_decision, result.candidate_count,
+            result.source_record_id,
+            result.person_id,
+            result.is_new_person,
+            result.match_decision,
+            result.candidate_count,
             " (DUPLICATE)" if result.skipped_duplicate else "",
         )
     return success, errors, skipped
 
 
-def run_ingestion(source_key: str, mode: str = "batch") -> IngestionSummary:
-    """Execute one ingestion run end-to-end."""
+def initialize_ingestion_graph() -> None:
     settings = get_settings()
-    logger.info("Starting ingestion: source=%s mode=%s", source_key, mode)
-
     client = Neo4jClient(settings)
     try:
         client.verify_connectivity()
         apply_schema(client)
         bootstrap_entities_and_sources(client)
+    finally:
+        client.close()
+
+
+def run_ingestion(
+    source_key: str, mode: str = "batch", *, initialize_graph: bool = True
+) -> IngestionSummary:
+    """Execute one ingestion run end-to-end."""
+    settings = get_settings()
+    logger.info("Starting ingestion: source=%s mode=%s", source_key, mode)
+
+    if initialize_graph:
+        initialize_ingestion_graph()
+
+    client = Neo4jClient(settings)
+    try:
+        if not initialize_graph:
+            client.verify_connectivity()
 
         pipeline = IngestPipeline(client)
         connector = get_connector(source_key)
@@ -206,7 +227,10 @@ def run_ingestion(source_key: str, mode: str = "batch") -> IngestionSummary:
 
         try:
             success, errors, skipped = _ingest_all_records(
-                client, pipeline, connector, ingest_run_id,
+                client,
+                pipeline,
+                connector,
+                ingest_run_id,
             )
             drained = drain_pending_customer_sales(client)
             if drained:
@@ -220,16 +244,26 @@ def run_ingestion(source_key: str, mode: str = "batch") -> IngestionSummary:
 
         final_status = "completed" if errors == 0 else "completed_with_errors"
         _finalize_ingest_run(
-            client, ingest_run_id, final_status, success + errors + skipped, errors,
+            client,
+            ingest_run_id,
+            final_status,
+            success + errors + skipped,
+            errors,
         )
         logger.info(
             "Ingestion complete: %d succeeded, %d errors, %d skipped",
-            success, errors, skipped,
+            success,
+            errors,
+            skipped,
         )
         return {
-            "ingest_run_id": ingest_run_id, "status": final_status,
-            "succeeded": success, "errors": errors, "skipped": skipped,
-            "source_key": source_key, "mode": mode,
+            "ingest_run_id": ingest_run_id,
+            "status": final_status,
+            "succeeded": success,
+            "errors": errors,
+            "skipped": skipped,
+            "source_key": source_key,
+            "mode": mode,
         }
     finally:
         client.close()

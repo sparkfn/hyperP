@@ -38,10 +38,15 @@ WHERE p.status <> 'merged'
 """
 
 _ENTITY_FILTER_CLAUSE = """
-WITH p, score, addr WHERE $entity_key IS NULL OR EXISTS {
+WITH p, score, addr WHERE ($entity_keys IS NULL OR EXISTS {
   MATCH (sr_e:SourceRecord)-[:LINKED_TO]->(p)
-  MATCH (sr_e)-[:FROM_SOURCE]->(:SourceSystem)-[:OPERATED_BY]->(:Entity {entity_key: $entity_key})
-}
+  MATCH (sr_e)-[:FROM_SOURCE]->(:SourceSystem)-[:OPERATED_BY]->(e:Entity)
+  WHERE e.entity_key IN $entity_keys
+}) AND ($source_keys IS NULL OR EXISTS {
+  MATCH (sr_s:SourceRecord)-[:LINKED_TO]->(p)
+  MATCH (sr_s)-[:FROM_SOURCE]->(ss:SourceSystem)
+  WHERE ss.source_key IN $source_keys
+})
 WITH DISTINCT p, score
 OPTIONAL MATCH (p)-[:LIVES_AT]->(addr:Address {address_id: p.preferred_address_id})
 """

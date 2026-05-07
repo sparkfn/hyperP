@@ -13,7 +13,7 @@ class AuthUser(BaseModel):
     """Represents an authenticated principal resolved from a Google ID token."""
 
     email: str
-    google_sub: str
+    google_sub: str | None
     role: Role
     entity_key: str | None = None
     display_name: str | None = None

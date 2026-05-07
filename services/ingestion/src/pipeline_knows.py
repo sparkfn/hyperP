@@ -39,14 +39,18 @@ def _parse_contact_payload(raw_payload_str: object) -> dict[str, object] | None:
 
 
 def _resolve_both_persons(
-    tx: ManagedTransaction, declarer_sr_id: object, contact_pk: str,
+    tx: ManagedTransaction,
+    declarer_sr_id: object,
+    contact_pk: str,
 ) -> tuple[str, str] | None:
     """Resolve declarer and contact person IDs. Returns None if either is missing or same."""
     declarer = tx.run(
-        queries.RESOLVE_PERSON_FROM_SOURCE_RECORD_ID, source_record_id=declarer_sr_id,
+        queries.RESOLVE_PERSON_FROM_SOURCE_RECORD_ID,
+        source_record_id=declarer_sr_id,
     ).single()
     contact = tx.run(
-        queries.RESOLVE_PERSON_FROM_SOURCE_RECORD_PK, source_record_pk=contact_pk,
+        queries.RESOLVE_PERSON_FROM_SOURCE_RECORD_PK,
+        source_record_pk=contact_pk,
     ).single()
     if declarer is None or contact is None:
         return None
@@ -56,7 +60,9 @@ def _resolve_both_persons(
 
 
 def _link_one_contact(
-    tx: ManagedTransaction, contact_source_record_pk: str, raw_payload: dict[str, object],
+    tx: ManagedTransaction,
+    contact_source_record_pk: str,
+    raw_payload: dict[str, object],
 ) -> bool:
     """Resolve both sides of a contact record and MERGE the KNOWS edge."""
     declarer_sr_id = raw_payload.get("linked_to_source_record_id")
@@ -86,9 +92,7 @@ def _link_one_contact(
     return True
 
 
-def materialize_knows_from_contacts(
-    client: Neo4jClient, *, batch_size: int = 500
-) -> int:
+def materialize_knows_from_contacts(client: Neo4jClient, *, batch_size: int = 500) -> int:
     """Walk every contact SourceRecord and link declarer → contact via KNOWS.
 
     Paginates through contact records using a source_record_pk cursor so
@@ -99,9 +103,8 @@ def materialize_knows_from_contacts(
     cursor = ""
 
     while True:
-        def _work(
-            tx: ManagedTransaction, cursor_param: str = cursor
-        ) -> tuple[int, str | None]:
+
+        def _work(tx: ManagedTransaction, cursor_param: str = cursor) -> tuple[int, str | None]:
             result = tx.run(
                 queries.SCAN_CONTACT_SOURCE_RECORDS,
                 cursor=cursor_param,

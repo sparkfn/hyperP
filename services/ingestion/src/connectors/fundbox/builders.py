@@ -110,7 +110,9 @@ class IdentifierBag:
             return
         self._seen.add(key)
         item: dict[str, JsonValue] = {
-            "type": id_type, "value": value_str, "is_verified": verified,
+            "type": id_type,
+            "value": value_str,
+            "is_verified": verified,
         }
         if last_confirmed_at is not None:
             item["last_confirmed_at"] = last_confirmed_at

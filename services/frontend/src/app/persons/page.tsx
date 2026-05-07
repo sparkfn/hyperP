@@ -19,7 +19,7 @@ import PersonsListTable, {
   type SortOrder,
 } from "@/components/PersonsListTable";
 
-import { usePersonSelection, usePersonsFetch, useEntitiesList } from "./hooks";
+import { usePersonSelection, usePersonsFetch, useEntitiesList, useSourceSystemsList } from "./hooks";
 import { countActiveFilters, parseStateFromParams, serializeStateToParams } from "./query";
 
 const ROWS_PER_PAGE_OPTIONS: readonly number[] = [10, 25, 50, 100] as const;
@@ -55,6 +55,7 @@ function PersonsListPageInner(): ReactElement {
   }, [filters, sortBy, sortOrder, pageIndex, rowsPerPage, router]);
 
   const entities = useEntitiesList();
+  const sourceSystems = useSourceSystemsList();
   const fetch = usePersonsFetch(filters, sortBy, sortOrder, pageIndex, rowsPerPage);
   const selection = usePersonSelection();
 
@@ -109,6 +110,7 @@ function PersonsListPageInner(): ReactElement {
       <PersonsFilterPanel
         value={filters}
         entities={entities}
+        sourceSystems={sourceSystems}
         onApply={handleApplyFilters}
         onClear={handleClearFilters}
       />

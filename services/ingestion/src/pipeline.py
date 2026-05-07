@@ -94,7 +94,11 @@ class IngestPipeline:
         # Steps 3-13 run inside a single write transaction
         def _work(tx: ManagedTransaction) -> IngestResult:
             return self._execute_ingest(
-                tx, envelope, identifiers, address, attributes,
+                tx,
+                envelope,
+                identifiers,
+                address,
+                attributes,
                 ingest_run_id=ingest_run_id,
             )
 
@@ -129,39 +133,61 @@ class IngestPipeline:
         upsert_nodes(tx, identifiers, address)
         candidates = find_candidates(tx, identifiers, address)
         match_result = self._match_engine.evaluate(
-            tx, candidates, identifiers, address, attributes,
+            tx,
+            candidates,
+            identifiers,
+            address,
+            attributes,
             record_type=envelope.record_type,
         )
         person_id, is_new_person = self._resolve_person(tx, match_result, candidates)
         source_record_pk = persist_source_record(
-            tx, envelope=envelope, identifiers=identifiers, address=address,
-            attributes=attributes, match_result=match_result,
-            is_new_person=is_new_person, ingest_run_id=ingest_run_id,
+            tx,
+            envelope=envelope,
+            identifiers=identifiers,
+            address=address,
+            attributes=attributes,
+            match_result=match_result,
+            is_new_person=is_new_person,
+            ingest_run_id=ingest_run_id,
         )
         match_decision_id = persist_match_decision(tx, match_result, source_record_pk)
         review_case_id = create_review_case_if_needed(tx, match_result, match_decision_id)
         link_record_to_graph(
-            tx, envelope=envelope, identifiers=identifiers, address=address,
-            attributes=attributes, person_id=person_id,
+            tx,
+            envelope=envelope,
+            identifiers=identifiers,
+            address=address,
+            attributes=attributes,
+            person_id=person_id,
             source_record_pk=source_record_pk,
         )
         compute_golden_profile(tx, person_id)
         if match_result.decision == MatchDecision.MERGE and not is_new_person:
             record_auto_merge_event(
-                tx, match_result=match_result, match_decision_id=match_decision_id,
-                person_id=person_id, source_record_pk=source_record_pk,
+                tx,
+                match_result=match_result,
+                match_decision_id=match_decision_id,
+                person_id=person_id,
+                source_record_pk=source_record_pk,
             )
         logger.info(
             "Ingested %s -> person %s (new=%s, decision=%s, candidates=%d)",
-            envelope.source_record_id, person_id, is_new_person,
-            match_result.decision.value, len(candidates),
+            envelope.source_record_id,
+            person_id,
+            is_new_person,
+            match_result.decision.value,
+            len(candidates),
         )
         return IngestResult(
             source_record_id=envelope.source_record_id,
             source_record_pk=source_record_pk,
-            person_id=person_id, is_new_person=is_new_person,
-            candidate_count=len(candidates), match_decision=match_result.decision,
-            ingest_run_id=ingest_run_id, match_decision_id=match_decision_id,
+            person_id=person_id,
+            is_new_person=is_new_person,
+            candidate_count=len(candidates),
+            match_decision=match_result.decision,
+            ingest_run_id=ingest_run_id,
+            match_decision_id=match_decision_id,
             review_case_id=review_case_id,
         )
 

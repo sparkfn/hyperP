@@ -87,16 +87,20 @@ def normalize_envelope_identifiers(
         normalizer = _IDENTIFIER_NORMALIZERS.get(id_type, _passthrough_normalize)
         normalized, flag = normalizer(raw_id.value)
         if normalized:
-            results.append(NormalizedIdentifier(
-                identifier_type=id_type,
-                normalized_value=normalized,
-                is_verified=raw_id.is_verified,
-                quality_flag=flag,
-            ))
+            results.append(
+                NormalizedIdentifier(
+                    identifier_type=id_type,
+                    normalized_value=normalized,
+                    is_verified=raw_id.is_verified,
+                    quality_flag=flag,
+                )
+            )
         else:
             logger.warning(
                 "%s normalization failed for %s: %s",
-                id_type, raw_id.value, flag,
+                id_type,
+                raw_id.value,
+                flag,
             )
     return results
 
@@ -110,8 +114,9 @@ def normalize_envelope_address(
 
     parsed, flag = normalize_address(raw_address)
     if parsed is None:
-        logger.warning("Address normalization failed for record %s: %s",
-                       envelope.source_record_id, flag)
+        logger.warning(
+            "Address normalization failed for record %s: %s", envelope.source_record_id, flag
+        )
         return None
 
     return NormalizedAddressModel(
@@ -139,9 +144,11 @@ def normalize_envelope_attributes(
         normalizer = _ATTRIBUTE_NORMALIZERS.get(attr_name, _passthrough_normalize)
         normalized, flag = normalizer(value_str)
         if normalized:
-            results.append(NormalizedAttribute(
-                attribute_name=attr_name,
-                attribute_value=normalized,
-                quality_flag=flag,
-            ))
+            results.append(
+                NormalizedAttribute(
+                    attribute_name=attr_name,
+                    attribute_value=normalized,
+                    quality_flag=flag,
+                )
+            )
     return results

@@ -34,9 +34,7 @@ class FundboxLegacyConnector(FundboxConnectorBase):
 
     def build_records(self, conn: Connection) -> Iterator[dict[str, JsonValue]]:
         primary_stmt = select(log_legacy_profiles).order_by(log_legacy_profiles.c.id)
-        for chunk in self._chunked(
-            self._stream(conn, primary_stmt), self._resolved_chunk_size()
-        ):
+        for chunk in self._chunked(self._stream(conn, primary_stmt), self._resolved_chunk_size()):
             user_ids = [row.user_id for row in chunk if row.user_id is not None]
             addresses_by_user = self._fetch_grouped(
                 conn, log_legacy_profile_addresses, "user_id", user_ids
@@ -59,9 +57,7 @@ class FundboxLegacyConnector(FundboxConnectorBase):
                         "dob": to_iso(row.date_of_birth),
                         "gender": row.gender,
                         "nationality": row.nationality,
-                        "address": format_address(user_addresses[0])
-                        if user_addresses
-                        else None,
+                        "address": format_address(user_addresses[0]) if user_addresses else None,
                     },
                     raw_payload={
                         "legacy_profile": serialize_row(row),

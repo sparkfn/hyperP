@@ -23,6 +23,7 @@ from src.models import (
     NormalizedAddress,
     NormalizedAttribute,
     NormalizedIdentifier,
+    RecordType,
 )
 
 logger = logging.getLogger(__name__)
@@ -49,6 +50,8 @@ ADDRESS_MATCH_WEIGHT = 0.10
 
 CONFIDENCE_AUTO_MERGE = 0.90
 CONFIDENCE_REVIEW = 0.60
+CONVERSATION_PROMOTED_CONFIDENCE = 0.91
+CONVERSATION_PROMOTION_NAME_THRESHOLD = 0.80
 
 
 def evaluate_heuristic(
@@ -57,6 +60,7 @@ def evaluate_heuristic(
     identifiers: list[NormalizedIdentifier],
     address: NormalizedAddress | None,
     attributes: list[NormalizedAttribute],
+    record_type: RecordType = RecordType.SYSTEM,
 ) -> MatchResult:
     """Conditional-weight heuristic scoring across phone/email/DOB/name/address."""
     snapshot = fetch_candidate_snapshot(tx, candidate_person_id)
@@ -81,10 +85,14 @@ def evaluate_heuristic(
         ident_evidence=ident_evidence,
         raw_score=score,
     )
+    confidence = _promote_conversation_confidence(record_type, confidence, reasons, features)
 
     logger.info(
         "Heuristic score for candidate %s: %.2f (raw=%.2f, reasons=%s)",
-        candidate_person_id, confidence, score, reasons,
+        candidate_person_id,
+        confidence,
+        score,
+        reasons,
     )
     return _band(confidence, reasons, candidate_person_id, features)
 
@@ -120,8 +128,7 @@ def _score_identifiers(
                 weight = PHONE_VERIFIED_WEIGHT if verified else PHONE_UNVERIFIED_WEIGHT
                 evidence += weight
                 reasons.append(
-                    f"Phone match ({'verified' if verified else 'unverified'}: "
-                    f"+{weight:.2f})"
+                    f"Phone match ({'verified' if verified else 'unverified'}: +{weight:.2f})"
                 )
 
         elif ident.identifier_type == "email" and ident.normalized_value in cand_emails:
@@ -130,8 +137,7 @@ def _score_identifiers(
             weight = EMAIL_VERIFIED_WEIGHT if verified else EMAIL_UNVERIFIED_WEIGHT
             evidence += weight
             reasons.append(
-                f"Email match ({'verified' if verified else 'unverified'}: "
-                f"+{weight:.2f})"
+                f"Email match ({'verified' if verified else 'unverified'}: +{weight:.2f})"
             )
     return evidence
 
@@ -139,9 +145,7 @@ def _score_identifiers(
 def _cap_identifier_evidence(raw: float, reasons: list[str]) -> float:
     capped = min(raw, IDENTIFIER_EVIDENCE_CAP)
     if raw > IDENTIFIER_EVIDENCE_CAP:
-        reasons.append(
-            f"Identifier evidence capped from {raw:.2f} to {IDENTIFIER_EVIDENCE_CAP}"
-        )
+        reasons.append(f"Identifier evidence capped from {raw:.2f} to {IDENTIFIER_EVIDENCE_CAP}")
     return capped
 
 
@@ -159,8 +163,7 @@ def _score_dob(
         reasons.append(f"DOB exact match (+{DOB_MATCH_WEIGHT:.2f})")
         return DOB_MATCH_WEIGHT
     reasons.append(
-        f"DOB conflict: incoming={incoming}, candidate={cand_dobs[0]} "
-        f"({DOB_CONFLICT_PENALTY:+.2f})"
+        f"DOB conflict: incoming={incoming}, candidate={cand_dobs[0]} ({DOB_CONFLICT_PENALTY:+.2f})"
     )
     return DOB_CONFLICT_PENALTY
 
@@ -171,7 +174,8 @@ def _score_name(
 ) -> float:
     """Return the best name similarity in [0, 1]; reasons appended by _score_name_band."""
     incoming = [
-        a.attribute_value for a in attributes
+        a.attribute_value
+        for a in attributes
         if a.attribute_name in ("full_name", "preferred_name", "legal_name")
     ]
     cand_names = snapshot.names()
@@ -192,8 +196,7 @@ def _score_name_band(
 ) -> float:
     # Only apply when both sides actually had names — otherwise best_sim is 0.
     has_incoming = any(
-        a.attribute_name in ("full_name", "preferred_name", "legal_name")
-        for a in attributes
+        a.attribute_name in ("full_name", "preferred_name", "legal_name") for a in attributes
     )
     if not has_incoming or not snapshot.names():
         return 0.0
@@ -204,9 +207,7 @@ def _score_name_band(
         reasons.append(f"Medium name similarity ({best_sim:.2f}: +{NAME_MEDIUM_WEIGHT:.2f})")
         return NAME_MEDIUM_WEIGHT
     if best_sim < NAME_MISMATCH_THRESHOLD:
-        reasons.append(
-            f"Strong name mismatch ({best_sim:.2f}: {NAME_MISMATCH_PENALTY:+.2f})"
-        )
+        reasons.append(f"Strong name mismatch ({best_sim:.2f}: {NAME_MISMATCH_PENALTY:+.2f})")
         return NAME_MISMATCH_PENALTY
     return 0.0
 
@@ -240,12 +241,12 @@ def _build_feature_snapshot(
     raw_score: float,
 ) -> dict[str, JsonValue]:
     had_names = any(
-        a.attribute_name in ("full_name", "preferred_name", "legal_name")
-        for a in attributes
+        a.attribute_name in ("full_name", "preferred_name", "legal_name") for a in attributes
     ) and bool(snapshot.names())
     return {
         "candidate_person_id": candidate_person_id,
         "phone_exact_match": any(r.startswith("Phone match") for r in reasons),
+        "phone_high_fanout": any(r.startswith("Phone ") and "seen on" in r for r in reasons),
         "email_exact_match": any(r.startswith("Email match") for r in reasons),
         "dob_exact_match": any(r.startswith("DOB exact") for r in reasons),
         "dob_conflict": any(r.startswith("DOB conflict") for r in reasons),
@@ -254,7 +255,49 @@ def _build_feature_snapshot(
         "identifier_evidence_raw": ident_evidence,
         "identifier_evidence_capped": min(ident_evidence, IDENTIFIER_EVIDENCE_CAP),
         "raw_score": raw_score,
+        "conversation_promotion": False,
     }
+
+
+def _promote_conversation_confidence(
+    record_type: RecordType,
+    confidence: float,
+    reasons: list[str],
+    features: dict[str, JsonValue],
+) -> float:
+    if record_type != RecordType.CONVERSATION:
+        return confidence
+    if confidence >= CONFIDENCE_AUTO_MERGE:
+        return confidence
+    if not _can_promote_conversation(features):
+        return confidence
+    features["conversation_promotion"] = True
+    features["pre_promotion_confidence"] = confidence
+    reasons.append("Conversation evidence promoted to merge")
+    return CONVERSATION_PROMOTED_CONFIDENCE
+
+
+def _can_promote_conversation(features: dict[str, JsonValue]) -> bool:
+    phone_exact = features["phone_exact_match"] is True
+    email_exact = features["email_exact_match"] is True
+    high_name = (
+        _float_feature(features.get("name_similarity")) >= CONVERSATION_PROMOTION_NAME_THRESHOLD
+    )
+    address_match = features["address_match"] is True
+    dob_exact = features["dob_exact_match"] is True
+    dob_conflict = features["dob_conflict"] is True
+    high_fanout_phone = features["phone_high_fanout"] is True
+    has_identifier = phone_exact or email_exact
+    corroborated = (phone_exact and email_exact) or (
+        has_identifier and (high_name or address_match or dob_exact)
+    )
+    return corroborated and not dob_conflict and not high_fanout_phone
+
+
+def _float_feature(value: JsonValue | None) -> float:
+    if isinstance(value, int | float):
+        return float(value)
+    return 0.0
 
 
 def _band(

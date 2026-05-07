@@ -7,23 +7,25 @@ import unicodedata
 
 from src.models import QualityFlag
 
-_PLACEHOLDER_PATTERNS = frozenset({
-    "na",
-    "n/a",
-    "-",
-    "unknown",
-    "nil",
-    "none",
-    "test",
-    "tbc",
-    "tba",
-    "customer",
-    "guest",
-    "walk-in",
-    "walkin",
-    "walk in",
-    "no name",
-})
+_PLACEHOLDER_PATTERNS = frozenset(
+    {
+        "na",
+        "n/a",
+        "-",
+        "unknown",
+        "nil",
+        "none",
+        "test",
+        "tbc",
+        "tba",
+        "customer",
+        "guest",
+        "walk-in",
+        "walkin",
+        "walk in",
+        "no name",
+    }
+)
 
 
 def normalize_name(raw: str) -> tuple[str | None, QualityFlag]:

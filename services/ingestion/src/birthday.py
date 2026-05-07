@@ -71,9 +71,7 @@ def _record_to_recipient(record: Record) -> BirthdayRecipient:
     )
 
 
-def fetch_birthday_recipients(
-    client: Neo4jClient, today: date
-) -> list[BirthdayRecipient]:
+def fetch_birthday_recipients(client: Neo4jClient, today: date) -> list[BirthdayRecipient]:
     """Read all active persons whose preferred DOB matches ``today`` (MM-DD)."""
     mmdd = _today_mmdd(today)
 
@@ -126,9 +124,7 @@ async def _send_one(
             success=False,
             error=str(exc),
         )
-    return BirthdaySendResult(
-        chat_id=chat_id, person_id=recipient.person_id, success=True
-    )
+    return BirthdaySendResult(chat_id=chat_id, person_id=recipient.person_id, success=True)
 
 
 async def _send_all(
@@ -158,8 +154,12 @@ def run_birthday_greetings(today: date | None = None) -> BirthdayRunSummary:
     if not settings.whatsapp_source_number:
         logger.warning("Birthday task skipped: WHATSAPP_SOURCE_NUMBER is not configured")
         return BirthdayRunSummary(
-            run_date=run_date, candidates_found=0, unique_phones=0,
-            sent=0, failed=0, skipped_no_source=True,
+            run_date=run_date,
+            candidates_found=0,
+            unique_phones=0,
+            sent=0,
+            failed=0,
+            skipped_no_source=True,
         )
 
     graph = Neo4jClient(settings)
@@ -171,18 +171,26 @@ def run_birthday_greetings(today: date | None = None) -> BirthdayRunSummary:
     unique = _dedupe_by_phone(candidates)
     logger.info(
         "Birthday run %s: %d candidates, %d unique phones",
-        run_date.isoformat(), len(candidates), len(unique),
+        run_date.isoformat(),
+        len(candidates),
+        len(unique),
     )
 
     if not unique:
         return BirthdayRunSummary(
-            run_date=run_date, candidates_found=len(candidates),
-            unique_phones=0, sent=0, failed=0,
+            run_date=run_date,
+            candidates_found=len(candidates),
+            unique_phones=0,
+            sent=0,
+            failed=0,
         )
 
     results = asyncio.run(_send_all(unique, settings=settings))
     sent = sum(1 for r in results if r.success)
     return BirthdayRunSummary(
-        run_date=run_date, candidates_found=len(candidates),
-        unique_phones=len(unique), sent=sent, failed=len(results) - sent,
+        run_date=run_date,
+        candidates_found=len(candidates),
+        unique_phones=len(unique),
+        sent=sent,
+        failed=len(results) - sent,
     )

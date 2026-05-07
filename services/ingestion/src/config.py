@@ -16,6 +16,7 @@ class Settings(BaseSettings):
         env_file=".env",
         env_file_encoding="utf-8",
         case_sensitive=False,
+        extra="ignore",
     )
 
     @model_validator(mode="before")
@@ -39,6 +40,7 @@ class Settings(BaseSettings):
     celery_broker_url: str = "redis://redis:6379/0"
     celery_result_backend: str = "redis://redis:6379/1"
     celery_worker_concurrency: int = 1
+    celery_broker_visibility_timeout: int = 60 * 60 * 8
     # How many ingestion tasks may run concurrently across the entire cluster.
     # Enforced via a Redis-backed semaphore inside the task itself, independent
     # of `celery_worker_concurrency` (which controls per-worker process count).
@@ -94,6 +96,39 @@ class Settings(BaseSettings):
     whatsapp_api_key: str = ""
     whatsapp_api_default_session: str = "default"
     whatsapp_api_timeout_seconds: float = 30.0
+
+    # Bitrix24 chat database (MariaDB) ---------------------------------------
+    # Set BITRIX_CHAT_SSH_HOST to enable SSH tunnelling.
+    bitrix_chat_ssh_host: str = ""
+    bitrix_chat_ssh_port: int = 2222
+    bitrix_chat_ssh_user: str = ""
+    bitrix_chat_ssh_password: str = ""
+    bitrix_chat_db_host: str = "mariadb-bitrix-chat"
+    bitrix_chat_db_port: int = 3306
+    bitrix_chat_db_user: str = "root"
+    bitrix_chat_db_password: str = ""
+    bitrix_chat_db_name: str = "bitrix_chat"
+    bitrix_chat_chunk_size: int = 500
+
+    # WhatsApp chat database (PostgreSQL) ------------------------------------
+    # Set WHATSAPP_CHAT_SSH_HOST to enable SSH tunnelling.
+    whatsapp_chat_ssh_host: str = ""
+    whatsapp_chat_ssh_port: int = 2222
+    whatsapp_chat_ssh_user: str = ""
+    whatsapp_chat_ssh_password: str = ""
+    whatsapp_chat_db_host: str = "postgres-whatsapp"
+    whatsapp_chat_db_port: int = 5432
+    whatsapp_chat_db_user: str = "postgres"
+    whatsapp_chat_db_password: str = ""
+    whatsapp_chat_db_name: str = "whatsapp_api"
+    whatsapp_chat_chunk_size: int = 500
+
+    # LLM service -------------------------------------------------------------
+    llm_default_model: str = "Qwen/Qwen2.5-72B-Instruct"
+    llm_request_delay_seconds: float = 0.5
+    llm_max_retries: int = 6
+    llm_retry_base_delay_seconds: float = 1.0
+    llm_retry_max_delay_seconds: float = 30.0
 
     # Birthday greeting task -------------------------------------------------
     # Daily Celery beat job that sends a WhatsApp birthday message to every

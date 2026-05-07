@@ -31,8 +31,8 @@ export default async function AdminPage(): Promise<ReactElement> {
         </Box>
         <Gate mode="admin">
           <Stack direction="row" spacing={1}>
-            <Button component={Link} href="/admin/api-keys" variant="outlined" size="small">
-              API Keys
+            <Button component={Link} href="/admin/oauth-clients" variant="outlined" size="small">
+              OAuth clients
             </Button>
             <Button component={Link} href="/admin/users" variant="contained" size="small">
               Users

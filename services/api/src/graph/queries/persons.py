@@ -75,7 +75,7 @@ MATCH (sr)-[:FROM_SOURCE]->(ss:SourceSystem)
 RETURN sr {
   .source_record_pk, .source_record_id, .source_record_version,
   .record_type, .extraction_confidence,
-  .link_status, .observed_at, .ingested_at
+  .link_status, .observed_at, .ingested_at, .normalized_payload
 } AS source_record,
 ss.source_key AS source_system,
 p.person_id AS linked_person_id

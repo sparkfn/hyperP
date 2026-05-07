@@ -52,9 +52,8 @@ def _apply_survivorship(
     """Apply survivorship rules and return golden profile fields."""
     preferred_full_name = _pick_best_fact(facts, "full_name")
     if preferred_full_name is None:
-        preferred_full_name = (
-            _pick_best_fact(facts, "preferred_name")
-            or _pick_best_fact(facts, "legal_name")
+        preferred_full_name = _pick_best_fact(facts, "preferred_name") or _pick_best_fact(
+            facts, "legal_name"
         )
 
     fields: dict[str, Any] = {
@@ -89,7 +88,8 @@ def compute_golden_profile(
 
     logger.info(
         "Golden profile computed for person %s (completeness=%.2f)",
-        person_id, profile["profile_completeness_score"],
+        person_id,
+        profile["profile_completeness_score"],
     )
     return profile
 
@@ -97,6 +97,7 @@ def compute_golden_profile(
 # ------------------------------------------------------------------
 # Survivorship helpers
 # ------------------------------------------------------------------
+
 
 def _pick_best_fact(
     facts: list[dict[str, Any]],
@@ -125,10 +126,7 @@ def _pick_best_identifier(
     identifier_type: str,
 ) -> str | None:
     """Pick the best identifier value: verified > unverified, newer > older."""
-    matching = [
-        i for i in identifiers
-        if i["identifier_type"] == identifier_type
-    ]
+    matching = [i for i in identifiers if i["identifier_type"] == identifier_type]
     if not matching:
         return None
 

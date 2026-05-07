@@ -12,13 +12,15 @@ from src.models import QualityFlag
 
 DEFAULT_REGION = "SG"
 
-_PLACEHOLDER_PATTERNS = frozenset({
-    "00000000",
-    "11111111",
-    "12345678",
-    "99999999",
-    "0000000000",
-})
+_PLACEHOLDER_PATTERNS = frozenset(
+    {
+        "00000000",
+        "11111111",
+        "12345678",
+        "99999999",
+        "0000000000",
+    }
+)
 
 
 def normalize_phone(

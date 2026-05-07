@@ -267,16 +267,12 @@ class WhatsAppApiClient:
         body: BaseModel | None = None,
     ) -> ResponseT:
         json_body: str | None = (
-            body.model_dump_json(by_alias=True, exclude_none=True)
-            if body is not None
-            else None
+            body.model_dump_json(by_alias=True, exclude_none=True) if body is not None else None
         )
         headers: dict[str, str] = (
             {"content-type": "application/json"} if json_body is not None else {}
         )
-        response = await self._client.request(
-            method, path, content=json_body, headers=headers
-        )
+        response = await self._client.request(method, path, content=json_body, headers=headers)
         if response.status_code >= 400:
             raise WhatsAppApiError(
                 response.status_code,
@@ -307,9 +303,7 @@ class WhatsAppApiClient:
 
     async def get_session_qr(self, session_id: str | None = None) -> QrCode:
         """``GET /session/qr/{sessionId}`` — returns the pairing QR string."""
-        return await self._request(
-            "GET", f"/session/qr/{self._session(session_id)}", QrCode
-        )
+        return await self._request("GET", f"/session/qr/{self._session(session_id)}", QrCode)
 
     async def restart_session(self, session_id: str | None = None) -> SimpleResult:
         """``GET /session/restart/{sessionId}``."""
@@ -350,9 +344,7 @@ class WhatsAppApiClient:
         session_id: str | None = None,
     ) -> SendMessageResponse:
         """``POST /client/sendMessage/{sessionId}``."""
-        body = SendMessageBody(
-            chat_id=chat_id, content=content, content_type=content_type
-        )
+        body = SendMessageBody(chat_id=chat_id, content=content, content_type=content_type)
         return await self._request(
             "POST",
             f"/client/sendMessage/{self._session(session_id)}",

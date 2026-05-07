@@ -78,9 +78,7 @@ class EkoConnector(SourceConnector):
         existing_tables = set(inspect(engine).get_table_names())
 
         if "phppos_people" not in existing_tables:
-            logger.warning(
-                "Eko: phppos_people table missing — skipping identity ingestion."
-            )
+            logger.warning("Eko: phppos_people table missing — skipping identity ingestion.")
             return
 
         use_customers = "phppos_customers" in existing_tables
@@ -107,11 +105,16 @@ class EkoConnector(SourceConnector):
             ids.add("email", row.email)
             ids.add("phone", row.phone_number)
             address_parts: list[object] = [
-                row.address_1, row.address_2, row.city, row.state, row.zip, row.country,
+                row.address_1,
+                row.address_2,
+                row.city,
+                row.state,
+                row.zip,
+                row.country,
             ]
-            address = ", ".join(
-                str(p).strip() for p in address_parts if p and str(p).strip()
-            ) or None
+            address = (
+                ", ".join(str(p).strip() for p in address_parts if p and str(p).strip()) or None
+            )
             yield build_envelope(
                 source_record_id=f"eko_phppos-person-{row.person_id}",
                 observed_at=to_iso(row.last_modified or row.create_date),

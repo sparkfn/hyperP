@@ -53,9 +53,7 @@ class SpeedZoneConnector(SourceConnector):
         existing_tables = set(inspect(engine).get_table_names())
 
         if "phppos_people" not in existing_tables:
-            logger.warning(
-                "SpeedZone: phppos_people table missing — skipping identity ingestion."
-            )
+            logger.warning("SpeedZone: phppos_people table missing — skipping identity ingestion.")
             return
 
         use_customers = "phppos_customers" in existing_tables

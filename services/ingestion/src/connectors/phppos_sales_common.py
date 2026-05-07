@@ -73,7 +73,10 @@ def _fetch_sale_items(
 
 
 def fetch_phppos_sales(
-    engine: Engine, conn: Connection, source_system_key: str, chunk_size: int,
+    engine: Engine,
+    conn: Connection,
+    source_system_key: str,
+    chunk_size: int,
 ) -> Iterator[dict[str, JsonValue]]:
     """Yield one sales envelope per phppos_sales row.
 
@@ -84,9 +87,9 @@ def fetch_phppos_sales(
         return
 
     md = MetaData()
-    sales_t = Table("phppos_sales", md, autoload_with=engine)
-    items_t = Table("phppos_sales_items", md, autoload_with=engine)
-    item_t = Table("phppos_items", md, autoload_with=engine)
+    sales_t = Table("phppos_sales", md, autoload_with=engine, resolve_fks=False)
+    items_t = Table("phppos_sales_items", md, autoload_with=engine, resolve_fks=False)
+    item_t = Table("phppos_items", md, autoload_with=engine, resolve_fks=False)
     sales_cols = {c.name for c in sales_t.columns}
     items_cols = {c.name for c in items_t.columns}
     item_cols = {c.name for c in item_t.columns}
@@ -99,8 +102,12 @@ def fetch_phppos_sales(
             sale_id = int(sale["sale_id"])
             line_rows, items_by_id = _fetch_sale_items(sidecar, items_t, item_t, sale_id)
             yield _build_envelope(
-                sale=sale, line_rows=line_rows, items_by_id=items_by_id,
-                sales_cols=sales_cols, items_cols=items_cols, item_cols=item_cols,
+                sale=sale,
+                line_rows=line_rows,
+                items_by_id=items_by_id,
+                sales_cols=sales_cols,
+                items_cols=items_cols,
+                item_cols=item_cols,
                 source_system_key=source_system_key,
             )
 
@@ -123,7 +130,13 @@ def _build_envelope(
         item_id_raw = line.get("item_id")
         item = items_by_id.get(int(item_id_raw)) if item_id_raw is not None else None
         line_payload, line_total_value = _build_line_item(
-            line, idx, source_order_id, item, items_cols, item_cols, source_system_key,
+            line,
+            idx,
+            source_order_id,
+            item,
+            items_cols,
+            item_cols,
+            source_system_key,
         )
         if line_total_value is not None:
             total += Decimal(str(line_total_value))
@@ -144,7 +157,13 @@ def _build_envelope(
         record_type="sales",
         raw_payload={
             "order": _build_order_payload(
-                sale, source_order_id, ordered_at, release_date, sales_cols, line_rows, total,
+                sale,
+                source_order_id,
+                ordered_at,
+                release_date,
+                sales_cols,
+                line_rows,
+                total,
             ),
             "line_items": line_items_payload,
             "customer_link": {

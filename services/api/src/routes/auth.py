@@ -12,7 +12,7 @@ from src.auth.deps import evict_user_cache, get_current_user
 from src.auth.models import AuthUser, Role
 from src.auth.revoke import decode_jwt_claims, revoke_token
 from src.config import config
-from src.http_utils import envelope
+from src.http_utils import envelope, http_error
 from src.types import ApiResponse
 
 log = logging.getLogger(__name__)
@@ -36,7 +36,14 @@ class LogoutResponse(BaseModel):
     ok: bool
 
 
-def _to_response(user: AuthUser) -> MeResponse:
+def _to_response(user: AuthUser, request: Request) -> MeResponse:
+    if user.google_sub is None:
+        raise http_error(
+            401,
+            "unauthenticated",
+            "Authenticated user is missing Google identity.",
+            request,
+        )
     return MeResponse(
         email=user.email,
         google_sub=user.google_sub,
@@ -51,7 +58,7 @@ async def read_me(
     request: Request, user: AuthUser = Depends(get_current_user)
 ) -> ApiResponse[MeResponse]:
     """Return the authenticated user's role and entity assignment."""
-    return envelope(_to_response(user), request)
+    return envelope(_to_response(user, request), request)
 
 
 @router.post("/logout", response_model=ApiResponse[LogoutResponse])

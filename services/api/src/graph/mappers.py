@@ -7,6 +7,7 @@ from datetime import datetime
 from typing import Literal
 
 from neo4j.time import DateTime as Neo4jDateTime
+from pydantic.types import JsonValue
 
 from src.graph.converters import (
     GraphRecord,
@@ -105,6 +106,7 @@ def map_source_record(record: GraphRecord) -> SourceRecord:
         linked_person_id=to_optional_str(record.get("linked_person_id")),
         observed_at=to_iso_or_empty(sr.get("observed_at")),
         ingested_at=to_iso_or_empty(sr.get("ingested_at")),
+        normalized_payload=_parse_normalized_payload(sr.get("normalized_payload")),
     )
 
 
@@ -262,55 +264,81 @@ def _map_source_record_comparison(e: GraphRecord) -> PersonComparisonEntity:
     )
 
 
-def _parse_normalized_payload(value: GraphValue) -> GraphRecord:
+def _parse_normalized_payload(value: GraphValue) -> dict[str, JsonValue]:
     if not isinstance(value, str):
         return {}
     try:
         parsed: object = json.loads(value)
     except json.JSONDecodeError:
         return {}
-    return parsed if isinstance(parsed, dict) else {}
+    if not isinstance(parsed, dict):
+        return {}
+    payload: dict[str, JsonValue] = {}
+    for key, item in parsed.items():
+        if isinstance(key, str) and _is_json_value(item):
+            payload[key] = item
+    return payload
 
 
-def _attribute_value(payload: GraphRecord, name: Literal["full_name", "dob"]) -> str | None:
+def _is_json_value(value: object) -> bool:
+    if isinstance(value, str | int | float | bool) or value is None:
+        return True
+    if isinstance(value, list):
+        return all(_is_json_value(item) for item in value)
+    if isinstance(value, dict):
+        return all(isinstance(key, str) and _is_json_value(item) for key, item in value.items())
+    return False
+
+
+def _json_dict(value: JsonValue) -> dict[str, JsonValue]:
+    return value if isinstance(value, dict) else {}
+
+
+def _json_str(value: JsonValue) -> str | None:
+    return value if isinstance(value, str) else None
+
+
+def _attribute_value(
+    payload: dict[str, JsonValue], name: Literal["full_name", "dob"]
+) -> str | None:
     attrs = payload.get("attributes")
     if not isinstance(attrs, list):
         return None
     for raw in attrs:
-        item = _as_dict(raw)
+        item = _json_dict(raw)
         if item.get("attribute_name") == name:
-            return to_optional_str(item.get("attribute_value"))
+            return _json_str(item.get("attribute_value"))
     return None
 
 
 def _identifier_value(
-    payload: GraphRecord, identifier_type: Literal["phone", "email"]
+    payload: dict[str, JsonValue], identifier_type: Literal["phone", "email"]
 ) -> str | None:
     ids = payload.get("identifiers")
     if not isinstance(ids, list):
         return None
     for raw in ids:
-        item = _as_dict(raw)
+        item = _json_dict(raw)
         if item.get("identifier_type") == identifier_type:
-            return to_optional_str(item.get("normalized_value"))
+            return _json_str(item.get("normalized_value"))
     return None
 
 
-def _source_record_address(payload: GraphRecord) -> AddressSummary | None:
-    addr = _as_dict(payload.get("address"))
+def _source_record_address(payload: dict[str, JsonValue]) -> AddressSummary | None:
+    addr = _json_dict(payload.get("address"))
     if not addr:
         return None
-    normalized = to_optional_str(addr.get("normalized_full"))
+    normalized = _json_str(addr.get("normalized_full"))
     if normalized is None:
         return None
     return AddressSummary(
         address_id="",
-        unit_number=to_optional_str(addr.get("unit_number")),
-        street_number=to_optional_str(addr.get("street_number")),
-        street_name=to_optional_str(addr.get("street_name")),
-        city=to_optional_str(addr.get("city")),
-        postal_code=to_optional_str(addr.get("postal_code")),
-        country_code=to_optional_str(addr.get("country_code")),
+        unit_number=_json_str(addr.get("unit_number")),
+        street_number=_json_str(addr.get("street_number")),
+        street_name=_json_str(addr.get("street_name")),
+        city=_json_str(addr.get("city")),
+        postal_code=_json_str(addr.get("postal_code")),
+        country_code=_json_str(addr.get("country_code")),
         normalized_full=normalized,
     )
 
