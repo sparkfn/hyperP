@@ -72,13 +72,17 @@ connection_count
 GET_PERSON_SOURCE_RECORDS = """
 MATCH (sr:SourceRecord)-[:LINKED_TO]->(p:Person {person_id: $person_id})
 MATCH (sr)-[:FROM_SOURCE]->(ss:SourceSystem)
+OPTIONAL MATCH (ss)-[:OPERATED_BY]->(entity:Entity)
 RETURN sr {
   .source_record_pk, .source_record_id, .source_record_version,
-  .record_type, .extraction_confidence,
-  .link_status, .observed_at, .ingested_at, .normalized_payload
+  .record_type, .extraction_confidence, .extraction_method,
+  .link_status, .observed_at, .ingested_at,
+  .conversation_ref, .raw_payload, .normalized_payload
 } AS source_record,
 ss.source_key AS source_system,
-p.person_id AS linked_person_id
+p.person_id AS linked_person_id,
+entity.entity_key AS entity_key,
+entity.display_name AS entity_display_name
 ORDER BY sr.observed_at DESC
 SKIP $skip LIMIT $limit
 """
@@ -234,13 +238,23 @@ ORDER BY e.display_name
 
 GET_PERSON_IDENTIFIERS = """
 MATCH (p:Person {person_id: $person_id})-[rel:IDENTIFIED_BY]->(id:Identifier)
+WITH id,
+     rel.is_active AS is_active,
+     rel.is_verified AS is_verified,
+     rel.last_confirmed_at AS last_confirmed_at,
+     rel.source_system_key AS source_system_key,
+     collect(DISTINCT rel.source_record_pk) AS source_record_pks
+OPTIONAL MATCH (sr:SourceRecord)
+WHERE sr.source_record_pk IN source_record_pks
 RETURN id.identifier_type AS identifier_type,
        id.normalized_value AS normalized_value,
-       rel.is_active AS is_active,
-       rel.is_verified AS is_verified,
-       rel.last_confirmed_at AS last_confirmed_at,
-       rel.source_system_key AS source_system_key
-ORDER BY rel.is_active DESC, id.identifier_type, id.normalized_value
+       is_active AS is_active,
+       is_verified AS is_verified,
+       last_confirmed_at AS last_confirmed_at,
+       source_system_key AS source_system_key,
+       source_record_pks AS source_record_pks,
+       collect(DISTINCT sr.source_record_id) AS source_record_ids
+ORDER BY is_active DESC, id.identifier_type, id.normalized_value
 SKIP $skip LIMIT $limit
 """
 
