@@ -140,7 +140,6 @@ function RecordPayloadDialog({
   const identifiers = payload?.identifiers ?? [];
   const attributes = payload?.attributes ?? [];
   const address = payload?.address ?? null;
-  const summary = firstText(payload?.summary, record?.raw_payload?.summary);
 
   return (
     <Dialog open={record !== null} onClose={onClose} fullWidth maxWidth="md">
@@ -165,7 +164,6 @@ function RecordPayloadDialog({
                 value={record.extraction_confidence?.toFixed(2) ?? "—"}
               />
             </Grid>
-            {record.record_type === "conversation" ? <ConversationPayload record={record} /> : null}
             <Divider />
             {payload === null ? (
               <Typography variant="body2" color="text.secondary">
@@ -173,12 +171,12 @@ function RecordPayloadDialog({
               </Typography>
             ) : (
               <Stack spacing={2.5}>
-                {summary !== null ? <PayloadSection title="Summary" body={summary} /> : null}
                 <IdentifierSection identifiers={identifiers} />
                 <AddressSection address={address} />
                 <AttributeSection attributes={attributes} />
               </Stack>
             )}
+            {record.record_type === "conversation" ? <ConversationPayload record={record} /> : null}
           </Stack>
         )}
       </DialogContent>
@@ -240,12 +238,12 @@ function ConversationPayload({ record }: { record: PersonSourceRecord }): ReactE
 
   return (
     <Stack spacing={2.5}>
-      {transcript !== null ? <PayloadSection title="Conversation" body={transcript} /> : null}
       {summary !== null ? <PayloadSection title="Conversation summary" body={summary} /> : null}
       {sentiment !== null ? <PayloadSection title="Customer sentiment" body={sentiment} /> : null}
       {chatMembers.length > 0 ? <ChatMembersSection members={chatMembers} /> : null}
       {inquiries.length > 0 ? <InquiriesSection inquiries={inquiries} /> : null}
       {refEntries.length > 0 ? <ConversationRefSection entries={refEntries} /> : null}
+      {transcript !== null ? <PayloadSection title="Conversation" body={transcript} /> : null}
     </Stack>
   );
 }
