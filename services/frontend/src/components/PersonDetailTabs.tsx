@@ -1,6 +1,12 @@
 "use client";
 
-import { useState, type ReactElement, type SyntheticEvent } from "react";
+import {
+  useCallback,
+  useEffect,
+  useState,
+  type ReactElement,
+  type SyntheticEvent,
+} from "react";
 
 import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
@@ -31,6 +37,7 @@ import ManualMergeDialog from "./ManualMergeDialog";
 import MatchesTab from "./MatchesTab";
 import PersonFocusedGraph from "./PersonFocusedGraph";
 import PersonSection from "./PersonSection";
+import PersonTimelineTab from "./PersonTimelineTab";
 import SalesCard from "./SalesCard";
 import SourceRecordsTab from "./SourceRecordsTab";
 import SurvivorshipOverrideDialog from "./SurvivorshipOverrideDialog";
@@ -40,14 +47,66 @@ interface Props {
 }
 
 export default function PersonDetailTabs({ person }: Props): ReactElement {
-  const [tab, setTab] = useState<number>(0);
+  const [tab, setTab] = useState<number>(() => {
+    if (typeof window === "undefined") return 0;
+    return new URLSearchParams(window.location.search).get("tab") === "timeline"
+      ? 1
+      : 0;
+  });
+  const [timelineTargetPk, setTimelineTargetPk] = useState<string | null>(
+    () => {
+      if (typeof window === "undefined") return null;
+      return new URLSearchParams(window.location.search).get("sourceRecordPk");
+    },
+  );
+  const [timelineTargetAt, setTimelineTargetAt] = useState<string | null>(
+    () => {
+      if (typeof window === "undefined") return null;
+      return new URLSearchParams(window.location.search).get("timelineAt");
+    },
+  );
   const [mergeOpen, setMergeOpen] = useState<boolean>(false);
   const [overrideOpen, setOverrideOpen] = useState<boolean>(false);
   const [shareLink, setShareLink] = useState<PublicLink | null>(null);
   const [shareLoading, setShareLoading] = useState<boolean>(false);
 
+  const openTimelineTarget = useCallback((sourceRecordPk: string): void => {
+    const params = new URLSearchParams(window.location.search);
+    params.set("tab", "timeline");
+    params.set("sourceRecordPk", sourceRecordPk);
+    window.history.replaceState(
+      null,
+      "",
+      `${window.location.pathname}?${params.toString()}`,
+    );
+    setTimelineTargetPk(sourceRecordPk);
+    setTimelineTargetAt(null);
+    setTab(1);
+  }, []);
+
+  useEffect(() => {
+    const listener = (event: Event): void => {
+      const custom = event as CustomEvent<{ timestamp?: string }>;
+      if (typeof custom.detail.timestamp === "string") {
+        setTimelineTargetAt(custom.detail.timestamp);
+        setTimelineTargetPk(null);
+        setTab(1);
+      }
+    };
+    window.addEventListener("timeline-target-change", listener);
+    return () => window.removeEventListener("timeline-target-change", listener);
+  }, []);
+
   const handleChange = (_e: SyntheticEvent, value: number): void => {
     setTab(value);
+    const params = new URLSearchParams(window.location.search);
+    if (value === 1) params.set("tab", "timeline");
+    else params.delete("tab");
+    window.history.replaceState(
+      null,
+      "",
+      `${window.location.pathname}?${params.toString()}`,
+    );
   };
 
   async function handleShare(): Promise<void> {
@@ -69,6 +128,7 @@ export default function PersonDetailTabs({ person }: Props): ReactElement {
     <Box>
       <Tabs value={tab} onChange={handleChange} sx={{ mb: 2 }}>
         <Tab label="Profile" />
+        <Tab label="Timeline" />
         <Tab label="Matches" />
       </Tabs>
 
@@ -86,7 +146,10 @@ export default function PersonDetailTabs({ person }: Props): ReactElement {
             <IdentifiersSection personId={person.person_id} />
           </PersonSection>
           <PersonSection title="Source Records">
-            <SourceRecordsTab personId={person.person_id} />
+            <SourceRecordsTab
+              personId={person.person_id}
+              onViewInTimeline={openTimelineTarget}
+            />
           </PersonSection>
           <SalesCard personId={person.person_id} />
           <PersonSection title="Audit">
@@ -95,7 +158,18 @@ export default function PersonDetailTabs({ person }: Props): ReactElement {
           <PersonGraphCard person={person} />
         </Stack>
       ) : null}
-      {tab === 1 ? <MatchesTab personId={person.person_id} /> : null}
+      {tab === 1 ? (
+        <PersonTimelineTab
+          personId={person.person_id}
+          targetSourceRecordPk={timelineTargetPk}
+          targetTimestamp={timelineTargetAt}
+          onTargetConsumed={() => {
+            setTimelineTargetPk(null);
+            setTimelineTargetAt(null);
+          }}
+        />
+      ) : null}
+      {tab === 2 ? <MatchesTab personId={person.person_id} /> : null}
 
       <ManualMergeDialog
         open={mergeOpen}
@@ -140,12 +214,25 @@ function PersonHeader({
           <Typography variant="h5" fontWeight={600}>
             {person.preferred_full_name ?? person.person_id}
           </Typography>
-          <Chip label={person.status} size="small" color={statusColor(person.status)} />
-          {person.is_high_value ? <Chip label="high value" size="small" color="primary" /> : null}
-          {person.is_high_risk ? <Chip label="high risk" size="small" color="error" /> : null}
+          <Chip
+            label={person.status}
+            size="small"
+            color={statusColor(person.status)}
+          />
+          {person.is_high_value ? (
+            <Chip label="high value" size="small" color="primary" />
+          ) : null}
+          {person.is_high_risk ? (
+            <Chip label="high risk" size="small" color="error" />
+          ) : null}
         </Stack>
         <Stack direction="row" spacing={1}>
-          <Button size="small" variant="text" onClick={onShareClick} disabled={shareLoading}>
+          <Button
+            size="small"
+            variant="text"
+            onClick={onShareClick}
+            disabled={shareLoading}
+          >
             {shareLoading ? "Generating…" : "Share"}
           </Button>
           <Gate mode="admin">
@@ -172,12 +259,18 @@ function PersonHeader({
         <Field label="Date of Birth" value={person.preferred_dob} />
         <Field label="Phone" value={person.preferred_phone} />
         <Field label="Email" value={person.preferred_email} />
-        <Field label="Address" value={person.preferred_address?.normalized_full ?? null} />
+        <Field
+          label="Address"
+          value={person.preferred_address?.normalized_full ?? null}
+        />
         <Field
           label="Profile Completeness"
           value={`${(person.profile_completeness_score * 100).toFixed(0)}%`}
         />
-        <Field label="Source Records" value={String(person.source_record_count)} />
+        <Field
+          label="Source Records"
+          value={String(person.source_record_count)}
+        />
         <Field label="Updated" value={person.updated_at} />
       </Grid>
     </Paper>
@@ -207,7 +300,10 @@ interface ShareLinkDialogProps {
   onClose: () => void;
 }
 
-function ShareLinkDialog({ link, onClose }: ShareLinkDialogProps): ReactElement {
+function ShareLinkDialog({
+  link,
+  onClose,
+}: ShareLinkDialogProps): ReactElement {
   const [copied, setCopied] = useState<boolean>(false);
   const url =
     link !== null && typeof window !== "undefined"
@@ -237,7 +333,9 @@ function ShareLinkDialog({ link, onClose }: ShareLinkDialogProps): ReactElement 
                   <InputAdornment position="end">
                     <Tooltip title={copied ? "Copied!" : "Copy"}>
                       <IconButton size="small" onClick={handleCopy} edge="end">
-                        <Typography variant="caption">{copied ? "✓" : "Copy"}</Typography>
+                        <Typography variant="caption">
+                          {copied ? "✓" : "Copy"}
+                        </Typography>
                       </IconButton>
                     </Tooltip>
                   </InputAdornment>
@@ -266,7 +364,12 @@ interface FieldProps {
   mono?: boolean;
 }
 
-function Field({ label, value, cols = 1, mono = false }: FieldProps): ReactElement {
+function Field({
+  label,
+  value,
+  cols = 1,
+  mono = false,
+}: FieldProps): ReactElement {
   const mdSpan = cols === 3 ? 12 : cols === 2 ? 6 : 3;
   const smSpan = cols === 1 ? 6 : 12;
   return (

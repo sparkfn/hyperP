@@ -35,11 +35,13 @@ from src.types import (
     PersonGraph,
     PersonIdentifier,
     PersonStatus,
+    PersonTimelineGroup,
     ReviewCaseDetail,
     ReviewCaseSummary,
     SharedAddress,
     SharedIdentifier,
     SourceRecord,
+    TimelineFact,
 )
 
 
@@ -112,6 +114,124 @@ def map_source_record(record: GraphRecord) -> SourceRecord:
         conversation_ref=_parse_json_object(sr.get("conversation_ref")) or None,
         raw_payload=_parse_json_object(sr.get("raw_payload")) or None,
         normalized_payload=_parse_json_object(sr.get("normalized_payload")),
+    )
+
+
+def _labelize(value: str) -> str:
+    label = " ".join(part for part in value.split("_") if part)
+    return label.capitalize() if label else "Unknown"
+
+
+def _append_summary_fact(facts: list[TimelineFact], payload: dict[str, JsonValue]) -> None:
+    summary = payload.get("summary")
+    if isinstance(summary, str) and summary.strip():
+        facts.append(
+            TimelineFact(
+                fact_id="summary",
+                category="source",
+                label="Summary",
+                value=summary.strip(),
+            )
+        )
+
+
+def _append_attribute_facts(facts: list[TimelineFact], payload: dict[str, JsonValue]) -> None:
+    raw_attributes = payload.get("attributes")
+    if not isinstance(raw_attributes, list):
+        return
+    for index, raw in enumerate(raw_attributes):
+        item = _json_dict(raw)
+        name = _json_str(item.get("attribute_name"))
+        value = _json_str(item.get("attribute_value"))
+        if name is None or value is None or value == "":
+            continue
+        category: Literal["identity", "source"] = (
+            "identity" if name in {"full_name", "dob"} else "source"
+        )
+        facts.append(
+            TimelineFact(
+                fact_id=f"attribute-{index}",
+                category=category,
+                label=_labelize(name),
+                value=value,
+                detail=_json_str(item.get("quality_flag")),
+            )
+        )
+
+
+def _append_identifier_facts(facts: list[TimelineFact], payload: dict[str, JsonValue]) -> None:
+    raw_identifiers = payload.get("identifiers")
+    if not isinstance(raw_identifiers, list):
+        return
+    for index, raw in enumerate(raw_identifiers):
+        item = _json_dict(raw)
+        identifier_type = _json_str(item.get("identifier_type"))
+        normalized_value = _json_str(item.get("normalized_value"))
+        if identifier_type is None or normalized_value is None or normalized_value == "":
+            continue
+        category: Literal["contact", "identity"] = (
+            "contact" if identifier_type in {"phone", "email"} else "identity"
+        )
+        facts.append(
+            TimelineFact(
+                fact_id=f"identifier-{index}",
+                category=category,
+                label=_labelize(identifier_type),
+                value=normalized_value,
+                detail=_json_str(item.get("quality_flag")),
+            )
+        )
+
+
+def _append_address_fact(facts: list[TimelineFact], payload: dict[str, JsonValue]) -> None:
+    address = _json_dict(payload.get("address"))
+    normalized = _json_str(address.get("normalized_full"))
+    if normalized is None or normalized == "":
+        return
+    facts.append(
+        TimelineFact(
+            fact_id="address",
+            category="address",
+            label="Address",
+            value=normalized,
+            detail=_json_str(address.get("quality_flag")),
+        )
+    )
+
+
+def _timeline_facts(payload: dict[str, JsonValue] | None) -> list[TimelineFact]:
+    if payload is None:
+        return []
+    facts: list[TimelineFact] = []
+    _append_summary_fact(facts, payload)
+    _append_attribute_facts(facts, payload)
+    _append_identifier_facts(facts, payload)
+    _append_address_fact(facts, payload)
+    return facts
+
+
+def map_timeline_group(record: GraphRecord) -> PersonTimelineGroup:
+    sr = _as_dict(record.get("source_record"))
+    observed_at = to_iso_or_none(sr.get("observed_at"))
+    ingested_at = to_iso_or_empty(sr.get("ingested_at"))
+    occurred_at = observed_at if observed_at is not None else ingested_at
+    return PersonTimelineGroup(
+        source_record_pk=to_str(sr.get("source_record_pk")),
+        source_system=to_str(record.get("source_system")),
+        source_record_id=to_str(sr.get("source_record_id")),
+        source_record_version=to_optional_str(sr.get("source_record_version")),
+        record_type="conversation" if to_str(sr.get("record_type")) == "conversation" else "system",
+        extraction_confidence=(
+            to_float(sr.get("extraction_confidence"))
+            if sr.get("extraction_confidence") is not None
+            else None
+        ),
+        link_status=to_str(sr.get("link_status")),
+        linked_person_id=to_optional_str(record.get("linked_person_id")),
+        occurred_at=occurred_at,
+        timestamp_kind="source" if observed_at is not None else "fallback",
+        ingested_at=ingested_at,
+        facts=_timeline_facts(_parse_normalized_payload(sr.get("normalized_payload"))),
     )
 
 
@@ -271,50 +391,43 @@ def _map_source_record_comparison(e: GraphRecord) -> PersonComparisonEntity:
     )
 
 
-def _parse_normalized_payload(value: GraphValue) -> dict[str, JsonValue]:
-    return _parse_json_object(value)
+def _json_payload_from_mapping(value: dict[str, GraphValue]) -> dict[str, JsonValue]:
+    payload: dict[str, JsonValue] = {}
+    for key, item in value.items():
+        if isinstance(key, str) and _is_json_value(item):
+            payload[key] = _to_json_value(item)
+    return payload
 
 
-def _parse_json_object(value: GraphValue) -> dict[str, JsonValue]:
-    if isinstance(value, dict):
-        return _json_graph_dict(value)
-    if isinstance(value, str):
-        try:
-            parsed: object = json.loads(value)
-        except json.JSONDecodeError:
-            return {}
-        if not isinstance(parsed, dict):
-            return {}
-        payload: dict[str, JsonValue] = {}
-        for key, item in parsed.items():
-            if isinstance(key, str) and _is_json_value(item):
-                payload[key] = item
-        return payload
-    return {}
-
-
-def _json_graph_value(value: GraphValue) -> JsonValue | None:
+def _to_json_value(value: object) -> JsonValue:
     if isinstance(value, str | int | float | bool) or value is None:
         return value
     if isinstance(value, list):
-        payload: list[JsonValue] = []
-        for item in value:
-            json_item = _json_graph_value(item)
-            if json_item is None and item is not None:
-                return None
-            payload.append(json_item)
-        return payload
+        return [_to_json_value(item) for item in value if _is_json_value(item)]
     if isinstance(value, dict):
-        return _json_graph_dict(value)
+        return {
+            key: _to_json_value(item)
+            for key, item in value.items()
+            if isinstance(key, str) and _is_json_value(item)
+        }
     return None
 
 
-def _json_graph_dict(value: dict[str, GraphValue]) -> dict[str, JsonValue]:
+def _parse_normalized_payload(value: GraphValue) -> dict[str, JsonValue]:
+    if isinstance(value, dict):
+        return _json_payload_from_mapping(value)
+    if not isinstance(value, str):
+        return {}
+    try:
+        parsed: object = json.loads(value)
+    except json.JSONDecodeError:
+        return {}
+    if not isinstance(parsed, dict):
+        return {}
     payload: dict[str, JsonValue] = {}
-    for key, item in value.items():
-        json_item = _json_graph_value(item)
-        if json_item is not None or item is None:
-            payload[key] = json_item
+    for key, item in parsed.items():
+        if isinstance(key, str) and _is_json_value(item):
+            payload[key] = _to_json_value(item)
     return payload
 
 

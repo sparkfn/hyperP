@@ -19,6 +19,7 @@ from src.types import (
     PersonEntitySummary,
     PersonGraph,
     PersonIdentifier,
+    PersonTimelineGroup,
     SourceRecord,
 )
 
@@ -174,6 +175,35 @@ async def get_person_source_records(
     items, total = await repo.get_source_records(person_id, skip, page_limit)
     has_more = skip + page_limit < total
     return envelope(items, request, next_cursor(skip, page_limit, has_more), total_count=total)
+
+
+@router.get("/{person_id}/timeline", response_model=ApiResponse[list[PersonTimelineGroup]])
+async def get_person_timeline(
+    person_id: str,
+    request: Request,
+    cursor: str | None = Query(default=None),
+    limit: int | None = Query(default=None),
+    repo: PersonRepository = Depends(get_person_repo),
+) -> ApiResponse[list[PersonTimelineGroup]]:
+    """List source-record timeline groups for a person, newest source timestamp first."""
+    skip, page_limit = page_window(cursor, limit)
+    items, total = await repo.get_timeline(person_id, skip, page_limit)
+    has_more = skip + page_limit < total
+    return envelope(items, request, next_cursor(skip, page_limit, has_more), total_count=total)
+
+
+@router.get("/{person_id}/timeline/target", response_model=ApiResponse[PersonTimelineGroup])
+async def get_person_timeline_target(
+    person_id: str,
+    request: Request,
+    source_record_pk: str = Query(),
+    repo: PersonRepository = Depends(get_person_repo),
+) -> ApiResponse[PersonTimelineGroup]:
+    """Return one source-record timeline group for deep-link jumps."""
+    item = await repo.get_timeline_target(person_id, source_record_pk)
+    if item is None:
+        raise http_error(404, "source_record_not_found", "Source record not found.", request)
+    return envelope(item, request)
 
 
 @router.get("/{person_id}/identifiers", response_model=ApiResponse[list[PersonIdentifier]])

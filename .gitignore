@@ -37,6 +37,7 @@ data/celerybeat/
 
 # Claude Code local session/cache
 .claude/
+.superpowers/
 .worktrees/
 
 # Dump files

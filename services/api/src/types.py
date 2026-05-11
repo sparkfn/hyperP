@@ -179,6 +179,41 @@ class SourceRecord(BaseModel):
     normalized_payload: dict[str, JsonValue] | None = None
 
 
+TimelineTimestampKind = Literal["source", "fallback"]
+TimelineFactCategory = Literal[
+    "identity",
+    "contact",
+    "address",
+    "sale",
+    "relationship",
+    "conversation",
+    "source",
+]
+
+
+class TimelineFact(BaseModel):
+    fact_id: str
+    category: TimelineFactCategory
+    label: str
+    value: str
+    detail: str | None = None
+
+
+class PersonTimelineGroup(BaseModel):
+    source_record_pk: str
+    source_system: str
+    source_record_id: str
+    source_record_version: str | None = None
+    record_type: Literal["system", "conversation"] = "system"
+    extraction_confidence: float | None = None
+    link_status: str
+    linked_person_id: str | None = None
+    occurred_at: str
+    timestamp_kind: TimelineTimestampKind
+    ingested_at: str
+    facts: list[TimelineFact] = Field(default_factory=list)
+
+
 class MatchDecisionSummary(BaseModel):
     match_decision_id: str
     engine_type: str

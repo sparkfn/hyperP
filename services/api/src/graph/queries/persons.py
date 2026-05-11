@@ -87,6 +87,37 @@ ORDER BY sr.observed_at DESC
 SKIP $skip LIMIT $limit
 """
 
+GET_PERSON_TIMELINE = """
+MATCH (sr:SourceRecord)-[:LINKED_TO]->(p:Person {person_id: $person_id})
+MATCH (sr)-[:FROM_SOURCE]->(ss:SourceSystem)
+RETURN sr {
+  .source_record_pk, .source_record_id, .source_record_version,
+  .record_type, .extraction_confidence,
+  .link_status, .observed_at, .ingested_at, .normalized_payload
+} AS source_record,
+ss.source_key AS source_system,
+p.person_id AS linked_person_id
+ORDER BY coalesce(sr.observed_at, sr.ingested_at) DESC, sr.source_record_pk DESC
+SKIP $skip LIMIT $limit
+"""
+
+COUNT_PERSON_TIMELINE = """
+MATCH (sr:SourceRecord)-[:LINKED_TO]->(:Person {person_id: $person_id})
+RETURN count(sr) AS total
+"""
+
+GET_PERSON_TIMELINE_TARGET = """
+MATCH (sr:SourceRecord {source_record_pk: $source_record_pk})-[:LINKED_TO]->(p:Person {person_id: $person_id})
+MATCH (sr)-[:FROM_SOURCE]->(ss:SourceSystem)
+RETURN sr {
+  .source_record_pk, .source_record_id, .source_record_version,
+  .record_type, .extraction_confidence,
+  .link_status, .observed_at, .ingested_at, .normalized_payload
+} AS source_record,
+ss.source_key AS source_system,
+p.person_id AS linked_person_id
+"""
+
 GET_PERSON_CONNECTIONS_IDENTIFIER = """
 MATCH (p:Person {person_id: $person_id})-[:IDENTIFIED_BY]->(id:Identifier)
   <-[:IDENTIFIED_BY]-(other:Person)

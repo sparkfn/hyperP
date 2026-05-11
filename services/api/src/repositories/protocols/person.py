@@ -14,6 +14,7 @@ from src.types import (
     PersonEntitySummary,
     PersonGraph,
     PersonIdentifier,
+    PersonTimelineGroup,
     SourceRecord,
 )
 
@@ -90,3 +91,11 @@ class PersonRepository(Protocol):
     ) -> tuple[list[MatchDecision], bool]:
         """Returns (items, has_more). No count query — has_more via +1 fetch."""
         ...
+
+    async def get_timeline(
+        self, person_id: str, skip: int, limit: int
+    ) -> tuple[list[PersonTimelineGroup], int]: ...
+
+    async def get_timeline_target(
+        self, person_id: str, source_record_pk: str
+    ) -> PersonTimelineGroup | None: ...
