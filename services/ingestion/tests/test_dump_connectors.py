@@ -6,6 +6,8 @@ from pathlib import Path
 
 from pytest import MonkeyPatch
 from src.connectors.dumps.connectors import get_dump_connector
+from src.connectors.sggov.bankruptcy import SGGovernmentBankruptcyConnector
+from src.connectors.sggov.rental_flats import SGGovernmentRentalFlatsConnector
 
 
 def _sample_extraction(texts: list[str]) -> list[dict[str, object]]:
@@ -226,3 +228,16 @@ def test_real_non_chat_dumps_yield_first_records() -> None:
         record = next(connector.fetch_records(), None)
         assert record is not None, source_key
         assert record["source_record_id"]
+
+
+def test_sggov_sources_are_registered_for_dump_mode(tmp_path: Path) -> None:
+    bankruptcy_dump = tmp_path / "bankruptcy.sql"
+    bankruptcy_dump.write_text("", encoding="utf-8")
+    rental_dump = tmp_path / "rental.sql"
+    rental_dump.write_text("", encoding="utf-8")
+
+    bankruptcy = get_dump_connector("sgbankruptcy", bankruptcy_dump)
+    rental_flats = get_dump_connector("sgrentalflats", rental_dump)
+
+    assert isinstance(bankruptcy, SGGovernmentBankruptcyConnector)
+    assert isinstance(rental_flats, SGGovernmentRentalFlatsConnector)
