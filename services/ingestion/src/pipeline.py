@@ -35,6 +35,7 @@ from src.models import (
 from src.models import (
     NormalizedAddress as NormalizedAddressModel,
 )
+from src.pipeline_bankruptcy import materialize_bankruptcy_case
 from src.pipeline_normalization import (
     normalize_envelope_address,
     normalize_envelope_attributes,
@@ -159,6 +160,12 @@ class IngestPipeline:
             identifiers=identifiers,
             address=address,
             attributes=attributes,
+            person_id=person_id,
+            source_record_pk=source_record_pk,
+        )
+        materialize_bankruptcy_case(
+            tx,
+            envelope=envelope,
             person_id=person_id,
             source_record_pk=source_record_pk,
         )
