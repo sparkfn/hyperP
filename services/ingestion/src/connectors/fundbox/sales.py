@@ -127,10 +127,15 @@ class FundboxSalesConnector(FundboxConnectorBase):
         )
 
         for chunk in self._chunked(self._stream(conn, primary_stmt), self._resolved_chunk_size()):
-            order_ids = [row.id for row in chunk]
+            user_ids = [row.user_id for row in chunk if row.user_id is not None]
+            excluded_user_ids = self._fetch_excluded_user_ids(conn, user_ids)
+            eligible_chunk = [
+                row for row in chunk if row.user_id is None or row.user_id not in excluded_user_ids
+            ]
+            order_ids = [row.id for row in eligible_chunk]
             items_by_order = self._fetch_grouped(conn, order_items, "order_id", order_ids)
             merchant_names = self._fetch_merchant_names(
-                conn, [row.merchant_id for row in chunk if row.merchant_id]
+                conn, [row.merchant_id for row in eligible_chunk if row.merchant_id]
             )
 
             variant_ids = {
@@ -138,7 +143,7 @@ class FundboxSalesConnector(FundboxConnectorBase):
             }
             product_info = self._fetch_product_info(conn, variant_ids)
 
-            for row in chunk:
+            for row in eligible_chunk:
                 yield self._build_one(
                     row,
                     items_by_order.get(row.id, []),

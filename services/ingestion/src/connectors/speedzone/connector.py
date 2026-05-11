@@ -31,7 +31,7 @@ from src.connectors.fundbox.builders import (
     to_iso,
 )
 from src.connectors.speedzone.db import get_engine
-from src.connectors.speedzone.schema import customers, people
+from src.connectors.speedzone.schema import customers, employees, people
 from src.models import JsonValue
 
 logger = logging.getLogger(__name__)
@@ -65,13 +65,21 @@ class SpeedZoneConnector(SourceConnector):
 
         with engine.connect() as conn:
             conn = conn.execution_options(stream_results=True)
+            excluded_person_ids = self._fetch_employee_person_ids(conn, existing_tables)
             if use_customers:
-                yield from self._build_records_with_customers(conn, chunk_size)
+                yield from self._build_records_with_customers(conn, chunk_size, excluded_person_ids)
             else:
-                yield from self._build_records_people_only(conn, chunk_size)
+                yield from self._build_records_people_only(conn, chunk_size, excluded_person_ids)
+
+    @staticmethod
+    def _fetch_employee_person_ids(conn: Connection, existing_tables: set[str]) -> set[int]:
+        if "phppos_employees" not in existing_tables:
+            return set()
+        result = conn.execute(select(employees.c.person_id))
+        return {int(row[0]) for row in result if row[0] is not None}
 
     def _build_records_with_customers(
-        self, conn: Connection, chunk_size: int
+        self, conn: Connection, chunk_size: int, excluded_person_ids: set[int]
     ) -> Iterator[dict[str, JsonValue]]:
         stmt = (
             select(
@@ -105,14 +113,18 @@ class SpeedZoneConnector(SourceConnector):
 
         result = conn.execute(stmt).yield_per(chunk_size)
         for row in result:
+            if row.person_id in excluded_person_ids:
+                continue
             yield self._build_envelope_with_customer(row)
 
     def _build_records_people_only(
-        self, conn: Connection, chunk_size: int
+        self, conn: Connection, chunk_size: int, excluded_person_ids: set[int]
     ) -> Iterator[dict[str, JsonValue]]:
         stmt = select(people).order_by(people.c.person_id)
         result = conn.execute(stmt).yield_per(chunk_size)
         for row in result:
+            if row.person_id in excluded_person_ids:
+                continue
             yield self._build_envelope_people_only(row)
 
     @staticmethod

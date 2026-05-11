@@ -614,6 +614,7 @@ source = { virtual = "." }
 dev = [
     { name = "mypy" },
     { name = "pytest" },
+    { name = "pytest-asyncio" },
     { name = "ruff" },
 ]
 
@@ -623,6 +624,7 @@ dev = [
 dev = [
     { name = "mypy", specifier = ">=1.10,<2" },
     { name = "pytest", specifier = ">=8.0,<9" },
+    { name = "pytest-asyncio", specifier = ">=0.23,<1" },
     { name = "ruff", specifier = ">=0.4,<1" },
 ]
 

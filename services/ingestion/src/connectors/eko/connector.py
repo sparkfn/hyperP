@@ -21,7 +21,7 @@ from sqlalchemy.engine import Connection
 from src.config import get_settings
 from src.connectors.base import SourceConnector
 from src.connectors.eko.db import get_engine
-from src.connectors.eko.schema import customers, people
+from src.connectors.eko.schema import customers, employees, people
 from src.connectors.fundbox.builders import (
     IdentifierBag,
     build_envelope,
@@ -90,17 +90,27 @@ class EkoConnector(SourceConnector):
 
         with engine.connect() as conn:
             conn = conn.execution_options(stream_results=True)
+            excluded_person_ids = self._fetch_employee_person_ids(conn, existing_tables)
             if use_customers:
-                yield from self._build_records(conn, chunk_size)
+                yield from self._build_records(conn, chunk_size, excluded_person_ids)
             else:
-                yield from self._build_records_people_only(conn, chunk_size)
+                yield from self._build_records_people_only(conn, chunk_size, excluded_person_ids)
+
+    @staticmethod
+    def _fetch_employee_person_ids(conn: Connection, existing_tables: set[str]) -> set[int]:
+        if "phppos_employees" not in existing_tables:
+            return set()
+        result = conn.execute(select(employees.c.person_id))
+        return {int(row[0]) for row in result if row[0] is not None}
 
     def _build_records_people_only(
-        self, conn: Connection, chunk_size: int
+        self, conn: Connection, chunk_size: int, excluded_person_ids: set[int]
     ) -> Iterator[dict[str, JsonValue]]:
         stmt = select(people).order_by(people.c.person_id)
         result = conn.execute(stmt).yield_per(chunk_size)
         for row in result:
+            if row.person_id in excluded_person_ids:
+                continue
             ids = IdentifierBag()
             ids.add("email", row.email)
             ids.add("phone", row.phone_number)
@@ -123,7 +133,9 @@ class EkoConnector(SourceConnector):
                 raw_payload={"person": serialize_row(row)},
             )
 
-    def _build_records(self, conn: Connection, chunk_size: int) -> Iterator[dict[str, JsonValue]]:
+    def _build_records(
+        self, conn: Connection, chunk_size: int, excluded_person_ids: set[int]
+    ) -> Iterator[dict[str, JsonValue]]:
         stmt = (
             select(
                 people.c.person_id,
@@ -158,6 +170,8 @@ class EkoConnector(SourceConnector):
 
         result = conn.execute(stmt).yield_per(chunk_size)
         for row in result:
+            if row.person_id in excluded_person_ids:
+                continue
             yield self._build_one(row)
 
     @staticmethod
