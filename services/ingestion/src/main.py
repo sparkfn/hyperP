@@ -22,6 +22,7 @@ from src.connectors.fundbox import (
     FundboxMergedUsersConnector,
     FundboxSalesConnector,
 )
+from src.connectors.sggov import SGGovernmentBankruptcyConnector
 from src.connectors.speedzone import SpeedZoneConnector, SpeedZoneSalesConnector
 from src.connectors.whatsapp import WhatsAppChatConnector
 from src.graph import queries
@@ -50,6 +51,7 @@ _CONNECTOR_REGISTRY: dict[str, type[SourceConnector]] = {
     "eko_phppos:sales": EkoSalesConnector,
     "whatsapp_chat": WhatsAppChatConnector,
     "bitrix_chat": BitrixChatConnector,
+    "sgbankruptcy": SGGovernmentBankruptcyConnector,
 }
 
 
