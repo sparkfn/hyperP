@@ -52,9 +52,6 @@ CREATE INDEX idx_identifier_type_hash IF NOT EXISTS
   FOR (id:Identifier) ON (id.identifier_type, id.hashed_value);
 
 // Address lookups
-CREATE INDEX idx_address_postal IF NOT EXISTS
-  FOR (addr:Address) ON (addr.country_code, addr.postal_code);
-
 CREATE INDEX idx_address_composite IF NOT EXISTS
   FOR (addr:Address)
   ON (addr.country_code, addr.postal_code, addr.street_name, addr.street_number);

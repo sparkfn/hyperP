@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from collections.abc import Iterator
 from datetime import datetime
 from pathlib import Path
@@ -11,7 +12,15 @@ from src.connectors.fundbox.builders import IdentifierBag, build_envelope
 from src.connectors.sggov.dump import CopyRow, parse_copy_tables
 from src.models import JsonValue
 
-_DEFAULT_DUMP_PATH = Path(".dumps/sgbankruptcy_2026-05-11.sql")
+_DUMP_FILENAME = "sgbankruptcy_2026-05-11.sql"
+_DEFAULT_DUMP_PATH = Path(".dumps") / _DUMP_FILENAME
+
+
+def _default_dump_path() -> Path:
+    dumps_root = os.environ.get("DUMPS_ROOT")
+    if dumps_root:
+        return Path(dumps_root) / _DUMP_FILENAME
+    return _DEFAULT_DUMP_PATH
 
 
 def _iso_datetime(value: JsonValue) -> str | None:
@@ -54,8 +63,8 @@ def _events_by_case(rows: list[CopyRow]) -> dict[str, CopyRow]:
 class SGGovernmentBankruptcyConnector(SourceConnector):
     """Yields one system source record per SG bankruptcy case."""
 
-    def __init__(self, dump_path: Path = _DEFAULT_DUMP_PATH) -> None:
-        self._dump_path = dump_path
+    def __init__(self, dump_path: Path | None = None) -> None:
+        self._dump_path = dump_path or _default_dump_path()
 
     def get_source_key(self) -> str:
         return "sgbankruptcy"

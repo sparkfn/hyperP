@@ -22,7 +22,10 @@ from src.connectors.fundbox import (
     FundboxMergedUsersConnector,
     FundboxSalesConnector,
 )
-from src.connectors.sggov import SGGovernmentBankruptcyConnector
+from src.connectors.sggov import (
+    SGGovernmentBankruptcyConnector,
+    SGGovernmentRentalFlatsConnector,
+)
 from src.connectors.speedzone import SpeedZoneConnector, SpeedZoneSalesConnector
 from src.connectors.whatsapp import WhatsAppChatConnector
 from src.graph import queries
@@ -31,6 +34,7 @@ from src.graph.client import Neo4jClient
 from src.graph.schema_init import apply_schema
 from src.models import IngestResult, RecordType, SourceRecordEnvelope
 from src.pipeline import IngestPipeline
+from src.pipeline_addresses import ingest_address_record
 from src.pipeline_knows import materialize_knows_from_contacts
 from src.pipeline_sales import drain_pending_customer_sales, ingest_sales_record
 
@@ -52,7 +56,14 @@ _CONNECTOR_REGISTRY: dict[str, type[SourceConnector]] = {
     "whatsapp_chat": WhatsAppChatConnector,
     "bitrix_chat": BitrixChatConnector,
     "sgbankruptcy": SGGovernmentBankruptcyConnector,
+    "sgrentalflats": SGGovernmentRentalFlatsConnector,
 }
+
+_ADDRESS_ONLY_SOURCES = frozenset({"sgrentalflats"})
+
+
+def _is_address_only_source(source_key: str) -> bool:
+    return source_key in _ADDRESS_ONLY_SOURCES
 
 
 def _mark_run_failed(
@@ -166,9 +177,11 @@ def _process_record(
     envelope: SourceRecordEnvelope,
     ingest_run_id: str,
 ) -> IngestResult:
-    """Route a single envelope to the sales or identity pipeline."""
+    """Route a single envelope to the correct ingestion pipeline."""
     if envelope.record_type == RecordType.SALES:
         return ingest_sales_record(client, envelope, ingest_run_id=ingest_run_id)
+    if _is_address_only_source(envelope.source_system):
+        return ingest_address_record(client, envelope, ingest_run_id=ingest_run_id)
     return pipeline.ingest(envelope, ingest_run_id=ingest_run_id)
 
 
@@ -191,15 +204,22 @@ def _ingest_all_records(
             errors += 1
         else:
             success += 1
-        logger.info(
-            "  %s -> person=%s new=%s decision=%s candidates=%d%s",
-            result.source_record_id,
-            result.person_id,
-            result.is_new_person,
-            result.match_decision,
-            result.candidate_count,
-            " (DUPLICATE)" if result.skipped_duplicate else "",
-        )
+        if result.person_id is None:
+            logger.info(
+                "  %s -> address-only%s",
+                result.source_record_id,
+                " (DUPLICATE)" if result.skipped_duplicate else "",
+            )
+        else:
+            logger.info(
+                "  %s -> person=%s new=%s decision=%s candidates=%d%s",
+                result.source_record_id,
+                result.person_id,
+                result.is_new_person,
+                result.match_decision,
+                result.candidate_count,
+                " (DUPLICATE)" if result.skipped_duplicate else "",
+            )
     return success, errors, skipped
 
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 from src.connectors.sggov.bankruptcy import SGGovernmentBankruptcyConnector
 from src.main import get_connector
 
@@ -111,6 +112,20 @@ def test_bankruptcy_connector_yields_case_envelope(tmp_path: Path) -> None:
     assert raw_payload["source_document"]["source_url"] == "https://example.test/file.pdf"
     assert isinstance(record["record_hash"], str)
     assert record["record_hash"].startswith("sha256:")
+
+
+def test_bankruptcy_connector_uses_dumps_root_env_by_default(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dump = tmp_path / "sgbankruptcy_2026-05-11.sql"
+    _write_dump(dump)
+    monkeypatch.setenv("DUMPS_ROOT", str(tmp_path))
+
+    records = list(SGGovernmentBankruptcyConnector().fetch_records())
+
+    assert len(records) == 1
+    assert records[0]["source_record_id"] == "bankruptcy_case:1"
 
 
 def test_bankruptcy_connector_is_registered() -> None:
