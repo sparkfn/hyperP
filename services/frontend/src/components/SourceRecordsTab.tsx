@@ -32,6 +32,7 @@ import type {
   SourceRecordInquiryPayload,
 } from "@/lib/api-types-person";
 import { usePaginatedFetch } from "@/lib/usePaginatedFetch";
+import { formatDateTime } from "@/lib/display";
 
 interface Props {
   personId: string;
@@ -119,8 +120,8 @@ export default function SourceRecordsTab({
                     />
                   </TableCell>
                   <TableCell>{record.link_status}</TableCell>
-                  <TableCell>{record.observed_at}</TableCell>
-                  <TableCell>{record.ingested_at}</TableCell>
+                  <TableCell>{formatDateTime(record.observed_at)}</TableCell>
+                  <TableCell>{formatDateTime(record.ingested_at)}</TableCell>
                 </TableRow>
               );
             })}
@@ -180,8 +181,8 @@ function RecordPayloadDialog({
               <PayloadMeta label="Source record id" value={record.source_record_id} />
               <PayloadMeta label="Entity" value={entityLabel(record)} />
               <PayloadMeta label="Extraction method" value={record.extraction_method ?? "—"} />
-              <PayloadMeta label="Observed" value={record.observed_at} />
-              <PayloadMeta label="Ingested" value={record.ingested_at} />
+              <PayloadMeta label="Observed" value={formatDateTime(record.observed_at)} />
+              <PayloadMeta label="Ingested" value={formatDateTime(record.ingested_at)} />
               <PayloadMeta
                 label="Extraction confidence"
                 value={record.extraction_confidence?.toFixed(2) ?? "—"}

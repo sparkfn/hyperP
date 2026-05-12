@@ -19,6 +19,7 @@ import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import ExpandLessIcon from "@mui/icons-material/ExpandLess";
 
 import PaginationBar from "@/components/PaginationBar";
+import { formatDate } from "@/lib/display";
 import { usePaginatedFetch } from "@/lib/usePaginatedFetch";
 import type { SalesOrder } from "@/lib/api-types";
 
@@ -26,15 +27,6 @@ function formatCurrency(amount: number | null, currency: string | null): string 
   if (amount === null) return "—";
   const prefix = currency ? `${currency} ` : "";
   return `${prefix}${amount.toFixed(2)}`;
-}
-
-function formatDate(iso: string | null): string {
-  if (!iso) return "—";
-  try {
-    return new Date(iso).toLocaleDateString();
-  } catch {
-    return iso;
-  }
 }
 
 interface OrderRowProps {
@@ -60,8 +52,8 @@ function OrderRow({ order }: OrderRowProps): ReactElement {
           ) : null}
         </TableCell>
         <TableCell>{order.order_no ?? order.source_order_id ?? "—"}</TableCell>
-        <TableCell>{formatDate(order.order_date)}</TableCell>
-        <TableCell>{formatDate(order.release_date)}</TableCell>
+        <TableCell>{formatDate(order.order_date ?? null)}</TableCell>
+        <TableCell>{formatDate(order.release_date ?? null)}</TableCell>
         <TableCell>{order.entity_name ?? order.source_system ?? "—"}</TableCell>
         <TableCell align="right">{formatCurrency(order.total_amount, order.currency)}</TableCell>
         <TableCell align="right">{order.line_items.length} items</TableCell>

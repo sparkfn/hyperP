@@ -14,19 +14,13 @@ import TableHead from "@mui/material/TableHead";
 import TableRow from "@mui/material/TableRow";
 import Typography from "@mui/material/Typography";
 
+import { formatDate } from "@/lib/display";
 import PaginationBar from "@/components/PaginationBar";
 import type { PersonBankruptcyCase } from "@/lib/api-types-person";
 import { usePaginatedFetch } from "@/lib/usePaginatedFetch";
 
 function displayValue(value: string | null): string {
   return value && value.trim() ? value : "—";
-}
-
-function displayDate(value: string | null): string {
-  if (!value) return "—";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value;
-  return date.toLocaleDateString();
 }
 
 interface Props {
@@ -71,9 +65,9 @@ export default function BankruptcyCasesCard({ personId }: Props): ReactElement {
                 <TableRow key={c.bankruptcy_case_id} hover>
                   <TableCell>{displayValue(c.case_number ?? c.source_case_id)}</TableCell>
                   <TableCell>{displayValue(c.event_type)}</TableCell>
-                  <TableCell>{displayDate(c.event_date)}</TableCell>
+                  <TableCell>{formatDate(c.event_date)}</TableCell>
                   <TableCell>{displayValue(c.document_type)}</TableCell>
-                  <TableCell>{displayDate(c.document_date)}</TableCell>
+                  <TableCell>{formatDate(c.document_date)}</TableCell>
                   <TableCell>{displayValue(c.trustee_name ?? c.trustee_firm)}</TableCell>
                   <TableCell>
                     {c.source_url ? (
@@ -85,7 +79,7 @@ export default function BankruptcyCasesCard({ personId }: Props): ReactElement {
                     )}
                   </TableCell>
                   <TableCell>
-                    {displayDate(c.first_seen_at)} / {displayDate(c.last_seen_at)}
+                    {formatDate(c.first_seen_at)} / {formatDate(c.last_seen_at)}
                   </TableCell>
                 </TableRow>
               ))}

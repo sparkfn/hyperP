@@ -28,6 +28,7 @@ import Tooltip from "@mui/material/Tooltip";
 import Typography from "@mui/material/Typography";
 
 import type { ApiResponse, Person, PublicLink } from "@/lib/api-types";
+import { formatDateTime, formatDob } from "@/lib/display";
 import { statusColor } from "@/lib/display";
 import AuditTab from "./AuditTab";
 import BankruptcyCasesCard from "./BankruptcyCasesCard";
@@ -258,7 +259,7 @@ function PersonHeader({
 
       <Grid container spacing={2}>
         <Field label="NRIC" value={person.preferred_nric} mono />
-        <Field label="Date of Birth" value={person.preferred_dob} />
+        <Field label="Date of Birth" value={formatDob(person.preferred_dob)} />
         <Field label="Phone" value={person.preferred_phone} />
         <Field label="Email" value={person.preferred_email} />
         <Field
@@ -273,7 +274,7 @@ function PersonHeader({
           label="Source Records"
           value={String(person.source_record_count)}
         />
-        <Field label="Updated" value={person.updated_at} />
+        <Field label="Updated" value={formatDateTime(person.updated_at)} />
       </Grid>
     </Paper>
   );
@@ -347,7 +348,7 @@ function ShareLinkDialog({
           />
           {link !== null ? (
             <Typography variant="caption" color="text.secondary">
-              Expires: {new Date(link.expires_at).toLocaleString()}
+              Expires: {formatDateTime(link.expires_at)}
             </Typography>
           ) : null}
         </Stack>

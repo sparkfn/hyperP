@@ -16,6 +16,7 @@ import Tooltip from "@mui/material/Tooltip";
 import Typography from "@mui/material/Typography";
 
 import type { PersonIdentifier } from "@/lib/api-types-person";
+import { formatDate } from "@/lib/display";
 import { usePaginatedFetch } from "@/lib/usePaginatedFetch";
 import PaginationBar from "@/components/PaginationBar";
 
@@ -107,7 +108,7 @@ export default function IdentifiersSection({ personId }: Props): ReactElement {
                       </Typography>
                     </Tooltip>
                   </TableCell>
-                  <TableCell>{id.last_confirmed_at?.slice(0, 10) ?? "—"}</TableCell>
+                  <TableCell>{formatDate(id.last_confirmed_at ?? "")}</TableCell>
                 </TableRow>
               );
             })}
