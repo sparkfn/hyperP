@@ -23,6 +23,7 @@ from src.graph.converters import (
 from src.types import (
     AddressSummary,
     AuditEvent,
+    BankruptcyCase,
     DownstreamEvent,
     GraphEdge,
     GraphNode,
@@ -111,9 +112,9 @@ def map_source_record(record: GraphRecord) -> SourceRecord:
         linked_person_id=to_optional_str(record.get("linked_person_id")),
         observed_at=to_iso_or_empty(sr.get("observed_at")),
         ingested_at=to_iso_or_empty(sr.get("ingested_at")),
-        conversation_ref=_parse_json_object(sr.get("conversation_ref")) or None,
-        raw_payload=_parse_json_object(sr.get("raw_payload")) or None,
-        normalized_payload=_parse_json_object(sr.get("normalized_payload")),
+        conversation_ref=_parse_normalized_payload(sr.get("conversation_ref")) or None,
+        raw_payload=_parse_normalized_payload(sr.get("raw_payload")) or None,
+        normalized_payload=_parse_normalized_payload(sr.get("normalized_payload")),
     )
 
 
@@ -199,6 +200,82 @@ def _append_address_fact(facts: list[TimelineFact], payload: dict[str, JsonValue
     )
 
 
+def map_bankruptcy_case(record: GraphRecord) -> BankruptcyCase:
+    bc = _as_dict(record.get("bankruptcy_case"))
+    return BankruptcyCase(
+        bankruptcy_case_id=to_str(bc.get("bankruptcy_case_id")),
+        source_system_key=to_str(bc.get("source_system_key")),
+        source_case_id=to_str(bc.get("source_case_id")),
+        case_number=to_optional_str(bc.get("case_number")),
+        document_type=to_optional_str(bc.get("document_type")),
+        document_date=to_iso_or_none(bc.get("document_date"))
+        or to_optional_str(bc.get("document_date")),
+        event_type=to_optional_str(bc.get("event_type")),
+        event_date=to_iso_or_none(bc.get("event_date")) or to_optional_str(bc.get("event_date")),
+        trustee_name=to_optional_str(bc.get("trustee_name")),
+        trustee_firm=to_optional_str(bc.get("trustee_firm")),
+        source_url=to_optional_str(bc.get("source_url")),
+        first_seen_at=to_iso_or_none(bc.get("first_seen_at")),
+        last_seen_at=to_iso_or_none(bc.get("last_seen_at")),
+        created_at=to_iso_or_none(bc.get("created_at")),
+        updated_at=to_iso_or_none(bc.get("updated_at")),
+    )
+
+
+def _append_bankruptcy_case_facts(facts: list[TimelineFact], value: GraphValue) -> None:
+    case = _as_dict(value)
+    case_number = to_optional_str(case.get("case_number")) or to_optional_str(
+        case.get("source_case_id")
+    )
+    if case_number is not None:
+        facts.append(
+            TimelineFact(
+                fact_id="bankruptcy_case",
+                category="bankruptcy",
+                label="Bankruptcy case",
+                value=case_number,
+            )
+        )
+    event_type = to_optional_str(case.get("event_type"))
+    event_date = to_iso_or_none(case.get("event_date")) or to_optional_str(case.get("event_date"))
+    if event_type is not None:
+        facts.append(
+            TimelineFact(
+                fact_id="bankruptcy_event",
+                category="bankruptcy",
+                label="Bankruptcy event",
+                value=event_type,
+                detail=event_date,
+            )
+        )
+    document_type = to_optional_str(case.get("document_type"))
+    document_date = to_iso_or_none(case.get("document_date")) or to_optional_str(
+        case.get("document_date")
+    )
+    if document_type is not None:
+        facts.append(
+            TimelineFact(
+                fact_id="bankruptcy_document",
+                category="bankruptcy",
+                label="Bankruptcy document",
+                value=document_type,
+                detail=document_date,
+            )
+        )
+    trustee_name = to_optional_str(case.get("trustee_name"))
+    trustee_firm = to_optional_str(case.get("trustee_firm"))
+    if trustee_name is not None:
+        facts.append(
+            TimelineFact(
+                fact_id="bankruptcy_trustee",
+                category="bankruptcy",
+                label="Trustee",
+                value=trustee_name,
+                detail=trustee_firm,
+            )
+        )
+
+
 def _timeline_facts(payload: dict[str, JsonValue] | None) -> list[TimelineFact]:
     if payload is None:
         return []
@@ -215,6 +292,8 @@ def map_timeline_group(record: GraphRecord) -> PersonTimelineGroup:
     observed_at = to_iso_or_none(sr.get("observed_at"))
     ingested_at = to_iso_or_empty(sr.get("ingested_at"))
     occurred_at = observed_at if observed_at is not None else ingested_at
+    facts = _timeline_facts(_parse_normalized_payload(sr.get("normalized_payload")))
+    _append_bankruptcy_case_facts(facts, record.get("bankruptcy_case"))
     return PersonTimelineGroup(
         source_record_pk=to_str(sr.get("source_record_pk")),
         source_system=to_str(record.get("source_system")),
@@ -231,7 +310,7 @@ def map_timeline_group(record: GraphRecord) -> PersonTimelineGroup:
         occurred_at=occurred_at,
         timestamp_kind="source" if observed_at is not None else "fallback",
         ingested_at=ingested_at,
-        facts=_timeline_facts(_parse_normalized_payload(sr.get("normalized_payload"))),
+        facts=facts,
     )
 
 

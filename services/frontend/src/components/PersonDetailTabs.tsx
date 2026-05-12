@@ -30,6 +30,7 @@ import Typography from "@mui/material/Typography";
 import type { ApiResponse, Person, PublicLink } from "@/lib/api-types";
 import { statusColor } from "@/lib/display";
 import AuditTab from "./AuditTab";
+import BankruptcyCasesCard from "./BankruptcyCasesCard";
 import ConnectionsCard from "./ConnectionsCard";
 import Gate from "./auth/Gate";
 import IdentifiersSection from "./IdentifiersSection";
@@ -152,6 +153,7 @@ export default function PersonDetailTabs({ person }: Props): ReactElement {
             />
           </PersonSection>
           <SalesCard personId={person.person_id} />
+          <BankruptcyCasesCard personId={person.person_id} />
           <PersonSection title="Audit">
             <AuditTab personId={person.person_id} />
           </PersonSection>

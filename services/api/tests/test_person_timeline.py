@@ -76,15 +76,52 @@ def test_map_timeline_group_uses_observed_at_as_source_timestamp() -> None:
     ]
 
 
+def test_map_timeline_group_includes_bankruptcy_case_facts() -> None:
+    group = map_timeline_group(
+        {
+            "source_record": {
+                "source_record_pk": "sr-bc",
+                "source_record_id": "external-bc",
+                "source_record_version": "v1",
+                "record_type": "system",
+                "extraction_confidence": None,
+                "link_status": "linked",
+                "observed_at": "2026-04-28T14:32:00Z",
+                "ingested_at": "2026-05-01T01:00:00Z",
+                "normalized_payload": {},
+            },
+            "source_system": "sgbankruptcy",
+            "linked_person_id": "person-1",
+            "bankruptcy_case": {
+                "bankruptcy_case_id": "bc-1",
+                "source_system_key": "sgbankruptcy",
+                "source_case_id": "case-123",
+                "case_number": "B 123/2026",
+                "event_type": "order_made",
+                "event_date": "2026-04-02",
+                "document_type": "Bankruptcy Order",
+                "document_date": "2026-04-01",
+                "trustee_name": "Jane Trustee",
+                "trustee_firm": "Trustee LLP",
+            },
+        }
+    )
+
+    assert [(fact.category, fact.label, fact.value, fact.detail) for fact in group.facts] == [
+        ("bankruptcy", "Bankruptcy case", "B 123/2026", None),
+        ("bankruptcy", "Bankruptcy event", "order_made", "2026-04-02"),
+        ("bankruptcy", "Bankruptcy document", "Bankruptcy Order", "2026-04-01"),
+        ("bankruptcy", "Trustee", "Jane Trustee", "Trustee LLP"),
+    ]
+
+
 def test_map_timeline_group_labels_ingested_at_as_fallback_timestamp() -> None:
     group = map_timeline_group(
         _record(
             observed_at=None,
             ingested_at="2026-05-01T01:00:00Z",
             payload={
-                "identifiers": [
-                    {"identifier_type": "email", "normalized_value": "ana@example.com"}
-                ]
+                "identifiers": [{"identifier_type": "email", "normalized_value": "ana@example.com"}]
             },
         )
     )

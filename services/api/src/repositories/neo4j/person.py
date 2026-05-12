@@ -5,6 +5,7 @@ from __future__ import annotations
 from src.graph.client import get_session
 from src.graph.mappers import (
     map_audit_event,
+    map_bankruptcy_case,
     map_connection,
     map_match_decision,
     map_person,
@@ -16,6 +17,7 @@ from src.graph.mappers import (
 from src.graph.mappers_entities import map_listed_person, map_person_entity
 from src.graph.queries import (
     COUNT_PERSON_AUDIT,
+    COUNT_PERSON_BANKRUPTCY_CASES,
     COUNT_PERSON_CONNECTIONS_ADDRESS,
     COUNT_PERSON_CONNECTIONS_ALL,
     COUNT_PERSON_CONNECTIONS_IDENTIFIER,
@@ -25,6 +27,7 @@ from src.graph.queries import (
     COUNT_PERSON_TIMELINE,
     FIND_PERSON_BY_IDENTIFIER,
     GET_PERSON_AUDIT,
+    GET_PERSON_BANKRUPTCY_CASES,
     GET_PERSON_BY_ID,
     GET_PERSON_CONNECTIONS_ADDRESS,
     GET_PERSON_CONNECTIONS_ALL,
@@ -45,6 +48,7 @@ from src.graph.queries import (
 from src.repositories.protocols.person import PersonListFilters
 from src.types import (
     AuditEvent,
+    BankruptcyCase,
     ConnectionType,
     ListedPerson,
     MatchDecision,
@@ -144,6 +148,18 @@ class Neo4jPersonRepository:
             count_result = await session.run(COUNT_PERSON_SOURCE_RECORDS, person_id=person_id)
             count_record = await count_result.single()
         return [map_source_record(rec) for rec in records[:limit]], to_total(count_record)
+
+    async def get_bankruptcy_cases(
+        self, person_id: str, skip: int, limit: int
+    ) -> tuple[list[BankruptcyCase], int]:
+        async with get_session() as session:
+            result = await session.run(
+                GET_PERSON_BANKRUPTCY_CASES, person_id=person_id, skip=skip, limit=limit + 1
+            )
+            records = [record_to_dict(r.keys(), list(r.values())) async for r in result]
+            count_result = await session.run(COUNT_PERSON_BANKRUPTCY_CASES, person_id=person_id)
+            count_record = await count_result.single()
+        return [map_bankruptcy_case(rec) for rec in records[:limit]], to_total(count_record)
 
     async def get_identifiers(
         self, person_id: str, skip: int, limit: int

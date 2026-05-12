@@ -179,6 +179,24 @@ class SourceRecord(BaseModel):
     normalized_payload: dict[str, JsonValue] | None = None
 
 
+class BankruptcyCase(BaseModel):
+    bankruptcy_case_id: str
+    source_system_key: str
+    source_case_id: str
+    case_number: str | None = None
+    document_type: str | None = None
+    document_date: str | None = None
+    event_type: str | None = None
+    event_date: str | None = None
+    trustee_name: str | None = None
+    trustee_firm: str | None = None
+    source_url: str | None = None
+    first_seen_at: str | None = None
+    last_seen_at: str | None = None
+    created_at: str | None = None
+    updated_at: str | None = None
+
+
 TimelineTimestampKind = Literal["source", "fallback"]
 TimelineFactCategory = Literal[
     "identity",
@@ -188,6 +206,7 @@ TimelineFactCategory = Literal[
     "relationship",
     "conversation",
     "source",
+    "bankruptcy",
 ]
 
 
@@ -383,3 +402,4 @@ class ListedPerson(EntityPerson):
     entity_count: int = 0
     identifier_count: int = 0
     order_count: int = 0
+    bankruptcy_case_count: int = 0

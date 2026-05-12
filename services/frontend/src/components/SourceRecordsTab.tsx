@@ -162,6 +162,7 @@ function RecordPayloadDialog({
   const identifiers = payload?.identifiers ?? [];
   const attributes = payload?.attributes ?? [];
   const address = payload?.address ?? null;
+  const summary = firstText(payload?.summary, record?.raw_payload?.summary);
 
   return (
     <Dialog open={record !== null} onClose={onClose} fullWidth maxWidth="md">

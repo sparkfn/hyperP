@@ -105,7 +105,8 @@ export type TimelineFactCategory =
   | "sale"
   | "relationship"
   | "conversation"
-  | "source";
+  | "source"
+  | "bankruptcy";
 
 export interface PersonTimelineFact {
   fact_id: string;
@@ -128,6 +129,24 @@ export interface PersonTimelineGroup {
   timestamp_kind: TimelineTimestampKind;
   ingested_at: string;
   facts: PersonTimelineFact[];
+}
+
+export interface PersonBankruptcyCase {
+  bankruptcy_case_id: string;
+  source_system_key: string;
+  source_case_id: string;
+  case_number: string | null;
+  document_type: string | null;
+  document_date: string | null;
+  event_type: string | null;
+  event_date: string | null;
+  trustee_name: string | null;
+  trustee_firm: string | null;
+  source_url: string | null;
+  first_seen_at: string | null;
+  last_seen_at: string | null;
+  created_at: string | null;
+  updated_at: string | null;
 }
 
 export interface PersonAuditEvent {

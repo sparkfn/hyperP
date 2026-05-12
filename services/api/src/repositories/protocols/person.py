@@ -6,6 +6,7 @@ from typing import Protocol, TypedDict
 
 from src.types import (
     AuditEvent,
+    BankruptcyCase,
     ConnectionType,
     ListedPerson,
     MatchDecision,
@@ -28,6 +29,7 @@ class PersonListFilters(TypedDict, total=False):
     has_phone: bool | None
     has_email: bool | None
     has_address: bool | None
+    has_bankruptcy_case: bool | None
     addr_street: str | None
     addr_unit: str | None
     addr_city: str | None
@@ -62,6 +64,10 @@ class PersonRepository(Protocol):
     async def get_source_records(
         self, person_id: str, skip: int, limit: int
     ) -> tuple[list[SourceRecord], int]: ...
+
+    async def get_bankruptcy_cases(
+        self, person_id: str, skip: int, limit: int
+    ) -> tuple[list[BankruptcyCase], int]: ...
 
     async def get_identifiers(
         self, person_id: str, skip: int, limit: int

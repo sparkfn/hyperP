@@ -18,6 +18,7 @@ const LABEL_COLORS: Record<string, string> = {
   Identifier: "#7e57c2",
   Address: "#00897b",
   SourceRecord: "#ef6c00",
+  BankruptcyCase: "#b45309",
   SourceSystem: "#6d4c41",
   MatchDecision: "#c62828",
   ReviewCase: "#ad1457",
@@ -48,6 +49,7 @@ export type NodeIcon =
   | "inventory"
   | "bullet"
   | "dataSource"
+  | "gavel"
   | "storefront";
 
 const LABEL_ICONS: Record<string, NodeIcon> = {
@@ -55,6 +57,7 @@ const LABEL_ICONS: Record<string, NodeIcon> = {
   Identifier: "vpnKey",
   Address: "home",
   SourceRecord: "description",
+  BankruptcyCase: "gavel",
   MatchDecision: "diamond",
   ReviewCase: "assignment",
   MergeEvent: "mergeType",
@@ -85,6 +88,7 @@ const ICON_PATHS: Record<NodeIcon, string> = {
   inventory: "M20 2H4c-1 0-2 .9-2 2v3.01c0 .72.43 1.34 1 1.69V20c0 1.1 1.1 2 2 2h14c.9 0 2-.9 2-2V8.7c.57-.35 1-.97 1-1.69V4c0-1.1-1-2-2-2m-5 12H9v-2h6zm5-7H4V4l16-.02z",
   bullet: "",
   dataSource: "M2 20h20v-4H2zm2-3h2v2H4zM2 4v4h20V4zm4 3H4V5h2zm-4 7h20v-4H2zm2-3h2v2H4z",
+  gavel: "M1 21h12v2H1zm5.24-8.07 2.83-2.83 14.14 14.14-2.83 2.83zM12.9 2.1l7.07 7.07-2.83 2.83-7.07-7.07zM4.83 10.17l7.07-7.07 2.83 2.83-7.07 7.07z",
   storefront: "M21.9 8.89l-1.05-4.37c-.22-.9-1-1.52-1.91-1.52H5.05c-.9 0-1.69.63-1.9 1.52L2.1 8.89c-.24 1.02-.02 2.06.62 2.88.08.11.19.19.28.29V19c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2v-6.94c.09-.09.2-.18.28-.28.64-.82.87-1.87.62-2.89zM5.05 5h1.97l-.58 4.86c-.08.65-.6 1.14-1.21 1.14-.49 0-.8-.29-.93-.47-.27-.32-.36-.75-.26-1.17L5.05 5zm4.45.16L9.04 5H11v4.69c0 .72-.55 1.31-1.29 1.31-.34 0-.65-.15-.89-.41-.25-.29-.37-.68-.33-1.07zM13 5h1.96l.51 4.52c.05.39-.07.78-.33 1.07-.22.26-.54.41-.95.41-.67 0-1.22-.59-1.22-1.31V5zm4.96 4.86L17.97 5h1.96l1.05 4.37c.1.42.01.84-.25 1.17-.14.18-.44.47-.94.47-.61 0-1.14-.49-1.21-1.14zm.04 5.83c0 .72-.55 1.31-1.29 1.31-.34 0-.65-.15-.89-.41-.25-.29-.37-.68-.33-1.07l.53-4.69H19.1l-.58 4.86c-.08.65-.6 1.14-1.21 1.14-.49 0-.8-.29-.93-.47-.27-.32-.36-.75-.26-1.17z",
 };
 
@@ -162,6 +166,13 @@ function displayNameForNode(node: GraphNode): string {
       return (p["normalized_full"] as string | null) ?? node.id;
     case "SourceRecord":
       return (p["source_record_id"] as string | null) ?? node.id;
+    case "BankruptcyCase":
+      return (
+        (p["case_number"] as string | null) ??
+        (p["source_case_id"] as string | null) ??
+        (p["bankruptcy_case_id"] as string | null) ??
+        "Bankruptcy case"
+      );
     case "SourceSystem":
       return (p["source_key"] as string | null) ?? node.id;
     case "Order": {

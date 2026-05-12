@@ -23,6 +23,7 @@ import Typography from "@mui/material/Typography";
 
 import { BffError, bffFetchEnvelope } from "@/lib/api-client";
 import type { ApiResponse } from "@/lib/api-types";
+import { formatDateTime } from "@/lib/display";
 import type {
   PersonTimelineFact,
   PersonTimelineGroup,
@@ -221,7 +222,7 @@ export default function PersonTimelineTab({
   const sourceRecordOptions = useMemo(
     () =>
       groups.map((group) => ({
-        label: `${group.source_system} • ${group.source_record_id}`,
+        label: `${group.source_system} • ${group.source_record_id} • ${formatDateTime(group.occurred_at)}`,
         value: group.source_record_pk,
       })),
     [groups],
@@ -458,7 +459,7 @@ function TimelineCard({
               {group.source_record_id}
             </Typography>
             <Typography variant="caption" color="text.secondary">
-              {new Date(group.occurred_at).toLocaleString()}
+              {formatDateTime(group.occurred_at)}
             </Typography>
           </Box>
           {group.facts.length === 0 ? (
@@ -478,6 +479,12 @@ function TimelineCard({
   );
 }
 
+function timelineFactColor(
+  category: PersonTimelineFact["category"],
+): "default" | "primary" | "secondary" | "error" | "info" | "success" | "warning" {
+  return category === "bankruptcy" ? "warning" : "default";
+}
+
 function TimelineFactRow({ fact }: { fact: PersonTimelineFact }): ReactElement {
   return (
     <Stack direction="row" spacing={1} alignItems="baseline">
@@ -485,6 +492,7 @@ function TimelineFactRow({ fact }: { fact: PersonTimelineFact }): ReactElement {
         label={fact.category}
         size="small"
         variant="outlined"
+        color={timelineFactColor(fact.category)}
         sx={{ minWidth: 88 }}
       />
       <Box>

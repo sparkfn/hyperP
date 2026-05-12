@@ -18,7 +18,7 @@ import TableSortLabel from "@mui/material/TableSortLabel";
 import Typography from "@mui/material/Typography";
 
 import type { ListedPerson, PersonConnection, SalesOrder, SourceRecord } from "@/lib/api-types";
-import type { PersonIdentifier } from "@/lib/api-types-person";
+import type { PersonBankruptcyCase, PersonIdentifier } from "@/lib/api-types-person";
 import { bffFetch } from "@/lib/api-client";
 import PersonGraphDialog from "@/components/PersonGraphDialog";
 import PersonRow from "@/components/PersonRow";
@@ -34,6 +34,7 @@ export type SortField =
   | "entity_count"
   | "identifier_count"
   | "order_count"
+  | "bankruptcy_case_count"
   | "updated_at"
   | "profile_completeness_score";
 
@@ -67,6 +68,7 @@ const COLUMNS: readonly ColumnDef[] = [
   { field: "__address", label: "Address", sortable: false },
   { field: "connection_count", label: "Connections", align: "center", sortable: true },
   { field: "order_count", label: "Orders", align: "center", sortable: true },
+  { field: "bankruptcy_case_count", label: "Bankruptcy", align: "center", sortable: true },
   { field: "source_record_count", label: "Sources", align: "center", sortable: true },
   { field: "identifier_count", label: "Identifiers", align: "center", sortable: true },
   { field: "entity_count", label: "Entities", align: "center", sortable: true },
@@ -159,6 +161,9 @@ export default function PersonsListTable({
   );
   const ordersFetch = useLazyPersonFetch<SalesOrder>(
     (id) => `/bff/persons/${encodeURIComponent(id)}/sales?limit=50`,
+  );
+  const bankruptcyFetch = useLazyPersonFetch<PersonBankruptcyCase>(
+    (id) => `/bff/persons/${encodeURIComponent(id)}/bankruptcy-cases?limit=50`,
   );
 
   const allSelected: boolean = persons.length > 0 && persons.every((p) => selected.has(p.person_id));
@@ -267,6 +272,9 @@ export default function PersonsListTable({
               orders={ordersFetch.cache.data[p.person_id]}
               ordersLoading={ordersFetch.cache.loading.has(p.person_id)}
               onRequestOrders={() => ordersFetch.request(p.person_id)}
+              bankruptcyCases={bankruptcyFetch.cache.data[p.person_id]}
+              bankruptcyLoading={bankruptcyFetch.cache.loading.has(p.person_id)}
+              onRequestBankruptcyCases={() => bankruptcyFetch.request(p.person_id)}
             />
           ))}
         </TableBody>

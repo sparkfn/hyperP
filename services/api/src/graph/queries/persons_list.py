@@ -30,6 +30,9 @@ WHERE p.status <> 'merged'
   AND ($has_address IS NULL
        OR ($has_address = true  AND p.preferred_address_id IS NOT NULL)
        OR ($has_address = false AND p.preferred_address_id IS NULL))
+  AND ($has_bankruptcy_case IS NULL
+       OR ($has_bankruptcy_case = true AND EXISTS { (p)-[:HAS_BANKRUPTCY_CASE]->(:BankruptcyCase) })
+       OR ($has_bankruptcy_case = false AND NOT EXISTS { (p)-[:HAS_BANKRUPTCY_CASE]->(:BankruptcyCase) }))
   AND ($addr_street IS NULL  OR toLower(addr.street_name)     CONTAINS toLower($addr_street))
   AND ($addr_unit   IS NULL   OR toLower(addr.unit_number)    CONTAINS toLower($addr_unit))
   AND ($addr_city   IS NULL   OR toLower(addr.city)           CONTAINS toLower($addr_city))
@@ -113,6 +116,10 @@ CALL {
   WITH p
   RETURN count{ (p)-[:PURCHASED]->(:Order) } AS order_count
 }
+CALL {
+  WITH p
+  RETURN count{ (p)-[:HAS_BANKRUPTCY_CASE]->(:BankruptcyCase) } AS bankruptcy_case_count
+}
 RETURN p {
   .person_id, .status, .is_high_value, .is_high_risk,
   .preferred_full_name, .preferred_phone, .preferred_email, .preferred_dob, .preferred_nric,
@@ -124,7 +131,7 @@ addr {
   .city, .postal_code, .country_code, .normalized_full
 } AS preferred_address,
 source_record_count, connection_count, phone_confidence, entities,
-size(entities) AS entity_count, identifier_count, order_count, score
+size(entities) AS entity_count, identifier_count, order_count, bankruptcy_case_count, score
 """
 
 _SORT_COLUMNS: dict[str, str] = {
@@ -138,6 +145,7 @@ _SORT_COLUMNS: dict[str, str] = {
     "entity_count": "entity_count",
     "identifier_count": "identifier_count",
     "order_count": "order_count",
+    "bankruptcy_case_count": "bankruptcy_case_count",
     "phone_confidence": "phone_confidence",
     "updated_at": "person.updated_at",
     "profile_completeness_score": "person.profile_completeness_score",
