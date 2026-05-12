@@ -311,6 +311,7 @@ class WhatsAppDumpConnector(SourceConnector):
                             chat_id, whatsapp_uid, msgs, contacts_by_jid
                         ),
                         message_endpoints=_message_endpoints(msgs),
+                        session_phone=_phone_from_jid(whatsapp_uid),
                     )
                 )
 
@@ -320,7 +321,9 @@ class WhatsAppDumpConnector(SourceConnector):
             run_extraction_batch,
         ):
             if extraction is not None:
-                yield build_whatsapp_envelope(bundle=bundles[bundle], extraction=extraction)
+                envelope = build_whatsapp_envelope(bundle=bundles[bundle], extraction=extraction)
+                if envelope is not None:
+                    yield envelope
 
 
 class BitrixDumpConnector(SourceConnector):
@@ -380,10 +383,12 @@ class BitrixDumpConnector(SourceConnector):
             run_extraction_batch,
         ):
             if extraction is not None:
-                yield self._builder._build_envelope(
+                envelope = self._builder._build_envelope(
                     bundle=bundles[bundle_index],
                     extraction=extraction,
                 )
+                if envelope is not None:
+                    yield envelope
 
 
 class EkoDumpConnector(SourceConnector):

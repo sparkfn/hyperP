@@ -96,9 +96,10 @@ def fetch_phppos_sales(
     items_cols = {c.name for c in items_t.columns}
     item_cols = {c.name for c in item_t.columns}
 
-    result = (
-        conn.execute(select(sales_t).order_by(sales_t.c.sale_id)).mappings().yield_per(chunk_size)
-    )
+    stmt = select(sales_t).order_by(sales_t.c.sale_id)
+    if excluded_customer_ids:
+        stmt = stmt.where(sales_t.c.customer_id.not_in(sorted(excluded_customer_ids)))
+    result = conn.execute(stmt).mappings().yield_per(chunk_size)
     with engine.connect() as sidecar:
         for sale in result:
             customer_id_raw = sale.get("customer_id")

@@ -105,6 +105,7 @@ def test_whatsapp_chat_envelope_keeps_agent_identity_raw_only(monkeypatch: Monke
             {"role": "sender", "jid": "6599990000@c.us", "phone": "+6599990000"},
             {"role": "recipient", "jid": "6591234567@c.us", "phone": "+6591234567"},
         ],
+        session_phone="+6599990000",
     )
     extraction = {
         "persons": [{"name": "Ada Customer", "phone": "+6591234567", "email": "ada@example.com"}],

@@ -91,9 +91,6 @@ def filter_extraction(
     ]
     if not persons:
         return None
-    return ExtractionResult(
-        persons=persons,
-        transactions=extraction["transactions"],
-        summary=extraction["summary"],
-        confidence=extraction["confidence"],
-    )
+    filtered = extraction.copy()
+    filtered["persons"] = persons
+    return filtered

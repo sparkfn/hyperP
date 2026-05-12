@@ -25,6 +25,7 @@ from src.connectors.eko.schema import customers, employees, people
 from src.connectors.fundbox.builders import (
     IdentifierBag,
     build_envelope,
+    format_address,
     serialize_row,
     to_iso,
 )
@@ -114,17 +115,7 @@ class EkoConnector(SourceConnector):
             ids = IdentifierBag()
             ids.add("email", row.email)
             ids.add("phone", row.phone_number)
-            address_parts: list[object] = [
-                row.address_1,
-                row.address_2,
-                row.city,
-                row.state,
-                row.zip,
-                row.country,
-            ]
-            address = (
-                ", ".join(str(p).strip() for p in address_parts if p and str(p).strip()) or None
-            )
+            address = format_address(row)
             yield build_envelope(
                 source_record_id=f"eko_phppos-person-{row.person_id}",
                 observed_at=to_iso(row.last_modified or row.create_date),
@@ -187,15 +178,7 @@ class EkoConnector(SourceConnector):
         if row.external_customer_id and str(row.external_customer_id).strip() != "0":
             ids.add("external_customer_id", row.external_customer_id)
 
-        address_parts: list[object] = [
-            row.address_1,
-            row.address_2,
-            row.city,
-            row.state,
-            row.zip,
-            row.country,
-        ]
-        address = ", ".join(str(p).strip() for p in address_parts if p and str(p).strip()) or None
+        address = format_address(row)
 
         dob = _epoch_to_iso(row.dob_epoch)
 
