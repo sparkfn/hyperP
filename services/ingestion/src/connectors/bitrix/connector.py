@@ -23,6 +23,7 @@ from datetime import datetime
 from sqlalchemy import func, select
 from sqlalchemy.engine import Connection
 
+from src.config import get_settings
 from src.connectors.base import SourceConnector
 from src.connectors.bitrix.db import get_engine
 from src.connectors.bitrix.schema import (
@@ -43,9 +44,12 @@ from src.connectors.chat_helpers import (
     inquiries_payload,
     latest_timestamp,
     run_extraction_batch,
+    strong_identifiers_payload,
     transactions_payload,
+    weak_identifiers_payload,
 )
-from src.exclusions import ExclusionContext, filter_extraction, normalized_name_set
+from src.exclusion_config import load_exclusion_file
+from src.exclusions import build_exclusion_context, filter_extraction
 from src.models import JsonValue
 
 logger = logging.getLogger(__name__)
@@ -228,29 +232,30 @@ class BitrixChatConnector(SourceConnector):
         deal: dict[str, object] | None,
     ) -> str:
         lines: list[str] = []
+        events: list[tuple[datetime | None, str, int, str]] = []
 
         if deal:
             title = str(deal.get("title") or "")
             if title:
                 lines.append(f"[Deal] {title}")
 
-        p_stmt = (
-            select(personalize_message_logs)
-            .where(personalize_message_logs.c.chat_id == chat_id)
-            .order_by(personalize_message_logs.c.created_at)
+        p_stmt = select(personalize_message_logs).where(
+            personalize_message_logs.c.chat_id == chat_id
         )
         for row in conn.execute(p_stmt):
             ts = ""
-            if row.created_at:
-                ts = row.created_at.strftime("%Y-%m-%d %H:%M:%S")
+            created_at = row.created_at if isinstance(row.created_at, datetime) else None
+            if created_at is not None:
+                ts = created_at.strftime("%Y-%m-%d %H:%M:%S")
+            row_id = int(getattr(row, "id", 0) or 0)
             client_name = str(getattr(row, "client_name", "") or "").strip()
             if client_name:
-                lines.append(f"[{ts}] Client: {client_name}")
+                events.append((created_at, "personalize", row_id, f"[{ts}] Client: {client_name}"))
             body = str(
                 getattr(row, "message_sent", "") or getattr(row, "llm_message", "") or ""
             ).strip()
             if body:
-                lines.append(f"[{ts}] Sent: {body}")
+                events.append((created_at, "personalize", row_id, f"[{ts}] Sent: {body}"))
 
         s_stmt = (
             select(sent_message_logs, templates.c.content.label("template_content"))
@@ -261,15 +266,27 @@ class BitrixChatConnector(SourceConnector):
                 )
             )
             .where(sent_message_logs.c.chat_id == chat_id)
-            .order_by(sent_message_logs.c.created_at)
         )
         for row in conn.execute(s_stmt):
             ts = ""
-            if row.created_at:
-                ts = row.created_at.strftime("%Y-%m-%d %H:%M:%S")
+            created_at = row.created_at if isinstance(row.created_at, datetime) else None
+            if created_at is not None:
+                ts = created_at.strftime("%Y-%m-%d %H:%M:%S")
+            row_id = int(getattr(row, "id", 0) or 0)
             body = str(getattr(row, "template_content", "") or "").strip()
             if body:
-                lines.append(f"[{ts}] Template: {body}")
+                events.append((created_at, "template", row_id, f"[{ts}] Template: {body}"))
+
+        for _ts, _source, _row_id, line in sorted(
+            events,
+            key=lambda item: (
+                0 if item[0] is not None else 1,
+                item[0] or datetime.max,
+                item[1],
+                item[2],
+            ),
+        ):
+            lines.append(line)
 
         return "\n".join(lines)
 
@@ -282,9 +299,27 @@ class BitrixChatConnector(SourceConnector):
         from src.connectors.fundbox.builders import build_envelope
 
         agent_names = [agent.name for agent in bundle.agents if agent.name]
+        try:
+            settings = get_settings()
+            company_mobile_numbers = getattr(settings, "company_mobile_numbers", [])
+            company_email_addresses = getattr(settings, "company_email_addresses", [])
+            internal_person_names = getattr(settings, "internal_person_names", [])
+            exclusions_file = getattr(settings, "ingestion_exclusions_file", "")
+        except Exception:
+            company_mobile_numbers = []
+            company_email_addresses = []
+            internal_person_names = []
+            exclusions_file = ""
+        file_exclusions = load_exclusion_file(exclusions_file)
+        file_exclusions.names.extend(agent_names)
         filtered = filter_extraction(
             extraction,
-            ExclusionContext(names=normalized_name_set(agent_names)),
+            build_exclusion_context(
+                company_mobile_numbers=company_mobile_numbers,
+                company_email_addresses=company_email_addresses,
+                internal_person_names=internal_person_names,
+                file_exclusions=file_exclusions,
+            ),
         )
         if filtered is None:
             return None
@@ -330,6 +365,8 @@ class BitrixChatConnector(SourceConnector):
             "customer_sentiment": extraction.get("customer_sentiment"),
             "chat_members": chat_members,
             "inquiries": inquiries_payload(extraction),
+            "strong_identifiers": strong_identifiers_payload(extraction),
+            "weak_identifiers": weak_identifiers_payload(extraction),
             "transactions": tx_payload,
         }
         conversation_ref: dict[str, JsonValue] = {

@@ -48,8 +48,27 @@ Return a JSON object with these top-level keys:
     - "serial_number": serial number if stated
     - "notes": any other relevant context
 - "customer_sentiment": concise customer sentiment label or phrase if evident
-- "summary": concise factual summary of the full conversation, including customer intent,
-  products/orders discussed, agent-provided order details, and any follow-up state
+- "strong_identifiers": array of explicitly stated customer identity identifiers. Each has:
+    - "type": "phone" | "email" | "government_id" | "source_customer_ref"
+    - "value": exact extracted value
+    - "label": optional source label such as nric, fin, customer_id
+    - "person_name": associated customer name if stated
+    - "confidence": confidence for this identifier from 0.0 to 1.0
+    - "notes": short evidence context
+- "weak_identifiers": array of contextual identifiers. Weak identifiers are evidence,
+  not identity keys. Each has:
+    - "type": "name" | "address" | "dob" | "machine_lta_tag" |
+      "machine_serial_number" | "machine_unit" | "product" | "order_ref" |
+      "relationship" | "other"
+    - "value": exact extracted value
+    - "label": optional source label
+    - "person_name": associated customer name if stated
+    - "confidence": confidence for this value from 0.0 to 1.0
+    - "notes": short evidence context
+- "summary": thorough sectioned factual summary of the full conversation. Use these
+  headings when evidence exists: Customer / Participants, Identity Evidence,
+  Products / Machine Units, Orders / Commercial Terms, Timeline / Follow-ups,
+  Uncertainties
 - "confidence": your overall confidence (0.0-1.0) in this extraction
 
 Conversation (newest messages last):

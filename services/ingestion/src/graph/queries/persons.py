@@ -133,9 +133,11 @@ MATCH (sr:SourceRecord {source_record_pk: $source_record_pk})
 CREATE (p)-[:HAS_FACT {
     attribute_name:    $attribute_name,
     attribute_value:   $attribute_value,
+    source_record_pk:  $source_record_pk,
     source_trust_tier: $source_trust_tier,
     confidence:        $confidence,
     quality_flag:      $quality_flag,
+    is_active:         true,
     is_current_hint:   false,
     observed_at:       datetime($observed_at),
     created_at:        datetime()
@@ -144,6 +146,7 @@ CREATE (p)-[:HAS_FACT {
 
 FETCH_PERSON_FACTS = """
 MATCH (p:Person {person_id: $person_id})-[f:HAS_FACT]->(sr:SourceRecord)
+WHERE coalesce(f.is_active, true) = true
 RETURN f.attribute_name AS attribute_name,
        f.attribute_value AS attribute_value,
        f.source_trust_tier AS source_trust_tier,

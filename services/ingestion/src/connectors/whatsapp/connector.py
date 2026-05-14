@@ -30,11 +30,14 @@ from src.connectors.chat_helpers import (
     inquiries_payload,
     latest_timestamp,
     run_extraction_batch,
+    strong_identifiers_payload,
     transactions_payload,
+    weak_identifiers_payload,
 )
 from src.connectors.whatsapp.db import get_engine
 from src.connectors.whatsapp.schema import chats, contacts, messages, orgs, sessions
-from src.exclusions import ExclusionContext, filter_extraction, normalized_phone_set
+from src.exclusion_config import load_exclusion_file
+from src.exclusions import build_exclusion_context, filter_extraction
 from src.models import JsonValue
 
 logger = logging.getLogger(__name__)
@@ -250,8 +253,17 @@ def _build_envelope(
 ) -> dict[str, JsonValue] | None:
     from src.connectors.fundbox.builders import build_envelope
 
-    settings = get_settings()
-    company_phones = list(settings.company_mobile_numbers)
+    try:
+        settings = get_settings()
+        company_phones = list(getattr(settings, "company_mobile_numbers", []))
+        company_email_addresses = getattr(settings, "company_email_addresses", [])
+        internal_person_names = getattr(settings, "internal_person_names", [])
+        exclusions_file = getattr(settings, "ingestion_exclusions_file", "")
+    except Exception:
+        company_phones = []
+        company_email_addresses = []
+        internal_person_names = []
+        exclusions_file = ""
     if bundle.session_phone:
         company_phones.append(bundle.session_phone)
     for endpoint in bundle.message_endpoints:
@@ -259,9 +271,15 @@ def _build_envelope(
         role = endpoint.get("role") if isinstance(endpoint, dict) else None
         if role == "sender" and isinstance(phone, str):
             company_phones.append(phone)
+    file_exclusions = load_exclusion_file(exclusions_file)
     filtered = filter_extraction(
         extraction,
-        ExclusionContext(phones=normalized_phone_set(company_phones)),
+        build_exclusion_context(
+            company_mobile_numbers=company_phones,
+            company_email_addresses=company_email_addresses,
+            internal_person_names=internal_person_names,
+            file_exclusions=file_exclusions,
+        ),
     )
     if filtered is None:
         return None
@@ -294,6 +312,8 @@ def _build_envelope(
         "customer_sentiment": extraction.get("customer_sentiment"),
         "chat_members": chat_members_payload(extraction),
         "inquiries": inquiries_payload(extraction),
+        "strong_identifiers": strong_identifiers_payload(extraction),
+        "weak_identifiers": weak_identifiers_payload(extraction),
         "participants": _participants_payload(bundle.participants),
         "message_endpoints": bundle.message_endpoints,
         "transactions": tx_payload,
@@ -362,9 +382,16 @@ def _phone_from_jid(jid: str) -> str | None:
     return f"+{digits}"
 
 
+def _message_sort_key(msg: dict[str, object]) -> tuple[int, str, str]:
+    ts = msg.get("timestamp")
+    if isinstance(ts, datetime):
+        return (0, ts.isoformat(), str(msg.get("id") or ""))
+    return (1, "", str(msg.get("id") or ""))
+
+
 def _format_messages(msgs: list[dict[str, object]]) -> str:
     lines: list[str] = []
-    for m in msgs:
+    for m in sorted(msgs, key=_message_sort_key):
         ts = m.get("timestamp")
         ts_str = ""
         if isinstance(ts, datetime):
@@ -381,4 +408,5 @@ def _format_messages(msgs: list[dict[str, object]]) -> str:
 
 
 def _latest_message_timestamp(msgs: list[dict[str, object]]) -> str:
-    return latest_timestamp(*(m.get("timestamp") for m in reversed(msgs)))
+    sorted_messages = sorted(msgs, key=_message_sort_key, reverse=True)
+    return latest_timestamp(*(m.get("timestamp") for m in sorted_messages))

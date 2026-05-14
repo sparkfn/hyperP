@@ -52,11 +52,31 @@ class ExtractedInquiry(TypedDict, total=False):
     notes: str | None
 
 
+class ExtractedStrongIdentifier(TypedDict, total=False):
+    type: str
+    value: str | None
+    label: str | None
+    person_name: str | None
+    confidence: float | None
+    notes: str | None
+
+
+class ExtractedWeakIdentifier(TypedDict, total=False):
+    type: str
+    value: str | None
+    label: str | None
+    person_name: str | None
+    confidence: float | None
+    notes: str | None
+
+
 class ExtractionResult(TypedDict):
     persons: list[ExtractedPerson]
     transactions: list[ExtractedTransaction]
     chat_members: list[ExtractedChatMember]
     inquiries: list[ExtractedInquiry]
+    strong_identifiers: list[ExtractedStrongIdentifier]
+    weak_identifiers: list[ExtractedWeakIdentifier]
     summary: str | None
     customer_sentiment: str | None
     confidence: float
@@ -104,6 +124,8 @@ def run_extraction_batch(texts: list[str]) -> list[ExtractionResult | None]:
             transactions_raw = parsed.get("transactions")
             chat_members_raw = parsed.get("chat_members")
             inquiries_raw = parsed.get("inquiries")
+            strong_raw = parsed.get("strong_identifiers")
+            weak_raw = parsed.get("weak_identifiers")
             summary_raw = parsed.get("summary")
             sentiment_raw = parsed.get("customer_sentiment")
             confidence_raw = parsed.get("confidence")
@@ -168,12 +190,26 @@ def run_extraction_batch(texts: list[str]) -> list[ExtractionResult | None]:
                     inquiry = _parse_inquiry(inquiry_raw)
                     if inquiry is not None:
                         inquiries.append(inquiry)
+            strong_identifiers: list[ExtractedStrongIdentifier] = []
+            if isinstance(strong_raw, list):
+                for identifier_raw in strong_raw:
+                    identifier = _parse_identifier(identifier_raw)
+                    if identifier is not None:
+                        strong_identifiers.append(identifier)
+            weak_identifiers: list[ExtractedWeakIdentifier] = []
+            if isinstance(weak_raw, list):
+                for identifier_raw in weak_raw:
+                    identifier = _parse_identifier(identifier_raw)
+                    if identifier is not None:
+                        weak_identifiers.append(identifier)
             results.append(
                 ExtractionResult(
                     persons=persons,
                     transactions=transactions,
                     chat_members=chat_members,
                     inquiries=inquiries,
+                    strong_identifiers=strong_identifiers,
+                    weak_identifiers=weak_identifiers,
                     summary=summary_raw if isinstance(summary_raw, str) else None,
                     customer_sentiment=sentiment_raw if isinstance(sentiment_raw, str) else None,
                     confidence=(
@@ -188,7 +224,11 @@ def run_extraction_batch(texts: list[str]) -> list[ExtractionResult | None]:
 
 
 def extraction_method_label() -> str:
-    return f"llm:{get_settings().llm_default_model}"
+    try:
+        model = get_settings().llm_default_model
+    except Exception:
+        model = "Qwen/Qwen2.5-72B-Instruct"
+    return f"llm:{model}"
 
 
 def identifiers_from_extraction(extraction: ExtractionResult) -> list[dict[str, JsonValue]]:
@@ -205,6 +245,19 @@ def identifiers_from_extraction(extraction: ExtractionResult) -> list[dict[str, 
             normalized_email, email_quality = normalize_email(email)
             if normalized_email is not None and email_quality == QualityFlag.VALID:
                 identifiers.add("email", normalized_email, verified=False)
+    for identifier in extraction.get("strong_identifiers", []):
+        identifier_type = identifier.get("type")
+        value = identifier.get("value")
+        if not value:
+            continue
+        if identifier_type == "phone":
+            normalized_phone, phone_quality = normalize_phone(value)
+            if normalized_phone is not None and phone_quality == QualityFlag.VALID:
+                identifiers.add("phone", normalized_phone, verified=False)
+        elif identifier_type == "email":
+            normalized_email, email_quality = normalize_email(value)
+            if normalized_email is not None and email_quality == QualityFlag.VALID:
+                identifiers.add("email", normalized_email, verified=False)
     return identifiers.items
 
 
@@ -212,6 +265,29 @@ def _optional_str(value: object) -> str | None:
     if isinstance(value, str) or value is None:
         return value
     return None
+
+
+def _optional_float(value: object) -> float | None:
+    if isinstance(value, int | float):
+        return float(value)
+    return None
+
+
+def _parse_identifier(raw: object) -> ExtractedStrongIdentifier | ExtractedWeakIdentifier | None:
+    if not isinstance(raw, dict):
+        return None
+    type_value = _optional_str(raw.get("type"))
+    value = _optional_str(raw.get("value"))
+    if type_value is None or value is None:
+        return None
+    return {
+        "type": type_value,
+        "value": value,
+        "label": _optional_str(raw.get("label")),
+        "person_name": _optional_str(raw.get("person_name")),
+        "confidence": _optional_float(raw.get("confidence")),
+        "notes": _optional_str(raw.get("notes")),
+    }
 
 
 def _parse_chat_member(member_raw: object) -> ExtractedChatMember | None:
@@ -264,6 +340,27 @@ def inquiries_payload(extraction: ExtractionResult) -> list[JsonValue]:
             }
         )
     return payload
+
+
+def _identifier_payload(
+    identifier: ExtractedStrongIdentifier | ExtractedWeakIdentifier,
+) -> dict[str, JsonValue]:
+    return {
+        "type": identifier.get("type"),
+        "value": identifier.get("value"),
+        "label": identifier.get("label"),
+        "person_name": identifier.get("person_name"),
+        "confidence": identifier.get("confidence"),
+        "notes": identifier.get("notes"),
+    }
+
+
+def strong_identifiers_payload(extraction: ExtractionResult) -> list[JsonValue]:
+    return [_identifier_payload(item) for item in extraction.get("strong_identifiers", [])]
+
+
+def weak_identifiers_payload(extraction: ExtractionResult) -> list[JsonValue]:
+    return [_identifier_payload(item) for item in extraction.get("weak_identifiers", [])]
 
 
 def transactions_payload(extraction: ExtractionResult) -> list[JsonValue]:

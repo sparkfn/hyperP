@@ -128,6 +128,7 @@ class Settings(BaseSettings):
     company_mobile_numbers: list[str] = []
     company_email_addresses: list[str] = []
     internal_person_names: list[str] = []
+    ingestion_exclusions_file: str = ""
 
     # LLM service -------------------------------------------------------------
     llm_default_model: str = "Qwen/Qwen2.5-72B-Instruct"

@@ -67,6 +67,7 @@ x-ingestion-env: &ingestion-env
   WHATSAPP_CHAT_DB_PASSWORD: ${WHATSAPP_CHAT_DB_PASSWORD:-}
   WHATSAPP_CHAT_DB_NAME: ${WHATSAPP_CHAT_DB_NAME:-whatsapp_api}
   WHATSAPP_CHAT_CHUNK_SIZE: ${WHATSAPP_CHAT_CHUNK_SIZE:-500}
+  INGESTION_EXCLUSIONS_FILE: /app/config/ingestion-exclusions.json
 
 services:
   neo4j:
@@ -172,6 +173,7 @@ services:
     environment: *ingestion-env
     volumes:
       - ./.dumps:/app/dumps:ro
+      - ${INGESTION_EXCLUSIONS_HOST_FILE:-./config/ingestion-exclusions.example.json}:/app/config/ingestion-exclusions.json:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
@@ -197,6 +199,7 @@ services:
         condition: service_healthy
     volumes:
       - ./data/celerybeat:/var/celerybeat
+      - ${INGESTION_EXCLUSIONS_HOST_FILE:-./config/ingestion-exclusions.example.json}:/app/config/ingestion-exclusions.json:ro
     command:
       - celery
       - -A
