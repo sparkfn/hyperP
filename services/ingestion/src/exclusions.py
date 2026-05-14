@@ -4,7 +4,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from src.connectors.chat_helpers import ExtractedPerson, ExtractedStrongIdentifier, ExtractionResult
+from src.connectors.chat_helpers import (
+    ExtractedPerson,
+    ExtractedPossiblePerson,
+    ExtractedStrongIdentifier,
+    ExtractionResult,
+)
 from src.exclusion_config import ExclusionFile
 from src.normalizers.email import normalize_email
 from src.normalizers.name import normalize_name
@@ -126,6 +131,22 @@ def is_excluded_person(person: ExtractedPerson, context: ExclusionContext) -> bo
     )
 
 
+def is_excluded_possible_person(
+    person: ExtractedPossiblePerson,
+    context: ExclusionContext,
+) -> bool:
+    if is_excluded_phone(person.get("phone"), context):
+        return True
+    if is_excluded_email(person.get("email"), context):
+        return True
+    if is_excluded_name(person.get("name"), context):
+        return True
+    return any(
+        _is_excluded_strong_identifier(identifier, context)
+        for identifier in person.get("identifiers", [])
+    )
+
+
 def _is_excluded_strong_identifier(
     identifier: ExtractedStrongIdentifier,
     context: ExclusionContext,
@@ -149,14 +170,20 @@ def filter_extraction(
     persons = [
         person for person in extraction["persons"] if not is_excluded_person(person, context)
     ]
+    possible_persons = [
+        person
+        for person in extraction.get("possible_persons", [])
+        if not is_excluded_possible_person(person, context)
+    ]
     strong_identifiers = [
         identifier
         for identifier in extraction.get("strong_identifiers", [])
         if not _is_excluded_strong_identifier(identifier, context)
     ]
-    if not persons and not strong_identifiers:
+    if not persons and not possible_persons and not strong_identifiers:
         return None
     filtered = extraction.copy()
     filtered["persons"] = persons
+    filtered["possible_persons"] = possible_persons
     filtered["strong_identifiers"] = strong_identifiers
     return filtered

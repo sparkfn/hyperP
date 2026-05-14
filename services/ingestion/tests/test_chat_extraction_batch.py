@@ -120,6 +120,63 @@ def test_chat_extraction_prompt_keeps_persons_customer_only() -> None:
     assert "strong_identifiers" in prompt
     assert "weak_identifiers" in prompt
     assert "Weak identifiers are evidence" in prompt
+    assert "possible_persons" in prompt
+    assert "secondary external people" in prompt
+    assert "Group identifiers under the possible person they describe" in prompt
+    assert "relationship_to_primary" in prompt
+    assert "pending KNOWS" in prompt
+
+
+def test_possible_persons_from_extraction_keeps_grouped_identifiers_separate() -> None:
+    from src.connectors.chat_helpers import (
+        ExtractionResult,
+        identifiers_from_possible_person,
+        possible_persons_from_extraction,
+    )
+
+    extraction = ExtractionResult(
+        persons=[],
+        possible_persons=[
+            {
+                "name": "Alice",
+                "phone": "+65 8123 4567",
+                "identifiers": [{"type": "phone", "value": "+6581234567", "confidence": 0.95}],
+                "weak_identifiers": [{"type": "name", "value": "Alice", "confidence": 0.8}],
+                "role": "primary_customer",
+                "relationship_to_primary": None,
+                "relationship_label": None,
+                "evidence": "Alice gave her phone",
+                "confidence": 0.95,
+            },
+            {
+                "name": "Bob",
+                "email": "bob@example.com",
+                "identifiers": [{"type": "email", "value": "bob@example.com", "confidence": 0.9}],
+                "weak_identifiers": [{"type": "name", "value": "Bob", "confidence": 0.8}],
+                "role": "secondary_person",
+                "relationship_to_primary": "brother",
+                "relationship_label": "brother",
+                "evidence": "Alice said Bob is her brother",
+                "confidence": 0.9,
+            },
+        ],
+        transactions=[],
+        chat_members=[],
+        inquiries=[],
+        strong_identifiers=[],
+        weak_identifiers=[],
+        summary="Customer / Participants:\nAlice mentioned Bob.",
+        customer_sentiment="neutral",
+        confidence=0.9,
+    )
+
+    people = possible_persons_from_extraction(extraction)
+    alice_identifiers = identifiers_from_possible_person(people[0])
+    bob_identifiers = identifiers_from_possible_person(people[1])
+
+    assert {item["value"] for item in alice_identifiers} == {"+6581234567"}
+    assert {item["value"] for item in bob_identifiers} == {"bob@example.com"}
+    assert people[1]["relationship_to_primary"] == "brother"
 
 
 def test_identifiers_from_extraction_deduplicates_legacy_and_strong_identifiers() -> None:

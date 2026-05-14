@@ -35,7 +35,10 @@ from src.graph.schema_init import apply_schema
 from src.models import IngestResult, RecordType, SourceRecordEnvelope
 from src.pipeline import IngestPipeline
 from src.pipeline_addresses import ingest_address_record
-from src.pipeline_knows import materialize_knows_from_contacts
+from src.pipeline_knows import (
+    materialize_knows_from_chat_relationships,
+    materialize_knows_from_contacts,
+)
 from src.pipeline_sales import drain_pending_customer_sales, ingest_sales_record
 
 logger = logging.getLogger(__name__)
@@ -272,6 +275,12 @@ def run_ingestion(
             drained = drain_pending_customer_sales(client)
             if drained:
                 logger.info("Drained %d pending sales records", drained)
+            chat_knows_linked = materialize_knows_from_chat_relationships(client)
+            if chat_knows_linked:
+                logger.info(
+                    "Materialized %d KNOWS edges from chat relationships",
+                    chat_knows_linked,
+                )
             knows_linked = materialize_knows_from_contacts(client)
             if knows_linked:
                 logger.info("Materialized %d KNOWS edges from contacts", knows_linked)

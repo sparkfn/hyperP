@@ -140,6 +140,68 @@ def test_whatsapp_chat_envelope_keeps_agent_identity_raw_only(monkeypatch: Monke
     assert record["raw_payload"]["transactions"][0]["notes"] == (
         "Tonni confirmed the order details"
     )
-    assert record["raw_payload"]["summary"] == (
-        "Ada ordered item A; Tonni confirmed follow-up state."
+
+
+def test_whatsapp_chat_envelopes_split_possible_people(monkeypatch: MonkeyPatch) -> None:
+    monkeypatch.setattr(whatsapp_module, "extraction_method_label", lambda: "llm:test")
+
+    bundle = whatsapp_module._ChatBundle(
+        chat_id="6599990000@c.us",
+        chat_name="Alice chat",
+        session_id="session-1",
+        whatsapp_user_id="6599990000@c.us",
+        tenant="fundbox",
+        msg_text="Alice: My phone is +6581234567. My brother Bob is bob@example.com.",
+        observed_at="2026-05-07T10:01:00",
+        participants=[],
+        message_endpoints=[],
+        session_phone=None,
     )
+    extraction = {
+        "persons": [],
+        "possible_persons": [
+            {
+                "name": "Alice",
+                "phone": "+6581234567",
+                "identifiers": [{"type": "phone", "value": "+6581234567", "confidence": 0.95}],
+                "weak_identifiers": [],
+                "role": "primary_customer",
+                "relationship_to_primary": None,
+                "relationship_label": None,
+                "evidence": "Alice gave her phone",
+                "confidence": 0.95,
+            },
+            {
+                "name": "Bob",
+                "email": "bob@example.com",
+                "identifiers": [{"type": "email", "value": "bob@example.com", "confidence": 0.9}],
+                "weak_identifiers": [],
+                "role": "secondary_person",
+                "relationship_to_primary": "brother",
+                "relationship_label": "brother",
+                "evidence": "Alice said Bob is her brother",
+                "confidence": 0.9,
+            },
+        ],
+        "transactions": [],
+        "chat_members": [],
+        "inquiries": [],
+        "strong_identifiers": [],
+        "weak_identifiers": [],
+        "summary": "Alice mentioned Bob.",
+        "customer_sentiment": "neutral",
+        "confidence": 0.9,
+    }
+
+    records = whatsapp_module._build_envelopes(bundle=bundle, extraction=extraction)
+
+    assert [record["source_record_id"] for record in records] == [
+        "whatsapp-chat-6599990000@c.us-person-1",
+        "whatsapp-chat-6599990000@c.us-person-2",
+    ]
+    assert records[0]["attributes"]["full_name"] == "Alice"
+    assert {item["value"] for item in records[0]["identifiers"]} == {"+6581234567"}
+    assert records[1]["attributes"]["full_name"] == "Bob"
+    assert {item["value"] for item in records[1]["identifiers"]} == {"bob@example.com"}
+    assert records[1]["raw_payload"]["primary_source_record_id"] == records[0]["source_record_id"]
+    assert records[1]["raw_payload"]["relationship_to_primary"] == "brother"

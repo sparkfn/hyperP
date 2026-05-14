@@ -17,16 +17,28 @@ Always output valid JSON.\
 EXTRACTION_TEMPLATE = """\
 Extract customer identity and transaction information from the following conversation.
 Return a JSON object with these top-level keys:
-- "persons": array of customers, clients, prospects, or other external people whose
-  identity should be attached to the customer profile. Do not include sales agents,
-  staff, internal users, tenant or business representatives, or message senders acting
-  on behalf of the business. Each person has:
+- "persons": legacy array of customers, clients, prospects, or other external people whose
+  identity should be attached to the customer profile. Prefer `possible_persons` for new
+  grouped output. Do not include sales agents, staff, internal users, tenant or business
+  representatives, or message senders acting on behalf of the business.
+- "possible_persons": array of customers, clients, prospects, or secondary external people
+  mentioned in the conversation. Group identifiers under the possible person they describe;
+  never mix identifiers from two people in one object. Do not include sales agents, staff,
+  internal users, tenant or business representatives, or message senders acting on behalf
+  of the business. Each possible person has:
     - "name": full name if stated
     - "phone": phone number if stated (Singapore format like +65 or 8-digit local)
     - "email": email address if stated
     - "address": full address if stated
     - "nric": NRIC/FIN number if stated
-    - "notes": any other relevant context about this customer
+    - "role": primary_customer | secondary_person | prospect | other if evident
+    - "relationship_to_primary": relationship such as brother, wife, referrer if stated
+    - "relationship_label": exact relationship phrase if stated; used as pending KNOWS evidence
+    - "identifiers": strong identifiers for this possible person only
+    - "weak_identifiers": weak/contextual identifiers for this possible person only
+    - "evidence": short text explaining why these identifiers belong together
+    - "confidence": confidence for this person grouping from 0.0 to 1.0
+    - "notes": any other relevant context about this possible person
 - "transactions": array of orders/invoices mentioned anywhere in the full conversation.
   Include order details stated by customers or business representatives. Each has:
     - "order_id": order/invoice reference number if stated
