@@ -206,7 +206,7 @@ function PersonBreadcrumb({ personName }: { personName: string | null }): ReactE
           </svg>
           Override fields
         </button>
-        <button type="button" className={styles.bcBtnPrimary}>
+        <button type="button" className={styles.bcBtnDanger}>
           <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
             <path d="M17 20.41L18.41 19 15 15.59 13.59 17 17 20.41zM7.5 8H11v5.59L5.59 19 7 20.41l6-6V8h3.5L12 3.5 7.5 8z"/>
           </svg>
@@ -383,14 +383,10 @@ function PersonTabs({ tabs, activeTab, onChange }: { tabs: TabConfig[]; activeTa
   );
 }
 
-type SummaryIconType = "revenue" | "completeness" | "contacts" | "activity";
-
 interface TopStat {
   label: string;
   value: string;
   note: string;
-  accentClass?: string;
-  icon: SummaryIconType;
   valueStyle?: { color: string };
 }
 
@@ -427,33 +423,25 @@ function RightRail({ person, detailData, tabs, activeTab, onChange, children }: 
 
   const topStats: TopStat[] = [
     {
-      label: "Total revenue",
+      label: "Lifetime value",
       value: detailData.sales.length ? fmtCurrency(totalSales, detailData.sales[0]?.currency ?? "SGD") : "—",
       note: detailData.sales.length ? `${detailData.sales.length} orders` : "No orders yet",
-      accentClass: styles.summaryAccentNeutral,
-      icon: "revenue",
     },
     {
-      label: "Profile completeness",
+      label: "Completeness",
       value: `${completeness}%`,
       note: `${detailData.identifiers.length} identifiers`,
-      accentClass: "",
-      icon: "completeness",
       valueStyle: { color: scoreColor(person.profile_completeness_score) },
     },
     {
-      label: "Primary contacts",
+      label: "Connections",
       value: `${phoneCount} · ${emailCount}`,
       note: `${phoneCount} phones · ${emailCount} emails`,
-      accentClass: styles.summaryAccentNeutral,
-      icon: "contacts",
     },
     {
-      label: "Latest activity",
+      label: "Last activity",
       value: fmtDate(latestActivityAt),
       note: `at ${fmtTime(person.updated_at)}`,
-      accentClass: styles.summaryAccentNeutral,
-      icon: "activity",
     },
   ];
 
@@ -462,9 +450,8 @@ function RightRail({ person, detailData, tabs, activeTab, onChange, children }: 
       <section className={styles.summaryStrip}>
         {topStats.map((stat) => (
           <div key={stat.label} className={styles.summaryCard}>
-            <SummaryIcon type={stat.icon} />
             <div className={styles.summaryCardLabel}>{stat.label}</div>
-            <div className={`${styles.summaryCardValue} ${stat.accentClass ?? ""}`} style={stat.valueStyle}>{stat.value}</div>
+            <div className={styles.summaryCardValue} style={stat.valueStyle}>{stat.value}</div>
             <div className={styles.summaryCardNote}>{stat.note}</div>
           </div>
         ))}
@@ -479,47 +466,6 @@ function RightRail({ person, detailData, tabs, activeTab, onChange, children }: 
   );
 }
 
-function SummaryIcon({ type }: { type: SummaryIconType }): ReactElement {
-  const iconClassName = `${styles.summaryArt} ${
-    type === "revenue"
-      ? styles.summaryArtRevenue
-      : type === "completeness"
-        ? styles.summaryArtRecords
-        : type === "contacts"
-          ? styles.summaryArtIdentifiers
-          : styles.summaryArtEntities
-  }`;
-
-  if (type === "revenue") {
-    return (
-      <svg className={iconClassName} viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-        <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1.41 16.09V20h-2.67v-1.93c-1.71-.36-3.16-1.46-3.27-3.4h1.96c.1 1.05.82 1.87 2.65 1.87 1.96 0 2.4-.98 2.4-1.59 0-.83-.44-1.61-2.67-2.14-2.48-.6-4.18-1.62-4.18-3.67 0-1.72 1.39-2.84 3.11-3.21V4h2.67v1.95c1.86.45 2.79 1.86 2.85 3.39H14.3c-.05-1.11-.64-1.87-2.22-1.87-1.5 0-2.4.68-2.4 1.64 0 .84.65 1.39 2.67 1.91s4.18 1.39 4.18 3.91c-.01 1.83-1.38 2.83-3.12 3.16z" />
-      </svg>
-    );
-  }
-
-  if (type === "completeness") {
-    return (
-      <svg className={iconClassName} viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-        <path d="M12 22C6.477 22 2 17.523 2 12S6.477 2 12 2s10 4.477 10 10-4.477 10-10 10zm-1.177-7.86l-2.765-2.767L7 12.431l3.823 3.845L18 9.124l-1.06-1.06-6.117 6.077z" />
-      </svg>
-    );
-  }
-
-  if (type === "contacts") {
-    return (
-      <svg className={iconClassName} viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-        <path d="M6.6 10.8c1.4 2.8 3.8 5.1 6.6 6.6l2.2-2.2c.3-.3.7-.4 1-.2 1.1.4 2.3.6 3.6.6.6 0 1 .4 1 1V20c0 .6-.4 1-1 1-9.4 0-17-7.6-17-17 0-.6.4-1 1-1h3.5c.6 0 1 .4 1 1 0 1.3.2 2.5.6 3.6.1.3 0 .7-.2 1L6.6 10.8z" />
-      </svg>
-    );
-  }
-
-  return (
-    <svg className={iconClassName} viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-      <path d="M3.5 18.49l6-6.01 4 4L22 6.92l-1.41-1.41-7.09 7.97-4-4L2 16.99z" />
-    </svg>
-  );
-}
 
 type TLEventKind = "audit" | "source" | "sale";
 
