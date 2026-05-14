@@ -12,6 +12,7 @@ def test_load_exclusion_file_returns_arrays(tmp_path: Path) -> None:
         "{"
         '"phones":["+6512345678"],'
         '"emails":["ops@example.com"],'
+        '"email_domains":["ada.asia"],'
         '"names":["Ada Ops"],'
         '"source_ids":["staff-1"]'
         "}",
@@ -22,6 +23,7 @@ def test_load_exclusion_file_returns_arrays(tmp_path: Path) -> None:
 
     assert loaded.phones == ["+6512345678"]
     assert loaded.emails == ["ops@example.com"]
+    assert loaded.email_domains == ["ada.asia"]
     assert loaded.names == ["Ada Ops"]
     assert loaded.source_ids == ["staff-1"]
 
@@ -31,6 +33,7 @@ def test_load_exclusion_file_blank_path_returns_empty() -> None:
 
     assert loaded.phones == []
     assert loaded.emails == []
+    assert loaded.email_domains == []
     assert loaded.names == []
     assert loaded.source_ids == []
 

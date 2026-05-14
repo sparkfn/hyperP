@@ -17,6 +17,7 @@ class ExclusionContext:
 
     phones: frozenset[str] = field(default_factory=frozenset)
     emails: frozenset[str] = field(default_factory=frozenset)
+    email_domains: frozenset[str] = field(default_factory=frozenset)
     names: frozenset[str] = field(default_factory=frozenset)
     source_ids: frozenset[str] = field(default_factory=frozenset)
 
@@ -35,6 +36,20 @@ def normalize_excluded_email(value: str | None) -> str | None:
     return normalized
 
 
+def normalize_excluded_email_domain(value: str | None) -> str | None:
+    if not value:
+        return None
+    normalized = value.strip().lower().removeprefix("@").rstrip(".")
+    if not normalized or "@" in normalized:
+        return None
+    return normalized
+
+
+def email_matches_domain(email: str, domain: str) -> bool:
+    email_domain = email.rsplit("@", maxsplit=1)[1]
+    return email_domain == domain or email_domain.endswith(f".{domain}")
+
+
 def normalize_excluded_name(value: str | None) -> str | None:
     if not value:
         return None
@@ -48,6 +63,12 @@ def normalized_phone_set(values: list[str]) -> frozenset[str]:
 
 def normalized_email_set(values: list[str]) -> frozenset[str]:
     return frozenset(v for value in values if (v := normalize_excluded_email(value)) is not None)
+
+
+def normalized_email_domain_set(values: list[str]) -> frozenset[str]:
+    return frozenset(
+        v for value in values if (v := normalize_excluded_email_domain(value)) is not None
+    )
 
 
 def normalized_name_set(values: list[str]) -> frozenset[str]:
@@ -64,6 +85,7 @@ def build_exclusion_context(
     return ExclusionContext(
         phones=normalized_phone_set(company_mobile_numbers + file_exclusions.phones),
         emails=normalized_email_set(company_email_addresses + file_exclusions.emails),
+        email_domains=normalized_email_domain_set(file_exclusions.email_domains),
         names=normalized_name_set(internal_person_names + file_exclusions.names),
         source_ids=frozenset(
             value.strip().lower() for value in file_exclusions.source_ids if value.strip()
@@ -78,7 +100,11 @@ def is_excluded_phone(value: str | None, context: ExclusionContext) -> bool:
 
 def is_excluded_email(value: str | None, context: ExclusionContext) -> bool:
     normalized = normalize_excluded_email(value)
-    return normalized is not None and normalized in context.emails
+    if normalized is None:
+        return False
+    if normalized in context.emails:
+        return True
+    return any(email_matches_domain(normalized, domain) for domain in context.email_domains)
 
 
 def is_excluded_name(value: str | None, context: ExclusionContext) -> bool:

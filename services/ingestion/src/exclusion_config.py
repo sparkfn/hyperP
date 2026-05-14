@@ -16,6 +16,7 @@ class ExclusionFile:
 
     phones: list[str] = field(default_factory=list)
     emails: list[str] = field(default_factory=list)
+    email_domains: list[str] = field(default_factory=list)
     names: list[str] = field(default_factory=list)
     source_ids: list[str] = field(default_factory=list)
 
@@ -49,6 +50,7 @@ def load_exclusion_file(path_value: str) -> ExclusionFile:
     return ExclusionFile(
         phones=_str_list(payload.get("phones"), path=path),
         emails=_str_list(payload.get("emails"), path=path),
+        email_domains=_str_list(payload.get("email_domains"), path=path),
         names=_str_list(payload.get("names"), path=path),
         source_ids=_str_list(payload.get("source_ids"), path=path),
     )

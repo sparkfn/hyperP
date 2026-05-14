@@ -1,6 +1,7 @@
 {
   "phones": [],
   "emails": [],
+  "email_domains": [],
   "names": [],
   "source_ids": []
 }

@@ -37,6 +37,7 @@ def test_build_exclusion_context_merges_env_and_file_values() -> None:
         file_exclusions=ExclusionFile(
             phones=["+6582222222"],
             emails=["file@example.com"],
+            email_domains=["Ada.Asia"],
             names=["File Person"],
             source_ids=["staff-1"],
         ),
@@ -46,6 +47,7 @@ def test_build_exclusion_context_merges_env_and_file_values() -> None:
     assert "+6582222222" in context.phones
     assert "env@example.com" in context.emails
     assert "file@example.com" in context.emails
+    assert "ada.asia" in context.email_domains
     assert "staff-1" in context.source_ids
 
 
@@ -110,3 +112,23 @@ def test_email_and_name_checks_are_exact_after_normalization() -> None:
     assert is_excluded_email(" Staff@Example.com ", context)
     assert is_excluded_name("  Staff   Member ", context)
     assert not is_excluded_name("Staff Member Jr", context)
+
+
+def test_email_domain_exclusion_matches_domain_and_subdomains() -> None:
+    context = ExclusionContext(email_domains=frozenset({"ada.asia"}))
+
+    assert is_excluded_email("staff@ada.asia", context)
+    assert is_excluded_email("staff@mail.ada.asia", context)
+    assert not is_excluded_email("staff@notada.asia", context)
+
+
+def test_email_domain_exclusion_normalizes_configured_domains() -> None:
+    context = build_exclusion_context(
+        company_mobile_numbers=[],
+        company_email_addresses=[],
+        internal_person_names=[],
+        file_exclusions=ExclusionFile(email_domains=["@SpeedZone.Asia", " mail.ADA.Asia "]),
+    )
+
+    assert is_excluded_email("person@speedzone.asia", context)
+    assert is_excluded_email("person@x.mail.ada.asia", context)
