@@ -281,6 +281,9 @@ Person statuses: `active`, `merged`, `suppressed` (no `under_review` — review 
 
 ## Working with This Repo
 
+### Worktrees
+Create worktrees from the current branch/HEAD, not from `origin/main`, so in-progress branch context is preserved.
+
 ### docker-compose.yml sync rule
 Any commit that modifies the root `docker-compose.yml` **must** also apply the equivalent change to every counterpart in `.docker/[environment]/docker-compose.yml`. Currently: `.docker/staging/docker-compose.yml`. The environment files differ only in build context paths (`../../`), project name (`name:`), and environment-specific volume paths — service definitions, image versions, and environment variables must stay in sync. Apply changes to both files in the same commit.
 
