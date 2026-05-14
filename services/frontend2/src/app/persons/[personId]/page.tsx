@@ -1,0 +1,1362 @@
+"use client";
+
+import { Fragment, use, useMemo, useState, type ReactElement } from "react";
+import Link from "next/link";
+import { notFound } from "next/navigation";
+import {
+  MOCK_AUDIT,
+  MOCK_BANKRUPTCY,
+  MOCK_IDENTIFIERS,
+  MOCK_PERSON_CONNECTIONS_BY_PERSON_ID,
+  MOCK_PERSONS,
+  MOCK_SALES,
+  MOCK_SOURCE_RECORDS,
+} from "@/lib/mock-data";
+import type { PersonConnection, SalesOrder } from "@/lib/api-types";
+import type {
+  PersonAuditEvent,
+  PersonBankruptcyCase,
+  PersonIdentifier,
+  PersonSourceRecord,
+} from "@/lib/api-types-person";
+import styles from "./person.module.css";
+
+const AVATAR_COLORS = ["#4361ee", "#7c3aed", "#0891b2", "#059669", "#d97706", "#dc2626"];
+
+type Person = (typeof MOCK_PERSONS)[number];
+type Tab = "timeline" | "matches" | "connections" | "identifier" | "source" | "sales" | "bankruptcy" | "audit" | "graph";
+
+type DetailData = {
+  identifiers: PersonIdentifier[];
+  sourceRecords: PersonSourceRecord[];
+  sales: SalesOrder[];
+  audit: PersonAuditEvent[];
+  bankruptcyCases: PersonBankruptcyCase[];
+};
+
+
+type SnapshotField = {
+  label: string;
+  value: string;
+  mono?: boolean;
+};
+
+type TabConfig = {
+  id: Tab;
+  label: string;
+  count?: number;
+};
+
+function avatarColor(name: string): string {
+  return AVATAR_COLORS[name.charCodeAt(0) % AVATAR_COLORS.length] ?? "#4361ee";
+}
+
+function scoreColor(score: number): string {
+  if (score >= 0.8) return "#22c55e";
+  if (score >= 0.5) return "#f59e0b";
+  return "#ef4444";
+}
+
+const DATE_FORMATTER = new Intl.DateTimeFormat("en-SG", {
+  day: "2-digit",
+  month: "short",
+  year: "numeric",
+  timeZone: "UTC",
+});
+
+const DATE_TIME_FORMATTER = new Intl.DateTimeFormat("en-SG", {
+  day: "2-digit",
+  month: "short",
+  year: "numeric",
+  hour: "2-digit",
+  minute: "2-digit",
+  hour12: true,
+  timeZone: "UTC",
+});
+
+function fmtDate(value: string | null): string {
+  if (!value) return "—";
+  return DATE_FORMATTER.format(new Date(value));
+}
+
+function fmtDateTime(value: string | null): string {
+  if (!value) return "—";
+  return DATE_TIME_FORMATTER.format(new Date(value));
+}
+
+function fmtTime(value: string | null): string {
+  if (!value) return "—";
+  return new Intl.DateTimeFormat("en-SG", {
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: true,
+    timeZone: "UTC",
+  }).format(new Date(value));
+}
+
+function fmtCurrency(amount: number | null, currency: string | null): string {
+  if (amount == null) return "—";
+  return `${currency ?? "SGD"} ${amount.toFixed(2)}`;
+}
+
+function titleCase(value: string): string {
+  return value
+    .split("_")
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
+}
+
+function personInitials(name: string | null): string {
+  return (name ?? "?")
+    .split(" ")
+    .filter(Boolean)
+    .map((part) => part[0])
+    .slice(0, 2)
+    .join("")
+    .toUpperCase();
+}
+
+function getPersonDetailData(person: Person): DetailData {
+  const sourceRecords = MOCK_SOURCE_RECORDS.filter((record) => record.linked_person_id === person.person_id);
+  const audit = MOCK_AUDIT.filter(
+    (event) =>
+      event.survivor_person_id === person.person_id ||
+      event.absorbed_person_id === person.person_id ||
+      sourceRecords.some((record) => record.source_record_pk === event.metadata.source_record_pk),
+  );
+
+  if (person.person_id === "p-001") {
+    return {
+      identifiers: MOCK_IDENTIFIERS,
+      sourceRecords,
+      sales: MOCK_SALES,
+      audit,
+      bankruptcyCases: MOCK_BANKRUPTCY,
+    };
+  }
+
+  const identifiers: PersonIdentifier[] = [];
+
+  if (person.preferred_phone) {
+    identifiers.push({
+      identifier_type: "phone",
+      normalized_value: person.preferred_phone,
+      is_active: true,
+      is_verified: (person.phone_confidence ?? 0) >= 0.9,
+      last_confirmed_at: person.updated_at,
+      source_system_key: person.entities[0]?.entity_key ?? null,
+      source_record_ids: null,
+    });
+  }
+
+  if (person.preferred_email) {
+    identifiers.push({
+      identifier_type: "email",
+      normalized_value: person.preferred_email,
+      is_active: true,
+      is_verified: true,
+      last_confirmed_at: person.updated_at,
+      source_system_key: person.entities[0]?.entity_key ?? null,
+      source_record_ids: null,
+    });
+  }
+
+  if (person.preferred_nric) {
+    identifiers.push({
+      identifier_type: "nric",
+      normalized_value: person.preferred_nric,
+      is_active: true,
+      is_verified: true,
+      last_confirmed_at: person.created_at,
+      source_system_key: person.entities[0]?.entity_key ?? null,
+      source_record_ids: null,
+    });
+  }
+
+  return {
+    identifiers,
+    sourceRecords,
+    sales: [],
+    audit,
+    bankruptcyCases: [],
+  };
+}
+
+
+
+function PersonBreadcrumb({ personName }: { personName: string | null }): ReactElement {
+  return (
+    <div className={styles.breadcrumbRow}>
+      <div className={styles.breadcrumb}>
+        <Link href="/persons">Persons</Link>
+        <span className={styles.breadcrumbSep}>/</span>
+        <span className={styles.breadcrumbCurrent}>{personName ?? "Unknown person"}</span>
+      </div>
+      <div className={styles.breadcrumbActions}>
+        <button type="button" className={styles.bcBtnText}>
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8"/><polyline points="16 6 12 2 8 6"/><line x1="12" y1="2" x2="12" y2="15"/>
+          </svg>
+          Share
+        </button>
+        <button type="button" className={styles.bcBtnOutline}>
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
+          </svg>
+          Override fields
+        </button>
+        <button type="button" className={styles.bcBtnPrimary}>
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+            <path d="M17 20.41L18.41 19 15 15.59 13.59 17 17 20.41zM7.5 8H11v5.59L5.59 19 7 20.41l6-6V8h3.5L12 3.5 7.5 8z"/>
+          </svg>
+          Merge into
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function PersonSidebar({ person, detailData }: { person: Person; detailData: DetailData }): ReactElement {
+  const completeness = Math.round(person.profile_completeness_score * 100);
+  const statusClass =
+    person.status === "active"
+      ? styles.badgeActive
+      : person.status === "merged"
+        ? styles.badgeMerged
+        : styles.badgeSuppressed;
+
+  const priorityLabel = person.is_high_risk
+    ? { label: "Risk", className: styles.priorityRisk }
+    : person.is_high_value
+      ? { label: "High", className: styles.priorityHigh }
+      : person.profile_completeness_score < 0.3
+        ? { label: "Low", className: styles.priorityLow }
+        : null;
+
+  const summaryFields: SnapshotField[] = [
+    { label: "NRIC", value: person.preferred_nric ?? "—", mono: true },
+    { label: "DOB", value: person.preferred_dob ?? "—" },
+    { label: "Source record", value: String(detailData.sourceRecords.length) },
+    { label: "Updated", value: fmtDateTime(person.updated_at) },
+  ];
+
+  const phones = Array.from(
+    new Set(
+      [
+        person.preferred_phone,
+        ...detailData.identifiers
+          .filter((identifier) => identifier.identifier_type === "phone")
+          .map((identifier) => identifier.normalized_value),
+        ...detailData.sourceRecords.flatMap((record) =>
+          (record.normalized_payload?.identifiers ?? [])
+            .filter((identifier) => identifier.identifier_type === "phone")
+            .map((identifier) => identifier.normalized_value),
+        ),
+      ].filter((value): value is string => Boolean(value)),
+    ),
+  );
+
+  const emails = Array.from(
+    new Set(
+      [
+        person.preferred_email,
+        ...detailData.identifiers
+          .filter((identifier) => identifier.identifier_type === "email")
+          .map((identifier) => identifier.normalized_value),
+        ...detailData.sourceRecords.flatMap((record) =>
+          (record.normalized_payload?.identifiers ?? [])
+            .filter((identifier) => identifier.identifier_type === "email")
+            .map((identifier) => identifier.normalized_value),
+        ),
+      ].filter((value): value is string => Boolean(value)),
+    ),
+  );
+
+  const addresses = Array.from(
+    new Set(
+      [
+        person.preferred_address?.normalized_full,
+        ...detailData.sourceRecords
+          .map((record) => record.normalized_payload?.address?.normalized_full)
+          .filter((value): value is string => Boolean(value)),
+      ].filter((value): value is string => Boolean(value)),
+    ),
+  );
+
+  return (
+    <aside className={styles.sidebar}>
+      <section className={styles.sidebarHeroCard}>
+        <div className={styles.sidebarHeroTop}>
+          <div className={styles.sidebarHeroAvatarCol}>
+            <div
+              className={styles.avatarRing}
+              style={{ background: `conic-gradient(${scoreColor(person.profile_completeness_score)} ${completeness}%, rgba(148, 163, 184, 0.18) 0)` }}
+            >
+              <div className={styles.avatarRingInner}>
+                <div className={styles.avatar} style={{ background: avatarColor(person.preferred_full_name ?? "?") }}>
+                  {personInitials(person.preferred_full_name)}
+                </div>
+              </div>
+            </div>
+          </div>
+          <div className={styles.sidebarHeroIdentity}>
+            <div className={styles.sidebarHeroRow}>
+              <div className={styles.sidebarHeroName}>{person.preferred_full_name}</div>
+            </div>
+            <div className={styles.sidebarHeroMetaRow}>
+              <div className={`${styles.sidebarHeroMetaLine} ${styles.sidebarHeroPersonId}`}>{person.person_id}</div>
+              <span className={`${styles.badge} ${statusClass} ${styles.badgeCompact} ${styles.badgeSubtle}`}>
+                {titleCase(person.status)}
+              </span>
+            </div>
+            <div className={styles.compactCompletenessInline}>
+              <span className={styles.compactCompletenessValue}>{completeness}%</span>
+              <div className={styles.completenessBarWrap}>
+                <div className={styles.completenessBarCompact}>
+                  <div
+                    className={styles.completenessFill}
+                    style={{ width: `${completeness}%`, background: scoreColor(person.profile_completeness_score) }}
+                  />
+                </div>
+              </div>
+              {priorityLabel && <span className={`${styles.priorityLabel} ${priorityLabel.className}`}>{priorityLabel.label}</span>}
+            </div>
+          </div>
+        </div>
+        <div className={styles.sidebarHeroSummaryRows}>
+          {summaryFields.map((field) => (
+            <div key={field.label} className={styles.sidebarHeroSummaryRow}>
+              <div className={styles.sidebarHeroSummaryLabel}>{field.label}</div>
+              <div className={`${styles.sidebarHeroSummaryValue} ${field.mono ? styles.mono : ""}`}>{field.value}</div>
+            </div>
+          ))}
+          {(() => {
+            const phoneItems = phones.length ? phones : ["—"];
+            return phoneItems.map((phone, index) => (
+              <div key={`phone-${phone}-${index}`} className={styles.sidebarHeroSummaryRow}>
+                <div className={styles.sidebarHeroSummaryLabel}>{`Phone ${index + 1}`}</div>
+                <div className={`${styles.sidebarHeroSummaryValue} ${styles.infoValueItem}`}>{phone}</div>
+              </div>
+            ));
+          })()}
+          {(() => {
+            const emailItems = emails.length ? emails : ["—"];
+            return emailItems.map((email, index) => (
+              <div key={`email-${email}-${index}`} className={styles.sidebarHeroSummaryRow}>
+                <div className={styles.sidebarHeroSummaryLabel}>{`Email ${index + 1}`}</div>
+                <div className={`${styles.sidebarHeroSummaryValue} ${styles.infoValueItem}`}>{email}</div>
+              </div>
+            ));
+          })()}
+        </div>
+      </section>
+      <section className={styles.sidebarCard}>
+        <div className={`${styles.infoCardTitle} ${styles.addressCardTitle}`}>Addresses</div>
+        <div className={styles.addressList}>
+          {(addresses.length ? addresses : ["—"]).map((address) => (
+            <div key={address} className={styles.addressItem}>
+              <div className={styles.addressItemValue}>{address}</div>
+            </div>
+          ))}
+        </div>
+      </section>
+    </aside>
+  );
+}
+
+function PersonTabs({ tabs, activeTab, onChange }: { tabs: TabConfig[]; activeTab: Tab; onChange: (tab: Tab) => void }): ReactElement {
+  return (
+    <div className={styles.tabs}>
+      {tabs.map((tab) => (
+        <button
+          key={tab.id}
+          type="button"
+          className={`${styles.tab} ${activeTab === tab.id ? styles.tabActive : ""}`}
+          onClick={() => onChange(tab.id)}
+        >
+          <span>{tab.label}</span>
+          {tab.count !== undefined && <span className={styles.tabCount}>{tab.count}</span>}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+type SummaryIconType = "revenue" | "completeness" | "contacts" | "activity";
+
+interface TopStat {
+  label: string;
+  value: string;
+  note: string;
+  accentClass?: string;
+  icon: SummaryIconType;
+  valueStyle?: { color: string };
+}
+
+function RightRail({ person, detailData, tabs, activeTab, onChange, children }: { person: Person; detailData: DetailData; tabs: TabConfig[]; activeTab: Tab; onChange: (tab: Tab) => void; children: ReactElement }): ReactElement {
+  const totalSales = detailData.sales.reduce((sum, order) => sum + (order.total_amount ?? 0), 0);
+  const completeness = Math.round(person.profile_completeness_score * 100);
+  const phoneCount = new Set(
+    [
+      person.preferred_phone,
+      ...detailData.identifiers
+        .filter((identifier) => identifier.identifier_type === "phone")
+        .map((identifier) => identifier.normalized_value),
+      ...detailData.sourceRecords.flatMap((record) =>
+        (record.normalized_payload?.identifiers ?? [])
+          .filter((identifier) => identifier.identifier_type === "phone")
+          .map((identifier) => identifier.normalized_value),
+      ),
+    ].filter(Boolean),
+  ).size;
+  const emailCount = new Set(
+    [
+      person.preferred_email,
+      ...detailData.identifiers
+        .filter((identifier) => identifier.identifier_type === "email")
+        .map((identifier) => identifier.normalized_value),
+      ...detailData.sourceRecords.flatMap((record) =>
+        (record.normalized_payload?.identifiers ?? [])
+          .filter((identifier) => identifier.identifier_type === "email")
+          .map((identifier) => identifier.normalized_value),
+      ),
+    ].filter(Boolean),
+  ).size;
+  const latestActivityAt = detailData.sourceRecords[0]?.observed_at ?? person.updated_at;
+
+  const topStats: TopStat[] = [
+    {
+      label: "Total revenue",
+      value: detailData.sales.length ? fmtCurrency(totalSales, detailData.sales[0]?.currency ?? "SGD") : "—",
+      note: detailData.sales.length ? `${detailData.sales.length} orders` : "No orders yet",
+      accentClass: styles.summaryAccentNeutral,
+      icon: "revenue",
+    },
+    {
+      label: "Profile completeness",
+      value: `${completeness}%`,
+      note: `${detailData.identifiers.length} identifiers`,
+      accentClass: "",
+      icon: "completeness",
+      valueStyle: { color: scoreColor(person.profile_completeness_score) },
+    },
+    {
+      label: "Primary contacts",
+      value: `${phoneCount} · ${emailCount}`,
+      note: `${phoneCount} phones · ${emailCount} emails`,
+      accentClass: styles.summaryAccentNeutral,
+      icon: "contacts",
+    },
+    {
+      label: "Latest activity",
+      value: fmtDate(latestActivityAt),
+      note: `at ${fmtTime(person.updated_at)}`,
+      accentClass: styles.summaryAccentNeutral,
+      icon: "activity",
+    },
+  ];
+
+  return (
+    <div className={styles.mainColumn}>
+      <section className={styles.summaryStrip}>
+        {topStats.map((stat) => (
+          <div key={stat.label} className={styles.summaryCard}>
+            <SummaryIcon type={stat.icon} />
+            <div className={styles.summaryCardLabel}>{stat.label}</div>
+            <div className={`${styles.summaryCardValue} ${stat.accentClass ?? ""}`} style={stat.valueStyle}>{stat.value}</div>
+            <div className={styles.summaryCardNote}>{stat.note}</div>
+          </div>
+        ))}
+      </section>
+
+      <div className={styles.rightTabsInline}>
+        <PersonTabs tabs={tabs} activeTab={activeTab} onChange={onChange} />
+      </div>
+
+      <div className={styles.tabPanelScroll}>{children}</div>
+    </div>
+  );
+}
+
+function SummaryIcon({ type }: { type: SummaryIconType }): ReactElement {
+  const iconClassName = `${styles.summaryArt} ${
+    type === "revenue"
+      ? styles.summaryArtRevenue
+      : type === "completeness"
+        ? styles.summaryArtRecords
+        : type === "contacts"
+          ? styles.summaryArtIdentifiers
+          : styles.summaryArtEntities
+  }`;
+
+  if (type === "revenue") {
+    return (
+      <svg className={iconClassName} viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+        <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1.41 16.09V20h-2.67v-1.93c-1.71-.36-3.16-1.46-3.27-3.4h1.96c.1 1.05.82 1.87 2.65 1.87 1.96 0 2.4-.98 2.4-1.59 0-.83-.44-1.61-2.67-2.14-2.48-.6-4.18-1.62-4.18-3.67 0-1.72 1.39-2.84 3.11-3.21V4h2.67v1.95c1.86.45 2.79 1.86 2.85 3.39H14.3c-.05-1.11-.64-1.87-2.22-1.87-1.5 0-2.4.68-2.4 1.64 0 .84.65 1.39 2.67 1.91s4.18 1.39 4.18 3.91c-.01 1.83-1.38 2.83-3.12 3.16z" />
+      </svg>
+    );
+  }
+
+  if (type === "completeness") {
+    return (
+      <svg className={iconClassName} viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+        <path d="M12 22C6.477 22 2 17.523 2 12S6.477 2 12 2s10 4.477 10 10-4.477 10-10 10zm-1.177-7.86l-2.765-2.767L7 12.431l3.823 3.845L18 9.124l-1.06-1.06-6.117 6.077z" />
+      </svg>
+    );
+  }
+
+  if (type === "contacts") {
+    return (
+      <svg className={iconClassName} viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+        <path d="M6.6 10.8c1.4 2.8 3.8 5.1 6.6 6.6l2.2-2.2c.3-.3.7-.4 1-.2 1.1.4 2.3.6 3.6.6.6 0 1 .4 1 1V20c0 .6-.4 1-1 1-9.4 0-17-7.6-17-17 0-.6.4-1 1-1h3.5c.6 0 1 .4 1 1 0 1.3.2 2.5.6 3.6.1.3 0 .7-.2 1L6.6 10.8z" />
+      </svg>
+    );
+  }
+
+  return (
+    <svg className={iconClassName} viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+      <path d="M3.5 18.49l6-6.01 4 4L22 6.92l-1.41-1.41-7.09 7.97-4-4L2 16.99z" />
+    </svg>
+  );
+}
+
+type TLEventKind = "audit" | "source" | "sale";
+
+type TLEvent = {
+  id: string;
+  timestamp: string;
+  kind: TLEventKind;
+  title: string;
+  meta: string;
+  description?: string;
+};
+
+
+function buildTimeline(detailData: DetailData): TLEvent[] {
+  const events: TLEvent[] = [];
+
+  detailData.audit.forEach((e) => {
+    events.push({
+      id: `audit-${e.merge_event_id}`,
+      timestamp: e.created_at,
+      kind: "audit",
+      title: e.event_type,
+      meta: `${e.actor_type}:${e.actor_id}`,
+      description: e.reason ?? undefined,
+    });
+  });
+
+  detailData.sourceRecords.forEach((r) => {
+    events.push({
+      id: `src-${r.source_record_pk}`,
+      timestamp: r.ingested_at,
+      kind: "source",
+      title: "record_ingested",
+      meta: `${r.source_system} · ${r.source_record_id}`,
+    });
+    if (r.observed_at !== r.ingested_at) {
+      events.push({
+        id: `obs-${r.source_record_pk}`,
+        timestamp: r.observed_at,
+        kind: "source",
+        title: "record_observed",
+        meta: `${r.source_system} · ${r.source_record_id}`,
+      });
+    }
+  });
+
+  detailData.sales.forEach((o, i) => {
+    if (!o.order_date) return;
+    events.push({
+      id: `sale-${o.order_no ?? i}`,
+      timestamp: `${o.order_date}T00:00:00Z`,
+      kind: "sale",
+      title: "order_placed",
+      meta: `${o.order_no ?? o.source_order_id ?? "—"} · ${o.entity_name ?? o.source_system ?? ""}`,
+      description: o.total_amount != null ? fmtCurrency(o.total_amount, o.currency) : undefined,
+    });
+  });
+
+  return events.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+}
+
+function TimelineTab({ person, detailData }: { person: Person; detailData: DetailData }): ReactElement {
+  const events = useMemo(() => buildTimeline(detailData), [detailData]);
+  const [collapsedDates, setCollapsedDates] = useState<Set<string>>(new Set());
+
+  const grouped = useMemo(() => {
+    const map = new Map<string, TLEvent[]>();
+    events.forEach((e) => {
+      const day = e.timestamp.slice(0, 10);
+      const arr = map.get(day) ?? [];
+      arr.push(e);
+      map.set(day, arr);
+    });
+    return Array.from(map.entries()).map(([day, evts]) => ({ day, evts }));
+  }, [events]);
+
+  function toggleDate(day: string): void {
+    setCollapsedDates((prev) => {
+      const next = new Set(prev);
+      if (next.has(day)) next.delete(day); else next.add(day);
+      return next;
+    });
+  }
+
+  return (
+    <section className={styles.contentCard}>
+      <div className={styles.connHeader}>
+        <span className={styles.connHeaderTitle}>Timeline</span>
+        <span className={styles.connHeaderDot}>·</span>
+        <span className={styles.connHeaderCount}>{events.length} events</span>
+      </div>
+      <div className={styles.tlGroups}>
+        {grouped.map(({ day, evts }) => {
+          const isCollapsed = collapsedDates.has(day);
+          return (
+            <div key={day} className={styles.tlGroup}>
+              <button
+                type="button"
+                className={styles.tlGroupHeader}
+                onClick={() => toggleDate(day)}
+              >
+                <svg className={`${styles.tlChevron} ${isCollapsed ? "" : styles.tlChevronOpen}`} width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                  <path d="M9 18l6-6-6-6" />
+                </svg>
+                <span className={styles.tlGroupDate}>{fmtDate(day)}</span>
+                {isCollapsed && <span className={styles.tlGroupBadge}>{evts.length}</span>}
+              </button>
+              {!isCollapsed && (
+                <div className={styles.tlEventsList}>
+                  {evts.map((e) => (
+                    <div key={e.id} className={styles.tlEventItem}>
+                      <div className={styles.tlEventTop}>
+                        <span className={styles.tlTitle}>{e.title}</span>
+                        <span className={styles.tlTime}>{fmtTime(e.timestamp)}</span>
+                      </div>
+                      <div className={styles.tlMeta}>{e.meta}</div>
+                      {e.description && <div className={styles.tlDesc}>{e.description}</div>}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          );
+        })}
+        {events.length === 0 && <p className={styles.tlEmpty}>No events recorded.</p>}
+      </div>
+      <div className={styles.tlFooter}>
+        <span className={styles.tlFooterLabel}>Person created</span>
+        <span className={styles.tlFooterValue}>{fmtDateTime(person.created_at)}</span>
+      </div>
+    </section>
+  );
+}
+
+function DetailShell({ person, detailData, children, tabs, activeTab, onTabChange }: { person: Person; detailData: DetailData; children: ReactElement; tabs: TabConfig[]; activeTab: Tab; onTabChange: (tab: Tab) => void }): ReactElement {
+  return (
+    <div className={styles.detailLayout}>
+      <PersonSidebar person={person} detailData={detailData} />
+      <RightRail person={person} detailData={detailData} tabs={tabs} activeTab={activeTab} onChange={onTabChange}>
+        {children}
+      </RightRail>
+    </div>
+  );
+}
+
+
+
+function IdTypeIcon({ type }: { type: string }): ReactElement {
+  if (type === "phone") return <PhoneIcon />;
+  if (type === "email") return <EmailIcon />;
+  if (type === "nric") {
+    return (
+      <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" style={{ flexShrink: 0 }}>
+        <path d="M20 4H4c-1.11 0-2 .89-2 2v12c0 1.11.89 2 2 2h16c1.11 0 2-.89 2-2V6c0-1.11-.89-2-2-2zm0 14H4V6h16v12zM6 10h2v2H6zm0 4h8v2H6zm4-4h8v2h-8z" />
+      </svg>
+    );
+  }
+  return <KeyIcon />;
+}
+
+function IdentifiersTab({ identifiers }: { identifiers: PersonIdentifier[] }): ReactElement {
+  return (
+    <section className={styles.contentCard}>
+      <div className={styles.connHeader}>
+        <span className={styles.connHeaderTitle}>IDs</span>
+        <span className={styles.connHeaderDot}>·</span>
+        <span className={styles.connHeaderCount}>{identifiers.length} {identifiers.length === 1 ? "identifier" : "identifiers"}</span>
+      </div>
+      <div className={styles.idList}>
+        {identifiers.map((id, index) => (
+          <div key={`${id.identifier_type}-${id.normalized_value}-${index}`} className={styles.idRow}>
+            <div className={styles.idIconWrap}>
+              <IdTypeIcon type={id.identifier_type} />
+            </div>
+            <div className={styles.idBody}>
+              <span className={styles.idValue}>{id.normalized_value}</span>
+              <div className={styles.connMeta}>
+                <span>{titleCase(id.identifier_type)}</span>
+                {id.source_system_key && (
+                  <>
+                    <span className={styles.connMetaSep}>·</span>
+                    <span>{id.source_system_key}</span>
+                  </>
+                )}
+                {id.source_record_ids && id.source_record_ids.length > 0 && (
+                  <>
+                    <span className={styles.connMetaSep}>·</span>
+                    <span className={styles.mono}>{id.source_record_ids.join(", ")}</span>
+                  </>
+                )}
+                {id.last_confirmed_at && (
+                  <>
+                    <span className={styles.connMetaSep}>·</span>
+                    <span>{fmtDate(id.last_confirmed_at)}</span>
+                  </>
+                )}
+              </div>
+            </div>
+            <div className={styles.idBadges}>
+              {id.is_verified && <span className={styles.idBadgeVerified}>Verified</span>}
+              <span className={id.is_active ? styles.idBadgeActive : styles.idBadgeInactive}>
+                {id.is_active ? "Active" : "Inactive"}
+              </span>
+            </div>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function SourceRecordDetail({ record }: { record: PersonSourceRecord }): ReactElement {
+  const payload = record.normalized_payload;
+
+  return (
+    <div className={styles.srcDetail}>
+      <div className={styles.srcDetailLayout}>
+
+        {/* ── Left: identity + timeline ── */}
+        <div className={styles.srcDetailLeft}>
+          <div className={styles.srcDetailIdentity}>
+            <span className={styles.srcDetailSystem}>{record.source_system}</span>
+            {record.entity_name && <span className={styles.srcDetailEntity}>{record.entity_name}</span>}
+            <div className={styles.srcDetailBadgeRow}>
+              <span className={styles.srcTypeBadge}>{record.record_type}</span>
+              <span className={record.link_status === "linked" ? styles.idBadgeActive : styles.idBadgeInactive}>
+                {record.link_status}
+              </span>
+            </div>
+          </div>
+
+          <div className={styles.srcTimeline}>
+            {[
+              { label: "Observed", value: fmtDateTime(record.observed_at) },
+              { label: "Ingested", value: fmtDateTime(record.ingested_at) },
+              ...(record.extraction_method ? [{ label: "Method", value: record.extraction_method }] : []),
+              ...(record.extraction_confidence != null ? [{ label: "Confidence", value: `${Math.round(record.extraction_confidence * 100)}%` }] : []),
+            ].map(({ label, value }, i, arr) => (
+              <div key={label} className={`${styles.srcTimelineItem} ${i === arr.length - 1 ? styles.srcTimelineLast : ""}`}>
+                <div className={styles.srcTimelineDot} />
+                <div>
+                  <div className={styles.srcTimelineLabel}>{label}</div>
+                  <div className={styles.srcTimelineValue}>{value}</div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* ── Right: extracted data ── */}
+        <div className={styles.srcDetailRight}>
+          {payload?.identifiers && payload.identifiers.length > 0 && (
+            <div className={styles.srcDataBlock}>
+              <div className={styles.srcDataBlockTitle}>Identifiers</div>
+              <div className={styles.srcIdentList}>
+                {payload.identifiers.map((id, i) => (
+                  <div key={i} className={styles.srcIdentRow}>
+                    <span className={id.is_verified ? styles.srcIdentDotVerified : styles.srcIdentDot} />
+                    <span className={styles.srcIdentType}>{titleCase(id.identifier_type ?? "")}</span>
+                    <span className={styles.srcIdentValue}>{id.normalized_value}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {payload?.address && (
+            <div className={styles.srcDataBlock}>
+              <div className={styles.srcDataBlockTitle}>Address</div>
+              <div className={styles.srcAddressFull}>{payload.address.normalized_full ?? "—"}</div>
+              <div className={styles.srcAddressMeta}>
+                {[payload.address.city, payload.address.postal_code, payload.address.country_code, payload.address.quality_flag]
+                  .filter(Boolean).join(" · ")}
+              </div>
+            </div>
+          )}
+
+          {payload?.attributes && payload.attributes.length > 0 && (
+            <div className={styles.srcDataBlock}>
+              <div className={styles.srcDataBlockTitle}>Attributes</div>
+              <div className={styles.srcAttrGrid}>
+                {payload.attributes.map((attr, i) => (
+                  <div key={i} className={styles.srcAttrItem}>
+                    <span className={styles.srcAttrLabel}>{titleCase(attr.attribute_name ?? "")}</span>
+                    <span className={styles.srcAttrValue}>{attr.attribute_value ?? "—"}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {payload?.summary && (
+            <div className={styles.srcDataBlock}>
+              <div className={styles.srcDataBlockTitle}>Summary</div>
+              <div className={styles.srcSummaryText}>{payload.summary}</div>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function SourceRecordsTab({ sourceRecords }: { sourceRecords: PersonSourceRecord[] }): ReactElement {
+  const [expandedPk, setExpandedPk] = useState<string | null>(null);
+
+  return (
+    <section className={styles.contentCard}>
+      <div className={styles.connHeader}>
+        <span className={styles.connHeaderTitle}>Sources</span>
+        <span className={styles.connHeaderDot}>·</span>
+        <span className={styles.connHeaderCount}>{sourceRecords.length} {sourceRecords.length === 1 ? "record" : "records"}</span>
+      </div>
+      <div className={styles.idList}>
+        {sourceRecords.map((record) => {
+          const isOpen = expandedPk === record.source_record_pk;
+          return (
+            <div key={record.source_record_pk} className={`${styles.srcRow} ${isOpen ? styles.srcRowOpen : ""}`}>
+              <div
+                className={styles.srcMain}
+                onClick={() => setExpandedPk(isOpen ? null : record.source_record_pk)}
+                role="button"
+                tabIndex={0}
+                onKeyDown={(e) => e.key === "Enter" && setExpandedPk(isOpen ? null : record.source_record_pk)}
+              >
+                <div className={styles.idBody}>
+                  <span className={styles.idValue}>{record.source_record_id}</span>
+                  <div className={styles.connMeta}>
+                    <span>{record.source_system}</span>
+                    {record.entity_name && <><span className={styles.connMetaSep}>·</span><span>{record.entity_name}</span></>}
+                    <span className={styles.connMetaSep}>·</span>
+                    <span>Observed {fmtDateTime(record.observed_at)}</span>
+                  </div>
+                </div>
+                <div className={styles.idBadges}>
+                  <span className={styles.srcTypeBadge}>{record.record_type}</span>
+                  <span className={record.link_status === "linked" ? styles.idBadgeActive : styles.idBadgeInactive}>{record.link_status}</span>
+                  <svg className={`${styles.srcChevron} ${isOpen ? styles.srcChevronOpen : ""}`} width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <path d="M6 9l6 6 6-6" />
+                  </svg>
+                </div>
+              </div>
+              {isOpen && <SourceRecordDetail record={record} />}
+            </div>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
+function SalesTab({ sales }: { sales: SalesOrder[] }): ReactElement {
+  const [expandedKey, setExpandedKey] = useState<string | null>(null);
+  const totalRevenue = sales.reduce((sum, o) => sum + (o.total_amount ?? 0), 0);
+  const currency = sales[0]?.currency ?? "SGD";
+
+  return (
+    <section className={styles.contentCard}>
+      <div className={styles.connHeader}>
+        <span className={styles.connHeaderTitle}>Sales history</span>
+        <span className={styles.connHeaderDot}>·</span>
+        <span className={styles.connHeaderCount}>{sales.length} orders</span>
+        <span className={styles.connHeaderDot}>·</span>
+        <span className={styles.connHeaderCount}>{fmtCurrency(totalRevenue, currency)} total</span>
+      </div>
+      <div className={styles.idList}>
+        {sales.map((order, index) => {
+          const key = order.order_no ?? order.source_order_id ?? `order-${index}`;
+          const isOpen = expandedKey === key;
+          const source = order.entity_name ?? order.source_system;
+          return (
+            <div key={key} className={`${styles.srcRow} ${isOpen ? styles.srcRowOpen : ""}`}>
+              <div
+                className={styles.srcMain}
+                onClick={() => setExpandedKey(isOpen ? null : key)}
+                role="button"
+                tabIndex={0}
+                onKeyDown={(e) => e.key === "Enter" && setExpandedKey(isOpen ? null : key)}
+              >
+                <div className={styles.idBody}>
+                  <span className={styles.idValue}>{key}</span>
+                  <div className={styles.connMeta}>
+                    <span>Ordered {fmtDate(order.order_date)}</span>
+                    {order.release_date && (
+                      <><span className={styles.connMetaSep}>·</span><span>Released {fmtDate(order.release_date)}</span></>
+                    )}
+                    {source && (
+                      <><span className={styles.connMetaSep}>·</span><span>{source}</span></>
+                    )}
+                  </div>
+                </div>
+                <div className={styles.idBadges}>
+                  <span className={styles.salesTotal}>{fmtCurrency(order.total_amount, order.currency)}</span>
+                  <span className={styles.salesItemCount}>{order.line_items.length} {order.line_items.length === 1 ? "item" : "items"}</span>
+                  <svg className={`${styles.srcChevron} ${isOpen ? styles.srcChevronOpen : ""}`} width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <path d="M6 9l6 6 6-6" />
+                  </svg>
+                </div>
+              </div>
+              {isOpen && (
+                <div className={styles.salesDetail}>
+                  <div className={styles.salesLineTable}>
+                    <div className={`${styles.salesLineRow} ${styles.salesLineHeader}`}>
+                      <span>Line #</span>
+                      <span>Product</span>
+                      <span>Category</span>
+                      <span>SKU</span>
+                      <span className={styles.salesCellRight}>Qty</span>
+                      <span className={styles.salesCellRight}>Unit price</span>
+                      <span className={styles.salesCellRight}>Subtotal</span>
+                    </div>
+                    {order.line_items.map((item, i) => (
+                      <div key={i} className={styles.salesLineRow}>
+                        <span className={styles.salesCellMuted}>{item.line_no ?? i + 1}</span>
+                        <span className={styles.salesCellPrimary}>{item.product?.display_name ?? "—"}</span>
+                        <span className={styles.salesCellMuted}>{item.product?.category ?? "—"}</span>
+                        <span className={styles.salesCellMono}>{item.product?.sku ?? "—"}</span>
+                        <span className={`${styles.salesCellMuted} ${styles.salesCellRight}`}>{item.quantity ?? "—"}</span>
+                        <span className={`${styles.salesCellMuted} ${styles.salesCellRight}`}>{item.unit_price != null ? item.unit_price.toFixed(2) : "—"}</span>
+                        <span className={`${styles.salesCellPrimary} ${styles.salesCellRight}`}>{item.subtotal != null ? fmtCurrency(item.subtotal, order.currency) : "—"}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
+function BankruptcyTab({ cases }: { cases: PersonBankruptcyCase[] }): ReactElement {
+  const [expandedCase, setExpandedCase] = useState<string | null>(null);
+
+  const statusClass = (status: PersonBankruptcyCase["status"]) => {
+    if (status === "active") return styles.bkStatusActive;
+    if (status === "discharged") return styles.bkStatusDischarged;
+    return styles.bkStatusAnnulled;
+  };
+
+  return (
+    <section className={styles.contentCard}>
+      <div className={styles.connHeader}>
+        <span className={styles.connHeaderTitle}>Bankruptcy</span>
+        <span className={styles.connHeaderDot}>·</span>
+        <span className={styles.connHeaderCount}>{cases.length} {cases.length === 1 ? "case" : "cases"}</span>
+      </div>
+      <div className={styles.idList}>
+        {cases.map((bkCase) => {
+          const isOpen = expandedCase === bkCase.case_number;
+          return (
+            <div key={bkCase.case_number} className={`${styles.srcRow} ${isOpen ? styles.srcRowOpen : ""}`}>
+              <div
+                className={styles.srcMain}
+                onClick={() => setExpandedCase(isOpen ? null : bkCase.case_number)}
+                role="button"
+                tabIndex={0}
+                onKeyDown={(e) => e.key === "Enter" && setExpandedCase(isOpen ? null : bkCase.case_number)}
+              >
+                <div className={styles.idBody}>
+                  <span className={styles.idValue}>{bkCase.case_number}</span>
+                  <div className={styles.connMeta}>
+                    <span>{bkCase.court}</span>
+                    <span className={styles.connMetaSep}>·</span>
+                    <span>Filed {fmtDate(bkCase.filing_date)}</span>
+                    {bkCase.discharge_date && (
+                      <><span className={styles.connMetaSep}>·</span><span>Discharged {fmtDate(bkCase.discharge_date)}</span></>
+                    )}
+                  </div>
+                </div>
+                <div className={styles.idBadges}>
+                  {bkCase.total_debt != null && (
+                    <span className={styles.salesTotal}>{fmtCurrency(bkCase.total_debt, bkCase.currency)}</span>
+                  )}
+                  <span className={statusClass(bkCase.status)}>{titleCase(bkCase.status)}</span>
+                  <svg className={`${styles.srcChevron} ${isOpen ? styles.srcChevronOpen : ""}`} width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <path d="M6 9l6 6 6-6" />
+                  </svg>
+                </div>
+              </div>
+              {isOpen && (
+                <div className={styles.bkDetail}>
+                  <div className={styles.bkMeta}>
+                    {[
+                      { label: "Case number", value: bkCase.case_number },
+                      { label: "Court", value: bkCase.court },
+                      { label: "Official assignee", value: bkCase.official_assignee ?? "—" },
+                      { label: "Filing date", value: fmtDate(bkCase.filing_date) },
+                      { label: "Discharge date", value: bkCase.discharge_date ? fmtDate(bkCase.discharge_date) : "—" },
+                      { label: "Total debt", value: bkCase.total_debt != null ? fmtCurrency(bkCase.total_debt, bkCase.currency) : "—" },
+                    ].map(({ label, value }) => (
+                      <div key={label} className={styles.srcDetailField}>
+                        <div className={styles.srcDetailLabel}>{label}</div>
+                        <div className={styles.srcDetailValue}>{value}</div>
+                      </div>
+                    ))}
+                  </div>
+                  {bkCase.creditors.length > 0 && (
+                    <div className={styles.bkCreditors}>
+                      <div className={styles.srcDataBlockTitle}>Creditors</div>
+                      <div className={styles.bkCreditorList}>
+                        <div className={`${styles.bkCreditorRow} ${styles.bkCreditorHeader}`}>
+                          <span>Creditor</span>
+                          <span className={styles.salesCellRight}>Amount</span>
+                        </div>
+                        {bkCase.creditors.map((c, i) => (
+                          <div key={i} className={styles.bkCreditorRow}>
+                            <span className={styles.salesCellPrimary}>{c.name}</span>
+                            <span className={`${styles.salesCellMuted} ${styles.salesCellRight}`}>
+                              {c.amount != null ? fmtCurrency(c.amount, c.currency) : "—"}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
+function AuditTab({ audit }: { audit: PersonAuditEvent[] }): ReactElement {
+  return (
+    <section className={styles.contentCard}>
+      <div className={styles.connHeader}>
+        <span className={styles.connHeaderTitle}>Audit trail</span>
+        <span className={styles.connHeaderDot}>·</span>
+        <span className={styles.connHeaderCount}>{audit.length} {audit.length === 1 ? "event" : "events"}</span>
+      </div>
+      <div className={styles.auditList}>
+        {audit.map((event, i) => (
+          <div key={event.merge_event_id} className={styles.auditItem}>
+            <div className={styles.auditRail}>
+              <div className={styles.auditDot} />
+              {i < audit.length - 1 && <div className={styles.auditLine} />}
+            </div>
+            <div className={styles.auditBody}>
+              <div className={styles.auditTop}>
+                <span className={styles.auditEventType}>{event.event_type}</span>
+                <span className={styles.auditTime}>{fmtDateTime(event.created_at)}</span>
+              </div>
+              <div className={styles.auditActor}>
+                {event.actor_type}:{event.actor_id}
+              </div>
+              {event.reason && <div className={styles.auditReason}>{event.reason}</div>}
+            </div>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function PhoneIcon(): ReactElement {
+  return (
+    <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" style={{ flexShrink: 0 }}>
+      <path d="M6.6 10.8c1.4 2.8 3.8 5.1 6.6 6.6l2.2-2.2c.3-.3.7-.4 1-.2 1.1.4 2.3.6 3.6.6.6 0 1 .4 1 1V20c0 .6-.4 1-1 1-9.4 0-17-7.6-17-17 0-.6.4-1 1-1h3.5c.6 0 1 .4 1 1 0 1.3.2 2.5.6 3.6.1.3 0 .7-.2 1L6.6 10.8z" />
+    </svg>
+  );
+}
+
+function EmailIcon(): ReactElement {
+  return (
+    <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" style={{ flexShrink: 0 }}>
+      <path d="M20 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 4l-8 5-8-5V6l8 5 8-5v2z" />
+    </svg>
+  );
+}
+
+function LocationIcon(): ReactElement {
+  return (
+    <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" style={{ flexShrink: 0 }}>
+      <path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z" />
+    </svg>
+  );
+}
+
+function KeyIcon(): ReactElement {
+  return (
+    <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" style={{ flexShrink: 0 }}>
+      <path d="M12.65 10C11.83 7.67 9.61 6 7 6c-3.31 0-6 2.69-6 6s2.69 6 6 6c2.61 0 4.83-1.67 5.65-4H17v4h4v-4h2v-4H12.65zM7 14c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2z" />
+    </svg>
+  );
+}
+
+function identifierIcon(type: string): ReactElement {
+  if (type === "phone") return <PhoneIcon />;
+  if (type === "email") return <EmailIcon />;
+  return <KeyIcon />;
+}
+
+type ConnMetaLineProps = {
+  hops: number;
+  sharedIdentifiers: Array<{ identifier_type: string; normalized_value: string }>;
+  sharedAddresses: Array<{ normalized_full: string | null }>;
+};
+
+function ConnMetaLine({ hops, sharedIdentifiers, sharedAddresses }: ConnMetaLineProps): ReactElement {
+  const items: ReactElement[] = [
+    <span key="hops">{hops} hop{hops !== 1 ? "s" : ""}</span>,
+    ...sharedIdentifiers.map((id, i) => (
+      <span key={`id-${i}`} className={styles.connMetaWithIcon}>
+        {identifierIcon(id.identifier_type)}
+        {id.normalized_value}
+      </span>
+    )),
+    ...sharedAddresses.map((addr, i) => (
+      <span key={`addr-${i}`} className={styles.connMetaWithIcon}>
+        <LocationIcon />
+        {addr.normalized_full ?? "shared address"}
+      </span>
+    )),
+  ];
+
+  return (
+    <div className={styles.connMeta}>
+      {items.map((item, i) => (
+        <Fragment key={i}>
+          {i > 0 && <span className={styles.connMetaSep}>·</span>}
+          {item}
+        </Fragment>
+      ))}
+    </div>
+  );
+}
+
+
+function ConnectionsTab({ connections }: { connections: PersonConnection[] }): ReactElement {
+  const withRel = connections.filter((c) => c.knows_relationships.length > 0);
+  const sharedOnly = connections.filter((c) => c.knows_relationships.length === 0);
+
+  return (
+    <section className={styles.contentCard}>
+      <div className={styles.connHeader}>
+        <span className={styles.connHeaderTitle}>Connections</span>
+        <span className={styles.connHeaderDot}>·</span>
+        <span className={styles.connHeaderCount}>{connections.length} {connections.length === 1 ? "profile" : "profiles"}</span>
+      </div>
+      <div className={styles.connSections}>
+        {withRel.length > 0 && (
+          <div>
+            <div className={styles.sharedList}>
+              {withRel.map((conn, i) => {
+                const color = avatarColor(conn.preferred_full_name ?? "?");
+                return (
+                  <Link key={`${conn.person_id}-${i}`} href={`/persons/${conn.person_id}`} className={styles.sharedRow}>
+                    <div className={styles.sharedAvatar} style={{ background: color }}>
+                      {personInitials(conn.preferred_full_name)}
+                    </div>
+                    <div className={styles.connBody}>
+                      <div className={styles.sharedName}>{conn.preferred_full_name ?? conn.person_id}</div>
+                      <ConnMetaLine hops={conn.hops} sharedIdentifiers={conn.shared_identifiers} sharedAddresses={conn.shared_addresses} />
+                    </div>
+                    <div className={styles.relRowTags}>
+                      {conn.knows_relationships.map((rel, j) => (
+                        <span key={j} className={styles.relBadge}>
+                          {rel.relationship_label ?? rel.relationship_category}
+                        </span>
+                      ))}
+                    </div>
+                  </Link>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        {sharedOnly.length > 0 && (
+          <div>
+            <div className={styles.sharedList}>
+              {sharedOnly.map((conn, i) => {
+                const color = avatarColor(conn.preferred_full_name ?? "?");
+                return (
+                  <Link key={`${conn.person_id}-${i}`} href={`/persons/${conn.person_id}`} className={styles.sharedRow}>
+                    <div className={styles.sharedAvatar} style={{ background: color }}>
+                      {personInitials(conn.preferred_full_name)}
+                    </div>
+                    <div className={styles.connBody}>
+                      <div className={styles.sharedName}>{conn.preferred_full_name ?? conn.person_id}</div>
+                      <ConnMetaLine hops={conn.hops} sharedIdentifiers={conn.shared_identifiers} sharedAddresses={conn.shared_addresses} />
+                    </div>
+                  </Link>
+                );
+              })}
+            </div>
+          </div>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function EmptyState({ title, description }: { title: string; description: string }): ReactElement {
+  return (
+    <section className={styles.emptyState}>
+      <div className={styles.emptyTitle}>{title}</div>
+      <div className={styles.emptyDescription}>{description}</div>
+    </section>
+  );
+}
+
+export default function PersonDetailPage({ params }: { params: Promise<{ personId: string }> }): ReactElement {
+  const { personId } = use(params);
+  const person = MOCK_PERSONS.find((candidate) => candidate.person_id === personId);
+
+  if (!person) {
+    notFound();
+  }
+
+  const [activeTab, setActiveTab] = useState<Tab>("timeline");
+  const detailData = useMemo(() => getPersonDetailData(person), [person]);
+  const connections = useMemo(
+    () => MOCK_PERSON_CONNECTIONS_BY_PERSON_ID[person.person_id] ?? [],
+    [person.person_id],
+  );
+
+  const tabs: TabConfig[] = [
+    { id: "timeline", label: "Timeline" },
+    { id: "matches", label: "Matches" },
+    { id: "connections", label: "Relations", count: connections.length },
+    { id: "identifier", label: "IDs", count: detailData.identifiers.length },
+    { id: "source", label: "Sources", count: detailData.sourceRecords.length },
+    { id: "sales", label: "Sales", count: detailData.sales.length },
+    { id: "bankruptcy", label: "Bankruptcy", count: detailData.bankruptcyCases.length || undefined },
+    { id: "audit", label: "Audit", count: detailData.audit.length },
+    { id: "graph", label: "Graph" },
+  ];
+
+  return (
+    <div className={styles.page}>
+      <PersonBreadcrumb personName={person.preferred_full_name} />
+      <div className={styles.tabContent}>
+        {activeTab === "timeline" && (
+          <DetailShell person={person} detailData={detailData} tabs={tabs} activeTab={activeTab} onTabChange={setActiveTab}>
+            <TimelineTab person={person} detailData={detailData} />
+          </DetailShell>
+        )}
+        {activeTab === "matches" && (
+          <DetailShell person={person} detailData={detailData} tabs={tabs} activeTab={activeTab} onTabChange={setActiveTab}>
+            <EmptyState
+              title="No match clusters available"
+              description="No FE2 mock match-cluster data is currently attached to this person detail view."
+            />
+          </DetailShell>
+        )}
+        {activeTab === "connections" && (
+          <DetailShell person={person} detailData={detailData} tabs={tabs} activeTab={activeTab} onTabChange={setActiveTab}>
+            {connections.length > 0 ? (
+              <ConnectionsTab connections={connections} />
+            ) : (
+              <EmptyState
+                title="No connections found"
+                description="This person has no linked profiles via shared identifiers or known relationships."
+              />
+            )}
+          </DetailShell>
+        )}
+        {activeTab === "identifier" &&
+          (detailData.identifiers.length ? (
+            <DetailShell person={person} detailData={detailData} tabs={tabs} activeTab={activeTab} onTabChange={setActiveTab}>
+              <IdentifiersTab identifiers={detailData.identifiers} />
+            </DetailShell>
+          ) : (
+            <DetailShell person={person} detailData={detailData} tabs={tabs} activeTab={activeTab} onTabChange={setActiveTab}>
+              <EmptyState
+                title="No identifiers available"
+                description="This mock profile does not yet include person-specific identifiers beyond the overview snapshot."
+              />
+            </DetailShell>
+          ))}
+        {activeTab === "source" &&
+          (detailData.sourceRecords.length ? (
+            <DetailShell person={person} detailData={detailData} tabs={tabs} activeTab={activeTab} onTabChange={setActiveTab}>
+              <SourceRecordsTab sourceRecords={detailData.sourceRecords} />
+            </DetailShell>
+          ) : (
+            <DetailShell person={person} detailData={detailData} tabs={tabs} activeTab={activeTab} onTabChange={setActiveTab}>
+              <EmptyState
+                title="No source records linked"
+                description="No linked mock records are currently attached to this person in FE2."
+              />
+            </DetailShell>
+          ))}
+        {activeTab === "sales" &&
+          (detailData.sales.length ? (
+            <DetailShell person={person} detailData={detailData} tabs={tabs} activeTab={activeTab} onTabChange={setActiveTab}>
+              <SalesTab sales={detailData.sales} />
+            </DetailShell>
+          ) : (
+            <DetailShell person={person} detailData={detailData} tabs={tabs} activeTab={activeTab} onTabChange={setActiveTab}>
+              <EmptyState
+                title="No sales history available"
+                description="Mock sales are only attached where the FE2 dataset currently provides person-scoped order detail."
+              />
+            </DetailShell>
+          ))}
+        {activeTab === "bankruptcy" && (
+          <DetailShell person={person} detailData={detailData} tabs={tabs} activeTab={activeTab} onTabChange={setActiveTab}>
+            {detailData.bankruptcyCases.length > 0 ? (
+              <BankruptcyTab cases={detailData.bankruptcyCases} />
+            ) : (
+              <EmptyState
+                title="No bankruptcy cases"
+                description="There are no bankruptcy cases associated with this person."
+              />
+            )}
+          </DetailShell>
+        )}
+        {activeTab === "audit" &&
+          (detailData.audit.length ? (
+            <DetailShell person={person} detailData={detailData} tabs={tabs} activeTab={activeTab} onTabChange={setActiveTab}>
+              <AuditTab audit={detailData.audit} />
+            </DetailShell>
+          ) : (
+            <DetailShell person={person} detailData={detailData} tabs={tabs} activeTab={activeTab} onTabChange={setActiveTab}>
+              <EmptyState
+                title="No audit events available"
+                description="There are no mock audit events currently associated with this person."
+              />
+            </DetailShell>
+          ))}
+        {activeTab === "graph" && (
+          <DetailShell person={person} detailData={detailData} tabs={tabs} activeTab={activeTab} onTabChange={setActiveTab}>
+            <EmptyState
+              title="Graph view is not available yet"
+              description="No person-level graph mock is currently wired into this detail page."
+            />
+          </DetailShell>
+        )}
+      </div>
+    </div>
+  );
+}
