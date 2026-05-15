@@ -658,8 +658,7 @@ function PersonsInner(): ReactElement {
   const [dobSingleDate, setDobSingleDate] = useState("");
   const [dobStartDate, setDobStartDate] = useState("");
   const [dobEndDate, setDobEndDate] = useState("");
-  const [isHighValue, setIsHighValue] = useState<boolean | null>(null);
-  const [isHighRisk, setIsHighRisk] = useState<boolean | null>(null);
+  const [flagFilter, setFlagFilter] = useState<"any" | "high_value" | "high_risk">("any");
   const [hasBankruptcy, setHasBankruptcy] = useState<boolean | null>(null);
   const [updatedAfter, setUpdatedAfter] = useState("");
   const [updatedBefore, setUpdatedBefore] = useState("");
@@ -820,8 +819,7 @@ function PersonsInner(): ReactElement {
     dobFilter === "has" && dobMode === "single" && dobSingleDate !== "",
     dobFilter === "has" && dobMode === "range" && (dobStartDate !== "" || dobEndDate !== ""),
     addressFilter !== "any",
-    isHighValue !== null,
-    isHighRisk !== null,
+    flagFilter !== "any",
     hasBankruptcy !== null,
     updatedAfter !== "",
     updatedBefore !== "",
@@ -841,8 +839,7 @@ function PersonsInner(): ReactElement {
     setDobSingleDate("");
     setDobStartDate("");
     setDobEndDate("");
-    setIsHighValue(null);
-    setIsHighRisk(null);
+    setFlagFilter("any");
     setHasBankruptcy(null);
     setUpdatedAfter("");
     setUpdatedBefore("");
@@ -882,8 +879,8 @@ function PersonsInner(): ReactElement {
       params.set("sort_by", sortByMap[sortKey]);
       params.set("sort_order", sortDir);
     }
-    if (isHighValue !== null) params.set("is_high_value", String(isHighValue));
-    if (isHighRisk !== null) params.set("is_high_risk", String(isHighRisk));
+    if (flagFilter === "high_value") params.set("is_high_value", "true");
+    if (flagFilter === "high_risk") params.set("is_high_risk", "true");
     if (hasBankruptcy !== null) params.set("has_bankruptcy_case", String(hasBankruptcy));
     if (updatedAfter) params.set("updated_after", updatedAfter);
     if (updatedBefore) params.set("updated_before", updatedBefore);
@@ -892,7 +889,7 @@ function PersonsInner(): ReactElement {
     if (addrCountry) params.set("addr_country", addrCountry);
     params.set("limit", String(pageSize));
     return params.toString();
-  }, [search, entityFilter, sourceFilter, identityFilter, addressFilter, dobFilter, dobMode, dobSingleDate, dobStartDate, dobEndDate, isHighValue, isHighRisk, hasBankruptcy, updatedAfter, updatedBefore, addrCity, addrPostal, addrCountry, sortKey, sortDir, pageSize]);
+  }, [search, entityFilter, sourceFilter, identityFilter, addressFilter, dobFilter, dobMode, dobSingleDate, dobStartDate, dobEndDate, flagFilter, hasBankruptcy, updatedAfter, updatedBefore, addrCity, addrPostal, addrCountry, sortKey, sortDir, pageSize]);
 
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
@@ -1313,32 +1310,24 @@ function PersonsInner(): ReactElement {
 
           <FilterPill
             label="Flags"
-            isActive={isHighValue !== null || isHighRisk !== null}
-            activeLabel={
-              isHighValue && isHighRisk ? "HV + HR"
-                : isHighValue ? "High Value"
-                : "High Risk"
-            }
-            onClear={() => { setIsHighValue(null); setIsHighRisk(null); }}
+            isActive={flagFilter !== "any"}
+            activeLabel={flagFilter === "high_value" ? "High Value" : "High Risk"}
+            onClear={() => setFlagFilter("any")}
             open={openFilter === "flags"}
             onToggle={() => toggleFilter("flags")}
           >
             <div className={styles.fpInner}>
-              <div className={styles.filterOptions}>
-                <button
-                  type="button"
-                  className={`${styles.filterChip} ${isHighValue === true ? styles.filterChipActive : ""}`}
-                  onClick={() => setIsHighValue((v) => v === true ? null : true)}
-                >
-                  High Value
-                </button>
-                <button
-                  type="button"
-                  className={`${styles.filterChip} ${isHighRisk === true ? styles.filterChipActive : ""}`}
-                  onClick={() => setIsHighRisk((v) => v === true ? null : true)}
-                >
-                  High Risk
-                </button>
+              <div className={styles.fpSegmented}>
+                {(["any", "high_value", "high_risk"] as const).map((value) => (
+                  <button
+                    key={value}
+                    type="button"
+                    className={`${styles.fpSegmentedBtn} ${flagFilter === value ? styles.fpSegmentedBtnActive : ""}`}
+                    onClick={() => setFlagFilter(value)}
+                  >
+                    {value === "any" ? "Any" : value === "high_value" ? "High Value" : "High Risk"}
+                  </button>
+                ))}
               </div>
             </div>
           </FilterPill>
