@@ -8,6 +8,7 @@ import { MOCK_PERSON_CONNECTIONS_BY_PERSON_ID, MOCK_SALES } from "@/lib/mock-dat
 import type { ListedPerson, PersonConnection, SalesOrder, EntitySummary } from "@/lib/api-types";
 import { bffFetchEnvelope, BffError, bffFetch } from "@/lib/api-client";
 import type { SourceSystemInfo } from "@/lib/api-types-ops";
+import PersonGraphDialog from "@/components/PersonGraphDialog";
 import styles from "./persons.module.css";
 
 
@@ -401,6 +402,7 @@ function PersonRow({
   onEntityClick,
   onRelationsClick,
   onOrdersClick,
+  onGraphClick,
 }: {
   p: ListedPerson;
   checked: boolean;
@@ -408,6 +410,7 @@ function PersonRow({
   onEntityClick: (key: string) => void;
   onRelationsClick: (event: ReactMouseEvent<HTMLButtonElement>, personId: string) => void;
   onOrdersClick: (event: ReactMouseEvent<HTMLButtonElement>, personId: string) => void;
+  onGraphClick: (personId: string, name: string) => void;
 }): ReactElement {
   const initials = (p.preferred_full_name ?? "?")
     .split(" ")
@@ -535,12 +538,12 @@ function PersonRow({
         </div>
       </td>
       <td className={`${styles.tdGraph} ${styles.tdSticky} ${styles.stickyGraph}`}>
-        <Link href={`/relationships?person=${p.person_id}`} className={styles.graphLink} title="View in graph" onClick={(e) => e.stopPropagation()}>
+        <button type="button" className={styles.graphLink} title="View in graph" onClick={() => onGraphClick(p.person_id, p.preferred_full_name ?? p.person_id)}>
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/>
             <line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/>
           </svg>
-        </Link>
+        </button>
       </td>
     </tr>
   );
@@ -678,6 +681,12 @@ function PersonsInner(): ReactElement {
   const [currentCursor, setCurrentCursor] = useState<string | null>(null);
   const [entities, setEntities] = useState<EntitySummary[]>([]);
   const [sourceSystems, setSourceSystems] = useState<SourceSystemInfo[]>([]);
+
+  const [graphDialog, setGraphDialog] = useState<{ open: boolean; personId: string; title: string }>({
+    open: false,
+    personId: "",
+    title: "",
+  });
 
 
   function toggleSort(key: SortKey): void {
@@ -1531,6 +1540,7 @@ function PersonsInner(): ReactElement {
                     }
                     onRelationsClick={handleRelationsClick}
                     onOrdersClick={handleOrdersClick}
+                    onGraphClick={(personId, name) => setGraphDialog({ open: true, personId, title: name })}
                   />
                 ))
               )}
@@ -1568,6 +1578,12 @@ function PersonsInner(): ReactElement {
           />
         </div>
       </div>{/* end main card */}
+      <PersonGraphDialog
+        open={graphDialog.open}
+        personId={graphDialog.personId}
+        title={graphDialog.title}
+        onClose={() => setGraphDialog((g) => ({ ...g, open: false }))}
+      />
     </div>
   );
 }
