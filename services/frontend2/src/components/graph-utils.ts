@@ -48,6 +48,7 @@ export type NodeIcon =
   | "receipt"
   | "inventory"
   | "bullet"
+  | "shoppingCart"
   | "dataSource"
   | "gavel"
   | "storefront";
@@ -63,7 +64,7 @@ const LABEL_ICONS: Record<string, NodeIcon> = {
   MergeEvent: "mergeType",
   Order: "receipt",
   Product: "inventory",
-  LineItem: "bullet",
+  LineItem: "shoppingCart",
   SourceSystem: "dataSource",
   Entity: "storefront",
 };
@@ -84,15 +85,16 @@ const ICON_PATHS: Record<NodeIcon, string> = {
   diamond: "M12 7.77 18.39 18H5.61zM12 4 2 20h20z",
   assignment: "M19 3h-4.18C14.4 1.84 13.3 1 12 1s-2.4.84-2.82 2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2m-7 0c.55 0 1 .45 1 1s-.45 1-1 1-1-.45-1-1 .45-1 1-1m2 14H7v-2h7zm3-4H7v-2h10zm0-4H7V7h10z",
   mergeType: "M17 20.41 18.41 19 15 15.59 13.59 17zM7.5 8H11v5.59L5.59 19 7 20.41l6-6V8h3.5L12 3.5z",
-  receipt: "M18 17H6v-2h12zm3-2.5V16l1 1v3h-2v-1H5v1H3v-3l1-1v-1.5c0-1.38-1.12-2.5-2.5-2.5v-2c1.38 0 2.5-1.12 2.5-2.5V6l-1-1V2h2v1h14V2h2v3l-1 1v1.5c0 1.38 1.12 2.5 2.5 2.5v2c-1.38 0-2.5 1.12-2.5 2.5M21 4H3v2h18zm-3 6H6v2h12z",
+  receipt: "M19 3H5c-1.1 0-2 .9-2 2v16l3-2 3 2 3-2 3 2 3-2 3 2V5c0-1.1-.9-2-2-2m-2 12H7v-2h10zm0-4H7V9h10zm0-4H7V5h10z",
   inventory: "M20 2H4c-1 0-2 .9-2 2v3.01c0 .72.44 1.34 1.07 1.69C3.65 8.98 4 9.64 4 10.35s-.35.71-.93 1.07C2.44 11.77 2 12.39 2 13.11V16c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2v-2.89c0-.72-.44-1.34-1.07-1.69-.58-.35-.93-1.01-.93-1.73s.35-1.38.93-1.73c.63-.35 1.07-.97 1.07-1.69V5c0-1.1-.9-3-2-3m0 3v2.01c-1.08.63-2 1.72-2 3.36s.92 2.75 2 3.38V16H4v-2.26c1.08-.63 2-1.72 2-3.36s-.92-2.75-2-3.38V5h16",
   bullet: "M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4",
   dataSource: "M12 3c-4.97 0-9 4.03-9 9s4.03 9 9 9 9-4.03 9-9-4.03-9-9-9m0 16c-3.87 0-7-3.13-7-7s3.13-7 7-7 7 3.13 7 7-3.13 7-7 7m0-12c-2.76 0-5 2.24-5 5s2.24 5 5 5 5-2.24 5-5-2.24-5-5-5m0 8c-1.66 0-3-1.34-3-3s1.34-3 3-3 3 1.34 3 3-1.34 3-3 3",
+  shoppingCart: "M7 18c-1.1 0-1.99.9-1.99 2S5.9 22 7 22s2-.9 2-2-.9-2-2-2M1 2v2h2l3.6 7.59-1.35 2.45C4.52 15.37 5.48 17 7 17h12v-2H7l1.1-2h7.45c.75 0 1.41-.41 1.75-1.03L21 5H5.21l-.94-2zM17 18c-1.1 0-1.99.9-1.99 2S15.9 22 17 22s2-.9 2-2-.9-2-2-2",
   gavel: "M1 21h12v2H1zM5.245 8.07l2.83-2.827 14.14 14.142-2.828 2.828zM12.317 1l5.657 5.656-2.83 2.83-5.654-5.66zM3.825 9.485l5.657 5.657-2.828 2.828-5.657-5.657z",
   storefront: "M21.9 8.89 20.49 5.1c-.38-.67-1.06-1.1-1.81-1.1H5.32c-.75 0-1.43.43-1.81 1.1L2.1 8.89c-.24.44-.1.98.34 1.22l.39.22c.5.28 1.07.44 1.67.44 1.21 0 2.27-.67 2.83-1.65.56.98 1.62 1.65 2.83 1.65s2.27-.67 2.83-1.65c.56.98 1.62 1.65 2.83 1.65 1.21 0 2.27-.67 2.83-1.65.56.98 1.62 1.65 2.83 1.65.59 0 1.17-.16 1.66-.44l.39-.22c.45-.24.59-.78.35-1.22M19.32 12c-.5 0-1-.08-1.46-.22V17H6.14v-5.22c-.46.14-.96.22-1.46.22-.49 0-.95-.08-1.39-.22V19h17.42v-7.22c-.44.14-.9.22-1.39.22",
 };
 
-const ICON_SCALE_FACTOR = (18 * 2) / 24; // icon fills ~18px of 24px box → scale to fit node
+const ICON_SCALE_FACTOR = (8 * 2) / 24;
 export const NODE_SIZE = 12;
 
 // --- Types ---
@@ -104,6 +106,7 @@ export interface FGNode {
   color: string;
   icon: NodeIcon;
   isFocus: boolean;
+  showLabel: boolean;
   properties: Record<string, string | number | boolean | null>;
 }
 
@@ -129,11 +132,15 @@ export type SelectedItem =
 const HIDDEN_LABELS = new Set(["IngestRun"]);
 const HIDDEN_REL_TYPES = new Set([
   "HAS_FACT",
-  "FOR_DECISION",
   "SOURCE_FOR",
 ]);
 
 // --- Display-name helpers ---
+
+function shortId(id: string): string {
+  const cleaned = id.replace(/[^A-Za-z0-9]/g, "");
+  return cleaned.length <= 8 ? cleaned : cleaned.slice(-8);
+}
 
 function displayNameForNode(node: GraphNode): string {
   const props = node.properties;
@@ -143,27 +150,39 @@ function displayNameForNode(node: GraphNode): string {
     const first = (props["preferred_first_name"] as string | null) ?? (props["first_name"] as string | null);
     const last = (props["preferred_last_name"] as string | null) ?? (props["last_name"] as string | null);
     if (first && last) return `${first} ${last}`;
-    return node.id.slice(0, 8);
+    return shortId(node.id);
   }
   if (node.label === "Identifier") {
     const val = (props["value"] as string | null) ?? (props["identifier_value"] as string | null);
     const kind = (props["identifier_type"] as string | null) ?? (props["type"] as string | null);
     if (val && kind) return `${kind}: ${val}`;
     if (val) return val;
-    return node.id.slice(0, 8);
+    return shortId(node.id);
   }
   if (node.label === "Address") {
     const full = (props["normalized_full"] as string | null) ?? (props["full_address"] as string | null);
     if (full) return full.length > 30 ? `${full.slice(0, 28)}…` : full;
-    return node.id.slice(0, 8);
+    return shortId(node.id);
   }
   if (node.label === "SourceRecord") {
     const name = (props["record_type"] as string | null) ?? (props["source_name"] as string | null);
     if (name) return name;
-    return node.id.slice(0, 8);
+    return shortId(node.id);
+  }
+  if (node.label === "Order") {
+    const orderId = (props["order_id"] as string | null) ?? (props["id"] as string | null);
+    const amount = props["total_amount"] as number | string | null;
+    if (orderId) return `Order ${shortId(orderId)}`;
+    if (amount) return `Order ${amount}`;
+    return `Order ${shortId(node.id)}`;
+  }
+  if (node.label === "LineItem") {
+    const product = (props["product_name"] as string | null) ?? (props["name"] as string | null) ?? (props["model"] as string | null);
+    if (product) return product.length > 24 ? `${product.slice(0, 22)}…` : product;
+    return `Item ${shortId(node.id)}`;
   }
   const fallback = (props["name"] as string | null) ?? (props["label"] as string | null);
-  return fallback ?? node.id.slice(0, 8);
+  return fallback ?? shortId(node.id);
 }
 
 // --- Icon Path2D cache ---
@@ -200,17 +219,18 @@ export function paintNode(
   const { x, y, color, icon, isFocus } = node;
   if (x === undefined || y === undefined) return;
 
+  const nodeRadius = isFocus ? NODE_SIZE * 1.35 : NODE_SIZE;
   const fontSize = Math.max(10 / globalScale, 3);
 
   // Focus ring
   if (isFocus) {
     ctx.beginPath();
-    ctx.arc(x, y, NODE_SIZE + 4, 0, 2 * Math.PI);
+    ctx.arc(x, y, nodeRadius + 4, 0, 2 * Math.PI);
     ctx.strokeStyle = "#1565c0";
     ctx.lineWidth = 2.5 / globalScale;
     ctx.stroke();
     ctx.beginPath();
-    ctx.arc(x, y, NODE_SIZE + 7, 0, 2 * Math.PI);
+    ctx.arc(x, y, nodeRadius + 7, 0, 2 * Math.PI);
     ctx.strokeStyle = "rgba(255, 152, 0, 0.3)";
     ctx.lineWidth = 3 / globalScale;
     ctx.stroke();
@@ -218,7 +238,7 @@ export function paintNode(
 
   // Background circle (filled with node color)
   ctx.beginPath();
-  ctx.arc(x, y, NODE_SIZE, 0, 2 * Math.PI);
+  ctx.arc(x, y, nodeRadius, 0, 2 * Math.PI);
   ctx.fillStyle = color;
   ctx.fill();
   ctx.strokeStyle = themeValue("--bg-card", "#fff");
@@ -230,7 +250,7 @@ export function paintNode(
     const path2d = getIconPath2D(icon);
     if (path2d) {
       ctx.save();
-      const s = ICON_SCALE_FACTOR;
+      const s = ICON_SCALE_FACTOR * (isFocus ? 1.25 : 1);
       ctx.translate(x - 12 * s, y - 12 * s);
       ctx.scale(s, s);
       ctx.fillStyle = "#fff";
@@ -239,13 +259,25 @@ export function paintNode(
     }
   }
 
-  // Label below
-  ctx.font = `${fontSize}px Inter, sans-serif`;
-  ctx.textAlign = "center";
-  ctx.textBaseline = "top";
-  ctx.fillStyle = themeValue("--text-secondary", "#333");
-  const text = node.displayName.length > 24 ? node.displayName.slice(0, 22) + "…" : node.displayName;
-  ctx.fillText(text, x, y + NODE_SIZE + 4);
+  if (node.showLabel) {
+    const text = node.displayName.length > 22 ? node.displayName.slice(0, 20) + "…" : node.displayName;
+    ctx.font = `${fontSize}px Inter, sans-serif`;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "top";
+    const metrics = ctx.measureText(text);
+    const labelWidth = metrics.width + 10 / globalScale;
+    const labelHeight = fontSize + 5 / globalScale;
+    const labelX = x - labelWidth / 2;
+    const labelY = y + nodeRadius + 4;
+    ctx.fillStyle = themeValue("--bg-card", "#fff");
+    ctx.globalAlpha = 0.86;
+    ctx.beginPath();
+    ctx.roundRect(labelX, labelY, labelWidth, labelHeight, 4 / globalScale);
+    ctx.fill();
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = themeValue("--text-secondary", "#333");
+    ctx.fillText(text, x, labelY + 2 / globalScale);
+  }
 }
 
 export function paintNodePointerArea(raw: Record<string, unknown>, color: string, ctx: CanvasRenderingContext2D): void {
@@ -277,6 +309,7 @@ export function toForceGraphData(
         color: colorForLabel(n.label),
         icon: iconForLabel(n.label),
         isFocus: isFocus ?? false,
+        showLabel: true,
         properties: n.properties,
       };
     }),

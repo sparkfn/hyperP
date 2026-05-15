@@ -10,7 +10,7 @@ import {
 
 import Box from "@mui/material/Box";
 import Chip from "@mui/material/Chip";
-import CircularProgress from "@mui/material/CircularProgress";
+import Divider from "@mui/material/Divider";
 import MenuItem from "@mui/material/MenuItem";
 import Paper from "@mui/material/Paper";
 import Stack from "@mui/material/Stack";
@@ -29,6 +29,7 @@ import CircleIcon from "@mui/icons-material/Circle";
 import StorageIcon from "@mui/icons-material/Storage";
 import GavelIcon from "@mui/icons-material/Gavel";
 import StorefrontIcon from "@mui/icons-material/Storefront";
+import ShoppingCartIcon from "@mui/icons-material/ShoppingCart";
 import dynamic from "next/dynamic";
 import type { ForceGraphMethods } from "react-force-graph-2d";
 
@@ -59,6 +60,9 @@ type AnyNode = Record<string, unknown>;
 type AnyLink = Record<string, unknown>;
 
 const DOUBLE_CLICK_MS = 300;
+const LINK_DISTANCE = 72;
+const NODE_COLLISION_RADIUS = 32;
+const MANY_BODY_STRENGTH = -260;
 
 const ICON_COMPONENTS: Record<NodeIcon, ReactElement> = {
   person: <PersonIcon />,
@@ -71,6 +75,7 @@ const ICON_COMPONENTS: Record<NodeIcon, ReactElement> = {
   receipt: <ReceiptIcon />,
   inventory: <InventoryIcon />,
   bullet: <CircleIcon sx={{ fontSize: 12 }} />,
+  shoppingCart: <ShoppingCartIcon />,
   dataSource: <StorageIcon />,
   gavel: <GavelIcon />,
   storefront: <StorefrontIcon />,
@@ -78,37 +83,36 @@ const ICON_COMPONENTS: Record<NodeIcon, ReactElement> = {
 
 function Legend({ labels }: { labels: string[] }): ReactElement {
   return (
-    <Paper
-      elevation={2}
-      sx={{
-        position: "absolute",
-        bottom: 16,
-        left: 16,
-        zIndex: 10,
-        px: 2,
-        py: 1,
-        bgcolor: "var(--bg-card)",
-        color: "var(--text-primary)",
-        border: "1px solid var(--border)",
-        borderRadius: "8px",
-      }}
-    >
-      <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+    <Stack spacing={0.75}>
+      <Typography
+        variant="caption"
+        sx={{ color: "var(--text-muted)", fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase" }}
+      >
+        Node types · {labels.length}
+      </Typography>
+      <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap>
         {labels.map((label) => (
           <Chip
             key={label}
             icon={ICON_COMPONENTS[iconForLabel(label)]}
             label={label}
             size="small"
-            sx={{ bgcolor: colorForLabel(label), color: "#fff", "& .MuiChip-icon": { color: "#fff" } }}
+            sx={{
+              height: 24,
+              bgcolor: colorForLabel(label),
+              color: "#fff",
+              fontWeight: 600,
+              "& .MuiChip-icon": { color: "#fff", fontSize: 16 },
+            }}
           />
         ))}
       </Stack>
-    </Paper>
+    </Stack>
   );
 }
 
 interface PersonGraphViewerProps {
+  title: string;
   personId?: string;
   elementId?: string;
   onNavigateNode?: (elementId: string, label: string, displayName: string) => void;
@@ -122,6 +126,7 @@ interface PersonGraphViewerProps {
 }
 
 export default function PersonGraphViewer({
+  title,
   personId,
   elementId,
   onNavigateNode,
@@ -185,6 +190,48 @@ export default function PersonGraphViewer({
       .finally(() => setLoading(false));
   }, [personId, elementId, maxHops]);
 
+  useEffect(() => {
+    if (graphData === null) return;
+    const graph = graphRef.current;
+    if (!graph) return;
+
+    const linkForce = graph.d3Force("link");
+    if (linkForce && "distance" in linkForce && typeof linkForce.distance === "function") {
+      linkForce.distance(LINK_DISTANCE);
+    }
+
+    const chargeForce = graph.d3Force("charge");
+    if (chargeForce && "strength" in chargeForce && typeof chargeForce.strength === "function") {
+      chargeForce.strength(MANY_BODY_STRENGTH);
+    }
+
+    graph.d3Force("collide", ((alpha: number) => {
+      const nodes = graphData.nodes as Array<FGNode & { x?: number; y?: number; vx?: number; vy?: number }>;
+      for (let i = 0; i < nodes.length; i += 1) {
+        const a = nodes[i];
+        if (!a) continue;
+        for (let j = i + 1; j < nodes.length; j += 1) {
+          const b = nodes[j];
+          if (!b) continue;
+          const dx = (b.x ?? 0) - (a.x ?? 0);
+          const dy = (b.y ?? 0) - (a.y ?? 0);
+          const distance = Math.hypot(dx, dy) || 1;
+          const overlap = NODE_COLLISION_RADIUS - distance;
+          if (overlap <= 0) continue;
+          const move = (overlap / distance) * alpha * 0.5;
+          const mx = dx * move;
+          const my = dy * move;
+          a.vx = (a.vx ?? 0) - mx;
+          a.vy = (a.vy ?? 0) - my;
+          b.vx = (b.vx ?? 0) + mx;
+          b.vy = (b.vy ?? 0) + my;
+        }
+      }
+    }) as never);
+    graph.d3ReheatSimulation();
+    window.setTimeout(() => graph.zoomToFit(500, 90), 150);
+  }, [graphData, dimensions.width, dimensions.height]);
+
   const handleNodeClick = useCallback(
     (raw: AnyNode) => {
       const node = raw as unknown as FGNode & { x?: number; y?: number };
@@ -221,73 +268,167 @@ export default function PersonGraphViewer({
     setSelected({ kind: "edge", data: link });
   }, []);
 
+  const stats = graphData
+    ? [
+        { label: "Nodes", value: graphData.nodes.length },
+        { label: "Edges", value: graphData.links.length },
+        { label: "Types", value: uniqueLabels.length },
+      ]
+    : [];
+
   return (
-    <Stack spacing={1} sx={{ height: "100%", color: "var(--text-primary)" }}>
-      <Stack direction="row" spacing={1} alignItems="center">
-        <TextField
-          id="graph-max-hops"
-          select
-          size="small"
-          label="Max hops"
-          value={maxHops}
-          onChange={(e) => setMaxHops(Number(e.target.value))}
-          slotProps={{
-            inputLabel: { htmlFor: undefined },
-            select: {
-              MenuProps: {
-                slotProps: {
-                  paper: {
-                    sx: {
-                      bgcolor: "var(--bg-card)",
-                      color: "var(--text-primary)",
-                      border: "1px solid var(--border)",
+    <Box
+      sx={{
+        display: "grid",
+        gridTemplateColumns: { xs: "1fr", md: "300px minmax(0, 1fr)" },
+        gap: 1.5,
+        height: "100%",
+        minHeight: 0,
+        color: "var(--text-primary)",
+      }}
+    >
+      <Paper
+        elevation={0}
+        sx={{
+          display: "flex",
+          flexDirection: "column",
+          gap: 1.5,
+          minHeight: 0,
+          p: 1.5,
+          bgcolor: "var(--bg-surface-2)",
+          border: "1px solid var(--border)",
+          borderRadius: "10px",
+        }}
+      >
+        <Stack spacing={0.5}>
+          <Typography
+            variant="caption"
+            sx={{ color: "var(--text-muted)", fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase" }}
+          >
+            Focused graph
+          </Typography>
+          <Typography variant="subtitle1" fontWeight={700} sx={{ lineHeight: 1.25, color: "var(--text-primary)" }}>
+            {title}
+          </Typography>
+          <Typography variant="body2" sx={{ color: "var(--text-secondary)" }}>
+            Explore related people, identifiers, addresses, review cases, and source records around this person.
+          </Typography>
+        </Stack>
+
+        <Divider sx={{ borderColor: "var(--border)" }} />
+
+        <Stack spacing={1}>
+          <Typography
+            variant="caption"
+            sx={{ color: "var(--text-muted)", fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase" }}
+          >
+            Scope
+          </Typography>
+          <TextField
+            id="graph-max-hops"
+            select
+            size="small"
+            label="Max hops"
+            value={maxHops}
+            onChange={(e) => setMaxHops(Number(e.target.value))}
+            slotProps={{
+              inputLabel: { htmlFor: undefined },
+              select: {
+                MenuProps: {
+                  slotProps: {
+                    paper: {
+                      sx: {
+                        bgcolor: "var(--bg-card)",
+                        color: "var(--text-primary)",
+                        border: "1px solid var(--border)",
+                      },
                     },
                   },
                 },
               },
-            },
-          }}
-          sx={{
-            width: 120,
-            "& .MuiOutlinedInput-root": {
-              color: "var(--text-primary)",
-              backgroundColor: "var(--bg-card)",
-              "& fieldset": { borderColor: "var(--border)" },
-              "&:hover fieldset": { borderColor: "var(--border-strong)" },
-              "&.Mui-focused fieldset": { borderColor: "var(--accent)" },
-            },
-            "& .MuiInputLabel-root": { color: "var(--text-muted)" },
-            "& .MuiSvgIcon-root": { color: "var(--text-muted)" },
-          }}
-        >
-          {[1, 2, 3, 4].map((n) => (
-            <MenuItem key={n} value={n}>
-              {n} hop{n > 1 ? "s" : ""}
-            </MenuItem>
-          ))}
-        </TextField>
-        {graphData !== null ? (
-          <Typography variant="body2" sx={{ color: "var(--text-secondary)" }}>
-            {graphData.nodes.length} nodes, {graphData.links.length} edges
+            }}
+            sx={{
+              "& .MuiOutlinedInput-root": {
+                color: "var(--text-primary)",
+                backgroundColor: "var(--bg-card)",
+                "& fieldset": { borderColor: "var(--border)" },
+                "&:hover fieldset": { borderColor: "var(--border-strong)" },
+                "&.Mui-focused fieldset": { borderColor: "var(--accent)" },
+              },
+              "& .MuiInputLabel-root": { color: "var(--text-muted)" },
+              "& .MuiSvgIcon-root": { color: "var(--text-muted)" },
+            }}
+          >
+            {[1, 2, 3, 4].map((n) => (
+              <MenuItem key={n} value={n}>
+                {n} hop{n > 1 ? "s" : ""}
+              </MenuItem>
+            ))}
+          </TextField>
+        </Stack>
+
+        <Stack spacing={1}>
+          <Typography
+            variant="caption"
+            sx={{ color: "var(--text-muted)", fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase" }}
+          >
+            Summary
           </Typography>
-        ) : null}
-        {loading ? <CircularProgress size={20} /> : null}
-      </Stack>
+          <Box sx={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 0.75 }}>
+            {stats.map((stat) => (
+              <Paper
+                key={stat.label}
+                elevation={0}
+                sx={{ p: 1, bgcolor: "var(--bg-card)", border: "1px solid var(--border)", borderRadius: "8px" }}
+              >
+                <Typography variant="h6" sx={{ color: "var(--text-primary)", fontSize: 20, fontWeight: 700, lineHeight: 1 }}>
+                  {stat.value}
+                </Typography>
+                <Typography variant="caption" sx={{ color: "var(--text-muted)" }}>
+                  {stat.label}
+                </Typography>
+              </Paper>
+            ))}
+            {loading ? <Typography variant="body2" sx={{ color: "var(--text-muted)" }}>Loading graph…</Typography> : null}
+          </Box>
+        </Stack>
 
-      {error !== null ? <Typography color="error">{error}</Typography> : null}
+        <Divider sx={{ borderColor: "var(--border)" }} />
 
-      <Box
+        <Legend labels={uniqueLabels} />
+
+        <Box sx={{ flexGrow: 1 }} />
+
+        <Stack spacing={0.75}>
+          <Typography
+            variant="caption"
+            sx={{ color: "var(--text-muted)", fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase" }}
+          >
+            Interactions
+          </Typography>
+          <Typography variant="body2" sx={{ color: "var(--text-secondary)", fontSize: 12, lineHeight: 1.6 }}>
+            Hint: click a node to inspect details, double-click to open its focused graph, or right-click for node actions.
+          </Typography>
+        </Stack>
+      </Paper>
+
+      <Box sx={{ display: "flex", flexDirection: "column", minHeight: 0 }}>
+        {error !== null ? <Typography color="error" sx={{ mb: 1 }}>{error}</Typography> : null}
+
+        <Box
         ref={containerRef}
         sx={{
           position: "relative",
           flexGrow: 1,
-          minHeight: 500,
+          minHeight: 0,
           border: 1,
           borderColor: "var(--border)",
           borderRadius: "10px",
           bgcolor: "var(--bg-surface-2)",
           backgroundImage: "radial-gradient(circle, var(--border-strong) 1px, transparent 1px)",
           backgroundSize: "24px 24px",
+          boxShadow: "inset 0 1px 0 color-mix(in srgb, var(--bg-card) 82%, transparent)",
+          overflow: "hidden",
         }}
       >
         {graphData !== null && !loading ? (
@@ -319,7 +460,6 @@ export default function PersonGraphViewer({
               d3VelocityDecay={0.3}
               warmupTicks={100}
             />
-            <Legend labels={uniqueLabels} />
             {selected !== null ? (
               <GraphDetailPanel
                 item={selected}
@@ -329,7 +469,8 @@ export default function PersonGraphViewer({
             ) : null}
           </>
         ) : null}
+        </Box>
       </Box>
-    </Stack>
+    </Box>
   );
 }

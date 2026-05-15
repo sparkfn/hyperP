@@ -7,6 +7,7 @@ import DialogContent from "@mui/material/DialogContent";
 import DialogTitle from "@mui/material/DialogTitle";
 import IconButton from "@mui/material/IconButton";
 import Stack from "@mui/material/Stack";
+import Typography from "@mui/material/Typography";
 import CloseIcon from "@mui/icons-material/Close";
 
 import PersonFocusedGraph from "@/components/PersonFocusedGraph";
@@ -30,7 +31,7 @@ export default function PersonGraphDialog({
     <Dialog
       open={open}
       onClose={onClose}
-      maxWidth="lg"
+      maxWidth="xl"
       fullWidth
       slotProps={{
         paper: {
@@ -43,9 +44,13 @@ export default function PersonGraphDialog({
         },
       }}
     >
-      <DialogTitle sx={{ py: 1.5, borderBottom: "1px solid var(--border)", color: "var(--text-primary)" }}>
-        <Stack direction="row" alignItems="center" justifyContent="space-between" spacing={1}>
-          <span>Graph</span>
+      <DialogTitle sx={{ py: 1.25, borderBottom: "1px solid var(--border)", color: "var(--text-primary)" }}>
+        <Stack direction="row" alignItems="center" justifyContent="space-between" spacing={1.5}>
+          <Stack spacing={0.25}>
+            <Typography variant="h6" sx={{ fontSize: 20, fontWeight: 700, letterSpacing: "-0.02em" }}>
+              Graph explorer
+            </Typography>
+          </Stack>
           <IconButton size="small" onClick={onClose} sx={{ color: "var(--text-muted)" }}>
             <CloseIcon fontSize="small" />
           </IconButton>
@@ -68,7 +73,6 @@ export default function PersonGraphDialog({
             initialPersonId={personId}
             initialElementId={elementId}
             initialTitle={title}
-            height="100%"
           />
         ) : null}
       </DialogContent>
