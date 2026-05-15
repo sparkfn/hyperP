@@ -32,17 +32,33 @@ import type {
   SourceRecordInquiryPayload,
 } from "@/lib/api-types-person";
 import { usePaginatedFetch } from "@/lib/usePaginatedFetch";
+import { formatDateTime } from "@/lib/display";
 
 interface Props {
   personId: string;
+  onViewInTimeline: (sourceRecordPk: string) => void;
 }
 
-export default function SourceRecordsTab({ personId }: Props): ReactElement {
-  const [selectedRecord, setSelectedRecord] = useState<PersonSourceRecord | null>(null);
-  const { rows, error, loading, from, to, total, hasPrev, hasNext, goNext, goPrev } =
-    usePaginatedFetch<PersonSourceRecord>(
-      `/bff/persons/${encodeURIComponent(personId)}/source-records`,
-    );
+export default function SourceRecordsTab({
+  personId,
+  onViewInTimeline,
+}: Props): ReactElement {
+  const [selectedRecord, setSelectedRecord] =
+    useState<PersonSourceRecord | null>(null);
+  const {
+    rows,
+    error,
+    loading,
+    from,
+    to,
+    total,
+    hasPrev,
+    hasNext,
+    goNext,
+    goPrev,
+  } = usePaginatedFetch<PersonSourceRecord>(
+    `/bff/persons/${encodeURIComponent(personId)}/source-records`,
+  );
 
   if (error !== null) return <Alert severity="error">{error}</Alert>;
   if (rows === null) {
@@ -77,7 +93,8 @@ export default function SourceRecordsTab({ personId }: Props): ReactElement {
           </TableHead>
           <TableBody>
             {rows.map((record) => {
-              const isConversation: boolean = record.record_type === "conversation";
+              const isConversation: boolean =
+                record.record_type === "conversation";
               return (
                 <TableRow
                   key={record.source_record_pk}
@@ -103,8 +120,8 @@ export default function SourceRecordsTab({ personId }: Props): ReactElement {
                     />
                   </TableCell>
                   <TableCell>{record.link_status}</TableCell>
-                  <TableCell>{record.observed_at}</TableCell>
-                  <TableCell>{record.ingested_at}</TableCell>
+                  <TableCell>{formatDateTime(record.observed_at)}</TableCell>
+                  <TableCell>{formatDateTime(record.ingested_at)}</TableCell>
                 </TableRow>
               );
             })}
@@ -124,7 +141,11 @@ export default function SourceRecordsTab({ personId }: Props): ReactElement {
         onPrev={goPrev}
         onNext={goNext}
       />
-      <RecordPayloadDialog record={selectedRecord} onClose={() => setSelectedRecord(null)} />
+      <RecordPayloadDialog
+        record={selectedRecord}
+        onClose={() => setSelectedRecord(null)}
+        onViewInTimeline={onViewInTimeline}
+      />
     </>
   );
 }
@@ -132,14 +153,17 @@ export default function SourceRecordsTab({ personId }: Props): ReactElement {
 function RecordPayloadDialog({
   record,
   onClose,
+  onViewInTimeline,
 }: {
   record: PersonSourceRecord | null;
   onClose: () => void;
+  onViewInTimeline: (sourceRecordPk: string) => void;
 }): ReactElement {
   const payload = record?.normalized_payload ?? null;
   const identifiers = payload?.identifiers ?? [];
   const attributes = payload?.attributes ?? [];
   const address = payload?.address ?? null;
+  const summary = firstText(payload?.summary, record?.raw_payload?.summary);
 
   return (
     <Dialog open={record !== null} onClose={onClose} fullWidth maxWidth="md">
@@ -157,8 +181,8 @@ function RecordPayloadDialog({
               <PayloadMeta label="Source record id" value={record.source_record_id} />
               <PayloadMeta label="Entity" value={entityLabel(record)} />
               <PayloadMeta label="Extraction method" value={record.extraction_method ?? "—"} />
-              <PayloadMeta label="Observed" value={record.observed_at} />
-              <PayloadMeta label="Ingested" value={record.ingested_at} />
+              <PayloadMeta label="Observed" value={formatDateTime(record.observed_at)} />
+              <PayloadMeta label="Ingested" value={formatDateTime(record.ingested_at)} />
               <PayloadMeta
                 label="Extraction confidence"
                 value={record.extraction_confidence?.toFixed(2) ?? "—"}
@@ -171,6 +195,9 @@ function RecordPayloadDialog({
               </Typography>
             ) : (
               <Stack spacing={2.5}>
+                {summary !== null ? (
+                  <PayloadSection title="Summary" body={summary} />
+                ) : null}
                 <IdentifierSection identifiers={identifiers} />
                 <AddressSection address={address} />
                 <AttributeSection attributes={attributes} />
@@ -181,13 +208,29 @@ function RecordPayloadDialog({
         )}
       </DialogContent>
       <DialogActions>
+        {record !== null ? (
+          <Button
+            onClick={() => {
+              onViewInTimeline(record.source_record_pk);
+              onClose();
+            }}
+          >
+            View in timeline
+          </Button>
+        ) : null}
         <Button onClick={onClose}>Close</Button>
       </DialogActions>
     </Dialog>
   );
 }
 
-function PayloadMeta({ label, value }: { label: string; value: string }): ReactElement {
+function PayloadMeta({
+  label,
+  value,
+}: {
+  label: string;
+  value: string;
+}): ReactElement {
   return (
     <Grid size={{ xs: 12, sm: 6, md: 3 }}>
       <Typography variant="caption" color="text.secondary" display="block">
@@ -200,7 +243,13 @@ function PayloadMeta({ label, value }: { label: string; value: string }): ReactE
   );
 }
 
-function PayloadSection({ title, body }: { title: string; body: string }): ReactElement {
+function PayloadSection({
+  title,
+  body,
+}: {
+  title: string;
+  body: string;
+}): ReactElement {
   return (
     <Box>
       <Typography variant="subtitle2" gutterBottom>

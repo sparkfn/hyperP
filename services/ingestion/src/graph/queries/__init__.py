@@ -9,6 +9,7 @@ working unchanged.
 
 from __future__ import annotations
 
+from src.graph.queries.bankruptcy import MERGE_BANKRUPTCY_CASE
 from src.graph.queries.entities import (
     UPSERT_ENTITY,
     UPSERT_SOURCE_SYSTEM_WITH_ENTITY,
@@ -56,6 +57,7 @@ from src.graph.queries.persons import (
     FETCH_PERSON_IDENTIFIERS,
     LINK_PERSON_TO_ADDRESS,
     LINK_PERSON_TO_IDENTIFIER,
+    LINK_SOURCE_RECORD_TO_ADDRESS,
     UPDATE_GOLDEN_PROFILE,
     UPSERT_ADDRESS,
     UPSERT_IDENTIFIER,
@@ -113,10 +115,12 @@ __all__ = [
     "LINK_PERSON_TO_IDENTIFIER",
     "LINK_PRODUCT_TO_ENTITY",
     "LINK_SALES_TO_IDENTITY_RECORD",
+    "LINK_SOURCE_RECORD_TO_ADDRESS",
     "LINK_SOURCE_RECORD_TO_PERSON",
     "LINK_SOURCE_RECORD_TO_RUN",
     "MARK_PERSON_MERGED",
     "MARK_SALES_RECORD_LINKED",
+    "MERGE_BANKRUPTCY_CASE",
     "MERGE_LINE_ITEM",
     "MERGE_ORDER",
     "MERGE_PRODUCT",

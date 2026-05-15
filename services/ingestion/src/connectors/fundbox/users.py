@@ -69,14 +69,19 @@ class FundboxConnector(FundboxConnectorBase):
 
         for chunk in self._chunked(self._stream(conn, primary_stmt), self._resolved_chunk_size()):
             user_ids = [row.user_id for row in chunk]
-            addresses_by_user = self._fetch_grouped(conn, addresses, "user_id", user_ids)
-            socials_by_user = self._fetch_grouped(conn, social_accounts, "user_id", user_ids)
-            devices_by_user = self._fetch_grouped(conn, device_ids, "user_id", user_ids)
+            excluded_user_ids = self._fetch_excluded_user_ids(conn, user_ids)
+            eligible_chunk = [row for row in chunk if row.user_id not in excluded_user_ids]
+            eligible_user_ids = [row.user_id for row in eligible_chunk]
+            addresses_by_user = self._fetch_grouped(conn, addresses, "user_id", eligible_user_ids)
+            socials_by_user = self._fetch_grouped(
+                conn, social_accounts, "user_id", eligible_user_ids
+            )
+            devices_by_user = self._fetch_grouped(conn, device_ids, "user_id", eligible_user_ids)
             last_login_by_user = self._fetch_scalar_map(
-                conn, last_logins, "user_id", "last_logged_in", user_ids
+                conn, last_logins, "user_id", "last_logged_in", eligible_user_ids
             )
 
-            for row in chunk:
+            for row in eligible_chunk:
                 yield self._build_one(
                     row,
                     addresses_by_user.get(row.user_id, []),

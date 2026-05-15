@@ -11,7 +11,10 @@ from sqlalchemy.engine import Connection
 from src.config import get_settings
 from src.connectors.base import SourceConnector
 from src.connectors.fundbox.db import get_engine
+from src.connectors.fundbox.schema import merchant_staff, model_has_roles, roles
 from src.models import JsonValue
+
+_EXCLUDED_ROLE_NAMES: frozenset[str] = frozenset({"merchant", "admin"})
 
 
 class FundboxConnectorBase(SourceConnector):
@@ -101,6 +104,24 @@ class FundboxConnectorBase(SourceConnector):
         stmt = select(col, val).where(col.in_(keys_list))
         target = self._sidecar_conn or conn
         return {row[0]: row[1] for row in target.execute(stmt)}
+
+    def _fetch_excluded_user_ids(self, conn: Connection, user_ids: Iterable[int]) -> set[int]:
+        ids = list({int(user_id) for user_id in user_ids if user_id is not None})
+        if not ids:
+            return set()
+        target = self._sidecar_conn or conn
+
+        role_stmt = (
+            select(model_has_roles.c.model_id)
+            .select_from(model_has_roles.join(roles, roles.c.id == model_has_roles.c.role_id))
+            .where(model_has_roles.c.model_id.in_(ids))
+            .where(roles.c.name.in_(sorted(_EXCLUDED_ROLE_NAMES)))
+        )
+        staff_stmt = select(merchant_staff.c.user_id).where(merchant_staff.c.user_id.in_(ids))
+
+        excluded = {int(row[0]) for row in target.execute(role_stmt) if row[0] is not None}
+        excluded.update(int(row[0]) for row in target.execute(staff_stmt) if row[0] is not None)
+        return excluded
 
     @staticmethod
     def _chunked(it: Iterable[Any], size: int) -> Iterator[list[Any]]:

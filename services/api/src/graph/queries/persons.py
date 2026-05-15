@@ -87,6 +87,68 @@ ORDER BY sr.observed_at DESC
 SKIP $skip LIMIT $limit
 """
 
+GET_PERSON_BANKRUPTCY_CASES = """
+MATCH (:Person {person_id: $person_id})-[:HAS_BANKRUPTCY_CASE]->(bc:BankruptcyCase)
+RETURN bc {
+  .bankruptcy_case_id, .source_system_key, .source_case_id,
+  .case_number, .document_type, .document_date,
+  .event_type, .event_date, .trustee_name, .trustee_firm,
+  .source_url, .first_seen_at, .last_seen_at, .created_at, .updated_at
+} AS bankruptcy_case
+ORDER BY coalesce(bc.event_date, bc.document_date, toString(bc.last_seen_at), toString(bc.updated_at), bc.source_case_id) DESC
+SKIP $skip LIMIT $limit
+"""
+
+COUNT_PERSON_BANKRUPTCY_CASES = """
+MATCH (:Person {person_id: $person_id})-[:HAS_BANKRUPTCY_CASE]->(bc:BankruptcyCase)
+RETURN count(bc) AS total
+"""
+
+GET_PERSON_TIMELINE = """
+MATCH (sr:SourceRecord)-[:LINKED_TO]->(p:Person {person_id: $person_id})
+MATCH (sr)-[:FROM_SOURCE]->(ss:SourceSystem)
+OPTIONAL MATCH (sr)-[:DESCRIBES_CASE]->(bc:BankruptcyCase)
+RETURN sr {
+  .source_record_pk, .source_record_id, .source_record_version,
+  .record_type, .extraction_confidence,
+  .link_status, .observed_at, .ingested_at, .normalized_payload
+} AS source_record,
+ss.source_key AS source_system,
+p.person_id AS linked_person_id,
+bc {
+  .bankruptcy_case_id, .source_system_key, .source_case_id,
+  .case_number, .document_type, .document_date,
+  .event_type, .event_date, .trustee_name, .trustee_firm,
+  .source_url, .first_seen_at, .last_seen_at, .created_at, .updated_at
+} AS bankruptcy_case
+ORDER BY coalesce(sr.observed_at, sr.ingested_at) DESC, sr.source_record_pk DESC
+SKIP $skip LIMIT $limit
+"""
+
+COUNT_PERSON_TIMELINE = """
+MATCH (sr:SourceRecord)-[:LINKED_TO]->(:Person {person_id: $person_id})
+RETURN count(sr) AS total
+"""
+
+GET_PERSON_TIMELINE_TARGET = """
+MATCH (sr:SourceRecord {source_record_pk: $source_record_pk})-[:LINKED_TO]->(p:Person {person_id: $person_id})
+MATCH (sr)-[:FROM_SOURCE]->(ss:SourceSystem)
+OPTIONAL MATCH (sr)-[:DESCRIBES_CASE]->(bc:BankruptcyCase)
+RETURN sr {
+  .source_record_pk, .source_record_id, .source_record_version,
+  .record_type, .extraction_confidence,
+  .link_status, .observed_at, .ingested_at, .normalized_payload
+} AS source_record,
+ss.source_key AS source_system,
+p.person_id AS linked_person_id,
+bc {
+  .bankruptcy_case_id, .source_system_key, .source_case_id,
+  .case_number, .document_type, .document_date,
+  .event_type, .event_date, .trustee_name, .trustee_firm,
+  .source_url, .first_seen_at, .last_seen_at, .created_at, .updated_at
+} AS bankruptcy_case
+"""
+
 GET_PERSON_CONNECTIONS_IDENTIFIER = """
 MATCH (p:Person {person_id: $person_id})-[:IDENTIFIED_BY]->(id:Identifier)
   <-[:IDENTIFIED_BY]-(other:Person)

@@ -36,10 +36,15 @@ class FundboxLegacyConnector(FundboxConnectorBase):
         primary_stmt = select(log_legacy_profiles).order_by(log_legacy_profiles.c.id)
         for chunk in self._chunked(self._stream(conn, primary_stmt), self._resolved_chunk_size()):
             user_ids = [row.user_id for row in chunk if row.user_id is not None]
+            excluded_user_ids = self._fetch_excluded_user_ids(conn, user_ids)
+            eligible_chunk = [
+                row for row in chunk if row.user_id is None or row.user_id not in excluded_user_ids
+            ]
+            eligible_user_ids = [row.user_id for row in eligible_chunk if row.user_id is not None]
             addresses_by_user = self._fetch_grouped(
-                conn, log_legacy_profile_addresses, "user_id", user_ids
+                conn, log_legacy_profile_addresses, "user_id", eligible_user_ids
             )
-            for row in chunk:
+            for row in eligible_chunk:
                 user_addresses = addresses_by_user.get(row.user_id, [])
                 ids = IdentifierBag()
                 ids.add("nric", row.nric, verified=True)

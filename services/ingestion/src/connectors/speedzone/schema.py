@@ -57,3 +57,11 @@ customers = Table(
     Column("custom_field_1_value", String(255)),  # NRIC / Passport No.
     Column("custom_field_2_value", String(255)),  # bitrix_user_id
 )
+
+employees = Table(
+    "phppos_employees",
+    metadata,
+    Column("person_id", Integer, primary_key=True),
+    Column("username", String(255)),
+    Column("deleted", Integer),
+)

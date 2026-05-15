@@ -97,6 +97,58 @@ export interface PersonSourceRecord {
   normalized_payload: SourceRecordNormalizedPayload | null;
 }
 
+export type TimelineTimestampKind = "source" | "fallback";
+export type TimelineFactCategory =
+  | "identity"
+  | "contact"
+  | "address"
+  | "sale"
+  | "relationship"
+  | "conversation"
+  | "source"
+  | "bankruptcy";
+
+export interface PersonTimelineFact {
+  fact_id: string;
+  category: TimelineFactCategory;
+  label: string;
+  value: string;
+  detail: string | null;
+}
+
+export interface PersonTimelineGroup {
+  source_record_pk: string;
+  source_system: string;
+  source_record_id: string;
+  source_record_version: string | null;
+  record_type: SourceRecordType;
+  extraction_confidence: number | null;
+  link_status: string;
+  linked_person_id: string | null;
+  occurred_at: string;
+  timestamp_kind: TimelineTimestampKind;
+  ingested_at: string;
+  facts: PersonTimelineFact[];
+}
+
+export interface PersonBankruptcyCase {
+  bankruptcy_case_id: string;
+  source_system_key: string;
+  source_case_id: string;
+  case_number: string | null;
+  document_type: string | null;
+  document_date: string | null;
+  event_type: string | null;
+  event_date: string | null;
+  trustee_name: string | null;
+  trustee_firm: string | null;
+  source_url: string | null;
+  first_seen_at: string | null;
+  last_seen_at: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
 export interface PersonAuditEvent {
   merge_event_id: string;
   event_type: string;

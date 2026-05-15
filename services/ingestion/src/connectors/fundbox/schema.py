@@ -101,6 +101,33 @@ last_logins = Table(
     Column("last_logged_in", DateTime),
 )
 
+roles = Table(
+    "roles",
+    metadata,
+    Column("id", BigInteger, primary_key=True),
+    Column("name", String(255)),
+    Column("guard_name", String(255)),
+)
+
+model_has_roles = Table(
+    "model_has_roles",
+    metadata,
+    Column("role_id", BigInteger, index=True),
+    Column("model_type", String(255)),
+    Column("model_id", BigInteger, index=True),
+)
+
+merchant_staff = Table(
+    "merchant_staff",
+    metadata,
+    Column("id", BigInteger, primary_key=True),
+    Column("user_id", BigInteger, index=True),
+    Column("merchant_id", BigInteger, index=True),
+    Column("name", String(255)),
+    Column("created_at", DateTime),
+    Column("updated_at", DateTime),
+)
+
 contacts = Table(
     "contacts",
     metadata,

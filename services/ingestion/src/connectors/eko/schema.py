@@ -64,3 +64,11 @@ customers = Table(
     Column("custom_field_9_value", String(255)),  # DOB epoch
     Column("custom_field_10_value", String(255)),  # opt-in status / DOB string
 )
+
+employees = Table(
+    "phppos_employees",
+    metadata,
+    Column("person_id", Integer, primary_key=True),
+    Column("username", String(255)),
+    Column("deleted", Integer),
+)

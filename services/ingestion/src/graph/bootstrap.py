@@ -53,6 +53,12 @@ _ENTITIES: tuple[_EntitySeed, ...] = (
         "entity_type": "retailer",
         "country_code": "SG",
     },
+    {
+        "entity_key": "sggov",
+        "display_name": "SG Gov",
+        "entity_type": "government",
+        "country_code": "SG",
+    },
 )
 
 
@@ -81,6 +87,12 @@ _CHAT_TRUST: dict[str, str] = {
     "email": "tier_3",
     "full_name": "tier_3",
     "dob": "tier_4",
+    "nric": "tier_4",
+    "address": "tier_4",
+}
+
+_GOVERNMENT_REGISTRY_TRUST: dict[str, str] = {
+    "full_name": "tier_4",
     "nric": "tier_4",
     "address": "tier_4",
 }
@@ -163,6 +175,20 @@ _SOURCE_SYSTEMS: tuple[_SourceSystemSeed, ...] = (
         "system_type": "chat",
         "entity_key": "fundbox",
         "field_trust": _CHAT_TRUST,
+    },
+    {
+        "source_key": "sgbankruptcy",
+        "display_name": "SG Bankruptcy Register",
+        "system_type": "government_registry",
+        "entity_key": "sggov",
+        "field_trust": _GOVERNMENT_REGISTRY_TRUST,
+    },
+    {
+        "source_key": "sgrentalflats",
+        "display_name": "SG Rental Flats",
+        "system_type": "government_registry",
+        "entity_key": "sggov",
+        "field_trust": _GOVERNMENT_REGISTRY_TRUST,
     },
 )
 

@@ -15,17 +15,33 @@ export function confidenceColor(value: number | null): "success" | "warning" | "
   return "error";
 }
 
-export function formatDate(value: string): string {
+export function formatDate(value: string | null | undefined): string {
   if (!value) return "—";
   const parsed = new Date(value);
   if (Number.isNaN(parsed.getTime())) return value;
   return parsed.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
 }
 
+export function formatDateTime(value: string | null | undefined): string {
+  if (!value) return "—";
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return value;
+  const formatted = parsed.toLocaleString("en-GB", {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: true,
+  });
+  return formatted.replace("am", "am").replace("pm", "pm") as string;
+}
+
 export function formatDob(value: string | null): string {
   if (!value) return "—";
-  if (/^\d{4}-\d{2}-\d{2}$/.test(value)) {
-    const parsed = new Date(value + "T00:00:00");
+  const datePart = value.split("T", 1)[0];
+  if (datePart !== undefined && /^\d{4}-\d{2}-\d{2}$/.test(datePart)) {
+    const parsed = new Date(datePart + "T00:00:00");
     if (!Number.isNaN(parsed.getTime())) {
       return parsed.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
     }

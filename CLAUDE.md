@@ -157,7 +157,7 @@ return envelope(items, request, next_cursor(skip, page_limit, has_more))
 Use `usePaginatedFetch<T>(basePath)` from `src/lib/usePaginatedFetch.ts`. It manages `cursor`/`prevStack`/`nextCursor` state and exposes `{ rows, loading, error, from, to, total, hasPrev, hasNext, goNext, goPrev }`. BFF route handlers must forward `limit`/`cursor` from `searchParams` using `searchParamsToQuery(searchParams)` from `src/lib/proxy.ts`.
 
 ### BFF proxy
-Every browser→API call goes through a Next.js route handler. Standard thin handler:
+Every browser→API call goes through a Next.js route handler under `src/app/bff/`. Standard thin handler:
 ```typescript
 export async function GET(request: Request, context: RouteContext): Promise<NextResponse> {
   const { personId } = await context.params;
@@ -168,6 +168,7 @@ export async function GET(request: Request, context: RouteContext): Promise<Next
   );
 }
 ```
+Key BFF route groups: `bff/persons/` (list, search, profile sub-resources), `bff/review-cases/` (list, actions, assign), `bff/entities/`, `bff/ingest/`, `bff/admin/oauth-clients/`, `bff/auth/`, `bff/reports/`, `bff/dumps/`.
 
 ### Graph query modules
 All Cypher strings live as module-level string constants **or dynamic builder functions** in `services/api/src/graph/queries/` and `services/ingestion/src/graph/queries/`. The `E501` line-length rule is disabled for these files so queries aren't artificially wrapped. Neither routes nor repository implementations embed Cypher inline — implementations import query constants and builders by name from `src.graph.queries`.
@@ -331,5 +332,4 @@ The person/relationship graph uses `react-force-graph-2d` (dynamically imported,
 
 - **Module split**: types, colors, icon paths, and canvas callbacks live in `graph-utils.ts` (~300 lines); the viewer component and legend stay in `PersonGraphViewer.tsx`; the detail panel is in `GraphDetailPanel.tsx`.
 - **Canvas icons**: Node icons use `Path2D(svgPathString)` constructed from MUI icon SVG path data (24×24 viewBox). Icons are drawn in world coordinates inside `paintNode()` — they scale with the graph zoom, not in screen pixels. The legend uses actual MUI icon React components in `Chip` elements.
-- **Force configuration**: `nodeVal` is set to `NODE_SIZE * 3` so the simulation respects node area for collision. `d3Force("link").distance()` and `d3Force("charge").strength()` are configured via ref callback after mount to prevent overlap while keeping the graph compact.
 - **Detail panel**: Person nodes show a rich profile card (name, status chips, key fields grid, "More" link to person page). Non-Person nodes show generic key-value properties. Both panels include an "Expand in graph" link.

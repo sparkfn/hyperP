@@ -26,6 +26,9 @@ CREATE CONSTRAINT line_item_dedup_unique IF NOT EXISTS
 CREATE CONSTRAINT product_dedup_unique IF NOT EXISTS
   FOR (p:Product) REQUIRE (p.source_system_key, p.source_product_id) IS UNIQUE;
 
+CREATE CONSTRAINT bankruptcy_case_dedup_unique IF NOT EXISTS
+  FOR (bc:BankruptcyCase) REQUIRE (bc.source_system_key, bc.source_case_id) IS UNIQUE;
+
 CREATE CONSTRAINT source_record_pk_unique IF NOT EXISTS
   FOR (sr:SourceRecord) REQUIRE sr.source_record_pk IS UNIQUE;
 
@@ -49,9 +52,6 @@ CREATE INDEX idx_identifier_type_hash IF NOT EXISTS
   FOR (id:Identifier) ON (id.identifier_type, id.hashed_value);
 
 // Address lookups
-CREATE INDEX idx_address_postal IF NOT EXISTS
-  FOR (addr:Address) ON (addr.country_code, addr.postal_code);
-
 CREATE INDEX idx_address_composite IF NOT EXISTS
   FOR (addr:Address)
   ON (addr.country_code, addr.postal_code, addr.street_name, addr.street_number);
@@ -93,6 +93,13 @@ CREATE INDEX idx_product_sku IF NOT EXISTS
 
 CREATE INDEX idx_product_category IF NOT EXISTS
   FOR (p:Product) ON (p.category);
+
+// Bankruptcy lookups
+CREATE INDEX idx_bankruptcy_case_number IF NOT EXISTS
+  FOR (bc:BankruptcyCase) ON (bc.case_number);
+
+CREATE INDEX idx_bankruptcy_event_date IF NOT EXISTS
+  FOR (bc:BankruptcyCase) ON (bc.event_date);
 
 // Full-text search — name, NRIC, email, phone
 CREATE FULLTEXT INDEX person_name_search IF NOT EXISTS

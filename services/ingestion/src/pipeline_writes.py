@@ -261,6 +261,55 @@ def create_review_case_if_needed(
     return review_case_id
 
 
+def _attribute_str(envelope: SourceRecordEnvelope, key: str) -> str:
+    value = envelope.attributes.get(key)
+    return value if isinstance(value, str) else ""
+
+
+def _attribute_bool(envelope: SourceRecordEnvelope, key: str) -> bool:
+    value = envelope.attributes.get(key)
+    return value if isinstance(value, bool) else False
+
+
+def link_source_record_to_address(
+    tx: ManagedTransaction,
+    *,
+    envelope: SourceRecordEnvelope,
+    source_record_pk: str,
+) -> None:
+    """Persist an address-only source record onto the shared Address graph."""
+    postal_code = _attribute_str(envelope, "postal_code")
+    country_code = _attribute_str(envelope, "country_code") or "SG"
+    block_no = _attribute_str(envelope, "block_no")
+    street_name = _attribute_str(envelope, "street_name")
+    town_name = _attribute_str(envelope, "town_name")
+    normalized_full = " ".join(
+        part for part in [block_no, street_name, postal_code, country_code] if part
+    )
+
+    tx.run(
+        queries.UPSERT_ADDRESS,
+        country_code=country_code,
+        postal_code=postal_code,
+        street_name=street_name,
+        street_number=block_no,
+        unit_number="",
+        building_name=None,
+        city=town_name,
+        state_province=None,
+        normalized_full=normalized_full,
+    )
+    tx.run(
+        queries.LINK_SOURCE_RECORD_TO_ADDRESS,
+        source_record_pk=source_record_pk,
+        country_code=country_code,
+        postal_code=postal_code,
+        source_system_key=envelope.source_system,
+        flat_type=_attribute_str(envelope, "flat_type"),
+        is_active=_attribute_bool(envelope, "is_active"),
+    )
+
+
 # --- Steps 8–11: wire the source record into the Person subgraph ----------
 
 

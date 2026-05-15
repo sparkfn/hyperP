@@ -45,6 +45,7 @@ from src.connectors.chat_helpers import (
     run_extraction_batch,
     transactions_payload,
 )
+from src.exclusions import ExclusionContext, filter_extraction, normalized_name_set
 from src.models import JsonValue
 
 logger = logging.getLogger(__name__)
@@ -184,7 +185,9 @@ class BitrixChatConnector(SourceConnector):
             if extraction is None:
                 logger.warning("LLM extraction failed for chat %s", bundle.chat_id)
                 continue
-            yield self._build_envelope(bundle=bundle, extraction=extraction)
+            envelope = self._build_envelope(bundle=bundle, extraction=extraction)
+            if envelope is not None:
+                yield envelope
 
     def _load_deal(self, conn: Connection, deal_id: int | None) -> dict[str, object] | None:
         if deal_id is None:
@@ -275,8 +278,17 @@ class BitrixChatConnector(SourceConnector):
         *,
         bundle: _ChatBundle,
         extraction: ExtractionResult,
-    ) -> dict[str, JsonValue]:
+    ) -> dict[str, JsonValue] | None:
         from src.connectors.fundbox.builders import build_envelope
+
+        agent_names = [agent.name for agent in bundle.agents if agent.name]
+        filtered = filter_extraction(
+            extraction,
+            ExclusionContext(names=normalized_name_set(agent_names)),
+        )
+        if filtered is None:
+            return None
+        extraction = filtered
 
         chat_id = str(bundle.chat_id)
         deal_id = str(bundle.deal_id)

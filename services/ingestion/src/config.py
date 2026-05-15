@@ -124,6 +124,11 @@ class Settings(BaseSettings):
     whatsapp_chat_db_name: str = "whatsapp_api"
     whatsapp_chat_chunk_size: int = 500
 
+    # Hard ingestion exclusions -------------------------------------------------
+    company_mobile_numbers: list[str] = []
+    company_email_addresses: list[str] = []
+    internal_person_names: list[str] = []
+
     # LLM service -------------------------------------------------------------
     llm_default_model: str = "Qwen/Qwen2.5-72B-Instruct"
     llm_request_delay_seconds: float = 0.5

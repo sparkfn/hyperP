@@ -20,6 +20,7 @@ from datetime import datetime
 from sqlalchemy import or_, select
 from sqlalchemy.engine import Connection
 
+from src.config import get_settings
 from src.connectors.base import SourceConnector
 from src.connectors.chat_helpers import (
     ExtractionResult,
@@ -33,6 +34,7 @@ from src.connectors.chat_helpers import (
 )
 from src.connectors.whatsapp.db import get_engine
 from src.connectors.whatsapp.schema import chats, contacts, messages, orgs, sessions
+from src.exclusions import ExclusionContext, filter_extraction, normalized_phone_set
 from src.models import JsonValue
 
 logger = logging.getLogger(__name__)
@@ -60,6 +62,7 @@ class _ChatBundle:
     observed_at: str
     participants: list[_Participant]
     message_endpoints: list[JsonValue]
+    session_phone: str | None
 
 
 #: Map org name → entity_key (from graph bootstrap).
@@ -130,6 +133,10 @@ class WhatsAppChatConnector(SourceConnector):
                         observed_at=_latest_message_timestamp(msgs),
                         participants=participants,
                         message_endpoints=_message_endpoints(msgs),
+                        session_phone=_first_str(
+                            getattr(session, "expected_phone_number", None),
+                            _phone_from_jid(whatsapp_uid),
+                        ),
                     )
                 )
 
@@ -157,7 +164,9 @@ class WhatsAppChatConnector(SourceConnector):
                 logger.warning("LLM extraction failed for chat %s", bundle.chat_id)
                 continue
 
-            yield _build_envelope(bundle=bundle, extraction=extraction)
+            envelope = _build_envelope(bundle=bundle, extraction=extraction)
+            if envelope is not None:
+                yield envelope
 
     def _fetch_messages(
         self,
@@ -238,8 +247,25 @@ def _build_envelope(
     *,
     bundle: _ChatBundle,
     extraction: ExtractionResult,
-) -> dict[str, JsonValue]:
+) -> dict[str, JsonValue] | None:
     from src.connectors.fundbox.builders import build_envelope
+
+    settings = get_settings()
+    company_phones = list(settings.company_mobile_numbers)
+    if bundle.session_phone:
+        company_phones.append(bundle.session_phone)
+    for endpoint in bundle.message_endpoints:
+        phone = endpoint.get("phone") if isinstance(endpoint, dict) else None
+        role = endpoint.get("role") if isinstance(endpoint, dict) else None
+        if role == "sender" and isinstance(phone, str):
+            company_phones.append(phone)
+    filtered = filter_extraction(
+        extraction,
+        ExclusionContext(phones=normalized_phone_set(company_phones)),
+    )
+    if filtered is None:
+        return None
+    extraction = filtered
 
     chat_id = bundle.chat_id
     chat_name = bundle.chat_name
