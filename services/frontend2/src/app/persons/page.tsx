@@ -575,7 +575,7 @@ type PresenceFilter = "any" | "has" | "none";
 type DobMode = "single" | "range";
 type SortKey = "name" | "dob" | "orders" | "quality";
 type SortDir = "asc" | "desc";
-type FilterKey = "entity" | "source" | "identity" | "dob" | "address";
+type FilterKey = "entity" | "source" | "identity" | "dob" | "address" | "flags" | "bankruptcy" | "updated" | "location";
 
 function FilterPill({
   label,
@@ -658,6 +658,14 @@ function PersonsInner(): ReactElement {
   const [dobSingleDate, setDobSingleDate] = useState("");
   const [dobStartDate, setDobStartDate] = useState("");
   const [dobEndDate, setDobEndDate] = useState("");
+  const [isHighValue, setIsHighValue] = useState<boolean | null>(null);
+  const [isHighRisk, setIsHighRisk] = useState<boolean | null>(null);
+  const [hasBankruptcy, setHasBankruptcy] = useState<boolean | null>(null);
+  const [updatedAfter, setUpdatedAfter] = useState("");
+  const [updatedBefore, setUpdatedBefore] = useState("");
+  const [addrCity, setAddrCity] = useState("");
+  const [addrPostal, setAddrPostal] = useState("");
+  const [addrCountry, setAddrCountry] = useState("");
 
   const [openFilter, setOpenFilter] = useState<FilterKey | null>(null);
   const [sortKey, setSortKey] = useState<SortKey | null>(null);
@@ -812,6 +820,14 @@ function PersonsInner(): ReactElement {
     dobFilter === "has" && dobMode === "single" && dobSingleDate !== "",
     dobFilter === "has" && dobMode === "range" && (dobStartDate !== "" || dobEndDate !== ""),
     addressFilter !== "any",
+    isHighValue !== null,
+    isHighRisk !== null,
+    hasBankruptcy !== null,
+    updatedAfter !== "",
+    updatedBefore !== "",
+    addrCity !== "",
+    addrPostal !== "",
+    addrCountry !== "",
   ].filter(Boolean).length + entityFilter.length + sourceFilter.length + identityFilter.length;
 
   function clearAllFilters(): void {
@@ -825,6 +841,14 @@ function PersonsInner(): ReactElement {
     setDobSingleDate("");
     setDobStartDate("");
     setDobEndDate("");
+    setIsHighValue(null);
+    setIsHighRisk(null);
+    setHasBankruptcy(null);
+    setUpdatedAfter("");
+    setUpdatedBefore("");
+    setAddrCity("");
+    setAddrPostal("");
+    setAddrCountry("");
   }
 
   const apiQuery = useMemo(() => {
@@ -858,14 +882,21 @@ function PersonsInner(): ReactElement {
       params.set("sort_by", sortByMap[sortKey]);
       params.set("sort_order", sortDir);
     }
+    if (isHighValue !== null) params.set("is_high_value", String(isHighValue));
+    if (isHighRisk !== null) params.set("is_high_risk", String(isHighRisk));
+    if (hasBankruptcy !== null) params.set("has_bankruptcy_case", String(hasBankruptcy));
+    if (updatedAfter) params.set("updated_after", updatedAfter);
+    if (updatedBefore) params.set("updated_before", updatedBefore);
+    if (addrCity) params.set("addr_city", addrCity);
+    if (addrPostal) params.set("addr_postal", addrPostal);
+    if (addrCountry) params.set("addr_country", addrCountry);
     params.set("limit", String(pageSize));
     return params.toString();
-  }, [search, entityFilter, sourceFilter, identityFilter, addressFilter, dobFilter, dobMode, dobSingleDate, dobStartDate, dobEndDate, sortKey, sortDir, pageSize]);
+  }, [search, entityFilter, sourceFilter, identityFilter, addressFilter, dobFilter, dobMode, dobSingleDate, dobStartDate, dobEndDate, isHighValue, isHighRisk, hasBankruptcy, updatedAfter, updatedBefore, addrCity, addrPostal, addrCountry, sortKey, sortDir, pageSize]);
 
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setCurrentCursor(null);
-    // eslint-disable-next-line react-hooks/set-state-in-effect
     setCursorStack([]);
   }, [apiQuery]);
 
@@ -1276,6 +1307,156 @@ function PersonsInner(): ReactElement {
                     {value === "any" ? "Any" : value === "has" ? "Has" : "None"}
                   </button>
                 ))}
+              </div>
+            </div>
+          </FilterPill>
+
+          <FilterPill
+            label="Flags"
+            isActive={isHighValue !== null || isHighRisk !== null}
+            activeLabel={
+              isHighValue && isHighRisk ? "HV + HR"
+                : isHighValue ? "High Value"
+                : "High Risk"
+            }
+            onClear={() => { setIsHighValue(null); setIsHighRisk(null); }}
+            open={openFilter === "flags"}
+            onToggle={() => toggleFilter("flags")}
+          >
+            <div className={styles.fpInner}>
+              <div className={styles.filterOptions}>
+                <button
+                  type="button"
+                  className={`${styles.filterChip} ${isHighValue === true ? styles.filterChipActive : ""}`}
+                  onClick={() => setIsHighValue((v) => v === true ? null : true)}
+                >
+                  High Value
+                </button>
+                <button
+                  type="button"
+                  className={`${styles.filterChip} ${isHighRisk === true ? styles.filterChipActive : ""}`}
+                  onClick={() => setIsHighRisk((v) => v === true ? null : true)}
+                >
+                  High Risk
+                </button>
+              </div>
+            </div>
+          </FilterPill>
+
+          <FilterPill
+            label="Bankruptcy"
+            isActive={hasBankruptcy !== null}
+            activeLabel="Has case"
+            onClear={() => setHasBankruptcy(null)}
+            open={openFilter === "bankruptcy"}
+            onToggle={() => toggleFilter("bankruptcy")}
+          >
+            <div className={styles.fpInner}>
+              <div className={styles.fpSegmented}>
+                {([null, true] as const).map((value) => (
+                  <button
+                    key={String(value)}
+                    type="button"
+                    className={`${styles.fpSegmentedBtn} ${hasBankruptcy === value ? styles.fpSegmentedBtnActive : ""}`}
+                    onClick={() => setHasBankruptcy(value)}
+                  >
+                    {value === null ? "Any" : "Has case"}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </FilterPill>
+
+          <FilterPill
+            label="Updated"
+            isActive={updatedAfter !== "" || updatedBefore !== ""}
+            activeLabel={
+              updatedAfter && updatedBefore ? `${updatedAfter} → ${updatedBefore}`
+                : updatedAfter ? `After ${updatedAfter}`
+                : `Before ${updatedBefore}`
+            }
+            onClear={() => { setUpdatedAfter(""); setUpdatedBefore(""); }}
+            open={openFilter === "updated"}
+            onToggle={() => toggleFilter("updated")}
+          >
+            <div className={styles.fpInner}>
+              <div className={styles.dateFieldsRow}>
+                <div className={`${styles.dateFieldGroup} ${styles.compactFieldGroup}`}>
+                  <label className={styles.dateFieldLabel}>From</label>
+                  <div className={styles.dateInputWrap}>
+                    <input
+                      aria-label="Updated after"
+                      className={styles.dateInput}
+                      type="date"
+                      value={updatedAfter}
+                      onChange={(e) => setUpdatedAfter(e.target.value)}
+                    />
+                  </div>
+                </div>
+                <div className={`${styles.dateFieldGroup} ${styles.compactFieldGroup}`}>
+                  <label className={styles.dateFieldLabel}>To</label>
+                  <div className={styles.dateInputWrap}>
+                    <input
+                      aria-label="Updated before"
+                      className={styles.dateInput}
+                      type="date"
+                      value={updatedBefore}
+                      onChange={(e) => setUpdatedBefore(e.target.value)}
+                    />
+                  </div>
+                </div>
+              </div>
+            </div>
+          </FilterPill>
+
+          <FilterPill
+            label="Location"
+            isActive={addrCity !== "" || addrPostal !== "" || addrCountry !== ""}
+            activeLabel={
+              [addrCity, addrPostal, addrCountry].filter(Boolean).join(", ")
+            }
+            onClear={() => { setAddrCity(""); setAddrPostal(""); setAddrCountry(""); }}
+            open={openFilter === "location"}
+            onToggle={() => toggleFilter("location")}
+          >
+            <div className={styles.fpInner}>
+              <div className={styles.dateFieldGroup}>
+                <label className={styles.dateFieldLabel}>City</label>
+                <div className={styles.dateInputWrap}>
+                  <input
+                    className={styles.dateInput}
+                    type="text"
+                    value={addrCity}
+                    onChange={(e) => setAddrCity(e.target.value)}
+                    placeholder="e.g. Singapore"
+                  />
+                </div>
+              </div>
+              <div className={styles.dateFieldsRow}>
+                <div className={`${styles.dateFieldGroup} ${styles.compactFieldGroup}`}>
+                  <label className={styles.dateFieldLabel}>Postal</label>
+                  <div className={styles.dateInputWrap}>
+                    <input
+                      className={styles.dateInput}
+                      type="text"
+                      value={addrPostal}
+                      onChange={(e) => setAddrPostal(e.target.value)}
+                      placeholder="e.g. 018982"
+                    />
+                  </div>
+                </div>
+                <div className={`${styles.dateFieldGroup} ${styles.compactFieldGroup}`}>
+                  <label className={styles.dateFieldLabel}>Country</label>
+                  <div className={styles.dateInputWrap}>
+                    <input
+                      className={styles.dateInput}
+                      type="text"
+                      value={addrCountry}
+                      onChange={(e) => setAddrCountry(e.target.value)}
+                      placeholder="e.g. SG"
+                    />
+                  </div>
+                </div>
               </div>
             </div>
           </FilterPill>
