@@ -38,6 +38,7 @@ data/celerybeat/
 # Claude Code local session/cache
 .claude/
 .worktrees/
+services/frontend2/AGENT_NOTES.md
 
 # Dump files
 .dumps/
