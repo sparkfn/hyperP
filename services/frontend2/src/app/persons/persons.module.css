@@ -1171,16 +1171,10 @@
 }
 
 .thCheck {
-  padding: 10px 8px 10px 14px;
-  width: 36px;
-  position: sticky;
-  left: 0;
-  z-index: 2;
-  background: var(--bg-card);
-  border-bottom: 1px solid var(--border-subtle);
+  display: none;
 }
 .tdCheck {
-  padding: 11px 8px 11px 14px;
+  display: none;
   vertical-align: middle;
   position: sticky;
   left: 0;

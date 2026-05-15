@@ -27,7 +27,7 @@ const COLS: ColDef[] = [
   { key: "quality", minWidth: 108, resizable: true  },
   { key: "graph",   minWidth: 48,  resizable: false },
 ];
-const DEFAULT_WIDTHS = [36, 180, 110, 110, 110, 160, 200, 120, 112, 84, 124, 54];
+const DEFAULT_WIDTHS = [0, 180, 110, 110, 110, 160, 200, 120, 112, 84, 124, 54];
 
 const AVATAR_COLORS = ["#4361ee", "#7c3aed", "#0891b2", "#059669", "#d97706", "#dc2626"];
 
