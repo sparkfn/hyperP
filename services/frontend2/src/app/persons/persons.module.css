@@ -370,10 +370,55 @@
 }
 
 .filterOptionsScrollable {
-  max-height: 88px;
+  max-height: 160px;
   overflow-y: auto;
   padding-right: 4px;
   align-content: flex-start;
+}
+
+/* Stack variant container */
+.filterOptionsStack {
+  flex-direction: column;
+  flex-wrap: nowrap;
+  gap: 3px;
+}
+
+/* Stand-alone chip for stack — no inheritance from filterChip */
+.filterChipStack {
+  display: block;
+  width: 100%;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-app);
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 500;
+  font-family: inherit;
+  cursor: pointer;
+  text-align: left;
+  white-space: normal;
+  overflow-wrap: break-word;
+  word-break: break-word;
+  line-height: 1.4;
+  transition: border-color 0.12s, color 0.12s, background 0.12s;
+}
+
+.filterChipStack:hover {
+  border-color: var(--accent);
+  color: var(--accent-text);
+}
+
+.filterChipStackActive {
+  background: var(--accent-light);
+  border-color: var(--accent);
+  color: var(--accent-text);
+  font-weight: 600;
+}
+
+.filterPopoverWide {
+  min-width: 320px;
+  max-width: 380px;
 }
 
 .filterSubLabel {

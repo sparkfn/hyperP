@@ -63,11 +63,6 @@ type OrdersPopoverState = {
   anchorRight: number;
 };
 
-type RelationTypeOption = {
-  key: string;
-  label: string;
-};
-
 function formatRelationType(connection: PersonConnection): string {
   if (connection.knows_relationships.length > 0) {
     return connection.knows_relationships
@@ -591,6 +586,7 @@ function FilterPill({
   open,
   onToggle,
   alignRight,
+  wide,
   children,
 }: {
   label: string;
@@ -601,6 +597,7 @@ function FilterPill({
   open: boolean;
   onToggle: () => void;
   alignRight?: boolean;
+  wide?: boolean;
   children: ReactNode;
 }): ReactElement {
   return (
@@ -634,7 +631,7 @@ function FilterPill({
         )}
       </button>
       {open && (
-        <div className={`${styles.filterPopover} ${alignRight ? styles.filterPopoverRight : ""}`}>
+        <div className={`${styles.filterPopover} ${alignRight ? styles.filterPopoverRight : ""} ${wide ? styles.filterPopoverWide : ""}`}>
           {children}
         </div>
       )}
@@ -1100,6 +1097,7 @@ function PersonsInner(): ReactElement {
             onClear={() => { setSourceFilter([]); setSourceSearch(""); }}
             open={openFilter === "source"}
             onToggle={() => toggleFilter("source")}
+            wide
           >
             <div className={styles.fpInner}>
               <div className={styles.sourceSearchBox}>
@@ -1114,21 +1112,22 @@ function PersonsInner(): ReactElement {
                   placeholder="Search sources"
                 />
               </div>
-              <div className={`${styles.filterOptions} ${styles.filterOptionsScrollable}`}>
+              <div className={`${styles.filterOptions} ${styles.filterOptionsScrollable} ${styles.filterOptionsStack}`}>
                 {filteredSourceSystems.map((source) => {
                   const checked = sourceFilter.includes(source.source_key);
                   return (
                     <button
                       key={source.source_key}
                       type="button"
-                      className={`${styles.filterChip} ${checked ? styles.filterChipActive : ""}`}
+                      title={source.display_name ?? source.source_key}
+                      className={`${styles.filterChipStack} ${checked ? styles.filterChipStackActive : ""}`}
                       onClick={() =>
                         setSourceFilter((v) =>
                           checked ? v.filter((k) => k !== source.source_key) : [...v, source.source_key]
                         )
                       }
                     >
-                      {source.display_name}
+                      {source.display_name ?? source.source_key}
                     </button>
                   );
                 })}
