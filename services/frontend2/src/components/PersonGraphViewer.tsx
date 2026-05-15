@@ -88,22 +88,6 @@ const graphPulse = keyframes`
   50%       { opacity: 0.75; }
 `;
 
-// Skeleton nodes and edges for graph loading state
-const SKEL_NODES = [
-  { cx: 50, cy: 50, r: 18 },   // center
-  { cx: 50, cy: 18, r: 12 },   // top
-  { cx: 76, cy: 34, r: 12 },   // top-right
-  { cx: 78, cy: 66, r: 12 },   // bottom-right
-  { cx: 50, cy: 80, r: 12 },   // bottom
-  { cx: 24, cy: 66, r: 12 },   // bottom-left
-  { cx: 22, cy: 34, r: 12 },   // top-left
-] as const;
-
-const SKEL_EDGES = [
-  [0, 1], [0, 2], [0, 3], [0, 4], [0, 5], [0, 6],
-  [1, 2], [3, 4], [5, 6],
-] as const;
-
 function GraphLoadingSkeleton(): ReactElement {
   return (
     <Box
@@ -114,41 +98,50 @@ function GraphLoadingSkeleton(): ReactElement {
         alignItems: "center",
         justifyContent: "center",
         pointerEvents: "none",
+        color: "var(--border-strong)",
       }}
     >
       <Box
         component="svg"
         viewBox="0 0 100 100"
         preserveAspectRatio="xMidYMid meet"
-        sx={{
-          width: "min(60%, 320px)",
-          height: "min(60%, 320px)",
-          animation: `${graphPulse} 1.6s ease-in-out infinite`,
-        }}
+        sx={{ width: "min(28%, 160px)", height: "min(28%, 160px)" }}
       >
-        {SKEL_EDGES.map(([a, b]) => {
-          const na = SKEL_NODES[a];
-          const nb = SKEL_NODES[b];
-          if (!na || !nb) return null;
-          return (
-            <line
-              key={`${a}-${b}`}
-              x1={na.cx} y1={na.cy}
-              x2={nb.cx} y2={nb.cy}
-              stroke="currentColor"
-              strokeWidth={0.8}
-              opacity={0.45}
-            />
-          );
-        })}
-        {SKEL_NODES.map((n, i) => (
-          <circle
-            key={i}
-            cx={n.cx} cy={n.cy} r={n.r}
-            fill="currentColor"
-            opacity={i === 0 ? 0.7 : 0.45}
-          />
-        ))}
+        {/* Orbit tracks */}
+        <circle cx="50" cy="50" r="22" fill="none" stroke="currentColor" strokeWidth="0.4" opacity="0.25" />
+        <circle cx="50" cy="50" r="36" fill="none" stroke="currentColor" strokeWidth="0.3" opacity="0.18" />
+
+        {/* Center node */}
+        <circle cx="50" cy="50" r="7" fill="currentColor" opacity="0.55" />
+
+        {/* Inner orbit — 2 nodes, 3s CW */}
+        <g>
+          <animateTransform attributeName="transform" type="rotate" from="0 50 50" to="360 50 50" dur="3s" repeatCount="indefinite" />
+          <line x1="50" y1="50" x2="72" y2="50" stroke="currentColor" strokeWidth="0.7" opacity="0.3" />
+          <circle cx="72" cy="50" r="5" fill="currentColor" opacity="0.65" />
+        </g>
+        <g>
+          <animateTransform attributeName="transform" type="rotate" from="180 50 50" to="540 50 50" dur="3s" repeatCount="indefinite" />
+          <line x1="50" y1="50" x2="72" y2="50" stroke="currentColor" strokeWidth="0.7" opacity="0.3" />
+          <circle cx="72" cy="50" r="4" fill="currentColor" opacity="0.5" />
+        </g>
+
+        {/* Outer orbit — 3 nodes, 5s CCW */}
+        <g>
+          <animateTransform attributeName="transform" type="rotate" from="60 50 50" to="-300 50 50" dur="5s" repeatCount="indefinite" />
+          <line x1="50" y1="50" x2="86" y2="50" stroke="currentColor" strokeWidth="0.5" opacity="0.22" />
+          <circle cx="86" cy="50" r="4" fill="currentColor" opacity="0.55" />
+        </g>
+        <g>
+          <animateTransform attributeName="transform" type="rotate" from="180 50 50" to="-180 50 50" dur="5s" repeatCount="indefinite" />
+          <line x1="50" y1="50" x2="86" y2="50" stroke="currentColor" strokeWidth="0.5" opacity="0.22" />
+          <circle cx="86" cy="50" r="3.5" fill="currentColor" opacity="0.45" />
+        </g>
+        <g>
+          <animateTransform attributeName="transform" type="rotate" from="300 50 50" to="-60 50 50" dur="5s" repeatCount="indefinite" />
+          <line x1="50" y1="50" x2="86" y2="50" stroke="currentColor" strokeWidth="0.5" opacity="0.22" />
+          <circle cx="86" cy="50" r="3" fill="currentColor" opacity="0.4" />
+        </g>
       </Box>
     </Box>
   );
