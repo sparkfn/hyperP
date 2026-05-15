@@ -681,6 +681,9 @@ function PersonsInner(): ReactElement {
   const [currentCursor, setCurrentCursor] = useState<string | null>(null);
   const [entities, setEntities] = useState<EntitySummary[]>([]);
   const [sourceSystems, setSourceSystems] = useState<SourceSystemInfo[]>([]);
+  const [highRiskCount, setHighRiskCount] = useState<number | null>(null);
+  const [highValueCount, setHighValueCount] = useState<number | null>(null);
+  const [noContactCount, setNoContactCount] = useState<number | null>(null);
 
   const [graphDialog, setGraphDialog] = useState<{ open: boolean; personId: string; title: string }>({
     open: false,
@@ -797,14 +800,20 @@ function PersonsInner(): ReactElement {
   useEffect(() => {
     void (async () => {
       try {
-        const [ents, srcs] = await Promise.all([
+        const [ents, srcs, hr, hv, nc] = await Promise.all([
           bffFetch<EntitySummary[]>("/bff/entities"),
           bffFetch<SourceSystemInfo[]>("/bff/source-systems"),
+          bffFetchEnvelope<ListedPerson[]>("/bff/persons?is_high_risk=true&limit=1"),
+          bffFetchEnvelope<ListedPerson[]>("/bff/persons?is_high_value=true&limit=1"),
+          bffFetchEnvelope<ListedPerson[]>("/bff/persons?has_phone=false&has_email=false&limit=1"),
         ]);
         setEntities(ents);
         setSourceSystems(srcs);
+        setHighRiskCount(hr.meta.total_count ?? null);
+        setHighValueCount(hv.meta.total_count ?? null);
+        setNoContactCount(nc.meta.total_count ?? null);
       } catch {
-        // silently fail — filter options fall back to empty
+        // silently fail — filter options and stat cards fall back gracefully
       }
     })();
   }, []);
@@ -1042,25 +1051,35 @@ function PersonsInner(): ReactElement {
         <div className={styles.statCard}>
           <div className={styles.statLabel}>Total Profiles</div>
           <div className={styles.statValue} style={{ color: "var(--good)" }}>{total != null ? total.toLocaleString() : "—"}</div>
-          <div className={styles.statSub}>+128 this week</div>
+          <div className={styles.statSub}>active persons</div>
         </div>
 
-        <div className={styles.statCard}>
-          <div className={styles.statLabel}>Completeness</div>
-          <div className={styles.statValue} style={{ color: "var(--warn-text)" }}>78%</div>
-          <div className={styles.statSub}>203 records flagged</div>
-        </div>
+        <button
+          type="button"
+          className={`${styles.statCard} ${styles.statCardClickable} ${flagFilter === "high_risk" ? styles.statCardActive : ""}`}
+          onClick={() => setFlagFilter((f) => f === "high_risk" ? "any" : "high_risk")}
+          title="Filter by high risk"
+        >
+          <div className={styles.statLabel}>High Risk</div>
+          <div className={styles.statValue} style={{ color: "var(--bad)" }}>{highRiskCount != null ? highRiskCount.toLocaleString() : "—"}</div>
+          <div className={styles.statSub}>{flagFilter === "high_risk" ? "✓ filtering active" : "click to filter"}</div>
+        </button>
 
-        <div className={styles.statCard}>
-          <div className={styles.statLabel}>Birthdays this month</div>
-          <div className={styles.statValue} style={{ color: "var(--accent)" }}>47</div>
-          <div className={styles.statSub}>in {new Date().toLocaleString("en", { month: "long" })}</div>
-        </div>
+        <button
+          type="button"
+          className={`${styles.statCard} ${styles.statCardClickable} ${flagFilter === "high_value" ? styles.statCardActive : ""}`}
+          onClick={() => setFlagFilter((f) => f === "high_value" ? "any" : "high_value")}
+          title="Filter by high value"
+        >
+          <div className={styles.statLabel}>High Value</div>
+          <div className={styles.statValue} style={{ color: "var(--accent)" }}>{highValueCount != null ? highValueCount.toLocaleString() : "—"}</div>
+          <div className={styles.statSub}>{flagFilter === "high_value" ? "✓ filtering active" : "click to filter"}</div>
+        </button>
 
         <div className={styles.statCard}>
           <div className={styles.statLabel}>No contact info</div>
-          <div className={styles.statValue} style={{ color: "var(--bad)" }}>341</div>
-          <div className={styles.statSub}>Can&apos;t be reached — fix needed</div>
+          <div className={styles.statValue} style={{ color: "var(--warn-text)" }}>{noContactCount != null ? noContactCount.toLocaleString() : "—"}</div>
+          <div className={styles.statSub}>can&apos;t be reached</div>
         </div>
       </div>
 
