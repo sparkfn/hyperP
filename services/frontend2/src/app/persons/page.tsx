@@ -1,14 +1,14 @@
 "use client";
 
-import { useState, useEffect, useRef, useCallback, type MouseEvent as ReactMouseEvent, type ReactElement, type ReactNode } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo, type MouseEvent as ReactMouseEvent, type ReactElement, type ReactNode } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { Suspense } from "react";
-import { MOCK_PERSONS, MOCK_ENTITIES, MOCK_PERSON_CONNECTIONS_BY_PERSON_ID, MOCK_SALES, MOCK_SOURCE_SYSTEMS } from "@/lib/mock-data";
-import type { ListedPerson, PersonConnection, PersonEntitySummary, SalesOrder } from "@/lib/api-types";
+import { MOCK_ENTITIES, MOCK_PERSON_CONNECTIONS_BY_PERSON_ID, MOCK_SALES, MOCK_SOURCE_SYSTEMS } from "@/lib/mock-data";
+import type { ListedPerson, PersonConnection, SalesOrder } from "@/lib/api-types";
+import { bffFetchEnvelope, BffError } from "@/lib/api-client";
 import styles from "./persons.module.css";
 
-const TOTAL = 6039;
 
 interface ColDef { key: string; minWidth: number; resizable: boolean }
 const COLS: ColDef[] = [
@@ -26,137 +26,6 @@ const COLS: ColDef[] = [
   { key: "graph",   minWidth: 48,  resizable: false },
 ];
 const DEFAULT_WIDTHS = [36, 180, 110, 110, 110, 160, 200, 120, 112, 84, 124, 54];
-
-// Generated mock persons — chaotic realistic data for edge-case testing
-const NAMES = [
-  // Very long Malay names
-  "Muhammad Nur Hakim Bin Abdul Rahman Al-Rashid",
-  "Siti Noor Hafizah Binte Mohd Zulkifli",
-  "Mohamad Faris Irfan Bin Haji Mohd Suffian",
-  "Nur Aisyah Binte Muhammad Hafidz",
-  "Muhammad Asyraaf Bin Mohd Norzaini",
-  // Long Indian names
-  "Balasubramaniam s/o Krishnaswamy Naicker",
-  "Thavaseelan s/o Rajasekaran",
-  "Letchumy d/o Govindasamy Pillai",
-  "Subramaniam Venkatesan s/o Muthuswamy",
-  "Vijayalakshmi d/o Ramasamy",
-  // Long Chinese names
-  "Chua Ah Kow @ Jeffrey Chua Beng Huat",
-  "Tan Wei Ming Brandon",
-  "Lim Siew Kuan Jasmine",
-  "Wong Boon Huat Michael",
-  "Ng Swee Leng Doris",
-  // Short / weird names (bad data)
-  "Li",
-  "Unknown Unknown",
-  "Test User",
-  "N/A",
-  "CUSTOMER 00291",
-  // Normal SG names
-  "Ahmad Razif Bin Osman","Chua Beng Teck","Lim Mei Ling","Tan Ah Kow","Wong Siew Fong",
-  "Ng Boon Huat","Lee Shu Fen","Goh Chee Keong","Yeo Pei Shan","Ong Kah Wee",
-  "Fatimah Binte Yusof","Zainuddin Bin Mohd","Ho Wai Kien","Chong Kok Leong",
-  "Teo Beng Seng","Lau Ah Lian","Koh Swee Leng","Sim Hui Ying","Ang Bee Lian",
-  "Fong Weng Fatt","Chin Siew Lan","Leong Wai Mun","Quek Ah Huat","Heng Soo Khim",
-  "Yap Kim Huat","Seow Boon Lay","Mohamad Hafiz Bin Ali","Noor Hidayah Binte Rahman",
-  "Deepa d/o Rajan","Selvam s/o Krishnan","Kavitha Devi","Murugesan s/o Perumal",
-  "Chan Wai Leng","Tay Boon Pin","Wee Siew Khim","Ibrahim Bin Kassim",
-  "Nurhayati Binte Salleh","Hairul Anuar Bin Taib","Vasu s/o Pillai","Saroja d/o Ramu",
-  "Bernard Tan","Vincent Lim","Raymond Ng","Patrick Lee","Anthony Goh",
-  "Michelle Wong","Stephanie Chua","Jennifer Teo","Samantha Koh","Rebecca Yeo",
-  "Darren Ang","Justin Fong","Marcus Chin","Wayne Leong","Ethan Quek",
-];
-
-const LONG_ADDRESSES = [
-  "Block 123 Jurong West Street 41 #05-12, Singapore 640123",
-  "1 Marina Bay Financial Centre Tower 3 #42-01, Singapore 018982",
-  "25 Serangoon North Avenue 5 #08-33 Riverfront Residences, Singapore 554025",
-  "Blk 456A Tampines Street 44 #12-345, Singapore 522456",
-  "88 Pasir Ris Drive 10 #03-02, Singapore 519078",
-  "321 Bukit Timah Road #07-11 Heng Leong Building, Singapore 227820",
-  null, null, null,
-];
-
-const LONG_EMAILS = [
-  null, null,
-  "muhammad.nur.hakim@verylongcompanynamecorporation.com.sg",
-  "balasubramaniam.krishnaswamy@enterprise-solutions-group.sg",
-  "user@example.sg",
-  "test.customer.profile.001@gmail.com",
-  "no-reply-bounced-address@invalid",
-];
-
-const ENTITY_LIST: PersonEntitySummary[][] = [
-  [{ entity_key: "speedzone", display_name: "SpeedZone Retail", entity_type: "retail", country_code: "SG", is_active: true, source_record_count: 1 }],
-  [{ entity_key: "fundbox",   display_name: "Fundbox Consumer",  entity_type: "finance",   country_code: "SG", is_active: true, source_record_count: 1 }],
-  [{ entity_key: "eko",       display_name: "Eko Commerce",      entity_type: "ecommerce", country_code: "SG", is_active: true, source_record_count: 1 }],
-  [
-    { entity_key: "speedzone", display_name: "SpeedZone Retail", entity_type: "retail",  country_code: "SG", is_active: true, source_record_count: 3 },
-    { entity_key: "fundbox",   display_name: "Fundbox Consumer", entity_type: "finance", country_code: "SG", is_active: true, source_record_count: 2 },
-    { entity_key: "eko",       display_name: "Eko Commerce",     entity_type: "ecommerce", country_code: "SG", is_active: true, source_record_count: 1 },
-  ],
-  [],
-  [{ entity_key: "bitrix-sg", display_name: "Bitrix SG CRM", entity_type: "crm", country_code: "SG", is_active: false, source_record_count: 1 }],
-];
-
-const BAD_DOBS = ["1900-01-01", "2099-12-31", "1111-11-11", "0001-01-01"];
-const STATUSES: ListedPerson["status"][] = ["active","active","active","active","active","merged","merged","suppressed"];
-
-function makePerson(i: number): ListedPerson {
-  const name = NAMES[i % NAMES.length] ?? `Person ${i}`;
-  const yr = 1948 + (i * 11 % 60);
-  const mo = String((i % 12) + 1).padStart(2, "0");
-  const dy = String((i % 28) + 1).padStart(2, "0");
-  // Varied completeness: some very low, some high
-  const scoreRaw = [0.08, 0.15, 0.22, 0.31, 0.44, 0.55, 0.62, 0.71, 0.80, 0.88, 0.93, 0.97];
-  const score = scoreRaw[i % scoreRaw.length] ?? 0.5;
-  const nricPrefix = yr < 2000 ? "S" : "T";
-  const entities = ENTITY_LIST[i % ENTITY_LIST.length] ?? [];
-  // Various messy phone formats
-  const phones = [null, null, `+65 ${8000 + (i % 999)} ${String(i * 37 % 9999).padStart(4,"0")}`,
-    `65${9000 + (i % 999)}${i % 9999}`, `+60 12-${i % 9999} ${i % 9999}`, `(+65) 9${i%9}${i%9}${i%9}-${i%9}${i%9}${i%9}${i%9}`];
-  const phone = phones[i % phones.length] ?? null;
-  const email = LONG_EMAILS[i % LONG_EMAILS.length] ?? null;
-  const addr = LONG_ADDRESSES[i % LONG_ADDRESSES.length];
-  const badDob = BAD_DOBS[Math.floor(i / 12) % BAD_DOBS.length] ?? null;
-  const dob = i % 12 === 0 ? badDob : (i % 8 === 0 ? null : `${yr}-${mo}-${dy}`);
-
-  const hex = (n: number, len: number) => n.toString(16).padStart(len, "0");
-  const uuid = `${hex(i * 0xdeadbeef & 0xffffffff, 8)}-${hex(i * 0x1234 & 0xffff, 4)}-4${hex(i * 0xabcd & 0xfff, 3)}-${hex((i * 0x5678 & 0x3fff) | 0x8000, 4)}-${hex(i * 0xfeedface & 0xffffffffffff, 12)}`;
-  return {
-    person_id: uuid,
-    status: STATUSES[i % STATUSES.length] ?? "active",
-    is_high_value: i % 7 === 0,
-    is_high_risk:  i % 13 === 0,
-    preferred_full_name: i % 20 === 0 ? null : name,
-    preferred_phone: phone,
-    preferred_email: email,
-    preferred_dob: dob,
-    preferred_nric: i % 5 !== 0
-      ? `${nricPrefix}${String(yr % 100).padStart(2,"0")}${String((i * 1234) % 99999).padStart(5,"0")}${String.fromCharCode(65 + (i % 26))}`
-      : null,
-    preferred_address: addr
-      ? { address_id: `ag-${i}`, unit_number: null, street_number: null, street_name: null, city: "Singapore", postal_code: null, country_code: "SG", normalized_full: addr }
-      : null,
-    profile_completeness_score: score,
-    golden_profile_computed_at: score > 0.5 ? "2026-04-01T00:00:00Z" : null,
-    golden_profile_version: score > 0.5 ? "1" : null,
-    source_record_count: 1 + (i % 8),
-    connection_count: i % 10,
-    created_at: `202${4 + (i % 3)}-${String((i % 12) + 1).padStart(2,"0")}-01T00:00:00Z`,
-    updated_at: "2026-04-01T00:00:00Z",
-    phone_confidence: phone ? 0.4 + (i % 6) * 0.1 : null,
-    entities,
-    entity_count: entities.length,
-    identifier_count: 1 + (i % 6),
-    order_count: [0,0,1,2,3,5,8,13,21,34][i % 10] ?? 0,
-  };
-}
-
-const GENERATED = Array.from({ length: 120 }, (_, i) => makePerson(i + 11));
-
-const ALL_PERSONS = [...MOCK_PERSONS, ...GENERATED];
 
 const AVATAR_COLORS = ["#4361ee", "#7c3aed", "#0891b2", "#059669", "#d97706", "#dc2626"];
 
@@ -298,18 +167,10 @@ function getPersonConnections(person: ListedPerson): PersonConnection[] {
   return buildFallbackConnections(person);
 }
 
-function getPersonRelationTypeKeys(person: ListedPerson): string[] {
-  return getPersonConnections(person).flatMap((connection) => collectConnectionRelationTypes(connection).map((option) => option.key));
-}
-
 function getRelationTypeOptions(persons: ListedPerson[]): RelationTypeOption[] {
   return uniqueRelationTypeOptions(
     persons.flatMap((person) => getPersonConnections(person).flatMap(collectConnectionRelationTypes)),
   ).sort((left, right) => left.label.localeCompare(right.label));
-}
-
-function getRelationTypeLabel(options: RelationTypeOption[], key: string): string {
-  return options.find((option) => option.key === key)?.label ?? key;
 }
 
 function formatOrderCurrency(order: SalesOrder): string {
@@ -368,10 +229,6 @@ function getPersonOrders(person: ListedPerson): SalesOrder[] {
     return [];
   }
   return buildFallbackOrders(person);
-}
-
-function getPersonOrderTotal(person: ListedPerson): number {
-  return getPersonOrders(person).reduce((total, order) => total + (order.total_amount ?? 0), 0);
 }
 
 function OrdersPopover({
@@ -741,9 +598,9 @@ function PersonRow({
 }
 
 function PaginationBar({
-  showing, page, totalPages, pageSize, selectedCount, onPrev, onNext, onPageSize, bottom,
+  showing, hasPrev, hasNext, pageSize, selectedCount, onPrev, onNext, onPageSize, bottom,
 }: {
-  showing: string; page: number; totalPages: number; pageSize: number; selectedCount: number;
+  showing: string; hasPrev: boolean; hasNext: boolean; pageSize: number; selectedCount: number;
   onPrev: () => void; onNext: () => void; onPageSize: (n: number) => void; bottom?: boolean;
 }): ReactElement {
   return (
@@ -754,11 +611,10 @@ function PaginationBar({
         <select className={styles.pageSizeSelect} value={pageSize} onChange={(e) => onPageSize(Number(e.target.value))}>
           {[25, 50, 100, 200].map((n) => <option key={n} value={n}>{n} / page</option>)}
         </select>
-        {totalPages > 1 && (
+        {(hasPrev || hasNext) && (
           <>
-            <button className={styles.pageBtn} disabled={page === 0} onClick={onPrev}>← Prev</button>
-            <span className={styles.pageInfo}>Page {page + 1} of {totalPages}</span>
-            <button className={styles.pageBtn} disabled={page >= totalPages - 1} onClick={onNext}>Next →</button>
+            <button className={styles.pageBtn} disabled={!hasPrev} onClick={onPrev}>← Prev</button>
+            <button className={styles.pageBtn} disabled={!hasNext} onClick={onNext}>Next →</button>
           </>
         )}
       </div>
@@ -842,65 +698,6 @@ const IDENTITY_FILTERS = [
   { key: "nric", label: "NRIC" },
 ] as const;
 
-const ENTITY_SOURCE_KEYS: Record<string, string[]> = {
-  speedzone: ["speedzone-phppos"],
-  fundbox: ["fundbox-bitrix"],
-  eko: ["eko-phppos"],
-  "bitrix-sg": ["bitrix-sg"],
-};
-
-function getPersonSourceKeys(person: ListedPerson): string[] {
-  const keys = new Set<string>();
-
-  person.entities.forEach((entity) => {
-    ENTITY_SOURCE_KEYS[entity.entity_key]?.forEach((key) => keys.add(key));
-  });
-
-  if (person.preferred_phone || person.identifier_count >= 3) {
-    keys.add("whatsapp-main");
-  }
-
-  if (keys.size === 0) {
-    keys.add("whatsapp-main");
-  }
-
-  return Array.from(keys);
-}
-
-function getPersonIdentityTypes(person: ListedPerson): string[] {
-  const types = new Set<string>();
-
-  if (person.preferred_email) types.add("email");
-  if (person.preferred_phone) types.add("phone");
-  if (person.preferred_nric) types.add("nric");
-
-  return Array.from(types);
-}
-
-function hasVerifiedIdentity(person: ListedPerson, type: string): boolean {
-  switch (type) {
-    case "email":
-      return Boolean(person.preferred_email);
-    case "phone":
-      return Boolean(person.preferred_phone);
-    case "nric":
-      return Boolean(person.preferred_nric);
-    default:
-      return false;
-  }
-}
-
-function dobMatches(personDob: string | null, mode: DobMode, singleDate: string, startDate: string, endDate: string): boolean {
-  if (!personDob) return false;
-
-  if (mode === "single") {
-    return singleDate ? personDob === singleDate : true;
-  }
-
-  if (startDate && personDob < startDate) return false;
-  if (endDate && personDob > endDate) return false;
-  return startDate !== "" || endDate !== "";
-}
 
 function PersonsInner(): ReactElement {
   const searchParams = useSearchParams();
@@ -929,6 +726,14 @@ function PersonsInner(): ReactElement {
   const [openFilter, setOpenFilter] = useState<FilterKey | null>(null);
   const [sortKey, setSortKey] = useState<SortKey | null>(null);
   const [sortDir, setSortDir] = useState<SortDir>("desc");
+  const [apiRows, setApiRows] = useState<ListedPerson[]>([]);
+  const [total, setTotal] = useState<number | null>(null);
+  const [fetchLoading, setFetchLoading] = useState(true);
+  const [fetchError, setFetchError] = useState<string | null>(null);
+  const [nextCursor, setNextCursor] = useState<string | null>(null);
+  const [cursorStack, setCursorStack] = useState<(string | null)[]>([]);
+  const [currentCursor, setCurrentCursor] = useState<string | null>(null);
+
 
   function toggleSort(key: SortKey): void {
     const def: SortDir = key === "name" || key === "dob" ? "asc" : "desc";
@@ -946,7 +751,6 @@ function PersonsInner(): ReactElement {
   }
 
   const [selected, setSelected] = useState<Set<string>>(new Set());
-  const [page, setPage] = useState(0);
   const [pageSize, setPageSize] = useState(100);
   const [canScrollRight, setCanScrollRight] = useState(false);
   const [canScrollLeft, setCanScrollLeft] = useState(false);
@@ -1036,12 +840,6 @@ function PersonsInner(): ReactElement {
     if (q) setSearch(q);
   }, [searchParams]);
 
-  // Reset to page 0 whenever filters change
-  useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    setPage(0);
-  }, [search, statusFilter, entityFilter, sourceFilter, identityFilter, verifiedOnly, addressFilter, relationFilter, relationTypeFilter, dobFilter, dobMode, dobSingleDate, dobStartDate, dobEndDate, qualityMin, qualityMax, hasOrdersOnly, threePlusOrdersOnly, orderTotalMin, orderTotalMax]);
-
   useEffect(() => {
     function handleOutsideClick(e: MouseEvent): void {
       if (filterBarRef.current && !filterBarRef.current.contains(e.target as Node)) {
@@ -1095,73 +893,92 @@ function PersonsInner(): ReactElement {
     setOrderTotalMax("");
   }
 
-  const relationTypeOptions = getRelationTypeOptions(ALL_PERSONS);
-
-  const filtered = ALL_PERSONS.filter((p) => {
-    if (search) {
-      const q = search.toLowerCase();
-      if (
-        !p.preferred_full_name?.toLowerCase().includes(q) &&
-        !p.preferred_email?.toLowerCase().includes(q) &&
-        !p.preferred_phone?.includes(q)
-      )
-        return false;
-    }
-    if (statusFilter && p.status !== statusFilter) return false;
-    if (entityFilter.length > 0 && !p.entities.some((e) => entityFilter.includes(e.entity_key))) return false;
-    if (sourceFilter.length > 0 && !getPersonSourceKeys(p).some((key) => sourceFilter.includes(key))) return false;
-    if (identityFilter.length > 0) {
-      const personIdentityTypes = getPersonIdentityTypes(p);
-      if (!identityFilter.some((type) => personIdentityTypes.includes(type))) return false;
-      if (verifiedOnly && !identityFilter.some((type) => hasVerifiedIdentity(p, type))) return false;
-    } else if (verifiedOnly) {
-      if (!["email", "phone", "nric"].some((type) => hasVerifiedIdentity(p, type))) return false;
-    }
-    if (addressFilter === "has" && !p.preferred_address) return false;
-    if (addressFilter === "none" && p.preferred_address) return false;
-    if (relationFilter === "has" && p.connection_count <= 0) return false;
-    if (relationFilter === "none" && p.connection_count > 0) return false;
-    if (relationTypeFilter.length > 0) {
-      const relationTypeKeys = getPersonRelationTypeKeys(p);
-      if (!relationTypeFilter.some((key) => relationTypeKeys.includes(key))) return false;
-    }
-    if (hasOrdersOnly && p.order_count <= 0) return false;
-    if (threePlusOrdersOnly && p.order_count < 3) return false;
-    const minOrderTotal = Number(orderTotalMin);
-    const maxOrderTotal = Number(orderTotalMax);
-    if ((Number.isFinite(minOrderTotal) && orderTotalMin !== "") || (Number.isFinite(maxOrderTotal) && orderTotalMax !== "")) {
-      const orderTotal = getPersonOrderTotal(p);
-      if (Number.isFinite(minOrderTotal) && orderTotalMin !== "" && orderTotal < minOrderTotal) return false;
-      if (Number.isFinite(maxOrderTotal) && orderTotalMax !== "" && orderTotal > maxOrderTotal) return false;
-    }
+  const apiQuery = useMemo(() => {
+    const params = new URLSearchParams();
+    if (search.trim().length >= 3) params.set("q", search.trim());
+    entityFilter.forEach((key) => params.append("entity_key", key));
+    sourceFilter.forEach((key) => params.append("source_key", key));
+    if (identityFilter.includes("email")) params.set("has_email", "true");
+    if (identityFilter.includes("phone")) params.set("has_phone", "true");
+    if (addressFilter === "has") params.set("has_address", "true");
+    else if (addressFilter === "none") params.set("has_address", "false");
     if (dobFilter === "has") {
-      if (!p.preferred_dob) return false;
-      if ((dobMode === "single" && dobSingleDate !== "") || (dobMode === "range" && (dobStartDate !== "" || dobEndDate !== ""))) {
-        if (!dobMatches(p.preferred_dob, dobMode, dobSingleDate, dobStartDate, dobEndDate)) return false;
+      params.set("has_dob", "true");
+      if (dobMode === "single" && dobSingleDate) {
+        params.set("dob_from", dobSingleDate);
+        params.set("dob_to", dobSingleDate);
+      } else if (dobMode === "range") {
+        if (dobStartDate) params.set("dob_from", dobStartDate);
+        if (dobEndDate) params.set("dob_to", dobEndDate);
       }
+    } else if (dobFilter === "none") {
+      params.set("has_dob", "false");
     }
-    if (dobFilter === "none" && p.preferred_dob) return false;
-    const qualityScore = Math.round(p.profile_completeness_score * 100);
-    if (qualityScore < qualityMin || qualityScore > qualityMax) return false;
-    return true;
-  });
+    const sortByMap: Record<SortKey, string> = {
+      name: "preferred_full_name",
+      dob: "preferred_dob",
+      orders: "order_count",
+      quality: "profile_completeness_score",
+    };
+    if (sortKey) {
+      params.set("sort_by", sortByMap[sortKey]);
+      params.set("sort_order", sortDir);
+    }
+    params.set("limit", String(pageSize));
+    return params.toString();
+  }, [search, entityFilter, sourceFilter, identityFilter, addressFilter, dobFilter, dobMode, dobSingleDate, dobStartDate, dobEndDate, sortKey, sortDir, pageSize]);
 
-  const sorted = sortKey
-    ? [...filtered].sort((a, b) => {
-        let cmp = 0;
-        if (sortKey === "name") cmp = (a.preferred_full_name ?? "").localeCompare(b.preferred_full_name ?? "");
-        else if (sortKey === "dob") cmp = (a.preferred_dob ?? "9999-99-99").localeCompare(b.preferred_dob ?? "9999-99-99");
-        else if (sortKey === "orders") cmp = a.order_count - b.order_count;
-        else if (sortKey === "quality") cmp = a.profile_completeness_score - b.profile_completeness_score;
-        return sortDir === "asc" ? cmp : -cmp;
-      })
-    : filtered;
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setCurrentCursor(null);
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setCursorStack([]);
+  }, [apiQuery]);
 
-  const totalPages = Math.max(1, Math.ceil(sorted.length / pageSize));
-  const safePage = Math.min(page, totalPages - 1);
-  const pageStart = safePage * pageSize;
-  const pageEnd = Math.min(pageStart + pageSize, sorted.length);
-  const pageRows = sorted.slice(pageStart, pageEnd);
+  useEffect(() => {
+    let cancelled = false;
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setFetchLoading(true);
+    setFetchError(null);
+    const params = new URLSearchParams(apiQuery);
+    if (currentCursor) params.set("cursor", currentCursor);
+    const run = async (): Promise<void> => {
+      try {
+        const envelope = await bffFetchEnvelope<ListedPerson[]>(`/bff/persons?${params.toString()}`);
+        if (!cancelled) {
+          setApiRows(envelope.data ?? []);
+          setTotal(envelope.meta.total_count ?? null);
+          setNextCursor(envelope.meta.next_cursor ?? null);
+        }
+      } catch (err: unknown) {
+        if (!cancelled) {
+          setFetchError(err instanceof BffError ? err.message : "Failed to load data.");
+          setApiRows([]);
+        }
+      } finally {
+        if (!cancelled) setFetchLoading(false);
+      }
+    };
+    void run();
+    return () => { cancelled = true; };
+  }, [apiQuery, currentCursor]);
+
+  function goNext(): void {
+    if (!nextCursor) return;
+    setCursorStack((prev) => [...prev, currentCursor]);
+    setCurrentCursor(nextCursor);
+  }
+
+  function goPrev(): void {
+    const prev = cursorStack[cursorStack.length - 1] ?? null;
+    setCursorStack((stack) => stack.slice(0, -1));
+    setCurrentCursor(prev);
+  }
+
+
+  const relationTypeOptions = getRelationTypeOptions(apiRows);
+
+  const pageRows = apiRows;
   const filteredSourceSystems = MOCK_SOURCE_SYSTEMS.filter((source) => {
     const label = `${source.display_name ?? source.source_key} ${source.system_type ?? ""}`.toLowerCase();
     return label.includes(sourceSearch.toLowerCase());
@@ -1235,9 +1052,9 @@ function PersonsInner(): ReactElement {
   }
 
   const tableWidth = colWidths.reduce((sum, width) => sum + width, 0);
-  const activePopoverPerson = relationPopover ? ALL_PERSONS.find((person) => person.person_id === relationPopover.personId) ?? null : null;
+  const activePopoverPerson = relationPopover ? apiRows.find((person) => person.person_id === relationPopover.personId) ?? null : null;
   const activeConnections = activePopoverPerson ? getPersonConnections(activePopoverPerson) : [];
-  const activeOrdersPerson = ordersPopover ? ALL_PERSONS.find((person) => person.person_id === ordersPopover.personId) ?? null : null;
+  const activeOrdersPerson = ordersPopover ? apiRows.find((person) => person.person_id === ordersPopover.personId) ?? null : null;
   const activeOrders = activeOrdersPerson ? getPersonOrders(activeOrdersPerson) : [];
 
   return (
@@ -1250,7 +1067,7 @@ function PersonsInner(): ReactElement {
       <div className={styles.statsRow}>
         <div className={styles.statCard}>
           <div className={styles.statLabel}>Total Profiles</div>
-          <div className={styles.statValue} style={{ color: "var(--good)" }}>{TOTAL.toLocaleString()}</div>
+          <div className={styles.statValue} style={{ color: "var(--good)" }}>{total != null ? total.toLocaleString() : "—"}</div>
           <div className={styles.statSub}>+128 this week</div>
         </div>
 
@@ -1714,11 +1531,11 @@ function PersonsInner(): ReactElement {
         {/* ── Count bar + Table ─────────────────────────────────── */}
         <div className={styles.tableSection}>
           <PaginationBar
-            showing={`Showing ${sorted.length === 0 ? 0 : pageStart + 1}–${pageEnd} of ${sorted.length < ALL_PERSONS.length ? `${sorted.length} filtered` : TOTAL.toLocaleString()} profiles`}
-            page={safePage} totalPages={totalPages}
+            showing={`Showing ${apiRows.length === 0 ? 0 : cursorStack.length * pageSize + 1}–${cursorStack.length * pageSize + apiRows.length} of ${total != null ? total.toLocaleString() : "…"} profiles`}
+            hasPrev={cursorStack.length > 0} hasNext={nextCursor !== null}
             pageSize={pageSize} selectedCount={selected.size}
-            onPrev={() => setPage(safePage - 1)} onNext={() => setPage(safePage + 1)}
-            onPageSize={(n) => { setPageSize(n); setPage(0); }}
+            onPrev={goPrev} onNext={goNext}
+            onPageSize={(n) => { setPageSize(n); setCurrentCursor(null); setCursorStack([]); }}
           />
           <div className={`${styles.tableScrollWrap} ${canScrollRight ? styles.canScrollRight : ""} ${canScrollLeft ? styles.canScrollLeft : ""}`}>
             <div className={styles.scrollHint}>
@@ -1771,7 +1588,11 @@ function PersonsInner(): ReactElement {
               </tr>
             </thead>
             <tbody>
-              {pageRows.length === 0 ? (
+              {fetchLoading ? (
+                <tr><td colSpan={12} className={styles.empty}>Loading…</td></tr>
+              ) : fetchError ? (
+                <tr><td colSpan={12} className={styles.empty} style={{ color: "var(--bad)" }}>{fetchError}</td></tr>
+              ) : pageRows.length === 0 ? (
                 <tr>
                   <td colSpan={12} className={styles.empty}>No persons match your filters.</td>
                 </tr>
@@ -1815,11 +1636,11 @@ function PersonsInner(): ReactElement {
           </div>{/* tableScrollWrap */}
 
           <PaginationBar
-            showing={`Showing ${sorted.length === 0 ? 0 : pageStart + 1}–${pageEnd} of ${sorted.length < ALL_PERSONS.length ? `${sorted.length} filtered` : TOTAL.toLocaleString()} profiles`}
-            page={safePage} totalPages={totalPages}
+            showing={`Showing ${apiRows.length === 0 ? 0 : cursorStack.length * pageSize + 1}–${cursorStack.length * pageSize + apiRows.length} of ${total != null ? total.toLocaleString() : "…"} profiles`}
+            hasPrev={cursorStack.length > 0} hasNext={nextCursor !== null}
             pageSize={pageSize} selectedCount={selected.size}
-            onPrev={() => setPage(safePage - 1)} onNext={() => setPage(safePage + 1)}
-            onPageSize={(n) => { setPageSize(n); setPage(0); }}
+            onPrev={goPrev} onNext={goNext}
+            onPageSize={(n) => { setPageSize(n); setCurrentCursor(null); setCursorStack([]); }}
             bottom
           />
         </div>
