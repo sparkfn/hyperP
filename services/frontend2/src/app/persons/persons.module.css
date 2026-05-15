@@ -1215,7 +1215,14 @@
 }
 
 .tr {
+  cursor: pointer;
   transition: background 0.1s;
+}
+
+.tr:focus-visible td {
+  background: var(--bg-hover);
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
 }
 .tr:hover td { background: var(--bg-hover); }
 
@@ -1241,13 +1248,14 @@
   content: "";
   position: absolute;
   top: 20%;
-  right: 0;
+  right: -4px;
   height: 60%;
-  width: 2px;
+  width: 8px;
   border-radius: 1px;
-  background: var(--border);
+  background: linear-gradient(to right, transparent 3px, var(--border) 3px, var(--border) 5px, transparent 5px);
+  cursor: col-resize;
   opacity: 0;
-  pointer-events: none;
+  pointer-events: auto;
   transition: opacity 0.15s;
 }
 .tr:hover .td::after { opacity: 0.6; }

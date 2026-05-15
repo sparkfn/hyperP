@@ -1,8 +1,8 @@
 "use client";
 
-import { useState, useEffect, useRef, useCallback, useMemo, type MouseEvent as ReactMouseEvent, type ReactElement, type ReactNode } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactElement, type ReactNode } from "react";
 import Link from "next/link";
-import { useSearchParams } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense } from "react";
 import { MOCK_PERSON_CONNECTIONS_BY_PERSON_ID, MOCK_SALES } from "@/lib/mock-data";
 import type { ListedPerson, PersonConnection, SalesOrder, EntitySummary } from "@/lib/api-types";
@@ -403,6 +403,7 @@ function PersonRow({
   onRelationsClick,
   onOrdersClick,
   onGraphClick,
+  isResizing,
 }: {
   p: ListedPerson;
   checked: boolean;
@@ -411,6 +412,7 @@ function PersonRow({
   onRelationsClick: (event: ReactMouseEvent<HTMLButtonElement>, personId: string) => void;
   onOrdersClick: (event: ReactMouseEvent<HTMLButtonElement>, personId: string) => void;
   onGraphClick: (personId: string, name: string) => void;
+  isResizing: () => boolean;
 }): ReactElement {
   const initials = (p.preferred_full_name ?? "?")
     .split(" ")
@@ -421,14 +423,36 @@ function PersonRow({
   const pct = Math.round(p.profile_completeness_score * 100);
   const dob = parseDob(p.preferred_dob);
   const labels = getLabels(p);
+  const router = useRouter();
+  const personHref = `/persons/${p.person_id}`;
+
+  const handleRowClick = (): void => {
+    if (isResizing()) return;
+    router.push(personHref);
+  };
+
+  const handleRowKeyDown = (event: ReactKeyboardEvent<HTMLTableRowElement>): void => {
+    if (isResizing()) return;
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      router.push(personHref);
+    }
+  };
 
   return (
-    <tr className={styles.tr}>
+    <tr
+      className={styles.tr}
+      onClick={handleRowClick}
+      onKeyDown={handleRowKeyDown}
+      tabIndex={0}
+      role="link"
+      aria-label={`Open ${p.preferred_full_name ?? p.person_id} details`}
+    >
       <td className={styles.tdCheck} onClick={(e) => e.stopPropagation()}>
         <input type="checkbox" checked={checked} onChange={onToggle} className={styles.checkbox} />
       </td>
       <td className={`${styles.td} ${styles.tdName}`}>
-        <Link href={`/persons/${p.person_id}`} className={styles.personLink}>
+        <Link href={personHref} className={styles.personLink} onClick={(event) => event.stopPropagation()}>
           <div className={styles.personCell}>
             <AvatarRing initials={initials} color={avatarColor(p.preferred_full_name ?? "?")} score={p.profile_completeness_score} />
             <div className={styles.personInfo}>
@@ -538,7 +562,15 @@ function PersonRow({
         </div>
       </td>
       <td className={`${styles.tdGraph} ${styles.tdSticky} ${styles.stickyGraph}`}>
-        <button type="button" className={styles.graphLink} title="View in graph" onClick={() => onGraphClick(p.person_id, p.preferred_full_name ?? p.person_id)}>
+        <button
+          type="button"
+          className={styles.graphLink}
+          title="View in graph"
+          onClick={(event) => {
+            event.stopPropagation();
+            onGraphClick(p.person_id, p.preferred_full_name ?? p.person_id);
+          }}
+        >
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/>
             <line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/>
@@ -772,11 +804,13 @@ function PersonsInner(): ReactElement {
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const colEls = useRef<(HTMLTableColElement | null)[]>([]);
   const dragRef = useRef<{ idx: number; startX: number; startW: number } | null>(null);
+  const suppressRowClickRef = useRef(false);
 
   function startColResize(idx: number, e: React.MouseEvent): void {
     e.preventDefault();
     const startW = colWidths[idx] ?? DEFAULT_WIDTHS[idx] ?? 100;
     dragRef.current = { idx, startX: e.clientX, startW };
+    suppressRowClickRef.current = true;
 
     function onMove(ev: MouseEvent): void {
       const d = dragRef.current;
@@ -795,6 +829,9 @@ function PersonsInner(): ReactElement {
         setColWidths(prev => prev.map((c, i) => i === d.idx ? w : c));
       }
       dragRef.current = null;
+      window.setTimeout(() => {
+        suppressRowClickRef.current = false;
+      }, 0);
       document.removeEventListener("mousemove", onMove);
       document.removeEventListener("mouseup", onUp);
     }
@@ -1635,6 +1672,7 @@ function PersonsInner(): ReactElement {
                     onRelationsClick={handleRelationsClick}
                     onOrdersClick={handleOrdersClick}
                     onGraphClick={(personId, name) => setGraphDialog({ open: true, personId, title: name })}
+                    isResizing={() => suppressRowClickRef.current}
                   />
                 ))
               )}
