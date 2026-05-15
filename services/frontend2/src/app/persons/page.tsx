@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef, useCallback, type MouseEvent as ReactMouseEvent, type ReactElement } from "react";
+import { useState, useEffect, useRef, useCallback, type MouseEvent as ReactMouseEvent, type ReactElement, type ReactNode } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { Suspense } from "react";
@@ -528,6 +528,27 @@ function RelationPopover({
 const RING_R = 16;
 const RING_CIRC = 2 * Math.PI * RING_R;
 
+function SortIcon({ active, dir }: { active: boolean; dir: SortDir }): ReactElement {
+  return (
+    <svg width="11" height="11" viewBox="0 0 16 16" fill="none" aria-hidden="true" style={{ flexShrink: 0 }}>
+      <path
+        d="M5 7L8 4L11 7"
+        stroke={active && dir === "asc" ? "var(--accent)" : "var(--text-faint)"}
+        strokeWidth={active && dir === "asc" ? 2 : 1.5}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M5 9L8 12L11 9"
+        stroke={active && dir === "desc" ? "var(--accent)" : "var(--text-faint)"}
+        strokeWidth={active && dir === "desc" ? 2 : 1.5}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
 function AvatarRing({ initials, color, score }: { initials: string; color: string; score: number }): ReactElement {
   const ringColor = qualityColor(score);
   const dash = RING_CIRC * score;
@@ -745,9 +766,73 @@ function PaginationBar({
   );
 }
 
+type FilterKey = "status" | "entity" | "source" | "identity" | "dob" | "address" | "relations" | "quality" | "sales";
+
+function FilterPill({
+  label,
+  isActive,
+  activeLabel,
+  count,
+  onClear,
+  open,
+  onToggle,
+  alignRight,
+  children,
+}: {
+  label: string;
+  isActive: boolean;
+  activeLabel: string;
+  count?: number;
+  onClear: () => void;
+  open: boolean;
+  onToggle: () => void;
+  alignRight?: boolean;
+  children: ReactNode;
+}): ReactElement {
+  return (
+    <div className={styles.fpWrap}>
+      <button
+        type="button"
+        className={`${styles.filterPill} ${isActive ? styles.filterPillActive : ""}`}
+        onClick={onToggle}
+        aria-expanded={open}
+        aria-haspopup="true"
+      >
+        <span className={styles.fpLabel}>
+          {isActive ? activeLabel : label}
+          {isActive && count != null && count > 1 && (
+            <span className={styles.fpCount}>{count}</span>
+          )}
+        </span>
+        {isActive ? (
+          <span
+            role="button"
+            className={styles.fpClear}
+            tabIndex={0}
+            aria-label={`Clear ${label} filter`}
+            onClick={(e) => { e.stopPropagation(); onClear(); }}
+            onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.stopPropagation(); onClear(); } }}
+          >×</span>
+        ) : (
+          <svg width="9" height="9" viewBox="0 0 12 12" fill="none" aria-hidden="true">
+            <path d="M2.5 4.5L6 8L9.5 4.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+          </svg>
+        )}
+      </button>
+      {open && (
+        <div className={`${styles.filterPopover} ${alignRight ? styles.filterPopoverRight : ""}`}>
+          {children}
+        </div>
+      )}
+    </div>
+  );
+}
+
 type StatusFilter = "active" | "merged" | "suppressed";
 type PresenceFilter = "any" | "has" | "none";
 type DobMode = "single" | "range";
+type SortKey = "name" | "dob" | "orders" | "quality";
+type SortDir = "asc" | "desc";
 
 const STATUS_FILTERS: StatusFilter[] = ["active", "merged", "suppressed"];
 
@@ -841,7 +926,24 @@ function PersonsInner(): ReactElement {
   const [threePlusOrdersOnly, setThreePlusOrdersOnly] = useState(false);
   const [orderTotalMin, setOrderTotalMin] = useState("");
   const [orderTotalMax, setOrderTotalMax] = useState("");
-  const [showFilters, setShowFilters] = useState(false);
+  const [openFilter, setOpenFilter] = useState<FilterKey | null>(null);
+  const [sortKey, setSortKey] = useState<SortKey | null>(null);
+  const [sortDir, setSortDir] = useState<SortDir>("desc");
+
+  function toggleSort(key: SortKey): void {
+    const def: SortDir = key === "name" || key === "dob" ? "asc" : "desc";
+    if (sortKey !== key) {
+      setSortKey(key);
+      setSortDir(def);
+    } else {
+      const next: SortDir = sortDir === "asc" ? "desc" : "asc";
+      if (next === def) {
+        setSortKey(null); // third click → reset
+      } else {
+        setSortDir(next);
+      }
+    }
+  }
 
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [page, setPage] = useState(0);
@@ -852,6 +954,7 @@ function PersonsInner(): ReactElement {
   const [relationPopover, setRelationPopover] = useState<RelationPopoverState | null>(null);
   const [ordersPopover, setOrdersPopover] = useState<OrdersPopoverState | null>(null);
   const checkAllRef = useRef<HTMLInputElement | null>(null);
+  const filterBarRef = useRef<HTMLDivElement | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const colEls = useRef<(HTMLTableColElement | null)[]>([]);
   const dragRef = useRef<{ idx: number; startX: number; startW: number } | null>(null);
@@ -938,6 +1041,20 @@ function PersonsInner(): ReactElement {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setPage(0);
   }, [search, statusFilter, entityFilter, sourceFilter, identityFilter, verifiedOnly, addressFilter, relationFilter, relationTypeFilter, dobFilter, dobMode, dobSingleDate, dobStartDate, dobEndDate, qualityMin, qualityMax, hasOrdersOnly, threePlusOrdersOnly, orderTotalMin, orderTotalMax]);
+
+  useEffect(() => {
+    function handleOutsideClick(e: MouseEvent): void {
+      if (filterBarRef.current && !filterBarRef.current.contains(e.target as Node)) {
+        setOpenFilter(null);
+      }
+    }
+    document.addEventListener("mousedown", handleOutsideClick);
+    return () => document.removeEventListener("mousedown", handleOutsideClick);
+  }, []);
+
+  function toggleFilter(key: FilterKey): void {
+    setOpenFilter((prev) => (prev === key ? null : key));
+  }
 
   const activeFilterCount = [
     statusFilter,
@@ -1029,11 +1146,22 @@ function PersonsInner(): ReactElement {
     return true;
   });
 
-  const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
+  const sorted = sortKey
+    ? [...filtered].sort((a, b) => {
+        let cmp = 0;
+        if (sortKey === "name") cmp = (a.preferred_full_name ?? "").localeCompare(b.preferred_full_name ?? "");
+        else if (sortKey === "dob") cmp = (a.preferred_dob ?? "9999-99-99").localeCompare(b.preferred_dob ?? "9999-99-99");
+        else if (sortKey === "orders") cmp = a.order_count - b.order_count;
+        else if (sortKey === "quality") cmp = a.profile_completeness_score - b.profile_completeness_score;
+        return sortDir === "asc" ? cmp : -cmp;
+      })
+    : filtered;
+
+  const totalPages = Math.max(1, Math.ceil(sorted.length / pageSize));
   const safePage = Math.min(page, totalPages - 1);
   const pageStart = safePage * pageSize;
-  const pageEnd = Math.min(pageStart + pageSize, filtered.length);
-  const pageRows = filtered.slice(pageStart, pageEnd);
+  const pageEnd = Math.min(pageStart + pageSize, sorted.length);
+  const pageRows = sorted.slice(pageStart, pageEnd);
   const filteredSourceSystems = MOCK_SOURCE_SYSTEMS.filter((source) => {
     const label = `${source.display_name ?? source.source_key} ${source.system_type ?? ""}`.toLowerCase();
     return label.includes(sourceSearch.toLowerCase());
@@ -1121,39 +1249,27 @@ function PersonsInner(): ReactElement {
       {/* ── Stats row ─────────────────────────────────────────── */}
       <div className={styles.statsRow}>
         <div className={styles.statCard}>
-          <svg className={styles.statBg} viewBox="0 0 24 24" fill="currentColor">
-            <path d="M16 11c1.66 0 2.99-1.34 2.99-3S17.66 5 16 5c-1.66 0-3 1.34-3 3s1.34 3 3 3zm-8 0c1.66 0 2.99-1.34 2.99-3S9.66 5 8 5C6.34 5 5 6.34 5 8s1.34 3 3 3zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5c0-2.33-4.67-3.5-7-3.5zm8 0c-.29 0-.62.02-.97.05 1.16.84 1.97 1.97 1.97 3.45V19h6v-2.5c0-2.33-4.67-3.5-7-3.5z"/>
-          </svg>
           <div className={styles.statLabel}>Total Profiles</div>
-          <div className={styles.statValue} style={{ color: "#16a34a" }}>{TOTAL.toLocaleString()}</div>
+          <div className={styles.statValue} style={{ color: "var(--good)" }}>{TOTAL.toLocaleString()}</div>
           <div className={styles.statSub}>+128 this week</div>
         </div>
 
         <div className={styles.statCard}>
-          <svg className={styles.statBg} viewBox="0 0 24 24" fill="currentColor">
-            <path d="M12 22C6.477 22 2 17.523 2 12S6.477 2 12 2s10 4.477 10 10-4.477 10-10 10zm-1.177-7.86l-2.765-2.767L7 12.431l3.823 3.845L18 9.124l-1.06-1.06-6.117 6.077z"/>
-          </svg>
           <div className={styles.statLabel}>Completeness</div>
-          <div className={styles.statValue} style={{ color: "#d97706" }}>78%</div>
+          <div className={styles.statValue} style={{ color: "var(--warn-text)" }}>78%</div>
           <div className={styles.statSub}>203 records flagged</div>
         </div>
 
         <div className={styles.statCard}>
-          <svg className={styles.statBg} viewBox="0 0 24 24" fill="currentColor">
-            <path d="M12 6c1.11 0 2-.89 2-2 0-.74-.4-1.39-1-1.73V1h-2v1.27C10.4 2.61 10 3.26 10 4c0 1.11.89 2 2 2zm4.6 9.99l-1.07-1.07-1.08 1.07c-1.3 1.3-3.58 1.31-4.89 0l-1.07-1.07-1.09 1.07C6.75 16.64 5.88 17 4.96 17c-.73 0-1.4-.23-1.96-.61V21c0 .55.45 1 1 1h16c.55 0 1-.45 1-1v-4.61c-.56.38-1.23.61-1.96.61-.92 0-1.79-.36-2.44-1.01zM18 9H6c-1.66 0-3 1.34-3 3v1.54c0 1.08.88 1.96 1.96 1.96.52 0 1.02-.2 1.38-.57l2.14-2.13 2.13 2.13c.74.74 2.03.74 2.77 0l2.14-2.13 2.13 2.13c.37.37.86.57 1.38.57 1.08 0 1.96-.88 1.96-1.96V12C21 10.34 19.66 9 18 9z"/>
-          </svg>
           <div className={styles.statLabel}>Birthdays this month</div>
-          <div className={styles.statValue} style={{ color: "#1d4ed8" }}>47</div>
+          <div className={styles.statValue} style={{ color: "var(--accent)" }}>47</div>
           <div className={styles.statSub}>in {new Date().toLocaleString("en", { month: "long" })}</div>
         </div>
 
         <div className={styles.statCard}>
-          <svg className={styles.statBg} viewBox="0 0 24 24" fill="currentColor">
-            <path d="M6.6 10.8c1.4 2.8 3.8 5.1 6.6 6.6l2.2-2.2c.3-.3.7-.4 1-.2 1.1.4 2.3.6 3.6.6.6 0 1 .4 1 1V20c0 .6-.4 1-1 1-9.4 0-17-7.6-17-17 0-.6.4-1 1-1h3.5c.6 0 1 .4 1 1 0 1.3.2 2.5.6 3.6.1.3 0 .7-.2 1L6.6 10.8z"/>
-          </svg>
           <div className={styles.statLabel}>No contact info</div>
-          <div className={styles.statValue} style={{ color: "#dc2626" }}>341</div>
-          <div className={styles.statSub}>Can&apos;t be reached – FIX needed</div>
+          <div className={styles.statValue} style={{ color: "var(--bad)" }}>341</div>
+          <div className={styles.statSub}>Can&apos;t be reached — fix needed</div>
         </div>
       </div>
 
@@ -1172,518 +1288,433 @@ function PersonsInner(): ReactElement {
               placeholder="Search by name, phone, email..."
             />
           </div>
-          <button
-            className={`${styles.filterToggleBtn} ${showFilters ? styles.filterToggleBtnActive : ""}`}
-            type="button"
-            onClick={() => setShowFilters((value) => !value)}
-            aria-expanded={showFilters}
-            aria-controls="persons-filter-groups"
-          >
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-              <polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/>
-            </svg>
-            Filter
-            {activeFilterCount > 0 && <span className={styles.filterToggleCount}>{activeFilterCount}</span>}
-          </button>
           {activeFilterCount > 0 && (
-            <button className={styles.clearBtn} onClick={clearAllFilters}>Clear filters</button>
+            <button className={styles.clearBtn} onClick={clearAllFilters}>Clear all</button>
           )}
         </div>
 
-        <div className={styles.activeBadges}>
-          {statusFilter && (
-            <span className={styles.activeBadge}>
-              {statusFilter}
-              <button className={styles.badgeX} onClick={() => setStatusFilter(null)}>×</button>
-            </span>
-          )}
-          {entityFilter.map((entityKey) => (
-            <span key={entityKey} className={styles.activeBadge}>
-              {MOCK_ENTITIES.find((e) => e.entity_key === entityKey)?.display_name ?? entityKey}
-              <button
-                className={styles.badgeX}
-                onClick={() => setEntityFilter((value) => value.filter((key) => key !== entityKey))}
-              >
-                ×
-              </button>
-            </span>
-          ))}
-          {identityFilter.map((identityKey) => (
-            <span key={identityKey} className={styles.activeBadge}>
-              {IDENTITY_FILTERS.find((filter) => filter.key === identityKey)?.label ?? identityKey}
-              <button
-                className={styles.badgeX}
-                onClick={() => setIdentityFilter((value) => value.filter((key) => key !== identityKey))}
-              >
-                ×
-              </button>
-            </span>
-          ))}
-          {verifiedOnly && (
-            <span className={styles.activeBadge}>
-              Verified only
-              <button className={styles.badgeX} onClick={() => setVerifiedOnly(false)}>×</button>
-            </span>
-          )}
-          {sourceFilter.map((sourceKey) => (
-            <span key={sourceKey} className={styles.activeBadge}>
-              {MOCK_SOURCE_SYSTEMS.find((source) => source.source_key === sourceKey)?.display_name ?? sourceKey}
-              <button
-                className={styles.badgeX}
-                onClick={() => setSourceFilter((value) => value.filter((key) => key !== sourceKey))}
-              >
-                ×
-              </button>
-            </span>
-          ))}
-          {addressFilter !== "any" && (
-            <span className={styles.activeBadge}>
-              Address: {addressFilter === "has" ? "Has" : "None"}
-              <button className={styles.badgeX} onClick={() => setAddressFilter("any")}>×</button>
-            </span>
-          )}
-          {relationFilter !== "any" && (
-            <span className={styles.activeBadge}>
-              Relations: {relationFilter === "has" ? "Has" : "None"}
-              <button className={styles.badgeX} onClick={() => setRelationFilter("any")}>×</button>
-            </span>
-          )}
-          {relationTypeFilter.length > 0 && (
-            <span className={styles.activeBadge}>
-              {relationTypeFilter.length === 1
-                ? `Relation: ${getRelationTypeLabel(relationTypeOptions, relationTypeFilter[0] ?? "")}`
-                : `Relations: ${relationTypeFilter.length} types`}
-              <button className={styles.badgeX} onClick={() => setRelationTypeFilter([])}>×</button>
-            </span>
-          )}
-          {hasOrdersOnly && <span className={styles.activeBadge}>Has orders<button className={styles.badgeX} onClick={() => setHasOrdersOnly(false)}>×</button></span>}
-          {threePlusOrdersOnly && <span className={styles.activeBadge}>≥3 orders<button className={styles.badgeX} onClick={() => setThreePlusOrdersOnly(false)}>×</button></span>}
-          {orderTotalMin !== "" && <span className={styles.activeBadge}>Min total: {orderTotalMin}<button className={styles.badgeX} onClick={() => setOrderTotalMin("")}>×</button></span>}
-          {orderTotalMax !== "" && <span className={styles.activeBadge}>Max total: {orderTotalMax}<button className={styles.badgeX} onClick={() => setOrderTotalMax("")}>×</button></span>}
-          {dobFilter !== "any" && (
-            <span className={styles.activeBadge}>
-              {dobFilter === "none"
-                ? "DOB: None"
+        {/* ── Filter pill bar ─────────────────────────────────────── */}
+        <div className={styles.filterBar} ref={filterBarRef}>
+
+          <FilterPill
+            label="Status"
+            isActive={statusFilter !== null}
+            activeLabel={statusFilter ? (statusFilter.charAt(0).toUpperCase() + statusFilter.slice(1)) : ""}
+            onClear={() => setStatusFilter(null)}
+            open={openFilter === "status"}
+            onToggle={() => toggleFilter("status")}
+          >
+            <div className={styles.fpInner}>
+              <div className={styles.fpSegmented}>
+                {STATUS_FILTERS.map((s) => (
+                  <button
+                    key={s}
+                    type="button"
+                    className={`${styles.fpSegmentedBtn} ${statusFilter === s ? styles.fpSegmentedBtnActive : ""}`}
+                    onClick={() => setStatusFilter((v) => (v === s ? null : s))}
+                  >
+                    {s.charAt(0).toUpperCase() + s.slice(1)}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </FilterPill>
+
+          <FilterPill
+            label="Entity"
+            isActive={entityFilter.length > 0}
+            activeLabel={
+              entityFilter.length === 1
+                ? (MOCK_ENTITIES.find((e) => e.entity_key === entityFilter[0])?.display_name ?? "Entity")
+                : `${entityFilter.length} entities`
+            }
+            count={entityFilter.length > 1 ? entityFilter.length : undefined}
+            onClear={() => setEntityFilter([])}
+            open={openFilter === "entity"}
+            onToggle={() => toggleFilter("entity")}
+          >
+            <div className={styles.fpInner}>
+              <div className={styles.filterOptions}>
+                {MOCK_ENTITIES.map((entity) => (
+                  <button
+                    key={entity.entity_key}
+                    type="button"
+                    className={`${styles.filterChip} ${entityFilter.includes(entity.entity_key) ? styles.filterChipActive : ""}`}
+                    onClick={() =>
+                      setEntityFilter((v) =>
+                        v.includes(entity.entity_key)
+                          ? v.filter((k) => k !== entity.entity_key)
+                          : [...v, entity.entity_key]
+                      )
+                    }
+                  >
+                    {entity.display_name ?? entity.entity_key}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </FilterPill>
+
+          <FilterPill
+            label="Source"
+            isActive={sourceFilter.length > 0}
+            activeLabel={
+              sourceFilter.length === 1
+                ? (MOCK_SOURCE_SYSTEMS.find((s) => s.source_key === sourceFilter[0])?.display_name ?? "Source")
+                : `${sourceFilter.length} sources`
+            }
+            count={sourceFilter.length > 1 ? sourceFilter.length : undefined}
+            onClear={() => { setSourceFilter([]); setSourceSearch(""); }}
+            open={openFilter === "source"}
+            onToggle={() => toggleFilter("source")}
+          >
+            <div className={styles.fpInner}>
+              <div className={styles.sourceSearchBox}>
+                <svg className={styles.sourceSearchIcon} width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+                </svg>
+                <input
+                  className={styles.sourceSearchInput}
+                  type="text"
+                  value={sourceSearch}
+                  onChange={(e) => setSourceSearch(e.target.value)}
+                  placeholder="Search sources"
+                />
+              </div>
+              <div className={`${styles.filterOptions} ${styles.filterOptionsScrollable}`}>
+                {filteredSourceSystems.map((source) => {
+                  const checked = sourceFilter.includes(source.source_key);
+                  return (
+                    <button
+                      key={source.source_key}
+                      type="button"
+                      className={`${styles.filterChip} ${checked ? styles.filterChipActive : ""}`}
+                      onClick={() =>
+                        setSourceFilter((v) =>
+                          checked ? v.filter((k) => k !== source.source_key) : [...v, source.source_key]
+                        )
+                      }
+                    >
+                      {source.display_name}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          </FilterPill>
+
+          <FilterPill
+            label="Identity"
+            isActive={identityFilter.length > 0 || verifiedOnly}
+            activeLabel={
+              identityFilter.length > 0
+                ? identityFilter.map((k) => IDENTITY_FILTERS.find((f) => f.key === k)?.label ?? k).join(", ")
+                : "Verified only"
+            }
+            onClear={() => { setIdentityFilter([]); setVerifiedOnly(false); }}
+            open={openFilter === "identity"}
+            onToggle={() => toggleFilter("identity")}
+          >
+            <div className={styles.fpInner}>
+              <div className={styles.filterOptions}>
+                {IDENTITY_FILTERS.map((filter) => {
+                  const checked = identityFilter.includes(filter.key);
+                  return (
+                    <button
+                      key={filter.key}
+                      type="button"
+                      className={`${styles.filterChip} ${checked ? styles.filterChipActive : ""}`}
+                      onClick={() =>
+                        setIdentityFilter((v) =>
+                          checked ? v.filter((k) => k !== filter.key) : [...v, filter.key]
+                        )
+                      }
+                    >
+                      {filter.label}
+                    </button>
+                  );
+                })}
+              </div>
+              <label className={styles.switch}>
+                <input
+                  type="checkbox"
+                  className={styles.switchInput}
+                  checked={verifiedOnly}
+                  onChange={(e) => setVerifiedOnly(e.target.checked)}
+                />
+                <span className={styles.switchTrack} aria-hidden="true">
+                  <span className={styles.switchThumb} />
+                </span>
+                <span className={styles.switchLabel}>Verified only</span>
+              </label>
+            </div>
+          </FilterPill>
+
+          <FilterPill
+            label="Date of Birth"
+            isActive={dobFilter !== "any"}
+            activeLabel={
+              dobFilter === "none"
+                ? "No DOB"
                 : dobMode === "single" && dobSingleDate
                   ? `DOB: ${dobSingleDate}`
                   : dobMode === "range" && (dobStartDate || dobEndDate)
                     ? `DOB: ${dobStartDate || "…"} → ${dobEndDate || "…"}`
-                    : "DOB: Has"}
-              <button
-                className={styles.badgeX}
-                onClick={() => {
-                  setDobFilter("any");
-                  setDobMode("single");
-                  setDobSingleDate("");
-                  setDobStartDate("");
-                  setDobEndDate("");
-                }}
-              >
-                ×
-              </button>
-            </span>
-          )}
-          {(qualityMin > 0 || qualityMax < 100) && (
-            <span className={styles.activeBadge}>
-              Quality: {qualityMin}–{qualityMax}
-              <button
-                className={styles.badgeX}
-                onClick={() => {
-                  setQualityMin(0);
-                  setQualityMax(100);
-                }}
-              >
-                ×
-              </button>
-            </span>
-          )}
-        </div>
-
-        {showFilters && (
-          <div className={styles.filterGroups} id="persons-filter-groups">
-            <div className={styles.filterRowStack}>
-              <div className={styles.filterGroup}>
-                <div className={styles.filterGroupHeader}>
-                  <span className={styles.filterGroupLabel}>Status</span>
-                </div>
-                <div className={styles.filterOptions}>
-                  {STATUS_FILTERS.map((status) => (
-                    <button
-                      key={status}
-                      className={`${styles.filterChip} ${statusFilter === status ? styles.filterChipActive : ""}`}
-                      onClick={() => setStatusFilter((value) => value === status ? null : status)}
-                    >
-                      {status.charAt(0).toUpperCase() + status.slice(1)}
-                    </button>
-                  ))}
-                </div>
+                    : "Has DOB"
+            }
+            onClear={() => { setDobFilter("any"); setDobMode("single"); setDobSingleDate(""); setDobStartDate(""); setDobEndDate(""); }}
+            open={openFilter === "dob"}
+            onToggle={() => toggleFilter("dob")}
+          >
+            <div className={styles.fpInner}>
+              <div className={styles.fpSegmented}>
+                {(["any", "has", "none"] as const).map((value) => (
+                  <button
+                    key={value}
+                    type="button"
+                    className={`${styles.fpSegmentedBtn} ${dobFilter === value ? styles.fpSegmentedBtnActive : ""}`}
+                    onClick={() => setDobFilter(value)}
+                  >
+                    {value === "any" ? "Any" : value === "has" ? "Has DOB" : "No DOB"}
+                  </button>
+                ))}
               </div>
-
-              <div className={styles.filterGroup}>
-                <div className={styles.filterGroupHeader}>
-                  <span className={styles.filterGroupLabel}>DOB</span>
-                </div>
-                <div className={styles.filterGroupBody}>
-                  <div className={styles.filterOptions}>
-                    {(["any", "has", "none"] as const).map((value) => (
-                      <button
-                        key={value}
-                        type="button"
-                        className={`${styles.filterChip} ${dobFilter === value ? styles.filterChipActive : ""}`}
-                        onClick={() => setDobFilter(value)}
-                      >
-                        {value === "any" ? "Any" : value === "has" ? "Has" : "None"}
-                      </button>
-                    ))}
+              {dobFilter === "has" && (
+                <>
+                  <hr className={styles.fpSep} />
+                  <div className={styles.fpSegmented}>
+                    <button
+                      type="button"
+                      className={`${styles.fpSegmentedBtn} ${dobMode === "single" ? styles.fpSegmentedBtnActive : ""}`}
+                      onClick={() => { setDobMode("single"); setDobStartDate(""); setDobEndDate(""); }}
+                    >
+                      Pick date
+                    </button>
+                    <button
+                      type="button"
+                      className={`${styles.fpSegmentedBtn} ${dobMode === "range" ? styles.fpSegmentedBtnActive : ""}`}
+                      onClick={() => { setDobMode("range"); setDobSingleDate(""); }}
+                    >
+                      Range
+                    </button>
                   </div>
-                  {dobFilter === "has" && (
-                    <>
-                      <div className={styles.filterOptions}>
-                        <button
-                          type="button"
-                          className={`${styles.filterChip} ${dobMode === "single" ? styles.filterChipActive : ""}`}
-                          onClick={() => {
-                            setDobMode("single");
-                            setDobStartDate("");
-                            setDobEndDate("");
-                          }}
-                        >
-                          Pick date
-                        </button>
-                        <button
-                          type="button"
-                          className={`${styles.filterChip} ${dobMode === "range" ? styles.filterChipActive : ""}`}
-                          onClick={() => {
-                            setDobMode("range");
-                            setDobSingleDate("");
-                          }}
-                        >
-                          Range
-                        </button>
+                  {dobMode === "single" ? (
+                    <div className={styles.dateInputWrap}>
+                      <input
+                        className={styles.dateInput}
+                        type="date"
+                        value={dobSingleDate}
+                        onChange={(e) => setDobSingleDate(e.target.value)}
+                      />
+                    </div>
+                  ) : (
+                    <div className={styles.dateFieldsRow}>
+                      <div className={`${styles.dateFieldGroup} ${styles.compactFieldGroup}`}>
+                        <label className={styles.dateFieldLabel}>From</label>
+                        <div className={styles.dateInputWrap}>
+                          <input
+                            aria-label="DOB start date"
+                            className={styles.dateInput}
+                            type="date"
+                            value={dobStartDate}
+                            onChange={(e) => setDobStartDate(e.target.value)}
+                          />
+                        </div>
                       </div>
-                      {dobMode === "single" ? (
-                        <div className={`${styles.dateFieldGroup} ${styles.compactFieldGroup}`}>
-                          <label className={styles.dateFieldLabel} htmlFor="dob-single-date">Pick date</label>
-                          <div className={styles.dateInputWrap}>
-                            <input
-                              id="dob-single-date"
-                              className={styles.dateInput}
-                              type="date"
-                              value={dobSingleDate}
-                              onChange={(e) => setDobSingleDate(e.target.value)}
-                            />
-                          </div>
+                      <div className={`${styles.dateFieldGroup} ${styles.compactFieldGroup}`}>
+                        <label className={styles.dateFieldLabel}>To</label>
+                        <div className={styles.dateInputWrap}>
+                          <input
+                            aria-label="DOB end date"
+                            className={styles.dateInput}
+                            type="date"
+                            value={dobEndDate}
+                            onChange={(e) => setDobEndDate(e.target.value)}
+                          />
                         </div>
-                      ) : (
-                        <div className={styles.dateFieldsRow}>
-                          <div className={`${styles.dateFieldGroup} ${styles.compactFieldGroup}`}>
-                            <label className={styles.dateFieldLabel} htmlFor="dob-start-date">From</label>
-                            <div className={styles.dateInputWrap}>
-                              <input
-                                id="dob-start-date"
-                                aria-label="DOB start date"
-                                className={styles.dateInput}
-                                type="date"
-                                value={dobStartDate}
-                                onChange={(e) => setDobStartDate(e.target.value)}
-                              />
-                            </div>
-                          </div>
-                          <div className={`${styles.dateFieldGroup} ${styles.compactFieldGroup}`}>
-                            <label className={styles.dateFieldLabel} htmlFor="dob-end-date">To</label>
-                            <div className={styles.dateInputWrap}>
-                              <input
-                                id="dob-end-date"
-                                aria-label="DOB end date"
-                                className={styles.dateInput}
-                                type="date"
-                                value={dobEndDate}
-                                onChange={(e) => setDobEndDate(e.target.value)}
-                              />
-                            </div>
-                          </div>
-                        </div>
-                      )}
-                    </>
+                      </div>
+                    </div>
                   )}
-                </div>
-              </div>
+                </>
+              )}
+            </div>
+          </FilterPill>
 
-              <div className={styles.filterGroup}>
-                <div className={styles.filterGroupHeader}>
-                  <span className={styles.filterGroupLabel}>Address</span>
-                </div>
-                <div className={styles.filterOptions}>
-                  {(["any", "has", "none"] as const).map((value) => (
-                    <button
-                      key={value}
-                      type="button"
-                      className={`${styles.filterChip} ${addressFilter === value ? styles.filterChipActive : ""}`}
-                      onClick={() => setAddressFilter(value)}
-                    >
-                      {value === "any" ? "Any" : value === "has" ? "Has" : "None"}
-                    </button>
-                  ))}
-                </div>
+          <FilterPill
+            label="Address"
+            isActive={addressFilter !== "any"}
+            activeLabel={addressFilter === "none" ? "No address" : "Has address"}
+            onClear={() => setAddressFilter("any")}
+            open={openFilter === "address"}
+            onToggle={() => toggleFilter("address")}
+          >
+            <div className={styles.fpInner}>
+              <div className={styles.fpSegmented}>
+                {(["any", "has", "none"] as const).map((value) => (
+                  <button
+                    key={value}
+                    type="button"
+                    className={`${styles.fpSegmentedBtn} ${addressFilter === value ? styles.fpSegmentedBtnActive : ""}`}
+                    onClick={() => setAddressFilter(value)}
+                  >
+                    {value === "any" ? "Any" : value === "has" ? "Has" : "None"}
+                  </button>
+                ))}
               </div>
             </div>
+          </FilterPill>
 
-            <div className={styles.filterRowStack}>
-              <div className={styles.filterGroup}>
-                <div className={styles.filterGroupHeader}>
-                  <span className={styles.filterGroupLabel}>Identity</span>
-                </div>
-                <div className={styles.filterGroupBody}>
-                  <div className={styles.filterOptions}>
-                    {IDENTITY_FILTERS.map((filter) => {
-                      const checked = identityFilter.includes(filter.key);
-                      return (
-                        <button
-                          key={filter.key}
-                          type="button"
-                          className={`${styles.filterChip} ${checked ? styles.filterChipActive : ""}`}
-                          onClick={() =>
-                            setIdentityFilter(
-                              checked
-                                ? identityFilter.filter((key) => key !== filter.key)
-                                : [...identityFilter, filter.key]
-                            )
-                          }
-                        >
-                          {filter.label}
-                        </button>
-                      );
-                    })}
-                  </div>
-                  <label className={styles.switch}>
-                    <input
-                      type="checkbox"
-                      className={styles.switchInput}
-                      checked={verifiedOnly}
-                      onChange={(e) => setVerifiedOnly(e.target.checked)}
-                    />
-                    <span className={styles.switchTrack} aria-hidden="true">
-                      <span className={styles.switchThumb} />
-                    </span>
-                    <span className={styles.switchLabel}>Verified only</span>
-                  </label>
-                </div>
+          <FilterPill
+            label="Relations"
+            isActive={relationFilter !== "any" || relationTypeFilter.length > 0}
+            activeLabel={
+              relationFilter === "none"
+                ? "No relations"
+                : relationTypeFilter.length > 0
+                  ? `Has: ${relationTypeFilter.length} type${relationTypeFilter.length === 1 ? "" : "s"}`
+                  : "Has relations"
+            }
+            onClear={() => { setRelationFilter("any"); setRelationTypeFilter([]); }}
+            open={openFilter === "relations"}
+            onToggle={() => toggleFilter("relations")}
+          >
+            <div className={styles.fpInner}>
+              <div className={styles.fpSegmented}>
+                {(["any", "has", "none"] as const).map((value) => (
+                  <button
+                    key={value}
+                    type="button"
+                    className={`${styles.fpSegmentedBtn} ${relationFilter === value ? styles.fpSegmentedBtnActive : ""}`}
+                    onClick={() => setRelationFilter(value)}
+                  >
+                    {value === "any" ? "Any" : value === "has" ? "Has" : "None"}
+                  </button>
+                ))}
               </div>
-
-              <div className={styles.filterGroup}>
-                <div className={styles.filterGroupHeader}>
-                  <span className={styles.filterGroupLabel}>Sales</span>
-                </div>
-                <div className={styles.filterGroupBody}>
-                  <div className={styles.filterOptions}>
+              <hr className={styles.fpSep} />
+              <span className={styles.fpSectionLabel}>Types</span>
+              <div className={`${styles.filterOptions} ${styles.filterOptionsScrollable}`}>
+                {relationTypeOptions.map((option) => {
+                  const checked = relationTypeFilter.includes(option.key);
+                  return (
                     <button
+                      key={option.key}
                       type="button"
-                      className={`${styles.filterChip} ${hasOrdersOnly ? styles.filterChipActive : ""}`}
-                      onClick={() => setHasOrdersOnly((value) => !value)}
-                    >
-                      Has orders
-                    </button>
-                    <button
-                      type="button"
-                      className={`${styles.filterChip} ${threePlusOrdersOnly ? styles.filterChipActive : ""}`}
-                      onClick={() => setThreePlusOrdersOnly((value) => !value)}
-                    >
-                      ≥3 orders
-                    </button>
-                  </div>
-                  <div className={styles.dateFieldsRow}>
-                    <div className={`${styles.dateFieldGroup} ${styles.compactFieldGroup}`}>
-                      <label className={styles.dateFieldLabel} htmlFor="order-total-min">Min total</label>
-                      <div className={`${styles.dateInputWrap} ${styles.numberInputWrap}`}>
-                        <input
-                          id="order-total-min"
-                          aria-label="Minimum order total"
-                          className={styles.dateInput}
-                          min="0"
-                          type="number"
-                          value={orderTotalMin}
-                          onChange={(e) => setOrderTotalMin(e.target.value)}
-                        />
-                      </div>
-                    </div>
-                    <div className={`${styles.dateFieldGroup} ${styles.compactFieldGroup}`}>
-                      <label className={styles.dateFieldLabel} htmlFor="order-total-max">Max total</label>
-                      <div className={`${styles.dateInputWrap} ${styles.numberInputWrap}`}>
-                        <input
-                          id="order-total-max"
-                          aria-label="Maximum order total"
-                          className={styles.dateInput}
-                          min="0"
-                          type="number"
-                          value={orderTotalMax}
-                          onChange={(e) => setOrderTotalMax(e.target.value)}
-                        />
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              <div className={styles.filterGroup}>
-                <div className={styles.filterGroupHeader}>
-                  <span className={styles.filterGroupLabel}>Quality</span>
-                </div>
-                <div className={styles.filterGroupBody}>
-                  <div className={styles.qualityRangeHeader}>
-                    <span className={styles.qualityRangeValue}>{qualityMin}</span>
-                    <span className={styles.qualityRangeDash}>–</span>
-                    <span className={styles.qualityRangeValue}>{qualityMax}</span>
-                  </div>
-                  <div className={styles.qualitySliderStack}>
-                    <div className={styles.qualitySliderRail} aria-hidden="true" />
-                    <div
-                      className={styles.qualitySliderRange}
-                      aria-hidden="true"
-                      style={{
-                        left: `${qualityMin}%`,
-                        width: `${Math.max(qualityMax - qualityMin, 0)}%`,
-                      }}
-                    />
-                    <input
-                      className={`${styles.rangeInput} ${styles.rangeInputMin}`}
-                      type="range"
-                      min="0"
-                      max="100"
-                      value={qualityMin}
-                      onChange={(e) => {
-                        const next = Number(e.target.value);
-                        setQualityMin(Math.min(next, qualityMax));
-                      }}
-                    />
-                    <input
-                      className={`${styles.rangeInput} ${styles.rangeInputMax}`}
-                      type="range"
-                      min="0"
-                      max="100"
-                      value={qualityMax}
-                      onChange={(e) => {
-                        const next = Number(e.target.value);
-                        setQualityMax(Math.max(next, qualityMin));
-                      }}
-                    />
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            <div className={styles.filterRowStack}>
-              <div className={styles.filterGroup}>
-                <div className={styles.filterGroupHeader}>
-                  <span className={styles.filterGroupLabel}>Relations</span>
-                </div>
-                <div className={styles.filterGroupBody}>
-                  <div className={styles.filterOptions}>
-                    {(["any", "has", "none"] as const).map((value) => (
-                      <button
-                        key={value}
-                        type="button"
-                        className={`${styles.filterChip} ${relationFilter === value ? styles.filterChipActive : ""}`}
-                        onClick={() => setRelationFilter(value)}
-                      >
-                        {value === "any" ? "Any" : value === "has" ? "Has" : "None"}
-                      </button>
-                    ))}
-                  </div>
-                  <span className={styles.filterSubLabel}>Types</span>
-                  <div className={`${styles.filterOptions} ${styles.filterOptionsScrollable}`}>
-                    {relationTypeOptions.map((option) => {
-                      const checked = relationTypeFilter.includes(option.key);
-                      return (
-                        <button
-                          key={option.key}
-                          type="button"
-                          className={`${styles.filterChip} ${checked ? styles.filterChipActive : ""}`}
-                          onClick={() =>
-                            setRelationTypeFilter((value) =>
-                              checked
-                                ? value.filter((key) => key !== option.key)
-                                : [...value, option.key]
-                            )
-                          }
-                        >
-                          {option.label}
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
-              </div>
-
-              <div className={styles.filterGroup}>
-                <div className={styles.filterGroupHeader}>
-                  <span className={styles.filterGroupLabel}>Entity</span>
-                </div>
-                <div className={styles.filterOptions}>
-                  {MOCK_ENTITIES.map((entity) => (
-                    <button
-                      key={entity.entity_key}
-                      className={`${styles.filterChip} ${entityFilter.includes(entity.entity_key) ? styles.filterChipActive : ""}`}
+                      className={`${styles.filterChip} ${checked ? styles.filterChipActive : ""}`}
                       onClick={() =>
-                        setEntityFilter((value) =>
-                          value.includes(entity.entity_key)
-                            ? value.filter((key) => key !== entity.entity_key)
-                            : [...value, entity.entity_key]
+                        setRelationTypeFilter((v) =>
+                          checked ? v.filter((k) => k !== option.key) : [...v, option.key]
                         )
                       }
                     >
-                      {entity.display_name ?? entity.entity_key}
+                      {option.label}
                     </button>
-                  ))}
-                </div>
+                  );
+                })}
               </div>
+            </div>
+          </FilterPill>
 
-              <div className={styles.filterGroup}>
-                <div className={styles.filterGroupHeader}>
-                  <span className={styles.filterGroupLabel}>Data source</span>
-                </div>
-                <div className={styles.filterGroupBody}>
-                  <div className={styles.sourceSearchBox}>
-                    <svg className={styles.sourceSearchIcon} width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                      <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
-                    </svg>
+          <FilterPill
+            label="Quality"
+            isActive={qualityMin > 0 || qualityMax < 100}
+            activeLabel={`${qualityMin}–${qualityMax}%`}
+            onClear={() => { setQualityMin(0); setQualityMax(100); }}
+            open={openFilter === "quality"}
+            onToggle={() => toggleFilter("quality")}
+            alignRight
+          >
+            <div className={styles.fpInner}>
+              <div className={styles.qualityRangeHeader}>
+                <span className={styles.qualityRangeValue}>{qualityMin}%</span>
+                <span className={styles.qualityRangeDash}>–</span>
+                <span className={styles.qualityRangeValue}>{qualityMax}%</span>
+              </div>
+              <div className={styles.qualitySliderStack}>
+                <div className={styles.qualitySliderRail} aria-hidden="true" />
+                <div
+                  className={styles.qualitySliderRange}
+                  aria-hidden="true"
+                  style={{ left: `${qualityMin}%`, width: `${Math.max(qualityMax - qualityMin, 0)}%` }}
+                />
+                <input
+                  className={`${styles.rangeInput} ${styles.rangeInputMin}`}
+                  type="range" min="0" max="100" value={qualityMin}
+                  onChange={(e) => setQualityMin(Math.min(Number(e.target.value), qualityMax))}
+                />
+                <input
+                  className={`${styles.rangeInput} ${styles.rangeInputMax}`}
+                  type="range" min="0" max="100" value={qualityMax}
+                  onChange={(e) => setQualityMax(Math.max(Number(e.target.value), qualityMin))}
+                />
+              </div>
+            </div>
+          </FilterPill>
+
+          <FilterPill
+            label="Sales"
+            isActive={hasOrdersOnly || threePlusOrdersOnly || orderTotalMin !== "" || orderTotalMax !== ""}
+            activeLabel={
+              hasOrdersOnly ? "Has orders" : threePlusOrdersOnly ? "≥3 orders" : "Order range"
+            }
+            onClear={() => { setHasOrdersOnly(false); setThreePlusOrdersOnly(false); setOrderTotalMin(""); setOrderTotalMax(""); }}
+            open={openFilter === "sales"}
+            onToggle={() => toggleFilter("sales")}
+            alignRight
+          >
+            <div className={styles.fpInner}>
+              <div className={styles.filterOptions}>
+                <button
+                  type="button"
+                  className={`${styles.filterChip} ${hasOrdersOnly ? styles.filterChipActive : ""}`}
+                  onClick={() => setHasOrdersOnly((v) => !v)}
+                >
+                  Has orders
+                </button>
+                <button
+                  type="button"
+                  className={`${styles.filterChip} ${threePlusOrdersOnly ? styles.filterChipActive : ""}`}
+                  onClick={() => setThreePlusOrdersOnly((v) => !v)}
+                >
+                  ≥3 orders
+                </button>
+              </div>
+              <div className={styles.dateFieldsRow}>
+                <div className={`${styles.dateFieldGroup} ${styles.compactFieldGroup}`}>
+                  <label className={styles.dateFieldLabel} htmlFor="fp-order-min">Min total</label>
+                  <div className={`${styles.dateInputWrap} ${styles.numberInputWrap}`}>
                     <input
-                      className={styles.sourceSearchInput}
-                      type="text"
-                      value={sourceSearch}
-                      onChange={(e) => setSourceSearch(e.target.value)}
-                      placeholder="Search sources"
+                      id="fp-order-min"
+                      aria-label="Minimum order total"
+                      className={styles.dateInput}
+                      min="0" type="number"
+                      value={orderTotalMin}
+                      onChange={(e) => setOrderTotalMin(e.target.value)}
                     />
                   </div>
-                  <div className={`${styles.filterOptions} ${styles.filterOptionsScrollable}`}>
-                    {filteredSourceSystems.map((source) => {
-                      const checked = sourceFilter.includes(source.source_key);
-                      return (
-                        <button
-                          key={source.source_key}
-                          type="button"
-                          className={`${styles.filterChip} ${checked ? styles.filterChipActive : ""}`}
-                          onClick={() =>
-                            setSourceFilter(
-                              checked
-                                ? sourceFilter.filter((key) => key !== source.source_key)
-                                : [...sourceFilter, source.source_key]
-                            )
-                          }
-                        >
-                          {source.display_name}
-                        </button>
-                      );
-                    })}
+                </div>
+                <div className={`${styles.dateFieldGroup} ${styles.compactFieldGroup}`}>
+                  <label className={styles.dateFieldLabel} htmlFor="fp-order-max">Max total</label>
+                  <div className={`${styles.dateInputWrap} ${styles.numberInputWrap}`}>
+                    <input
+                      id="fp-order-max"
+                      aria-label="Maximum order total"
+                      className={styles.dateInput}
+                      min="0" type="number"
+                      value={orderTotalMax}
+                      onChange={(e) => setOrderTotalMax(e.target.value)}
+                    />
                   </div>
                 </div>
               </div>
             </div>
-          </div>
-        )}
+          </FilterPill>
+
+        </div>
         {/* ── Count bar + Table ─────────────────────────────────── */}
         <div className={styles.tableSection}>
           <PaginationBar
-            showing={`Showing ${filtered.length === 0 ? 0 : pageStart + 1}–${pageEnd} of ${filtered.length < ALL_PERSONS.length ? `${filtered.length} filtered` : TOTAL.toLocaleString()} profiles`}
+            showing={`Showing ${sorted.length === 0 ? 0 : pageStart + 1}–${pageEnd} of ${sorted.length < ALL_PERSONS.length ? `${sorted.length} filtered` : TOTAL.toLocaleString()} profiles`}
             page={safePage} totalPages={totalPages}
             pageSize={pageSize} selectedCount={selected.size}
             onPrev={() => setPage(safePage - 1)} onNext={() => setPage(safePage + 1)}
@@ -1715,14 +1746,25 @@ function PersonsInner(): ReactElement {
                 <th className={`${styles.th} ${styles.thCheck}`}>
                   <input type="checkbox" ref={checkAllRef} checked={allChecked} onChange={toggleAll} className={styles.checkbox} />
                 </th>
-                {(["Name", "NRIC", "Phone", "Date of Birth", "Email", "Address", "Entity", "Relations", "Orders"] as const).map((h, i) => (
-                  <th key={h} className={styles.th}>
-                    {h}
-                    <div className={styles.resizeHandle} onMouseDown={(e) => startColResize(i + 1, e)} />
-                  </th>
-                ))}
+                {(["Name", "NRIC", "Phone", "Date of Birth", "Email", "Address", "Entity", "Relations", "Orders"] as const).map((h, i) => {
+                  const sk: SortKey | null = h === "Name" ? "name" : h === "Date of Birth" ? "dob" : h === "Orders" ? "orders" : null;
+                  return (
+                    <th key={h} className={styles.th}>
+                      {sk ? (
+                        <button className={styles.sortBtn} onClick={() => toggleSort(sk)}>
+                          {h}
+                          <SortIcon active={sortKey === sk} dir={sortDir} />
+                        </button>
+                      ) : h}
+                      <div className={styles.resizeHandle} onMouseDown={(e) => startColResize(i + 1, e)} />
+                    </th>
+                  );
+                })}
                 <th className={`${styles.th} ${styles.thSticky} ${styles.stickyQuality}`}>
-                  Completeness
+                  <button className={styles.sortBtn} onClick={() => toggleSort("quality")}>
+                    Completeness
+                    <SortIcon active={sortKey === "quality"} dir={sortDir} />
+                  </button>
                   <div className={styles.resizeHandle} onMouseDown={(e) => startColResize(10, e)} />
                 </th>
                 <th className={`${styles.th} ${styles.thSticky} ${styles.stickyGraph}`}>Graph</th>
@@ -1773,7 +1815,7 @@ function PersonsInner(): ReactElement {
           </div>{/* tableScrollWrap */}
 
           <PaginationBar
-            showing={`Showing ${filtered.length === 0 ? 0 : pageStart + 1}–${pageEnd} of ${filtered.length < ALL_PERSONS.length ? `${filtered.length} filtered` : TOTAL.toLocaleString()} profiles`}
+            showing={`Showing ${sorted.length === 0 ? 0 : pageStart + 1}–${pageEnd} of ${sorted.length < ALL_PERSONS.length ? `${sorted.length} filtered` : TOTAL.toLocaleString()} profiles`}
             page={safePage} totalPages={totalPages}
             pageSize={pageSize} selectedCount={selected.size}
             onPrev={() => setPage(safePage - 1)} onNext={() => setPage(safePage + 1)}
