@@ -1,29 +1,22 @@
 "use client";
 
-import { Fragment, use, useMemo, useState, type ReactElement } from "react";
+import { Fragment, use, useEffect, useMemo, useState, type ReactElement } from "react";
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import {
-  MOCK_AUDIT,
-  MOCK_BANKRUPTCY,
-  MOCK_IDENTIFIERS,
-  MOCK_PERSON_CONNECTIONS_BY_PERSON_ID,
-  MOCK_PERSONS,
-  MOCK_SALES,
-  MOCK_SOURCE_RECORDS,
-} from "@/lib/mock-data";
-import type { PersonConnection, SalesOrder } from "@/lib/api-types";
+import type { Person, PersonConnection, SalesOrder } from "@/lib/api-types";
 import type {
   PersonAuditEvent,
   PersonBankruptcyCase,
   PersonIdentifier,
   PersonSourceRecord,
 } from "@/lib/api-types-person";
+import { bffFetch, BffError } from "@/lib/api-client";
+import PersonFocusedGraph from "@/components/PersonFocusedGraph";
+import PersonGraphDialog from "@/components/PersonGraphDialog";
 import styles from "./person.module.css";
 
 const AVATAR_COLORS = ["#4361ee", "#7c3aed", "#0891b2", "#059669", "#d97706", "#dc2626"];
 
-type Person = (typeof MOCK_PERSONS)[number];
 type Tab = "timeline" | "matches" | "connections" | "identifier" | "source" | "sales" | "bankruptcy" | "audit" | "graph";
 
 type DetailData = {
@@ -33,7 +26,6 @@ type DetailData = {
   audit: PersonAuditEvent[];
   bankruptcyCases: PersonBankruptcyCase[];
 };
-
 
 type SnapshotField = {
   label: string;
@@ -76,22 +68,28 @@ const DATE_TIME_FORMATTER = new Intl.DateTimeFormat("en-SG", {
 
 function fmtDate(value: string | null): string {
   if (!value) return "—";
-  return DATE_FORMATTER.format(new Date(value));
+  const d = new Date(value);
+  if (isNaN(d.getTime())) return "—";
+  return DATE_FORMATTER.format(d);
 }
 
 function fmtDateTime(value: string | null): string {
   if (!value) return "—";
-  return DATE_TIME_FORMATTER.format(new Date(value));
+  const d = new Date(value);
+  if (isNaN(d.getTime())) return "—";
+  return DATE_TIME_FORMATTER.format(d);
 }
 
 function fmtTime(value: string | null): string {
   if (!value) return "—";
+  const d = new Date(value);
+  if (isNaN(d.getTime())) return "—";
   return new Intl.DateTimeFormat("en-SG", {
     hour: "2-digit",
     minute: "2-digit",
     hour12: true,
     timeZone: "UTC",
-  }).format(new Date(value));
+  }).format(d);
 }
 
 function fmtCurrency(amount: number | null, currency: string | null): string {
@@ -116,74 +114,6 @@ function personInitials(name: string | null): string {
     .join("")
     .toUpperCase();
 }
-
-function getPersonDetailData(person: Person): DetailData {
-  const sourceRecords = MOCK_SOURCE_RECORDS.filter((record) => record.linked_person_id === person.person_id);
-  const audit = MOCK_AUDIT.filter(
-    (event) =>
-      event.survivor_person_id === person.person_id ||
-      event.absorbed_person_id === person.person_id ||
-      sourceRecords.some((record) => record.source_record_pk === event.metadata.source_record_pk),
-  );
-
-  if (person.person_id === "p-001") {
-    return {
-      identifiers: MOCK_IDENTIFIERS,
-      sourceRecords,
-      sales: MOCK_SALES,
-      audit,
-      bankruptcyCases: MOCK_BANKRUPTCY,
-    };
-  }
-
-  const identifiers: PersonIdentifier[] = [];
-
-  if (person.preferred_phone) {
-    identifiers.push({
-      identifier_type: "phone",
-      normalized_value: person.preferred_phone,
-      is_active: true,
-      is_verified: (person.phone_confidence ?? 0) >= 0.9,
-      last_confirmed_at: person.updated_at,
-      source_system_key: person.entities[0]?.entity_key ?? null,
-      source_record_ids: null,
-    });
-  }
-
-  if (person.preferred_email) {
-    identifiers.push({
-      identifier_type: "email",
-      normalized_value: person.preferred_email,
-      is_active: true,
-      is_verified: true,
-      last_confirmed_at: person.updated_at,
-      source_system_key: person.entities[0]?.entity_key ?? null,
-      source_record_ids: null,
-    });
-  }
-
-  if (person.preferred_nric) {
-    identifiers.push({
-      identifier_type: "nric",
-      normalized_value: person.preferred_nric,
-      is_active: true,
-      is_verified: true,
-      last_confirmed_at: person.created_at,
-      source_system_key: person.entities[0]?.entity_key ?? null,
-      source_record_ids: null,
-    });
-  }
-
-  return {
-    identifiers,
-    sourceRecords,
-    sales: [],
-    audit,
-    bankruptcyCases: [],
-  };
-}
-
-
 
 function PersonBreadcrumb({ personName }: { personName: string | null }): ReactElement {
   return (
@@ -237,7 +167,7 @@ function PersonSidebar({ person, detailData }: { person: Person; detailData: Det
   const summaryFields: SnapshotField[] = [
     { label: "NRIC", value: person.preferred_nric ?? "—", mono: true },
     { label: "DOB", value: person.preferred_dob ?? "—" },
-    { label: "Source record", value: String(detailData.sourceRecords.length) },
+    { label: "Source record", value: String(person.source_record_count) },
     { label: "Updated", value: fmtDateTime(person.updated_at) },
   ];
 
@@ -435,8 +365,8 @@ function RightRail({ person, detailData, tabs, activeTab, onChange, children }: 
     },
     {
       label: "Connections",
-      value: `${phoneCount} · ${emailCount}`,
-      note: `${phoneCount} phones · ${emailCount} emails`,
+      value: String(person.connection_count),
+      note: "linked profiles",
     },
     {
       label: "Last activity",
@@ -688,7 +618,7 @@ function SourceRecordDetail({ record }: { record: PersonSourceRecord }): ReactEl
         <div className={styles.srcDetailLeft}>
           <div className={styles.srcDetailIdentity}>
             <span className={styles.srcDetailSystem}>{record.source_system}</span>
-            {record.entity_name && <span className={styles.srcDetailEntity}>{record.entity_name}</span>}
+            {record.entity_display_name && <span className={styles.srcDetailEntity}>{record.entity_display_name}</span>}
             <div className={styles.srcDetailBadgeRow}>
               <span className={styles.srcTypeBadge}>{record.record_type}</span>
               <span className={record.link_status === "linked" ? styles.idBadgeActive : styles.idBadgeInactive}>
@@ -795,7 +725,7 @@ function SourceRecordsTab({ sourceRecords }: { sourceRecords: PersonSourceRecord
                   <span className={styles.idValue}>{record.source_record_id}</span>
                   <div className={styles.connMeta}>
                     <span>{record.source_system}</span>
-                    {record.entity_name && <><span className={styles.connMetaSep}>·</span><span>{record.entity_name}</span></>}
+                    {record.entity_display_name && <><span className={styles.connMetaSep}>·</span><span>{record.entity_display_name}</span></>}
                     <span className={styles.connMetaSep}>·</span>
                     <span>Observed {fmtDateTime(record.observed_at)}</span>
                   </div>
@@ -902,12 +832,6 @@ function SalesTab({ sales }: { sales: SalesOrder[] }): ReactElement {
 function BankruptcyTab({ cases }: { cases: PersonBankruptcyCase[] }): ReactElement {
   const [expandedCase, setExpandedCase] = useState<string | null>(null);
 
-  const statusClass = (status: PersonBankruptcyCase["status"]) => {
-    if (status === "active") return styles.bkStatusActive;
-    if (status === "discharged") return styles.bkStatusDischarged;
-    return styles.bkStatusAnnulled;
-  };
-
   return (
     <section className={styles.contentCard}>
       <div className={styles.connHeader}>
@@ -917,32 +841,34 @@ function BankruptcyTab({ cases }: { cases: PersonBankruptcyCase[] }): ReactEleme
       </div>
       <div className={styles.idList}>
         {cases.map((bkCase) => {
-          const isOpen = expandedCase === bkCase.case_number;
+          const key = bkCase.bankruptcy_case_id;
+          const isOpen = expandedCase === key;
+          const displayName = bkCase.case_number ?? bkCase.source_case_id;
           return (
-            <div key={bkCase.case_number} className={`${styles.srcRow} ${isOpen ? styles.srcRowOpen : ""}`}>
+            <div key={key} className={`${styles.srcRow} ${isOpen ? styles.srcRowOpen : ""}`}>
               <div
                 className={styles.srcMain}
-                onClick={() => setExpandedCase(isOpen ? null : bkCase.case_number)}
+                onClick={() => setExpandedCase(isOpen ? null : key)}
                 role="button"
                 tabIndex={0}
-                onKeyDown={(e) => e.key === "Enter" && setExpandedCase(isOpen ? null : bkCase.case_number)}
+                onKeyDown={(e) => e.key === "Enter" && setExpandedCase(isOpen ? null : key)}
               >
                 <div className={styles.idBody}>
-                  <span className={styles.idValue}>{bkCase.case_number}</span>
+                  <span className={styles.idValue}>{displayName}</span>
                   <div className={styles.connMeta}>
-                    <span>{bkCase.court}</span>
-                    <span className={styles.connMetaSep}>·</span>
-                    <span>Filed {fmtDate(bkCase.filing_date)}</span>
-                    {bkCase.discharge_date && (
-                      <><span className={styles.connMetaSep}>·</span><span>Discharged {fmtDate(bkCase.discharge_date)}</span></>
+                    <span>{bkCase.source_system_key}</span>
+                    {bkCase.event_type && (
+                      <><span className={styles.connMetaSep}>·</span><span>{titleCase(bkCase.event_type)}</span></>
+                    )}
+                    {bkCase.event_date && (
+                      <><span className={styles.connMetaSep}>·</span><span>{fmtDate(bkCase.event_date)}</span></>
                     )}
                   </div>
                 </div>
                 <div className={styles.idBadges}>
-                  {bkCase.total_debt != null && (
-                    <span className={styles.salesTotal}>{fmtCurrency(bkCase.total_debt, bkCase.currency)}</span>
+                  {bkCase.document_type && (
+                    <span className={styles.srcTypeBadge}>{titleCase(bkCase.document_type)}</span>
                   )}
-                  <span className={statusClass(bkCase.status)}>{titleCase(bkCase.status)}</span>
                   <svg className={`${styles.srcChevron} ${isOpen ? styles.srcChevronOpen : ""}`} width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                     <path d="M6 9l6 6 6-6" />
                   </svg>
@@ -953,37 +879,39 @@ function BankruptcyTab({ cases }: { cases: PersonBankruptcyCase[] }): ReactEleme
                   <div className={styles.bkMeta}>
                     {[
                       { label: "Case number", value: bkCase.case_number },
-                      { label: "Court", value: bkCase.court },
-                      { label: "Official assignee", value: bkCase.official_assignee ?? "—" },
-                      { label: "Filing date", value: fmtDate(bkCase.filing_date) },
-                      { label: "Discharge date", value: bkCase.discharge_date ? fmtDate(bkCase.discharge_date) : "—" },
-                      { label: "Total debt", value: bkCase.total_debt != null ? fmtCurrency(bkCase.total_debt, bkCase.currency) : "—" },
-                    ].map(({ label, value }) => (
-                      <div key={label} className={styles.srcDetailField}>
-                        <div className={styles.srcDetailLabel}>{label}</div>
-                        <div className={styles.srcDetailValue}>{value}</div>
-                      </div>
-                    ))}
-                  </div>
-                  {bkCase.creditors.length > 0 && (
-                    <div className={styles.bkCreditors}>
-                      <div className={styles.srcDataBlockTitle}>Creditors</div>
-                      <div className={styles.bkCreditorList}>
-                        <div className={`${styles.bkCreditorRow} ${styles.bkCreditorHeader}`}>
-                          <span>Creditor</span>
-                          <span className={styles.salesCellRight}>Amount</span>
+                      { label: "Source case ID", value: bkCase.source_case_id },
+                      { label: "Source system", value: bkCase.source_system_key },
+                      { label: "Document type", value: bkCase.document_type ? titleCase(bkCase.document_type) : null },
+                      { label: "Document date", value: bkCase.document_date ? fmtDate(bkCase.document_date) : null },
+                      { label: "Event type", value: bkCase.event_type ? titleCase(bkCase.event_type) : null },
+                      { label: "Event date", value: bkCase.event_date ? fmtDate(bkCase.event_date) : null },
+                      { label: "Trustee", value: bkCase.trustee_name },
+                      { label: "Trustee firm", value: bkCase.trustee_firm },
+                      { label: "First seen", value: bkCase.first_seen_at ? fmtDate(bkCase.first_seen_at) : null },
+                      { label: "Last seen", value: bkCase.last_seen_at ? fmtDate(bkCase.last_seen_at) : null },
+                    ]
+                      .filter(({ value }) => value != null)
+                      .map(({ label, value }) => (
+                        <div key={label} className={styles.srcDetailField}>
+                          <div className={styles.srcDetailLabel}>{label}</div>
+                          <div className={styles.srcDetailValue}>{value}</div>
                         </div>
-                        {bkCase.creditors.map((c, i) => (
-                          <div key={i} className={styles.bkCreditorRow}>
-                            <span className={styles.salesCellPrimary}>{c.name}</span>
-                            <span className={`${styles.salesCellMuted} ${styles.salesCellRight}`}>
-                              {c.amount != null ? fmtCurrency(c.amount, c.currency) : "—"}
-                            </span>
-                          </div>
-                        ))}
+                      ))}
+                    {bkCase.source_url && (
+                      <div className={styles.srcDetailField}>
+                        <div className={styles.srcDetailLabel}>Source URL</div>
+                        <div className={styles.srcDetailValue}>
+                          <a
+                            href={bkCase.source_url.startsWith("http") ? bkCase.source_url : "#"}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                          >
+                            {bkCase.source_url}
+                          </a>
+                        </div>
                       </div>
-                    </div>
-                  )}
+                    )}
+                  </div>
                 </div>
               )}
             </div>
@@ -1174,20 +1102,65 @@ function EmptyState({ title, description }: { title: string; description: string
   );
 }
 
+const EMPTY_DETAIL: DetailData = {
+  identifiers: [],
+  sourceRecords: [],
+  sales: [],
+  audit: [],
+  bankruptcyCases: [],
+};
+
 export default function PersonDetailPage({ params }: { params: Promise<{ personId: string }> }): ReactElement {
   const { personId } = use(params);
-  const person = MOCK_PERSONS.find((candidate) => candidate.person_id === personId);
 
-  if (!person) {
-    notFound();
-  }
-
+  const [person, setPerson] = useState<Person | null>(null);
+  const [detailData, setDetailData] = useState<DetailData>(EMPTY_DETAIL);
+  const [connections, setConnections] = useState<PersonConnection[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [notFoundFlag, setNotFoundFlag] = useState(false);
   const [activeTab, setActiveTab] = useState<Tab>("timeline");
-  const detailData = useMemo(() => getPersonDetailData(person), [person]);
-  const connections = useMemo(
-    () => MOCK_PERSON_CONNECTIONS_BY_PERSON_ID[person.person_id] ?? [],
-    [person.person_id],
-  );
+  const [graphOpen, setGraphOpen] = useState(false);
+
+  useEffect(() => {
+    async function load(): Promise<void> {
+      try {
+        const p = await bffFetch<Person>(`/bff/persons/${encodeURIComponent(personId)}`);
+        setPerson(p);
+
+        const [identifiers, sourceRecords, sales, audit, bankruptcyCases, conns] = await Promise.all([
+          bffFetch<PersonIdentifier[]>(`/bff/persons/${encodeURIComponent(personId)}/identifiers`).catch(() => []),
+          bffFetch<PersonSourceRecord[]>(`/bff/persons/${encodeURIComponent(personId)}/source-records`).catch(() => []),
+          bffFetch<SalesOrder[]>(`/bff/persons/${encodeURIComponent(personId)}/sales`).catch(() => []),
+          bffFetch<PersonAuditEvent[]>(`/bff/persons/${encodeURIComponent(personId)}/audit`).catch(() => []),
+          bffFetch<PersonBankruptcyCase[]>(`/bff/persons/${encodeURIComponent(personId)}/bankruptcy-cases`).catch(() => []),
+          bffFetch<PersonConnection[]>(`/bff/persons/${encodeURIComponent(personId)}/connections?connection_type=all`).catch(() => []),
+        ]);
+
+        setDetailData({ identifiers, sourceRecords, sales, audit, bankruptcyCases });
+        setConnections(conns);
+      } catch (err) {
+        if (err instanceof BffError && err.status === 404) {
+          setNotFoundFlag(true);
+        }
+      } finally {
+        setLoading(false);
+      }
+    }
+
+    void load();
+  }, [personId]);
+
+  if (notFoundFlag) notFound();
+
+  if (loading || person === null) {
+    return (
+      <div className={styles.page}>
+        <section className={styles.emptyState}>
+          <div className={styles.emptyTitle}>Loading…</div>
+        </section>
+      </div>
+    );
+  }
 
   const tabs: TabConfig[] = [
     { id: "timeline", label: "Timeline" },
@@ -1214,7 +1187,7 @@ export default function PersonDetailPage({ params }: { params: Promise<{ personI
           <DetailShell person={person} detailData={detailData} tabs={tabs} activeTab={activeTab} onTabChange={setActiveTab}>
             <EmptyState
               title="No match clusters available"
-              description="No FE2 mock match-cluster data is currently attached to this person detail view."
+              description="No match decisions are currently linked to this person."
             />
           </DetailShell>
         )}
@@ -1239,7 +1212,7 @@ export default function PersonDetailPage({ params }: { params: Promise<{ personI
             <DetailShell person={person} detailData={detailData} tabs={tabs} activeTab={activeTab} onTabChange={setActiveTab}>
               <EmptyState
                 title="No identifiers available"
-                description="This mock profile does not yet include person-specific identifiers beyond the overview snapshot."
+                description="This person has no identifiers on record."
               />
             </DetailShell>
           ))}
@@ -1252,7 +1225,7 @@ export default function PersonDetailPage({ params }: { params: Promise<{ personI
             <DetailShell person={person} detailData={detailData} tabs={tabs} activeTab={activeTab} onTabChange={setActiveTab}>
               <EmptyState
                 title="No source records linked"
-                description="No linked mock records are currently attached to this person in FE2."
+                description="No source records are currently linked to this person."
               />
             </DetailShell>
           ))}
@@ -1265,7 +1238,7 @@ export default function PersonDetailPage({ params }: { params: Promise<{ personI
             <DetailShell person={person} detailData={detailData} tabs={tabs} activeTab={activeTab} onTabChange={setActiveTab}>
               <EmptyState
                 title="No sales history available"
-                description="Mock sales are only attached where the FE2 dataset currently provides person-scoped order detail."
+                description="This person has no orders on record."
               />
             </DetailShell>
           ))}
@@ -1290,19 +1263,30 @@ export default function PersonDetailPage({ params }: { params: Promise<{ personI
             <DetailShell person={person} detailData={detailData} tabs={tabs} activeTab={activeTab} onTabChange={setActiveTab}>
               <EmptyState
                 title="No audit events available"
-                description="There are no mock audit events currently associated with this person."
+                description="There are no audit events currently associated with this person."
               />
             </DetailShell>
           ))}
         {activeTab === "graph" && (
           <DetailShell person={person} detailData={detailData} tabs={tabs} activeTab={activeTab} onTabChange={setActiveTab}>
-            <EmptyState
-              title="Graph view is not available yet"
-              description="No person-level graph mock is currently wired into this detail page."
-            />
+            <div style={{ height: 560, border: "1px solid var(--border)", borderRadius: "10px", overflow: "hidden" }}>
+              <PersonFocusedGraph
+                initialPersonId={person.person_id}
+                initialTitle={person.preferred_full_name ?? person.person_id}
+                overlayMode
+                onMaximize={() => setGraphOpen(true)}
+              />
+            </div>
           </DetailShell>
         )}
       </div>
+
+      <PersonGraphDialog
+        open={graphOpen}
+        personId={person.person_id}
+        title={person.preferred_full_name ?? person.person_id}
+        onClose={() => setGraphOpen(false)}
+      />
     </div>
   );
 }

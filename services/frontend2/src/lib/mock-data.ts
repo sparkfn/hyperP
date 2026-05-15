@@ -407,9 +407,9 @@ export const MOCK_IDENTIFIERS: PersonIdentifier[] = [
 // ── Person Detail: Source Records ────────────────────────────────────────────
 
 export const MOCK_SOURCE_RECORDS: PersonSourceRecord[] = [
-  { source_record_pk: "sr-001", source_system: "speedzone-phppos", entity_name: "SpeedZone Retail",  source_record_id: "SPZ-CUST-00123",      source_record_version: "3",  record_type: "system",       extraction_method: null, extraction_confidence: null, link_status: "linked", linked_person_id: "p-001", observed_at: "2026-05-06T08:00:00Z", ingested_at: "2026-05-07T06:45:00Z", normalized_payload: { identifiers: [{ identifier_type: "phone", normalized_value: "+6591234567", is_verified: true }, { identifier_type: "nric", normalized_value: "S8512345A", is_verified: true }], address: { normalized_full: "18 Orchard Road #05-12, Singapore 238801", unit_number: "#05-12", street_number: "18", street_name: "Orchard Road", city: "Singapore", postal_code: "238801", country_code: "SG", quality_flag: "full_parse" }, attributes: [{ attribute_name: "full_name", attribute_value: "Tan Wei Ming" }, { attribute_name: "dob", attribute_value: "1985-03-12" }, { attribute_name: "gender", attribute_value: "MALE" }, { attribute_name: "nationality", attribute_value: "Singapore Citizen" }] } },
-  { source_record_pk: "sr-002", source_system: "fundbox-bitrix",  entity_name: "Fundbox Consumer",   source_record_id: "BITRIX-CONTACT-8821", source_record_version: "1",  record_type: "system",       extraction_method: null, extraction_confidence: null, link_status: "linked", linked_person_id: "p-001", observed_at: "2026-05-01T00:00:00Z", ingested_at: "2026-05-07T04:00:00Z", normalized_payload: { identifiers: [{ identifier_type: "email", normalized_value: "weiming.tan@gmail.com", is_verified: true }, { identifier_type: "email", normalized_value: "wm.tan@company.sg", is_verified: false }], address: { normalized_full: "301 Alexandra Road, Singapore 159968", unit_number: null, street_number: "301", street_name: "Alexandra Road", city: "Singapore", postal_code: "159968", country_code: "SG", quality_flag: "partial_parse" }, attributes: [{ attribute_name: "full_name", attribute_value: "Wei Ming Tan" }, { attribute_name: "company", attribute_value: "Self-employed" }] } },
-  { source_record_pk: "sr-003", source_system: "whatsapp-main",   entity_name: null,                 source_record_id: "WA-2026-05-001",      source_record_version: null, record_type: "conversation", extraction_method: "llm-gpt4o", extraction_confidence: 0.82, link_status: "linked", linked_person_id: "p-001", observed_at: "2026-05-03T14:30:00Z", ingested_at: "2026-05-07T07:10:00Z", normalized_payload: { identifiers: [{ identifier_type: "phone", normalized_value: "+6591234567", is_verified: false }, { identifier_type: "phone", normalized_value: "+6587654321", is_verified: false }], address: null, attributes: [{ attribute_name: "mentioned_name", attribute_value: "Wei Ming" }], summary: "Customer enquired about membership upgrade via WhatsApp." } },
+  { source_record_pk: "sr-001", source_system: "speedzone-phppos", entity_key: "speedzone-retail",   entity_display_name: "SpeedZone Retail",  source_record_id: "SPZ-CUST-00123",      source_record_version: "3",  record_type: "system",       extraction_method: null, extraction_confidence: null, link_status: "linked", linked_person_id: "p-001", observed_at: "2026-05-06T08:00:00Z", ingested_at: "2026-05-07T06:45:00Z", normalized_payload: { identifiers: [{ identifier_type: "phone", normalized_value: "+6591234567", is_verified: true }, { identifier_type: "nric", normalized_value: "S8512345A", is_verified: true }], address: { normalized_full: "18 Orchard Road #05-12, Singapore 238801", unit_number: "#05-12", street_number: "18", street_name: "Orchard Road", city: "Singapore", postal_code: "238801", country_code: "SG", quality_flag: "full_parse" }, attributes: [{ attribute_name: "full_name", attribute_value: "Tan Wei Ming" }, { attribute_name: "dob", attribute_value: "1985-03-12" }, { attribute_name: "gender", attribute_value: "MALE" }, { attribute_name: "nationality", attribute_value: "Singapore Citizen" }] } },
+  { source_record_pk: "sr-002", source_system: "fundbox-bitrix",  entity_key: "fundbox-consumer",   entity_display_name: "Fundbox Consumer",   source_record_id: "BITRIX-CONTACT-8821", source_record_version: "1",  record_type: "system",       extraction_method: null, extraction_confidence: null, link_status: "linked", linked_person_id: "p-001", observed_at: "2026-05-01T00:00:00Z", ingested_at: "2026-05-07T04:00:00Z", normalized_payload: { identifiers: [{ identifier_type: "email", normalized_value: "weiming.tan@gmail.com", is_verified: true }, { identifier_type: "email", normalized_value: "wm.tan@company.sg", is_verified: false }], address: { normalized_full: "301 Alexandra Road, Singapore 159968", unit_number: null, street_number: "301", street_name: "Alexandra Road", city: "Singapore", postal_code: "159968", country_code: "SG", quality_flag: "partial_parse" }, attributes: [{ attribute_name: "full_name", attribute_value: "Wei Ming Tan" }, { attribute_name: "company", attribute_value: "Self-employed" }] } },
+  { source_record_pk: "sr-003", source_system: "whatsapp-main",   entity_key: null,                 entity_display_name: null,                 source_record_id: "WA-2026-05-001",      source_record_version: null, record_type: "conversation", extraction_method: "llm-gpt4o", extraction_confidence: 0.82, link_status: "linked", linked_person_id: "p-001", observed_at: "2026-05-03T14:30:00Z", ingested_at: "2026-05-07T07:10:00Z", normalized_payload: { identifiers: [{ identifier_type: "phone", normalized_value: "+6591234567", is_verified: false }, { identifier_type: "phone", normalized_value: "+6587654321", is_verified: false }], address: null, attributes: [{ attribute_name: "mentioned_name", attribute_value: "Wei Ming" }], summary: "Customer enquired about membership upgrade via WhatsApp." } },
 ];
 
 // ── Person Detail: Sales ──────────────────────────────────────────────────────
@@ -433,19 +433,21 @@ export const MOCK_AUDIT: PersonAuditEvent[] = [
 
 export const MOCK_BANKRUPTCY: PersonBankruptcyCase[] = [
   {
+    bankruptcy_case_id: "bk-001",
+    source_system_key: "ipto-sg",
+    source_case_id: "B-2891/2019",
     case_number: "B-2891/2019",
-    filing_date: "2019-03-15",
-    status: "discharged",
-    court: "High Court of Singapore",
-    total_debt: 284500.00,
-    currency: "SGD",
-    official_assignee: "Official Assignee, Ministry of Law",
-    discharge_date: "2022-08-10",
-    creditors: [
-      { name: "DBS Bank Ltd", amount: 145000, currency: "SGD" },
-      { name: "OCBC Bank Ltd", amount: 89500, currency: "SGD" },
-      { name: "Citibank Singapore Ltd", amount: 50000, currency: "SGD" },
-    ],
+    document_type: "bankruptcy_order",
+    document_date: "2019-03-15",
+    event_type: "discharged",
+    event_date: "2022-08-10",
+    trustee_name: "Official Assignee",
+    trustee_firm: "Ministry of Law",
+    source_url: null,
+    first_seen_at: "2024-01-10T00:00:00Z",
+    last_seen_at: "2026-05-01T00:00:00Z",
+    created_at: "2024-01-10T00:00:00Z",
+    updated_at: "2026-05-01T00:00:00Z",
   },
 ];
 

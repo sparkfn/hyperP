@@ -6,6 +6,7 @@ import {
   useRef,
   useState,
   type ReactElement,
+  type ReactNode,
 } from "react";
 
 import Box from "@mui/material/Box";
@@ -111,10 +112,43 @@ function Legend({ labels }: { labels: string[] }): ReactElement {
   );
 }
 
+const HOP_SELECT_SX = {
+  "& .MuiOutlinedInput-root": {
+    color: "var(--text-primary)",
+    backgroundColor: "var(--bg-card)",
+    "& fieldset": { borderColor: "var(--border)" },
+    "&:hover fieldset": { borderColor: "var(--border-strong)" },
+    "&.Mui-focused fieldset": { borderColor: "var(--accent)" },
+  },
+  "& .MuiInputLabel-root": { color: "var(--text-muted)" },
+  "& .MuiSvgIcon-root": { color: "var(--text-muted)" },
+} as const;
+
+const HOP_SELECT_PROPS = {
+  inputLabel: { htmlFor: undefined as undefined },
+  select: {
+    MenuProps: {
+      slotProps: {
+        paper: {
+          sx: {
+            bgcolor: "var(--bg-card)",
+            color: "var(--text-primary)",
+            border: "1px solid var(--border)",
+          },
+        },
+      },
+    },
+  },
+} as const;
+
 interface PersonGraphViewerProps {
   title: string;
   personId?: string;
   elementId?: string;
+  /** When true: full-canvas layout with overlay controls; no left panel. */
+  overlayMode?: boolean;
+  /** Extra overlay nodes rendered inside the canvas container (e.g. maximize button). */
+  extraOverlay?: ReactNode;
   onNavigateNode?: (elementId: string, label: string, displayName: string) => void;
   onNodeContextMenu?: (
     elementId: string,
@@ -129,6 +163,8 @@ export default function PersonGraphViewer({
   title,
   personId,
   elementId,
+  overlayMode = false,
+  extraOverlay,
   onNavigateNode,
   onNodeContextMenu,
 }: PersonGraphViewerProps): ReactElement {
@@ -235,11 +271,9 @@ export default function PersonGraphViewer({
   const handleNodeClick = useCallback(
     (raw: AnyNode) => {
       const node = raw as unknown as FGNode & { x?: number; y?: number };
-      // Distinguish single-click (select) from double-click (navigate)
       if (clickTimerRef.current !== null) {
         clearTimeout(clickTimerRef.current);
         clickTimerRef.current = null;
-        // Double-click: navigate
         if (onNavigateNode) {
           onNavigateNode(node.id, node.label, node.displayName);
         }
@@ -268,6 +302,127 @@ export default function PersonGraphViewer({
     setSelected({ kind: "edge", data: link });
   }, []);
 
+  const forceGraphCanvas = graphData !== null && !loading ? (
+    <>
+      <ForceGraph2D
+        ref={graphRef}
+        graphData={graphData}
+        backgroundColor="rgba(0,0,0,0)"
+        width={dimensions.width}
+        height={dimensions.height}
+        nodeId="id"
+        linkSource="source"
+        linkTarget="target"
+        nodeVal={() => NODE_SIZE * 3}
+        nodeCanvasObject={paintNode}
+        nodeCanvasObjectMode={() => "replace"}
+        nodePointerAreaPaint={paintNodePointerArea}
+        linkLabel={(raw: AnyLink) => (raw as unknown as FGLink).type}
+        linkColor={() => "#b0bec5"}
+        linkWidth={1.5}
+        linkDirectionalArrowLength={4}
+        linkDirectionalArrowRelPos={1}
+        onNodeClick={handleNodeClick}
+        onNodeRightClick={onNodeContextMenu ? handleNodeRightClick : undefined}
+        onLinkClick={handleLinkClick}
+        enableNodeDrag
+        cooldownTicks={300}
+        d3AlphaDecay={0.01}
+        d3VelocityDecay={0.3}
+        warmupTicks={100}
+      />
+      {selected !== null ? (
+        <GraphDetailPanel
+          item={selected}
+          onClose={() => setSelected(null)}
+          onOpenGraph={onNavigateNode ?? (() => {})}
+        />
+      ) : null}
+    </>
+  ) : null;
+
+  // ── Overlay mode: full-canvas, controls as overlays ──────────────────────────
+  if (overlayMode) {
+    return (
+      <Box
+        ref={containerRef}
+        sx={{
+          position: "relative",
+          width: "100%",
+          height: "100%",
+          minHeight: 0,
+          bgcolor: "var(--bg-surface-2)",
+          backgroundImage: "radial-gradient(circle, var(--border-strong) 1px, transparent 1px)",
+          backgroundSize: "24px 24px",
+          overflow: "hidden",
+        }}
+      >
+        {forceGraphCanvas}
+
+        {loading ? (
+          <Typography
+            variant="body2"
+            sx={{ position: "absolute", top: 16, left: "50%", transform: "translateX(-50%)", color: "var(--text-muted)", pointerEvents: "none" }}
+          >
+            Loading graph…
+          </Typography>
+        ) : null}
+        {error !== null ? (
+          <Typography
+            variant="body2"
+            color="error"
+            sx={{ position: "absolute", top: 12, left: 12 }}
+          >
+            {error}
+          </Typography>
+        ) : null}
+
+        {/* Top-left: hops selector */}
+        <Box sx={{ position: "absolute", top: 12, left: 12, zIndex: 10 }}>
+          <TextField
+            id="graph-max-hops-overlay"
+            select
+            size="small"
+            label="Max hops"
+            value={maxHops}
+            onChange={(e) => setMaxHops(Number(e.target.value))}
+            slotProps={HOP_SELECT_PROPS}
+            sx={{ width: 140, ...HOP_SELECT_SX }}
+          >
+            {[1, 2, 3, 4].map((n) => (
+              <MenuItem key={n} value={n}>
+                {n} hop{n > 1 ? "s" : ""}
+              </MenuItem>
+            ))}
+          </TextField>
+        </Box>
+
+        {/* Bottom-left: node type legend */}
+        {uniqueLabels.length > 0 ? (
+          <Box
+            sx={{
+              position: "absolute",
+              bottom: 12,
+              left: 12,
+              zIndex: 10,
+              maxWidth: 360,
+              bgcolor: "var(--bg-card)",
+              border: "1px solid var(--border)",
+              borderRadius: "8px",
+              p: 1,
+            }}
+          >
+            <Legend labels={uniqueLabels} />
+          </Box>
+        ) : null}
+
+        {/* Extra overlays (e.g. maximize button) */}
+        {extraOverlay}
+      </Box>
+    );
+  }
+
+  // ── Default mode: two-column layout (side panel + canvas) ────────────────────
   const stats = graphData
     ? [
         { label: "Nodes", value: graphData.nodes.length },
@@ -331,33 +486,8 @@ export default function PersonGraphViewer({
             label="Max hops"
             value={maxHops}
             onChange={(e) => setMaxHops(Number(e.target.value))}
-            slotProps={{
-              inputLabel: { htmlFor: undefined },
-              select: {
-                MenuProps: {
-                  slotProps: {
-                    paper: {
-                      sx: {
-                        bgcolor: "var(--bg-card)",
-                        color: "var(--text-primary)",
-                        border: "1px solid var(--border)",
-                      },
-                    },
-                  },
-                },
-              },
-            }}
-            sx={{
-              "& .MuiOutlinedInput-root": {
-                color: "var(--text-primary)",
-                backgroundColor: "var(--bg-card)",
-                "& fieldset": { borderColor: "var(--border)" },
-                "&:hover fieldset": { borderColor: "var(--border-strong)" },
-                "&.Mui-focused fieldset": { borderColor: "var(--accent)" },
-              },
-              "& .MuiInputLabel-root": { color: "var(--text-muted)" },
-              "& .MuiSvgIcon-root": { color: "var(--text-muted)" },
-            }}
+            slotProps={HOP_SELECT_PROPS}
+            sx={HOP_SELECT_SX}
           >
             {[1, 2, 3, 4].map((n) => (
               <MenuItem key={n} value={n}>
@@ -416,59 +546,22 @@ export default function PersonGraphViewer({
         {error !== null ? <Typography color="error" sx={{ mb: 1 }}>{error}</Typography> : null}
 
         <Box
-        ref={containerRef}
-        sx={{
-          position: "relative",
-          flexGrow: 1,
-          minHeight: 0,
-          border: 1,
-          borderColor: "var(--border)",
-          borderRadius: "10px",
-          bgcolor: "var(--bg-surface-2)",
-          backgroundImage: "radial-gradient(circle, var(--border-strong) 1px, transparent 1px)",
-          backgroundSize: "24px 24px",
-          boxShadow: "inset 0 1px 0 color-mix(in srgb, var(--bg-card) 82%, transparent)",
-          overflow: "hidden",
-        }}
-      >
-        {graphData !== null && !loading ? (
-          <>
-            <ForceGraph2D
-              ref={graphRef}
-              graphData={graphData}
-              backgroundColor="rgba(0,0,0,0)"
-              width={dimensions.width}
-              height={dimensions.height}
-              nodeId="id"
-              linkSource="source"
-              linkTarget="target"
-              nodeVal={() => NODE_SIZE * 3}
-              nodeCanvasObject={paintNode}
-              nodeCanvasObjectMode={() => "replace"}
-              nodePointerAreaPaint={paintNodePointerArea}
-              linkLabel={(raw: AnyLink) => (raw as unknown as FGLink).type}
-              linkColor={() => "#b0bec5"}
-              linkWidth={1.5}
-              linkDirectionalArrowLength={4}
-              linkDirectionalArrowRelPos={1}
-              onNodeClick={handleNodeClick}
-              onNodeRightClick={onNodeContextMenu ? handleNodeRightClick : undefined}
-              onLinkClick={handleLinkClick}
-              enableNodeDrag
-              cooldownTicks={300}
-              d3AlphaDecay={0.01}
-              d3VelocityDecay={0.3}
-              warmupTicks={100}
-            />
-            {selected !== null ? (
-              <GraphDetailPanel
-                item={selected}
-                onClose={() => setSelected(null)}
-                onOpenGraph={onNavigateNode ?? (() => {})}
-              />
-            ) : null}
-          </>
-        ) : null}
+          ref={containerRef}
+          sx={{
+            position: "relative",
+            flexGrow: 1,
+            minHeight: 0,
+            border: 1,
+            borderColor: "var(--border)",
+            borderRadius: "10px",
+            bgcolor: "var(--bg-surface-2)",
+            backgroundImage: "radial-gradient(circle, var(--border-strong) 1px, transparent 1px)",
+            backgroundSize: "24px 24px",
+            boxShadow: "inset 0 1px 0 color-mix(in srgb, var(--bg-card) 82%, transparent)",
+            overflow: "hidden",
+          }}
+        >
+          {forceGraphCanvas}
         </Box>
       </Box>
     </Box>

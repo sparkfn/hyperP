@@ -3,8 +3,11 @@
 import { useCallback, useState, type ReactElement } from "react";
 
 import Box from "@mui/material/Box";
+import IconButton from "@mui/material/IconButton";
 import Menu from "@mui/material/Menu";
 import MenuItem from "@mui/material/MenuItem";
+import Tooltip from "@mui/material/Tooltip";
+import OpenInFullIcon from "@mui/icons-material/OpenInFull";
 
 import PersonGraphViewer from "@/components/PersonGraphViewer";
 
@@ -21,6 +24,10 @@ interface PersonFocusedGraphProps {
   initialPersonId?: string;
   initialElementId?: string;
   initialTitle: string;
+  /** When true: full-canvas layout with overlay controls, no left panel. */
+  overlayMode?: boolean;
+  /** Called when the user clicks the maximize button (only shown in overlayMode). */
+  onMaximize?: () => void;
 }
 
 function openGraphTab(elementId: string, label: string, displayName: string): void {
@@ -36,6 +43,8 @@ export default function PersonFocusedGraph({
   initialPersonId,
   initialElementId,
   initialTitle,
+  overlayMode = false,
+  onMaximize,
 }: PersonFocusedGraphProps): ReactElement {
   const [contextMenu, setContextMenu] = useState<NodeContextMenu | null>(null);
 
@@ -80,12 +89,33 @@ export default function PersonFocusedGraph({
     setContextMenu(null);
   }
 
+  const maximizeOverlay = overlayMode && onMaximize ? (
+    <Box sx={{ position: "absolute", top: 12, right: 12, zIndex: 10 }}>
+      <Tooltip title="Maximize graph">
+        <IconButton
+          size="small"
+          onClick={onMaximize}
+          sx={{
+            bgcolor: "var(--bg-card)",
+            border: "1px solid var(--border)",
+            color: "var(--text-secondary)",
+            "&:hover": { bgcolor: "var(--bg-surface-2)", color: "var(--text-primary)" },
+          }}
+        >
+          <OpenInFullIcon fontSize="small" />
+        </IconButton>
+      </Tooltip>
+    </Box>
+  ) : undefined;
+
   return (
     <Box sx={{ height: "100%", minHeight: 0, color: "var(--text-primary)" }}>
       <PersonGraphViewer
         personId={initialPersonId}
         elementId={initialElementId}
         title={initialTitle}
+        overlayMode={overlayMode}
+        extraOverlay={maximizeOverlay}
         onNavigateNode={handleNavigateNode}
         onNodeContextMenu={handleNodeContextMenu}
       />

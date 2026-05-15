@@ -3,24 +3,22 @@
 
 export type SourceRecordType = "system" | "conversation";
 
-export type BankruptcyCaseStatus = "active" | "discharged" | "annulled";
-
-export interface BankruptcyCreditor {
-  name: string;
-  amount: number | null;
-  currency: string;
-}
-
 export interface PersonBankruptcyCase {
-  case_number: string;
-  filing_date: string;
-  status: BankruptcyCaseStatus;
-  court: string;
-  total_debt: number | null;
-  currency: string;
-  official_assignee: string | null;
-  discharge_date: string | null;
-  creditors: BankruptcyCreditor[];
+  bankruptcy_case_id: string;
+  source_system_key: string;
+  source_case_id: string;
+  case_number: string | null;
+  document_type: string | null;
+  document_date: string | null;
+  event_type: string | null;
+  event_date: string | null;
+  trustee_name: string | null;
+  trustee_firm: string | null;
+  source_url: string | null;
+  first_seen_at: string | null;
+  last_seen_at: string | null;
+  created_at: string | null;
+  updated_at: string | null;
 }
 
 export interface SourceRecordIdentifierPayload {
@@ -57,7 +55,8 @@ export interface SourceRecordNormalizedPayload {
 export interface PersonSourceRecord {
   source_record_pk: string;
   source_system: string;
-  entity_name: string | null;
+  entity_key: string | null;
+  entity_display_name: string | null;
   source_record_id: string;
   source_record_version: string | null;
   record_type: SourceRecordType;
