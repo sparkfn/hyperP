@@ -4,9 +4,10 @@ import { useState, useEffect, useRef, useCallback, useMemo, type MouseEvent as R
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { Suspense } from "react";
-import { MOCK_ENTITIES, MOCK_PERSON_CONNECTIONS_BY_PERSON_ID, MOCK_SALES, MOCK_SOURCE_SYSTEMS } from "@/lib/mock-data";
-import type { ListedPerson, PersonConnection, SalesOrder } from "@/lib/api-types";
-import { bffFetchEnvelope, BffError } from "@/lib/api-client";
+import { MOCK_PERSON_CONNECTIONS_BY_PERSON_ID, MOCK_SALES } from "@/lib/mock-data";
+import type { ListedPerson, PersonConnection, SalesOrder, EntitySummary } from "@/lib/api-types";
+import { bffFetchEnvelope, BffError, bffFetch } from "@/lib/api-client";
+import type { SourceSystemInfo } from "@/lib/api-types-ops";
 import styles from "./persons.module.css";
 
 
@@ -67,47 +68,6 @@ type RelationTypeOption = {
   label: string;
 };
 
-function formatRelationCategory(category: string): string {
-  return category
-    .split(/[-_\s]+/)
-    .filter(Boolean)
-    .map((part) => `${part.charAt(0).toUpperCase()}${part.slice(1)}`)
-    .join(" ");
-}
-
-function relationTypeKey(kind: "category" | "label", value: string): string {
-  return `${kind}:${value}`;
-}
-
-function collectConnectionRelationTypes(connection: PersonConnection): RelationTypeOption[] {
-  return connection.knows_relationships.flatMap((relationship) => {
-    const options: RelationTypeOption[] = [
-      {
-        key: relationTypeKey("category", relationship.relationship_category),
-        label: formatRelationCategory(relationship.relationship_category),
-      },
-    ];
-
-    if (relationship.relationship_label) {
-      options.push({
-        key: relationTypeKey("label", relationship.relationship_label),
-        label: relationship.relationship_label,
-      });
-    }
-
-    return options;
-  });
-}
-
-function uniqueRelationTypeOptions(options: RelationTypeOption[]): RelationTypeOption[] {
-  const seen = new Set<string>();
-  return options.filter((option) => {
-    if (seen.has(option.key)) return false;
-    seen.add(option.key);
-    return true;
-  });
-}
-
 function formatRelationType(connection: PersonConnection): string {
   if (connection.knows_relationships.length > 0) {
     return connection.knows_relationships
@@ -165,12 +125,6 @@ function getPersonConnections(person: ListedPerson): PersonConnection[] {
     return [];
   }
   return buildFallbackConnections(person);
-}
-
-function getRelationTypeOptions(persons: ListedPerson[]): RelationTypeOption[] {
-  return uniqueRelationTypeOptions(
-    persons.flatMap((person) => getPersonConnections(person).flatMap(collectConnectionRelationTypes)),
-  ).sort((left, right) => left.label.localeCompare(right.label));
 }
 
 function formatOrderCurrency(order: SalesOrder): string {
@@ -622,7 +576,11 @@ function PaginationBar({
   );
 }
 
-type FilterKey = "status" | "entity" | "source" | "identity" | "dob" | "address" | "relations" | "quality" | "sales";
+type PresenceFilter = "any" | "has" | "none";
+type DobMode = "single" | "range";
+type SortKey = "name" | "dob" | "orders" | "quality";
+type SortDir = "asc" | "desc";
+type FilterKey = "entity" | "source" | "identity" | "dob" | "address";
 
 function FilterPill({
   label,
@@ -684,45 +642,26 @@ function FilterPill({
   );
 }
 
-type StatusFilter = "active" | "merged" | "suppressed";
-type PresenceFilter = "any" | "has" | "none";
-type DobMode = "single" | "range";
-type SortKey = "name" | "dob" | "orders" | "quality";
-type SortDir = "asc" | "desc";
-
-const STATUS_FILTERS: StatusFilter[] = ["active", "merged", "suppressed"];
-
 const IDENTITY_FILTERS = [
   { key: "email", label: "Email" },
   { key: "phone", label: "Phone" },
-  { key: "nric", label: "NRIC" },
 ] as const;
 
 
 function PersonsInner(): ReactElement {
   const searchParams = useSearchParams();
   const [search, setSearch] = useState(searchParams.get("q") ?? "");
-
-  const [statusFilter, setStatusFilter] = useState<StatusFilter | null>(null);
   const [entityFilter, setEntityFilter] = useState<string[]>([]);
   const [sourceFilter, setSourceFilter] = useState<string[]>([]);
   const [sourceSearch, setSourceSearch] = useState("");
   const [identityFilter, setIdentityFilter] = useState<string[]>([]);
-  const [verifiedOnly, setVerifiedOnly] = useState(false);
   const [addressFilter, setAddressFilter] = useState<PresenceFilter>("any");
-  const [relationFilter, setRelationFilter] = useState<PresenceFilter>("any");
-  const [relationTypeFilter, setRelationTypeFilter] = useState<string[]>([]);
   const [dobFilter, setDobFilter] = useState<PresenceFilter>("any");
   const [dobMode, setDobMode] = useState<DobMode>("single");
   const [dobSingleDate, setDobSingleDate] = useState("");
   const [dobStartDate, setDobStartDate] = useState("");
   const [dobEndDate, setDobEndDate] = useState("");
-  const [qualityMin, setQualityMin] = useState(0);
-  const [qualityMax, setQualityMax] = useState(100);
-  const [hasOrdersOnly, setHasOrdersOnly] = useState(false);
-  const [threePlusOrdersOnly, setThreePlusOrdersOnly] = useState(false);
-  const [orderTotalMin, setOrderTotalMin] = useState("");
-  const [orderTotalMax, setOrderTotalMax] = useState("");
+
   const [openFilter, setOpenFilter] = useState<FilterKey | null>(null);
   const [sortKey, setSortKey] = useState<SortKey | null>(null);
   const [sortDir, setSortDir] = useState<SortDir>("desc");
@@ -733,6 +672,8 @@ function PersonsInner(): ReactElement {
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [cursorStack, setCursorStack] = useState<(string | null)[]>([]);
   const [currentCursor, setCurrentCursor] = useState<string | null>(null);
+  const [entities, setEntities] = useState<EntitySummary[]>([]);
+  const [sourceSystems, setSourceSystems] = useState<SourceSystemInfo[]>([]);
 
 
   function toggleSort(key: SortKey): void {
@@ -841,6 +782,21 @@ function PersonsInner(): ReactElement {
   }, [searchParams]);
 
   useEffect(() => {
+    void (async () => {
+      try {
+        const [ents, srcs] = await Promise.all([
+          bffFetch<EntitySummary[]>("/bff/entities"),
+          bffFetch<SourceSystemInfo[]>("/bff/source-systems"),
+        ]);
+        setEntities(ents);
+        setSourceSystems(srcs);
+      } catch {
+        // silently fail — filter options fall back to empty
+      }
+    })();
+  }, []);
+
+  useEffect(() => {
     function handleOutsideClick(e: MouseEvent): void {
       if (filterBarRef.current && !filterBarRef.current.contains(e.target as Node)) {
         setOpenFilter(null);
@@ -855,42 +811,23 @@ function PersonsInner(): ReactElement {
   }
 
   const activeFilterCount = [
-    statusFilter,
-    verifiedOnly,
-    addressFilter !== "any",
-    relationFilter !== "any",
-    relationTypeFilter.length > 0,
     dobFilter !== "any",
     dobFilter === "has" && dobMode === "single" && dobSingleDate !== "",
     dobFilter === "has" && dobMode === "range" && (dobStartDate !== "" || dobEndDate !== ""),
-    qualityMin > 0 || qualityMax < 100,
-    hasOrdersOnly,
-    threePlusOrdersOnly,
-    orderTotalMin !== "",
-    orderTotalMax !== "",
+    addressFilter !== "any",
   ].filter(Boolean).length + entityFilter.length + sourceFilter.length + identityFilter.length;
 
   function clearAllFilters(): void {
-    setStatusFilter(null);
     setEntityFilter([]);
     setSourceFilter([]);
     setSourceSearch("");
     setIdentityFilter([]);
-    setVerifiedOnly(false);
     setAddressFilter("any");
-    setRelationFilter("any");
-    setRelationTypeFilter([]);
     setDobFilter("any");
     setDobMode("single");
     setDobSingleDate("");
     setDobStartDate("");
     setDobEndDate("");
-    setQualityMin(0);
-    setQualityMax(100);
-    setHasOrdersOnly(false);
-    setThreePlusOrdersOnly(false);
-    setOrderTotalMin("");
-    setOrderTotalMax("");
   }
 
   const apiQuery = useMemo(() => {
@@ -952,6 +889,10 @@ function PersonsInner(): ReactElement {
         }
       } catch (err: unknown) {
         if (!cancelled) {
+          if (err instanceof BffError && err.status === 401) {
+            window.location.href = "/login";
+            return;
+          }
           setFetchError(err instanceof BffError ? err.message : "Failed to load data.");
           setApiRows([]);
         }
@@ -976,10 +917,9 @@ function PersonsInner(): ReactElement {
   }
 
 
-  const relationTypeOptions = getRelationTypeOptions(apiRows);
 
   const pageRows = apiRows;
-  const filteredSourceSystems = MOCK_SOURCE_SYSTEMS.filter((source) => {
+  const filteredSourceSystems = sourceSystems.filter((source) => {
     const label = `${source.display_name ?? source.source_key} ${source.system_type ?? ""}`.toLowerCase();
     return label.includes(sourceSearch.toLowerCase());
   });
@@ -1114,35 +1054,11 @@ function PersonsInner(): ReactElement {
         <div className={styles.filterBar} ref={filterBarRef}>
 
           <FilterPill
-            label="Status"
-            isActive={statusFilter !== null}
-            activeLabel={statusFilter ? (statusFilter.charAt(0).toUpperCase() + statusFilter.slice(1)) : ""}
-            onClear={() => setStatusFilter(null)}
-            open={openFilter === "status"}
-            onToggle={() => toggleFilter("status")}
-          >
-            <div className={styles.fpInner}>
-              <div className={styles.fpSegmented}>
-                {STATUS_FILTERS.map((s) => (
-                  <button
-                    key={s}
-                    type="button"
-                    className={`${styles.fpSegmentedBtn} ${statusFilter === s ? styles.fpSegmentedBtnActive : ""}`}
-                    onClick={() => setStatusFilter((v) => (v === s ? null : s))}
-                  >
-                    {s.charAt(0).toUpperCase() + s.slice(1)}
-                  </button>
-                ))}
-              </div>
-            </div>
-          </FilterPill>
-
-          <FilterPill
             label="Entity"
             isActive={entityFilter.length > 0}
             activeLabel={
               entityFilter.length === 1
-                ? (MOCK_ENTITIES.find((e) => e.entity_key === entityFilter[0])?.display_name ?? "Entity")
+                ? (entities.find((e) => e.entity_key === entityFilter[0])?.display_name ?? "Entity")
                 : `${entityFilter.length} entities`
             }
             count={entityFilter.length > 1 ? entityFilter.length : undefined}
@@ -1152,7 +1068,7 @@ function PersonsInner(): ReactElement {
           >
             <div className={styles.fpInner}>
               <div className={styles.filterOptions}>
-                {MOCK_ENTITIES.map((entity) => (
+                {entities.map((entity) => (
                   <button
                     key={entity.entity_key}
                     type="button"
@@ -1177,7 +1093,7 @@ function PersonsInner(): ReactElement {
             isActive={sourceFilter.length > 0}
             activeLabel={
               sourceFilter.length === 1
-                ? (MOCK_SOURCE_SYSTEMS.find((s) => s.source_key === sourceFilter[0])?.display_name ?? "Source")
+                ? (sourceSystems.find((s) => s.source_key === sourceFilter[0])?.display_name ?? "Source")
                 : `${sourceFilter.length} sources`
             }
             count={sourceFilter.length > 1 ? sourceFilter.length : undefined}
@@ -1222,13 +1138,9 @@ function PersonsInner(): ReactElement {
 
           <FilterPill
             label="Identity"
-            isActive={identityFilter.length > 0 || verifiedOnly}
-            activeLabel={
-              identityFilter.length > 0
-                ? identityFilter.map((k) => IDENTITY_FILTERS.find((f) => f.key === k)?.label ?? k).join(", ")
-                : "Verified only"
-            }
-            onClear={() => { setIdentityFilter([]); setVerifiedOnly(false); }}
+            isActive={identityFilter.length > 0}
+            activeLabel={identityFilter.map((k) => IDENTITY_FILTERS.find((f) => f.key === k)?.label ?? k).join(", ")}
+            onClear={() => setIdentityFilter([])}
             open={openFilter === "identity"}
             onToggle={() => toggleFilter("identity")}
           >
@@ -1252,18 +1164,6 @@ function PersonsInner(): ReactElement {
                   );
                 })}
               </div>
-              <label className={styles.switch}>
-                <input
-                  type="checkbox"
-                  className={styles.switchInput}
-                  checked={verifiedOnly}
-                  onChange={(e) => setVerifiedOnly(e.target.checked)}
-                />
-                <span className={styles.switchTrack} aria-hidden="true">
-                  <span className={styles.switchThumb} />
-                </span>
-                <span className={styles.switchLabel}>Verified only</span>
-              </label>
             </div>
           </FilterPill>
 
@@ -1377,152 +1277,6 @@ function PersonsInner(): ReactElement {
                     {value === "any" ? "Any" : value === "has" ? "Has" : "None"}
                   </button>
                 ))}
-              </div>
-            </div>
-          </FilterPill>
-
-          <FilterPill
-            label="Relations"
-            isActive={relationFilter !== "any" || relationTypeFilter.length > 0}
-            activeLabel={
-              relationFilter === "none"
-                ? "No relations"
-                : relationTypeFilter.length > 0
-                  ? `Has: ${relationTypeFilter.length} type${relationTypeFilter.length === 1 ? "" : "s"}`
-                  : "Has relations"
-            }
-            onClear={() => { setRelationFilter("any"); setRelationTypeFilter([]); }}
-            open={openFilter === "relations"}
-            onToggle={() => toggleFilter("relations")}
-          >
-            <div className={styles.fpInner}>
-              <div className={styles.fpSegmented}>
-                {(["any", "has", "none"] as const).map((value) => (
-                  <button
-                    key={value}
-                    type="button"
-                    className={`${styles.fpSegmentedBtn} ${relationFilter === value ? styles.fpSegmentedBtnActive : ""}`}
-                    onClick={() => setRelationFilter(value)}
-                  >
-                    {value === "any" ? "Any" : value === "has" ? "Has" : "None"}
-                  </button>
-                ))}
-              </div>
-              <hr className={styles.fpSep} />
-              <span className={styles.fpSectionLabel}>Types</span>
-              <div className={`${styles.filterOptions} ${styles.filterOptionsScrollable}`}>
-                {relationTypeOptions.map((option) => {
-                  const checked = relationTypeFilter.includes(option.key);
-                  return (
-                    <button
-                      key={option.key}
-                      type="button"
-                      className={`${styles.filterChip} ${checked ? styles.filterChipActive : ""}`}
-                      onClick={() =>
-                        setRelationTypeFilter((v) =>
-                          checked ? v.filter((k) => k !== option.key) : [...v, option.key]
-                        )
-                      }
-                    >
-                      {option.label}
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-          </FilterPill>
-
-          <FilterPill
-            label="Quality"
-            isActive={qualityMin > 0 || qualityMax < 100}
-            activeLabel={`${qualityMin}–${qualityMax}%`}
-            onClear={() => { setQualityMin(0); setQualityMax(100); }}
-            open={openFilter === "quality"}
-            onToggle={() => toggleFilter("quality")}
-            alignRight
-          >
-            <div className={styles.fpInner}>
-              <div className={styles.qualityRangeHeader}>
-                <span className={styles.qualityRangeValue}>{qualityMin}%</span>
-                <span className={styles.qualityRangeDash}>–</span>
-                <span className={styles.qualityRangeValue}>{qualityMax}%</span>
-              </div>
-              <div className={styles.qualitySliderStack}>
-                <div className={styles.qualitySliderRail} aria-hidden="true" />
-                <div
-                  className={styles.qualitySliderRange}
-                  aria-hidden="true"
-                  style={{ left: `${qualityMin}%`, width: `${Math.max(qualityMax - qualityMin, 0)}%` }}
-                />
-                <input
-                  className={`${styles.rangeInput} ${styles.rangeInputMin}`}
-                  type="range" min="0" max="100" value={qualityMin}
-                  onChange={(e) => setQualityMin(Math.min(Number(e.target.value), qualityMax))}
-                />
-                <input
-                  className={`${styles.rangeInput} ${styles.rangeInputMax}`}
-                  type="range" min="0" max="100" value={qualityMax}
-                  onChange={(e) => setQualityMax(Math.max(Number(e.target.value), qualityMin))}
-                />
-              </div>
-            </div>
-          </FilterPill>
-
-          <FilterPill
-            label="Sales"
-            isActive={hasOrdersOnly || threePlusOrdersOnly || orderTotalMin !== "" || orderTotalMax !== ""}
-            activeLabel={
-              hasOrdersOnly ? "Has orders" : threePlusOrdersOnly ? "≥3 orders" : "Order range"
-            }
-            onClear={() => { setHasOrdersOnly(false); setThreePlusOrdersOnly(false); setOrderTotalMin(""); setOrderTotalMax(""); }}
-            open={openFilter === "sales"}
-            onToggle={() => toggleFilter("sales")}
-            alignRight
-          >
-            <div className={styles.fpInner}>
-              <div className={styles.filterOptions}>
-                <button
-                  type="button"
-                  className={`${styles.filterChip} ${hasOrdersOnly ? styles.filterChipActive : ""}`}
-                  onClick={() => setHasOrdersOnly((v) => !v)}
-                >
-                  Has orders
-                </button>
-                <button
-                  type="button"
-                  className={`${styles.filterChip} ${threePlusOrdersOnly ? styles.filterChipActive : ""}`}
-                  onClick={() => setThreePlusOrdersOnly((v) => !v)}
-                >
-                  ≥3 orders
-                </button>
-              </div>
-              <div className={styles.dateFieldsRow}>
-                <div className={`${styles.dateFieldGroup} ${styles.compactFieldGroup}`}>
-                  <label className={styles.dateFieldLabel} htmlFor="fp-order-min">Min total</label>
-                  <div className={`${styles.dateInputWrap} ${styles.numberInputWrap}`}>
-                    <input
-                      id="fp-order-min"
-                      aria-label="Minimum order total"
-                      className={styles.dateInput}
-                      min="0" type="number"
-                      value={orderTotalMin}
-                      onChange={(e) => setOrderTotalMin(e.target.value)}
-                    />
-                  </div>
-                </div>
-                <div className={`${styles.dateFieldGroup} ${styles.compactFieldGroup}`}>
-                  <label className={styles.dateFieldLabel} htmlFor="fp-order-max">Max total</label>
-                  <div className={`${styles.dateInputWrap} ${styles.numberInputWrap}`}>
-                    <input
-                      id="fp-order-max"
-                      aria-label="Maximum order total"
-                      className={styles.dateInput}
-                      min="0" type="number"
-                      value={orderTotalMax}
-                      onChange={(e) => setOrderTotalMax(e.target.value)}
-                    />
-                  </div>
-                </div>
               </div>
             </div>
           </FilterPill>
