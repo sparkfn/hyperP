@@ -3,7 +3,6 @@
 import { useState, type ReactElement } from "react";
 
 import Box from "@mui/material/Box";
-import Button from "@mui/material/Button";
 import Chip from "@mui/material/Chip";
 import Divider from "@mui/material/Divider";
 import IconButton from "@mui/material/IconButton";
@@ -12,7 +11,6 @@ import Stack from "@mui/material/Stack";
 import Tooltip from "@mui/material/Tooltip";
 import Typography from "@mui/material/Typography";
 import CloseIcon from "@mui/icons-material/Close";
-import OpenInNewIcon from "@mui/icons-material/OpenInNew";
 
 import { statusColor, formatDob, formatDate } from "@/lib/display";
 import type { FGNode, FGLink, SelectedItem } from "@/components/graph-utils";
@@ -20,7 +18,6 @@ import type { FGNode, FGLink, SelectedItem } from "@/components/graph-utils";
 interface DetailPanelProps {
   item: SelectedItem;
   onClose: () => void;
-  onOpenGraph: (elementId: string, label: string, displayName: string) => void;
 }
 
 type GraphPropertyValue = string | number | boolean | null | readonly GraphPropertyValue[] | { readonly [key: string]: GraphPropertyValue };
@@ -525,44 +522,22 @@ function FieldGrid({ fields, props }: { fields: FieldSpec[]; props: Record<strin
   );
 }
 
-function ExpandButton({ node, onOpenGraph }: { node: FGNode; onOpenGraph: (elementId: string, label: string, displayName: string) => void }): ReactElement {
-  return (
-    <Button
-      size="small"
-      variant="outlined"
-      endIcon={<OpenInNewIcon sx={{ fontSize: 14 }} />}
-      onClick={() => onOpenGraph(node.id, node.label, node.displayName)}
-      sx={{
-        alignSelf: "flex-start",
-        borderColor: "var(--border)",
-        color: "var(--accent-text)",
-        textTransform: "none",
-        "&:hover": { borderColor: "var(--accent)", bgcolor: "var(--accent-light)" },
-      }}
-    >
-      Expand in graph
-    </Button>
-  );
-}
-
-export default function GraphDetailPanel({ item, onClose, onOpenGraph }: DetailPanelProps): ReactElement {
+export default function GraphDetailPanel({ item, onClose }: DetailPanelProps): ReactElement {
   if (item.kind === "edge") {
     return <EdgeDetail edge={item.data} onClose={onClose} />;
   }
   if (item.data.label === "Person") {
-    return <PersonDetail node={item.data} onClose={onClose} onOpenGraph={onOpenGraph} />;
+    return <PersonDetail node={item.data} onClose={onClose} />;
   }
-  return <NodeDetail node={item.data} onClose={onClose} onOpenGraph={onOpenGraph} />;
+  return <NodeDetail node={item.data} onClose={onClose} />;
 }
 
 function PersonDetail({
   node,
   onClose,
-  onOpenGraph,
 }: {
   node: FGNode;
   onClose: () => void;
-  onOpenGraph: (elementId: string, label: string, displayName: string) => void;
 }): ReactElement {
   const props = node.properties;
   const status = String(props.status ?? "active");
@@ -574,10 +549,7 @@ function PersonDetail({
       chip={<Chip label={status} size="small" color={statusColor(status)} variant="outlined" />}
       onClose={onClose}
     >
-      <Stack spacing={1.5}>
-        <FieldGrid fields={orderedFields(props, PERSON_FIELDS)} props={props} />
-        <ExpandButton node={node} onOpenGraph={onOpenGraph} />
-      </Stack>
+      <FieldGrid fields={orderedFields(props, PERSON_FIELDS)} props={props} />
     </DetailShell>
   );
 }
@@ -585,11 +557,9 @@ function PersonDetail({
 function NodeDetail({
   node,
   onClose,
-  onOpenGraph,
 }: {
   node: FGNode;
   onClose: () => void;
-  onOpenGraph: (elementId: string, label: string, displayName: string) => void;
 }): ReactElement {
   const props = node.properties;
   const fields = orderedFields(props, NODE_FIELD_OVERRIDES[node.label] ?? []);
@@ -601,10 +571,7 @@ function NodeDetail({
       chip={<Chip label={node.label} size="small" sx={{ bgcolor: node.color, color: "#fff", fontWeight: 700, maxWidth: 180, "& .MuiChip-label": { overflow: "hidden", textOverflow: "ellipsis" } }} />}
       onClose={onClose}
     >
-      <Stack spacing={1.5}>
-        <FieldGrid fields={fields} props={props} />
-        <ExpandButton node={node} onOpenGraph={onOpenGraph} />
-      </Stack>
+      <FieldGrid fields={fields} props={props} />
     </DetailShell>
   );
 }

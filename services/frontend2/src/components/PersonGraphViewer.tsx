@@ -400,7 +400,6 @@ export default function PersonGraphViewer({
         <GraphDetailPanel
           item={selected}
           onClose={() => setSelected(null)}
-          onOpenGraph={onNavigateNode ?? (() => {})}
         />
       ) : null}
     </>
