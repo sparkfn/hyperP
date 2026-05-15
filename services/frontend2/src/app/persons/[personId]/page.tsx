@@ -8,6 +8,7 @@ import type {
   PersonAuditEvent,
   PersonBankruptcyCase,
   PersonIdentifier,
+  PersonMatchDecision,
   PersonSourceRecord,
 } from "@/lib/api-types-person";
 import { bffFetch, BffError } from "@/lib/api-client";
@@ -25,6 +26,7 @@ type DetailData = {
   sales: SalesOrder[];
   audit: PersonAuditEvent[];
   bankruptcyCases: PersonBankruptcyCase[];
+  matches: PersonMatchDecision[];
 };
 
 type SnapshotField = {
@@ -103,6 +105,13 @@ function titleCase(value: string): string {
     .filter(Boolean)
     .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
     .join(" ");
+}
+
+function decisionBadgeClass(decision: string): string | undefined {
+  if (decision === "merge") return styles.matchDecisionMerge;
+  if (decision === "review") return styles.matchDecisionReview;
+  if (decision === "no_match") return styles.matchDecisionNoMatch;
+  return styles.matchDecisionDefault;
 }
 
 function personInitials(name: string | null): string {
@@ -554,6 +563,90 @@ function IdTypeIcon({ type }: { type: string }): ReactElement {
     );
   }
   return <KeyIcon />;
+}
+
+function MatchesTab({ matches, personId }: { matches: PersonMatchDecision[]; personId: string }): ReactElement {
+  const [expandedMatch, setExpandedMatch] = useState<string | null>(null);
+
+  return (
+    <section className={styles.contentCard}>
+      <div className={styles.connHeader}>
+        <span className={styles.connHeaderTitle}>Match decisions</span>
+        <span className={styles.connHeaderDot}>·</span>
+        <span className={styles.connHeaderCount}>{matches.length} {matches.length === 1 ? "decision" : "decisions"}</span>
+      </div>
+      <div className={styles.matchList}>
+        <div className={styles.matchHeaderRow}>
+          <span>Decision</span>
+          <span>Engine</span>
+          <span>Counterpart</span>
+          <span>Confidence</span>
+          <span>Created</span>
+        </div>
+        {matches.map((match) => {
+          const isOpen = expandedMatch === match.match_decision_id;
+          const otherPersonId = match.left_person_id === personId ? match.right_person_id : match.left_person_id;
+          return (
+            <div key={match.match_decision_id} className={`${styles.matchRow} ${isOpen ? styles.matchRowOpen : ""}`}>
+              <button
+                type="button"
+                className={styles.matchRowButton}
+                onClick={() => setExpandedMatch(isOpen ? null : match.match_decision_id)}
+                aria-expanded={isOpen}
+              >
+                <span className={styles.matchDecisionCell}>
+                  <span className={[styles.matchDecisionBadge, decisionBadgeClass(match.decision)].filter(Boolean).join(" ")}>
+                    {titleCase(match.decision)}
+                  </span>
+                  <span className={`${styles.matchId} ${styles.mono}`}>{match.match_decision_id}</span>
+                </span>
+                <span className={styles.matchEngineCell}>
+                  <span>{titleCase(match.engine_type)}</span>
+                  <span className={`${styles.matchSubText} ${styles.mono}`}>{match.engine_version}</span>
+                </span>
+                <span className={`${styles.matchPersonCell} ${styles.mono}`}>{otherPersonId ?? "—"}</span>
+                <span className={styles.matchConfidenceCell}>
+                  <span className={styles.matchConfidenceValue}>{(match.confidence * 100).toFixed(1)}%</span>
+                  <span className={styles.matchConfidenceTrack}>
+                    <span className={styles.matchConfidenceFill} style={{ width: `${Math.max(0, Math.min(100, match.confidence * 100))}%` }} />
+                  </span>
+                </span>
+                <span className={styles.matchCreatedCell}>{fmtDateTime(match.created_at)}</span>
+                <svg className={`${styles.matchChevron} ${isOpen ? styles.matchChevronOpen : ""}`} width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <path d="M6 9l6 6 6-6" />
+                </svg>
+              </button>
+              {isOpen && (
+                <div className={styles.matchDetail}>
+                  <div className={styles.matchMetaGrid}>
+                    {[
+                      { label: "Policy", value: match.policy_version },
+                      { label: "Left", value: match.left_person_id },
+                      { label: "Right", value: match.right_person_id },
+                      { label: "Conflicts", value: match.blocking_conflicts.length ? match.blocking_conflicts.join(", ") : "None" },
+                    ].map(({ label, value }) => (
+                      <div key={label} className={styles.matchMetaItem}>
+                        <span className={styles.matchMetaLabel}>{label}</span>
+                        <span className={`${styles.matchMetaValue} ${styles.mono}`}>{value ?? "—"}</span>
+                      </div>
+                    ))}
+                  </div>
+                  <div className={styles.matchReasonsBlock}>
+                    <span className={styles.matchMetaLabel}>Reasons</span>
+                    <div className={styles.matchReasonList}>
+                      {match.reasons.length > 0 ? match.reasons.map((reason) => (
+                        <span key={reason} className={styles.matchReasonChip}>{reason}</span>
+                      )) : <span className={styles.matchEmptyText}>No reasons recorded.</span>}
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </section>
+  );
 }
 
 function IdentifiersTab({ identifiers }: { identifiers: PersonIdentifier[] }): ReactElement {
@@ -1192,6 +1285,7 @@ const EMPTY_DETAIL: DetailData = {
   sales: [],
   audit: [],
   bankruptcyCases: [],
+  matches: [],
 };
 
 export default function PersonDetailPage({ params }: { params: Promise<{ personId: string }> }): ReactElement {
@@ -1211,16 +1305,17 @@ export default function PersonDetailPage({ params }: { params: Promise<{ personI
         const p = await bffFetch<Person>(`/bff/persons/${encodeURIComponent(personId)}`);
         setPerson(p);
 
-        const [identifiers, sourceRecords, sales, audit, bankruptcyCases, conns] = await Promise.all([
+        const [identifiers, sourceRecords, sales, audit, bankruptcyCases, matches, conns] = await Promise.all([
           bffFetch<PersonIdentifier[]>(`/bff/persons/${encodeURIComponent(personId)}/identifiers`).catch(() => []),
           bffFetch<PersonSourceRecord[]>(`/bff/persons/${encodeURIComponent(personId)}/source-records`).catch(() => []),
           bffFetch<SalesOrder[]>(`/bff/persons/${encodeURIComponent(personId)}/sales`).catch(() => []),
           bffFetch<PersonAuditEvent[]>(`/bff/persons/${encodeURIComponent(personId)}/audit`).catch(() => []),
           bffFetch<PersonBankruptcyCase[]>(`/bff/persons/${encodeURIComponent(personId)}/bankruptcy-cases`).catch(() => []),
+          bffFetch<PersonMatchDecision[]>(`/bff/persons/${encodeURIComponent(personId)}/matches`).catch(() => []),
           bffFetch<PersonConnection[]>(`/bff/persons/${encodeURIComponent(personId)}/connections?connection_type=all`).catch(() => []),
         ]);
 
-        setDetailData({ identifiers, sourceRecords, sales, audit, bankruptcyCases });
+        setDetailData({ identifiers, sourceRecords, sales, audit, bankruptcyCases, matches });
         setConnections(conns);
       } catch (err) {
         if (err instanceof BffError && err.status === 404) {
@@ -1242,7 +1337,7 @@ export default function PersonDetailPage({ params }: { params: Promise<{ personI
 
   const tabs: TabConfig[] = [
     { id: "timeline", label: "Timeline" },
-    { id: "matches", label: "Matches" },
+    { id: "matches", label: "Matches", count: detailData.matches.length || undefined },
     { id: "connections", label: "Relations", count: connections.length },
     { id: "identifier", label: "IDs", count: detailData.identifiers.length },
     { id: "source", label: "Sources", count: detailData.sourceRecords.length },
@@ -1263,10 +1358,14 @@ export default function PersonDetailPage({ params }: { params: Promise<{ personI
         )}
         {activeTab === "matches" && (
           <DetailShell person={person} detailData={detailData} tabs={tabs} activeTab={activeTab} onTabChange={setActiveTab}>
-            <EmptyState
-              title="No match clusters available"
-              description="No match decisions are currently linked to this person."
-            />
+            {detailData.matches.length > 0 ? (
+              <MatchesTab matches={detailData.matches} personId={personId} />
+            ) : (
+              <EmptyState
+                title="No match decisions available"
+                description="No match decisions are currently linked to this person."
+              />
+            )}
           </DetailShell>
         )}
         {activeTab === "connections" && (

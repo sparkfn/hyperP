@@ -1444,6 +1444,206 @@
   color: var(--text-secondary);
 }
 
+/* ── Matches tab ───────────────────────────────────────────── */
+
+.matchList {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.matchHeaderRow,
+.matchRowButton {
+  display: grid;
+  grid-template-columns: minmax(180px, 1.25fr) minmax(120px, 0.8fr) minmax(140px, 1fr) 112px 132px 20px;
+  align-items: center;
+  gap: 12px;
+}
+
+.matchHeaderRow {
+  padding: 8px 12px;
+  background: color-mix(in srgb, var(--bg-card) 92%, var(--bg-hover));
+  border-bottom: 1px solid var(--border-subtle);
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-muted);
+}
+
+.matchRow {
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--bg-card);
+}
+
+.matchRow:last-child {
+  border-bottom: none;
+}
+
+.matchRowOpen {
+  background: color-mix(in srgb, var(--bg-card) 96%, var(--bg-hover));
+}
+
+.matchRowButton {
+  width: 100%;
+  padding: 9px 12px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.matchRowButton:hover {
+  background: var(--bg-hover);
+}
+
+.matchDecisionCell,
+.matchEngineCell,
+.matchConfidenceCell {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.matchDecisionBadge {
+  width: fit-content;
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.matchDecisionMerge {
+  background: var(--good-soft);
+  color: var(--good);
+}
+
+.matchDecisionReview {
+  background: var(--warn-bg);
+  color: var(--warn-text);
+}
+
+.matchDecisionNoMatch {
+  background: var(--bad-soft);
+  color: var(--bad);
+}
+
+.matchDecisionDefault {
+  background: var(--bg-hover);
+  color: var(--text-secondary);
+}
+
+.matchId,
+.matchSubText,
+.matchPersonCell,
+.matchCreatedCell,
+.matchMetaValue {
+  font-size: 11px;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.matchEngineCell {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.matchConfidenceValue {
+  font-size: 12px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-primary);
+}
+
+.matchConfidenceTrack {
+  width: 100%;
+  height: 4px;
+  border-radius: 999px;
+  background: var(--bg-hover);
+  overflow: hidden;
+}
+
+.matchConfidenceFill {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--text-primary);
+}
+
+.matchChevron {
+  color: var(--text-muted);
+  transition: transform 0.15s;
+}
+
+.matchChevronOpen {
+  transform: rotate(180deg);
+}
+
+.matchDetail {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 0 12px 12px;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.matchMetaGrid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  padding-top: 12px;
+}
+
+.matchMetaItem,
+.matchReasonsBlock {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.matchMetaLabel {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-muted);
+}
+
+.matchReasonList {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.matchReasonChip {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 7px;
+  border-radius: 3px;
+  background: var(--bg-hover);
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.matchEmptyText {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
 /* ── Bankruptcy tab ────────────────────────────────────────── */
 
 .bkStatusActive {
@@ -2041,6 +2241,26 @@
   }
 
   .summaryStrip {
+    grid-template-columns: 1fr;
+  }
+
+  .matchHeaderRow {
+    display: none;
+  }
+
+  .matchRowButton {
+    grid-template-columns: 1fr auto;
+    gap: 8px;
+  }
+
+  .matchEngineCell,
+  .matchPersonCell,
+  .matchConfidenceCell,
+  .matchCreatedCell {
+    grid-column: 1 / -1;
+  }
+
+  .matchMetaGrid {
     grid-template-columns: 1fr;
   }
 
