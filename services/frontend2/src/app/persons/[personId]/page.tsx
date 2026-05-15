@@ -1102,6 +1102,90 @@ function EmptyState({ title, description }: { title: string; description: string
   );
 }
 
+function PersonDetailSkeleton(): ReactElement {
+  return (
+    <div className={styles.page}>
+      {/* breadcrumb */}
+      <div className={styles.breadcrumbRow}>
+        <span className={styles.skel} style={{ width: 200, height: 14 }} />
+      </div>
+
+      <div className={styles.detailLayout}>
+        {/* ── Sidebar ── */}
+        <aside className={styles.sidebar}>
+          <section className={styles.sidebarHeroCard}>
+            <div className={styles.sidebarHeroTop}>
+              {/* avatar ring */}
+              <span className={styles.skelRing} style={{ width: 64, height: 64, flexShrink: 0 }} />
+              <div className={styles.sidebarHeroIdentity} style={{ gap: 8 }}>
+                <span className={styles.skel} style={{ width: "75%", height: 16 }} />
+                <span className={styles.skel} style={{ width: "55%", height: 11 }} />
+                <span className={styles.skel} style={{ width: "40%", height: 8, marginTop: 4 }} />
+              </div>
+            </div>
+            <div className={styles.sidebarHeroSummaryRows} style={{ marginTop: 12 }}>
+              {[80, 60, 70, 90, 65, 75].map((w, i) => (
+                <div key={i} className={styles.sidebarHeroSummaryRow}>
+                  <span className={styles.skel} style={{ width: 48, height: 11 }} />
+                  <span className={styles.skel} style={{ width: w, height: 11 }} />
+                </div>
+              ))}
+            </div>
+          </section>
+          <section className={styles.sidebarCard} style={{ paddingTop: 10, paddingBottom: 10 }}>
+            <span className={styles.skel} style={{ width: 60, height: 11, marginBottom: 10 }} />
+            <span className={styles.skel} style={{ width: "90%", height: 11, marginBottom: 6 }} />
+            <span className={styles.skel} style={{ width: "70%", height: 11 }} />
+          </section>
+        </aside>
+
+        {/* ── Right rail ── */}
+        <div className={styles.mainColumn}>
+          {/* summary strip */}
+          <section className={styles.summaryStrip}>
+            {[0, 1, 2, 3].map((i) => (
+              <div key={i} className={styles.summaryCard}>
+                <span className={styles.skel} style={{ width: 70, height: 10, marginBottom: 8 }} />
+                <span className={styles.skel} style={{ width: 52, height: 20, marginBottom: 6 }} />
+                <span className={styles.skel} style={{ width: 80, height: 10 }} />
+              </div>
+            ))}
+          </section>
+
+          {/* tabs row */}
+          <div className={styles.rightTabsInline}>
+            <div className={styles.tabs}>
+              {[72, 56, 64, 36, 52, 44, 72, 40, 44].map((w, i) => (
+                <span key={i} className={styles.skel} style={{ width: w, height: 28, borderRadius: 6 }} />
+              ))}
+            </div>
+          </div>
+
+          {/* content area */}
+          <div className={styles.tabPanelScroll}>
+            <section className={styles.contentCard}>
+              <div className={styles.connHeader}>
+                <span className={styles.skel} style={{ width: 60, height: 13 }} />
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 14, padding: "4px 0" }}>
+                {[0, 1, 2, 3, 4].map((i) => (
+                  <div key={i} style={{ display: "flex", flexDirection: "column", gap: 6, paddingBottom: 14, borderBottom: "1px solid var(--border)" }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                      <span className={styles.skel} style={{ width: [120, 90, 110, 80, 100][i], height: 13 }} />
+                      <span className={styles.skel} style={{ width: 60, height: 11 }} />
+                    </div>
+                    <span className={styles.skel} style={{ width: [200, 160, 180, 140, 170][i], height: 11 }} />
+                  </div>
+                ))}
+              </div>
+            </section>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 const EMPTY_DETAIL: DetailData = {
   identifiers: [],
   sourceRecords: [],
@@ -1153,13 +1237,7 @@ export default function PersonDetailPage({ params }: { params: Promise<{ personI
   if (notFoundFlag) notFound();
 
   if (loading || person === null) {
-    return (
-      <div className={styles.page}>
-        <section className={styles.emptyState}>
-          <div className={styles.emptyTitle}>Loading…</div>
-        </section>
-      </div>
-    );
+    return <PersonDetailSkeleton />;
   }
 
   const tabs: TabConfig[] = [
