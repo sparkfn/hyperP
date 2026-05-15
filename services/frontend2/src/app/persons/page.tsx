@@ -549,6 +549,58 @@ function PersonRow({
   );
 }
 
+const SKELETON_WIDTHS: readonly number[][] = [
+  [55, 90, 70, 80, 75, 110, 140, 60, 40, 36, 80],
+  [70, 80, 60, 90, 85, 130, 100, 80, 50, 44, 65],
+  [60, 95, 75, 70, 90, 120, 160, 70, 42, 40, 72],
+  [50, 85, 65, 85, 80, 100, 130, 55, 38, 48, 58],
+  [65, 100, 80, 75, 70, 140, 110, 75, 46, 36, 68],
+  [72, 78, 68, 88, 95, 115, 150, 65, 44, 52, 76],
+  [58, 92, 72, 78, 78, 125, 120, 68, 40, 40, 62],
+  [68, 86, 58, 82, 82, 135, 145, 72, 48, 44, 70],
+] as const;
+
+const FALLBACK_WIDTHS: readonly number[] = [55, 90, 70, 80, 75, 110, 140, 60, 40, 36, 80] as const;
+
+function SkeletonRow({ index, colWidths }: { index: number; colWidths: number[] }): ReactElement {
+  const row = SKELETON_WIDTHS[index % SKELETON_WIDTHS.length] ?? FALLBACK_WIDTHS;
+  const w = (i: number): number => row[i] ?? FALLBACK_WIDTHS[i] ?? 60;
+  return (
+    <tr className={`${styles.tr} ${styles.skeletonRow}`}>
+      <td className={styles.tdCheck}>
+        <span className={styles.skeleton} style={{ width: 14, height: 14, borderRadius: 3, display: "block" }} />
+      </td>
+      {/* name cell — avatar + two lines */}
+      <td className={`${styles.td} ${styles.tdName}`} style={{ minWidth: colWidths[1] ?? 180 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <span className={styles.skeletonAvatar} />
+          <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+            <span className={styles.skeletonLine} style={{ width: w(0) }} />
+            <span className={styles.skeletonLine} style={{ width: Math.round(w(0) * 0.6), height: 10 }} />
+          </div>
+        </div>
+      </td>
+      {/* nric, phone, dob, email, address, entity, relations, orders */}
+      {([1, 2, 3, 4, 5, 6, 7, 8] as const).map((wi) => (
+        <td key={wi} className={styles.td}>
+          <span className={styles.skeletonLine} style={{ width: w(wi) }} />
+        </td>
+      ))}
+      {/* completeness — bar + number */}
+      <td className={`${styles.td} ${styles.tdSticky} ${styles.stickyQuality}`}>
+        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          <span className={styles.skeleton} style={{ flex: 1, height: 6, borderRadius: 3 }} />
+          <span className={styles.skeletonLine} style={{ width: w(9), height: 11 }} />
+        </div>
+      </td>
+      {/* graph icon */}
+      <td className={`${styles.tdGraph} ${styles.tdSticky} ${styles.stickyGraph}`}>
+        <span className={styles.skeleton} style={{ width: 18, height: 18, borderRadius: 4, display: "block", margin: "0 auto" }} />
+      </td>
+    </tr>
+  );
+}
+
 function PaginationBar({
   showing, hasPrev, hasNext, pageSize, selectedCount, onPrev, onNext, onPageSize, bottom,
 }: {
@@ -684,6 +736,7 @@ function PersonsInner(): ReactElement {
   const [highRiskCount, setHighRiskCount] = useState<number | null>(null);
   const [highValueCount, setHighValueCount] = useState<number | null>(null);
   const [noContactCount, setNoContactCount] = useState<number | null>(null);
+  const [statsLoading, setStatsLoading] = useState(true);
 
   const [graphDialog, setGraphDialog] = useState<{ open: boolean; personId: string; title: string }>({
     open: false,
@@ -814,6 +867,8 @@ function PersonsInner(): ReactElement {
         setNoContactCount(nc.meta.total_count ?? null);
       } catch {
         // silently fail — filter options and stat cards fall back gracefully
+      } finally {
+        setStatsLoading(false);
       }
     })();
   }, []);
@@ -1050,7 +1105,11 @@ function PersonsInner(): ReactElement {
       <div className={styles.statsRow}>
         <div className={styles.statCard}>
           <div className={styles.statLabel}>Total Profiles</div>
-          <div className={styles.statValue} style={{ color: "var(--good)" }}>{total != null ? total.toLocaleString() : "—"}</div>
+          {statsLoading ? (
+            <span className={styles.skeletonLine} style={{ width: 64, height: 26, display: "block", marginTop: 2 }} />
+          ) : (
+            <div className={styles.statValue} style={{ color: "var(--good)" }}>{total != null ? total.toLocaleString() : "—"}</div>
+          )}
           <div className={styles.statSub}>active persons</div>
         </div>
 
@@ -1059,10 +1118,15 @@ function PersonsInner(): ReactElement {
           className={`${styles.statCard} ${styles.statCardClickable} ${flagFilter === "high_risk" ? styles.statCardActive : ""}`}
           onClick={() => setFlagFilter((f) => f === "high_risk" ? "any" : "high_risk")}
           title="Filter by high risk"
+          disabled={statsLoading}
         >
           <div className={styles.statLabel}>High Risk</div>
-          <div className={styles.statValue} style={{ color: "var(--bad)" }}>{highRiskCount != null ? highRiskCount.toLocaleString() : "—"}</div>
-          <div className={styles.statSub}>{flagFilter === "high_risk" ? "✓ filtering active" : "click to filter"}</div>
+          {statsLoading ? (
+            <span className={styles.skeletonLine} style={{ width: 48, height: 26, display: "block", marginTop: 2 }} />
+          ) : (
+            <div className={styles.statValue} style={{ color: "var(--bad)" }}>{highRiskCount != null ? highRiskCount.toLocaleString() : "—"}</div>
+          )}
+          <div className={styles.statSub}>{!statsLoading && flagFilter === "high_risk" ? "✓ filtering active" : "click to filter"}</div>
         </button>
 
         <button
@@ -1070,15 +1134,24 @@ function PersonsInner(): ReactElement {
           className={`${styles.statCard} ${styles.statCardClickable} ${flagFilter === "high_value" ? styles.statCardActive : ""}`}
           onClick={() => setFlagFilter((f) => f === "high_value" ? "any" : "high_value")}
           title="Filter by high value"
+          disabled={statsLoading}
         >
           <div className={styles.statLabel}>High Value</div>
-          <div className={styles.statValue} style={{ color: "var(--accent)" }}>{highValueCount != null ? highValueCount.toLocaleString() : "—"}</div>
-          <div className={styles.statSub}>{flagFilter === "high_value" ? "✓ filtering active" : "click to filter"}</div>
+          {statsLoading ? (
+            <span className={styles.skeletonLine} style={{ width: 56, height: 26, display: "block", marginTop: 2 }} />
+          ) : (
+            <div className={styles.statValue} style={{ color: "var(--accent)" }}>{highValueCount != null ? highValueCount.toLocaleString() : "—"}</div>
+          )}
+          <div className={styles.statSub}>{!statsLoading && flagFilter === "high_value" ? "✓ filtering active" : "click to filter"}</div>
         </button>
 
         <div className={styles.statCard}>
           <div className={styles.statLabel}>No contact info</div>
-          <div className={styles.statValue} style={{ color: "var(--warn-text)" }}>{noContactCount != null ? noContactCount.toLocaleString() : "—"}</div>
+          {statsLoading ? (
+            <span className={styles.skeletonLine} style={{ width: 52, height: 26, display: "block", marginTop: 2 }} />
+          ) : (
+            <div className={styles.statValue} style={{ color: "var(--warn-text)" }}>{noContactCount != null ? noContactCount.toLocaleString() : "—"}</div>
+          )}
           <div className={styles.statSub}>can&apos;t be reached</div>
         </div>
       </div>
@@ -1540,7 +1613,9 @@ function PersonsInner(): ReactElement {
             </thead>
             <tbody>
               {fetchLoading ? (
-                <tr><td colSpan={12} className={styles.empty}>Loading…</td></tr>
+                Array.from({ length: pageSize > 25 ? 12 : 8 }, (_, i) => (
+                  <SkeletonRow key={i} index={i} colWidths={colWidths} />
+                ))
               ) : fetchError ? (
                 <tr><td colSpan={12} className={styles.empty} style={{ color: "var(--bad)" }}>{fetchError}</td></tr>
               ) : pageRows.length === 0 ? (

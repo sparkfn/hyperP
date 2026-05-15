@@ -8,6 +8,44 @@
   letter-spacing: -0.4px;
 }
 
+/* ── Skeleton shimmer ────────────────────────────────────── */
+@keyframes shimmer {
+  0%   { background-position: -400px 0; }
+  100% { background-position:  400px 0; }
+}
+
+.skeleton {
+  background: linear-gradient(
+    90deg,
+    var(--border) 25%,
+    color-mix(in srgb, var(--border) 60%, var(--bg-card)) 50%,
+    var(--border) 75%
+  );
+  background-size: 800px 100%;
+  animation: shimmer 1.4s infinite linear;
+  border-radius: 4px;
+  display: inline-block;
+}
+
+.skeletonLine {
+  composes: skeleton;
+  height: 14px;
+  border-radius: 4px;
+}
+
+.skeletonAvatar {
+  composes: skeleton;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.skeletonRow td {
+  padding: 10px 8px;
+  vertical-align: middle;
+}
+
 /* ── Stats row ───────────────────────────────────────────── */
 .statsRow {
   display: grid;
