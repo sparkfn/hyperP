@@ -8,6 +8,7 @@ import {
   type ReactElement,
   type ReactNode,
 } from "react";
+import { keyframes } from "@mui/system";
 
 import Box from "@mui/material/Box";
 import Chip from "@mui/material/Chip";
@@ -81,6 +82,77 @@ const ICON_COMPONENTS: Record<NodeIcon, ReactElement> = {
   gavel: <GavelIcon />,
   storefront: <StorefrontIcon />,
 };
+
+const graphPulse = keyframes`
+  0%, 100% { opacity: 0.35; }
+  50%       { opacity: 0.75; }
+`;
+
+// Skeleton nodes and edges for graph loading state
+const SKEL_NODES = [
+  { cx: 50, cy: 50, r: 18 },   // center
+  { cx: 50, cy: 18, r: 12 },   // top
+  { cx: 76, cy: 34, r: 12 },   // top-right
+  { cx: 78, cy: 66, r: 12 },   // bottom-right
+  { cx: 50, cy: 80, r: 12 },   // bottom
+  { cx: 24, cy: 66, r: 12 },   // bottom-left
+  { cx: 22, cy: 34, r: 12 },   // top-left
+] as const;
+
+const SKEL_EDGES = [
+  [0, 1], [0, 2], [0, 3], [0, 4], [0, 5], [0, 6],
+  [1, 2], [3, 4], [5, 6],
+] as const;
+
+function GraphLoadingSkeleton(): ReactElement {
+  return (
+    <Box
+      sx={{
+        position: "absolute",
+        inset: 0,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        pointerEvents: "none",
+      }}
+    >
+      <Box
+        component="svg"
+        viewBox="0 0 100 100"
+        preserveAspectRatio="xMidYMid meet"
+        sx={{
+          width: "min(60%, 320px)",
+          height: "min(60%, 320px)",
+          animation: `${graphPulse} 1.6s ease-in-out infinite`,
+        }}
+      >
+        {SKEL_EDGES.map(([a, b]) => {
+          const na = SKEL_NODES[a];
+          const nb = SKEL_NODES[b];
+          if (!na || !nb) return null;
+          return (
+            <line
+              key={`${a}-${b}`}
+              x1={na.cx} y1={na.cy}
+              x2={nb.cx} y2={nb.cy}
+              stroke="currentColor"
+              strokeWidth={0.8}
+              opacity={0.45}
+            />
+          );
+        })}
+        {SKEL_NODES.map((n, i) => (
+          <circle
+            key={i}
+            cx={n.cx} cy={n.cy} r={n.r}
+            fill="currentColor"
+            opacity={i === 0 ? 0.7 : 0.45}
+          />
+        ))}
+      </Box>
+    </Box>
+  );
+}
 
 function Legend({ labels }: { labels: string[] }): ReactElement {
   return (
@@ -359,14 +431,7 @@ export default function PersonGraphViewer({
       >
         {forceGraphCanvas}
 
-        {loading ? (
-          <Typography
-            variant="body2"
-            sx={{ position: "absolute", top: 16, left: "50%", transform: "translateX(-50%)", color: "var(--text-muted)", pointerEvents: "none" }}
-          >
-            Loading graph…
-          </Typography>
-        ) : null}
+        {loading ? <GraphLoadingSkeleton /> : null}
         {error !== null ? (
           <Typography
             variant="body2"
@@ -505,21 +570,39 @@ export default function PersonGraphViewer({
             Summary
           </Typography>
           <Box sx={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 0.75 }}>
-            {stats.map((stat) => (
-              <Paper
-                key={stat.label}
-                elevation={0}
-                sx={{ p: 1, bgcolor: "var(--bg-card)", border: "1px solid var(--border)", borderRadius: "8px" }}
-              >
-                <Typography variant="h6" sx={{ color: "var(--text-primary)", fontSize: 20, fontWeight: 700, lineHeight: 1 }}>
-                  {stat.value}
-                </Typography>
-                <Typography variant="caption" sx={{ color: "var(--text-muted)" }}>
-                  {stat.label}
-                </Typography>
-              </Paper>
-            ))}
-            {loading ? <Typography variant="body2" sx={{ color: "var(--text-muted)" }}>Loading graph…</Typography> : null}
+            {loading ? (
+              ["Nodes", "Edges", "Types"].map((label) => (
+                <Paper
+                  key={label}
+                  elevation={0}
+                  sx={{ p: 1, bgcolor: "var(--bg-card)", border: "1px solid var(--border)", borderRadius: "8px" }}
+                >
+                  <Box
+                    sx={{
+                      width: 32, height: 20, borderRadius: "4px", mb: 0.5,
+                      bgcolor: "var(--border)",
+                      animation: `${graphPulse} 1.6s ease-in-out infinite`,
+                    }}
+                  />
+                  <Typography variant="caption" sx={{ color: "var(--text-muted)" }}>{label}</Typography>
+                </Paper>
+              ))
+            ) : (
+              stats.map((stat) => (
+                <Paper
+                  key={stat.label}
+                  elevation={0}
+                  sx={{ p: 1, bgcolor: "var(--bg-card)", border: "1px solid var(--border)", borderRadius: "8px" }}
+                >
+                  <Typography variant="h6" sx={{ color: "var(--text-primary)", fontSize: 20, fontWeight: 700, lineHeight: 1 }}>
+                    {stat.value}
+                  </Typography>
+                  <Typography variant="caption" sx={{ color: "var(--text-muted)" }}>
+                    {stat.label}
+                  </Typography>
+                </Paper>
+              ))
+            )}
           </Box>
         </Stack>
 
@@ -561,7 +644,7 @@ export default function PersonGraphViewer({
             overflow: "hidden",
           }}
         >
-          {forceGraphCanvas}
+          {loading ? <GraphLoadingSkeleton /> : forceGraphCanvas}
         </Box>
       </Box>
     </Box>
