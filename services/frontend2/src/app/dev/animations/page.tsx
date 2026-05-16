@@ -32,26 +32,45 @@ function MergeAnimation(): ReactElement {
 
 function OverrideAnimation(): ReactElement {
   return (
-    <svg width="240" height="140" viewBox="0 0 120 70" style={{ color: "var(--text-secondary, #6b7280)" }}>
-      <text x="10" y="16" fontSize="7" fill="currentColor" opacity="0.3" fontFamily="monospace">old</text>
-      <rect x="10" y="20" width="100" height="9" rx="3" fill="currentColor">
-        <animate attributeName="opacity" values="0.2;0.05;0.2" dur="2s" repeatCount="indefinite" keyTimes="0;0.5;1" />
-      </rect>
-      <text x="10" y="46" fontSize="7" fill="currentColor" opacity="0.55" fontFamily="monospace">new</text>
-      <rect x="10" y="50" width="0" height="9" rx="3" fill="currentColor" opacity="0.75">
-        <animate attributeName="width" values="0;100;100;0" dur="2s" repeatCount="indefinite" keyTimes="0;0.4;0.7;1" calcMode="spline" keySplines="0.4 0 0.2 1;0 0 0 0;0.6 0 1 1" />
-        <animate attributeName="opacity" values="0.75;0.75;0;0" dur="2s" repeatCount="indefinite" keyTimes="0;0.4;0.7;1" />
-      </rect>
-      <rect x="10" y="48" width="2" height="13" rx="1" fill="currentColor" opacity="0">
-        <animate attributeName="x" values="10;108;10" dur="2s" repeatCount="indefinite" keyTimes="0;0.4;1" calcMode="spline" keySplines="0.4 0 0.2 1;0 0 0 0" />
-        <animate attributeName="opacity" values="0.9;0.9;0" dur="2s" repeatCount="indefinite" keyTimes="0;0.38;0.42" />
-      </rect>
-      <line x1="60" y1="48" x2="60" y2="32" stroke="currentColor" strokeWidth="1">
-        <animate attributeName="opacity" values="0;0.35;0.35;0" dur="2s" repeatCount="indefinite" keyTimes="0;0.42;0.65;1" />
+    <svg width="200" height="200" viewBox="0 0 100 100" style={{ color: "var(--text-secondary, #6b7280)" }}>
+      {/* field node — center bottom */}
+      <circle cx="50" cy="72" r="8" fill="currentColor" opacity="0.5" />
+
+      {/* connection A — left source → field, dims when B wins */}
+      <line x1="28" y1="28" x2="50" y2="72" stroke="currentColor" strokeWidth="1">
+        <animate attributeName="opacity" values="0.3;0.08;0.08;0.3" dur="3s" repeatCount="indefinite" keyTimes="0;0.45;0.7;1" />
+        <animate attributeName="strokeWidth" values="1;0.5;0.5;1" dur="3s" repeatCount="indefinite" keyTimes="0;0.45;0.7;1" />
       </line>
-      <polygon points="56,34 60,28 64,34" fill="currentColor">
-        <animate attributeName="opacity" values="0;0.5;0.5;0" dur="2s" repeatCount="indefinite" keyTimes="0;0.42;0.65;1" />
-      </polygon>
+
+      {/* source node A — dims */}
+      <circle cx="28" cy="28" r="7" fill="currentColor">
+        <animate attributeName="opacity" values="0.55;0.15;0.15;0.55" dur="3s" repeatCount="indefinite" keyTimes="0;0.45;0.7;1" />
+        <animate attributeName="r" values="7;5;5;7" dur="3s" repeatCount="indefinite" keyTimes="0;0.45;0.7;1" />
+      </circle>
+
+      {/* connection B — right source → field, brightens when winning */}
+      <line x1="72" y1="28" x2="50" y2="72" stroke="currentColor" strokeWidth="1">
+        <animate attributeName="opacity" values="0.3;0.8;0.8;0.3" dur="3s" repeatCount="indefinite" keyTimes="0;0.45;0.7;1" />
+        <animate attributeName="strokeWidth" values="1;2.5;2.5;1" dur="3s" repeatCount="indefinite" keyTimes="0;0.45;0.7;1" />
+      </line>
+
+      {/* source node B — brightens, pulses as winner */}
+      <circle cx="72" cy="28" r="7" fill="currentColor">
+        <animate attributeName="opacity" values="0.55;0.9;0.9;0.55" dur="3s" repeatCount="indefinite" keyTimes="0;0.45;0.7;1" />
+        <animate attributeName="r" values="7;9;9;7" dur="3s" repeatCount="indefinite" keyTimes="0;0.45;0.7;1" />
+      </circle>
+
+      {/* pulse ring on winning node */}
+      <circle cx="72" cy="28" r="9" fill="none" stroke="currentColor" strokeWidth="1.2">
+        <animate attributeName="r" values="9;16;16;9" dur="3s" repeatCount="indefinite" keyTimes="0;0.55;0.65;1" />
+        <animate attributeName="opacity" values="0;0.35;0;0" dur="3s" repeatCount="indefinite" keyTimes="0;0.5;0.65;1" />
+      </circle>
+
+      {/* lock dot on winning connection midpoint */}
+      <circle cx="61" cy="50" r="0" fill="currentColor">
+        <animate attributeName="r" values="0;3;3;0" dur="3s" repeatCount="indefinite" keyTimes="0;0.48;0.68;1" />
+        <animate attributeName="opacity" values="0;0.85;0.85;0" dur="3s" repeatCount="indefinite" keyTimes="0;0.48;0.68;1" />
+      </circle>
     </svg>
   );
 }
