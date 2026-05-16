@@ -31,62 +31,69 @@ function MergeAnimation(): ReactElement {
 }
 
 function OverrideAnimation(): ReactElement {
-  // Layout: person center (50,54), 3 field nodes around r=26
-  // top(50,28), bottom-right(72,67), bottom-left(28,67)
-  // Source node arrives from top-right (88,8) → replaces top field node
+  const dur = "3.6s";
   const P = { x: 50, y: 54 };
-  const fields = [
-    { x: 50, y: 28 },   // top ← target
-    { x: 73, y: 67 },   // bottom-right
-    { x: 27, y: 67 },   // bottom-left
-  ] as const;
-  const T = fields[0]!;
-  const S = { x: 88, y: 8 };
+  const T = { x: 50, y: 28 };   // target field node (top)
+  const F1 = { x: 73, y: 67 };  // bottom-right field
+  const F2 = { x: 27, y: 67 };  // bottom-left field
+  const S = { x: 88, y: 8 };    // source node start
 
   return (
     <svg width="200" height="200" viewBox="0 0 100 100" style={{ color: "var(--text-secondary, #6b7280)" }}>
 
-      {/* ── static edges + nodes (non-target) ── */}
-      {fields.slice(1).map((f, i) => (
-        <g key={i}>
-          <line x1={P.x} y1={P.y} x2={f.x} y2={f.y} stroke="currentColor" strokeWidth="0.8" opacity="0.2" />
-          <circle cx={f.x} cy={f.y} r="4.5" fill="currentColor" opacity="0.25" />
-        </g>
-      ))}
+      {/* ── edges: person → non-target fields ── */}
+      <line x1={P.x} y1={P.y} x2={F1.x} y2={F1.y} stroke="currentColor" strokeWidth="0.8" opacity="0.18" />
+      <line x1={P.x} y1={P.y} x2={F2.x} y2={F2.y} stroke="currentColor" strokeWidth="0.8" opacity="0.18" />
 
-      {/* ── person node ── */}
-      <circle cx={P.x} cy={P.y} r="9" fill="currentColor" opacity="0.6" />
+      {/* ── non-target field nodes: slow breathing ── */}
+      <circle cx={F1.x} cy={F1.y} r="4.5" fill="currentColor">
+        <animate attributeName="opacity" values="0.25;0.38;0.25;0.2;0.25" dur="4.1s" repeatCount="indefinite" keyTimes="0;0.35;0.6;0.8;1" />
+        {/* brief react on impact */}
+        <animate attributeName="r" values="4.5;4.5;4.5;5.5;4.5;4.5" dur={dur} repeatCount="indefinite" keyTimes="0;0.5;0.54;0.58;0.64;1" />
+      </circle>
+      <circle cx={F2.x} cy={F2.y} r="4.5" fill="currentColor">
+        <animate attributeName="opacity" values="0.25;0.25;0.38;0.25;0.25" dur="3.7s" repeatCount="indefinite" keyTimes="0;0.2;0.55;0.75;1" />
+        <animate attributeName="r" values="4.5;4.5;4.5;5.5;4.5;4.5" dur={dur} repeatCount="indefinite" keyTimes="0;0.5;0.56;0.6;0.66;1" />
+      </circle>
 
-      {/* ── target edge: person → top field ── */}
+      {/* ── person node: gentle pulse ── */}
+      <circle cx={P.x} cy={P.y} r="9" fill="currentColor">
+        <animate attributeName="opacity" values="0.55;0.68;0.55;0.72;0.55" dur="4.4s" repeatCount="indefinite" keyTimes="0;0.3;0.55;0.78;1" />
+        {/* briefly brightens on impact */}
+        <animate attributeName="r" values="9;9;9;10.5;9;9" dur={dur} repeatCount="indefinite" keyTimes="0;0.5;0.54;0.58;0.64;1" />
+      </circle>
+
+      {/* ── target edge: dims during transit, strengthens after ── */}
       <line x1={P.x} y1={P.y} x2={T.x} y2={T.y} stroke="currentColor">
-        <animate attributeName="strokeWidth" values="0.8;0.8;0.8;2.2;2.2;0.8" dur="3.5s" repeatCount="indefinite" keyTimes="0;0.28;0.48;0.58;0.78;1" />
-        <animate attributeName="opacity"     values="0.2;0.2;0.06;0.75;0.75;0.2" dur="3.5s" repeatCount="indefinite" keyTimes="0;0.28;0.48;0.58;0.78;1" />
+        <animate attributeName="strokeWidth" values="0.8;0.8;0.4;0.4;2.4;2.4;0.8" dur={dur} repeatCount="indefinite" keyTimes="0;0.22;0.38;0.52;0.6;0.78;1" />
+        <animate attributeName="opacity"     values="0.2;0.2;0.06;0.06;0.85;0.85;0.2" dur={dur} repeatCount="indefinite" keyTimes="0;0.22;0.38;0.52;0.6;0.78;1" />
       </line>
 
-      {/* ── target field node (old) — shrinks & fades ── */}
-      <circle cx={T.x} cy={T.y} r="4.5" fill="currentColor">
-        <animate attributeName="r"       values="4.5;4.5;2;2;4.5"     dur="3.5s" repeatCount="indefinite" keyTimes="0;0.3;0.5;0.76;1" />
-        <animate attributeName="opacity" values="0.5;0.5;0.05;0.05;0.5" dur="3.5s" repeatCount="indefinite" keyTimes="0;0.3;0.5;0.76;1" />
-      </circle>
-
-      {/* ── source node — travels from corner to target slot ── */}
-      <circle r="5" fill="currentColor">
-        <animate attributeName="cx" values={`${S.x};${S.x};${T.x};${T.x};${S.x}`} dur="3.5s" repeatCount="indefinite" keyTimes="0;0.22;0.52;0.76;1" calcMode="spline" keySplines="0 0 0 0;0.35 0 0.1 1;0 0 0 0;0.35 0 0.1 1" />
-        <animate attributeName="cy" values={`${S.y};${S.y};${T.y};${T.y};${S.y}`} dur="3.5s" repeatCount="indefinite" keyTimes="0;0.22;0.52;0.76;1" calcMode="spline" keySplines="0 0 0 0;0.35 0 0.1 1;0 0 0 0;0.35 0 0.1 1" />
-        <animate attributeName="r"  values="5;5;6;5.5;5"               dur="3.5s" repeatCount="indefinite" keyTimes="0;0.22;0.54;0.62;1" />
-        <animate attributeName="opacity" values="0;0.8;0.9;0.9;0"      dur="3.5s" repeatCount="indefinite" keyTimes="0;0.24;0.52;0.76;1" />
-      </circle>
-
-      {/* ── impact pulse ring at target ── */}
-      <circle cx={T.x} cy={T.y} fill="none" stroke="currentColor" strokeWidth="1">
-        <animate attributeName="r"       values="0;0;6;18;18;0"  dur="3.5s" repeatCount="indefinite" keyTimes="0;0.5;0.52;0.64;0.68;1" />
-        <animate attributeName="opacity" values="0;0;0.65;0;0;0" dur="3.5s" repeatCount="indefinite" keyTimes="0;0.5;0.52;0.64;0.68;1" />
-      </circle>
-
-      {/* ── lock dot: stays at target after override ── */}
+      {/* ── target field node (old): breathes, then shrinks ── */}
       <circle cx={T.x} cy={T.y} fill="currentColor">
-        <animate attributeName="r"       values="0;0;0;3.5;3.5;0"    dur="3.5s" repeatCount="indefinite" keyTimes="0;0.52;0.56;0.6;0.78;1" />
-        <animate attributeName="opacity" values="0;0;0;0.85;0.85;0"  dur="3.5s" repeatCount="indefinite" keyTimes="0;0.52;0.56;0.6;0.78;1" />
+        <animate attributeName="r"       values="4.5;5;4.5;4.5;2;1;4.5"       dur={dur} repeatCount="indefinite" keyTimes="0;0.15;0.28;0.34;0.5;0.55;1" />
+        <animate attributeName="opacity" values="0.5;0.6;0.5;0.5;0.08;0.0;0.5" dur={dur} repeatCount="indefinite" keyTimes="0;0.15;0.28;0.34;0.5;0.55;1" />
+      </circle>
+
+      {/* ── source node: arc path via intermediate point ── */}
+      <circle fill="currentColor">
+        {/* fake arc: S → midpoint (72,16) → T */}
+        <animate attributeName="cx" values={`${S.x};${S.x};72;${T.x};${T.x};${S.x}`} dur={dur} repeatCount="indefinite" keyTimes="0;0.18;0.38;0.54;0.78;1" calcMode="spline" keySplines="0 0 0 0;0.42 0 0.58 1;0.42 0 0.58 1;0 0 0 0;0.42 0 0.58 1" />
+        <animate attributeName="cy" values={`${S.y};${S.y};16;${T.y};${T.y};${S.y}`} dur={dur} repeatCount="indefinite" keyTimes="0;0.18;0.38;0.54;0.78;1" calcMode="spline" keySplines="0 0 0 0;0.42 0 0.58 1;0.42 0 0.58 1;0 0 0 0;0.42 0 0.58 1" />
+        <animate attributeName="r"        values="5;5;6;6.5;5.5;5"              dur={dur} repeatCount="indefinite" keyTimes="0;0.18;0.38;0.56;0.65;1" />
+        <animate attributeName="opacity"  values="0;0.85;0.92;0.92;0.85;0"      dur={dur} repeatCount="indefinite" keyTimes="0;0.2;0.38;0.54;0.78;1" />
+      </circle>
+
+      {/* ── impact pulse ring ── */}
+      <circle cx={T.x} cy={T.y} fill="none" stroke="currentColor" strokeWidth="1.2">
+        <animate attributeName="r"       values="0;0;5;20;20;0"   dur={dur} repeatCount="indefinite" keyTimes="0;0.52;0.54;0.66;0.7;1" />
+        <animate attributeName="opacity" values="0;0;0.7;0;0;0"   dur={dur} repeatCount="indefinite" keyTimes="0;0.52;0.54;0.66;0.7;1" />
+      </circle>
+
+      {/* ── lock dot remains at target ── */}
+      <circle cx={T.x} cy={T.y} fill="currentColor">
+        <animate attributeName="r"       values="0;0;0;4;4;0"       dur={dur} repeatCount="indefinite" keyTimes="0;0.54;0.58;0.62;0.8;1" />
+        <animate attributeName="opacity" values="0;0;0;0.88;0.88;0" dur={dur} repeatCount="indefinite" keyTimes="0;0.54;0.58;0.62;0.8;1" />
       </circle>
     </svg>
   );
