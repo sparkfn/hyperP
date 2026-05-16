@@ -83,7 +83,7 @@ export default function AnimationsPage(): ReactElement {
           { label: "Override loading", el: <OverrideAnimation /> },
         ] as const).map(({ label, el }) => (
           <div key={label} style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 16 }}>
-            <div style={{ background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 16, padding: 40, display: "flex", alignItems: "center", justifyContent: "center" }}>
+            <div style={{ width: 240, height: 240, background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 16, display: "flex", alignItems: "center", justifyContent: "center" }}>
               {el}
             </div>
             <p style={{ color: "#64748b", fontSize: 12, margin: 0 }}>{label}</p>
