@@ -3,7 +3,6 @@ import type { ReactElement } from "react";
 import { notFound } from "next/navigation";
 import { apiFetch } from "@/lib/api-server";
 import type { Person, PersonConnection, SalesOrder } from "@/lib/api-types";
-import type { PersonIdentifier } from "@/lib/api-types-person";
 import { UpstreamError } from "@/lib/api-server";
 import styles from "./public-person.module.css";
 
@@ -39,31 +38,18 @@ function maskNric(nric: string | null): string {
   return nric.length >= 4 ? `****${nric.slice(-4)}` : "****";
 }
 
-function identifierLabel(type: string): string {
-  const map: Record<string, string> = {
-    phone: "Phone",
-    email: "Email",
-    nric: "NRIC",
-    passport: "Passport",
-    uen: "UEN",
-    singpass: "Singpass",
-  };
-  return map[type] ?? type;
-}
 
 export default async function PublicPersonPage({ params }: PageProps): Promise<ReactElement> {
   const { token } = await params;
 
   let person: Person;
-  let identifiers: PersonIdentifier[];
   let connections: PersonConnection[];
   let sales: SalesOrder[];
 
   try {
     const opts = { authToken: null as null };
-    [person, identifiers, connections, sales] = await Promise.all([
+    [person, connections, sales] = await Promise.all([
       apiFetch<Person>(`/public/persons/${token}`, opts).then((r) => r.data),
-      apiFetch<PersonIdentifier[]>(`/public/persons/${token}/identifiers`, opts).then((r) => r.data).catch(() => []),
       apiFetch<PersonConnection[]>(`/public/persons/${token}/connections`, opts).then((r) => r.data).catch(() => []),
       apiFetch<SalesOrder[]>(`/public/persons/${token}/sales`, opts).then((r) => r.data).catch(() => []),
     ]);
@@ -71,11 +57,6 @@ export default async function PublicPersonPage({ params }: PageProps): Promise<R
     if (e instanceof UpstreamError && e.status === 404) notFound();
     throw e;
   }
-
-  const activeIdentifiers = identifiers.filter((id) => id.is_active);
-  const phones = activeIdentifiers.filter((id) => id.identifier_type === "phone");
-  const emails = activeIdentifiers.filter((id) => id.identifier_type === "email");
-  const otherIds = activeIdentifiers.filter((id) => id.identifier_type !== "phone" && id.identifier_type !== "email");
 
   return (
     <div className={styles.page}>
@@ -110,28 +91,24 @@ export default async function PublicPersonPage({ params }: PageProps): Promise<R
           <div className={styles.fieldGrid}>
             <div className={styles.fieldGroup}>
               <div className={styles.fieldLabel}>Phone</div>
-              {phones.length > 0
-                ? phones.map((id) => <div key={id.normalized_value} className={styles.fieldValue}>{id.normalized_value}</div>)
-                : <div className={styles.fieldValue}>—</div>}
+              <div className={styles.fieldValue}>{person.preferred_phone ?? "—"}</div>
             </div>
             <div className={styles.fieldGroup}>
               <div className={styles.fieldLabel}>Email</div>
-              {emails.length > 0
-                ? emails.map((id) => <div key={id.normalized_value} className={styles.fieldValue}>{id.normalized_value}</div>)
-                : <div className={styles.fieldValue}>—</div>}
+              <div className={styles.fieldValue}>{person.preferred_email ?? "—"}</div>
             </div>
+            {person.preferred_nric && (
+              <div className={styles.fieldGroup}>
+                <div className={styles.fieldLabel}>NRIC</div>
+                <div className={styles.fieldValue}>{maskNric(person.preferred_nric)}</div>
+              </div>
+            )}
             {person.preferred_address && (
               <div className={`${styles.fieldGroup} ${styles.fieldGroupFull}`}>
                 <div className={styles.fieldLabel}>Address</div>
                 <div className={styles.fieldValue}>{person.preferred_address.normalized_full ?? "—"}</div>
               </div>
             )}
-            {otherIds.map((id) => (
-              <div key={`${id.identifier_type}-${id.normalized_value}`} className={styles.fieldGroup}>
-                <div className={styles.fieldLabel}>{identifierLabel(id.identifier_type)}</div>
-                <div className={styles.fieldValue}>{id.normalized_value}</div>
-              </div>
-            ))}
           </div>
         </section>
 
