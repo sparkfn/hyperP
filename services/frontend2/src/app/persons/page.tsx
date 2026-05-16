@@ -1146,43 +1146,43 @@ function PersonsInner(): ReactElement {
       {/* ── Stats row ─────────────────────────────────────────── */}
       <div className={styles.statsRow}>
         <div className={styles.statCard}>
-          <div className={styles.statLabel}>Total Profiles</div>
+          {statsLoading ? <span className={styles.skeletonLine} style={{ width: 80, height: 10 }} /> : <div className={styles.statLabel}>Total Profiles</div>}
           {statsLoading ? (
             <span className={styles.skeletonLine} style={{ width: 64, height: 26, display: "block", marginTop: 2 }} />
           ) : (
             <div className={styles.statValue} style={{ color: "var(--good)" }}>{total != null ? total.toLocaleString() : "—"}</div>
           )}
-          <div className={styles.statSub}>active persons</div>
+          {statsLoading ? <span className={styles.skeletonLine} style={{ width: 70, height: 10, marginTop: 2 }} /> : <div className={styles.statSub}>active persons</div>}
         </div>
 
         <div className={styles.statCard}>
-          <div className={styles.statLabel}>High Risk</div>
+          {statsLoading ? <span className={styles.skeletonLine} style={{ width: 60, height: 10 }} /> : <div className={styles.statLabel}>High Risk</div>}
           {statsLoading ? (
             <span className={styles.skeletonLine} style={{ width: 48, height: 26, display: "block", marginTop: 2 }} />
           ) : (
             <div className={styles.statValue} style={{ color: "var(--bad)" }}>{highRiskCount != null ? highRiskCount.toLocaleString() : "—"}</div>
           )}
-          <div className={styles.statSub}>flagged as high risk</div>
+          {statsLoading ? <span className={styles.skeletonLine} style={{ width: 90, height: 10, marginTop: 2 }} /> : <div className={styles.statSub}>flagged as high risk</div>}
         </div>
 
         <div className={styles.statCard}>
-          <div className={styles.statLabel}>High Value</div>
+          {statsLoading ? <span className={styles.skeletonLine} style={{ width: 68, height: 10 }} /> : <div className={styles.statLabel}>High Value</div>}
           {statsLoading ? (
             <span className={styles.skeletonLine} style={{ width: 56, height: 26, display: "block", marginTop: 2 }} />
           ) : (
             <div className={styles.statValue} style={{ color: "var(--accent)" }}>{highValueCount != null ? highValueCount.toLocaleString() : "—"}</div>
           )}
-          <div className={styles.statSub}>flagged as high value</div>
+          {statsLoading ? <span className={styles.skeletonLine} style={{ width: 94, height: 10, marginTop: 2 }} /> : <div className={styles.statSub}>flagged as high value</div>}
         </div>
 
         <div className={styles.statCard}>
-          <div className={styles.statLabel}>No contact info</div>
+          {statsLoading ? <span className={styles.skeletonLine} style={{ width: 88, height: 10 }} /> : <div className={styles.statLabel}>No contact info</div>}
           {statsLoading ? (
             <span className={styles.skeletonLine} style={{ width: 52, height: 26, display: "block", marginTop: 2 }} />
           ) : (
             <div className={styles.statValue} style={{ color: "var(--warn-text)" }}>{noContactCount != null ? noContactCount.toLocaleString() : "—"}</div>
           )}
-          <div className={styles.statSub}>can&apos;t be reached</div>
+          {statsLoading ? <span className={styles.skeletonLine} style={{ width: 76, height: 10, marginTop: 2 }} /> : <div className={styles.statSub}>can&apos;t be reached</div>}
         </div>
       </div>
 
