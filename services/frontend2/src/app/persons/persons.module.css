@@ -1172,7 +1172,9 @@
   position: sticky;
   left: 0;
   z-index: 2;
-  background: var(--bg-card);
+  background: color-mix(in srgb, var(--bg-card) 82%, transparent);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
   border-bottom: 1px solid var(--border-subtle);
 }
 .tdCheck {
@@ -1181,9 +1183,11 @@
   position: sticky;
   left: 0;
   z-index: 1;
-  background: var(--bg-card);
+  background: color-mix(in srgb, var(--bg-card) 82%, transparent);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
 }
-.tr:hover .tdCheck { background: var(--bg-hover); }
+.tr:hover .tdCheck { background: color-mix(in srgb, var(--bg-hover) 85%, transparent); }
 
 .thSticky {
   position: sticky;
