@@ -558,6 +558,21 @@ function IdTypeIcon({ type }: { type: string }): ReactElement {
 
 const SKEL_N = [0, 1, 2, 3, 4] as const;
 
+function TabEmptyState({ message }: { message: string }): ReactElement {
+  return (
+    <div className={styles.tabEmptyState}>
+      <svg className={styles.tabEmptyIcon} viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+        <circle cx="32" cy="32" r="28" stroke="currentColor" strokeWidth="2" />
+        <circle cx="23" cy="26" r="2.5" fill="currentColor" />
+        <circle cx="41" cy="26" r="2.5" fill="currentColor" />
+        <path d="M22 42c2.5-4 17.5-4 20 0" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+        <path d="M20 20 L18 16M44 20 L46 16" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+      </svg>
+      <p className={styles.tabEmptyMsg}>{message}</p>
+    </div>
+  );
+}
+
 function SkeletonRows(): ReactElement {
   return (
     <>
@@ -651,7 +666,7 @@ function MatchesTab({ personId, onTotalLoaded }: { personId: string; onTotalLoad
         <span className={styles.connHeaderDot}>·</span>
         <span className={styles.connHeaderCount}>{total ?? matches.length} {(total ?? matches.length) === 1 ? "decision" : "decisions"}</span>
       </div>
-      {matches.length === 0 && <div className={styles.tabEmpty}>No match decisions on record.</div>}
+      {matches.length === 0 && <TabEmptyState message="No match decisions on record." />}
       <div className={styles.matchList}>
         {matches.length > 0 && <div className={styles.matchHeaderRow}>
           <span>Decision</span>
@@ -744,6 +759,7 @@ function IdentifiersTab({ personId, onTotalLoaded }: { personId: string; onTotal
         <span className={styles.connHeaderDot}>·</span>
         <span className={styles.connHeaderCount}>{total ?? identifiers.length} {(total ?? identifiers.length) === 1 ? "identifier" : "identifiers"}</span>
       </div>
+      {identifiers.length === 0 && <TabEmptyState message="No identifiers on record." />}
       <div className={styles.idList}>
         {identifiers.map((id: PersonIdentifier, index: number) => (
           <div key={`${id.identifier_type}-${id.normalized_value}-${index}`} className={styles.idRow}>
@@ -898,6 +914,7 @@ function SourceRecordsTab({ personId, onTotalLoaded }: { personId: string; onTot
         <span className={styles.connHeaderDot}>·</span>
         <span className={styles.connHeaderCount}>{total ?? sourceRecords.length} {(total ?? sourceRecords.length) === 1 ? "record" : "records"}</span>
       </div>
+      {sourceRecords.length === 0 && <TabEmptyState message="No source records linked." />}
       <div className={styles.idList}>
         {sourceRecords.map((record) => {
           const isOpen = expandedPk === record.source_record_pk;
@@ -958,6 +975,7 @@ function SalesTab({ personId, onTotalLoaded }: { personId: string; onTotalLoaded
         <span className={styles.connHeaderCount}>{total ?? sales.length} orders</span>
         {sales.length > 0 && <><span className={styles.connHeaderDot}>·</span><span className={styles.connHeaderCount}>{fmtCurrency(pageRevenue, currency)} this page</span></>}
       </div>
+      {sales.length === 0 && <TabEmptyState message="No orders on record." />}
       <div className={styles.idList}>
         {sales.map((order, index) => {
           const key = order.order_no ?? order.source_order_id ?? `order-${index}`;
@@ -1045,7 +1063,7 @@ function BankruptcyTab({ personId, onTotalLoaded }: { personId: string; onTotalL
         <span className={styles.connHeaderDot}>·</span>
         <span className={styles.connHeaderCount}>{total ?? cases.length} {(total ?? cases.length) === 1 ? "case" : "cases"}</span>
       </div>
-      {cases.length === 0 && <div className={styles.tabEmpty}>No bankruptcy cases on record.</div>}
+      {cases.length === 0 && <TabEmptyState message="No bankruptcy cases on record." />}
       <div className={styles.idList}>
         {cases.map((bkCase) => {
           const key = bkCase.bankruptcy_case_id;
@@ -1147,6 +1165,7 @@ function AuditTab({ personId, onTotalLoaded }: { personId: string; onTotalLoaded
         <span className={styles.connHeaderDot}>·</span>
         <span className={styles.connHeaderCount}>{total ?? audit.length} {(total ?? audit.length) === 1 ? "event" : "events"}</span>
       </div>
+      {audit.length === 0 && <TabEmptyState message="No audit events on record." />}
       <div className={styles.auditList}>
         {audit.map((event, i) => (
           <div key={event.merge_event_id} className={styles.auditItem}>
@@ -1265,6 +1284,7 @@ function ConnectionsTab({ personId, onTotalLoaded }: { personId: string; onTotal
         <span className={styles.connHeaderDot}>·</span>
         <span className={styles.connHeaderCount}>{total ?? connections.length} {(total ?? connections.length) === 1 ? "profile" : "profiles"}</span>
       </div>
+      {connections.length === 0 && <TabEmptyState message="No linked profiles found." />}
       <div className={styles.connSections}>
         {withRel.length > 0 && (
           <div>
