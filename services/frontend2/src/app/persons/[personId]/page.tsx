@@ -617,6 +617,15 @@ function MergeLoadingOverlay(): ReactElement {
               <animate attributeName="opacity" values="0;0;0.42;0.42;0;0" keyTimes="0;0.06;0.09;0.12;0.20;1" dur="8s" repeatCount="indefinite" />
             </circle>
           </g>
+          <g>
+            <animateTransform attributeName="transform" type="rotate" from="120 72 50" to="480 72 50" dur="2s" repeatCount="indefinite" />
+            <line x1="72" y1="50" x2="84" y2="50" stroke="currentColor" strokeWidth="0.5">
+              <animate attributeName="opacity" values="0;0;0.28;0.28;0;0" keyTimes="0;0.06;0.09;0.12;0.20;1" dur="8s" repeatCount="indefinite" />
+            </line>
+            <circle cx="84" cy="50" r="2.5" fill="currentColor">
+              <animate attributeName="opacity" values="0;0;0.35;0.35;0;0" keyTimes="0;0.06;0.09;0.12;0.20;1" dur="8s" repeatCount="indefinite" />
+            </circle>
+          </g>
           <circle cx="72" cy="50" r="6" fill="currentColor">
             <animate attributeName="opacity" values="0;0.55;0.55;0;0;0" keyTimes="0;0.07;0.09;0.20;0.90;1" dur="8s" repeatCount="indefinite" />
           </circle>
@@ -670,6 +679,15 @@ function MergeLoadingOverlay(): ReactElement {
           </line>
           <circle cx="86" cy="50" r="3" fill="currentColor">
             <animate attributeName="opacity" values="0;0;0;0.40;0;0" keyTimes="0;0.18;0.28;0.32;0.84;1" dur="8s" repeatCount="indefinite" />
+          </circle>
+        </g>
+        <g>
+          <animateTransform attributeName="transform" type="rotate" from="30 50 50" to="-330 50 50" dur="5s" repeatCount="indefinite" />
+          <line x1="50" y1="50" x2="86" y2="50" stroke="currentColor" strokeWidth="0.4">
+            <animate attributeName="opacity" values="0;0;0;0.20;0;0" keyTimes="0;0.18;0.28;0.32;0.84;1" dur="8s" repeatCount="indefinite" />
+          </line>
+          <circle cx="86" cy="50" r="2.5" fill="currentColor">
+            <animate attributeName="opacity" values="0;0;0;0.35;0;0" keyTimes="0;0.18;0.28;0.32;0.84;1" dur="8s" repeatCount="indefinite" />
           </circle>
         </g>
       </svg>
