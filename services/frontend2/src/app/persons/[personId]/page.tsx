@@ -571,12 +571,18 @@ function MergeLoadingOverlay(): ReactElement {
         </circle>
         <g>
           <animateTransform attributeName="transform" type="rotate" from="0 28 50" to="360 28 50" dur="2.4s" repeatCount="indefinite" />
+          <line x1="28" y1="50" x2="40" y2="50" stroke="currentColor" strokeWidth="0.5">
+            <animate attributeName="opacity" values="0;0;0.28;0.28;0;0" keyTimes="0;0.06;0.09;0.12;0.20;1" dur="8s" repeatCount="indefinite" />
+          </line>
           <circle cx="40" cy="50" r="3.5" fill="currentColor">
             <animate attributeName="opacity" values="0;0;0.60;0.60;0;0" keyTimes="0;0.06;0.09;0.12;0.20;1" dur="8s" repeatCount="indefinite" />
           </circle>
         </g>
         <g>
           <animateTransform attributeName="transform" type="rotate" from="180 28 50" to="540 28 50" dur="2.4s" repeatCount="indefinite" />
+          <line x1="28" y1="50" x2="40" y2="50" stroke="currentColor" strokeWidth="0.5">
+            <animate attributeName="opacity" values="0;0;0.28;0.28;0;0" keyTimes="0;0.06;0.09;0.12;0.20;1" dur="8s" repeatCount="indefinite" />
+          </line>
           <circle cx="40" cy="50" r="3" fill="currentColor">
             <animate attributeName="opacity" values="0;0;0.42;0.42;0;0" keyTimes="0;0.06;0.09;0.12;0.20;1" dur="8s" repeatCount="indefinite" />
           </circle>
@@ -591,12 +597,18 @@ function MergeLoadingOverlay(): ReactElement {
         </circle>
         <g>
           <animateTransform attributeName="transform" type="rotate" from="60 72 50" to="420 72 50" dur="2s" repeatCount="indefinite" />
+          <line x1="72" y1="50" x2="84" y2="50" stroke="currentColor" strokeWidth="0.5">
+            <animate attributeName="opacity" values="0;0;0.28;0.28;0;0" keyTimes="0;0.06;0.09;0.12;0.20;1" dur="8s" repeatCount="indefinite" />
+          </line>
           <circle cx="84" cy="50" r="3.5" fill="currentColor">
             <animate attributeName="opacity" values="0;0;0.60;0.60;0;0" keyTimes="0;0.06;0.09;0.12;0.20;1" dur="8s" repeatCount="indefinite" />
           </circle>
         </g>
         <g>
           <animateTransform attributeName="transform" type="rotate" from="240 72 50" to="600 72 50" dur="2s" repeatCount="indefinite" />
+          <line x1="72" y1="50" x2="84" y2="50" stroke="currentColor" strokeWidth="0.5">
+            <animate attributeName="opacity" values="0;0;0.28;0.28;0;0" keyTimes="0;0.06;0.09;0.12;0.20;1" dur="8s" repeatCount="indefinite" />
+          </line>
           <circle cx="84" cy="50" r="3" fill="currentColor">
             <animate attributeName="opacity" values="0;0;0.42;0.42;0;0" keyTimes="0;0.06;0.09;0.12;0.20;1" dur="8s" repeatCount="indefinite" />
           </circle>
