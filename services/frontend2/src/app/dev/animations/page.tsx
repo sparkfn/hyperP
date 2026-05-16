@@ -33,43 +33,49 @@ function MergeAnimation(): ReactElement {
 function OverrideAnimation(): ReactElement {
   return (
     <svg width="200" height="200" viewBox="0 0 100 100" style={{ color: "var(--text-secondary, #6b7280)" }}>
-      {/* field node — center bottom */}
-      <circle cx="50" cy="72" r="8" fill="currentColor" opacity="0.5" />
-
-      {/* connection A — left source → field, dims when B wins */}
-      <line x1="28" y1="28" x2="50" y2="72" stroke="currentColor" strokeWidth="1">
-        <animate attributeName="opacity" values="0.3;0.08;0.08;0.3" dur="3s" repeatCount="indefinite" keyTimes="0;0.45;0.7;1" />
-        <animate attributeName="strokeWidth" values="1;0.5;0.5;1" dur="3s" repeatCount="indefinite" keyTimes="0;0.45;0.7;1" />
+      {/* dashed guide track — appears before stamp */}
+      <line x1="50" y1="14" x2="50" y2="55" stroke="currentColor" strokeWidth="0.8" strokeDasharray="3 2">
+        <animate attributeName="opacity" values="0;0.22;0.22;0;0" dur="3s" repeatCount="indefinite" keyTimes="0;0.12;0.42;0.5;1" />
       </line>
 
-      {/* source node A — dims */}
-      <circle cx="28" cy="28" r="7" fill="currentColor">
-        <animate attributeName="opacity" values="0.55;0.15;0.15;0.55" dur="3s" repeatCount="indefinite" keyTimes="0;0.45;0.7;1" />
-        <animate attributeName="r" values="7;5;5;7" dur="3s" repeatCount="indefinite" keyTimes="0;0.45;0.7;1" />
+      {/* field node at center */}
+      <circle cx="50" cy="62" r="9" fill="currentColor">
+        <animate attributeName="opacity" values="0.3;0.3;0.85;0.85;0.3" dur="3s" repeatCount="indefinite" keyTimes="0;0.4;0.5;0.75;1" />
+      </circle>
+      {/* ambient dashed ring — "undecided / auto" state */}
+      <circle cx="50" cy="62" r="17" fill="none" stroke="currentColor" strokeWidth="0.7" strokeDasharray="3 2">
+        <animate attributeName="opacity" values="0.22;0.22;0;0;0.22" dur="3s" repeatCount="indefinite" keyTimes="0;0.38;0.5;0.65;1" />
+        <animate attributeName="r" values="17;17;24;24;17" dur="3s" repeatCount="indefinite" keyTimes="0;0.38;0.5;0.65;1" />
       </circle>
 
-      {/* connection B — right source → field, brightens when winning */}
-      <line x1="72" y1="28" x2="50" y2="72" stroke="currentColor" strokeWidth="1">
-        <animate attributeName="opacity" values="0.3;0.8;0.8;0.3" dur="3s" repeatCount="indefinite" keyTimes="0;0.45;0.7;1" />
-        <animate attributeName="strokeWidth" values="1;2.5;2.5;1" dur="3s" repeatCount="indefinite" keyTimes="0;0.45;0.7;1" />
-      </line>
-
-      {/* source node B — brightens, pulses as winner */}
-      <circle cx="72" cy="28" r="7" fill="currentColor">
-        <animate attributeName="opacity" values="0.55;0.9;0.9;0.55" dur="3s" repeatCount="indefinite" keyTimes="0;0.45;0.7;1" />
-        <animate attributeName="r" values="7;9;9;7" dur="3s" repeatCount="indefinite" keyTimes="0;0.45;0.7;1" />
+      {/* motion trail dot 1 */}
+      <circle cx="50" cy="28" r="2.5" fill="currentColor">
+        <animate attributeName="cy" values="28;28;42;56;56" dur="3s" repeatCount="indefinite" keyTimes="0;0.18;0.32;0.46;1" />
+        <animate attributeName="opacity" values="0;0.35;0.35;0;0" dur="3s" repeatCount="indefinite" keyTimes="0;0.18;0.36;0.46;1" />
+      </circle>
+      {/* motion trail dot 2 */}
+      <circle cx="50" cy="20" r="1.8" fill="currentColor">
+        <animate attributeName="cy" values="20;20;34;50;50" dur="3s" repeatCount="indefinite" keyTimes="0;0.22;0.36;0.46;1" />
+        <animate attributeName="opacity" values="0;0.2;0.2;0;0" dur="3s" repeatCount="indefinite" keyTimes="0;0.22;0.4;0.46;1" />
       </circle>
 
-      {/* pulse ring on winning node */}
-      <circle cx="72" cy="28" r="9" fill="none" stroke="currentColor" strokeWidth="1.2">
-        <animate attributeName="r" values="9;16;16;9" dur="3s" repeatCount="indefinite" keyTimes="0;0.55;0.65;1" />
-        <animate attributeName="opacity" values="0;0.35;0;0" dur="3s" repeatCount="indefinite" keyTimes="0;0.5;0.65;1" />
+      {/* override node — descends, stamps, retreats */}
+      <circle cx="50" cy="14" r="7" fill="currentColor">
+        <animate attributeName="cy" values="14;14;53;46;46;14" dur="3s" repeatCount="indefinite" keyTimes="0;0.1;0.44;0.52;0.72;1" calcMode="spline" keySplines="0 0 0 0;0.4 0 0.2 1;0.4 0 0.2 1;0 0 0 0;0.4 0 0.2 1" />
+        <animate attributeName="r" values="7;7;9;7;7;7" dur="3s" repeatCount="indefinite" keyTimes="0;0.1;0.46;0.54;0.72;1" />
+        <animate attributeName="opacity" values="0.2;0.88;0.88;0.88;0.2;0.2" dur="3s" repeatCount="indefinite" keyTimes="0;0.14;0.46;0.72;0.86;1" />
       </circle>
 
-      {/* lock dot on winning connection midpoint */}
-      <circle cx="61" cy="50" r="0" fill="currentColor">
-        <animate attributeName="r" values="0;3;3;0" dur="3s" repeatCount="indefinite" keyTimes="0;0.48;0.68;1" />
-        <animate attributeName="opacity" values="0;0.85;0.85;0" dur="3s" repeatCount="indefinite" keyTimes="0;0.48;0.68;1" />
+      {/* impact ring at field on stamp */}
+      <circle cx="50" cy="62" r="9" fill="none" stroke="currentColor" strokeWidth="1.5">
+        <animate attributeName="r" values="9;9;20;20;9" dur="3s" repeatCount="indefinite" keyTimes="0;0.47;0.58;0.65;1" />
+        <animate attributeName="opacity" values="0;0.7;0;0;0" dur="3s" repeatCount="indefinite" keyTimes="0;0.47;0.6;0.65;1" />
+      </circle>
+
+      {/* pin dot — stays on field after stamp */}
+      <circle cx="50" cy="62" r="0" fill="currentColor">
+        <animate attributeName="r" values="0;0;3.5;3.5;0" dur="3s" repeatCount="indefinite" keyTimes="0;0.5;0.56;0.78;1" />
+        <animate attributeName="opacity" values="0;0;0.9;0.9;0" dur="3s" repeatCount="indefinite" keyTimes="0;0.5;0.56;0.78;1" />
       </circle>
     </svg>
   );
