@@ -1305,11 +1305,39 @@
 
 /* ── Checkbox ────────────────────────────────────────────── */
 .checkbox {
+  appearance: none;
+  -webkit-appearance: none;
   width: 15px;
   height: 15px;
   border-radius: 4px;
   cursor: pointer;
-  accent-color: var(--accent);
+  border: 1.5px solid var(--border-active, var(--text-muted));
+  background: transparent;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  transition: border-color 0.12s, background 0.12s;
+}
+
+.checkbox:hover {
+  border-color: var(--accent);
+}
+
+.checkbox:checked {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.checkbox:checked::after {
+  content: "";
+  display: block;
+  width: 4px;
+  height: 7px;
+  border: 2px solid #fff;
+  border-top: none;
+  border-left: none;
+  transform: rotate(42deg) translate(-1px, -1px);
 }
 
 /* ── Person name cell ────────────────────────────────────── */
