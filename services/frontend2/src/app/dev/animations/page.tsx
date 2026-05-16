@@ -36,7 +36,7 @@ function OverrideAnimation(): ReactElement {
   // Dot cx animates: far outside (106) → node cx (72/86) → invisible reset.
   // Different dur from the group's orbit creates a spiral approach in world space.
   return (
-    <svg width="200" height="200" viewBox="0 0 100 100" style={{ color: "var(--text-secondary, #6b7280)" }}>
+    <svg width="200" height="200" viewBox="0 0 100 100" overflow="visible" style={{ color: "var(--text-secondary, #6b7280)" }}>
       <circle cx="50" cy="50" r="22" fill="none" stroke="currentColor" strokeWidth="0.4" opacity="0.25" />
       <circle cx="50" cy="50" r="36" fill="none" stroke="currentColor" strokeWidth="0.3" opacity="0.18" />
       <circle cx="50" cy="50" r="7" fill="currentColor" opacity="0.55" />
