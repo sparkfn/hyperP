@@ -31,83 +31,101 @@ function MergeAnimation(): ReactElement {
 }
 
 function OverrideAnimation(): ReactElement {
-  const P  = { x: 50, y: 54 };
-  const T  = { x: 50, y: 28 };
-  const F1 = { x: 73, y: 67 };
-  const F2 = { x: 27, y: 67 };
-
+  // Center (50,52), field orbit r=24, spiral loop=3.2s, orbit=9.6s (3× spiral)
+  const P = "50 52";
   return (
     <svg width="200" height="200" viewBox="0 0 100 100" style={{ color: "var(--text-secondary, #6b7280)" }}>
 
-      {/* ── always-flowing edge dashes ── */}
-      <line x1={P.x} y1={P.y} x2={F1.x} y2={F1.y} stroke="currentColor" strokeWidth="0.8" strokeDasharray="2 3">
-        <animate attributeName="opacity" values="0.15;0.28;0.15" dur="1.8s" repeatCount="indefinite" />
-        <animate attributeName="strokeDashoffset" values="0;-20" dur="1.2s" repeatCount="indefinite" />
+      {/* ── orbiting group: 3 field nodes + edges rotating together ── */}
+      <g>
+        <animateTransform attributeName="transform" type="rotate"
+          from="0 50 52" to="360 50 52" dur="9.6s" repeatCount="indefinite" />
+
+        {/* field 0 (top at start): (50,28) */}
+        <line x1="50" y1="52" x2="50" y2="28" stroke="currentColor" strokeWidth="0.8" opacity="0.2" />
+        <circle cx="50" cy="28" r="4.5" fill="currentColor">
+          {/* fades out when override hits (t≈0.62) */}
+          <animate attributeName="opacity" values="0.38;0.38;0.38;0.05;0.05;0.38" dur="3.2s" repeatCount="indefinite" keyTimes="0;0.5;0.6;0.65;0.78;1" />
+          <animate attributeName="r"       values="4.5;4.5;4.5;1.5;0;4.5"         dur="3.2s" repeatCount="indefinite" keyTimes="0;0.5;0.6;0.65;0.7;1" />
+        </circle>
+
+        {/* field 1 (bottom-right): (71,64) */}
+        <line x1="50" y1="52" x2="71" y2="64" stroke="currentColor" strokeWidth="0.8" opacity="0.2" />
+        <circle cx="71" cy="64" r="4.5" fill="currentColor">
+          <animate attributeName="opacity" values="0.28;0.4;0.28;0.28;0.28" dur="3.1s" repeatCount="indefinite" />
+        </circle>
+
+        {/* field 2 (bottom-left): (29,64) */}
+        <line x1="50" y1="52" x2="29" y2="64" stroke="currentColor" strokeWidth="0.8" opacity="0.2" />
+        <circle cx="29" cy="64" r="4.5" fill="currentColor">
+          <animate attributeName="opacity" values="0.28;0.28;0.4;0.28;0.28" dur="2.7s" repeatCount="indefinite" begin="0.8s" />
+        </circle>
+      </g>
+
+      {/* ── person node: gentle continuous pulse ── */}
+      <circle cx="50" cy="52" r="9" fill="currentColor">
+        <animate attributeName="opacity" values="0.55;0.7;0.55;0.65;0.55" dur="2.1s" repeatCount="indefinite" />
+        <animate attributeName="r"       values="9;10;9;9.5;9"             dur="2.1s" repeatCount="indefinite" />
+      </circle>
+
+      {/* ── target edge: strengthens on impact ── */}
+      <line x1="50" y1="52" x2="50" y2="28" stroke="currentColor">
+        <animate attributeName="strokeWidth" values="0.8;0.8;0.8;2.8;2.8;0.8" dur="3.2s" repeatCount="indefinite" keyTimes="0;0.5;0.62;0.68;0.8;1" />
+        <animate attributeName="opacity"     values="0.2;0.2;0.06;0.85;0.85;0.2" dur="3.2s" repeatCount="indefinite" keyTimes="0;0.5;0.62;0.68;0.8;1" />
       </line>
-      <line x1={P.x} y1={P.y} x2={F2.x} y2={F2.y} stroke="currentColor" strokeWidth="0.8" strokeDasharray="2 3">
-        <animate attributeName="opacity" values="0.15;0.28;0.15" dur="2.2s" repeatCount="indefinite" begin="0.4s" />
-        <animate attributeName="strokeDashoffset" values="0;-20" dur="1.5s" repeatCount="indefinite" />
-      </line>
-      {/* target edge — dims then flares */}
-      <line x1={P.x} y1={P.y} x2={T.x} y2={T.y} stroke="currentColor" strokeDasharray="2 3">
-        <animate attributeName="strokeWidth" values="0.8;0.8;0.3;2.8;2.8;0.8" dur="2.6s" repeatCount="indefinite" keyTimes="0;0.2;0.42;0.52;0.72;1" />
-        <animate attributeName="opacity"     values="0.18;0.18;0.04;0.9;0.9;0.18" dur="2.6s" repeatCount="indefinite" keyTimes="0;0.2;0.42;0.52;0.72;1" />
-        <animate attributeName="strokeDashoffset" values="0;-20" dur="0.9s" repeatCount="indefinite" />
-      </line>
 
-      {/* ── field nodes: continuous breathing ── */}
-      <circle cx={F1.x} cy={F1.y} fill="currentColor">
-        <animate attributeName="r"       values="4.5;5.5;4.5;4;4.5" dur="2.3s" repeatCount="indefinite" />
-        <animate attributeName="opacity" values="0.25;0.42;0.25;0.2;0.25" dur="2.3s" repeatCount="indefinite" />
-      </circle>
-      <circle cx={F2.x} cy={F2.y} fill="currentColor">
-        <animate attributeName="r"       values="4.5;4;4.5;5.5;4.5" dur="2.7s" repeatCount="indefinite" />
-        <animate attributeName="opacity" values="0.25;0.2;0.25;0.42;0.25" dur="2.7s" repeatCount="indefinite" />
-      </circle>
-
-      {/* ── person: continuous pulse ── */}
-      <circle cx={P.x} cy={P.y} fill="currentColor">
-        <animate attributeName="r"       values="9;10.5;9;9.5;9" dur="1.9s" repeatCount="indefinite" />
-        <animate attributeName="opacity" values="0.55;0.72;0.55;0.65;0.55" dur="1.9s" repeatCount="indefinite" />
-      </circle>
-
-      {/* ── target field node: breathes then gets replaced ── */}
-      <circle cx={T.x} cy={T.y} fill="currentColor">
-        <animate attributeName="r"       values="4.5;5.2;4.5;4.5;1.5;0;4.5" dur="2.6s" repeatCount="indefinite" keyTimes="0;0.18;0.32;0.38;0.48;0.54;1" />
-        <animate attributeName="opacity" values="0.5;0.65;0.5;0.5;0.1;0;0.5"  dur="2.6s" repeatCount="indefinite" keyTimes="0;0.18;0.32;0.38;0.48;0.54;1" />
-      </circle>
-
-      {/* ── source node: wide sweeping arc from 90,5 → 20,12 → 50,28 ── */}
+      {/* ── source node: spiral in from top-right corner ──
+           Path: (83,14) → wide left arc (18,30) → bottom sweep (28,68) → up to target (50,28)
+           Creates a clear wide spiral inward ── */}
       <circle fill="currentColor">
-        <animate attributeName="cx" values="90;90;20;50;50;90" dur="2.6s" repeatCount="indefinite" keyTimes="0;0.06;0.34;0.52;0.72;1" calcMode="spline" keySplines="0 0 0 0;0.4 0 0.2 1;0.4 0 0.2 1;0 0 0 0;0.4 0 0.2 1" />
-        <animate attributeName="cy" values="5;5;12;28;28;5"     dur="2.6s" repeatCount="indefinite" keyTimes="0;0.06;0.34;0.52;0.72;1" calcMode="spline" keySplines="0 0 0 0;0.4 0 0.2 1;0.4 0 0.2 1;0 0 0 0;0.4 0 0.2 1" />
-        <animate attributeName="r"       values="5;5.5;6.5;7;6;5" dur="2.6s" repeatCount="indefinite" keyTimes="0;0.06;0.34;0.54;0.62;1" />
-        <animate attributeName="opacity" values="0;0.88;0.95;0.95;0.6;0"    dur="2.6s" repeatCount="indefinite" keyTimes="0;0.08;0.34;0.52;0.72;1" />
+        <animate attributeName="cx" values="83;83;18;28;50;83" dur="3.2s" repeatCount="indefinite"
+          keyTimes="0;0.06;0.3;0.52;0.64;1"
+          calcMode="spline" keySplines="0 0 0 0;0.4 0 0.2 1;0.4 0 0.2 1;0.4 0 0.2 1;0.4 0 0.2 1" />
+        <animate attributeName="cy" values="14;14;30;68;28;14" dur="3.2s" repeatCount="indefinite"
+          keyTimes="0;0.06;0.3;0.52;0.64;1"
+          calcMode="spline" keySplines="0 0 0 0;0.4 0 0.2 1;0.4 0 0.2 1;0.4 0 0.2 1;0.4 0 0.2 1" />
+        <animate attributeName="r"       values="5.5;5.5;6;6.5;7;5.5"   dur="3.2s" repeatCount="indefinite" keyTimes="0;0.06;0.3;0.52;0.66;1" />
+        <animate attributeName="opacity" values="0;0.85;0.9;0.92;0.95;0" dur="3.2s" repeatCount="indefinite" keyTimes="0;0.07;0.3;0.52;0.68;1" />
       </circle>
 
-      {/* ── trail dots along the arc ── */}
+      {/* ── trail dot 1 (slightly behind source) ── */}
       <circle fill="currentColor">
-        <animate attributeName="cx" values="90;90;20;50;50;90" dur="2.6s" repeatCount="indefinite" keyTimes="0;0.06;0.34;0.52;0.72;1" calcMode="spline" keySplines="0 0 0 0;0.4 0 0.2 1;0.4 0 0.2 1;0 0 0 0;0.4 0 0.2 1" begin="0.08s" />
-        <animate attributeName="cy" values="5;5;12;28;28;5"     dur="2.6s" repeatCount="indefinite" keyTimes="0;0.06;0.34;0.52;0.72;1" calcMode="spline" keySplines="0 0 0 0;0.4 0 0.2 1;0.4 0 0.2 1;0 0 0 0;0.4 0 0.2 1" begin="0.08s" />
-        <animate attributeName="r"       values="2.5;3;3.5;2;0;0" dur="2.6s" repeatCount="indefinite" keyTimes="0;0.06;0.34;0.52;0.6;1" begin="0.08s" />
-        <animate attributeName="opacity" values="0;0.4;0.5;0.2;0;0" dur="2.6s" repeatCount="indefinite" keyTimes="0;0.08;0.34;0.52;0.6;1" begin="0.08s" />
+        <animate attributeName="cx" values="83;83;18;28;50;83" dur="3.2s" repeatCount="indefinite"
+          keyTimes="0;0.06;0.3;0.52;0.64;1" calcMode="spline" keySplines="0 0 0 0;0.4 0 0.2 1;0.4 0 0.2 1;0.4 0 0.2 1;0.4 0 0.2 1" begin="0.07s" />
+        <animate attributeName="cy" values="14;14;30;68;28;14" dur="3.2s" repeatCount="indefinite"
+          keyTimes="0;0.06;0.3;0.52;0.64;1" calcMode="spline" keySplines="0 0 0 0;0.4 0 0.2 1;0.4 0 0.2 1;0.4 0 0.2 1;0.4 0 0.2 1" begin="0.07s" />
+        <animate attributeName="r"       values="3;3;3.5;4;2.5;0"     dur="3.2s" repeatCount="indefinite" keyTimes="0;0.06;0.3;0.52;0.65;1" begin="0.07s" />
+        <animate attributeName="opacity" values="0;0.4;0.45;0.48;0;0" dur="3.2s" repeatCount="indefinite" keyTimes="0;0.07;0.3;0.52;0.66;1" begin="0.07s" />
       </circle>
 
-      {/* ── impact burst ── */}
-      <circle cx={T.x} cy={T.y} fill="none" stroke="currentColor" strokeWidth="1.5">
-        <animate attributeName="r"       values="0;0;7;22;22;0"   dur="2.6s" repeatCount="indefinite" keyTimes="0;0.5;0.52;0.64;0.68;1" />
-        <animate attributeName="opacity" values="0;0;0.8;0;0;0"   dur="2.6s" repeatCount="indefinite" keyTimes="0;0.5;0.52;0.64;0.68;1" />
-      </circle>
-      <circle cx={T.x} cy={T.y} fill="none" stroke="currentColor" strokeWidth="0.8">
-        <animate attributeName="r"       values="0;0;7;28;28;0"   dur="2.6s" repeatCount="indefinite" keyTimes="0;0.5;0.54;0.7;0.74;1" />
-        <animate attributeName="opacity" values="0;0;0.4;0;0;0"   dur="2.6s" repeatCount="indefinite" keyTimes="0;0.5;0.54;0.7;0.74;1" />
+      {/* ── trail dot 2 (further behind) ── */}
+      <circle fill="currentColor">
+        <animate attributeName="cx" values="83;83;18;28;50;83" dur="3.2s" repeatCount="indefinite"
+          keyTimes="0;0.06;0.3;0.52;0.64;1" calcMode="spline" keySplines="0 0 0 0;0.4 0 0.2 1;0.4 0 0.2 1;0.4 0 0.2 1;0.4 0 0.2 1" begin="0.13s" />
+        <animate attributeName="cy" values="14;14;30;68;28;14" dur="3.2s" repeatCount="indefinite"
+          keyTimes="0;0.06;0.3;0.52;0.64;1" calcMode="spline" keySplines="0 0 0 0;0.4 0 0.2 1;0.4 0 0.2 1;0.4 0 0.2 1;0.4 0 0.2 1" begin="0.13s" />
+        <animate attributeName="r"       values="1.8;1.8;2.2;2.5;1;0"   dur="3.2s" repeatCount="indefinite" keyTimes="0;0.06;0.3;0.52;0.64;1" begin="0.13s" />
+        <animate attributeName="opacity" values="0;0.25;0.28;0.3;0;0"   dur="3.2s" repeatCount="indefinite" keyTimes="0;0.07;0.3;0.52;0.65;1" begin="0.13s" />
       </circle>
 
-      {/* ── lock dot ── */}
-      <circle cx={T.x} cy={T.y} fill="currentColor">
-        <animate attributeName="r"       values="0;0;4.5;4.5;0"     dur="2.6s" repeatCount="indefinite" keyTimes="0;0.54;0.58;0.78;1" />
-        <animate attributeName="opacity" values="0;0;0.9;0.9;0"      dur="2.6s" repeatCount="indefinite" keyTimes="0;0.54;0.58;0.78;1" />
+      {/* ── impact rings at target (50,28) ── */}
+      <circle cx="50" cy="28" fill="none" stroke="currentColor" strokeWidth="1.5">
+        <animate attributeName="r"       values="0;0;6;22;0"   dur="3.2s" repeatCount="indefinite" keyTimes="0;0.63;0.65;0.78;0.84" />
+        <animate attributeName="opacity" values="0;0;0.8;0;0"  dur="3.2s" repeatCount="indefinite" keyTimes="0;0.63;0.65;0.78;0.84" />
       </circle>
+      <circle cx="50" cy="28" fill="none" stroke="currentColor" strokeWidth="0.8">
+        <animate attributeName="r"       values="0;0;6;30;0"   dur="3.2s" repeatCount="indefinite" keyTimes="0;0.65;0.67;0.82;0.88" />
+        <animate attributeName="opacity" values="0;0;0.4;0;0"  dur="3.2s" repeatCount="indefinite" keyTimes="0;0.65;0.67;0.82;0.88" />
+      </circle>
+
+      {/* ── lock dot settled at target ── */}
+      <circle cx="50" cy="28" fill="currentColor">
+        <animate attributeName="r"       values="0;0;4.5;4.5;0"    dur="3.2s" repeatCount="indefinite" keyTimes="0;0.66;0.7;0.84;1" />
+        <animate attributeName="opacity" values="0;0;0.88;0.88;0"   dur="3.2s" repeatCount="indefinite" keyTimes="0;0.66;0.7;0.84;1" />
+      </circle>
+
+      {/* suppress unused var warning */}
+      <text fontSize="0" opacity="0">{P}</text>
     </svg>
   );
 }
