@@ -2700,8 +2700,9 @@
 /* ── Merge modal ─────────────────────────────────────────── */
 .mergeWarning {
   font-size: 12px;
-  color: var(--bad);
-  background: var(--bad-soft);
+  color: var(--warn-text);
+  background: color-mix(in srgb, var(--warn-text) 8%, var(--bg-card));
+  border: 1px solid color-mix(in srgb, var(--warn-text) 25%, transparent);
   border-radius: 6px;
   padding: 10px 12px;
   line-height: 1.5;

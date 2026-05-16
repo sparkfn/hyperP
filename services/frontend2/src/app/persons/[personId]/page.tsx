@@ -1716,7 +1716,7 @@ export default function PersonDetailPage({ params }: { params: Promise<{ personI
             ) : (
               <>
                 <div className={styles.mergeWarning}>
-                  <strong>This action is irreversible.</strong> The current profile will be absorbed into the target profile and marked as merged.
+                  ⚠ This action is irreversible. The current profile will be absorbed into the target profile and marked as merged.
                 </div>
 
                 {/* Search */}
