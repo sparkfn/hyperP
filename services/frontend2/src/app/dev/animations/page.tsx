@@ -31,38 +31,70 @@ function MergeAnimation(): ReactElement {
 }
 
 function OverrideAnimation(): ReactElement {
-  // Dots fly from outside to nodes on the orbit rings. No connecting lines.
-  // Each dot has a different start position, target, duration, and begin offset
-  // so they feel independent and random.
-  const dots = [
-    { fx: 4,  fy: 6,  tx: 72, ty: 50, dur: "5.8s", begin: "0s",    r: 3.5, op: 0.82 },
-    { fx: 96, fy: 14, tx: 28, ty: 50, dur: "6.4s", begin: "1.6s",  r: 3,   op: 0.72 },
-    { fx: 94, fy: 92, tx: 50, ty: 14, dur: "7.2s", begin: "0.8s",  r: 3.5, op: 0.78 },
-    { fx: 6,  fy: 90, tx: 86, ty: 50, dur: "5.2s", begin: "3.1s",  r: 2.8, op: 0.68 },
-    { fx: 96, fy: 60, tx: 50, ty: 86, dur: "6.8s", begin: "2.2s",  r: 3.2, op: 0.75 },
-  ] as const;
-
+  // Override dots live INSIDE the same rotating group as their target node.
+  // The group rotates together, so the dot naturally "chases" the orbiting node.
+  // Dot cx animates: far outside (106) → node cx (72/86) → invisible reset.
+  // Different dur from the group's orbit creates a spiral approach in world space.
   return (
     <svg width="200" height="200" viewBox="0 0 100 100" style={{ color: "var(--text-secondary, #6b7280)" }}>
-      {/* ── exact graph animation ── */}
       <circle cx="50" cy="50" r="22" fill="none" stroke="currentColor" strokeWidth="0.4" opacity="0.25" />
       <circle cx="50" cy="50" r="36" fill="none" stroke="currentColor" strokeWidth="0.3" opacity="0.18" />
       <circle cx="50" cy="50" r="7" fill="currentColor" opacity="0.55" />
-      <g><animateTransform attributeName="transform" type="rotate" from="0 50 50" to="360 50 50" dur="3s" repeatCount="indefinite" /><line x1="50" y1="50" x2="72" y2="50" stroke="currentColor" strokeWidth="0.7" opacity="0.3" /><circle cx="72" cy="50" r="5" fill="currentColor" opacity="0.65" /></g>
-      <g><animateTransform attributeName="transform" type="rotate" from="180 50 50" to="540 50 50" dur="3s" repeatCount="indefinite" /><line x1="50" y1="50" x2="72" y2="50" stroke="currentColor" strokeWidth="0.7" opacity="0.3" /><circle cx="72" cy="50" r="4" fill="currentColor" opacity="0.5" /></g>
-      <g><animateTransform attributeName="transform" type="rotate" from="60 50 50" to="-300 50 50" dur="5s" repeatCount="indefinite" /><line x1="50" y1="50" x2="86" y2="50" stroke="currentColor" strokeWidth="0.5" opacity="0.22" /><circle cx="86" cy="50" r="4" fill="currentColor" opacity="0.55" /></g>
-      <g><animateTransform attributeName="transform" type="rotate" from="180 50 50" to="-180 50 50" dur="5s" repeatCount="indefinite" /><line x1="50" y1="50" x2="86" y2="50" stroke="currentColor" strokeWidth="0.5" opacity="0.22" /><circle cx="86" cy="50" r="3.5" fill="currentColor" opacity="0.45" /></g>
-      <g><animateTransform attributeName="transform" type="rotate" from="300 50 50" to="-60 50 50" dur="5s" repeatCount="indefinite" /><line x1="50" y1="50" x2="86" y2="50" stroke="currentColor" strokeWidth="0.5" opacity="0.22" /><circle cx="86" cy="50" r="3" fill="currentColor" opacity="0.4" /></g>
 
-      {/* ── override dots: fly in from outside, no lines ── */}
-      {dots.map((d, i) => (
-        <circle key={i} fill="currentColor">
-          <animate attributeName="cx" values={`${d.fx};${d.fx};${d.tx};${d.tx};${d.fx}`} keyTimes="0;0.1;0.58;0.68;1" dur={d.dur} begin={d.begin} repeatCount="indefinite" calcMode="spline" keySplines="0 0 0 0;0.4 0 0.2 1;0 0 0 0;0 0 0 0" />
-          <animate attributeName="cy" values={`${d.fy};${d.fy};${d.ty};${d.ty};${d.fy}`} keyTimes="0;0.1;0.58;0.68;1" dur={d.dur} begin={d.begin} repeatCount="indefinite" calcMode="spline" keySplines="0 0 0 0;0.4 0 0.2 1;0 0 0 0;0 0 0 0" />
-          <animate attributeName="r"       values={`${d.r};${d.r};${d.r + 1.5};${d.r};${d.r}`} keyTimes="0;0.1;0.6;0.68;1"  dur={d.dur} begin={d.begin} repeatCount="indefinite" />
-          <animate attributeName="opacity" values={`0;${d.op};${d.op};0;0`}              keyTimes="0;0.12;0.6;0.68;1"         dur={d.dur} begin={d.begin} repeatCount="indefinite" />
+      {/* inner A — with override dot, begin=0s dur=6s */}
+      <g>
+        <animateTransform attributeName="transform" type="rotate" from="0 50 50" to="360 50 50" dur="3s" repeatCount="indefinite" />
+        <line x1="50" y1="50" x2="72" y2="50" stroke="currentColor" strokeWidth="0.7" opacity="0.3" />
+        <circle cx="72" cy="50" r="5" fill="currentColor" opacity="0.65" />
+        <circle cy="50" fill="currentColor">
+          <animate attributeName="cx"      values="106;106;72;72;106;106" keyTimes="0;0.05;0.5;0.72;0.78;1" dur="6s"  begin="0s"   repeatCount="indefinite" calcMode="spline" keySplines="0 0 0 0;0.4 0 0.2 1;0 0 0 0;0 0 0 0;0 0 0 0" />
+          <animate attributeName="r"       values="3.5;3.5;5;3.5;3.5;3.5" keyTimes="0;0.05;0.52;0.6;0.72;1"  dur="6s"  begin="0s"   repeatCount="indefinite" />
+          <animate attributeName="opacity" values="0;0.82;0.88;0;0;0"      keyTimes="0;0.07;0.5;0.72;0.78;1"  dur="6s"  begin="0s"   repeatCount="indefinite" />
         </circle>
-      ))}
+      </g>
+
+      {/* inner B — with override dot, begin=2.4s dur=7.5s */}
+      <g>
+        <animateTransform attributeName="transform" type="rotate" from="180 50 50" to="540 50 50" dur="3s" repeatCount="indefinite" />
+        <line x1="50" y1="50" x2="72" y2="50" stroke="currentColor" strokeWidth="0.7" opacity="0.3" />
+        <circle cx="72" cy="50" r="4" fill="currentColor" opacity="0.5" />
+        <circle cy="50" fill="currentColor">
+          <animate attributeName="cx"      values="106;106;72;72;106;106" keyTimes="0;0.05;0.5;0.72;0.78;1" dur="7.5s" begin="2.4s"  repeatCount="indefinite" calcMode="spline" keySplines="0 0 0 0;0.4 0 0.2 1;0 0 0 0;0 0 0 0;0 0 0 0" />
+          <animate attributeName="r"       values="3;3;4.5;3;3;3"         keyTimes="0;0.05;0.52;0.6;0.72;1"  dur="7.5s" begin="2.4s"  repeatCount="indefinite" />
+          <animate attributeName="opacity" values="0;0.75;0.82;0;0;0"     keyTimes="0;0.07;0.5;0.72;0.78;1"  dur="7.5s" begin="2.4s"  repeatCount="indefinite" />
+        </circle>
+      </g>
+
+      {/* outer 1 — with override dot, begin=1s dur=8s */}
+      <g>
+        <animateTransform attributeName="transform" type="rotate" from="60 50 50" to="-300 50 50" dur="5s" repeatCount="indefinite" />
+        <line x1="50" y1="50" x2="86" y2="50" stroke="currentColor" strokeWidth="0.5" opacity="0.22" />
+        <circle cx="86" cy="50" r="4" fill="currentColor" opacity="0.55" />
+        <circle cy="50" fill="currentColor">
+          <animate attributeName="cx"      values="108;108;86;86;108;108" keyTimes="0;0.05;0.5;0.72;0.78;1" dur="8s"  begin="1s"   repeatCount="indefinite" calcMode="spline" keySplines="0 0 0 0;0.4 0 0.2 1;0 0 0 0;0 0 0 0;0 0 0 0" />
+          <animate attributeName="r"       values="3.5;3.5;5;3.5;3.5;3.5" keyTimes="0;0.05;0.52;0.6;0.72;1"  dur="8s"  begin="1s"   repeatCount="indefinite" />
+          <animate attributeName="opacity" values="0;0.78;0.85;0;0;0"     keyTimes="0;0.07;0.5;0.72;0.78;1"  dur="8s"  begin="1s"   repeatCount="indefinite" />
+        </circle>
+      </g>
+
+      {/* outer 2 */}
+      <g>
+        <animateTransform attributeName="transform" type="rotate" from="180 50 50" to="-180 50 50" dur="5s" repeatCount="indefinite" />
+        <line x1="50" y1="50" x2="86" y2="50" stroke="currentColor" strokeWidth="0.5" opacity="0.22" />
+        <circle cx="86" cy="50" r="3.5" fill="currentColor" opacity="0.45" />
+      </g>
+
+      {/* outer 3 — with override dot, begin=3.8s dur=9s */}
+      <g>
+        <animateTransform attributeName="transform" type="rotate" from="300 50 50" to="-60 50 50" dur="5s" repeatCount="indefinite" />
+        <line x1="50" y1="50" x2="86" y2="50" stroke="currentColor" strokeWidth="0.5" opacity="0.22" />
+        <circle cx="86" cy="50" r="3" fill="currentColor" opacity="0.4" />
+        <circle cy="50" fill="currentColor">
+          <animate attributeName="cx"      values="108;108;86;86;108;108" keyTimes="0;0.05;0.5;0.72;0.78;1" dur="9s"  begin="3.8s"  repeatCount="indefinite" calcMode="spline" keySplines="0 0 0 0;0.4 0 0.2 1;0 0 0 0;0 0 0 0;0 0 0 0" />
+          <animate attributeName="r"       values="3;3;4.5;3;3;3"         keyTimes="0;0.05;0.52;0.6;0.72;1"  dur="9s"  begin="3.8s"  repeatCount="indefinite" />
+          <animate attributeName="opacity" values="0;0.7;0.8;0;0;0"       keyTimes="0;0.07;0.5;0.72;0.78;1"  dur="9s"  begin="3.8s"  repeatCount="indefinite" />
+        </circle>
+      </g>
     </svg>
   );
 }
