@@ -67,7 +67,7 @@ function OverrideAnimation(): ReactElement {
         <animateTransform attributeName="transform" type="rotate"
           from="240 50 50" to="600 50 50" dur="5s" repeatCount="indefinite" />
         {/* line shrinks with radius */}
-        <line x1="50" y1="50" stroke="currentColor" strokeWidth="0.7">
+        <line x1="50" y1="50" y2="50" stroke="currentColor" strokeWidth="0.7">
           <animate attributeName="x2" values="92;92;76;76;92"
             dur="4s" repeatCount="indefinite" keyTimes="0;0.08;0.5;0.7;1"
             calcMode="spline" keySplines="0 0 0 0;0.4 0 0.2 1;0 0 0 0;0.4 0 0.2 1" />
