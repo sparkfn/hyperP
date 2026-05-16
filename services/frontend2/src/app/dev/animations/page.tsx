@@ -31,59 +31,69 @@ function MergeAnimation(): ReactElement {
 }
 
 function OverrideAnimation(): ReactElement {
-  // Like graph loading: 1 ring, center node, 2 orbiting field nodes.
-  // One field node gets replaced by an incoming override node.
-  // Override node approaches from outside the ring, swaps in. Loop 4s.
   return (
     <svg width="200" height="200" viewBox="0 0 100 100" style={{ color: "var(--text-secondary, #6b7280)" }}>
-      {/* ── orbit track ring ── */}
-      <circle cx="50" cy="50" r="28" fill="none" stroke="currentColor" strokeWidth="0.4" opacity="0.25" />
+      {/* ── orbit ring track ── */}
+      <circle cx="50" cy="50" r="26" fill="none" stroke="currentColor" strokeWidth="0.4" opacity="0.25" />
 
       {/* ── center node ── */}
       <circle cx="50" cy="50" r="7" fill="currentColor" opacity="0.55" />
 
-      {/* ── orbiting field node A (steady, CCW 6s) ── */}
+      {/* ── field node A — steady CW orbit, 5s ── */}
       <g>
         <animateTransform attributeName="transform" type="rotate"
-          from="180 50 50" to="-180 50 50" dur="6s" repeatCount="indefinite" />
-        <line x1="50" y1="50" x2="78" y2="50" stroke="currentColor" strokeWidth="0.7" opacity="0.3" />
-        <circle cx="78" cy="50" r="5" fill="currentColor" opacity="0.55" />
+          from="60 50 50" to="420 50 50" dur="5s" repeatCount="indefinite" />
+        <line x1="50" y1="50" x2="76" y2="50" stroke="currentColor" strokeWidth="0.7" opacity="0.3" />
+        <circle cx="76" cy="50" r="5" fill="currentColor" opacity="0.55" />
       </g>
 
-      {/* ── orbiting field node B (target, CW 4s) — fades when overridden ── */}
+      {/* ── field node B — same orbit, 180° offset — gets overridden ── */}
       <g>
         <animateTransform attributeName="transform" type="rotate"
-          from="0 50 50" to="360 50 50" dur="4s" repeatCount="indefinite" />
-        <line x1="50" y1="50" x2="78" y2="50" stroke="currentColor" strokeWidth="0.7" opacity="0.3" />
-        <circle cx="78" cy="50" r="5" fill="currentColor">
-          {/* fades out mid-cycle, restores at end */}
-          <animate attributeName="opacity" values="0.55;0.55;0.05;0.05;0.55" dur="4s" repeatCount="indefinite" keyTimes="0;0.42;0.52;0.72;1" />
-          <animate attributeName="r"       values="5;5;1.5;0;5"               dur="4s" repeatCount="indefinite" keyTimes="0;0.42;0.52;0.55;1" />
+          from="240 50 50" to="600 50 50" dur="5s" repeatCount="indefinite" />
+        <line x1="50" y1="50" x2="76" y2="50" stroke="currentColor" strokeWidth="0.7" opacity="0.3" />
+        <circle cx="76" cy="50" r="5" fill="currentColor">
+          <animate attributeName="opacity" values="0.55;0.55;0.06;0.06;0.55"
+            dur="4s" repeatCount="indefinite" keyTimes="0;0.38;0.5;0.7;1" />
+          <animate attributeName="r" values="5;5;1;0;5"
+            dur="4s" repeatCount="indefinite" keyTimes="0;0.38;0.5;0.53;1" />
         </circle>
       </g>
 
-      {/* ── override node: approaches from outside, snaps onto ring ──
-           Starts far (92,50), moves to ring radius (78,50) in the rotating frame.
-           We animate in world space: from (92,50) approaching toward (78,50),
-           then once on the ring, it orbits CW with field B from that point. ── */}
-      <circle fill="currentColor">
-        {/* Phase 1 (0→0.5): approach from outside to ring edge */}
-        <animate attributeName="cx" values="92;92;78;78;92" dur="4s" repeatCount="indefinite"
-          keyTimes="0;0.1;0.52;0.72;1"
-          calcMode="spline" keySplines="0 0 0 0;0.4 0 0.2 1;0 0 0 0;0.4 0 0.2 1" />
-        <animate attributeName="cy" values="50;50;50;50;50" dur="4s" repeatCount="indefinite"
-          keyTimes="0;0.1;0.52;0.72;1" />
-        <animate attributeName="opacity" values="0;0.8;0.9;0.9;0"  dur="4s" repeatCount="indefinite"
-          keyTimes="0;0.12;0.52;0.72;1" />
-        <animate attributeName="r"       values="5;5.5;6;5;5"      dur="4s" repeatCount="indefinite"
-          keyTimes="0;0.1;0.54;0.62;1" />
-      </circle>
-
-      {/* ── impact ring when override snaps in ── */}
-      <circle cx="78" cy="50" fill="none" stroke="currentColor" strokeWidth="1.2">
-        <animate attributeName="r"       values="0;0;5;20;0;0" dur="4s" repeatCount="indefinite" keyTimes="0;0.5;0.52;0.64;0.7;1" />
-        <animate attributeName="opacity" values="0;0;0.7;0;0;0" dur="4s" repeatCount="indefinite" keyTimes="0;0.5;0.52;0.64;0.7;1" />
-      </circle>
+      {/* ── override node — same orbit as B, but starts at outer radius and spirals in ──
+           Within the rotating group, animate cx from far (92) to ring (76).
+           This creates a spiral-inward effect as the group rotates. ── */}
+      <g>
+        <animateTransform attributeName="transform" type="rotate"
+          from="240 50 50" to="600 50 50" dur="5s" repeatCount="indefinite" />
+        {/* line shrinks with radius */}
+        <line x1="50" y1="50" stroke="currentColor" strokeWidth="0.7">
+          <animate attributeName="x2" values="92;92;76;76;92"
+            dur="4s" repeatCount="indefinite" keyTimes="0;0.08;0.5;0.7;1"
+            calcMode="spline" keySplines="0 0 0 0;0.4 0 0.2 1;0 0 0 0;0.4 0 0.2 1" />
+          <animate attributeName="opacity" values="0;0.3;0.3;0;0"
+            dur="4s" repeatCount="indefinite" keyTimes="0;0.1;0.5;0.72;1" />
+        </line>
+        {/* override node itself */}
+        <circle cy="50" fill="currentColor">
+          <animate attributeName="cx" values="92;92;76;76;92"
+            dur="4s" repeatCount="indefinite" keyTimes="0;0.08;0.5;0.7;1"
+            calcMode="spline" keySplines="0 0 0 0;0.4 0 0.2 1;0 0 0 0;0.4 0 0.2 1" />
+          <animate attributeName="r" values="5;5.5;6.5;5.5;5"
+            dur="4s" repeatCount="indefinite" keyTimes="0;0.08;0.52;0.7;1" />
+          <animate attributeName="opacity" values="0;0.85;0.92;0.85;0"
+            dur="4s" repeatCount="indefinite" keyTimes="0;0.1;0.5;0.72;1" />
+        </circle>
+        {/* impact ring — appears when override reaches ring radius */}
+        <circle cy="50" fill="none" stroke="currentColor" strokeWidth="1.2">
+          <animate attributeName="cx" values="76;76;76;76"
+            dur="4s" repeatCount="indefinite" keyTimes="0;0.5;0.62;1" />
+          <animate attributeName="r" values="0;5;20;0"
+            dur="4s" repeatCount="indefinite" keyTimes="0;0.5;0.62;1" />
+          <animate attributeName="opacity" values="0;0.75;0;0"
+            dur="4s" repeatCount="indefinite" keyTimes="0;0.5;0.62;1" />
+        </circle>
+      </g>
     </svg>
   );
 }
