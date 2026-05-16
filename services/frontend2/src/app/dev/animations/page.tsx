@@ -31,52 +31,60 @@ function MergeAnimation(): ReactElement {
 }
 
 function OverrideAnimation(): ReactElement {
+  // Person node at center. 4 field nodes around it.
+  // Field node at top-right gets overridden by an incoming source node.
+  // cx/cy of the 4 field nodes (evenly spaced around center 50,50, r=28)
+  const cx = 50; const cy = 50; const r = 28;
+  const fields = [
+    { fx: cx + r * Math.cos(-Math.PI / 4),  fy: cy + r * Math.sin(-Math.PI / 4)  }, // top-right  ← target
+    { fx: cx + r * Math.cos( Math.PI / 4),  fy: cy + r * Math.sin( Math.PI / 4)  }, // bot-right
+    { fx: cx + r * Math.cos( 3*Math.PI / 4),fy: cy + r * Math.sin( 3*Math.PI / 4)}, // bot-left
+    { fx: cx + r * Math.cos(-3*Math.PI / 4),fy: cy + r * Math.sin(-3*Math.PI / 4)}, // top-left
+  ] as const;
+  const target = fields[0]!; // top-right field node gets overridden
+  // source node starts far top-right corner
+  const srcX = 92; const srcY = 8;
+
   return (
     <svg width="200" height="200" viewBox="0 0 100 100" style={{ color: "var(--text-secondary, #6b7280)" }}>
-      {/* dashed guide track — appears before stamp */}
-      <line x1="50" y1="14" x2="50" y2="55" stroke="currentColor" strokeWidth="0.8" strokeDasharray="3 2">
-        <animate attributeName="opacity" values="0;0.22;0.22;0;0" dur="3s" repeatCount="indefinite" keyTimes="0;0.12;0.42;0.5;1" />
+      {/* edges: person → each field */}
+      {fields.map((f, i) => (
+        <line key={i} x1={cx} y1={cy} x2={f.fx} y2={f.fy} stroke="currentColor" strokeWidth="1" opacity={i === 0 ? undefined : "0.25"}>
+          {i === 0 && <animate attributeName="opacity" values="0.25;0.25;0;0.9;0.9;0.25" dur="3.2s" repeatCount="indefinite" keyTimes="0;0.3;0.48;0.56;0.78;1" />}
+        </line>
+      ))}
+
+      {/* person node — center */}
+      <circle cx={cx} cy={cy} r="9" fill="currentColor" opacity="0.6" />
+
+      {/* field nodes — non-target stay static */}
+      {fields.slice(1).map((f, i) => (
+        <circle key={i} cx={f.fx} cy={f.fy} r="5" fill="currentColor" opacity="0.3" />
+      ))}
+
+      {/* target field node — fades out when overridden */}
+      <circle cx={target.fx} cy={target.fy} r="5" fill="currentColor">
+        <animate attributeName="opacity" values="0.55;0.55;0.08;0.08;0.55" dur="3.2s" repeatCount="indefinite" keyTimes="0;0.42;0.5;0.78;1" />
+      </circle>
+
+      {/* source (override) node — travels from corner to target position */}
+      <circle cx={srcX} cy={srcY} r="5.5" fill="currentColor">
+        <animate attributeName="cx" values={`${srcX};${srcX};${target.fx};${target.fx};${srcX}`} dur="3.2s" repeatCount="indefinite" keyTimes="0;0.28;0.5;0.78;1" calcMode="spline" keySplines="0 0 0 0;0.4 0 0.2 1;0 0 0 0;0.4 0 0.2 1" />
+        <animate attributeName="cy" values={`${srcY};${srcY};${target.fy};${target.fy};${srcY}`} dur="3.2s" repeatCount="indefinite" keyTimes="0;0.28;0.5;0.78;1" calcMode="spline" keySplines="0 0 0 0;0.4 0 0.2 1;0 0 0 0;0.4 0 0.2 1" />
+        <animate attributeName="opacity" values="0.2;0.85;0.85;0.85;0.2" dur="3.2s" repeatCount="indefinite" keyTimes="0;0.3;0.5;0.78;1" />
+        <animate attributeName="r" values="5.5;5.5;6.5;5.5;5.5" dur="3.2s" repeatCount="indefinite" keyTimes="0;0.3;0.52;0.6;1" />
+      </circle>
+
+      {/* pulse ring at target when source arrives */}
+      <circle cx={target.fx} cy={target.fy} r="6" fill="none" stroke="currentColor" strokeWidth="1.2">
+        <animate attributeName="r" values="6;6;14;14;6" dur="3.2s" repeatCount="indefinite" keyTimes="0;0.5;0.6;0.65;1" />
+        <animate attributeName="opacity" values="0;0.6;0;0;0" dur="3.2s" repeatCount="indefinite" keyTimes="0;0.5;0.62;0.65;1" />
+      </circle>
+
+      {/* dashed edge from source to person — appears after override */}
+      <line x1={cx} y1={cy} x2={target.fx} y2={target.fy} stroke="currentColor" strokeWidth="1.8" strokeDasharray="0">
+        <animate attributeName="opacity" values="0;0;0.75;0.75;0" dur="3.2s" repeatCount="indefinite" keyTimes="0;0.54;0.58;0.78;1" />
       </line>
-
-      {/* field node at center */}
-      <circle cx="50" cy="62" r="9" fill="currentColor">
-        <animate attributeName="opacity" values="0.3;0.3;0.85;0.85;0.3" dur="3s" repeatCount="indefinite" keyTimes="0;0.4;0.5;0.75;1" />
-      </circle>
-      {/* ambient dashed ring — "undecided / auto" state */}
-      <circle cx="50" cy="62" r="17" fill="none" stroke="currentColor" strokeWidth="0.7" strokeDasharray="3 2">
-        <animate attributeName="opacity" values="0.22;0.22;0;0;0.22" dur="3s" repeatCount="indefinite" keyTimes="0;0.38;0.5;0.65;1" />
-        <animate attributeName="r" values="17;17;24;24;17" dur="3s" repeatCount="indefinite" keyTimes="0;0.38;0.5;0.65;1" />
-      </circle>
-
-      {/* motion trail dot 1 */}
-      <circle cx="50" cy="28" r="2.5" fill="currentColor">
-        <animate attributeName="cy" values="28;28;42;56;56" dur="3s" repeatCount="indefinite" keyTimes="0;0.18;0.32;0.46;1" />
-        <animate attributeName="opacity" values="0;0.35;0.35;0;0" dur="3s" repeatCount="indefinite" keyTimes="0;0.18;0.36;0.46;1" />
-      </circle>
-      {/* motion trail dot 2 */}
-      <circle cx="50" cy="20" r="1.8" fill="currentColor">
-        <animate attributeName="cy" values="20;20;34;50;50" dur="3s" repeatCount="indefinite" keyTimes="0;0.22;0.36;0.46;1" />
-        <animate attributeName="opacity" values="0;0.2;0.2;0;0" dur="3s" repeatCount="indefinite" keyTimes="0;0.22;0.4;0.46;1" />
-      </circle>
-
-      {/* override node — descends, stamps, retreats */}
-      <circle cx="50" cy="14" r="7" fill="currentColor">
-        <animate attributeName="cy" values="14;14;53;46;46;14" dur="3s" repeatCount="indefinite" keyTimes="0;0.1;0.44;0.52;0.72;1" calcMode="spline" keySplines="0 0 0 0;0.4 0 0.2 1;0.4 0 0.2 1;0 0 0 0;0.4 0 0.2 1" />
-        <animate attributeName="r" values="7;7;9;7;7;7" dur="3s" repeatCount="indefinite" keyTimes="0;0.1;0.46;0.54;0.72;1" />
-        <animate attributeName="opacity" values="0.2;0.88;0.88;0.88;0.2;0.2" dur="3s" repeatCount="indefinite" keyTimes="0;0.14;0.46;0.72;0.86;1" />
-      </circle>
-
-      {/* impact ring at field on stamp */}
-      <circle cx="50" cy="62" r="9" fill="none" stroke="currentColor" strokeWidth="1.5">
-        <animate attributeName="r" values="9;9;20;20;9" dur="3s" repeatCount="indefinite" keyTimes="0;0.47;0.58;0.65;1" />
-        <animate attributeName="opacity" values="0;0.7;0;0;0" dur="3s" repeatCount="indefinite" keyTimes="0;0.47;0.6;0.65;1" />
-      </circle>
-
-      {/* pin dot — stays on field after stamp */}
-      <circle cx="50" cy="62" r="0" fill="currentColor">
-        <animate attributeName="r" values="0;0;3.5;3.5;0" dur="3s" repeatCount="indefinite" keyTimes="0;0.5;0.56;0.78;1" />
-        <animate attributeName="opacity" values="0;0;0.9;0.9;0" dur="3s" repeatCount="indefinite" keyTimes="0;0.5;0.56;0.78;1" />
-      </circle>
     </svg>
   );
 }
