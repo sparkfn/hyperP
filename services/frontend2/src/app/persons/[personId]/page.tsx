@@ -684,15 +684,16 @@ function MatchesTab({ personId, onTotalLoaded }: { personId: string; onTotalLoad
         <span className={styles.connHeaderCount}>{total ?? matches.length} {(total ?? matches.length) === 1 ? "decision" : "decisions"}</span>
       </div>
       {matches.length === 0 && <TabEmptyState message="No match decisions on record." />}
-      <div className={styles.matchList}>
-        {matches.length > 0 && <div className={styles.matchHeaderRow}>
-          <span>Decision</span>
-          <span>Engine</span>
-          <span>Counterpart</span>
-          <span>Confidence</span>
-          <span>Created</span>
-        </div>}
-        {matches.map((match) => {
+      {matches.length > 0 && (
+        <div className={styles.matchList}>
+          <div className={styles.matchHeaderRow}>
+            <span>Decision</span>
+            <span>Engine</span>
+            <span>Counterpart</span>
+            <span>Confidence</span>
+            <span>Created</span>
+          </div>
+          {matches.map((match) => {
           const isOpen = expandedMatch === match.match_decision_id;
           const otherPersonId = match.left_person_id === personId ? match.right_person_id : match.left_person_id;
           return (
@@ -752,8 +753,9 @@ function MatchesTab({ personId, onTotalLoaded }: { personId: string; onTotalLoad
               )}
             </div>
           );
-        })}
-      </div>
+          })}
+        </div>
+      )}
       {(hasPrev || hasNext) && <TabPagination from={from} to={to} total={total} hasPrev={hasPrev} hasNext={hasNext} onPrev={goPrev} onNext={goNext} />}
     </section>
   );
