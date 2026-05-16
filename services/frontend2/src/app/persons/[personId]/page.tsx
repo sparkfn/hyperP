@@ -5,6 +5,8 @@ import Link from "next/link";
 import { notFound, useSearchParams } from "next/navigation";
 import type { Person, PersonConnection, SalesOrder } from "@/lib/api-types";
 import type {
+  ManualMergeRequestBody,
+  ManualMergeResponseBody,
   PersonAuditEvent,
   PersonBankruptcyCase,
   PersonIdentifier,
@@ -140,7 +142,7 @@ function TabPagination({ from, to, total, hasPrev, hasNext, onPrev, onNext }: {
   );
 }
 
-function PersonBreadcrumb({ personName, onShare, shareLoading, onOverride }: { personName: string | null; onShare: () => void; shareLoading: boolean; onOverride: () => void }): ReactElement {
+function PersonBreadcrumb({ personName, onShare, shareLoading, onOverride, onMerge }: { personName: string | null; onShare: () => void; shareLoading: boolean; onOverride: () => void; onMerge: () => void }): ReactElement {
   return (
     <div className={styles.breadcrumbRow}>
       <div className={styles.breadcrumb}>
@@ -161,7 +163,7 @@ function PersonBreadcrumb({ personName, onShare, shareLoading, onOverride }: { p
           </svg>
           Override fields
         </button>
-        <button type="button" className={styles.bcBtnDanger}>
+        <button type="button" className={styles.bcBtnDanger} onClick={onMerge}>
           <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
             <path d="M17 20.41L18.41 19 15 15.59 13.59 17 17 20.41zM7.5 8H11v5.59L5.59 19 7 20.41l6-6V8h3.5L12 3.5 7.5 8z"/>
           </svg>
@@ -1502,6 +1504,65 @@ export default function PersonDetailPage({ params }: { params: Promise<{ personI
     setShareOpen(false);
   }
 
+  const [mergeOpen, setMergeOpen] = useState(false);
+  const [mergeQuery, setMergeQuery] = useState("");
+  const [mergeResults, setMergeResults] = useState<Person[]>([]);
+  const [mergeSearching, setMergeSearching] = useState(false);
+  const [mergeTarget, setMergeTarget] = useState<Person | null>(null);
+  const [mergeReason, setMergeReason] = useState("");
+  const [mergeSubmitting, setMergeSubmitting] = useState(false);
+  const [mergeError, setMergeError] = useState<string | null>(null);
+  const [mergeSuccess, setMergeSuccess] = useState(false);
+
+  useEffect(() => {
+    if (!mergeOpen) return;
+    if (mergeQuery.trim().length < 2) { setMergeResults([]); return; }
+    let cancelled = false;
+    setMergeSearching(true);
+    void bffFetchEnvelope<Person[]>(`/bff/persons/search?q=${encodeURIComponent(mergeQuery)}&limit=8`)
+      .then((res) => { if (!cancelled) setMergeResults(res.data.filter((p) => p.person_id !== personId)); })
+      .catch(() => { if (!cancelled) setMergeResults([]); })
+      .finally(() => { if (!cancelled) setMergeSearching(false); });
+    return () => { cancelled = true; };
+  }, [mergeQuery, mergeOpen, personId]);
+
+  async function handleMergeSubmit(): Promise<void> {
+    if (!mergeTarget || !mergeReason.trim()) return;
+    setMergeSubmitting(true);
+    setMergeError(null);
+    try {
+      const body: ManualMergeRequestBody = {
+        from_person_id: personId,
+        to_person_id: mergeTarget.person_id,
+        reason: mergeReason.trim(),
+        recompute_golden_profile: true,
+      };
+      const res = await bffFetchEnvelope<ManualMergeResponseBody>("/bff/persons/manual-merge", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (res.data.status === "merged") {
+        setMergeSuccess(true);
+        setTimeout(() => window.location.replace(`/persons/${mergeTarget.person_id}`), 1500);
+      }
+    } catch (e) {
+      setMergeError(e instanceof BffError ? e.message : "Failed to merge.");
+    } finally {
+      setMergeSubmitting(false);
+    }
+  }
+
+  function closeMerge(): void {
+    setMergeOpen(false);
+    setMergeQuery("");
+    setMergeResults([]);
+    setMergeTarget(null);
+    setMergeReason("");
+    setMergeError(null);
+    setMergeSuccess(false);
+  }
+
   const [overrideOpen, setOverrideOpen] = useState(false);
   const [overrideField, setOverrideField] = useState<string>("full_name");
   const [overrideSrPk, setOverrideSrPk] = useState<string>("");
@@ -1616,7 +1677,7 @@ export default function PersonDetailPage({ params }: { params: Promise<{ personI
 
   return (
     <div className={styles.page}>
-      <PersonBreadcrumb personName={person.preferred_full_name} onShare={() => void handleShare()} shareLoading={shareLoading} onOverride={() => setOverrideOpen(true)} />
+      <PersonBreadcrumb personName={person.preferred_full_name} onShare={() => void handleShare()} shareLoading={shareLoading} onOverride={() => setOverrideOpen(true)} onMerge={() => setMergeOpen(true)} />
       <div className={styles.tabContent}>
         {activeTab === "timeline" && shell(<TimelineTab person={person} detailData={detailData} />)}
         {activeTab === "matches" && shell(<MatchesTab personId={personId} onTotalLoaded={onMatchesTotal} />)}
@@ -1639,6 +1700,100 @@ export default function PersonDetailPage({ params }: { params: Promise<{ personI
           </DetailShell>
         )}
       </div>
+
+      {mergeOpen && (
+        <div className={styles.shareOverlay} onClick={closeMerge}>
+          <div className={styles.overrideModal} onClick={(e) => e.stopPropagation()}>
+            <div className={styles.shareModalHeader}>
+              <span className={styles.shareModalTitle}>Merge into another profile</span>
+              <button type="button" className={styles.shareModalClose} onClick={closeMerge} aria-label="Close">×</button>
+            </div>
+
+            {mergeSuccess ? (
+              <div className={styles.mergeSuccess}>
+                ✓ Merged successfully. Redirecting…
+              </div>
+            ) : (
+              <>
+                <div className={styles.mergeWarning}>
+                  <strong>This action is irreversible.</strong> The current profile will be absorbed into the target profile and marked as merged.
+                </div>
+
+                {/* Search */}
+                <div className={styles.overrideFieldGroup}>
+                  <div className={styles.overrideLabel}>Search target profile</div>
+                  <input
+                    className={styles.mergeSearchInput}
+                    type="text"
+                    placeholder="Name, phone, email…"
+                    value={mergeQuery}
+                    onChange={(e) => { setMergeQuery(e.target.value); setMergeTarget(null); }}
+                    autoFocus
+                  />
+                  {mergeSearching && <div className={styles.mergeSearchStatus}>Searching…</div>}
+                  {!mergeSearching && mergeQuery.length >= 2 && mergeResults.length === 0 && (
+                    <div className={styles.mergeSearchStatus}>No results found.</div>
+                  )}
+                  {mergeResults.length > 0 && (
+                    <div className={styles.overrideSrList}>
+                      {mergeResults.map((p) => (
+                        <div
+                          key={p.person_id}
+                          className={`${styles.overrideSrRow} ${mergeTarget?.person_id === p.person_id ? styles.overrideSrRowActive : ""}`}
+                          onClick={() => setMergeTarget(p)}
+                          role="button"
+                          tabIndex={0}
+                          onKeyDown={(e) => e.key === "Enter" && setMergeTarget(p)}
+                        >
+                          <div className={styles.overrideSrInfo}>
+                            <span className={styles.overrideSrId}>{p.preferred_full_name ?? p.person_id}</span>
+                            <span className={styles.overrideSrMeta}>
+                              {[p.preferred_phone, p.preferred_email].filter(Boolean).join(" · ") || p.person_id}
+                            </span>
+                          </div>
+                          {mergeTarget?.person_id === p.person_id && <span className={styles.mergeSelectedMark}>✓</span>}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                {/* Preview */}
+                {mergeTarget && (
+                  <div className={styles.mergePreview}>
+                    <span className={styles.mergePreviewFrom}>{person.preferred_full_name ?? personId}</span>
+                    <span className={styles.mergePreviewArrow}>→</span>
+                    <span className={styles.mergePreviewTo}>{mergeTarget.preferred_full_name ?? mergeTarget.person_id}</span>
+                  </div>
+                )}
+
+                {/* Reason */}
+                <div className={styles.overrideFieldGroup}>
+                  <div className={styles.overrideLabel}>Reason</div>
+                  <textarea
+                    className={styles.overrideReason}
+                    placeholder="Why are you merging these profiles?"
+                    value={mergeReason}
+                    onChange={(e) => setMergeReason(e.target.value)}
+                    rows={2}
+                  />
+                </div>
+
+                {mergeError && <div className={styles.overrideError}>{mergeError}</div>}
+
+                <button
+                  type="button"
+                  className={styles.mergeSubmit}
+                  onClick={() => void handleMergeSubmit()}
+                  disabled={!mergeTarget || !mergeReason.trim() || mergeSubmitting}
+                >
+                  {mergeSubmitting ? "Merging…" : "Merge profiles"}
+                </button>
+              </>
+            )}
+          </div>
+        </div>
+      )}
 
       {overrideOpen && (
         <div className={styles.shareOverlay} onClick={() => setOverrideOpen(false)}>
