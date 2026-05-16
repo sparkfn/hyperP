@@ -51,6 +51,10 @@ function OverrideAnimation(): ReactElement {
           <animate attributeName="r"       values="3.5;3.5;5;3.5;3.5;3.5" keyTimes="0;0.05;0.52;0.6;0.72;1"  dur="6s"  begin="0s"   repeatCount="indefinite" />
           <animate attributeName="opacity" values="0;0.82;0.88;0;0;0"      keyTimes="0;0.07;0.5;0.72;0.78;1"  dur="6s"  begin="0s"   repeatCount="indefinite" />
         </circle>
+        <circle cx="72" cy="50" fill="none" stroke="currentColor" strokeWidth="1">
+          <animate attributeName="r"       values="0;0;5;16;16;0" keyTimes="0;0.48;0.5;0.62;0.66;1" dur="6s"  begin="0s"  repeatCount="indefinite" />
+          <animate attributeName="opacity" values="0;0;0.7;0;0;0"  keyTimes="0;0.48;0.5;0.62;0.66;1" dur="6s"  begin="0s"  repeatCount="indefinite" />
+        </circle>
       </g>
 
       {/* inner B — with override dot, begin=2.4s dur=7.5s */}
@@ -63,6 +67,10 @@ function OverrideAnimation(): ReactElement {
           <animate attributeName="r"       values="3;3;4.5;3;3;3"         keyTimes="0;0.05;0.52;0.6;0.72;1"  dur="7.5s" begin="2.4s"  repeatCount="indefinite" />
           <animate attributeName="opacity" values="0;0.75;0.82;0;0;0"     keyTimes="0;0.07;0.5;0.72;0.78;1"  dur="7.5s" begin="2.4s"  repeatCount="indefinite" />
         </circle>
+        <circle cx="72" cy="50" fill="none" stroke="currentColor" strokeWidth="1">
+          <animate attributeName="r"       values="0;0;4;14;14;0" keyTimes="0;0.48;0.5;0.62;0.66;1" dur="7.5s" begin="2.4s" repeatCount="indefinite" />
+          <animate attributeName="opacity" values="0;0;0.65;0;0;0" keyTimes="0;0.48;0.5;0.62;0.66;1" dur="7.5s" begin="2.4s" repeatCount="indefinite" />
+        </circle>
       </g>
 
       {/* outer 1 — with override dot, begin=1s dur=8s */}
@@ -74,6 +82,10 @@ function OverrideAnimation(): ReactElement {
           <animate attributeName="cx"      values="108;108;86;86;108;108" keyTimes="0;0.05;0.5;0.72;0.78;1" dur="8s"  begin="1s"   repeatCount="indefinite" calcMode="spline" keySplines="0 0 0 0;0.4 0 0.2 1;0 0 0 0;0 0 0 0;0 0 0 0" />
           <animate attributeName="r"       values="3.5;3.5;5;3.5;3.5;3.5" keyTimes="0;0.05;0.52;0.6;0.72;1"  dur="8s"  begin="1s"   repeatCount="indefinite" />
           <animate attributeName="opacity" values="0;0.78;0.85;0;0;0"     keyTimes="0;0.07;0.5;0.72;0.78;1"  dur="8s"  begin="1s"   repeatCount="indefinite" />
+        </circle>
+        <circle cx="86" cy="50" fill="none" stroke="currentColor" strokeWidth="1">
+          <animate attributeName="r"       values="0;0;5;16;16;0" keyTimes="0;0.48;0.5;0.62;0.66;1" dur="8s"  begin="1s"  repeatCount="indefinite" />
+          <animate attributeName="opacity" values="0;0;0.65;0;0;0" keyTimes="0;0.48;0.5;0.62;0.66;1" dur="8s"  begin="1s"  repeatCount="indefinite" />
         </circle>
       </g>
 
@@ -93,6 +105,10 @@ function OverrideAnimation(): ReactElement {
           <animate attributeName="cx"      values="108;108;86;86;108;108" keyTimes="0;0.05;0.5;0.72;0.78;1" dur="9s"  begin="3.8s"  repeatCount="indefinite" calcMode="spline" keySplines="0 0 0 0;0.4 0 0.2 1;0 0 0 0;0 0 0 0;0 0 0 0" />
           <animate attributeName="r"       values="3;3;4.5;3;3;3"         keyTimes="0;0.05;0.52;0.6;0.72;1"  dur="9s"  begin="3.8s"  repeatCount="indefinite" />
           <animate attributeName="opacity" values="0;0.7;0.8;0;0;0"       keyTimes="0;0.07;0.5;0.72;0.78;1"  dur="9s"  begin="3.8s"  repeatCount="indefinite" />
+        </circle>
+        <circle cx="86" cy="50" fill="none" stroke="currentColor" strokeWidth="1">
+          <animate attributeName="r"       values="0;0;4;14;14;0" keyTimes="0;0.48;0.5;0.62;0.66;1" dur="9s"  begin="3.8s" repeatCount="indefinite" />
+          <animate attributeName="opacity" values="0;0;0.6;0;0;0"  keyTimes="0;0.48;0.5;0.62;0.66;1" dur="9s"  begin="3.8s" repeatCount="indefinite" />
         </circle>
       </g>
     </svg>
