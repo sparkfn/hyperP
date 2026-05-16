@@ -1387,14 +1387,31 @@ export default function PersonDetailPage({ params }: { params: Promise<{ personI
         const p = await bffFetch<Person>(`/bff/persons/${encodeURIComponent(personId)}`);
         setPerson(p);
 
-        const [identifiers, sourceRecords, sales, audit] = await Promise.all([
-          bffFetch<PersonIdentifier[]>(`/bff/persons/${encodeURIComponent(personId)}/identifiers`).catch(() => []),
-          bffFetch<PersonSourceRecord[]>(`/bff/persons/${encodeURIComponent(personId)}/source-records`).catch(() => []),
-          bffFetch<SalesOrder[]>(`/bff/persons/${encodeURIComponent(personId)}/sales`).catch(() => []),
-          bffFetch<PersonAuditEvent[]>(`/bff/persons/${encodeURIComponent(personId)}/audit`).catch(() => []),
+        const [idEnv, srcEnv, salesEnv, auditEnv, matchesEnv, connsEnv, bkEnv] = await Promise.all([
+          bffFetchEnvelope<PersonIdentifier[]>(`/bff/persons/${encodeURIComponent(personId)}/identifiers`).catch(() => null),
+          bffFetchEnvelope<PersonSourceRecord[]>(`/bff/persons/${encodeURIComponent(personId)}/source-records`).catch(() => null),
+          bffFetchEnvelope<SalesOrder[]>(`/bff/persons/${encodeURIComponent(personId)}/sales`).catch(() => null),
+          bffFetchEnvelope<PersonAuditEvent[]>(`/bff/persons/${encodeURIComponent(personId)}/audit`).catch(() => null),
+          bffFetchEnvelope<unknown[]>(`/bff/persons/${encodeURIComponent(personId)}/matches?limit=1`).catch(() => null),
+          bffFetchEnvelope<unknown[]>(`/bff/persons/${encodeURIComponent(personId)}/connections?limit=1`).catch(() => null),
+          bffFetchEnvelope<unknown[]>(`/bff/persons/${encodeURIComponent(personId)}/bankruptcy-cases?limit=1`).catch(() => null),
         ]);
 
-        setDetailData({ identifiers, sourceRecords, sales, audit });
+        setDetailData({
+          identifiers: idEnv?.data ?? [],
+          sourceRecords: srcEnv?.data ?? [],
+          sales: salesEnv?.data ?? [],
+          audit: auditEnv?.data ?? [],
+        });
+        setTabTotals({
+          identifier:  idEnv?.meta.total_count    ?? undefined,
+          source:      srcEnv?.meta.total_count   ?? undefined,
+          sales:       salesEnv?.meta.total_count ?? undefined,
+          audit:       auditEnv?.meta.total_count ?? undefined,
+          matches:     matchesEnv?.meta.total_count ?? undefined,
+          connections: connsEnv?.meta.total_count  ?? undefined,
+          bankruptcy:  bkEnv?.meta.total_count     ?? undefined,
+        });
       } catch (err) {
         if (err instanceof BffError && err.status === 404) {
           setNotFoundFlag(true);
