@@ -561,18 +561,71 @@ function IdTypeIcon({ type }: { type: string }): ReactElement {
 
 const SKEL_N = [0, 1, 2, 3, 4] as const;
 
-function ModalLoadingOverlay(): ReactElement {
+function MergeLoadingOverlay(): ReactElement {
   return (
     <div className={styles.modalLoadingOverlay}>
-      <svg className={styles.modalLoadingSpinner} viewBox="0 0 100 100" preserveAspectRatio="xMidYMid meet" aria-hidden="true">
-        <circle cx="50" cy="50" r="22" fill="none" stroke="currentColor" strokeWidth="0.4" opacity="0.25" />
-        <circle cx="50" cy="50" r="36" fill="none" stroke="currentColor" strokeWidth="0.3" opacity="0.18" />
-        <circle cx="50" cy="50" r="7" fill="currentColor" opacity="0.55" />
-        <g><animateTransform attributeName="transform" type="rotate" from="0 50 50" to="360 50 50" dur="3s" repeatCount="indefinite" /><line x1="50" y1="50" x2="72" y2="50" stroke="currentColor" strokeWidth="0.7" opacity="0.3" /><circle cx="72" cy="50" r="5" fill="currentColor" opacity="0.65" /></g>
-        <g><animateTransform attributeName="transform" type="rotate" from="180 50 50" to="540 50 50" dur="3s" repeatCount="indefinite" /><line x1="50" y1="50" x2="72" y2="50" stroke="currentColor" strokeWidth="0.7" opacity="0.3" /><circle cx="72" cy="50" r="4" fill="currentColor" opacity="0.5" /></g>
-        <g><animateTransform attributeName="transform" type="rotate" from="60 50 50" to="-300 50 50" dur="5s" repeatCount="indefinite" /><line x1="50" y1="50" x2="86" y2="50" stroke="currentColor" strokeWidth="0.5" opacity="0.22" /><circle cx="86" cy="50" r="4" fill="currentColor" opacity="0.55" /></g>
-        <g><animateTransform attributeName="transform" type="rotate" from="180 50 50" to="-180 50 50" dur="5s" repeatCount="indefinite" /><line x1="50" y1="50" x2="86" y2="50" stroke="currentColor" strokeWidth="0.5" opacity="0.22" /><circle cx="86" cy="50" r="3.5" fill="currentColor" opacity="0.45" /></g>
-        <g><animateTransform attributeName="transform" type="rotate" from="300 50 50" to="-60 50 50" dur="5s" repeatCount="indefinite" /><line x1="50" y1="50" x2="86" y2="50" stroke="currentColor" strokeWidth="0.5" opacity="0.22" /><circle cx="86" cy="50" r="3" fill="currentColor" opacity="0.4" /></g>
+      {/* Two nodes converging into one, then splitting back */}
+      <svg className={styles.modalLoadingSpinner} viewBox="0 0 120 60" preserveAspectRatio="xMidYMid meet" aria-hidden="true">
+        {/* connection line fading as nodes approach */}
+        <line x1="18" y1="30" x2="102" y2="30" stroke="currentColor" strokeWidth="1" strokeDasharray="4 3">
+          <animate attributeName="opacity" values="0.25;0;0;0.25" dur="2.4s" repeatCount="indefinite" keyTimes="0;0.38;0.6;1" />
+        </line>
+        {/* left node → center */}
+        <circle cx="18" cy="30" r="9" fill="currentColor">
+          <animate attributeName="cx" values="18;60;60;18" dur="2.4s" repeatCount="indefinite" keyTimes="0;0.4;0.6;1" calcMode="spline" keySplines="0.4 0 0.2 1;0 0 0 0;0.4 0 0.2 1" />
+          <animate attributeName="opacity" values="0.55;0;0;0.55" dur="2.4s" repeatCount="indefinite" keyTimes="0;0.4;0.6;1" />
+        </circle>
+        {/* right node → center */}
+        <circle cx="102" cy="30" r="9" fill="currentColor">
+          <animate attributeName="cx" values="102;60;60;102" dur="2.4s" repeatCount="indefinite" keyTimes="0;0.4;0.6;1" calcMode="spline" keySplines="0.4 0 0.2 1;0 0 0 0;0.4 0 0.2 1" />
+          <animate attributeName="opacity" values="0.55;0;0;0.55" dur="2.4s" repeatCount="indefinite" keyTimes="0;0.4;0.6;1" />
+        </circle>
+        {/* merged center node */}
+        <circle cx="60" cy="30" r="0" fill="currentColor">
+          <animate attributeName="r" values="0;13;13;0" dur="2.4s" repeatCount="indefinite" keyTimes="0;0.42;0.58;1" />
+          <animate attributeName="opacity" values="0;0.85;0.85;0" dur="2.4s" repeatCount="indefinite" keyTimes="0;0.42;0.58;1" />
+        </circle>
+        {/* pulse ring */}
+        <circle cx="60" cy="30" r="0" fill="none" stroke="currentColor" strokeWidth="1.5">
+          <animate attributeName="r" values="0;22;22;0" dur="2.4s" repeatCount="indefinite" keyTimes="0;0.5;0.56;1" />
+          <animate attributeName="opacity" values="0;0.3;0;0" dur="2.4s" repeatCount="indefinite" keyTimes="0;0.5;0.56;1" />
+        </circle>
+      </svg>
+    </div>
+  );
+}
+
+function OverrideLoadingOverlay(): ReactElement {
+  return (
+    <div className={styles.modalLoadingOverlay}>
+      {/* Old value bar fades; new value bar writes in from left */}
+      <svg className={styles.modalLoadingSpinner} viewBox="0 0 120 70" preserveAspectRatio="xMidYMid meet" aria-hidden="true">
+        {/* label "old" */}
+        <text x="10" y="16" fontSize="7" fill="currentColor" opacity="0.3" fontFamily="monospace">old</text>
+        {/* old value bar */}
+        <rect x="10" y="20" width="100" height="9" rx="3" fill="currentColor">
+          <animate attributeName="opacity" values="0.2;0.05;0.2" dur="2s" repeatCount="indefinite" keyTimes="0;0.5;1" />
+        </rect>
+
+        {/* label "new" */}
+        <text x="10" y="46" fontSize="7" fill="currentColor" opacity="0.55" fontFamily="monospace">new</text>
+        {/* new value bar — sweeps in */}
+        <rect x="10" y="50" width="0" height="9" rx="3" fill="currentColor" opacity="0.75">
+          <animate attributeName="width" values="0;100;100;0" dur="2s" repeatCount="indefinite" keyTimes="0;0.4;0.7;1" calcMode="spline" keySplines="0.4 0 0.2 1;0 0 0 0;0.6 0 1 1" />
+          <animate attributeName="opacity" values="0.75;0.75;0;0" dur="2s" repeatCount="indefinite" keyTimes="0;0.4;0.7;1" />
+        </rect>
+        {/* cursor at leading edge */}
+        <rect x="10" y="48" width="2" height="13" rx="1" fill="currentColor" opacity="0">
+          <animate attributeName="x" values="10;108;10" dur="2s" repeatCount="indefinite" keyTimes="0;0.4;1" calcMode="spline" keySplines="0.4 0 0.2 1;0 0 0 0" />
+          <animate attributeName="opacity" values="0.9;0.9;0" dur="2s" repeatCount="indefinite" keyTimes="0;0.38;0.42" />
+        </rect>
+        {/* arrow from new to old */}
+        <line x1="60" y1="48" x2="60" y2="32" stroke="currentColor" strokeWidth="1">
+          <animate attributeName="opacity" values="0;0.35;0.35;0" dur="2s" repeatCount="indefinite" keyTimes="0;0.42;0.65;1" />
+        </line>
+        <polygon points="56,34 60,28 64,34" fill="currentColor">
+          <animate attributeName="opacity" values="0;0.5;0.5;0" dur="2s" repeatCount="indefinite" keyTimes="0;0.42;0.65;1" />
+        </polygon>
       </svg>
     </div>
   );
@@ -1721,7 +1774,7 @@ export default function PersonDetailPage({ params }: { params: Promise<{ personI
       {mergeOpen && (
         <div className={styles.shareOverlay} onClick={closeMerge}>
           <div className={styles.overrideModal} onClick={(e) => e.stopPropagation()}>
-            {mergeSubmitting && <ModalLoadingOverlay />}
+            {mergeSubmitting && <MergeLoadingOverlay />}
             <div className={styles.shareModalHeader}>
               <span className={styles.shareModalTitle}>Merge into another profile</span>
               <button type="button" className={styles.shareModalClose} onClick={closeMerge} aria-label="Close">×</button>
@@ -1816,7 +1869,7 @@ export default function PersonDetailPage({ params }: { params: Promise<{ personI
       {overrideOpen && (
         <div className={styles.shareOverlay} onClick={() => setOverrideOpen(false)}>
           <div className={styles.overrideModal} onClick={(e) => e.stopPropagation()}>
-            {overrideSubmitting && <ModalLoadingOverlay />}
+            {overrideSubmitting && <OverrideLoadingOverlay />}
             <div className={styles.shareModalHeader}>
               <span className={styles.shareModalTitle}>Override field</span>
               <button type="button" className={styles.shareModalClose} onClick={() => setOverrideOpen(false)} aria-label="Close">×</button>
