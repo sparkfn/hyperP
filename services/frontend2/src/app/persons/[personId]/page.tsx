@@ -1348,7 +1348,7 @@ export default function PersonDetailPage({ params }: { params: Promise<{ personI
         const [identifiers, sourceRecords, sales, audit, bankruptcyCases, matches, conns] = await Promise.all([
           bffFetch<PersonIdentifier[]>(`/bff/persons/${encodeURIComponent(personId)}/identifiers`).catch(() => []),
           bffFetch<PersonSourceRecord[]>(`/bff/persons/${encodeURIComponent(personId)}/source-records`).catch(() => []),
-          bffFetch<SalesOrder[]>(`/bff/persons/${encodeURIComponent(personId)}/sales`).catch(() => []),
+          bffFetch<SalesOrder[]>(`/bff/persons/${encodeURIComponent(personId)}/sales?limit=50`).catch(() => []),
           bffFetch<PersonAuditEvent[]>(`/bff/persons/${encodeURIComponent(personId)}/audit`).catch(() => []),
           bffFetch<PersonBankruptcyCase[]>(`/bff/persons/${encodeURIComponent(personId)}/bankruptcy-cases`).catch(() => []),
           bffFetch<PersonMatchDecision[]>(`/bff/persons/${encodeURIComponent(personId)}/matches`).catch(() => []),
