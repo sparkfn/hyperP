@@ -562,11 +562,12 @@ function TabEmptyState({ message }: { message: string }): ReactElement {
   return (
     <div className={styles.tabEmptyState}>
       <svg className={styles.tabEmptyIcon} viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-        <circle cx="32" cy="32" r="28" stroke="currentColor" strokeWidth="2" />
-        <circle cx="23" cy="26" r="2.5" fill="currentColor" />
-        <circle cx="41" cy="26" r="2.5" fill="currentColor" />
-        <path d="M22 42c2.5-4 17.5-4 20 0" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-        <path d="M20 20 L18 16M44 20 L46 16" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+        {/* left drop — small, faint */}
+        <path d="M18 38 C18 31 22 24 22 24 C22 24 26 31 26 38 C26 42.4 24.2 45 22 45 C19.8 45 18 42.4 18 38Z" fill="currentColor" opacity="0.25"/>
+        {/* centre drop — tall, prominent */}
+        <path d="M27 42 C27 33 32 24 32 24 C32 24 37 33 37 42 C37 47.5 34.8 51 32 51 C29.2 51 27 47.5 27 42Z" fill="currentColor" opacity="0.55"/>
+        {/* right drop — small, faint */}
+        <path d="M38 38 C38 31 42 24 42 24 C42 24 46 31 46 38 C46 42.4 44.2 45 42 45 C39.8 45 38 42.4 38 38Z" fill="currentColor" opacity="0.25"/>
       </svg>
       <p className={styles.tabEmptyMsg}>{message}</p>
     </div>
