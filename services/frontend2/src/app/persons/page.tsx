@@ -1155,37 +1155,25 @@ function PersonsInner(): ReactElement {
           <div className={styles.statSub}>active persons</div>
         </div>
 
-        <button
-          type="button"
-          className={`${styles.statCard} ${styles.statCardClickable} ${flagFilter === "high_risk" ? styles.statCardActive : ""}`}
-          onClick={() => setFlagFilter((f) => f === "high_risk" ? "any" : "high_risk")}
-          title="Filter by high risk"
-          disabled={statsLoading}
-        >
+        <div className={styles.statCard}>
           <div className={styles.statLabel}>High Risk</div>
           {statsLoading ? (
             <span className={styles.skeletonLine} style={{ width: 48, height: 26, display: "block", marginTop: 2 }} />
           ) : (
             <div className={styles.statValue} style={{ color: "var(--bad)" }}>{highRiskCount != null ? highRiskCount.toLocaleString() : "—"}</div>
           )}
-          <div className={styles.statSub}>{!statsLoading && flagFilter === "high_risk" ? "✓ filtering active" : "click to filter"}</div>
-        </button>
+          <div className={styles.statSub}>flagged as high risk</div>
+        </div>
 
-        <button
-          type="button"
-          className={`${styles.statCard} ${styles.statCardClickable} ${flagFilter === "high_value" ? styles.statCardActive : ""}`}
-          onClick={() => setFlagFilter((f) => f === "high_value" ? "any" : "high_value")}
-          title="Filter by high value"
-          disabled={statsLoading}
-        >
+        <div className={styles.statCard}>
           <div className={styles.statLabel}>High Value</div>
           {statsLoading ? (
             <span className={styles.skeletonLine} style={{ width: 56, height: 26, display: "block", marginTop: 2 }} />
           ) : (
             <div className={styles.statValue} style={{ color: "var(--accent)" }}>{highValueCount != null ? highValueCount.toLocaleString() : "—"}</div>
           )}
-          <div className={styles.statSub}>{!statsLoading && flagFilter === "high_value" ? "✓ filtering active" : "click to filter"}</div>
-        </button>
+          <div className={styles.statSub}>flagged as high value</div>
+        </div>
 
         <div className={styles.statCard}>
           <div className={styles.statLabel}>No contact info</div>
