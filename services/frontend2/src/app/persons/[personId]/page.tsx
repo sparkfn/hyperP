@@ -564,32 +564,86 @@ const SKEL_N = [0, 1, 2, 3, 4] as const;
 function MergeLoadingOverlay(): ReactElement {
   return (
     <div className={styles.modalLoadingOverlay}>
-      {/* Two nodes converging into one, then splitting back */}
-      <svg className={styles.modalLoadingSpinner} viewBox="0 0 120 60" preserveAspectRatio="xMidYMid meet" aria-hidden="true">
-        {/* connection line fading as nodes approach */}
-        <line x1="18" y1="30" x2="102" y2="30" stroke="currentColor" strokeWidth="1" strokeDasharray="4 3">
-          <animate attributeName="opacity" values="0.25;0;0;0.25" dur="2.4s" repeatCount="indefinite" keyTimes="0;0.38;0.6;1" />
-        </line>
-        {/* left node → center */}
-        <circle cx="18" cy="30" r="9" fill="currentColor">
-          <animate attributeName="cx" values="18;60;60;18" dur="2.4s" repeatCount="indefinite" keyTimes="0;0.4;0.6;1" calcMode="spline" keySplines="0.4 0 0.2 1;0 0 0 0;0.4 0 0.2 1" />
-          <animate attributeName="opacity" values="0.55;0;0;0.55" dur="2.4s" repeatCount="indefinite" keyTimes="0;0.4;0.6;1" />
+      <svg className={styles.modalLoadingSpinner} viewBox="0 0 100 100" overflow="visible" preserveAspectRatio="xMidYMid meet" aria-hidden="true">
+        {/* System A — center (28,50), ring r=12 */}
+        <circle cx="28" cy="50" r="12" fill="none" stroke="currentColor" strokeWidth="0.4">
+          <animate attributeName="opacity" values="0.22;0.22;0;0;0;0.22;0.22" keyTimes="0;0.28;0.40;0.62;0.74;0.88;1" dur="8s" repeatCount="indefinite" />
         </circle>
-        {/* right node → center */}
-        <circle cx="102" cy="30" r="9" fill="currentColor">
-          <animate attributeName="cx" values="102;60;60;102" dur="2.4s" repeatCount="indefinite" keyTimes="0;0.4;0.6;1" calcMode="spline" keySplines="0.4 0 0.2 1;0 0 0 0;0.4 0 0.2 1" />
-          <animate attributeName="opacity" values="0.55;0;0;0.55" dur="2.4s" repeatCount="indefinite" keyTimes="0;0.4;0.6;1" />
+        <g>
+          <animateTransform attributeName="transform" type="rotate" from="0 28 50" to="360 28 50" dur="2.4s" repeatCount="indefinite" />
+          <circle cx="40" cy="50" r="3.5" fill="currentColor">
+            <animate attributeName="opacity" values="0.60;0.60;0;0;0;0.60;0.60" keyTimes="0;0.28;0.40;0.62;0.74;0.88;1" dur="8s" repeatCount="indefinite" />
+          </circle>
+        </g>
+        <g>
+          <animateTransform attributeName="transform" type="rotate" from="180 28 50" to="540 28 50" dur="2.4s" repeatCount="indefinite" />
+          <circle cx="40" cy="50" r="3" fill="currentColor">
+            <animate attributeName="opacity" values="0.42;0.42;0;0;0;0.42;0.42" keyTimes="0;0.28;0.40;0.62;0.74;0.88;1" dur="8s" repeatCount="indefinite" />
+          </circle>
+        </g>
+        <circle cx="28" cy="50" r="6" fill="currentColor">
+          <animate attributeName="cx"      values="28;28;50;50;50;28;28"      keyTimes="0;0.34;0.46;0.60;0.72;0.86;1" dur="8s" repeatCount="indefinite" calcMode="spline" keySplines="0 0 0 0;0.4 0 0.2 1;0 0 0 0;0 0 0 0;0.4 0 0.2 1;0 0 0 0" />
+          <animate attributeName="opacity" values="0.55;0.55;0;0;0;0.55;0.55" keyTimes="0;0.34;0.46;0.60;0.72;0.86;1" dur="8s" repeatCount="indefinite" />
         </circle>
-        {/* merged center node */}
-        <circle cx="60" cy="30" r="0" fill="currentColor">
-          <animate attributeName="r" values="0;13;13;0" dur="2.4s" repeatCount="indefinite" keyTimes="0;0.42;0.58;1" />
-          <animate attributeName="opacity" values="0;0.85;0.85;0" dur="2.4s" repeatCount="indefinite" keyTimes="0;0.42;0.58;1" />
+        {/* System B — center (72,50), ring r=12 */}
+        <circle cx="72" cy="50" r="12" fill="none" stroke="currentColor" strokeWidth="0.4">
+          <animate attributeName="opacity" values="0.22;0.22;0;0;0;0.22;0.22" keyTimes="0;0.28;0.40;0.62;0.74;0.88;1" dur="8s" repeatCount="indefinite" />
         </circle>
-        {/* pulse ring */}
-        <circle cx="60" cy="30" r="0" fill="none" stroke="currentColor" strokeWidth="1.5">
-          <animate attributeName="r" values="0;22;22;0" dur="2.4s" repeatCount="indefinite" keyTimes="0;0.5;0.56;1" />
-          <animate attributeName="opacity" values="0;0.3;0;0" dur="2.4s" repeatCount="indefinite" keyTimes="0;0.5;0.56;1" />
+        <g>
+          <animateTransform attributeName="transform" type="rotate" from="60 72 50" to="420 72 50" dur="2s" repeatCount="indefinite" />
+          <circle cx="84" cy="50" r="3.5" fill="currentColor">
+            <animate attributeName="opacity" values="0.60;0.60;0;0;0;0.60;0.60" keyTimes="0;0.28;0.40;0.62;0.74;0.88;1" dur="8s" repeatCount="indefinite" />
+          </circle>
+        </g>
+        <g>
+          <animateTransform attributeName="transform" type="rotate" from="240 72 50" to="600 72 50" dur="2s" repeatCount="indefinite" />
+          <circle cx="84" cy="50" r="3" fill="currentColor">
+            <animate attributeName="opacity" values="0.42;0.42;0;0;0;0.42;0.42" keyTimes="0;0.28;0.40;0.62;0.74;0.88;1" dur="8s" repeatCount="indefinite" />
+          </circle>
+        </g>
+        <circle cx="72" cy="50" r="6" fill="currentColor">
+          <animate attributeName="cx"      values="72;72;50;50;50;72;72"      keyTimes="0;0.34;0.46;0.60;0.72;0.86;1" dur="8s" repeatCount="indefinite" calcMode="spline" keySplines="0 0 0 0;0.4 0 0.2 1;0 0 0 0;0 0 0 0;0.4 0 0.2 1;0 0 0 0" />
+          <animate attributeName="opacity" values="0.55;0.55;0;0;0;0.55;0.55" keyTimes="0;0.34;0.46;0.60;0.72;0.86;1" dur="8s" repeatCount="indefinite" />
         </circle>
+        {/* Merged state — center (50,50), 2 rings */}
+        <circle cx="50" cy="50" r="0" fill="none" stroke="currentColor" strokeWidth="1.5">
+          <animate attributeName="r"       values="0;0;8;38;38;0;0" keyTimes="0;0.44;0.46;0.57;0.59;0.62;1" dur="8s" repeatCount="indefinite" />
+          <animate attributeName="opacity" values="0;0;0.5;0;0;0;0"  keyTimes="0;0.44;0.46;0.57;0.59;0.62;1" dur="8s" repeatCount="indefinite" />
+        </circle>
+        <circle cx="50" cy="50" r="0" fill="currentColor">
+          <animate attributeName="r"       values="0;0;8;8;8;0;0"       keyTimes="0;0.44;0.50;0.60;0.70;0.78;1" dur="8s" repeatCount="indefinite" />
+          <animate attributeName="opacity" values="0;0;0.7;0.7;0.7;0;0" keyTimes="0;0.44;0.50;0.60;0.70;0.78;1" dur="8s" repeatCount="indefinite" />
+        </circle>
+        <circle cx="50" cy="50" r="22" fill="none" stroke="currentColor" strokeWidth="0.4">
+          <animate attributeName="opacity" values="0;0;0;0.25;0.25;0;0" keyTimes="0;0.44;0.52;0.56;0.70;0.78;1" dur="8s" repeatCount="indefinite" />
+        </circle>
+        <circle cx="50" cy="50" r="36" fill="none" stroke="currentColor" strokeWidth="0.3">
+          <animate attributeName="opacity" values="0;0;0;0.18;0.18;0;0" keyTimes="0;0.44;0.54;0.58;0.70;0.78;1" dur="8s" repeatCount="indefinite" />
+        </circle>
+        <g>
+          <animateTransform attributeName="transform" type="rotate" from="0 50 50" to="360 50 50" dur="3s" repeatCount="indefinite" />
+          <circle cx="72" cy="50" r="4" fill="currentColor">
+            <animate attributeName="opacity" values="0;0;0;0.65;0.65;0;0" keyTimes="0;0.44;0.52;0.56;0.70;0.78;1" dur="8s" repeatCount="indefinite" />
+          </circle>
+        </g>
+        <g>
+          <animateTransform attributeName="transform" type="rotate" from="180 50 50" to="540 50 50" dur="3s" repeatCount="indefinite" />
+          <circle cx="72" cy="50" r="3.5" fill="currentColor">
+            <animate attributeName="opacity" values="0;0;0;0.50;0.50;0;0" keyTimes="0;0.44;0.52;0.56;0.70;0.78;1" dur="8s" repeatCount="indefinite" />
+          </circle>
+        </g>
+        <g>
+          <animateTransform attributeName="transform" type="rotate" from="90 50 50" to="-270 50 50" dur="5s" repeatCount="indefinite" />
+          <circle cx="86" cy="50" r="3.5" fill="currentColor">
+            <animate attributeName="opacity" values="0;0;0;0.55;0.55;0;0" keyTimes="0;0.44;0.54;0.58;0.70;0.78;1" dur="8s" repeatCount="indefinite" />
+          </circle>
+        </g>
+        <g>
+          <animateTransform attributeName="transform" type="rotate" from="270 50 50" to="-90 50 50" dur="5s" repeatCount="indefinite" />
+          <circle cx="86" cy="50" r="3" fill="currentColor">
+            <animate attributeName="opacity" values="0;0;0;0.40;0.40;0;0" keyTimes="0;0.44;0.54;0.58;0.70;0.78;1" dur="8s" repeatCount="indefinite" />
+          </circle>
+        </g>
       </svg>
     </div>
   );
