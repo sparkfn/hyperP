@@ -1661,7 +1661,6 @@ export default function PersonDetailPage({ params }: { params: Promise<{ personI
                   { key: "email", label: "Email" },
                   { key: "dob", label: "Date of birth" },
                   { key: "address", label: "Address" },
-                  { key: "nric", label: "NRIC" },
                 ] as const).map(({ key, label }) => (
                   <button
                     key={key}
