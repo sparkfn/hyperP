@@ -55,6 +55,11 @@ CALL {
   UNWIND all_conn AS c
   RETURN count(DISTINCT c) AS connection_count
 }
+CALL {
+  WITH person
+  OPTIONAL MATCH (person)-[:PURCHASED]->(o:Order)
+  RETURN sum(o.total_amount) AS lifetime_value
+}
 RETURN person {
   .person_id, .status, .is_high_value, .is_high_risk,
   .preferred_full_name, .preferred_phone, .preferred_email, .preferred_dob, .preferred_nric,
@@ -66,7 +71,8 @@ addr {
   .city, .postal_code, .country_code, .normalized_full
 } AS preferred_address,
 source_record_count,
-connection_count
+connection_count,
+lifetime_value
 """
 
 GET_PERSON_SOURCE_RECORDS = """

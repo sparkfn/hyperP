@@ -87,6 +87,7 @@ def map_person(record: GraphRecord, address_key: str = "preferred_address") -> P
         golden_profile_version=to_optional_str(p.get("golden_profile_version")),
         source_record_count=to_int(record.get("source_record_count")),
         connection_count=to_int(record.get("connection_count")),
+        lifetime_value=to_optional_float(record.get("lifetime_value")),
         created_at=to_iso_or_empty(p.get("created_at")),
         updated_at=to_iso_or_empty(p.get("updated_at")),
     )

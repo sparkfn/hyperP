@@ -145,6 +145,7 @@ class Person(BaseModel):
     golden_profile_version: str | None = None
     source_record_count: int = 0
     connection_count: int = 0
+    lifetime_value: float | None = None
     created_at: str = ""
     updated_at: str = ""
 
