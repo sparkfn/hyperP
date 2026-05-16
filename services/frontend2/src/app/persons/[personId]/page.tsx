@@ -1522,6 +1522,7 @@ export default function PersonDetailPage({ params }: { params: Promise<{ personI
       };
       await bffFetchEnvelope(`/bff/persons/${encodeURIComponent(personId)}/survivorship-overrides`, {
         method: "POST",
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
       });
       setOverrideSuccess(true);
