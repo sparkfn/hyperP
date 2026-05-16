@@ -561,13 +561,29 @@ const SKEL_N = [0, 1, 2, 3, 4] as const;
 function TabEmptyState({ message }: { message: string }): ReactElement {
   return (
     <div className={styles.tabEmptyState}>
-      <svg className={styles.tabEmptyIcon} viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-        {/* left drop — small, faint */}
-        <path d="M18 38 C18 31 22 24 22 24 C22 24 26 31 26 38 C26 42.4 24.2 45 22 45 C19.8 45 18 42.4 18 38Z" fill="currentColor" opacity="0.25"/>
-        {/* centre drop — tall, prominent */}
-        <path d="M27 42 C27 33 32 24 32 24 C32 24 37 33 37 42 C37 47.5 34.8 51 32 51 C29.2 51 27 47.5 27 42Z" fill="currentColor" opacity="0.55"/>
-        {/* right drop — small, faint */}
-        <path d="M38 38 C38 31 42 24 42 24 C42 24 46 31 46 38 C46 42.4 44.2 45 42 45 C39.8 45 38 42.4 38 38Z" fill="currentColor" opacity="0.25"/>
+      <svg className={styles.tabEmptyIcon} viewBox="0 0 80 72" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+        {/* cloud body */}
+        <path
+          d="M18 38 Q16 38 14 36 Q10 34 10 30 Q10 24 16 23 Q17 17 24 16 Q31 15 34 20 Q36 15 42 15 Q49 15 51 21 Q57 22 58 28 Q59 34 55 37 Q53 38 50 38 Z"
+          fill="currentColor" opacity="0.12"
+        />
+        <path
+          d="M18 38 Q16 38 14 36 Q10 34 10 30 Q10 24 16 23 Q17 17 24 16 Q31 15 34 20 Q36 15 42 15 Q49 15 51 21 Q57 22 58 28 Q59 34 55 37 Q53 38 50 38 Z"
+          stroke="currentColor" strokeWidth="1.4" opacity="0.6"
+        />
+        {/* rain lines — 5 drops, varied lengths and offsets */}
+        <line x1="21" y1="43" x2="18" y2="52" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" opacity="0.35"/>
+        <line x1="30" y1="43" x2="27" y2="54" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" opacity="0.55"/>
+        <line x1="39" y1="43" x2="37" y2="56" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" opacity="0.65"/>
+        <line x1="48" y1="43" x2="46" y2="54" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" opacity="0.55"/>
+        <line x1="57" y1="43" x2="55" y2="52" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" opacity="0.35"/>
+        {/* puddle — thin oval at bottom */}
+        <ellipse cx="38" cy="65" rx="18" ry="3.5" fill="currentColor" opacity="0.1"/>
+        <ellipse cx="38" cy="65" rx="18" ry="3.5" stroke="currentColor" strokeWidth="1" opacity="0.25"/>
+        {/* two tiny floating dots near cloud — like mist */}
+        <circle cx="6" cy="28" r="1.8" fill="currentColor" opacity="0.2"/>
+        <circle cx="68" cy="24" r="1.4" fill="currentColor" opacity="0.15"/>
+        <circle cx="64" cy="34" r="1" fill="currentColor" opacity="0.12"/>
       </svg>
       <p className={styles.tabEmptyMsg}>{message}</p>
     </div>
