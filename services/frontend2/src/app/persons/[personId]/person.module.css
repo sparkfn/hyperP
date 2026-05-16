@@ -2522,6 +2522,7 @@
 
 /* ── Override modal ──────────────────────────────────────── */
 .overrideModal {
+  position: relative;
   background: var(--bg-card);
   border: 1px solid var(--border);
   border-radius: 12px;
@@ -2790,4 +2791,24 @@
   font-size: 14px;
   font-weight: 600;
   color: var(--good);
+}
+
+/* ── Modal loading overlay ───────────────────────────────── */
+.modalLoadingOverlay {
+  position: absolute;
+  inset: 0;
+  z-index: 10;
+  border-radius: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: color-mix(in srgb, var(--bg-card) 75%, transparent);
+  backdrop-filter: blur(3px);
+  -webkit-backdrop-filter: blur(3px);
+}
+
+.modalLoadingSpinner {
+  width: min(45%, 120px);
+  height: min(45%, 120px);
+  color: var(--text-muted);
 }

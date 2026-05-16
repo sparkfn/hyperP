@@ -561,6 +561,23 @@ function IdTypeIcon({ type }: { type: string }): ReactElement {
 
 const SKEL_N = [0, 1, 2, 3, 4] as const;
 
+function ModalLoadingOverlay(): ReactElement {
+  return (
+    <div className={styles.modalLoadingOverlay}>
+      <svg className={styles.modalLoadingSpinner} viewBox="0 0 100 100" preserveAspectRatio="xMidYMid meet" aria-hidden="true">
+        <circle cx="50" cy="50" r="22" fill="none" stroke="currentColor" strokeWidth="0.4" opacity="0.25" />
+        <circle cx="50" cy="50" r="36" fill="none" stroke="currentColor" strokeWidth="0.3" opacity="0.18" />
+        <circle cx="50" cy="50" r="7" fill="currentColor" opacity="0.55" />
+        <g><animateTransform attributeName="transform" type="rotate" from="0 50 50" to="360 50 50" dur="3s" repeatCount="indefinite" /><line x1="50" y1="50" x2="72" y2="50" stroke="currentColor" strokeWidth="0.7" opacity="0.3" /><circle cx="72" cy="50" r="5" fill="currentColor" opacity="0.65" /></g>
+        <g><animateTransform attributeName="transform" type="rotate" from="180 50 50" to="540 50 50" dur="3s" repeatCount="indefinite" /><line x1="50" y1="50" x2="72" y2="50" stroke="currentColor" strokeWidth="0.7" opacity="0.3" /><circle cx="72" cy="50" r="4" fill="currentColor" opacity="0.5" /></g>
+        <g><animateTransform attributeName="transform" type="rotate" from="60 50 50" to="-300 50 50" dur="5s" repeatCount="indefinite" /><line x1="50" y1="50" x2="86" y2="50" stroke="currentColor" strokeWidth="0.5" opacity="0.22" /><circle cx="86" cy="50" r="4" fill="currentColor" opacity="0.55" /></g>
+        <g><animateTransform attributeName="transform" type="rotate" from="180 50 50" to="-180 50 50" dur="5s" repeatCount="indefinite" /><line x1="50" y1="50" x2="86" y2="50" stroke="currentColor" strokeWidth="0.5" opacity="0.22" /><circle cx="86" cy="50" r="3.5" fill="currentColor" opacity="0.45" /></g>
+        <g><animateTransform attributeName="transform" type="rotate" from="300 50 50" to="-60 50 50" dur="5s" repeatCount="indefinite" /><line x1="50" y1="50" x2="86" y2="50" stroke="currentColor" strokeWidth="0.5" opacity="0.22" /><circle cx="86" cy="50" r="3" fill="currentColor" opacity="0.4" /></g>
+      </svg>
+    </div>
+  );
+}
+
 function TabEmptyState({ message }: { message: string }): ReactElement {
   return (
     <div className={styles.tabEmptyState}>
@@ -1704,6 +1721,7 @@ export default function PersonDetailPage({ params }: { params: Promise<{ personI
       {mergeOpen && (
         <div className={styles.shareOverlay} onClick={closeMerge}>
           <div className={styles.overrideModal} onClick={(e) => e.stopPropagation()}>
+            {mergeSubmitting && <ModalLoadingOverlay />}
             <div className={styles.shareModalHeader}>
               <span className={styles.shareModalTitle}>Merge into another profile</span>
               <button type="button" className={styles.shareModalClose} onClick={closeMerge} aria-label="Close">×</button>
@@ -1798,6 +1816,7 @@ export default function PersonDetailPage({ params }: { params: Promise<{ personI
       {overrideOpen && (
         <div className={styles.shareOverlay} onClick={() => setOverrideOpen(false)}>
           <div className={styles.overrideModal} onClick={(e) => e.stopPropagation()}>
+            {overrideSubmitting && <ModalLoadingOverlay />}
             <div className={styles.shareModalHeader}>
               <span className={styles.shareModalTitle}>Override field</span>
               <button type="button" className={styles.shareModalClose} onClick={() => setOverrideOpen(false)} aria-label="Close">×</button>
