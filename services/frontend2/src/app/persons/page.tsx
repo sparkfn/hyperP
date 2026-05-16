@@ -734,6 +734,7 @@ function PersonsInner(): ReactElement {
   const [currentCursor, setCurrentCursor] = useState<string | null>(null);
   const [entities, setEntities] = useState<EntitySummary[]>([]);
   const [sourceSystems, setSourceSystems] = useState<SourceSystemInfo[]>([]);
+  const [allProfilesCount, setAllProfilesCount] = useState<number | null>(null);
   const [highRiskCount, setHighRiskCount] = useState<number | null>(null);
   const [highValueCount, setHighValueCount] = useState<number | null>(null);
   const [noContactCount, setNoContactCount] = useState<number | null>(null);
@@ -865,15 +866,17 @@ function PersonsInner(): ReactElement {
   useEffect(() => {
     void (async () => {
       try {
-        const [ents, srcs, hr, hv, nc] = await Promise.all([
+        const [ents, srcs, all, hr, hv, nc] = await Promise.all([
           bffFetch<EntitySummary[]>("/bff/entities"),
           bffFetch<SourceSystemInfo[]>("/bff/source-systems"),
+          bffFetchEnvelope<ListedPerson[]>("/bff/persons?limit=1"),
           bffFetchEnvelope<ListedPerson[]>("/bff/persons?is_high_risk=true&limit=1"),
           bffFetchEnvelope<ListedPerson[]>("/bff/persons?is_high_value=true&limit=1"),
           bffFetchEnvelope<ListedPerson[]>("/bff/persons?has_phone=false&has_email=false&limit=1"),
         ]);
         setEntities(ents);
         setSourceSystems(srcs);
+        setAllProfilesCount(all.meta.total_count ?? null);
         setHighRiskCount(hr.meta.total_count ?? null);
         setHighValueCount(hv.meta.total_count ?? null);
         setNoContactCount(nc.meta.total_count ?? null);
@@ -1157,7 +1160,7 @@ function PersonsInner(): ReactElement {
           {statsLoading ? (
             <span className={styles.skeletonLine} style={{ width: 64, height: 26, display: "block", marginTop: 2 }} />
           ) : (
-            <div className={styles.statValue} style={{ color: "var(--good)" }}>{total != null ? total.toLocaleString() : "—"}</div>
+            <div className={styles.statValue} style={{ color: "var(--good)" }}>{allProfilesCount != null ? allProfilesCount.toLocaleString() : "—"}</div>
           )}
           {statsLoading ? <span className={styles.skeletonLine} style={{ width: 70, height: 10, marginTop: 2 }} /> : <div className={styles.statSub}>{flagFilter === "any" ? "✓ showing all" : "click to reset"}</div>}
         </button>
