@@ -99,13 +99,12 @@
   transition: border-color 0.15s, box-shadow 0.15s, background 0.15s;
 }
 .statCardClickable:hover {
-  border-color: var(--border-active, var(--text-muted));
+  border-color: color-mix(in srgb, var(--border) 60%, var(--text-muted));
 }
 .statCardActive {
-  border-color: var(--text-muted);
+  border-color: color-mix(in srgb, var(--border) 30%, var(--text-muted));
 }
 .statCardActive .statSub {
-  color: var(--text-secondary);
   font-weight: 600;
 }
 
