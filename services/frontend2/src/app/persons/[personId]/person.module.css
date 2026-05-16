@@ -2519,3 +2519,180 @@
   opacity: 0.75;
   letter-spacing: 0.01em;
 }
+
+/* ── Override modal ──────────────────────────────────────── */
+.overrideModal {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: 0 20px 48px rgba(15, 23, 42, 0.18);
+  width: min(480px, calc(100vw - 32px));
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  max-height: calc(100vh - 64px);
+  overflow-y: auto;
+}
+
+.overrideFieldGroup {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.overrideLabel {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.overrideFieldPills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.overridePill {
+  appearance: none;
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-family: inherit;
+  padding: 4px 12px;
+  cursor: pointer;
+  transition: border-color 0.1s, color 0.1s, background 0.1s;
+}
+
+.overridePill:hover {
+  border-color: var(--accent);
+  color: var(--accent-text);
+}
+
+.overridePillActive {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, var(--bg-card));
+  color: var(--accent-text);
+  font-weight: 600;
+}
+
+.overrideSrList {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+.overrideSrEmpty {
+  padding: 12px;
+  font-size: 12px;
+  color: var(--text-muted);
+  text-align: center;
+}
+
+.overrideSrRow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  cursor: pointer;
+  border-bottom: 1px solid var(--border-subtle);
+  transition: background 0.1s;
+}
+
+.overrideSrRow:last-child {
+  border-bottom: none;
+}
+
+.overrideSrRow:hover {
+  background: var(--bg-hover);
+}
+
+.overrideSrRowActive {
+  background: color-mix(in srgb, var(--accent) 8%, var(--bg-card));
+}
+
+.overrideSrRadio {
+  flex-shrink: 0;
+  accent-color: var(--accent);
+}
+
+.overrideSrInfo {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.overrideSrId {
+  font-size: 12px;
+  font-weight: 600;
+  font-family: monospace;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.overrideSrMeta {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.overrideReason {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--bg-base);
+  color: var(--text-primary);
+  font-size: 13px;
+  font-family: inherit;
+  resize: vertical;
+  outline: none;
+}
+
+.overrideReason:focus {
+  border-color: var(--accent);
+}
+
+.overrideError {
+  font-size: 12px;
+  color: var(--bad);
+  padding: 8px 10px;
+  background: var(--bad-soft);
+  border-radius: 6px;
+}
+
+.overrideSubmit {
+  appearance: none;
+  border: none;
+  border-radius: 7px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 600;
+  font-family: inherit;
+  padding: 9px 16px;
+  cursor: pointer;
+  transition: opacity 0.1s;
+  align-self: flex-end;
+}
+
+.overrideSubmit:hover:not(:disabled) {
+  opacity: 0.88;
+}
+
+.overrideSubmit:disabled {
+  opacity: 0.4;
+  cursor: default;
+}

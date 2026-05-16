@@ -10,6 +10,7 @@ import type {
   PersonIdentifier,
   PersonMatchDecision,
   PersonSourceRecord,
+  SurvivorshipOverrideRequestBody,
 } from "@/lib/api-types-person";
 import { bffFetch, BffError, bffFetchEnvelope } from "@/lib/api-client";
 import { usePaginatedFetch } from "@/lib/usePaginatedFetch";
@@ -139,7 +140,7 @@ function TabPagination({ from, to, total, hasPrev, hasNext, onPrev, onNext }: {
   );
 }
 
-function PersonBreadcrumb({ personName, onShare, shareLoading }: { personName: string | null; onShare: () => void; shareLoading: boolean }): ReactElement {
+function PersonBreadcrumb({ personName, onShare, shareLoading, onOverride }: { personName: string | null; onShare: () => void; shareLoading: boolean; onOverride: () => void }): ReactElement {
   return (
     <div className={styles.breadcrumbRow}>
       <div className={styles.breadcrumb}>
@@ -154,7 +155,7 @@ function PersonBreadcrumb({ personName, onShare, shareLoading }: { personName: s
           </svg>
           {shareLoading ? "Generating…" : "Share"}
         </button>
-        <button type="button" className={styles.bcBtnOutline}>
+        <button type="button" className={styles.bcBtnOutline} onClick={onOverride}>
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
             <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
           </svg>
@@ -1501,6 +1502,42 @@ export default function PersonDetailPage({ params }: { params: Promise<{ personI
     setShareOpen(false);
   }
 
+  const [overrideOpen, setOverrideOpen] = useState(false);
+  const [overrideField, setOverrideField] = useState<string>("full_name");
+  const [overrideSrPk, setOverrideSrPk] = useState<string>("");
+  const [overrideReason, setOverrideReason] = useState("");
+  const [overrideSubmitting, setOverrideSubmitting] = useState(false);
+  const [overrideError, setOverrideError] = useState<string | null>(null);
+  const [overrideSuccess, setOverrideSuccess] = useState(false);
+
+  async function handleOverrideSubmit(): Promise<void> {
+    if (!overrideSrPk || !overrideReason.trim()) return;
+    setOverrideSubmitting(true);
+    setOverrideError(null);
+    try {
+      const body: SurvivorshipOverrideRequestBody = {
+        attribute_name: overrideField,
+        selected_source_record_pk: overrideSrPk,
+        reason: overrideReason.trim(),
+      };
+      await bffFetchEnvelope(`/bff/persons/${encodeURIComponent(personId)}/survivorship-overrides`, {
+        method: "POST",
+        body: JSON.stringify(body),
+      });
+      setOverrideSuccess(true);
+      setTimeout(() => {
+        setOverrideOpen(false);
+        setOverrideSuccess(false);
+        setOverrideReason("");
+        setOverrideSrPk("");
+      }, 1200);
+    } catch (e) {
+      setOverrideError(e instanceof BffError ? e.message : "Failed to apply override.");
+    } finally {
+      setOverrideSubmitting(false);
+    }
+  }
+
   useEffect(() => {
     async function load(): Promise<void> {
       try {
@@ -1578,7 +1615,7 @@ export default function PersonDetailPage({ params }: { params: Promise<{ personI
 
   return (
     <div className={styles.page}>
-      <PersonBreadcrumb personName={person.preferred_full_name} onShare={() => void handleShare()} shareLoading={shareLoading} />
+      <PersonBreadcrumb personName={person.preferred_full_name} onShare={() => void handleShare()} shareLoading={shareLoading} onOverride={() => setOverrideOpen(true)} />
       <div className={styles.tabContent}>
         {activeTab === "timeline" && shell(<TimelineTab person={person} detailData={detailData} />)}
         {activeTab === "matches" && shell(<MatchesTab personId={personId} onTotalLoaded={onMatchesTotal} />)}
@@ -1601,6 +1638,93 @@ export default function PersonDetailPage({ params }: { params: Promise<{ personI
           </DetailShell>
         )}
       </div>
+
+      {overrideOpen && (
+        <div className={styles.shareOverlay} onClick={() => setOverrideOpen(false)}>
+          <div className={styles.overrideModal} onClick={(e) => e.stopPropagation()}>
+            <div className={styles.shareModalHeader}>
+              <span className={styles.shareModalTitle}>Override field</span>
+              <button type="button" className={styles.shareModalClose} onClick={() => setOverrideOpen(false)} aria-label="Close">×</button>
+            </div>
+            <p className={styles.shareModalDesc}>
+              Pin a golden profile field to a specific source record value. This overrides the automatic survivorship selection.
+            </p>
+
+            {/* Field selector */}
+            <div className={styles.overrideFieldGroup}>
+              <div className={styles.overrideLabel}>Field</div>
+              <div className={styles.overrideFieldPills}>
+                {([
+                  { key: "full_name", label: "Full name" },
+                  { key: "phone", label: "Phone" },
+                  { key: "email", label: "Email" },
+                  { key: "dob", label: "Date of birth" },
+                  { key: "address", label: "Address" },
+                  { key: "nric", label: "NRIC" },
+                ] as const).map(({ key, label }) => (
+                  <button
+                    key={key}
+                    type="button"
+                    className={`${styles.overridePill} ${overrideField === key ? styles.overridePillActive : ""}`}
+                    onClick={() => { setOverrideField(key); setOverrideSrPk(""); }}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Source record selector */}
+            <div className={styles.overrideFieldGroup}>
+              <div className={styles.overrideLabel}>Source record</div>
+              <div className={styles.overrideSrList}>
+                {detailData.sourceRecords.length === 0 && (
+                  <div className={styles.overrideSrEmpty}>No source records loaded. Open the Sources tab first.</div>
+                )}
+                {detailData.sourceRecords.map((sr) => (
+                  <label key={sr.source_record_pk} className={`${styles.overrideSrRow} ${overrideSrPk === sr.source_record_pk ? styles.overrideSrRowActive : ""}`}>
+                    <input
+                      type="radio"
+                      name="override-sr"
+                      value={sr.source_record_pk}
+                      checked={overrideSrPk === sr.source_record_pk}
+                      onChange={() => setOverrideSrPk(sr.source_record_pk)}
+                      className={styles.overrideSrRadio}
+                    />
+                    <div className={styles.overrideSrInfo}>
+                      <span className={styles.overrideSrId}>{sr.source_record_id}</span>
+                      <span className={styles.overrideSrMeta}>{sr.source_system}{sr.entity_display_name ? ` · ${sr.entity_display_name}` : ""}</span>
+                    </div>
+                  </label>
+                ))}
+              </div>
+            </div>
+
+            {/* Reason */}
+            <div className={styles.overrideFieldGroup}>
+              <div className={styles.overrideLabel}>Reason</div>
+              <textarea
+                className={styles.overrideReason}
+                placeholder="Why are you overriding this field?"
+                value={overrideReason}
+                onChange={(e) => setOverrideReason(e.target.value)}
+                rows={2}
+              />
+            </div>
+
+            {overrideError && <div className={styles.overrideError}>{overrideError}</div>}
+
+            <button
+              type="button"
+              className={styles.overrideSubmit}
+              onClick={() => void handleOverrideSubmit()}
+              disabled={!overrideSrPk || !overrideReason.trim() || overrideSubmitting}
+            >
+              {overrideSuccess ? "✓ Applied" : overrideSubmitting ? "Applying…" : "Apply override"}
+            </button>
+          </div>
+        </div>
+      )}
 
       <PersonGraphDialog
         open={graphOpen}
