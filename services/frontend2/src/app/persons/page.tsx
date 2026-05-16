@@ -519,7 +519,7 @@ function PersonRow({
           <span className={styles.ordersZero}>No orders</span>
         )}
       </td>
-      <td className={`${styles.td} ${styles.tdSticky} ${styles.stickyQuality}`}>
+      <td className={`${styles.td} ${styles.td}`}>
         <div className={styles.qualityWrap}>
           <div className={styles.qualityBar}>
             <div
@@ -588,7 +588,7 @@ function SkeletonRow({ index, colWidths }: { index: number; colWidths: number[] 
         </td>
       ))}
       {/* completeness — bar + number */}
-      <td className={`${styles.td} ${styles.tdSticky} ${styles.stickyQuality}`}>
+      <td className={`${styles.td} ${styles.td}`}>
         <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
           <span className={styles.skeleton} style={{ flex: 1, height: 6, borderRadius: 3 }} />
           <span className={styles.skeletonLine} style={{ width: w(9), height: 11 }} />
@@ -1659,7 +1659,7 @@ function PersonsInner(): ReactElement {
                     </th>
                   );
                 })}
-                <th className={`${styles.th} ${styles.thSticky} ${styles.stickyQuality}`}>
+                <th className={`${styles.th} ${styles.th}`}>
                   <button className={styles.sortBtn} onClick={() => toggleSort("quality")}>
                     Completeness
                     <SortIcon active={sortKey === "quality"} dir={sortDir} />
