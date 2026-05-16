@@ -1239,14 +1239,6 @@ function ConnectionsTab({ personId, onTotalLoaded }: { personId: string; onTotal
   );
 }
 
-function EmptyState({ title, description }: { title: string; description: string }): ReactElement {
-  return (
-    <section className={styles.emptyState}>
-      <div className={styles.emptyTitle}>{title}</div>
-      <div className={styles.emptyDescription}>{description}</div>
-    </section>
-  );
-}
 
 function PersonDetailSkeleton(): ReactElement {
   return (
@@ -1415,15 +1407,15 @@ export default function PersonDetailPage({ params }: { params: Promise<{ personI
     void load();
   }, [personId]);
 
+  const onTabTotal = useCallback((tab: Tab) => (n: number) => {
+    setTabTotals((prev) => ({ ...prev, [tab]: n }));
+  }, []);
+
   if (notFoundFlag) notFound();
 
   if (loading || person === null) {
     return <PersonDetailSkeleton />;
   }
-
-  const onTabTotal = useCallback((tab: Tab) => (n: number) => {
-    setTabTotals((prev) => ({ ...prev, [tab]: n }));
-  }, []);
 
   const tabs: TabConfig[] = [
     { id: "timeline", label: "Timeline" },
