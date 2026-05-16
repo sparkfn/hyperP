@@ -136,23 +136,31 @@ export default async function PublicPersonPage({ params }: PageProps): Promise<R
           <section className={styles.section}>
             <h2 className={styles.sectionTitle}>Order history <span className={styles.sectionCount}>{sales.length}</span></h2>
             <table className={styles.salesTable}>
+              <colgroup>
+                <col /><col /><col /><col />
+              </colgroup>
               <thead>
                 <tr>
                   <th>Order</th>
                   <th>Date</th>
-                  <th>Items</th>
+                  <th>Item</th>
                   <th className={styles.colRight}>Amount</th>
                 </tr>
               </thead>
               <tbody>
-                {sales.map((order) => (
-                  <tr key={order.order_no ?? order.source_order_id}>
-                    <td className={styles.orderNo}>{order.order_no ?? order.source_order_id ?? "—"}</td>
-                    <td>{formatDate(order.order_date)}</td>
-                    <td>{order.line_items[0]?.product?.display_name ?? "—"}{order.line_items.length > 1 ? ` +${order.line_items.length - 1}` : ""}</td>
-                    <td className={styles.colRight}>{formatAmount(order.total_amount, order.currency)}</td>
-                  </tr>
-                ))}
+                {sales.map((order) => {
+                  const id = order.order_no ?? order.source_order_id ?? "—";
+                  const item = order.line_items[0]?.product?.display_name ?? "—";
+                  const extra = order.line_items.length > 1 ? ` +${order.line_items.length - 1} more` : "";
+                  return (
+                    <tr key={id}>
+                      <td className={styles.orderNo} title={id}>{id}</td>
+                      <td className={styles.dateCell}>{formatDate(order.order_date)}</td>
+                      <td className={styles.itemCell}>{item}{extra}</td>
+                      <td className={`${styles.colRight} ${styles.amountCell}`}>{formatAmount(order.total_amount, order.currency)}</td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </section>

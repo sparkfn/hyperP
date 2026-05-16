@@ -196,7 +196,13 @@
   width: 100%;
   border-collapse: collapse;
   font-size: 12px;
+  table-layout: fixed;
 }
+
+.salesTable col:nth-child(1) { width: 18%; }
+.salesTable col:nth-child(2) { width: 18%; }
+.salesTable col:nth-child(3) { width: 44%; }
+.salesTable col:nth-child(4) { width: 20%; }
 
 .salesTable th {
   text-align: left;
@@ -205,15 +211,23 @@
   text-transform: uppercase;
   letter-spacing: 0.05em;
   color: #8a97aa;
-  padding: 0 0 10px;
+  padding: 0 12px 10px 0;
   border-bottom: 1px solid #e5e9f0;
 }
 
+.salesTable th:last-child {
+  padding-right: 0;
+}
+
 .salesTable td {
-  padding: 9px 0;
+  padding: 10px 12px 10px 0;
   color: #1a2233;
   border-bottom: 1px solid #f0f3f8;
-  vertical-align: top;
+  vertical-align: middle;
+}
+
+.salesTable td:last-child {
+  padding-right: 0;
 }
 
 .salesTable tr:last-child td {
@@ -228,6 +242,26 @@
   font-family: monospace;
   font-size: 11px;
   color: #5a6a80;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 0;
+}
+
+.dateCell {
+  white-space: nowrap;
+  color: #5a6a80;
+  font-size: 12px;
+}
+
+.itemCell {
+  overflow-wrap: anywhere;
+  line-height: 1.4;
+}
+
+.amountCell {
+  font-weight: 600;
+  white-space: nowrap;
 }
 
 /* ── Footer ──────────────────────────────────────────────── */
