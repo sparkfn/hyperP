@@ -344,21 +344,23 @@ interface TopStat {
   valueStyle?: { color: string };
 }
 
-function RightRail({ person, detailData, tabs, activeTab, onChange, children }: { person: Person; detailData: DetailData; tabs: TabConfig[]; activeTab: Tab; onChange: (tab: Tab) => void; children: ReactElement }): ReactElement {
+function RightRail({ person, detailData, salesTotal, identifiersTotal, tabs, activeTab, onChange, children }: { person: Person; detailData: DetailData; salesTotal: number | undefined; identifiersTotal: number | undefined; tabs: TabConfig[]; activeTab: Tab; onChange: (tab: Tab) => void; children: ReactElement }): ReactElement {
   const totalSales = detailData.sales.reduce((sum, order) => sum + (order.total_amount ?? 0), 0);
   const completeness = Math.round(person.profile_completeness_score * 100);
   const latestActivityAt = detailData.sourceRecords[0]?.observed_at ?? person.updated_at;
+  const salesCount = salesTotal ?? detailData.sales.length;
+  const idCount = identifiersTotal ?? detailData.identifiers.length;
 
   const topStats: TopStat[] = [
     {
       label: "Lifetime value",
       value: detailData.sales.length ? fmtCurrency(totalSales, detailData.sales[0]?.currency ?? "SGD") : "—",
-      note: detailData.sales.length ? `${detailData.sales.length} orders` : "No orders yet",
+      note: salesCount ? `${salesCount} orders` : "No orders yet",
     },
     {
       label: "Completeness",
       value: `${completeness}%`,
-      note: `${detailData.identifiers.length} identifiers`,
+      note: `${idCount} identifiers`,
       valueStyle: { color: scoreColor(person.profile_completeness_score) },
     },
     {
@@ -528,11 +530,11 @@ function TimelineTab({ person, detailData }: { person: Person; detailData: Detai
   );
 }
 
-function DetailShell({ person, detailData, children, tabs, activeTab, onTabChange }: { person: Person; detailData: DetailData; children: ReactElement; tabs: TabConfig[]; activeTab: Tab; onTabChange: (tab: Tab) => void }): ReactElement {
+function DetailShell({ person, detailData, salesTotal, identifiersTotal, children, tabs, activeTab, onTabChange }: { person: Person; detailData: DetailData; salesTotal: number | undefined; identifiersTotal: number | undefined; children: ReactElement; tabs: TabConfig[]; activeTab: Tab; onTabChange: (tab: Tab) => void }): ReactElement {
   return (
     <div className={styles.detailLayout}>
       <PersonSidebar person={person} detailData={detailData} />
-      <RightRail person={person} detailData={detailData} tabs={tabs} activeTab={activeTab} onChange={onTabChange}>
+      <RightRail person={person} detailData={detailData} salesTotal={salesTotal} identifiersTotal={identifiersTotal} tabs={tabs} activeTab={activeTab} onChange={onTabChange}>
         {children}
       </RightRail>
     </div>
@@ -1451,7 +1453,7 @@ export default function PersonDetailPage({ params }: { params: Promise<{ personI
   ];
 
   const shell = (children: ReactElement): ReactElement => (
-    <DetailShell person={person} detailData={detailData} tabs={tabs} activeTab={activeTab} onTabChange={setActiveTab}>
+    <DetailShell person={person} detailData={detailData} salesTotal={tabTotals.sales} identifiersTotal={tabTotals.identifier} tabs={tabs} activeTab={activeTab} onTabChange={setActiveTab}>
       {children}
     </DetailShell>
   );
@@ -1469,7 +1471,7 @@ export default function PersonDetailPage({ params }: { params: Promise<{ personI
         {activeTab === "bankruptcy" && shell(<BankruptcyTab personId={personId} onTotalLoaded={onBankruptcyTotal} />)}
         {activeTab === "audit" && shell(<AuditTab personId={personId} onTotalLoaded={onAuditTotal} />)}
         {activeTab === "graph" && (
-          <DetailShell person={person} detailData={detailData} tabs={tabs} activeTab={activeTab} onTabChange={setActiveTab}>
+          <DetailShell person={person} detailData={detailData} salesTotal={tabTotals.sales} identifiersTotal={tabTotals.identifier} tabs={tabs} activeTab={activeTab} onTabChange={setActiveTab}>
             <div style={{ height: 560, border: "1px solid var(--border)", borderRadius: "10px", overflow: "hidden" }}>
               <PersonFocusedGraph
                 initialPersonId={person.person_id}
