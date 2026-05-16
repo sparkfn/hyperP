@@ -2434,3 +2434,56 @@
   font-size: 12px;
   color: var(--bad);
 }
+
+/* ── Tab skeleton items ──────────────────────────────────── */
+.tabSkelItem {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 11px 0;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.tabSkelItem:last-child {
+  border-bottom: none;
+}
+
+.tabSkelLine {
+  composes: skel;
+  height: 12px;
+  border-radius: 4px;
+  display: block;
+  flex-shrink: 0;
+}
+
+.tabSkelAvatar {
+  composes: skel;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.tabSkelBadge {
+  composes: skel;
+  height: 20px;
+  border-radius: 20px;
+  flex-shrink: 0;
+}
+
+.tabSkelDot {
+  composes: skel;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  margin-top: 3px;
+}
+
+.tabSkelStack {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+}

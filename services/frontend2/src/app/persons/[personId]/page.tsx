@@ -556,6 +556,83 @@ function IdTypeIcon({ type }: { type: string }): ReactElement {
   return <KeyIcon />;
 }
 
+const SKEL_N = [0, 1, 2, 3, 4] as const;
+
+function SkeletonRows(): ReactElement {
+  return (
+    <>
+      {SKEL_N.map((i) => (
+        <div key={i} className={styles.tabSkelItem}>
+          <div className={styles.tabSkelStack}>
+            <span className={styles.tabSkelLine} style={{ width: `${55 + (i % 3) * 12}%` }} />
+            <span className={styles.tabSkelLine} style={{ width: `${35 + (i % 4) * 10}%`, height: 10 }} />
+          </div>
+          <span className={styles.tabSkelBadge} style={{ width: 52 }} />
+        </div>
+      ))}
+    </>
+  );
+}
+
+function SkeletonConnections(): ReactElement {
+  return (
+    <>
+      {SKEL_N.map((i) => (
+        <div key={i} className={styles.tabSkelItem}>
+          <div className={styles.tabSkelAvatar} />
+          <div className={styles.tabSkelStack}>
+            <span className={styles.tabSkelLine} style={{ width: `${50 + (i % 3) * 15}%` }} />
+            <span className={styles.tabSkelLine} style={{ width: `${65 + (i % 3) * 8}%`, height: 10 }} />
+          </div>
+        </div>
+      ))}
+    </>
+  );
+}
+
+function SkeletonAudit(): ReactElement {
+  return (
+    <>
+      {SKEL_N.map((i) => (
+        <div key={i} className={styles.tabSkelItem} style={{ alignItems: "flex-start" }}>
+          <div className={styles.tabSkelDot} />
+          <div className={styles.tabSkelStack}>
+            <span className={styles.tabSkelLine} style={{ width: `${45 + (i % 3) * 12}%` }} />
+            <span className={styles.tabSkelLine} style={{ width: `${30 + (i % 4) * 8}%`, height: 10 }} />
+          </div>
+        </div>
+      ))}
+    </>
+  );
+}
+
+function SkeletonMatches(): ReactElement {
+  return (
+    <>
+      {SKEL_N.map((i) => (
+        <div key={i} className={styles.tabSkelItem}>
+          <span className={styles.tabSkelBadge} style={{ width: 64 }} />
+          <span className={styles.tabSkelLine} style={{ width: 72 }} />
+          <span className={styles.tabSkelLine} style={{ flex: 1 }} />
+          <span className={styles.tabSkelLine} style={{ width: 80 }} />
+          <span className={styles.tabSkelLine} style={{ width: 90 }} />
+        </div>
+      ))}
+    </>
+  );
+}
+
+function TabSkelShell({ title, children }: { title: string; children: ReactElement }): ReactElement {
+  return (
+    <section className={styles.contentCard}>
+      <div className={styles.connHeader}>
+        <span className={styles.connHeaderTitle}>{title}</span>
+      </div>
+      {children}
+    </section>
+  );
+}
+
 function MatchesTab({ personId, onTotalLoaded }: { personId: string; onTotalLoaded: (n: number) => void }): ReactElement {
   const [expandedMatch, setExpandedMatch] = useState<string | null>(null);
   const { rows, loading, error, from, to, total, hasPrev, hasNext, goNext, goPrev } =
@@ -564,7 +641,7 @@ function MatchesTab({ personId, onTotalLoaded }: { personId: string; onTotalLoad
 
   useEffect(() => { if (total !== null) onTotalLoaded(total); }, [total, onTotalLoaded]);
 
-  if (loading) return <section className={styles.contentCard}><div className={styles.connHeader}><span className={styles.connHeaderTitle}>Match decisions</span></div><div className={styles.tabLoading}>Loading…</div></section>;
+  if (loading) return <TabSkelShell title="Match decisions"><SkeletonMatches /></TabSkelShell>;
   if (error) return <section className={styles.contentCard}><div className={styles.tabError}>{error}</div></section>;
 
   return (
@@ -656,7 +733,7 @@ function IdentifiersTab({ personId, onTotalLoaded }: { personId: string; onTotal
 
   useEffect(() => { if (total !== null) onTotalLoaded(total); }, [total, onTotalLoaded]);
 
-  if (loading) return <section className={styles.contentCard}><div className={styles.connHeader}><span className={styles.connHeaderTitle}>IDs</span></div><div className={styles.tabLoading}>Loading…</div></section>;
+  if (loading) return <TabSkelShell title="IDs"><SkeletonRows /></TabSkelShell>;
   if (error) return <section className={styles.contentCard}><div className={styles.tabError}>{error}</div></section>;
 
   return (
@@ -810,7 +887,7 @@ function SourceRecordsTab({ personId, onTotalLoaded }: { personId: string; onTot
 
   useEffect(() => { if (total !== null) onTotalLoaded(total); }, [total, onTotalLoaded]);
 
-  if (loading) return <section className={styles.contentCard}><div className={styles.connHeader}><span className={styles.connHeaderTitle}>Sources</span></div><div className={styles.tabLoading}>Loading…</div></section>;
+  if (loading) return <TabSkelShell title="Sources"><SkeletonRows /></TabSkelShell>;
   if (error) return <section className={styles.contentCard}><div className={styles.tabError}>{error}</div></section>;
 
   return (
@@ -869,7 +946,7 @@ function SalesTab({ personId, onTotalLoaded }: { personId: string; onTotalLoaded
 
   useEffect(() => { if (total !== null) onTotalLoaded(total); }, [total, onTotalLoaded]);
 
-  if (loading) return <section className={styles.contentCard}><div className={styles.connHeader}><span className={styles.connHeaderTitle}>Sales history</span></div><div className={styles.tabLoading}>Loading…</div></section>;
+  if (loading) return <TabSkelShell title="Sales history"><SkeletonRows /></TabSkelShell>;
   if (error) return <section className={styles.contentCard}><div className={styles.tabError}>{error}</div></section>;
 
   return (
@@ -957,7 +1034,7 @@ function BankruptcyTab({ personId, onTotalLoaded }: { personId: string; onTotalL
 
   useEffect(() => { if (total !== null) onTotalLoaded(total); }, [total, onTotalLoaded]);
 
-  if (loading) return <section className={styles.contentCard}><div className={styles.connHeader}><span className={styles.connHeaderTitle}>Bankruptcy</span></div><div className={styles.tabLoading}>Loading…</div></section>;
+  if (loading) return <TabSkelShell title="Bankruptcy"><SkeletonRows /></TabSkelShell>;
   if (error) return <section className={styles.contentCard}><div className={styles.tabError}>{error}</div></section>;
 
   return (
@@ -1058,7 +1135,7 @@ function AuditTab({ personId, onTotalLoaded }: { personId: string; onTotalLoaded
 
   useEffect(() => { if (total !== null) onTotalLoaded(total); }, [total, onTotalLoaded]);
 
-  if (loading) return <section className={styles.contentCard}><div className={styles.connHeader}><span className={styles.connHeaderTitle}>Audit trail</span></div><div className={styles.tabLoading}>Loading…</div></section>;
+  if (loading) return <TabSkelShell title="Audit trail"><SkeletonAudit /></TabSkelShell>;
   if (error) return <section className={styles.contentCard}><div className={styles.tabError}>{error}</div></section>;
 
   return (
@@ -1176,7 +1253,7 @@ function ConnectionsTab({ personId, onTotalLoaded }: { personId: string; onTotal
 
   useEffect(() => { if (total !== null) onTotalLoaded(total); }, [total, onTotalLoaded]);
 
-  if (loading) return <section className={styles.contentCard}><div className={styles.connHeader}><span className={styles.connHeaderTitle}>Connections</span></div><div className={styles.tabLoading}>Loading…</div></section>;
+  if (loading) return <TabSkelShell title="Connections"><SkeletonConnections /></TabSkelShell>;
   if (error) return <section className={styles.contentCard}><div className={styles.tabError}>{error}</div></section>;
 
   return (
