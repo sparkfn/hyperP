@@ -4,7 +4,6 @@ import { useState, useEffect, useRef, useCallback, useMemo, type KeyboardEvent a
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense } from "react";
-import { MOCK_PERSON_CONNECTIONS_BY_PERSON_ID, MOCK_SALES } from "@/lib/mock-data";
 import type { ListedPerson, PersonConnection, SalesOrder, EntitySummary } from "@/lib/api-types";
 import { bffFetchEnvelope, BffError, bffFetch } from "@/lib/api-client";
 import type { SourceSystemInfo } from "@/lib/api-types-ops";
@@ -80,48 +79,6 @@ function formatRelationType(connection: PersonConnection): string {
   return connection.hops > 1 ? "Graph-linked relation" : "Graph-linked relation";
 }
 
-const FALLBACK_RELATION_LABELS = [
-  "Emergency contact",
-  "Family contact",
-  "Referral contact",
-  "Co-borrower",
-  "Shared household",
-  "Business contact",
-] as const;
-
-const FALLBACK_RELATION_STATUSES = ["active", "active", "active", "merged", "suppressed"] as const;
-
-function buildFallbackConnections(person: ListedPerson): PersonConnection[] {
-  const baseName = person.preferred_full_name?.split(" ").slice(0, 2).join(" ") ?? "Related profile";
-
-  return Array.from({ length: person.connection_count }, (_, index) => ({
-    person_id: `rel-${person.person_id}-${String(index + 1).padStart(2, "0")}`,
-    status: FALLBACK_RELATION_STATUSES[index % FALLBACK_RELATION_STATUSES.length] ?? "active",
-    preferred_full_name: `${baseName} ${String.fromCharCode(66 + (index % 8))}`,
-    hops: index % 4 === 3 ? 2 : 1,
-    shared_identifiers: index % 3 === 0 && person.preferred_phone
-      ? [{ identifier_type: "phone", normalized_value: person.preferred_phone }]
-      : [],
-    shared_addresses: index % 3 === 1 && person.preferred_address
-      ? [{ address_id: person.preferred_address.address_id, normalized_full: person.preferred_address.normalized_full }]
-      : [],
-    knows_relationships: [{
-      relationship_label: FALLBACK_RELATION_LABELS[index % FALLBACK_RELATION_LABELS.length] ?? "Related contact",
-      relationship_category: index % 3 === 0 ? "family" : index % 3 === 1 ? "household" : "business",
-    }],
-  }));
-}
-
-function getPersonConnections(person: ListedPerson): PersonConnection[] {
-  const explicitConnections = MOCK_PERSON_CONNECTIONS_BY_PERSON_ID[person.person_id];
-  if (explicitConnections && explicitConnections.length > 0) {
-    return explicitConnections;
-  }
-  if (person.connection_count <= 0) {
-    return [];
-  }
-  return buildFallbackConnections(person);
-}
 
 function formatOrderCurrency(order: SalesOrder): string {
   if (order.total_amount == null) {
@@ -140,58 +97,31 @@ function formatOrderDate(date: string | null): string {
   if (!date) {
     return "—";
   }
+  const d = date.includes("T") ? new Date(date) : new Date(`${date}T00:00:00`);
+  if (isNaN(d.getTime())) {
+    return "—";
+  }
   return new Intl.DateTimeFormat("en-GB", {
     day: "2-digit",
     month: "short",
     year: "numeric",
-  }).format(new Date(`${date}T00:00:00`));
+  }).format(d);
 }
 
-function buildFallbackOrders(person: ListedPerson): SalesOrder[] {
-  return Array.from({ length: person.order_count }, (_, index) => ({
-    order_no: `ORD-${person.person_id.toUpperCase()}-${String(index + 1).padStart(3, "0")}`,
-    source_order_id: `SRC-${String(index + 1).padStart(4, "0")}`,
-    order_date: `2026-${String((index % 9) + 1).padStart(2, "0")}-${String(((index * 3) % 27) + 1).padStart(2, "0")}`,
-    release_date: null,
-    total_amount: 49 + index * 38.5,
-    currency: "SGD",
-    source_system: index % 2 === 0 ? "speedzone-phppos" : "fundbox-bitrix",
-    entity_name: person.entities[0]?.display_name ?? "SpeedZone Retail",
-    line_items: [{
-      line_no: 1,
-      quantity: (index % 3) + 1,
-      unit_price: 49 + index * 38.5,
-      subtotal: 49 + index * 38.5,
-      product: {
-        display_name: index % 2 === 0 ? "Running Shoes" : "Membership Package",
-        sku: index % 2 === 0 ? `SKU-RUN-${index + 1}` : `SKU-MEM-${index + 1}`,
-        category: index % 2 === 0 ? "Footwear" : "Services",
-      },
-    }],
-  }));
-}
-
-function getPersonOrders(person: ListedPerson): SalesOrder[] {
-  if (person.person_id === "p-001") {
-    return MOCK_SALES;
-  }
-  if (person.order_count <= 0) {
-    return [];
-  }
-  return buildFallbackOrders(person);
-}
 
 function OrdersPopover({
   personId,
   anchorTop,
   anchorRight,
   orders,
+  loading,
   onClose,
 }: {
   personId: string;
   anchorTop: number;
   anchorRight: number;
   orders: SalesOrder[];
+  loading: boolean;
   onClose: () => void;
 }): ReactElement {
   const popoverRef = useRef<HTMLDivElement | null>(null);
@@ -230,13 +160,26 @@ function OrdersPopover({
         <div>
           <div className={styles.ordersPopoverTitle}>Order history</div>
           <div className={styles.ordersPopoverSubtitle}>
-            {orders.length} order{orders.length === 1 ? "" : "s"}
+            {loading ? "Loading…" : `${orders.length} order${orders.length === 1 ? "" : "s"}`}
           </div>
         </div>
         <button type="button" className={styles.ordersPopoverClose} onClick={onClose} aria-label="Close orders popover">×</button>
       </div>
       <div className={styles.ordersList}>
-        {orders.map((order, index) => {
+        {loading ? (
+          <>
+            {[0, 1, 2].map((i) => (
+              <div key={i} className={styles.skeletonOrderItem}>
+                <div className={styles.skeletonOrderItemTop}>
+                  <span className={styles.skeletonLine} style={{ width: "55%" }} />
+                  <span className={styles.skeletonLine} style={{ width: "22%" }} />
+                </div>
+                <span className={styles.skeletonLine} style={{ width: "70%", height: "10px" }} />
+                <span className={styles.skeletonLine} style={{ width: "45%", height: "9px" }} />
+              </div>
+            ))}
+          </>
+        ) : orders.map((order, index) => {
           const primaryProduct = order.line_items[0]?.product?.display_name ?? "Order item";
           const secondaryLine = [order.entity_name, formatOrderDate(order.order_date)].filter(Boolean).join(" • ");
           return (
@@ -262,12 +205,14 @@ function RelationPopover({
   anchorTop,
   anchorRight,
   connections,
+  loading,
   onClose,
 }: {
   personId: string;
   anchorTop: number;
   anchorRight: number;
   connections: PersonConnection[];
+  loading: boolean;
   onClose: () => void;
 }): ReactElement {
   const popoverRef = useRef<HTMLDivElement | null>(null);
@@ -306,7 +251,7 @@ function RelationPopover({
         <div>
           <div className={styles.relationsPopoverTitle}>Relations</div>
           <div className={styles.relationsPopoverSubtitle}>
-            {connections.length} linked profile{connections.length === 1 ? "" : "s"}
+            {loading ? "Loading…" : `${connections.length} linked profile${connections.length === 1 ? "" : "s"}`}
           </div>
         </div>
         <button type="button" className={styles.relationsPopoverClose} onClick={onClose} aria-label="Close relations popover">
@@ -314,7 +259,17 @@ function RelationPopover({
         </button>
       </div>
       <div className={styles.relationsList}>
-        {connections.map((connection) => (
+        {loading ? (
+          <>
+            {[0, 1, 2].map((i) => (
+              <div key={i} className={styles.skeletonRelationItem}>
+                <span className={styles.skeletonLine} style={{ width: "65%" }} />
+                <span className={styles.skeletonLine} style={{ width: "40%", height: "9px" }} />
+                <span className={styles.skeletonLine} style={{ width: "55%", height: "10px" }} />
+              </div>
+            ))}
+          </>
+        ) : connections.map((connection) => (
           <div key={connection.person_id} className={styles.relationItem}>
             <div className={styles.relationItemTop}>
               <Link href={`/persons/${connection.person_id}`} className={styles.relationLink} onClick={onClose}>
@@ -799,6 +754,10 @@ function PersonsInner(): ReactElement {
   const [colWidths, setColWidths] = useState<number[]>(DEFAULT_WIDTHS);
   const [relationPopover, setRelationPopover] = useState<RelationPopoverState | null>(null);
   const [ordersPopover, setOrdersPopover] = useState<OrdersPopoverState | null>(null);
+  const [popoverConnections, setPopoverConnections] = useState<PersonConnection[]>([]);
+  const [popoverConnectionsLoading, setPopoverConnectionsLoading] = useState(false);
+  const [popoverOrders, setPopoverOrders] = useState<SalesOrder[]>([]);
+  const [popoverOrdersLoading, setPopoverOrdersLoading] = useState(false);
   const checkAllRef = useRef<HTMLInputElement | null>(null);
   const filterBarRef = useRef<HTMLDivElement | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
@@ -1084,6 +1043,36 @@ function PersonsInner(): ReactElement {
     });
   }
 
+  useEffect(() => {
+    if (!relationPopover) {
+      setPopoverConnections([]);
+      return;
+    }
+    let cancelled = false;
+    setPopoverConnectionsLoading(true);
+    setPopoverConnections([]);
+    void bffFetch<PersonConnection[]>(`/bff/persons/${encodeURIComponent(relationPopover.personId)}/connections`)
+      .then((data) => { if (!cancelled) { setPopoverConnections(data); } })
+      .catch(() => { if (!cancelled) { setPopoverConnections([]); } })
+      .finally(() => { if (!cancelled) { setPopoverConnectionsLoading(false); } });
+    return () => { cancelled = true; };
+  }, [relationPopover?.personId]);
+
+  useEffect(() => {
+    if (!ordersPopover) {
+      setPopoverOrders([]);
+      return;
+    }
+    let cancelled = false;
+    setPopoverOrdersLoading(true);
+    setPopoverOrders([]);
+    void bffFetch<SalesOrder[]>(`/bff/persons/${encodeURIComponent(ordersPopover.personId)}/sales`)
+      .then((data) => { if (!cancelled) { setPopoverOrders(data); } })
+      .catch(() => { if (!cancelled) { setPopoverOrders([]); } })
+      .finally(() => { if (!cancelled) { setPopoverOrdersLoading(false); } });
+    return () => { cancelled = true; };
+  }, [ordersPopover?.personId]);
+
   function closeRelationPopover(): void {
     setRelationPopover(null);
   }
@@ -1127,10 +1116,6 @@ function PersonsInner(): ReactElement {
   }
 
   const tableWidth = colWidths.reduce((sum, width) => sum + width, 0);
-  const activePopoverPerson = relationPopover ? apiRows.find((person) => person.person_id === relationPopover.personId) ?? null : null;
-  const activeConnections = activePopoverPerson ? getPersonConnections(activePopoverPerson) : [];
-  const activeOrdersPerson = ordersPopover ? apiRows.find((person) => person.person_id === ordersPopover.personId) ?? null : null;
-  const activeOrders = activeOrdersPerson ? getPersonOrders(activeOrdersPerson) : [];
 
   return (
     <div className={styles.page}>
@@ -1678,21 +1663,23 @@ function PersonsInner(): ReactElement {
               )}
             </tbody>
           </table>
-          {relationPopover && activeConnections.length > 0 && (
+          {relationPopover && (popoverConnectionsLoading || popoverConnections.length > 0) && (
             <RelationPopover
               personId={relationPopover.personId}
               anchorTop={relationPopover.anchorTop}
               anchorRight={relationPopover.anchorRight}
-              connections={activeConnections}
+              connections={popoverConnections}
+              loading={popoverConnectionsLoading}
               onClose={closeRelationPopover}
             />
           )}
-          {ordersPopover && activeOrders.length > 0 && (
+          {ordersPopover && (popoverOrdersLoading || popoverOrders.length > 0) && (
             <OrdersPopover
               personId={ordersPopover.personId}
               anchorTop={ordersPopover.anchorTop}
               anchorRight={ordersPopover.anchorRight}
-              orders={activeOrders}
+              orders={popoverOrders}
+              loading={popoverOrdersLoading}
               onClose={closeOrdersPopover}
             />
           )}

@@ -1680,6 +1680,27 @@
   overflow-wrap: anywhere;
 }
 
+/* ── Popover skeleton ────────────────────────────────────── */
+.skeletonRelationItem,
+.skeletonOrderItem {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 7px 10px;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.skeletonRelationItem:first-child,
+.skeletonOrderItem:first-child {
+  border-top: none;
+}
+
+.skeletonOrderItemTop {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+
 /* ── Data quality bar ────────────────────────────────────── */
 .qualityWrap {
   display: flex;
