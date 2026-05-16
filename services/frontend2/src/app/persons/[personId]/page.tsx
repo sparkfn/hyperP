@@ -1,6 +1,6 @@
 "use client";
 
-import { Fragment, use, useEffect, useMemo, useState, type ReactElement } from "react";
+import { Fragment, use, useCallback, useEffect, useMemo, useState, type ReactElement } from "react";
 import Link from "next/link";
 import { notFound, useSearchParams } from "next/navigation";
 import type { Person, PersonConnection, SalesOrder } from "@/lib/api-types";
@@ -12,6 +12,7 @@ import type {
   PersonSourceRecord,
 } from "@/lib/api-types-person";
 import { bffFetch, BffError, bffFetchEnvelope } from "@/lib/api-client";
+import { usePaginatedFetch } from "@/lib/usePaginatedFetch";
 import type { PublicLink } from "@/lib/api-types";
 import PersonFocusedGraph from "@/components/PersonFocusedGraph";
 import PersonGraphDialog from "@/components/PersonGraphDialog";
@@ -26,9 +27,8 @@ type DetailData = {
   sourceRecords: PersonSourceRecord[];
   sales: SalesOrder[];
   audit: PersonAuditEvent[];
-  bankruptcyCases: PersonBankruptcyCase[];
-  matches: PersonMatchDecision[];
 };
+
 
 type SnapshotField = {
   label: string;
@@ -123,6 +123,20 @@ function personInitials(name: string | null): string {
     .slice(0, 2)
     .join("")
     .toUpperCase();
+}
+
+function TabPagination({ from, to, total, hasPrev, hasNext, onPrev, onNext }: {
+  from: number; to: number; total: number | null;
+  hasPrev: boolean; hasNext: boolean;
+  onPrev: () => void; onNext: () => void;
+}): ReactElement {
+  return (
+    <div className={styles.tabPagination}>
+      <button type="button" className={styles.tabPagBtn} onClick={onPrev} disabled={!hasPrev}>‹ Prev</button>
+      <span className={styles.tabPagInfo}>{from}–{to}{total !== null ? ` of ${total}` : ""}</span>
+      <button type="button" className={styles.tabPagBtn} onClick={onNext} disabled={!hasNext}>Next ›</button>
+    </div>
+  );
 }
 
 function PersonBreadcrumb({ personName, onShare, shareLoading }: { personName: string | null; onShare: () => void; shareLoading: boolean }): ReactElement {
@@ -333,32 +347,6 @@ interface TopStat {
 function RightRail({ person, detailData, tabs, activeTab, onChange, children }: { person: Person; detailData: DetailData; tabs: TabConfig[]; activeTab: Tab; onChange: (tab: Tab) => void; children: ReactElement }): ReactElement {
   const totalSales = detailData.sales.reduce((sum, order) => sum + (order.total_amount ?? 0), 0);
   const completeness = Math.round(person.profile_completeness_score * 100);
-  const phoneCount = new Set(
-    [
-      person.preferred_phone,
-      ...detailData.identifiers
-        .filter((identifier) => identifier.identifier_type === "phone")
-        .map((identifier) => identifier.normalized_value),
-      ...detailData.sourceRecords.flatMap((record) =>
-        (record.normalized_payload?.identifiers ?? [])
-          .filter((identifier) => identifier.identifier_type === "phone")
-          .map((identifier) => identifier.normalized_value),
-      ),
-    ].filter(Boolean),
-  ).size;
-  const emailCount = new Set(
-    [
-      person.preferred_email,
-      ...detailData.identifiers
-        .filter((identifier) => identifier.identifier_type === "email")
-        .map((identifier) => identifier.normalized_value),
-      ...detailData.sourceRecords.flatMap((record) =>
-        (record.normalized_payload?.identifiers ?? [])
-          .filter((identifier) => identifier.identifier_type === "email")
-          .map((identifier) => identifier.normalized_value),
-      ),
-    ].filter(Boolean),
-  ).size;
   const latestActivityAt = detailData.sourceRecords[0]?.observed_at ?? person.updated_at;
 
   const topStats: TopStat[] = [
@@ -566,15 +554,23 @@ function IdTypeIcon({ type }: { type: string }): ReactElement {
   return <KeyIcon />;
 }
 
-function MatchesTab({ matches, personId }: { matches: PersonMatchDecision[]; personId: string }): ReactElement {
+function MatchesTab({ personId, onTotalLoaded }: { personId: string; onTotalLoaded: (n: number) => void }): ReactElement {
   const [expandedMatch, setExpandedMatch] = useState<string | null>(null);
+  const { rows, loading, error, from, to, total, hasPrev, hasNext, goNext, goPrev } =
+    usePaginatedFetch<PersonMatchDecision>(`/bff/persons/${encodeURIComponent(personId)}/matches`);
+  const matches = rows ?? [];
+
+  useEffect(() => { if (total !== null) onTotalLoaded(total); }, [total, onTotalLoaded]);
+
+  if (loading) return <section className={styles.contentCard}><div className={styles.connHeader}><span className={styles.connHeaderTitle}>Match decisions</span></div><div className={styles.tabLoading}>Loading…</div></section>;
+  if (error) return <section className={styles.contentCard}><div className={styles.tabError}>{error}</div></section>;
 
   return (
     <section className={styles.contentCard}>
       <div className={styles.connHeader}>
         <span className={styles.connHeaderTitle}>Match decisions</span>
         <span className={styles.connHeaderDot}>·</span>
-        <span className={styles.connHeaderCount}>{matches.length} {matches.length === 1 ? "decision" : "decisions"}</span>
+        <span className={styles.connHeaderCount}>{total ?? matches.length} {(total ?? matches.length) === 1 ? "decision" : "decisions"}</span>
       </div>
       <div className={styles.matchList}>
         <div className={styles.matchHeaderRow}>
@@ -646,20 +642,30 @@ function MatchesTab({ matches, personId }: { matches: PersonMatchDecision[]; per
           );
         })}
       </div>
+      {(hasPrev || hasNext) && <TabPagination from={from} to={to} total={total} hasPrev={hasPrev} hasNext={hasNext} onPrev={goPrev} onNext={goNext} />}
     </section>
   );
 }
 
-function IdentifiersTab({ identifiers }: { identifiers: PersonIdentifier[] }): ReactElement {
+function IdentifiersTab({ personId, onTotalLoaded }: { personId: string; onTotalLoaded: (n: number) => void }): ReactElement {
+  const { rows, loading, error, from, to, total, hasPrev, hasNext, goNext, goPrev } =
+    usePaginatedFetch<PersonIdentifier>(`/bff/persons/${encodeURIComponent(personId)}/identifiers`);
+  const identifiers = rows ?? [];
+
+  useEffect(() => { if (total !== null) onTotalLoaded(total); }, [total, onTotalLoaded]);
+
+  if (loading) return <section className={styles.contentCard}><div className={styles.connHeader}><span className={styles.connHeaderTitle}>IDs</span></div><div className={styles.tabLoading}>Loading…</div></section>;
+  if (error) return <section className={styles.contentCard}><div className={styles.tabError}>{error}</div></section>;
+
   return (
     <section className={styles.contentCard}>
       <div className={styles.connHeader}>
         <span className={styles.connHeaderTitle}>IDs</span>
         <span className={styles.connHeaderDot}>·</span>
-        <span className={styles.connHeaderCount}>{identifiers.length} {identifiers.length === 1 ? "identifier" : "identifiers"}</span>
+        <span className={styles.connHeaderCount}>{total ?? identifiers.length} {(total ?? identifiers.length) === 1 ? "identifier" : "identifiers"}</span>
       </div>
       <div className={styles.idList}>
-        {identifiers.map((id, index) => (
+        {identifiers.map((id: PersonIdentifier, index: number) => (
           <div key={`${id.identifier_type}-${id.normalized_value}-${index}`} className={styles.idRow}>
             <div className={styles.idIconWrap}>
               <IdTypeIcon type={id.identifier_type} />
@@ -697,6 +703,7 @@ function IdentifiersTab({ identifiers }: { identifiers: PersonIdentifier[] }): R
           </div>
         ))}
       </div>
+      {(hasPrev || hasNext) && <TabPagination from={from} to={to} total={total} hasPrev={hasPrev} hasNext={hasNext} onPrev={goPrev} onNext={goNext} />}
     </section>
   );
 }
@@ -793,15 +800,23 @@ function SourceRecordDetail({ record }: { record: PersonSourceRecord }): ReactEl
   );
 }
 
-function SourceRecordsTab({ sourceRecords }: { sourceRecords: PersonSourceRecord[] }): ReactElement {
+function SourceRecordsTab({ personId, onTotalLoaded }: { personId: string; onTotalLoaded: (n: number) => void }): ReactElement {
   const [expandedPk, setExpandedPk] = useState<string | null>(null);
+  const { rows, loading, error, from, to, total, hasPrev, hasNext, goNext, goPrev } =
+    usePaginatedFetch<PersonSourceRecord>(`/bff/persons/${encodeURIComponent(personId)}/source-records`);
+  const sourceRecords = rows ?? [];
+
+  useEffect(() => { if (total !== null) onTotalLoaded(total); }, [total, onTotalLoaded]);
+
+  if (loading) return <section className={styles.contentCard}><div className={styles.connHeader}><span className={styles.connHeaderTitle}>Sources</span></div><div className={styles.tabLoading}>Loading…</div></section>;
+  if (error) return <section className={styles.contentCard}><div className={styles.tabError}>{error}</div></section>;
 
   return (
     <section className={styles.contentCard}>
       <div className={styles.connHeader}>
         <span className={styles.connHeaderTitle}>Sources</span>
         <span className={styles.connHeaderDot}>·</span>
-        <span className={styles.connHeaderCount}>{sourceRecords.length} {sourceRecords.length === 1 ? "record" : "records"}</span>
+        <span className={styles.connHeaderCount}>{total ?? sourceRecords.length} {(total ?? sourceRecords.length) === 1 ? "record" : "records"}</span>
       </div>
       <div className={styles.idList}>
         {sourceRecords.map((record) => {
@@ -837,23 +852,31 @@ function SourceRecordsTab({ sourceRecords }: { sourceRecords: PersonSourceRecord
           );
         })}
       </div>
+      {(hasPrev || hasNext) && <TabPagination from={from} to={to} total={total} hasPrev={hasPrev} hasNext={hasNext} onPrev={goPrev} onNext={goNext} />}
     </section>
   );
 }
 
-function SalesTab({ sales }: { sales: SalesOrder[] }): ReactElement {
+function SalesTab({ personId, onTotalLoaded }: { personId: string; onTotalLoaded: (n: number) => void }): ReactElement {
   const [expandedKey, setExpandedKey] = useState<string | null>(null);
-  const totalRevenue = sales.reduce((sum, o) => sum + (o.total_amount ?? 0), 0);
+  const { rows, loading, error, from, to, total, hasPrev, hasNext, goNext, goPrev } =
+    usePaginatedFetch<SalesOrder>(`/bff/persons/${encodeURIComponent(personId)}/sales`);
+  const sales = rows ?? [];
+  const pageRevenue = sales.reduce((sum, o) => sum + (o.total_amount ?? 0), 0);
   const currency = sales[0]?.currency ?? "SGD";
+
+  useEffect(() => { if (total !== null) onTotalLoaded(total); }, [total, onTotalLoaded]);
+
+  if (loading) return <section className={styles.contentCard}><div className={styles.connHeader}><span className={styles.connHeaderTitle}>Sales history</span></div><div className={styles.tabLoading}>Loading…</div></section>;
+  if (error) return <section className={styles.contentCard}><div className={styles.tabError}>{error}</div></section>;
 
   return (
     <section className={styles.contentCard}>
       <div className={styles.connHeader}>
         <span className={styles.connHeaderTitle}>Sales history</span>
         <span className={styles.connHeaderDot}>·</span>
-        <span className={styles.connHeaderCount}>{sales.length} orders</span>
-        <span className={styles.connHeaderDot}>·</span>
-        <span className={styles.connHeaderCount}>{fmtCurrency(totalRevenue, currency)} total</span>
+        <span className={styles.connHeaderCount}>{total ?? sales.length} orders</span>
+        {sales.length > 0 && <><span className={styles.connHeaderDot}>·</span><span className={styles.connHeaderCount}>{fmtCurrency(pageRevenue, currency)} this page</span></>}
       </div>
       <div className={styles.idList}>
         {sales.map((order, index) => {
@@ -919,19 +942,28 @@ function SalesTab({ sales }: { sales: SalesOrder[] }): ReactElement {
           );
         })}
       </div>
+      {(hasPrev || hasNext) && <TabPagination from={from} to={to} total={total} hasPrev={hasPrev} hasNext={hasNext} onPrev={goPrev} onNext={goNext} />}
     </section>
   );
 }
 
-function BankruptcyTab({ cases }: { cases: PersonBankruptcyCase[] }): ReactElement {
+function BankruptcyTab({ personId, onTotalLoaded }: { personId: string; onTotalLoaded: (n: number) => void }): ReactElement {
   const [expandedCase, setExpandedCase] = useState<string | null>(null);
+  const { rows, loading, error, from, to, total, hasPrev, hasNext, goNext, goPrev } =
+    usePaginatedFetch<PersonBankruptcyCase>(`/bff/persons/${encodeURIComponent(personId)}/bankruptcy-cases`);
+  const cases = rows ?? [];
+
+  useEffect(() => { if (total !== null) onTotalLoaded(total); }, [total, onTotalLoaded]);
+
+  if (loading) return <section className={styles.contentCard}><div className={styles.connHeader}><span className={styles.connHeaderTitle}>Bankruptcy</span></div><div className={styles.tabLoading}>Loading…</div></section>;
+  if (error) return <section className={styles.contentCard}><div className={styles.tabError}>{error}</div></section>;
 
   return (
     <section className={styles.contentCard}>
       <div className={styles.connHeader}>
         <span className={styles.connHeaderTitle}>Bankruptcy</span>
         <span className={styles.connHeaderDot}>·</span>
-        <span className={styles.connHeaderCount}>{cases.length} {cases.length === 1 ? "case" : "cases"}</span>
+        <span className={styles.connHeaderCount}>{total ?? cases.length} {(total ?? cases.length) === 1 ? "case" : "cases"}</span>
       </div>
       <div className={styles.idList}>
         {cases.map((bkCase) => {
@@ -1012,17 +1044,27 @@ function BankruptcyTab({ cases }: { cases: PersonBankruptcyCase[] }): ReactEleme
           );
         })}
       </div>
+      {(hasPrev || hasNext) && <TabPagination from={from} to={to} total={total} hasPrev={hasPrev} hasNext={hasNext} onPrev={goPrev} onNext={goNext} />}
     </section>
   );
 }
 
-function AuditTab({ audit }: { audit: PersonAuditEvent[] }): ReactElement {
+function AuditTab({ personId, onTotalLoaded }: { personId: string; onTotalLoaded: (n: number) => void }): ReactElement {
+  const { rows, loading, error, from, to, total, hasPrev, hasNext, goNext, goPrev } =
+    usePaginatedFetch<PersonAuditEvent>(`/bff/persons/${encodeURIComponent(personId)}/audit`);
+  const audit = rows ?? [];
+
+  useEffect(() => { if (total !== null) onTotalLoaded(total); }, [total, onTotalLoaded]);
+
+  if (loading) return <section className={styles.contentCard}><div className={styles.connHeader}><span className={styles.connHeaderTitle}>Audit trail</span></div><div className={styles.tabLoading}>Loading…</div></section>;
+  if (error) return <section className={styles.contentCard}><div className={styles.tabError}>{error}</div></section>;
+
   return (
     <section className={styles.contentCard}>
       <div className={styles.connHeader}>
         <span className={styles.connHeaderTitle}>Audit trail</span>
         <span className={styles.connHeaderDot}>·</span>
-        <span className={styles.connHeaderCount}>{audit.length} {audit.length === 1 ? "event" : "events"}</span>
+        <span className={styles.connHeaderCount}>{total ?? audit.length} {(total ?? audit.length) === 1 ? "event" : "events"}</span>
       </div>
       <div className={styles.auditList}>
         {audit.map((event, i) => (
@@ -1044,6 +1086,7 @@ function AuditTab({ audit }: { audit: PersonAuditEvent[] }): ReactElement {
           </div>
         ))}
       </div>
+      {(hasPrev || hasNext) && <TabPagination from={from} to={to} total={total} hasPrev={hasPrev} hasNext={hasNext} onPrev={goPrev} onNext={goNext} />}
     </section>
   );
 }
@@ -1122,16 +1165,24 @@ function ConnMetaLine({ hops, sharedIdentifiers, sharedAddresses }: ConnMetaLine
 }
 
 
-function ConnectionsTab({ connections }: { connections: PersonConnection[] }): ReactElement {
+function ConnectionsTab({ personId, onTotalLoaded }: { personId: string; onTotalLoaded: (n: number) => void }): ReactElement {
+  const { rows, loading, error, from, to, total, hasPrev, hasNext, goNext, goPrev } =
+    usePaginatedFetch<PersonConnection>(`/bff/persons/${encodeURIComponent(personId)}/connections?connection_type=all`);
+  const connections = rows ?? [];
   const withRel = connections.filter((c) => c.knows_relationships.length > 0);
   const sharedOnly = connections.filter((c) => c.knows_relationships.length === 0);
+
+  useEffect(() => { if (total !== null) onTotalLoaded(total); }, [total, onTotalLoaded]);
+
+  if (loading) return <section className={styles.contentCard}><div className={styles.connHeader}><span className={styles.connHeaderTitle}>Connections</span></div><div className={styles.tabLoading}>Loading…</div></section>;
+  if (error) return <section className={styles.contentCard}><div className={styles.tabError}>{error}</div></section>;
 
   return (
     <section className={styles.contentCard}>
       <div className={styles.connHeader}>
         <span className={styles.connHeaderTitle}>Connections</span>
         <span className={styles.connHeaderDot}>·</span>
-        <span className={styles.connHeaderCount}>{connections.length} {connections.length === 1 ? "profile" : "profiles"}</span>
+        <span className={styles.connHeaderCount}>{total ?? connections.length} {(total ?? connections.length) === 1 ? "profile" : "profiles"}</span>
       </div>
       <div className={styles.connSections}>
         {withRel.length > 0 && (
@@ -1183,6 +1234,7 @@ function ConnectionsTab({ connections }: { connections: PersonConnection[] }): R
           </div>
         )}
       </div>
+      {(hasPrev || hasNext) && <TabPagination from={from} to={to} total={total} hasPrev={hasPrev} hasNext={hasNext} onPrev={goPrev} onNext={goNext} />}
     </section>
   );
 }
@@ -1285,8 +1337,6 @@ const EMPTY_DETAIL: DetailData = {
   sourceRecords: [],
   sales: [],
   audit: [],
-  bankruptcyCases: [],
-  matches: [],
 };
 
 const VALID_TABS = new Set<Tab>(["timeline", "matches", "connections", "identifier", "source", "sales", "bankruptcy", "audit", "graph"]);
@@ -1302,7 +1352,7 @@ export default function PersonDetailPage({ params }: { params: Promise<{ personI
 
   const [person, setPerson] = useState<Person | null>(null);
   const [detailData, setDetailData] = useState<DetailData>(EMPTY_DETAIL);
-  const [connections, setConnections] = useState<PersonConnection[]>([]);
+  const [tabTotals, setTabTotals] = useState<Partial<Record<Tab, number>>>({});
   const [loading, setLoading] = useState(true);
   const [notFoundFlag, setNotFoundFlag] = useState(false);
   const [activeTab, setActiveTab] = useState<Tab>(() => parseTabParam(searchParams.get("tab")));
@@ -1345,18 +1395,14 @@ export default function PersonDetailPage({ params }: { params: Promise<{ personI
         const p = await bffFetch<Person>(`/bff/persons/${encodeURIComponent(personId)}`);
         setPerson(p);
 
-        const [identifiers, sourceRecords, sales, audit, bankruptcyCases, matches, conns] = await Promise.all([
+        const [identifiers, sourceRecords, sales, audit] = await Promise.all([
           bffFetch<PersonIdentifier[]>(`/bff/persons/${encodeURIComponent(personId)}/identifiers`).catch(() => []),
           bffFetch<PersonSourceRecord[]>(`/bff/persons/${encodeURIComponent(personId)}/source-records`).catch(() => []),
-          bffFetch<SalesOrder[]>(`/bff/persons/${encodeURIComponent(personId)}/sales?limit=50`).catch(() => []),
+          bffFetch<SalesOrder[]>(`/bff/persons/${encodeURIComponent(personId)}/sales`).catch(() => []),
           bffFetch<PersonAuditEvent[]>(`/bff/persons/${encodeURIComponent(personId)}/audit`).catch(() => []),
-          bffFetch<PersonBankruptcyCase[]>(`/bff/persons/${encodeURIComponent(personId)}/bankruptcy-cases`).catch(() => []),
-          bffFetch<PersonMatchDecision[]>(`/bff/persons/${encodeURIComponent(personId)}/matches`).catch(() => []),
-          bffFetch<PersonConnection[]>(`/bff/persons/${encodeURIComponent(personId)}/connections?connection_type=all`).catch(() => []),
         ]);
 
-        setDetailData({ identifiers, sourceRecords, sales, audit, bankruptcyCases, matches });
-        setConnections(conns);
+        setDetailData({ identifiers, sourceRecords, sales, audit });
       } catch (err) {
         if (err instanceof BffError && err.status === 404) {
           setNotFoundFlag(true);
@@ -1375,115 +1421,40 @@ export default function PersonDetailPage({ params }: { params: Promise<{ personI
     return <PersonDetailSkeleton />;
   }
 
+  const onTabTotal = useCallback((tab: Tab) => (n: number) => {
+    setTabTotals((prev) => ({ ...prev, [tab]: n }));
+  }, []);
+
   const tabs: TabConfig[] = [
     { id: "timeline", label: "Timeline" },
-    { id: "matches", label: "Matches", count: detailData.matches.length || undefined },
-    { id: "connections", label: "Relations", count: connections.length },
-    { id: "identifier", label: "IDs", count: detailData.identifiers.length },
-    { id: "source", label: "Sources", count: detailData.sourceRecords.length },
-    { id: "sales", label: "Sales", count: detailData.sales.length },
-    { id: "bankruptcy", label: "Bankruptcy", count: detailData.bankruptcyCases.length || undefined },
-    { id: "audit", label: "Audit", count: detailData.audit.length },
+    { id: "matches", label: "Matches", count: tabTotals.matches },
+    { id: "connections", label: "Relations", count: tabTotals.connections ?? person.connection_count },
+    { id: "identifier", label: "IDs", count: tabTotals.identifier ?? detailData.identifiers.length },
+    { id: "source", label: "Sources", count: tabTotals.source ?? detailData.sourceRecords.length },
+    { id: "sales", label: "Sales", count: tabTotals.sales ?? detailData.sales.length },
+    { id: "bankruptcy", label: "Bankruptcy", count: tabTotals.bankruptcy },
+    { id: "audit", label: "Audit", count: tabTotals.audit ?? detailData.audit.length },
     { id: "graph", label: "Graph" },
   ];
+
+  const shell = (children: ReactElement): ReactElement => (
+    <DetailShell person={person} detailData={detailData} tabs={tabs} activeTab={activeTab} onTabChange={setActiveTab}>
+      {children}
+    </DetailShell>
+  );
 
   return (
     <div className={styles.page}>
       <PersonBreadcrumb personName={person.preferred_full_name} onShare={() => void handleShare()} shareLoading={shareLoading} />
       <div className={styles.tabContent}>
-        {activeTab === "timeline" && (
-          <DetailShell person={person} detailData={detailData} tabs={tabs} activeTab={activeTab} onTabChange={setActiveTab}>
-            <TimelineTab person={person} detailData={detailData} />
-          </DetailShell>
-        )}
-        {activeTab === "matches" && (
-          <DetailShell person={person} detailData={detailData} tabs={tabs} activeTab={activeTab} onTabChange={setActiveTab}>
-            {detailData.matches.length > 0 ? (
-              <MatchesTab matches={detailData.matches} personId={personId} />
-            ) : (
-              <EmptyState
-                title="No match decisions available"
-                description="No match decisions are currently linked to this person."
-              />
-            )}
-          </DetailShell>
-        )}
-        {activeTab === "connections" && (
-          <DetailShell person={person} detailData={detailData} tabs={tabs} activeTab={activeTab} onTabChange={setActiveTab}>
-            {connections.length > 0 ? (
-              <ConnectionsTab connections={connections} />
-            ) : (
-              <EmptyState
-                title="No connections found"
-                description="This person has no linked profiles via shared identifiers or known relationships."
-              />
-            )}
-          </DetailShell>
-        )}
-        {activeTab === "identifier" &&
-          (detailData.identifiers.length ? (
-            <DetailShell person={person} detailData={detailData} tabs={tabs} activeTab={activeTab} onTabChange={setActiveTab}>
-              <IdentifiersTab identifiers={detailData.identifiers} />
-            </DetailShell>
-          ) : (
-            <DetailShell person={person} detailData={detailData} tabs={tabs} activeTab={activeTab} onTabChange={setActiveTab}>
-              <EmptyState
-                title="No identifiers available"
-                description="This person has no identifiers on record."
-              />
-            </DetailShell>
-          ))}
-        {activeTab === "source" &&
-          (detailData.sourceRecords.length ? (
-            <DetailShell person={person} detailData={detailData} tabs={tabs} activeTab={activeTab} onTabChange={setActiveTab}>
-              <SourceRecordsTab sourceRecords={detailData.sourceRecords} />
-            </DetailShell>
-          ) : (
-            <DetailShell person={person} detailData={detailData} tabs={tabs} activeTab={activeTab} onTabChange={setActiveTab}>
-              <EmptyState
-                title="No source records linked"
-                description="No source records are currently linked to this person."
-              />
-            </DetailShell>
-          ))}
-        {activeTab === "sales" &&
-          (detailData.sales.length ? (
-            <DetailShell person={person} detailData={detailData} tabs={tabs} activeTab={activeTab} onTabChange={setActiveTab}>
-              <SalesTab sales={detailData.sales} />
-            </DetailShell>
-          ) : (
-            <DetailShell person={person} detailData={detailData} tabs={tabs} activeTab={activeTab} onTabChange={setActiveTab}>
-              <EmptyState
-                title="No sales history available"
-                description="This person has no orders on record."
-              />
-            </DetailShell>
-          ))}
-        {activeTab === "bankruptcy" && (
-          <DetailShell person={person} detailData={detailData} tabs={tabs} activeTab={activeTab} onTabChange={setActiveTab}>
-            {detailData.bankruptcyCases.length > 0 ? (
-              <BankruptcyTab cases={detailData.bankruptcyCases} />
-            ) : (
-              <EmptyState
-                title="No bankruptcy cases"
-                description="There are no bankruptcy cases associated with this person."
-              />
-            )}
-          </DetailShell>
-        )}
-        {activeTab === "audit" &&
-          (detailData.audit.length ? (
-            <DetailShell person={person} detailData={detailData} tabs={tabs} activeTab={activeTab} onTabChange={setActiveTab}>
-              <AuditTab audit={detailData.audit} />
-            </DetailShell>
-          ) : (
-            <DetailShell person={person} detailData={detailData} tabs={tabs} activeTab={activeTab} onTabChange={setActiveTab}>
-              <EmptyState
-                title="No audit events available"
-                description="There are no audit events currently associated with this person."
-              />
-            </DetailShell>
-          ))}
+        {activeTab === "timeline" && shell(<TimelineTab person={person} detailData={detailData} />)}
+        {activeTab === "matches" && shell(<MatchesTab personId={personId} onTotalLoaded={onTabTotal("matches")} />)}
+        {activeTab === "connections" && shell(<ConnectionsTab personId={personId} onTotalLoaded={onTabTotal("connections")} />)}
+        {activeTab === "identifier" && shell(<IdentifiersTab personId={personId} onTotalLoaded={onTabTotal("identifier")} />)}
+        {activeTab === "source" && shell(<SourceRecordsTab personId={personId} onTotalLoaded={onTabTotal("source")} />)}
+        {activeTab === "sales" && shell(<SalesTab personId={personId} onTotalLoaded={onTabTotal("sales")} />)}
+        {activeTab === "bankruptcy" && shell(<BankruptcyTab personId={personId} onTotalLoaded={onTabTotal("bankruptcy")} />)}
+        {activeTab === "audit" && shell(<AuditTab personId={personId} onTotalLoaded={onTabTotal("audit")} />)}
         {activeTab === "graph" && (
           <DetailShell person={person} detailData={detailData} tabs={tabs} activeTab={activeTab} onTabChange={setActiveTab}>
             <div style={{ height: 560, border: "1px solid var(--border)", borderRadius: "10px", overflow: "hidden" }}>

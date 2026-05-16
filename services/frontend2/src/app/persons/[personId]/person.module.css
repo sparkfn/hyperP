@@ -2379,3 +2379,58 @@
   font-size: 11px;
   color: var(--text-muted);
 }
+
+/* ── Tab pagination ──────────────────────────────────────── */
+.tabPagination {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 12px 0 4px;
+  border-top: 1px solid var(--border-subtle);
+  margin-top: 8px;
+}
+
+.tabPagBtn {
+  appearance: none;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-card);
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-family: inherit;
+  padding: 4px 10px;
+  cursor: pointer;
+}
+
+.tabPagBtn:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent-text);
+}
+
+.tabPagBtn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.tabPagInfo {
+  font-size: 11px;
+  color: var(--text-muted);
+  min-width: 80px;
+  text-align: center;
+}
+
+/* ── Tab loading / error states ──────────────────────────── */
+.tabLoading {
+  padding: 32px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.tabError {
+  padding: 32px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--bad);
+}
