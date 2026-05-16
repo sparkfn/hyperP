@@ -11,7 +11,8 @@ import type {
   PersonMatchDecision,
   PersonSourceRecord,
 } from "@/lib/api-types-person";
-import { bffFetch, BffError } from "@/lib/api-client";
+import { bffFetch, BffError, bffFetchEnvelope } from "@/lib/api-client";
+import type { PublicLink } from "@/lib/api-types";
 import PersonFocusedGraph from "@/components/PersonFocusedGraph";
 import PersonGraphDialog from "@/components/PersonGraphDialog";
 import styles from "./person.module.css";
@@ -124,7 +125,7 @@ function personInitials(name: string | null): string {
     .toUpperCase();
 }
 
-function PersonBreadcrumb({ personName }: { personName: string | null }): ReactElement {
+function PersonBreadcrumb({ personName, onShare, shareLoading }: { personName: string | null; onShare: () => void; shareLoading: boolean }): ReactElement {
   return (
     <div className={styles.breadcrumbRow}>
       <div className={styles.breadcrumb}>
@@ -133,11 +134,11 @@ function PersonBreadcrumb({ personName }: { personName: string | null }): ReactE
         <span className={styles.breadcrumbCurrent}>{personName ?? "Unknown person"}</span>
       </div>
       <div className={styles.breadcrumbActions}>
-        <button type="button" className={styles.bcBtnText}>
+        <button type="button" className={styles.bcBtnText} onClick={onShare} disabled={shareLoading}>
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
             <path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8"/><polyline points="16 6 12 2 8 6"/><line x1="12" y1="2" x2="12" y2="15"/>
           </svg>
-          Share
+          {shareLoading ? "Generating…" : "Share"}
         </button>
         <button type="button" className={styles.bcBtnOutline}>
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -1306,6 +1307,37 @@ export default function PersonDetailPage({ params }: { params: Promise<{ personI
   const [notFoundFlag, setNotFoundFlag] = useState(false);
   const [activeTab, setActiveTab] = useState<Tab>(() => parseTabParam(searchParams.get("tab")));
   const [graphOpen, setGraphOpen] = useState(false);
+  const [shareOpen, setShareOpen] = useState(false);
+  const [shareLoading, setShareLoading] = useState(false);
+  const [shareUrl, setShareUrl] = useState<string | null>(null);
+  const [shareExpiry, setShareExpiry] = useState<string | null>(null);
+  const [shareCopied, setShareCopied] = useState(false);
+
+  async function handleShare(): Promise<void> {
+    if (shareUrl) { setShareOpen(true); return; }
+    setShareLoading(true);
+    try {
+      const res = await bffFetchEnvelope<PublicLink>(`/bff/persons/${encodeURIComponent(personId)}/public-link`, { method: "POST" });
+      const url = `${window.location.origin}/public/persons/${res.data.token}`;
+      setShareUrl(url);
+      setShareExpiry(res.data.expires_at);
+      setShareOpen(true);
+    } finally {
+      setShareLoading(false);
+    }
+  }
+
+  function handleCopy(): void {
+    if (!shareUrl) return;
+    void navigator.clipboard.writeText(shareUrl).then(() => {
+      setShareCopied(true);
+      setTimeout(() => setShareCopied(false), 2000);
+    });
+  }
+
+  function closeShare(): void {
+    setShareOpen(false);
+  }
 
   useEffect(() => {
     async function load(): Promise<void> {
@@ -1357,7 +1389,7 @@ export default function PersonDetailPage({ params }: { params: Promise<{ personI
 
   return (
     <div className={styles.page}>
-      <PersonBreadcrumb personName={person.preferred_full_name} />
+      <PersonBreadcrumb personName={person.preferred_full_name} onShare={() => void handleShare()} shareLoading={shareLoading} />
       <div className={styles.tabContent}>
         {activeTab === "timeline" && (
           <DetailShell person={person} detailData={detailData} tabs={tabs} activeTab={activeTab} onTabChange={setActiveTab}>
@@ -1472,6 +1504,31 @@ export default function PersonDetailPage({ params }: { params: Promise<{ personI
         title={person.preferred_full_name ?? person.person_id}
         onClose={() => setGraphOpen(false)}
       />
+
+      {shareOpen && shareUrl && (
+        <div className={styles.shareOverlay} onClick={closeShare}>
+          <div className={styles.shareModal} onClick={(e) => e.stopPropagation()}>
+            <div className={styles.shareModalHeader}>
+              <span className={styles.shareModalTitle}>Share profile</span>
+              <button type="button" className={styles.shareModalClose} onClick={closeShare} aria-label="Close">×</button>
+            </div>
+            <p className={styles.shareModalDesc}>
+              Anyone with this link can view a read-only snapshot of this profile. The link expires after 30 minutes.
+            </p>
+            <div className={styles.shareUrlRow}>
+              <input readOnly className={styles.shareUrlInput} value={shareUrl} onFocus={(e) => e.currentTarget.select()} />
+              <button type="button" className={styles.shareCopyBtn} onClick={handleCopy}>
+                {shareCopied ? "Copied!" : "Copy"}
+              </button>
+            </div>
+            {shareExpiry && (
+              <span className={styles.shareExpiry}>
+                Expires {new Date(shareExpiry).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}
+              </span>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
