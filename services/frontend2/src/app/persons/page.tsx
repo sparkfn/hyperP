@@ -115,6 +115,7 @@ function OrdersPopover({
   anchorRight,
   orders,
   loading,
+  total,
   onClose,
 }: {
   personId: string;
@@ -122,6 +123,7 @@ function OrdersPopover({
   anchorRight: number;
   orders: SalesOrder[];
   loading: boolean;
+  total: number | null;
   onClose: () => void;
 }): ReactElement {
   const popoverRef = useRef<HTMLDivElement | null>(null);
@@ -160,7 +162,7 @@ function OrdersPopover({
         <div>
           <div className={styles.ordersPopoverTitle}>Order history</div>
           <div className={styles.ordersPopoverSubtitle}>
-            {loading ? "Loading…" : `${orders.length} order${orders.length === 1 ? "" : "s"}`}
+            {loading ? "Loading…" : total !== null && total > orders.length ? `Showing ${orders.length} of ${total}` : `${orders.length} order${orders.length === 1 ? "" : "s"}`}
           </div>
         </div>
         <button type="button" className={styles.ordersPopoverClose} onClick={onClose} aria-label="Close orders popover">×</button>
@@ -211,6 +213,7 @@ function RelationPopover({
   anchorRight,
   connections,
   loading,
+  total,
   onClose,
 }: {
   personId: string;
@@ -218,6 +221,7 @@ function RelationPopover({
   anchorRight: number;
   connections: PersonConnection[];
   loading: boolean;
+  total: number | null;
   onClose: () => void;
 }): ReactElement {
   const popoverRef = useRef<HTMLDivElement | null>(null);
@@ -256,7 +260,7 @@ function RelationPopover({
         <div>
           <div className={styles.relationsPopoverTitle}>Relations</div>
           <div className={styles.relationsPopoverSubtitle}>
-            {loading ? "Loading…" : `${connections.length} linked profile${connections.length === 1 ? "" : "s"}`}
+            {loading ? "Loading…" : total !== null && total > connections.length ? `Showing ${connections.length} of ${total}` : `${connections.length} linked profile${connections.length === 1 ? "" : "s"}`}
           </div>
         </div>
         <button type="button" className={styles.relationsPopoverClose} onClick={onClose} aria-label="Close relations popover">
@@ -766,8 +770,10 @@ function PersonsInner(): ReactElement {
   const [ordersPopover, setOrdersPopover] = useState<OrdersPopoverState | null>(null);
   const [popoverConnections, setPopoverConnections] = useState<PersonConnection[]>([]);
   const [popoverConnectionsLoading, setPopoverConnectionsLoading] = useState(false);
+  const [popoverConnectionsTotal, setPopoverConnectionsTotal] = useState<number | null>(null);
   const [popoverOrders, setPopoverOrders] = useState<SalesOrder[]>([]);
   const [popoverOrdersLoading, setPopoverOrdersLoading] = useState(false);
+  const [popoverOrdersTotal, setPopoverOrdersTotal] = useState<number | null>(null);
   const checkAllRef = useRef<HTMLInputElement | null>(null);
   const filterBarRef = useRef<HTMLDivElement | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
@@ -1056,13 +1062,15 @@ function PersonsInner(): ReactElement {
   useEffect(() => {
     if (!relationPopover) {
       setPopoverConnections([]);
+      setPopoverConnectionsTotal(null);
       return;
     }
     let cancelled = false;
     setPopoverConnectionsLoading(true);
     setPopoverConnections([]);
-    void bffFetch<PersonConnection[]>(`/bff/persons/${encodeURIComponent(relationPopover.personId)}/connections`)
-      .then((data) => { if (!cancelled) { setPopoverConnections(data); } })
+    setPopoverConnectionsTotal(null);
+    void bffFetchEnvelope<PersonConnection[]>(`/bff/persons/${encodeURIComponent(relationPopover.personId)}/connections`)
+      .then((res) => { if (!cancelled) { setPopoverConnections(res.data); setPopoverConnectionsTotal(res.meta.total_count ?? null); } })
       .catch(() => { if (!cancelled) { setPopoverConnections([]); } })
       .finally(() => { if (!cancelled) { setPopoverConnectionsLoading(false); } });
     return () => { cancelled = true; };
@@ -1071,13 +1079,15 @@ function PersonsInner(): ReactElement {
   useEffect(() => {
     if (!ordersPopover) {
       setPopoverOrders([]);
+      setPopoverOrdersTotal(null);
       return;
     }
     let cancelled = false;
     setPopoverOrdersLoading(true);
     setPopoverOrders([]);
-    void bffFetch<SalesOrder[]>(`/bff/persons/${encodeURIComponent(ordersPopover.personId)}/sales`)
-      .then((data) => { if (!cancelled) { setPopoverOrders(data); } })
+    setPopoverOrdersTotal(null);
+    void bffFetchEnvelope<SalesOrder[]>(`/bff/persons/${encodeURIComponent(ordersPopover.personId)}/sales`)
+      .then((res) => { if (!cancelled) { setPopoverOrders(res.data); setPopoverOrdersTotal(res.meta.total_count ?? null); } })
       .catch(() => { if (!cancelled) { setPopoverOrders([]); } })
       .finally(() => { if (!cancelled) { setPopoverOrdersLoading(false); } });
     return () => { cancelled = true; };
@@ -1680,6 +1690,7 @@ function PersonsInner(): ReactElement {
               anchorRight={relationPopover.anchorRight}
               connections={popoverConnections}
               loading={popoverConnectionsLoading}
+              total={popoverConnectionsTotal}
               onClose={closeRelationPopover}
             />
           )}
@@ -1690,6 +1701,7 @@ function PersonsInner(): ReactElement {
               anchorRight={ordersPopover.anchorRight}
               orders={popoverOrders}
               loading={popoverOrdersLoading}
+              total={popoverOrdersTotal}
               onClose={closeOrdersPopover}
             />
           )}
