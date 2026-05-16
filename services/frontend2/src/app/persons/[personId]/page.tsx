@@ -1407,9 +1407,13 @@ export default function PersonDetailPage({ params }: { params: Promise<{ personI
     void load();
   }, [personId]);
 
-  const onTabTotal = useCallback((tab: Tab) => (n: number) => {
-    setTabTotals((prev) => ({ ...prev, [tab]: n }));
-  }, []);
+  const onMatchesTotal     = useCallback((n: number) => { setTabTotals((p) => ({ ...p, matches:     n })); }, []);
+  const onConnectionsTotal = useCallback((n: number) => { setTabTotals((p) => ({ ...p, connections: n })); }, []);
+  const onIdentifierTotal  = useCallback((n: number) => { setTabTotals((p) => ({ ...p, identifier:  n })); }, []);
+  const onSourceTotal      = useCallback((n: number) => { setTabTotals((p) => ({ ...p, source:      n })); }, []);
+  const onSalesTotal       = useCallback((n: number) => { setTabTotals((p) => ({ ...p, sales:       n })); }, []);
+  const onBankruptcyTotal  = useCallback((n: number) => { setTabTotals((p) => ({ ...p, bankruptcy:  n })); }, []);
+  const onAuditTotal       = useCallback((n: number) => { setTabTotals((p) => ({ ...p, audit:       n })); }, []);
 
   if (notFoundFlag) notFound();
 
@@ -1440,13 +1444,13 @@ export default function PersonDetailPage({ params }: { params: Promise<{ personI
       <PersonBreadcrumb personName={person.preferred_full_name} onShare={() => void handleShare()} shareLoading={shareLoading} />
       <div className={styles.tabContent}>
         {activeTab === "timeline" && shell(<TimelineTab person={person} detailData={detailData} />)}
-        {activeTab === "matches" && shell(<MatchesTab personId={personId} onTotalLoaded={onTabTotal("matches")} />)}
-        {activeTab === "connections" && shell(<ConnectionsTab personId={personId} onTotalLoaded={onTabTotal("connections")} />)}
-        {activeTab === "identifier" && shell(<IdentifiersTab personId={personId} onTotalLoaded={onTabTotal("identifier")} />)}
-        {activeTab === "source" && shell(<SourceRecordsTab personId={personId} onTotalLoaded={onTabTotal("source")} />)}
-        {activeTab === "sales" && shell(<SalesTab personId={personId} onTotalLoaded={onTabTotal("sales")} />)}
-        {activeTab === "bankruptcy" && shell(<BankruptcyTab personId={personId} onTotalLoaded={onTabTotal("bankruptcy")} />)}
-        {activeTab === "audit" && shell(<AuditTab personId={personId} onTotalLoaded={onTabTotal("audit")} />)}
+        {activeTab === "matches" && shell(<MatchesTab personId={personId} onTotalLoaded={onMatchesTotal} />)}
+        {activeTab === "connections" && shell(<ConnectionsTab personId={personId} onTotalLoaded={onConnectionsTotal} />)}
+        {activeTab === "identifier" && shell(<IdentifiersTab personId={personId} onTotalLoaded={onIdentifierTotal} />)}
+        {activeTab === "source" && shell(<SourceRecordsTab personId={personId} onTotalLoaded={onSourceTotal} />)}
+        {activeTab === "sales" && shell(<SalesTab personId={personId} onTotalLoaded={onSalesTotal} />)}
+        {activeTab === "bankruptcy" && shell(<BankruptcyTab personId={personId} onTotalLoaded={onBankruptcyTotal} />)}
+        {activeTab === "audit" && shell(<AuditTab personId={personId} onTotalLoaded={onAuditTotal} />)}
         {activeTab === "graph" && (
           <DetailShell person={person} detailData={detailData} tabs={tabs} activeTab={activeTab} onTabChange={setActiveTab}>
             <div style={{ height: 560, border: "1px solid var(--border)", borderRadius: "10px", overflow: "hidden" }}>
