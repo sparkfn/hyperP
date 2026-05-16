@@ -598,32 +598,71 @@ function MergeLoadingOverlay(): ReactElement {
 function OverrideLoadingOverlay(): ReactElement {
   return (
     <div className={styles.modalLoadingOverlay}>
-      <svg className={styles.modalLoadingSpinner} viewBox="0 0 100 100" preserveAspectRatio="xMidYMid meet" aria-hidden="true">
-        <circle cx="50" cy="72" r="8" fill="currentColor" opacity="0.5" />
-        <line x1="28" y1="28" x2="50" y2="72" stroke="currentColor" strokeWidth="1">
-          <animate attributeName="opacity" values="0.3;0.08;0.08;0.3" dur="3s" repeatCount="indefinite" keyTimes="0;0.45;0.7;1" />
-          <animate attributeName="strokeWidth" values="1;0.5;0.5;1" dur="3s" repeatCount="indefinite" keyTimes="0;0.45;0.7;1" />
-        </line>
-        <circle cx="28" cy="28" r="7" fill="currentColor">
-          <animate attributeName="opacity" values="0.55;0.15;0.15;0.55" dur="3s" repeatCount="indefinite" keyTimes="0;0.45;0.7;1" />
-          <animate attributeName="r" values="7;5;5;7" dur="3s" repeatCount="indefinite" keyTimes="0;0.45;0.7;1" />
-        </circle>
-        <line x1="72" y1="28" x2="50" y2="72" stroke="currentColor" strokeWidth="1">
-          <animate attributeName="opacity" values="0.3;0.8;0.8;0.3" dur="3s" repeatCount="indefinite" keyTimes="0;0.45;0.7;1" />
-          <animate attributeName="strokeWidth" values="1;2.5;2.5;1" dur="3s" repeatCount="indefinite" keyTimes="0;0.45;0.7;1" />
-        </line>
-        <circle cx="72" cy="28" r="7" fill="currentColor">
-          <animate attributeName="opacity" values="0.55;0.9;0.9;0.55" dur="3s" repeatCount="indefinite" keyTimes="0;0.45;0.7;1" />
-          <animate attributeName="r" values="7;9;9;7" dur="3s" repeatCount="indefinite" keyTimes="0;0.45;0.7;1" />
-        </circle>
-        <circle cx="72" cy="28" r="9" fill="none" stroke="currentColor" strokeWidth="1.2">
-          <animate attributeName="r" values="9;16;16;9" dur="3s" repeatCount="indefinite" keyTimes="0;0.55;0.65;1" />
-          <animate attributeName="opacity" values="0;0.35;0;0" dur="3s" repeatCount="indefinite" keyTimes="0;0.5;0.65;1" />
-        </circle>
-        <circle cx="61" cy="50" r="0" fill="currentColor">
-          <animate attributeName="r" values="0;3;3;0" dur="3s" repeatCount="indefinite" keyTimes="0;0.48;0.68;1" />
-          <animate attributeName="opacity" values="0;0.85;0.85;0" dur="3s" repeatCount="indefinite" keyTimes="0;0.48;0.68;1" />
-        </circle>
+      <svg className={styles.modalLoadingSpinner} viewBox="0 0 100 100" overflow="visible" preserveAspectRatio="xMidYMid meet" aria-hidden="true">
+        <circle cx="50" cy="50" r="22" fill="none" stroke="currentColor" strokeWidth="0.4" opacity="0.25" />
+        <circle cx="50" cy="50" r="36" fill="none" stroke="currentColor" strokeWidth="0.3" opacity="0.18" />
+        <circle cx="50" cy="50" r="7" fill="currentColor" opacity="0.55" />
+        <g>
+          <animateTransform attributeName="transform" type="rotate" from="0 50 50" to="360 50 50" dur="3s" repeatCount="indefinite" />
+          <line x1="50" y1="50" x2="72" y2="50" stroke="currentColor" strokeWidth="0.7" opacity="0.3" />
+          <circle cx="72" cy="50" r="5" fill="currentColor" opacity="0.65" />
+          <circle cy="50" fill="currentColor">
+            <animate attributeName="cx"      values="106;106;72;72;106;106" keyTimes="0;0.05;0.5;0.72;0.78;1" dur="6s"   begin="0s"   repeatCount="indefinite" calcMode="spline" keySplines="0 0 0 0;0.4 0 0.2 1;0 0 0 0;0 0 0 0;0 0 0 0" />
+            <animate attributeName="r"       values="3.5;3.5;5;3.5;3.5;3.5" keyTimes="0;0.05;0.52;0.6;0.72;1"  dur="6s"   begin="0s"   repeatCount="indefinite" />
+            <animate attributeName="opacity" values="0;0.82;0.88;0;0;0"      keyTimes="0;0.07;0.5;0.72;0.78;1"  dur="6s"   begin="0s"   repeatCount="indefinite" />
+          </circle>
+          <circle cx="72" cy="50" fill="none" stroke="currentColor" strokeWidth="1">
+            <animate attributeName="r"       values="0;0;5;16;16;0" keyTimes="0;0.48;0.5;0.62;0.66;1" dur="6s"   begin="0s"   repeatCount="indefinite" />
+            <animate attributeName="opacity" values="0;0;0.7;0;0;0"  keyTimes="0;0.48;0.5;0.62;0.66;1" dur="6s"   begin="0s"   repeatCount="indefinite" />
+          </circle>
+        </g>
+        <g>
+          <animateTransform attributeName="transform" type="rotate" from="180 50 50" to="540 50 50" dur="3s" repeatCount="indefinite" />
+          <line x1="50" y1="50" x2="72" y2="50" stroke="currentColor" strokeWidth="0.7" opacity="0.3" />
+          <circle cx="72" cy="50" r="4" fill="currentColor" opacity="0.5" />
+          <circle cy="50" fill="currentColor">
+            <animate attributeName="cx"      values="106;106;72;72;106;106" keyTimes="0;0.05;0.5;0.72;0.78;1" dur="7.5s" begin="2.4s" repeatCount="indefinite" calcMode="spline" keySplines="0 0 0 0;0.4 0 0.2 1;0 0 0 0;0 0 0 0;0 0 0 0" />
+            <animate attributeName="r"       values="3;3;4.5;3;3;3"         keyTimes="0;0.05;0.52;0.6;0.72;1"  dur="7.5s" begin="2.4s" repeatCount="indefinite" />
+            <animate attributeName="opacity" values="0;0.75;0.82;0;0;0"     keyTimes="0;0.07;0.5;0.72;0.78;1"  dur="7.5s" begin="2.4s" repeatCount="indefinite" />
+          </circle>
+          <circle cx="72" cy="50" fill="none" stroke="currentColor" strokeWidth="1">
+            <animate attributeName="r"       values="0;0;4;14;14;0" keyTimes="0;0.48;0.5;0.62;0.66;1" dur="7.5s" begin="2.4s" repeatCount="indefinite" />
+            <animate attributeName="opacity" values="0;0;0.65;0;0;0" keyTimes="0;0.48;0.5;0.62;0.66;1" dur="7.5s" begin="2.4s" repeatCount="indefinite" />
+          </circle>
+        </g>
+        <g>
+          <animateTransform attributeName="transform" type="rotate" from="60 50 50" to="-300 50 50" dur="5s" repeatCount="indefinite" />
+          <line x1="50" y1="50" x2="86" y2="50" stroke="currentColor" strokeWidth="0.5" opacity="0.22" />
+          <circle cx="86" cy="50" r="4" fill="currentColor" opacity="0.55" />
+          <circle cy="50" fill="currentColor">
+            <animate attributeName="cx"      values="108;108;86;86;108;108" keyTimes="0;0.05;0.5;0.72;0.78;1" dur="8s"   begin="1s"   repeatCount="indefinite" calcMode="spline" keySplines="0 0 0 0;0.4 0 0.2 1;0 0 0 0;0 0 0 0;0 0 0 0" />
+            <animate attributeName="r"       values="3.5;3.5;5;3.5;3.5;3.5" keyTimes="0;0.05;0.52;0.6;0.72;1"  dur="8s"   begin="1s"   repeatCount="indefinite" />
+            <animate attributeName="opacity" values="0;0.78;0.85;0;0;0"     keyTimes="0;0.07;0.5;0.72;0.78;1"  dur="8s"   begin="1s"   repeatCount="indefinite" />
+          </circle>
+          <circle cx="86" cy="50" fill="none" stroke="currentColor" strokeWidth="1">
+            <animate attributeName="r"       values="0;0;5;16;16;0" keyTimes="0;0.48;0.5;0.62;0.66;1" dur="8s"   begin="1s"   repeatCount="indefinite" />
+            <animate attributeName="opacity" values="0;0;0.65;0;0;0" keyTimes="0;0.48;0.5;0.62;0.66;1" dur="8s"   begin="1s"   repeatCount="indefinite" />
+          </circle>
+        </g>
+        <g>
+          <animateTransform attributeName="transform" type="rotate" from="180 50 50" to="-180 50 50" dur="5s" repeatCount="indefinite" />
+          <line x1="50" y1="50" x2="86" y2="50" stroke="currentColor" strokeWidth="0.5" opacity="0.22" />
+          <circle cx="86" cy="50" r="3.5" fill="currentColor" opacity="0.45" />
+        </g>
+        <g>
+          <animateTransform attributeName="transform" type="rotate" from="300 50 50" to="-60 50 50" dur="5s" repeatCount="indefinite" />
+          <line x1="50" y1="50" x2="86" y2="50" stroke="currentColor" strokeWidth="0.5" opacity="0.22" />
+          <circle cx="86" cy="50" r="3" fill="currentColor" opacity="0.4" />
+          <circle cy="50" fill="currentColor">
+            <animate attributeName="cx"      values="108;108;86;86;108;108" keyTimes="0;0.05;0.5;0.72;0.78;1" dur="9s"   begin="3.8s" repeatCount="indefinite" calcMode="spline" keySplines="0 0 0 0;0.4 0 0.2 1;0 0 0 0;0 0 0 0;0 0 0 0" />
+            <animate attributeName="r"       values="3;3;4.5;3;3;3"         keyTimes="0;0.05;0.52;0.6;0.72;1"  dur="9s"   begin="3.8s" repeatCount="indefinite" />
+            <animate attributeName="opacity" values="0;0.7;0.8;0;0;0"       keyTimes="0;0.07;0.5;0.72;0.78;1"  dur="9s"   begin="3.8s" repeatCount="indefinite" />
+          </circle>
+          <circle cx="86" cy="50" fill="none" stroke="currentColor" strokeWidth="1">
+            <animate attributeName="r"       values="0;0;4;14;14;0" keyTimes="0;0.48;0.5;0.62;0.66;1" dur="9s"   begin="3.8s" repeatCount="indefinite" />
+            <animate attributeName="opacity" values="0;0;0.6;0;0;0"  keyTimes="0;0.48;0.5;0.62;0.66;1" dur="9s"   begin="3.8s" repeatCount="indefinite" />
+          </circle>
+        </g>
       </svg>
     </div>
   );
