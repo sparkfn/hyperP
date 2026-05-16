@@ -2,7 +2,7 @@
 
 import { Fragment, use, useEffect, useMemo, useState, type ReactElement } from "react";
 import Link from "next/link";
-import { notFound } from "next/navigation";
+import { notFound, useSearchParams } from "next/navigation";
 import type { Person, PersonConnection, SalesOrder } from "@/lib/api-types";
 import type {
   PersonAuditEvent,
@@ -1288,15 +1288,23 @@ const EMPTY_DETAIL: DetailData = {
   matches: [],
 };
 
+const VALID_TABS = new Set<Tab>(["timeline", "matches", "connections", "identifier", "source", "sales", "bankruptcy", "audit", "graph"]);
+
+function parseTabParam(value: string | null): Tab {
+  if (value !== null && VALID_TABS.has(value as Tab)) return value as Tab;
+  return "timeline";
+}
+
 export default function PersonDetailPage({ params }: { params: Promise<{ personId: string }> }): ReactElement {
   const { personId } = use(params);
+  const searchParams = useSearchParams();
 
   const [person, setPerson] = useState<Person | null>(null);
   const [detailData, setDetailData] = useState<DetailData>(EMPTY_DETAIL);
   const [connections, setConnections] = useState<PersonConnection[]>([]);
   const [loading, setLoading] = useState(true);
   const [notFoundFlag, setNotFoundFlag] = useState(false);
-  const [activeTab, setActiveTab] = useState<Tab>("timeline");
+  const [activeTab, setActiveTab] = useState<Tab>(() => parseTabParam(searchParams.get("tab")));
   const [graphOpen, setGraphOpen] = useState(false);
 
   useEffect(() => {

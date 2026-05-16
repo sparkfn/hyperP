@@ -196,6 +196,11 @@ function OrdersPopover({
           );
         })}
       </div>
+      <div className={styles.popoverFooter}>
+        <Link href={`/persons/${personId}?tab=sales`} className={styles.popoverViewAll} onClick={onClose}>
+          View all
+        </Link>
+      </div>
     </div>
   );
 }
@@ -282,6 +287,11 @@ function RelationPopover({
             <div className={styles.relationSummary}>{formatRelationType(connection)}</div>
           </div>
         ))}
+      </div>
+      <div className={styles.popoverFooter}>
+        <Link href={`/persons/${personId}?tab=connections`} className={styles.popoverViewAll} onClick={onClose}>
+          View all
+        </Link>
       </div>
     </div>
   );
