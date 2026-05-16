@@ -58,7 +58,6 @@ export interface Person {
   golden_profile_version: string | null;
   source_record_count: number;
   connection_count: number;
-  lifetime_value: number | null;
   created_at: string;
   updated_at: string;
 }

@@ -354,7 +354,7 @@ function RightRail({ person, detailData, salesTotal, identifiersTotal, tabs, act
   const topStats: TopStat[] = [
     {
       label: "Lifetime value",
-      value: person.lifetime_value != null ? fmtCurrency(person.lifetime_value, detailData.sales[0]?.currency ?? "SGD") : "—",
+      value: detailData.sales.length ? fmtCurrency(totalSales, detailData.sales[0]?.currency ?? "SGD") : "—",
       note: salesCount ? `${salesCount} orders` : "No orders yet",
     },
     {
