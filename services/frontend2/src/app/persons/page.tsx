@@ -1162,7 +1162,7 @@ function PersonsInner(): ReactElement {
           ) : (
             <div className={styles.statValue} style={{ color: "var(--good)" }}>{allProfilesCount != null ? allProfilesCount.toLocaleString() : "—"}</div>
           )}
-          {statsLoading ? <span className={styles.skeletonLine} style={{ width: 70, height: 10, marginTop: 2 }} /> : <div className={styles.statSub}>{flagFilter === "any" ? "✓ showing all" : "click to reset"}</div>}
+          {statsLoading ? <span className={styles.skeletonLine} style={{ width: 70, height: 10, marginTop: 2 }} /> : <div className={styles.statSub}>"active persons"</div>}
         </button>
 
         <button
@@ -1178,7 +1178,7 @@ function PersonsInner(): ReactElement {
           ) : (
             <div className={styles.statValue} style={{ color: "var(--bad)" }}>{highRiskCount != null ? highRiskCount.toLocaleString() : "—"}</div>
           )}
-          {statsLoading ? <span className={styles.skeletonLine} style={{ width: 90, height: 10, marginTop: 2 }} /> : <div className={styles.statSub}>{flagFilter === "high_risk" ? "✓ filtering" : "flagged as high risk"}</div>}
+          {statsLoading ? <span className={styles.skeletonLine} style={{ width: 90, height: 10, marginTop: 2 }} /> : <div className={styles.statSub}>"flagged as high risk"</div>}
         </button>
 
         <button
@@ -1194,7 +1194,7 @@ function PersonsInner(): ReactElement {
           ) : (
             <div className={styles.statValue} style={{ color: "var(--accent)" }}>{highValueCount != null ? highValueCount.toLocaleString() : "—"}</div>
           )}
-          {statsLoading ? <span className={styles.skeletonLine} style={{ width: 94, height: 10, marginTop: 2 }} /> : <div className={styles.statSub}>{flagFilter === "high_value" ? "✓ filtering" : "flagged as high value"}</div>}
+          {statsLoading ? <span className={styles.skeletonLine} style={{ width: 94, height: 10, marginTop: 2 }} /> : <div className={styles.statSub}>"flagged as high value"</div>}
         </button>
 
         <button
@@ -1210,7 +1210,7 @@ function PersonsInner(): ReactElement {
           ) : (
             <div className={styles.statValue} style={{ color: "var(--warn-text)" }}>{noContactCount != null ? noContactCount.toLocaleString() : "—"}</div>
           )}
-          {statsLoading ? <span className={styles.skeletonLine} style={{ width: 76, height: 10, marginTop: 2 }} /> : <div className={styles.statSub}>{flagFilter === "no_contact" ? "✓ filtering" : "can't be reached"}</div>}
+          {statsLoading ? <span className={styles.skeletonLine} style={{ width: 76, height: 10, marginTop: 2 }} /> : <div className={styles.statSub}>"can't be reached"</div>}
         </button>
       </div>
 
