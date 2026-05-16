@@ -651,14 +651,15 @@ function MatchesTab({ personId, onTotalLoaded }: { personId: string; onTotalLoad
         <span className={styles.connHeaderDot}>·</span>
         <span className={styles.connHeaderCount}>{total ?? matches.length} {(total ?? matches.length) === 1 ? "decision" : "decisions"}</span>
       </div>
+      {matches.length === 0 && <div className={styles.tabEmpty}>No match decisions on record.</div>}
       <div className={styles.matchList}>
-        <div className={styles.matchHeaderRow}>
+        {matches.length > 0 && <div className={styles.matchHeaderRow}>
           <span>Decision</span>
           <span>Engine</span>
           <span>Counterpart</span>
           <span>Confidence</span>
           <span>Created</span>
-        </div>
+        </div>}
         {matches.map((match) => {
           const isOpen = expandedMatch === match.match_decision_id;
           const otherPersonId = match.left_person_id === personId ? match.right_person_id : match.left_person_id;
@@ -1044,6 +1045,7 @@ function BankruptcyTab({ personId, onTotalLoaded }: { personId: string; onTotalL
         <span className={styles.connHeaderDot}>·</span>
         <span className={styles.connHeaderCount}>{total ?? cases.length} {(total ?? cases.length) === 1 ? "case" : "cases"}</span>
       </div>
+      {cases.length === 0 && <div className={styles.tabEmpty}>No bankruptcy cases on record.</div>}
       <div className={styles.idList}>
         {cases.map((bkCase) => {
           const key = bkCase.bankruptcy_case_id;

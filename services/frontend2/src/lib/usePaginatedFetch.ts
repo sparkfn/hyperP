@@ -44,7 +44,12 @@ export function usePaginatedFetch<T>(basePath: string): PaginatedResult<T> {
         }
       } catch (err: unknown) {
         if (cancelled) return;
-        setError(err instanceof BffError ? err.message : "Failed to load.");
+        if (err instanceof BffError && err.status === 404) {
+          setRows([]);
+          setTotal(0);
+        } else {
+          setError(err instanceof BffError ? err.message : "Failed to load.");
+        }
       } finally {
         if (!cancelled) setLoading(false);
       }
