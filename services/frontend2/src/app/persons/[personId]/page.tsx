@@ -330,7 +330,7 @@ function PersonTabs({ tabs, activeTab, onChange }: { tabs: TabConfig[]; activeTa
           onClick={() => onChange(tab.id)}
         >
           <span>{tab.label}</span>
-          {tab.count !== undefined && <span className={styles.tabCount}>{tab.count}</span>}
+          {!!tab.count && <span className={styles.tabCount}>{tab.count}</span>}
         </button>
       ))}
     </div>
