@@ -714,7 +714,7 @@ function PersonsInner(): ReactElement {
   const [dobSingleDate, setDobSingleDate] = useState("");
   const [dobStartDate, setDobStartDate] = useState("");
   const [dobEndDate, setDobEndDate] = useState("");
-  const [flagFilter, setFlagFilter] = useState<"any" | "high_value" | "high_risk">("any");
+  const [flagFilter, setFlagFilter] = useState<"any" | "high_value" | "high_risk" | "no_contact">("any");
   const [hasBankruptcy, setHasBankruptcy] = useState<boolean | null>(null);
   const [updatedAfter, setUpdatedAfter] = useState("");
   const [updatedBefore, setUpdatedBefore] = useState("");
@@ -966,6 +966,7 @@ function PersonsInner(): ReactElement {
     }
     if (flagFilter === "high_value") params.set("is_high_value", "true");
     if (flagFilter === "high_risk") params.set("is_high_risk", "true");
+    if (flagFilter === "no_contact") { params.set("has_phone", "false"); params.set("has_email", "false"); }
     if (hasBankruptcy !== null) params.set("has_bankruptcy_case", String(hasBankruptcy));
     if (updatedAfter) params.set("updated_after", updatedAfter);
     if (updatedBefore) params.set("updated_before", updatedBefore);
@@ -1145,45 +1146,69 @@ function PersonsInner(): ReactElement {
 
       {/* ── Stats row ─────────────────────────────────────────── */}
       <div className={styles.statsRow}>
-        <div className={styles.statCard}>
+        <button
+          type="button"
+          className={`${styles.statCard} ${styles.statCardClickable} ${flagFilter === "any" ? styles.statCardActive : ""}`}
+          onClick={() => setFlagFilter("any")}
+          title="Show all profiles"
+          disabled={statsLoading}
+        >
           {statsLoading ? <span className={styles.skeletonLine} style={{ width: 80, height: 10 }} /> : <div className={styles.statLabel}>Total Profiles</div>}
           {statsLoading ? (
             <span className={styles.skeletonLine} style={{ width: 64, height: 26, display: "block", marginTop: 2 }} />
           ) : (
             <div className={styles.statValue} style={{ color: "var(--good)" }}>{total != null ? total.toLocaleString() : "—"}</div>
           )}
-          {statsLoading ? <span className={styles.skeletonLine} style={{ width: 70, height: 10, marginTop: 2 }} /> : <div className={styles.statSub}>active persons</div>}
-        </div>
+          {statsLoading ? <span className={styles.skeletonLine} style={{ width: 70, height: 10, marginTop: 2 }} /> : <div className={styles.statSub}>{flagFilter === "any" ? "✓ showing all" : "click to reset"}</div>}
+        </button>
 
-        <div className={styles.statCard}>
+        <button
+          type="button"
+          className={`${styles.statCard} ${styles.statCardClickable} ${flagFilter === "high_risk" ? styles.statCardActive : ""}`}
+          onClick={() => setFlagFilter((f) => f === "high_risk" ? "any" : "high_risk")}
+          title="Filter by high risk"
+          disabled={statsLoading}
+        >
           {statsLoading ? <span className={styles.skeletonLine} style={{ width: 60, height: 10 }} /> : <div className={styles.statLabel}>High Risk</div>}
           {statsLoading ? (
             <span className={styles.skeletonLine} style={{ width: 48, height: 26, display: "block", marginTop: 2 }} />
           ) : (
             <div className={styles.statValue} style={{ color: "var(--bad)" }}>{highRiskCount != null ? highRiskCount.toLocaleString() : "—"}</div>
           )}
-          {statsLoading ? <span className={styles.skeletonLine} style={{ width: 90, height: 10, marginTop: 2 }} /> : <div className={styles.statSub}>flagged as high risk</div>}
-        </div>
+          {statsLoading ? <span className={styles.skeletonLine} style={{ width: 90, height: 10, marginTop: 2 }} /> : <div className={styles.statSub}>{flagFilter === "high_risk" ? "✓ filtering" : "flagged as high risk"}</div>}
+        </button>
 
-        <div className={styles.statCard}>
+        <button
+          type="button"
+          className={`${styles.statCard} ${styles.statCardClickable} ${flagFilter === "high_value" ? styles.statCardActive : ""}`}
+          onClick={() => setFlagFilter((f) => f === "high_value" ? "any" : "high_value")}
+          title="Filter by high value"
+          disabled={statsLoading}
+        >
           {statsLoading ? <span className={styles.skeletonLine} style={{ width: 68, height: 10 }} /> : <div className={styles.statLabel}>High Value</div>}
           {statsLoading ? (
             <span className={styles.skeletonLine} style={{ width: 56, height: 26, display: "block", marginTop: 2 }} />
           ) : (
             <div className={styles.statValue} style={{ color: "var(--accent)" }}>{highValueCount != null ? highValueCount.toLocaleString() : "—"}</div>
           )}
-          {statsLoading ? <span className={styles.skeletonLine} style={{ width: 94, height: 10, marginTop: 2 }} /> : <div className={styles.statSub}>flagged as high value</div>}
-        </div>
+          {statsLoading ? <span className={styles.skeletonLine} style={{ width: 94, height: 10, marginTop: 2 }} /> : <div className={styles.statSub}>{flagFilter === "high_value" ? "✓ filtering" : "flagged as high value"}</div>}
+        </button>
 
-        <div className={styles.statCard}>
+        <button
+          type="button"
+          className={`${styles.statCard} ${styles.statCardClickable} ${flagFilter === "no_contact" ? styles.statCardActive : ""}`}
+          onClick={() => setFlagFilter((f) => f === "no_contact" ? "any" : "no_contact")}
+          title="Filter by no contact info"
+          disabled={statsLoading}
+        >
           {statsLoading ? <span className={styles.skeletonLine} style={{ width: 88, height: 10 }} /> : <div className={styles.statLabel}>No contact info</div>}
           {statsLoading ? (
             <span className={styles.skeletonLine} style={{ width: 52, height: 26, display: "block", marginTop: 2 }} />
           ) : (
             <div className={styles.statValue} style={{ color: "var(--warn-text)" }}>{noContactCount != null ? noContactCount.toLocaleString() : "—"}</div>
           )}
-          {statsLoading ? <span className={styles.skeletonLine} style={{ width: 76, height: 10, marginTop: 2 }} /> : <div className={styles.statSub}>can&apos;t be reached</div>}
-        </div>
+          {statsLoading ? <span className={styles.skeletonLine} style={{ width: 76, height: 10, marginTop: 2 }} /> : <div className={styles.statSub}>{flagFilter === "no_contact" ? "✓ filtering" : "can't be reached"}</div>}
+        </button>
       </div>
 
       {/* ── Filter section ────────────────────────────────────────── */}
@@ -1442,7 +1467,7 @@ function PersonsInner(): ReactElement {
           <FilterPill
             label="Flags"
             isActive={flagFilter !== "any"}
-            activeLabel={flagFilter === "high_value" ? "High Value" : "High Risk"}
+            activeLabel={flagFilter === "high_value" ? "High Value" : flagFilter === "no_contact" ? "No Contact Info" : "High Risk"}
             onClear={() => setFlagFilter("any")}
             open={openFilter === "flags"}
             onToggle={() => toggleFilter("flags")}
