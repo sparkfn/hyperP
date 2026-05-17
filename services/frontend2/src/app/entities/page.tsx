@@ -22,17 +22,30 @@ function relativeTime(iso: string | null): string {
 }
 
 function entityTypeLabel(t: string | null): string {
-  if (!t) return "—";
+  if (!t) return null as unknown as string;
   return t.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
-function SkeletonRow(): ReactElement {
+function SkeletonCard(): ReactElement {
   return (
-    <tr className={styles.skeletonRow}>
-      {[160, 90, 60, 60, 70, 70, 80, 90].map((w, i) => (
-        <td key={i}><span className={styles.skeleton} style={{ width: w, height: 12, display: "inline-block" }} /></td>
-      ))}
-    </tr>
+    <div className={styles.card}>
+      <div className={styles.cardLeft}>
+        <span className={styles.skeleton} style={{ width: 160, height: 15, display: "block", marginBottom: 6 }} />
+        <span className={styles.skeleton} style={{ width: 100, height: 11, display: "block" }} />
+        <div style={{ display: "flex", gap: 6, marginTop: 8 }}>
+          <span className={styles.skeleton} style={{ width: 70, height: 18, display: "block", borderRadius: 4 }} />
+          <span className={styles.skeleton} style={{ width: 36, height: 18, display: "block", borderRadius: 4 }} />
+        </div>
+      </div>
+      <div className={styles.cardRight}>
+        {[60, 60, 80].map((w, i) => (
+          <div key={i} className={styles.stat}>
+            <span className={styles.skeleton} style={{ width: 20, height: 16, display: "block" }} />
+            <span className={styles.skeleton} style={{ width: w, height: 11, display: "block", marginTop: 2 }} />
+          </div>
+        ))}
+      </div>
+    </div>
   );
 }
 
@@ -52,7 +65,6 @@ export default function EntitiesPage(): ReactElement {
 
   return (
     <div className={styles.page}>
-      {/* Breadcrumb + title */}
       <div className={styles.header}>
         <span className={styles.title}>Entities</span>
         {!loading && <span className={styles.count}>{entities.length}</span>}
@@ -60,67 +72,58 @@ export default function EntitiesPage(): ReactElement {
 
       {error && <p className={styles.errorMsg}>{error}</p>}
 
-      {/* Table */}
-      <div className={styles.tableWrap}>
-        <table className={styles.table}>
-          <thead>
-            <tr>
-              <th className={styles.th}>Entity</th>
-              <th className={styles.th}>Type</th>
-              <th className={styles.th}>Country</th>
-              <th className={styles.th}>Status</th>
-              <th className={styles.thNum}>Persons</th>
-              <th className={styles.thNum}>Records</th>
-              <th className={styles.thNum}>Review cases</th>
-              <th className={styles.th}>Last ingested</th>
-            </tr>
-          </thead>
-          <tbody>
-            {loading && [0,1,2,3,4].map((i) => <SkeletonRow key={i} />)}
-            {!loading && entities.length === 0 && !error && (
-              <tr><td colSpan={8} className={styles.emptyCell}>No entities found.</td></tr>
-            )}
-            {!loading && entities.map((e) => (
-              <tr key={e.entity_key} className={styles.row}>
-                <td className={styles.td}>
-                  <div className={styles.nameCell}>
-                    <Link href={`/persons?entity=${encodeURIComponent(e.entity_key)}`} className={styles.nameLink}>
-                      {e.display_name ?? <span className={styles.muted}>—</span>}
-                    </Link>
-                    <span className={styles.entityKey}>{e.entity_key}</span>
-                  </div>
-                </td>
-                <td className={styles.td}>
-                  {e.entity_type
-                    ? <span className={styles.typePill}>{entityTypeLabel(e.entity_type)}</span>
-                    : <span className={styles.muted}>—</span>}
-                </td>
-                <td className={styles.td}>
-                  {e.country_code
-                    ? <span className={styles.countryBadge}>{e.country_code.toUpperCase()}</span>
-                    : <span className={styles.muted}>—</span>}
-                </td>
-                <td className={styles.td}>
+      <div className={styles.list}>
+        {loading && [0,1,2,3,4].map((i) => <SkeletonCard key={i} />)}
+
+        {!loading && entities.length === 0 && !error && (
+          <div className={styles.empty}>No entities found.</div>
+        )}
+
+        {!loading && entities.map((e) => {
+          const typeLabel = entityTypeLabel(e.entity_type);
+          return (
+            <Link
+              key={e.entity_key}
+              href={`/persons?entity=${encodeURIComponent(e.entity_key)}`}
+              className={styles.card}
+            >
+              {/* Left: identity */}
+              <div className={styles.cardLeft}>
+                <div className={styles.entityName}>{e.display_name ?? "—"}</div>
+                <div className={styles.entityKey}>{e.entity_key}</div>
+                <div className={styles.badges}>
+                  {typeLabel && <span className={styles.typePill}>{typeLabel}</span>}
+                  {e.country_code && <span className={styles.countryBadge}>{e.country_code.toUpperCase()}</span>}
                   <span className={e.is_active ? styles.badgeActive : styles.badgeInactive}>
                     {e.is_active ? "Active" : "Inactive"}
                   </span>
-                </td>
-                <td className={styles.tdNum}>{e.person_count.toLocaleString()}</td>
-                <td className={styles.tdNum}>{e.source_record_count.toLocaleString()}</td>
-                <td className={styles.tdNum}>
-                  {e.active_review_cases > 0
-                    ? <span className={styles.warnCount}>{e.active_review_cases}</span>
-                    : <span className={styles.muted}>—</span>}
-                </td>
-                <td className={styles.td}>
-                  <span className={styles.dateCell} title={e.last_ingested_at ?? undefined}>
-                    {relativeTime(e.last_ingested_at)}
-                  </span>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+                </div>
+              </div>
+
+              {/* Right: stats */}
+              <div className={styles.cardRight}>
+                <div className={styles.stat}>
+                  <span className={styles.statValue}>{e.person_count.toLocaleString()}</span>
+                  <span className={styles.statLabel}>Persons</span>
+                </div>
+                <div className={styles.stat}>
+                  <span className={styles.statValue}>{e.source_record_count.toLocaleString()}</span>
+                  <span className={styles.statLabel}>Records</span>
+                </div>
+                {e.active_review_cases > 0 && (
+                  <div className={styles.stat}>
+                    <span className={styles.warnValue}>{e.active_review_cases}</span>
+                    <span className={styles.statLabel}>Review cases</span>
+                  </div>
+                )}
+                <div className={styles.stat}>
+                  <span className={styles.statValue}>{relativeTime(e.last_ingested_at)}</span>
+                  <span className={styles.statLabel}>Last ingested</span>
+                </div>
+              </div>
+            </Link>
+          );
+        })}
       </div>
     </div>
   );
