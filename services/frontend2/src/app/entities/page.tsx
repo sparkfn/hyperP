@@ -8,6 +8,16 @@ import type { EntitySummary } from "@/lib/api-types";
 import { formatDate } from "@/lib/display";
 import styles from "./entities.module.css";
 
+const ENTITY_COLORS = ["#4361ee", "#7c3aed", "#0891b2", "#059669", "#d97706", "#0f766e", "#b45309", "#be185d"];
+function entityColor(key: string): string {
+  let h = 0;
+  for (let i = 0; i < key.length; i++) h = (h * 31 + key.charCodeAt(i)) >>> 0;
+  return ENTITY_COLORS[h % ENTITY_COLORS.length] ?? "#4361ee";
+}
+function initials(name: string | null, key: string): string {
+  if (!name) return key.slice(0, 2).toUpperCase();
+  return name.split(/\s+/).filter(Boolean).map((w) => w[0]).slice(0, 2).join("").toUpperCase();
+}
 function relativeTime(iso: string | null): string {
   if (!iso) return "—";
   const diff = Date.now() - new Date(iso).getTime();
@@ -20,28 +30,27 @@ function relativeTime(iso: string | null): string {
   if (days < 7) return `${days}d ago`;
   return formatDate(iso);
 }
-
-function entityTypeLabel(t: string | null): string {
-  if (!t) return null as unknown as string;
+function entityTypeLabel(t: string | null): string | null {
+  if (!t) return null;
   return t.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
 function SkeletonCard(): ReactElement {
   return (
     <div className={styles.card}>
-      <div className={styles.cardLeft}>
-        <span className={styles.skeleton} style={{ width: 160, height: 15, display: "block", marginBottom: 6 }} />
-        <span className={styles.skeleton} style={{ width: 100, height: 11, display: "block" }} />
-        <div style={{ display: "flex", gap: 6, marginTop: 8 }}>
-          <span className={styles.skeleton} style={{ width: 70, height: 18, display: "block", borderRadius: 4 }} />
-          <span className={styles.skeleton} style={{ width: 36, height: 18, display: "block", borderRadius: 4 }} />
+      <div className={styles.cardTop}>
+        <span className={styles.skeleton} style={{ width: 48, height: 48, borderRadius: 12, display: "block" }} />
+        <div style={{ flex: 1 }}>
+          <span className={styles.skeleton} style={{ width: "60%", height: 14, display: "block", marginBottom: 6 }} />
+          <span className={styles.skeleton} style={{ width: "40%", height: 11, display: "block" }} />
         </div>
       </div>
-      <div className={styles.cardRight}>
-        {[60, 60, 80].map((w, i) => (
+      <div className={styles.cardDivider} />
+      <div className={styles.cardStats}>
+        {[0,1,2].map((i) => (
           <div key={i} className={styles.stat}>
-            <span className={styles.skeleton} style={{ width: 20, height: 16, display: "block" }} />
-            <span className={styles.skeleton} style={{ width: w, height: 11, display: "block", marginTop: 2 }} />
+            <span className={styles.skeleton} style={{ width: 28, height: 16, display: "block" }} />
+            <span className={styles.skeleton} style={{ width: 50, height: 10, display: "block", marginTop: 3 }} />
           </div>
         ))}
       </div>
@@ -72,36 +81,41 @@ export default function EntitiesPage(): ReactElement {
 
       {error && <p className={styles.errorMsg}>{error}</p>}
 
-      <div className={styles.list}>
-        {loading && [0,1,2,3,4].map((i) => <SkeletonCard key={i} />)}
+      <div className={styles.grid}>
+        {loading && [0,1,2,3,4,5].map((i) => <SkeletonCard key={i} />)}
 
         {!loading && entities.length === 0 && !error && (
           <div className={styles.empty}>No entities found.</div>
         )}
 
         {!loading && entities.map((e) => {
+          const color = entityColor(e.entity_key);
+          const init = initials(e.display_name, e.entity_key);
           const typeLabel = entityTypeLabel(e.entity_type);
           return (
-            <Link
-              key={e.entity_key}
-              href={`/persons?entity=${encodeURIComponent(e.entity_key)}`}
-              className={styles.card}
-            >
-              {/* Left: identity */}
-              <div className={styles.cardLeft}>
-                <div className={styles.entityName}>{e.display_name ?? "—"}</div>
-                <div className={styles.entityKey}>{e.entity_key}</div>
-                <div className={styles.badges}>
-                  {typeLabel && <span className={styles.typePill}>{typeLabel}</span>}
-                  {e.country_code && <span className={styles.countryBadge}>{e.country_code.toUpperCase()}</span>}
-                  <span className={e.is_active ? styles.badgeActive : styles.badgeInactive}>
-                    {e.is_active ? "Active" : "Inactive"}
-                  </span>
+            <Link key={e.entity_key} href={`/persons?entity=${encodeURIComponent(e.entity_key)}`} className={styles.card}>
+              {/* Logo + name */}
+              <div className={styles.cardTop}>
+                <div className={styles.avatar} style={{ background: color }}>{init}</div>
+                <div className={styles.cardMeta}>
+                  <div className={styles.entityName}>{e.display_name ?? e.entity_key}</div>
+                  <div className={styles.entityKey}>{e.entity_key}</div>
                 </div>
               </div>
 
-              {/* Right: stats */}
-              <div className={styles.cardRight}>
+              {/* Badges row */}
+              <div className={styles.badges}>
+                {typeLabel && <span className={styles.typePill}>{typeLabel}</span>}
+                {e.country_code && <span className={styles.countryBadge}>{e.country_code.toUpperCase()}</span>}
+                <span className={e.is_active ? styles.badgeActive : styles.badgeInactive}>
+                  {e.is_active ? "Active" : "Inactive"}
+                </span>
+              </div>
+
+              <div className={styles.cardDivider} />
+
+              {/* Stats */}
+              <div className={styles.cardStats}>
                 <div className={styles.stat}>
                   <span className={styles.statValue}>{e.person_count.toLocaleString()}</span>
                   <span className={styles.statLabel}>Persons</span>
@@ -110,15 +124,15 @@ export default function EntitiesPage(): ReactElement {
                   <span className={styles.statValue}>{e.source_record_count.toLocaleString()}</span>
                   <span className={styles.statLabel}>Records</span>
                 </div>
-                {e.active_review_cases > 0 && (
-                  <div className={styles.stat}>
-                    <span className={styles.warnValue}>{e.active_review_cases}</span>
-                    <span className={styles.statLabel}>Review cases</span>
-                  </div>
-                )}
                 <div className={styles.stat}>
-                  <span className={styles.statValue}>{relativeTime(e.last_ingested_at)}</span>
-                  <span className={styles.statLabel}>Last ingested</span>
+                  {e.active_review_cases > 0
+                    ? <span className={styles.warnValue}>{e.active_review_cases}</span>
+                    : <span className={styles.statValue}>—</span>}
+                  <span className={styles.statLabel}>Review</span>
+                </div>
+                <div className={styles.stat}>
+                  <span className={styles.statValue} style={{ fontSize: 11 }}>{relativeTime(e.last_ingested_at)}</span>
+                  <span className={styles.statLabel}>Last sync</span>
                 </div>
               </div>
             </Link>
