@@ -1,4 +1,4 @@
-.page { display: flex; flex-direction: column; gap: 14px; flex: 1; overflow-y: auto; }
+.page { display: flex; flex-direction: column; gap: 14px; flex: 1; min-height: 0; }
 
 /* ── Heading ─────────────────────────────────────────────── */
 .title {
