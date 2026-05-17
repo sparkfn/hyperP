@@ -1,0 +1,180 @@
+.page {
+  display: flex;
+  flex-direction: column;
+  gap: 32px;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.title {
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--text-primary);
+  letter-spacing: -0.4px;
+  margin: 0;
+  flex-shrink: 0;
+}
+
+/* ── Section ─────────────────────────────────────── */
+.section { display: flex; flex-direction: column; gap: 12px; }
+
+.sectionHeader {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--text-muted);
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--border);
+}
+.sectionTitle {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--text-muted);
+  margin: 0;
+}
+
+/* ── Grid ────────────────────────────────────────── */
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 10px;
+}
+
+/* ── Card ────────────────────────────────────────── */
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+
+.cardRow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.avatar {
+  width: 36px;
+  height: 36px;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  flex-shrink: 0;
+}
+
+.avatarKey {
+  width: 36px;
+  height: 36px;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  background: color-mix(in srgb, var(--bg-card) 60%, var(--bg-app));
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+}
+
+.cardInfo {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+.cardName {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.cardKey {
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 10px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Status dot */
+.dotActive {
+  width: 7px; height: 7px;
+  border-radius: 50%;
+  background: #22c55e;
+  flex-shrink: 0;
+}
+.dotInactive {
+  width: 7px; height: 7px;
+  border-radius: 50%;
+  background: var(--text-muted);
+  flex-shrink: 0;
+  opacity: 0.5;
+}
+
+/* Meta row */
+.cardMeta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.pill {
+  display: inline-flex;
+  padding: 2px 7px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  background: color-mix(in srgb, var(--bg-card) 60%, var(--bg-app));
+  color: var(--text-secondary);
+  border: 1px solid var(--border);
+}
+.scopePill {
+  display: inline-flex;
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  font-family: ui-monospace, monospace;
+  background: color-mix(in srgb, #4361ee 12%, transparent);
+  color: #4361ee;
+  border: 1px solid color-mix(in srgb, #4361ee 25%, transparent);
+}
+.metaItem {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+/* Empty */
+.empty {
+  font-size: 13px;
+  color: var(--text-muted);
+  margin: 0;
+  padding: 12px 0;
+}
+
+/* Skeleton */
+@keyframes shimmer {
+  0%   { background-position: -400px 0; }
+  100% { background-position:  400px 0; }
+}
+.skeleton {
+  background: linear-gradient(90deg, var(--border) 25%, color-mix(in srgb, var(--border) 60%, var(--bg-card)) 50%, var(--border) 75%);
+  background-size: 800px 100%;
+  animation: shimmer 1.4s infinite linear;
+  border-radius: 4px;
+}
