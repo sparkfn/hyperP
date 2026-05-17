@@ -43,7 +43,7 @@ function MergeAnimation(): ReactElement {
           <animate attributeName="opacity" values="0;0;0.22;0.22;0;0" keyTimes="0;0.06;0.09;0.12;0.20;1" dur="8s" repeatCount="indefinite" />
         </circle>
         <g>
-          <animateTransform attributeName="transform" type="rotate" from="60 72 50" to="420 72 50" dur="2s" repeatCount="indefinite" />
+          <animateTransform attributeName="transform" type="rotate" from="0 72 50" to="360 72 50" dur="2s" repeatCount="indefinite" />
           <line x1="72" y1="50" x2="84" y2="50" stroke="currentColor" strokeWidth="0.5">
             <animate attributeName="opacity" values="0;0;0.28;0.28;0;0" keyTimes="0;0.06;0.09;0.12;0.20;1" dur="8s" repeatCount="indefinite" />
           </line>
