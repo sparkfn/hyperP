@@ -62,9 +62,9 @@ type AnyNode = Record<string, unknown>;
 type AnyLink = Record<string, unknown>;
 
 const DOUBLE_CLICK_MS = 300;
-const LINK_DISTANCE = 80;
-const NODE_COLLISION_RADIUS = 38;
-const MANY_BODY_STRENGTH = -400;
+const LINK_DISTANCE = 72;
+const NODE_COLLISION_RADIUS = 32;
+const MANY_BODY_STRENGTH = -260;
 
 const ICON_COMPONENTS: Record<NodeIcon, ReactElement> = {
   person: <PersonIcon />,
@@ -291,7 +291,6 @@ export default function PersonGraphViewer({
       .finally(() => setLoading(false));
   }, [personId, elementId, maxHops]);
 
-  // Set up forces + reheat + zoom only when graph data changes (not on resize).
   useEffect(() => {
     if (graphData === null) return;
     const graph = graphRef.current;
@@ -320,7 +319,7 @@ export default function PersonGraphViewer({
           const distance = Math.hypot(dx, dy) || 1;
           const overlap = NODE_COLLISION_RADIUS - distance;
           if (overlap <= 0) continue;
-          const move = (overlap / distance) * Math.max(alpha, 0.15) * 0.7;
+          const move = (overlap / distance) * alpha * 0.5;
           const mx = dx * move;
           const my = dy * move;
           a.vx = (a.vx ?? 0) - mx;
@@ -331,18 +330,8 @@ export default function PersonGraphViewer({
       }
     }) as never);
     graph.d3ReheatSimulation();
-    // Zoom after simulation has had time to spread nodes out.
-    // warmupTicks pre-spreads nodes, so 600ms (≈36 frames) is enough to settle further.
-    window.setTimeout(() => graph.zoomToFit(400, 90), 600);
-  }, [graphData]);
-
-  // On container resize, just re-fit without reheating the simulation.
-  useEffect(() => {
-    if (graphData === null) return;
-    const graph = graphRef.current;
-    if (!graph) return;
-    graph.zoomToFit(300, 90);
-  }, [dimensions.width, dimensions.height, graphData]);
+    window.setTimeout(() => graph.zoomToFit(500, 90), 150);
+  }, [graphData, dimensions.width, dimensions.height]);
 
   const handleNodeClick = useCallback(
     (raw: AnyNode) => {
@@ -402,10 +391,10 @@ export default function PersonGraphViewer({
         onNodeRightClick={onNodeContextMenu ? handleNodeRightClick : undefined}
         onLinkClick={handleLinkClick}
         enableNodeDrag
-        cooldownTicks={200}
-        d3AlphaDecay={0.02}
+        cooldownTicks={300}
+        d3AlphaDecay={0.01}
         d3VelocityDecay={0.3}
-        warmupTicks={200}
+        warmupTicks={100}
       />
       {selected !== null ? (
         <GraphDetailPanel
