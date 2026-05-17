@@ -246,27 +246,25 @@ function GraphAnimation(): ReactElement {
 
 function EmptyStateAnimation(): ReactElement {
   return (
-    <svg width="120" height="120" viewBox="0 0 80 80" fill="none" style={{ color: "var(--text-secondary, #6b7280)", animation: "emptyFloat 3.4s ease-in-out infinite" }}>
-      <style>{`@keyframes emptyFloat { 0%,100%{transform:translateY(0)} 50%{transform:translateY(-6px)} }`}</style>
-      {/* Degraded orbit rings — irregular dashes, like rusting rings */}
-      <circle cx="38" cy="39" r="16" stroke="currentColor" strokeWidth="0.7" strokeDasharray="5 4 12 2 8 5 3 6" opacity="0.18" />
-      <circle cx="38" cy="39" r="27" stroke="currentColor" strokeWidth="0.5" strokeDasharray="8 6 3 11 7 4 14 5" opacity="0.10" />
-      {/* Severed connections — different lengths, cut off into the void */}
-      <line x1="38" y1="39" x2="18" y2="19" stroke="currentColor" strokeWidth="0.9" strokeDasharray="2 2.5" strokeLinecap="round" opacity="0.22" />
-      <line x1="38" y1="39" x2="61" y2="27" stroke="currentColor" strokeWidth="0.8" strokeDasharray="2 2.5" strokeLinecap="round" opacity="0.15" />
-      <line x1="38" y1="39" x2="61" y2="57" stroke="currentColor" strokeWidth="0.8" strokeDasharray="2 2.5" strokeLinecap="round" opacity="0.13" />
-      <line x1="38" y1="39" x2="20" y2="58" stroke="currentColor" strokeWidth="0.7" strokeDasharray="1.5 3"   strokeLinecap="round" opacity="0.11" />
-      {/* Lone center node — faded, neglected */}
-      <circle cx="38" cy="39" r="6.5" fill="currentColor" opacity="0.42" />
-      {/* Debris — former nodes scattered at uneven distances, varying sizes */}
-      <circle cx="7"  cy="11" r="3"   fill="currentColor" opacity="0.24" />
-      <circle cx="70" cy="8"  r="2"   fill="currentColor" opacity="0.17" />
-      <circle cx="73" cy="61" r="2.5" fill="currentColor" opacity="0.19" />
-      <circle cx="5"  cy="66" r="1.8" fill="currentColor" opacity="0.15" />
-      <circle cx="53" cy="74" r="1.5" fill="currentColor" opacity="0.13" />
-      <circle cx="17" cy="73" r="1"   fill="currentColor" opacity="0.10" />
-      <circle cx="66" cy="43" r="1.2" fill="currentColor" opacity="0.12" />
-      <circle cx="29" cy="4"  r="1.3" fill="currentColor" opacity="0.11" />
+    <svg width="120" height="120" viewBox="0 0 80 80" fill="none" style={{ color: "var(--text-secondary, #6b7280)" }}>
+      <g>
+        <animateTransform attributeName="transform" type="translate" values="0 0;0 -5;0 0" dur="3.4s" begin="0s" calcMode="spline" keySplines="0.45 0 0.55 1;0.45 0 0.55 1" repeatCount="indefinite" />
+        <circle cx="38" cy="39" r="16" stroke="currentColor" strokeWidth="0.7" strokeDasharray="5 4 12 2 8 5 3 6" opacity="0.18" />
+        <circle cx="38" cy="39" r="27" stroke="currentColor" strokeWidth="0.5" strokeDasharray="8 6 3 11 7 4 14 5" opacity="0.10" />
+        <line x1="38" y1="39" x2="18" y2="19" stroke="currentColor" strokeWidth="0.9" strokeDasharray="2 2.5" strokeLinecap="round" opacity="0.22" />
+        <line x1="38" y1="39" x2="61" y2="27" stroke="currentColor" strokeWidth="0.8" strokeDasharray="2 2.5" strokeLinecap="round" opacity="0.15" />
+        <line x1="38" y1="39" x2="61" y2="57" stroke="currentColor" strokeWidth="0.8" strokeDasharray="2 2.5" strokeLinecap="round" opacity="0.13" />
+        <line x1="38" y1="39" x2="20" y2="58" stroke="currentColor" strokeWidth="0.7" strokeDasharray="1.5 3"   strokeLinecap="round" opacity="0.11" />
+        <circle cx="38" cy="39" r="6.5" fill="currentColor" opacity="0.42" />
+      </g>
+      <circle cx="7"  cy="11" r="3"   fill="currentColor" opacity="0.24"><animateTransform attributeName="transform" type="translate" values="0 0;0 -4;0 0"   dur="4.1s" begin="-1.2s" calcMode="spline" keySplines="0.45 0 0.55 1;0.45 0 0.55 1" repeatCount="indefinite" /></circle>
+      <circle cx="70" cy="8"  r="2"   fill="currentColor" opacity="0.17"><animateTransform attributeName="transform" type="translate" values="0 0;0 -3;0 0"   dur="3.7s" begin="-2.8s" calcMode="spline" keySplines="0.45 0 0.55 1;0.45 0 0.55 1" repeatCount="indefinite" /></circle>
+      <circle cx="73" cy="61" r="2.5" fill="currentColor" opacity="0.19"><animateTransform attributeName="transform" type="translate" values="0 0;0 -3.5;0 0" dur="4.6s" begin="-0.7s" calcMode="spline" keySplines="0.45 0 0.55 1;0.45 0 0.55 1" repeatCount="indefinite" /></circle>
+      <circle cx="5"  cy="66" r="1.8" fill="currentColor" opacity="0.15"><animateTransform attributeName="transform" type="translate" values="0 0;0 -2.5;0 0" dur="3.2s" begin="-1.9s" calcMode="spline" keySplines="0.45 0 0.55 1;0.45 0 0.55 1" repeatCount="indefinite" /></circle>
+      <circle cx="53" cy="74" r="1.5" fill="currentColor" opacity="0.13"><animateTransform attributeName="transform" type="translate" values="0 0;0 -2;0 0"   dur="4.8s" begin="-3.1s" calcMode="spline" keySplines="0.45 0 0.55 1;0.45 0 0.55 1" repeatCount="indefinite" /></circle>
+      <circle cx="17" cy="73" r="1"   fill="currentColor" opacity="0.10"><animateTransform attributeName="transform" type="translate" values="0 0;0 -2;0 0"   dur="3.9s" begin="-0.4s" calcMode="spline" keySplines="0.45 0 0.55 1;0.45 0 0.55 1" repeatCount="indefinite" /></circle>
+      <circle cx="66" cy="43" r="1.2" fill="currentColor" opacity="0.12"><animateTransform attributeName="transform" type="translate" values="0 0;0 -3;0 0"   dur="4.3s" begin="-2.2s" calcMode="spline" keySplines="0.45 0 0.55 1;0.45 0 0.55 1" repeatCount="indefinite" /></circle>
+      <circle cx="29" cy="4"  r="1.3" fill="currentColor" opacity="0.11"><animateTransform attributeName="transform" type="translate" values="0 0;0 -2.5;0 0" dur="3.6s" begin="-1.6s" calcMode="spline" keySplines="0.45 0 0.55 1;0.45 0 0.55 1" repeatCount="indefinite" /></circle>
     </svg>
   );
 }
