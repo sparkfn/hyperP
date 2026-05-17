@@ -256,14 +256,33 @@ export default function PersonFocusedGraph({
     return (
       <Box sx={{ height: "100%", minHeight: 0, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-primary)", px: 2 }}>
         <Box sx={{ width: "100%", maxWidth: 620, display: "flex", flexDirection: "column", alignItems: "center", gap: 3 }}>
-          <Typography sx={{ fontSize: { xs: 28, sm: 36 }, fontWeight: 700, letterSpacing: "-0.02em", color: "var(--text-primary)", textAlign: "center" }}>
-            Explore connections
-          </Typography>
+          <Box sx={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 1.5 }}>
+            <svg width="48" height="48" viewBox="0 0 56 56" fill="none" style={{ color: "var(--text-secondary)", opacity: 0.5 }}>
+              <circle cx="28" cy="28" r="7" fill="currentColor" />
+              <circle cx="10" cy="14" r="5" fill="currentColor" opacity="0.7" />
+              <circle cx="46" cy="14" r="5" fill="currentColor" opacity="0.7" />
+              <circle cx="10" cy="42" r="4" fill="currentColor" opacity="0.5" />
+              <circle cx="46" cy="42" r="4" fill="currentColor" opacity="0.5" />
+              <line x1="28" y1="28" x2="10" y2="14" stroke="currentColor" strokeWidth="1.5" opacity="0.5" />
+              <line x1="28" y1="28" x2="46" y2="14" stroke="currentColor" strokeWidth="1.5" opacity="0.5" />
+              <line x1="28" y1="28" x2="10" y2="42" stroke="currentColor" strokeWidth="1.5" opacity="0.4" />
+              <line x1="28" y1="28" x2="46" y2="42" stroke="currentColor" strokeWidth="1.5" opacity="0.4" />
+            </svg>
+            <Box sx={{ textAlign: "center" }}>
+              <Typography variant="h6" fontWeight={700} sx={{ color: "var(--text-primary)", mb: 0.5 }}>
+                Graph Explorer
+              </Typography>
+              <Typography variant="body2" sx={{ color: "var(--text-secondary)" }}>
+                Search for a person to visualize their network and connections.
+              </Typography>
+            </Box>
+          </Box>
           {searchAutocomplete}
         </Box>
       </Box>
     );
   }
+
 
   return (
     <Box sx={{ height: "100%", minHeight: 0, color: "var(--text-primary)" }}>
