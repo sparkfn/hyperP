@@ -307,7 +307,7 @@ export default function PersonGraphViewer({
       chargeForce.strength(MANY_BODY_STRENGTH);
     }
 
-    graph.d3Force("collide", (() => {
+    graph.d3Force("collide", ((alpha: number) => {
       const nodes = graphData.nodes as Array<FGNode & { x?: number; y?: number; vx?: number; vy?: number }>;
       for (let i = 0; i < nodes.length; i += 1) {
         const a = nodes[i];
@@ -320,8 +320,7 @@ export default function PersonGraphViewer({
           const distance = Math.hypot(dx, dy) || 1;
           const overlap = NODE_COLLISION_RADIUS - distance;
           if (overlap <= 0) continue;
-          // Don't scale by alpha — enforce separation regardless of simulation temperature.
-          const move = (overlap / distance) * 0.5;
+          const move = (overlap / distance) * Math.max(alpha, 0.15) * 0.7;
           const mx = dx * move;
           const my = dy * move;
           a.vx = (a.vx ?? 0) - mx;
