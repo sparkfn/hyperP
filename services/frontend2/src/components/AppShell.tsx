@@ -94,8 +94,10 @@ export default function AppShell({ children, initials, email, displayName }: App
 
   return (
     <div className={`${styles.shell} ${collapsed ? styles.shellCollapsed : ""}`}>
-      {/* Desktop sidebar */}
-      <Sidebar />
+      {/* Desktop sidebar — hidden on mobile via wrapper */}
+      <div className={styles.desktopSidebar}>
+        <Sidebar />
+      </div>
 
       {/* Mobile drawer */}
       {mobileOpen && (

@@ -389,9 +389,14 @@
   transform: translateX(0);
 }
 
+/* Desktop sidebar wrapper — hidden on mobile */
+.desktopSidebar {
+  display: contents;
+}
+
 @media (max-width: 768px) {
-  /* Hide desktop sidebar */
-  .sidebar { display: none !important; }
+  /* Hide desktop sidebar wrapper */
+  .desktopSidebar { display: none; }
 
   /* Show mobile drawer elements */
   .mobileOverlay { display: block; }
