@@ -2507,7 +2507,6 @@
   width: 88px;
   height: 88px;
   color: var(--text-muted);
-  opacity: 0.4;
   animation: emptyFloat 3.4s ease-in-out infinite;
 }
 
