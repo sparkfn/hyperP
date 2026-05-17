@@ -147,7 +147,9 @@ export default function AppShell({ children, initials, email, displayName }: App
         </header>
 
         <main className={styles.content}>
-          {children}
+          <div className={styles.contentInner}>
+            {children}
+          </div>
         </main>
       </div>
     </div>

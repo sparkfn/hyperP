@@ -410,14 +410,28 @@
 .content {
   flex: 1;
   min-height: 0;
-  overflow: hidden;
+  overflow-y: auto;
   display: flex;
   flex-direction: column;
-  padding: 24px 28px;
 }
 
 .content::-webkit-scrollbar { width: 6px; }
 .content::-webkit-scrollbar-thumb {
   background: var(--border);
   border-radius: 3px;
+}
+
+/* Padding lives here — scrollbar stays flush with the edge */
+.contentInner {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 24px 28px;
+}
+
+@media (max-width: 768px) {
+  .contentInner {
+    padding: 16px;
+  }
 }
