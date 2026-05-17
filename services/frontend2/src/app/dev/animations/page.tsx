@@ -244,6 +244,24 @@ function GraphAnimation(): ReactElement {
   );
 }
 
+function EmptyStateAnimation(): ReactElement {
+  return (
+    <svg width="120" height="120" viewBox="0 0 80 80" fill="none" style={{ color: "var(--text-secondary, #6b7280)", animation: "emptyFloat 3.4s ease-in-out infinite" }}>
+      <style>{`@keyframes emptyFloat { 0%,100%{transform:translateY(0)} 50%{transform:translateY(-6px)} }`}</style>
+      <circle cx="40" cy="40" r="17" stroke="currentColor" strokeWidth="0.7" strokeDasharray="2.5 2.5" opacity="0.20" />
+      <circle cx="40" cy="40" r="28" stroke="currentColor" strokeWidth="0.5" strokeDasharray="2 3"   opacity="0.13" />
+      <line x1="40" y1="40" x2="22" y2="24" stroke="currentColor" strokeWidth="0.9" strokeDasharray="2 2.5" strokeLinecap="round" opacity="0.22" />
+      <line x1="40" y1="40" x2="60" y2="30" stroke="currentColor" strokeWidth="0.9" strokeDasharray="2 2.5" strokeLinecap="round" opacity="0.17" />
+      <line x1="40" y1="40" x2="56" y2="58" stroke="currentColor" strokeWidth="0.9" strokeDasharray="2 2.5" strokeLinecap="round" opacity="0.17" />
+      <circle cx="40" cy="40" r="7" fill="currentColor" opacity="0.50" />
+      <circle cx="10" cy="14" r="2.5" fill="currentColor" opacity="0.22" />
+      <circle cx="70" cy="16" r="2"   fill="currentColor" opacity="0.17" />
+      <circle cx="68" cy="68" r="2"   fill="currentColor" opacity="0.15" />
+      <circle cx="13" cy="66" r="1.5" fill="currentColor" opacity="0.12" />
+    </svg>
+  );
+}
+
 export default function AnimationsPage(): ReactElement {
   const [theme, setTheme] = useState<"dark" | "light">("dark");
 
@@ -276,6 +294,7 @@ export default function AnimationsPage(): ReactElement {
           { label: "Graph loading", el: <GraphAnimation /> },
           { label: "Merge loading", el: <MergeAnimation /> },
           { label: "Override loading", el: <OverrideAnimation /> },
+          { label: "Empty state", el: <EmptyStateAnimation /> },
         ] as const).map(({ label, el }) => (
           <div key={label} style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 16 }}>
             <div style={{ width: 240, height: 240, background: "var(--bg-card)", border: "1px solid var(--border)", borderRadius: 16, display: "flex", alignItems: "center", justifyContent: "center" }}>
