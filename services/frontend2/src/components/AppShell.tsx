@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState, type ReactElement, type ReactNode } from "react";
+import { usePathname } from "next/navigation";
 import { signOut } from "next-auth/react";
 
 import GlobalSearch from "@/components/GlobalSearch";
@@ -77,18 +78,41 @@ function ProfilePopover({ email, initials, displayName, onClose }: { email: stri
 export default function AppShell({ children, initials, email, displayName }: AppShellProps): ReactElement {
   const [collapsed, setCollapsed] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
+  const [mobileOpen, setMobileOpen] = useState(false);
+  const pathname = usePathname();
+
+  // Close mobile drawer on navigation
+  useEffect(() => { setMobileOpen(false); }, [pathname]);
+
+  function handleHamburger(): void {
+    if (window.matchMedia("(max-width: 768px)").matches) {
+      setMobileOpen((o) => !o);
+    } else {
+      setCollapsed((c) => !c);
+    }
+  }
 
   return (
     <div className={`${styles.shell} ${collapsed ? styles.shellCollapsed : ""}`}>
+      {/* Desktop sidebar */}
       <Sidebar />
+
+      {/* Mobile drawer */}
+      {mobileOpen && (
+        <div className={styles.mobileOverlay} onClick={() => setMobileOpen(false)} aria-hidden="true" />
+      )}
+      <div className={`${styles.mobileSidebar} ${mobileOpen ? styles.mobileSidebarOpen : ""}`}>
+        <Sidebar />
+      </div>
 
       <div className={styles.main}>
         <header className={styles.navbar}>
           <button
             type="button"
             className={styles.navbarToggle}
-            onClick={() => setCollapsed((c) => !c)}
-            title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+            onClick={handleHamburger}
+            title="Toggle navigation"
+            aria-label="Toggle navigation"
           >
             <MenuIcon />
           </button>
