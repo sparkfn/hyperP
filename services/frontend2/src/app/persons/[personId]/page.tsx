@@ -771,29 +771,21 @@ function OverrideLoadingOverlay(): ReactElement {
 function TabEmptyState({ message }: { message: string }): ReactElement {
   return (
     <div className={styles.tabEmptyState}>
-      <svg className={styles.tabEmptyIcon} viewBox="0 0 80 72" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-        {/* cloud body */}
-        <path
-          d="M18 38 Q16 38 14 36 Q10 34 10 30 Q10 24 16 23 Q17 17 24 16 Q31 15 34 20 Q36 15 42 15 Q49 15 51 21 Q57 22 58 28 Q59 34 55 37 Q53 38 50 38 Z"
-          fill="currentColor" opacity="0.12"
-        />
-        <path
-          d="M18 38 Q16 38 14 36 Q10 34 10 30 Q10 24 16 23 Q17 17 24 16 Q31 15 34 20 Q36 15 42 15 Q49 15 51 21 Q57 22 58 28 Q59 34 55 37 Q53 38 50 38 Z"
-          stroke="currentColor" strokeWidth="1.4" opacity="0.6"
-        />
-        {/* rain lines — 5 drops, varied lengths and offsets */}
-        <line x1="21" y1="43" x2="18" y2="52" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" opacity="0.35"/>
-        <line x1="30" y1="43" x2="27" y2="54" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" opacity="0.55"/>
-        <line x1="39" y1="43" x2="37" y2="56" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" opacity="0.65"/>
-        <line x1="48" y1="43" x2="46" y2="54" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" opacity="0.55"/>
-        <line x1="57" y1="43" x2="55" y2="52" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" opacity="0.35"/>
-        {/* puddle — thin oval at bottom */}
-        <ellipse cx="38" cy="65" rx="18" ry="3.5" fill="currentColor" opacity="0.1"/>
-        <ellipse cx="38" cy="65" rx="18" ry="3.5" stroke="currentColor" strokeWidth="1" opacity="0.25"/>
-        {/* two tiny floating dots near cloud — like mist */}
-        <circle cx="6" cy="28" r="1.8" fill="currentColor" opacity="0.2"/>
-        <circle cx="68" cy="24" r="1.4" fill="currentColor" opacity="0.15"/>
-        <circle cx="64" cy="34" r="1" fill="currentColor" opacity="0.12"/>
+      <svg className={styles.tabEmptyIcon} viewBox="0 0 80 80" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+        {/* Empty orbit tracks — rings with no nodes */}
+        <circle cx="40" cy="40" r="17" stroke="currentColor" strokeWidth="0.7" strokeDasharray="2.5 2.5" opacity="0.20" />
+        <circle cx="40" cy="40" r="28" stroke="currentColor" strokeWidth="0.5" strokeDasharray="2 3"   opacity="0.13" />
+        {/* Broken connection lines — reach outward but connect to nothing */}
+        <line x1="40" y1="40" x2="22" y2="24" stroke="currentColor" strokeWidth="0.9" strokeDasharray="2 2.5" strokeLinecap="round" opacity="0.22" />
+        <line x1="40" y1="40" x2="60" y2="30" stroke="currentColor" strokeWidth="0.9" strokeDasharray="2 2.5" strokeLinecap="round" opacity="0.17" />
+        <line x1="40" y1="40" x2="56" y2="58" stroke="currentColor" strokeWidth="0.9" strokeDasharray="2 2.5" strokeLinecap="round" opacity="0.17" />
+        {/* Lonely center node */}
+        <circle cx="40" cy="40" r="7" fill="currentColor" opacity="0.50" />
+        {/* Isolated tiny dots — scattered, disconnected, unreachable */}
+        <circle cx="10" cy="14" r="2.5" fill="currentColor" opacity="0.22" />
+        <circle cx="70" cy="16" r="2"   fill="currentColor" opacity="0.17" />
+        <circle cx="68" cy="68" r="2"   fill="currentColor" opacity="0.15" />
+        <circle cx="13" cy="66" r="1.5" fill="currentColor" opacity="0.12" />
       </svg>
       <p className={styles.tabEmptyMsg}>{message}</p>
     </div>
