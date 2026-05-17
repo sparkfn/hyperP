@@ -202,26 +202,21 @@ export default function PersonFocusedGraph({
     </Box>
   ) : null;
 
-  const MAX_CRUMBS = 2;
-  const showEllipsis = navStack.length > MAX_CRUMBS;
-  const visibleStack = showEllipsis ? navStack.slice(-(MAX_CRUMBS)) : navStack;
-  const linkCrumbSx = { cursor: "pointer", color: "var(--text-secondary)", "&:hover": { color: "var(--text-primary)" }, transition: "color 0.12s", whiteSpace: "nowrap" as const };
-  const sepEl = <Box component="span" sx={{ color: "var(--text-muted)" }}>/</Box>;
+  const itemSx = { overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const, maxWidth: 120 };
+  const linkCrumbSx = { ...itemSx, cursor: "pointer", color: "var(--text-secondary)", "&:hover": { color: "var(--text-primary)" }, transition: "color 0.12s", flexShrink: 1 };
 
   const breadcrumb = (
-    <Box sx={{ display: "inline-flex", alignItems: "center", gap: "8px", fontSize: 13, color: "var(--text-secondary)", flexShrink: 0, maxWidth: "100%", overflow: "hidden" }}>
-      <Box component="span" onClick={handleNewSearch} sx={linkCrumbSx}>
+    <Box sx={{ display: "flex", alignItems: "center", gap: "8px", fontSize: 13, color: "var(--text-secondary)", overflow: "hidden" }}>
+      <Box component="span" onClick={handleNewSearch} sx={{ ...linkCrumbSx, flexShrink: 0 }}>
         Graph Explorer
       </Box>
-      {showEllipsis && <>{sepEl}<Box component="span" sx={{ color: "var(--text-muted)" }}>…</Box></>}
-      {visibleStack.flatMap((entry, i) => {
-        const actualIndex = navStack.length - visibleStack.length + i;
-        const isCurrent = actualIndex === navStack.length - 1;
+      {navStack.flatMap((entry, i) => {
+        const isCurrent = i === navStack.length - 1;
         return [
-          <Box key={`sep-${actualIndex}`} component="span" sx={{ color: "var(--text-muted)" }}>/</Box>,
+          <Box key={`sep-${i}`} component="span" sx={{ color: "var(--text-muted)", flexShrink: 0 }}>/</Box>,
           isCurrent
-            ? <Box key={`cur-${actualIndex}`} component="span" sx={{ color: "var(--text-primary)", fontWeight: 500, whiteSpace: "nowrap" as const }}>{entry.title}</Box>
-            : <Box key={`nav-${actualIndex}`} component="span" onClick={() => setNavStack(navStack.slice(0, actualIndex + 1))} sx={linkCrumbSx}>{entry.title}</Box>,
+            ? <Box key={`cur-${i}`} component="span" sx={{ ...itemSx, color: "var(--text-primary)", fontWeight: 500, flexShrink: 1 }}>{entry.title}</Box>
+            : <Box key={`nav-${i}`} component="span" onClick={() => setNavStack(navStack.slice(0, i + 1))} sx={linkCrumbSx}>{entry.title}</Box>,
         ];
       })}
     </Box>
