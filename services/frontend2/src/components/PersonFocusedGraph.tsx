@@ -17,7 +17,7 @@ import OpenInFullIcon from "@mui/icons-material/OpenInFull";
 import SearchIcon from "@mui/icons-material/Search";
 import InputAdornment from "@mui/material/InputAdornment";
 
-import { bffFetch } from "@/lib/api-client";
+import { bffFetchEnvelope } from "@/lib/api-client";
 import type { Person } from "@/lib/api-types";
 import PersonGraphViewer from "@/components/PersonGraphViewer";
 
@@ -52,7 +52,7 @@ const SKELETON_ROW = (
 
 const SKELETON_LOADING_TEXT = (
   <Box sx={{ py: 0.5 }}>
-    {Array.from({ length: 5 }, (_, i) => (
+    {Array.from({ length: 2 }, (_, i) => (
       <Box key={i}>{SKELETON_ROW}</Box>
     ))}
   </Box>
@@ -125,10 +125,10 @@ export default function PersonFocusedGraph({
     setSearchLoading(true);
     let cancelled = false;
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    void bffFetch<Person[]>(`/bff/persons/search?q=${encodeURIComponent(q)}&limit=8`)
-      .then((persons) => {
+    void bffFetchEnvelope<Person[]>(`/bff/persons/search?q=${encodeURIComponent(q)}&limit=8`)
+      .then((res) => {
         if (!cancelled) {
-          setSearchOptions(persons.map((p) => ({
+          setSearchOptions((res.data ?? []).map((p) => ({
             personId: p.person_id,
             name: p.preferred_full_name ?? p.person_id,
             email: p.preferred_email,
