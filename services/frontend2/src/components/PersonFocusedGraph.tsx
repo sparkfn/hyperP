@@ -5,7 +5,6 @@ import { useCallback, useEffect, useState, type ReactElement } from "react";
 import Autocomplete from "@mui/material/Autocomplete";
 import Skeleton from "@mui/material/Skeleton";
 import Box from "@mui/material/Box";
-import CircularProgress from "@mui/material/CircularProgress";
 import IconButton from "@mui/material/IconButton";
 import Menu from "@mui/material/Menu";
 import MenuItem from "@mui/material/MenuItem";
@@ -35,18 +34,29 @@ interface PersonOption {
   phone: string | null;
   status: string;
   completeness: number;
-  _skeleton?: boolean;
 }
 
-const SKELETON_OPTIONS: PersonOption[] = Array.from({ length: 5 }, (_, i) => ({
-  personId: `__skeleton_${i}`,
-  name: "",
-  email: null,
-  phone: null,
-  status: "active",
-  completeness: 0,
-  _skeleton: true,
-}));
+const SKELETON_ROW = (
+  <Box sx={{ display: "flex", alignItems: "center", gap: 1.5, px: 1.5, py: 0.75 }}>
+    <Skeleton variant="circular" width={34} height={34} sx={{ flexShrink: 0 }} />
+    <Box sx={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: 0.5 }}>
+      <Skeleton variant="text" width="55%" height={16} />
+      <Skeleton variant="text" width="38%" height={13} />
+    </Box>
+    <Box sx={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 0.5, flexShrink: 0 }}>
+      <Skeleton variant="text" width={36} height={13} />
+      <Skeleton variant="text" width={28} height={13} />
+    </Box>
+  </Box>
+);
+
+const SKELETON_LOADING_TEXT = (
+  <Box sx={{ py: 0.5 }}>
+    {Array.from({ length: 5 }, (_, i) => (
+      <Box key={i}>{SKELETON_ROW}</Box>
+    ))}
+  </Box>
+);
 
 const AVATAR_COLORS = ["#4361ee", "#7c3aed", "#0891b2", "#059669", "#d97706", "#dc2626"];
 function avatarColor(name: string): string {
@@ -237,10 +247,11 @@ export default function PersonFocusedGraph({
   const searchAutocomplete = (
     <Autocomplete
       fullWidth
-      options={searchLoading ? SKELETON_OPTIONS : searchOptions}
+      options={searchOptions}
       getOptionLabel={(opt) => opt.name}
       getOptionKey={(opt) => opt.personId}
-      loading={false}
+      loading={searchLoading}
+      loadingText={SKELETON_LOADING_TEXT}
       filterOptions={(x) => x}
       inputValue={searchInput}
       onInputChange={(_, val) => setSearchInput(val)}
@@ -249,23 +260,6 @@ export default function PersonFocusedGraph({
       }}
       noOptionsText={searchInput.trim().length < 3 ? "Type at least 3 characters…" : "No results"}
       renderOption={(props, opt) => {
-        if (opt._skeleton) {
-          return (
-            <li {...props} key={opt.personId} style={{ pointerEvents: "none" }}>
-              <Box sx={{ display: "flex", alignItems: "center", gap: 1.5, width: "100%", py: 0.25 }}>
-                <Skeleton variant="circular" width={34} height={34} sx={{ flexShrink: 0 }} />
-                <Box sx={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: 0.5 }}>
-                  <Skeleton variant="text" width="55%" height={16} />
-                  <Skeleton variant="text" width="38%" height={13} />
-                </Box>
-                <Box sx={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 0.5, flexShrink: 0 }}>
-                  <Skeleton variant="text" width={36} height={13} />
-                  <Skeleton variant="text" width={28} height={13} />
-                </Box>
-              </Box>
-            </li>
-          );
-        }
         const initials = opt.name.split(" ").filter(Boolean).map((w) => w[0]).slice(0, 2).join("").toUpperCase();
         const circ = 2 * Math.PI * 14;
         const dash = circ * opt.completeness;
