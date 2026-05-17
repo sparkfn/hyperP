@@ -202,22 +202,21 @@ export default function PersonFocusedGraph({
     </Box>
   ) : null;
 
-  const crumbSx = { fontSize: 12, color: "var(--text-muted)", cursor: "pointer", "&:hover": { color: "var(--text-primary)" }, transition: "color 0.15s", whiteSpace: "nowrap" as const };
+  const linkSx = { fontSize: 13, color: "var(--text-secondary)", cursor: "pointer", "&:hover": { color: "var(--text-primary)" }, transition: "color 0.12s", whiteSpace: "nowrap" as const, textDecoration: "none" };
   const breadcrumb = (
-    <Box sx={{ display: "flex", alignItems: "center", gap: 0.5, px: 1.5, py: 0.75, flexWrap: "nowrap", overflow: "hidden" }}>
-      <Box component="span" onClick={handleNewSearch} sx={{ ...crumbSx, display: "flex", alignItems: "center", gap: 0.5 }}>
-        <SearchIcon sx={{ fontSize: 12 }} />
+    <Box sx={{ display: "inline-flex", alignItems: "center", gap: 1, px: 1.5, py: 0.75, flexWrap: "nowrap", overflow: "hidden" }}>
+      <Box component="span" onClick={handleNewSearch} sx={linkSx}>
         Graph Explorer
       </Box>
       {navStack.map((entry, i) => (
-        <Box key={i} sx={{ display: "flex", alignItems: "center", gap: 0.5, minWidth: 0 }}>
-          <Typography component="span" sx={{ fontSize: 12, color: "var(--border-strong)" }}>/</Typography>
+        <Box key={i} sx={{ display: "inline-flex", alignItems: "center", gap: 1, minWidth: 0 }}>
+          <Box component="span" sx={{ fontSize: 13, color: "var(--text-muted)" }}>/</Box>
           {i === navStack.length - 1 ? (
-            <Typography component="span" sx={{ fontSize: 12, fontWeight: 600, color: "var(--text-primary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+            <Box component="span" sx={{ fontSize: 13, fontWeight: 500, color: "var(--text-primary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>
               {entry.title}
-            </Typography>
+            </Box>
           ) : (
-            <Box component="span" onClick={() => setNavStack(navStack.slice(0, i + 1))} sx={{ ...crumbSx, overflow: "hidden", textOverflow: "ellipsis" }}>
+            <Box component="span" onClick={() => setNavStack(navStack.slice(0, i + 1))} sx={{ ...linkSx, overflow: "hidden", textOverflow: "ellipsis" }}>
               {entry.title}
             </Box>
           )}
