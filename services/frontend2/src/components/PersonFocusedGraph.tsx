@@ -176,7 +176,7 @@ export default function PersonFocusedGraph({
     "&:hover": { bgcolor: "var(--bg-surface-2)", color: "var(--text-primary)" },
   };
 
-  const navOverlay = (
+  const navOverlay = (canGoBack || (overlayMode && onMaximize)) ? (
     <Box sx={{ position: "absolute", top: 12, right: 12, zIndex: 10, display: "flex", gap: 1 }}>
       {canGoBack && (
         <Tooltip title="Back">
@@ -192,11 +192,6 @@ export default function PersonFocusedGraph({
           </IconButton>
         </Tooltip>
       )}
-      <Tooltip title="Search another person">
-        <IconButton size="small" onClick={handleNewSearch} sx={btnSx}>
-          <SearchIcon fontSize="small" />
-        </IconButton>
-      </Tooltip>
       {overlayMode && onMaximize && (
         <Tooltip title="Maximize graph">
           <IconButton size="small" onClick={onMaximize} sx={btnSx}>
@@ -204,6 +199,30 @@ export default function PersonFocusedGraph({
           </IconButton>
         </Tooltip>
       )}
+    </Box>
+  ) : null;
+
+  const crumbSx = { fontSize: 12, color: "var(--text-muted)", cursor: "pointer", "&:hover": { color: "var(--text-primary)" }, transition: "color 0.15s", whiteSpace: "nowrap" as const };
+  const breadcrumb = (
+    <Box sx={{ display: "flex", alignItems: "center", gap: 0.5, px: 1.5, py: 0.75, borderBottom: "1px solid var(--border)", flexWrap: "nowrap", overflow: "hidden" }}>
+      <Box component="span" onClick={handleNewSearch} sx={{ ...crumbSx, display: "flex", alignItems: "center", gap: 0.5 }}>
+        <SearchIcon sx={{ fontSize: 12 }} />
+        Graph Explorer
+      </Box>
+      {navStack.map((entry, i) => (
+        <Box key={i} sx={{ display: "flex", alignItems: "center", gap: 0.5, minWidth: 0 }}>
+          <Typography component="span" sx={{ fontSize: 12, color: "var(--border-strong)" }}>/</Typography>
+          {i === navStack.length - 1 ? (
+            <Typography component="span" sx={{ fontSize: 12, fontWeight: 600, color: "var(--text-primary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+              {entry.title}
+            </Typography>
+          ) : (
+            <Box component="span" onClick={() => setNavStack(navStack.slice(0, i + 1))} sx={{ ...crumbSx, overflow: "hidden", textOverflow: "ellipsis" }}>
+              {entry.title}
+            </Box>
+          )}
+        </Box>
+      ))}
     </Box>
   );
 
@@ -363,7 +382,9 @@ export default function PersonFocusedGraph({
 
 
   return (
-    <Box sx={{ height: "100%", minHeight: 0, color: "var(--text-primary)" }}>
+    <Box sx={{ height: "100%", minHeight: 0, color: "var(--text-primary)", display: "flex", flexDirection: "column" }}>
+      {breadcrumb}
+      <Box sx={{ flex: 1, minHeight: 0 }}>
       <PersonGraphViewer
         key={`${current.elementId ?? ""}-${current.personId ?? ""}`}
         personId={current.personId}
@@ -374,6 +395,7 @@ export default function PersonFocusedGraph({
         onNavigateNode={handleNavigateNode}
         onNodeContextMenu={handleNodeContextMenu}
       />
+      </Box>
       <Menu
         open={contextMenu !== null}
         onClose={() => setContextMenu(null)}
