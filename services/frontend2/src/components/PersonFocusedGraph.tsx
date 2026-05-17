@@ -14,6 +14,8 @@ import Typography from "@mui/material/Typography";
 import ArrowBackIcon from "@mui/icons-material/ArrowBack";
 import HomeIcon from "@mui/icons-material/Home";
 import OpenInFullIcon from "@mui/icons-material/OpenInFull";
+import SearchIcon from "@mui/icons-material/Search";
+import InputAdornment from "@mui/material/InputAdornment";
 
 import { bffFetch } from "@/lib/api-client";
 import type { Person } from "@/lib/api-types";
@@ -188,16 +190,25 @@ export default function PersonFocusedGraph({
         <TextField
           {...params}
           placeholder="Search by name, email, phone…"
-          size="small"
           slotProps={{
             input: {
               ...params.InputProps,
-              endAdornment: (
-                <>
-                  {searchLoading ? <CircularProgress size={16} color="inherit" /> : null}
-                  {params.InputProps.endAdornment}
-                </>
+              startAdornment: (
+                <InputAdornment position="start">
+                  {searchLoading
+                    ? <CircularProgress size={16} color="inherit" />
+                    : <SearchIcon fontSize="small" sx={{ color: "var(--text-muted)" }} />}
+                </InputAdornment>
               ),
+              endAdornment: null,
+              sx: {
+                borderRadius: "10px",
+                bgcolor: "var(--bg-surface-2, var(--bg-card))",
+                fontSize: 15,
+                "& fieldset": { borderColor: "var(--border)" },
+                "&:hover fieldset": { borderColor: "var(--border-strong)" },
+                "&.Mui-focused fieldset": { borderColor: "var(--text-secondary)" },
+              },
             },
           }}
         />
