@@ -204,7 +204,7 @@ export default function PersonFocusedGraph({
 
   const crumbSx = { fontSize: 12, color: "var(--text-muted)", cursor: "pointer", "&:hover": { color: "var(--text-primary)" }, transition: "color 0.15s", whiteSpace: "nowrap" as const };
   const breadcrumb = (
-    <Box sx={{ display: "flex", alignItems: "center", gap: 0.5, px: 1.5, py: 0.75, borderBottom: "1px solid var(--border)", flexWrap: "nowrap", overflow: "hidden" }}>
+    <Box sx={{ display: "flex", alignItems: "center", gap: 0.5, px: 1.5, py: 0.75, flexWrap: "nowrap", overflow: "hidden" }}>
       <Box component="span" onClick={handleNewSearch} sx={{ ...crumbSx, display: "flex", alignItems: "center", gap: 0.5 }}>
         <SearchIcon sx={{ fontSize: 12 }} />
         Graph Explorer
