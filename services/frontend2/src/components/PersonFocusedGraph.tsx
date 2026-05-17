@@ -189,14 +189,14 @@ export default function PersonFocusedGraph({
       slotProps={{
         paper: {
           sx: {
-            mt: 0.5,
+            mt: 1,
             bgcolor: "var(--bg-card)",
             border: "1px solid var(--border)",
-            borderRadius: "10px",
-            boxShadow: "0 8px 24px rgba(0,0,0,0.18)",
-            "& .MuiAutocomplete-listbox": { p: 0.5 },
+            borderRadius: "16px",
+            boxShadow: "0 8px 32px rgba(0,0,0,0.18)",
+            "& .MuiAutocomplete-listbox": { p: 0.75 },
             "& .MuiAutocomplete-option": {
-              borderRadius: "6px",
+              borderRadius: "8px",
               color: "var(--text-primary)",
               fontSize: 14,
               px: 1.5,
@@ -208,7 +208,8 @@ export default function PersonFocusedGraph({
             "& .MuiAutocomplete-noOptions, & .MuiAutocomplete-loading": {
               color: "var(--text-muted)",
               fontSize: 13,
-              py: 1.5,
+              py: 2,
+              textAlign: "center",
             },
           },
         },
@@ -217,27 +218,32 @@ export default function PersonFocusedGraph({
         <TextField
           {...params}
           placeholder="Search by name, email, phone…"
+          fullWidth
           slotProps={{
             input: {
               ...params.InputProps,
               startAdornment: (
-                <InputAdornment position="start">
+                <InputAdornment position="start" sx={{ ml: 0.5 }}>
                   {searchLoading
-                    ? <CircularProgress size={16} sx={{ color: "var(--text-muted)" }} />
-                    : <SearchIcon fontSize="small" sx={{ color: "var(--text-muted)" }} />}
+                    ? <CircularProgress size={18} sx={{ color: "var(--text-muted)" }} />
+                    : <SearchIcon sx={{ color: "var(--text-muted)", fontSize: 20 }} />}
                 </InputAdornment>
               ),
               endAdornment: null,
               sx: {
-                borderRadius: "10px",
+                borderRadius: "16px",
                 bgcolor: "var(--bg-card)",
-                color: "var(--text-primary)",
-                fontSize: 14,
-                "& fieldset": { borderColor: "var(--border)" },
+                boxShadow: "0 2px 12px rgba(0,0,0,0.08)",
+                "& fieldset": { borderColor: "var(--border)", borderWidth: 1 },
                 "&:hover fieldset": { borderColor: "var(--border-strong)" },
                 "&.Mui-focused fieldset": { borderColor: "var(--border-strong)", borderWidth: 1 },
-                "& input::placeholder": { color: "var(--text-muted)", opacity: 1 },
-                "& input": { color: "var(--text-primary)", py: "10px" },
+                "& input": {
+                  color: "var(--text-primary)",
+                  fontSize: 16,
+                  py: "16px",
+                  px: 1,
+                  "&::placeholder": { color: "var(--text-muted)", opacity: 1 },
+                },
               },
             },
           }}
@@ -248,29 +254,12 @@ export default function PersonFocusedGraph({
 
   if (isUnloaded) {
     return (
-      <Box sx={{ height: "100%", minHeight: 0, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-primary)" }}>
-        <Box sx={{ width: 360, display: "flex", flexDirection: "column", alignItems: "center", gap: 2, textAlign: "center" }}>
-          {/* Abstract graph icon */}
-          <svg width="56" height="56" viewBox="0 0 56 56" fill="none" style={{ opacity: 0.35 }}>
-            <circle cx="28" cy="28" r="7" fill="currentColor" />
-            <circle cx="10" cy="14" r="5" fill="currentColor" opacity="0.7" />
-            <circle cx="46" cy="14" r="5" fill="currentColor" opacity="0.7" />
-            <circle cx="10" cy="42" r="4" fill="currentColor" opacity="0.5" />
-            <circle cx="46" cy="42" r="4" fill="currentColor" opacity="0.5" />
-            <line x1="28" y1="28" x2="10" y2="14" stroke="currentColor" strokeWidth="1.5" opacity="0.5" />
-            <line x1="28" y1="28" x2="46" y2="14" stroke="currentColor" strokeWidth="1.5" opacity="0.5" />
-            <line x1="28" y1="28" x2="10" y2="42" stroke="currentColor" strokeWidth="1.5" opacity="0.4" />
-            <line x1="28" y1="28" x2="46" y2="42" stroke="currentColor" strokeWidth="1.5" opacity="0.4" />
-          </svg>
-          <Box>
-            <Typography variant="h6" fontWeight={700} sx={{ color: "var(--text-primary)", mb: 0.5 }}>
-              Graph Explorer
-            </Typography>
-            <Typography variant="body2" sx={{ color: "var(--text-secondary)" }}>
-              Search for a person to visualize their network and connections.
-            </Typography>
-          </Box>
-          <Box sx={{ width: "100%" }}>{searchAutocomplete}</Box>
+      <Box sx={{ height: "100%", minHeight: 0, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-primary)", px: 2 }}>
+        <Box sx={{ width: "100%", maxWidth: 620, display: "flex", flexDirection: "column", alignItems: "center", gap: 3 }}>
+          <Typography sx={{ fontSize: { xs: 28, sm: 36 }, fontWeight: 700, letterSpacing: "-0.02em", color: "var(--text-primary)", textAlign: "center" }}>
+            Explore connections
+          </Typography>
+          {searchAutocomplete}
         </Box>
       </Box>
     );
