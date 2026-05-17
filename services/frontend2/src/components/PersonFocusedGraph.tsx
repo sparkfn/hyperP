@@ -78,7 +78,7 @@ export default function PersonFocusedGraph({
   useEffect(() => {
     if (!isUnloaded) return;
     const q = searchInput.trim();
-    if (q.length < 2) { setSearchOptions([]); return; }
+    if (q.length < 3) { setSearchOptions([]); return; }
     setSearchLoading(true);
     let cancelled = false;
     // eslint-disable-next-line react-hooks/set-state-in-effect
@@ -91,6 +91,7 @@ export default function PersonFocusedGraph({
           })));
         }
       })
+      .catch(() => { if (!cancelled) setSearchOptions([]); })
       .finally(() => { if (!cancelled) setSearchLoading(false); });
     return () => { cancelled = true; };
   }, [searchInput, isUnloaded]);
@@ -189,7 +190,7 @@ export default function PersonFocusedGraph({
           onChange={(_, val) => {
             if (val) setNavStack([{ personId: val.personId, title: val.name }]);
           }}
-          noOptionsText={searchInput.trim().length < 2 ? "Type at least 2 characters" : "No results"}
+          noOptionsText={searchInput.trim().length < 3 ? "Type at least 3 characters" : "No results"}
           renderInput={(params) => (
             <TextField
               {...params}
