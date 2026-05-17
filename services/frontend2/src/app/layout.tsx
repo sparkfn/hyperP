@@ -24,7 +24,8 @@ export default async function RootLayout({ children }: { children: ReactNode }):
   const role = session?.user?.role ?? null;
   const isChromeless = !session || role === "first_time"
     || pathname === "/login"
-    || pathname.startsWith("/public");
+    || pathname.startsWith("/public")
+    || pathname.startsWith("/dev");
   const email = session?.user?.email ?? null;
   const displayName = session?.user?.displayName ?? session?.user?.name ?? null;
   const initials = displayName
