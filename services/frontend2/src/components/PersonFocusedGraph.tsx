@@ -30,6 +30,25 @@ interface NavEntry {
 interface PersonOption {
   personId: string;
   name: string;
+  email: string | null;
+  phone: string | null;
+  status: string;
+  completeness: number;
+}
+
+const AVATAR_COLORS = ["#4361ee", "#7c3aed", "#0891b2", "#059669", "#d97706", "#dc2626"];
+function avatarColor(name: string): string {
+  return AVATAR_COLORS[name.charCodeAt(0) % AVATAR_COLORS.length] ?? "#4361ee";
+}
+function completenessColor(s: number): string {
+  if (s >= 0.8) return "#22c55e";
+  if (s >= 0.5) return "#f59e0b";
+  return "#ef4444";
+}
+function statusColor(s: string): string {
+  if (s === "active") return "#22c55e";
+  if (s === "merged") return "#3b82f6";
+  return "#94a3b8";
 }
 
 interface NodeContextMenu {
@@ -90,6 +109,10 @@ export default function PersonFocusedGraph({
           setSearchOptions(persons.map((p) => ({
             personId: p.person_id,
             name: p.preferred_full_name ?? p.person_id,
+            email: p.preferred_email,
+            phone: p.preferred_phone,
+            status: p.status,
+            completeness: p.profile_completeness_score,
           })));
         }
       })
@@ -187,6 +210,49 @@ export default function PersonFocusedGraph({
         if (val) setNavStack([{ personId: val.personId, title: val.name }]);
       }}
       noOptionsText={searchInput.trim().length < 3 ? "Type at least 3 characters…" : "No results"}
+      renderOption={(props, opt) => {
+        const initials = opt.name.split(" ").filter(Boolean).map((w) => w[0]).slice(0, 2).join("").toUpperCase();
+        const circ = 2 * Math.PI * 14;
+        const dash = circ * opt.completeness;
+        const gap = circ - dash;
+        const ringCol = completenessColor(opt.completeness);
+        const subtitle = opt.email ?? opt.phone ?? opt.personId;
+        return (
+          <li {...props} key={opt.personId}>
+            <Box sx={{ display: "flex", alignItems: "center", gap: 1.5, width: "100%", py: 0.25 }}>
+              {/* Avatar ring */}
+              <Box sx={{ position: "relative", width: 34, height: 34, flexShrink: 0 }}>
+                <svg width="34" height="34" viewBox="0 0 34 34" fill="none" style={{ position: "absolute", inset: 0 }}>
+                  <circle cx="17" cy="17" r="14" stroke={ringCol} strokeWidth="1.5" opacity="0.2" />
+                  <circle cx="17" cy="17" r="14" stroke={ringCol} strokeWidth="1.5" strokeLinecap="round"
+                    strokeDasharray={`${dash} ${gap}`} transform="rotate(-90 17 17)" />
+                </svg>
+                <Box sx={{ position: "absolute", inset: "3px", borderRadius: "50%", bgcolor: avatarColor(opt.name), display: "flex", alignItems: "center", justifyContent: "center", color: "#fff", fontSize: 11, fontWeight: 700 }}>
+                  {initials}
+                </Box>
+              </Box>
+              {/* Name + subtitle */}
+              <Box sx={{ flex: 1, minWidth: 0 }}>
+                <Typography sx={{ fontSize: 13, fontWeight: 600, color: "var(--text-primary)", lineHeight: 1.35 }}>
+                  {opt.name}
+                </Typography>
+                <Typography sx={{ fontSize: 12, color: "var(--text-muted)", lineHeight: 1.3 }} noWrap>
+                  {subtitle}
+                </Typography>
+              </Box>
+              {/* Status + completeness */}
+              <Box sx={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 0.25, flexShrink: 0 }}>
+                <Typography sx={{ fontSize: 11, color: statusColor(opt.status), fontWeight: 600, textTransform: "capitalize" }}>
+                  {opt.status}
+                </Typography>
+                <Typography sx={{ fontSize: 11, color: ringCol, fontWeight: 600 }}>
+                  {Math.round(opt.completeness * 100)}%
+                </Typography>
+              </Box>
+            </Box>
+          </li>
+        );
+      }}
       slotProps={{
         paper: {
           sx: {
