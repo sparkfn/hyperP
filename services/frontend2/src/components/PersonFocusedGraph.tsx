@@ -171,49 +171,69 @@ export default function PersonFocusedGraph({
     </Box>
   ) : null;
 
-  const emptyStateOverlay = isUnloaded ? (
-    <Box sx={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", zIndex: 20, pointerEvents: "none" }}>
-      <Box sx={{ width: 340, p: 3, bgcolor: "var(--bg-card)", border: "1px solid var(--border)", borderRadius: "16px", boxShadow: "0 8px 40px rgba(0,0,0,0.18)", pointerEvents: "auto" }}>
-        <Typography variant="subtitle1" fontWeight={700} sx={{ mb: 0.5, color: "var(--text-primary)" }}>
-          Explore graph connections
-        </Typography>
-        <Typography variant="body2" sx={{ mb: 2, color: "var(--text-secondary)" }}>
-          Search for a person to visualize their network.
-        </Typography>
-        <Autocomplete
-          options={searchOptions}
-          getOptionLabel={(opt) => opt.name}
-          getOptionKey={(opt) => opt.personId}
-          loading={searchLoading}
-          filterOptions={(x) => x}
-          inputValue={searchInput}
-          onInputChange={(_, val) => setSearchInput(val)}
-          onChange={(_, val) => {
-            if (val) setNavStack([{ personId: val.personId, title: val.name }]);
+  const searchAutocomplete = (
+    <Autocomplete
+      options={searchOptions}
+      getOptionLabel={(opt) => opt.name}
+      getOptionKey={(opt) => opt.personId}
+      loading={searchLoading}
+      filterOptions={(x) => x}
+      inputValue={searchInput}
+      onInputChange={(_, val) => setSearchInput(val)}
+      onChange={(_, val) => {
+        if (val) setNavStack([{ personId: val.personId, title: val.name }]);
+      }}
+      noOptionsText={searchInput.trim().length < 3 ? "Type at least 3 characters" : "No results"}
+      renderInput={(params) => (
+        <TextField
+          {...params}
+          placeholder="Search by name, email, phone…"
+          size="small"
+          slotProps={{
+            input: {
+              ...params.InputProps,
+              endAdornment: (
+                <>
+                  {searchLoading ? <CircularProgress size={16} color="inherit" /> : null}
+                  {params.InputProps.endAdornment}
+                </>
+              ),
+            },
           }}
-          noOptionsText={searchInput.trim().length < 3 ? "Type at least 3 characters" : "No results"}
-          renderInput={(params) => (
-            <TextField
-              {...params}
-              placeholder="Search by name, email, phone…"
-              size="small"
-              slotProps={{
-                input: {
-                  ...params.InputProps,
-                  endAdornment: (
-                    <>
-                      {searchLoading ? <CircularProgress size={16} color="inherit" /> : null}
-                      {params.InputProps.endAdornment}
-                    </>
-                  ),
-                },
-              }}
-            />
-          )}
         />
+      )}
+    />
+  );
+
+  if (isUnloaded) {
+    return (
+      <Box sx={{ height: "100%", minHeight: 0, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-primary)" }}>
+        <Box sx={{ width: 360, display: "flex", flexDirection: "column", alignItems: "center", gap: 2, textAlign: "center" }}>
+          {/* Abstract graph icon */}
+          <svg width="56" height="56" viewBox="0 0 56 56" fill="none" style={{ opacity: 0.35 }}>
+            <circle cx="28" cy="28" r="7" fill="currentColor" />
+            <circle cx="10" cy="14" r="5" fill="currentColor" opacity="0.7" />
+            <circle cx="46" cy="14" r="5" fill="currentColor" opacity="0.7" />
+            <circle cx="10" cy="42" r="4" fill="currentColor" opacity="0.5" />
+            <circle cx="46" cy="42" r="4" fill="currentColor" opacity="0.5" />
+            <line x1="28" y1="28" x2="10" y2="14" stroke="currentColor" strokeWidth="1.5" opacity="0.5" />
+            <line x1="28" y1="28" x2="46" y2="14" stroke="currentColor" strokeWidth="1.5" opacity="0.5" />
+            <line x1="28" y1="28" x2="10" y2="42" stroke="currentColor" strokeWidth="1.5" opacity="0.4" />
+            <line x1="28" y1="28" x2="46" y2="42" stroke="currentColor" strokeWidth="1.5" opacity="0.4" />
+          </svg>
+          <Box>
+            <Typography variant="h6" fontWeight={700} sx={{ color: "var(--text-primary)", mb: 0.5 }}>
+              Graph Explorer
+            </Typography>
+            <Typography variant="body2" sx={{ color: "var(--text-secondary)" }}>
+              Search for a person to visualize their network and connections.
+            </Typography>
+          </Box>
+          <Box sx={{ width: "100%" }}>{searchAutocomplete}</Box>
+        </Box>
       </Box>
-    </Box>
-  ) : null;
+    );
+  }
 
   return (
     <Box sx={{ height: "100%", minHeight: 0, color: "var(--text-primary)" }}>
@@ -222,8 +242,8 @@ export default function PersonFocusedGraph({
         personId={current.personId}
         elementId={current.elementId}
         title={current.title}
-        overlayMode={overlayMode || isUnloaded}
-        extraOverlay={<>{navOverlay}{emptyStateOverlay}</>}
+        overlayMode={overlayMode}
+        extraOverlay={navOverlay}
         onNavigateNode={handleNavigateNode}
         onNodeContextMenu={handleNodeContextMenu}
       />
