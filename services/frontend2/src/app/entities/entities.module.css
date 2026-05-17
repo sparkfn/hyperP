@@ -1,97 +1,44 @@
-/* ── Page shell ─────────────────────────────────────────────────────────── */
 .page {
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 16px;
   flex: 1;
   min-height: 0;
 }
 
-/* ── Header ─────────────────────────────────────────────────────────────── */
+/* Header */
 .header {
   display: flex;
-  align-items: flex-end;
-  justify-content: space-between;
+  align-items: baseline;
+  gap: 10px;
   flex-shrink: 0;
 }
-
-.breadcrumb {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 13px;
-  color: var(--text-secondary);
-  margin-bottom: 4px;
-}
-.breadcrumbMuted { color: var(--text-secondary); }
-.breadcrumbSep   { color: var(--text-muted); }
-.breadcrumbCurrent { color: var(--text-primary); font-weight: 500; }
-
 .title {
   font-size: 20px;
   font-weight: 700;
   color: var(--text-primary);
   letter-spacing: -0.4px;
-  margin: 0;
 }
-
-/* ── KPI strip ──────────────────────────────────────────────────────────── */
-.kpiStrip {
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 12px;
-  flex-shrink: 0;
-}
-
-@media (max-width: 900px) { .kpiStrip { grid-template-columns: repeat(2, 1fr); } }
-@media (max-width: 560px) { .kpiStrip { grid-template-columns: 1fr; } }
-
-.kpi {
-  padding: 12px 14px;
-  border-radius: 10px;
-  background: var(--bg-card);
-  border: 1px solid var(--border);
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-.kpiAccent { background: color-mix(in srgb, var(--accent, #4361ee) 10%, var(--bg-card)); }
-.kpiWarn   { background: color-mix(in srgb, #f59e0b 10%, var(--bg-card)); border-color: #f59e0b40; }
-
-.kpiLabel {
-  font-size: 10px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
+.count {
+  font-size: 13px;
   color: var(--text-muted);
-}
-.kpiValue {
-  font-size: 22px;
-  font-weight: 600;
-  color: var(--text-primary);
-  letter-spacing: -0.02em;
   font-variant-numeric: tabular-nums;
 }
-.kpiSub {
-  font-size: 11px;
-  color: var(--text-muted);
-}
 
-/* ── Error ──────────────────────────────────────────────────────────────── */
+/* Error */
 .errorMsg {
   font-size: 13px;
   color: var(--text-muted);
   margin: 0;
-  padding: 12px 0;
 }
 
-/* ── Table wrapper ──────────────────────────────────────────────────────── */
+/* Table */
 .tableWrap {
   flex: 1;
   min-height: 0;
+  overflow: auto;
   border: 1px solid var(--border);
   border-radius: 10px;
-  overflow: auto;
   background: var(--bg-card);
 }
 
@@ -101,29 +48,29 @@
   font-size: 13px;
 }
 
-/* ── Table header ───────────────────────────────────────────────────────── */
 .th {
-  padding: 10px 14px;
+  padding: 9px 14px;
   text-align: left;
   font-size: 10px;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.06em;
   color: var(--text-muted);
-  background: var(--bg-surface-2, color-mix(in srgb, var(--bg-card) 60%, var(--bg-app)));
   border-bottom: 1px solid var(--border);
   white-space: nowrap;
+  background: var(--bg-card);
   position: sticky;
   top: 0;
-  z-index: 1;
+}
+.thNum {
+  composes: th;
+  text-align: right;
 }
 
-/* ── Table rows ─────────────────────────────────────────────────────────── */
-.row {
-  transition: background 0.1s;
-}
-.row:hover { background: var(--bg-hover, color-mix(in srgb, var(--bg-card) 85%, var(--border))); }
-.row:not(:last-child) .td { border-bottom: 1px solid var(--border-subtle, var(--border)); }
+.row { transition: background 0.1s; }
+.row:hover { background: var(--bg-surface-2, color-mix(in srgb, var(--bg-card) 85%, var(--border))); }
+.row:not(:last-child) .td,
+.row:not(:last-child) .tdNum { border-bottom: 1px solid var(--border-subtle, var(--border)); }
 
 .td {
   padding: 10px 14px;
@@ -131,112 +78,86 @@
   color: var(--text-primary);
   white-space: nowrap;
 }
-
-/* ── Cell types ─────────────────────────────────────────────────────────── */
-.nameCell {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
+.tdNum {
+  composes: td;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 12px;
+  color: var(--text-secondary);
 }
-.name {
+
+/* Cell parts */
+.nameCell { display: flex; flex-direction: column; gap: 2px; }
+.nameLink {
   font-size: 13px;
   font-weight: 600;
   color: var(--text-primary);
+  text-decoration: none;
 }
+.nameLink:hover { text-decoration: underline; }
 .entityKey {
   font-family: ui-monospace, "SF Mono", Menlo, monospace;
   font-size: 11px;
   color: var(--text-muted);
 }
+.dateCell  { font-size: 12px; color: var(--text-muted); }
+.muted     { color: var(--text-muted); }
 
-.numCell {
-  text-align: right;
-  font-variant-numeric: tabular-nums;
-  font-family: ui-monospace, "SF Mono", Menlo, monospace;
-  font-size: 12px;
-  color: var(--text-primary);
-}
-
-.dateCell {
-  font-size: 12px;
-  color: var(--text-muted);
-}
-
-.muted { color: var(--text-muted); }
-
-/* ── Pills & badges ─────────────────────────────────────────────────────── */
+/* Badges */
 .typePill {
   display: inline-flex;
-  align-items: center;
   padding: 2px 8px;
   border-radius: 4px;
   font-size: 11px;
   font-weight: 600;
-  background: var(--bg-surface-2, color-mix(in srgb, var(--bg-card) 60%, var(--bg-app)));
+  background: var(--bg-surface-2, color-mix(in srgb, var(--bg-card) 70%, var(--bg-app)));
   color: var(--text-secondary);
   border: 1px solid var(--border);
-  white-space: nowrap;
 }
-
 .countryBadge {
   display: inline-flex;
-  align-items: center;
   padding: 1px 6px;
   border-radius: 3px;
   font-size: 10px;
   font-weight: 700;
   letter-spacing: 0.05em;
-  background: var(--bg-surface-2, color-mix(in srgb, var(--bg-card) 60%, var(--bg-app)));
   color: var(--text-muted);
   border: 1px solid var(--border);
   font-family: ui-monospace, monospace;
 }
-
 .badgeActive {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  padding: 2px 8px;
-  border-radius: 999px;
+  gap: 5px;
   font-size: 11px;
   font-weight: 600;
-  background: color-mix(in srgb, #22c55e 12%, transparent);
   color: #22c55e;
 }
 .badgeActive::before {
   content: "";
-  display: inline-block;
-  width: 5px;
-  height: 5px;
+  width: 5px; height: 5px;
   border-radius: 50%;
   background: #22c55e;
+  display: inline-block;
 }
-
 .badgeInactive {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  padding: 2px 8px;
-  border-radius: 999px;
+  gap: 5px;
   font-size: 11px;
   font-weight: 600;
-  background: color-mix(in srgb, var(--text-muted) 10%, transparent);
   color: var(--text-muted);
 }
 .badgeInactive::before {
   content: "";
-  display: inline-block;
-  width: 5px;
-  height: 5px;
+  width: 5px; height: 5px;
   border-radius: 50%;
   background: var(--text-muted);
+  display: inline-block;
 }
-
 .warnCount {
   display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 20px;
   padding: 1px 6px;
   border-radius: 3px;
   font-size: 11px;
@@ -246,18 +167,7 @@
   color: #d97706;
 }
 
-/* ── Actions ────────────────────────────────────────────────────────────── */
-.actionCell { text-align: right; }
-.viewLink {
-  font-size: 12px;
-  color: var(--text-muted);
-  text-decoration: none;
-  font-weight: 500;
-  transition: color 0.12s;
-}
-.viewLink:hover { color: var(--text-primary); }
-
-/* ── Empty ──────────────────────────────────────────────────────────────── */
+/* Empty */
 .emptyCell {
   padding: 48px 14px;
   text-align: center;
@@ -265,25 +175,18 @@
   color: var(--text-muted);
 }
 
-/* ── Skeleton shimmer ───────────────────────────────────────────────────── */
+/* Skeleton */
 @keyframes shimmer {
   0%   { background-position: -400px 0; }
   100% { background-position:  400px 0; }
 }
-
 .skeleton {
-  background: linear-gradient(
-    90deg,
-    var(--border) 25%,
-    color-mix(in srgb, var(--border) 60%, var(--bg-card)) 50%,
-    var(--border) 75%
-  );
+  background: linear-gradient(90deg, var(--border) 25%, color-mix(in srgb, var(--border) 60%, var(--bg-card)) 50%, var(--border) 75%);
   background-size: 800px 100%;
   animation: shimmer 1.4s infinite linear;
   border-radius: 4px;
   display: inline-block;
 }
-
 .skeletonRow td {
   padding: 10px 14px;
   vertical-align: middle;
