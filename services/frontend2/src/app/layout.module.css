@@ -403,8 +403,6 @@
   .mobileSidebar {
     display: flex;
     flex-direction: column;
-    background: var(--bg-sidebar);
-    border-right: 1px solid var(--border);
   }
 }
 
