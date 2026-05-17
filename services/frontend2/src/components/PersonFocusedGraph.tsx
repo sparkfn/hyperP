@@ -8,6 +8,7 @@ import Menu from "@mui/material/Menu";
 import MenuItem from "@mui/material/MenuItem";
 import Tooltip from "@mui/material/Tooltip";
 import ArrowBackIcon from "@mui/icons-material/ArrowBack";
+import HomeIcon from "@mui/icons-material/Home";
 import OpenInFullIcon from "@mui/icons-material/OpenInFull";
 
 import PersonGraphViewer from "@/components/PersonGraphViewer";
@@ -68,6 +69,10 @@ export default function PersonFocusedGraph({
     setNavStack((prev) => (prev.length > 1 ? prev.slice(0, -1) : prev));
   }
 
+  function handleReset(): void {
+    setNavStack((prev) => (prev[0] ? [prev[0]] : prev));
+  }
+
   const handleNodeContextMenu = useCallback(
     (
       elementId: string,
@@ -95,36 +100,32 @@ export default function PersonFocusedGraph({
     setContextMenu(null);
   }
 
+  const btnSx = {
+    bgcolor: "var(--bg-card)",
+    border: "1px solid var(--border)",
+    color: "var(--text-secondary)",
+    "&:hover": { bgcolor: "var(--bg-surface-2)", color: "var(--text-primary)" },
+  };
+
   const overlayControls = (
     <Box sx={{ position: "absolute", top: 12, right: 12, zIndex: 10, display: "flex", gap: 1 }}>
       {canGoBack && (
         <Tooltip title="Back">
-          <IconButton
-            size="small"
-            onClick={handleBack}
-            sx={{
-              bgcolor: "var(--bg-card)",
-              border: "1px solid var(--border)",
-              color: "var(--text-secondary)",
-              "&:hover": { bgcolor: "var(--bg-surface-2)", color: "var(--text-primary)" },
-            }}
-          >
+          <IconButton size="small" onClick={handleBack} sx={btnSx}>
             <ArrowBackIcon fontSize="small" />
+          </IconButton>
+        </Tooltip>
+      )}
+      {canGoBack && (
+        <Tooltip title="Reset to initial graph">
+          <IconButton size="small" onClick={handleReset} sx={btnSx}>
+            <HomeIcon fontSize="small" />
           </IconButton>
         </Tooltip>
       )}
       {overlayMode && onMaximize && (
         <Tooltip title="Maximize graph">
-          <IconButton
-            size="small"
-            onClick={onMaximize}
-            sx={{
-              bgcolor: "var(--bg-card)",
-              border: "1px solid var(--border)",
-              color: "var(--text-secondary)",
-              "&:hover": { bgcolor: "var(--bg-surface-2)", color: "var(--text-primary)" },
-            }}
-          >
+          <IconButton size="small" onClick={onMaximize} sx={btnSx}>
             <OpenInFullIcon fontSize="small" />
           </IconButton>
         </Tooltip>

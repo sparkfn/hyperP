@@ -637,6 +637,7 @@ export default function PersonGraphViewer({
           }}
         >
           {loading ? <GraphLoadingSkeleton /> : forceGraphCanvas}
+          {extraOverlay}
         </Box>
       </Box>
     </Box>
