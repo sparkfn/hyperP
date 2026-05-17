@@ -203,7 +203,7 @@ export default function PersonFocusedGraph({
   ) : null;
 
   const breadcrumb = (
-    <Box sx={{ display: "inline-flex", alignItems: "center", gap: "8px", fontSize: 13, color: "var(--text-secondary)", bgcolor: "var(--bg-app)", flexShrink: 0 }}>
+    <Box sx={{ display: "inline-flex", alignItems: "center", gap: "8px", fontSize: 13, color: "var(--text-secondary)", flexShrink: 0 }}>
       <Box component="span" onClick={handleNewSearch} sx={{ cursor: "pointer", color: "var(--text-secondary)", "&:hover": { color: "var(--text-primary)" }, transition: "color 0.12s" }}>
         Graph Explorer
       </Box>
@@ -372,7 +372,7 @@ export default function PersonFocusedGraph({
 
 
   return (
-    <Box sx={{ height: "100%", minHeight: 0, color: "var(--text-primary)", display: "flex", flexDirection: "column" }}>
+    <Box sx={{ height: "100%", minHeight: 0, color: "var(--text-primary)", display: "flex", flexDirection: "column", gap: "18px" }}>
       {breadcrumb}
       <Box sx={{ flex: 1, minHeight: 0 }}>
       <PersonGraphViewer
