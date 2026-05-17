@@ -291,6 +291,7 @@ export default function PersonGraphViewer({
       .finally(() => setLoading(false));
   }, [personId, elementId, maxHops]);
 
+  // Set up forces + reheat + zoom only when graph data changes (not on resize).
   useEffect(() => {
     if (graphData === null) return;
     const graph = graphRef.current;
@@ -330,8 +331,18 @@ export default function PersonGraphViewer({
       }
     }) as never);
     graph.d3ReheatSimulation();
-    window.setTimeout(() => graph.zoomToFit(500, 90), 150);
-  }, [graphData, dimensions.width, dimensions.height]);
+    // Zoom after simulation has had time to spread nodes out.
+    // warmupTicks pre-spreads nodes, so 600ms (≈36 frames) is enough to settle further.
+    window.setTimeout(() => graph.zoomToFit(400, 90), 600);
+  }, [graphData]);
+
+  // On container resize, just re-fit without reheating the simulation.
+  useEffect(() => {
+    if (graphData === null) return;
+    const graph = graphRef.current;
+    if (!graph) return;
+    graph.zoomToFit(300, 90);
+  }, [dimensions.width, dimensions.height, graphData]);
 
   const handleNodeClick = useCallback(
     (raw: AnyNode) => {
@@ -391,10 +402,10 @@ export default function PersonGraphViewer({
         onNodeRightClick={onNodeContextMenu ? handleNodeRightClick : undefined}
         onLinkClick={handleLinkClick}
         enableNodeDrag
-        cooldownTicks={300}
-        d3AlphaDecay={0.01}
+        cooldownTicks={200}
+        d3AlphaDecay={0.02}
         d3VelocityDecay={0.3}
-        warmupTicks={100}
+        warmupTicks={200}
       />
       {selected !== null ? (
         <GraphDetailPanel
