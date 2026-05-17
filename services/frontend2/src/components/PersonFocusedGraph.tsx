@@ -255,7 +255,7 @@ export default function PersonFocusedGraph({
   if (isUnloaded) {
     return (
       <Box sx={{ height: "100%", minHeight: 0, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-primary)", px: 2 }}>
-        <Box sx={{ width: "100%", maxWidth: 620, display: "flex", flexDirection: "column", alignItems: "center", gap: 3 }}>
+        <Box sx={{ width: "100%", maxWidth: 780, display: "flex", flexDirection: "column", alignItems: "center", gap: 3 }}>
           <Box sx={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 1.5 }}>
             <svg width="48" height="48" viewBox="0 0 56 56" fill="none" style={{ color: "var(--text-secondary)", opacity: 0.5 }}>
               <circle cx="28" cy="28" r="7" fill="currentColor" />
