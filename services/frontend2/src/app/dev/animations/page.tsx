@@ -1,6 +1,6 @@
 "use client";
 import { notFound } from "next/navigation";
-import type { ReactElement } from "react";
+import { useEffect, useState, type ReactElement } from "react";
 
 if (process.env.NODE_ENV !== "development") notFound();
 
@@ -245,9 +245,31 @@ function GraphAnimation(): ReactElement {
 }
 
 export default function AnimationsPage(): ReactElement {
+  const [theme, setTheme] = useState<"dark" | "light">("dark");
+
+  useEffect(() => {
+    const stored = localStorage.getItem("theme");
+    const initial = stored === "light" ? "light" : "dark";
+    setTheme(initial);
+    document.documentElement.setAttribute("data-theme", initial);
+  }, []);
+
+  function toggleTheme(): void {
+    const next = theme === "dark" ? "light" : "dark";
+    setTheme(next);
+    document.documentElement.setAttribute("data-theme", next);
+    localStorage.setItem("theme", next);
+  }
+
   return (
-    <div style={{ minHeight: "100vh", background: "#0f172a", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 48, padding: 40, fontFamily: "system-ui, sans-serif" }}>
-      <h1 style={{ color: "#94a3b8", fontSize: 13, letterSpacing: "0.1em", textTransform: "uppercase", margin: 0 }}>Animation Preview</h1>
+    <div style={{ minHeight: "100vh", background: "var(--bg-app)", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 48, padding: 40, fontFamily: "system-ui, sans-serif", position: "relative" }}>
+      <button
+        onClick={toggleTheme}
+        style={{ position: "absolute", top: 20, right: 20, background: "var(--bg-card)", border: "1px solid var(--border)", borderRadius: 8, padding: "6px 14px", cursor: "pointer", color: "var(--text-secondary)", fontSize: 12, letterSpacing: "0.05em" }}
+      >
+        {theme === "dark" ? "Light" : "Dark"}
+      </button>
+      <h1 style={{ color: "var(--text-secondary)", fontSize: 13, letterSpacing: "0.1em", textTransform: "uppercase", margin: 0 }}>Animation Preview</h1>
 
       <div style={{ display: "flex", gap: 64, flexWrap: "wrap", justifyContent: "center" }}>
         {([
@@ -256,10 +278,10 @@ export default function AnimationsPage(): ReactElement {
           { label: "Override loading", el: <OverrideAnimation /> },
         ] as const).map(({ label, el }) => (
           <div key={label} style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 16 }}>
-            <div style={{ width: 240, height: 240, background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 16, display: "flex", alignItems: "center", justifyContent: "center" }}>
+            <div style={{ width: 240, height: 240, background: "var(--bg-card)", border: "1px solid var(--border)", borderRadius: 16, display: "flex", alignItems: "center", justifyContent: "center" }}>
               {el}
             </div>
-            <p style={{ color: "#64748b", fontSize: 12, margin: 0 }}>{label}</p>
+            <p style={{ color: "var(--text-muted)", fontSize: 12, margin: 0 }}>{label}</p>
           </div>
         ))}
       </div>
