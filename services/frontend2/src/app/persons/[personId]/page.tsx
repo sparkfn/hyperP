@@ -772,20 +772,25 @@ function TabEmptyState({ message }: { message: string }): ReactElement {
   return (
     <div className={styles.tabEmptyState}>
       <svg className={styles.tabEmptyIcon} viewBox="0 0 80 80" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-        {/* Empty orbit tracks — rings with no nodes */}
-        <circle cx="40" cy="40" r="17" stroke="currentColor" strokeWidth="0.7" strokeDasharray="2.5 2.5" opacity="0.20" />
-        <circle cx="40" cy="40" r="28" stroke="currentColor" strokeWidth="0.5" strokeDasharray="2 3"   opacity="0.13" />
-        {/* Broken connection lines — reach outward but connect to nothing */}
-        <line x1="40" y1="40" x2="22" y2="24" stroke="currentColor" strokeWidth="0.9" strokeDasharray="2 2.5" strokeLinecap="round" opacity="0.22" />
-        <line x1="40" y1="40" x2="60" y2="30" stroke="currentColor" strokeWidth="0.9" strokeDasharray="2 2.5" strokeLinecap="round" opacity="0.17" />
-        <line x1="40" y1="40" x2="56" y2="58" stroke="currentColor" strokeWidth="0.9" strokeDasharray="2 2.5" strokeLinecap="round" opacity="0.17" />
-        {/* Lonely center node */}
-        <circle cx="40" cy="40" r="7" fill="currentColor" opacity="0.50" />
-        {/* Isolated tiny dots — scattered, disconnected, unreachable */}
-        <circle cx="10" cy="14" r="2.5" fill="currentColor" opacity="0.22" />
-        <circle cx="70" cy="16" r="2"   fill="currentColor" opacity="0.17" />
-        <circle cx="68" cy="68" r="2"   fill="currentColor" opacity="0.15" />
-        <circle cx="13" cy="66" r="1.5" fill="currentColor" opacity="0.12" />
+        {/* Degraded orbit rings — irregular dashes, like rusting rings */}
+        <circle cx="38" cy="39" r="16" stroke="currentColor" strokeWidth="0.7" strokeDasharray="5 4 12 2 8 5 3 6" opacity="0.18" />
+        <circle cx="38" cy="39" r="27" stroke="currentColor" strokeWidth="0.5" strokeDasharray="8 6 3 11 7 4 14 5" opacity="0.10" />
+        {/* Severed connections — different lengths, cut off into the void */}
+        <line x1="38" y1="39" x2="18" y2="19" stroke="currentColor" strokeWidth="0.9" strokeDasharray="2 2.5" strokeLinecap="round" opacity="0.22" />
+        <line x1="38" y1="39" x2="61" y2="27" stroke="currentColor" strokeWidth="0.8" strokeDasharray="2 2.5" strokeLinecap="round" opacity="0.15" />
+        <line x1="38" y1="39" x2="61" y2="57" stroke="currentColor" strokeWidth="0.8" strokeDasharray="2 2.5" strokeLinecap="round" opacity="0.13" />
+        <line x1="38" y1="39" x2="20" y2="58" stroke="currentColor" strokeWidth="0.7" strokeDasharray="1.5 3"   strokeLinecap="round" opacity="0.11" />
+        {/* Lone center node — faded, neglected */}
+        <circle cx="38" cy="39" r="6.5" fill="currentColor" opacity="0.42" />
+        {/* Debris — former nodes scattered at uneven distances, varying sizes */}
+        <circle cx="7"  cy="11" r="3"   fill="currentColor" opacity="0.24" />
+        <circle cx="70" cy="8"  r="2"   fill="currentColor" opacity="0.17" />
+        <circle cx="73" cy="61" r="2.5" fill="currentColor" opacity="0.19" />
+        <circle cx="5"  cy="66" r="1.8" fill="currentColor" opacity="0.15" />
+        <circle cx="53" cy="74" r="1.5" fill="currentColor" opacity="0.13" />
+        <circle cx="17" cy="73" r="1"   fill="currentColor" opacity="0.10" />
+        <circle cx="66" cy="43" r="1.2" fill="currentColor" opacity="0.12" />
+        <circle cx="29" cy="4"  r="1.3" fill="currentColor" opacity="0.11" />
       </svg>
       <p className={styles.tabEmptyMsg}>{message}</p>
     </div>
