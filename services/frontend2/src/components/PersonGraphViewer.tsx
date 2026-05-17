@@ -62,9 +62,9 @@ type AnyNode = Record<string, unknown>;
 type AnyLink = Record<string, unknown>;
 
 const DOUBLE_CLICK_MS = 300;
-const LINK_DISTANCE = 72;
-const NODE_COLLISION_RADIUS = 32;
-const MANY_BODY_STRENGTH = -260;
+const LINK_DISTANCE = 80;
+const NODE_COLLISION_RADIUS = 38;
+const MANY_BODY_STRENGTH = -400;
 
 const ICON_COMPONENTS: Record<NodeIcon, ReactElement> = {
   person: <PersonIcon />,
@@ -307,7 +307,7 @@ export default function PersonGraphViewer({
       chargeForce.strength(MANY_BODY_STRENGTH);
     }
 
-    graph.d3Force("collide", ((alpha: number) => {
+    graph.d3Force("collide", (() => {
       const nodes = graphData.nodes as Array<FGNode & { x?: number; y?: number; vx?: number; vy?: number }>;
       for (let i = 0; i < nodes.length; i += 1) {
         const a = nodes[i];
@@ -320,7 +320,8 @@ export default function PersonGraphViewer({
           const distance = Math.hypot(dx, dy) || 1;
           const overlap = NODE_COLLISION_RADIUS - distance;
           if (overlap <= 0) continue;
-          const move = (overlap / distance) * alpha * 0.5;
+          // Don't scale by alpha — enforce separation regardless of simulation temperature.
+          const move = (overlap / distance) * 0.5;
           const mx = dx * move;
           const my = dy * move;
           a.vx = (a.vx ?? 0) - mx;
