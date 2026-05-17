@@ -202,26 +202,17 @@ export default function PersonFocusedGraph({
     </Box>
   ) : null;
 
-  const linkSx = { fontSize: 13, color: "var(--text-secondary)", cursor: "pointer", "&:hover": { color: "var(--text-primary)" }, transition: "color 0.12s", whiteSpace: "nowrap" as const, textDecoration: "none" };
   const breadcrumb = (
-    <Box sx={{ display: "flex", alignItems: "center", gap: 1, flexWrap: "nowrap", overflow: "hidden", bgcolor: "var(--bg-app)" }}>
-      <Box component="span" onClick={handleNewSearch} sx={linkSx}>
+    <Box sx={{ display: "inline-flex", alignItems: "center", gap: "8px", fontSize: 13, color: "var(--text-secondary)", bgcolor: "var(--bg-app)", flexShrink: 0 }}>
+      <Box component="span" onClick={handleNewSearch} sx={{ cursor: "pointer", color: "var(--text-secondary)", "&:hover": { color: "var(--text-primary)" }, transition: "color 0.12s" }}>
         Graph Explorer
       </Box>
-      {navStack.map((entry, i) => (
-        <Box key={i} sx={{ display: "inline-flex", alignItems: "center", gap: 1, minWidth: 0 }}>
-          <Box component="span" sx={{ fontSize: 13, color: "var(--text-muted)" }}>/</Box>
-          {i === navStack.length - 1 ? (
-            <Box component="span" sx={{ fontSize: 13, fontWeight: 500, color: "var(--text-primary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>
-              {entry.title}
-            </Box>
-          ) : (
-            <Box component="span" onClick={() => setNavStack(navStack.slice(0, i + 1))} sx={{ ...linkSx, overflow: "hidden", textOverflow: "ellipsis" }}>
-              {entry.title}
-            </Box>
-          )}
-        </Box>
-      ))}
+      {navStack.flatMap((entry, i) => [
+        <Box key={`sep-${i}`} component="span" sx={{ color: "var(--text-muted)" }}>/</Box>,
+        i === navStack.length - 1
+          ? <Box key={`cur-${i}`} component="span" sx={{ color: "var(--text-primary)", fontWeight: 500 }}>{entry.title}</Box>
+          : <Box key={`nav-${i}`} component="span" onClick={() => setNavStack(navStack.slice(0, i + 1))} sx={{ cursor: "pointer", color: "var(--text-secondary)", "&:hover": { color: "var(--text-primary)" }, transition: "color 0.12s" }}>{entry.title}</Box>,
+      ])}
     </Box>
   );
 
