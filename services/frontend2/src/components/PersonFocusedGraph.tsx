@@ -240,8 +240,8 @@ export default function PersonFocusedGraph({
                 "&.Mui-focused fieldset": { borderColor: "var(--border-strong)", borderWidth: 1 },
                 "& input": {
                   color: "var(--text-primary)",
-                  fontSize: 16,
-                  py: "16px",
+                  fontSize: 15,
+                  py: "11px",
                   px: 1,
                   "&::placeholder": { color: "var(--text-muted)", opacity: 1 },
                 },
