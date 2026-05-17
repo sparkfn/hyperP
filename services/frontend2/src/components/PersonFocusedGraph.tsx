@@ -136,6 +136,12 @@ export default function PersonFocusedGraph({
     setNavStack((prev) => (prev[0] ? [prev[0]] : prev));
   }
 
+  function handleNewSearch(): void {
+    setNavStack([{ title: "Graph Explorer" }]);
+    setSearchInput("");
+    setSearchOptions([]);
+  }
+
   const handleNodeContextMenu = useCallback(
     (
       elementId: string,
@@ -170,7 +176,7 @@ export default function PersonFocusedGraph({
     "&:hover": { bgcolor: "var(--bg-surface-2)", color: "var(--text-primary)" },
   };
 
-  const navOverlay = (canGoBack || (overlayMode && onMaximize)) ? (
+  const navOverlay = (
     <Box sx={{ position: "absolute", top: 12, right: 12, zIndex: 10, display: "flex", gap: 1 }}>
       {canGoBack && (
         <Tooltip title="Back">
@@ -186,6 +192,11 @@ export default function PersonFocusedGraph({
           </IconButton>
         </Tooltip>
       )}
+      <Tooltip title="Search another person">
+        <IconButton size="small" onClick={handleNewSearch} sx={btnSx}>
+          <SearchIcon fontSize="small" />
+        </IconButton>
+      </Tooltip>
       {overlayMode && onMaximize && (
         <Tooltip title="Maximize graph">
           <IconButton size="small" onClick={onMaximize} sx={btnSx}>
@@ -194,7 +205,7 @@ export default function PersonFocusedGraph({
         </Tooltip>
       )}
     </Box>
-  ) : null;
+  );
 
   const searchAutocomplete = (
     <Autocomplete
