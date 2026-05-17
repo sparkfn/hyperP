@@ -183,6 +183,7 @@ export default function PersonFocusedGraph({
         <Autocomplete
           options={searchOptions}
           getOptionLabel={(opt) => opt.name}
+          getOptionKey={(opt) => opt.personId}
           loading={searchLoading}
           filterOptions={(x) => x}
           inputValue={searchInput}
