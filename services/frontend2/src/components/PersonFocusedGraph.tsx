@@ -185,7 +185,34 @@ export default function PersonFocusedGraph({
       onChange={(_, val) => {
         if (val) setNavStack([{ personId: val.personId, title: val.name }]);
       }}
-      noOptionsText={searchInput.trim().length < 3 ? "Type at least 3 characters" : "No results"}
+      noOptionsText={searchInput.trim().length < 3 ? "Type at least 3 characters…" : "No results"}
+      slotProps={{
+        paper: {
+          sx: {
+            mt: 0.5,
+            bgcolor: "var(--bg-card)",
+            border: "1px solid var(--border)",
+            borderRadius: "10px",
+            boxShadow: "0 8px 24px rgba(0,0,0,0.18)",
+            "& .MuiAutocomplete-listbox": { p: 0.5 },
+            "& .MuiAutocomplete-option": {
+              borderRadius: "6px",
+              color: "var(--text-primary)",
+              fontSize: 14,
+              px: 1.5,
+              py: 1,
+              '&[aria-selected="true"], &.Mui-focused, &:hover': {
+                bgcolor: "var(--bg-surface-2)",
+              },
+            },
+            "& .MuiAutocomplete-noOptions, & .MuiAutocomplete-loading": {
+              color: "var(--text-muted)",
+              fontSize: 13,
+              py: 1.5,
+            },
+          },
+        },
+      }}
       renderInput={(params) => (
         <TextField
           {...params}
@@ -196,18 +223,21 @@ export default function PersonFocusedGraph({
               startAdornment: (
                 <InputAdornment position="start">
                   {searchLoading
-                    ? <CircularProgress size={16} color="inherit" />
+                    ? <CircularProgress size={16} sx={{ color: "var(--text-muted)" }} />
                     : <SearchIcon fontSize="small" sx={{ color: "var(--text-muted)" }} />}
                 </InputAdornment>
               ),
               endAdornment: null,
               sx: {
                 borderRadius: "10px",
-                bgcolor: "var(--bg-surface-2, var(--bg-card))",
-                fontSize: 15,
+                bgcolor: "var(--bg-card)",
+                color: "var(--text-primary)",
+                fontSize: 14,
                 "& fieldset": { borderColor: "var(--border)" },
                 "&:hover fieldset": { borderColor: "var(--border-strong)" },
-                "&.Mui-focused fieldset": { borderColor: "var(--text-secondary)" },
+                "&.Mui-focused fieldset": { borderColor: "var(--border-strong)", borderWidth: 1 },
+                "& input::placeholder": { color: "var(--text-muted)", opacity: 1 },
+                "& input": { color: "var(--text-primary)", py: "10px" },
               },
             },
           }}
