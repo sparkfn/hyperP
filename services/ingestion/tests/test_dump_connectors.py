@@ -56,7 +56,7 @@ COPY public.contacts (jid, phone_number, name) FROM stdin;
     records = list(connector.fetch_records())
 
     assert len(records) == 1
-    assert records[0]["source_record_id"] == "whatsapp-chat-6599990000@c.us"
+    assert records[0]["source_record_id"] == "whatsapp-chat-6599990000@c.us-person-1"
     assert records[0]["record_type"] == "conversation"
     assert records[0]["observed_at"] == "2026-05-06T10:00:00Z"
     assert records[0]["attributes"] == {"full_name": "Ada Lovelace"}
@@ -139,7 +139,7 @@ INSERT INTO `agent_chat` VALUES (5,400);
     records = list(connector.fetch_records())
 
     assert len(records) == 1
-    assert records[0]["source_record_id"] == "bitrix-chat-5"
+    assert records[0]["source_record_id"] == "bitrix-chat-5-person-1"
     assert records[0]["record_type"] == "conversation"
     assert records[0]["attributes"] == {"full_name": "Ada Lovelace", "deal_title": "Deal for Ada"}
     assert records[0]["conversation_ref"] == {
@@ -209,6 +209,18 @@ INSERT INTO `phppos_customers` VALUES
     assert identifiers["email"] == "ada@example.test"
     assert identifiers["phone"] == "6599990000"
     assert identifiers["external_customer_id"] == "EXT-11"
+
+
+def test_fundbox_dump_keeps_device_ids_out_of_identifiers() -> None:
+    connector = get_dump_connector(
+        "fundbox_consumer_backend",
+        Path(".dumps") / "limited-100" / "fundbox_2026-05-06.sql",
+    )
+    record = next(connector.fetch_records())
+
+    identifier_types = {item["type"] for item in record["identifiers"]}
+    assert "device_id" not in identifier_types
+    assert record["raw_payload"]["device_ids"]
 
 
 def test_real_non_chat_dumps_yield_first_records() -> None:

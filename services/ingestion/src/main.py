@@ -28,6 +28,14 @@ from src.connectors.sggov import (
 )
 from src.connectors.speedzone import SpeedZoneConnector, SpeedZoneSalesConnector
 from src.connectors.whatsapp import WhatsAppChatConnector
+from src.exclusion_config import load_exclusion_file
+from src.exclusions import (
+    ExclusionContext,
+    build_exclusion_context,
+    is_excluded_email,
+    is_excluded_phone,
+    is_excluded_source_id,
+)
 from src.graph import queries
 from src.graph.bootstrap import bootstrap_entities_and_sources
 from src.graph.client import Neo4jClient
@@ -188,6 +196,17 @@ def _process_record(
     return pipeline.ingest(envelope, ingest_run_id=ingest_run_id)
 
 
+def _record_is_excluded(envelope: SourceRecordEnvelope, context: ExclusionContext) -> bool:
+    if is_excluded_source_id(envelope.source_record_id, context):
+        return True
+    for identifier in envelope.identifiers:
+        if identifier.type == "phone" and is_excluded_phone(identifier.value, context):
+            return True
+        if identifier.type == "email" and is_excluded_email(identifier.value, context):
+            return True
+    return False
+
+
 def _ingest_all_records(
     client: Neo4jClient,
     pipeline: IngestPipeline,
@@ -196,10 +215,21 @@ def _ingest_all_records(
 ) -> tuple[int, int, int]:
     """Process every record from the connector. Returns (success, errors, skipped)."""
     success = errors = skipped = 0
+    settings = get_settings()
+    exclusion_context = build_exclusion_context(
+        company_mobile_numbers=settings.company_mobile_numbers,
+        company_email_addresses=settings.company_email_addresses,
+        internal_person_names=settings.internal_person_names,
+        file_exclusions=load_exclusion_file(settings.ingestion_exclusions_file),
+    )
     for raw_record in connector.fetch_records():
         envelope = SourceRecordEnvelope.model_validate(
             {"source_system": connector.get_source_key(), **raw_record},
         )
+        if _record_is_excluded(envelope, exclusion_context):
+            skipped += 1
+            logger.info("  %s -> excluded", envelope.source_record_id)
+            continue
         result = _process_record(client, pipeline, envelope, ingest_run_id)
         if result.skipped_duplicate:
             skipped += 1

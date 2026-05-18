@@ -109,8 +109,6 @@ class FundboxConnector(FundboxConnectorBase):
             provider = (social._mapping.get("provider") or "").strip().lower()
             if provider:
                 ids.add(f"social:{provider}", social._mapping.get("provider_id"))
-        for device in user_devices:
-            ids.add("device_id", device._mapping.get("device_id"))
         return ids
 
     @staticmethod
