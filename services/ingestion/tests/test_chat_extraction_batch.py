@@ -52,8 +52,49 @@ class _FakeLlmService:
         )
 
 
+class _FakeObjectSummaryLlmService:
+    async def chat_json(self, messages: Sequence[ChatMessage]) -> str:
+        _ = messages
+        return json.dumps(
+            {
+                "persons": [{"name": "Ada", "phone": "+6512345678"}],
+                "possible_persons": [],
+                "transactions": [],
+                "chat_members": [],
+                "inquiries": [],
+                "customer_sentiment": "neutral",
+                "summary": {
+                    "Customer / Participants": "Ada asked about Forklift X.",
+                    "Identity Evidence": "Ada gave phone +6512345678.",
+                    "Uncertainties": "",
+                },
+                "strong_identifiers": [],
+                "weak_identifiers": [],
+                "confidence": 0.9,
+            }
+        )
+
+
 class _FakeSettings:
     llm_request_delay_seconds = 0.5
+
+
+def test_chat_extraction_batch_preserves_object_summaries(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    from src.connectors import chat_helpers
+
+    monkeypatch.setattr(chat_helpers, "get_llm_service", lambda: _FakeObjectSummaryLlmService())
+    monkeypatch.setattr(chat_helpers, "get_settings", lambda: _FakeSettings())
+
+    results = chat_helpers.run_extraction_batch(["hello"])
+
+    assert len(results) == 1
+    assert results[0] is not None
+    assert results[0]["summary"] == (
+        "Customer / Participants:\nAda asked about Forklift X.\n\n"
+        "Identity Evidence:\nAda gave phone +6512345678."
+    )
 
 
 def test_chat_extraction_batch_runs_async_gather_inside_event_loop(

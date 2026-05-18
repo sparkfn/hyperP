@@ -181,16 +181,23 @@ CREATE TABLE `phppos_customers` (
   `account_number` varchar(255),
   `company_name` varchar(255),
   `custom_field_1_value` varchar(255),
+  `custom_field_2_value` varchar(255),
+  `custom_field_3_value` varchar(255),
   `custom_field_4_value` varchar(255),
   `custom_field_5_value` varchar(255),
-  `custom_field_9_value` varchar(255)
+  `custom_field_6_value` varchar(255),
+  `custom_field_7_value` varchar(255),
+  `custom_field_8_value` varchar(255),
+  `custom_field_9_value` varchar(255),
+  `custom_field_10_value` varchar(255)
 );
 INSERT INTO `phppos_people` VALUES
 (7,'Ada','Lovelace','Ada Lovelace','6599990000','ada@example.test','One','Two',
 'Singapore','SG','123456','SG','notes','2026-05-01 01:00:00','2026-05-06 02:00:00',
 'Ms','65');
 INSERT INTO `phppos_customers` VALUES
-(11,7,0,'ACC-11','Ada Co','S1234567A','0','EXT-11','-536457600');
+(11,7,0,'ACC-11','Ada Co','S1234567A','unused-2','unused-3','2026-12-31','15',
+'unused-6','unused-7','East','1990-01-31','Y');
 """.strip(),
         encoding="utf-8",
     )
@@ -203,12 +210,95 @@ INSERT INTO `phppos_customers` VALUES
     assert records[0]["attributes"] == {
         "full_name": "Ada Lovelace",
         "address": "One, Two, Singapore, SG, 123456, SG",
+        "dob": "1990-01-31",
     }
     identifiers = {item["type"]: item["value"] for item in records[0]["identifiers"]}
+    phone_values = {item["value"] for item in records[0]["identifiers"] if item["type"] == "phone"}
+    identifier_types = {item["type"] for item in records[0]["identifiers"]}
+    raw_person = records[0]["raw_payload"]["person"]
     assert identifiers["nric"] == "S1234567A"
     assert identifiers["email"] == "ada@example.test"
-    assert identifiers["phone"] == "6599990000"
-    assert identifiers["external_customer_id"] == "EXT-11"
+    assert phone_values == {"6599990000"}
+    assert "external:bitrix" not in identifier_types
+    assert "external_customer_id" not in identifier_types
+    assert raw_person["custom_field_2_value"] == "unused-2"
+    assert raw_person["custom_field_4_value"] == "2026-12-31"
+    assert raw_person["custom_field_5_value"] == "15"
+    assert raw_person["custom_field_8_value"] == "East"
+    assert raw_person["custom_field_10_value"] == "Y"
+def test_speedzone_dump_connector_preserves_custom_field_mapping(tmp_path: Path) -> None:
+    dump_path = tmp_path / "speedzone.sql"
+    dump_path.write_text(
+        """
+CREATE TABLE `phppos_people` (
+  `person_id` int NOT NULL,
+  `first_name` varchar(255),
+  `last_name` varchar(255),
+  `full_name` varchar(255),
+  `phone_number` varchar(255),
+  `email` varchar(255),
+  `address_1` varchar(255),
+  `address_2` varchar(255),
+  `city` varchar(255),
+  `state` varchar(255),
+  `zip` varchar(255),
+  `country` varchar(255),
+  `comments` text,
+  `create_date` datetime,
+  `last_modified` datetime,
+  `title` varchar(255),
+  `phone_code` varchar(255)
+);
+CREATE TABLE `phppos_customers` (
+  `id` int NOT NULL,
+  `person_id` int,
+  `deleted` int,
+  `account_number` varchar(255),
+  `company_name` varchar(255),
+  `custom_field_1_value` varchar(255),
+  `custom_field_2_value` varchar(255),
+  `custom_field_3_value` varchar(255),
+  `custom_field_4_value` varchar(255),
+  `custom_field_5_value` varchar(255),
+  `custom_field_6_value` varchar(255),
+  `custom_field_7_value` varchar(255),
+  `custom_field_8_value` varchar(255),
+  `custom_field_9_value` varchar(255),
+  `custom_field_10_value` varchar(255)
+);
+INSERT INTO `phppos_people` VALUES
+(8,'Grace','Hopper','Grace Hopper','6588880000','grace@example.test','Three','Four',
+'Singapore','SG','654321','SG','notes','2026-05-01 01:00:00','2026-05-06 02:00:00',
+'Ms','65');
+INSERT INTO `phppos_customers` VALUES
+(12,8,0,'ACC-12','Grace Co','S7654321B','BITRIX-12','2026-11-30','9','unused-5',
+'unused-6','Vespa Primavera','SBA1234A','1992-02-29','SBB5678B');
+""".strip(),
+        encoding="utf-8",
+    )
+
+    connector = get_dump_connector("speedzone_phppos", dump_path)
+    records = list(connector.fetch_records())
+
+    assert len(records) == 1
+    assert records[0]["source_record_id"] == "speedzone_phppos-customer-12"
+    assert records[0]["attributes"] == {
+        "full_name": "Grace Hopper",
+        "address": "Three, Four, Singapore, SG, 654321, SG",
+        "dob": "1992-02-29",
+    }
+    identifiers = {item["type"]: item["value"] for item in records[0]["identifiers"]}
+    raw_person = records[0]["raw_payload"]["person"]
+    assert identifiers["nric"] == "S7654321B"
+    assert identifiers["email"] == "grace@example.test"
+    assert identifiers["phone"] == "6588880000"
+    assert identifiers["external:bitrix"] == "BITRIX-12"
+    assert raw_person["custom_field_3_value"] == "2026-11-30"
+    assert raw_person["custom_field_4_value"] == "9"
+    assert raw_person["custom_field_7_value"] == "Vespa Primavera"
+    assert raw_person["custom_field_8_value"] == "SBA1234A"
+    assert raw_person["custom_field_9_value"] == "1992-02-29"
+    assert raw_person["custom_field_10_value"] == "SBB5678B"
 
 
 def test_fundbox_dump_keeps_device_ids_out_of_identifiers() -> None:

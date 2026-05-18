@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Iterator
+from datetime import date
 from typing import Any
 
 from sqlalchemy import inspect, select
@@ -35,6 +36,35 @@ from src.connectors.speedzone.schema import customers, employees, people
 from src.models import JsonValue
 
 logger = logging.getLogger(__name__)
+
+
+def _raw_json_value(value: object) -> JsonValue:
+    if isinstance(value, str | int | float | bool) or value is None:
+        return value
+    return str(value)
+
+
+def _person_raw_payload(row: Any) -> dict[str, JsonValue]:
+    payload = serialize_row(row)
+    mapping = row._mapping if hasattr(row, "_mapping") else row
+    for index in range(1, 11):
+        key = f"custom_field_{index}_value"
+        if key in mapping:
+            payload[key] = _raw_json_value(mapping[key])
+    return payload
+
+
+def _date_string_to_iso(value: object) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    try:
+        parsed = date.fromisoformat(text)
+    except ValueError:
+        return None
+    if not 1900 <= parsed.year <= 2100:
+        return None
+    return parsed.isoformat()
 
 
 class SpeedZoneConnector(SourceConnector):
@@ -103,8 +133,16 @@ class SpeedZoneConnector(SourceConnector):
                 customers.c.id.label("customer_id"),
                 customers.c.account_number,
                 customers.c.company_name,
-                customers.c.custom_field_1_value.label("nric_passport"),
-                customers.c.custom_field_2_value.label("bitrix_user_id"),
+                customers.c.custom_field_1_value,
+                customers.c.custom_field_2_value,
+                customers.c.custom_field_3_value,
+                customers.c.custom_field_4_value,
+                customers.c.custom_field_5_value,
+                customers.c.custom_field_6_value,
+                customers.c.custom_field_7_value,
+                customers.c.custom_field_8_value,
+                customers.c.custom_field_9_value,
+                customers.c.custom_field_10_value,
             )
             .select_from(customers.join(people, customers.c.person_id == people.c.person_id))
             .where(customers.c.deleted == 0)
@@ -130,23 +168,25 @@ class SpeedZoneConnector(SourceConnector):
     @staticmethod
     def _build_envelope_with_customer(row: Any) -> dict[str, JsonValue]:
         ids = IdentifierBag()
-        ids.add("nric", row.nric_passport, verified=True)
+        ids.add("nric", row.custom_field_1_value, verified=True)
         ids.add("email", row.email)
         ids.add("phone", row.phone_number)
 
-        if row.bitrix_user_id:
-            ids.add("external:bitrix", row.bitrix_user_id)
+        if row.custom_field_2_value:
+            ids.add("external:bitrix", row.custom_field_2_value)
 
         address = format_address(row)
+        dob = _date_string_to_iso(row.custom_field_9_value)
         return build_envelope(
             source_record_id=f"speedzone_phppos-customer-{row.customer_id}",
             observed_at=to_iso(row.last_modified or row.create_date),
             identifiers=ids.items,
             attributes={
                 "full_name": row.full_name,
+                "dob": dob,
                 "address": address,
             },
-            raw_payload={"person": serialize_row(row)},
+            raw_payload={"person": _person_raw_payload(row)},
         )
 
     @staticmethod

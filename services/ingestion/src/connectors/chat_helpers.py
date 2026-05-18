@@ -117,6 +117,37 @@ async def _gather_extractions(texts: list[str]) -> list[str | BaseException]:
     return list(await asyncio.gather(*tasks, return_exceptions=True))
 
 
+def _summary_value_to_text(value: JsonValue) -> str | None:
+    if isinstance(value, str):
+        text = value.strip()
+        return text if text else None
+    if isinstance(value, int | float) and not isinstance(value, bool):
+        return str(value)
+    if isinstance(value, list):
+        items: list[str] = []
+        for item in value:
+            item_text = _summary_value_to_text(item)
+            if item_text is not None:
+                items.append(item_text)
+        return "\n".join(items) if items else None
+    return None
+
+
+def _summary_to_text(value: JsonValue) -> str | None:
+    if isinstance(value, str):
+        text = value.strip()
+        return text if text else None
+    if isinstance(value, dict):
+        sections: list[str] = []
+        for key, section_value in value.items():
+            heading = key.strip()
+            section_text = _summary_value_to_text(section_value)
+            if heading and section_text is not None:
+                sections.append(f"{heading}:\n{section_text}")
+        return "\n\n".join(sections) if sections else None
+    return None
+
+
 def run_extraction_batch(texts: list[str]) -> list[ExtractionResult | None]:
     raw_results = asyncio.run(_gather_extractions(texts))
 
@@ -220,7 +251,7 @@ def run_extraction_batch(texts: list[str]) -> list[ExtractionResult | None]:
                     inquiries=inquiries,
                     strong_identifiers=strong_identifiers,
                     weak_identifiers=weak_identifiers,
-                    summary=summary_raw if isinstance(summary_raw, str) else None,
+                    summary=_summary_to_text(summary_raw),
                     customer_sentiment=sentiment_raw if isinstance(sentiment_raw, str) else None,
                     confidence=(
                         float(confidence_raw) if isinstance(confidence_raw, int | float) else 0.0

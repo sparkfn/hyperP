@@ -779,10 +779,16 @@ def _join_eko_row(person: DumpRow, customer: DumpRow) -> DumpRow:
             "customer_id": customer.id,
             "account_number": customer.account_number,
             "company_name": customer.company_name,
-            "nric_passport": customer.custom_field_1_value,
-            "bitrix_user_id": customer.custom_field_4_value,
-            "external_customer_id": customer.custom_field_5_value,
-            "dob_epoch": customer.custom_field_9_value,
+            "custom_field_1_value": customer.custom_field_1_value,
+            "custom_field_2_value": customer.custom_field_2_value,
+            "custom_field_3_value": customer.custom_field_3_value,
+            "custom_field_4_value": customer.custom_field_4_value,
+            "custom_field_5_value": customer.custom_field_5_value,
+            "custom_field_6_value": customer.custom_field_6_value,
+            "custom_field_7_value": customer.custom_field_7_value,
+            "custom_field_8_value": customer.custom_field_8_value,
+            "custom_field_9_value": customer.custom_field_9_value,
+            "custom_field_10_value": customer.custom_field_10_value,
         }
     )
 
@@ -794,8 +800,16 @@ def _join_speedzone_row(person: DumpRow, customer: DumpRow) -> DumpRow:
             "customer_id": customer.id,
             "account_number": customer.account_number,
             "company_name": customer.company_name,
-            "nric_passport": customer.custom_field_1_value,
-            "bitrix_user_id": customer.custom_field_2_value,
+            "custom_field_1_value": customer.custom_field_1_value,
+            "custom_field_2_value": customer.custom_field_2_value,
+            "custom_field_3_value": customer.custom_field_3_value,
+            "custom_field_4_value": customer.custom_field_4_value,
+            "custom_field_5_value": customer.custom_field_5_value,
+            "custom_field_6_value": customer.custom_field_6_value,
+            "custom_field_7_value": customer.custom_field_7_value,
+            "custom_field_8_value": customer.custom_field_8_value,
+            "custom_field_9_value": customer.custom_field_9_value,
+            "custom_field_10_value": customer.custom_field_10_value,
         }
     )
 
