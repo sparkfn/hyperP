@@ -99,9 +99,9 @@ def test_bitrix_fetch_uses_one_cursor_for_chunked_chat_scan(
 
     assert conn.chat_select_count == 1
     assert [record["source_record_id"] for record in records] == [
-        "bitrix-chat-1",
-        "bitrix-chat-2",
-        "bitrix-chat-3",
+        "bitrix-chat-1-person-1",
+        "bitrix-chat-2-person-1",
+        "bitrix-chat-3-person-1",
     ]
 
 
@@ -175,3 +175,69 @@ def test_bitrix_chat_envelope_keeps_agent_identity_raw_only(monkeypatch: MonkeyP
     records = list(connector._fetch_chats(cast("Connection", conn)))
 
     assert records == []
+
+
+def test_bitrix_chat_envelopes_split_possible_people(monkeypatch: MonkeyPatch) -> None:
+    monkeypatch.setattr(connector_module, "extraction_method_label", lambda: "llm:test")
+
+    connector = BitrixChatConnector()
+    bundle = connector_module._ChatBundle(
+        chat_id=1,
+        deal_id=101,
+        bitrix_chat_id="chat-1",
+        last_message_at=datetime(2026, 5, 7, 10, 1, 0),
+        created_at=datetime(2026, 5, 7, 10, 0, 0),
+        category_name="Fundbox",
+        entity="fundbox",
+        conv_text="Alice: My phone is +6581234567. My brother Bob is bob@example.com.",
+        deal={"title": "Alice order", "stage_id": "NEW", "opened": True, "closed": False},
+        agents=[],
+    )
+    extraction = {
+        "persons": [],
+        "possible_persons": [
+            {
+                "name": "Alice",
+                "phone": "+6581234567",
+                "identifiers": [{"type": "phone", "value": "+6581234567", "confidence": 0.95}],
+                "weak_identifiers": [],
+                "role": "primary_customer",
+                "relationship_to_primary": None,
+                "relationship_label": None,
+                "evidence": "Alice gave her phone",
+                "confidence": 0.95,
+            },
+            {
+                "name": "Bob",
+                "email": "bob@example.com",
+                "identifiers": [{"type": "email", "value": "bob@example.com", "confidence": 0.9}],
+                "weak_identifiers": [],
+                "role": "secondary_person",
+                "relationship_to_primary": "brother",
+                "relationship_label": "brother",
+                "evidence": "Alice said Bob is her brother",
+                "confidence": 0.9,
+            },
+        ],
+        "transactions": [],
+        "chat_members": [],
+        "inquiries": [],
+        "strong_identifiers": [],
+        "weak_identifiers": [],
+        "summary": "Alice mentioned Bob.",
+        "customer_sentiment": "neutral",
+        "confidence": 0.9,
+    }
+
+    records = connector._build_envelopes(bundle=bundle, extraction=extraction)
+
+    assert [record["source_record_id"] for record in records] == [
+        "bitrix-chat-1-person-1",
+        "bitrix-chat-1-person-2",
+    ]
+    assert records[0]["attributes"]["full_name"] == "Alice"
+    assert {item["value"] for item in records[0]["identifiers"]} == {"+6581234567"}
+    assert records[1]["attributes"]["full_name"] == "Bob"
+    assert {item["value"] for item in records[1]["identifiers"]} == {"bob@example.com"}
+    assert records[1]["raw_payload"]["primary_source_record_id"] == records[0]["source_record_id"]
+    assert records[1]["raw_payload"]["relationship_to_primary"] == "brother"

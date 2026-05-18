@@ -23,6 +23,7 @@ from datetime import datetime
 from sqlalchemy import func, select
 from sqlalchemy.engine import Connection
 
+from src.config import get_settings
 from src.connectors.base import SourceConnector
 from src.connectors.bitrix.db import get_engine
 from src.connectors.bitrix.schema import (
@@ -39,13 +40,19 @@ from src.connectors.chat_helpers import (
     ExtractionResult,
     chat_members_payload,
     extraction_method_label,
-    identifiers_from_extraction,
+    identifiers_from_possible_person,
     inquiries_payload,
     latest_timestamp,
+    possible_person_payload,
+    possible_persons_from_extraction,
     run_extraction_batch,
+    strong_identifiers_payload,
     transactions_payload,
+    weak_identifiers_for_possible_person,
+    weak_identifiers_payload,
 )
-from src.exclusions import ExclusionContext, filter_extraction, normalized_name_set
+from src.exclusion_config import load_exclusion_file
+from src.exclusions import build_exclusion_context, filter_extraction
 from src.models import JsonValue
 
 logger = logging.getLogger(__name__)
@@ -185,9 +192,7 @@ class BitrixChatConnector(SourceConnector):
             if extraction is None:
                 logger.warning("LLM extraction failed for chat %s", bundle.chat_id)
                 continue
-            envelope = self._build_envelope(bundle=bundle, extraction=extraction)
-            if envelope is not None:
-                yield envelope
+            yield from self._build_envelopes(bundle=bundle, extraction=extraction)
 
     def _load_deal(self, conn: Connection, deal_id: int | None) -> dict[str, object] | None:
         if deal_id is None:
@@ -228,29 +233,30 @@ class BitrixChatConnector(SourceConnector):
         deal: dict[str, object] | None,
     ) -> str:
         lines: list[str] = []
+        events: list[tuple[datetime | None, str, int, str]] = []
 
         if deal:
             title = str(deal.get("title") or "")
             if title:
                 lines.append(f"[Deal] {title}")
 
-        p_stmt = (
-            select(personalize_message_logs)
-            .where(personalize_message_logs.c.chat_id == chat_id)
-            .order_by(personalize_message_logs.c.created_at)
+        p_stmt = select(personalize_message_logs).where(
+            personalize_message_logs.c.chat_id == chat_id
         )
         for row in conn.execute(p_stmt):
             ts = ""
-            if row.created_at:
-                ts = row.created_at.strftime("%Y-%m-%d %H:%M:%S")
+            created_at = row.created_at if isinstance(row.created_at, datetime) else None
+            if created_at is not None:
+                ts = created_at.strftime("%Y-%m-%d %H:%M:%S")
+            row_id = int(getattr(row, "id", 0) or 0)
             client_name = str(getattr(row, "client_name", "") or "").strip()
             if client_name:
-                lines.append(f"[{ts}] Client: {client_name}")
+                events.append((created_at, "personalize", row_id, f"[{ts}] Client: {client_name}"))
             body = str(
                 getattr(row, "message_sent", "") or getattr(row, "llm_message", "") or ""
             ).strip()
             if body:
-                lines.append(f"[{ts}] Sent: {body}")
+                events.append((created_at, "personalize", row_id, f"[{ts}] Sent: {body}"))
 
         s_stmt = (
             select(sent_message_logs, templates.c.content.label("template_content"))
@@ -261,15 +267,27 @@ class BitrixChatConnector(SourceConnector):
                 )
             )
             .where(sent_message_logs.c.chat_id == chat_id)
-            .order_by(sent_message_logs.c.created_at)
         )
         for row in conn.execute(s_stmt):
             ts = ""
-            if row.created_at:
-                ts = row.created_at.strftime("%Y-%m-%d %H:%M:%S")
+            created_at = row.created_at if isinstance(row.created_at, datetime) else None
+            if created_at is not None:
+                ts = created_at.strftime("%Y-%m-%d %H:%M:%S")
+            row_id = int(getattr(row, "id", 0) or 0)
             body = str(getattr(row, "template_content", "") or "").strip()
             if body:
-                lines.append(f"[{ts}] Template: {body}")
+                events.append((created_at, "template", row_id, f"[{ts}] Template: {body}"))
+
+        for _ts, _source, _row_id, line in sorted(
+            events,
+            key=lambda item: (
+                0 if item[0] is not None else 1,
+                item[0] or datetime.max,
+                item[1],
+                item[2],
+            ),
+        ):
+            lines.append(line)
 
         return "\n".join(lines)
 
@@ -279,48 +297,56 @@ class BitrixChatConnector(SourceConnector):
         bundle: _ChatBundle,
         extraction: ExtractionResult,
     ) -> dict[str, JsonValue] | None:
+        envelopes = self._build_envelopes(bundle=bundle, extraction=extraction)
+        return envelopes[0] if envelopes else None
+
+    def _build_envelopes(
+        self,
+        *,
+        bundle: _ChatBundle,
+        extraction: ExtractionResult,
+    ) -> list[dict[str, JsonValue]]:
         from src.connectors.fundbox.builders import build_envelope
 
         agent_names = [agent.name for agent in bundle.agents if agent.name]
+        try:
+            settings = get_settings()
+            company_mobile_numbers = getattr(settings, "company_mobile_numbers", [])
+            company_email_addresses = getattr(settings, "company_email_addresses", [])
+            internal_person_names = getattr(settings, "internal_person_names", [])
+            exclusions_file = getattr(settings, "ingestion_exclusions_file", "")
+        except Exception:
+            company_mobile_numbers = []
+            company_email_addresses = []
+            internal_person_names = []
+            exclusions_file = ""
+        file_exclusions = load_exclusion_file(exclusions_file)
+        file_exclusions.names.extend(agent_names)
         filtered = filter_extraction(
             extraction,
-            ExclusionContext(names=normalized_name_set(agent_names)),
+            build_exclusion_context(
+                company_mobile_numbers=company_mobile_numbers,
+                company_email_addresses=company_email_addresses,
+                internal_person_names=internal_person_names,
+                file_exclusions=file_exclusions,
+            ),
         )
         if filtered is None:
-            return None
+            return []
         extraction = filtered
 
         chat_id = str(bundle.chat_id)
         deal_id = str(bundle.deal_id)
-        bitrix_chat_id = bundle.bitrix_chat_id
         observed_at = latest_timestamp(bundle.last_message_at, bundle.created_at)
-        entity = bundle.entity
-        cat_name = bundle.category_name
-
-        identifiers = identifiers_from_extraction(extraction)
-
-        attributes: dict[str, JsonValue] = {}
-        persons = extraction["persons"]
-        if persons:
-            name = persons[0].get("name")
-            if name:
-                attributes["full_name"] = name
-        if bundle.deal:
-            title = str(bundle.deal.get("title") or "")
-            if title:
-                attributes["deal_title"] = title
-
         tx_payload = transactions_payload(extraction)
-
         chat_members = chat_members_payload(extraction) or _agents_payload(bundle.agents)
-
         d = bundle.deal or {}
-        raw_payload: dict[str, JsonValue] = {
+        base_raw_payload: dict[str, JsonValue] = {
             "chat_id": chat_id,
             "deal_id": deal_id,
-            "bitrix_chat_id": bitrix_chat_id,
-            "category": cat_name,
-            "tenant": entity,
+            "bitrix_chat_id": bundle.bitrix_chat_id,
+            "category": bundle.category_name,
+            "tenant": bundle.entity,
             "deal_title": str(d.get("title", "") or ""),
             "deal_stage_id": str(d.get("stage_id", "") or ""),
             "deal_opened": bool(d.get("opened", False)),
@@ -330,23 +356,68 @@ class BitrixChatConnector(SourceConnector):
             "customer_sentiment": extraction.get("customer_sentiment"),
             "chat_members": chat_members,
             "inquiries": inquiries_payload(extraction),
+            "strong_identifiers": strong_identifiers_payload(extraction),
+            "weak_identifiers": weak_identifiers_payload(extraction),
             "transactions": tx_payload,
         }
         conversation_ref: dict[str, JsonValue] = {
             "platform": "bitrix",
             "chat_id": chat_id,
             "deal_id": deal_id,
-            "bitrix_chat_id": bitrix_chat_id,
-            "tenant": entity,
+            "bitrix_chat_id": bundle.bitrix_chat_id,
+            "tenant": bundle.entity,
         }
-        return build_envelope(
-            source_record_id=f"bitrix-chat-{chat_id}",
-            observed_at=observed_at,
-            identifiers=identifiers,
-            attributes=attributes,
-            raw_payload=raw_payload,
-            record_type="conversation",
-            extraction_confidence=extraction["confidence"],
-            extraction_method=extraction_method_label(),
-            conversation_ref=conversation_ref,
-        )
+
+        people = possible_persons_from_extraction(extraction)
+        envelopes: list[dict[str, JsonValue]] = []
+        primary_source_record_id: str | None = None
+        for index, person in enumerate(people, start=1):
+            source_record_id = f"bitrix-chat-{chat_id}-person-{index}"
+            if primary_source_record_id is None:
+                primary_source_record_id = source_record_id
+            attributes: dict[str, JsonValue] = {}
+            name = person.get("name")
+            if name:
+                attributes["full_name"] = name
+            if bundle.deal:
+                title = str(bundle.deal.get("title") or "")
+                if title:
+                    attributes["deal_title"] = title
+            raw_payload = dict(base_raw_payload)
+            raw_payload.update(
+                {
+                    "possible_person": possible_person_payload(person),
+                    "possible_person_index": index,
+                    "primary_source_record_id": primary_source_record_id,
+                    "relationship_to_primary": person.get("relationship_to_primary"),
+                    "relationship_label": person.get("relationship_label"),
+                    "relationship_status": "pending"
+                    if person.get("relationship_to_primary") or person.get("relationship_label")
+                    else None,
+                    "person_weak_identifiers": [
+                        {
+                            "type": item.get("type"),
+                            "value": item.get("value"),
+                            "label": item.get("label"),
+                            "person_name": item.get("person_name"),
+                            "confidence": item.get("confidence"),
+                            "notes": item.get("notes"),
+                        }
+                        for item in weak_identifiers_for_possible_person(person)
+                    ],
+                }
+            )
+            envelopes.append(
+                build_envelope(
+                    source_record_id=source_record_id,
+                    observed_at=observed_at,
+                    identifiers=identifiers_from_possible_person(person),
+                    attributes=attributes,
+                    raw_payload=raw_payload,
+                    record_type="conversation",
+                    extraction_confidence=person.get("confidence") or extraction["confidence"],
+                    extraction_method=extraction_method_label(),
+                    conversation_ref=conversation_ref,
+                )
+            )
+        return envelopes

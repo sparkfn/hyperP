@@ -26,15 +26,21 @@ from src.connectors.chat_helpers import (
     ExtractionResult,
     chat_members_payload,
     extraction_method_label,
-    identifiers_from_extraction,
+    identifiers_from_possible_person,
     inquiries_payload,
     latest_timestamp,
+    possible_person_payload,
+    possible_persons_from_extraction,
     run_extraction_batch,
+    strong_identifiers_payload,
     transactions_payload,
+    weak_identifiers_for_possible_person,
+    weak_identifiers_payload,
 )
 from src.connectors.whatsapp.db import get_engine
 from src.connectors.whatsapp.schema import chats, contacts, messages, orgs, sessions
-from src.exclusions import ExclusionContext, filter_extraction, normalized_phone_set
+from src.exclusion_config import load_exclusion_file
+from src.exclusions import build_exclusion_context, filter_extraction
 from src.models import JsonValue
 
 logger = logging.getLogger(__name__)
@@ -164,9 +170,7 @@ class WhatsAppChatConnector(SourceConnector):
                 logger.warning("LLM extraction failed for chat %s", bundle.chat_id)
                 continue
 
-            envelope = _build_envelope(bundle=bundle, extraction=extraction)
-            if envelope is not None:
-                yield envelope
+            yield from _build_envelopes(bundle=bundle, extraction=extraction)
 
     def _fetch_messages(
         self,
@@ -248,10 +252,28 @@ def _build_envelope(
     bundle: _ChatBundle,
     extraction: ExtractionResult,
 ) -> dict[str, JsonValue] | None:
+    envelopes = _build_envelopes(bundle=bundle, extraction=extraction)
+    return envelopes[0] if envelopes else None
+
+
+def _build_envelopes(
+    *,
+    bundle: _ChatBundle,
+    extraction: ExtractionResult,
+) -> list[dict[str, JsonValue]]:
     from src.connectors.fundbox.builders import build_envelope
 
-    settings = get_settings()
-    company_phones = list(settings.company_mobile_numbers)
+    try:
+        settings = get_settings()
+        company_phones = list(getattr(settings, "company_mobile_numbers", []))
+        company_email_addresses = getattr(settings, "company_email_addresses", [])
+        internal_person_names = getattr(settings, "internal_person_names", [])
+        exclusions_file = getattr(settings, "ingestion_exclusions_file", "")
+    except Exception:
+        company_phones = []
+        company_email_addresses = []
+        internal_person_names = []
+        exclusions_file = ""
     if bundle.session_phone:
         company_phones.append(bundle.session_phone)
     for endpoint in bundle.message_endpoints:
@@ -259,63 +281,95 @@ def _build_envelope(
         role = endpoint.get("role") if isinstance(endpoint, dict) else None
         if role == "sender" and isinstance(phone, str):
             company_phones.append(phone)
+    file_exclusions = load_exclusion_file(exclusions_file)
     filtered = filter_extraction(
         extraction,
-        ExclusionContext(phones=normalized_phone_set(company_phones)),
+        build_exclusion_context(
+            company_mobile_numbers=company_phones,
+            company_email_addresses=company_email_addresses,
+            internal_person_names=internal_person_names,
+            file_exclusions=file_exclusions,
+        ),
     )
     if filtered is None:
-        return None
+        return []
     extraction = filtered
 
-    chat_id = bundle.chat_id
-    chat_name = bundle.chat_name
-    whatsapp_uid = bundle.whatsapp_user_id
-    session_id = bundle.session_id
-    tenant = bundle.tenant
-    msg_text = bundle.msg_text
-    observed_at = bundle.observed_at
-
-    identifiers = identifiers_from_extraction(extraction)
-
-    attributes: dict[str, JsonValue] = {}
-    if extraction["persons"] and extraction["persons"][0].get("name"):
-        attributes["full_name"] = extraction["persons"][0]["name"]
-
     tx_payload = transactions_payload(extraction)
-
-    raw_payload: dict[str, JsonValue] = {
-        "chat_id": chat_id,
-        "chat_name": chat_name,
-        "session_id": session_id,
-        "whatsapp_user_id": whatsapp_uid,
-        "tenant": tenant,
-        "messages_text": msg_text,
+    base_raw_payload: dict[str, JsonValue] = {
+        "chat_id": bundle.chat_id,
+        "chat_name": bundle.chat_name,
+        "session_id": bundle.session_id,
+        "whatsapp_user_id": bundle.whatsapp_user_id,
+        "tenant": bundle.tenant,
+        "messages_text": bundle.msg_text,
         "summary": extraction.get("summary"),
         "customer_sentiment": extraction.get("customer_sentiment"),
         "chat_members": chat_members_payload(extraction),
         "inquiries": inquiries_payload(extraction),
+        "strong_identifiers": strong_identifiers_payload(extraction),
+        "weak_identifiers": weak_identifiers_payload(extraction),
         "participants": _participants_payload(bundle.participants),
         "message_endpoints": bundle.message_endpoints,
         "transactions": tx_payload,
     }
     conversation_ref: dict[str, JsonValue] = {
         "platform": "whatsapp",
-        "whatsapp_user_id": whatsapp_uid,
-        "chat_id": chat_id,
-        "session_id": session_id,
-        "tenant": tenant,
+        "whatsapp_user_id": bundle.whatsapp_user_id,
+        "chat_id": bundle.chat_id,
+        "session_id": bundle.session_id,
+        "tenant": bundle.tenant,
     }
-    return build_envelope(
-        source_record_id=f"whatsapp-chat-{chat_id}",
-        observed_at=observed_at,
-        identifiers=identifiers,
-        attributes=attributes,
-        raw_payload=raw_payload,
-        record_type="conversation",
-        extraction_confidence=extraction["confidence"],
-        extraction_method=extraction_method_label(),
-        conversation_ref=conversation_ref,
-    )
+
+    people = possible_persons_from_extraction(extraction)
+    envelopes: list[dict[str, JsonValue]] = []
+    primary_source_record_id: str | None = None
+    for index, person in enumerate(people, start=1):
+        source_record_id = f"whatsapp-chat-{bundle.chat_id}-person-{index}"
+        if primary_source_record_id is None:
+            primary_source_record_id = source_record_id
+        attributes: dict[str, JsonValue] = {}
+        name = person.get("name")
+        if name:
+            attributes["full_name"] = name
+        raw_payload = dict(base_raw_payload)
+        raw_payload.update(
+            {
+                "possible_person": possible_person_payload(person),
+                "possible_person_index": index,
+                "primary_source_record_id": primary_source_record_id,
+                "relationship_to_primary": person.get("relationship_to_primary"),
+                "relationship_label": person.get("relationship_label"),
+                "relationship_status": "pending"
+                if person.get("relationship_to_primary") or person.get("relationship_label")
+                else None,
+                "person_weak_identifiers": [
+                    {
+                        "type": item.get("type"),
+                        "value": item.get("value"),
+                        "label": item.get("label"),
+                        "person_name": item.get("person_name"),
+                        "confidence": item.get("confidence"),
+                        "notes": item.get("notes"),
+                    }
+                    for item in weak_identifiers_for_possible_person(person)
+                ],
+            }
+        )
+        envelopes.append(
+            build_envelope(
+                source_record_id=source_record_id,
+                observed_at=bundle.observed_at,
+                identifiers=identifiers_from_possible_person(person),
+                attributes=attributes,
+                raw_payload=raw_payload,
+                record_type="conversation",
+                extraction_confidence=person.get("confidence") or extraction["confidence"],
+                extraction_method=extraction_method_label(),
+                conversation_ref=conversation_ref,
+            )
+        )
+    return envelopes
 
 
 def _participants_payload(participants: list[_Participant]) -> list[JsonValue]:
@@ -362,9 +416,16 @@ def _phone_from_jid(jid: str) -> str | None:
     return f"+{digits}"
 
 
+def _message_sort_key(msg: dict[str, object]) -> tuple[int, str, str]:
+    ts = msg.get("timestamp")
+    if isinstance(ts, datetime):
+        return (0, ts.isoformat(), str(msg.get("id") or ""))
+    return (1, "", str(msg.get("id") or ""))
+
+
 def _format_messages(msgs: list[dict[str, object]]) -> str:
     lines: list[str] = []
-    for m in msgs:
+    for m in sorted(msgs, key=_message_sort_key):
         ts = m.get("timestamp")
         ts_str = ""
         if isinstance(ts, datetime):
@@ -381,4 +442,5 @@ def _format_messages(msgs: list[dict[str, object]]) -> str:
 
 
 def _latest_message_timestamp(msgs: list[dict[str, object]]) -> str:
-    return latest_timestamp(*(m.get("timestamp") for m in reversed(msgs)))
+    sorted_messages = sorted(msgs, key=_message_sort_key, reverse=True)
+    return latest_timestamp(*(m.get("timestamp") for m in sorted_messages))

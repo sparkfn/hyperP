@@ -22,6 +22,8 @@ from neo4j import ManagedTransaction
 from src.golden_profile import compute_golden_profile
 from src.graph import queries
 from src.graph.client import Neo4jClient
+from src.machine_unit_extraction import observations_from_chat_inquiries
+from src.machine_units import normalize_lta_tag, normalize_serial_number
 from src.matching.engine import MatchEngine
 from src.models import (
     CandidateResult,
@@ -30,6 +32,7 @@ from src.models import (
     MatchResult,
     NormalizedAttribute,
     NormalizedIdentifier,
+    RecordType,
     SourceRecordEnvelope,
 )
 from src.models import (
@@ -74,8 +77,8 @@ class IngestPipeline:
         """Ingest a single source record.  Returns an ``IngestResult``."""
 
         # Step 1: Idempotency check (read-only, outside write tx)
-        existing_pk = self._check_idempotency(envelope)
-        if existing_pk is not None:
+        previous_pk, latest_hash, next_version = self._latest_source_record(envelope)
+        if previous_pk is not None and latest_hash == envelope.record_hash:
             logger.info(
                 "Duplicate source record %s (hash=%s) — skipping",
                 envelope.source_record_id,
@@ -83,9 +86,10 @@ class IngestPipeline:
             )
             return IngestResult(
                 source_record_id=envelope.source_record_id,
-                source_record_pk=existing_pk,
+                source_record_pk=previous_pk,
                 skipped_duplicate=True,
             )
+        envelope.source_record_version = str(next_version)
 
         # Step 2: Normalize identifiers, address, attributes
         identifiers = normalize_envelope_identifiers(envelope)
@@ -101,25 +105,38 @@ class IngestPipeline:
                 address,
                 attributes,
                 ingest_run_id=ingest_run_id,
+                previous_source_record_pk=previous_pk,
             )
 
         with self._client.session() as session:
             return session.execute_write(_work)
 
-    def _check_idempotency(self, envelope: SourceRecordEnvelope) -> str | None:
-        """Return existing ``source_record_pk`` if a duplicate exists, else None."""
+    def _latest_source_record(
+        self,
+        envelope: SourceRecordEnvelope,
+    ) -> tuple[str | None, str | None, int]:
+        """Return latest source record pk, hash, and next version for this source ID."""
 
-        def _read(tx: ManagedTransaction) -> str | None:
+        def _read(tx: ManagedTransaction) -> tuple[str | None, str | None, int]:
             result = tx.run(
-                queries.CHECK_SOURCE_RECORD_EXISTS,
+                queries.GET_LATEST_SOURCE_RECORD,
                 source_system=envelope.source_system,
                 source_record_id=envelope.source_record_id,
-                record_hash=envelope.record_hash,
             )
             record = result.single()
-            return record["source_record_pk"] if record else None
+            if record is None:
+                return None, None, 1
+            version = int(record.get("source_record_version", 1))
+            return str(record["source_record_pk"]), str(record.get("record_hash", "")), version + 1
 
         return self._client.execute_read(_read)
+
+    def _check_idempotency(self, envelope: SourceRecordEnvelope) -> str | None:
+        """Return latest source_record_pk if this exact latest version already exists."""
+        latest_pk, latest_hash, _next_version = self._latest_source_record(envelope)
+        if latest_pk is not None and latest_hash == envelope.record_hash:
+            return latest_pk
+        return None
 
     def _execute_ingest(
         self,
@@ -129,6 +146,7 @@ class IngestPipeline:
         address: NormalizedAddressModel | None,
         attributes: list[NormalizedAttribute],
         ingest_run_id: str | None = None,
+        previous_source_record_pk: str | None = None,
     ) -> IngestResult:
         """Orchestrate steps 3–13 of the ingest flow inside one write tx."""
         upsert_nodes(tx, identifiers, address)
@@ -151,6 +169,17 @@ class IngestPipeline:
             match_result=match_result,
             is_new_person=is_new_person,
             ingest_run_id=ingest_run_id,
+        )
+        if previous_source_record_pk is not None:
+            tx.run(
+                queries.SUPERSEDE_SOURCE_RECORD,
+                old_source_record_pk=previous_source_record_pk,
+                new_source_record_pk=source_record_pk,
+            )
+        self._write_chat_machine_unit_observations(
+            tx,
+            envelope=envelope,
+            source_record_pk=source_record_pk,
         )
         match_decision_id = persist_match_decision(tx, match_result, source_record_pk)
         review_case_id = create_review_case_if_needed(tx, match_result, match_decision_id)
@@ -197,6 +226,44 @@ class IngestPipeline:
             match_decision_id=match_decision_id,
             review_case_id=review_case_id,
         )
+
+    def _write_chat_machine_unit_observations(
+        self,
+        tx: ManagedTransaction,
+        *,
+        envelope: SourceRecordEnvelope,
+        source_record_pk: str,
+    ) -> None:
+        if envelope.record_type != RecordType.CONVERSATION:
+            return
+        inquiries_raw = envelope.raw_payload.get("inquiries")
+        if not isinstance(inquiries_raw, list):
+            return
+        observations = observations_from_chat_inquiries(
+            source_system_key=envelope.source_system,
+            source_record_id=envelope.source_record_id,
+            observed_at=envelope.observed_at,
+            inquiries=inquiries_raw,
+        )
+        for observation in observations:
+            row = tx.run(
+                queries.UPSERT_MACHINE_UNIT,
+                lta_tag=observation.lta_tag,
+                normalized_lta_tag=normalize_lta_tag(observation.lta_tag),
+                serial_number=observation.serial_number,
+                normalized_serial_number=normalize_serial_number(observation.serial_number),
+            ).single()
+            if row is None:
+                continue
+            tx.run(
+                queries.LINK_SOURCE_RECORD_MENTIONS_UNIT,
+                source_record_pk=source_record_pk,
+                machine_unit_id=str(row["machine_unit_id"]),
+                raw_context=observation.raw_context,
+                observed_at=observation.observed_at,
+                confidence=observation.confidence,
+                quality_flag=observation.quality_flag.value,
+            )
 
     @staticmethod
     def _resolve_person(

@@ -16,6 +16,8 @@ from neo4j import ManagedTransaction
 from src.graph import queries
 from src.graph.bootstrap import SOURCE_KEY_TO_ENTITY
 from src.graph.client import Neo4jClient
+from src.machine_unit_extraction import observations_from_sales_lines
+from src.machine_units import normalize_lta_tag, normalize_serial_number
 from src.models import (
     IngestResult,
     JsonValue,
@@ -73,15 +75,20 @@ def _entity_key_for(source_system_key: str) -> str:
         raise ValueError(f"Unknown source_system_key: {source_system_key!r}") from exc
 
 
-def _check_idempotency(client: Neo4jClient, envelope: SourceRecordEnvelope) -> str | None:
-    def _read(tx: ManagedTransaction) -> str | None:
+def _latest_source_record(
+    client: Neo4jClient,
+    envelope: SourceRecordEnvelope,
+) -> tuple[str | None, str | None, int]:
+    def _read(tx: ManagedTransaction) -> tuple[str | None, str | None, int]:
         rec = tx.run(
-            queries.CHECK_SOURCE_RECORD_EXISTS,
+            queries.GET_LATEST_SOURCE_RECORD,
             source_system=envelope.source_system,
             source_record_id=envelope.source_record_id,
-            record_hash=envelope.record_hash,
         ).single()
-        return rec["source_record_pk"] if rec else None
+        if rec is None:
+            return None, None, 1
+        version = int(rec["source_record_version"])
+        return str(rec["source_record_pk"]), str(rec["record_hash"]), version + 1
 
     return client.execute_read(_read)
 
@@ -93,16 +100,22 @@ def ingest_sales_record(
     ingest_run_id: str | None,
 ) -> IngestResult:
     """Full sales-record ingestion in a single write transaction."""
-    existing_pk = _check_idempotency(client, envelope)
-    if existing_pk is not None:
+    latest_pk, latest_hash, next_version = _latest_source_record(client, envelope)
+    if latest_pk is not None and latest_hash == envelope.record_hash:
         return IngestResult(
             source_record_id=envelope.source_record_id,
-            source_record_pk=existing_pk,
+            source_record_pk=latest_pk,
             skipped_duplicate=True,
         )
+    envelope.source_record_version = str(next_version)
 
     def _work(tx: ManagedTransaction) -> IngestResult:
-        return _execute(tx, envelope, ingest_run_id=ingest_run_id)
+        return _execute(
+            tx,
+            envelope,
+            ingest_run_id=ingest_run_id,
+            previous_source_record_pk=latest_pk,
+        )
 
     with client.session() as session:
         return session.execute_write(_work)
@@ -172,6 +185,7 @@ def _execute(
     envelope: SourceRecordEnvelope,
     *,
     ingest_run_id: str | None,
+    previous_source_record_pk: str | None,
 ) -> IngestResult:
     order, line_items, customer_link = _parse_sales_envelope(envelope.raw_payload)
     source_system_key = envelope.source_system
@@ -188,6 +202,18 @@ def _execute(
             queries.LINK_SOURCE_RECORD_TO_RUN,
             source_record_pk=source_record_pk,
             ingest_run_id=ingest_run_id,
+        )
+    if previous_source_record_pk is not None:
+        tx.run(
+            queries.SUPERSEDE_SOURCE_RECORD,
+            old_source_record_pk=previous_source_record_pk,
+            new_source_record_pk=source_record_pk,
+        )
+        tx.run(
+            queries.CLEAR_SUPERSEDED_SALES_LINKS,
+            old_source_record_pk=previous_source_record_pk,
+            source_system_key=source_system_key,
+            source_order_id=source_order_id,
         )
 
     _merge_order(tx, source_system_key=source_system_key, order=order)
@@ -206,6 +232,16 @@ def _execute(
         customer_link=customer_link,
         source_system_key=source_system_key,
         source_order_id=source_order_id,
+    )
+    _write_machine_unit_observations(
+        tx,
+        source_system_key=source_system_key,
+        source_record_pk=source_record_pk,
+        source_record_id=envelope.source_record_id,
+        source_order_id=source_order_id,
+        observed_at=envelope.observed_at,
+        line_items=cast(list[JsonValue], line_items),
+        person_id=person_id,
     )
 
     logger.info(
@@ -252,6 +288,60 @@ def _create_sales_source_record(
     assert rec is not None, "CREATE_SOURCE_RECORD must return a row"
     pk: str = rec["source_record_pk"]
     return pk
+
+
+def _write_machine_unit_observations(
+    tx: ManagedTransaction,
+    *,
+    source_system_key: str,
+    source_record_pk: str,
+    source_record_id: str,
+    source_order_id: str,
+    observed_at: str | None,
+    line_items: list[JsonValue],
+    person_id: str | None,
+) -> None:
+    observations = observations_from_sales_lines(
+        source_system_key=source_system_key,
+        source_record_id=source_record_id,
+        observed_at=observed_at,
+        lines=line_items,
+    )
+    for observation in observations:
+        row = tx.run(
+            queries.UPSERT_MACHINE_UNIT,
+            lta_tag=observation.lta_tag,
+            normalized_lta_tag=normalize_lta_tag(observation.lta_tag),
+            serial_number=observation.serial_number,
+            normalized_serial_number=normalize_serial_number(observation.serial_number),
+        ).single()
+        if row is None:
+            continue
+        machine_unit_id = str(row["machine_unit_id"])
+        tx.run(
+            queries.LINK_ORDER_INVOLVES_UNIT,
+            source_system_key=source_system_key,
+            source_order_id=source_order_id,
+            source_record_pk=source_record_pk,
+            machine_unit_id=machine_unit_id,
+            raw_context=observation.raw_context,
+            observed_at=observation.observed_at,
+            confidence=observation.confidence,
+            quality_flag=observation.quality_flag.value,
+        )
+        if person_id is not None:
+            tx.run(
+                queries.LINK_PERSON_BOUGHT_UNIT,
+                person_id=person_id,
+                source_system_key=source_system_key,
+                source_order_id=source_order_id,
+                source_record_pk=source_record_pk,
+                machine_unit_id=machine_unit_id,
+                raw_context=observation.raw_context,
+                observed_at=observation.observed_at,
+                confidence=observation.confidence,
+                quality_flag=observation.quality_flag.value,
+            )
 
 
 def _merge_order(
@@ -400,6 +490,20 @@ def _drain_one_pending_sale(
         source_system_key=source_system_key,
         source_order_id=source_order_id,
         source_record_pk=sales_pk,
+    )
+    line_items_raw = raw_payload.get("line_items")
+    line_items = line_items_raw if isinstance(line_items_raw, list) else []
+    source_record_id = str(raw_payload.get("source_record_id") or source_order_id)
+    observed_at = str(raw_payload.get("observed_at")) if raw_payload.get("observed_at") else None
+    _write_machine_unit_observations(
+        tx,
+        source_system_key=source_system_key,
+        source_record_pk=sales_pk,
+        source_record_id=source_record_id,
+        source_order_id=source_order_id,
+        observed_at=observed_at,
+        line_items=line_items,
+        person_id=person_id,
     )
     tx.run(queries.MARK_SALES_RECORD_LINKED, source_record_pk=sales_pk)
     return True

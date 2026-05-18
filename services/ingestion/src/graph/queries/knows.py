@@ -99,6 +99,20 @@ RETURN p.person_id AS person_id
 LIMIT 1
 """
 
+SCAN_CHAT_RELATIONSHIP_SOURCE_RECORDS = """
+MATCH (sr:SourceRecord)-[:FROM_SOURCE]->(ss:SourceSystem)
+WHERE sr.source_record_pk > $cursor
+  AND sr.record_type = 'conversation'
+  AND sr.raw_payload CONTAINS 'primary_source_record_id'
+  AND sr.raw_payload CONTAINS 'relationship'
+RETURN sr.source_record_pk AS source_record_pk,
+       ss.source_key       AS source_system_key,
+       sr.raw_payload      AS raw_payload
+ORDER BY sr.source_record_pk
+LIMIT $batch_size
+"""
+
+
 REWIRE_KNOWS_IN = """
 MATCH (other:Person)-[old:KNOWS]->(absorbed:Person {person_id: $absorbed_id})
 WHERE other.person_id <> $survivor_id

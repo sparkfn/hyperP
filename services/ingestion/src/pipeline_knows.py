@@ -92,6 +92,85 @@ def _link_one_contact(
     return True
 
 
+def _link_one_chat_relationship(
+    tx: ManagedTransaction,
+    contact_source_record_pk: str,
+    source_system_key: str,
+    raw_payload: dict[str, object],
+) -> bool:
+    declarer_sr_id = raw_payload.get("primary_source_record_id")
+    if not declarer_sr_id:
+        return False
+    relationship_label_raw = raw_payload.get("relationship_label") or raw_payload.get(
+        "relationship_to_primary"
+    )
+    if not relationship_label_raw:
+        return False
+    pair = _resolve_both_persons(tx, declarer_sr_id, contact_source_record_pk)
+    if pair is None:
+        return False
+    declarer_person_id, contact_person_id = pair
+    relationship_label = str(relationship_label_raw)
+    tx.run(
+        queries.LINK_PERSON_KNOWS,
+        declarer_person_id=declarer_person_id,
+        contact_person_id=contact_person_id,
+        source_system_key=source_system_key,
+        source_record_pk=contact_source_record_pk,
+        relationship_label=relationship_label,
+        relationship_category=_category_for(relationship_label),
+        status="pending",
+        approved_at=None,
+    )
+    return True
+
+
+def materialize_knows_from_chat_relationships(
+    client: Neo4jClient,
+    *,
+    batch_size: int = 500,
+) -> int:
+    total_linked = 0
+    cursor = ""
+
+    while True:
+
+        def _work(tx: ManagedTransaction, cursor_param: str = cursor) -> tuple[int, str | None]:
+            result = tx.run(
+                queries.SCAN_CHAT_RELATIONSHIP_SOURCE_RECORDS,
+                cursor=cursor_param,
+                batch_size=batch_size,
+            )
+            rows = list(result)
+            if not rows:
+                return 0, None
+            newly_linked = 0
+            last_pk: str = cursor_param
+            for row in rows:
+                pk: str = row["source_record_pk"]
+                source_system_key: str = row["source_system_key"]
+                last_pk = pk
+                raw = _parse_contact_payload(row["raw_payload"])
+                if raw is None:
+                    continue
+                if _link_one_chat_relationship(tx, pk, source_system_key, raw):
+                    newly_linked += 1
+            return newly_linked, last_pk
+
+        with client.session() as session:
+            newly_linked, last_pk = session.execute_write(_work)
+        if last_pk is None:
+            break
+        total_linked += newly_linked
+        cursor = last_pk
+
+    if total_linked:
+        logger.info("Materialized %d KNOWS edges from chat relationships", total_linked)
+    else:
+        logger.debug("No new chat relationship KNOWS edges materialized")
+    return total_linked
+
+
 def materialize_knows_from_contacts(client: Neo4jClient, *, batch_size: int = 500) -> int:
     """Walk every contact SourceRecord and link declarer → contact via KNOWS.
 
@@ -148,6 +227,17 @@ def _category_for(label: str | None) -> str:
         return "emergency_contact"
     if any(t in lower for t in ("referrer", "referral")):
         return "referrer"
-    if any(t in lower for t in ("spouse", "parent", "child", "sibling", "family")):
+    if any(
+        t in lower
+        for t in (
+            "spouse",
+            "parent",
+            "child",
+            "sibling",
+            "brother",
+            "sister",
+            "family",
+        )
+    ):
         return "family"
     return "social"

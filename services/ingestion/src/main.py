@@ -28,6 +28,14 @@ from src.connectors.sggov import (
 )
 from src.connectors.speedzone import SpeedZoneConnector, SpeedZoneSalesConnector
 from src.connectors.whatsapp import WhatsAppChatConnector
+from src.exclusion_config import load_exclusion_file
+from src.exclusions import (
+    ExclusionContext,
+    build_exclusion_context,
+    is_excluded_email,
+    is_excluded_phone,
+    is_excluded_source_id,
+)
 from src.graph import queries
 from src.graph.bootstrap import bootstrap_entities_and_sources
 from src.graph.client import Neo4jClient
@@ -35,7 +43,10 @@ from src.graph.schema_init import apply_schema
 from src.models import IngestResult, RecordType, SourceRecordEnvelope
 from src.pipeline import IngestPipeline
 from src.pipeline_addresses import ingest_address_record
-from src.pipeline_knows import materialize_knows_from_contacts
+from src.pipeline_knows import (
+    materialize_knows_from_chat_relationships,
+    materialize_knows_from_contacts,
+)
 from src.pipeline_sales import drain_pending_customer_sales, ingest_sales_record
 
 logger = logging.getLogger(__name__)
@@ -185,6 +196,17 @@ def _process_record(
     return pipeline.ingest(envelope, ingest_run_id=ingest_run_id)
 
 
+def _record_is_excluded(envelope: SourceRecordEnvelope, context: ExclusionContext) -> bool:
+    if is_excluded_source_id(envelope.source_record_id, context):
+        return True
+    for identifier in envelope.identifiers:
+        if identifier.type == "phone" and is_excluded_phone(identifier.value, context):
+            return True
+        if identifier.type == "email" and is_excluded_email(identifier.value, context):
+            return True
+    return False
+
+
 def _ingest_all_records(
     client: Neo4jClient,
     pipeline: IngestPipeline,
@@ -193,10 +215,21 @@ def _ingest_all_records(
 ) -> tuple[int, int, int]:
     """Process every record from the connector. Returns (success, errors, skipped)."""
     success = errors = skipped = 0
+    settings = get_settings()
+    exclusion_context = build_exclusion_context(
+        company_mobile_numbers=settings.company_mobile_numbers,
+        company_email_addresses=settings.company_email_addresses,
+        internal_person_names=settings.internal_person_names,
+        file_exclusions=load_exclusion_file(settings.ingestion_exclusions_file),
+    )
     for raw_record in connector.fetch_records():
         envelope = SourceRecordEnvelope.model_validate(
             {"source_system": connector.get_source_key(), **raw_record},
         )
+        if _record_is_excluded(envelope, exclusion_context):
+            skipped += 1
+            logger.info("  %s -> excluded", envelope.source_record_id)
+            continue
         result = _process_record(client, pipeline, envelope, ingest_run_id)
         if result.skipped_duplicate:
             skipped += 1
@@ -272,6 +305,12 @@ def run_ingestion(
             drained = drain_pending_customer_sales(client)
             if drained:
                 logger.info("Drained %d pending sales records", drained)
+            chat_knows_linked = materialize_knows_from_chat_relationships(client)
+            if chat_knows_linked:
+                logger.info(
+                    "Materialized %d KNOWS edges from chat relationships",
+                    chat_knows_linked,
+                )
             knows_linked = materialize_knows_from_contacts(client)
             if knows_linked:
                 logger.info("Materialized %d KNOWS edges from contacts", knows_linked)
