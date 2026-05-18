@@ -1,6 +1,7 @@
 "use client";
 
-import { useState, type ReactElement } from "react";
+import { useRef, useState, type ReactElement } from "react";
+import useMediaQuery from "@mui/material/useMediaQuery";
 
 import Box from "@mui/material/Box";
 import Chip from "@mui/material/Chip";
@@ -249,6 +250,9 @@ function orderedFields(props: Record<string, GraphPropertyValue>, specs: FieldSp
   return [...preferred, ...remaining].slice(0, 12);
 }
 
+const SNAP_POINTS = [0.35, 0.55, 0.80];
+const CLOSE_THRESHOLD = 0.22;
+
 function DetailShell({
   eyebrow,
   title,
@@ -263,7 +267,133 @@ function DetailShell({
   children: ReactElement;
 }): ReactElement {
   const [expandedTitle, setExpandedTitle] = useState(false);
+  const isMobile = useMediaQuery("(max-width: 768px)");
+  const [sheetHeight, setSheetHeight] = useState(0.55);
+  const [isDragging, setIsDragging] = useState(false);
+  const dragStartY = useRef<number | null>(null);
+  const dragStartH = useRef<number>(0.55);
 
+  function onHandlePointerDown(e: React.PointerEvent<HTMLDivElement>): void {
+    e.currentTarget.setPointerCapture(e.pointerId);
+    dragStartY.current = e.clientY;
+    dragStartH.current = sheetHeight;
+    setIsDragging(true);
+  }
+
+  function onHandlePointerMove(e: React.PointerEvent<HTMLDivElement>): void {
+    if (dragStartY.current === null) return;
+    const delta = dragStartY.current - e.clientY;
+    const newH = Math.max(0.1, Math.min(0.92, dragStartH.current + delta / window.innerHeight));
+    setSheetHeight(newH);
+  }
+
+  function onHandlePointerUp(): void {
+    setIsDragging(false);
+    dragStartY.current = null;
+    if (sheetHeight < CLOSE_THRESHOLD) {
+      onClose();
+      return;
+    }
+    const nearest = SNAP_POINTS.reduce((prev, curr) =>
+      Math.abs(curr - sheetHeight) < Math.abs(prev - sheetHeight) ? curr : prev,
+    );
+    setSheetHeight(nearest);
+  }
+
+  // ── Mobile: draggable bottom sheet ───────────────────────────────────────────
+  if (isMobile) {
+    return (
+      <Paper
+        elevation={8}
+        sx={{
+          position: "fixed",
+          bottom: 0,
+          left: 0,
+          right: 0,
+          height: `${sheetHeight * 100}vh`,
+          display: "flex",
+          flexDirection: "column",
+          overflow: "hidden",
+          zIndex: 1400,
+          bgcolor: "var(--bg-card)",
+          color: "var(--text-primary)",
+          borderTop: "1px solid var(--border)",
+          borderRadius: "14px 14px 0 0",
+          boxShadow: "0 -8px 32px color-mix(in srgb, var(--bg-app) 50%, transparent)",
+          transition: isDragging ? "none" : "height 0.2s ease",
+          animation: "slideUp 0.22s ease",
+          "@keyframes slideUp": {
+            from: { transform: "translateY(100%)" },
+            to: { transform: "translateY(0)" },
+          },
+        }}
+      >
+        {/* Drag handle */}
+        <Box
+          onPointerDown={onHandlePointerDown}
+          onPointerMove={onHandlePointerMove}
+          onPointerUp={onHandlePointerUp}
+          onPointerCancel={onHandlePointerUp}
+          sx={{
+            display: "flex",
+            justifyContent: "center",
+            alignItems: "center",
+            pt: 1.25,
+            pb: 0.75,
+            cursor: "ns-resize",
+            touchAction: "none",
+            flexShrink: 0,
+            userSelect: "none",
+          }}
+        >
+          <Box sx={{ width: 36, height: 4, borderRadius: "2px", bgcolor: isDragging ? "var(--text-muted)" : "var(--border-strong)", transition: "background 0.15s" }} />
+        </Box>
+
+        {/* Header */}
+        <Box sx={{ px: 2.5, pb: 1.5, flexShrink: 0 }}>
+          <Stack direction="row" justifyContent="space-between" alignItems="flex-start" spacing={1.5}>
+            <Stack spacing={0.75} sx={{ minWidth: 0 }}>
+              <Stack direction="row" spacing={0.75} alignItems="center">
+                {chip}
+                <Typography variant="caption" noWrap sx={{ color: "var(--text-muted)", fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase" }}>
+                  {eyebrow}
+                </Typography>
+              </Stack>
+              <Typography
+                variant="subtitle1"
+                fontWeight={700}
+                onClick={() => setExpandedTitle((c) => !c)}
+                sx={{
+                  color: "var(--text-primary)",
+                  cursor: "pointer",
+                  fontSize: 16,
+                  letterSpacing: "-0.01em",
+                  lineHeight: 1.25,
+                  overflow: expandedTitle ? "visible" : "hidden",
+                  textOverflow: expandedTitle ? "clip" : "ellipsis",
+                  whiteSpace: expandedTitle ? "normal" : "nowrap",
+                }}
+              >
+                {title}
+              </Typography>
+            </Stack>
+            <IconButton size="small" onClick={onClose} sx={{ color: "var(--text-muted)" }}>
+              <CloseIcon fontSize="small" />
+            </IconButton>
+          </Stack>
+        </Box>
+
+        <Divider sx={{ borderColor: "var(--border)", flexShrink: 0 }} />
+
+        {/* Scrollable content */}
+        <Box sx={{ flex: 1, overflowY: "auto", px: 2.5, pt: 2, pb: "max(20px, env(safe-area-inset-bottom))" }}>
+          {children}
+        </Box>
+      </Paper>
+    );
+  }
+
+  // ── Desktop: top-right popup ─────────────────────────────────────────────────
   return (
     <Paper
       elevation={8}
@@ -272,6 +402,7 @@ function DetailShell({
         top: 14,
         right: 14,
         width: 400,
+        maxWidth: "calc(100% - 28px)",
         maxHeight: "calc(100% - 28px)",
         overflowY: "auto",
         zIndex: 20,
@@ -288,11 +419,7 @@ function DetailShell({
           <Stack spacing={0.75} sx={{ minWidth: 0 }}>
             <Stack direction="row" spacing={0.75} alignItems="center" sx={{ minWidth: 0, flexWrap: "nowrap" }}>
               {chip}
-              <Typography
-                variant="caption"
-                noWrap
-                sx={{ color: "var(--text-muted)", fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", minWidth: 0 }}
-              >
+              <Typography variant="caption" noWrap sx={{ color: "var(--text-muted)", fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", minWidth: 0 }}>
                 {eyebrow}
               </Typography>
             </Stack>

@@ -411,6 +411,7 @@
   flex: 1;
   min-height: 0;
   overflow-y: auto;
+  overflow-x: hidden;
   display: flex;
   flex-direction: column;
 }
@@ -419,6 +420,15 @@
 .content::-webkit-scrollbar-thumb {
   background: var(--border);
   border-radius: 3px;
+}
+
+@media (max-width: 768px) {
+  .content::after {
+    content: "";
+    display: block;
+    height: 40px;
+    flex-shrink: 0;
+  }
 }
 
 /* Padding lives here — scrollbar stays flush with the edge */
@@ -433,5 +443,18 @@
 @media (max-width: 768px) {
   .contentInner {
     padding: 16px;
+  }
+}
+
+.bottomSpacer {
+  display: none;
+}
+
+@media (max-width: 768px) {
+  .bottomSpacer {
+    display: block;
+    height: 40px;
+    flex-shrink: 0;
+    width: 100%;
   }
 }

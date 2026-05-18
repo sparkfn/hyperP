@@ -9,6 +9,7 @@ import {
   type ReactNode,
 } from "react";
 import { keyframes } from "@mui/system";
+import useMediaQuery from "@mui/material/useMediaQuery";
 
 import Box from "@mui/material/Box";
 import Chip from "@mui/material/Chip";
@@ -147,7 +148,33 @@ function GraphLoadingSkeleton(): ReactElement {
   );
 }
 
-function Legend({ labels }: { labels: string[] }): ReactElement {
+function Legend({ labels, compact = false }: { labels: string[]; compact?: boolean }): ReactElement {
+  if (compact) {
+    return (
+      <Stack direction="row" spacing={0.5} sx={{ overflowX: "auto", "&::-webkit-scrollbar": { display: "none" }, scrollbarWidth: "none" }} useFlexGap>
+        {labels.map((label) => (
+          <Chip
+            key={label}
+            icon={ICON_COMPONENTS[iconForLabel(label)]}
+            label={label}
+            size="small"
+            title={label}
+            sx={{
+              height: 22,
+              flexShrink: 0,
+              bgcolor: colorForLabel(label),
+              color: "#fff",
+              fontWeight: 600,
+              fontSize: 10,
+              "& .MuiChip-icon": { color: "#fff", fontSize: 14 },
+              "& .MuiChip-label": { px: 0.75 },
+            }}
+          />
+        ))}
+      </Stack>
+    );
+  }
+
   return (
     <Stack spacing={0.75}>
       <Typography
@@ -240,6 +267,8 @@ export default function PersonGraphViewer({
   const [maxHops, setMaxHops] = useState(2);
   const [dimensions, setDimensions] = useState({ width: 800, height: 500 });
   const [uniqueLabels, setUniqueLabels] = useState<string[]>([]);
+
+  const isMobile = useMediaQuery("(max-width: 768px)");
 
   const graphRef = useRef<ForceGraphMethods<AnyNode, AnyLink> | undefined>(undefined);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -406,7 +435,7 @@ export default function PersonGraphViewer({
   ) : null;
 
   // ── Overlay mode: full-canvas, controls as overlays ──────────────────────────
-  if (overlayMode) {
+  if (overlayMode || isMobile) {
     return (
       <Box
         ref={containerRef}
@@ -461,15 +490,15 @@ export default function PersonGraphViewer({
               position: "absolute",
               bottom: 12,
               left: 12,
+              right: 12,
               zIndex: 10,
-              maxWidth: 360,
               bgcolor: "var(--bg-card)",
               border: "1px solid var(--border)",
               borderRadius: "8px",
               p: 1,
             }}
           >
-            <Legend labels={uniqueLabels} />
+            <Legend labels={uniqueLabels} compact />
           </Box>
         ) : null}
 

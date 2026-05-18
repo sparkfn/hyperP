@@ -54,6 +54,8 @@
   flex-shrink: 0;
 }
 
+.btnLabel { display: inline; }
+
 .breadcrumbActions {
   display: flex;
   align-items: center;
@@ -2279,6 +2281,128 @@
   .infoValue {
     text-align: left;
   }
+}
+
+@media (max-width: 768px) {
+  .page { gap: 12px; padding-bottom: 40px; }
+
+  /* Prevent horizontal overflow on all containers */
+  .detailLayout,
+  .mainColumn,
+  .tabContent,
+  .sidebar,
+  .sidebarHeroCard,
+  .sidebarCard,
+  .contentCard { max-width: 100%; min-width: 0; }
+
+  /* Long mono text must truncate */
+  .sidebarHeroPersonId {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 100%;
+    min-width: 0;
+    flex: 1;
+  }
+  .sidebarHeroRow { min-width: 0; }
+  .sidebarHeroIdentity { min-width: 0; max-width: 100%; }
+  .compactCompletenessInline { grid-template-columns: auto 1fr auto; min-width: 0; }
+
+  /* Breadcrumb: action buttons icon-only */
+  .breadcrumbRow {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 10px;
+  }
+  .breadcrumbActions { width: 100%; }
+  .btnLabel { display: none; }
+  .bcBtnText,
+  .bcBtnOutline,
+  .bcBtnDanger {
+    flex: 1;
+    justify-content: center;
+    padding: 7px 10px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+  }
+
+  /* Tabs: clean scrollable row, sticky at top */
+  .tabs {
+    gap: 14px;
+    scrollbar-width: none;
+  }
+  .tabs::-webkit-scrollbar { display: none; }
+  .tab { font-size: 12px; }
+
+  .rightTabsInline {
+    position: sticky;
+    top: 0;
+    z-index: 20;
+    background: var(--bg-app);
+    width: 100%;
+    padding-top: 12px;
+  }
+
+  /* Remove border from inner .tabs since rightTabsInline wraps it */
+  .rightTabsInline .tabs {
+    border-bottom: none;
+    padding-bottom: 0;
+  }
+
+  /* Summary strip: 2 cols */
+  .summaryStrip {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  /* Cards: tighter padding */
+  .contentCard,
+  .emptyState,
+  .sidebarCard,
+  .sidebarHeroCard {
+    padding: 12px;
+  }
+
+  /* Overview hero grid: single column */
+  .overviewHeroGrid {
+    grid-template-columns: 1fr;
+  }
+
+  /* Sidebar: no scroll lock when stacked */
+  .sidebar {
+    overflow-y: visible;
+  }
+
+  /* Allow sticky tabs to work — remove overflow clipping from parents */
+  .mainColumn,
+  .tabContent,
+  .tabPanelScroll {
+    overflow: visible;
+    margin-bottom: 12px;
+  }
+
+  /* IDs + Sources: meta row wraps, badges move below */
+  .idRow {
+    align-items: flex-start;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .idBody {
+    flex: 1;
+    min-width: 0;
+  }
+  .connMeta {
+    flex-wrap: wrap;
+    overflow: visible;
+  }
+  .idBadges {
+    flex-basis: 100%;
+    padding-left: 42px; /* indent to align under text (icon 30px + gap 12px) */
+  }
+
+  /* Skeleton: prevent items overflowing their row */
+  .tabSkelItem { overflow: hidden; max-width: 100%; }
+  .tabSkelLine { max-width: 100%; }
+  .tabSkelBadge { max-width: 30%; }
 }
 
 /* ── Share modal ─────────────────────────────────────────── */

@@ -39,7 +39,7 @@ data/celerybeat/
 .claude/
 .superpowers/
 .worktrees/
-services/frontend2/AGENT_NOTES.md
+services/frontend2/*.md
 
 # Dump files
 .dumps/

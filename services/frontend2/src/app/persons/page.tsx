@@ -550,6 +550,80 @@ function PersonRow({
   );
 }
 
+function PersonCardMobile({
+  p,
+  onGraphClick,
+}: {
+  p: ListedPerson;
+  onGraphClick: (personId: string, name: string) => void;
+}): ReactElement {
+  const router = useRouter();
+  const initials = (p.preferred_full_name ?? "?")
+    .split(" ")
+    .map((w) => w[0])
+    .slice(0, 2)
+    .join("")
+    .toUpperCase();
+  const pct = Math.round(p.profile_completeness_score * 100);
+  const labels = getLabels(p);
+
+  return (
+    <div
+      role="button"
+      tabIndex={0}
+      className={styles.mobileCard}
+      onClick={() => router.push(`/persons/${p.person_id}`)}
+      onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") router.push(`/persons/${p.person_id}`); }}
+      aria-label={`Open ${p.preferred_full_name ?? p.person_id}`}
+    >
+      <AvatarRing initials={initials} color={avatarColor(p.preferred_full_name ?? "?")} score={p.profile_completeness_score} />
+
+      <div className={styles.mobileCardBody}>
+        <div className={styles.mobileCardTop}>
+          <span className={styles.mobileCardName}>{p.preferred_full_name ?? p.person_id}</span>
+          <div className={styles.mobileCardFlags}>
+            {labels.map((l) => (
+              <span key={l.text} className={`${styles.flag} ${l.cls}`}>{l.text}</span>
+            ))}
+          </div>
+        </div>
+        <div className={styles.mobileCardSub}>
+          <span className={styles.mobileCardId}>{p.person_id.length > 10 ? `${p.person_id.slice(0, 8)}…` : p.person_id}</span>
+          {p.preferred_phone && <span className={styles.mobileCardInfo}>{p.preferred_phone}</span>}
+          {!p.preferred_phone && p.preferred_email && <span className={styles.mobileCardInfo}>{p.preferred_email}</span>}
+        </div>
+      </div>
+
+      <div className={styles.mobileCardRight}>
+        <div className={styles.mobileCardQuality}>
+          <div className={styles.mobileCardQualityBar}>
+            <div className={styles.mobileCardQualityFill} style={{ width: `${pct}%`, background: qualityColor(p.profile_completeness_score) }} />
+          </div>
+          <span className={styles.mobileCardQualityPct}>{pct}%</span>
+        </div>
+        {(p.connection_count > 0 || p.order_count > 0) && (
+          <div className={styles.mobileCardCounts}>
+            {p.connection_count > 0 && <span className={styles.mobileCardCount}>{p.connection_count} linked</span>}
+            {p.order_count > 0 && <span className={styles.mobileCardCount}>{p.order_count} orders</span>}
+          </div>
+        )}
+      </div>
+
+      <button
+        type="button"
+        className={styles.mobileCardGraph}
+        title="View in graph"
+        onClick={(e) => { e.stopPropagation(); onGraphClick(p.person_id, p.preferred_full_name ?? p.person_id); }}
+      >
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/>
+          <line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/>
+        </svg>
+      </button>
+    </div>
+  );
+}
+
 const SKELETON_WIDTHS: readonly number[][] = [
   [55, 90, 70, 80, 75, 110, 140, 60, 40, 36, 80],
   [70, 80, 60, 90, 85, 130, 100, 80, 50, 44, 65],
@@ -764,6 +838,9 @@ function PersonsInner(): ReactElement {
 
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [pageSize, setPageSize] = useState(100);
+  useEffect(() => {
+    if (window.innerWidth <= 768) setPageSize(25);
+  }, []);
   const [canScrollRight, setCanScrollRight] = useState(false);
   const [canScrollLeft, setCanScrollLeft] = useState(false);
   const [colWidths, setColWidths] = useState<number[]>(DEFAULT_WIDTHS);
@@ -1724,6 +1801,37 @@ function PersonsInner(): ReactElement {
           </div>{/* tableContent */}
           </div>{/* tableScroll */}
           </div>{/* tableScrollWrap */}
+
+          {/* ── Mobile card list — hidden on desktop ─────────── */}
+          <div className={styles.mobileList}>
+            {fetchLoading ? (
+              Array.from({ length: 8 }, (_, i) => (
+                <div key={i} className={styles.mobileSkeletonCard}>
+                  <span className={styles.skeletonAvatar} />
+                  <div className={styles.mobileSkeletonBody}>
+                    <span className={styles.skeletonLine} style={{ width: "55%" }} />
+                    <span className={styles.skeletonLine} style={{ width: "35%", height: 10 }} />
+                  </div>
+                  <div className={styles.mobileSkeletonRight}>
+                    <span className={styles.skeletonLine} style={{ width: 50, height: 10 }} />
+                    <span className={styles.skeletonLine} style={{ width: 40, height: 10 }} />
+                  </div>
+                </div>
+              ))
+            ) : fetchError ? (
+              <p className={styles.mobileEmpty} style={{ color: "var(--bad)" }}>{fetchError}</p>
+            ) : pageRows.length === 0 ? (
+              <p className={styles.mobileEmpty}>No persons match your filters.</p>
+            ) : (
+              pageRows.map((p) => (
+                <PersonCardMobile
+                  key={p.person_id}
+                  p={p}
+                  onGraphClick={(personId, name) => setGraphDialog({ open: true, personId, title: name })}
+                />
+              ))
+            )}
+          </div>
 
           <PaginationBar
             showing={`Showing ${apiRows.length === 0 ? 0 : cursorStack.length * pageSize + 1}–${cursorStack.length * pageSize + apiRows.length} of ${total != null ? total.toLocaleString() : "…"} profiles`}

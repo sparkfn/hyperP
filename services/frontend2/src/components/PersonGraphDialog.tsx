@@ -33,13 +33,22 @@ export default function PersonGraphDialog({
       onClose={onClose}
       maxWidth="xl"
       fullWidth
+      fullScreen={undefined}
       slotProps={{
         paper: {
           sx: {
             bgcolor: "var(--bg-card)",
             color: "var(--text-primary)",
             border: "1px solid var(--border)",
-            borderRadius: "10px",
+            borderRadius: { xs: "14px 14px 0 0", sm: "10px" },
+            margin: { xs: 0, sm: "32px" },
+            position: { xs: "fixed", sm: "relative" },
+            bottom: { xs: 0, sm: "auto" },
+            left: { xs: 0, sm: "auto" },
+            right: { xs: 0, sm: "auto" },
+            width: { xs: "100%", sm: "calc(100% - 64px)" },
+            maxWidth: { xs: "100%", sm: "1536px" },
+            maxHeight: { xs: "92dvh", sm: "calc(100% - 64px)" },
           },
         },
       }}
@@ -59,10 +68,10 @@ export default function PersonGraphDialog({
       <DialogContent
         dividers
         sx={{
-          height: "75vh",
+          height: { xs: "calc(92dvh - 60px)", sm: "75vh" },
           display: "flex",
           flexDirection: "column",
-          p: 2,
+          p: { xs: 0, sm: 2 },
           bgcolor: "var(--bg-card)",
           color: "var(--text-primary)",
           borderColor: "var(--border)",

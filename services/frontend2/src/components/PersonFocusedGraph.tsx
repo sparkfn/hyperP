@@ -389,7 +389,7 @@ export default function PersonFocusedGraph({
 
   return (
     <Box sx={{ height: "100%", minHeight: 0, color: "var(--text-primary)", display: "flex", flexDirection: "column", gap: "18px" }}>
-      {breadcrumb}
+      <Box sx={{ px: 1.5, pt: "18px", pb: 0.5 }}>{breadcrumb}</Box>
       <Box sx={{ flex: 1, minHeight: 0 }}>
       <PersonGraphViewer
         key={`${current.elementId ?? ""}-${current.personId ?? ""}`}

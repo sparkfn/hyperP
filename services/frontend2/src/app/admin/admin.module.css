@@ -177,3 +177,7 @@
   animation: shimmer 1.4s infinite linear;
   border-radius: 4px;
 }
+
+@media (max-width: 768px) {
+  .page { margin-bottom: 40px; }
+}

@@ -155,19 +155,19 @@ function PersonBreadcrumb({ personName, onShare, shareLoading, onOverride, onMer
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
             <path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8"/><polyline points="16 6 12 2 8 6"/><line x1="12" y1="2" x2="12" y2="15"/>
           </svg>
-          {shareLoading ? "Generating…" : "Share"}
+          <span className={styles.btnLabel}>{shareLoading ? "Generating…" : "Share"}</span>
         </button>
         <button type="button" className={styles.bcBtnOutline} onClick={onOverride}>
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
             <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
           </svg>
-          Override fields
+          <span className={styles.btnLabel}>Override fields</span>
         </button>
         <button type="button" className={styles.bcBtnDanger} onClick={onMerge}>
           <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
             <path d="M17 20.41L18.41 19 15 15.59 13.59 17 17 20.41zM7.5 8H11v5.59L5.59 19 7 20.41l6-6V8h3.5L12 3.5 7.5 8z"/>
           </svg>
-          Merge into
+          <span className={styles.btnLabel}>Merge into</span>
         </button>
       </div>
     </div>
@@ -1894,7 +1894,7 @@ export default function PersonDetailPage({ params }: { params: Promise<{ personI
         {activeTab === "audit" && shell(<AuditTab personId={personId} onTotalLoaded={onAuditTotal} />)}
         {activeTab === "graph" && (
           <DetailShell person={person} detailData={detailData} salesTotal={tabTotals.sales} identifiersTotal={tabTotals.identifier} tabs={tabs} activeTab={activeTab} onTabChange={setActiveTab}>
-            <div style={{ height: 560, border: "1px solid var(--border)", borderRadius: "10px", overflow: "hidden" }}>
+            <div style={{ height: "max(calc(100vh - 340px), 480px)", border: "1px solid var(--border)", borderRadius: "10px", overflow: "hidden" }}>
               <PersonFocusedGraph
                 initialPersonId={person.person_id}
                 initialTitle={person.preferred_full_name ?? person.person_id}

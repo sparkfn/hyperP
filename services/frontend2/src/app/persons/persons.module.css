@@ -1864,3 +1864,234 @@
   color: var(--text-muted);
   font-size: 13px;
 }
+
+/* ── Mobile card list ────────────────────────────────────── */
+.mobileList { display: none; }
+
+@media (max-width: 768px) {
+  .statsRow { grid-template-columns: repeat(2, 1fr); }
+
+  .filterSection { padding: 10px 12px 0; }
+
+  /* Filter pills: single scrollable row */
+  .filterBar {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+    padding-bottom: 10px;
+    gap: 6px;
+  }
+  .filterBar::-webkit-scrollbar { display: none; }
+  .fpWrap { flex-shrink: 0; }
+
+  /* Filter popovers: anchor to viewport width */
+  .filterPopover,
+  .filterPopoverRight,
+  .filterPopoverWide {
+    position: fixed;
+    left: 12px !important;
+    right: 12px !important;
+    top: auto;
+    max-width: none;
+    min-width: 0;
+    width: auto;
+    z-index: 200;
+  }
+
+  .tableScrollWrap { display: none; }
+
+  /* Pagination: 2 rows on mobile */
+  .countBar,
+  .paginationBottom {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 8px;
+    padding: 10px 14px;
+  }
+  .countBar > div,
+  .paginationBottom > div {
+    margin-left: 0 !important;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+
+  .mobileList {
+    display: flex;
+    flex-direction: column;
+    border-top: 1px solid var(--border-subtle);
+  }
+}
+
+.mobileCard {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--border-subtle);
+  cursor: pointer;
+  text-decoration: none;
+  color: inherit;
+  background: none;
+  border-left: none;
+  border-right: none;
+  border-top: none;
+  font: inherit;
+  text-align: left;
+  width: 100%;
+  transition: background 0.1s;
+}
+.mobileCard:active { background: var(--bg-hover); }
+
+.mobileCardBody {
+  flex: 1;
+  min-width: 0;
+}
+
+.mobileCardTop {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+
+.mobileCardName {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 1;
+  min-width: 0;
+}
+
+.mobileCardFlags {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  flex-shrink: 0;
+}
+
+.mobileCardSub {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 3px;
+  flex-wrap: wrap;
+}
+
+.mobileCardId {
+  font-size: 10px;
+  font-family: monospace;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.mobileCardInfo {
+  font-size: 12px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.mobileCardRight {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.mobileCardQuality {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.mobileCardQualityBar {
+  width: 36px;
+  height: 3px;
+  background: var(--border);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.mobileCardQualityFill {
+  height: 100%;
+  border-radius: 2px;
+}
+
+.mobileCardQualityPct {
+  font-size: 10px;
+  color: var(--text-muted);
+  width: 26px;
+  text-align: right;
+}
+
+.mobileCardCounts {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.mobileCardCount {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.mobileCardGraph {
+  width: 28px;
+  height: 28px;
+  border-radius: 7px;
+  border: 1px solid var(--border);
+  background: transparent;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background 0.12s, border-color 0.12s, color 0.12s;
+}
+.mobileCardGraph:hover {
+  background: var(--accent-light);
+  border-color: var(--accent);
+  color: var(--accent-text);
+}
+
+.mobileEmpty {
+  padding: 48px 20px;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+.mobileSkeletonCard {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.mobileSkeletonBody {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.mobileSkeletonRight {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+}
+
+@media (max-width: 768px) {
+  .page { margin-bottom: 40px; }
+}
