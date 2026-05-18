@@ -126,16 +126,17 @@ class WhatsAppChatConnector(SourceConnector):
                 msgs = self._fetch_messages(conn, chat.id, whatsapp_uid)
                 if not msgs:
                     continue
+                chat_name = str(chat.name or "")
                 participants = self._fetch_participants(conn, chat.id, whatsapp_uid, msgs)
 
                 all_bundles.append(
                     _ChatBundle(
                         chat_id=str(chat.id),
-                        chat_name=str(chat.name or ""),
+                        chat_name=chat_name,
                         session_id=str(session.id),
                         whatsapp_user_id=whatsapp_uid,
                         tenant=tenant,
-                        msg_text=_format_messages(msgs),
+                        msg_text=_format_messages(msgs, participants, chat_name),
                         observed_at=_latest_message_timestamp(msgs),
                         participants=participants,
                         message_endpoints=_message_endpoints(msgs),
@@ -423,7 +424,39 @@ def _message_sort_key(msg: dict[str, object]) -> tuple[int, str, str]:
     return (1, "", str(msg.get("id") or ""))
 
 
-def _format_messages(msgs: list[dict[str, object]]) -> str:
+def _participant_by_jid(participants: list[_Participant]) -> dict[str, _Participant]:
+    return {participant.jid: participant for participant in participants}
+
+
+def _clean_jid(jid: str) -> str:
+    return jid.split("@", 1)[0]
+
+
+def _dialog_speaker(
+    jid: str,
+    participants_by_jid: dict[str, _Participant],
+    chat_name: str | None,
+) -> str:
+    participant = participants_by_jid.get(jid)
+    name = participant.name if participant is not None else None
+    phone = participant.phone if participant is not None else _phone_from_jid(jid)
+    if participant is not None and participant.role == "chat" and name is None:
+        name = chat_name
+    if name and phone:
+        return f"{name} ({phone})"
+    if name:
+        return name
+    if phone:
+        return phone
+    return _clean_jid(jid)
+
+
+def _format_messages(
+    msgs: list[dict[str, object]],
+    participants: list[_Participant] | None = None,
+    chat_name: str | None = None,
+) -> str:
+    participants_by_jid = _participant_by_jid(participants or [])
     lines: list[str] = []
     for m in sorted(msgs, key=_message_sort_key):
         ts = m.get("timestamp")
@@ -435,7 +468,8 @@ def _format_messages(msgs: list[dict[str, object]]) -> str:
         body = str(m.get("body", "")).strip()
         if not body:
             continue
-        sender = str(m.get("author_id") or m.get("from_id") or "unknown")
+        sender_jid = str(m.get("author_id") or m.get("from_id") or "unknown")
+        sender = _dialog_speaker(sender_jid, participants_by_jid, chat_name)
         prefix = "[ME] " if m.get("from_me") else ""
         lines.append(f"[{ts_str}] {prefix}{sender}: {body}")
     return "\n".join(lines)

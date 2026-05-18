@@ -5,7 +5,11 @@ from __future__ import annotations
 from pathlib import Path
 
 from pytest import MonkeyPatch
-from src.connectors.dumps.connectors import get_dump_connector
+from src.connectors.dumps.connectors import (
+    FundboxSalesDumpConnector,
+    _fetch_phppos_dump_sales,
+    get_dump_connector,
+)
 from src.connectors.sggov.bankruptcy import SGGovernmentBankruptcyConnector
 from src.connectors.sggov.rental_flats import SGGovernmentRentalFlatsConnector
 
@@ -226,6 +230,8 @@ INSERT INTO `phppos_customers` VALUES
     assert raw_person["custom_field_5_value"] == "15"
     assert raw_person["custom_field_8_value"] == "East"
     assert raw_person["custom_field_10_value"] == "Y"
+
+
 def test_speedzone_dump_connector_preserves_custom_field_mapping(tmp_path: Path) -> None:
     dump_path = tmp_path / "speedzone.sql"
     dump_path.write_text(
@@ -299,6 +305,116 @@ INSERT INTO `phppos_customers` VALUES
     assert raw_person["custom_field_8_value"] == "SBA1234A"
     assert raw_person["custom_field_9_value"] == "1992-02-29"
     assert raw_person["custom_field_10_value"] == "SBB5678B"
+
+
+def test_fundbox_sales_dump_resolves_product_from_product_variant_id(tmp_path: Path) -> None:
+    dump_path = tmp_path / "fundbox.sql"
+    dump_path.write_text(
+        "\n".join(
+            [
+                (
+                    "INSERT INTO `orders` "
+                    "(`id`,`order_no`,`user_id`,`merchant_id`,`status`,"
+                    "`created_at`,`updated_at`,`deleted_at`) "
+                    "VALUES (10,'INV-10',123,1,'completed',"
+                    "'2026-05-01 00:00:00','2026-05-01 00:00:00',NULL);"
+                ),
+                (
+                    "INSERT INTO `order_items` "
+                    "(`id`,`order_id`,`merchant_product_id`,`quantity`,`price`,"
+                    "`lta_tag`,`serial_no`,`created_at`,`updated_at`) "
+                    "VALUES (77,10,501,1,1599.00,'X891','SN-891',"
+                    "'2026-05-01 00:00:00','2026-05-01 00:00:00');"
+                ),
+                (
+                    "INSERT INTO `merchant_products` "
+                    "(`id`,`merchant_id`,`product_variant_id`,`price`,`created_at`,"
+                    "`updated_at`) "
+                    "VALUES (501,1,701,1599.00,'2026-05-01 00:00:00',"
+                    "'2026-05-01 00:00:00');"
+                ),
+                (
+                    "INSERT INTO `product_variants` "
+                    "(`id`,`product_id`,`sku`,`name`,`image`,`price`,`attributes`,"
+                    "`active`,`visible`,`deleted_at`,`created_at`,`updated_at`) "
+                    "VALUES (701,801,'SKU-701','Variant Bike','',1599.00,'{}',"
+                    "1,1,NULL,'2026-05-01 00:00:00','2026-05-01 00:00:00');"
+                ),
+                (
+                    "INSERT INTO `products` "
+                    "(`id`,`product_id`,`name`,`image`,`type`,`sub_type`,`category`,"
+                    "`sub_category`,`description`,`make`,`model`,`has_serial_number`,"
+                    "`has_lta_tag`,`active`,`visible`,`deleted_at`,`created_at`,"
+                    "`updated_at`) "
+                    "VALUES (801,'P-801','Parent Bike','','Micro Mobility',NULL,"
+                    "'Bicycles',NULL,'','Brand','Model X',1,1,1,1,NULL,"
+                    "'2026-05-01 00:00:00','2026-05-01 00:00:00');"
+                ),
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    records = list(FundboxSalesDumpConnector(dump_path).fetch_records())
+
+    assert len(records) == 1
+    raw_payload = records[0]["raw_payload"]
+    assert isinstance(raw_payload, dict)
+    line_items = raw_payload["line_items"]
+    assert isinstance(line_items, list)
+    line = line_items[0]
+    assert isinstance(line, dict)
+    product = line["product"]
+    assert isinstance(product, dict)
+    assert product["display_name"] == "Parent Bike"
+    assert product["name"] == "Variant Bike"
+    assert product["attributes"] == {
+        "variant_attributes": "{}",
+        "type": "Micro Mobility",
+        "sub_type": None,
+        "model": "Model X",
+    }
+
+
+def test_phppos_sales_dump_puts_serialnumber_in_metadata(tmp_path: Path) -> None:
+    dump_path = tmp_path / "phppos.sql"
+    dump_path.write_text(
+        "\n".join(
+            [
+                (
+                    "INSERT INTO `phppos_sales` (`sale_id`,`customer_id`,`sale_time`,"
+                    "`invoice_date`,`invoice_number`,`sale_status`,`suspended`) "
+                    "VALUES (1,55,'2026-05-01 00:00:00','2026-05-01','INV-1',"
+                    "'0','0');"
+                ),
+                (
+                    "INSERT INTO `phppos_sales_items` (`sale_id`,`item_id`,`line`,"
+                    "`quantity_purchased`,`item_unit_price`,`discount_percent`,"
+                    "`serialnumber`) VALUES (1,22,0,1.0,899.0,0.0,'SER-22');"
+                ),
+                (
+                    "INSERT INTO `phppos_items` (`item_id`,`item_number`,`name`,"
+                    "`category`,`subcategory`,`size`,`cost_price`,`unit_price`,"
+                    "`description`) VALUES (22,'SKU-22','Scooter Model','Scooters',"
+                    "'Electric','Large',500.0,899.0,'');"
+                ),
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    records = list(_fetch_phppos_dump_sales(dump_path, "eko_phppos"))
+
+    assert len(records) == 1
+    raw_payload = records[0]["raw_payload"]
+    assert isinstance(raw_payload, dict)
+    line_items = raw_payload["line_items"]
+    assert isinstance(line_items, list)
+    line = line_items[0]
+    assert isinstance(line, dict)
+    metadata = line["metadata"]
+    assert isinstance(metadata, dict)
+    assert metadata["serialnumber"] == "SER-22"
 
 
 def test_fundbox_dump_keeps_device_ids_out_of_identifiers() -> None:

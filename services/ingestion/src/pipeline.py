@@ -23,7 +23,11 @@ from src.golden_profile import compute_golden_profile
 from src.graph import queries
 from src.graph.client import Neo4jClient
 from src.machine_unit_extraction import observations_from_chat_inquiries
-from src.machine_units import normalize_lta_tag, normalize_serial_number
+from src.machine_units import (
+    normalize_lta_tag,
+    normalize_machine_product,
+    normalize_serial_number,
+)
 from src.matching.engine import MatchEngine
 from src.models import (
     CandidateResult,
@@ -247,18 +251,23 @@ class IngestPipeline:
         )
         for observation in observations:
             row = tx.run(
-                queries.UPSERT_MACHINE_UNIT,
-                lta_tag=observation.lta_tag,
+                queries.RESOLVE_EXISTING_MACHINE_UNIT_FOR_CHAT,
+                normalized_machine_product=normalize_machine_product(observation.machine_product),
                 normalized_lta_tag=normalize_lta_tag(observation.lta_tag),
-                serial_number=observation.serial_number,
                 normalized_serial_number=normalize_serial_number(observation.serial_number),
             ).single()
             if row is None:
                 continue
+            machine_unit_ids = [str(item) for item in row["machine_unit_ids"]]
+            if len(machine_unit_ids) != 1:
+                continue
+            machine_unit_id = machine_unit_ids[0]
             tx.run(
-                queries.LINK_SOURCE_RECORD_MENTIONS_UNIT,
+                queries.LINK_CHAT_SOURCE_RECORD_MENTIONS_EXISTING_UNIT,
                 source_record_pk=source_record_pk,
-                machine_unit_id=str(row["machine_unit_id"]),
+                source_system_key=observation.source_system_key,
+                source_record_id=observation.source_record_id,
+                machine_unit_id=machine_unit_id,
                 raw_context=observation.raw_context,
                 observed_at=observation.observed_at,
                 confidence=observation.confidence,

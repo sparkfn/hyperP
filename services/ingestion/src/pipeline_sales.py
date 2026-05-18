@@ -17,7 +17,11 @@ from src.graph import queries
 from src.graph.bootstrap import SOURCE_KEY_TO_ENTITY
 from src.graph.client import Neo4jClient
 from src.machine_unit_extraction import observations_from_sales_lines
-from src.machine_units import normalize_lta_tag, normalize_serial_number
+from src.machine_units import (
+    normalize_lta_tag,
+    normalize_machine_product,
+    normalize_serial_number,
+)
 from src.models import (
     IngestResult,
     JsonValue,
@@ -310,6 +314,8 @@ def _write_machine_unit_observations(
     for observation in observations:
         row = tx.run(
             queries.UPSERT_MACHINE_UNIT,
+            machine_product=observation.machine_product,
+            normalized_machine_product=normalize_machine_product(observation.machine_product),
             lta_tag=observation.lta_tag,
             normalized_lta_tag=normalize_lta_tag(observation.lta_tag),
             serial_number=observation.serial_number,

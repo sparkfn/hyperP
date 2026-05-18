@@ -298,18 +298,18 @@ class WhatsAppDumpConnector(SourceConnector):
                 ]
                 if not msgs:
                     continue
+                chat_name = str(chat.name or "")
+                participants = _whatsapp_participants(chat_id, whatsapp_uid, msgs, contacts_by_jid)
                 bundles.append(
                     WhatsAppChatBundle(
                         chat_id=chat_id,
-                        chat_name=str(chat.name or ""),
+                        chat_name=chat_name,
                         session_id=str(session.id),
                         whatsapp_user_id=whatsapp_uid,
                         tenant=tenant,
-                        msg_text=_format_messages(msgs),
+                        msg_text=_format_messages(msgs, participants, chat_name),
                         observed_at=to_iso(msgs[-1].get("timestamp")) or "",
-                        participants=_whatsapp_participants(
-                            chat_id, whatsapp_uid, msgs, contacts_by_jid
-                        ),
+                        participants=participants,
                         message_endpoints=_message_endpoints(msgs),
                         session_phone=_phone_from_jid(whatsapp_uid),
                     )
@@ -603,7 +603,7 @@ def _fundbox_product_info(tables: DumpTableReader) -> dict[int, dict[str, JsonVa
     variants = _single_by_int(tables.rows("product_variants"), "id")
     result: dict[int, dict[str, JsonValue]] = {}
     for merchant_product in tables.rows("merchant_products"):
-        variant = variants.get(_row_int(merchant_product, "variant_id"))
+        variant = variants.get(_row_int(merchant_product, "product_variant_id"))
         if variant is None:
             continue
         product = products.get(_row_int(variant, "product_id"))
@@ -715,11 +715,13 @@ def _build_phppos_sales_envelope(
         line_items.append(
             {
                 "source_line_id": f"{source_system_key}-sale-{sale.sale_id}-line-{line.line}",
+                "source_line_item_id": f"{source_system_key}-sale-{sale.sale_id}-line-{line.line}",
                 "quantity": quantity,
                 "unit_price": unit_price,
                 "discount_amount": None,
                 "line_total": line_total,
                 "serial_number": line.serialnumber,
+                "metadata": {"serialnumber": line.serialnumber},
                 "raw": serialize_row(line),
                 "product": product,
             }
