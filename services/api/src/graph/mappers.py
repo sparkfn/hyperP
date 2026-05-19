@@ -16,6 +16,7 @@ from src.graph.converters import (
     to_int,
     to_iso_or_empty,
     to_iso_or_none,
+    to_optional_float,
     to_optional_str,
     to_str,
     to_str_list,

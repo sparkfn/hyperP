@@ -23,7 +23,7 @@ import PersonFocusedGraph from "@/components/PersonFocusedGraph";
 import PersonGraphDialog from "@/components/PersonGraphDialog";
 import styles from "./person.module.css";
 
-type Tab = "timeline" | "matches" | "connections" | "identifier" | "source" | "sales" | "bankruptcy" | "audit" | "graph";
+type Tab = "timeline" | "matches" | "connections" | "sales" | "bankruptcy" | "audit" | "graph";
 
 type DetailData = {
   identifiers: PersonIdentifier[];
@@ -338,12 +338,12 @@ interface TopStat {
   valueStyle?: { color: string };
 }
 
-function RightRail({ person, detailData, salesTotal, identifiersTotal, tabs, activeTab, onChange, children }: { person: Person; detailData: DetailData; salesTotal: number | undefined; identifiersTotal: number | undefined; tabs: TabConfig[]; activeTab: Tab; onChange: (tab: Tab) => void; children: ReactElement }): ReactElement {
+function RightRail({ person, detailData, salesTotal, tabs, activeTab, onChange, children }: { person: Person; detailData: DetailData; salesTotal: number | undefined; tabs: TabConfig[]; activeTab: Tab; onChange: (tab: Tab) => void; children: ReactElement }): ReactElement {
   const totalSales = detailData.sales.reduce((sum, order) => sum + (order.total_amount ?? 0), 0);
   const completeness = Math.round(person.profile_completeness_score * 100);
   const latestActivityAt = detailData.sourceRecords[0]?.observed_at ?? person.updated_at;
   const salesCount = salesTotal ?? detailData.sales.length;
-  const idCount = identifiersTotal ?? detailData.identifiers.length;
+  const idCount = detailData.identifiers.length;
 
   const topStats: TopStat[] = [
     {
@@ -524,11 +524,11 @@ function TimelineTab({ person, detailData }: { person: Person; detailData: Detai
   );
 }
 
-function DetailShell({ person, detailData, salesTotal, identifiersTotal, children, tabs, activeTab, onTabChange }: { person: Person; detailData: DetailData; salesTotal: number | undefined; identifiersTotal: number | undefined; children: ReactElement; tabs: TabConfig[]; activeTab: Tab; onTabChange: (tab: Tab) => void }): ReactElement {
+function DetailShell({ person, detailData, salesTotal, children, tabs, activeTab, onTabChange }: { person: Person; detailData: DetailData; salesTotal: number | undefined; children: ReactElement; tabs: TabConfig[]; activeTab: Tab; onTabChange: (tab: Tab) => void }): ReactElement {
   return (
     <div className={styles.detailLayout}>
       <PersonSidebar person={person} detailData={detailData} />
-      <RightRail person={person} detailData={detailData} salesTotal={salesTotal} identifiersTotal={identifiersTotal} tabs={tabs} activeTab={activeTab} onChange={onTabChange}>
+      <RightRail person={person} detailData={detailData} salesTotal={salesTotal} tabs={tabs} activeTab={activeTab} onChange={onTabChange}>
         {children}
       </RightRail>
     </div>
@@ -536,19 +536,6 @@ function DetailShell({ person, detailData, salesTotal, identifiersTotal, childre
 }
 
 
-
-function IdTypeIcon({ type }: { type: string }): ReactElement {
-  if (type === "phone") return <PhoneIcon />;
-  if (type === "email") return <EmailIcon />;
-  if (type === "nric") {
-    return (
-      <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" style={{ flexShrink: 0 }}>
-        <path d="M20 4H4c-1.11 0-2 .89-2 2v12c0 1.11.89 2 2 2h16c1.11 0 2-.89 2-2V6c0-1.11-.89-2-2-2zm0 14H4V6h16v12zM6 10h2v2H6zm0 4h8v2H6zm4-4h8v2h-8z" />
-      </svg>
-    );
-  }
-  return <KeyIcon />;
-}
 
 const SKEL_N = [0, 1, 2, 3, 4] as const;
 
@@ -955,218 +942,6 @@ function MatchesTab({ personId, onTotalLoaded }: { personId: string; onTotalLoad
           })}
         </div>
       )}
-      {(hasPrev || hasNext) && <TabPagination from={from} to={to} total={total} hasPrev={hasPrev} hasNext={hasNext} onPrev={goPrev} onNext={goNext} />}
-    </section>
-  );
-}
-
-function IdentifiersTab({ personId, onTotalLoaded }: { personId: string; onTotalLoaded: (n: number) => void }): ReactElement {
-  const { rows, loading, error, from, to, total, hasPrev, hasNext, goNext, goPrev } =
-    usePaginatedFetch<PersonIdentifier>(`/bff/persons/${encodeURIComponent(personId)}/identifiers`);
-  const identifiers = rows ?? [];
-
-  useEffect(() => { if (total !== null) onTotalLoaded(total); }, [total, onTotalLoaded]);
-
-  if (loading) return <TabSkelShell title="IDs"><SkeletonRows /></TabSkelShell>;
-  if (error) return <section className={styles.contentCard}><div className={styles.tabError}>{error}</div></section>;
-
-  return (
-    <section className={styles.contentCard}>
-      <div className={styles.connHeader}>
-        <span className={styles.connHeaderTitle}>IDs</span>
-        <span className={styles.connHeaderDot}>·</span>
-        <span className={styles.connHeaderCount}>{total ?? identifiers.length} {(total ?? identifiers.length) === 1 ? "identifier" : "identifiers"}</span>
-      </div>
-      {identifiers.length === 0 && <TabEmptyState message="No identifiers on record." />}
-      <div className={styles.idList}>
-        {identifiers.map((id: PersonIdentifier, index: number) => (
-          <div key={`${id.identifier_type}-${id.normalized_value}-${index}`} className={styles.idRow}>
-            <div className={styles.idIconWrap}>
-              <IdTypeIcon type={id.identifier_type} />
-            </div>
-            <div className={styles.idBody}>
-              <span className={styles.idValue}>{id.normalized_value}</span>
-              <div className={styles.connMeta}>
-                <span>{titleCase(id.identifier_type)}</span>
-                {id.source_system_key && (
-                  <>
-                    <span className={styles.connMetaSep}>·</span>
-                    <span>{id.source_system_key}</span>
-                  </>
-                )}
-                {id.source_record_ids && id.source_record_ids.length > 0 && (
-                  <>
-                    <span className={styles.connMetaSep}>·</span>
-                    <span className={styles.mono}>{id.source_record_ids.join(", ")}</span>
-                  </>
-                )}
-                {id.last_confirmed_at && (
-                  <>
-                    <span className={styles.connMetaSep}>·</span>
-                    <span>{fmtDate(id.last_confirmed_at)}</span>
-                  </>
-                )}
-              </div>
-            </div>
-            <div className={styles.idBadges}>
-              {id.is_verified && <span className={styles.idBadgeVerified}>Verified</span>}
-              <span className={id.is_active ? styles.idBadgeActive : styles.idBadgeInactive}>
-                {id.is_active ? "Active" : "Inactive"}
-              </span>
-            </div>
-          </div>
-        ))}
-      </div>
-      {(hasPrev || hasNext) && <TabPagination from={from} to={to} total={total} hasPrev={hasPrev} hasNext={hasNext} onPrev={goPrev} onNext={goNext} />}
-    </section>
-  );
-}
-
-function SourceRecordDetail({ record }: { record: PersonSourceRecord }): ReactElement {
-  const payload = record.normalized_payload;
-
-  return (
-    <div className={styles.srcDetail}>
-      <div className={styles.srcDetailLayout}>
-
-        {/* ── Left: identity + timeline ── */}
-        <div className={styles.srcDetailLeft}>
-          <div className={styles.srcDetailIdentity}>
-            <span className={styles.srcDetailSystem}>{record.source_system}</span>
-            {record.entity_display_name && <span className={styles.srcDetailEntity}>{record.entity_display_name}</span>}
-            <div className={styles.srcDetailBadgeRow}>
-              <span className={styles.srcTypeBadge}>{record.record_type}</span>
-              <span className={record.link_status === "linked" ? styles.idBadgeActive : styles.idBadgeInactive}>
-                {record.link_status}
-              </span>
-            </div>
-          </div>
-
-          <div className={styles.srcTimeline}>
-            {[
-              { label: "Observed", value: fmtDateTime(record.observed_at) },
-              { label: "Ingested", value: fmtDateTime(record.ingested_at) },
-              ...(record.extraction_method ? [{ label: "Method", value: record.extraction_method }] : []),
-              ...(record.extraction_confidence != null ? [{ label: "Confidence", value: `${Math.round(record.extraction_confidence * 100)}%` }] : []),
-            ].map(({ label, value }, i, arr) => (
-              <div key={label} className={`${styles.srcTimelineItem} ${i === arr.length - 1 ? styles.srcTimelineLast : ""}`}>
-                <div className={styles.srcTimelineDot} />
-                <div>
-                  <div className={styles.srcTimelineLabel}>{label}</div>
-                  <div className={styles.srcTimelineValue}>{value}</div>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        {/* ── Right: extracted data ── */}
-        <div className={styles.srcDetailRight}>
-          {payload?.identifiers && payload.identifiers.length > 0 && (
-            <div className={styles.srcDataBlock}>
-              <div className={styles.srcDataBlockTitle}>Identifiers</div>
-              <div className={styles.srcIdentList}>
-                {payload.identifiers.map((id, i) => (
-                  <div key={i} className={styles.srcIdentRow}>
-                    <span className={id.is_verified ? styles.srcIdentDotVerified : styles.srcIdentDot} />
-                    <span className={styles.srcIdentType}>{titleCase(id.identifier_type ?? "")}</span>
-                    <span className={styles.srcIdentValue}>{id.normalized_value}</span>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {payload?.address && (
-            <div className={styles.srcDataBlock}>
-              <div className={styles.srcDataBlockTitle}>Address</div>
-              <div className={styles.srcAddressFull}>{payload.address.normalized_full ?? "—"}</div>
-              <div className={styles.srcAddressMeta}>
-                {[payload.address.city, payload.address.postal_code, payload.address.country_code, payload.address.quality_flag]
-                  .filter(Boolean).join(" · ")}
-              </div>
-            </div>
-          )}
-
-          {payload?.attributes && payload.attributes.length > 0 && (
-            <div className={styles.srcDataBlock}>
-              <div className={styles.srcDataBlockTitle}>Attributes</div>
-              <div className={styles.srcAttrGrid}>
-                {payload.attributes.map((attr, i) => (
-                  <div key={i} className={styles.srcAttrItem}>
-                    <span className={styles.srcAttrLabel}>{titleCase(attr.attribute_name ?? "")}</span>
-                    <span className={styles.srcAttrValue}>{attr.attribute_value ?? "—"}</span>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {payload?.summary && (
-            <div className={styles.srcDataBlock}>
-              <div className={styles.srcDataBlockTitle}>Summary</div>
-              <div className={styles.srcSummaryText}>{payload.summary}</div>
-            </div>
-          )}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function SourceRecordsTab({ personId, onTotalLoaded }: { personId: string; onTotalLoaded: (n: number) => void }): ReactElement {
-  const [expandedPk, setExpandedPk] = useState<string | null>(null);
-  const { rows, loading, error, from, to, total, hasPrev, hasNext, goNext, goPrev } =
-    usePaginatedFetch<PersonSourceRecord>(`/bff/persons/${encodeURIComponent(personId)}/source-records`);
-  const sourceRecords = rows ?? [];
-
-  useEffect(() => { if (total !== null) onTotalLoaded(total); }, [total, onTotalLoaded]);
-
-  if (loading) return <TabSkelShell title="Sources"><SkeletonRows /></TabSkelShell>;
-  if (error) return <section className={styles.contentCard}><div className={styles.tabError}>{error}</div></section>;
-
-  return (
-    <section className={styles.contentCard}>
-      <div className={styles.connHeader}>
-        <span className={styles.connHeaderTitle}>Sources</span>
-        <span className={styles.connHeaderDot}>·</span>
-        <span className={styles.connHeaderCount}>{total ?? sourceRecords.length} {(total ?? sourceRecords.length) === 1 ? "record" : "records"}</span>
-      </div>
-      {sourceRecords.length === 0 && <TabEmptyState message="No source records linked." />}
-      <div className={styles.idList}>
-        {sourceRecords.map((record) => {
-          const isOpen = expandedPk === record.source_record_pk;
-          return (
-            <div key={record.source_record_pk} className={`${styles.srcRow} ${isOpen ? styles.srcRowOpen : ""}`}>
-              <div
-                className={styles.srcMain}
-                onClick={() => setExpandedPk(isOpen ? null : record.source_record_pk)}
-                role="button"
-                tabIndex={0}
-                onKeyDown={(e) => e.key === "Enter" && setExpandedPk(isOpen ? null : record.source_record_pk)}
-              >
-                <div className={styles.idBody}>
-                  <span className={styles.idValue}>{record.source_record_id}</span>
-                  <div className={styles.connMeta}>
-                    <span>{record.source_system}</span>
-                    {record.entity_display_name && <><span className={styles.connMetaSep}>·</span><span>{record.entity_display_name}</span></>}
-                    <span className={styles.connMetaSep}>·</span>
-                    <span>Observed {fmtDateTime(record.observed_at)}</span>
-                  </div>
-                </div>
-                <div className={styles.idBadges}>
-                  <span className={styles.srcTypeBadge}>{record.record_type}</span>
-                  <span className={record.link_status === "linked" ? styles.idBadgeActive : styles.idBadgeInactive}>{record.link_status}</span>
-                  <svg className={`${styles.srcChevron} ${isOpen ? styles.srcChevronOpen : ""}`} width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                    <path d="M6 9l6 6 6-6" />
-                  </svg>
-                </div>
-              </div>
-              {isOpen && <SourceRecordDetail record={record} />}
-            </div>
-          );
-        })}
-      </div>
       {(hasPrev || hasNext) && <TabPagination from={from} to={to} total={total} hasPrev={hasPrev} hasNext={hasNext} onPrev={goPrev} onNext={goNext} />}
     </section>
   );
@@ -1650,7 +1425,7 @@ const EMPTY_DETAIL: DetailData = {
   audit: [],
 };
 
-const VALID_TABS = new Set<Tab>(["timeline", "matches", "connections", "identifier", "source", "sales", "bankruptcy", "audit", "graph"]);
+const VALID_TABS = new Set<Tab>(["timeline", "matches", "connections", "sales", "bankruptcy", "audit", "graph"]);
 
 function parseTabParam(value: string | null): Tab {
   if (value !== null && VALID_TABS.has(value as Tab)) return value as Tab;
@@ -1848,8 +1623,6 @@ export default function PersonDetailPage({ params }: { params: Promise<{ personI
           audit: auditEnv?.data ?? [],
         });
         setTabTotals({
-          identifier:  idEnv?.meta.total_count    ?? undefined,
-          source:      srcEnv?.meta.total_count   ?? undefined,
           sales:       salesEnv?.meta.total_count ?? undefined,
           audit:       auditEnv?.meta.total_count ?? undefined,
           matches:     matchesEnv?.meta.total_count ?? undefined,
@@ -1874,8 +1647,6 @@ export default function PersonDetailPage({ params }: { params: Promise<{ personI
 
   const onMatchesTotal     = useCallback((n: number) => { setTabTotals((p) => ({ ...p, matches:     n })); }, []);
   const onConnectionsTotal = useCallback((n: number) => { setTabTotals((p) => ({ ...p, connections: n })); }, []);
-  const onIdentifierTotal  = useCallback((n: number) => { setTabTotals((p) => ({ ...p, identifier:  n })); }, []);
-  const onSourceTotal      = useCallback((n: number) => { setTabTotals((p) => ({ ...p, source:      n })); }, []);
   const onSalesTotal       = useCallback((n: number) => { setTabTotals((p) => ({ ...p, sales:       n })); }, []);
   const onBankruptcyTotal  = useCallback((n: number) => { setTabTotals((p) => ({ ...p, bankruptcy:  n })); }, []);
   const onAuditTotal       = useCallback((n: number) => { setTabTotals((p) => ({ ...p, audit:       n })); }, []);
@@ -1894,8 +1665,6 @@ export default function PersonDetailPage({ params }: { params: Promise<{ personI
     { id: "timeline", label: "Timeline" },
     { id: "matches", label: "Matches", count: tabTotals.matches },
     { id: "connections", label: "Relations", count: tabTotals.connections ?? person.connection_count },
-    { id: "identifier", label: "IDs", count: tabTotals.identifier ?? detailData.identifiers.length },
-    { id: "source", label: "Sources", count: tabTotals.source ?? detailData.sourceRecords.length },
     { id: "sales", label: "Sales", count: tabTotals.sales ?? detailData.sales.length },
     { id: "bankruptcy", label: "Bankruptcy", count: tabTotals.bankruptcy },
     { id: "audit", label: "Audit", count: tabTotals.audit ?? detailData.audit.length },
@@ -1903,7 +1672,7 @@ export default function PersonDetailPage({ params }: { params: Promise<{ personI
   ];
 
   const shell = (children: ReactElement): ReactElement => (
-    <DetailShell person={person} detailData={detailData} salesTotal={tabTotals.sales} identifiersTotal={tabTotals.identifier} tabs={tabs} activeTab={activeTab} onTabChange={setActiveTab}>
+    <DetailShell person={person} detailData={detailData} salesTotal={tabTotals.sales} tabs={tabs} activeTab={activeTab} onTabChange={setActiveTab}>
       {children}
     </DetailShell>
   );
@@ -1915,13 +1684,11 @@ export default function PersonDetailPage({ params }: { params: Promise<{ personI
         {activeTab === "timeline" && shell(<TimelineTab person={person} detailData={detailData} />)}
         {activeTab === "matches" && shell(<MatchesTab personId={personId} onTotalLoaded={onMatchesTotal} />)}
         {activeTab === "connections" && shell(<ConnectionsTab personId={personId} onTotalLoaded={onConnectionsTotal} />)}
-        {activeTab === "identifier" && shell(<IdentifiersTab personId={personId} onTotalLoaded={onIdentifierTotal} />)}
-        {activeTab === "source" && shell(<SourceRecordsTab personId={personId} onTotalLoaded={onSourceTotal} />)}
         {activeTab === "sales" && shell(<SalesTab personId={personId} onTotalLoaded={onSalesTotal} />)}
         {activeTab === "bankruptcy" && shell(<BankruptcyTab personId={personId} onTotalLoaded={onBankruptcyTotal} />)}
         {activeTab === "audit" && shell(<AuditTab personId={personId} onTotalLoaded={onAuditTotal} />)}
         {activeTab === "graph" && (
-          <DetailShell person={person} detailData={detailData} salesTotal={tabTotals.sales} identifiersTotal={tabTotals.identifier} tabs={tabs} activeTab={activeTab} onTabChange={setActiveTab}>
+          <DetailShell person={person} detailData={detailData} salesTotal={tabTotals.sales} tabs={tabs} activeTab={activeTab} onTabChange={setActiveTab}>
             <div style={{ height: "max(calc(100vh - 340px), 480px)", border: "1px solid var(--border)", borderRadius: "10px", overflow: "hidden" }}>
               <PersonFocusedGraph
                 initialPersonId={person.person_id}
@@ -2069,7 +1836,7 @@ export default function PersonDetailPage({ params }: { params: Promise<{ personI
               <div className={styles.overrideLabel}>Source record</div>
               <div className={styles.overrideSrList}>
                 {detailData.sourceRecords.length === 0 && (
-                  <div className={styles.overrideSrEmpty}>No source records loaded. Open the Sources tab first.</div>
+                  <div className={styles.overrideSrEmpty}>No source records loaded.</div>
                 )}
                 {detailData.sourceRecords.map((sr) => (
                   <label key={sr.source_record_pk} className={`${styles.overrideSrRow} ${overrideSrPk === sr.source_record_pk ? styles.overrideSrRowActive : ""}`}>

@@ -22,9 +22,9 @@ const QUEUE_FILTERS: { value: QueueState; label: string }[] = [
 
 const PRIORITY_FILTERS: { value: Priority; label: string; lte: number | null }[] = [
   { value: "all",    label: "All priority", lte: null },
-  { value: "high",   label: "High",         lte: 10 },
-  { value: "medium", label: "Medium",       lte: 7 },
-  { value: "low",    label: "Low",          lte: 4 },
+  { value: "high",   label: "High",         lte: 100 },
+  { value: "medium", label: "Medium",       lte: 75 },
+  { value: "low",    label: "Low",          lte: 50 },
 ];
 
 const PAGE_SIZES = [25, 50, 100];
@@ -36,13 +36,13 @@ function queueStateColor(s: string): string {
   return "#22c55e";
 }
 function priorityLabel(p: number): string {
-  if (p >= 8) return "High";
-  if (p >= 5) return "Medium";
+  if (p >= 80) return "High";
+  if (p >= 50) return "Medium";
   return "Low";
 }
 function priorityColor(p: number): string {
-  if (p >= 8) return "var(--bad, #ef4444)";
-  if (p >= 5) return "#f59e0b";
+  if (p >= 80) return "var(--bad, #ef4444)";
+  if (p >= 50) return "#f59e0b";
   return "var(--text-muted)";
 }
 

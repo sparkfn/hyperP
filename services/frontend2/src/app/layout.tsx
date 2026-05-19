@@ -8,7 +8,7 @@ import AppShell from "@/components/AppShell";
 import SessionProviderClient from "@/components/SessionProviderClient";
 import { getInitials } from "@/lib/display";
 import { LoadingProvider } from "@/lib/LoadingContext";
-import { isPublicPath } from "@/lib/route-paths";
+import { isAdminPath, isPublicPath } from "@/lib/route-paths";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -29,6 +29,9 @@ export default async function RootLayout({ children }: { children: ReactNode }):
 
   if (!session?.googleIdToken && !isPublicPath(pathname)) {
     redirect("/login");
+  }
+  if (isAdminPath(pathname) && session?.user?.role !== "admin") {
+    redirect("/persons");
   }
 
   const role = session?.user?.role ?? null;

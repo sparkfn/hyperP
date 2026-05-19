@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useId, useState } from "react";
+import { useCallback, useEffect, useId, useState } from "react";
 import { bffFetch } from "./api-client";
 import { useSetLoading } from "./LoadingContext";
 
@@ -8,6 +8,7 @@ interface BffListResult<T> {
   data: T[];
   loading: boolean;
   error: string | null;
+  refresh: () => void;
 }
 
 // Module-level cache — persists across navigations in the same session.
@@ -19,8 +20,14 @@ export function useBffList<T>(url: string, errorMessage?: string): BffListResult
   const [data, setData] = useState<T[]>(cached ?? []);
   const [loading, setLoading] = useState(cached === undefined);
   const [error, setError] = useState<string | null>(null);
+  const [version, setVersion] = useState(0);
   const id = useId();
   const setGlobalLoading = useSetLoading();
+
+  const refresh = useCallback(() => {
+    listCache.delete(url);
+    setVersion((v) => v + 1);
+  }, [url]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -34,7 +41,8 @@ export function useBffList<T>(url: string, errorMessage?: string): BffListResult
       .catch(() => { if (!cancelled && !listCache.has(url)) setError(errorMessage ?? "Failed to load data."); })
       .finally(() => { if (!cancelled) { setLoading(false); setGlobalLoading(id, false); } });
     return () => { cancelled = true; controller.abort(); setGlobalLoading(id, false); };
-  }, [url, errorMessage, id, setGlobalLoading]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [url, errorMessage, id, setGlobalLoading, version]);
 
-  return { data, loading, error };
+  return { data, loading, error, refresh };
 }

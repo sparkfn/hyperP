@@ -1,6 +1,6 @@
 "use client";
 
-import { createContext, useCallback, useContext, useRef, useState, type ReactElement, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useMemo, useRef, useState, type ReactElement, type ReactNode } from "react";
 
 interface LoadingContextValue {
   setLoading: (key: string, active: boolean) => void;
@@ -22,8 +22,10 @@ export function LoadingProvider({ children }: { children: ReactNode }): ReactEle
     setActive(keys.current.size > 0);
   }, []);
 
+  const value = useMemo(() => ({ setLoading }), [setLoading]);
+
   return (
-    <LoadingContext.Provider value={{ setLoading }}>
+    <LoadingContext.Provider value={value}>
       {active && (
         <div style={{ position: "fixed", top: 0, left: 0, right: 0, height: 3, zIndex: 9999, overflow: "hidden", pointerEvents: "none" }}>
           <div style={{

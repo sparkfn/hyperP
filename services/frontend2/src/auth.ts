@@ -7,7 +7,7 @@ import NextAuth, {
 import Google from "next-auth/providers/google";
 import type { JWT } from "next-auth/jwt";
 
-import { BFF_AUTH_BASE_PATH, BFF_ME_PATH, isPublicPath } from "@/lib/route-paths";
+import { BFF_AUTH_BASE_PATH, BFF_ME_PATH, isAdminPath, isPublicPath } from "@/lib/route-paths";
 import { buildApiUrl } from "@/lib/api-url";
 import type { Role } from "@/lib/permissions";
 
@@ -181,6 +181,11 @@ export const authConfig: NextAuthConfig = {
         if (pathname === BFF_ME_PATH) return true;
         const url = request.nextUrl.clone();
         url.pathname = "/pending";
+        return Response.redirect(url);
+      }
+      if (isAdminPath(pathname) && role !== "admin") {
+        const url = request.nextUrl.clone();
+        url.pathname = "/persons";
         return Response.redirect(url);
       }
       return true;

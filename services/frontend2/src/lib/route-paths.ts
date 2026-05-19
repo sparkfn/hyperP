@@ -8,3 +8,10 @@ export const PUBLIC_PATHS = ["/login", "/public/", API_HEALTH_PATH, BFF_AUTH_BAS
 export function isPublicPath(pathname: string): boolean {
   return PUBLIC_PATHS.some((p) => pathname === p || pathname.startsWith(p));
 }
+
+// Routes only accessible by admin role.
+const ADMIN_PATHS = ["/review", "/admin"] as const;
+
+export function isAdminPath(pathname: string): boolean {
+  return ADMIN_PATHS.some((p) => pathname === p || pathname.startsWith(p));
+}
