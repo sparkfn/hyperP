@@ -1,16 +1,22 @@
 "use client";
 
-import { useState, useEffect, useRef, useCallback, useMemo, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactElement, type ReactNode } from "react";
+import { useState, useEffect, useId, useRef, useCallback, useMemo, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactElement, type ReactNode } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense } from "react";
 import type { ListedPerson, PersonConnection, SalesOrder, EntitySummary } from "@/lib/api-types";
 import { bffFetchEnvelope, BffError, bffFetch } from "@/lib/api-client";
 import type { SourceSystemInfo } from "@/lib/api-types-ops";
-import { avatarColor, completenessColor } from "@/lib/display";
+import { avatarColor, completenessColor, getInitials } from "@/lib/display";
+import { useSetLoading } from "@/lib/LoadingContext";
+import { usePopoverClose } from "@/lib/usePopoverClose";
 import PersonGraphDialog from "@/components/PersonGraphDialog";
 import styles from "./persons.module.css";
 
+// Module-level SWR cache — persists across navigations within the same session.
+const personsCache = new Map<string, ListedPerson[]>();
+interface StatsCache { entities: EntitySummary[]; sourceSystems: SourceSystemInfo[]; allCount: number | null; hrCount: number | null; hvCount: number | null; ncCount: number | null }
+let statsCache: StatsCache | null = null;
 
 interface ColDef { key: string; minWidth: number; resizable: boolean }
 const COLS: ColDef[] = [
@@ -88,7 +94,7 @@ function formatOrderDate(date: string | null): string {
     return "—";
   }
   const d = date.includes("T") ? new Date(date) : new Date(`${date}T00:00:00`);
-  if (isNaN(d.getTime())) {
+  if (Number.isNaN(d.getTime())) {
     return "—";
   }
   return new Intl.DateTimeFormat("en-GB", {
@@ -116,29 +122,7 @@ function OrdersPopover({
   total: number | null;
   onClose: () => void;
 }): ReactElement {
-  const popoverRef = useRef<HTMLDivElement | null>(null);
-
-  useEffect(() => {
-    function handlePointerDown(event: MouseEvent): void {
-      const target = event.target;
-      if (!(target instanceof Node)) return;
-      if (popoverRef.current?.contains(target)) return;
-      onClose();
-    }
-
-    function handleKeyDown(event: KeyboardEvent): void {
-      if (event.key === "Escape") {
-        onClose();
-      }
-    }
-
-    document.addEventListener("mousedown", handlePointerDown);
-    document.addEventListener("keydown", handleKeyDown);
-    return () => {
-      document.removeEventListener("mousedown", handlePointerDown);
-      document.removeEventListener("keydown", handleKeyDown);
-    };
-  }, [onClose]);
+  const popoverRef = usePopoverClose<HTMLDivElement>(onClose);
 
   return (
     <div
@@ -214,29 +198,7 @@ function RelationPopover({
   total: number | null;
   onClose: () => void;
 }): ReactElement {
-  const popoverRef = useRef<HTMLDivElement | null>(null);
-
-  useEffect(() => {
-    function handlePointerDown(event: MouseEvent): void {
-      const target = event.target;
-      if (!(target instanceof Node)) return;
-      if (popoverRef.current?.contains(target)) return;
-      onClose();
-    }
-
-    function handleKeyDown(event: KeyboardEvent): void {
-      if (event.key === "Escape") {
-        onClose();
-      }
-    }
-
-    document.addEventListener("mousedown", handlePointerDown);
-    document.addEventListener("keydown", handleKeyDown);
-    return () => {
-      document.removeEventListener("mousedown", handlePointerDown);
-      document.removeEventListener("keydown", handleKeyDown);
-    };
-  }, [onClose]);
+  const popoverRef = usePopoverClose<HTMLDivElement>(onClose);
 
   return (
     <div
@@ -373,12 +335,7 @@ function PersonRow({
   onGraphClick: (personId: string, name: string) => void;
   isResizing: () => boolean;
 }): ReactElement {
-  const initials = (p.preferred_full_name ?? "?")
-    .split(" ")
-    .map((w) => w[0])
-    .slice(0, 2)
-    .join("")
-    .toUpperCase();
+  const initials = getInitials(p.preferred_full_name);
   const pct = Math.round(p.profile_completeness_score * 100);
   const dob = parseDob(p.preferred_dob);
   const labels = getLabels(p);
@@ -548,12 +505,7 @@ function PersonCardMobile({
   onGraphClick: (personId: string, name: string) => void;
 }): ReactElement {
   const router = useRouter();
-  const initials = (p.preferred_full_name ?? "?")
-    .split(" ")
-    .map((w) => w[0])
-    .slice(0, 2)
-    .join("")
-    .toUpperCase();
+  const initials = getInitials(p.preferred_full_name);
   const pct = Math.round(p.profile_completeness_score * 100);
   const labels = getLabels(p);
 
@@ -791,18 +743,18 @@ function PersonsInner(): ReactElement {
   const [sortDir, setSortDir] = useState<SortDir>("desc");
   const [apiRows, setApiRows] = useState<ListedPerson[]>([]);
   const [total, setTotal] = useState<number | null>(null);
-  const [fetchLoading, setFetchLoading] = useState(true);
+  const [fetchLoading, setFetchLoading] = useState(true); // always true initially; cache hydration happens in effect
   const [fetchError, setFetchError] = useState<string | null>(null);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [cursorStack, setCursorStack] = useState<(string | null)[]>([]);
   const [currentCursor, setCurrentCursor] = useState<string | null>(null);
-  const [entities, setEntities] = useState<EntitySummary[]>([]);
-  const [sourceSystems, setSourceSystems] = useState<SourceSystemInfo[]>([]);
-  const [allProfilesCount, setAllProfilesCount] = useState<number | null>(null);
-  const [highRiskCount, setHighRiskCount] = useState<number | null>(null);
-  const [highValueCount, setHighValueCount] = useState<number | null>(null);
-  const [noContactCount, setNoContactCount] = useState<number | null>(null);
-  const [statsLoading, setStatsLoading] = useState(true);
+  const [entities, setEntities] = useState<EntitySummary[]>(statsCache?.entities ?? []);
+  const [sourceSystems, setSourceSystems] = useState<SourceSystemInfo[]>(statsCache?.sourceSystems ?? []);
+  const [allProfilesCount, setAllProfilesCount] = useState<number | null>(statsCache?.allCount ?? null);
+  const [highRiskCount, setHighRiskCount] = useState<number | null>(statsCache?.hrCount ?? null);
+  const [highValueCount, setHighValueCount] = useState<number | null>(statsCache?.hvCount ?? null);
+  const [noContactCount, setNoContactCount] = useState<number | null>(statsCache?.ncCount ?? null);
+  const [statsLoading, setStatsLoading] = useState(statsCache === null);
 
   const [graphDialog, setGraphDialog] = useState<{ open: boolean; personId: string; title: string }>({
     open: false,
@@ -827,7 +779,9 @@ function PersonsInner(): ReactElement {
   }
 
   const [selected, setSelected] = useState<Set<string>>(new Set());
-  const [pageSize, setPageSize] = useState(100);
+  const [pageSize, setPageSize] = useState(25);
+  const listLoadId = useId();
+  const setGlobalLoading = useSetLoading();
   useEffect(() => {
     if (window.innerWidth <= 768) setPageSize(25);
   }, []);
@@ -931,16 +885,19 @@ function PersonsInner(): ReactElement {
   }, [searchParams]);
 
   useEffect(() => {
+    const controller = new AbortController();
+    const { signal } = controller;
     void (async () => {
       try {
         const [ents, srcs, all, hr, hv, nc] = await Promise.all([
-          bffFetch<EntitySummary[]>("/bff/entities"),
-          bffFetch<SourceSystemInfo[]>("/bff/source-systems"),
-          bffFetchEnvelope<ListedPerson[]>("/bff/persons?limit=1"),
-          bffFetchEnvelope<ListedPerson[]>("/bff/persons?is_high_risk=true&limit=1"),
-          bffFetchEnvelope<ListedPerson[]>("/bff/persons?is_high_value=true&limit=1"),
-          bffFetchEnvelope<ListedPerson[]>("/bff/persons?has_phone=false&has_email=false&limit=1"),
+          bffFetch<EntitySummary[]>("/bff/entities", { signal }),
+          bffFetch<SourceSystemInfo[]>("/bff/source-systems", { signal }),
+          bffFetchEnvelope<ListedPerson[]>("/bff/persons?limit=1", { signal }),
+          bffFetchEnvelope<ListedPerson[]>("/bff/persons?is_high_risk=true&limit=1", { signal }),
+          bffFetchEnvelope<ListedPerson[]>("/bff/persons?is_high_value=true&limit=1", { signal }),
+          bffFetchEnvelope<ListedPerson[]>("/bff/persons?has_phone=false&has_email=false&limit=1", { signal }),
         ]);
+        statsCache = { entities: ents, sourceSystems: srcs, allCount: all.meta.total_count ?? null, hrCount: hr.meta.total_count ?? null, hvCount: hv.meta.total_count ?? null, ncCount: nc.meta.total_count ?? null };
         setEntities(ents);
         setSourceSystems(srcs);
         setAllProfilesCount(all.meta.total_count ?? null);
@@ -950,9 +907,10 @@ function PersonsInner(): ReactElement {
       } catch {
         // silently fail — filter options and stat cards fall back gracefully
       } finally {
-        setStatsLoading(false);
+        if (!signal.aborted) setStatsLoading(false);
       }
     })();
+    return () => controller.abort();
   }, []);
 
   useEffect(() => {
@@ -1054,32 +1012,36 @@ function PersonsInner(): ReactElement {
   }, [apiQuery]);
 
   useEffect(() => {
-    let cancelled = false;
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    setFetchLoading(true);
-    setFetchError(null);
+    const controller = new AbortController();
+    const { signal } = controller;
     const params = new URLSearchParams(apiQuery);
     if (currentCursor) params.set("cursor", currentCursor);
+    const cacheKey = `/bff/persons?${params.toString()}`;
+    const cached = personsCache.get(cacheKey);
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    if (cached) { setApiRows(cached); setFetchLoading(false); } else { setFetchLoading(true); setGlobalLoading(listLoadId, true); }
+    setFetchError(null);
     const run = async (): Promise<void> => {
       try {
-        const envelope = await bffFetchEnvelope<ListedPerson[]>(`/bff/persons?${params.toString()}`);
-        if (!cancelled) {
+        const envelope = await bffFetchEnvelope<ListedPerson[]>(cacheKey, { signal });
+        if (!signal.aborted) {
+          personsCache.set(cacheKey, envelope.data ?? []);
           setApiRows(envelope.data ?? []);
           setTotal(envelope.meta.total_count ?? null);
           setNextCursor(envelope.meta.next_cursor ?? null);
         }
       } catch (err: unknown) {
-        if (!cancelled) {
+        if (!signal.aborted) {
           setFetchError(err instanceof BffError ? err.message : "Failed to load data.");
-          setApiRows([]);
+          if (!cached) setApiRows([]);
         }
       } finally {
-        if (!cancelled) setFetchLoading(false);
+        if (!signal.aborted) { setFetchLoading(false); setGlobalLoading(listLoadId, false); }
       }
     };
     void run();
-    return () => { cancelled = true; };
-  }, [apiQuery, currentCursor]);
+    return () => { controller.abort(); setGlobalLoading(listLoadId, false); };
+  }, [apiQuery, currentCursor, listLoadId, setGlobalLoading]);
 
   function goNext(): void {
     if (!nextCursor) return;
@@ -1132,15 +1094,15 @@ function PersonsInner(): ReactElement {
       setPopoverConnectionsTotal(null);
       return;
     }
-    let cancelled = false;
+    const controller = new AbortController();
     setPopoverConnectionsLoading(true);
     setPopoverConnections([]);
     setPopoverConnectionsTotal(null);
-    void bffFetchEnvelope<PersonConnection[]>(`/bff/persons/${encodeURIComponent(relationPopover.personId)}/connections`)
-      .then((res) => { if (!cancelled) { setPopoverConnections(res.data); setPopoverConnectionsTotal(res.meta.total_count ?? null); } })
-      .catch(() => { if (!cancelled) { setPopoverConnections([]); } })
-      .finally(() => { if (!cancelled) { setPopoverConnectionsLoading(false); } });
-    return () => { cancelled = true; };
+    void bffFetchEnvelope<PersonConnection[]>(`/bff/persons/${encodeURIComponent(relationPopover.personId)}/connections`, { signal: controller.signal })
+      .then((res) => { if (!controller.signal.aborted) { setPopoverConnections(res.data); setPopoverConnectionsTotal(res.meta.total_count ?? null); } })
+      .catch(() => { if (!controller.signal.aborted) { setPopoverConnections([]); } })
+      .finally(() => { if (!controller.signal.aborted) { setPopoverConnectionsLoading(false); } });
+    return () => controller.abort();
   }, [relationPopover?.personId]);
 
   useEffect(() => {
@@ -1149,15 +1111,15 @@ function PersonsInner(): ReactElement {
       setPopoverOrdersTotal(null);
       return;
     }
-    let cancelled = false;
+    const controller = new AbortController();
     setPopoverOrdersLoading(true);
     setPopoverOrders([]);
     setPopoverOrdersTotal(null);
-    void bffFetchEnvelope<SalesOrder[]>(`/bff/persons/${encodeURIComponent(ordersPopover.personId)}/sales`)
-      .then((res) => { if (!cancelled) { setPopoverOrders(res.data); setPopoverOrdersTotal(res.meta.total_count ?? null); } })
-      .catch(() => { if (!cancelled) { setPopoverOrders([]); } })
-      .finally(() => { if (!cancelled) { setPopoverOrdersLoading(false); } });
-    return () => { cancelled = true; };
+    void bffFetchEnvelope<SalesOrder[]>(`/bff/persons/${encodeURIComponent(ordersPopover.personId)}/sales`, { signal: controller.signal })
+      .then((res) => { if (!controller.signal.aborted) { setPopoverOrders(res.data); setPopoverOrdersTotal(res.meta.total_count ?? null); } })
+      .catch(() => { if (!controller.signal.aborted) { setPopoverOrders([]); } })
+      .finally(() => { if (!controller.signal.aborted) { setPopoverOrdersLoading(false); } });
+    return () => controller.abort();
   }, [ordersPopover?.personId]);
 
   function closeRelationPopover(): void {

@@ -6,6 +6,8 @@ import { headers } from "next/headers";
 import { auth } from "@/auth";
 import AppShell from "@/components/AppShell";
 import SessionProviderClient from "@/components/SessionProviderClient";
+import { getInitials } from "@/lib/display";
+import { LoadingProvider } from "@/lib/LoadingContext";
 import { isPublicPath } from "@/lib/route-paths";
 import "./globals.css";
 
@@ -33,9 +35,7 @@ export default async function RootLayout({ children }: { children: ReactNode }):
   const isChromeless = !session || role === "first_time" || isPublicPath(pathname) || pathname.startsWith("/dev");
   const email = session?.user?.email ?? null;
   const displayName = session?.user?.displayName ?? session?.user?.name ?? null;
-  const initials = displayName
-    ? displayName.split(" ").filter(Boolean).map((w) => w[0]).slice(0, 2).join("").toUpperCase()
-    : (email?.[0] ?? "?").toUpperCase();
+  const initials = getInitials(displayName, email?.[0] ?? "?");
 
   if (isChromeless) {
     return (
@@ -50,11 +50,13 @@ export default async function RootLayout({ children }: { children: ReactNode }):
     <html lang="en" suppressHydrationWarning>
       <head><script dangerouslySetInnerHTML={{ __html: themeScript }}/></head>
       <body>
-        <SessionProviderClient>
-          <AppShell initials={initials} email={email} displayName={displayName}>
-            {children}
-          </AppShell>
-        </SessionProviderClient>
+        <LoadingProvider>
+          <SessionProviderClient>
+            <AppShell initials={initials} email={email} displayName={displayName}>
+              {children}
+            </AppShell>
+          </SessionProviderClient>
+        </LoadingProvider>
       </body>
     </html>
   );

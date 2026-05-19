@@ -273,6 +273,7 @@ export default function PersonGraphViewer({
   const graphRef = useRef<ForceGraphMethods<AnyNode, AnyLink> | undefined>(undefined);
   const containerRef = useRef<HTMLDivElement>(null);
   const clickTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => { if (clickTimerRef.current !== null) clearTimeout(clickTimerRef.current); }, []);
 
   // Responsive container
   useEffect(() => {
@@ -304,20 +305,24 @@ export default function PersonGraphViewer({
     params.set("max_hops", String(maxHops));
 
     const suffix = elementId ? `/bff/persons/graph/node?${params.toString()}` : `/bff/persons/${encodeURIComponent(personId!)}/graph?${params.toString()}`;
+    let cancelled = false;
     bffFetch<PersonGraph>(suffix)
       .then((data) => {
+        if (cancelled) return;
         const fgData = toForceGraphData(data, personId, elementId);
         setGraphData(fgData);
         setUniqueLabels([...new Set(fgData.nodes.map((n) => n.label))].sort());
       })
       .catch((err: unknown) => {
+        if (cancelled) return;
         if (err instanceof BffError) {
           setError(err.message);
         } else {
           setError("Failed to load graph data");
         }
       })
-      .finally(() => setLoading(false));
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
   }, [personId, elementId, maxHops]);
 
   useEffect(() => {
@@ -359,7 +364,8 @@ export default function PersonGraphViewer({
       }
     }) as never);
     graph.d3ReheatSimulation();
-    window.setTimeout(() => graph.zoomToFit(500, 90), 150);
+    const zoomTimer = window.setTimeout(() => graph.zoomToFit(500, 90), 150);
+    return () => clearTimeout(zoomTimer);
   }, [graphData, dimensions.width, dimensions.height]);
 
   const handleNodeClick = useCallback(

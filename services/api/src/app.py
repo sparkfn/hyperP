@@ -60,12 +60,30 @@ async def _ensure_oauth_client_constraints() -> None:
     await ensure_oauth_client_constraints()
 
 
+_PERSON_INDEXES = [
+    "CREATE INDEX idx_person_completeness IF NOT EXISTS FOR (p:Person) ON (p.profile_completeness_score)",
+    "CREATE INDEX idx_person_high_value IF NOT EXISTS FOR (p:Person) ON (p.is_high_value)",
+    "CREATE INDEX idx_person_high_risk IF NOT EXISTS FOR (p:Person) ON (p.is_high_risk)",
+    "CREATE INDEX idx_person_updated_at IF NOT EXISTS FOR (p:Person) ON (p.updated_at)",
+]
+
+
+async def _ensure_person_indexes() -> None:
+    try:
+        async with get_session(write=True) as session:
+            for cypher in _PERSON_INDEXES:
+                await session.run(cypher)
+    except Exception:  # noqa: BLE001
+        logger.exception("Failed to create Person indexes")
+
+
 @asynccontextmanager
 async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
     """Manage the Neo4j driver lifecycle alongside the FastAPI process."""
     validate_oauth_runtime_config()
     await _ensure_user_constraint()
     await _ensure_oauth_client_constraints()
+    await _ensure_person_indexes()
     yield
     await close_driver()
     await close_redis()

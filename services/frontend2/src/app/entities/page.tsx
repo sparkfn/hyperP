@@ -1,23 +1,12 @@
 "use client";
 
-import { useEffect, useState, type ReactElement } from "react";
+import { type ReactElement } from "react";
 import Link from "next/link";
 
-import { bffFetchEnvelope } from "@/lib/api-client";
 import type { EntitySummary } from "@/lib/api-types";
-import { relativeTime } from "@/lib/display";
+import { entityColor, getInitials, relativeTime } from "@/lib/display";
+import { useBffList } from "@/lib/useBffList";
 import styles from "./entities.module.css";
-
-const ENTITY_COLORS = ["#4361ee", "#7c3aed", "#0891b2", "#059669", "#d97706", "#0f766e", "#b45309", "#be185d"];
-function entityColor(key: string): string {
-  let h = 0;
-  for (let i = 0; i < key.length; i++) h = (h * 31 + key.charCodeAt(i)) >>> 0;
-  return ENTITY_COLORS[h % ENTITY_COLORS.length] ?? "#4361ee";
-}
-function initials(name: string | null, key: string): string {
-  if (!name) return key.slice(0, 2).toUpperCase();
-  return name.split(/\s+/).filter(Boolean).map((w) => w[0]).slice(0, 2).join("").toUpperCase();
-}
 function entityTypeLabel(t: string | null): string | null {
   if (!t) return null;
   return t.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
@@ -47,18 +36,7 @@ function SkeletonCard(): ReactElement {
 }
 
 export default function EntitiesPage(): ReactElement {
-  const [entities, setEntities] = useState<EntitySummary[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    setLoading(true);
-    void bffFetchEnvelope<EntitySummary[]>("/bff/entities")
-      .then((res) => setEntities(res.data ?? []))
-      .catch(() => setError("Failed to load entities."))
-      .finally(() => setLoading(false));
-  }, []);
+  const { data: entities, loading, error } = useBffList<EntitySummary>("/bff/entities", "Failed to load entities.");
 
   return (
     <div className={styles.page}>
@@ -78,7 +56,7 @@ export default function EntitiesPage(): ReactElement {
 
         {!loading && entities.map((e) => {
           const color = entityColor(e.entity_key);
-          const init = initials(e.display_name, e.entity_key);
+          const init = getInitials(e.display_name, e.entity_key);
           const typeLabel = entityTypeLabel(e.entity_type);
           return (
             <Link key={e.entity_key} href={`/persons?entity=${encodeURIComponent(e.entity_key)}`} className={styles.card}>

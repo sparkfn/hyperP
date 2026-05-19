@@ -34,7 +34,7 @@ export async function bffFetchEnvelope<T>(path: string, init?: RequestInit): Pro
   if (!response.ok) {
     if (response.status === 401) {
       window.location.href = "/login";
-      return new Promise(() => undefined);
+      throw new BffError(401, "unauthorized", "Session expired.");
     }
     if (isApiError(json)) {
       throw new BffError(response.status, json.error.code, json.error.message);

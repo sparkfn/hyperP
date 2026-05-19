@@ -4,24 +4,11 @@ import { notFound } from "next/navigation";
 import { apiFetch } from "@/lib/api-server";
 import type { Person, PersonConnection, SalesOrder } from "@/lib/api-types";
 import { UpstreamError } from "@/lib/api-server";
+import { formatDate, formatDob, getInitials } from "@/lib/display";
 import styles from "./public-person.module.css";
 
 interface PageProps {
   params: Promise<{ token: string }>;
-}
-
-function formatDob(dob: string | null): string {
-  if (!dob) return "—";
-  const d = new Date(`${dob}T00:00:00`);
-  if (isNaN(d.getTime())) return "—";
-  return d.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
-}
-
-function formatDate(iso: string | null): string {
-  if (!iso) return "—";
-  const d = new Date(iso);
-  if (isNaN(d.getTime())) return "—";
-  return d.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
 }
 
 function formatAmount(amount: number | null, currency: string | null): string {
@@ -71,7 +58,7 @@ export default async function PublicPersonPage({ params }: PageProps): Promise<R
         {/* ── Person header ── */}
         <div className={styles.personHeader}>
           <div className={styles.avatar}>
-            {(person.preferred_full_name ?? "?").charAt(0).toUpperCase()}
+            {getInitials(person.preferred_full_name)}
           </div>
           <div className={styles.personInfo}>
             <h1 className={styles.personName}>{person.preferred_full_name ?? "Unknown"}</h1>

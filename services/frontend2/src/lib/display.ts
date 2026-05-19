@@ -15,7 +15,7 @@ export function confidenceColor(value: number | null): "success" | "warning" | "
   return "error";
 }
 
-export function formatDate(value: string): string {
+export function formatDate(value: string | null): string {
   if (!value) return "—";
   const parsed = new Date(value);
   if (Number.isNaN(parsed.getTime())) return value;
@@ -40,6 +40,11 @@ export function formatDob(value: string | null): string {
   return value;
 }
 
+export function getInitials(name: string | null, fallback = "?"): string {
+  if (!name) return fallback.slice(0, 2).toUpperCase();
+  return name.split(/\s+/).filter(Boolean).map((w) => w[0]).slice(0, 2).join("").toUpperCase();
+}
+
 export const AVATAR_COLORS = ["#4361ee", "#7c3aed", "#0891b2", "#059669", "#d97706", "#dc2626"] as const;
 
 export function avatarColor(name: string): string {
@@ -56,6 +61,14 @@ export function statusHex(status: string): string {
   if (status === "active") return "#22c55e";
   if (status === "merged") return "#3b82f6";
   return "#94a3b8";
+}
+
+const ENTITY_COLORS = ["#4361ee", "#7c3aed", "#0891b2", "#059669", "#d97706", "#0f766e", "#b45309", "#be185d"] as const;
+
+export function entityColor(key: string): string {
+  let h = 0;
+  for (let i = 0; i < key.length; i++) h = (h * 31 + key.charCodeAt(i)) >>> 0;
+  return ENTITY_COLORS[h % ENTITY_COLORS.length] ?? "#4361ee";
 }
 
 export function relativeTime(iso: string | null): string {

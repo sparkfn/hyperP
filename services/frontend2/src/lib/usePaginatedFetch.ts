@@ -1,7 +1,8 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useId, useState } from "react";
 import { BffError, bffFetchEnvelope } from "@/lib/api-client";
+import { useSetLoading } from "@/lib/LoadingContext";
 
 export const PAGE_SIZE = 10;
 
@@ -26,17 +27,21 @@ export function usePaginatedFetch<T>(basePath: string): PaginatedResult<T> {
   const [total, setTotal] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
+  const id = useId();
+  const setGlobalLoading = useSetLoading();
 
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
+    setGlobalLoading(id, true);
     setRows(null);
     setError(null);
     const sep = basePath.includes("?") ? "&" : "?";
     const url = `${basePath}${sep}limit=${PAGE_SIZE}${cursor !== null ? `&cursor=${encodeURIComponent(cursor)}` : ""}`;
+    const controller = new AbortController();
     const run = async (): Promise<void> => {
       try {
-        const envelope = await bffFetchEnvelope<T[]>(url);
+        const envelope = await bffFetchEnvelope<T[]>(url, { signal: controller.signal });
         if (!cancelled) {
           setRows(envelope.data);
           setNextCursor(envelope.meta.next_cursor);
@@ -51,14 +56,16 @@ export function usePaginatedFetch<T>(basePath: string): PaginatedResult<T> {
           setError(err instanceof BffError ? err.message : "Failed to load.");
         }
       } finally {
-        if (!cancelled) setLoading(false);
+        if (!cancelled) { setLoading(false); setGlobalLoading(id, false); }
       }
     };
     void run();
     return () => {
       cancelled = true;
+      controller.abort();
+      setGlobalLoading(id, false);
     };
-  }, [basePath, cursor]);
+  }, [basePath, cursor, id, setGlobalLoading]);
 
   const goNext = useCallback((): void => {
     if (nextCursor === null) return;

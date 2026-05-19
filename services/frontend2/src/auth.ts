@@ -7,7 +7,7 @@ import NextAuth, {
 import Google from "next-auth/providers/google";
 import type { JWT } from "next-auth/jwt";
 
-import { BFF_ME_PATH, isPublicPath } from "@/lib/route-paths";
+import { BFF_AUTH_BASE_PATH, BFF_ME_PATH, isPublicPath } from "@/lib/route-paths";
 import { buildApiUrl } from "@/lib/api-url";
 import type { Role } from "@/lib/permissions";
 
@@ -175,7 +175,7 @@ export const authConfig: NextAuthConfig = {
       const { pathname } = request.nextUrl;
       if (isPublicPath(pathname)) return true;
       if (!sess || !sess.googleIdToken || sess.error === "RefreshTokenError") return false;
-      const role: string | undefined = sess.user?.role;
+      const role: string | undefined = sess.user.role;
       if (role === "first_time") {
         if (pathname.startsWith("/pending")) return true;
         if (pathname === BFF_ME_PATH) return true;

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 from src.graph.client import get_session
 from src.graph.mappers import (
     map_audit_event,
@@ -101,12 +103,19 @@ class Neo4jPersonRepository:
         }
         list_params = {**cypher_params, "skip": skip, "limit": limit + 1}
         count_params = cypher_params
-        async with get_session() as session:
-            list_result = await session.run(list_query, list_params)
-            records = [record_to_dict(r.keys(), list(r.values())) async for r in list_result]
-            count_result = await session.run(count_query, count_params)
-            count_record = await count_result.single()
-        total = to_total(count_record)
+
+        async def _run_list() -> list[dict[str, object]]:
+            async with get_session() as session:
+                result = await session.run(list_query, list_params)
+                return [record_to_dict(r.keys(), list(r.values())) async for r in result]
+
+        async def _run_count() -> int:
+            async with get_session() as session:
+                result = await session.run(count_query, count_params)
+                record = await result.single()
+                return to_total(record)
+
+        records, total = await asyncio.gather(_run_list(), _run_count())
         return [map_listed_person(rec) for rec in records[:limit]], total
 
     async def search_by_identifier(self, identifier_type: str, value: str) -> list[Person]:

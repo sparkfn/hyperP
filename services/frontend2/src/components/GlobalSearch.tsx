@@ -56,26 +56,28 @@ export default function GlobalSearch(): ReactElement {
   const inputRef = useRef<HTMLInputElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
-  // Debounced search
+  // Debounced search — 300ms delay to avoid firing on every keystroke
   useEffect(() => {
     const q = query.trim();
     if (q.length < 3) { setResults([]); setLoading(false); return; }
     setLoading(true);
     let cancelled = false;
-    void bffFetchEnvelope<Person[]>(`/bff/persons/search?q=${encodeURIComponent(q)}&limit=8`)
-      .then((res) => {
-        if (!cancelled) setResults((res.data ?? []).map((p) => ({
-          personId: p.person_id,
-          name: p.preferred_full_name ?? p.person_id,
-          email: p.preferred_email,
-          phone: p.preferred_phone,
-          status: p.status,
-          completeness: p.profile_completeness_score,
-        })));
-      })
-      .catch(() => { if (!cancelled) setResults([]); })
-      .finally(() => { if (!cancelled) setLoading(false); });
-    return () => { cancelled = true; };
+    const timer = setTimeout(() => {
+      void bffFetchEnvelope<Person[]>(`/bff/persons/search?q=${encodeURIComponent(q)}&limit=8`)
+        .then((res) => {
+          if (!cancelled) setResults((res.data ?? []).map((p) => ({
+            personId: p.person_id,
+            name: p.preferred_full_name ?? p.person_id,
+            email: p.preferred_email,
+            phone: p.preferred_phone,
+            status: p.status,
+            completeness: p.profile_completeness_score,
+          })));
+        })
+        .catch(() => { if (!cancelled) setResults([]); })
+        .finally(() => { if (!cancelled) setLoading(false); });
+    }, 300);
+    return () => { cancelled = true; clearTimeout(timer); };
   }, [query]);
 
   // Reset highlight when results change

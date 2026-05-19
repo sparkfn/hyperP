@@ -157,6 +157,20 @@ _DEFAULT_SORT_WITHOUT_Q = "profile_completeness_score"
 _DEFAULT_ORDER_WITH_Q = "DESC"
 _DEFAULT_ORDER_WITHOUT_Q = "DESC"
 
+# Sort columns that are native Person node properties (or fulltext score).
+# For these, SKIP/LIMIT can happen BEFORE the 8 CALL enrichments so only
+# the requested page of rows is ever enriched instead of the full match set.
+_PRE_ENRICH_SORT_MAP: dict[str, str] = {
+    "person.preferred_full_name": "p.preferred_full_name",
+    "person.preferred_phone": "p.preferred_phone",
+    "person.preferred_email": "p.preferred_email",
+    "person.preferred_dob": "p.preferred_dob",
+    "person.preferred_nric": "p.preferred_nric",
+    "person.updated_at": "p.updated_at",
+    "person.profile_completeness_score": "p.profile_completeness_score",
+    "score": "score",
+}
+
 
 def _resolve_sort(sort_by: str | None, sort_order: str | None, *, has_q: bool) -> tuple[str, str]:
     default_col = _DEFAULT_SORT_WITH_Q if has_q else _DEFAULT_SORT_WITHOUT_Q
@@ -173,8 +187,23 @@ def build_list_persons_query(sort_by: str | None, sort_order: str | None, *, has
 
     When ``has_q`` is true, prefixes a fulltext index match; otherwise scans
     Person directly. All non-q filters are parameterised and applied uniformly.
+
+    For sort columns that are native Person properties (or fulltext score),
+    SKIP/LIMIT is applied *before* the 8 CALL enrichment blocks so that only
+    the requested page of rows is ever enriched. For computed sort columns
+    (source_record_count, connection_count, etc.) enrichment must precede
+    ordering, so the original structure is preserved.
     """
     col, direction = _resolve_sort(sort_by, sort_order, has_q=has_q)
+    pre_col = _PRE_ENRICH_SORT_MAP.get(col)
+    if pre_col:
+        return (
+            _head(has_q=has_q)
+            + _COMMON_FILTER_CLAUSE
+            + _ENTITY_FILTER_CLAUSE
+            + f"WITH p, addr, score\nORDER BY {pre_col} {direction}\nSKIP $skip LIMIT $limit\n"
+            + _ENRICH_AND_RETURN
+        )
     return (
         _head(has_q=has_q)
         + _COMMON_FILTER_CLAUSE

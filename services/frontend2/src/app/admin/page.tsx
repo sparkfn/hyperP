@@ -1,10 +1,10 @@
 "use client";
 
-import { useEffect, useState, type ReactElement } from "react";
+import { type ReactElement } from "react";
 
-import { bffFetch } from "@/lib/api-client";
 import type { SourceSystemInfo, OAuthClient } from "@/lib/api-types-ops";
 import { relativeTime } from "@/lib/display";
+import { useBffList } from "@/lib/useBffList";
 import styles from "./admin.module.css";
 
 // ── Skeleton ──────────────────────────────────────────────────────────────────
@@ -32,23 +32,18 @@ function SkeletonCard({ lines = 2 }: { lines?: number }): ReactElement {
 
 // ── Source Systems ────────────────────────────────────────────────────────────
 
-const SOURCE_COLORS: Record<string, string> = {
-  fundbox: "#1e40af", eko: "#166534", speedzone: "#9f1239", bitrix: "#92400e",
+const SOURCE_PALETTE: Record<string, { fg: string; bg: string }> = {
+  fundbox:   { fg: "#1e40af", bg: "#dbeafe" },
+  eko:       { fg: "#166534", bg: "#dcfce7" },
+  speedzone: { fg: "#9f1239", bg: "#ffe4e6" },
+  bitrix:    { fg: "#92400e", bg: "#fef3c7" },
 };
-function sourceColor(key: string): string {
-  for (const [k, v] of Object.entries(SOURCE_COLORS)) {
-    if (key.toLowerCase().includes(k)) return v;
+function sourceStyle(key: string): { fg: string; bg: string } {
+  const lower = key.toLowerCase();
+  for (const [k, v] of Object.entries(SOURCE_PALETTE)) {
+    if (lower.includes(k)) return v;
   }
-  return "#4361ee";
-}
-function sourceBg(key: string): string {
-  const map: Record<string, string> = {
-    fundbox: "#dbeafe", eko: "#dcfce7", speedzone: "#ffe4e6", bitrix: "#fef3c7",
-  };
-  for (const [k, v] of Object.entries(map)) {
-    if (key.toLowerCase().includes(k)) return v;
-  }
-  return "color-mix(in srgb, var(--bg-card) 60%, var(--bg-app))";
+  return { fg: "#4361ee", bg: "color-mix(in srgb, var(--bg-card) 60%, var(--bg-app))" };
 }
 
 function SourceSystemCard({ s }: { s: SourceSystemInfo }): ReactElement {
@@ -58,7 +53,7 @@ function SourceSystemCard({ s }: { s: SourceSystemInfo }): ReactElement {
   return (
     <div className={styles.card}>
       <div className={styles.cardRow}>
-        <div className={styles.avatar} style={{ background: sourceBg(s.source_key), color: sourceColor(s.source_key) }}>
+        <div className={styles.avatar} style={{ background: sourceStyle(s.source_key).bg, color: sourceStyle(s.source_key).fg }}>
           {abbr}
         </div>
         <div className={styles.cardInfo}>
@@ -123,28 +118,8 @@ function Section({ title, icon, children }: { title: string; icon: ReactElement;
 // ── Page ──────────────────────────────────────────────────────────────────────
 
 export default function AdminPage(): ReactElement {
-  const [sources, setSources] = useState<SourceSystemInfo[]>([]);
-  const [clients, setClients] = useState<OAuthClient[]>([]);
-  const [sourcesLoading, setSourcesLoading] = useState(true);
-  const [clientsLoading, setClientsLoading] = useState(true);
-
-  useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    setSourcesLoading(true);
-    void bffFetch<SourceSystemInfo[]>("/bff/source-systems")
-      .then((data) => setSources(data))
-      .catch(() => {})
-      .finally(() => setSourcesLoading(false));
-  }, []);
-
-  useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    setClientsLoading(true);
-    void bffFetch<OAuthClient[]>("/bff/admin/oauth-clients")
-      .then((data) => setClients(data))
-      .catch(() => {})
-      .finally(() => setClientsLoading(false));
-  }, []);
+  const { data: sources, loading: sourcesLoading } = useBffList<SourceSystemInfo>("/bff/source-systems", "Failed to load source systems.");
+  const { data: clients, loading: clientsLoading } = useBffList<OAuthClient>("/bff/admin/oauth-clients", "Failed to load OAuth clients.");
 
   return (
     <div className={styles.page}>

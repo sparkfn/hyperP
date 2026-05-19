@@ -1,12 +1,13 @@
 "use client";
 
-import { useEffect, useRef, useState, type ReactElement, type ReactNode } from "react";
+import { useEffect, useState, type ReactElement, type ReactNode } from "react";
 import { usePathname } from "next/navigation";
 import { signOut } from "next-auth/react";
 
 import GlobalSearch from "@/components/GlobalSearch";
 import Sidebar from "@/components/Sidebar";
 import ThemeToggle from "@/components/ThemeToggle";
+import { usePopoverClose } from "@/lib/usePopoverClose";
 import styles from "@/app/layout.module.css";
 
 interface AppShellProps {
@@ -27,22 +28,7 @@ function MenuIcon(): ReactElement {
 }
 
 function ProfilePopover({ email, initials, displayName, onClose }: { email: string | null; initials: string; displayName: string | null; onClose: () => void }): ReactElement {
-  const ref = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    function handleClick(e: MouseEvent): void {
-      if (ref.current && !ref.current.contains(e.target as Node)) onClose();
-    }
-    function handleKey(e: KeyboardEvent): void {
-      if (e.key === "Escape") onClose();
-    }
-    document.addEventListener("mousedown", handleClick);
-    document.addEventListener("keydown", handleKey);
-    return () => {
-      document.removeEventListener("mousedown", handleClick);
-      document.removeEventListener("keydown", handleKey);
-    };
-  }, [onClose]);
+  const ref = usePopoverClose<HTMLDivElement>(onClose);
 
   async function handleLogout(): Promise<void> {
     onClose();

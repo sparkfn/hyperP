@@ -1,6 +1,6 @@
 "use client";
 
-import { Fragment, use, useCallback, useEffect, useMemo, useState, type ReactElement } from "react";
+import { Fragment, use, useCallback, useEffect, useId, useMemo, useRef, useState, type ReactElement } from "react";
 import Link from "next/link";
 import { notFound, useSearchParams } from "next/navigation";
 import type { Person, PersonConnection, SalesOrder } from "@/lib/api-types";
@@ -18,6 +18,7 @@ import { bffFetch, BffError, bffFetchEnvelope } from "@/lib/api-client";
 import { usePaginatedFetch } from "@/lib/usePaginatedFetch";
 import type { PublicLink } from "@/lib/api-types";
 import { avatarColor, completenessColor } from "@/lib/display";
+import { useSetLoading } from "@/lib/LoadingContext";
 import PersonFocusedGraph from "@/components/PersonFocusedGraph";
 import PersonGraphDialog from "@/components/PersonGraphDialog";
 import styles from "./person.module.css";
@@ -65,21 +66,21 @@ const DATE_TIME_FORMATTER = new Intl.DateTimeFormat("en-SG", {
 function fmtDate(value: string | null): string {
   if (!value) return "—";
   const d = new Date(value);
-  if (isNaN(d.getTime())) return "—";
+  if (Number.isNaN(d.getTime())) return "—";
   return DATE_FORMATTER.format(d);
 }
 
 function fmtDateTime(value: string | null): string {
   if (!value) return "—";
   const d = new Date(value);
-  if (isNaN(d.getTime())) return "—";
+  if (Number.isNaN(d.getTime())) return "—";
   return DATE_TIME_FORMATTER.format(d);
 }
 
 function fmtTime(value: string | null): string {
   if (!value) return "—";
   const d = new Date(value);
-  if (isNaN(d.getTime())) return "—";
+  if (Number.isNaN(d.getTime())) return "—";
   return new Intl.DateTimeFormat("en-SG", {
     hour: "2-digit",
     minute: "2-digit",
@@ -1656,6 +1657,13 @@ function parseTabParam(value: string | null): Tab {
   return "timeline";
 }
 
+// Swallows 404 (optional data not present) but re-throws everything else
+// so 401/500 errors surface rather than silently showing zero counts.
+function catchNotFound(err: unknown): null {
+  if (err instanceof BffError && err.status === 404) return null;
+  throw err;
+}
+
 export default function PersonDetailPage({ params }: { params: Promise<{ personId: string }> }): ReactElement {
   const { personId } = use(params);
   const searchParams = useSearchParams();
@@ -1664,6 +1672,9 @@ export default function PersonDetailPage({ params }: { params: Promise<{ personI
   const [detailData, setDetailData] = useState<DetailData>(EMPTY_DETAIL);
   const [tabTotals, setTabTotals] = useState<Partial<Record<Tab, number>>>({});
   const [loading, setLoading] = useState(true);
+  const pageLoadId = useId();
+  const setGlobalLoading = useSetLoading();
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [notFoundFlag, setNotFoundFlag] = useState(false);
   const [activeTab, setActiveTab] = useState<Tab>(() => parseTabParam(searchParams.get("tab")));
   const [graphOpen, setGraphOpen] = useState(false);
@@ -1672,16 +1683,27 @@ export default function PersonDetailPage({ params }: { params: Promise<{ personI
   const [shareUrl, setShareUrl] = useState<string | null>(null);
   const [shareExpiry, setShareExpiry] = useState<string | null>(null);
   const [shareCopied, setShareCopied] = useState(false);
+  const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const mergeRedirectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => () => {
+    if (copyTimerRef.current !== null) clearTimeout(copyTimerRef.current);
+    if (mergeRedirectTimerRef.current !== null) clearTimeout(mergeRedirectTimerRef.current);
+  }, []);
+  const [shareError, setShareError] = useState<string | null>(null);
 
   async function handleShare(): Promise<void> {
     if (shareUrl) { setShareOpen(true); return; }
     setShareLoading(true);
+    setShareError(null);
     try {
       const res = await bffFetchEnvelope<PublicLink>(`/bff/persons/${encodeURIComponent(personId)}/public-link`, { method: "POST" });
       const url = `${window.location.origin}/public/persons/${res.data.token}`;
       setShareUrl(url);
       setShareExpiry(res.data.expires_at);
       setShareOpen(true);
+    } catch (err) {
+      setShareError(err instanceof BffError ? err.message : "Failed to generate share link.");
     } finally {
       setShareLoading(false);
     }
@@ -1689,10 +1711,13 @@ export default function PersonDetailPage({ params }: { params: Promise<{ personI
 
   function handleCopy(): void {
     if (!shareUrl) return;
-    void navigator.clipboard.writeText(shareUrl).then(() => {
-      setShareCopied(true);
-      setTimeout(() => setShareCopied(false), 2000);
-    });
+    void navigator.clipboard.writeText(shareUrl)
+      .then(() => {
+        setShareCopied(true);
+        if (copyTimerRef.current !== null) clearTimeout(copyTimerRef.current);
+        copyTimerRef.current = setTimeout(() => setShareCopied(false), 2000);
+      })
+      .catch(() => { setShareError("Failed to copy link. Please copy it manually."); });
   }
 
   function closeShare(): void {
@@ -1739,7 +1764,7 @@ export default function PersonDetailPage({ params }: { params: Promise<{ personI
       });
       if (res.data.status === "merged") {
         setMergeSuccess(true);
-        setTimeout(() => window.location.replace(`/persons/${mergeTarget.person_id}`), 1500);
+        mergeRedirectTimerRef.current = setTimeout(() => window.location.replace(`/persons/${mergeTarget.person_id}`), 1500);
       }
     } catch (e) {
       setMergeError(e instanceof BffError ? e.message : "Failed to merge.");
@@ -1796,21 +1821,26 @@ export default function PersonDetailPage({ params }: { params: Promise<{ personI
   }
 
   useEffect(() => {
+    let cancelled = false;
+    setGlobalLoading(pageLoadId, true);
+
     async function load(): Promise<void> {
       try {
         const p = await bffFetch<Person>(`/bff/persons/${encodeURIComponent(personId)}`);
+        if (cancelled) return;
         setPerson(p);
 
         const [idEnv, srcEnv, salesEnv, auditEnv, matchesEnv, connsEnv, bkEnv] = await Promise.all([
-          bffFetchEnvelope<PersonIdentifier[]>(`/bff/persons/${encodeURIComponent(personId)}/identifiers`).catch(() => null),
-          bffFetchEnvelope<PersonSourceRecord[]>(`/bff/persons/${encodeURIComponent(personId)}/source-records`).catch(() => null),
-          bffFetchEnvelope<SalesOrder[]>(`/bff/persons/${encodeURIComponent(personId)}/sales`).catch(() => null),
-          bffFetchEnvelope<PersonAuditEvent[]>(`/bff/persons/${encodeURIComponent(personId)}/audit`).catch(() => null),
-          bffFetchEnvelope<unknown[]>(`/bff/persons/${encodeURIComponent(personId)}/matches?limit=1`).catch(() => null),
-          bffFetchEnvelope<unknown[]>(`/bff/persons/${encodeURIComponent(personId)}/connections?limit=1`).catch(() => null),
-          bffFetchEnvelope<unknown[]>(`/bff/persons/${encodeURIComponent(personId)}/bankruptcy-cases?limit=1`).catch(() => null),
+          bffFetchEnvelope<PersonIdentifier[]>(`/bff/persons/${encodeURIComponent(personId)}/identifiers`).catch(catchNotFound),
+          bffFetchEnvelope<PersonSourceRecord[]>(`/bff/persons/${encodeURIComponent(personId)}/source-records`).catch(catchNotFound),
+          bffFetchEnvelope<SalesOrder[]>(`/bff/persons/${encodeURIComponent(personId)}/sales`).catch(catchNotFound),
+          bffFetchEnvelope<PersonAuditEvent[]>(`/bff/persons/${encodeURIComponent(personId)}/audit`).catch(catchNotFound),
+          bffFetchEnvelope<unknown[]>(`/bff/persons/${encodeURIComponent(personId)}/matches?limit=1`).catch(catchNotFound),
+          bffFetchEnvelope<unknown[]>(`/bff/persons/${encodeURIComponent(personId)}/connections?limit=1`).catch(catchNotFound),
+          bffFetchEnvelope<unknown[]>(`/bff/persons/${encodeURIComponent(personId)}/bankruptcy-cases?limit=1`).catch(catchNotFound),
         ]);
 
+        if (cancelled) return;
         setDetailData({
           identifiers: idEnv?.data ?? [],
           sourceRecords: srcEnv?.data ?? [],
@@ -1827,16 +1857,20 @@ export default function PersonDetailPage({ params }: { params: Promise<{ personI
           bankruptcy:  bkEnv?.meta.total_count     ?? undefined,
         });
       } catch (err) {
+        if (cancelled) return;
         if (err instanceof BffError && err.status === 404) {
           setNotFoundFlag(true);
+        } else {
+          setLoadError(err instanceof BffError ? err.message : "Failed to load person.");
         }
       } finally {
-        setLoading(false);
+        if (!cancelled) { setLoading(false); setGlobalLoading(pageLoadId, false); }
       }
     }
 
     void load();
-  }, [personId]);
+    return () => { cancelled = true; setGlobalLoading(pageLoadId, false); };
+  }, [personId, pageLoadId, setGlobalLoading]);
 
   const onMatchesTotal     = useCallback((n: number) => { setTabTotals((p) => ({ ...p, matches:     n })); }, []);
   const onConnectionsTotal = useCallback((n: number) => { setTabTotals((p) => ({ ...p, connections: n })); }, []);
@@ -1850,6 +1884,10 @@ export default function PersonDetailPage({ params }: { params: Promise<{ personI
 
   if (loading || person === null) {
     return <PersonDetailSkeleton />;
+  }
+
+  if (loadError !== null) {
+    return <div style={{ padding: "2rem", color: "var(--text-muted)", fontSize: 14 }}>{loadError}</div>;
   }
 
   const tabs: TabConfig[] = [
@@ -2084,6 +2122,10 @@ export default function PersonDetailPage({ params }: { params: Promise<{ personI
         title={person.preferred_full_name ?? person.person_id}
         onClose={() => setGraphOpen(false)}
       />
+
+      {shareError !== null && (
+        <div style={{ padding: "0.5rem 1rem", color: "var(--color-error, #ef4444)", fontSize: 13 }}>{shareError}</div>
+      )}
 
       {shareOpen && shareUrl && (
         <div className={styles.shareOverlay} onClick={closeShare}>
