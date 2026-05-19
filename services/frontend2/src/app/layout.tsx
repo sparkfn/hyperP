@@ -1,10 +1,15 @@
 import type { Metadata } from "next";
 import type { ReactElement, ReactNode } from "react";
+import { redirect } from "next/navigation";
 import { headers } from "next/headers";
 
 import { auth } from "@/auth";
 import AppShell from "@/components/AppShell";
+import SessionProviderClient from "@/components/SessionProviderClient";
+import { BFF_AUTH_BASE_PATH } from "@/lib/route-paths";
 import "./globals.css";
+
+const PUBLIC_PATHS = ["/login", "/public/", "/api/health", BFF_AUTH_BASE_PATH];
 
 export const metadata: Metadata = {
   title: "HyperP",
@@ -21,6 +26,12 @@ const themeScript = `
 export default async function RootLayout({ children }: { children: ReactNode }): Promise<ReactElement> {
   const [session, headersList] = await Promise.all([auth(), headers()]);
   const pathname = headersList.get("x-pathname") ?? "";
+
+  const isPublic = PUBLIC_PATHS.some((p) => pathname === p || pathname.startsWith(p));
+  if (!session?.googleIdToken && !isPublic) {
+    redirect("/login");
+  }
+
   const role = session?.user?.role ?? null;
   const isChromeless = !session || role === "first_time"
     || pathname === "/login"
@@ -36,7 +47,7 @@ export default async function RootLayout({ children }: { children: ReactNode }):
     return (
       <html lang="en" suppressHydrationWarning>
         <head><script dangerouslySetInnerHTML={{ __html: themeScript }}/></head>
-        <body>{children}</body>
+        <body><SessionProviderClient>{children}</SessionProviderClient></body>
       </html>
     );
   }
@@ -45,9 +56,11 @@ export default async function RootLayout({ children }: { children: ReactNode }):
     <html lang="en" suppressHydrationWarning>
       <head><script dangerouslySetInnerHTML={{ __html: themeScript }}/></head>
       <body>
-        <AppShell initials={initials} email={email} displayName={displayName}>
-          {children}
-        </AppShell>
+        <SessionProviderClient>
+          <AppShell initials={initials} email={email} displayName={displayName}>
+            {children}
+          </AppShell>
+        </SessionProviderClient>
       </body>
     </html>
   );

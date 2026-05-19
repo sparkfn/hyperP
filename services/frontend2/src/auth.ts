@@ -177,7 +177,7 @@ export const authConfig: NextAuthConfig = {
       if (pathname === "/login") return true;
       if (pathname === "/api/health") return true;
       if (pathname.startsWith("/public/")) return true;
-      if (!sess || !sess.googleIdToken) return false;
+      if (!sess || !sess.googleIdToken || sess.error === "RefreshTokenError") return false;
       const role: string | undefined = sess.user?.role;
       if (role === "first_time") {
         if (pathname.startsWith("/pending")) return true;

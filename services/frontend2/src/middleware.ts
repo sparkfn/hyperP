@@ -3,6 +3,11 @@ import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 
 export default auth((req: NextRequest & { auth: unknown }) => {
+  if (req.nextUrl.pathname === "/") {
+    const url = req.nextUrl.clone();
+    url.pathname = "/persons";
+    return NextResponse.redirect(url);
+  }
   const res = NextResponse.next();
   res.headers.set("x-pathname", req.nextUrl.pathname);
   return res;

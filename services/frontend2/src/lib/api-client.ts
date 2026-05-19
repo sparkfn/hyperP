@@ -32,6 +32,10 @@ export async function bffFetchEnvelope<T>(path: string, init?: RequestInit): Pro
   const json: unknown = await response.json();
 
   if (!response.ok) {
+    if (response.status === 401) {
+      window.location.href = "/login";
+      return new Promise(() => undefined);
+    }
     if (isApiError(json)) {
       throw new BffError(response.status, json.error.code, json.error.message);
     }
