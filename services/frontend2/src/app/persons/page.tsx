@@ -1080,10 +1080,6 @@ function PersonsInner(): ReactElement {
         }
       } catch (err: unknown) {
         if (!cancelled) {
-          if (err instanceof BffError && err.status === 401) {
-            window.location.href = "/login";
-            return;
-          }
           setFetchError(err instanceof BffError ? err.message : "Failed to load data.");
           setApiRows([]);
         }

@@ -6,10 +6,8 @@ import { headers } from "next/headers";
 import { auth } from "@/auth";
 import AppShell from "@/components/AppShell";
 import SessionProviderClient from "@/components/SessionProviderClient";
-import { BFF_AUTH_BASE_PATH } from "@/lib/route-paths";
+import { isPublicPath } from "@/lib/route-paths";
 import "./globals.css";
-
-const PUBLIC_PATHS = ["/login", "/public/", "/api/health", BFF_AUTH_BASE_PATH];
 
 export const metadata: Metadata = {
   title: "HyperP",
@@ -27,16 +25,12 @@ export default async function RootLayout({ children }: { children: ReactNode }):
   const [session, headersList] = await Promise.all([auth(), headers()]);
   const pathname = headersList.get("x-pathname") ?? "";
 
-  const isPublic = PUBLIC_PATHS.some((p) => pathname === p || pathname.startsWith(p));
-  if (!session?.googleIdToken && !isPublic) {
+  if (!session?.googleIdToken && !isPublicPath(pathname)) {
     redirect("/login");
   }
 
   const role = session?.user?.role ?? null;
-  const isChromeless = !session || role === "first_time"
-    || pathname === "/login"
-    || pathname.startsWith("/public")
-    || pathname.startsWith("/dev");
+  const isChromeless = !session || role === "first_time" || isPublicPath(pathname) || pathname.startsWith("/dev");
   const email = session?.user?.email ?? null;
   const displayName = session?.user?.displayName ?? session?.user?.name ?? null;
   const initials = displayName
