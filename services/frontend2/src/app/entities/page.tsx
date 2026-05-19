@@ -5,7 +5,7 @@ import Link from "next/link";
 
 import { bffFetchEnvelope } from "@/lib/api-client";
 import type { EntitySummary } from "@/lib/api-types";
-import { formatDate } from "@/lib/display";
+import { relativeTime } from "@/lib/display";
 import styles from "./entities.module.css";
 
 const ENTITY_COLORS = ["#4361ee", "#7c3aed", "#0891b2", "#059669", "#d97706", "#0f766e", "#b45309", "#be185d"];
@@ -17,18 +17,6 @@ function entityColor(key: string): string {
 function initials(name: string | null, key: string): string {
   if (!name) return key.slice(0, 2).toUpperCase();
   return name.split(/\s+/).filter(Boolean).map((w) => w[0]).slice(0, 2).join("").toUpperCase();
-}
-function relativeTime(iso: string | null): string {
-  if (!iso) return "—";
-  const diff = Date.now() - new Date(iso).getTime();
-  const mins = Math.floor(diff / 60_000);
-  if (mins < 2) return "just now";
-  if (mins < 60) return `${mins}m ago`;
-  const hrs = Math.floor(mins / 60);
-  if (hrs < 24) return `${hrs}h ago`;
-  const days = Math.floor(hrs / 24);
-  if (days < 7) return `${days}d ago`;
-  return formatDate(iso);
 }
 function entityTypeLabel(t: string | null): string | null {
   if (!t) return null;

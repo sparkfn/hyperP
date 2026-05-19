@@ -19,6 +19,7 @@ import InputAdornment from "@mui/material/InputAdornment";
 
 import { bffFetchEnvelope } from "@/lib/api-client";
 import type { Person } from "@/lib/api-types";
+import { avatarColor, completenessColor, statusHex } from "@/lib/display";
 import PersonGraphViewer from "@/components/PersonGraphViewer";
 
 interface NavEntry {
@@ -58,20 +59,6 @@ const SKELETON_LOADING_TEXT = (
   </Box>
 );
 
-const AVATAR_COLORS = ["#4361ee", "#7c3aed", "#0891b2", "#059669", "#d97706", "#dc2626"];
-function avatarColor(name: string): string {
-  return AVATAR_COLORS[name.charCodeAt(0) % AVATAR_COLORS.length] ?? "#4361ee";
-}
-function completenessColor(s: number): string {
-  if (s >= 0.8) return "#22c55e";
-  if (s >= 0.5) return "#f59e0b";
-  return "#ef4444";
-}
-function statusColor(s: string): string {
-  if (s === "active") return "#22c55e";
-  if (s === "merged") return "#3b82f6";
-  return "#94a3b8";
-}
 
 interface NodeContextMenu {
   mouseX: number;
@@ -284,7 +271,7 @@ export default function PersonFocusedGraph({
                 <Typography sx={{ fontSize: 12, color: "var(--text-muted)", lineHeight: 1.3 }} noWrap>{subtitle}</Typography>
               </Box>
               <Box sx={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 0.25, flexShrink: 0 }}>
-                <Typography sx={{ fontSize: 11, color: statusColor(opt.status), fontWeight: 600, textTransform: "capitalize" }}>{opt.status}</Typography>
+                <Typography sx={{ fontSize: 11, color: statusHex(opt.status), fontWeight: 600, textTransform: "capitalize" }}>{opt.status}</Typography>
                 <Typography sx={{ fontSize: 11, color: ringCol, fontWeight: 600 }}>{Math.round(opt.completeness * 100)}%</Typography>
               </Box>
             </Box>

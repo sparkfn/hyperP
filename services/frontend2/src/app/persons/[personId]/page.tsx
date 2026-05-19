@@ -17,11 +17,10 @@ import type {
 import { bffFetch, BffError, bffFetchEnvelope } from "@/lib/api-client";
 import { usePaginatedFetch } from "@/lib/usePaginatedFetch";
 import type { PublicLink } from "@/lib/api-types";
+import { avatarColor, completenessColor } from "@/lib/display";
 import PersonFocusedGraph from "@/components/PersonFocusedGraph";
 import PersonGraphDialog from "@/components/PersonGraphDialog";
 import styles from "./person.module.css";
-
-const AVATAR_COLORS = ["#4361ee", "#7c3aed", "#0891b2", "#059669", "#d97706", "#dc2626"];
 
 type Tab = "timeline" | "matches" | "connections" | "identifier" | "source" | "sales" | "bankruptcy" | "audit" | "graph";
 
@@ -45,15 +44,6 @@ type TabConfig = {
   count?: number;
 };
 
-function avatarColor(name: string): string {
-  return AVATAR_COLORS[name.charCodeAt(0) % AVATAR_COLORS.length] ?? "#4361ee";
-}
-
-function scoreColor(score: number): string {
-  if (score >= 0.8) return "#22c55e";
-  if (score >= 0.5) return "#f59e0b";
-  return "#ef4444";
-}
 
 const DATE_FORMATTER = new Intl.DateTimeFormat("en-SG", {
   day: "2-digit",
@@ -248,7 +238,7 @@ function PersonSidebar({ person, detailData }: { person: Person; detailData: Det
           <div className={styles.sidebarHeroAvatarCol}>
             <div
               className={styles.avatarRing}
-              style={{ background: `conic-gradient(${scoreColor(person.profile_completeness_score)} ${completeness}%, rgba(148, 163, 184, 0.18) 0)` }}
+              style={{ background: `conic-gradient(${completenessColor(person.profile_completeness_score)} ${completeness}%, rgba(148, 163, 184, 0.18) 0)` }}
             >
               <div className={styles.avatarRingInner}>
                 <div className={styles.avatar} style={{ background: avatarColor(person.preferred_full_name ?? "?") }}>
@@ -273,7 +263,7 @@ function PersonSidebar({ person, detailData }: { person: Person; detailData: Det
                 <div className={styles.completenessBarCompact}>
                   <div
                     className={styles.completenessFill}
-                    style={{ width: `${completeness}%`, background: scoreColor(person.profile_completeness_score) }}
+                    style={{ width: `${completeness}%`, background: completenessColor(person.profile_completeness_score) }}
                   />
                 </div>
               </div>
@@ -364,7 +354,7 @@ function RightRail({ person, detailData, salesTotal, identifiersTotal, tabs, act
       label: "Completeness",
       value: `${completeness}%`,
       note: `${idCount} identifiers`,
-      valueStyle: { color: scoreColor(person.profile_completeness_score) },
+      valueStyle: { color: completenessColor(person.profile_completeness_score) },
     },
     {
       label: "Connections",

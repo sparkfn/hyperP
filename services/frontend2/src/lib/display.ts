@@ -40,6 +40,37 @@ export function formatDob(value: string | null): string {
   return value;
 }
 
+export const AVATAR_COLORS = ["#4361ee", "#7c3aed", "#0891b2", "#059669", "#d97706", "#dc2626"] as const;
+
+export function avatarColor(name: string): string {
+  return AVATAR_COLORS[name.charCodeAt(0) % AVATAR_COLORS.length] ?? "#4361ee";
+}
+
+export function completenessColor(score: number): string {
+  if (score >= 0.8) return "#22c55e";
+  if (score >= 0.5) return "#f59e0b";
+  return "#ef4444";
+}
+
+export function statusHex(status: string): string {
+  if (status === "active") return "#22c55e";
+  if (status === "merged") return "#3b82f6";
+  return "#94a3b8";
+}
+
+export function relativeTime(iso: string | null): string {
+  if (!iso) return "—";
+  const diff = Date.now() - new Date(iso).getTime();
+  const mins = Math.floor(diff / 60_000);
+  if (mins < 2) return "just now";
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  const days = Math.floor(hrs / 24);
+  if (days < 7) return `${days}d ago`;
+  return formatDate(iso);
+}
+
 export function connectionsToItems(data: PersonConnection[] | undefined): CountCardItem[] | undefined {
   if (data === undefined) return undefined;
   return data.map((c) => ({

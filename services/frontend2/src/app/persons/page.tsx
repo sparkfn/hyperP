@@ -7,6 +7,7 @@ import { Suspense } from "react";
 import type { ListedPerson, PersonConnection, SalesOrder, EntitySummary } from "@/lib/api-types";
 import { bffFetchEnvelope, BffError, bffFetch } from "@/lib/api-client";
 import type { SourceSystemInfo } from "@/lib/api-types-ops";
+import { avatarColor, completenessColor } from "@/lib/display";
 import PersonGraphDialog from "@/components/PersonGraphDialog";
 import styles from "./persons.module.css";
 
@@ -28,17 +29,6 @@ const COLS: ColDef[] = [
 ];
 const DEFAULT_WIDTHS = [36, 180, 110, 110, 110, 160, 200, 120, 112, 84, 124, 54];
 
-const AVATAR_COLORS = ["#4361ee", "#7c3aed", "#0891b2", "#059669", "#d97706", "#dc2626"];
-
-function avatarColor(name: string): string {
-  return AVATAR_COLORS[name.charCodeAt(0) % AVATAR_COLORS.length] ?? "#4361ee";
-}
-
-function qualityColor(s: number): string {
-  if (s >= 0.8) return "#22c55e";
-  if (s >= 0.5) return "#f59e0b";
-  return "#ef4444";
-}
 
 function parseDob(dob: string | null): { display: string; invalid: boolean } {
   if (!dob) return { display: "—", invalid: false };
@@ -326,7 +316,7 @@ function SortIcon({ active, dir }: { active: boolean; dir: SortDir }): ReactElem
 }
 
 function AvatarRing({ initials, color, score }: { initials: string; color: string; score: number }): ReactElement {
-  const ringColor = qualityColor(score);
+  const ringColor = completenessColor(score);
   const dash = RING_CIRC * score;
   const gap  = RING_CIRC - dash;
   return (
@@ -524,7 +514,7 @@ function PersonRow({
           <div className={styles.qualityBar}>
             <div
               className={styles.qualityFill}
-              style={{ width: `${pct}%`, background: qualityColor(p.profile_completeness_score) }}
+              style={{ width: `${pct}%`, background: completenessColor(p.profile_completeness_score) }}
             />
           </div>
           <span className={styles.qualityText}>{pct}%</span>
@@ -597,7 +587,7 @@ function PersonCardMobile({
       <div className={styles.mobileCardRight}>
         <div className={styles.mobileCardQuality}>
           <div className={styles.mobileCardQualityBar}>
-            <div className={styles.mobileCardQualityFill} style={{ width: `${pct}%`, background: qualityColor(p.profile_completeness_score) }} />
+            <div className={styles.mobileCardQualityFill} style={{ width: `${pct}%`, background: completenessColor(p.profile_completeness_score) }} />
           </div>
           <span className={styles.mobileCardQualityPct}>{pct}%</span>
         </div>

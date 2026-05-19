@@ -5,21 +5,7 @@ import { useRouter } from "next/navigation";
 
 import { bffFetchEnvelope } from "@/lib/api-client";
 import type { Person } from "@/lib/api-types";
-
-const AVATAR_COLORS = ["#4361ee", "#7c3aed", "#0891b2", "#059669", "#d97706", "#dc2626"];
-function avatarBg(name: string): string {
-  return AVATAR_COLORS[name.charCodeAt(0) % AVATAR_COLORS.length] ?? "#4361ee";
-}
-function ringColor(s: number): string {
-  if (s >= 0.8) return "#22c55e";
-  if (s >= 0.5) return "#f59e0b";
-  return "#ef4444";
-}
-function statusCol(s: string): string {
-  if (s === "active") return "#22c55e";
-  if (s === "merged") return "#3b82f6";
-  return "#94a3b8";
-}
+import { avatarColor, completenessColor, statusHex } from "@/lib/display";
 
 interface SearchResult {
   personId: string;
@@ -35,7 +21,7 @@ function AvatarRing({ name, completeness }: { name: string; completeness: number
   const circ = 2 * Math.PI * 14;
   const dash = circ * completeness;
   const gap = circ - dash;
-  const col = ringColor(completeness);
+  const col = completenessColor(completeness);
   return (
     <div style={{ position: "relative", width: 34, height: 34, flexShrink: 0 }}>
       <svg width="34" height="34" viewBox="0 0 34 34" fill="none" style={{ position: "absolute", inset: 0 }}>
@@ -43,7 +29,7 @@ function AvatarRing({ name, completeness }: { name: string; completeness: number
         <circle cx="17" cy="17" r="14" stroke={col} strokeWidth="1.5" strokeLinecap="round"
           strokeDasharray={`${dash} ${gap}`} transform="rotate(-90 17 17)" />
       </svg>
-      <div style={{ position: "absolute", inset: 3, borderRadius: "50%", background: avatarBg(name || "?"), display: "flex", alignItems: "center", justifyContent: "center", color: "#fff", fontSize: 11, fontWeight: 700 }}>
+      <div style={{ position: "absolute", inset: 3, borderRadius: "50%", background: avatarColor(name || "?"), display: "flex", alignItems: "center", justifyContent: "center", color: "#fff", fontSize: 11, fontWeight: 700 }}>
         {initials || "?"}
       </div>
     </div>
@@ -220,8 +206,8 @@ export default function GlobalSearch(): ReactElement {
                     </div>
                   </div>
                   <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 2, flexShrink: 0 }}>
-                    <span style={{ fontSize: 11, color: statusCol(r.status), fontWeight: 600, textTransform: "capitalize" }}>{r.status}</span>
-                    <span style={{ fontSize: 11, color: ringColor(r.completeness), fontWeight: 600 }}>{Math.round(r.completeness * 100)}%</span>
+                    <span style={{ fontSize: 11, color: statusHex(r.status), fontWeight: 600, textTransform: "capitalize" }}>{r.status}</span>
+                    <span style={{ fontSize: 11, color: completenessColor(r.completeness), fontWeight: 600 }}>{Math.round(r.completeness * 100)}%</span>
                   </div>
                 </div>
               ))}
