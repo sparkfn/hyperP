@@ -19,6 +19,11 @@ from src.graph.queries import (
     LIST_REVIEW_CASES,
     build_review_action_cypher,
 )
+from src.repositories.neo4j.merge import (
+    _apply_golden_profile_selections_tx,
+    are_valid_golden_profile_selections,
+)
+from src.repositories.protocols.merge import GoldenProfileSelection
 from src.repositories.protocols.review import ActionResult, AssignResult, ReviewListFilters
 from src.types import ApiReviewActionType, ReviewCaseDetail, ReviewCaseSummary
 
@@ -71,7 +76,10 @@ class Neo4jReviewRepository:
         follow_up_at: str | None,
         actor_id: str,
         survivor_person_id: str | None,
+        golden_profile_selections: list[GoldenProfileSelection],
     ) -> ActionResult | None:
+        if not are_valid_golden_profile_selections(golden_profile_selections):
+            return ActionResult(merge_not_applicable=True)
         async with get_session(write=True) as session:
             result = await session.execute_write(
                 _action_tx,
@@ -83,6 +91,7 @@ class Neo4jReviewRepository:
                 follow_up_at,
                 actor_id,
                 survivor_person_id,
+                golden_profile_selections,
             )
 
         if result is None:
@@ -90,9 +99,16 @@ class Neo4jReviewRepository:
 
         # Recompute golden profile for the surviving person after a merge
         survivor_id = to_optional_str(result.get("survivor_person_id"))
+        selections = result.get("golden_profile_selections", [])
         if action_type == ApiReviewActionType.MERGE.value and survivor_id:
             async with get_session(write=True) as session:
                 await session.execute_write(recompute_golden_profile_tx, survivor_id)
+                if selections:
+                    await session.execute_write(
+                        _apply_golden_profile_selections_tx,
+                        survivor_id,
+                        selections,
+                    )
 
         return result
 
@@ -119,6 +135,7 @@ async def _action_tx(
     follow_up_at: str | None,
     actor_id: str,
     survivor_person_id: str | None,
+    golden_profile_selections: list[GoldenProfileSelection],
 ) -> ActionResult | None:
     absorbed_id: str | None = None
     survivor_id: str | None = None
@@ -134,8 +151,10 @@ async def _action_tx(
 
         if survivor_person_id == right_id:
             survivor_id, absorbed_id = right_id, left_id
-        else:
+        elif survivor_person_id == left_id or survivor_person_id is None:
             survivor_id, absorbed_id = left_id, right_id
+        else:
+            return ActionResult(merge_not_applicable=True)
 
         active_result = await tx.run(
             CHECK_BOTH_PERSONS_ACTIVE, from_id=absorbed_id, to_id=survivor_id
@@ -189,5 +208,6 @@ async def _action_tx(
             actor_id=actor_id,
         )
         out["survivor_person_id"] = survivor_id
+        out["golden_profile_selections"] = golden_profile_selections
 
     return out

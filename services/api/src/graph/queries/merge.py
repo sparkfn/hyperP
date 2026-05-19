@@ -165,9 +165,11 @@ RETURN absorbed.person_id AS absorbed_id, survivor.person_id AS survivor_id
 """
 
 REVERT_MERGE = """
-MATCH (absorbed:Person {person_id: $absorbed_id})-[mi:MERGED_INTO]->(survivor:Person {person_id: $survivor_id})
+MATCH (absorbed:Person {person_id: $absorbed_id})-[mi:MERGED_INTO]->(current_survivor:Person)
+WITH absorbed, mi, current_survivor.person_id AS current_survivor_id
 DELETE mi
 SET absorbed.status = 'active', absorbed.updated_at = datetime()
+RETURN count(mi) AS removed_count, current_survivor_id
 """
 
 CREATE_UNMERGE_AUDIT = """

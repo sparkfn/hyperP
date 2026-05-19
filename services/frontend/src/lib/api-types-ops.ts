@@ -1,3 +1,5 @@
+import type { GoldenProfileSelectionBody } from "@/lib/api-types-person";
+
 import type { Role } from "./permissions";
 
 export interface UserResponse {
@@ -283,6 +285,8 @@ export interface ReviewActionMetadataBody {
   create_manual_lock?: boolean;
   follow_up_at?: string | null;
   escalation_reason?: string | null;
+  survivor_person_id?: string | null;
+  golden_profile_selections?: GoldenProfileSelectionBody[];
 }
 
 export interface ReviewActionRequestBody {

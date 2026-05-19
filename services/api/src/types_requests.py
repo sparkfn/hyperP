@@ -7,7 +7,32 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator
 
+from src.repositories.protocols.merge import GoldenProfileSelection
 from src.types import ApiReviewActionType, TrustTier
+
+
+class GoldenProfileSelectionRequest(BaseModel):
+    field_name: Literal[
+        "preferred_full_name",
+        "preferred_dob",
+        "preferred_phone",
+        "preferred_email",
+        "preferred_address",
+        "preferred_nric",
+    ]
+    source_kind: Literal["source_record_fact", "identifier", "address"]
+    selected_value: str
+    source_record_pk: str | None = None
+    identifier_type: str | None = None
+
+    def to_selection(self) -> GoldenProfileSelection:
+        return {
+            "field_name": self.field_name,
+            "source_kind": self.source_kind,
+            "selected_value": self.selected_value,
+            "source_record_pk": self.source_record_pk,
+            "identifier_type": self.identifier_type,
+        }
 
 
 class AssignReviewRequest(BaseModel):
@@ -19,6 +44,7 @@ class ReviewActionMetadata(BaseModel):
     follow_up_at: str | None = None
     escalation_reason: str | None = None
     survivor_person_id: str | None = None
+    golden_profile_selections: list[GoldenProfileSelectionRequest] = Field(default_factory=list)
 
 
 class ReviewActionRequest(BaseModel):
@@ -32,6 +58,7 @@ class ManualMergeRequest(BaseModel):
     to_person_id: str
     reason: str
     recompute_golden_profile: bool = True
+    golden_profile_selections: list[GoldenProfileSelectionRequest] = Field(default_factory=list)
 
 
 class UnmergeRequest(BaseModel):

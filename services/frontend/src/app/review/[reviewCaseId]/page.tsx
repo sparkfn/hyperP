@@ -61,6 +61,8 @@ export default async function ReviewCaseDetailPage({ params }: PageProps): Promi
         reviewCaseId={detail.review_case_id}
         queueState={detail.queue_state}
         assignedTo={detail.assigned_to}
+        leftPersonId={detail.comparison_left?.person_id ?? null}
+        rightPersonId={detail.comparison_right?.person_id ?? null}
       />
 
       <ActionHistoryCard actions={detail.actions} />

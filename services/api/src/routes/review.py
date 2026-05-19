@@ -134,6 +134,7 @@ async def submit_review_action(
         body.metadata.follow_up_at,
         user.email,
         body.metadata.survivor_person_id,
+        [selection.to_selection() for selection in body.metadata.golden_profile_selections],
     )
 
     if result is None:
