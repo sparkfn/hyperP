@@ -13,6 +13,7 @@ from typing import TypedDict, cast
 
 from neo4j import ManagedTransaction
 
+from src.exclusions import ExclusionContext, is_excluded_machine_unit_observation
 from src.graph import queries
 from src.graph.bootstrap import SOURCE_KEY_TO_ENTITY
 from src.graph.client import Neo4jClient
@@ -102,6 +103,7 @@ def ingest_sales_record(
     envelope: SourceRecordEnvelope,
     *,
     ingest_run_id: str | None,
+    exclusion_context: ExclusionContext | None = None,
 ) -> IngestResult:
     """Full sales-record ingestion in a single write transaction."""
     latest_pk, latest_hash, next_version = _latest_source_record(client, envelope)
@@ -112,6 +114,9 @@ def ingest_sales_record(
             skipped_duplicate=True,
         )
     envelope.source_record_version = str(next_version)
+    active_exclusion_context = (
+        exclusion_context if exclusion_context is not None else ExclusionContext()
+    )
 
     def _work(tx: ManagedTransaction) -> IngestResult:
         return _execute(
@@ -119,6 +124,7 @@ def ingest_sales_record(
             envelope,
             ingest_run_id=ingest_run_id,
             previous_source_record_pk=latest_pk,
+            exclusion_context=active_exclusion_context,
         )
 
     with client.session() as session:
@@ -190,6 +196,7 @@ def _execute(
     *,
     ingest_run_id: str | None,
     previous_source_record_pk: str | None,
+    exclusion_context: ExclusionContext,
 ) -> IngestResult:
     order, line_items, customer_link = _parse_sales_envelope(envelope.raw_payload)
     source_system_key = envelope.source_system
@@ -246,6 +253,7 @@ def _execute(
         observed_at=envelope.observed_at,
         line_items=cast(list[JsonValue], line_items),
         person_id=person_id,
+        exclusion_context=exclusion_context,
     )
 
     logger.info(
@@ -304,6 +312,7 @@ def _write_machine_unit_observations(
     observed_at: str | None,
     line_items: list[JsonValue],
     person_id: str | None,
+    exclusion_context: ExclusionContext,
 ) -> None:
     observations = observations_from_sales_lines(
         source_system_key=source_system_key,
@@ -312,6 +321,8 @@ def _write_machine_unit_observations(
         lines=line_items,
     )
     for observation in observations:
+        if is_excluded_machine_unit_observation(observation, exclusion_context):
+            continue
         row = tx.run(
             queries.UPSERT_MACHINE_UNIT,
             machine_product=observation.machine_product,
@@ -463,6 +474,7 @@ def _drain_one_pending_sale(
     sales_pk: str,
     source_system_key: str,
     raw_payload: dict[str, JsonValue],
+    exclusion_context: ExclusionContext,
 ) -> bool:
     """Try to resolve and link a single pending-customer sales record."""
     customer_link = raw_payload.get("customer_link") or {}
@@ -510,14 +522,23 @@ def _drain_one_pending_sale(
         observed_at=observed_at,
         line_items=line_items,
         person_id=person_id,
+        exclusion_context=exclusion_context,
     )
     tx.run(queries.MARK_SALES_RECORD_LINKED, source_record_pk=sales_pk)
     return True
 
 
-def drain_pending_customer_sales(client: Neo4jClient, *, batch_size: int = 200) -> int:
+def drain_pending_customer_sales(
+    client: Neo4jClient,
+    *,
+    batch_size: int = 200,
+    exclusion_context: ExclusionContext | None = None,
+) -> int:
     """Re-attempt customer resolution for parked sales SourceRecords."""
     linked_count = 0
+    active_exclusion_context = (
+        exclusion_context if exclusion_context is not None else ExclusionContext()
+    )
     while True:
 
         def _work(tx: ManagedTransaction) -> int:
@@ -535,6 +556,7 @@ def drain_pending_customer_sales(client: Neo4jClient, *, batch_size: int = 200) 
                     row["source_record_pk"],
                     row["source_system_key"],
                     raw_payload,
+                    active_exclusion_context,
                 ):
                     newly_linked += 1
             return newly_linked

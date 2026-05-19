@@ -39,7 +39,7 @@ from src.connectors.chat_helpers import (
 )
 from src.connectors.whatsapp.db import get_engine
 from src.connectors.whatsapp.schema import chats, contacts, messages, orgs, sessions
-from src.exclusion_config import load_exclusion_file
+from src.exclusion_config import ExclusionFile, load_exclusion_file
 from src.exclusions import build_exclusion_context, filter_extraction
 from src.models import JsonValue
 
@@ -149,6 +149,19 @@ class WhatsAppChatConnector(SourceConnector):
 
         logger.info("Collected %d WhatsApp chats — starting LLM batch phase", len(all_bundles))
 
+        try:
+            settings = get_settings()
+            company_mobile_numbers = list(settings.company_mobile_numbers)
+            company_email_addresses = list(settings.company_email_addresses)
+            internal_person_names = list(settings.internal_person_names)
+            exclusions_file = settings.ingestion_exclusions_file
+        except Exception:
+            company_mobile_numbers = []
+            company_email_addresses = []
+            internal_person_names = []
+            exclusions_file = ""
+        file_exclusions = load_exclusion_file(exclusions_file)
+
         # Phase 2: run LLM in batches.
         extraction_cache: dict[str, ExtractionResult] = {}
         for i in range(0, len(all_bundles), LLM_BATCH_SIZE):
@@ -171,7 +184,14 @@ class WhatsAppChatConnector(SourceConnector):
                 logger.warning("LLM extraction failed for chat %s", bundle.chat_id)
                 continue
 
-            yield from _build_envelopes(bundle=bundle, extraction=extraction)
+            yield from _build_envelopes(
+                bundle=bundle,
+                extraction=extraction,
+                company_mobile_numbers=company_mobile_numbers,
+                company_email_addresses=company_email_addresses,
+                internal_person_names=internal_person_names,
+                file_exclusions=file_exclusions,
+            )
 
     def _fetch_messages(
         self,
@@ -252,8 +272,19 @@ def _build_envelope(
     *,
     bundle: _ChatBundle,
     extraction: ExtractionResult,
+    company_mobile_numbers: list[str] | None = None,
+    company_email_addresses: list[str] | None = None,
+    internal_person_names: list[str] | None = None,
+    file_exclusions: ExclusionFile | None = None,
 ) -> dict[str, JsonValue] | None:
-    envelopes = _build_envelopes(bundle=bundle, extraction=extraction)
+    envelopes = _build_envelopes(
+        bundle=bundle,
+        extraction=extraction,
+        company_mobile_numbers=company_mobile_numbers,
+        company_email_addresses=company_email_addresses,
+        internal_person_names=internal_person_names,
+        file_exclusions=file_exclusions,
+    )
     return envelopes[0] if envelopes else None
 
 
@@ -261,20 +292,16 @@ def _build_envelopes(
     *,
     bundle: _ChatBundle,
     extraction: ExtractionResult,
+    company_mobile_numbers: list[str] | None = None,
+    company_email_addresses: list[str] | None = None,
+    internal_person_names: list[str] | None = None,
+    file_exclusions: ExclusionFile | None = None,
 ) -> list[dict[str, JsonValue]]:
     from src.connectors.fundbox.builders import build_envelope
 
-    try:
-        settings = get_settings()
-        company_phones = list(getattr(settings, "company_mobile_numbers", []))
-        company_email_addresses = getattr(settings, "company_email_addresses", [])
-        internal_person_names = getattr(settings, "internal_person_names", [])
-        exclusions_file = getattr(settings, "ingestion_exclusions_file", "")
-    except Exception:
-        company_phones = []
-        company_email_addresses = []
-        internal_person_names = []
-        exclusions_file = ""
+    company_phones = [] if company_mobile_numbers is None else list(company_mobile_numbers)
+    company_emails = [] if company_email_addresses is None else company_email_addresses
+    internal_names = [] if internal_person_names is None else internal_person_names
     if bundle.session_phone:
         company_phones.append(bundle.session_phone)
     for endpoint in bundle.message_endpoints:
@@ -282,14 +309,13 @@ def _build_envelopes(
         role = endpoint.get("role") if isinstance(endpoint, dict) else None
         if role == "sender" and isinstance(phone, str):
             company_phones.append(phone)
-    file_exclusions = load_exclusion_file(exclusions_file)
     filtered = filter_extraction(
         extraction,
         build_exclusion_context(
             company_mobile_numbers=company_phones,
-            company_email_addresses=company_email_addresses,
-            internal_person_names=internal_person_names,
-            file_exclusions=file_exclusions,
+            company_email_addresses=company_emails,
+            internal_person_names=internal_names,
+            file_exclusions=file_exclusions or ExclusionFile(),
         ),
     )
     if filtered is None:

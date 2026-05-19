@@ -19,6 +19,7 @@ import logging
 
 from neo4j import ManagedTransaction
 
+from src.exclusions import ExclusionContext, is_excluded_machine_unit_observation
 from src.golden_profile import compute_golden_profile
 from src.graph import queries
 from src.graph.client import Neo4jClient
@@ -77,6 +78,7 @@ class IngestPipeline:
         self,
         envelope: SourceRecordEnvelope,
         ingest_run_id: str | None = None,
+        exclusion_context: ExclusionContext | None = None,
     ) -> IngestResult:
         """Ingest a single source record.  Returns an ``IngestResult``."""
 
@@ -99,6 +101,9 @@ class IngestPipeline:
         identifiers = normalize_envelope_identifiers(envelope)
         address = normalize_envelope_address(envelope)
         attributes = normalize_envelope_attributes(envelope)
+        active_exclusion_context = (
+            exclusion_context if exclusion_context is not None else ExclusionContext()
+        )
 
         # Steps 3-13 run inside a single write transaction
         def _work(tx: ManagedTransaction) -> IngestResult:
@@ -110,6 +115,7 @@ class IngestPipeline:
                 attributes,
                 ingest_run_id=ingest_run_id,
                 previous_source_record_pk=previous_pk,
+                exclusion_context=active_exclusion_context,
             )
 
         with self._client.session() as session:
@@ -151,8 +157,12 @@ class IngestPipeline:
         attributes: list[NormalizedAttribute],
         ingest_run_id: str | None = None,
         previous_source_record_pk: str | None = None,
+        exclusion_context: ExclusionContext | None = None,
     ) -> IngestResult:
         """Orchestrate steps 3–13 of the ingest flow inside one write tx."""
+        active_exclusion_context = (
+            exclusion_context if exclusion_context is not None else ExclusionContext()
+        )
         upsert_nodes(tx, identifiers, address)
         candidates = find_candidates(tx, identifiers, address)
         match_result = self._match_engine.evaluate(
@@ -184,6 +194,7 @@ class IngestPipeline:
             tx,
             envelope=envelope,
             source_record_pk=source_record_pk,
+            exclusion_context=active_exclusion_context,
         )
         match_decision_id = persist_match_decision(tx, match_result, source_record_pk)
         review_case_id = create_review_case_if_needed(tx, match_result, match_decision_id)
@@ -237,6 +248,7 @@ class IngestPipeline:
         *,
         envelope: SourceRecordEnvelope,
         source_record_pk: str,
+        exclusion_context: ExclusionContext,
     ) -> None:
         if envelope.record_type != RecordType.CONVERSATION:
             return
@@ -250,6 +262,8 @@ class IngestPipeline:
             inquiries=inquiries_raw,
         )
         for observation in observations:
+            if is_excluded_machine_unit_observation(observation, exclusion_context):
+                continue
             row = tx.run(
                 queries.RESOLVE_EXISTING_MACHINE_UNIT_FOR_CHAT,
                 normalized_machine_product=normalize_machine_product(observation.machine_product),

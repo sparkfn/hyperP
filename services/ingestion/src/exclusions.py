@@ -10,10 +10,23 @@ from src.connectors.chat_helpers import (
     ExtractedStrongIdentifier,
     ExtractionResult,
 )
-from src.exclusion_config import ExclusionFile
+from src.exclusion_config import ExclusionFile, MachineUnitIdentifierExclusion
+from src.machine_units import (
+    MachineUnitObservation,
+    normalize_lta_tag,
+    normalize_machine_product,
+    normalize_serial_number,
+)
 from src.normalizers.email import normalize_email
 from src.normalizers.name import normalize_name
 from src.normalizers.phone import normalize_phone
+
+
+@dataclass(frozen=True)
+class MachineUnitIdentifierKey:
+    machine_product: str
+    lta_tag: str | None = None
+    serial_number: str | None = None
 
 
 @dataclass(frozen=True)
@@ -25,6 +38,9 @@ class ExclusionContext:
     email_domains: frozenset[str] = field(default_factory=frozenset)
     names: frozenset[str] = field(default_factory=frozenset)
     source_ids: frozenset[str] = field(default_factory=frozenset)
+    machine_unit_identifiers: frozenset[MachineUnitIdentifierKey] = field(
+        default_factory=frozenset
+    )
 
 
 def normalize_excluded_phone(value: str | None) -> str | None:
@@ -80,6 +96,28 @@ def normalized_name_set(values: list[str]) -> frozenset[str]:
     return frozenset(v for value in values if (v := normalize_excluded_name(value)) is not None)
 
 
+def normalized_machine_unit_identifier_set(
+    values: list[MachineUnitIdentifierExclusion],
+) -> frozenset[MachineUnitIdentifierKey]:
+    keys: set[MachineUnitIdentifierKey] = set()
+    for value in values:
+        machine_product = normalize_machine_product(value.get("machine_product"))
+        if machine_product is None:
+            continue
+        lta_tag = normalize_lta_tag(value.get("lta_tag"))
+        serial_number = normalize_serial_number(value.get("serial_number"))
+        if lta_tag is None and serial_number is None:
+            continue
+        keys.add(
+            MachineUnitIdentifierKey(
+                machine_product=machine_product,
+                lta_tag=lta_tag,
+                serial_number=serial_number,
+            )
+        )
+    return frozenset(keys)
+
+
 def build_exclusion_context(
     *,
     company_mobile_numbers: list[str],
@@ -94,6 +132,9 @@ def build_exclusion_context(
         names=normalized_name_set(internal_person_names + file_exclusions.names),
         source_ids=frozenset(
             value.strip().lower() for value in file_exclusions.source_ids if value.strip()
+        ),
+        machine_unit_identifiers=normalized_machine_unit_identifier_set(
+            file_exclusions.machine_unit_identifiers
         ),
     )
 
@@ -121,6 +162,28 @@ def is_excluded_source_id(value: str | None, context: ExclusionContext) -> bool:
     if not value:
         return False
     return value.strip().lower() in context.source_ids
+
+
+def is_excluded_machine_unit_observation(
+    observation: MachineUnitObservation,
+    context: ExclusionContext,
+) -> bool:
+    machine_product = normalize_machine_product(observation.machine_product)
+    if machine_product is None:
+        return False
+    lta_tag = normalize_lta_tag(observation.lta_tag)
+    serial_number = normalize_serial_number(observation.serial_number)
+    return any(
+        excluded.machine_product == machine_product
+        and (
+            (excluded.lta_tag is not None and excluded.lta_tag == lta_tag)
+            or (
+                excluded.serial_number is not None
+                and excluded.serial_number == serial_number
+            )
+        )
+        for excluded in context.machine_unit_identifiers
+    )
 
 
 def is_excluded_person(person: ExtractedPerson, context: ExclusionContext) -> bool:
