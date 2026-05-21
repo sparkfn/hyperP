@@ -64,7 +64,13 @@ async def create_ingest_run(
     repo: IngestRepository = Depends(get_ingest_repo),
 ) -> ApiResponse[IngestRunResponse]:
     """Create a new ingest run for a bulk sync."""
-    result = await repo.create_run(source_key, body.run_type, body.metadata)
+    result = await repo.create_run(
+        source_key,
+        body.run_type,
+        body.mode,
+        body.dump_path,
+        body.metadata,
+    )
     if result is None:
         raise http_error(
             404, "not_found", f"Source system '{source_key}' not found or inactive.", request

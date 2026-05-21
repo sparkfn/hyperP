@@ -29,6 +29,7 @@ export interface PersonsFilters {
   q: string;
   entity_keys: string[];
   source_keys: string[];
+  has_bankruptcy_case: "" | "true" | "false";
   has_address: "" | "true" | "false";
   addr_street: string;
   addr_unit: string;
@@ -46,6 +47,7 @@ export const DEFAULT_FILTERS: PersonsFilters = {
   q: "",
   entity_keys: [],
   source_keys: [],
+  has_bankruptcy_case: "",
   has_address: "",
   addr_street: "",
   addr_unit: "",
@@ -61,6 +63,7 @@ export const DEFAULT_FILTERS: PersonsFilters = {
 
 function hasAdvancedFilters(f: PersonsFilters): boolean {
   return (
+    f.has_bankruptcy_case !== "" ||
     f.has_address !== "" ||
     f.addr_street !== "" ||
     f.addr_unit !== "" ||
@@ -79,6 +82,7 @@ function hasAdvancedFilters(f: PersonsFilters): boolean {
 const IMMEDIATE_KEYS = new Set<keyof PersonsFilters>([
   "entity_keys",
   "source_keys",
+  "has_bankruptcy_case",
   "has_address",
   "has_dob",
   "updated_after",
@@ -100,6 +104,10 @@ interface PersonsFilterPanelProps {
   sourceSystems: SourceSystemSummary[];
   onApply: (next: PersonsFilters) => void;
   onClear: () => void;
+}
+
+function asPresenceFilter(value: string): "" | "true" | "false" {
+  return value === "true" || value === "false" ? value : "";
 }
 
 export default function PersonsFilterPanel({
@@ -272,6 +280,19 @@ export default function PersonsFilterPanel({
                 {source.display_name ?? source.source_key}
               </MenuItem>
             ))}
+          </Select>
+        </FormControl>
+        <FormControl size="small" sx={{ minWidth: 170 }}>
+          <InputLabel>Bankruptcy</InputLabel>
+          <Select
+            label="Bankruptcy"
+            value={draft.has_bankruptcy_case}
+            onChange={(e) => handleChange({ has_bankruptcy_case: asPresenceFilter(e.target.value) })}
+            sx={{ fontSize: "0.875rem" }}
+          >
+            <MenuItem value="">All</MenuItem>
+            <MenuItem value="true">Has bankruptcy</MenuItem>
+            <MenuItem value="false">No bankruptcy</MenuItem>
           </Select>
         </FormControl>
         {hasActiveFilters && (

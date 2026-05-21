@@ -13,9 +13,9 @@ import Typography from "@mui/material/Typography";
 import AccountTreeIcon from "@mui/icons-material/AccountTree";
 
 import type { ListedPerson, PersonConnection, SalesOrder, SourceRecord } from "@/lib/api-types";
-import type { PersonIdentifier } from "@/lib/api-types-person";
+import type { PersonBankruptcyCase, PersonIdentifier } from "@/lib/api-types-person";
 import { confidenceColor, connectionsToItems, formatDate, formatDob, identifiersToItems, ordersToItems, sourcesToItems } from "@/lib/display";
-import CountCardsCell from "@/components/CountCardsCell";
+import CountCardsCell, { type CountCardItem } from "@/components/CountCardsCell";
 
 interface PersonRowProps {
   person: ListedPerson;
@@ -36,6 +36,17 @@ interface PersonRowProps {
   orders: SalesOrder[] | undefined;
   ordersLoading: boolean;
   onRequestOrders: () => void;
+  bankruptcyCases: PersonBankruptcyCase[] | undefined;
+  bankruptcyLoading: boolean;
+  onRequestBankruptcyCases: () => void;
+}
+
+function bankruptcyToItems(cases: PersonBankruptcyCase[] | undefined): CountCardItem[] | undefined {
+  return cases?.map((c) => ({
+    primary: c.case_number ?? c.source_case_id,
+    secondary: [c.event_type, c.event_date].filter(Boolean).join(" · ") || c.document_type,
+    color: "warning",
+  }));
 }
 
 export default function PersonRow({
@@ -57,6 +68,9 @@ export default function PersonRow({
   orders,
   ordersLoading,
   onRequestOrders,
+  bankruptcyCases,
+  bankruptcyLoading,
+  onRequestBankruptcyCases,
 }: PersonRowProps): ReactElement {
   return (
     <TableRow
@@ -114,6 +128,16 @@ export default function PersonRow({
           loading={ordersLoading}
           items={ordersToItems(orders)}
           onOpen={onRequestOrders}
+        />
+      </TableCell>
+      <TableCell align="center" onClick={(e) => e.stopPropagation()}>
+        <CountCardsCell
+          count={person.bankruptcy_case_count}
+          label="cases"
+          emptyText="No bankruptcy cases"
+          loading={bankruptcyLoading}
+          items={bankruptcyToItems(bankruptcyCases)}
+          onOpen={onRequestBankruptcyCases}
         />
       </TableCell>
       <TableCell align="center" onClick={(e) => e.stopPropagation()}>

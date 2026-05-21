@@ -15,6 +15,7 @@ import PaginationBar from "@/components/PaginationBar";
 import UnmergeDialog from "@/components/UnmergeDialog";
 import { usePaginatedFetch } from "@/lib/usePaginatedFetch";
 import type { PersonAuditEvent } from "@/lib/api-types-person";
+import { formatDateTime } from "@/lib/display";
 
 interface Props {
   personId: string;
@@ -53,7 +54,7 @@ export default function AuditTab({ personId }: Props): ReactElement {
                 <Box>
                   <Typography variant="subtitle2">{e.event_type}</Typography>
                   <Typography variant="caption" color="text.secondary" display="block">
-                    {e.actor_type}:{e.actor_id} · {e.created_at}
+                    {e.actor_type}:{e.actor_id} · {formatDateTime(e.created_at)}
                   </Typography>
                   {e.reason !== null ? (
                     <Typography variant="body2" sx={{ mt: 0.5 }}>

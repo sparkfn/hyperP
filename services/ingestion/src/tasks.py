@@ -151,7 +151,12 @@ class _SourceAlreadyRunningError(Exception):
     retry_jitter=True,
     max_retries=None,  # keep retrying — eventually a slot frees up
 )
-def run_ingestion_task(self: Task, source_key: str, mode: str = "batch") -> IngestionSummary:
+def run_ingestion_task(
+    self: Task,
+    source_key: str,
+    mode: str = "batch",
+    dump_path: str | None = None,
+) -> IngestionSummary:
     """Run a single ingestion under the cluster-wide concurrency cap."""
     settings = get_settings()
     setup_logging(settings.log_level)
@@ -163,7 +168,12 @@ def run_ingestion_task(self: Task, source_key: str, mode: str = "batch") -> Inge
             _acquire_source_lock(source_key),
             _acquire_ingestion_slot(settings.max_concurrent_ingestions),
         ):
-            return run_ingestion(source_key, mode, initialize_graph=False)
+            return run_ingestion(
+                source_key,
+                mode,
+                dump_path,
+                initialize_graph=False,
+            )
     except _SourceAlreadyRunningError as exc:
         logger.warning(
             "Ingestion source %s is already running; skipping duplicate",

@@ -6,6 +6,7 @@ from typing import Protocol, TypedDict
 
 from src.types import (
     AuditEvent,
+    BankruptcyCase,
     ConnectionType,
     ListedPerson,
     MatchDecision,
@@ -14,6 +15,7 @@ from src.types import (
     PersonEntitySummary,
     PersonGraph,
     PersonIdentifier,
+    PersonTimelineGroup,
     SourceRecord,
 )
 
@@ -27,6 +29,7 @@ class PersonListFilters(TypedDict, total=False):
     has_phone: bool | None
     has_email: bool | None
     has_address: bool | None
+    has_bankruptcy_case: bool | None
     addr_street: str | None
     addr_unit: str | None
     addr_city: str | None
@@ -62,6 +65,10 @@ class PersonRepository(Protocol):
         self, person_id: str, skip: int, limit: int
     ) -> tuple[list[SourceRecord], int]: ...
 
+    async def get_bankruptcy_cases(
+        self, person_id: str, skip: int, limit: int
+    ) -> tuple[list[BankruptcyCase], int]: ...
+
     async def get_identifiers(
         self, person_id: str, skip: int, limit: int
     ) -> tuple[list[PersonIdentifier], int]: ...
@@ -90,3 +97,11 @@ class PersonRepository(Protocol):
     ) -> tuple[list[MatchDecision], bool]:
         """Returns (items, has_more). No count query — has_more via +1 fetch."""
         ...
+
+    async def get_timeline(
+        self, person_id: str, skip: int, limit: int
+    ) -> tuple[list[PersonTimelineGroup], int]: ...
+
+    async def get_timeline_target(
+        self, person_id: str, source_record_pk: str
+    ) -> PersonTimelineGroup | None: ...

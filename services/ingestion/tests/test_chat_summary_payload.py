@@ -32,7 +32,22 @@ def test_persist_source_record_includes_chat_summary_in_normalized_payload() -> 
         record_type=RecordType.CONVERSATION,
         observed_at="2026-05-06T00:00:00",
         record_hash="hash-1",
-        raw_payload={"summary": " Customer asks about delivery. "},
+        raw_payload={
+            "summary": " Customer asks about delivery. ",
+            "customer_sentiment": "frustrated",
+            "chat_members": [
+                {"name": "Ben", "phone": "+6588880000", "role": "agent", "notes": "Sales"}
+            ],
+            "inquiries": [
+                {
+                    "machine_product": "Forklift X",
+                    "unit": "Unit 7",
+                    "lta_tag": "LTA123",
+                    "serial_number": "SN-9",
+                    "notes": "Asked for availability",
+                }
+            ],
+        },
         extraction_confidence=0.9,
         extraction_method="llm:qwen-max",
     )
@@ -59,3 +74,16 @@ def test_persist_source_record_includes_chat_summary_in_normalized_payload() -> 
     assert isinstance(payload_raw, str)
     payload = json.loads(payload_raw)
     assert payload["summary"] == "Customer asks about delivery."
+    assert payload["customer_sentiment"] == "frustrated"
+    assert payload["chat_members"] == [
+        {"name": "Ben", "phone": "+6588880000", "role": "agent", "notes": "Sales"}
+    ]
+    assert payload["inquiries"] == [
+        {
+            "machine_product": "Forklift X",
+            "unit": "Unit 7",
+            "lta_tag": "LTA123",
+            "serial_number": "SN-9",
+            "notes": "Asked for availability",
+        }
+    ]

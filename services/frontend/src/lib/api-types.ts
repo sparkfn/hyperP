@@ -165,6 +165,7 @@ export interface ListedPerson extends EntityPerson {
   entity_count: number;
   identifier_count: number;
   order_count: number;
+  bankruptcy_case_count: number;
 }
 
 // --- Reports (stretchy reports) ---

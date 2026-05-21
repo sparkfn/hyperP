@@ -3,6 +3,7 @@ x-ingestion-env: &ingestion-env
   NEO4J_USER: neo4j
   NEO4J_PASSWORD: ${NEO4J_PASSWORD:-changeme}
   LOG_LEVEL: ${LOG_LEVEL:-INFO}
+  DUMPS_ROOT: /app/dumps
   BATCH_SIZE: ${BATCH_SIZE:-1000}
   CELERY_BROKER_URL: redis://redis:6379/0
   CELERY_RESULT_BACKEND: redis://redis:6379/1
@@ -66,10 +67,12 @@ x-ingestion-env: &ingestion-env
   WHATSAPP_CHAT_DB_PASSWORD: ${WHATSAPP_CHAT_DB_PASSWORD:-}
   WHATSAPP_CHAT_DB_NAME: ${WHATSAPP_CHAT_DB_NAME:-whatsapp_api}
   WHATSAPP_CHAT_CHUNK_SIZE: ${WHATSAPP_CHAT_CHUNK_SIZE:-500}
+  INGESTION_EXCLUSIONS_FILE: /app/config/ingestion-exclusions.json
 
 services:
   neo4j:
     image: neo4j:5.26-community
+    stop_grace_period: 30s
     ports:
       - "${NEO4J_HTTP_PORT:-7474}:7474"
       - "${NEO4J_BOLT_PORT:-7687}:7687"
@@ -126,6 +129,9 @@ services:
       OAUTH_PUBLIC_KEY_PEM: ${OAUTH_PUBLIC_KEY_PEM:-}
       OAUTH_SECRET_HASH_KEY: ${OAUTH_SECRET_HASH_KEY:-}
       ROOT_PATH: /api
+      DUMPS_ROOT: /app/dumps
+    volumes:
+      - ./.dumps:/app/dumps:ro
     depends_on:
       neo4j:
         condition: service_healthy
@@ -165,6 +171,9 @@ services:
       context: .
       dockerfile: services/ingestion/Dockerfile
     environment: *ingestion-env
+    volumes:
+      - ./.dumps:/app/dumps:ro
+      - ${INGESTION_EXCLUSIONS_HOST_FILE:-./config/ingestion-exclusions.example.json}:/app/config/ingestion-exclusions.json:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
@@ -190,6 +199,7 @@ services:
         condition: service_healthy
     volumes:
       - ./data/celerybeat:/var/celerybeat
+      - ${INGESTION_EXCLUSIONS_HOST_FILE:-./config/ingestion-exclusions.example.json}:/app/config/ingestion-exclusions.json:ro
     command:
       - celery
       - -A

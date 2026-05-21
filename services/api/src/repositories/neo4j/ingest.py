@@ -41,10 +41,14 @@ class Neo4jIngestRepository:
         self,
         source_key: str,
         run_type: str,
+        mode: str,
+        dump_path: str | None,
         metadata: dict[str, str],
     ) -> IngestRunResponse | None:
         async with get_session(write=True) as session:
-            return await session.execute_write(_create_run_tx, source_key, run_type, metadata)
+            return await session.execute_write(
+                _create_run_tx, source_key, run_type, mode, dump_path, metadata
+            )
 
     async def update_run(
         self,
@@ -67,6 +71,8 @@ class Neo4jIngestRepository:
         return IngestRunDetailResponse(
             ingest_run_id=to_str(run.get("ingest_run_id")),
             run_type=to_str(run.get("run_type")),
+            mode=to_str(run.get("mode")) or "batch",
+            dump_path=to_str(run.get("dump_path")) or None,
             status=to_str(run.get("status")),
             record_count=int(run.get("record_count") or 0),
             rejected_count=int(run.get("rejected_count") or 0),
@@ -154,10 +160,17 @@ async def _create_run_tx(
     tx: AsyncManagedTransaction,
     source_key: str,
     run_type: str,
+    mode: str,
+    dump_path: str | None,
     metadata: dict[str, str],
 ) -> IngestRunResponse | None:
     result = await tx.run(
-        CREATE_INGEST_RUN, source_key=source_key, run_type=run_type, metadata=metadata
+        CREATE_INGEST_RUN,
+        source_key=source_key,
+        run_type=run_type,
+        mode=mode,
+        dump_path=dump_path,
+        metadata=metadata,
     )
     record = await result.single()
     if record is None:
@@ -165,6 +178,8 @@ async def _create_run_tx(
     return IngestRunResponse(
         ingest_run_id=to_str(record["ingest_run_id"]),
         status=to_str(record["status"]),
+        mode=to_str(record["mode"]),
+        dump_path=to_str(record["dump_path"]) or None,
         started_at=to_str(record["started_at"]),
     )
 
@@ -189,5 +204,7 @@ async def _update_run_tx(
     return IngestRunResponse(
         ingest_run_id=to_str(record["ingest_run_id"]),
         status=to_str(record["status"]),
+        mode=to_str(record["mode"]) or "batch",
+        dump_path=to_str(record["dump_path"]) or None,
         finished_at=to_str(record["finished_at"]) or None,
     )

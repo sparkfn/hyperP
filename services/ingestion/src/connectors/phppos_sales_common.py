@@ -77,6 +77,7 @@ def fetch_phppos_sales(
     conn: Connection,
     source_system_key: str,
     chunk_size: int,
+    excluded_customer_ids: set[int] | None = None,
 ) -> Iterator[dict[str, JsonValue]]:
     """Yield one sales envelope per phppos_sales row.
 
@@ -86,6 +87,7 @@ def fetch_phppos_sales(
     if not sales_tables_present(engine):
         return
 
+    excluded_customer_ids = excluded_customer_ids or set()
     md = MetaData()
     sales_t = Table("phppos_sales", md, autoload_with=engine, resolve_fks=False)
     items_t = Table("phppos_sales_items", md, autoload_with=engine, resolve_fks=False)
@@ -94,11 +96,15 @@ def fetch_phppos_sales(
     items_cols = {c.name for c in items_t.columns}
     item_cols = {c.name for c in item_t.columns}
 
-    result = (
-        conn.execute(select(sales_t).order_by(sales_t.c.sale_id)).mappings().yield_per(chunk_size)
-    )
+    stmt = select(sales_t).order_by(sales_t.c.sale_id)
+    if excluded_customer_ids:
+        stmt = stmt.where(sales_t.c.customer_id.not_in(sorted(excluded_customer_ids)))
+    result = conn.execute(stmt).mappings().yield_per(chunk_size)
     with engine.connect() as sidecar:
         for sale in result:
+            customer_id_raw = sale.get("customer_id")
+            if customer_id_raw is not None and int(customer_id_raw) in excluded_customer_ids:
+                continue
             sale_id = int(sale["sale_id"])
             line_rows, items_by_id = _fetch_sale_items(sidecar, items_t, item_t, sale_id)
             yield _build_envelope(

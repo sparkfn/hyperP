@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import PurePosixPath
 from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator
@@ -103,9 +104,32 @@ class IngestRecordsRequest(BaseModel):
     records: list[IngestRecord]
 
 
+IngestRunMode = Literal["batch", "dump"]
+
+
 class IngestRunCreateRequest(BaseModel):
     run_type: str
+    mode: IngestRunMode = "batch"
+    dump_path: str | None = None
     metadata: dict[str, str] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _check_dump_path(self) -> IngestRunCreateRequest:
+        if self.mode == "batch":
+            if self.dump_path is not None:
+                raise ValueError("dump_path is only valid when mode='dump'")
+            return self
+        if self.dump_path is None or self.dump_path.strip() == "":
+            raise ValueError("dump_path is required when mode='dump'")
+        normalized = self.dump_path.replace("\\", "/").strip()
+        path = PurePosixPath(normalized)
+        has_windows_anchor = len(path.parts) > 0 and path.parts[0].endswith(":")
+        if path.is_absolute() or has_windows_anchor:
+            raise ValueError("dump_path must be relative to the dumps root")
+        if ".." in path.parts:
+            raise ValueError("dump_path must not contain parent traversal")
+        self.dump_path = path.as_posix()
+        return self
 
 
 class IngestRunUpdateRequest(BaseModel):

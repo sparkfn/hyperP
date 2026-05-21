@@ -92,8 +92,12 @@ export interface IngestRecordsResponse {
   results: IngestRecordResult[];
 }
 
+export type IngestRunMode = "batch" | "dump";
+
 export interface IngestRunCreateRequest {
   run_type: string;
+  mode: IngestRunMode;
+  dump_path: string | null;
   metadata: Record<string, string>;
 }
 
@@ -106,6 +110,8 @@ export interface IngestRunUpdateRequest {
 export interface IngestRunResponse {
   ingest_run_id: string;
   status: string;
+  mode: IngestRunMode;
+  dump_path: string | null;
   started_at: string | null;
   finished_at: string | null;
 }
@@ -113,6 +119,8 @@ export interface IngestRunResponse {
 export interface IngestRunDetailResponse {
   ingest_run_id: string;
   run_type: string;
+  mode: IngestRunMode;
+  dump_path: string | null;
   status: string;
   record_count: number;
   rejected_count: number;

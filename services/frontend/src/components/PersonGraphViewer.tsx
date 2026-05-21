@@ -27,6 +27,7 @@ import ReceiptIcon from "@mui/icons-material/Receipt";
 import InventoryIcon from "@mui/icons-material/Inventory";
 import CircleIcon from "@mui/icons-material/Circle";
 import StorageIcon from "@mui/icons-material/Storage";
+import GavelIcon from "@mui/icons-material/Gavel";
 import StorefrontIcon from "@mui/icons-material/Storefront";
 import dynamic from "next/dynamic";
 import type { ForceGraphMethods } from "react-force-graph-2d";
@@ -71,6 +72,7 @@ const ICON_COMPONENTS: Record<NodeIcon, ReactElement> = {
   inventory: <InventoryIcon />,
   bullet: <CircleIcon sx={{ fontSize: 12 }} />,
   dataSource: <StorageIcon />,
+  gavel: <GavelIcon />,
   storefront: <StorefrontIcon />,
 };
 

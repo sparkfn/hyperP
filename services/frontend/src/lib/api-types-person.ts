@@ -27,14 +27,96 @@ export interface SourceRecordAttributePayload {
   quality_flag?: string;
 }
 
+export interface SourceRecordChatMemberPayload {
+  name?: string | null;
+  phone?: string | null;
+  role?: string | null;
+  notes?: string | null;
+}
+
+export interface SourceRecordInquiryPayload {
+  machine_product?: string | null;
+  unit?: string | null;
+  lta_tag?: string | null;
+  serial_number?: string | null;
+  notes?: string | null;
+}
+
 export interface SourceRecordNormalizedPayload {
   identifiers?: SourceRecordIdentifierPayload[];
   address?: SourceRecordAddressPayload | null;
   attributes?: SourceRecordAttributePayload[];
   summary?: string;
+  customer_sentiment?: string;
+  chat_members?: SourceRecordChatMemberPayload[];
+  inquiries?: SourceRecordInquiryPayload[];
+}
+
+export interface SourceRecordConversationRef {
+  platform?: string;
+  tenant?: string;
+  chat_id?: string;
+  deal_id?: string;
+  bitrix_chat_id?: string;
+  whatsapp_user_id?: string;
+  session_id?: string;
+}
+
+export interface SourceRecordRawPayload {
+  conversation_text?: string;
+  messages_text?: string;
+  summary?: string;
+  customer_sentiment?: string;
+  chat_members?: SourceRecordChatMemberPayload[];
+  inquiries?: SourceRecordInquiryPayload[];
+  tenant?: string;
+  category?: string;
+  chat_id?: string;
+  deal_id?: string;
+  bitrix_chat_id?: string;
+  whatsapp_user_id?: string;
+  session_id?: string;
 }
 
 export interface PersonSourceRecord {
+  source_record_pk: string;
+  source_system: string;
+  source_record_id: string;
+  source_record_version: string | null;
+  entity_key: string | null;
+  entity_display_name: string | null;
+  record_type: SourceRecordType;
+  extraction_confidence: number | null;
+  extraction_method: string | null;
+  link_status: string;
+  linked_person_id: string | null;
+  observed_at: string;
+  ingested_at: string;
+  conversation_ref: SourceRecordConversationRef | null;
+  raw_payload: SourceRecordRawPayload | null;
+  normalized_payload: SourceRecordNormalizedPayload | null;
+}
+
+export type TimelineTimestampKind = "source" | "fallback";
+export type TimelineFactCategory =
+  | "identity"
+  | "contact"
+  | "address"
+  | "sale"
+  | "relationship"
+  | "conversation"
+  | "source"
+  | "bankruptcy";
+
+export interface PersonTimelineFact {
+  fact_id: string;
+  category: TimelineFactCategory;
+  label: string;
+  value: string;
+  detail: string | null;
+}
+
+export interface PersonTimelineGroup {
   source_record_pk: string;
   source_system: string;
   source_record_id: string;
@@ -43,9 +125,28 @@ export interface PersonSourceRecord {
   extraction_confidence: number | null;
   link_status: string;
   linked_person_id: string | null;
-  observed_at: string;
+  occurred_at: string;
+  timestamp_kind: TimelineTimestampKind;
   ingested_at: string;
-  normalized_payload: SourceRecordNormalizedPayload | null;
+  facts: PersonTimelineFact[];
+}
+
+export interface PersonBankruptcyCase {
+  bankruptcy_case_id: string;
+  source_system_key: string;
+  source_case_id: string;
+  case_number: string | null;
+  document_type: string | null;
+  document_date: string | null;
+  event_type: string | null;
+  event_date: string | null;
+  trustee_name: string | null;
+  trustee_firm: string | null;
+  source_url: string | null;
+  first_seen_at: string | null;
+  last_seen_at: string | null;
+  created_at: string | null;
+  updated_at: string | null;
 }
 
 export interface PersonAuditEvent {
@@ -85,6 +186,8 @@ export interface PersonIdentifier {
   is_verified: boolean;
   last_confirmed_at: string | null;
   source_system_key: string | null;
+  source_record_pks: string[];
+  source_record_ids: string[];
 }
 
 // --- Request bodies ---

@@ -6,11 +6,15 @@ schema mirrors the standard PHP POS (phppos) layout.
 Customer custom-field mapping (from ``phppos_app_config``):
 
 - ``custom_field_1_value`` → NRIC / Passport No.
-- ``custom_field_4_value`` → bitrix_user_id (numeric)
-- ``custom_field_5_value`` → external customer ID (numeric)
-- ``custom_field_8_value`` → region (Central, East, North, etc.)
-- ``custom_field_9_value`` → DOB epoch (negative = pre-1970)
-- ``custom_field_10_value`` → opt-in status or DOB string
+- ``custom_field_2_value`` → not in use
+- ``custom_field_3_value`` → not in use
+- ``custom_field_4_value`` → points expiry date
+- ``custom_field_5_value`` → expired points
+- ``custom_field_6_value`` → not in use
+- ``custom_field_7_value`` → not in use
+- ``custom_field_8_value`` → Area Zone
+- ``custom_field_9_value`` → Date of Birth
+- ``custom_field_10_value`` → Whatsapp Optin
 """
 
 from __future__ import annotations
@@ -58,9 +62,21 @@ customers = Table(
     Column("company_name", String(255)),
     Column("deleted", Integer),
     Column("custom_field_1_value", String(255)),  # NRIC / Passport No.
-    Column("custom_field_4_value", String(255)),  # bitrix_user_id
-    Column("custom_field_5_value", String(255)),  # external customer ID
-    Column("custom_field_8_value", String(255)),  # region
-    Column("custom_field_9_value", String(255)),  # DOB epoch
-    Column("custom_field_10_value", String(255)),  # opt-in status / DOB string
+    Column("custom_field_2_value", String(255)),  # not in use
+    Column("custom_field_3_value", String(255)),  # not in use
+    Column("custom_field_4_value", String(255)),  # points expiry date
+    Column("custom_field_5_value", String(255)),  # expired points
+    Column("custom_field_6_value", String(255)),  # not in use
+    Column("custom_field_7_value", String(255)),  # not in use
+    Column("custom_field_8_value", String(255)),  # Area Zone
+    Column("custom_field_9_value", String(255)),  # Date of Birth
+    Column("custom_field_10_value", String(255)),  # Whatsapp Optin
+)
+
+employees = Table(
+    "phppos_employees",
+    metadata,
+    Column("person_id", Integer, primary_key=True),
+    Column("username", String(255)),
+    Column("deleted", Integer),
 )

@@ -13,6 +13,7 @@ function isSortField(v: string | null): v is SortField {
     case "entity_count":
     case "identifier_count":
     case "order_count":
+    case "bankruptcy_case_count":
     case "updated_at":
     case "profile_completeness_score":
       return true;
@@ -91,6 +92,7 @@ export function parseStateFromParams(
       q: sp.get("q") ?? "",
       entity_keys: getAllParams(sp, "entity_key"),
       source_keys: getAllParams(sp, "source_key"),
+      has_bankruptcy_case: parsePresence(sp.get("has_bankruptcy_case")),
       has_address: parsePresence(sp.get("has_address")),
       addr_street: sp.get("addr_street") ?? "",
       addr_unit: sp.get("addr_unit") ?? "",
@@ -116,6 +118,7 @@ export function serializeStateToParams(state: PersonsListState): string {
   if (f.q.trim()) params.set("q", f.q.trim());
   appendRepeated(params, "entity_key", f.entity_keys);
   appendRepeated(params, "source_key", f.source_keys);
+  if (f.has_bankruptcy_case) params.set("has_bankruptcy_case", f.has_bankruptcy_case);
   if (f.has_address) params.set("has_address", f.has_address);
   if (f.addr_street.trim()) params.set("addr_street", f.addr_street.trim());
   if (f.addr_unit.trim()) params.set("addr_unit", f.addr_unit.trim());
@@ -151,6 +154,7 @@ export function buildQuery(
   if (filters.q.trim().length >= 3) params.set("q", filters.q.trim());
   appendRepeated(params, "entity_key", filters.entity_keys);
   appendRepeated(params, "source_key", filters.source_keys);
+  if (filters.has_bankruptcy_case) params.set("has_bankruptcy_case", filters.has_bankruptcy_case);
   if (filters.has_address) params.set("has_address", filters.has_address);
   if (filters.addr_street.trim()) params.set("addr_street", filters.addr_street.trim());
   if (filters.addr_unit.trim()) params.set("addr_unit", filters.addr_unit.trim());
@@ -175,6 +179,7 @@ export function countActiveFilters(f: PersonsFilters): number {
   if (f.q.trim().length >= 3) count++;
   if (f.entity_keys.length > 0) count++;
   if (f.source_keys.length > 0) count++;
+  if (f.has_bankruptcy_case) count++;
   if (f.has_address) count++;
   if (f.addr_street.trim()) count++;
   if (f.addr_unit.trim()) count++;

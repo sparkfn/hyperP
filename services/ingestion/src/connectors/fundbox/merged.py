@@ -32,13 +32,18 @@ class FundboxMergedUsersConnector(FundboxConnectorBase):
 
     def build_records(self, conn: Connection) -> Iterator[dict[str, JsonValue]]:
         stmt = select(merged_users).order_by(merged_users.c.id)
-        for row in self._stream(conn, stmt):
-            ids = IdentifierBag()
-            ids.add("nric", row.nric, verified=True)
-            ids.add("email", row.email)
-            ids.add("phone", row.mobile_number)
+        for chunk in self._chunked(self._stream(conn, stmt), self._resolved_chunk_size()):
+            surviving_ids = [row.new_user_id for row in chunk if row.new_user_id is not None]
+            excluded_user_ids = self._fetch_excluded_user_ids(conn, surviving_ids)
+            for row in chunk:
+                if row.new_user_id is not None and row.new_user_id in excluded_user_ids:
+                    continue
+                ids = IdentifierBag()
+                ids.add("nric", row.nric, verified=True)
+                ids.add("email", row.email)
+                ids.add("phone", row.mobile_number)
 
-            yield build_envelope(
+                yield build_envelope(
                 source_record_id=f"fundbox_consumer_backend-merged-{row.id}",
                 observed_at=to_iso(row.updated_at or row.created_at),
                 identifiers=ids.items,

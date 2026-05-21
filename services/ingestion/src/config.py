@@ -34,6 +34,7 @@ class Settings(BaseSettings):
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
 
     # Ingestion tuning --------------------------------------------------------
+    dumps_root: str = "/app/dumps"
     batch_size: int = 500
 
     # Celery / queue ----------------------------------------------------------
@@ -122,6 +123,12 @@ class Settings(BaseSettings):
     whatsapp_chat_db_password: str = ""
     whatsapp_chat_db_name: str = "whatsapp_api"
     whatsapp_chat_chunk_size: int = 500
+
+    # Hard ingestion exclusions -------------------------------------------------
+    company_mobile_numbers: list[str] = []
+    company_email_addresses: list[str] = []
+    internal_person_names: list[str] = []
+    ingestion_exclusions_file: str = ""
 
     # LLM service -------------------------------------------------------------
     llm_default_model: str = "Qwen/Qwen2.5-72B-Instruct"

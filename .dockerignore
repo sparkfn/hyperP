@@ -46,6 +46,7 @@ docs/
 
 # Claude Code
 .claude/
+.superpowers/
 
 # Dump files
 .dumps/

@@ -156,9 +156,69 @@ class PersonIdentifier(BaseModel):
     is_verified: bool = False
     last_confirmed_at: str | None = None
     source_system_key: str | None = None
+    source_record_pks: list[str] = Field(default_factory=list)
+    source_record_ids: list[str] = Field(default_factory=list)
 
 
 class SourceRecord(BaseModel):
+    source_record_pk: str
+    source_system: str
+    source_record_id: str
+    source_record_version: str | None = None
+    entity_key: str | None = None
+    entity_display_name: str | None = None
+    record_type: Literal["system", "conversation"] = "system"
+    extraction_confidence: float | None = None
+    extraction_method: str | None = None
+    link_status: str
+    linked_person_id: str | None = None
+    observed_at: str
+    ingested_at: str
+    conversation_ref: dict[str, JsonValue] | None = None
+    raw_payload: dict[str, JsonValue] | None = None
+    normalized_payload: dict[str, JsonValue] | None = None
+
+
+class BankruptcyCase(BaseModel):
+    bankruptcy_case_id: str
+    source_system_key: str
+    source_case_id: str
+    case_number: str | None = None
+    document_type: str | None = None
+    document_date: str | None = None
+    event_type: str | None = None
+    event_date: str | None = None
+    trustee_name: str | None = None
+    trustee_firm: str | None = None
+    source_url: str | None = None
+    first_seen_at: str | None = None
+    last_seen_at: str | None = None
+    created_at: str | None = None
+    updated_at: str | None = None
+
+
+TimelineTimestampKind = Literal["source", "fallback"]
+TimelineFactCategory = Literal[
+    "identity",
+    "contact",
+    "address",
+    "sale",
+    "relationship",
+    "conversation",
+    "source",
+    "bankruptcy",
+]
+
+
+class TimelineFact(BaseModel):
+    fact_id: str
+    category: TimelineFactCategory
+    label: str
+    value: str
+    detail: str | None = None
+
+
+class PersonTimelineGroup(BaseModel):
     source_record_pk: str
     source_system: str
     source_record_id: str
@@ -167,9 +227,10 @@ class SourceRecord(BaseModel):
     extraction_confidence: float | None = None
     link_status: str
     linked_person_id: str | None = None
-    observed_at: str
+    occurred_at: str
+    timestamp_kind: TimelineTimestampKind
     ingested_at: str
-    normalized_payload: dict[str, JsonValue] | None = None
+    facts: list[TimelineFact] = Field(default_factory=list)
 
 
 class MatchDecisionSummary(BaseModel):
@@ -341,3 +402,4 @@ class ListedPerson(EntityPerson):
     entity_count: int = 0
     identifier_count: int = 0
     order_count: int = 0
+    bankruptcy_case_count: int = 0

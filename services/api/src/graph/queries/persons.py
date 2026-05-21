@@ -72,15 +72,81 @@ connection_count
 GET_PERSON_SOURCE_RECORDS = """
 MATCH (sr:SourceRecord)-[:LINKED_TO]->(p:Person {person_id: $person_id})
 MATCH (sr)-[:FROM_SOURCE]->(ss:SourceSystem)
+OPTIONAL MATCH (ss)-[:OPERATED_BY]->(entity:Entity)
+RETURN sr {
+  .source_record_pk, .source_record_id, .source_record_version,
+  .record_type, .extraction_confidence, .extraction_method,
+  .link_status, .observed_at, .ingested_at,
+  .conversation_ref, .raw_payload, .normalized_payload
+} AS source_record,
+ss.source_key AS source_system,
+p.person_id AS linked_person_id,
+entity.entity_key AS entity_key,
+entity.display_name AS entity_display_name
+ORDER BY sr.observed_at DESC
+SKIP $skip LIMIT $limit
+"""
+
+GET_PERSON_BANKRUPTCY_CASES = """
+MATCH (:Person {person_id: $person_id})-[:HAS_BANKRUPTCY_CASE]->(bc:BankruptcyCase)
+RETURN bc {
+  .bankruptcy_case_id, .source_system_key, .source_case_id,
+  .case_number, .document_type, .document_date,
+  .event_type, .event_date, .trustee_name, .trustee_firm,
+  .source_url, .first_seen_at, .last_seen_at, .created_at, .updated_at
+} AS bankruptcy_case
+ORDER BY coalesce(bc.event_date, bc.document_date, toString(bc.last_seen_at), toString(bc.updated_at), bc.source_case_id) DESC
+SKIP $skip LIMIT $limit
+"""
+
+COUNT_PERSON_BANKRUPTCY_CASES = """
+MATCH (:Person {person_id: $person_id})-[:HAS_BANKRUPTCY_CASE]->(bc:BankruptcyCase)
+RETURN count(bc) AS total
+"""
+
+GET_PERSON_TIMELINE = """
+MATCH (sr:SourceRecord)-[:LINKED_TO]->(p:Person {person_id: $person_id})
+MATCH (sr)-[:FROM_SOURCE]->(ss:SourceSystem)
+OPTIONAL MATCH (sr)-[:DESCRIBES_CASE]->(bc:BankruptcyCase)
 RETURN sr {
   .source_record_pk, .source_record_id, .source_record_version,
   .record_type, .extraction_confidence,
   .link_status, .observed_at, .ingested_at, .normalized_payload
 } AS source_record,
 ss.source_key AS source_system,
-p.person_id AS linked_person_id
-ORDER BY sr.observed_at DESC
+p.person_id AS linked_person_id,
+bc {
+  .bankruptcy_case_id, .source_system_key, .source_case_id,
+  .case_number, .document_type, .document_date,
+  .event_type, .event_date, .trustee_name, .trustee_firm,
+  .source_url, .first_seen_at, .last_seen_at, .created_at, .updated_at
+} AS bankruptcy_case
+ORDER BY coalesce(sr.observed_at, sr.ingested_at) DESC, sr.source_record_pk DESC
 SKIP $skip LIMIT $limit
+"""
+
+COUNT_PERSON_TIMELINE = """
+MATCH (sr:SourceRecord)-[:LINKED_TO]->(:Person {person_id: $person_id})
+RETURN count(sr) AS total
+"""
+
+GET_PERSON_TIMELINE_TARGET = """
+MATCH (sr:SourceRecord {source_record_pk: $source_record_pk})-[:LINKED_TO]->(p:Person {person_id: $person_id})
+MATCH (sr)-[:FROM_SOURCE]->(ss:SourceSystem)
+OPTIONAL MATCH (sr)-[:DESCRIBES_CASE]->(bc:BankruptcyCase)
+RETURN sr {
+  .source_record_pk, .source_record_id, .source_record_version,
+  .record_type, .extraction_confidence,
+  .link_status, .observed_at, .ingested_at, .normalized_payload
+} AS source_record,
+ss.source_key AS source_system,
+p.person_id AS linked_person_id,
+bc {
+  .bankruptcy_case_id, .source_system_key, .source_case_id,
+  .case_number, .document_type, .document_date,
+  .event_type, .event_date, .trustee_name, .trustee_firm,
+  .source_url, .first_seen_at, .last_seen_at, .created_at, .updated_at
+} AS bankruptcy_case
 """
 
 GET_PERSON_CONNECTIONS_IDENTIFIER = """
@@ -234,13 +300,23 @@ ORDER BY e.display_name
 
 GET_PERSON_IDENTIFIERS = """
 MATCH (p:Person {person_id: $person_id})-[rel:IDENTIFIED_BY]->(id:Identifier)
+WITH id,
+     rel.is_active AS is_active,
+     rel.is_verified AS is_verified,
+     rel.last_confirmed_at AS last_confirmed_at,
+     rel.source_system_key AS source_system_key,
+     collect(DISTINCT rel.source_record_pk) AS source_record_pks
+OPTIONAL MATCH (sr:SourceRecord)
+WHERE sr.source_record_pk IN source_record_pks
 RETURN id.identifier_type AS identifier_type,
        id.normalized_value AS normalized_value,
-       rel.is_active AS is_active,
-       rel.is_verified AS is_verified,
-       rel.last_confirmed_at AS last_confirmed_at,
-       rel.source_system_key AS source_system_key
-ORDER BY rel.is_active DESC, id.identifier_type, id.normalized_value
+       is_active AS is_active,
+       is_verified AS is_verified,
+       last_confirmed_at AS last_confirmed_at,
+       source_system_key AS source_system_key,
+       source_record_pks AS source_record_pks,
+       collect(DISTINCT sr.source_record_id) AS source_record_ids
+ORDER BY is_active DESC, id.identifier_type, id.normalized_value
 SKIP $skip LIMIT $limit
 """
 

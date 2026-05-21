@@ -7,9 +7,43 @@ MATCH (sr:SourceRecord {
     source_record_id: $source_record_id
 })
 WHERE sr.record_hash = $record_hash
+  AND coalesce(sr.is_latest, true) = true
 MATCH (sr)-[:FROM_SOURCE]->(ss:SourceSystem {source_key: $source_system})
 RETURN sr.source_record_pk AS source_record_pk
 LIMIT 1
+"""
+
+GET_LATEST_SOURCE_RECORD = """
+MATCH (sr:SourceRecord {source_record_id: $source_record_id})-[:FROM_SOURCE]->(:SourceSystem {source_key: $source_system})
+WHERE coalesce(sr.is_latest, true) = true
+RETURN sr.source_record_pk AS source_record_pk,
+       sr.record_hash AS record_hash,
+       coalesce(sr.source_record_version, '1') AS source_record_version
+ORDER BY toInteger(coalesce(sr.source_record_version, '1')) DESC
+LIMIT 1
+"""
+
+SUPERSEDE_SOURCE_RECORD = """
+MATCH (old:SourceRecord {source_record_pk: $old_source_record_pk})
+MATCH (new:SourceRecord {source_record_pk: $new_source_record_pk})
+SET old.is_latest = false,
+    old.superseded_at = datetime(),
+    old.updated_at = datetime(),
+    new.is_latest = true,
+    new.updated_at = datetime()
+MERGE (old)-[:SUPERSEDED_BY]->(new)
+WITH old
+OPTIONAL MATCH (:Person)-[ident:IDENTIFIED_BY {source_record_pk: old.source_record_pk}]->(:Identifier)
+SET ident.is_active = false,
+    ident.updated_at = datetime()
+WITH old
+OPTIONAL MATCH (:Person)-[addr:LIVES_AT {source_record_pk: old.source_record_pk}]->(:Address)
+SET addr.is_active = false,
+    addr.updated_at = datetime()
+WITH old
+OPTIONAL MATCH (:Person)-[fact:HAS_FACT {source_record_pk: old.source_record_pk}]->(old)
+SET fact.is_active = false,
+    fact.updated_at = datetime()
 """
 
 CREATE_SOURCE_RECORD = """
@@ -28,6 +62,7 @@ CREATE (sr:SourceRecord {
     record_hash:           $record_hash,
     raw_payload:           $raw_payload,
     normalized_payload:    $normalized_payload,
+    is_latest:             true,
     retention_expires_at:  null
 })-[:FROM_SOURCE]->(ss)
 RETURN sr.source_record_pk AS source_record_pk

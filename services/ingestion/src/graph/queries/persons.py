@@ -14,20 +14,37 @@ RETURN id.identifier_id AS identifier_id
 """
 
 UPSERT_ADDRESS = """
-MERGE (addr:Address {
-    country_code: $country_code,
-    postal_code:  $postal_code,
-    street_name:  $street_name,
-    street_number: $street_number,
-    unit_number:  $unit_number
-})
-ON CREATE SET
-    addr.address_id      = randomUUID(),
-    addr.building_name   = $building_name,
-    addr.city            = $city,
-    addr.state_province  = $state_province,
-    addr.normalized_full = $normalized_full,
-    addr.created_at      = datetime()
+OPTIONAL MATCH (existing:Address {country_code: $country_code, postal_code: $postal_code})
+WITH existing
+ORDER BY existing.created_at ASC
+WITH collect(existing)[0] AS existing
+FOREACH (_ IN CASE WHEN existing IS NULL THEN [1] ELSE [] END |
+    CREATE (:Address {
+        address_id: randomUUID(),
+        country_code: $country_code,
+        postal_code: $postal_code,
+        street_name: $street_name,
+        street_number: $street_number,
+        unit_number: $unit_number,
+        building_name: $building_name,
+        city: $city,
+        state_province: $state_province,
+        normalized_full: $normalized_full,
+        created_at: datetime()
+    })
+)
+WITH existing
+OPTIONAL MATCH (addr:Address {country_code: $country_code, postal_code: $postal_code})
+WITH CASE WHEN existing IS NULL THEN addr ELSE existing END AS addr
+ORDER BY addr.created_at ASC
+WITH collect(addr)[0] AS addr
+SET addr.street_name = CASE WHEN coalesce(addr.street_name, '') = '' THEN $street_name ELSE addr.street_name END,
+    addr.street_number = CASE WHEN coalesce(addr.street_number, '') = '' THEN $street_number ELSE addr.street_number END,
+    addr.unit_number = CASE WHEN coalesce(addr.unit_number, '') = '' THEN $unit_number ELSE addr.unit_number END,
+    addr.building_name = CASE WHEN coalesce(addr.building_name, '') = '' THEN $building_name ELSE addr.building_name END,
+    addr.city = CASE WHEN coalesce(addr.city, '') = '' THEN $city ELSE addr.city END,
+    addr.state_province = CASE WHEN coalesce(addr.state_province, '') = '' THEN $state_province ELSE addr.state_province END,
+    addr.normalized_full = CASE WHEN coalesce(addr.normalized_full, '') = '' THEN $normalized_full ELSE addr.normalized_full END
 RETURN addr.address_id AS address_id
 """
 
@@ -91,6 +108,24 @@ ON MATCH SET
     rel.source_record_pk = $source_record_pk
 """
 
+LINK_SOURCE_RECORD_TO_ADDRESS = """
+MATCH (sr:SourceRecord {source_record_pk: $source_record_pk})
+MATCH (addr:Address {country_code: $country_code, postal_code: $postal_code})
+WITH sr, addr
+ORDER BY addr.created_at ASC
+WITH sr, collect(addr)[0] AS addr
+MERGE (sr)-[rel:DESCRIBES_ADDRESS]->(addr)
+ON CREATE SET
+    rel.linked_at = datetime(),
+    rel.source_system_key = $source_system_key,
+    rel.flat_type = $flat_type,
+    rel.is_active = $is_active
+ON MATCH SET
+    rel.linked_at = datetime(),
+    rel.flat_type = $flat_type,
+    rel.is_active = $is_active
+"""
+
 # Person -[:HAS_FACT]-> SourceRecord — never a self-loop.
 CREATE_ATTRIBUTE_FACT = """
 MATCH (p:Person {person_id: $person_id})
@@ -98,9 +133,11 @@ MATCH (sr:SourceRecord {source_record_pk: $source_record_pk})
 CREATE (p)-[:HAS_FACT {
     attribute_name:    $attribute_name,
     attribute_value:   $attribute_value,
+    source_record_pk:  $source_record_pk,
     source_trust_tier: $source_trust_tier,
     confidence:        $confidence,
     quality_flag:      $quality_flag,
+    is_active:         true,
     is_current_hint:   false,
     observed_at:       datetime($observed_at),
     created_at:        datetime()
@@ -109,6 +146,7 @@ CREATE (p)-[:HAS_FACT {
 
 FETCH_PERSON_FACTS = """
 MATCH (p:Person {person_id: $person_id})-[f:HAS_FACT]->(sr:SourceRecord)
+WHERE coalesce(f.is_active, true) = true
 RETURN f.attribute_name AS attribute_name,
        f.attribute_value AS attribute_value,
        f.source_trust_tier AS source_trust_tier,

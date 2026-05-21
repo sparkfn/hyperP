@@ -12,6 +12,8 @@ from neo4j import ManagedTransaction
 from src.config import get_settings
 from src.connectors.base import SourceConnector
 from src.connectors.bitrix import BitrixChatConnector
+from src.connectors.dumps.connectors import get_dump_connector
+from src.connectors.dumps.reader import resolve_dump_path
 from src.connectors.eko import EkoConnector, EkoSalesConnector
 from src.connectors.fundbox import (
     FundboxConnector,
@@ -20,15 +22,31 @@ from src.connectors.fundbox import (
     FundboxMergedUsersConnector,
     FundboxSalesConnector,
 )
+from src.connectors.sggov import (
+    SGGovernmentBankruptcyConnector,
+    SGGovernmentRentalFlatsConnector,
+)
 from src.connectors.speedzone import SpeedZoneConnector, SpeedZoneSalesConnector
 from src.connectors.whatsapp import WhatsAppChatConnector
+from src.exclusion_config import load_exclusion_file
+from src.exclusions import (
+    ExclusionContext,
+    build_exclusion_context,
+    is_excluded_email,
+    is_excluded_phone,
+    is_excluded_source_id,
+)
 from src.graph import queries
 from src.graph.bootstrap import bootstrap_entities_and_sources
 from src.graph.client import Neo4jClient
 from src.graph.schema_init import apply_schema
 from src.models import IngestResult, RecordType, SourceRecordEnvelope
 from src.pipeline import IngestPipeline
-from src.pipeline_knows import materialize_knows_from_contacts
+from src.pipeline_addresses import ingest_address_record
+from src.pipeline_knows import (
+    materialize_knows_from_chat_relationships,
+    materialize_knows_from_contacts,
+)
 from src.pipeline_sales import drain_pending_customer_sales, ingest_sales_record
 
 logger = logging.getLogger(__name__)
@@ -48,7 +66,15 @@ _CONNECTOR_REGISTRY: dict[str, type[SourceConnector]] = {
     "eko_phppos:sales": EkoSalesConnector,
     "whatsapp_chat": WhatsAppChatConnector,
     "bitrix_chat": BitrixChatConnector,
+    "sgbankruptcy": SGGovernmentBankruptcyConnector,
+    "sgrentalflats": SGGovernmentRentalFlatsConnector,
 }
+
+_ADDRESS_ONLY_SOURCES = frozenset({"sgrentalflats"})
+
+
+def _is_address_only_source(source_key: str) -> bool:
+    return source_key in _ADDRESS_ONLY_SOURCES
 
 
 def _mark_run_failed(
@@ -89,8 +115,12 @@ def setup_logging(level: str) -> None:
     logging.getLogger("neo4j.notifications").setLevel(logging.ERROR)
 
 
-def get_connector(source_key: str) -> SourceConnector:
+def get_connector(source_key: str, dump_path: str | None = None) -> SourceConnector:
     """Return the appropriate connector for the given source key."""
+    if dump_path is not None:
+        settings = get_settings()
+        resolved_dump_path = resolve_dump_path(dump_path, settings.dumps_root)
+        return get_dump_connector(source_key, resolved_dump_path)
     try:
         return _CONNECTOR_REGISTRY[source_key]()
     except KeyError as exc:
@@ -108,6 +138,7 @@ class IngestionSummary(TypedDict):
     skipped: int
     source_key: str
     mode: str
+    dump_path: str | None
 
 
 def _create_ingest_run(client: Neo4jClient, source_key: str, mode: str) -> str:
@@ -156,11 +187,44 @@ def _process_record(
     pipeline: IngestPipeline,
     envelope: SourceRecordEnvelope,
     ingest_run_id: str,
+    exclusion_context: ExclusionContext,
 ) -> IngestResult:
-    """Route a single envelope to the sales or identity pipeline."""
+    """Route a single envelope to the correct ingestion pipeline."""
     if envelope.record_type == RecordType.SALES:
-        return ingest_sales_record(client, envelope, ingest_run_id=ingest_run_id)
-    return pipeline.ingest(envelope, ingest_run_id=ingest_run_id)
+        return ingest_sales_record(
+            client,
+            envelope,
+            ingest_run_id=ingest_run_id,
+            exclusion_context=exclusion_context,
+        )
+    if _is_address_only_source(envelope.source_system):
+        return ingest_address_record(client, envelope, ingest_run_id=ingest_run_id)
+    return pipeline.ingest(
+        envelope,
+        ingest_run_id=ingest_run_id,
+        exclusion_context=exclusion_context,
+    )
+
+
+def _record_is_excluded(envelope: SourceRecordEnvelope, context: ExclusionContext) -> bool:
+    if is_excluded_source_id(envelope.source_record_id, context):
+        return True
+    for identifier in envelope.identifiers:
+        if identifier.type == "phone" and is_excluded_phone(identifier.value, context):
+            return True
+        if identifier.type == "email" and is_excluded_email(identifier.value, context):
+            return True
+    return False
+
+
+def _load_exclusion_context() -> ExclusionContext:
+    settings = get_settings()
+    return build_exclusion_context(
+        company_mobile_numbers=settings.company_mobile_numbers,
+        company_email_addresses=settings.company_email_addresses,
+        internal_person_names=settings.internal_person_names,
+        file_exclusions=load_exclusion_file(settings.ingestion_exclusions_file),
+    )
 
 
 def _ingest_all_records(
@@ -168,29 +232,50 @@ def _ingest_all_records(
     pipeline: IngestPipeline,
     connector: SourceConnector,
     ingest_run_id: str,
+    exclusion_context: ExclusionContext | None = None,
 ) -> tuple[int, int, int]:
     """Process every record from the connector. Returns (success, errors, skipped)."""
     success = errors = skipped = 0
+    active_exclusion_context = (
+        exclusion_context if exclusion_context is not None else _load_exclusion_context()
+    )
     for raw_record in connector.fetch_records():
         envelope = SourceRecordEnvelope.model_validate(
             {"source_system": connector.get_source_key(), **raw_record},
         )
-        result = _process_record(client, pipeline, envelope, ingest_run_id)
+        if _record_is_excluded(envelope, active_exclusion_context):
+            skipped += 1
+            logger.info("  %s -> excluded", envelope.source_record_id)
+            continue
+        result = _process_record(
+            client,
+            pipeline,
+            envelope,
+            ingest_run_id,
+            active_exclusion_context,
+        )
         if result.skipped_duplicate:
             skipped += 1
         elif result.errors:
             errors += 1
         else:
             success += 1
-        logger.info(
-            "  %s -> person=%s new=%s decision=%s candidates=%d%s",
-            result.source_record_id,
-            result.person_id,
-            result.is_new_person,
-            result.match_decision,
-            result.candidate_count,
-            " (DUPLICATE)" if result.skipped_duplicate else "",
-        )
+        if result.person_id is None:
+            logger.info(
+                "  %s -> address-only%s",
+                result.source_record_id,
+                " (DUPLICATE)" if result.skipped_duplicate else "",
+            )
+        else:
+            logger.info(
+                "  %s -> person=%s new=%s decision=%s candidates=%d%s",
+                result.source_record_id,
+                result.person_id,
+                result.is_new_person,
+                result.match_decision,
+                result.candidate_count,
+                " (DUPLICATE)" if result.skipped_duplicate else "",
+            )
     return success, errors, skipped
 
 
@@ -206,10 +291,18 @@ def initialize_ingestion_graph() -> None:
 
 
 def run_ingestion(
-    source_key: str, mode: str = "batch", *, initialize_graph: bool = True
+    source_key: str,
+    mode: str = "batch",
+    dump_path: str | None = None,
+    *,
+    initialize_graph: bool = True,
 ) -> IngestionSummary:
     """Execute one ingestion run end-to-end."""
     settings = get_settings()
+    if mode == "dump" and dump_path is None:
+        raise ValueError("dump_path is required when mode='dump'")
+    if mode != "dump" and dump_path is not None:
+        raise ValueError("dump_path is only valid when mode='dump'")
     logger.info("Starting ingestion: source=%s mode=%s", source_key, mode)
 
     if initialize_graph:
@@ -221,20 +314,31 @@ def run_ingestion(
             client.verify_connectivity()
 
         pipeline = IngestPipeline(client)
-        connector = get_connector(source_key)
+        connector = get_connector(source_key, dump_path if mode == "dump" else None)
         ingest_run_id = _create_ingest_run(client, source_key, mode)
         logger.info("IngestRun %s created, connector=%s", ingest_run_id, type(connector).__name__)
 
         try:
+            exclusion_context = _load_exclusion_context()
             success, errors, skipped = _ingest_all_records(
                 client,
                 pipeline,
                 connector,
                 ingest_run_id,
+                exclusion_context,
             )
-            drained = drain_pending_customer_sales(client)
+            drained = drain_pending_customer_sales(
+                client,
+                exclusion_context=exclusion_context,
+            )
             if drained:
                 logger.info("Drained %d pending sales records", drained)
+            chat_knows_linked = materialize_knows_from_chat_relationships(client)
+            if chat_knows_linked:
+                logger.info(
+                    "Materialized %d KNOWS edges from chat relationships",
+                    chat_knows_linked,
+                )
             knows_linked = materialize_knows_from_contacts(client)
             if knows_linked:
                 logger.info("Materialized %d KNOWS edges from contacts", knows_linked)
@@ -264,6 +368,7 @@ def run_ingestion(
             "skipped": skipped,
             "source_key": source_key,
             "mode": mode,
+            "dump_path": dump_path,
         }
     finally:
         client.close()
@@ -275,12 +380,13 @@ def main(argv: list[str] | None = None) -> None:
         description="Ingestion service for the profile unification platform",
     )
     parser.add_argument("--source-key", required=True)
-    parser.add_argument("--mode", choices=["batch", "backfill"], default="batch")
+    parser.add_argument("--mode", choices=["batch", "backfill", "dump"], default="batch")
+    parser.add_argument("--dump-path", default=None)
     args = parser.parse_args(argv)
 
     setup_logging(get_settings().log_level)
     try:
-        run_ingestion(args.source_key, args.mode)
+        run_ingestion(args.source_key, args.mode, args.dump_path)
     except Exception:
         logger.exception("Fatal error during ingestion")
         sys.exit(1)

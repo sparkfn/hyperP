@@ -127,22 +127,36 @@ RETURN identity_sr.source_record_pk AS identity_source_record_pk
 """
 
 #: Attach a resolved Person to the Order via PURCHASED. Deduplicated on
-#: (source_system_key, source_record_pk) so re-ingestion never duplicates.
+#: (source_system_key, source_order_id) so changed SourceRecord versions refresh
+#: the same durable purchase edge instead of duplicating it.
 LINK_PERSON_PURCHASED_ORDER = """
 MATCH (person:Person {person_id: $person_id})
 MATCH (o:Order {source_system_key: $source_system_key, source_order_id: $source_order_id})
 MERGE (person)-[rel:PURCHASED {
     source_system_key: $source_system_key,
-    source_record_pk:  $source_record_pk
+    source_order_id:   $source_order_id
 }]->(o)
 ON CREATE SET
     rel.first_seen_at     = datetime(),
-    rel.last_seen_at      = datetime(),
-    rel.last_confirmed_at = datetime(),
     rel.created_at        = datetime()
-ON MATCH SET
+SET rel.source_record_pk  = $source_record_pk,
     rel.last_seen_at      = datetime(),
     rel.last_confirmed_at = datetime()
+"""
+
+CLEAR_SUPERSEDED_SALES_LINKS = """
+MATCH (o:Order {source_system_key: $source_system_key, source_order_id: $source_order_id})
+OPTIONAL MATCH (:Person)-[purchase:PURCHASED {source_system_key: $source_system_key}]->(o)
+WHERE purchase.source_record_pk = $old_source_record_pk
+DELETE purchase
+WITH o
+OPTIONAL MATCH (o)-[unit_rel:INVOLVES_UNIT]->(:MachineUnit)
+WHERE unit_rel.source_record_pk = $old_source_record_pk
+DELETE unit_rel
+WITH o
+OPTIONAL MATCH (:Person)-[bought:BOUGHT_UNIT {source_system_key: $source_system_key, source_order_id: $source_order_id}]->(:MachineUnit)
+WHERE bought.source_record_pk = $old_source_record_pk
+DELETE bought
 """
 
 #: Find sales SourceRecords that are still waiting for their customer
