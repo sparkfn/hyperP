@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 
 from neo4j import AsyncManagedTransaction
 
-from src.graph.converters import to_optional_str, to_str
+from src.graph.converters import GraphValue, to_optional_str, to_str, to_str_dict
 from src.graph.queries import (
     CHECK_PERSON_ACTIVE,
     CREATE_RECOMPUTE_AUDIT,
@@ -48,6 +48,11 @@ def _fact_value_to_str(value: object) -> str | None:
     return str(value)
 
 
+def _field_trust_tier(field_trust: GraphValue, attribute_name: str) -> str:
+    value = to_str_dict(field_trust).get(attribute_name)
+    return value if value is not None else "tier_4"
+
+
 def _empty_fact() -> _BestFact:
     return _BestFact(value=None, trust_rank=99, observed_at="")
 
@@ -76,7 +81,7 @@ async def _gather_best_facts(tx: AsyncManagedTransaction, person_id: str) -> dic
         attr_name = to_str(record["attribute_name"])
         attr_value = _fact_value_to_str(record["attribute_value"])
         quality_flag = to_str(record["quality_flag"], "valid")
-        trust_tier = to_str(record["trust_tier"], "tier_4")
+        trust_tier = _field_trust_tier(record["field_trust"], attr_name)
         source_pk = to_str(record["source_record_pk"])
         observed_at = to_str(record["observed_at"], "")
 

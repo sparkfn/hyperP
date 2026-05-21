@@ -9,7 +9,7 @@ from httpx import ASGITransport, AsyncClient
 from pydantic.types import JsonValue
 from src.auth.deps import get_current_user_or_oauth_client, require_active_user
 from src.auth.models import AuthUser
-from src.graph.mappers import map_timeline_group
+from src.graph.mappers import map_audit_event, map_timeline_group
 from src.repositories.deps import get_person_repo
 from src.routes.persons import router
 from src.types import (
@@ -130,6 +130,27 @@ def test_map_timeline_group_labels_ingested_at_as_fallback_timestamp() -> None:
     assert group.timestamp_kind == "fallback"
     assert group.facts[0].category == "contact"
     assert group.facts[0].label == "Email"
+
+
+def test_map_audit_event_reads_json_metadata() -> None:
+    event = map_audit_event(
+        {
+            "merge_event": {
+                "merge_event_id": "unmerge-1",
+                "event_type": "unmerge",
+                "actor_type": "admin",
+                "actor_id": "admin@example.com",
+                "reason": "false merge",
+                "metadata": '{"original_merge_event_id": "merge-1"}',
+                "created_at": "2026-05-21T20:34:18Z",
+            },
+            "absorbed_person_id": "person-a",
+            "survivor_person_id": "person-b",
+            "triggered_by_decision_id": None,
+        }
+    )
+
+    assert event.metadata == {"original_merge_event_id": "merge-1"}
 
 
 class FakeTimelineRepo:

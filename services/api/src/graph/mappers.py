@@ -18,6 +18,7 @@ from src.graph.converters import (
     to_iso_or_none,
     to_optional_str,
     to_str,
+    to_str_dict,
     to_str_list,
 )
 from src.types import (
@@ -380,10 +381,7 @@ def map_connection(record: GraphRecord) -> PersonConnection:
 
 def map_audit_event(record: GraphRecord) -> AuditEvent:
     me = _as_dict(record.get("merge_event"))
-    metadata_raw = me.get("metadata")
-    metadata: dict[str, str] = {}
-    if isinstance(metadata_raw, dict):
-        metadata = {to_str(k): to_str(v) for k, v in metadata_raw.items()}
+    metadata = to_str_dict(me.get("metadata"))
     return AuditEvent(
         merge_event_id=to_str(me.get("merge_event_id")),
         event_type=to_str(me.get("event_type")),
@@ -657,14 +655,10 @@ def map_person_graph(record: GraphRecord) -> PersonGraph:
 
 
 def map_downstream_event(record: GraphRecord) -> DownstreamEvent:
-    metadata_raw = record.get("metadata")
-    metadata: dict[str, str] = {}
-    if isinstance(metadata_raw, dict):
-        metadata = {to_str(k): to_str(v) for k, v in metadata_raw.items()}
     return DownstreamEvent(
         event_id=to_str(record.get("event_id")),
         event_type=to_str(record.get("event_type")),
         affected_person_ids=to_str_list(record.get("affected_person_ids")),
-        metadata=metadata,
+        metadata=to_str_dict(record.get("metadata")),
         created_at=to_str(record.get("created_at")),
     )

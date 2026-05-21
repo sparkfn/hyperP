@@ -25,7 +25,7 @@ CREATE (me:MergeEvent {
   actor_type: 'admin',
   actor_id: $actor_id,
   reason: $reason,
-  metadata: {},
+  metadata: '{}',
   created_at: datetime()
 })
 CREATE (me)-[:ABSORBED]->(absorbed)
@@ -39,100 +39,57 @@ FOREACH (_ IN CASE WHEN old_link IS NOT NULL THEN [1] ELSE [] END |
   CREATE (me)-[:AFFECTED_RECORD]->(sr)
 )
 
-WITH absorbed, survivor, me
+WITH DISTINCT absorbed, survivor, me
 OPTIONAL MATCH (absorbed)-[old_id:IDENTIFIED_BY]->(id:Identifier)
+WITH absorbed, survivor, me, id, old_id, properties(old_id) AS old_id_props
 FOREACH (_ IN CASE WHEN old_id IS NOT NULL THEN [1] ELSE [] END |
-  CREATE (survivor)-[:IDENTIFIED_BY {
-    is_verified: old_id.is_verified,
-    verification_method: old_id.verification_method,
-    is_active: old_id.is_active,
-    quality_flag: old_id.quality_flag,
-    first_seen_at: old_id.first_seen_at,
-    last_seen_at: old_id.last_seen_at,
-    last_confirmed_at: old_id.last_confirmed_at,
-    source_system_key: old_id.source_system_key,
-    source_record_pk: old_id.source_record_pk
-  }]->(id)
+  CREATE (survivor)-[new_id:IDENTIFIED_BY]->(id)
+  SET new_id = old_id_props
   DELETE old_id
 )
 
-WITH absorbed, survivor, me
+WITH DISTINCT absorbed, survivor, me
 OPTIONAL MATCH (absorbed)-[old_addr:LIVES_AT]->(addr:Address)
+WITH absorbed, survivor, me, addr, old_addr, properties(old_addr) AS old_addr_props
 FOREACH (_ IN CASE WHEN old_addr IS NOT NULL THEN [1] ELSE [] END |
-  CREATE (survivor)-[:LIVES_AT {
-    is_active: old_addr.is_active,
-    is_verified: old_addr.is_verified,
-    source_system_key: old_addr.source_system_key,
-    source_record_pk: old_addr.source_record_pk,
-    first_seen_at: old_addr.first_seen_at,
-    last_seen_at: old_addr.last_seen_at,
-    last_confirmed_at: old_addr.last_confirmed_at,
-    quality_flag: old_addr.quality_flag
-  }]->(addr)
+  CREATE (survivor)-[new_addr:LIVES_AT]->(addr)
+  SET new_addr = old_addr_props
   DELETE old_addr
 )
 
-WITH absorbed, survivor, me
+WITH DISTINCT absorbed, survivor, me
 OPTIONAL MATCH (absorbed)-[old_k_out:KNOWS]->(k_other:Person)
 WHERE k_other.person_id <> survivor.person_id
+WITH absorbed, survivor, me, k_other, old_k_out, properties(old_k_out) AS old_k_out_props
 FOREACH (_ IN CASE WHEN old_k_out IS NOT NULL THEN [1] ELSE [] END |
-  CREATE (survivor)-[:KNOWS {
-    knows_id: old_k_out.knows_id,
-    relationship_label: old_k_out.relationship_label,
-    relationship_category: old_k_out.relationship_category,
-    source_system_key: old_k_out.source_system_key,
-    source_record_pk: old_k_out.source_record_pk,
-    declared_by_person_id: survivor.person_id,
-    status: old_k_out.status,
-    approved_at: old_k_out.approved_at,
-    first_seen_at: old_k_out.first_seen_at,
-    last_seen_at: old_k_out.last_seen_at,
-    last_confirmed_at: old_k_out.last_confirmed_at,
-    created_at: old_k_out.created_at,
-    updated_at: datetime()
-  }]->(k_other)
+  CREATE (survivor)-[new_k_out:KNOWS]->(k_other)
+  SET new_k_out = old_k_out_props
+  SET new_k_out.declared_by_person_id = survivor.person_id,
+      new_k_out.updated_at = datetime()
   DELETE old_k_out
 )
 
-WITH absorbed, survivor, me
+WITH DISTINCT absorbed, survivor, me
 OPTIONAL MATCH (k_other2:Person)-[old_k_in:KNOWS]->(absorbed)
 WHERE k_other2.person_id <> survivor.person_id
+WITH absorbed, survivor, me, k_other2, old_k_in, properties(old_k_in) AS old_k_in_props
 FOREACH (_ IN CASE WHEN old_k_in IS NOT NULL THEN [1] ELSE [] END |
-  CREATE (k_other2)-[:KNOWS {
-    knows_id: old_k_in.knows_id,
-    relationship_label: old_k_in.relationship_label,
-    relationship_category: old_k_in.relationship_category,
-    source_system_key: old_k_in.source_system_key,
-    source_record_pk: old_k_in.source_record_pk,
-    declared_by_person_id: old_k_in.declared_by_person_id,
-    status: old_k_in.status,
-    approved_at: old_k_in.approved_at,
-    first_seen_at: old_k_in.first_seen_at,
-    last_seen_at: old_k_in.last_seen_at,
-    last_confirmed_at: old_k_in.last_confirmed_at,
-    created_at: old_k_in.created_at,
-    updated_at: datetime()
-  }]->(survivor)
+  CREATE (k_other2)-[new_k_in:KNOWS]->(survivor)
+  SET new_k_in = old_k_in_props
+  SET new_k_in.updated_at = datetime()
   DELETE old_k_in
 )
 
-WITH absorbed, survivor, me
+WITH DISTINCT absorbed, survivor, me
 OPTIONAL MATCH (absorbed)-[old_fact:HAS_FACT]->(sr_fact:SourceRecord)
+WITH absorbed, survivor, me, sr_fact, old_fact, properties(old_fact) AS old_fact_props
 FOREACH (_ IN CASE WHEN old_fact IS NOT NULL THEN [1] ELSE [] END |
-  CREATE (survivor)-[:HAS_FACT {
-    attribute_name: old_fact.attribute_name,
-    attribute_value: old_fact.attribute_value,
-    source_trust_tier: old_fact.source_trust_tier,
-    confidence: old_fact.confidence,
-    quality_flag: old_fact.quality_flag,
-    is_current_hint: old_fact.is_current_hint,
-    observed_at: old_fact.observed_at,
-    created_at: old_fact.created_at
-  }]->(sr_fact)
+  CREATE (survivor)-[new_fact:HAS_FACT]->(sr_fact)
+  SET new_fact = old_fact_props
   DELETE old_fact
 )
 
-WITH absorbed, survivor, me
+WITH DISTINCT absorbed, survivor, me
 SET absorbed.status = 'merged', absorbed.updated_at = datetime()
 CREATE (absorbed)-[:MERGED_INTO {
   merge_event_id: me.merge_event_id,
@@ -166,7 +123,116 @@ RETURN absorbed.person_id AS absorbed_id, survivor.person_id AS survivor_id
 
 REVERT_MERGE = """
 MATCH (absorbed:Person {person_id: $absorbed_id})-[mi:MERGED_INTO]->(current_survivor:Person)
-WITH absorbed, mi, current_survivor.person_id AS current_survivor_id
+WITH absorbed, mi, current_survivor, current_survivor.person_id AS current_survivor_id
+OPTIONAL MATCH (merge_event:MergeEvent {merge_event_id: mi.merge_event_id})-[:AFFECTED_RECORD]->(affected_sr:SourceRecord)
+WITH absorbed, mi, current_survivor, current_survivor_id, collect(affected_sr.source_record_pk) AS affected_pks
+
+OPTIONAL MATCH (sr:SourceRecord)-[survivor_link:LINKED_TO]->(current_survivor)
+WHERE sr.source_record_pk IN affected_pks
+FOREACH (_ IN CASE WHEN survivor_link IS NOT NULL THEN [1] ELSE [] END |
+  DELETE survivor_link
+  CREATE (sr)-[:LINKED_TO {linked_at: datetime()}]->(absorbed)
+)
+
+WITH DISTINCT absorbed, mi, current_survivor, current_survivor_id, affected_pks
+OPTIONAL MATCH (current_survivor)-[survivor_id:IDENTIFIED_BY]->(id:Identifier)
+WHERE survivor_id.source_record_pk IN affected_pks
+FOREACH (_ IN CASE WHEN survivor_id IS NOT NULL THEN [1] ELSE [] END |
+  CREATE (absorbed)-[:IDENTIFIED_BY {
+    is_verified: survivor_id.is_verified,
+    verification_method: survivor_id.verification_method,
+    is_active: survivor_id.is_active,
+    quality_flag: survivor_id.quality_flag,
+    first_seen_at: survivor_id.first_seen_at,
+    last_seen_at: survivor_id.last_seen_at,
+    last_confirmed_at: survivor_id.last_confirmed_at,
+    source_system_key: survivor_id.source_system_key,
+    source_record_pk: survivor_id.source_record_pk
+  }]->(id)
+  DELETE survivor_id
+)
+
+WITH DISTINCT absorbed, mi, current_survivor, current_survivor_id, affected_pks
+OPTIONAL MATCH (current_survivor)-[survivor_addr:LIVES_AT]->(addr:Address)
+WHERE survivor_addr.source_record_pk IN affected_pks
+FOREACH (_ IN CASE WHEN survivor_addr IS NOT NULL THEN [1] ELSE [] END |
+  CREATE (absorbed)-[:LIVES_AT {
+    is_active: survivor_addr.is_active,
+    is_verified: survivor_addr.is_verified,
+    source_system_key: survivor_addr.source_system_key,
+    source_record_pk: survivor_addr.source_record_pk,
+    first_seen_at: survivor_addr.first_seen_at,
+    last_seen_at: survivor_addr.last_seen_at,
+    last_confirmed_at: survivor_addr.last_confirmed_at,
+    quality_flag: survivor_addr.quality_flag
+  }]->(addr)
+  DELETE survivor_addr
+)
+
+WITH DISTINCT absorbed, mi, current_survivor, current_survivor_id, affected_pks
+OPTIONAL MATCH (current_survivor)-[survivor_fact:HAS_FACT]->(sr_fact:SourceRecord)
+WHERE sr_fact.source_record_pk IN affected_pks
+FOREACH (_ IN CASE WHEN survivor_fact IS NOT NULL THEN [1] ELSE [] END |
+  CREATE (absorbed)-[:HAS_FACT {
+    attribute_name: survivor_fact.attribute_name,
+    attribute_value: survivor_fact.attribute_value,
+    source_trust_tier: survivor_fact.source_trust_tier,
+    confidence: survivor_fact.confidence,
+    quality_flag: survivor_fact.quality_flag,
+    is_current_hint: survivor_fact.is_current_hint,
+    observed_at: survivor_fact.observed_at,
+    created_at: survivor_fact.created_at
+  }]->(sr_fact)
+  DELETE survivor_fact
+)
+
+WITH DISTINCT absorbed, mi, current_survivor, current_survivor_id, affected_pks
+OPTIONAL MATCH (current_survivor)-[survivor_k_out:KNOWS]->(k_other_out:Person)
+WHERE survivor_k_out.source_record_pk IN affected_pks
+  AND k_other_out.person_id <> absorbed.person_id
+FOREACH (_ IN CASE WHEN survivor_k_out IS NOT NULL THEN [1] ELSE [] END |
+  CREATE (absorbed)-[:KNOWS {
+    knows_id: survivor_k_out.knows_id,
+    relationship_label: survivor_k_out.relationship_label,
+    relationship_category: survivor_k_out.relationship_category,
+    source_system_key: survivor_k_out.source_system_key,
+    source_record_pk: survivor_k_out.source_record_pk,
+    declared_by_person_id: absorbed.person_id,
+    status: survivor_k_out.status,
+    approved_at: survivor_k_out.approved_at,
+    first_seen_at: survivor_k_out.first_seen_at,
+    last_seen_at: survivor_k_out.last_seen_at,
+    last_confirmed_at: survivor_k_out.last_confirmed_at,
+    created_at: survivor_k_out.created_at,
+    updated_at: datetime()
+  }]->(k_other_out)
+  DELETE survivor_k_out
+)
+
+WITH DISTINCT absorbed, mi, current_survivor, current_survivor_id, affected_pks
+OPTIONAL MATCH (k_other_in:Person)-[survivor_k_in:KNOWS]->(current_survivor)
+WHERE survivor_k_in.source_record_pk IN affected_pks
+  AND k_other_in.person_id <> absorbed.person_id
+FOREACH (_ IN CASE WHEN survivor_k_in IS NOT NULL THEN [1] ELSE [] END |
+  CREATE (k_other_in)-[:KNOWS {
+    knows_id: survivor_k_in.knows_id,
+    relationship_label: survivor_k_in.relationship_label,
+    relationship_category: survivor_k_in.relationship_category,
+    source_system_key: survivor_k_in.source_system_key,
+    source_record_pk: survivor_k_in.source_record_pk,
+    declared_by_person_id: survivor_k_in.declared_by_person_id,
+    status: survivor_k_in.status,
+    approved_at: survivor_k_in.approved_at,
+    first_seen_at: survivor_k_in.first_seen_at,
+    last_seen_at: survivor_k_in.last_seen_at,
+    last_confirmed_at: survivor_k_in.last_confirmed_at,
+    created_at: survivor_k_in.created_at,
+    updated_at: datetime()
+  }]->(absorbed)
+  DELETE survivor_k_in
+)
+
+WITH DISTINCT absorbed, mi, current_survivor_id
 DELETE mi
 SET absorbed.status = 'active', absorbed.updated_at = datetime()
 RETURN count(mi) AS removed_count, current_survivor_id
@@ -181,7 +247,7 @@ CREATE (ume:MergeEvent {
   actor_type: 'admin',
   actor_id: $actor_id,
   reason: $reason,
-  metadata: {original_merge_event_id: $original_merge_event_id},
+  metadata: $metadata,
   created_at: datetime()
 })
 CREATE (ume)-[:ABSORBED]->(absorbed)

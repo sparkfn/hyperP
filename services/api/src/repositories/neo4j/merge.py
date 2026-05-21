@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 from neo4j import AsyncManagedTransaction
 
 from src.graph.client import get_session
@@ -174,7 +176,7 @@ async def _unmerge_tx(
         absorbed_id=absorbed_id,
         survivor_id=survivor_id,
         reason=reason,
-        original_merge_event_id=merge_event_id,
+        metadata=json.dumps({"original_merge_event_id": merge_event_id}),
         actor_id=actor_id,
     )
     await tx.run(FLAG_AFFECTED_RECORDS_FOR_REVIEW, merge_event_id=merge_event_id)

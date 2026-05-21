@@ -137,6 +137,62 @@ async def test_manual_merge_success_returns_merge_event_id() -> None:
     }
 
 
+def test_merge_event_queries_store_metadata_as_string_properties() -> None:
+    assert "metadata: '{}'" in EXECUTE_MANUAL_MERGE
+    assert "metadata: {" not in EXECUTE_MANUAL_MERGE
+    assert "metadata: {" not in CREATE_UNMERGE_AUDIT
+
+
+def test_manual_merge_copies_relationship_properties_before_deleting_relationships() -> None:
+    assert (
+        "WITH absorbed, survivor, me, id, old_id, properties(old_id) AS old_id_props"
+        in EXECUTE_MANUAL_MERGE
+    )
+    assert "CREATE (survivor)-[new_id:IDENTIFIED_BY]->(id)" in EXECUTE_MANUAL_MERGE
+    assert "SET new_id = old_id_props" in EXECUTE_MANUAL_MERGE
+    assert (
+        "WITH absorbed, survivor, me, addr, old_addr, properties(old_addr) AS old_addr_props"
+        in EXECUTE_MANUAL_MERGE
+    )
+    assert "CREATE (survivor)-[new_addr:LIVES_AT]->(addr)" in EXECUTE_MANUAL_MERGE
+    assert "SET new_addr = old_addr_props" in EXECUTE_MANUAL_MERGE
+    assert (
+        "WITH absorbed, survivor, me, sr_fact, old_fact, properties(old_fact) AS old_fact_props"
+        in EXECUTE_MANUAL_MERGE
+    )
+    assert "CREATE (survivor)-[new_fact:HAS_FACT]->(sr_fact)" in EXECUTE_MANUAL_MERGE
+    assert "SET new_fact = old_fact_props" in EXECUTE_MANUAL_MERGE
+    assert "old_id.is_verified" not in EXECUTE_MANUAL_MERGE
+    assert "old_addr.is_active" not in EXECUTE_MANUAL_MERGE
+    assert "old_fact.attribute_name" not in EXECUTE_MANUAL_MERGE
+
+
+def test_revert_merge_restores_connections_moved_by_merge_event() -> None:
+    assert "AFFECTED_RECORD" in REVERT_MERGE
+    assert "DELETE survivor_link" in REVERT_MERGE
+    assert "CREATE (sr)-[:LINKED_TO {linked_at: datetime()}]->(absorbed)" in REVERT_MERGE
+    assert "DELETE survivor_id" in REVERT_MERGE
+    assert "CREATE (absorbed)-[:IDENTIFIED_BY" in REVERT_MERGE
+    assert "DELETE survivor_addr" in REVERT_MERGE
+    assert "CREATE (absorbed)-[:LIVES_AT" in REVERT_MERGE
+    assert "DELETE survivor_fact" in REVERT_MERGE
+    assert "CREATE (absorbed)-[:HAS_FACT" in REVERT_MERGE
+    assert "DELETE survivor_k_out" in REVERT_MERGE
+    assert "CREATE (absorbed)-[:KNOWS" in REVERT_MERGE
+    assert "DELETE survivor_k_in" in REVERT_MERGE
+    assert "CREATE (k_other_in)-[:KNOWS" in REVERT_MERGE
+
+
+def test_revert_merge_deduplicates_rows_between_relationship_rewrites() -> None:
+    assert (
+        REVERT_MERGE.count(
+            "WITH DISTINCT absorbed, mi, current_survivor, current_survivor_id, affected_pks"
+        )
+        == 5
+    )
+    assert "WITH DISTINCT absorbed, mi, current_survivor_id\nDELETE mi" in REVERT_MERGE
+
+
 @pytest.mark.asyncio
 async def test_unmerge_reactivates_absorbed_flags_records_and_audits() -> None:
     tx = _Tx(
@@ -313,6 +369,7 @@ async def test_repository_manual_merge_applies_selected_golden_profile_values(
         (merge_module._apply_golden_profile_selections_tx, ("person-b", selections)),
     ]
 
+
 def test_golden_profile_selection_validation_rejects_incompatible_identifier_field() -> None:
     selections: list[GoldenProfileSelection] = [
         {
@@ -339,6 +396,7 @@ def test_golden_profile_selection_validation_rejects_fact_without_source_record(
     ]
 
     assert merge_module.are_valid_golden_profile_selections(selections) is False
+
 
 @pytest.mark.asyncio
 async def test_repository_manual_merge_marks_invalid_selection_as_not_found(
@@ -368,6 +426,7 @@ async def test_repository_manual_merge_marks_invalid_selection_as_not_found(
 
     assert outcome.not_found is True
     assert outcome.merge_event_id is None
+
 
 @pytest.mark.asyncio
 async def test_repository_manual_merge_skips_recompute_when_blocked(

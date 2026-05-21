@@ -5,7 +5,7 @@ from __future__ import annotations
 from neo4j import AsyncManagedTransaction
 
 from src.graph.client import get_session
-from src.graph.converters import to_optional_str, to_str
+from src.graph.converters import to_optional_str, to_str, to_str_dict
 from src.graph.queries import GET_FIELD_TRUST, LIST_SOURCE_SYSTEMS, UPDATE_FIELD_TRUST
 from src.repositories.protocols.admin import FieldTrustResponse, SourceSystemInfo
 from src.types import TrustTier
@@ -20,10 +20,7 @@ class Neo4jAdminRepository:
                 ss = record["source_system"]
                 if not isinstance(ss, dict):
                     continue
-                field_trust_raw = ss.get("field_trust")
-                field_trust: dict[str, str] = {}
-                if isinstance(field_trust_raw, dict):
-                    field_trust = {to_str(k): to_str(v) for k, v in field_trust_raw.items()}
+                field_trust = to_str_dict(ss.get("field_trust"))
                 systems.append(
                     SourceSystemInfo(
                         source_system_id=to_optional_str(ss.get("source_system_id")),
@@ -45,14 +42,10 @@ class Neo4jAdminRepository:
             record = await result.single()
         if record is None:
             return None
-        field_trust_raw = record["field_trust"]
-        field_trust: dict[str, str] = {}
-        if isinstance(field_trust_raw, dict):
-            field_trust = {to_str(k): to_str(v) for k, v in field_trust_raw.items()}
         return FieldTrustResponse(
             source_key=to_str(record["source_key"]),
             display_name=to_optional_str(record["display_name"]),
-            field_trust=field_trust,
+            field_trust=to_str_dict(record["field_trust"]),
         )
 
     async def update_field_trust(
@@ -71,10 +64,7 @@ async def _update_trust_tx(
     record = await current.single()
     if record is None:
         return None
-    existing_raw = record["field_trust"]
-    existing: dict[str, str] = {}
-    if isinstance(existing_raw, dict):
-        existing = {to_str(k): to_str(v) for k, v in existing_raw.items()}
+    existing: dict[str, str] = to_str_dict(record["field_trust"])
     merged: dict[str, str] = {**existing, **{k: v.value for k, v in updates.items()}}
     await tx.run(UPDATE_FIELD_TRUST, source_key=source_key, field_trust=merged)
     return merged

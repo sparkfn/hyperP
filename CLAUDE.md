@@ -281,6 +281,9 @@ Person statuses: `active`, `merged`, `suppressed` (no `under_review` — review 
 
 ## Working with This Repo
 
+### Coding workflow
+Before reporting implementation work as complete, perform a hostile review of the changed code: look for correctness regressions, edge cases, brittle tests, security issues, and overfitting to the immediate bug. Also run a DRY check across the touched area and centralize duplicated parsing, mapping, validation, or UI state logic into the existing appropriate layer rather than adding near-copy helpers.
+
 ### Worktrees
 Create worktrees from the current branch/HEAD, not from `origin/main`, so in-progress branch context is preserved.
 
