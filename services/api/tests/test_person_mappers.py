@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import json
 
-from src.graph.mappers import map_person_identifier, map_source_record
+from src.graph.mappers import (
+    map_person_identifier,
+    map_shared_identifier_candidate,
+    map_source_record,
+)
 
 
 def test_map_source_record_includes_entity_and_conversation_payloads() -> None:
@@ -60,8 +64,67 @@ def test_map_person_identifier_includes_source_record_provenance() -> None:
             "source_system_key": "whatsapp_chat",
             "source_record_pks": ["sr-pk-1", "sr-pk-2"],
             "source_record_ids": ["whatsapp-chat-1", "bitrix-chat-2"],
+            "entities": [
+                {
+                    "entity_key": "speedzone",
+                    "display_name": "Speedzone",
+                    "entity_type": "company",
+                    "country_code": "SG",
+                    "is_active": True,
+                    "source_record_count": 2,
+                }
+            ],
+            "source_records": [
+                {
+                    "source_record_pk": "sr-pk-1",
+                    "source_system": "whatsapp_chat",
+                    "source_record_id": "whatsapp-chat-1",
+                    "source_record_version": None,
+                    "entity_key": "speedzone",
+                    "entity_display_name": "Speedzone",
+                    "record_type": "conversation",
+                    "extraction_confidence": 0.91,
+                    "extraction_method": "llm:qwen",
+                    "link_status": "linked",
+                    "linked_person_id": "person-1",
+                    "observed_at": "2026-05-07T10:00:00Z",
+                    "ingested_at": "2026-05-07T10:05:00Z",
+                    "conversation_ref": None,
+                    "raw_payload": None,
+                    "normalized_payload": {
+                        "identifiers": [
+                            {"identifier_type": "phone", "normalized_value": "+6599990000"}
+                        ]
+                    },
+                }
+            ],
         }
     )
 
     assert identifier.source_record_pks == ["sr-pk-1", "sr-pk-2"]
     assert identifier.source_record_ids == ["whatsapp-chat-1", "bitrix-chat-2"]
+    assert identifier.entities[0].entity_key == "speedzone"
+    assert identifier.source_records[0].source_record_pk == "sr-pk-1"
+
+
+def test_map_shared_identifier_candidate_groups_identifiers() -> None:
+    candidate = map_shared_identifier_candidate(
+        {
+            "person_id": "person-2",
+            "status": "active",
+            "preferred_full_name": "Ana Lim",
+            "preferred_phone": "+6599990000",
+            "preferred_email": "ana@example.com",
+            "preferred_dob": "1990-01-02",
+            "profile_completeness_score": 0.73,
+            "identifiers": [
+                {"identifier_type": "nric", "normalized_value": "S1234567A"},
+                {"identifier_type": "phone", "normalized_value": "+6599990000"},
+            ],
+        }
+    )
+
+    assert candidate.person_id == "person-2"
+    assert candidate.profile_completeness_score == 0.73
+    assert candidate.identifier_strength == "strong"
+    assert [identifier.identifier_type for identifier in candidate.identifiers] == ["nric", "phone"]

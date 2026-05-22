@@ -28,6 +28,7 @@ import Tooltip from "@mui/material/Tooltip";
 import Typography from "@mui/material/Typography";
 
 import type { ApiResponse, Person, PublicLink } from "@/lib/api-types";
+import { bffFetch } from "@/lib/api-client";
 import { formatDateTime, formatDob } from "@/lib/display";
 import { statusColor } from "@/lib/display";
 import AuditTab from "./AuditTab";
@@ -41,7 +42,7 @@ import PersonFocusedGraph from "./PersonFocusedGraph";
 import PersonSection from "./PersonSection";
 import PersonTimelineTab from "./PersonTimelineTab";
 import SalesCard from "./SalesCard";
-import SourceRecordsTab from "./SourceRecordsTab";
+import SharedIdentifiersSection from "./SharedIdentifiersSection";
 import SurvivorshipOverrideDialog from "./SurvivorshipOverrideDialog";
 
 interface Props {
@@ -71,20 +72,16 @@ export default function PersonDetailTabs({ person }: Props): ReactElement {
   const [overrideOpen, setOverrideOpen] = useState<boolean>(false);
   const [shareLink, setShareLink] = useState<PublicLink | null>(null);
   const [shareLoading, setShareLoading] = useState<boolean>(false);
+  const [refreshedPerson, setRefreshedPerson] = useState<Person | null>(null);
+  const [detailRefreshKey, setDetailRefreshKey] = useState<number>(0);
+  const currentPerson = refreshedPerson?.person_id === person.person_id ? refreshedPerson : person;
 
-  const openTimelineTarget = useCallback((sourceRecordPk: string): void => {
-    const params = new URLSearchParams(window.location.search);
-    params.set("tab", "timeline");
-    params.set("sourceRecordPk", sourceRecordPk);
-    window.history.replaceState(
-      null,
-      "",
-      `${window.location.pathname}?${params.toString()}`,
-    );
-    setTimelineTargetPk(sourceRecordPk);
-    setTimelineTargetAt(null);
-    setTab(1);
-  }, []);
+  const refreshDetailData = useCallback((): void => {
+    setDetailRefreshKey((current) => current + 1);
+    void bffFetch<Person>(`/bff/persons/${encodeURIComponent(person.person_id)}`)
+      .then(setRefreshedPerson)
+      .catch(() => undefined);
+  }, [person.person_id]);
 
   useEffect(() => {
     const listener = (event: Event): void => {
@@ -115,7 +112,7 @@ export default function PersonDetailTabs({ person }: Props): ReactElement {
     setShareLoading(true);
     try {
       const res = await fetch(
-        `/bff/persons/${encodeURIComponent(person.person_id)}/public-link`,
+        `/bff/persons/${encodeURIComponent(currentPerson.person_id)}/public-link`,
         { method: "POST" },
       );
       if (!res.ok) return;
@@ -137,33 +134,39 @@ export default function PersonDetailTabs({ person }: Props): ReactElement {
       {tab === 0 ? (
         <Stack spacing={2}>
           <PersonHeader
-            person={person}
+            person={currentPerson}
             onMergeClick={() => setMergeOpen(true)}
             onOverrideClick={() => setOverrideOpen(true)}
             onShareClick={() => void handleShare()}
             shareLoading={shareLoading}
           />
-          <ConnectionsCard personId={person.person_id} />
-          <PersonSection title="Identifiers">
-            <IdentifiersSection personId={person.person_id} />
-          </PersonSection>
-          <PersonSection title="Source Records">
-            <SourceRecordsTab
-              personId={person.person_id}
-              onViewInTimeline={openTimelineTarget}
+          <ConnectionsCard personId={currentPerson.person_id} />
+          <PersonSection title="Shared Identifiers">
+            <SharedIdentifiersSection
+              personId={currentPerson.person_id}
+              personName={currentPerson.preferred_full_name}
+              refreshKey={detailRefreshKey}
+              onMerged={refreshDetailData}
             />
           </PersonSection>
-          <SalesCard personId={person.person_id} />
-          <BankruptcyCasesCard personId={person.person_id} />
-          <PersonSection title="Audit">
-            <AuditTab personId={person.person_id} />
+          <PersonSection title="Identifiers">
+            <IdentifiersSection personId={currentPerson.person_id} />
           </PersonSection>
-          <PersonGraphCard person={person} />
+          <SalesCard personId={currentPerson.person_id} />
+          <BankruptcyCasesCard personId={currentPerson.person_id} />
+          <PersonSection title="Audit">
+            <AuditTab
+              personId={currentPerson.person_id}
+              refreshKey={detailRefreshKey}
+              onUnmerged={refreshDetailData}
+            />
+          </PersonSection>
+          <PersonGraphCard person={currentPerson} />
         </Stack>
       ) : null}
       {tab === 1 ? (
         <PersonTimelineTab
-          personId={person.person_id}
+          personId={currentPerson.person_id}
           targetSourceRecordPk={timelineTargetPk}
           targetTimestamp={timelineTargetAt}
           onTargetConsumed={() => {
@@ -172,16 +175,17 @@ export default function PersonDetailTabs({ person }: Props): ReactElement {
           }}
         />
       ) : null}
-      {tab === 2 ? <MatchesTab personId={person.person_id} /> : null}
+      {tab === 2 ? <MatchesTab personId={currentPerson.person_id} /> : null}
 
       <ManualMergeDialog
         open={mergeOpen}
-        fromPersonId={person.person_id}
+        fromPersonId={currentPerson.person_id}
         onClose={() => setMergeOpen(false)}
+        onMerged={refreshDetailData}
       />
       <SurvivorshipOverrideDialog
         open={overrideOpen}
-        personId={person.person_id}
+        personId={currentPerson.person_id}
         onClose={() => setOverrideOpen(false)}
       />
       <ShareLinkDialog link={shareLink} onClose={() => setShareLink(null)} />
@@ -215,7 +219,7 @@ function PersonHeader({
       >
         <Stack direction="row" spacing={2} alignItems="center">
           <Typography variant="h5" fontWeight={600}>
-            {person.preferred_full_name ?? person.person_id}
+            {person.preferred_full_name ?? "Unnamed person"}
           </Typography>
           <Chip
             label={person.status}
@@ -251,9 +255,15 @@ function PersonHeader({
         </Stack>
       </Stack>
 
-      <Typography variant="caption" color="text.secondary">
-        {person.person_id}
-      </Typography>
+      <Tooltip title={aliasText(person)}>
+        <Typography
+          variant="caption"
+          color="text.secondary"
+          sx={{ display: "block", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+        >
+          {aliasText(person)}
+        </Typography>
+      </Tooltip>
 
       <Divider sx={{ my: 2 }} />
 
@@ -270,18 +280,22 @@ function PersonHeader({
           label="Profile Completeness"
           value={`${(person.profile_completeness_score * 100).toFixed(0)}%`}
         />
-        <Field
-          label="Source Records"
-          value={String(person.source_record_count)}
-        />
         <Field label="Updated" value={formatDateTime(person.updated_at)} />
       </Grid>
     </Paper>
   );
 }
 
+function aliasText(person: Person): string {
+  const aliases = [person.preferred_full_name].filter(
+    (value): value is string => value !== null && value.trim().length > 0,
+  );
+  return aliases.length > 0 ? `Aliases: ${aliases.join(", ")}` : "No aliases available";
+}
+
+
 function PersonGraphCard({ person }: { person: Person }): ReactElement {
-  const title = person.preferred_full_name ?? person.person_id;
+  const title = person.preferred_full_name ?? "Person";
   return (
     <Paper variant="outlined" sx={{ p: 2 }}>
       <Typography variant="subtitle1" sx={{ mb: 1 }}>

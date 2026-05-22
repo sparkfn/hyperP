@@ -34,8 +34,10 @@ from src.types import (
     Person,
     PersonComparisonEntity,
     PersonConnection,
+    PersonEntitySummary,
     PersonGraph,
     PersonIdentifier,
+    PersonSharedIdentifierCandidate,
     PersonStatus,
     PersonTimelineGroup,
     ReviewCaseDetail,
@@ -315,7 +317,38 @@ def map_timeline_group(record: GraphRecord) -> PersonTimelineGroup:
     )
 
 
+def map_person_entity_dict(raw: GraphValue) -> PersonEntitySummary:
+    entity = _as_dict(raw)
+    return PersonEntitySummary(
+        entity_key=to_str(entity.get("entity_key")),
+        display_name=to_optional_str(entity.get("display_name")),
+        entity_type=to_optional_str(entity.get("entity_type")),
+        country_code=to_optional_str(entity.get("country_code")),
+        is_active=bool(entity.get("is_active", True)),
+        source_record_count=to_int(entity.get("source_record_count")),
+    )
+
+
+def _map_source_records(value: GraphValue) -> list[SourceRecord]:
+    if not isinstance(value, list):
+        return []
+    records: list[SourceRecord] = []
+    for raw in value:
+        record = _as_dict(raw)
+        if "source_record" in record:
+            records.append(map_source_record(record))
+        elif "source_record_pk" in record:
+            records.append(map_source_record({"source_record": record, **record}))
+    return records
+
+
 def map_person_identifier(record: GraphRecord) -> PersonIdentifier:
+    raw_entities = record.get("entities")
+    entities = (
+        [map_person_entity_dict(raw) for raw in raw_entities]
+        if isinstance(raw_entities, list)
+        else []
+    )
     return PersonIdentifier(
         identifier_type=to_str(record.get("identifier_type")),
         normalized_value=to_str(record.get("normalized_value")),
@@ -325,6 +358,8 @@ def map_person_identifier(record: GraphRecord) -> PersonIdentifier:
         source_system_key=to_optional_str(record.get("source_system_key")),
         source_record_pks=to_str_list(record.get("source_record_pks")),
         source_record_ids=to_str_list(record.get("source_record_ids")),
+        entities=entities,
+        source_records=_map_source_records(record.get("source_records")),
     )
 
 
@@ -339,6 +374,27 @@ def _map_shared_identifiers(value: GraphValue) -> list[SharedIdentifier]:
         for raw in value
         if (d := _as_dict(raw)).get("identifier_type")
     ]
+
+
+def _identifier_strength(identifiers: list[SharedIdentifier]) -> Literal["strong", "weak"]:
+    if any(identifier.identifier_type == "nric" for identifier in identifiers):
+        return "strong"
+    return "weak"
+
+
+def map_shared_identifier_candidate(record: GraphRecord) -> PersonSharedIdentifierCandidate:
+    identifiers = _map_shared_identifiers(record.get("identifiers"))
+    return PersonSharedIdentifierCandidate(
+        person_id=to_str(record.get("person_id")),
+        status=to_str(record.get("status")),
+        preferred_full_name=to_optional_str(record.get("preferred_full_name")),
+        preferred_phone=to_optional_str(record.get("preferred_phone")),
+        preferred_email=to_optional_str(record.get("preferred_email")),
+        preferred_dob=to_optional_str(record.get("preferred_dob")),
+        profile_completeness_score=to_float(record.get("profile_completeness_score")),
+        identifier_strength=_identifier_strength(identifiers),
+        identifiers=identifiers,
+    )
 
 
 def _map_shared_addresses(value: GraphValue) -> list[SharedAddress]:

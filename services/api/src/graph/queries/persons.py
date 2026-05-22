@@ -206,27 +206,22 @@ SKIP $skip LIMIT $limit
 
 GET_PERSON_CONNECTIONS_ALL = """
 MATCH (p:Person {person_id: $person_id})
-OPTIONAL MATCH (p)-[:IDENTIFIED_BY]->(id:Identifier)<-[:IDENTIFIED_BY]-(oi:Person)
-  WHERE oi.person_id <> p.person_id AND oi.status <> 'merged'
-    AND ($identifier_type IS NULL OR id.identifier_type = $identifier_type)
 OPTIONAL MATCH (p)-[:LIVES_AT]->(addr:Address)<-[:LIVES_AT]-(oa:Person)
   WHERE oa.person_id <> p.person_id AND oa.status <> 'merged'
 OPTIONAL MATCH (p)-[k:KNOWS]-(ok:Person)
   WHERE ok.person_id <> p.person_id AND ok.status <> 'merged'
 WITH p,
-  collect(DISTINCT CASE WHEN oi IS NOT NULL THEN {person_id: oi.person_id, status: oi.status, preferred_full_name: oi.preferred_full_name, identifier_type: id.identifier_type, normalized_value: id.normalized_value} END) AS id_links,
   collect(DISTINCT CASE WHEN oa IS NOT NULL THEN {person_id: oa.person_id, status: oa.status, preferred_full_name: oa.preferred_full_name, address_id: addr.address_id, normalized_full: addr.normalized_full} END) AS addr_links,
   collect(DISTINCT CASE WHEN ok IS NOT NULL THEN {person_id: ok.person_id, status: ok.status, preferred_full_name: ok.preferred_full_name, relationship_label: k.relationship_label, relationship_category: k.relationship_category} END) AS knows_links
-UNWIND (id_links + addr_links + knows_links) AS link
+UNWIND (addr_links + knows_links) AS link
 WITH link WHERE link IS NOT NULL
 WITH link.person_id AS person_id,
      link.status AS status,
      link.preferred_full_name AS preferred_full_name,
-     collect(DISTINCT CASE WHEN link.identifier_type IS NOT NULL THEN {identifier_type: link.identifier_type, normalized_value: link.normalized_value} END) AS shared_identifiers_raw,
      collect(DISTINCT CASE WHEN link.address_id IS NOT NULL THEN {address_id: link.address_id, normalized_full: link.normalized_full} END) AS shared_addresses_raw,
      collect(DISTINCT CASE WHEN link.relationship_category IS NOT NULL THEN {relationship_label: link.relationship_label, relationship_category: link.relationship_category} END) AS knows_raw
 RETURN person_id, status, preferred_full_name, 1 AS hops,
-       [x IN shared_identifiers_raw WHERE x IS NOT NULL] AS shared_identifiers,
+       [] AS shared_identifiers,
        [x IN shared_addresses_raw WHERE x IS NOT NULL] AS shared_addresses,
        [x IN knows_raw WHERE x IS NOT NULL] AS knows_relationships
 ORDER BY preferred_full_name
@@ -306,8 +301,35 @@ WITH id,
      rel.last_confirmed_at AS last_confirmed_at,
      rel.source_system_key AS source_system_key,
      collect(DISTINCT rel.source_record_pk) AS source_record_pks
-OPTIONAL MATCH (sr:SourceRecord)
-WHERE sr.source_record_pk IN source_record_pks
+CALL {
+  WITH source_record_pks
+  OPTIONAL MATCH (sr:SourceRecord)-[:FROM_SOURCE]->(ss:SourceSystem)
+  WHERE sr.source_record_pk IN source_record_pks
+  OPTIONAL MATCH (ss)-[:OPERATED_BY]->(e:Entity)
+  RETURN [record IN collect(DISTINCT CASE WHEN sr IS NULL THEN null ELSE {
+    source_record: sr {
+      .source_record_pk, .source_record_id, .source_record_version,
+      .record_type, .extraction_confidence, .extraction_method,
+      .link_status, .observed_at, .ingested_at, .conversation_ref,
+      .raw_payload, .normalized_payload
+    },
+    source_system: ss.source_key,
+    linked_person_id: $person_id,
+    entity_key: e.entity_key,
+    entity_display_name: e.display_name
+  } END) WHERE record IS NOT NULL] AS source_records,
+  [source_record_id IN collect(DISTINCT sr.source_record_id) WHERE source_record_id IS NOT NULL] AS source_record_ids
+}
+CALL {
+  WITH source_record_pks
+  OPTIONAL MATCH (sr:SourceRecord)-[:FROM_SOURCE]->(:SourceSystem)-[:OPERATED_BY]->(e:Entity)
+  WHERE sr.source_record_pk IN source_record_pks
+  WITH e, count(DISTINCT sr) AS source_record_count
+  RETURN [entity IN collect(CASE WHEN e IS NULL THEN null ELSE e {
+    .entity_key, .display_name, .entity_type, .country_code, .is_active,
+    source_record_count: source_record_count
+  } END) WHERE entity IS NOT NULL] AS entities
+}
 RETURN id.identifier_type AS identifier_type,
        id.normalized_value AS normalized_value,
        is_active AS is_active,
@@ -315,8 +337,32 @@ RETURN id.identifier_type AS identifier_type,
        last_confirmed_at AS last_confirmed_at,
        source_system_key AS source_system_key,
        source_record_pks AS source_record_pks,
-       collect(DISTINCT sr.source_record_id) AS source_record_ids
+       source_record_ids AS source_record_ids,
+       entities AS entities,
+       source_records AS source_records
 ORDER BY is_active DESC, id.identifier_type, id.normalized_value
+SKIP $skip LIMIT $limit
+"""
+
+GET_PERSON_SHARED_IDENTIFIERS = """
+MATCH (p:Person {person_id: $person_id})-[:IDENTIFIED_BY]->(id:Identifier)
+  <-[:IDENTIFIED_BY]-(other:Person)
+WHERE other.person_id <> p.person_id
+  AND other.status <> 'merged'
+WITH other, id
+ORDER BY id.identifier_type, id.normalized_value
+RETURN other.person_id AS person_id,
+       other.status AS status,
+       other.preferred_full_name AS preferred_full_name,
+       other.preferred_phone AS preferred_phone,
+       other.preferred_email AS preferred_email,
+       other.preferred_dob AS preferred_dob,
+       other.profile_completeness_score AS profile_completeness_score,
+       collect(DISTINCT {
+         identifier_type: id.identifier_type,
+         normalized_value: id.normalized_value
+       }) AS identifiers
+ORDER BY preferred_full_name, person_id
 SKIP $skip LIMIT $limit
 """
 
@@ -328,6 +374,14 @@ RETURN count(sr) AS total
 COUNT_PERSON_IDENTIFIERS = """
 MATCH (p:Person {person_id: $person_id})-[:IDENTIFIED_BY]->(id:Identifier)
 RETURN count(id) AS total
+"""
+
+COUNT_PERSON_SHARED_IDENTIFIERS = """
+MATCH (p:Person {person_id: $person_id})-[:IDENTIFIED_BY]->(:Identifier)
+  <-[:IDENTIFIED_BY]-(other:Person)
+WHERE other.person_id <> p.person_id
+  AND other.status <> 'merged'
+RETURN count(DISTINCT other) AS total
 """
 
 COUNT_PERSON_AUDIT = """
@@ -365,13 +419,11 @@ COUNT_PERSON_CONNECTIONS_ALL = """
 MATCH (p:Person {person_id: $person_id})
 CALL {
   WITH p
-  OPTIONAL MATCH (p)-[:IDENTIFIED_BY]->(:Identifier)<-[:IDENTIFIED_BY]-(ci:Person)
-    WHERE ci.person_id <> p.person_id AND ci.status <> 'merged'
   OPTIONAL MATCH (p)-[:LIVES_AT]->(:Address)<-[:LIVES_AT]-(ca:Person)
     WHERE ca.person_id <> p.person_id AND ca.status <> 'merged'
   OPTIONAL MATCH (p)-[:KNOWS]-(ck:Person)
     WHERE ck.person_id <> p.person_id AND ck.status <> 'merged'
-  WITH collect(DISTINCT ci) + collect(DISTINCT ca) + collect(DISTINCT ck) AS all_conn
+  WITH collect(DISTINCT ca) + collect(DISTINCT ck) AS all_conn
   UNWIND all_conn AS c
   RETURN count(DISTINCT c) AS total
 }

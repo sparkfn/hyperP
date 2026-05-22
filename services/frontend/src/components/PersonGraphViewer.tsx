@@ -25,6 +25,8 @@ import AssignmentIcon from "@mui/icons-material/Assignment";
 import MergeTypeIcon from "@mui/icons-material/MergeType";
 import ReceiptIcon from "@mui/icons-material/Receipt";
 import InventoryIcon from "@mui/icons-material/Inventory";
+import FormatListBulletedIcon from "@mui/icons-material/FormatListBulleted";
+import PrecisionManufacturingIcon from "@mui/icons-material/PrecisionManufacturing";
 import CircleIcon from "@mui/icons-material/Circle";
 import StorageIcon from "@mui/icons-material/Storage";
 import GavelIcon from "@mui/icons-material/Gavel";
@@ -70,6 +72,8 @@ const ICON_COMPONENTS: Record<NodeIcon, ReactElement> = {
   mergeType: <MergeTypeIcon />,
   receipt: <ReceiptIcon />,
   inventory: <InventoryIcon />,
+  formatListBulleted: <FormatListBulletedIcon />,
+  precisionManufacturing: <PrecisionManufacturingIcon />,
   bullet: <CircleIcon sx={{ fontSize: 12 }} />,
   dataSource: <StorageIcon />,
   gavel: <GavelIcon />,

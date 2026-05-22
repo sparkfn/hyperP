@@ -22,7 +22,9 @@ from src.types import (
     PersonEntitySummary,
     PersonGraph,
     PersonIdentifier,
+    PersonSharedIdentifierCandidate,
     PersonTimelineGroup,
+    SharedIdentifier,
     SourceRecord,
 )
 
@@ -197,6 +199,28 @@ class FakeTimelineRepo:
         _ = person_id, connection_type, identifier_type, skip, limit
         return [], 0
 
+    async def get_shared_identifier_candidates(
+        self, person_id: str, skip: int, limit: int
+    ) -> tuple[list[PersonSharedIdentifierCandidate], int]:
+        _ = skip, limit
+        return [
+            PersonSharedIdentifierCandidate(
+                person_id="person-2",
+                status="active",
+                preferred_full_name="Ana Lim",
+                preferred_phone=None,
+                preferred_email="ana@example.com",
+                preferred_dob="1990-01-02",
+                identifier_strength="strong",
+                identifiers=[
+                    SharedIdentifier(
+                        identifier_type="nric",
+                        normalized_value="S1234567A",
+                    )
+                ],
+            )
+        ], 1
+
     async def get_entities(self, person_id: str) -> list[PersonEntitySummary]:
         _ = person_id
         return []
@@ -284,6 +308,21 @@ async def timeline_client(app: FastAPI) -> AsyncIterator[AsyncClient]:
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://testserver") as client:
         yield client
+
+
+@pytest.mark.anyio
+async def test_get_person_shared_identifier_candidates_returns_envelope(
+    timeline_app: FastAPI,
+) -> None:
+    async with timeline_client(timeline_app) as client:
+        response = await client.get("/v1/persons/person-1/shared-identifiers?limit=1")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["data"][0]["person_id"] == "person-2"
+    assert body["data"][0]["identifier_strength"] == "strong"
+    assert body["data"][0]["identifiers"][0]["identifier_type"] == "nric"
+    assert body["meta"]["total_count"] == 1
 
 
 @pytest.mark.anyio

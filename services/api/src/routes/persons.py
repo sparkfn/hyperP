@@ -20,6 +20,7 @@ from src.types import (
     PersonEntitySummary,
     PersonGraph,
     PersonIdentifier,
+    PersonSharedIdentifierCandidate,
     PersonTimelineGroup,
     SourceRecord,
 )
@@ -255,6 +256,24 @@ async def get_person_connections(
     items, total = await repo.get_connections(
         person_id, connection_type, identifier_type, skip, page_limit
     )
+    has_more = skip + page_limit < total
+    return envelope(items, request, next_cursor(skip, page_limit, has_more), total_count=total)
+
+
+@router.get(
+    "/{person_id}/shared-identifiers",
+    response_model=ApiResponse[list[PersonSharedIdentifierCandidate]],
+)
+async def get_person_shared_identifiers(
+    person_id: str,
+    request: Request,
+    cursor: str | None = Query(default=None),
+    limit: int | None = Query(default=None),
+    repo: PersonRepository = Depends(get_person_repo),
+) -> ApiResponse[list[PersonSharedIdentifierCandidate]]:
+    """Return active persons sharing identifiers with a person."""
+    skip, page_limit = page_window(cursor, limit)
+    items, total = await repo.get_shared_identifier_candidates(person_id, skip, page_limit)
     has_more = skip + page_limit < total
     return envelope(items, request, next_cursor(skip, page_limit, has_more), total_count=total)
 

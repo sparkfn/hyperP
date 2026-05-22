@@ -158,6 +158,20 @@ class PersonIdentifier(BaseModel):
     source_system_key: str | None = None
     source_record_pks: list[str] = Field(default_factory=list)
     source_record_ids: list[str] = Field(default_factory=list)
+    entities: list[PersonEntitySummary] = Field(default_factory=list)
+    source_records: list[SourceRecord] = Field(default_factory=list)
+
+
+class PersonSharedIdentifierCandidate(BaseModel):
+    person_id: str
+    status: str
+    preferred_full_name: str | None = None
+    preferred_phone: str | None = None
+    preferred_email: str | None = None
+    preferred_dob: str | None = None
+    profile_completeness_score: float = 0.0
+    identifier_strength: Literal["strong", "weak"]
+    identifiers: list[SharedIdentifier] = Field(default_factory=list)
 
 
 class SourceRecord(BaseModel):

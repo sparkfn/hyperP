@@ -1,6 +1,8 @@
 // Hand-mirrored from services/api/src/types.py and routes/{merge,survivorship}.py.
 // Lives outside api-types.ts so the shared module stays untouched.
 
+import type { PersonEntitySummary, SharedIdentifier } from "@/lib/api-types";
+
 export type SourceRecordType = "system" | "conversation";
 
 export interface SourceRecordIdentifierPayload {
@@ -188,6 +190,20 @@ export interface PersonIdentifier {
   source_system_key: string | null;
   source_record_pks: string[];
   source_record_ids: string[];
+  entities: PersonEntitySummary[];
+  source_records: PersonSourceRecord[];
+}
+
+export interface PersonSharedIdentifierCandidate {
+  person_id: string;
+  status: string;
+  preferred_full_name: string | null;
+  preferred_phone: string | null;
+  preferred_email: string | null;
+  preferred_dob: string | null;
+  profile_completeness_score: number;
+  identifier_strength: "strong" | "weak";
+  identifiers: SharedIdentifier[];
 }
 
 // --- Request bodies ---

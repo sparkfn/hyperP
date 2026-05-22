@@ -1,11 +1,20 @@
 "use client";
 
-import type { ReactElement } from "react";
+import { useState, type ReactElement } from "react";
 
+import Accordion from "@mui/material/Accordion";
+import AccordionDetails from "@mui/material/AccordionDetails";
+import AccordionSummary from "@mui/material/AccordionSummary";
 import Alert from "@mui/material/Alert";
 import Box from "@mui/material/Box";
+import Button from "@mui/material/Button";
 import Chip from "@mui/material/Chip";
 import CircularProgress from "@mui/material/CircularProgress";
+import Dialog from "@mui/material/Dialog";
+import DialogActions from "@mui/material/DialogActions";
+import DialogContent from "@mui/material/DialogContent";
+import DialogTitle from "@mui/material/DialogTitle";
+import Stack from "@mui/material/Stack";
 import Table from "@mui/material/Table";
 import TableBody from "@mui/material/TableBody";
 import TableCell from "@mui/material/TableCell";
@@ -14,17 +23,20 @@ import TableHead from "@mui/material/TableHead";
 import TableRow from "@mui/material/TableRow";
 import Tooltip from "@mui/material/Tooltip";
 import Typography from "@mui/material/Typography";
+import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 
+import PaginationBar from "@/components/PaginationBar";
+import { SourceRecordDetails } from "@/components/SourceRecordDetails";
 import type { PersonIdentifier } from "@/lib/api-types-person";
 import { formatDate } from "@/lib/display";
 import { usePaginatedFetch } from "@/lib/usePaginatedFetch";
-import PaginationBar from "@/components/PaginationBar";
 
 interface Props {
   personId: string;
 }
 
 export default function IdentifiersSection({ personId }: Props): ReactElement {
+  const [selected, setSelected] = useState<PersonIdentifier | null>(null);
   const { rows, error, loading, from, to, total, hasPrev, hasNext, goNext, goPrev } =
     usePaginatedFetch<PersonIdentifier>(
       `/bff/persons/${encodeURIComponent(personId)}/identifiers`,
@@ -58,17 +70,21 @@ export default function IdentifiersSection({ personId }: Props): ReactElement {
               <TableCell>Verified</TableCell>
               <TableCell>Source system</TableCell>
               <TableCell>Source record id/s</TableCell>
+              <TableCell>Entities</TableCell>
               <TableCell>Last confirmed</TableCell>
             </TableRow>
           </TableHead>
           <TableBody>
             {rows.map((id) => {
               const sourceRecordRefs: string =
-                id.source_record_ids.length > 0
-                  ? id.source_record_ids.join(", ")
-                  : id.source_record_pks.join(", ");
+                id.source_record_ids.length > 0 ? id.source_record_ids.join(", ") : "—";
               return (
-                <TableRow key={`${id.identifier_type}:${id.normalized_value}`} hover>
+                <TableRow
+                  key={`${id.identifier_type}:${id.normalized_value}`}
+                  hover
+                  onClick={() => setSelected(id)}
+                  sx={{ cursor: "pointer" }}
+                >
                   <TableCell>{id.identifier_type}</TableCell>
                   <TableCell>
                     <Tooltip title={id.normalized_value}>
@@ -98,15 +114,31 @@ export default function IdentifiersSection({ personId }: Props): ReactElement {
                   </TableCell>
                   <TableCell>{id.source_system_key ?? "—"}</TableCell>
                   <TableCell>
-                    <Tooltip title={sourceRecordRefs || "—"}>
+                    <Tooltip title={sourceRecordRefs}>
                       <Typography
                         variant="body2"
-                        fontFamily="monospace"
-                        sx={{ maxWidth: 240, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+                        sx={{ maxWidth: 220, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
                       >
-                        {sourceRecordRefs || "—"}
+                        {sourceRecordRefs}
                       </Typography>
                     </Tooltip>
+                  </TableCell>
+                  <TableCell>
+                    <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap>
+                      {id.entities.length > 0 ? (
+                        id.entities.map((entity) => (
+                          <Chip
+                            key={entity.entity_key}
+                            label={`${entity.display_name ?? entity.entity_key} (${entity.source_record_count})`}
+                            size="small"
+                            color="info"
+                            variant="outlined"
+                          />
+                        ))
+                      ) : (
+                        <Typography variant="body2" color="text.secondary">—</Typography>
+                      )}
+                    </Stack>
                   </TableCell>
                   <TableCell>{formatDate(id.last_confirmed_at ?? "")}</TableCell>
                 </TableRow>
@@ -125,6 +157,61 @@ export default function IdentifiersSection({ personId }: Props): ReactElement {
         onPrev={goPrev}
         onNext={goNext}
       />
+      <IdentifierSourceRecordsDialog identifier={selected} onClose={() => setSelected(null)} />
     </>
+  );
+}
+
+function IdentifierSourceRecordsDialog({
+  identifier,
+  onClose,
+}: {
+  identifier: PersonIdentifier | null;
+  onClose: () => void;
+}): ReactElement {
+  return (
+    <Dialog open={identifier !== null} onClose={onClose} fullWidth maxWidth="md">
+      <DialogTitle>
+        {identifier !== null
+          ? `${identifier.identifier_type}: ${identifier.normalized_value}`
+          : "Identifier source records"}
+      </DialogTitle>
+      <DialogContent>
+        {identifier === null || identifier.source_records.length === 0 ? (
+          <Typography variant="body2" color="text.secondary">
+            No source-record details are available for this identifier.
+          </Typography>
+        ) : (
+          <Stack spacing={1} sx={{ mt: 1 }}>
+            {identifier.source_records.map((record) => (
+              <SourceRecordAccordion key={record.source_record_pk} record={record} />
+            ))}
+          </Stack>
+        )}
+      </DialogContent>
+      <DialogActions>
+        <Button onClick={onClose}>Close</Button>
+      </DialogActions>
+    </Dialog>
+  );
+}
+
+function SourceRecordAccordion({ record }: { record: PersonIdentifier["source_records"][number] }): ReactElement {
+  return (
+    <Accordion variant="outlined">
+      <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+        <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
+          <Typography variant="subtitle2">{record.source_record_id}</Typography>
+          <Chip label={record.source_system} size="small" />
+          <Chip label={record.record_type} size="small" variant="outlined" />
+          {record.entity_display_name !== null ? (
+            <Chip label={record.entity_display_name} size="small" color="info" variant="outlined" />
+          ) : null}
+        </Stack>
+      </AccordionSummary>
+      <AccordionDetails>
+        <SourceRecordDetails record={record} />
+      </AccordionDetails>
+    </Accordion>
   );
 }

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, type ReactElement } from "react";
+import { useEffect, useState, type ReactElement } from "react";
 
 import Alert from "@mui/material/Alert";
 import Box from "@mui/material/Box";
@@ -19,6 +19,8 @@ import { formatDateTime } from "@/lib/display";
 
 interface Props {
   personId: string;
+  refreshKey?: number;
+  onUnmerged?: () => void;
 }
 
 function originalMergeEventId(event: PersonAuditEvent): string | null {
@@ -32,13 +34,17 @@ function canUnmerge(event: PersonAuditEvent, reversedMergeEventIds: ReadonlySet<
   return !reversedMergeEventIds.has(event.merge_event_id);
 }
 
-export default function AuditTab({ personId }: Props): ReactElement {
-  const { rows: events, error, loading, from, to, total, hasPrev, hasNext, goNext, goPrev } =
+export default function AuditTab({ personId, refreshKey = 0, onUnmerged }: Props): ReactElement {
+  const { rows: events, error, loading, from, to, total, hasPrev, hasNext, goNext, goPrev, refresh } =
     usePaginatedFetch<PersonAuditEvent>(
       `/bff/persons/${encodeURIComponent(personId)}/audit`,
     );
   const [unmergeTarget, setUnmergeTarget] = useState<PersonAuditEvent | null>(null);
   const [optimisticallyUnmergedIds, setOptimisticallyUnmergedIds] = useState<string[]>([]);
+
+  useEffect(() => {
+    if (refreshKey > 0) refresh();
+  }, [refresh, refreshKey]);
 
   if (error !== null) return <Alert severity="error">{error}</Alert>;
   if (events === null) {
@@ -119,6 +125,8 @@ export default function AuditTab({ personId }: Props): ReactElement {
             setOptimisticallyUnmergedIds((current) =>
               current.includes(mergeEventId) ? current : [...current, mergeEventId],
             );
+            if (onUnmerged !== undefined) onUnmerged();
+            else refresh();
           }}
         />
       ) : null}

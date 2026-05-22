@@ -38,6 +38,8 @@ const evidence: GoldenProfileEvidence = {
       source_system_key: "crm",
       source_record_pks: ["sr-1"],
       source_record_ids: ["record-1"],
+      entities: [],
+      source_records: [],
     },
     {
       identifier_type: "nric",
@@ -48,6 +50,8 @@ const evidence: GoldenProfileEvidence = {
       source_system_key: "crm",
       source_record_pks: ["sr-2"],
       source_record_ids: ["record-2"],
+      entities: [],
+      source_records: [],
     },
   ],
 };

@@ -11,6 +11,7 @@ from src.graph.mappers import (
     map_person,
     map_person_graph,
     map_person_identifier,
+    map_shared_identifier_candidate,
     map_source_record,
     map_timeline_group,
 )
@@ -23,6 +24,7 @@ from src.graph.queries import (
     COUNT_PERSON_CONNECTIONS_IDENTIFIER,
     COUNT_PERSON_CONNECTIONS_KNOWS,
     COUNT_PERSON_IDENTIFIERS,
+    COUNT_PERSON_SHARED_IDENTIFIERS,
     COUNT_PERSON_SOURCE_RECORDS,
     COUNT_PERSON_TIMELINE,
     FIND_PERSON_BY_IDENTIFIER,
@@ -36,6 +38,7 @@ from src.graph.queries import (
     GET_PERSON_ENTITIES,
     GET_PERSON_IDENTIFIERS,
     GET_PERSON_MATCHES,
+    GET_PERSON_SHARED_IDENTIFIERS,
     GET_PERSON_SOURCE_RECORDS,
     GET_PERSON_TIMELINE,
     GET_PERSON_TIMELINE_TARGET,
@@ -57,6 +60,7 @@ from src.types import (
     PersonEntitySummary,
     PersonGraph,
     PersonIdentifier,
+    PersonSharedIdentifierCandidate,
     PersonTimelineGroup,
     SourceRecord,
 )
@@ -197,6 +201,22 @@ class Neo4jPersonRepository:
             )
             count_record = await count_result.single()
         return [map_connection(rec) for rec in records[:limit]], to_total(count_record)
+
+    async def get_shared_identifier_candidates(
+        self, person_id: str, skip: int, limit: int
+    ) -> tuple[list[PersonSharedIdentifierCandidate], int]:
+        async with get_session() as session:
+            result = await session.run(
+                GET_PERSON_SHARED_IDENTIFIERS,
+                person_id=person_id,
+                skip=skip,
+                limit=limit + 1,
+            )
+            records = [record_to_dict(r.keys(), list(r.values())) async for r in result]
+            count_result = await session.run(COUNT_PERSON_SHARED_IDENTIFIERS, person_id=person_id)
+            count_record = await count_result.single()
+        candidates = [map_shared_identifier_candidate(rec) for rec in records[:limit]]
+        return candidates, to_total(count_record)
 
     async def get_entities(self, person_id: str) -> list[PersonEntitySummary]:
         async with get_session() as session:

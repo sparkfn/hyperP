@@ -15,6 +15,7 @@ from src.types import (
     PersonEntitySummary,
     PersonGraph,
     PersonIdentifier,
+    PersonSharedIdentifierCandidate,
     PersonTimelineGroup,
     SourceRecord,
 )
@@ -81,6 +82,10 @@ class PersonRepository(Protocol):
         skip: int,
         limit: int,
     ) -> tuple[list[PersonConnection], int]: ...
+
+    async def get_shared_identifier_candidates(
+        self, person_id: str, skip: int, limit: int
+    ) -> tuple[list[PersonSharedIdentifierCandidate], int]: ...
 
     async def get_entities(self, person_id: str) -> list[PersonEntitySummary]: ...
 

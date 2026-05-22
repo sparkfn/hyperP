@@ -78,13 +78,11 @@ CALL {
 }
 CALL {
   WITH p
-  OPTIONAL MATCH (p)-[:IDENTIFIED_BY]->(:Identifier)<-[:IDENTIFIED_BY]-(ci:Person)
-    WHERE ci.person_id <> p.person_id AND ci.status <> 'merged'
   OPTIONAL MATCH (p)-[:LIVES_AT]->(:Address)<-[:LIVES_AT]-(ca:Person)
     WHERE ca.person_id <> p.person_id AND ca.status <> 'merged'
   OPTIONAL MATCH (p)-[:KNOWS]-(ck:Person)
     WHERE ck.person_id <> p.person_id AND ck.status <> 'merged'
-  WITH collect(DISTINCT ci) + collect(DISTINCT ca) + collect(DISTINCT ck) AS all_conn
+  WITH collect(DISTINCT ca) + collect(DISTINCT ck) AS all_conn
   UNWIND all_conn AS c
   RETURN count(DISTINCT c) AS connection_count
 }

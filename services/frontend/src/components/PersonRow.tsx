@@ -113,7 +113,7 @@ export default function PersonRow({
       <TableCell align="center" onClick={(e) => e.stopPropagation()}>
         <CountCardsCell
           count={person.connection_count}
-          label="links"
+          label="connections"
           emptyText="No connections"
           loading={connectionsLoading}
           items={connectionsToItems(connections)}

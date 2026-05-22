@@ -40,6 +40,9 @@ interface Props {
   fromPersonId: string;
   onClose: () => void;
   onMerged?: (response: ManualMergeResponseBody) => void;
+  defaultToPersonId?: string;
+  lockTarget?: boolean;
+  title?: string;
 }
 
 export default function ManualMergeDialog({
@@ -47,8 +50,11 @@ export default function ManualMergeDialog({
   fromPersonId,
   onClose,
   onMerged,
+  defaultToPersonId,
+  lockTarget = false,
+  title = "Merge into another person",
 }: Props): ReactElement {
-  const [toPersonId, setToPersonId] = useState<string>("");
+  const [toPersonId, setToPersonId] = useState<string>(defaultToPersonId ?? "");
   const [reason, setReason] = useState<string>("");
   const [recompute, setRecompute] = useState<boolean>(true);
   const [submitting, setSubmitting] = useState<boolean>(false);
@@ -141,7 +147,7 @@ export default function ManualMergeDialog({
 
   return (
     <Dialog open={open} onClose={onClose} fullWidth maxWidth="md">
-      <DialogTitle>Merge into another person</DialogTitle>
+      <DialogTitle>{title}</DialogTitle>
       <DialogContent>
         <Stack spacing={2} sx={{ mt: 1 }}>
           {error !== null ? <Alert severity="error">{error}</Alert> : null}
@@ -151,6 +157,7 @@ export default function ManualMergeDialog({
             onChange={(e) => setToPersonId(e.target.value)}
             fullWidth
             required
+            disabled={lockTarget}
           />
           <TextField
             label="Reason"
