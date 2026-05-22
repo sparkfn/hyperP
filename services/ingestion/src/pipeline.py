@@ -45,7 +45,7 @@ from src.models import (
 )
 from src.pipeline_bankruptcy import materialize_bankruptcy_case
 from src.pipeline_normalization import (
-    normalize_envelope_address,
+    normalize_envelope_addresses,
     normalize_envelope_attributes,
     normalize_envelope_identifiers,
 )
@@ -97,9 +97,9 @@ class IngestPipeline:
             )
         envelope.source_record_version = str(next_version)
 
-        # Step 2: Normalize identifiers, address, attributes
+        # Step 2: Normalize identifiers, addresses, attributes
         identifiers = normalize_envelope_identifiers(envelope)
-        address = normalize_envelope_address(envelope)
+        addresses = normalize_envelope_addresses(envelope)
         attributes = normalize_envelope_attributes(envelope)
         active_exclusion_context = (
             exclusion_context if exclusion_context is not None else ExclusionContext()
@@ -111,7 +111,7 @@ class IngestPipeline:
                 tx,
                 envelope,
                 identifiers,
-                address,
+                addresses,
                 attributes,
                 ingest_run_id=ingest_run_id,
                 previous_source_record_pk=previous_pk,
@@ -153,7 +153,7 @@ class IngestPipeline:
         tx: ManagedTransaction,
         envelope: SourceRecordEnvelope,
         identifiers: list[NormalizedIdentifier],
-        address: NormalizedAddressModel | None,
+        addresses: list[NormalizedAddressModel],
         attributes: list[NormalizedAttribute],
         ingest_run_id: str | None = None,
         previous_source_record_pk: str | None = None,
@@ -163,13 +163,13 @@ class IngestPipeline:
         active_exclusion_context = (
             exclusion_context if exclusion_context is not None else ExclusionContext()
         )
-        upsert_nodes(tx, identifiers, address)
-        candidates = find_candidates(tx, identifiers, address)
+        upsert_nodes(tx, identifiers, addresses)
+        candidates = find_candidates(tx, identifiers, addresses)
         match_result = self._match_engine.evaluate(
             tx,
             candidates,
             identifiers,
-            address,
+            addresses[0] if addresses else None,
             attributes,
             record_type=envelope.record_type,
         )
@@ -178,7 +178,7 @@ class IngestPipeline:
             tx,
             envelope=envelope,
             identifiers=identifiers,
-            address=address,
+            addresses=addresses,
             attributes=attributes,
             match_result=match_result,
             is_new_person=is_new_person,
@@ -202,7 +202,7 @@ class IngestPipeline:
             tx,
             envelope=envelope,
             identifiers=identifiers,
-            address=address,
+            addresses=addresses,
             attributes=attributes,
             person_id=person_id,
             source_record_pk=source_record_pk,

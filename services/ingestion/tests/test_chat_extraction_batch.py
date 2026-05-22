@@ -220,6 +220,58 @@ def test_possible_persons_from_extraction_keeps_grouped_identifiers_separate() -
     assert people[1]["relationship_to_primary"] == "brother"
 
 
+def test_possible_persons_preserve_address_arrays() -> None:
+    from src.connectors.chat_helpers import (
+        ExtractionResult,
+        person_addresses,
+        possible_persons_from_extraction,
+    )
+
+    extraction = ExtractionResult(
+        persons=[],
+        possible_persons=[
+            {
+                "name": "Alice",
+                "address": "10 Orchard Road Singapore 238863",
+                "addresses": [
+                    {
+                        "raw": "#05-123 10 Orchard Road Singapore 238863",
+                        "unit_number": "#05-123",
+                        "street_number": "10",
+                        "street_name": "Orchard Road",
+                        "building_name": "Lucky Plaza",
+                        "city": "Singapore",
+                        "postal_code": "238863",
+                        "country_code": "SG",
+                    },
+                    {
+                        "raw": "20 Second Street Singapore 654321",
+                        "postal_code": "654321",
+                        "country_code": "SG",
+                    },
+                ],
+                "confidence": 0.95,
+            }
+        ],
+        transactions=[],
+        chat_members=[],
+        inquiries=[],
+        strong_identifiers=[],
+        weak_identifiers=[],
+        summary="Customer / Participants:\nAlice.",
+        customer_sentiment="neutral",
+        confidence=0.9,
+    )
+
+    people = possible_persons_from_extraction(extraction)
+    addresses = person_addresses(people[0])
+
+    assert len(addresses) == 3
+    assert addresses[0]["unit_number"] == "#05-123"
+    assert addresses[1]["postal_code"] == "654321"
+    assert addresses[2]["raw"] == "10 Orchard Road Singapore 238863"
+
+
 def test_identifiers_from_extraction_deduplicates_legacy_and_strong_identifiers() -> None:
     from src.connectors.chat_helpers import ExtractionResult, identifiers_from_extraction
 

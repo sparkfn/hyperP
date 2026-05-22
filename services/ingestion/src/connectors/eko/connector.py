@@ -24,6 +24,7 @@ from src.connectors.eko.db import get_engine
 from src.connectors.eko.schema import customers, employees, people
 from src.connectors.fundbox.builders import (
     IdentifierBag,
+    address_from_row,
     build_envelope,
     format_address,
     serialize_row,
@@ -125,12 +126,14 @@ class EkoConnector(SourceConnector):
             ids.add("email", row.email)
             ids.add("phone", row.phone_number)
             address = format_address(row)
+            address_row = address_from_row(row)
             yield build_envelope(
                 source_record_id=f"eko_phppos-person-{row.person_id}",
                 observed_at=to_iso(row.last_modified or row.create_date),
                 identifiers=ids.items,
                 attributes={"full_name": row.full_name, "address": address},
                 raw_payload={"person": serialize_row(row)},
+                addresses=[address_row] if address_row is not None else None,
             )
 
     def _build_records(
@@ -188,6 +191,7 @@ class EkoConnector(SourceConnector):
         ids.add("phone", row.phone_number)
 
         address = format_address(row)
+        address_row = address_from_row(row)
 
         dob = _date_string_to_iso(row.custom_field_9_value)
 
@@ -203,4 +207,5 @@ class EkoConnector(SourceConnector):
             raw_payload={
                 "person": _person_raw_payload(row),
             },
+            addresses=[address_row] if address_row is not None else None,
         )

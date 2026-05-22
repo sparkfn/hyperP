@@ -29,6 +29,7 @@ from src.connectors.chat_helpers import (
     identifiers_from_possible_person,
     inquiries_payload,
     latest_timestamp,
+    person_address_payloads,
     possible_person_payload,
     possible_persons_from_extraction,
     run_extraction_batch,
@@ -394,6 +395,7 @@ def _build_envelopes(
                 extraction_confidence=person.get("confidence") or extraction["confidence"],
                 extraction_method=extraction_method_label(),
                 conversation_ref=conversation_ref,
+                addresses=person_address_payloads(person),
             )
         )
     return envelopes
@@ -447,6 +449,8 @@ def _message_sort_key(msg: dict[str, object]) -> tuple[int, str, str]:
     ts = msg.get("timestamp")
     if isinstance(ts, datetime):
         return (0, ts.isoformat(), str(msg.get("id") or ""))
+    if isinstance(ts, str) and ts.strip():
+        return (0, ts.strip(), str(msg.get("id") or ""))
     return (1, "", str(msg.get("id") or ""))
 
 

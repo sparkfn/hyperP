@@ -7,9 +7,11 @@ from pathlib import Path
 from pytest import MonkeyPatch
 from src.connectors.dumps.connectors import (
     FundboxSalesDumpConnector,
+    _build_fundbox_legacy,
     _fetch_phppos_dump_sales,
     get_dump_connector,
 )
+from src.connectors.dumps.reader import DumpRow
 from src.connectors.sggov.bankruptcy import SGGovernmentBankruptcyConnector
 from src.connectors.sggov.rental_flats import SGGovernmentRentalFlatsConnector
 
@@ -43,6 +45,7 @@ COPY public.chats (id, name, whatsapp_user_id) FROM stdin;
 6599990000@c.us	Ada Chat	6500000000@c.us
 \\.
 COPY public.messages (id, chat_id, from_id, to_id, author_id, body, timestamp, from_me) FROM stdin;
+msg-2	6599990000@c.us	6599990000@c.us	6500000000@c.us	\\N	Second message	2026-05-06 10:05:00	f
 msg-1	6599990000@c.us	6599990000@c.us	6500000000@c.us	\\N	Hi, I am Ada	2026-05-06 10:00:00	f
 \\.
 COPY public.contacts (jid, phone_number, name) FROM stdin;
@@ -62,9 +65,13 @@ COPY public.contacts (jid, phone_number, name) FROM stdin;
     assert len(records) == 1
     assert records[0]["source_record_id"] == "whatsapp-chat-6599990000@c.us-person-1"
     assert records[0]["record_type"] == "conversation"
-    assert records[0]["observed_at"] == "2026-05-06T10:00:00Z"
+    assert records[0]["observed_at"] == "2026-05-06T10:05:00Z"
     assert records[0]["attributes"] == {"full_name": "Ada Lovelace"}
     assert records[0]["identifiers"] == []
+    assert records[0]["raw_payload"]["messages_text"].splitlines() == [
+        "[2026-05-06 10:00:00] Ada Chat (+6599990000): Hi, I am Ada",
+        "[2026-05-06 10:05:00] Ada Chat (+6599990000): Second message",
+    ]
 
 
 def test_bitrix_dump_connector_yields_conversation_envelope(
@@ -126,7 +133,7 @@ INSERT INTO `categories` VALUES (1,'EkoSG');
 INSERT INTO `deals` VALUES (10,'B10','Deal for Ada','NEW',1,0,1);
 INSERT INTO `chats` VALUES (5,10,'chat-5','2026-05-06 10:00:00','2026-05-06 09:00:00');
 INSERT INTO `personalize_message_logs` VALUES
-(100,5,'Ada Lovelace','Hello Ada','LLM fallback','2026-05-06 09:30:00');
+(100,5,'Ada Lovelace','Hello Ada','LLM fallback','2026-05-06 09:50:00');
 INSERT INTO `sent_message_logs` VALUES (200,5,300,'2026-05-06 09:45:00');
 INSERT INTO `templates` VALUES (300,'Template body');
 INSERT INTO `agents` VALUES (400,'agent-1','Agent Smith',1);
@@ -153,6 +160,12 @@ INSERT INTO `agent_chat` VALUES (5,400);
         "bitrix_chat_id": "chat-5",
         "tenant": "eko",
     }
+    assert records[0]["raw_payload"]["conversation_text"].splitlines() == [
+        "[Deal] Deal for Ada",
+        "[2026-05-06 09:45:00] Template: Template body",
+        "[2026-05-06 09:50:00] Client: Ada Lovelace",
+        "[2026-05-06 09:50:00] Sent: Hello Ada",
+    ]
 
 
 def test_eko_dump_connector_yields_system_envelope(tmp_path: Path) -> None:
@@ -293,6 +306,19 @@ INSERT INTO `phppos_customers` VALUES
         "address": "Three, Four, Singapore, SG, 654321, SG",
         "dob": "1992-02-29",
     }
+    assert records[0]["addresses"] == [
+        {
+            "raw": "Three, Four, Singapore, SG, 654321, SG",
+            "street_number": None,
+            "street_name": "Three",
+            "unit_number": None,
+            "building_name": "Four",
+            "city": "Singapore",
+            "state_province": "SG",
+            "postal_code": "654321",
+            "country_code": "SG",
+        }
+    ]
     identifiers = {item["type"]: item["value"] for item in records[0]["identifiers"]}
     raw_person = records[0]["raw_payload"]["person"]
     assert identifiers["nric"] == "S7654321B"
@@ -305,6 +331,66 @@ INSERT INTO `phppos_customers` VALUES
     assert raw_person["custom_field_8_value"] == "SBA1234A"
     assert raw_person["custom_field_9_value"] == "1992-02-29"
     assert raw_person["custom_field_10_value"] == "SBB5678B"
+
+
+def test_fundbox_legacy_dump_preserves_multiple_addresses() -> None:
+    record = _build_fundbox_legacy(
+        DumpRow(
+            {
+                "id": 7,
+                "nric": "S1234567A",
+                "email": "ada@example.test",
+                "mobile_number": "6599990000",
+                "whatsapp_phone": None,
+                "facebook_id": None,
+                "updated_at": "2026-05-06 10:00:00",
+                "created_at": "2026-05-01 10:00:00",
+                "full_name": "Ada Lovelace",
+                "date_of_birth": "1992-02-29",
+                "gender": "F",
+                "nationality": "SG",
+            }
+        ),
+        [
+            DumpRow(
+                {
+                    "address_line_1": "10 Orchard Road",
+                    "address_line_2": "Lucky Plaza",
+                    "street": "Orchard Road",
+                    "building": "Lucky Plaza",
+                    "block": "10",
+                    "floor": "05",
+                    "unit": "123",
+                    "city": "Singapore",
+                    "state": None,
+                    "postal_code": "238863",
+                    "country": "SG",
+                }
+            ),
+            DumpRow(
+                {
+                    "address_line_1": "20 Second Street",
+                    "address_line_2": None,
+                    "street": "Second Street",
+                    "building": None,
+                    "block": "20",
+                    "floor": "07",
+                    "unit": "456",
+                    "city": "Singapore",
+                    "state": None,
+                    "postal_code": "654321",
+                    "country": "SG",
+                }
+            ),
+        ],
+    )
+
+    assert len(record["addresses"]) == 2
+    assert record["addresses"][0]["postal_code"] == "238863"
+    assert record["addresses"][0]["unit_number"] == "#05-123"
+    assert record["addresses"][1]["postal_code"] == "654321"
+    assert record["addresses"][1]["unit_number"] == "#07-456"
+    assert record["attributes"]["address"].startswith("10 Orchard Road")
 
 
 def test_fundbox_sales_dump_resolves_product_from_product_variant_id(tmp_path: Path) -> None:

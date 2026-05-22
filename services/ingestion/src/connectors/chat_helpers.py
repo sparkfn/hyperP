@@ -19,11 +19,24 @@ from src.normalizers.phone import normalize_phone
 logger = logging.getLogger(__name__)
 
 
+class ExtractedAddress(TypedDict, total=False):
+    raw: str | None
+    unit_number: str | None
+    street_number: str | None
+    street_name: str | None
+    building_name: str | None
+    city: str | None
+    state_province: str | None
+    postal_code: str | None
+    country_code: str | None
+
+
 class ExtractedPerson(TypedDict, total=False):
     name: str | None
     phone: str | None
     email: str | None
     address: str | None
+    addresses: list[ExtractedAddress]
     nric: str | None
     notes: str | None
 
@@ -51,6 +64,7 @@ class ExtractedPossiblePerson(TypedDict, total=False):
     phone: str | None
     email: str | None
     address: str | None
+    addresses: list[ExtractedAddress]
     nric: str | None
     notes: str | None
     role: str | None
@@ -349,6 +363,7 @@ def possible_person_payload(person: ExtractedPossiblePerson) -> dict[str, JsonVa
         "phone": person.get("phone"),
         "email": person.get("email"),
         "address": person.get("address"),
+        "addresses": [_address_payload(item) for item in person_addresses(person)],
         "nric": person.get("nric"),
         "notes": person.get("notes"),
         "role": person.get("role"),
@@ -391,6 +406,9 @@ def _parse_person(raw: object) -> ExtractedPerson | None:
     address = raw.get("address")
     if isinstance(address, str) or address is None:
         person["address"] = address
+    addresses = _parse_addresses(raw.get("addresses"))
+    if addresses:
+        person["addresses"] = addresses
     nric = raw.get("nric")
     if isinstance(nric, str) or nric is None:
         person["nric"] = nric
@@ -406,6 +424,7 @@ def _possible_person_from_legacy(person: ExtractedPerson) -> ExtractedPossiblePe
         phone=person.get("phone"),
         email=person.get("email"),
         address=person.get("address"),
+        addresses=person_addresses(person),
         nric=person.get("nric"),
         notes=person.get("notes"),
         identifiers=[],
@@ -442,6 +461,67 @@ def _parse_possible_person(raw: object) -> ExtractedPossiblePerson | None:
                 weak_identifiers.append(identifier)
     possible_person["weak_identifiers"] = weak_identifiers
     return possible_person
+
+
+def _parse_address(raw: object) -> ExtractedAddress | None:
+    if isinstance(raw, str):
+        text = raw.strip()
+        return ExtractedAddress(raw=text) if text else None
+    if not isinstance(raw, dict):
+        return None
+    address: ExtractedAddress = {}
+    for key in (
+        "raw",
+        "unit_number",
+        "street_number",
+        "street_name",
+        "building_name",
+        "city",
+        "state_province",
+        "postal_code",
+        "country_code",
+    ):
+        value = raw.get(key)
+        if isinstance(value, str) or value is None:
+            address[key] = value
+    return address if any(value for value in address.values()) else None
+
+
+def _parse_addresses(raw: object) -> list[ExtractedAddress]:
+    if not isinstance(raw, list):
+        return []
+    addresses: list[ExtractedAddress] = []
+    for item in raw:
+        address = _parse_address(item)
+        if address is not None:
+            addresses.append(address)
+    return addresses
+
+
+def person_addresses(person: ExtractedPerson | ExtractedPossiblePerson) -> list[ExtractedAddress]:
+    addresses = list(person.get("addresses", []))
+    legacy_address = person.get("address")
+    if legacy_address:
+        legacy = ExtractedAddress(raw=legacy_address)
+        if legacy not in addresses:
+            addresses.append(legacy)
+    return addresses
+
+
+def person_address_payloads(
+    person: ExtractedPerson | ExtractedPossiblePerson,
+) -> list[dict[str, JsonValue]]:
+    return [_address_payload(address) for address in person_addresses(person)]
+
+
+def _address_payload(address: ExtractedAddress) -> dict[str, JsonValue]:
+    payload: dict[str, JsonValue] = {}
+    for key, value in address.items():
+        if isinstance(value, str):
+            payload[key] = value
+        elif value is None:
+            payload[key] = None
+    return payload
 
 
 def _parse_identifier(raw: object) -> ExtractedStrongIdentifier | ExtractedWeakIdentifier | None:
@@ -552,7 +632,7 @@ def transactions_payload(extraction: ExtractionResult) -> list[JsonValue]:
 
 def latest_timestamp(*timestamps: object) -> str:
     for ts in timestamps:
-        if isinstance(ts, datetime):
+        if isinstance(ts, datetime | str):
             iso_value = to_iso(ts)
             if iso_value is not None:
                 return iso_value

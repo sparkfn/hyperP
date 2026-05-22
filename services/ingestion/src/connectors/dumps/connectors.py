@@ -24,6 +24,7 @@ from src.connectors.dumps.reader import DumpRow, load_dump_tables
 from src.connectors.eko.connector import EkoConnector
 from src.connectors.fundbox.builders import (
     IdentifierBag,
+    addresses_from_rows,
     build_envelope,
     format_address,
     serialize_row,
@@ -41,6 +42,7 @@ from src.connectors.whatsapp.connector import (
     ORG_TO_ENTITY,
     _first_str,
     _format_messages,
+    _latest_message_timestamp,
     _message_endpoints,
     _Participant,
     _participant_jids,
@@ -308,7 +310,7 @@ class WhatsAppDumpConnector(SourceConnector):
                         whatsapp_user_id=whatsapp_uid,
                         tenant=tenant,
                         msg_text=_format_messages(msgs, participants, chat_name),
-                        observed_at=to_iso(msgs[-1].get("timestamp")) or "",
+                        observed_at=_latest_message_timestamp(msgs),
                         participants=participants,
                         message_endpoints=_message_endpoints(msgs),
                         session_phone=_phone_from_jid(whatsapp_uid),
@@ -538,21 +540,25 @@ def _bitrix_conversation(
     title = str(deal.get("title") or "")
     if title:
         lines.append(f"[Deal] {title}")
+    events: list[tuple[str, int, str]] = []
     for row in personalize_rows:
         ts = str(row.created_at or "")
+        row_id = _int_value(row.id)
         client_name = str(row.client_name or "").strip()
         if client_name:
-            lines.append(f"[{ts}] Client: {client_name}")
+            events.append((ts, row_id, f"[{ts}] Client: {client_name}"))
         body = str(row.message_sent or row.llm_message or "").strip()
         if body:
-            lines.append(f"[{ts}] Sent: {body}")
+            events.append((ts, row_id, f"[{ts}] Sent: {body}"))
     for row in sent_rows:
         template = templates.get(_int_value(row.template_id))
         if template is None:
             continue
+        ts = str(row.created_at or "")
         body = str(template.content or "").strip()
         if body:
-            lines.append(f"[{row.created_at or ''}] Template: {body}")
+            events.append((ts, _int_value(row.id), f"[{ts}] Template: {body}"))
+    lines.extend(line for _ts, _row_id, line in sorted(events))
     return "\n".join(lines)
 
 
@@ -637,6 +643,7 @@ def _build_fundbox_legacy(row: DumpRow, user_addresses: list[DumpRow]) -> dict[s
     ids.add("phone", row.mobile_number)
     ids.add("phone", row.whatsapp_phone)
     ids.add("social:facebook", row.facebook_id)
+    address_rows = addresses_from_rows(user_addresses)
     return build_envelope(
         source_record_id=f"fundbox_consumer_backend-legacy-{row.id}",
         observed_at=to_iso(row.updated_at or row.created_at),
@@ -652,6 +659,7 @@ def _build_fundbox_legacy(row: DumpRow, user_addresses: list[DumpRow]) -> dict[s
             "legacy_profile": serialize_row(row),
             "addresses": [serialize_row(address) for address in user_addresses],
         },
+        addresses=address_rows,
     )
 
 

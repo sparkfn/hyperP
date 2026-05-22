@@ -26,6 +26,7 @@ from src.config import get_settings
 from src.connectors.base import SourceConnector
 from src.connectors.fundbox.builders import (
     IdentifierBag,
+    address_from_row,
     build_envelope,
     format_address,
     serialize_row,
@@ -176,6 +177,7 @@ class SpeedZoneConnector(SourceConnector):
             ids.add("external:bitrix", row.custom_field_2_value)
 
         address = format_address(row)
+        address_row = address_from_row(row)
         dob = _date_string_to_iso(row.custom_field_9_value)
         return build_envelope(
             source_record_id=f"speedzone_phppos-customer-{row.customer_id}",
@@ -187,6 +189,7 @@ class SpeedZoneConnector(SourceConnector):
                 "address": address,
             },
             raw_payload={"person": _person_raw_payload(row)},
+            addresses=[address_row] if address_row is not None else None,
         )
 
     @staticmethod
@@ -196,6 +199,7 @@ class SpeedZoneConnector(SourceConnector):
         ids.add("phone", row.phone_number)
 
         address = format_address(row)
+        address_row = address_from_row(row)
         return build_envelope(
             source_record_id=f"speedzone_phppos-person-{row.person_id}",
             observed_at=to_iso(row.last_modified or row.create_date),
@@ -205,4 +209,5 @@ class SpeedZoneConnector(SourceConnector):
                 "address": address,
             },
             raw_payload={"person": serialize_row(row)},
+            addresses=[address_row] if address_row is not None else None,
         )

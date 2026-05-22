@@ -43,6 +43,7 @@ from src.connectors.chat_helpers import (
     identifiers_from_possible_person,
     inquiries_payload,
     latest_timestamp,
+    person_address_payloads,
     possible_person_payload,
     possible_persons_from_extraction,
     run_extraction_batch,
@@ -455,6 +456,7 @@ class BitrixChatConnector(SourceConnector):
                     extraction_confidence=person.get("confidence") or extraction["confidence"],
                     extraction_method=extraction_method_label(),
                     conversation_ref=conversation_ref,
+                    addresses=person_address_payloads(person),
                 )
             )
         return envelopes
