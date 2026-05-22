@@ -6,20 +6,18 @@ import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
-from fastapi import Depends, FastAPI, Request
-from fastapi.exceptions import RequestValidationError
+from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.params import Depends as DependsMarker
-from fastapi.responses import JSONResponse
-from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from src.auth.deps import require_active_user
 from src.auth.oauth_clients import ensure_oauth_client_constraints
 from src.auth.oauth_tokens import validate_oauth_runtime_config
 from src.config import config
+from src.error_handlers import register_error_handlers
+from src.frontend_app import build_frontend_app
 from src.graph.client import close_driver, get_session
 from src.graph.queries.users import CREATE_USER_CONSTRAINT
-from src.http_utils import request_id
 from src.llm.service import close_llm_service
 from src.redis_client import close_redis
 from src.routes import (
@@ -41,7 +39,6 @@ from src.routes import auth as auth_routes
 from src.routes import oauth_clients as oauth_client_routes
 from src.routes import users as users_routes
 from src.routes.public_pages import person_links_router, public_router
-from src.types import ApiError, ApiErrorBody, ResponseMeta
 
 logger = logging.getLogger("profile_unifier_api")
 
@@ -115,53 +112,10 @@ def build_app() -> FastAPI:
     app.include_router(oauth_client_routes.router, dependencies=active)
     app.include_router(events.router, dependencies=active)
 
-    _register_error_handlers(app)
+    app.mount("/app/v1", build_frontend_app())
+
+    register_error_handlers(app)
     return app
-
-
-def _register_error_handlers(app: FastAPI) -> None:
-    @app.exception_handler(StarletteHTTPException)
-    async def http_exception_handler(request: Request, exc: StarletteHTTPException) -> JSONResponse:
-        if isinstance(exc.detail, dict):
-            return JSONResponse(exc.detail, status_code=exc.status_code)
-        body = ApiError(
-            error=ApiErrorBody(code=_default_code(exc.status_code), message=str(exc.detail)),
-            meta=ResponseMeta(request_id=request_id(request)),
-        )
-        return JSONResponse(body.model_dump(), status_code=exc.status_code)
-
-    @app.exception_handler(RequestValidationError)
-    async def validation_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
-        body = ApiError(
-            error=ApiErrorBody(code="invalid_request", message=str(exc.errors())),
-            meta=ResponseMeta(request_id=request_id(request)),
-        )
-        return JSONResponse(body.model_dump(), status_code=400)
-
-    @app.exception_handler(Exception)
-    async def unhandled_handler(request: Request, exc: Exception) -> JSONResponse:
-        logger.exception("Unhandled error", exc_info=exc)
-        body = ApiError(
-            error=ApiErrorBody(code="internal_error", message="An internal error occurred."),
-            meta=ResponseMeta(request_id=request_id(request)),
-        )
-        return JSONResponse(body.model_dump(), status_code=500)
-
-
-def _default_code(status_code: int) -> str:
-    if status_code == 404:
-        return "not_found"
-    if status_code == 401:
-        return "unauthorized"
-    if status_code == 403:
-        return "forbidden"
-    if status_code == 409:
-        return "conflict"
-    if status_code == 422:
-        return "unprocessable_entity"
-    if status_code >= 500:
-        return "internal_error"
-    return "invalid_request"
 
 
 app: FastAPI = build_app()
