@@ -24,7 +24,10 @@ export function SourceRecordDetails({ record }: { record: PersonSourceRecord }):
   const payload = record.normalized_payload;
   const identifiers = payload?.identifiers ?? [];
   const attributes = payload?.attributes ?? [];
-  const address = payload?.address ?? null;
+  const addresses = firstList(
+    payload?.addresses,
+    payload?.address !== null && payload?.address !== undefined ? [payload.address] : [],
+  );
   const summary = firstText(payload?.summary, record.raw_payload?.summary);
 
   return (
@@ -56,7 +59,7 @@ export function SourceRecordDetails({ record }: { record: PersonSourceRecord }):
         <Stack spacing={2.5}>
           {summary !== null ? <PayloadSection title="Summary" body={summary} /> : null}
           <IdentifierSection identifiers={identifiers} />
-          <AddressSection address={address} />
+          <AddressSection addresses={addresses} />
           <AttributeSection attributes={attributes} />
         </Stack>
       )}
@@ -215,18 +218,33 @@ function IdentifierSection({ identifiers }: { identifiers: SourceRecordIdentifie
   );
 }
 
-function AddressSection({ address }: { address: SourceRecordAddressPayload | null }): ReactElement {
-  if (address === null) {
-    return (
-      <Box>
-        <Typography variant="subtitle2" gutterBottom>
-          Address
-        </Typography>
+function AddressSection({ addresses }: { addresses: SourceRecordAddressPayload[] }): ReactElement {
+  return (
+    <Box>
+      <Typography variant="subtitle2" gutterBottom>
+        {addresses.length > 1 ? "Addresses" : "Address"}
+      </Typography>
+      {addresses.length === 0 ? (
         <EmptyPayloadText>No normalized address.</EmptyPayloadText>
-      </Box>
-    );
-  }
+      ) : (
+        <Stack spacing={1.5}>
+          {addresses.map((address, index) => (
+            <Paper key={`${address.normalized_full ?? "address"}-${index}`} variant="outlined" sx={{ p: 2 }}>
+              {addresses.length > 1 ? (
+                <Typography variant="body2" fontWeight={600} gutterBottom>
+                  Address {index + 1}
+                </Typography>
+              ) : null}
+              <AddressFields address={address} />
+            </Paper>
+          ))}
+        </Stack>
+      )}
+    </Box>
+  );
+}
 
+function AddressFields({ address }: { address: SourceRecordAddressPayload }): ReactElement {
   const fields = [
     ["Full address", address.normalized_full],
     ["Unit", address.unit_number],
@@ -239,16 +257,11 @@ function AddressSection({ address }: { address: SourceRecordAddressPayload | nul
   ] as const;
 
   return (
-    <Box>
-      <Typography variant="subtitle2" gutterBottom>
-        Address
-      </Typography>
-      <Grid container spacing={1.5}>
-        {fields.map(([label, value]) => (
-          <PayloadMeta key={label} label={label} value={value ?? "—"} />
-        ))}
-      </Grid>
-    </Box>
+    <Grid container spacing={1.5}>
+      {fields.map(([label, value]) => (
+        <PayloadMeta key={label} label={label} value={value ?? "—"} />
+      ))}
+    </Grid>
   );
 }
 

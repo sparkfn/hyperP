@@ -47,6 +47,7 @@ export interface SourceRecordInquiryPayload {
 export interface SourceRecordNormalizedPayload {
   identifiers?: SourceRecordIdentifierPayload[];
   address?: SourceRecordAddressPayload | null;
+  addresses?: SourceRecordAddressPayload[];
   attributes?: SourceRecordAttributePayload[];
   summary?: string;
   customer_sentiment?: string;
