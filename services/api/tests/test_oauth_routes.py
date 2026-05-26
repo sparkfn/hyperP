@@ -275,9 +275,9 @@ class _PersonRouteRepo:
 
     async def get_matches(
         self, person_id: str, skip: int, limit: int
-    ) -> tuple[list[MatchDecision], bool]:
+    ) -> tuple[list[MatchDecision], int]:
         _ = person_id, skip, limit
-        return [], False
+        return [], 0
 
 
 class _ReportRouteRepo:

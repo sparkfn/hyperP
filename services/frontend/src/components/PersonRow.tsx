@@ -12,9 +12,9 @@ import Tooltip from "@mui/material/Tooltip";
 import Typography from "@mui/material/Typography";
 import AccountTreeIcon from "@mui/icons-material/AccountTree";
 
-import type { ListedPerson, PersonConnection, SalesOrder, SourceRecord } from "@/lib/api-types";
-import type { PersonBankruptcyCase, PersonIdentifier } from "@/lib/api-types-person";
-import { confidenceColor, connectionsToItems, formatDate, formatDob, identifiersToItems, ordersToItems, sourcesToItems } from "@/lib/display";
+import type { ListedPerson, PopoverDisplayItem } from "@/lib/api-types";
+import type { PersonBankruptcyCase, PersonSharedIdentifierCandidate } from "@/lib/api-types-person";
+import { confidenceColor, formatDate, formatDob } from "@/lib/display";
 import CountCardsCell, { type CountCardItem } from "@/components/CountCardsCell";
 
 interface PersonRowProps {
@@ -24,18 +24,15 @@ interface PersonRowProps {
   onRowClick: () => void;
   onContextMenu: (event: MouseEvent<HTMLTableRowElement>) => void;
   onOpenGraph: () => void;
-  connections: PersonConnection[] | undefined;
+  connectionsItems: PopoverDisplayItem[] | undefined;
   connectionsLoading: boolean;
   onRequestConnections: () => void;
-  sources: SourceRecord[] | undefined;
+  sourcesItems: PopoverDisplayItem[] | undefined;
   sourcesLoading: boolean;
   onRequestSources: () => void;
-  identifiers: PersonIdentifier[] | undefined;
-  identifiersLoading: boolean;
-  onRequestIdentifiers: () => void;
-  orders: SalesOrder[] | undefined;
-  ordersLoading: boolean;
-  onRequestOrders: () => void;
+  matches: PersonSharedIdentifierCandidate[] | undefined;
+  matchesLoading: boolean;
+  onRequestMatches: () => void;
   bankruptcyCases: PersonBankruptcyCase[] | undefined;
   bankruptcyLoading: boolean;
   onRequestBankruptcyCases: () => void;
@@ -49,6 +46,16 @@ function bankruptcyToItems(cases: PersonBankruptcyCase[] | undefined): CountCard
   }));
 }
 
+function matchesToItems(matches: PersonSharedIdentifierCandidate[] | undefined): CountCardItem[] | undefined {
+  return matches?.map((candidate) => ({
+    primary: candidate.preferred_full_name ?? candidate.person_id,
+    secondary: candidate.identifiers
+      .map((identifier) => `${identifier.identifier_type}:${identifier.normalized_value}`)
+      .join(" · "),
+    color: candidate.identifier_strength === "strong" ? "warning" : "info",
+  }));
+}
+
 export default function PersonRow({
   person,
   selected,
@@ -56,18 +63,15 @@ export default function PersonRow({
   onRowClick,
   onContextMenu,
   onOpenGraph,
-  connections,
+  connectionsItems,
   connectionsLoading,
   onRequestConnections,
-  sources,
+  sourcesItems,
   sourcesLoading,
   onRequestSources,
-  identifiers,
-  identifiersLoading,
-  onRequestIdentifiers,
-  orders,
-  ordersLoading,
-  onRequestOrders,
+  matches,
+  matchesLoading,
+  onRequestMatches,
   bankruptcyCases,
   bankruptcyLoading,
   onRequestBankruptcyCases,
@@ -116,7 +120,7 @@ export default function PersonRow({
           label="connections"
           emptyText="No connections"
           loading={connectionsLoading}
-          items={connectionsToItems(connections)}
+          items={connectionsItems}
           onOpen={onRequestConnections}
         />
       </TableCell>
@@ -124,10 +128,7 @@ export default function PersonRow({
         <CountCardsCell
           count={person.order_count}
           label="orders"
-          emptyText="No orders"
-          loading={ordersLoading}
-          items={ordersToItems(orders)}
-          onOpen={onRequestOrders}
+          emptyText="Order previews moved to the person detail page"
         />
       </TableCell>
       <TableCell align="center" onClick={(e) => e.stopPropagation()}>
@@ -146,18 +147,18 @@ export default function PersonRow({
           label="records"
           emptyText="No source records"
           loading={sourcesLoading}
-          items={sourcesToItems(sources)}
+          items={sourcesItems}
           onOpen={onRequestSources}
         />
       </TableCell>
       <TableCell align="center" onClick={(e) => e.stopPropagation()}>
         <CountCardsCell
-          count={person.identifier_count}
-          label="identifiers"
-          emptyText="No identifiers"
-          loading={identifiersLoading}
-          items={identifiersToItems(identifiers)}
-          onOpen={onRequestIdentifiers}
+          count={person.possible_match_count}
+          label="matches"
+          emptyText="No possible matches"
+          loading={matchesLoading}
+          items={matchesToItems(matches)}
+          onOpen={onRequestMatches}
         />
       </TableCell>
       <TableCell align="center" onClick={(e) => e.stopPropagation()}>

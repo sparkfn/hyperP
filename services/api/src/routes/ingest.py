@@ -21,7 +21,7 @@ from src.types_requests import (
     IngestRunUpdateRequest,
 )
 
-router = APIRouter()
+router = APIRouter(tags=["Ingestion"])
 
 
 @router.post(

@@ -28,7 +28,12 @@ import Tooltip from "@mui/material/Tooltip";
 import Typography from "@mui/material/Typography";
 
 import type { ApiResponse, Person, PublicLink } from "@/lib/api-types";
-import { bffFetch } from "@/lib/api-client";
+import { bffFetch, bffFetchEnvelope } from "@/lib/api-client";
+import type {
+  PersonIdentifier,
+  PersonMatchDecision,
+  PersonSharedIdentifierCandidate,
+} from "@/lib/api-types-person";
 import { formatDateTime, formatDob } from "@/lib/display";
 import { statusColor } from "@/lib/display";
 import AuditTab from "./AuditTab";
@@ -41,12 +46,28 @@ import MatchesTab from "./MatchesTab";
 import PersonFocusedGraph from "./PersonFocusedGraph";
 import PersonSection from "./PersonSection";
 import PersonTimelineTab from "./PersonTimelineTab";
+import PossibleMatchesSection from "./PossibleMatchesSection";
 import SalesCard from "./SalesCard";
-import SharedIdentifiersSection from "./SharedIdentifiersSection";
 import SurvivorshipOverrideDialog from "./SurvivorshipOverrideDialog";
 
 interface Props {
   person: Person;
+}
+
+interface TabCounts {
+  possibleMatches: number | null;
+  identifiers: number | null;
+  matchDecisions: number | null;
+}
+
+const EMPTY_TAB_COUNTS: TabCounts = {
+  possibleMatches: null,
+  identifiers: null,
+  matchDecisions: null,
+};
+
+function tabLabel(label: string, count: number | null): string {
+  return count === null ? label : `${label} (${count})`;
 }
 
 export default function PersonDetailTabs({ person }: Props): ReactElement {
@@ -74,6 +95,7 @@ export default function PersonDetailTabs({ person }: Props): ReactElement {
   const [shareLoading, setShareLoading] = useState<boolean>(false);
   const [refreshedPerson, setRefreshedPerson] = useState<Person | null>(null);
   const [detailRefreshKey, setDetailRefreshKey] = useState<number>(0);
+  const [tabCounts, setTabCounts] = useState<TabCounts>(EMPTY_TAB_COUNTS);
   const currentPerson = refreshedPerson?.person_id === person.person_id ? refreshedPerson : person;
 
   const refreshDetailData = useCallback((): void => {
@@ -83,6 +105,40 @@ export default function PersonDetailTabs({ person }: Props): ReactElement {
       .catch(() => undefined);
   }, [person.person_id]);
 
+  useEffect(() => {
+    let cancelled = false;
+    const personId = currentPerson.person_id;
+
+    const loadCounts = async (): Promise<void> => {
+      try {
+        const [possibleMatches, identifiers, matchDecisions] = await Promise.all([
+          bffFetchEnvelope<PersonSharedIdentifierCandidate[]>(
+            `/bff/persons/${encodeURIComponent(personId)}/shared-identifiers?limit=1`,
+          ),
+          bffFetchEnvelope<PersonIdentifier[]>(
+            `/bff/persons/${encodeURIComponent(personId)}/identifiers?limit=1`,
+          ),
+          bffFetchEnvelope<PersonMatchDecision[]>(
+            `/bff/persons/${encodeURIComponent(personId)}/matches?limit=1`,
+          ),
+        ]);
+        if (cancelled) return;
+        setTabCounts({
+          possibleMatches:
+            possibleMatches.meta.total_count ?? possibleMatches.data.length,
+          identifiers: identifiers.meta.total_count ?? identifiers.data.length,
+          matchDecisions: matchDecisions.meta.total_count ?? matchDecisions.data.length,
+        });
+      } catch {
+        if (!cancelled) setTabCounts(EMPTY_TAB_COUNTS);
+      }
+    };
+
+    void loadCounts();
+    return () => {
+      cancelled = true;
+    };
+  }, [currentPerson.person_id, detailRefreshKey]);
   useEffect(() => {
     const listener = (event: Event): void => {
       const custom = event as CustomEvent<{ timestamp?: string }>;
@@ -128,7 +184,10 @@ export default function PersonDetailTabs({ person }: Props): ReactElement {
       <Tabs value={tab} onChange={handleChange} sx={{ mb: 2 }}>
         <Tab label="Profile" />
         <Tab label="Timeline" />
-        <Tab label="Matches" />
+        <Tab label={tabLabel("Possible Matches", tabCounts.possibleMatches)} />
+        <Tab label={tabLabel("Identifiers", tabCounts.identifiers)} />
+        <Tab label={tabLabel("Match Decisions", tabCounts.matchDecisions)} />
+        <Tab label="Audit" />
       </Tabs>
 
       {tab === 0 ? (
@@ -141,26 +200,8 @@ export default function PersonDetailTabs({ person }: Props): ReactElement {
             shareLoading={shareLoading}
           />
           <ConnectionsCard personId={currentPerson.person_id} />
-          <PersonSection title="Shared Identifiers">
-            <SharedIdentifiersSection
-              personId={currentPerson.person_id}
-              personName={currentPerson.preferred_full_name}
-              refreshKey={detailRefreshKey}
-              onMerged={refreshDetailData}
-            />
-          </PersonSection>
-          <PersonSection title="Identifiers">
-            <IdentifiersSection personId={currentPerson.person_id} />
-          </PersonSection>
           <SalesCard personId={currentPerson.person_id} />
           <BankruptcyCasesCard personId={currentPerson.person_id} />
-          <PersonSection title="Audit">
-            <AuditTab
-              personId={currentPerson.person_id}
-              refreshKey={detailRefreshKey}
-              onUnmerged={refreshDetailData}
-            />
-          </PersonSection>
           <PersonGraphCard person={currentPerson} />
         </Stack>
       ) : null}
@@ -175,7 +216,31 @@ export default function PersonDetailTabs({ person }: Props): ReactElement {
           }}
         />
       ) : null}
-      {tab === 2 ? <MatchesTab personId={currentPerson.person_id} /> : null}
+      {tab === 2 ? (
+        <PersonSection title="Possible Matches">
+          <PossibleMatchesSection
+            personId={currentPerson.person_id}
+            personName={currentPerson.preferred_full_name}
+            refreshKey={detailRefreshKey}
+            onMerged={refreshDetailData}
+          />
+        </PersonSection>
+      ) : null}
+      {tab === 3 ? (
+        <PersonSection title="Identifiers">
+          <IdentifiersSection personId={currentPerson.person_id} />
+        </PersonSection>
+      ) : null}
+      {tab === 4 ? <MatchesTab personId={currentPerson.person_id} /> : null}
+      {tab === 5 ? (
+        <PersonSection title="Audit">
+          <AuditTab
+            personId={currentPerson.person_id}
+            refreshKey={detailRefreshKey}
+            onUnmerged={refreshDetailData}
+          />
+        </PersonSection>
+      ) : null}
 
       <ManualMergeDialog
         open={mergeOpen}

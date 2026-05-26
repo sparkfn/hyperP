@@ -430,6 +430,50 @@ CALL {
 RETURN total
 """
 
+GET_PERSON_POSSIBLE_MATCH_DETAIL = """
+MATCH (p:Person {person_id: $person_id})-[:IDENTIFIED_BY]->(id:Identifier)
+  <-[:IDENTIFIED_BY]-(candidate:Person {person_id: $candidate_person_id})
+WHERE candidate.status <> 'merged'
+CALL {
+  WITH p, id
+  MATCH (p)-[rel:IDENTIFIED_BY]->(id)
+  MATCH (sr:SourceRecord {source_record_pk: rel.source_record_pk})
+  RETURN collect(DISTINCT sr {
+    .source_record_pk, .source_system, .source_record_id, .source_record_version,
+    .entity_key, .entity_display_name, .record_type, .extraction_confidence,
+    .extraction_method, .link_status, .linked_person_id, .observed_at, .ingested_at,
+    .conversation_ref, .raw_payload, .normalized_payload
+  }) AS current_person_source_records
+}
+CALL {
+  WITH candidate, id
+  MATCH (candidate)-[rel:IDENTIFIED_BY]->(id)
+  MATCH (sr:SourceRecord {source_record_pk: rel.source_record_pk})
+  RETURN collect(DISTINCT sr {
+    .source_record_pk, .source_system, .source_record_id, .source_record_version,
+    .entity_key, .entity_display_name, .record_type, .extraction_confidence,
+    .extraction_method, .link_status, .linked_person_id, .observed_at, .ingested_at,
+    .conversation_ref, .raw_payload, .normalized_payload
+  }) AS candidate_source_records
+}
+RETURN candidate.person_id AS candidate_person_id,
+       candidate.preferred_full_name AS candidate_name,
+       id.identifier_type AS identifier_type,
+       id.normalized_value AS normalized_value,
+       candidate_source_records AS candidate_source_records,
+       current_person_source_records AS current_person_source_records
+ORDER BY id.identifier_type, id.normalized_value
+"""
+
+
+COUNT_PERSON_MATCHES = """
+MATCH (md:MatchDecision)
+WHERE (md)-[:ABOUT_LEFT]->(:Person {person_id: $person_id})
+   OR (md)-[:ABOUT_RIGHT]->(:Person {person_id: $person_id})
+RETURN count(md) AS total
+"""
+
+
 GET_PERSON_MATCHES = """
 MATCH (md:MatchDecision)
 WHERE (md)-[:ABOUT_LEFT]->(:Person {person_id: $person_id})

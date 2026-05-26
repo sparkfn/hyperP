@@ -11,6 +11,7 @@ from src.graph.mappers import (
     map_person,
     map_person_graph,
     map_person_identifier,
+    map_possible_match_detail,
     map_shared_identifier_candidate,
     map_source_record,
     map_timeline_group,
@@ -24,6 +25,7 @@ from src.graph.queries import (
     COUNT_PERSON_CONNECTIONS_IDENTIFIER,
     COUNT_PERSON_CONNECTIONS_KNOWS,
     COUNT_PERSON_IDENTIFIERS,
+    COUNT_PERSON_MATCHES,
     COUNT_PERSON_SHARED_IDENTIFIERS,
     COUNT_PERSON_SOURCE_RECORDS,
     COUNT_PERSON_TIMELINE,
@@ -38,6 +40,7 @@ from src.graph.queries import (
     GET_PERSON_ENTITIES,
     GET_PERSON_IDENTIFIERS,
     GET_PERSON_MATCHES,
+    GET_PERSON_POSSIBLE_MATCH_DETAIL,
     GET_PERSON_SHARED_IDENTIFIERS,
     GET_PERSON_SOURCE_RECORDS,
     GET_PERSON_TIMELINE,
@@ -62,6 +65,7 @@ from src.types import (
     PersonIdentifier,
     PersonSharedIdentifierCandidate,
     PersonTimelineGroup,
+    PossibleMatchDetail,
     SourceRecord,
 )
 
@@ -218,6 +222,20 @@ class Neo4jPersonRepository:
         candidates = [map_shared_identifier_candidate(rec) for rec in records[:limit]]
         return candidates, to_total(count_record)
 
+    async def get_possible_match_detail(
+        self, person_id: str, candidate_person_id: str
+    ) -> PossibleMatchDetail | None:
+        async with get_session() as session:
+            result = await session.run(
+                GET_PERSON_POSSIBLE_MATCH_DETAIL,
+                person_id=person_id,
+                candidate_person_id=candidate_person_id,
+            )
+            records = [record_to_dict(r.keys(), list(r.values())) async for r in result]
+        if not records:
+            return None
+        return map_possible_match_detail(records)
+
     async def get_entities(self, person_id: str) -> list[PersonEntitySummary]:
         async with get_session() as session:
             result = await session.run(GET_PERSON_ENTITIES, person_id=person_id)
@@ -256,14 +274,15 @@ class Neo4jPersonRepository:
 
     async def get_matches(
         self, person_id: str, skip: int, limit: int
-    ) -> tuple[list[MatchDecision], bool]:
+    ) -> tuple[list[MatchDecision], int]:
         async with get_session() as session:
             result = await session.run(
-                GET_PERSON_MATCHES, person_id=person_id, skip=skip, limit=limit + 1
+                GET_PERSON_MATCHES, person_id=person_id, skip=skip, limit=limit
             )
             records = [record_to_dict(r.keys(), list(r.values())) async for r in result]
-        has_more = len(records) > limit
-        return [map_match_decision(rec) for rec in records[:limit]], has_more
+            count_result = await session.run(COUNT_PERSON_MATCHES, person_id=person_id)
+            count_record = await count_result.single()
+        return [map_match_decision(rec) for rec in records], to_total(count_record)
 
     async def get_timeline(
         self, person_id: str, skip: int, limit: int

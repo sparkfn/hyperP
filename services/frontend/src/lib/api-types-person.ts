@@ -1,7 +1,7 @@
 // Hand-mirrored from services/api/src/types.py and routes/{merge,survivorship}.py.
 // Lives outside api-types.ts so the shared module stays untouched.
 
-import type { PersonEntitySummary, SharedIdentifier } from "@/lib/api-types";
+import type { PersonEntitySummary, PopoverDisplayItem, SharedIdentifier } from "@/lib/api-types";
 
 export type SourceRecordType = "system" | "conversation";
 
@@ -206,6 +206,21 @@ export interface PersonSharedIdentifierCandidate {
   identifier_strength: "strong" | "weak";
   identifiers: SharedIdentifier[];
 }
+
+export interface SharedIdentifierGroup {
+  identifier_type: string;
+  normalized_value: string;
+  candidate_source_records: PersonSourceRecord[];
+  current_person_source_records: PersonSourceRecord[];
+}
+
+export interface PossibleMatchDetail {
+  candidate_person_id: string;
+  candidate_name: string | null;
+  shared_identifier_groups: SharedIdentifierGroup[];
+}
+
+export type { PopoverDisplayItem };
 
 // --- Request bodies ---
 

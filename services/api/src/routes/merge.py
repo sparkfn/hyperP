@@ -13,7 +13,7 @@ from src.repositories.protocols.merge import MergeRepository
 from src.types import ApiResponse
 from src.types_requests import LockRequest, ManualMergeRequest, UnmergeRequest
 
-router = APIRouter()
+router = APIRouter(tags=["Persons"])
 
 
 class ManualMergeResponse(BaseModel):

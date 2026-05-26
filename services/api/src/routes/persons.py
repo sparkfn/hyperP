@@ -22,11 +22,14 @@ from src.types import (
     PersonIdentifier,
     PersonSharedIdentifierCandidate,
     PersonTimelineGroup,
+    PopoverDisplayItem,
+    PossibleMatchDetail,
     SourceRecord,
 )
 
 router = APIRouter(
     prefix="/v1/persons",
+    tags=["Persons"],
     dependencies=[Depends(require_scope("persons:read"))],
 )
 
@@ -40,7 +43,7 @@ _ALLOWED_SORT: frozenset[str] = frozenset(
         "source_record_count",
         "connection_count",
         "entity_count",
-        "identifier_count",
+        "possible_match_count",
         "order_count",
         "bankruptcy_case_count",
         "phone_confidence",
@@ -49,6 +52,58 @@ _ALLOWED_SORT: frozenset[str] = frozenset(
         "relevance",
     }
 )
+
+
+def _identifier_display_items(items: list[PersonIdentifier]) -> list[PopoverDisplayItem]:
+    return [
+        PopoverDisplayItem(
+            primary=f"{item.identifier_type}: {item.normalized_value}",
+            secondary=" · ".join(
+                filter(
+                    None,
+                    [
+                        "active" if item.is_active else "inactive",
+                        "verified" if item.is_verified else "unverified",
+                        item.source_system_key or "",
+                    ],
+                )
+            ),
+        )
+        for item in items
+    ]
+
+
+def _connection_display_items(items: list[PersonConnection]) -> list[PopoverDisplayItem]:
+    return [
+        PopoverDisplayItem(
+            primary=item.preferred_full_name or item.person_id,
+            secondary=" · ".join(
+                [
+                    f"{identifier.identifier_type}:{identifier.normalized_value}"
+                    for identifier in item.shared_identifiers
+                ]
+                + [
+                    f"address:{address.normalized_full or address.address_id}"
+                    for address in item.shared_addresses
+                ]
+                + [
+                    f"knows:{rel.relationship_label or rel.relationship_category}"
+                    for rel in item.knows_relationships
+                ]
+            ),
+        )
+        for item in items
+    ]
+
+
+def _source_record_display_items(items: list[SourceRecord]) -> list[PopoverDisplayItem]:
+    return [
+        PopoverDisplayItem(
+            primary=item.source_system,
+            secondary=" · ".join([item.source_record_id, item.record_type, item.ingested_at]),
+        )
+        for item in items
+    ]
 
 
 @router.get("", response_model=ApiResponse[list[ListedPerson]])
@@ -179,7 +234,9 @@ async def get_person_source_records(
     skip, page_limit = page_window(cursor, limit)
     items, total = await repo.get_source_records(person_id, skip, page_limit)
     has_more = skip + page_limit < total
-    return envelope(items, request, next_cursor(skip, page_limit, has_more), total_count=total)
+    resp = envelope(items, request, next_cursor(skip, page_limit, has_more), total_count=total)
+    resp.display_items = _source_record_display_items(items)
+    return resp
 
 
 @router.get("/{person_id}/bankruptcy-cases", response_model=ApiResponse[list[BankruptcyCase]])
@@ -238,7 +295,9 @@ async def get_person_identifiers(
     skip, page_limit = page_window(cursor, limit)
     items, total = await repo.get_identifiers(person_id, skip, page_limit)
     has_more = skip + page_limit < total
-    return envelope(items, request, next_cursor(skip, page_limit, has_more), total_count=total)
+    resp = envelope(items, request, next_cursor(skip, page_limit, has_more), total_count=total)
+    resp.display_items = _identifier_display_items(items)
+    return resp
 
 
 @router.get("/{person_id}/connections", response_model=ApiResponse[list[PersonConnection]])
@@ -257,7 +316,9 @@ async def get_person_connections(
         person_id, connection_type, identifier_type, skip, page_limit
     )
     has_more = skip + page_limit < total
-    return envelope(items, request, next_cursor(skip, page_limit, has_more), total_count=total)
+    resp = envelope(items, request, next_cursor(skip, page_limit, has_more), total_count=total)
+    resp.display_items = _connection_display_items(items)
+    return resp
 
 
 @router.get(
@@ -276,6 +337,28 @@ async def get_person_shared_identifiers(
     items, total = await repo.get_shared_identifier_candidates(person_id, skip, page_limit)
     has_more = skip + page_limit < total
     return envelope(items, request, next_cursor(skip, page_limit, has_more), total_count=total)
+
+
+@router.get(
+    "/{person_id}/shared-identifiers/{candidate_id}/detail",
+    response_model=ApiResponse[PossibleMatchDetail],
+)
+async def get_person_shared_identifier_detail(
+    person_id: str,
+    candidate_id: str,
+    request: Request,
+    repo: PersonRepository = Depends(get_person_repo),
+) -> ApiResponse[PossibleMatchDetail]:
+    """Return grouped source records for a shared-identifier possible match."""
+    detail = await repo.get_possible_match_detail(person_id, candidate_id)
+    if detail is None:
+        raise http_error(
+            404,
+            "no_shared_identifiers",
+            "No shared identifiers found between these persons.",
+            request,
+        )
+    return envelope(detail, request)
 
 
 @router.get("/{person_id}/entities", response_model=ApiResponse[list[PersonEntitySummary]])
@@ -351,5 +434,6 @@ async def get_person_matches(
 ) -> ApiResponse[list[MatchDecision]]:
     """Return recent match decisions involving a person."""
     skip, page_limit = page_window(cursor, limit)
-    items, has_more = await repo.get_matches(person_id, skip, page_limit)
-    return envelope(items, request, next_cursor(skip, page_limit, has_more))
+    items, total = await repo.get_matches(person_id, skip, page_limit)
+    has_more = skip + page_limit < total
+    return envelope(items, request, next_cursor(skip, page_limit, has_more), total_count=total)

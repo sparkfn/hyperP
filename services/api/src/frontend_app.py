@@ -54,6 +54,17 @@ def build_frontend_app() -> FastAPI:
         version="0.1.0",
         docs_url="/docs",
         openapi_url="/openapi.json",
+        swagger_ui_parameters={"operationsSorter": "alpha"},
+        openapi_tags=[
+            {"name": "Admin", "description": "User management, OAuth client registry, and source-system field trust."},
+            {"name": "Auth", "description": "Session authentication: current user info and logout."},
+            {"name": "Entities", "description": "Source entity (business unit) directory and their person links."},
+            {"name": "Events", "description": "Downstream event polling for external integrations."},
+            {"name": "Ingestion", "description": "Source record ingest runs and raw record submission."},
+            {"name": "Persons", "description": "Person profiles, identifiers, connections, timeline, matches, merge, and survivorship."},
+            {"name": "Reports", "description": "Saved Cypher report definitions and execution."},
+            {"name": "Review", "description": "Human review queue: assign, action, and resolve match decisions."},
+        ],
     )
     dependencies: list[DependsMarker] = [Depends(require_active_user)]
     for router in _FRONTEND_ROUTERS:

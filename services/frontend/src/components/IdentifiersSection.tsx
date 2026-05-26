@@ -2,9 +2,6 @@
 
 import { useState, type ReactElement } from "react";
 
-import Accordion from "@mui/material/Accordion";
-import AccordionDetails from "@mui/material/AccordionDetails";
-import AccordionSummary from "@mui/material/AccordionSummary";
 import Alert from "@mui/material/Alert";
 import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
@@ -23,7 +20,6 @@ import TableHead from "@mui/material/TableHead";
 import TableRow from "@mui/material/TableRow";
 import Tooltip from "@mui/material/Tooltip";
 import Typography from "@mui/material/Typography";
-import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 
 import PaginationBar from "@/components/PaginationBar";
 import { SourceRecordDetails } from "@/components/SourceRecordDetails";
@@ -173,7 +169,7 @@ function IdentifierSourceRecordsDialog({
     <Dialog open={identifier !== null} onClose={onClose} fullWidth maxWidth="md">
       <DialogTitle>
         {identifier !== null
-          ? `${identifier.identifier_type}: ${identifier.normalized_value}`
+          ? `${identifier.identifier_type}: ${identifier.normalized_value} (${identifier.source_records.length} records)`
           : "Identifier source records"}
       </DialogTitle>
       <DialogContent>
@@ -183,8 +179,8 @@ function IdentifierSourceRecordsDialog({
           </Typography>
         ) : (
           <Stack spacing={1} sx={{ mt: 1 }}>
-            {identifier.source_records.map((record) => (
-              <SourceRecordAccordion key={record.source_record_pk} record={record} />
+            {identifier.source_records.map((record, index) => (
+              <SourceRecordSection key={record.source_record_pk} index={index} record={record} />
             ))}
           </Stack>
         )}
@@ -196,22 +192,24 @@ function IdentifierSourceRecordsDialog({
   );
 }
 
-function SourceRecordAccordion({ record }: { record: PersonIdentifier["source_records"][number] }): ReactElement {
+function SourceRecordSection({
+  index,
+  record,
+}: {
+  index: number;
+  record: PersonIdentifier["source_records"][number];
+}): ReactElement {
   return (
-    <Accordion variant="outlined">
-      <AccordionSummary expandIcon={<ExpandMoreIcon />}>
-        <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
-          <Typography variant="subtitle2">{record.source_record_id}</Typography>
-          <Chip label={record.source_system} size="small" />
-          <Chip label={record.record_type} size="small" variant="outlined" />
-          {record.entity_display_name !== null ? (
-            <Chip label={record.entity_display_name} size="small" color="info" variant="outlined" />
-          ) : null}
-        </Stack>
-      </AccordionSummary>
-      <AccordionDetails>
-        <SourceRecordDetails record={record} />
-      </AccordionDetails>
-    </Accordion>
+    <Box sx={{ border: "1px solid", borderColor: "divider", borderRadius: 1, p: 1.5 }}>
+      <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap sx={{ mb: 1 }}>
+        <Typography variant="subtitle2">{index + 1}. {record.source_record_id}</Typography>
+        <Chip label={record.source_system} size="small" />
+        <Chip label={record.record_type} size="small" variant="outlined" />
+        {record.entity_display_name !== null ? (
+          <Chip label={record.entity_display_name} size="small" color="info" variant="outlined" />
+        ) : null}
+      </Stack>
+      <SourceRecordDetails record={record} />
+    </Box>
   );
 }

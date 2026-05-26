@@ -99,9 +99,15 @@ class ResponseMeta(BaseModel):
     total_count: int | None = None
 
 
+class PopoverDisplayItem(BaseModel):
+    primary: str
+    secondary: str = ""
+
+
 class ApiResponse[DataT](BaseModel):
     data: DataT
     meta: ResponseMeta
+    display_items: list[PopoverDisplayItem] | None = None
 
 
 class ApiErrorBody(BaseModel):
@@ -191,6 +197,19 @@ class SourceRecord(BaseModel):
     conversation_ref: dict[str, JsonValue] | None = None
     raw_payload: dict[str, JsonValue] | None = None
     normalized_payload: dict[str, JsonValue] | None = None
+
+
+class SharedIdentifierGroup(BaseModel):
+    identifier_type: str
+    normalized_value: str
+    candidate_source_records: list[SourceRecord]
+    current_person_source_records: list[SourceRecord]
+
+
+class PossibleMatchDetail(BaseModel):
+    candidate_person_id: str
+    candidate_name: str | None = None
+    shared_identifier_groups: list[SharedIdentifierGroup]
 
 
 class BankruptcyCase(BaseModel):
@@ -415,5 +434,6 @@ class ListedPerson(EntityPerson):
     entities: list[PersonEntitySummary] = Field(default_factory=list)
     entity_count: int = 0
     identifier_count: int = 0
+    possible_match_count: int = 0
     order_count: int = 0
     bankruptcy_case_count: int = 0

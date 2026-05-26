@@ -84,6 +84,7 @@ def map_listed_person(record: GraphRecord) -> ListedPerson:
         entities=entities,
         entity_count=to_int(record.get("entity_count", len(entities))),
         identifier_count=to_int(record.get("identifier_count")),
+        possible_match_count=to_int(record.get("possible_match_count")),
         order_count=to_int(record.get("order_count")),
         bankruptcy_case_count=to_int(record.get("bankruptcy_case_count")),
     )

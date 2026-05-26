@@ -17,6 +17,7 @@ from src.types import (
     PersonIdentifier,
     PersonSharedIdentifierCandidate,
     PersonTimelineGroup,
+    PossibleMatchDetail,
     SourceRecord,
 )
 
@@ -87,6 +88,10 @@ class PersonRepository(Protocol):
         self, person_id: str, skip: int, limit: int
     ) -> tuple[list[PersonSharedIdentifierCandidate], int]: ...
 
+    async def get_possible_match_detail(
+        self, person_id: str, candidate_person_id: str
+    ) -> PossibleMatchDetail | None: ...
+
     async def get_entities(self, person_id: str) -> list[PersonEntitySummary]: ...
 
     async def get_graph(self, person_id: str, max_hops: int) -> PersonGraph | None: ...
@@ -99,9 +104,7 @@ class PersonRepository(Protocol):
 
     async def get_matches(
         self, person_id: str, skip: int, limit: int
-    ) -> tuple[list[MatchDecision], bool]:
-        """Returns (items, has_more). No count query — has_more via +1 fetch."""
-        ...
+    ) -> tuple[list[MatchDecision], int]: ...
 
     async def get_timeline(
         self, person_id: str, skip: int, limit: int

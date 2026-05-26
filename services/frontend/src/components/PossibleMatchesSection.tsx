@@ -1,11 +1,9 @@
 "use client";
 
-import { useEffect, useState, type ReactElement } from "react";
-import Link from "next/link";
+import { useEffect, useState, type KeyboardEvent, type ReactElement } from "react";
 
 import Alert from "@mui/material/Alert";
 import Box from "@mui/material/Box";
-import Button from "@mui/material/Button";
 import Chip from "@mui/material/Chip";
 import CircularProgress from "@mui/material/CircularProgress";
 import Stack from "@mui/material/Stack";
@@ -16,9 +14,8 @@ import TableHead from "@mui/material/TableHead";
 import TableRow from "@mui/material/TableRow";
 import Typography from "@mui/material/Typography";
 
-import Gate from "@/components/auth/Gate";
-import ManualMergeDialog from "@/components/ManualMergeDialog";
 import PaginationBar from "@/components/PaginationBar";
+import PossibleMatchDetailDialog from "@/components/PossibleMatchDetailDialog";
 import type { PersonSharedIdentifierCandidate } from "@/lib/api-types-person";
 import { formatDob } from "@/lib/display";
 import { usePaginatedFetch } from "@/lib/usePaginatedFetch";
@@ -30,13 +27,13 @@ interface Props {
   onMerged?: () => void;
 }
 
-export default function SharedIdentifiersSection({
+export default function PossibleMatchesSection({
   personId,
   personName,
   refreshKey = 0,
   onMerged,
 }: Props): ReactElement {
-  const [mergeCandidate, setMergeCandidate] = useState<PersonSharedIdentifierCandidate | null>(null);
+  const [selectedCandidate, setSelectedCandidate] = useState<PersonSharedIdentifierCandidate | null>(null);
   const { rows, error, loading, from, to, total, hasPrev, hasNext, goNext, goPrev, refresh } =
     usePaginatedFetch<PersonSharedIdentifierCandidate>(
       `/bff/persons/${encodeURIComponent(personId)}/shared-identifiers`,
@@ -73,19 +70,27 @@ export default function SharedIdentifiersSection({
             <TableCell>Profile completion</TableCell>
             <TableCell>Contact</TableCell>
             <TableCell>DOB</TableCell>
-            <TableCell align="right">Action</TableCell>
           </TableRow>
         </TableHead>
         <TableBody>
           {rows.map((candidate) => {
             const displayName = candidate.preferred_full_name ?? "Unnamed person";
             return (
-              <TableRow key={candidate.person_id} hover>
-                <TableCell>
-                  <Link href={`/persons/${candidate.person_id}`} style={{ textDecoration: "none" }}>
-                    {displayName}
-                  </Link>
-                </TableCell>
+              <TableRow
+                key={candidate.person_id}
+                hover
+                role="button"
+                tabIndex={0}
+                onClick={() => setSelectedCandidate(candidate)}
+                onKeyDown={(event: KeyboardEvent<HTMLTableRowElement>) => {
+                  if (event.key === "Enter" || event.key === " ") {
+                    event.preventDefault();
+                    setSelectedCandidate(candidate);
+                  }
+                }}
+                sx={{ cursor: "pointer" }}
+              >
+                <TableCell>{displayName}</TableCell>
                 <TableCell>{candidate.status}</TableCell>
                 <TableCell>
                   <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap>
@@ -107,13 +112,6 @@ export default function SharedIdentifiersSection({
                 <TableCell>{formatProfileCompleteness(candidate.profile_completeness_score)}</TableCell>
                 <TableCell>{candidate.preferred_email ?? candidate.preferred_phone ?? "—"}</TableCell>
                 <TableCell>{formatDob(candidate.preferred_dob)}</TableCell>
-                <TableCell align="right">
-                  <Gate mode="admin">
-                    <Button size="small" variant="outlined" onClick={() => setMergeCandidate(candidate)}>
-                      Merge
-                    </Button>
-                  </Gate>
-                </TableCell>
               </TableRow>
             );
           })}
@@ -129,21 +127,17 @@ export default function SharedIdentifiersSection({
         onPrev={goPrev}
         onNext={goNext}
       />
-      {mergeCandidate !== null ? (
-        <ManualMergeDialog
-          open
-          fromPersonId={mergeCandidate.person_id}
-          defaultToPersonId={personId}
-          lockTarget
-          title={`Merge ${mergeCandidate.preferred_full_name ?? "selected person"} into ${personName ?? "this person"}`}
-          onClose={() => setMergeCandidate(null)}
-          onMerged={() => {
-            setMergeCandidate(null);
-            if (onMerged !== undefined) onMerged();
-            else refresh();
-          }}
-        />
-      ) : null}
+      <PossibleMatchDetailDialog
+        personId={personId}
+        personName={personName}
+        candidate={selectedCandidate}
+        onClose={() => setSelectedCandidate(null)}
+        onMerged={() => {
+          setSelectedCandidate(null);
+          if (onMerged !== undefined) onMerged();
+          else refresh();
+        }}
+      />
     </>
   );
 }

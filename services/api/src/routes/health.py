@@ -10,7 +10,7 @@ from pydantic import BaseModel
 
 from src.graph.client import verify_connectivity
 
-router = APIRouter()
+router = APIRouter(tags=["System"])
 
 
 class HealthResponse(BaseModel):

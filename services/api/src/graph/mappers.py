@@ -40,10 +40,12 @@ from src.types import (
     PersonSharedIdentifierCandidate,
     PersonStatus,
     PersonTimelineGroup,
+    PossibleMatchDetail,
     ReviewCaseDetail,
     ReviewCaseSummary,
     SharedAddress,
     SharedIdentifier,
+    SharedIdentifierGroup,
     SourceRecord,
     TimelineFact,
 )
@@ -394,6 +396,33 @@ def map_shared_identifier_candidate(record: GraphRecord) -> PersonSharedIdentifi
         profile_completeness_score=to_float(record.get("profile_completeness_score")),
         identifier_strength=_identifier_strength(identifiers),
         identifiers=identifiers,
+    )
+
+
+def _map_possible_match_source_records(value: GraphValue) -> list[SourceRecord]:
+    if not isinstance(value, list):
+        return []
+    return [map_source_record({"source_record": _as_dict(raw), **_as_dict(raw)}) for raw in value]
+
+
+def map_possible_match_detail(records: list[GraphRecord]) -> PossibleMatchDetail:
+    first = records[0]
+    return PossibleMatchDetail(
+        candidate_person_id=to_str(first.get("candidate_person_id")),
+        candidate_name=to_optional_str(first.get("candidate_name")),
+        shared_identifier_groups=[
+            SharedIdentifierGroup(
+                identifier_type=to_str(record.get("identifier_type")),
+                normalized_value=to_str(record.get("normalized_value")),
+                candidate_source_records=_map_possible_match_source_records(
+                    record.get("candidate_source_records")
+                ),
+                current_person_source_records=_map_possible_match_source_records(
+                    record.get("current_person_source_records")
+                ),
+            )
+            for record in records
+        ],
     )
 
 

@@ -1,4 +1,5 @@
-import type { Person } from "./api-types";
+import type { ApiResponse, ListedPerson, Person, PopoverDisplayItem } from "./api-types";
+import type { PossibleMatchDetail } from "./api-types-person";
 import {
   appendPageLimit,
   buildGoldenProfileChoices,
@@ -24,6 +25,48 @@ const survivor: Person = {
   created_at: "2026-05-19T00:00:00Z",
   updated_at: "2026-05-19T00:00:00Z",
 };
+
+const displayResponse: ApiResponse<string[]> = {
+  data: ["row"],
+  meta: { request_id: "req-1", next_cursor: null },
+  display_items: [{ primary: "Jane Survivor", secondary: "CRM" } satisfies PopoverDisplayItem],
+};
+
+const listedPerson: ListedPerson = {
+  ...survivor,
+  phone_confidence: null,
+  entities: [],
+  entity_count: 0,
+  identifier_count: 1,
+  possible_match_count: 2,
+  order_count: 0,
+  bankruptcy_case_count: 0,
+};
+
+const possibleMatchDetail: PossibleMatchDetail = {
+  candidate_person_id: "person-c",
+  candidate_name: "Candidate",
+  shared_identifier_groups: [
+    {
+      identifier_type: "phone",
+      normalized_value: "+6599990000",
+      candidate_source_records: [],
+      current_person_source_records: [],
+    },
+  ],
+};
+
+if (displayResponse.display_items?.[0]?.primary !== "Jane Survivor") {
+  throw new Error("display_items were not exposed on ApiResponse");
+}
+
+if (listedPerson.possible_match_count !== 2) {
+  throw new Error("possible_match_count was not exposed on ListedPerson");
+}
+
+if (possibleMatchDetail.shared_identifier_groups[0]?.candidate_source_records.length !== 0) {
+  throw new Error("possible match detail source-record groups were not exposed");
+}
 
 const evidence: GoldenProfileEvidence = {
   person: survivor,

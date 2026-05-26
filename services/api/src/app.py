@@ -78,6 +78,20 @@ def build_app() -> FastAPI:
         version="0.1.0",
         lifespan=_lifespan,
         root_path=config.root_path,
+        swagger_ui_parameters={"operationsSorter": "alpha"},
+        openapi_tags=[
+            {"name": "Admin", "description": "User management, OAuth client registry, and source-system field trust."},
+            {"name": "Auth", "description": "Session authentication: current user info and logout."},
+            {"name": "Entities", "description": "Source entity (business unit) directory and their person links."},
+            {"name": "Events", "description": "Downstream event polling for external integrations."},
+            {"name": "Ingestion", "description": "Source record ingest runs and raw record submission."},
+            {"name": "OAuth", "description": "Machine-to-machine OAuth2 client credentials token flow."},
+            {"name": "Persons", "description": "Person profiles, identifiers, connections, timeline, matches, merge, and survivorship."},
+            {"name": "Public", "description": "Unauthenticated share-link person page endpoints."},
+            {"name": "Reports", "description": "Saved Cypher report definitions and execution."},
+            {"name": "Review", "description": "Human review queue: assign, action, and resolve match decisions."},
+            {"name": "System", "description": "Health check and internal data dump endpoints."},
+        ],
     )
 
     app.add_middleware(
