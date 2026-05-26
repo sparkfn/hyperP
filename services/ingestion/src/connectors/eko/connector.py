@@ -3,7 +3,7 @@
 Preferred extraction: ``phppos_customers`` joined with ``phppos_people``.
 
 Fallback ladder, same policy as SpeedZone:
-- customers + people present → full extraction (NRIC, bitrix, external id, DOB).
+- customers + people present → full extraction (NRIC and DOB).
 - people only → identifier-only extraction (phone/email/name/address).
 - people also absent → log warning + skip entirely.
 """
@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Iterator
-from datetime import UTC, date, datetime
+from datetime import date
 from typing import Any
 
 from sqlalchemy import inspect, select
@@ -24,6 +24,7 @@ from src.connectors.eko.db import get_engine
 from src.connectors.eko.schema import customers, employees, people
 from src.connectors.fundbox.builders import (
     IdentifierBag,
+    address_from_row,
     build_envelope,
     format_address,
     serialize_row,
@@ -34,26 +35,33 @@ from src.models import JsonValue
 logger = logging.getLogger(__name__)
 
 
-_DOB_YEAR_MIN = 1900
+def _raw_json_value(value: object) -> JsonValue:
+    if isinstance(value, str | int | float | bool) or value is None:
+        return value
+    return str(value)
 
 
-def _epoch_to_iso(epoch_str: str | None) -> str | None:
-    """Convert a DOB epoch string (e.g. '-100310400') to an ISO date.
+def _person_raw_payload(row: Any) -> dict[str, JsonValue]:
+    payload = serialize_row(row)
+    mapping = row._mapping if hasattr(row, "_mapping") else row
+    for index in range(1, 11):
+        key = f"custom_field_{index}_value"
+        if key in mapping:
+            payload[key] = _raw_json_value(mapping[key])
+    return payload
 
-    The Eko POS stores dates of birth as Unix epoch seconds in a string column.
-    Negative values represent dates before 1970-01-01.  Returns ``None`` for
-    unparseable, missing, or out-of-range values (pre-1900 or future dates are
-    not valid customer DOBs — they indicate overflow or garbage source data).
-    """
-    if not epoch_str or not epoch_str.strip().lstrip("-").isdigit():
+
+def _date_string_to_iso(value: object) -> str | None:
+    if value is None:
         return None
+    text = str(value).strip()
     try:
-        dt = datetime.fromtimestamp(int(epoch_str), tz=UTC)
-        if not (_DOB_YEAR_MIN <= dt.year <= date.today().year):
-            return None
-        return dt.strftime("%Y-%m-%d")
-    except (ValueError, OSError, OverflowError):
+        parsed = date.fromisoformat(text)
+    except ValueError:
         return None
+    if not 1900 <= parsed.year <= 2100:
+        return None
+    return parsed.isoformat()
 
 
 class EkoConnector(SourceConnector):
@@ -65,9 +73,11 @@ class EkoConnector(SourceConnector):
     Custom field mapping:
 
     - ``custom_field_1_value`` → NRIC / Passport No.
-    - ``custom_field_4_value`` → bitrix_user_id
-    - ``custom_field_5_value`` → external customer ID
-    - ``custom_field_9_value`` → DOB (Unix epoch seconds)
+    - ``custom_field_4_value`` → points expiry date
+    - ``custom_field_5_value`` → expired points
+    - ``custom_field_8_value`` → Area Zone
+    - ``custom_field_9_value`` → Date of Birth
+    - ``custom_field_10_value`` → Whatsapp Optin
     """
 
     def get_source_key(self) -> str:
@@ -86,7 +96,7 @@ class EkoConnector(SourceConnector):
         if not use_customers:
             logger.warning(
                 "Eko: phppos_customers table missing — ingesting from "
-                "phppos_people only; custom fields (NRIC, bitrix, DOB) absent."
+                "phppos_people only; Eko custom fields will be absent."
             )
 
         with engine.connect() as conn:
@@ -116,12 +126,14 @@ class EkoConnector(SourceConnector):
             ids.add("email", row.email)
             ids.add("phone", row.phone_number)
             address = format_address(row)
+            address_row = address_from_row(row)
             yield build_envelope(
                 source_record_id=f"eko_phppos-person-{row.person_id}",
                 observed_at=to_iso(row.last_modified or row.create_date),
                 identifiers=ids.items,
                 attributes={"full_name": row.full_name, "address": address},
                 raw_payload={"person": serialize_row(row)},
+                addresses=[address_row] if address_row is not None else None,
             )
 
     def _build_records(
@@ -149,10 +161,16 @@ class EkoConnector(SourceConnector):
                 customers.c.id.label("customer_id"),
                 customers.c.account_number,
                 customers.c.company_name,
-                customers.c.custom_field_1_value.label("nric_passport"),
-                customers.c.custom_field_4_value.label("bitrix_user_id"),
-                customers.c.custom_field_5_value.label("external_customer_id"),
-                customers.c.custom_field_9_value.label("dob_epoch"),
+                customers.c.custom_field_1_value,
+                customers.c.custom_field_2_value,
+                customers.c.custom_field_3_value,
+                customers.c.custom_field_4_value,
+                customers.c.custom_field_5_value,
+                customers.c.custom_field_6_value,
+                customers.c.custom_field_7_value,
+                customers.c.custom_field_8_value,
+                customers.c.custom_field_9_value,
+                customers.c.custom_field_10_value,
             )
             .select_from(customers.join(people, customers.c.person_id == people.c.person_id))
             .where(customers.c.deleted == 0)
@@ -168,19 +186,14 @@ class EkoConnector(SourceConnector):
     @staticmethod
     def _build_one(row: Any) -> dict[str, JsonValue]:
         ids = IdentifierBag()
-        ids.add("nric", row.nric_passport, verified=True)
+        ids.add("nric", row.custom_field_1_value, verified=True)
         ids.add("email", row.email)
         ids.add("phone", row.phone_number)
 
-        if row.bitrix_user_id and str(row.bitrix_user_id).strip() != "0":
-            ids.add("external:bitrix", row.bitrix_user_id)
-
-        if row.external_customer_id and str(row.external_customer_id).strip() != "0":
-            ids.add("external_customer_id", row.external_customer_id)
-
         address = format_address(row)
+        address_row = address_from_row(row)
 
-        dob = _epoch_to_iso(row.dob_epoch)
+        dob = _date_string_to_iso(row.custom_field_9_value)
 
         return build_envelope(
             source_record_id=f"eko_phppos-customer-{row.customer_id}",
@@ -192,6 +205,7 @@ class EkoConnector(SourceConnector):
                 "address": address,
             },
             raw_payload={
-                "person": serialize_row(row),
+                "person": _person_raw_payload(row),
             },
+            addresses=[address_row] if address_row is not None else None,
         )

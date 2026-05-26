@@ -187,13 +187,23 @@ def _process_record(
     pipeline: IngestPipeline,
     envelope: SourceRecordEnvelope,
     ingest_run_id: str,
+    exclusion_context: ExclusionContext,
 ) -> IngestResult:
     """Route a single envelope to the correct ingestion pipeline."""
     if envelope.record_type == RecordType.SALES:
-        return ingest_sales_record(client, envelope, ingest_run_id=ingest_run_id)
+        return ingest_sales_record(
+            client,
+            envelope,
+            ingest_run_id=ingest_run_id,
+            exclusion_context=exclusion_context,
+        )
     if _is_address_only_source(envelope.source_system):
         return ingest_address_record(client, envelope, ingest_run_id=ingest_run_id)
-    return pipeline.ingest(envelope, ingest_run_id=ingest_run_id)
+    return pipeline.ingest(
+        envelope,
+        ingest_run_id=ingest_run_id,
+        exclusion_context=exclusion_context,
+    )
 
 
 def _record_is_excluded(envelope: SourceRecordEnvelope, context: ExclusionContext) -> bool:
@@ -207,30 +217,43 @@ def _record_is_excluded(envelope: SourceRecordEnvelope, context: ExclusionContex
     return False
 
 
-def _ingest_all_records(
-    client: Neo4jClient,
-    pipeline: IngestPipeline,
-    connector: SourceConnector,
-    ingest_run_id: str,
-) -> tuple[int, int, int]:
-    """Process every record from the connector. Returns (success, errors, skipped)."""
-    success = errors = skipped = 0
+def _load_exclusion_context() -> ExclusionContext:
     settings = get_settings()
-    exclusion_context = build_exclusion_context(
+    return build_exclusion_context(
         company_mobile_numbers=settings.company_mobile_numbers,
         company_email_addresses=settings.company_email_addresses,
         internal_person_names=settings.internal_person_names,
         file_exclusions=load_exclusion_file(settings.ingestion_exclusions_file),
     )
+
+
+def _ingest_all_records(
+    client: Neo4jClient,
+    pipeline: IngestPipeline,
+    connector: SourceConnector,
+    ingest_run_id: str,
+    exclusion_context: ExclusionContext | None = None,
+) -> tuple[int, int, int]:
+    """Process every record from the connector. Returns (success, errors, skipped)."""
+    success = errors = skipped = 0
+    active_exclusion_context = (
+        exclusion_context if exclusion_context is not None else _load_exclusion_context()
+    )
     for raw_record in connector.fetch_records():
         envelope = SourceRecordEnvelope.model_validate(
             {"source_system": connector.get_source_key(), **raw_record},
         )
-        if _record_is_excluded(envelope, exclusion_context):
+        if _record_is_excluded(envelope, active_exclusion_context):
             skipped += 1
             logger.info("  %s -> excluded", envelope.source_record_id)
             continue
-        result = _process_record(client, pipeline, envelope, ingest_run_id)
+        result = _process_record(
+            client,
+            pipeline,
+            envelope,
+            ingest_run_id,
+            active_exclusion_context,
+        )
         if result.skipped_duplicate:
             skipped += 1
         elif result.errors:
@@ -296,13 +319,18 @@ def run_ingestion(
         logger.info("IngestRun %s created, connector=%s", ingest_run_id, type(connector).__name__)
 
         try:
+            exclusion_context = _load_exclusion_context()
             success, errors, skipped = _ingest_all_records(
                 client,
                 pipeline,
                 connector,
                 ingest_run_id,
+                exclusion_context,
             )
-            drained = drain_pending_customer_sales(client)
+            drained = drain_pending_customer_sales(
+                client,
+                exclusion_context=exclusion_context,
+            )
             if drained:
                 logger.info("Drained %d pending sales records", drained)
             chat_knows_linked = materialize_knows_from_chat_relationships(client)

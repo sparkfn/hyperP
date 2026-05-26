@@ -10,7 +10,7 @@ from src.repositories.deps import get_entity_repo
 from src.repositories.protocols.entity import EntityRepository
 from src.types import ApiResponse, EntityPerson, EntitySummary, SourceSystemSummary
 
-router = APIRouter(prefix="/v1/entities")
+router = APIRouter(prefix="/v1/entities", tags=["Entities"])
 
 
 @router.get(

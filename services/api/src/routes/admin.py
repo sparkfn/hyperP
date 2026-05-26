@@ -12,7 +12,7 @@ from src.repositories.protocols.admin import AdminRepository, FieldTrustResponse
 from src.types import ApiResponse
 from src.types_requests import FieldTrustUpdateRequest
 
-router = APIRouter()
+router = APIRouter(tags=["Admin"])
 
 
 @router.get(

@@ -11,7 +11,7 @@ from src.config import config
 from src.http_utils import envelope, http_error
 from src.types import ApiResponse
 
-router = APIRouter()
+router = APIRouter(tags=["System"])
 
 
 def list_dump_files(root: Path) -> list[str]:

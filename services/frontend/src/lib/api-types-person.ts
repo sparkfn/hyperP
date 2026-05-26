@@ -1,6 +1,8 @@
 // Hand-mirrored from services/api/src/types.py and routes/{merge,survivorship}.py.
 // Lives outside api-types.ts so the shared module stays untouched.
 
+import type { PersonEntitySummary, PopoverDisplayItem, SharedIdentifier } from "@/lib/api-types";
+
 export type SourceRecordType = "system" | "conversation";
 
 export interface SourceRecordIdentifierPayload {
@@ -45,6 +47,7 @@ export interface SourceRecordInquiryPayload {
 export interface SourceRecordNormalizedPayload {
   identifiers?: SourceRecordIdentifierPayload[];
   address?: SourceRecordAddressPayload | null;
+  addresses?: SourceRecordAddressPayload[];
   attributes?: SourceRecordAttributePayload[];
   summary?: string;
   customer_sentiment?: string;
@@ -188,15 +191,59 @@ export interface PersonIdentifier {
   source_system_key: string | null;
   source_record_pks: string[];
   source_record_ids: string[];
+  entities: PersonEntitySummary[];
+  source_records: PersonSourceRecord[];
 }
 
+export interface PersonSharedIdentifierCandidate {
+  person_id: string;
+  status: string;
+  preferred_full_name: string | null;
+  preferred_phone: string | null;
+  preferred_email: string | null;
+  preferred_dob: string | null;
+  profile_completeness_score: number;
+  identifier_strength: "strong" | "weak";
+  identifiers: SharedIdentifier[];
+}
+
+export interface SharedIdentifierGroup {
+  identifier_type: string;
+  normalized_value: string;
+  candidate_source_records: PersonSourceRecord[];
+  current_person_source_records: PersonSourceRecord[];
+}
+
+export interface PossibleMatchDetail {
+  candidate_person_id: string;
+  candidate_name: string | null;
+  shared_identifier_groups: SharedIdentifierGroup[];
+}
+
+export type { PopoverDisplayItem };
+
 // --- Request bodies ---
+
+export interface GoldenProfileSelectionBody {
+  field_name:
+    | "preferred_full_name"
+    | "preferred_dob"
+    | "preferred_phone"
+    | "preferred_email"
+    | "preferred_address"
+    | "preferred_nric";
+  source_kind: "source_record_fact" | "identifier" | "address";
+  selected_value: string;
+  source_record_pk: string | null;
+  identifier_type: string | null;
+}
 
 export interface ManualMergeRequestBody {
   from_person_id: string;
   to_person_id: string;
   reason: string;
   recompute_golden_profile: boolean;
+  golden_profile_selections: GoldenProfileSelectionBody[];
 }
 
 export interface UnmergeRequestBody {

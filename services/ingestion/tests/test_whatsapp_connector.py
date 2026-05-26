@@ -36,6 +36,67 @@ class _Connection:
         return self.rows
 
 
+def test_whatsapp_format_messages_prefers_names_and_speaker_phones() -> None:
+    messages: list[dict[str, object]] = [
+        {
+            "id": "msg-1",
+            "from_id": "6599990000@c.us",
+            "to_id": "6500000000@c.us",
+            "author_id": None,
+            "body": "hello",
+            "timestamp": datetime(2026, 5, 6, 10, 0),
+            "from_me": False,
+        },
+        {
+            "id": "msg-2",
+            "from_id": "120363349430463692@g.us",
+            "to_id": "6500000000@c.us",
+            "author_id": "183330762936572@lid",
+            "body": "group reply",
+            "timestamp": datetime(2026, 5, 6, 10, 1),
+            "from_me": True,
+        },
+        {
+            "id": "msg-3",
+            "from_id": "120363349430463692@g.us",
+            "to_id": "6500000000@c.us",
+            "author_id": None,
+            "body": "group notice",
+            "timestamp": datetime(2026, 5, 6, 10, 2),
+            "from_me": False,
+        },
+    ]
+    participants = [
+        whatsapp_module._Participant(
+            jid="6599990000@c.us",
+            phone="+6599990000",
+            name="Ada Lovelace",
+            role="participant",
+        ),
+        whatsapp_module._Participant(
+            jid="183330762936572@lid",
+            phone="+6588880000",
+            name="Babbage Bikes",
+            role="participant",
+        ),
+        whatsapp_module._Participant(
+            jid="120363349430463692@g.us",
+            phone=None,
+            name=None,
+            role="chat",
+        ),
+    ]
+
+    text = whatsapp_module._format_messages(messages, participants, "Loan Group")
+
+    assert text == (
+        "[2026-05-06 10:00:00] Ada Lovelace (+6599990000): hello\n"
+        "[2026-05-06 10:01:00] [ME] Babbage Bikes (+6588880000): group reply\n"
+        "[2026-05-06 10:02:00] Loan Group: group notice"
+    )
+    assert "@" not in text
+
+
 def test_whatsapp_fetch_participants_resolves_lid_chat_to_cus_phone() -> None:
     connector = WhatsAppChatConnector()
     conn = _Connection(

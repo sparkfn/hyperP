@@ -13,6 +13,12 @@ export interface ResponseMeta {
 export interface ApiResponse<T> {
   data: T;
   meta: ResponseMeta;
+  display_items?: PopoverDisplayItem[] | null;
+}
+
+export interface PopoverDisplayItem {
+  primary: string;
+  secondary: string;
 }
 
 export interface ApiErrorBody {
@@ -164,6 +170,7 @@ export interface ListedPerson extends EntityPerson {
   entities: PersonEntitySummary[];
   entity_count: number;
   identifier_count: number;
+  possible_match_count: number;
   order_count: number;
   bankruptcy_case_count: number;
 }

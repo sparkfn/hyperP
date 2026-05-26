@@ -160,8 +160,8 @@ class FakeBankruptcyRepo:
 
     async def get_matches(
         self, person_id: str, skip: int, limit: int
-    ) -> tuple[list[MatchDecision], bool]:
-        return [], False
+    ) -> tuple[list[MatchDecision], int]:
+        return [], 0
 
     async def get_timeline(
         self, person_id: str, skip: int, limit: int

@@ -13,7 +13,7 @@ from src.repositories.protocols.survivorship import SurvivorshipRepository
 from src.types import ApiResponse
 from src.types_requests import SurvivorshipOverrideRequest
 
-router = APIRouter()
+router = APIRouter(tags=["Persons"])
 
 
 class RecomputeResponse(BaseModel):

@@ -22,7 +22,7 @@ from src.auth.store import (
 from src.http_utils import envelope, http_error
 from src.types import ApiResponse
 
-router = APIRouter(prefix="/v1/users")
+router = APIRouter(prefix="/v1/users", tags=["Admin"])
 
 
 class UserResponse(BaseModel):

@@ -3,7 +3,22 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Literal, Protocol, TypedDict
+
+
+class GoldenProfileSelection(TypedDict):
+    field_name: Literal[
+        "preferred_full_name",
+        "preferred_dob",
+        "preferred_phone",
+        "preferred_email",
+        "preferred_address",
+        "preferred_nric",
+    ]
+    source_kind: Literal["source_record_fact", "identifier", "address"]
+    selected_value: str
+    source_record_pk: str | None
+    identifier_type: str | None
 
 
 @dataclass
@@ -15,7 +30,12 @@ class MergeOutcome:
 
 class MergeRepository(Protocol):
     async def manual_merge(
-        self, from_id: str, to_id: str, reason: str, actor_id: str
+        self,
+        from_id: str,
+        to_id: str,
+        reason: str,
+        actor_id: str,
+        golden_profile_selections: list[GoldenProfileSelection],
     ) -> MergeOutcome: ...
 
     async def unmerge(

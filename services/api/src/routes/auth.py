@@ -17,7 +17,7 @@ from src.types import ApiResponse
 
 log = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/v1/auth")
+router = APIRouter(prefix="/v1/auth", tags=["Auth"])
 
 
 class MeResponse(BaseModel):

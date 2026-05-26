@@ -31,10 +31,10 @@ _LINK_KEY_PREFIX = "public_link:"
 _PUBLIC_PAGE_LIMIT = 50
 
 # No auth — anyone with the token can access these endpoints.
-public_router = APIRouter(prefix="/v1/public")
+public_router = APIRouter(prefix="/v1/public", tags=["Public"])
 
 # Registered alongside persons router with require_active_user in app.py.
-person_links_router = APIRouter(prefix="/v1/persons")
+person_links_router = APIRouter(prefix="/v1/persons", tags=["Persons"])
 
 
 class PublicLinkResponse(BaseModel):

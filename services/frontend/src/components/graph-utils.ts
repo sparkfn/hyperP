@@ -25,6 +25,7 @@ const LABEL_COLORS: Record<string, string> = {
   MergeEvent: "#37474f",
   Order: "#2e7d32",
   Product: "#0277bd",
+  MachineUnit: "#1565c0",
   LineItem: "#558b2f",
   Entity: "#6d4c41",
 };
@@ -47,6 +48,8 @@ export type NodeIcon =
   | "mergeType"
   | "receipt"
   | "inventory"
+  | "formatListBulleted"
+  | "precisionManufacturing"
   | "bullet"
   | "dataSource"
   | "gavel"
@@ -63,7 +66,8 @@ const LABEL_ICONS: Record<string, NodeIcon> = {
   MergeEvent: "mergeType",
   Order: "receipt",
   Product: "inventory",
-  LineItem: "bullet",
+  MachineUnit: "precisionManufacturing",
+  LineItem: "formatListBulleted",
   SourceSystem: "dataSource",
   Entity: "storefront",
 };
@@ -86,6 +90,8 @@ const ICON_PATHS: Record<NodeIcon, string> = {
   mergeType: "M17 20.41 18.41 19 15 15.59 13.59 17zM7.5 8H11v5.59L5.59 19 7 20.41l6-6V8h3.5L12 3.5z",
   receipt: "M18 17H6v-2h12zm0-4H6v-2h12zm0-4H6V7h12zM3 22l1.5-1.5L6 22l1.5-1.5L9 22l1.5-1.5L12 22l1.5-1.5L15 22l1.5-1.5L18 22l1.5-1.5L21 22V2l-1.5 1.5L18 2l-1.5 1.5L15 2l-1.5 1.5L12 2l-1.5 1.5L9 2 7.5 3.5 6 2 4.5 3.5 3 2z",
   inventory: "M20 2H4c-1 0-2 .9-2 2v3.01c0 .72.43 1.34 1 1.69V20c0 1.1 1.1 2 2 2h14c.9 0 2-.9 2-2V8.7c.57-.35 1-.97 1-1.69V4c0-1.1-1-2-2-2m-5 12H9v-2h6zm5-7H4V4l16-.02z",
+  formatListBulleted: "M4 10.5c.83 0 1.5-.67 1.5-1.5S4.83 7.5 4 7.5 2.5 8.17 2.5 9 3.17 10.5 4 10.5m0 6c.83 0 1.5-.67 1.5-1.5S4.83 13.5 4 13.5 2.5 14.17 2.5 15 3.17 16.5 4 16.5M7 8h14v2H7zm0 6h14v2H7zM4 4.5c.83 0 1.5-.67 1.5-1.5S4.83 1.5 4 1.5 2.5 2.17 2.5 3 3.17 4.5 4 4.5M7 2h14v2H7zM4 22.5c.83 0 1.5-.67 1.5-1.5S4.83 19.5 4 19.5 2.5 20.17 2.5 21s.67 1.5 1.5 1.5M7 20h14v2H7z",
+  precisionManufacturing: "M19.93 8.21 17.79 6.07l-3.54 3.54-3.86-3.86 3.54-3.54-2.14-2.14-8.49 8.49c-.39.39-.39 1.03 0 1.42l1.41 1.41-3.54 3.54 2.14 2.14 3.54-3.54 1.41 1.41c.39.39 1.03.39 1.42 0zm-7.07 2.83-2.12 2.12-3.86-3.86L9 7.17zM20 17.17l-3.17 3.17-2.12-2.12 3.17-3.17H20zM11.34 18.95l-2.12 2.12-2.83-2.83 2.12-2.12z",
   bullet: "",
   dataSource: "M2 20h20v-4H2zm2-3h2v2H4zM2 4v4h20V4zm4 3H4V5h2zm-4 7h20v-4H2zm2-3h2v2H4z",
   gavel: "M1 21h12v2H1zm5.24-8.07 2.83-2.83 14.14 14.14-2.83 2.83zM12.9 2.1l7.07 7.07-2.83 2.83-7.07-7.07zM4.83 10.17l7.07-7.07 2.83 2.83-7.07 7.07z",
@@ -181,6 +187,13 @@ function displayNameForNode(node: GraphNode): string {
     }
     case "Product":
       return (p["display_name"] as string | null) ?? (p["name"] as string | null) ?? (p["sku"] as string | null) ?? node.id;
+    case "MachineUnit":
+      return (
+        (p["serial_number"] as string | null) ??
+        (p["lta_tag"] as string | null) ??
+        (p["machine_unit_id"] as string | null) ??
+        node.id
+      );
     case "LineItem": {
       const lineNo = p["line_no"] as number | null;
       return lineNo != null ? `Line #${String(lineNo)}` : node.id;

@@ -10,7 +10,7 @@ from src.repositories.deps import get_event_repo
 from src.repositories.protocols.event import EventRepository
 from src.types import ApiResponse, DownstreamEvent
 
-router = APIRouter()
+router = APIRouter(tags=["Events"])
 
 
 @router.get(

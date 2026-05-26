@@ -3,5 +3,6 @@
   "emails": [],
   "email_domains": [],
   "names": [],
-  "source_ids": []
+  "source_ids": [],
+  "machine_unit_identifiers": []
 }

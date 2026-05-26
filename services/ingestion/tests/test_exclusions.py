@@ -7,26 +7,31 @@ from src.exclusions import (
     build_exclusion_context,
     filter_extraction,
     is_excluded_email,
+    is_excluded_machine_unit_observation,
     is_excluded_name,
     is_excluded_phone,
 )
+from src.machine_units import MachineUnitObservation
+from src.models import QualityFlag
 
 
 def _extraction_result(
     persons: list[ExtractedPerson],
     transactions: list[ExtractedTransaction] | None = None,
 ) -> ExtractionResult:
-    return ExtractionResult(
-        confidence=0.9,
-        summary="customer spoke with agent",
-        persons=persons,
-        transactions=[] if transactions is None else transactions,
-        chat_members=[{"name": "Agent One", "phone": "+6568505434", "role": "agent"}],
-        inquiries=[{"machine_product": "loader", "unit": "A1"}],
-        strong_identifiers=[],
-        weak_identifiers=[],
-        customer_sentiment="positive",
-    )
+    result: ExtractionResult = {
+        "confidence": 0.9,
+        "summary": "customer spoke with agent",
+        "persons": persons,
+        "possible_persons": [],
+        "transactions": [] if transactions is None else transactions,
+        "chat_members": [{"name": "Agent One", "phone": "+6568505434", "role": "agent"}],
+        "inquiries": [{"machine_product": "loader", "unit": "A1"}],
+        "strong_identifiers": [],
+        "weak_identifiers": [],
+        "customer_sentiment": "positive",
+    }
+    return result
 
 
 def test_build_exclusion_context_merges_env_and_file_values() -> None:
@@ -132,3 +137,62 @@ def test_email_domain_exclusion_normalizes_configured_domains() -> None:
 
     assert is_excluded_email("person@speedzone.asia", context)
     assert is_excluded_email("person@x.mail.ada.asia", context)
+
+
+def test_build_exclusion_context_normalizes_machine_unit_identifiers() -> None:
+    context = build_exclusion_context(
+        company_mobile_numbers=[],
+        company_email_addresses=[],
+        internal_person_names=[],
+        file_exclusions=ExclusionFile(
+            machine_unit_identifiers=[
+                {"machine_product": " Servicing   Labour ", "serial_number": "1186#1506"}
+            ]
+        ),
+    )
+
+    observation = MachineUnitObservation(
+        source_kind="sales",
+        source_system_key="speedzone_phppos:sales",
+        source_record_id="sale-1",
+        serial_number=" 1186#1506 ",
+        machine_product="servicing labour",
+        confidence=1.0,
+        quality_flag=QualityFlag.VALID,
+    )
+
+    assert is_excluded_machine_unit_observation(observation, context)
+
+
+def test_machine_unit_exclusion_requires_same_product_and_identifier() -> None:
+    context = build_exclusion_context(
+        company_mobile_numbers=[],
+        company_email_addresses=[],
+        internal_person_names=[],
+        file_exclusions=ExclusionFile(
+            machine_unit_identifiers=[
+                {"machine_product": "Servicing Labour", "serial_number": "1186#1506"}
+            ]
+        ),
+    )
+    different_serial = MachineUnitObservation(
+        source_kind="sales",
+        source_system_key="speedzone_phppos:sales",
+        source_record_id="sale-2",
+        serial_number="1186#9999",
+        machine_product="Servicing Labour",
+        confidence=1.0,
+        quality_flag=QualityFlag.VALID,
+    )
+    different_product = MachineUnitObservation(
+        source_kind="sales",
+        source_system_key="speedzone_phppos:sales",
+        source_record_id="sale-3",
+        serial_number="1186#1506",
+        machine_product="Useful Product",
+        confidence=1.0,
+        quality_flag=QualityFlag.VALID,
+    )
+
+    assert not is_excluded_machine_unit_observation(different_serial, context)
+    assert not is_excluded_machine_unit_observation(different_product, context)

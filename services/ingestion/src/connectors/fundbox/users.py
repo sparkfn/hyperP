@@ -11,6 +11,7 @@ from sqlalchemy.engine import Connection
 from src.connectors.fundbox.base import FundboxConnectorBase
 from src.connectors.fundbox.builders import (
     IdentifierBag,
+    addresses_from_rows,
     build_envelope,
     format_address,
     serialize_row,
@@ -126,6 +127,7 @@ class FundboxConnector(FundboxConnectorBase):
             last_login,
         )
         primary_address = format_address(user_addresses[0]) if user_addresses else None
+        address_rows = addresses_from_rows(user_addresses)
         return build_envelope(
             source_record_id=f"fundbox_consumer_backend-user-{row.user_id}",
             observed_at=to_iso(row.user_updated_at or row.user_created_at),
@@ -159,4 +161,5 @@ class FundboxConnector(FundboxConnectorBase):
                 "device_ids": [d._mapping.get("device_id") for d in user_devices],
                 "last_logged_in": last_login,
             },
+            addresses=address_rows,
         )

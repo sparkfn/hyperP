@@ -78,13 +78,11 @@ CALL {
 }
 CALL {
   WITH p
-  OPTIONAL MATCH (p)-[:IDENTIFIED_BY]->(:Identifier)<-[:IDENTIFIED_BY]-(ci:Person)
-    WHERE ci.person_id <> p.person_id AND ci.status <> 'merged'
   OPTIONAL MATCH (p)-[:LIVES_AT]->(:Address)<-[:LIVES_AT]-(ca:Person)
     WHERE ca.person_id <> p.person_id AND ca.status <> 'merged'
   OPTIONAL MATCH (p)-[:KNOWS]-(ck:Person)
     WHERE ck.person_id <> p.person_id AND ck.status <> 'merged'
-  WITH collect(DISTINCT ci) + collect(DISTINCT ca) + collect(DISTINCT ck) AS all_conn
+  WITH collect(DISTINCT ca) + collect(DISTINCT ck) AS all_conn
   UNWIND all_conn AS c
   RETURN count(DISTINCT c) AS connection_count
 }
@@ -114,6 +112,12 @@ CALL {
 }
 CALL {
   WITH p
+  OPTIONAL MATCH (p)-[:IDENTIFIED_BY]->(shared_id:Identifier)<-[:IDENTIFIED_BY]-(other:Person)
+    WHERE other.person_id <> p.person_id AND other.status <> 'merged'
+  RETURN count(DISTINCT other) AS possible_match_count
+}
+CALL {
+  WITH p
   RETURN count{ (p)-[:PURCHASED]->(:Order) } AS order_count
 }
 CALL {
@@ -131,7 +135,7 @@ addr {
   .city, .postal_code, .country_code, .normalized_full
 } AS preferred_address,
 source_record_count, connection_count, phone_confidence, entities,
-size(entities) AS entity_count, identifier_count, order_count, bankruptcy_case_count, score
+size(entities) AS entity_count, identifier_count, possible_match_count, order_count, bankruptcy_case_count, score
 """
 
 _SORT_COLUMNS: dict[str, str] = {
@@ -143,7 +147,7 @@ _SORT_COLUMNS: dict[str, str] = {
     "source_record_count": "source_record_count",
     "connection_count": "connection_count",
     "entity_count": "entity_count",
-    "identifier_count": "identifier_count",
+    "possible_match_count": "possible_match_count",
     "order_count": "order_count",
     "bankruptcy_case_count": "bankruptcy_case_count",
     "phone_confidence": "phone_confidence",

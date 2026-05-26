@@ -73,6 +73,20 @@ class RawIdentifier(BaseModel):
     is_verified: bool = False
 
 
+class RawAddress(BaseModel):
+    """Structured address evidence as it arrives from the source system."""
+
+    raw: str | None = None
+    unit_number: str | None = None
+    street_number: str | None = None
+    street_name: str | None = None
+    building_name: str | None = None
+    city: str | None = None
+    state_province: str | None = None
+    postal_code: str | None = None
+    country_code: str | None = None
+
+
 class SourceRecordEnvelope(BaseModel):
     """Common envelope for raw source records.
 
@@ -88,6 +102,7 @@ class SourceRecordEnvelope(BaseModel):
     observed_at: str  # ISO-8601 datetime string
     record_hash: str
     identifiers: list[RawIdentifier] = Field(default_factory=list)
+    addresses: list[RawAddress] = Field(default_factory=list)
     attributes: dict[str, JsonValue] = Field(default_factory=dict)
     raw_payload: dict[str, JsonValue] = Field(default_factory=dict)
     # Conversation-only provenance fields. Required when record_type ==

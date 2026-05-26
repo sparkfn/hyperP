@@ -17,9 +17,9 @@ import TableRow from "@mui/material/TableRow";
 import TableSortLabel from "@mui/material/TableSortLabel";
 import Typography from "@mui/material/Typography";
 
-import type { ListedPerson, PersonConnection, SalesOrder, SourceRecord } from "@/lib/api-types";
-import type { PersonBankruptcyCase, PersonIdentifier } from "@/lib/api-types-person";
-import { bffFetch } from "@/lib/api-client";
+import type { ApiResponse, ListedPerson, PersonConnection, PopoverDisplayItem, SourceRecord } from "@/lib/api-types";
+import type { PersonBankruptcyCase, PersonSharedIdentifierCandidate } from "@/lib/api-types-person";
+import { bffFetch, bffFetchEnvelope } from "@/lib/api-client";
 import PersonGraphDialog from "@/components/PersonGraphDialog";
 import PersonRow from "@/components/PersonRow";
 
@@ -32,7 +32,7 @@ export type SortField =
   | "source_record_count"
   | "connection_count"
   | "entity_count"
-  | "identifier_count"
+  | "possible_match_count"
   | "order_count"
   | "bankruptcy_case_count"
   | "updated_at"
@@ -70,7 +70,7 @@ const COLUMNS: readonly ColumnDef[] = [
   { field: "order_count", label: "Orders", align: "center", sortable: true },
   { field: "bankruptcy_case_count", label: "Bankruptcy", align: "center", sortable: true },
   { field: "source_record_count", label: "Sources", align: "center", sortable: true },
-  { field: "identifier_count", label: "Identifiers", align: "center", sortable: true },
+  { field: "possible_match_count", label: "Matches", align: "center", sortable: true },
   { field: "entity_count", label: "Entities", align: "center", sortable: true },
   { field: "updated_at", label: "Updated", sortable: true },
 ] as const;
@@ -98,14 +98,14 @@ interface GraphDialogState {
 }
 
 interface LazyCache<T> {
-  data: Record<string, T[]>;
+  data: Record<string, T[] | undefined>;
   loading: Set<string>;
 }
 
 function useLazyPersonFetch<T>(
   path: (personId: string) => string,
 ): { cache: LazyCache<T>; request: (personId: string) => void } {
-  const [data, setData] = useState<Record<string, T[]>>({});
+  const [data, setData] = useState<Record<string, T[] | undefined>>({});
   const [loading, setLoading] = useState<Set<string>>(new Set());
 
   const request = useCallback(
@@ -134,6 +134,47 @@ function useLazyPersonFetch<T>(
   return { cache: { data, loading }, request };
 }
 
+interface LazyDisplayCache<T> {
+  data: Record<string, T[] | undefined>;
+  displayItems: Record<string, PopoverDisplayItem[] | undefined>;
+  loading: Set<string>;
+}
+
+function useLazyPersonDisplayFetch<T>(
+  path: (personId: string) => string,
+): { cache: LazyDisplayCache<T>; request: (personId: string) => void } {
+  const [data, setData] = useState<Record<string, T[] | undefined>>({});
+  const [displayItems, setDisplayItems] = useState<Record<string, PopoverDisplayItem[] | undefined>>({});
+  const [loading, setLoading] = useState<Set<string>>(new Set());
+
+  const request = useCallback(
+    (personId: string): void => {
+      if (data[personId] !== undefined) return;
+      if (loading.has(personId)) return;
+      setLoading((prev) => new Set(prev).add(personId));
+      (async (): Promise<void> => {
+        try {
+          const response: ApiResponse<T[]> = await bffFetchEnvelope<T[]>(path(personId));
+          setData((prev) => ({ ...prev, [personId]: response.data }));
+          setDisplayItems((prev) => ({ ...prev, [personId]: response.display_items ?? [] }));
+        } catch {
+          setData((prev) => ({ ...prev, [personId]: [] }));
+          setDisplayItems((prev) => ({ ...prev, [personId]: [] }));
+        } finally {
+          setLoading((prev) => {
+            const next = new Set(prev);
+            next.delete(personId);
+            return next;
+          });
+        }
+      })();
+    },
+    [data, loading, path],
+  );
+
+  return { cache: { data, displayItems, loading }, request };
+}
+
 export default function PersonsListTable({
   persons,
   loading,
@@ -150,17 +191,14 @@ export default function PersonsListTable({
   const tableScrollRef = useRef<HTMLDivElement>(null);
   const topScrollRef = useRef<HTMLDivElement>(null);
 
-  const connectionsFetch = useLazyPersonFetch<PersonConnection>(
+  const connectionsFetch = useLazyPersonDisplayFetch<PersonConnection>(
     (id) => `/bff/persons/${encodeURIComponent(id)}/connections?connection_type=all&limit=50`,
   );
-  const sourcesFetch = useLazyPersonFetch<SourceRecord>(
+  const sourcesFetch = useLazyPersonDisplayFetch<SourceRecord>(
     (id) => `/bff/persons/${encodeURIComponent(id)}/source-records?limit=50`,
   );
-  const identifiersFetch = useLazyPersonFetch<PersonIdentifier>(
-    (id) => `/bff/persons/${encodeURIComponent(id)}/identifiers?limit=50`,
-  );
-  const ordersFetch = useLazyPersonFetch<SalesOrder>(
-    (id) => `/bff/persons/${encodeURIComponent(id)}/sales?limit=50`,
+  const matchesFetch = useLazyPersonFetch<PersonSharedIdentifierCandidate>(
+    (id) => `/bff/persons/${encodeURIComponent(id)}/shared-identifiers?limit=50`,
   );
   const bankruptcyFetch = useLazyPersonFetch<PersonBankruptcyCase>(
     (id) => `/bff/persons/${encodeURIComponent(id)}/bankruptcy-cases?limit=50`,
@@ -260,18 +298,15 @@ export default function PersonsListTable({
                   title: p.preferred_full_name ?? p.person_id,
                 })
               }
-              connections={connectionsFetch.cache.data[p.person_id]}
+              connectionsItems={connectionsFetch.cache.displayItems[p.person_id]}
               connectionsLoading={connectionsFetch.cache.loading.has(p.person_id)}
               onRequestConnections={() => connectionsFetch.request(p.person_id)}
-              sources={sourcesFetch.cache.data[p.person_id]}
+              sourcesItems={sourcesFetch.cache.displayItems[p.person_id]}
               sourcesLoading={sourcesFetch.cache.loading.has(p.person_id)}
               onRequestSources={() => sourcesFetch.request(p.person_id)}
-              identifiers={identifiersFetch.cache.data[p.person_id]}
-              identifiersLoading={identifiersFetch.cache.loading.has(p.person_id)}
-              onRequestIdentifiers={() => identifiersFetch.request(p.person_id)}
-              orders={ordersFetch.cache.data[p.person_id]}
-              ordersLoading={ordersFetch.cache.loading.has(p.person_id)}
-              onRequestOrders={() => ordersFetch.request(p.person_id)}
+              matches={matchesFetch.cache.data[p.person_id]}
+              matchesLoading={matchesFetch.cache.loading.has(p.person_id)}
+              onRequestMatches={() => matchesFetch.request(p.person_id)}
               bankruptcyCases={bankruptcyFetch.cache.data[p.person_id]}
               bankruptcyLoading={bankruptcyFetch.cache.loading.has(p.person_id)}
               onRequestBankruptcyCases={() => bankruptcyFetch.request(p.person_id)}

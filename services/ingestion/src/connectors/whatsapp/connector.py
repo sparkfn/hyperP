@@ -29,6 +29,7 @@ from src.connectors.chat_helpers import (
     identifiers_from_possible_person,
     inquiries_payload,
     latest_timestamp,
+    person_address_payloads,
     possible_person_payload,
     possible_persons_from_extraction,
     run_extraction_batch,
@@ -39,7 +40,7 @@ from src.connectors.chat_helpers import (
 )
 from src.connectors.whatsapp.db import get_engine
 from src.connectors.whatsapp.schema import chats, contacts, messages, orgs, sessions
-from src.exclusion_config import load_exclusion_file
+from src.exclusion_config import ExclusionFile, load_exclusion_file
 from src.exclusions import build_exclusion_context, filter_extraction
 from src.models import JsonValue
 
@@ -126,16 +127,17 @@ class WhatsAppChatConnector(SourceConnector):
                 msgs = self._fetch_messages(conn, chat.id, whatsapp_uid)
                 if not msgs:
                     continue
+                chat_name = str(chat.name or "")
                 participants = self._fetch_participants(conn, chat.id, whatsapp_uid, msgs)
 
                 all_bundles.append(
                     _ChatBundle(
                         chat_id=str(chat.id),
-                        chat_name=str(chat.name or ""),
+                        chat_name=chat_name,
                         session_id=str(session.id),
                         whatsapp_user_id=whatsapp_uid,
                         tenant=tenant,
-                        msg_text=_format_messages(msgs),
+                        msg_text=_format_messages(msgs, participants, chat_name),
                         observed_at=_latest_message_timestamp(msgs),
                         participants=participants,
                         message_endpoints=_message_endpoints(msgs),
@@ -147,6 +149,19 @@ class WhatsAppChatConnector(SourceConnector):
                 )
 
         logger.info("Collected %d WhatsApp chats — starting LLM batch phase", len(all_bundles))
+
+        try:
+            settings = get_settings()
+            company_mobile_numbers = list(settings.company_mobile_numbers)
+            company_email_addresses = list(settings.company_email_addresses)
+            internal_person_names = list(settings.internal_person_names)
+            exclusions_file = settings.ingestion_exclusions_file
+        except Exception:
+            company_mobile_numbers = []
+            company_email_addresses = []
+            internal_person_names = []
+            exclusions_file = ""
+        file_exclusions = load_exclusion_file(exclusions_file)
 
         # Phase 2: run LLM in batches.
         extraction_cache: dict[str, ExtractionResult] = {}
@@ -170,7 +185,14 @@ class WhatsAppChatConnector(SourceConnector):
                 logger.warning("LLM extraction failed for chat %s", bundle.chat_id)
                 continue
 
-            yield from _build_envelopes(bundle=bundle, extraction=extraction)
+            yield from _build_envelopes(
+                bundle=bundle,
+                extraction=extraction,
+                company_mobile_numbers=company_mobile_numbers,
+                company_email_addresses=company_email_addresses,
+                internal_person_names=internal_person_names,
+                file_exclusions=file_exclusions,
+            )
 
     def _fetch_messages(
         self,
@@ -251,8 +273,19 @@ def _build_envelope(
     *,
     bundle: _ChatBundle,
     extraction: ExtractionResult,
+    company_mobile_numbers: list[str] | None = None,
+    company_email_addresses: list[str] | None = None,
+    internal_person_names: list[str] | None = None,
+    file_exclusions: ExclusionFile | None = None,
 ) -> dict[str, JsonValue] | None:
-    envelopes = _build_envelopes(bundle=bundle, extraction=extraction)
+    envelopes = _build_envelopes(
+        bundle=bundle,
+        extraction=extraction,
+        company_mobile_numbers=company_mobile_numbers,
+        company_email_addresses=company_email_addresses,
+        internal_person_names=internal_person_names,
+        file_exclusions=file_exclusions,
+    )
     return envelopes[0] if envelopes else None
 
 
@@ -260,20 +293,16 @@ def _build_envelopes(
     *,
     bundle: _ChatBundle,
     extraction: ExtractionResult,
+    company_mobile_numbers: list[str] | None = None,
+    company_email_addresses: list[str] | None = None,
+    internal_person_names: list[str] | None = None,
+    file_exclusions: ExclusionFile | None = None,
 ) -> list[dict[str, JsonValue]]:
     from src.connectors.fundbox.builders import build_envelope
 
-    try:
-        settings = get_settings()
-        company_phones = list(getattr(settings, "company_mobile_numbers", []))
-        company_email_addresses = getattr(settings, "company_email_addresses", [])
-        internal_person_names = getattr(settings, "internal_person_names", [])
-        exclusions_file = getattr(settings, "ingestion_exclusions_file", "")
-    except Exception:
-        company_phones = []
-        company_email_addresses = []
-        internal_person_names = []
-        exclusions_file = ""
+    company_phones = [] if company_mobile_numbers is None else list(company_mobile_numbers)
+    company_emails = [] if company_email_addresses is None else company_email_addresses
+    internal_names = [] if internal_person_names is None else internal_person_names
     if bundle.session_phone:
         company_phones.append(bundle.session_phone)
     for endpoint in bundle.message_endpoints:
@@ -281,14 +310,13 @@ def _build_envelopes(
         role = endpoint.get("role") if isinstance(endpoint, dict) else None
         if role == "sender" and isinstance(phone, str):
             company_phones.append(phone)
-    file_exclusions = load_exclusion_file(exclusions_file)
     filtered = filter_extraction(
         extraction,
         build_exclusion_context(
             company_mobile_numbers=company_phones,
-            company_email_addresses=company_email_addresses,
-            internal_person_names=internal_person_names,
-            file_exclusions=file_exclusions,
+            company_email_addresses=company_emails,
+            internal_person_names=internal_names,
+            file_exclusions=file_exclusions or ExclusionFile(),
         ),
     )
     if filtered is None:
@@ -367,6 +395,7 @@ def _build_envelopes(
                 extraction_confidence=person.get("confidence") or extraction["confidence"],
                 extraction_method=extraction_method_label(),
                 conversation_ref=conversation_ref,
+                addresses=person_address_payloads(person),
             )
         )
     return envelopes
@@ -420,10 +449,44 @@ def _message_sort_key(msg: dict[str, object]) -> tuple[int, str, str]:
     ts = msg.get("timestamp")
     if isinstance(ts, datetime):
         return (0, ts.isoformat(), str(msg.get("id") or ""))
+    if isinstance(ts, str) and ts.strip():
+        return (0, ts.strip(), str(msg.get("id") or ""))
     return (1, "", str(msg.get("id") or ""))
 
 
-def _format_messages(msgs: list[dict[str, object]]) -> str:
+def _participant_by_jid(participants: list[_Participant]) -> dict[str, _Participant]:
+    return {participant.jid: participant for participant in participants}
+
+
+def _clean_jid(jid: str) -> str:
+    return jid.split("@", 1)[0]
+
+
+def _dialog_speaker(
+    jid: str,
+    participants_by_jid: dict[str, _Participant],
+    chat_name: str | None,
+) -> str:
+    participant = participants_by_jid.get(jid)
+    name = participant.name if participant is not None else None
+    phone = participant.phone if participant is not None else _phone_from_jid(jid)
+    if participant is not None and participant.role == "chat" and name is None:
+        name = chat_name
+    if name and phone:
+        return f"{name} ({phone})"
+    if name:
+        return name
+    if phone:
+        return phone
+    return _clean_jid(jid)
+
+
+def _format_messages(
+    msgs: list[dict[str, object]],
+    participants: list[_Participant] | None = None,
+    chat_name: str | None = None,
+) -> str:
+    participants_by_jid = _participant_by_jid(participants or [])
     lines: list[str] = []
     for m in sorted(msgs, key=_message_sort_key):
         ts = m.get("timestamp")
@@ -435,7 +498,8 @@ def _format_messages(msgs: list[dict[str, object]]) -> str:
         body = str(m.get("body", "")).strip()
         if not body:
             continue
-        sender = str(m.get("author_id") or m.get("from_id") or "unknown")
+        sender_jid = str(m.get("author_id") or m.get("from_id") or "unknown")
+        sender = _dialog_speaker(sender_jid, participants_by_jid, chat_name)
         prefix = "[ME] " if m.get("from_me") else ""
         lines.append(f"[{ts_str}] {prefix}{sender}: {body}")
     return "\n".join(lines)

@@ -144,7 +144,7 @@ services:
     environment:
       # Server-side only — Next.js Route Handlers proxy to FastAPI on the
       # docker network using the service origin.
-      API_BASE_URL: ${API_BASE_URL:-http://api:3000}
+      API_BASE_URL: ${FRONTEND_API_BASE_URL:-http://api:3000/api}
       NODE_ENV: production
       PORT: 3001
       AUTH_SECRET: ${AUTH_SECRET:-}

@@ -1,19 +1,22 @@
 "use client";
 
-import { useState, type ReactElement } from "react";
+import { useEffect, useState, type ReactElement } from "react";
 import { useRouter } from "next/navigation";
 
 import Alert from "@mui/material/Alert";
 import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
+import CircularProgress from "@mui/material/CircularProgress";
 import MenuItem from "@mui/material/MenuItem";
 import Paper from "@mui/material/Paper";
 import Stack from "@mui/material/Stack";
 import TextField from "@mui/material/TextField";
 import Typography from "@mui/material/Typography";
 
+import GoldenProfilePicker from "@/components/GoldenProfilePicker";
 import { useToast } from "@/components/ToastProvider";
 import { BffError, bffFetch } from "@/lib/api-client";
+import type { Person } from "@/lib/api-types";
 import {
   REVIEW_ACTION_TYPES,
   type AssignReviewRequestBody,
@@ -22,11 +25,23 @@ import {
   type ReviewActionType,
   type ReviewAssignResponse,
 } from "@/lib/api-types-ops";
+import type { PersonIdentifier, PersonSourceRecord } from "@/lib/api-types-person";
+import {
+  appendPageLimit,
+  buildGoldenProfileChoices,
+  defaultChoiceByField,
+  selectionBody,
+  type GoldenProfileChoice,
+  type GoldenProfileEvidence,
+  type GoldenProfileFieldName,
+} from "@/lib/golden-profile-choices";
 
 interface Props {
   reviewCaseId: string;
   queueState: string;
   assignedTo: string | null;
+  leftPersonId: string | null;
+  rightPersonId: string | null;
 }
 
 function isReviewActionType(value: string): value is ReviewActionType {
@@ -37,6 +52,8 @@ export default function ReviewActionsPanel({
   reviewCaseId,
   queueState,
   assignedTo,
+  leftPersonId,
+  rightPersonId,
 }: Props): ReactElement {
   const router = useRouter();
   const { showToast } = useToast();
@@ -47,12 +64,56 @@ export default function ReviewActionsPanel({
   const [actionType, setActionType] = useState<ReviewActionType>("merge");
   const [notes, setNotes] = useState<string>("");
   const [followUpAt, setFollowUpAt] = useState<string>("");
+  const [survivorPersonId, setSurvivorPersonId] = useState<string>(leftPersonId ?? "");
   const [actionBusy, setActionBusy] = useState<boolean>(false);
+  const [loadingChoices, setLoadingChoices] = useState<boolean>(false);
+  const [choices, setChoices] = useState<GoldenProfileChoice[]>([]);
+  const [selectedChoiceKeys, setSelectedChoiceKeys] = useState<
+    Partial<Record<GoldenProfileFieldName, string>>
+  >({});
 
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
 
   const resolved: boolean = queueState === "resolved" || queueState === "cancelled";
+  const canLoadMergeChoices = leftPersonId !== null && rightPersonId !== null;
+
+  useEffect(() => {
+    if (actionType !== "merge" || !canLoadMergeChoices || survivorPersonId.length === 0) {
+      queueMicrotask(() => {
+        setChoices([]);
+        setSelectedChoiceKeys({});
+      });
+      return;
+    }
+    let cancelled = false;
+    const loadChoices = async (): Promise<void> => {
+      setLoadingChoices(true);
+      setError(null);
+      try {
+        const evidences = await Promise.all([
+          loadGoldenProfileEvidence(leftPersonId),
+          loadGoldenProfileEvidence(rightPersonId),
+        ]);
+        if (cancelled) return;
+        const nextChoices = buildGoldenProfileChoices(survivorPersonId, evidences);
+        setChoices(nextChoices);
+        setSelectedChoiceKeys(defaultChoiceByField(nextChoices));
+      } catch (err: unknown) {
+        if (cancelled) return;
+        const message = err instanceof BffError ? err.message : "Could not load merge choices.";
+        setError(message);
+        setChoices([]);
+        setSelectedChoiceKeys({});
+      } finally {
+        if (!cancelled) setLoadingChoices(false);
+      }
+    };
+    void loadChoices();
+    return () => {
+      cancelled = true;
+    };
+  }, [actionType, canLoadMergeChoices, leftPersonId, rightPersonId, survivorPersonId]);
 
   async function onAssign(): Promise<void> {
     setError(null);
@@ -95,6 +156,11 @@ export default function ReviewActionsPanel({
         notes: notes.trim().length > 0 ? notes.trim() : null,
         metadata: {
           follow_up_at: followUpAt.length > 0 ? followUpAt : null,
+          survivor_person_id: actionType === "merge" ? survivorPersonId : null,
+          golden_profile_selections:
+            actionType === "merge"
+              ? selectedChoices(choices, selectedChoiceKeys).map(selectionBody)
+              : [],
         },
       };
       const result: ReviewActionResponse = await bffFetch<ReviewActionResponse>(
@@ -141,9 +207,7 @@ export default function ReviewActionsPanel({
       ) : null}
 
       {resolved ? (
-        <Alert severity="info">
-          This review case is {queueState} and no longer accepts actions.
-        </Alert>
+        <Alert severity="info">This review case is {queueState} and no longer accepts actions.</Alert>
       ) : null}
 
       <Stack spacing={3}>
@@ -161,11 +225,7 @@ export default function ReviewActionsPanel({
               disabled={resolved}
               sx={{ minWidth: 240 }}
             />
-            <Button
-              variant="outlined"
-              onClick={onAssign}
-              disabled={assignBusy || resolved}
-            >
+            <Button variant="outlined" onClick={onAssign} disabled={assignBusy || resolved}>
               {assignBusy ? "Assigning…" : "Assign"}
             </Button>
           </Stack>
@@ -205,6 +265,31 @@ export default function ReviewActionsPanel({
                 sx={{ minWidth: 260 }}
               />
             </Stack>
+            {actionType === "merge" && canLoadMergeChoices ? (
+              <TextField
+                select
+                size="small"
+                label="Survivor"
+                value={survivorPersonId}
+                onChange={(e) => setSurvivorPersonId(e.target.value)}
+                disabled={resolved || actionBusy}
+                sx={{ minWidth: 260 }}
+              >
+                <MenuItem value={leftPersonId}>Left person ({leftPersonId})</MenuItem>
+                <MenuItem value={rightPersonId}>Right person ({rightPersonId})</MenuItem>
+              </TextField>
+            ) : null}
+            {loadingChoices ? <CircularProgress size={24} /> : null}
+            {actionType === "merge" && choices.length > 0 ? (
+              <GoldenProfilePicker
+                choices={choices}
+                selectedChoiceKeys={selectedChoiceKeys}
+                onChange={(fieldName, choiceKey) =>
+                  setSelectedChoiceKeys((current) => ({ ...current, [fieldName]: choiceKey }))
+                }
+                disabled={resolved || actionBusy}
+              />
+            ) : null}
             <TextField
               label="Notes"
               value={notes}
@@ -218,7 +303,7 @@ export default function ReviewActionsPanel({
               <Button
                 variant="contained"
                 onClick={onSubmitAction}
-                disabled={actionBusy || resolved}
+                disabled={actionBusy || resolved || loadingChoices}
               >
                 {actionBusy ? "Submitting…" : "Submit action"}
               </Button>
@@ -228,4 +313,25 @@ export default function ReviewActionsPanel({
       </Stack>
     </Paper>
   );
+}
+
+async function loadGoldenProfileEvidence(personId: string): Promise<GoldenProfileEvidence> {
+  const [person, sourceRecords, identifiers] = await Promise.all([
+    bffFetch<Person>(`/bff/persons/${encodeURIComponent(personId)}`),
+    bffFetch<PersonSourceRecord[]>(
+      appendPageLimit(`/bff/persons/${encodeURIComponent(personId)}/source-records`),
+    ),
+    bffFetch<PersonIdentifier[]>(
+      appendPageLimit(`/bff/persons/${encodeURIComponent(personId)}/identifiers`),
+    ),
+  ]);
+  return { person, sourceRecords, identifiers };
+}
+
+function selectedChoices(
+  choices: readonly GoldenProfileChoice[],
+  selectedChoiceKeys: Partial<Record<GoldenProfileFieldName, string>>,
+): GoldenProfileChoice[] {
+  const selectedKeys = new Set(Object.values(selectedChoiceKeys).filter((value) => value !== undefined));
+  return choices.filter((choice) => selectedKeys.has(choice.key));
 }
