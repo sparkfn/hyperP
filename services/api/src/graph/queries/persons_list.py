@@ -55,13 +55,11 @@ OPTIONAL MATCH (p)-[:LIVES_AT]->(addr:Address {address_id: p.preferred_address_i
 """
 
 _ENRICH_AND_RETURN = """
-CALL {
-  WITH p
+CALL (p) {
   OPTIONAL MATCH (sr:SourceRecord)-[:LINKED_TO]->(p)
   RETURN count(sr) AS source_record_count
 }
-CALL {
-  WITH p
+CALL (p) {
   OPTIONAL MATCH (sr_ent:SourceRecord)-[:LINKED_TO]->(p)
   OPTIONAL MATCH (sr_ent)-[:FROM_SOURCE]->(:SourceSystem)-[:OPERATED_BY]->(e:Entity)
   WITH e, count(DISTINCT sr_ent) AS e_sr_count
@@ -76,8 +74,7 @@ CALL {
   }) AS entities
   RETURN entities
 }
-CALL {
-  WITH p
+CALL (p) {
   OPTIONAL MATCH (p)-[:LIVES_AT]->(:Address)<-[:LIVES_AT]-(ca:Person)
     WHERE ca.person_id <> p.person_id AND ca.status <> 'merged'
   OPTIONAL MATCH (p)-[:KNOWS]-(ck:Person)
@@ -86,8 +83,7 @@ CALL {
   UNWIND all_conn AS c
   RETURN count(DISTINCT c) AS connection_count
 }
-CALL {
-  WITH p
+CALL (p) {
   OPTIONAL MATCH (p)-[pi:IDENTIFIED_BY]->(phone_id:Identifier)
   WHERE phone_id.identifier_type = 'phone'
     AND phone_id.normalized_value = p.preferred_phone
@@ -105,23 +101,19 @@ CALL {
     ELSE null
   END AS phone_confidence
 }
-CALL {
-  WITH p
+CALL (p) {
   OPTIONAL MATCH (p)-[:IDENTIFIED_BY]->(idc:Identifier)
   RETURN count(idc) AS identifier_count
 }
-CALL {
-  WITH p
+CALL (p) {
   OPTIONAL MATCH (p)-[:IDENTIFIED_BY]->(shared_id:Identifier)<-[:IDENTIFIED_BY]-(other:Person)
     WHERE other.person_id <> p.person_id AND other.status <> 'merged'
   RETURN count(DISTINCT other) AS possible_match_count
 }
-CALL {
-  WITH p
+CALL (p) {
   RETURN count{ (p)-[:PURCHASED]->(:Order) } AS order_count
 }
-CALL {
-  WITH p
+CALL (p) {
   RETURN count{ (p)-[:HAS_BANKRUPTCY_CASE]->(:BankruptcyCase) } AS bankruptcy_case_count
 }
 RETURN p {
@@ -161,6 +153,22 @@ _DEFAULT_SORT_WITHOUT_Q = "profile_completeness_score"
 _DEFAULT_ORDER_WITH_Q = "DESC"
 _DEFAULT_ORDER_WITHOUT_Q = "DESC"
 
+CREATE_PERSON_COMPLETENESS_INDEX = """
+CREATE INDEX idx_person_completeness IF NOT EXISTS FOR (p:Person) ON (p.profile_completeness_score)
+"""
+
+
+def _is_stored_sort(col: str) -> bool:
+    """Return True if col is resolvable before the enrichment CALL blocks."""
+    return col.startswith("person.") or col == "score"
+
+
+def _to_pre_enrich_sort_col(col: str) -> str:
+    """Convert a post-RETURN column alias to its pre-RETURN equivalent."""
+    if col.startswith("person."):
+        return "p." + col[len("person."):]
+    return col  # "score" — already in scope from _head
+
 
 def _resolve_sort(sort_by: str | None, sort_order: str | None, *, has_q: bool) -> tuple[str, str]:
     default_col = _DEFAULT_SORT_WITH_Q if has_q else _DEFAULT_SORT_WITHOUT_Q
@@ -177,8 +185,21 @@ def build_list_persons_query(sort_by: str | None, sort_order: str | None, *, has
 
     When ``has_q`` is true, prefixes a fulltext index match; otherwise scans
     Person directly. All non-q filters are parameterised and applied uniformly.
+
+    For stored-property sorts (``person.*`` or fulltext ``score``), ORDER BY /
+    SKIP / LIMIT is emitted before the enrichment CALL blocks so only the page
+    window is enriched.  For computed sorts the enrichment must run first.
     """
     col, direction = _resolve_sort(sort_by, sort_order, has_q=has_q)
+    if _is_stored_sort(col):
+        early_col = _to_pre_enrich_sort_col(col)
+        return (
+            _head(has_q=has_q)
+            + _COMMON_FILTER_CLAUSE
+            + _ENTITY_FILTER_CLAUSE
+            + f"ORDER BY {early_col} {direction}\nSKIP $skip LIMIT $limit\n"
+            + _ENRICH_AND_RETURN
+        )
     return (
         _head(has_q=has_q)
         + _COMMON_FILTER_CLAUSE
@@ -188,22 +209,37 @@ def build_list_persons_query(sort_by: str | None, sort_order: str | None, *, has
     )
 
 
-def build_count_persons_query(*, has_q: bool) -> str:
-    """Build the total-count query matching :func:`build_list_persons_query`'s filters."""
+def build_count_persons_query(*, has_q: bool, has_addr_filter: bool = False) -> str:
+    """Build the total-count query matching :func:`build_list_persons_query`'s filters.
+
+    Skips the address OPTIONAL MATCH in the head when no ``addr_*`` filter
+    params are active — the IS NULL guards in ``_COMMON_FILTER_CLAUSE`` make
+    all address conditions pass harmlessly when ``addr`` is null.
+    """
     return (
-        _head(has_q=has_q)
+        _head(has_q=has_q, skip_address=not has_addr_filter)
         + _COMMON_FILTER_CLAUSE
         + _ENTITY_FILTER_CLAUSE
         + "RETURN count(p) AS total\n"
     )
 
 
-def _head(*, has_q: bool) -> str:
+def _head(*, has_q: bool, skip_address: bool = False) -> str:
     if has_q:
+        if skip_address:
+            return (
+                "CALL db.index.fulltext.queryNodes('person_name_search', $q) YIELD node AS p, score\n"
+                "WITH p, null AS addr, score\n"
+            )
         return (
             "CALL db.index.fulltext.queryNodes('person_name_search', $q) YIELD node AS p, score\n"
             "OPTIONAL MATCH (p)-[:LIVES_AT]->(addr:Address)\n"
             "WITH p, addr, score\n"
+        )
+    if skip_address:
+        return (
+            "MATCH (p:Person)\n"
+            "WITH p, null AS addr, null AS score\n"
         )
     return (
         "MATCH (p:Person)\n"

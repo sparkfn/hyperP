@@ -85,6 +85,7 @@ from src.graph.queries.persons import (
     SEARCH_PERSONS,
 )
 from src.graph.queries.persons_list import (
+    CREATE_PERSON_COMPLETENESS_INDEX,
     build_count_persons_query,
     build_list_persons_query,
 )
@@ -206,6 +207,7 @@ __all__ = [
     "UPDATE_REPORT",
     "build_count_persons_query",
     "build_list_persons_query",
+    "CREATE_PERSON_COMPLETENESS_INDEX",
     "get_entity_persons_query",
     "get_graph_query",
     "get_node_graph_query",

@@ -86,7 +86,7 @@ async def get_current_user(
         return cached[1]
 
     try:
-        claims = verify_google_id_token(token)
+        claims = await verify_google_id_token(token)
     except ValueError as exc:
         log.warning("Token verification failed: %s", exc)
         raise http_error(401, "unauthorized", f"Invalid token: {exc}", request) from exc

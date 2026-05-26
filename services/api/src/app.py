@@ -17,6 +17,7 @@ from src.config import config
 from src.error_handlers import register_error_handlers
 from src.frontend_app import build_frontend_app
 from src.graph.client import close_driver, get_session
+from src.graph.queries.persons_list import CREATE_PERSON_COMPLETENESS_INDEX
 from src.graph.queries.users import CREATE_USER_CONSTRAINT
 from src.llm.service import close_llm_service
 from src.redis_client import close_redis
@@ -57,12 +58,22 @@ async def _ensure_oauth_client_constraints() -> None:
     await ensure_oauth_client_constraints()
 
 
+async def _ensure_person_indexes() -> None:
+    """Create person indexes if they do not exist."""
+    try:
+        async with get_session(write=True) as session:
+            await session.run(CREATE_PERSON_COMPLETENESS_INDEX)
+    except Exception:  # noqa: BLE001 — index setup is best-effort at startup
+        logger.exception("Failed to create person indexes")
+
+
 @asynccontextmanager
 async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
     """Manage the Neo4j driver lifecycle alongside the FastAPI process."""
     validate_oauth_runtime_config()
     await _ensure_user_constraint()
     await _ensure_oauth_client_constraints()
+    await _ensure_person_indexes()
     yield
     await close_driver()
     await close_redis()
