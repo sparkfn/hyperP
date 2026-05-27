@@ -209,59 +209,63 @@ function displayNameForNode(node: GraphNode): string {
 
 type AnyNode = Record<string, unknown>;
 
-export function paintNode(raw: AnyNode, ctx: CanvasRenderingContext2D, globalScale: number): void {
-  const node = raw as unknown as FGNode & { x?: number; y?: number };
-  const fontSize = 12 / globalScale;
-  const x = node.x ?? 0;
-  const y = node.y ?? 0;
-  const icon = node.icon ?? "bullet";
+export function makePaintNode(
+  labelColor: string,
+): (raw: AnyNode, ctx: CanvasRenderingContext2D, globalScale: number) => void {
+  return function paintNode(raw: AnyNode, ctx: CanvasRenderingContext2D, globalScale: number): void {
+    const node = raw as unknown as FGNode & { x?: number; y?: number };
+    const fontSize = 12 / globalScale;
+    const x = node.x ?? 0;
+    const y = node.y ?? 0;
+    const icon = node.icon ?? "bullet";
 
-  // Focus ring
-  if (node.isFocus) {
-    ctx.beginPath();
-    ctx.arc(x, y, NODE_SIZE + 4, 0, 2 * Math.PI);
-    ctx.strokeStyle = "#ff9800";
-    ctx.lineWidth = 2.5 / globalScale;
-    ctx.stroke();
-    ctx.beginPath();
-    ctx.arc(x, y, NODE_SIZE + 7, 0, 2 * Math.PI);
-    ctx.strokeStyle = "rgba(255, 152, 0, 0.3)";
-    ctx.lineWidth = 3 / globalScale;
-    ctx.stroke();
-  }
-
-  // Background circle (filled with node color)
-  ctx.beginPath();
-  ctx.arc(x, y, NODE_SIZE, 0, 2 * Math.PI);
-  ctx.fillStyle = node.color;
-  ctx.fill();
-  ctx.strokeStyle = "#fff";
-  ctx.lineWidth = 1.5 / globalScale;
-  ctx.stroke();
-
-  // Draw icon using Path2D inside the node circle (world coordinates — scales with zoom)
-  if (icon !== "bullet") {
-    const path2d = getIconPath2D(icon);
-    if (path2d) {
-      ctx.save();
-      // SVG paths are in 24×24 space. Scale to fit inside circle at world size.
-      // No globalScale division — the icon lives in world coords like the circle.
-      const s = ICON_SCALE_FACTOR;
-      ctx.translate(x - 12 * s, y - 12 * s);
-      ctx.scale(s, s);
-      ctx.fillStyle = "#fff";
-      ctx.fill(path2d);
-      ctx.restore();
+    // Focus ring
+    if (node.isFocus) {
+      ctx.beginPath();
+      ctx.arc(x, y, NODE_SIZE + 4, 0, 2 * Math.PI);
+      ctx.strokeStyle = "#ff9800";
+      ctx.lineWidth = 2.5 / globalScale;
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.arc(x, y, NODE_SIZE + 7, 0, 2 * Math.PI);
+      ctx.strokeStyle = "rgba(255, 152, 0, 0.3)";
+      ctx.lineWidth = 3 / globalScale;
+      ctx.stroke();
     }
-  }
 
-  // Label below
-  ctx.font = `${fontSize}px Inter, sans-serif`;
-  ctx.textAlign = "center";
-  ctx.textBaseline = "top";
-  ctx.fillStyle = "#333";
-  const text = node.displayName.length > 24 ? node.displayName.slice(0, 22) + "..." : node.displayName;
-  ctx.fillText(text, x, y + NODE_SIZE + 4);
+    // Background circle (filled with node color)
+    ctx.beginPath();
+    ctx.arc(x, y, NODE_SIZE, 0, 2 * Math.PI);
+    ctx.fillStyle = node.color;
+    ctx.fill();
+    ctx.strokeStyle = "#fff";
+    ctx.lineWidth = 1.5 / globalScale;
+    ctx.stroke();
+
+    // Draw icon using Path2D inside the node circle (world coordinates — scales with zoom)
+    if (icon !== "bullet") {
+      const path2d = getIconPath2D(icon);
+      if (path2d) {
+        ctx.save();
+        // SVG paths are in 24×24 space. Scale to fit inside circle at world size.
+        // No globalScale division — the icon lives in world coords like the circle.
+        const s = ICON_SCALE_FACTOR;
+        ctx.translate(x - 12 * s, y - 12 * s);
+        ctx.scale(s, s);
+        ctx.fillStyle = "#fff";
+        ctx.fill(path2d);
+        ctx.restore();
+      }
+    }
+
+    // Label below
+    ctx.font = `${fontSize}px Inter, sans-serif`;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "top";
+    ctx.fillStyle = labelColor;
+    const text = node.displayName.length > 24 ? node.displayName.slice(0, 22) + "..." : node.displayName;
+    ctx.fillText(text, x, y + NODE_SIZE + 4);
+  };
 }
 
 export function paintNodePointerArea(raw: AnyNode, color: string, ctx: CanvasRenderingContext2D): void {
