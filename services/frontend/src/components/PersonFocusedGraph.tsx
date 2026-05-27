@@ -23,7 +23,6 @@ interface PersonFocusedGraphProps {
   initialPersonId?: string;
   initialElementId?: string;
   initialTitle: string;
-  height: number | string;
 }
 
 function openGraphTab(elementId: string, label: string, displayName: string): void {
@@ -39,7 +38,6 @@ export default function PersonFocusedGraph({
   initialPersonId,
   initialElementId,
   initialTitle,
-  height,
 }: PersonFocusedGraphProps): ReactElement {
   const [contextMenu, setContextMenu] = useState<NodeContextMenu | null>(null);
 
@@ -92,7 +90,7 @@ export default function PersonFocusedGraph({
       <Typography variant="subtitle1" fontWeight={600}>
         {initialTitle}
       </Typography>
-      <Box sx={{ height, flexGrow: 1, minHeight: 0 }}>
+      <Box sx={{ flex: 1, minHeight: 0 }}>
         <PersonGraphViewer
           personId={initialPersonId}
           elementId={initialElementId}

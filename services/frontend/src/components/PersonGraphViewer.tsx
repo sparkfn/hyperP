@@ -269,7 +269,7 @@ export default function PersonGraphViewer({
         sx={{
           position: "relative",
           flexGrow: 1,
-          minHeight: 500,
+          minHeight: 0,
           border: 1,
           borderColor: "divider",
           borderRadius: 1,
