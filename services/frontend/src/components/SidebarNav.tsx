@@ -200,9 +200,8 @@ export default function SidebarNav({
                     px: 1,
                     py: 0.875,
                     borderRadius: "6px",
-                    borderLeft: active
-                      ? "2px solid #3b82f6"
-                      : "2px solid transparent",
+                    borderLeft: "2px solid",
+                    borderLeftColor: active ? "primary.main" : "transparent",
                     bgcolor: active ? "rgba(59,130,246,0.12)" : "transparent",
                     color: active
                       ? mode === "dark"
