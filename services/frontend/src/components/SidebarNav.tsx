@@ -118,6 +118,7 @@ export default function SidebarNav({
           py: 1.5,
           display: "flex",
           alignItems: "center",
+          justifyContent: expanded ? "flex-start" : "center",
           gap: 1,
           borderBottom: "1px solid",
           borderColor: "divider",
@@ -125,40 +126,42 @@ export default function SidebarNav({
           flexShrink: 0,
         }}
       >
-        <Box
-          sx={{
-            width: 28,
-            height: 28,
-            borderRadius: "8px",
-            background: "linear-gradient(135deg, #3b82f6, #1d4ed8)",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            fontSize: 11,
-            fontWeight: 800,
-            color: "#fff",
-            flexShrink: 0,
-            userSelect: "none",
-          }}
-        >
-          HP
-        </Box>
         {expanded && (
-          <Box sx={{ flex: 1, minWidth: 0 }}>
-            <Typography
-              variant="subtitle1"
-              sx={{ fontWeight: 700, lineHeight: 1.2, whiteSpace: "nowrap" }}
+          <>
+            <Box
+              sx={{
+                width: 28,
+                height: 28,
+                borderRadius: "8px",
+                background: "linear-gradient(135deg, #3b82f6, #1d4ed8)",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                fontSize: 11,
+                fontWeight: 800,
+                color: "#fff",
+                flexShrink: 0,
+                userSelect: "none",
+              }}
             >
-              HyperP
-            </Typography>
-            <Typography
-              variant="caption"
-              color="text.secondary"
-              sx={{ lineHeight: 1, display: "block" }}
-            >
-              Profile Unifier
-            </Typography>
-          </Box>
+              HP
+            </Box>
+            <Box sx={{ flex: 1, minWidth: 0 }}>
+              <Typography
+                variant="subtitle1"
+                sx={{ fontWeight: 700, lineHeight: 1.2, whiteSpace: "nowrap" }}
+              >
+                HyperP
+              </Typography>
+              <Typography
+                variant="caption"
+                color="text.secondary"
+                sx={{ lineHeight: 1, display: "block" }}
+              >
+                Profile Unifier
+              </Typography>
+            </Box>
+          </>
         )}
         <Tooltip title={expanded ? "Collapse sidebar" : "Expand sidebar"}>
           <IconButton onClick={toggleExpanded} size="small" sx={{ flexShrink: 0 }}>
