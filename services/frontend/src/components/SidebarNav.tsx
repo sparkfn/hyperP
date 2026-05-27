@@ -100,7 +100,7 @@ export default function SidebarNav({
       component="nav"
       sx={{
         width: expanded ? 200 : 52,
-        minHeight: "100vh",
+        height: "100vh",
         flexShrink: 0,
         borderRight: "1px solid",
         borderColor: "divider",
@@ -244,8 +244,9 @@ export default function SidebarNav({
           sx={{
             display: "flex",
             alignItems: "center",
-            gap: 1,
-            px: 1,
+            justifyContent: expanded ? "flex-start" : "center",
+            gap: expanded ? 1 : 0.5,
+            px: expanded ? 1 : 0,
             py: 0.5,
             minHeight: 36,
           }}
@@ -277,8 +278,10 @@ export default function SidebarNav({
         {email != null && (
           <Box
             sx={{
-              px: 0.5,
+              px: expanded ? 0.5 : 0,
               py: 0.25,
+              display: "flex",
+              justifyContent: expanded ? "flex-start" : "center",
               "& .MuiChip-root": { display: expanded ? undefined : "none" },
             }}
           >

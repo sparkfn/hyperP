@@ -36,7 +36,7 @@ export default async function RootLayout({
             <CssBaseline />
             <SessionProviderClient>
               <ToastProvider>
-                <Box sx={{ display: "flex", minHeight: "100vh" }}>
+                <Box sx={{ display: "flex", height: "100vh", overflow: "hidden" }}>
                   <SidebarNav
                     hideNav={hideNav}
                     email={email}
