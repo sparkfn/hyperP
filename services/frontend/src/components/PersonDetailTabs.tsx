@@ -370,7 +370,6 @@ function PersonGraphCard({ person }: { person: Person }): ReactElement {
         <PersonFocusedGraph
           initialPersonId={person.person_id}
           initialTitle={title}
-          height="100%"
         />
       </Box>
     </Paper>

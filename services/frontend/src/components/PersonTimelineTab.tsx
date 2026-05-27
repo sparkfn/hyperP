@@ -290,7 +290,7 @@ export default function PersonTimelineTab({
             height: 640,
             overflowY: "auto",
             p: 2,
-            bgcolor: "grey.50",
+            bgcolor: "background.default",
           }}
         >
           {loadingOlder ? (
