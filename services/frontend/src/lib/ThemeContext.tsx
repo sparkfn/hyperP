@@ -41,6 +41,7 @@ export function ThemeContextProvider({
 
   useEffect(() => {
     const stored = localStorage.getItem("theme-mode");
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     if (stored === "light" || stored === "dark") setMode(stored);
   }, []);
 
