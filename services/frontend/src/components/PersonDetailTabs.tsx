@@ -34,14 +34,12 @@ import type {
   PersonMatchDecision,
   PersonSharedIdentifierCandidate,
 } from "@/lib/api-types-person";
-import { formatDateTime, formatDob } from "@/lib/display";
-import { statusColor } from "@/lib/display";
+import { formatDateTime, formatDob, statusColor } from "@/lib/display";
 import AuditTab from "./AuditTab";
 import BankruptcyCasesCard from "./BankruptcyCasesCard";
 import ConnectionsCard from "./ConnectionsCard";
 import Gate from "./auth/Gate";
 import IdentifiersSection from "./IdentifiersSection";
-import ManualMergeDialog from "./ManualMergeDialog";
 import MatchesTab from "./MatchesTab";
 import PersonFocusedGraph from "./PersonFocusedGraph";
 import PersonSection from "./PersonSection";
@@ -89,7 +87,6 @@ export default function PersonDetailTabs({ person }: Props): ReactElement {
       return new URLSearchParams(window.location.search).get("timelineAt");
     },
   );
-  const [mergeOpen, setMergeOpen] = useState<boolean>(false);
   const [overrideOpen, setOverrideOpen] = useState<boolean>(false);
   const [shareLink, setShareLink] = useState<PublicLink | null>(null);
   const [shareLoading, setShareLoading] = useState<boolean>(false);
@@ -194,7 +191,6 @@ export default function PersonDetailTabs({ person }: Props): ReactElement {
         <Stack spacing={2}>
           <PersonHeader
             person={currentPerson}
-            onMergeClick={() => setMergeOpen(true)}
             onOverrideClick={() => setOverrideOpen(true)}
             onShareClick={() => void handleShare()}
             shareLoading={shareLoading}
@@ -242,12 +238,6 @@ export default function PersonDetailTabs({ person }: Props): ReactElement {
         </PersonSection>
       ) : null}
 
-      <ManualMergeDialog
-        open={mergeOpen}
-        fromPersonId={currentPerson.person_id}
-        onClose={() => setMergeOpen(false)}
-        onMerged={refreshDetailData}
-      />
       <SurvivorshipOverrideDialog
         open={overrideOpen}
         personId={currentPerson.person_id}
@@ -260,7 +250,6 @@ export default function PersonDetailTabs({ person }: Props): ReactElement {
 
 interface HeaderProps {
   person: Person;
-  onMergeClick: () => void;
   onOverrideClick: () => void;
   onShareClick: () => void;
   shareLoading: boolean;
@@ -268,7 +257,6 @@ interface HeaderProps {
 
 function PersonHeader({
   person,
-  onMergeClick,
   onOverrideClick,
   onShareClick,
   shareLoading,
@@ -312,11 +300,6 @@ function PersonHeader({
               Override field
             </Button>
           </Gate>
-          <Gate mode="admin">
-            <Button size="small" variant="contained" onClick={onMergeClick}>
-              Merge into…
-            </Button>
-          </Gate>
         </Stack>
       </Stack>
 
@@ -357,7 +340,6 @@ function aliasText(person: Person): string {
   );
   return aliases.length > 0 ? `Aliases: ${aliases.join(", ")}` : "No aliases available";
 }
-
 
 function PersonGraphCard({ person }: { person: Person }): ReactElement {
   const title = person.preferred_full_name ?? "Person";
