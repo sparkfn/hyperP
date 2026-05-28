@@ -18,20 +18,16 @@ import TextField from "@mui/material/TextField";
 import GoldenProfilePicker from "@/components/GoldenProfilePicker";
 import { useToast } from "@/components/ToastProvider";
 import { BffError, bffFetch } from "@/lib/api-client";
-import type { Person } from "@/lib/api-types";
 import type {
   ManualMergeRequestBody,
   ManualMergeResponseBody,
-  PersonIdentifier,
-  PersonSourceRecord,
 } from "@/lib/api-types-person";
 import {
-  appendPageLimit,
   buildGoldenProfileChoices,
   defaultChoiceByField,
+  loadGoldenProfileEvidence,
   selectionBody,
   type GoldenProfileChoice,
-  type GoldenProfileEvidence,
   type GoldenProfileFieldName,
 } from "@/lib/golden-profile-choices";
 
@@ -199,18 +195,6 @@ export default function ManualMergeDialog({
   );
 }
 
-async function loadGoldenProfileEvidence(personId: string): Promise<GoldenProfileEvidence> {
-  const [person, sourceRecords, identifiers] = await Promise.all([
-    bffFetch<Person>(`/bff/persons/${encodeURIComponent(personId)}`),
-    bffFetch<PersonSourceRecord[]>(
-      appendPageLimit(`/bff/persons/${encodeURIComponent(personId)}/source-records`),
-    ),
-    bffFetch<PersonIdentifier[]>(
-      appendPageLimit(`/bff/persons/${encodeURIComponent(personId)}/identifiers`),
-    ),
-  ]);
-  return { person, sourceRecords, identifiers };
-}
 
 function selectedChoices(
   choices: readonly GoldenProfileChoice[],

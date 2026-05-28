@@ -80,6 +80,16 @@ class SurvivorshipOverrideRequest(BaseModel):
     reason: str
 
 
+class SurvivorshipOverrideBatchItem(BaseModel):
+    attribute_name: str
+    selected_source_record_pk: str
+
+
+class SurvivorshipOverrideBatchRequest(BaseModel):
+    overrides: list[SurvivorshipOverrideBatchItem]
+    reason: str
+
+
 class IngestIdentifier(BaseModel):
     type: str
     value: str

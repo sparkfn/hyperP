@@ -98,3 +98,17 @@ UPDATE_GOLDEN_FIELD = """
 MATCH (p:Person {person_id: $person_id})
 SET p[$field_name] = $value, p.updated_at = datetime()
 """
+
+CREATE_OVERRIDE_AUDIT = """
+MATCH (p:Person {person_id: $person_id})
+CREATE (me:MergeEvent {
+  merge_event_id: randomUUID(),
+  event_type: 'survivorship_override',
+  actor_type: 'admin',
+  actor_id: $actor_id,
+  reason: $reason,
+  metadata: '{}',
+  created_at: datetime()
+})
+CREATE (me)-[:SURVIVOR]->(p)
+"""
