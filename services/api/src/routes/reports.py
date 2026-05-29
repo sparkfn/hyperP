@@ -25,7 +25,7 @@ from src.types_reports import (
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/v1/reports")
+router = APIRouter(prefix="/v1/reports", tags=["Reports"])
 
 
 @router.get(

@@ -41,7 +41,7 @@ export default function ConnectionsCard({ personId }: Props): ReactElement {
         </Box>
       ) : connections.length === 0 ? (
         <Typography variant="body2" color="text.secondary">
-          No connected persons via shared identifiers, addresses, or relationships.
+          No connected persons via shared addresses or relationships.
         </Typography>
       ) : (
         <>
@@ -51,7 +51,6 @@ export default function ConnectionsCard({ personId }: Props): ReactElement {
                 <TableCell>Name</TableCell>
                 <TableCell>Status</TableCell>
                 <TableCell align="right">Hops</TableCell>
-                <TableCell>Shared identifiers</TableCell>
                 <TableCell>Shared addresses</TableCell>
                 <TableCell>Relationships</TableCell>
               </TableRow>
@@ -61,18 +60,13 @@ export default function ConnectionsCard({ personId }: Props): ReactElement {
                 <TableRow key={c.person_id} hover>
                   <TableCell>
                     <Link href={`/persons/${c.person_id}`} style={{ textDecoration: "none" }}>
-                      {c.preferred_full_name ?? c.person_id}
+                      {c.preferred_full_name ?? "Unnamed person"}
                     </Link>
                   </TableCell>
                   <TableCell>{c.status}</TableCell>
                   <TableCell align="right">{c.hops}</TableCell>
                   <TableCell>
-                    {c.shared_identifiers
-                      .map((s) => `${s.identifier_type}:${s.normalized_value}`)
-                      .join(", ") || "—"}
-                  </TableCell>
-                  <TableCell>
-                    {c.shared_addresses.map((a) => a.normalized_full ?? a.address_id).join(", ") ||
+                    {c.shared_addresses.map((a) => a.normalized_full ?? "Address").join(", ") ||
                       "—"}
                   </TableCell>
                   <TableCell>

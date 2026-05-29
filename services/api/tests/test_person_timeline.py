@@ -9,7 +9,7 @@ from httpx import ASGITransport, AsyncClient
 from pydantic.types import JsonValue
 from src.auth.deps import get_current_user_or_oauth_client, require_active_user
 from src.auth.models import AuthUser
-from src.graph.mappers import map_timeline_group
+from src.graph.mappers import map_audit_event, map_timeline_group
 from src.repositories.deps import get_person_repo
 from src.routes.persons import router
 from src.types import (
@@ -22,7 +22,9 @@ from src.types import (
     PersonEntitySummary,
     PersonGraph,
     PersonIdentifier,
+    PersonSharedIdentifierCandidate,
     PersonTimelineGroup,
+    SharedIdentifier,
     SourceRecord,
 )
 
@@ -132,6 +134,27 @@ def test_map_timeline_group_labels_ingested_at_as_fallback_timestamp() -> None:
     assert group.facts[0].label == "Email"
 
 
+def test_map_audit_event_reads_json_metadata() -> None:
+    event = map_audit_event(
+        {
+            "merge_event": {
+                "merge_event_id": "unmerge-1",
+                "event_type": "unmerge",
+                "actor_type": "admin",
+                "actor_id": "admin@example.com",
+                "reason": "false merge",
+                "metadata": '{"original_merge_event_id": "merge-1"}',
+                "created_at": "2026-05-21T20:34:18Z",
+            },
+            "absorbed_person_id": "person-a",
+            "survivor_person_id": "person-b",
+            "triggered_by_decision_id": None,
+        }
+    )
+
+    assert event.metadata == {"original_merge_event_id": "merge-1"}
+
+
 class FakeTimelineRepo:
     async def get_page(
         self, filters: dict[str, object], skip: int, limit: int
@@ -176,6 +199,28 @@ class FakeTimelineRepo:
         _ = person_id, connection_type, identifier_type, skip, limit
         return [], 0
 
+    async def get_shared_identifier_candidates(
+        self, person_id: str, skip: int, limit: int
+    ) -> tuple[list[PersonSharedIdentifierCandidate], int]:
+        _ = skip, limit
+        return [
+            PersonSharedIdentifierCandidate(
+                person_id="person-2",
+                status="active",
+                preferred_full_name="Ana Lim",
+                preferred_phone=None,
+                preferred_email="ana@example.com",
+                preferred_dob="1990-01-02",
+                identifier_strength="strong",
+                identifiers=[
+                    SharedIdentifier(
+                        identifier_type="nric",
+                        normalized_value="S1234567A",
+                    )
+                ],
+            )
+        ], 1
+
     async def get_entities(self, person_id: str) -> list[PersonEntitySummary]:
         _ = person_id
         return []
@@ -196,9 +241,9 @@ class FakeTimelineRepo:
 
     async def get_matches(
         self, person_id: str, skip: int, limit: int
-    ) -> tuple[list[MatchDecision], bool]:
+    ) -> tuple[list[MatchDecision], int]:
         _ = person_id, skip, limit
-        return [], False
+        return [], 0
 
     async def get_timeline(
         self, person_id: str, skip: int, limit: int
@@ -263,6 +308,21 @@ async def timeline_client(app: FastAPI) -> AsyncIterator[AsyncClient]:
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://testserver") as client:
         yield client
+
+
+@pytest.mark.anyio
+async def test_get_person_shared_identifier_candidates_returns_envelope(
+    timeline_app: FastAPI,
+) -> None:
+    async with timeline_client(timeline_app) as client:
+        response = await client.get("/v1/persons/person-1/shared-identifiers?limit=1")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["data"][0]["person_id"] == "person-2"
+    assert body["data"][0]["identifier_strength"] == "strong"
+    assert body["data"][0]["identifiers"][0]["identifier_type"] == "nric"
+    assert body["meta"]["total_count"] == 1
 
 
 @pytest.mark.anyio

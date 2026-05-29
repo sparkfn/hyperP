@@ -218,9 +218,34 @@ const res = await apiFetch<Person>(`/public/persons/${token}`, { authToken: null
 ### Ingestion dispatch
 Always dispatch via Celery — never call `run_ingestion()` directly:
 ```python
+# Live source (pulls from configured SSH gateway / external DB):
 run_ingestion_task.delay(source_key, mode="batch")
+
+# File-based (dump): dump_path MUST be relative to DUMPS_ROOT (/app/dumps inside the worker container)
+run_ingestion_task.delay(source_key, mode="dump", dump_path="limited-100/fundbox_users_100.sql")
 ```
-The task enforces a Redis-backed cluster-wide concurrency cap (`MAX_CONCURRENT_INGESTIONS`, default 1) and retries automatically if a slot is busy.
+The task enforces a Redis-backed cluster-wide concurrency cap (`MAX_CONCURRENT_INGESTIONS`, default 1 in code, overridden to 4 in docker-compose) and retries automatically if a slot is busy.
+
+**⚠️ `limited-100` dumps are for local and development environments only — never use them in staging or production.**
+
+**Source keys** (from `src/connectors/dumps/connectors.py` factories dict and live connectors):
+| source_key | mode | limited-100 dump file (local/dev only) |
+|---|---|---|
+| `fundbox_consumer_backend` | dump | `limited-100/fundbox_users_100.sql` |
+| `fundbox_consumer_backend:legacy` | dump | `limited-100/fundbox_legacy_100.sql` |
+| `fundbox_consumer_backend:merged` | dump | `limited-100/fundbox_merged_100.sql` |
+| `fundbox_consumer_backend:contacts` | dump | `limited-100/fundbox_contacts_100.sql` |
+| `fundbox_consumer_backend:sales` | dump | `limited-100/fundbox_sales_100.sql` |
+| `eko_phppos` | dump | `limited-100/eko_customers_100.sql` |
+| `eko_phppos:sales` | dump | `limited-100/eko_sales_100.sql` |
+| `speedzone_phppos` | dump | `limited-100/speedzone_customers_100.sql` |
+| `speedzone_phppos:sales` | dump | `limited-100/speedzone_sales_100.sql` |
+| `bitrix_chat` | dump | `limited-100/bitrix_chat_100.sql` |
+| `whatsapp_chat` | dump | `limited-100/whatsapp_chat_100.sql` |
+| `sgbankruptcy` | batch | *(uses configured data source directly)* |
+| `sgrentalflats` | batch | *(uses configured data source directly)* |
+
+`eko_phppos`, `bitrix_chat`, and `whatsapp_chat` require an SSH gateway when used in `batch` mode — they only work without one when given a `dump_path` with `mode='dump'`.
 
 ### Date picker fields
 Date range filters use `DatePickerField` (a wrapper around `@mui/x-date-pickers@7` `DatePicker` + `dayjs` adapter with `en-gb` locale). The display format is `DD MMM YYYY` (e.g. "28 Apr 2026"), matching `formatDob`/`formatDate` from `display.ts`. The component stores values internally as ISO `YYYY-MM-DD` strings for API compatibility. Use `DatePickerField` for any date input that should match the table row date format — do not fall back to `<TextField type="date">`.
@@ -280,6 +305,9 @@ Person statuses: `active`, `merged`, `suppressed` (no `under_review` — review 
 - Phase 7: Monitoring, alerting, observability
 
 ## Working with This Repo
+
+### Coding workflow
+Before reporting implementation work as complete, perform a hostile review of the changed code: look for correctness regressions, edge cases, brittle tests, security issues, and overfitting to the immediate bug. Also run a DRY check across the touched area and centralize duplicated parsing, mapping, validation, or UI state logic into the existing appropriate layer rather than adding near-copy helpers.
 
 ### Worktrees
 Create worktrees from the current branch/HEAD, not from `origin/main`, so in-progress branch context is preserved.

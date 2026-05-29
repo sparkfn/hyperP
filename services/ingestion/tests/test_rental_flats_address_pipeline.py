@@ -5,19 +5,19 @@ from typing import cast
 from neo4j import ManagedTransaction
 from src.graph import queries
 from src.main import _is_address_only_source
-from src.models import IngestResult, SourceRecordEnvelope
+from src.models import IngestResult, NormalizedAddress, QualityFlag, SourceRecordEnvelope
 from src.pipeline_addresses import ingest_address_record
-from src.pipeline_writes import link_source_record_to_address
+from src.pipeline_writes import link_record_to_graph, link_source_record_to_address
 
 
-def test_address_upsert_matches_by_country_and_postal_code_first() -> None:
-    assert (
-        "OPTIONAL MATCH (existing:Address {country_code: $country_code, "
-        "postal_code: $postal_code})"
-    ) in queries.UPSERT_ADDRESS
-    assert "CREATE (:Address" in queries.UPSERT_ADDRESS
-    assert "RETURN addr.address_id AS address_id" in queries.UPSERT_ADDRESS
-    assert "street_name" not in queries.UPSERT_ADDRESS.split("OPTIONAL MATCH", maxsplit=1)[0]
+def test_address_upsert_matches_by_full_normalized_key() -> None:
+    assert "MERGE (addr:Address" in queries.UPSERT_ADDRESS
+    assert "country_code:  $country_code" in queries.UPSERT_ADDRESS
+    assert "postal_code:   $postal_code" in queries.UPSERT_ADDRESS
+    assert "street_name:   $street_name" in queries.UPSERT_ADDRESS
+    assert "street_number: $street_number" in queries.UPSERT_ADDRESS
+    assert "unit_number:   $unit_number" in queries.UPSERT_ADDRESS
+    assert "OPTIONAL MATCH (existing:Address" not in queries.UPSERT_ADDRESS
 
 
 def test_describe_address_query_is_exported() -> None:
@@ -106,8 +106,67 @@ def test_link_source_record_to_address_uses_postal_code_parameters() -> None:
     link_params = tx.calls[1][1]
     assert link_params["source_record_pk"] == "sr-1"
     assert link_params["source_system_key"] == "sgrentalflats"
+    assert link_params["street_number"] == "165A"
+    assert link_params["street_name"] == "Teck Whye Cres"
+    assert link_params["unit_number"] == ""
     assert link_params["flat_type"] == "1-room & 2-room"
     assert link_params["is_active"] is True
+
+
+def test_link_record_to_graph_links_every_address() -> None:
+    tx = _Tx()
+    envelope = SourceRecordEnvelope(
+        source_system="test_source",
+        source_record_id="record-1",
+        observed_at="2026-05-08T09:47:25.177976+00:00",
+        record_hash="sha256:def",
+        identifiers=[],
+        attributes={},
+        raw_payload={},
+    )
+    addresses = [
+        NormalizedAddress(
+            unit_number="#05-123",
+            street_number="10",
+            street_name="example street",
+            building_name=None,
+            city="singapore",
+            state_province=None,
+            postal_code="123456",
+            country_code="SG",
+            normalized_full="#05-123, 10 example street, singapore 123456, sg",
+            quality_flag=QualityFlag.VALID,
+        ),
+        NormalizedAddress(
+            unit_number="#07-456",
+            street_number="20",
+            street_name="second street",
+            building_name=None,
+            city="singapore",
+            state_province=None,
+            postal_code="654321",
+            country_code="SG",
+            normalized_full="#07-456, 20 second street, singapore 654321, sg",
+            quality_flag=QualityFlag.VALID,
+        ),
+    ]
+
+    link_record_to_graph(
+        cast(ManagedTransaction, tx),
+        envelope=envelope,
+        identifiers=[],
+        addresses=addresses,
+        attributes=[],
+        person_id="person-1",
+        source_record_pk="sr-1",
+    )
+
+    live_at_calls = [call for call in tx.calls if "MERGE (p)-[rel:LIVES_AT]->(addr)" in call[0]]
+    describe_calls = [
+        call for call in tx.calls if "MERGE (sr)-[rel:DESCRIBES_ADDRESS]->(addr)" in call[0]
+    ]
+    assert len(live_at_calls) == 2
+    assert len(describe_calls) == 2
 
 
 def test_ingest_address_record_returns_address_result() -> None:

@@ -19,11 +19,16 @@ import logging
 
 from neo4j import ManagedTransaction
 
+from src.exclusions import ExclusionContext, is_excluded_machine_unit_observation
 from src.golden_profile import compute_golden_profile
 from src.graph import queries
 from src.graph.client import Neo4jClient
 from src.machine_unit_extraction import observations_from_chat_inquiries
-from src.machine_units import normalize_lta_tag, normalize_serial_number
+from src.machine_units import (
+    normalize_lta_tag,
+    normalize_machine_product,
+    normalize_serial_number,
+)
 from src.matching.engine import MatchEngine
 from src.models import (
     CandidateResult,
@@ -40,7 +45,7 @@ from src.models import (
 )
 from src.pipeline_bankruptcy import materialize_bankruptcy_case
 from src.pipeline_normalization import (
-    normalize_envelope_address,
+    normalize_envelope_addresses,
     normalize_envelope_attributes,
     normalize_envelope_identifiers,
 )
@@ -73,6 +78,7 @@ class IngestPipeline:
         self,
         envelope: SourceRecordEnvelope,
         ingest_run_id: str | None = None,
+        exclusion_context: ExclusionContext | None = None,
     ) -> IngestResult:
         """Ingest a single source record.  Returns an ``IngestResult``."""
 
@@ -91,10 +97,13 @@ class IngestPipeline:
             )
         envelope.source_record_version = str(next_version)
 
-        # Step 2: Normalize identifiers, address, attributes
+        # Step 2: Normalize identifiers, addresses, attributes
         identifiers = normalize_envelope_identifiers(envelope)
-        address = normalize_envelope_address(envelope)
+        addresses = normalize_envelope_addresses(envelope)
         attributes = normalize_envelope_attributes(envelope)
+        active_exclusion_context = (
+            exclusion_context if exclusion_context is not None else ExclusionContext()
+        )
 
         # Steps 3-13 run inside a single write transaction
         def _work(tx: ManagedTransaction) -> IngestResult:
@@ -102,10 +111,11 @@ class IngestPipeline:
                 tx,
                 envelope,
                 identifiers,
-                address,
+                addresses,
                 attributes,
                 ingest_run_id=ingest_run_id,
                 previous_source_record_pk=previous_pk,
+                exclusion_context=active_exclusion_context,
             )
 
         with self._client.session() as session:
@@ -143,19 +153,23 @@ class IngestPipeline:
         tx: ManagedTransaction,
         envelope: SourceRecordEnvelope,
         identifiers: list[NormalizedIdentifier],
-        address: NormalizedAddressModel | None,
+        addresses: list[NormalizedAddressModel],
         attributes: list[NormalizedAttribute],
         ingest_run_id: str | None = None,
         previous_source_record_pk: str | None = None,
+        exclusion_context: ExclusionContext | None = None,
     ) -> IngestResult:
         """Orchestrate steps 3–13 of the ingest flow inside one write tx."""
-        upsert_nodes(tx, identifiers, address)
-        candidates = find_candidates(tx, identifiers, address)
+        active_exclusion_context = (
+            exclusion_context if exclusion_context is not None else ExclusionContext()
+        )
+        upsert_nodes(tx, identifiers, addresses)
+        candidates = find_candidates(tx, identifiers, addresses)
         match_result = self._match_engine.evaluate(
             tx,
             candidates,
             identifiers,
-            address,
+            addresses[0] if addresses else None,
             attributes,
             record_type=envelope.record_type,
         )
@@ -164,7 +178,7 @@ class IngestPipeline:
             tx,
             envelope=envelope,
             identifiers=identifiers,
-            address=address,
+            addresses=addresses,
             attributes=attributes,
             match_result=match_result,
             is_new_person=is_new_person,
@@ -180,6 +194,7 @@ class IngestPipeline:
             tx,
             envelope=envelope,
             source_record_pk=source_record_pk,
+            exclusion_context=active_exclusion_context,
         )
         match_decision_id = persist_match_decision(tx, match_result, source_record_pk)
         review_case_id = create_review_case_if_needed(tx, match_result, match_decision_id)
@@ -187,7 +202,7 @@ class IngestPipeline:
             tx,
             envelope=envelope,
             identifiers=identifiers,
-            address=address,
+            addresses=addresses,
             attributes=attributes,
             person_id=person_id,
             source_record_pk=source_record_pk,
@@ -233,6 +248,7 @@ class IngestPipeline:
         *,
         envelope: SourceRecordEnvelope,
         source_record_pk: str,
+        exclusion_context: ExclusionContext,
     ) -> None:
         if envelope.record_type != RecordType.CONVERSATION:
             return
@@ -246,19 +262,26 @@ class IngestPipeline:
             inquiries=inquiries_raw,
         )
         for observation in observations:
+            if is_excluded_machine_unit_observation(observation, exclusion_context):
+                continue
             row = tx.run(
-                queries.UPSERT_MACHINE_UNIT,
-                lta_tag=observation.lta_tag,
+                queries.RESOLVE_EXISTING_MACHINE_UNIT_FOR_CHAT,
+                normalized_machine_product=normalize_machine_product(observation.machine_product),
                 normalized_lta_tag=normalize_lta_tag(observation.lta_tag),
-                serial_number=observation.serial_number,
                 normalized_serial_number=normalize_serial_number(observation.serial_number),
             ).single()
             if row is None:
                 continue
+            machine_unit_ids = [str(item) for item in row["machine_unit_ids"]]
+            if len(machine_unit_ids) != 1:
+                continue
+            machine_unit_id = machine_unit_ids[0]
             tx.run(
-                queries.LINK_SOURCE_RECORD_MENTIONS_UNIT,
+                queries.LINK_CHAT_SOURCE_RECORD_MENTIONS_EXISTING_UNIT,
                 source_record_pk=source_record_pk,
-                machine_unit_id=str(row["machine_unit_id"]),
+                source_system_key=observation.source_system_key,
+                source_record_id=observation.source_record_id,
+                machine_unit_id=machine_unit_id,
                 raw_context=observation.raw_context,
                 observed_at=observation.observed_at,
                 confidence=observation.confidence,

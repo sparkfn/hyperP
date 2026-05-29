@@ -14,33 +14,21 @@ RETURN id.identifier_id AS identifier_id
 """
 
 UPSERT_ADDRESS = """
-OPTIONAL MATCH (existing:Address {country_code: $country_code, postal_code: $postal_code})
-WITH existing
-ORDER BY existing.created_at ASC
-WITH collect(existing)[0] AS existing
-FOREACH (_ IN CASE WHEN existing IS NULL THEN [1] ELSE [] END |
-    CREATE (:Address {
-        address_id: randomUUID(),
-        country_code: $country_code,
-        postal_code: $postal_code,
-        street_name: $street_name,
-        street_number: $street_number,
-        unit_number: $unit_number,
-        building_name: $building_name,
-        city: $city,
-        state_province: $state_province,
-        normalized_full: $normalized_full,
-        created_at: datetime()
-    })
-)
-WITH existing
-OPTIONAL MATCH (addr:Address {country_code: $country_code, postal_code: $postal_code})
-WITH CASE WHEN existing IS NULL THEN addr ELSE existing END AS addr
-ORDER BY addr.created_at ASC
-WITH collect(addr)[0] AS addr
-SET addr.street_name = CASE WHEN coalesce(addr.street_name, '') = '' THEN $street_name ELSE addr.street_name END,
-    addr.street_number = CASE WHEN coalesce(addr.street_number, '') = '' THEN $street_number ELSE addr.street_number END,
-    addr.unit_number = CASE WHEN coalesce(addr.unit_number, '') = '' THEN $unit_number ELSE addr.unit_number END,
+MERGE (addr:Address {
+    country_code:  $country_code,
+    postal_code:   $postal_code,
+    street_name:   $street_name,
+    street_number: $street_number,
+    unit_number:   $unit_number
+})
+ON CREATE SET
+    addr.address_id = randomUUID(),
+    addr.building_name = $building_name,
+    addr.city = $city,
+    addr.state_province = $state_province,
+    addr.normalized_full = $normalized_full,
+    addr.created_at = datetime()
+ON MATCH SET
     addr.building_name = CASE WHEN coalesce(addr.building_name, '') = '' THEN $building_name ELSE addr.building_name END,
     addr.city = CASE WHEN coalesce(addr.city, '') = '' THEN $city ELSE addr.city END,
     addr.state_province = CASE WHEN coalesce(addr.state_province, '') = '' THEN $state_province ELSE addr.state_province END,
@@ -110,10 +98,13 @@ ON MATCH SET
 
 LINK_SOURCE_RECORD_TO_ADDRESS = """
 MATCH (sr:SourceRecord {source_record_pk: $source_record_pk})
-MATCH (addr:Address {country_code: $country_code, postal_code: $postal_code})
-WITH sr, addr
-ORDER BY addr.created_at ASC
-WITH sr, collect(addr)[0] AS addr
+MATCH (addr:Address {
+    country_code:  $country_code,
+    postal_code:   $postal_code,
+    street_name:   $street_name,
+    street_number: $street_number,
+    unit_number:   $unit_number
+})
 MERGE (sr)-[rel:DESCRIBES_ADDRESS]->(addr)
 ON CREATE SET
     rel.linked_at = datetime(),

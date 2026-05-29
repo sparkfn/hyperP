@@ -55,13 +55,11 @@ OPTIONAL MATCH (p)-[:LIVES_AT]->(addr:Address {address_id: p.preferred_address_i
 """
 
 _ENRICH_AND_RETURN = """
-CALL {
-  WITH p
+CALL (p) {
   OPTIONAL MATCH (sr:SourceRecord)-[:LINKED_TO]->(p)
   RETURN count(sr) AS source_record_count
 }
-CALL {
-  WITH p
+CALL (p) {
   OPTIONAL MATCH (sr_ent:SourceRecord)-[:LINKED_TO]->(p)
   OPTIONAL MATCH (sr_ent)-[:FROM_SOURCE]->(:SourceSystem)-[:OPERATED_BY]->(e:Entity)
   WITH e, count(DISTINCT sr_ent) AS e_sr_count
@@ -76,20 +74,16 @@ CALL {
   }) AS entities
   RETURN entities
 }
-CALL {
-  WITH p
-  OPTIONAL MATCH (p)-[:IDENTIFIED_BY]->(:Identifier)<-[:IDENTIFIED_BY]-(ci:Person)
-    WHERE ci.person_id <> p.person_id AND ci.status <> 'merged'
+CALL (p) {
   OPTIONAL MATCH (p)-[:LIVES_AT]->(:Address)<-[:LIVES_AT]-(ca:Person)
     WHERE ca.person_id <> p.person_id AND ca.status <> 'merged'
   OPTIONAL MATCH (p)-[:KNOWS]-(ck:Person)
     WHERE ck.person_id <> p.person_id AND ck.status <> 'merged'
-  WITH collect(DISTINCT ci) + collect(DISTINCT ca) + collect(DISTINCT ck) AS all_conn
+  WITH collect(DISTINCT ca) + collect(DISTINCT ck) AS all_conn
   UNWIND all_conn AS c
   RETURN count(DISTINCT c) AS connection_count
 }
-CALL {
-  WITH p
+CALL (p) {
   OPTIONAL MATCH (p)-[pi:IDENTIFIED_BY]->(phone_id:Identifier)
   WHERE phone_id.identifier_type = 'phone'
     AND phone_id.normalized_value = p.preferred_phone
@@ -107,17 +101,19 @@ CALL {
     ELSE null
   END AS phone_confidence
 }
-CALL {
-  WITH p
+CALL (p) {
   OPTIONAL MATCH (p)-[:IDENTIFIED_BY]->(idc:Identifier)
   RETURN count(idc) AS identifier_count
 }
-CALL {
-  WITH p
+CALL (p) {
+  OPTIONAL MATCH (p)-[:IDENTIFIED_BY]->(shared_id:Identifier)<-[:IDENTIFIED_BY]-(other:Person)
+    WHERE other.person_id <> p.person_id AND other.status <> 'merged'
+  RETURN count(DISTINCT other) AS possible_match_count
+}
+CALL (p) {
   RETURN count{ (p)-[:PURCHASED]->(:Order) } AS order_count
 }
-CALL {
-  WITH p
+CALL (p) {
   RETURN count{ (p)-[:HAS_BANKRUPTCY_CASE]->(:BankruptcyCase) } AS bankruptcy_case_count
 }
 RETURN p {
@@ -131,7 +127,7 @@ addr {
   .city, .postal_code, .country_code, .normalized_full
 } AS preferred_address,
 source_record_count, connection_count, phone_confidence, entities,
-size(entities) AS entity_count, identifier_count, order_count, bankruptcy_case_count, score
+size(entities) AS entity_count, identifier_count, possible_match_count, order_count, bankruptcy_case_count, score
 """
 
 _SORT_COLUMNS: dict[str, str] = {
@@ -143,7 +139,7 @@ _SORT_COLUMNS: dict[str, str] = {
     "source_record_count": "source_record_count",
     "connection_count": "connection_count",
     "entity_count": "entity_count",
-    "identifier_count": "identifier_count",
+    "possible_match_count": "possible_match_count",
     "order_count": "order_count",
     "bankruptcy_case_count": "bankruptcy_case_count",
     "phone_confidence": "phone_confidence",
@@ -213,22 +209,37 @@ def build_list_persons_query(sort_by: str | None, sort_order: str | None, *, has
     )
 
 
-def build_count_persons_query(*, has_q: bool) -> str:
-    """Build the total-count query matching :func:`build_list_persons_query`'s filters."""
+def build_count_persons_query(*, has_q: bool, has_addr_filter: bool = False) -> str:
+    """Build the total-count query matching :func:`build_list_persons_query`'s filters.
+
+    Skips the address OPTIONAL MATCH in the head when no ``addr_*`` filter
+    params are active — the IS NULL guards in ``_COMMON_FILTER_CLAUSE`` make
+    all address conditions pass harmlessly when ``addr`` is null.
+    """
     return (
-        _head(has_q=has_q)
+        _head(has_q=has_q, skip_address=not has_addr_filter)
         + _COMMON_FILTER_CLAUSE
         + _ENTITY_FILTER_CLAUSE
         + "RETURN count(p) AS total\n"
     )
 
 
-def _head(*, has_q: bool) -> str:
+def _head(*, has_q: bool, skip_address: bool = False) -> str:
     if has_q:
+        if skip_address:
+            return (
+                "CALL db.index.fulltext.queryNodes('person_name_search', $q) YIELD node AS p, score\n"
+                "WITH p, null AS addr, score\n"
+            )
         return (
             "CALL db.index.fulltext.queryNodes('person_name_search', $q) YIELD node AS p, score\n"
             "OPTIONAL MATCH (p)-[:LIVES_AT]->(addr:Address)\n"
             "WITH p, addr, score\n"
+        )
+    if skip_address:
+        return (
+            "MATCH (p:Person)\n"
+            "WITH p, null AS addr, null AS score\n"
         )
     return (
         "MATCH (p:Person)\n"

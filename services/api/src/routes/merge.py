@@ -13,7 +13,7 @@ from src.repositories.protocols.merge import MergeRepository
 from src.types import ApiResponse
 from src.types_requests import LockRequest, ManualMergeRequest, UnmergeRequest
 
-router = APIRouter()
+router = APIRouter(tags=["Persons"])
 
 
 class ManualMergeResponse(BaseModel):
@@ -54,8 +54,19 @@ async def manual_merge(
     repo: MergeRepository = Depends(get_merge_repo),
 ) -> ApiResponse[ManualMergeResponse]:
     """Manually merge two canonical persons inside a single transaction."""
+    if body.from_person_id == body.to_person_id:
+        raise http_error(
+            400,
+            "invalid_person_pair",
+            "A person cannot be merged into itself.",
+            request,
+        )
     outcome = await repo.manual_merge(
-        body.from_person_id, body.to_person_id, body.reason, user.email
+        body.from_person_id,
+        body.to_person_id,
+        body.reason,
+        user.email,
+        [selection.to_selection() for selection in body.golden_profile_selections],
     )
 
     if outcome.blocked:
@@ -109,6 +120,13 @@ async def create_person_pair_lock(
     repo: MergeRepository = Depends(get_merge_repo),
 ) -> ApiResponse[LockResponse]:
     """Create a persistent lock to prevent repeated merge suggestions."""
+    if body.left_person_id == body.right_person_id:
+        raise http_error(
+            400,
+            "invalid_person_pair",
+            "A person-pair lock requires two distinct persons.",
+            request,
+        )
     left, right = _ordered_pair(body.left_person_id, body.right_person_id)
     status, lock_id = await repo.create_lock(
         left, right, body.lock_type, body.reason, body.expires_at, user.email

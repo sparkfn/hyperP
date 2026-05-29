@@ -52,8 +52,49 @@ class _FakeLlmService:
         )
 
 
+class _FakeObjectSummaryLlmService:
+    async def chat_json(self, messages: Sequence[ChatMessage]) -> str:
+        _ = messages
+        return json.dumps(
+            {
+                "persons": [{"name": "Ada", "phone": "+6512345678"}],
+                "possible_persons": [],
+                "transactions": [],
+                "chat_members": [],
+                "inquiries": [],
+                "customer_sentiment": "neutral",
+                "summary": {
+                    "Customer / Participants": "Ada asked about Forklift X.",
+                    "Identity Evidence": "Ada gave phone +6512345678.",
+                    "Uncertainties": "",
+                },
+                "strong_identifiers": [],
+                "weak_identifiers": [],
+                "confidence": 0.9,
+            }
+        )
+
+
 class _FakeSettings:
     llm_request_delay_seconds = 0.5
+
+
+def test_chat_extraction_batch_preserves_object_summaries(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    from src.connectors import chat_helpers
+
+    monkeypatch.setattr(chat_helpers, "get_llm_service", lambda: _FakeObjectSummaryLlmService())
+    monkeypatch.setattr(chat_helpers, "get_settings", lambda: _FakeSettings())
+
+    results = chat_helpers.run_extraction_batch(["hello"])
+
+    assert len(results) == 1
+    assert results[0] is not None
+    assert results[0]["summary"] == (
+        "Customer / Participants:\nAda asked about Forklift X.\n\n"
+        "Identity Evidence:\nAda gave phone +6512345678."
+    )
 
 
 def test_chat_extraction_batch_runs_async_gather_inside_event_loop(
@@ -177,6 +218,58 @@ def test_possible_persons_from_extraction_keeps_grouped_identifiers_separate() -
     assert {item["value"] for item in alice_identifiers} == {"+6581234567"}
     assert {item["value"] for item in bob_identifiers} == {"bob@example.com"}
     assert people[1]["relationship_to_primary"] == "brother"
+
+
+def test_possible_persons_preserve_address_arrays() -> None:
+    from src.connectors.chat_helpers import (
+        ExtractionResult,
+        person_addresses,
+        possible_persons_from_extraction,
+    )
+
+    extraction = ExtractionResult(
+        persons=[],
+        possible_persons=[
+            {
+                "name": "Alice",
+                "address": "10 Orchard Road Singapore 238863",
+                "addresses": [
+                    {
+                        "raw": "#05-123 10 Orchard Road Singapore 238863",
+                        "unit_number": "#05-123",
+                        "street_number": "10",
+                        "street_name": "Orchard Road",
+                        "building_name": "Lucky Plaza",
+                        "city": "Singapore",
+                        "postal_code": "238863",
+                        "country_code": "SG",
+                    },
+                    {
+                        "raw": "20 Second Street Singapore 654321",
+                        "postal_code": "654321",
+                        "country_code": "SG",
+                    },
+                ],
+                "confidence": 0.95,
+            }
+        ],
+        transactions=[],
+        chat_members=[],
+        inquiries=[],
+        strong_identifiers=[],
+        weak_identifiers=[],
+        summary="Customer / Participants:\nAlice.",
+        customer_sentiment="neutral",
+        confidence=0.9,
+    )
+
+    people = possible_persons_from_extraction(extraction)
+    addresses = person_addresses(people[0])
+
+    assert len(addresses) == 3
+    assert addresses[0]["unit_number"] == "#05-123"
+    assert addresses[1]["postal_code"] == "654321"
+    assert addresses[2]["raw"] == "10 Orchard Road Singapore 238863"
 
 
 def test_identifiers_from_extraction_deduplicates_legacy_and_strong_identifiers() -> None:

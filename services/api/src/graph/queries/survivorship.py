@@ -16,7 +16,7 @@ RETURN f.attribute_name AS attribute_name,
        f.confidence AS confidence,
        f.observed_at AS observed_at,
        sr.source_record_pk AS source_record_pk,
-       ss.field_trust[f.attribute_name] AS trust_tier
+       ss.field_trust AS field_trust
 ORDER BY attribute_name
 """
 
@@ -31,8 +31,8 @@ WHERE la.is_active = true AND la.quality_flag IN ['valid', 'partial_parse']
 MATCH (sr:SourceRecord {source_record_pk: la.source_record_pk})-[:FROM_SOURCE]->(ss:SourceSystem)
 RETURN addr.address_id AS address_id,
        la.last_seen_at AS last_seen_at,
-       ss.field_trust['address'] AS trust_tier
-ORDER BY ss.field_trust['address'], la.last_seen_at DESC
+       ss.field_trust AS field_trust
+ORDER BY la.last_seen_at DESC
 LIMIT 1
 """
 
@@ -68,7 +68,7 @@ CREATE (me:MergeEvent {
   actor_type: 'system',
   actor_id: 'golden_profile_recompute',
   reason: 'Golden profile recomputed',
-  metadata: {},
+  metadata: '{}',
   created_at: datetime()
 })
 CREATE (me)-[:SURVIVOR]->(p)
@@ -97,4 +97,18 @@ SET p.survivorship_overrides = $overrides, p.updated_at = datetime()
 UPDATE_GOLDEN_FIELD = """
 MATCH (p:Person {person_id: $person_id})
 SET p[$field_name] = $value, p.updated_at = datetime()
+"""
+
+CREATE_OVERRIDE_AUDIT = """
+MATCH (p:Person {person_id: $person_id})
+CREATE (me:MergeEvent {
+  merge_event_id: randomUUID(),
+  event_type: 'survivorship_override',
+  actor_type: 'admin',
+  actor_id: $actor_id,
+  reason: $reason,
+  metadata: '{}',
+  created_at: datetime()
+})
+CREATE (me)-[:SURVIVOR]->(p)
 """

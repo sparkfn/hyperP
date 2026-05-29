@@ -43,6 +43,7 @@ from src.connectors.chat_helpers import (
     identifiers_from_possible_person,
     inquiries_payload,
     latest_timestamp,
+    person_address_payloads,
     possible_person_payload,
     possible_persons_from_extraction,
     run_extraction_batch,
@@ -51,7 +52,7 @@ from src.connectors.chat_helpers import (
     weak_identifiers_for_possible_person,
     weak_identifiers_payload,
 )
-from src.exclusion_config import load_exclusion_file
+from src.exclusion_config import ExclusionFile, load_exclusion_file
 from src.exclusions import build_exclusion_context, filter_extraction
 from src.models import JsonValue
 
@@ -170,6 +171,19 @@ class BitrixChatConnector(SourceConnector):
 
         logger.info("Collected %d Bitrix chats — starting LLM batch phase", len(all_bundles))
 
+        try:
+            settings = get_settings()
+            company_mobile_numbers = list(settings.company_mobile_numbers)
+            company_email_addresses = list(settings.company_email_addresses)
+            internal_person_names = list(settings.internal_person_names)
+            exclusions_file = settings.ingestion_exclusions_file
+        except Exception:
+            company_mobile_numbers = []
+            company_email_addresses = []
+            internal_person_names = []
+            exclusions_file = ""
+        file_exclusions = load_exclusion_file(exclusions_file)
+
         # Phase 2: run LLM in batches.
         extraction_cache: dict[int, ExtractionResult] = {}
         for i in range(0, len(all_bundles), LLM_BATCH_SIZE):
@@ -192,7 +206,14 @@ class BitrixChatConnector(SourceConnector):
             if extraction is None:
                 logger.warning("LLM extraction failed for chat %s", bundle.chat_id)
                 continue
-            yield from self._build_envelopes(bundle=bundle, extraction=extraction)
+            yield from self._build_envelopes(
+                bundle=bundle,
+                extraction=extraction,
+                company_mobile_numbers=company_mobile_numbers,
+                company_email_addresses=company_email_addresses,
+                internal_person_names=internal_person_names,
+                file_exclusions=file_exclusions,
+            )
 
     def _load_deal(self, conn: Connection, deal_id: int | None) -> dict[str, object] | None:
         if deal_id is None:
@@ -296,8 +317,19 @@ class BitrixChatConnector(SourceConnector):
         *,
         bundle: _ChatBundle,
         extraction: ExtractionResult,
+        company_mobile_numbers: list[str] | None = None,
+        company_email_addresses: list[str] | None = None,
+        internal_person_names: list[str] | None = None,
+        file_exclusions: ExclusionFile | None = None,
     ) -> dict[str, JsonValue] | None:
-        envelopes = self._build_envelopes(bundle=bundle, extraction=extraction)
+        envelopes = self._build_envelopes(
+            bundle=bundle,
+            extraction=extraction,
+            company_mobile_numbers=company_mobile_numbers,
+            company_email_addresses=company_email_addresses,
+            internal_person_names=internal_person_names,
+            file_exclusions=file_exclusions,
+        )
         return envelopes[0] if envelopes else None
 
     def _build_envelopes(
@@ -305,30 +337,36 @@ class BitrixChatConnector(SourceConnector):
         *,
         bundle: _ChatBundle,
         extraction: ExtractionResult,
+        company_mobile_numbers: list[str] | None = None,
+        company_email_addresses: list[str] | None = None,
+        internal_person_names: list[str] | None = None,
+        file_exclusions: ExclusionFile | None = None,
     ) -> list[dict[str, JsonValue]]:
         from src.connectors.fundbox.builders import build_envelope
 
+        base_exclusions = file_exclusions or ExclusionFile()
         agent_names = [agent.name for agent in bundle.agents if agent.name]
-        try:
-            settings = get_settings()
-            company_mobile_numbers = getattr(settings, "company_mobile_numbers", [])
-            company_email_addresses = getattr(settings, "company_email_addresses", [])
-            internal_person_names = getattr(settings, "internal_person_names", [])
-            exclusions_file = getattr(settings, "ingestion_exclusions_file", "")
-        except Exception:
-            company_mobile_numbers = []
-            company_email_addresses = []
-            internal_person_names = []
-            exclusions_file = ""
-        file_exclusions = load_exclusion_file(exclusions_file)
-        file_exclusions.names.extend(agent_names)
+        bundle_exclusions = ExclusionFile(
+            phones=list(base_exclusions.phones),
+            emails=list(base_exclusions.emails),
+            email_domains=list(base_exclusions.email_domains),
+            names=[*base_exclusions.names, *agent_names],
+            source_ids=list(base_exclusions.source_ids),
+            machine_unit_identifiers=list(base_exclusions.machine_unit_identifiers),
+        )
         filtered = filter_extraction(
             extraction,
             build_exclusion_context(
-                company_mobile_numbers=company_mobile_numbers,
-                company_email_addresses=company_email_addresses,
-                internal_person_names=internal_person_names,
-                file_exclusions=file_exclusions,
+                company_mobile_numbers=[]
+                if company_mobile_numbers is None
+                else company_mobile_numbers,
+                company_email_addresses=[]
+                if company_email_addresses is None
+                else company_email_addresses,
+                internal_person_names=[]
+                if internal_person_names is None
+                else internal_person_names,
+                file_exclusions=bundle_exclusions,
             ),
         )
         if filtered is None:
@@ -418,6 +456,7 @@ class BitrixChatConnector(SourceConnector):
                     extraction_confidence=person.get("confidence") or extraction["confidence"],
                     extraction_method=extraction_method_label(),
                     conversation_ref=conversation_ref,
+                    addresses=person_address_payloads(person),
                 )
             )
         return envelopes

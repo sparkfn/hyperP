@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 
 from src.graph.client import get_session
+from src.graph.converters import GraphRecord
 from src.graph.mappers import (
     map_audit_event,
     map_bankruptcy_case,
@@ -13,6 +14,8 @@ from src.graph.mappers import (
     map_person,
     map_person_graph,
     map_person_identifier,
+    map_possible_match_detail,
+    map_shared_identifier_candidate,
     map_source_record,
     map_timeline_group,
 )
@@ -25,6 +28,8 @@ from src.graph.queries import (
     COUNT_PERSON_CONNECTIONS_IDENTIFIER,
     COUNT_PERSON_CONNECTIONS_KNOWS,
     COUNT_PERSON_IDENTIFIERS,
+    COUNT_PERSON_MATCHES,
+    COUNT_PERSON_SHARED_IDENTIFIERS,
     COUNT_PERSON_SOURCE_RECORDS,
     COUNT_PERSON_TIMELINE,
     FIND_PERSON_BY_IDENTIFIER,
@@ -38,6 +43,8 @@ from src.graph.queries import (
     GET_PERSON_ENTITIES,
     GET_PERSON_IDENTIFIERS,
     GET_PERSON_MATCHES,
+    GET_PERSON_POSSIBLE_MATCH_DETAIL,
+    GET_PERSON_SHARED_IDENTIFIERS,
     GET_PERSON_SOURCE_RECORDS,
     GET_PERSON_TIMELINE,
     GET_PERSON_TIMELINE_TARGET,
@@ -59,7 +66,9 @@ from src.types import (
     PersonEntitySummary,
     PersonGraph,
     PersonIdentifier,
+    PersonSharedIdentifierCandidate,
     PersonTimelineGroup,
+    PossibleMatchDetail,
     SourceRecord,
 )
 
@@ -93,8 +102,12 @@ class Neo4jPersonRepository:
         sort_by = filters.get("sort_by")
         sort_order = filters.get("sort_order")
         has_q = filters.get("q") is not None
+        has_addr_filter = any(
+            filters.get(k) is not None
+            for k in ("addr_street", "addr_unit", "addr_city", "addr_postal", "addr_country")
+        )
         list_query = build_list_persons_query(sort_by, sort_order, has_q=has_q)
-        count_query = build_count_persons_query(has_q=has_q)
+        count_query = build_count_persons_query(has_q=has_q, has_addr_filter=has_addr_filter)
         # sort_by/sort_order are used to build the query string, not as Cypher params
         cypher_params: dict[str, str | int | bool | list[str] | None] = {
             k: v  # type: ignore[misc]  # TypedDict values are object; known-safe filter keys
@@ -104,7 +117,7 @@ class Neo4jPersonRepository:
         list_params = {**cypher_params, "skip": skip, "limit": limit + 1}
         count_params = cypher_params
 
-        async def _run_list() -> list[dict[str, object]]:
+        async def _run_list() -> list[GraphRecord]:
             async with get_session() as session:
                 result = await session.run(list_query, list_params)
                 return [record_to_dict(r.keys(), list(r.values())) async for r in result]
@@ -207,6 +220,36 @@ class Neo4jPersonRepository:
             count_record = await count_result.single()
         return [map_connection(rec) for rec in records[:limit]], to_total(count_record)
 
+    async def get_shared_identifier_candidates(
+        self, person_id: str, skip: int, limit: int
+    ) -> tuple[list[PersonSharedIdentifierCandidate], int]:
+        async with get_session() as session:
+            result = await session.run(
+                GET_PERSON_SHARED_IDENTIFIERS,
+                person_id=person_id,
+                skip=skip,
+                limit=limit + 1,
+            )
+            records = [record_to_dict(r.keys(), list(r.values())) async for r in result]
+            count_result = await session.run(COUNT_PERSON_SHARED_IDENTIFIERS, person_id=person_id)
+            count_record = await count_result.single()
+        candidates = [map_shared_identifier_candidate(rec) for rec in records[:limit]]
+        return candidates, to_total(count_record)
+
+    async def get_possible_match_detail(
+        self, person_id: str, candidate_person_id: str
+    ) -> PossibleMatchDetail | None:
+        async with get_session() as session:
+            result = await session.run(
+                GET_PERSON_POSSIBLE_MATCH_DETAIL,
+                person_id=person_id,
+                candidate_person_id=candidate_person_id,
+            )
+            records = [record_to_dict(r.keys(), list(r.values())) async for r in result]
+        if not records:
+            return None
+        return map_possible_match_detail(records)
+
     async def get_entities(self, person_id: str) -> list[PersonEntitySummary]:
         async with get_session() as session:
             result = await session.run(GET_PERSON_ENTITIES, person_id=person_id)
@@ -245,14 +288,15 @@ class Neo4jPersonRepository:
 
     async def get_matches(
         self, person_id: str, skip: int, limit: int
-    ) -> tuple[list[MatchDecision], bool]:
+    ) -> tuple[list[MatchDecision], int]:
         async with get_session() as session:
             result = await session.run(
-                GET_PERSON_MATCHES, person_id=person_id, skip=skip, limit=limit + 1
+                GET_PERSON_MATCHES, person_id=person_id, skip=skip, limit=limit
             )
             records = [record_to_dict(r.keys(), list(r.values())) async for r in result]
-        has_more = len(records) > limit
-        return [map_match_decision(rec) for rec in records[:limit]], has_more
+            count_result = await session.run(COUNT_PERSON_MATCHES, person_id=person_id)
+            count_record = await count_result.single()
+        return [map_match_decision(rec) for rec in records], to_total(count_record)
 
     async def get_timeline(
         self, person_id: str, skip: int, limit: int

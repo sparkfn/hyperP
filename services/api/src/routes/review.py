@@ -13,7 +13,7 @@ from src.repositories.protocols.review import ReviewListFilters, ReviewRepositor
 from src.types import ApiResponse, ApiReviewActionType, ReviewCaseDetail, ReviewCaseSummary
 from src.types_requests import AssignReviewRequest, ReviewActionRequest
 
-router = APIRouter(prefix="/v1/review-cases")
+router = APIRouter(prefix="/v1/review-cases", tags=["Review"])
 
 
 class AssignResponse(BaseModel):
@@ -134,6 +134,7 @@ async def submit_review_action(
         body.metadata.follow_up_at,
         user.email,
         body.metadata.survivor_person_id,
+        [selection.to_selection() for selection in body.metadata.golden_profile_selections],
     )
 
     if result is None:

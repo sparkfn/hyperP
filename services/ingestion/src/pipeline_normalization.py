@@ -18,7 +18,7 @@ from src.models import (
     QualityFlag,
     SourceRecordEnvelope,
 )
-from src.normalizers.address import normalize_address
+from src.normalizers.address import NormalizedAddress, normalize_address, normalize_raw_addresses
 from src.normalizers.email import normalize_email
 from src.normalizers.name import normalize_name
 from src.normalizers.phone import normalize_phone
@@ -105,30 +105,44 @@ def normalize_envelope_identifiers(
     return results
 
 
+def normalize_envelope_addresses(
+    envelope: SourceRecordEnvelope,
+) -> list[NormalizedAddressModel]:
+    raw_addresses = list(envelope.addresses)
+    if not raw_addresses:
+        raw_address = envelope.attributes.get("address")
+        if raw_address and isinstance(raw_address, str):
+            parsed, flag = normalize_address(raw_address)
+            if parsed is None:
+                logger.warning(
+                    "Address normalization failed for record %s: %s",
+                    envelope.source_record_id,
+                    flag,
+                )
+                return []
+            return [_to_model(parsed, flag)]
+    normalized = normalize_raw_addresses(raw_addresses)
+    return [_to_model(address, flag) for address, flag in normalized]
+
+
 def normalize_envelope_address(
     envelope: SourceRecordEnvelope,
 ) -> NormalizedAddressModel | None:
-    raw_address = envelope.attributes.get("address")
-    if not raw_address or not isinstance(raw_address, str):
-        return None
+    addresses = normalize_envelope_addresses(envelope)
+    return addresses[0] if addresses else None
 
-    parsed, flag = normalize_address(raw_address)
-    if parsed is None:
-        logger.warning(
-            "Address normalization failed for record %s: %s", envelope.source_record_id, flag
-        )
-        return None
 
+def _to_model(address: NormalizedAddress, flag: QualityFlag) -> NormalizedAddressModel:
     return NormalizedAddressModel(
-        unit_number=parsed.unit_number,
-        street_number=parsed.street_number,
-        street_name=parsed.street_name,
-        building_name=parsed.building_name,
-        city=parsed.city,
-        state_province=parsed.state_province,
-        postal_code=parsed.postal_code,
-        country_code=parsed.country_code,
-        normalized_full=parsed.normalized_full,
+        unit_number=address.unit_number,
+        street_number=address.street_number,
+        street_name=address.street_name,
+        building_name=address.building_name,
+        city=address.city,
+        state_province=address.state_province,
+        postal_code=address.postal_code,
+        country_code=address.country_code,
+        normalized_full=address.normalized_full,
         quality_flag=flag,
     )
 

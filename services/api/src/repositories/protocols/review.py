@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Protocol, TypedDict
 
+from src.repositories.protocols.merge import GoldenProfileSelection
 from src.types import ReviewCaseDetail, ReviewCaseSummary
 
 
@@ -24,6 +25,7 @@ class ActionResult(TypedDict, total=False):
     queue_state: str
     resolution: str | None
     survivor_person_id: str | None
+    golden_profile_selections: list[GoldenProfileSelection]
     merge_blocked: bool
     merge_not_applicable: bool
 
@@ -49,4 +51,5 @@ class ReviewRepository(Protocol):
         follow_up_at: str | None,
         actor_id: str,
         survivor_person_id: str | None,
+        golden_profile_selections: list[GoldenProfileSelection],
     ) -> ActionResult | None: ...

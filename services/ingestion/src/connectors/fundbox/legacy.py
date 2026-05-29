@@ -10,6 +10,7 @@ from sqlalchemy.engine import Connection
 from src.connectors.fundbox.base import FundboxConnectorBase
 from src.connectors.fundbox.builders import (
     IdentifierBag,
+    addresses_from_rows,
     build_envelope,
     format_address,
     serialize_row,
@@ -53,6 +54,7 @@ class FundboxLegacyConnector(FundboxConnectorBase):
                 ids.add("phone", row.whatsapp_phone)
                 ids.add("social:facebook", row.facebook_id)
 
+                address_rows = addresses_from_rows(user_addresses)
                 yield build_envelope(
                     source_record_id=f"fundbox_consumer_backend-legacy-{row.id}",
                     observed_at=to_iso(row.updated_at or row.created_at),
@@ -68,4 +70,5 @@ class FundboxLegacyConnector(FundboxConnectorBase):
                         "legacy_profile": serialize_row(row),
                         "addresses": [serialize_row(a) for a in user_addresses],
                     },
+                    addresses=address_rows,
                 )

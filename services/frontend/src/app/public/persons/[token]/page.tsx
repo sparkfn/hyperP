@@ -27,7 +27,7 @@ interface PageProps {
 
 async function fetchPublic<T>(token: string, path: string): Promise<T[]> {
   try {
-    const res = await apiFetch<T[]>(`/public/persons/${encodeURIComponent(token)}${path}`, {
+    const res = await apiFetch<T[]>(`/v1/public/persons/${encodeURIComponent(token)}${path}`, {
       authToken: null,
     });
     return res.data;
@@ -41,7 +41,7 @@ export default async function PublicPersonPage({ params }: PageProps): Promise<R
 
   let person: Person;
   try {
-    const res = await apiFetch<Person>(`/public/persons/${encodeURIComponent(token)}`, {
+    const res = await apiFetch<Person>(`/v1/public/persons/${encodeURIComponent(token)}`, {
       authToken: null,
     });
     person = res.data;

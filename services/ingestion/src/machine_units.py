@@ -56,8 +56,18 @@ def normalize_serial_number(value: str | None) -> str | None:
     return normalized if normalized and normalized not in _PLACEHOLDERS else None
 
 
+def normalize_machine_product(value: str | None) -> str | None:
+    cleaned = _clean(value)
+    if cleaned is None:
+        return None
+    normalized = " ".join(cleaned.split())
+    return normalized if normalized and normalized not in _PLACEHOLDERS else None
+
+
 def valid_machine_unit_observation(observation: MachineUnitObservation) -> bool:
-    return (
+    has_product = normalize_machine_product(observation.machine_product) is not None
+    has_identifier = (
         normalize_lta_tag(observation.lta_tag) is not None
         or normalize_serial_number(observation.serial_number) is not None
     )
+    return has_product and has_identifier

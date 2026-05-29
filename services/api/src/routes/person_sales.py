@@ -13,6 +13,7 @@ from src.types_sales import SalesOrder
 
 router = APIRouter(
     prefix="/v1/persons",
+    tags=["Persons"],
     dependencies=[Depends(require_scope("persons:read"))],
 )
 

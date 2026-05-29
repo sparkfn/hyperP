@@ -45,7 +45,7 @@ def ingest_address_record(
             tx,
             envelope=envelope,
             identifiers=[],
-            address=None,
+            addresses=[],
             attributes=attributes,
             match_result=MatchResult(
                 decision=MatchDecision.MERGE,

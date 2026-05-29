@@ -19,6 +19,7 @@ from src.graph.converters import (
     to_optional_float,
     to_optional_str,
     to_str,
+    to_str_dict,
     to_str_list,
 )
 from src.types import (
@@ -34,14 +35,18 @@ from src.types import (
     Person,
     PersonComparisonEntity,
     PersonConnection,
+    PersonEntitySummary,
     PersonGraph,
     PersonIdentifier,
+    PersonSharedIdentifierCandidate,
     PersonStatus,
     PersonTimelineGroup,
+    PossibleMatchDetail,
     ReviewCaseDetail,
     ReviewCaseSummary,
     SharedAddress,
     SharedIdentifier,
+    SharedIdentifierGroup,
     SourceRecord,
     TimelineFact,
 )
@@ -316,7 +321,38 @@ def map_timeline_group(record: GraphRecord) -> PersonTimelineGroup:
     )
 
 
+def map_person_entity_dict(raw: GraphValue) -> PersonEntitySummary:
+    entity = _as_dict(raw)
+    return PersonEntitySummary(
+        entity_key=to_str(entity.get("entity_key")),
+        display_name=to_optional_str(entity.get("display_name")),
+        entity_type=to_optional_str(entity.get("entity_type")),
+        country_code=to_optional_str(entity.get("country_code")),
+        is_active=bool(entity.get("is_active", True)),
+        source_record_count=to_int(entity.get("source_record_count")),
+    )
+
+
+def _map_source_records(value: GraphValue) -> list[SourceRecord]:
+    if not isinstance(value, list):
+        return []
+    records: list[SourceRecord] = []
+    for raw in value:
+        record = _as_dict(raw)
+        if "source_record" in record:
+            records.append(map_source_record(record))
+        elif "source_record_pk" in record:
+            records.append(map_source_record({"source_record": record, **record}))
+    return records
+
+
 def map_person_identifier(record: GraphRecord) -> PersonIdentifier:
+    raw_entities = record.get("entities")
+    entities = (
+        [map_person_entity_dict(raw) for raw in raw_entities]
+        if isinstance(raw_entities, list)
+        else []
+    )
     return PersonIdentifier(
         identifier_type=to_str(record.get("identifier_type")),
         normalized_value=to_str(record.get("normalized_value")),
@@ -326,6 +362,8 @@ def map_person_identifier(record: GraphRecord) -> PersonIdentifier:
         source_system_key=to_optional_str(record.get("source_system_key")),
         source_record_pks=to_str_list(record.get("source_record_pks")),
         source_record_ids=to_str_list(record.get("source_record_ids")),
+        entities=entities,
+        source_records=_map_source_records(record.get("source_records")),
     )
 
 
@@ -340,6 +378,54 @@ def _map_shared_identifiers(value: GraphValue) -> list[SharedIdentifier]:
         for raw in value
         if (d := _as_dict(raw)).get("identifier_type")
     ]
+
+
+def _identifier_strength(identifiers: list[SharedIdentifier]) -> Literal["strong", "weak"]:
+    if any(identifier.identifier_type == "nric" for identifier in identifiers):
+        return "strong"
+    return "weak"
+
+
+def map_shared_identifier_candidate(record: GraphRecord) -> PersonSharedIdentifierCandidate:
+    identifiers = _map_shared_identifiers(record.get("identifiers"))
+    return PersonSharedIdentifierCandidate(
+        person_id=to_str(record.get("person_id")),
+        status=to_str(record.get("status")),
+        preferred_full_name=to_optional_str(record.get("preferred_full_name")),
+        preferred_phone=to_optional_str(record.get("preferred_phone")),
+        preferred_email=to_optional_str(record.get("preferred_email")),
+        preferred_dob=to_optional_str(record.get("preferred_dob")),
+        profile_completeness_score=to_float(record.get("profile_completeness_score")),
+        identifier_strength=_identifier_strength(identifiers),
+        identifiers=identifiers,
+    )
+
+
+def _map_possible_match_source_records(value: GraphValue) -> list[SourceRecord]:
+    if not isinstance(value, list):
+        return []
+    return [map_source_record({"source_record": _as_dict(raw), **_as_dict(raw)}) for raw in value]
+
+
+def map_possible_match_detail(records: list[GraphRecord]) -> PossibleMatchDetail:
+    first = records[0]
+    return PossibleMatchDetail(
+        candidate_person_id=to_str(first.get("candidate_person_id")),
+        candidate_name=to_optional_str(first.get("candidate_name")),
+        shared_identifier_groups=[
+            SharedIdentifierGroup(
+                identifier_type=to_str(record.get("identifier_type")),
+                normalized_value=to_str(record.get("normalized_value")),
+                candidate_source_records=_map_possible_match_source_records(
+                    record.get("candidate_source_records")
+                ),
+                current_person_source_records=_map_possible_match_source_records(
+                    record.get("current_person_source_records")
+                ),
+            )
+            for record in records
+        ],
+    )
 
 
 def _map_shared_addresses(value: GraphValue) -> list[SharedAddress]:
@@ -382,10 +468,7 @@ def map_connection(record: GraphRecord) -> PersonConnection:
 
 def map_audit_event(record: GraphRecord) -> AuditEvent:
     me = _as_dict(record.get("merge_event"))
-    metadata_raw = me.get("metadata")
-    metadata: dict[str, str] = {}
-    if isinstance(metadata_raw, dict):
-        metadata = {to_str(k): to_str(v) for k, v in metadata_raw.items()}
+    metadata = to_str_dict(me.get("metadata"))
     return AuditEvent(
         merge_event_id=to_str(me.get("merge_event_id")),
         event_type=to_str(me.get("event_type")),
@@ -659,14 +742,10 @@ def map_person_graph(record: GraphRecord) -> PersonGraph:
 
 
 def map_downstream_event(record: GraphRecord) -> DownstreamEvent:
-    metadata_raw = record.get("metadata")
-    metadata: dict[str, str] = {}
-    if isinstance(metadata_raw, dict):
-        metadata = {to_str(k): to_str(v) for k, v in metadata_raw.items()}
     return DownstreamEvent(
         event_id=to_str(record.get("event_id")),
         event_type=to_str(record.get("event_type")),
         affected_person_ids=to_str_list(record.get("affected_person_ids")),
-        metadata=metadata,
+        metadata=to_str_dict(record.get("metadata")),
         created_at=to_str(record.get("created_at")),
     )
