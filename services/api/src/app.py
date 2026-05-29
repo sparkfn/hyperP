@@ -145,7 +145,11 @@ def build_app() -> FastAPI:
     app.include_router(oauth_client_routes.router, dependencies=active)
     app.include_router(events.router, dependencies=active)
 
+    # Frontend-facing API contract, mounted once per UI version. Each mount is a
+    # fresh FastAPI instance exposing the same authenticated router set with the
+    # /v1 prefix stripped: frontend (v1) -> /app/v1, frontend2 (v2) -> /app/v2.
     app.mount("/app/v1", build_frontend_app())
+    app.mount("/app/v2", build_frontend_app())
 
     register_error_handlers(app)
     return app

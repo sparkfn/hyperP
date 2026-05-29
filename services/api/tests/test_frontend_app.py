@@ -63,6 +63,27 @@ def test_frontend_app_docs_are_mounted_under_app_v1() -> None:
     assert openapi.json()["info"]["title"] == "HyperP Frontend API"
 
 
+def test_frontend_app_docs_are_mounted_under_app_v2() -> None:
+    client = TestClient(build_app())
+
+    docs = client.get("/app/v2/docs")
+    openapi = client.get("/app/v2/openapi.json")
+
+    assert docs.status_code == 200
+    assert openapi.status_code == 200
+    assert openapi.json()["info"]["title"] == "HyperP Frontend API"
+
+
+def test_frontend_app_v2_requires_active_user() -> None:
+    app = build_app()
+    app.dependency_overrides[get_entity_repo] = _entity_repo
+    client = TestClient(app)
+
+    response = client.get("/app/v2/entities")
+
+    assert response.status_code == 401
+
+
 def test_frontend_app_openapi_uses_unversioned_contract_paths() -> None:
     client = TestClient(build_app())
 
