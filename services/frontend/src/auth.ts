@@ -7,7 +7,7 @@ import NextAuth, {
 import Google from "next-auth/providers/google";
 import type { JWT } from "next-auth/jwt";
 
-import { BFF_AUTH_BASE_PATH, BFF_ME_PATH } from "@/lib/route-paths";
+import { BFF_AUTH_BASE_PATH, BFF_ME_PATH, toBasePath, toRelativePath } from "@/lib/route-paths";
 import { buildApiUrl } from "@/lib/api-url";
 import type { Role } from "@/lib/permissions";
 
@@ -100,7 +100,10 @@ async function fetchMe(idToken: string): Promise<MeResponseBody["data"] | null> 
 }
 
 export const authConfig: NextAuthConfig = {
-  basePath: BFF_AUTH_BASE_PATH,
+  // Absolute auth-route path including the Next.js basePath ("/app/v1"). next-auth
+  // uses this verbatim and does not auto-prepend the framework basePath, so the
+  // value must match where the handler is actually served: /app/v1/bff/auth.
+  basePath: `/app/v1${BFF_AUTH_BASE_PATH}`,
   providers: [Google],
   session: { strategy: "jwt", maxAge: 60 * 60 },
   pages: { signIn: "/login" },
@@ -172,18 +175,25 @@ export const authConfig: NextAuthConfig = {
       return session;
     },
     authorized({ auth: sess, request }): boolean | Response {
-      const { pathname } = request.nextUrl;
+      const pathname = toRelativePath(request.nextUrl.pathname);
       if (pathname.startsWith(BFF_AUTH_BASE_PATH)) return true;
       if (pathname === "/login") return true;
       if (pathname === "/api/health") return true;
       if (pathname.startsWith("/public/")) return true;
-      if (!sess || !sess.googleIdToken) return false;
+      if (!sess || !sess.googleIdToken) {
+        // Redirect to the basePath-correct login rather than returning false,
+        // which would route to pages.signIn without the basePath and loop.
+        const url = request.nextUrl.clone();
+        url.pathname = toBasePath("/login");
+        url.search = "";
+        return Response.redirect(url);
+      }
       const role: string | undefined = sess.user?.role;
       if (role === "first_time") {
         if (pathname.startsWith("/pending")) return true;
         if (pathname === BFF_ME_PATH) return true;
         const url = request.nextUrl.clone();
-        url.pathname = "/pending";
+        url.pathname = toBasePath("/pending");
         return Response.redirect(url);
       }
       return true;

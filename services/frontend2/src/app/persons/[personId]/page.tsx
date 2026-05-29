@@ -16,6 +16,7 @@ import type {
 } from "@/lib/api-types-person";
 import { bffFetch, BffError, bffFetchEnvelope } from "@/lib/api-client";
 import { usePaginatedFetch } from "@/lib/usePaginatedFetch";
+import { toBasePath } from "@/lib/route-paths";
 import type { PublicLink } from "@/lib/api-types";
 import { avatarColor, completenessColor } from "@/lib/display";
 import { useSetLoading } from "@/lib/LoadingContext";
@@ -1473,7 +1474,7 @@ export default function PersonDetailPage({ params }: { params: Promise<{ personI
     setShareError(null);
     try {
       const res = await bffFetchEnvelope<PublicLink>(`/bff/persons/${encodeURIComponent(personId)}/public-link`, { method: "POST" });
-      const url = `${window.location.origin}/public/persons/${res.data.token}`;
+      const url = `${window.location.origin}${toBasePath(`/public/persons/${res.data.token}`)}`;
       setShareUrl(url);
       setShareExpiry(res.data.expires_at);
       setShareOpen(true);
@@ -1539,7 +1540,7 @@ export default function PersonDetailPage({ params }: { params: Promise<{ personI
       });
       if (res.data.status === "merged") {
         setMergeSuccess(true);
-        mergeRedirectTimerRef.current = setTimeout(() => window.location.replace(`/persons/${mergeTarget.person_id}`), 1500);
+        mergeRedirectTimerRef.current = setTimeout(() => window.location.replace(toBasePath(`/persons/${mergeTarget.person_id}`)), 1500);
       }
     } catch (e) {
       setMergeError(e instanceof BffError ? e.message : "Failed to merge.");

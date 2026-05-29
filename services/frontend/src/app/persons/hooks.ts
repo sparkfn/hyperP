@@ -7,6 +7,7 @@ import { BffError, bffFetch, bffFetchEnvelope } from "@/lib/api-client";
 import type { EntitySummary, ListedPerson, SourceSystemSummary } from "@/lib/api-types";
 import type { PersonsFilters } from "@/components/PersonsFilterPanel";
 import type { SortField, SortOrder } from "@/components/PersonsListTable";
+import { toBasePath } from "@/lib/route-paths";
 
 import { buildQuery } from "./query";
 
@@ -48,7 +49,7 @@ export function usePersonsFetch(
       } catch (err: unknown) {
         if (cancelled) return;
         if (err instanceof BffError && err.status === 401) {
-          void signOut({ callbackUrl: "/login", redirect: true });
+          void signOut({ callbackUrl: toBasePath("/login"), redirect: true });
           return;
         }
         const message: string =

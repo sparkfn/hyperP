@@ -7,7 +7,14 @@ import NextAuth, {
 import Google from "next-auth/providers/google";
 import type { JWT } from "next-auth/jwt";
 
-import { BFF_AUTH_BASE_PATH, BFF_ME_PATH, isAdminPath, isPublicPath } from "@/lib/route-paths";
+import {
+  BFF_AUTH_BASE_PATH,
+  BFF_ME_PATH,
+  isAdminPath,
+  isPublicPath,
+  toBasePath,
+  toRelativePath,
+} from "@/lib/route-paths";
 import { buildApiUrl } from "@/lib/api-url";
 import type { Role } from "@/lib/permissions";
 
@@ -100,7 +107,12 @@ async function fetchMe(idToken: string): Promise<MeResponseBody["data"] | null> 
 }
 
 export const authConfig: NextAuthConfig = {
-  basePath: BFF_AUTH_BASE_PATH,
+  // Full auth-route path including the Next.js basePath. next-auth builds OAuth
+  // signin/callback URLs as origin + basePath + action, so this MUST include the
+  // /app/v2 prefix (otherwise both apps collide at /bff/auth and Google's
+  // redirect_uri is wrong). The route handler re-adds the prefix that Next strips
+  // before next-auth parses the action — see app/bff/auth/[...nextauth]/route.ts.
+  basePath: `/app/v2${BFF_AUTH_BASE_PATH}`,
   providers: [Google],
   session: { strategy: "jwt", maxAge: 60 * 60 },
   pages: { signIn: "/login" },
@@ -172,20 +184,27 @@ export const authConfig: NextAuthConfig = {
       return session;
     },
     authorized({ auth: sess, request }): boolean | Response {
-      const { pathname } = request.nextUrl;
+      const pathname = toRelativePath(request.nextUrl.pathname);
       if (isPublicPath(pathname)) return true;
-      if (!sess || !sess.googleIdToken || sess.error === "RefreshTokenError") return false;
+      if (!sess || !sess.googleIdToken || sess.error === "RefreshTokenError") {
+        // Redirect to the basePath-correct login rather than returning false,
+        // which would route to pages.signIn without the basePath and loop.
+        const url = request.nextUrl.clone();
+        url.pathname = toBasePath("/login");
+        url.search = "";
+        return Response.redirect(url);
+      }
       const role: string | undefined = sess.user.role;
       if (role === "first_time") {
         if (pathname.startsWith("/pending")) return true;
         if (pathname === BFF_ME_PATH) return true;
         const url = request.nextUrl.clone();
-        url.pathname = "/pending";
+        url.pathname = toBasePath("/pending");
         return Response.redirect(url);
       }
       if (isAdminPath(pathname) && role !== "admin") {
         const url = request.nextUrl.clone();
-        url.pathname = "/persons";
+        url.pathname = toBasePath("/persons");
         return Response.redirect(url);
       }
       return true;

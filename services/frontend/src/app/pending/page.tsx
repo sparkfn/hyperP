@@ -7,6 +7,7 @@ import Typography from "@mui/material/Typography";
 import Button from "@mui/material/Button";
 
 import { auth, signOut } from "@/auth";
+import { toBasePath } from "@/lib/route-paths";
 
 export default async function PendingPage(): Promise<ReactElement> {
   const session = await auth();
@@ -37,7 +38,7 @@ export default async function PendingPage(): Promise<ReactElement> {
           <form
             action={async () => {
               "use server";
-              await signOut({ redirectTo: "/login" });
+              await signOut({ redirectTo: toBasePath("/login") });
             }}
           >
             <Button type="submit" variant="outlined" color="inherit">

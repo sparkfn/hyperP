@@ -35,6 +35,7 @@ import type {
   PersonSharedIdentifierCandidate,
 } from "@/lib/api-types-person";
 import { formatDateTime, formatDob, statusColor } from "@/lib/display";
+import { toBasePath } from "@/lib/route-paths";
 import AuditTab from "./AuditTab";
 import BankruptcyCasesCard from "./BankruptcyCasesCard";
 import ConnectionsCard from "./ConnectionsCard";
@@ -370,7 +371,7 @@ function ShareLinkDialog({
   const [copied, setCopied] = useState<boolean>(false);
   const url =
     link !== null && typeof window !== "undefined"
-      ? `${window.location.origin}/public/persons/${link.token}`
+      ? `${window.location.origin}${toBasePath(`/public/persons/${link.token}`)}`
       : "";
 
   function handleCopy(): void {

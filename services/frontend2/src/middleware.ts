@@ -2,14 +2,17 @@ import { auth } from "@/auth";
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 
+import { toBasePath, toRelativePath } from "@/lib/route-paths";
+
 export default auth((req: NextRequest & { auth: unknown }) => {
-  if (req.nextUrl.pathname === "/") {
+  const relativePath = toRelativePath(req.nextUrl.pathname);
+  if (relativePath === "/") {
     const url = req.nextUrl.clone();
-    url.pathname = "/persons";
+    url.pathname = toBasePath("/persons");
     return NextResponse.redirect(url);
   }
   const res = NextResponse.next();
-  res.headers.set("x-pathname", req.nextUrl.pathname);
+  res.headers.set("x-pathname", relativePath);
   return res;
 });
 

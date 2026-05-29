@@ -8,6 +8,7 @@ import GlobalSearch from "@/components/GlobalSearch";
 import Sidebar from "@/components/Sidebar";
 import ThemeToggle from "@/components/ThemeToggle";
 import { usePopoverClose } from "@/lib/usePopoverClose";
+import { toBasePath } from "@/lib/route-paths";
 import styles from "@/app/layout.module.css";
 
 interface AppShellProps {
@@ -32,7 +33,7 @@ function ProfilePopover({ email, initials, displayName, onClose }: { email: stri
 
   async function handleLogout(): Promise<void> {
     onClose();
-    await signOut({ callbackUrl: "/login" });
+    await signOut({ callbackUrl: toBasePath("/login") });
   }
 
   return (
