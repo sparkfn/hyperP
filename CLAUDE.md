@@ -14,12 +14,13 @@ Use Bash as the default shell/terminal for Claude Code commands in this project.
 ### Docker (primary workflow)
 ```bash
 docker compose up -d                                        # start all services
-docker compose build --no-cache api frontend               # rebuild images (always use --no-cache for code changes)
-docker compose up -d api frontend                          # restart after rebuild
+docker compose build --no-cache api frontend2              # rebuild images (always use --no-cache for code changes)
+docker compose up -d api frontend2 web                     # restart after rebuild
 docker compose logs -f api                                 # stream logs from a service
 docker compose stop                                        # stop containers while preserving them for log inspection
 docker compose down                                        # remove containers and network only when explicitly requested
 ```
+**Two frontends:** `frontend2` is the **active** app (served at the web root); `frontend` is the legacy v1 app (served under `/app/v1`). Most UI work happens in `services/frontend2` — rebuild `frontend2` (not `frontend`) unless you are specifically touching v1.
 If the user says "stop containers", run `docker compose stop`, not `docker compose down`. Only remove containers when the user explicitly says to remove containers.
 Always pass `--no-cache` when rebuilding after Python or TypeScript changes — Docker layer caching can serve stale source even when files change.
 
@@ -47,33 +48,37 @@ uv run pytest services/api/tests/test_foo.py        # single file
 Test paths are configured in the root `pyproject.toml`.
 
 ### Frontend
+`services/frontend2` is the active app (web root); `services/frontend` is legacy v1 (`/app/v1`). Substitute the directory for the one you're touching — commands are identical.
 ```bash
-cd services/frontend
+cd services/frontend2          # or services/frontend for v1
 npm install          # already done in Docker; run locally for typecheck/lint only
-npm run dev         # dev server on http://localhost:3001
+npm run dev         # dev server (frontend2 :3002, frontend :3001)
 npm run typecheck   # tsc --noEmit
 npm run lint       # eslint src (ESLint 9 flat config, max-warnings 9)
 npm run build      # production build (runs in Docker for deployment)
 ```
 **Note:** `next lint` was removed in Next.js 15 and replaced with direct ESLint. If `npm run lint` fails, check that `eslint` and `eslint-config-next` are in `devDependencies` and that `eslint.config.mjs` exists.
-The frontend Dockerfile uses `npm install --legacy-peer-deps` because `@mui/x-date-pickers@7` has a peer dependency range that conflicts with `@mui/material@6`. Do not remove this flag.
-**ESLint warning budget**: `--max-warnings 9` is enforced. The budget is currently fully consumed by pre-existing `react-hooks/set-state-in-effect` warnings in existing pages. Any new `"use client"` page that follows the `useEffect(() => { void loadX(); }, [loadX])` data-fetching pattern must add `// eslint-disable-next-line react-hooks/set-state-in-effect` on the `void loadX()` line to avoid exceeding the limit.
+Both frontend Dockerfiles use `npm install --legacy-peer-deps` because `@mui/x-date-pickers@7` has a peer dependency range that conflicts with `@mui/material@6`. Do not remove this flag.
+**ESLint warning budget**: `--max-warnings 9` is enforced. ⚠️ In `frontend2`, `npm run lint` **currently exceeds the budget** (~18 `react-hooks/set-state-in-effect` warnings, 0 errors) after the `eslint-plugin-react-hooks@7.x` bump introduced the React-Compiler rule — so `npm run lint` exits non-zero on a clean tree there, independent of your change. Verify your change adds **zero net warnings** (stash your changes and compare counts) rather than trusting a green exit. Do **not** add `eslint-disable-next-line react-hooks/set-state-in-effect` for a `useEffect` that only calls a callback prop (e.g. `onTotalLoaded(n)`) — that does not trip the rule, so the directive becomes an "unused directive" warning (see how `SalesTab` does it without one).
 
 ---
 
 ## Service Topology
 
-Seven Docker containers defined in `docker-compose.yml`:
+Eight Docker containers defined in `docker-compose.yml`:
 
 | Service | Image / Build | Internal address | Notes |
 |---|---|---|---|
 | `neo4j` | `neo4j:5.26-community` | `bolt://neo4j:7687` | HTTP browser at `:7474`; 5.11+ required for vector index support |
 | `redis` | `redis:7-alpine` | `redis://redis:6379` | Celery broker (db 0) + results (db 1) + token revocation store + public share-link tokens (TTL auto-cleanup) |
 | `api` | `services/api/Dockerfile` | `http://api:3000` | FastAPI/uvicorn; not exposed directly |
-| `frontend` | `services/frontend/Dockerfile` | `http://frontend:3001` | Next.js; not exposed directly |
-| `web` | `nginx:1.27-alpine` | exposed on `:80` | Reverse proxy; routes `/api/*` → FastAPI (strips `/api` prefix, FastAPI root_path is `/api`), rest → frontend |
+| `frontend` | `services/frontend/Dockerfile` | `http://frontend:3001` | Next.js **v1** (legacy); served under `/app/v1`; not exposed directly |
+| `frontend2` | `services/frontend2/Dockerfile` | `http://frontend2:3002` | Next.js **v2** (active app); served at the web root; not exposed directly |
+| `web` | `nginx:1.27-alpine` | exposed on `:80` | Reverse proxy. Longest-prefix routing: `/api/app/*` → FastAPI mounts (path preserved, no strip); `/api/*` → FastAPI (strips `/api`, root_path `/api`); `/app/v1` → `frontend`; `/` (catch-all) → `frontend2` |
 | `worker` | `services/ingestion/Dockerfile` | — | Celery worker; `celery -A src.celery_app worker` |
 | `beat` | `services/ingestion/Dockerfile` | — | Celery beat scheduler; cron schedules from env vars |
+
+**Frontend ↔ API wiring:** each frontend's server-side BFF calls `buildApiUrl` (`src/lib/api-url.ts`), which prefixes the FastAPI mount this app's contract lives under — `frontend` → `/app/v1`, `frontend2` → `/app/v2` — onto `API_BASE_URL` (`…/api`), so authenticated calls resolve to `/api/app/vN/...`. The mount path is **independent** of the UI's web base path: `frontend2` serves the UI at the web root (`NEXT_PUBLIC_BASE_PATH=""`) while still calling the `/app/v2` API mount. Public (unauthenticated) endpoints route to `/api/v1/public/...` instead. `NEXT_PUBLIC_BASE_PATH` (`src/lib/route-paths.ts`) is the single knob for the UI base path and drives `next.config.ts` `basePath`, NextAuth, and middleware; the nginx `location` blocks and FastAPI mounts are infra kept in sync separately.
 
 **Startup:** `logging.basicConfig(level=...)` in `src/app.py` also silences the `neo4j.notifications` logger (Cypher deprecation warnings) so they don't flood the API container logs. Real Neo4j errors at ERROR level are unaffected.
 
@@ -183,6 +188,13 @@ Dynamic builders (e.g. `build_list_persons_query`, `build_review_action_cypher`)
 **Neo4j type gotchas** (apply to all mapper code):
 - **Booleans**: Cypher map projections return Python `bool`, not a string. Use `bool(record.get("field", False))` directly — never `to_str(record.get("field", "false")) == "true"`, which produces `"False"` / `"True"` and the comparison always fails.
 - **Datetimes**: `datetime()` in Cypher stores with timezone and `.to_native()` may return a timezone-aware Python `datetime`. When doing arithmetic against a naive `now`, strip timezone first: `expires_at.replace(tzinfo=None) if expires_at.tzinfo else expires_at`. The reference pattern is `is_secret_usable` in `auth/oauth_clients.py`.
+
+### API-side display formatting & v2 presentation models
+The API formats human-facing strings (dates, percentages) so the frontend renders them verbatim — no client-side locale/number formatting. Helpers live in `src/display_format.py` (`format_display_date` → `"02 Apr 2026"`, `format_display_datetime` → `"02 Apr 2026, 03:14 AM"`, `format_confidence_pct` → `"82%"`; all UTC, return `""`/`None` on empty/invalid input). Reuse these rather than reformatting in TS.
+
+When an endpoint needs presentation fields that the shared/public domain model must not carry, add a **v2 presentation model** that subclasses the domain model and is returned only by the authenticated route — keeping the public contract untouched. Reference: `SourceRecordView(SourceRecord)` in `types.py` adds `*_display` fields (and a parsed `chat_transcript`); the authenticated `GET /persons/{id}/source-records` returns `SourceRecordView` while the public `/persons/{token}/source-records` keeps `SourceRecord`. Map domain → view in the route (`_to_source_record_view` in `routes/persons.py`), using `**item.model_dump()` plus the computed fields (this relies on `src.routes.*` being in the mypy strict override list).
+
+Conversation source records (`bitrix_chat`, `whatsapp_chat`) store the chat as a single transcript string under `raw_payload.conversation_text` / `messages_text`. `src/chat_transcript.py:parse_chat_transcript` turns it into a typed `list[ChatMessage]` (splits `[timestamp] Speaker (+phone): text` lines, joins continuation lines, strips BBCode, maps speaker→role via `chat_members`); returns `None` for non-chat payloads. The frontend renders bubbles from this — it does not parse transcripts itself.
 
 ### JWT / Google ID token verification
 `services/api/src/auth/verify.py` uses a **self-contained** RS256 verifier with a 300-second clock-skew tolerance (absorb drift between our server and Google's token-issuing servers). It does NOT use `google-auth`'s `verify_oauth2_token` directly — that library has a strict `nbf` check that causes spurious 401s. Signature is verified against Google's public cert endpoint.
@@ -338,7 +350,7 @@ These rules apply to all Python code in the repository (`services/api/`, `servic
 
 ## TypeScript / Next.js Coding Standards
 
-These rules apply to all TypeScript code in the repository (`services/frontend/`, etc.):
+These rules apply to all TypeScript code in the repository (`services/frontend2/` — the active app — and legacy `services/frontend/`):
 
 - **Strict TypeScript**: `tsconfig.json` must enable `strict`, `noUncheckedIndexedAccess`, `noImplicitOverride`, and `noFallthroughCasesInSwitch`. Code must compile clean under `tsc --noEmit`.
 - **No `any`, no unsafe casts**: never use `any`, `as any`, or `as unknown as T`. Parse external data (fetch responses, `JSON.parse`, route params) through type guards or schema validators (e.g. zod) before narrowing. A bare `as` cast on an `unknown` value is acceptable only when immediately preceded by a type guard.
@@ -355,7 +367,7 @@ These rules apply to all TypeScript code in the repository (`services/frontend/`
 - **Component / module size**: keep React components under ~150 lines and modules under ~300 lines. Extract subcomponents (e.g. `PersonHeader`, `ConnectionsCard`) rather than letting a single page balloon. Extract pure helpers (`statusColor`, `buildSearchParams`) out of components.
 - **MUI usage**: import from per-component paths (`@mui/material/Button`) not the barrel (`@mui/material`) to keep bundles tight. Use the `sx` prop for one-off styling, the theme for shared tokens. Wrap the App Router with `AppRouterCacheProvider` from `@mui/material-nextjs/v15-appRouter` exactly once in `layout.tsx`.
 - **Project standards**: format with Prettier, lint with `eslint src` (ESLint 9 flat config). Imports ordered: node/external → `next/*` and `@mui/*` → `@/*` aliases → relative. Use the `@/` path alias instead of long relative paths.
-- **Package manager — npm**: `services/frontend/` uses npm. Always use `npm install` (locally and in Docker) — do not use `npm ci`. Do not introduce `pnpm-lock.yaml` or `yarn.lock`.
+- **Package manager — npm**: both `services/frontend2/` and `services/frontend/` use npm. Always use `npm install` (locally and in Docker) — do not use `npm ci`. Do not introduce `pnpm-lock.yaml` or `yarn.lock`.
 
 ### Interactive graph viewer
 
