@@ -17,6 +17,7 @@ from src.graph.mappers import (
     map_possible_match_detail,
     map_shared_identifier_candidate,
     map_source_record,
+    map_source_record_entity_facet,
     map_timeline_group,
 )
 from src.graph.mappers_entities import map_listed_person, map_person_entity
@@ -45,6 +46,7 @@ from src.graph.queries import (
     GET_PERSON_MATCHES,
     GET_PERSON_POSSIBLE_MATCH_DETAIL,
     GET_PERSON_SHARED_IDENTIFIERS,
+    GET_PERSON_SOURCE_RECORD_ENTITY_FACETS,
     GET_PERSON_SOURCE_RECORDS,
     GET_PERSON_TIMELINE,
     GET_PERSON_TIMELINE_TARGET,
@@ -70,6 +72,7 @@ from src.types import (
     PersonTimelineGroup,
     PossibleMatchDetail,
     SourceRecord,
+    SourceRecordEntityFacet,
 )
 
 from ._utils import record_to_dict, to_total
@@ -160,16 +163,39 @@ class Neo4jPersonRepository:
         return map_person(record_to_dict(record.keys(), list(record.values())))
 
     async def get_source_records(
-        self, person_id: str, skip: int, limit: int
+        self,
+        person_id: str,
+        skip: int,
+        limit: int,
+        entity_key: str | None = None,
+        record_type: str | None = None,
     ) -> tuple[list[SourceRecord], int]:
         async with get_session() as session:
             result = await session.run(
-                GET_PERSON_SOURCE_RECORDS, person_id=person_id, skip=skip, limit=limit + 1
+                GET_PERSON_SOURCE_RECORDS,
+                person_id=person_id,
+                skip=skip,
+                limit=limit + 1,
+                entity_key=entity_key,
+                record_type=record_type,
             )
             records = [record_to_dict(r.keys(), list(r.values())) async for r in result]
-            count_result = await session.run(COUNT_PERSON_SOURCE_RECORDS, person_id=person_id)
+            count_result = await session.run(
+                COUNT_PERSON_SOURCE_RECORDS,
+                person_id=person_id,
+                entity_key=entity_key,
+                record_type=record_type,
+            )
             count_record = await count_result.single()
         return [map_source_record(rec) for rec in records[:limit]], to_total(count_record)
+
+    async def get_source_record_entity_facets(
+        self, person_id: str
+    ) -> list[SourceRecordEntityFacet]:
+        async with get_session() as session:
+            result = await session.run(GET_PERSON_SOURCE_RECORD_ENTITY_FACETS, person_id=person_id)
+            records = [record_to_dict(r.keys(), list(r.values())) async for r in result]
+        return [map_source_record_entity_facet(rec) for rec in records]
 
     async def get_bankruptcy_cases(
         self, person_id: str, skip: int, limit: int

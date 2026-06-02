@@ -49,6 +49,7 @@ from src.types import (
     SharedIdentifier,
     SharedIdentifierGroup,
     SourceRecord,
+    SourceRecordEntityFacet,
     TimelineFact,
 )
 
@@ -123,6 +124,15 @@ def map_source_record(record: GraphRecord) -> SourceRecord:
         conversation_ref=_parse_normalized_payload(sr.get("conversation_ref")) or None,
         raw_payload=_parse_normalized_payload(sr.get("raw_payload")) or None,
         normalized_payload=_parse_normalized_payload(sr.get("normalized_payload")),
+    )
+
+
+def map_source_record_entity_facet(record: GraphRecord) -> SourceRecordEntityFacet:
+    return SourceRecordEntityFacet(
+        source_system=to_str(record.get("source_system")),
+        entity_key=to_optional_str(record.get("entity_key")),
+        entity_display_name=to_optional_str(record.get("entity_display_name")),
+        count=to_int(record.get("count")),
     )
 
 

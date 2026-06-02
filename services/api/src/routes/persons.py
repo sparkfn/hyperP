@@ -5,6 +5,8 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, Query, Request
 
 from src.auth.deps import require_scope
+from src.chat_transcript import parse_chat_transcript
+from src.display_format import format_confidence_pct, format_display_datetime
 from src.http_utils import envelope, http_error, next_cursor, page_window
 from src.repositories.deps import get_person_repo
 from src.repositories.protocols.person import PersonListFilters, PersonRepository
@@ -25,6 +27,8 @@ from src.types import (
     PopoverDisplayItem,
     PossibleMatchDetail,
     SourceRecord,
+    SourceRecordEntityFacet,
+    SourceRecordView,
 )
 
 router = APIRouter(
@@ -104,6 +108,16 @@ def _source_record_display_items(items: list[SourceRecord]) -> list[PopoverDispl
         )
         for item in items
     ]
+
+
+def _to_source_record_view(item: SourceRecord) -> SourceRecordView:
+    return SourceRecordView(
+        **item.model_dump(),
+        observed_at_display=format_display_datetime(item.observed_at),
+        ingested_at_display=format_display_datetime(item.ingested_at),
+        extraction_confidence_display=format_confidence_pct(item.extraction_confidence),
+        chat_transcript=parse_chat_transcript(item.raw_payload),
+    )
 
 
 @router.get("", response_model=ApiResponse[list[ListedPerson]])
@@ -222,21 +236,40 @@ async def get_person(
     return envelope(person, request)
 
 
-@router.get("/{person_id}/source-records", response_model=ApiResponse[list[SourceRecord]])
+@router.get("/{person_id}/source-records", response_model=ApiResponse[list[SourceRecordView]])
 async def get_person_source_records(
     person_id: str,
     request: Request,
+    entity_key: str | None = Query(default=None),
+    record_type: str | None = Query(default=None),
     cursor: str | None = Query(default=None),
     limit: int | None = Query(default=None),
     repo: PersonRepository = Depends(get_person_repo),
-) -> ApiResponse[list[SourceRecord]]:
-    """List source records linked to a person."""
+) -> ApiResponse[list[SourceRecordView]]:
+    """List source records linked to a person (optionally filtered by entity/type)."""
     skip, page_limit = page_window(cursor, limit)
-    items, total = await repo.get_source_records(person_id, skip, page_limit)
+    items, total = await repo.get_source_records(
+        person_id, skip, page_limit, entity_key=entity_key, record_type=record_type
+    )
+    views = [_to_source_record_view(item) for item in items]
     has_more = skip + page_limit < total
-    resp = envelope(items, request, next_cursor(skip, page_limit, has_more), total_count=total)
+    resp = envelope(views, request, next_cursor(skip, page_limit, has_more), total_count=total)
     resp.display_items = _source_record_display_items(items)
     return resp
+
+
+@router.get(
+    "/{person_id}/source-record-entities",
+    response_model=ApiResponse[list[SourceRecordEntityFacet]],
+)
+async def get_person_source_record_entities(
+    person_id: str,
+    request: Request,
+    repo: PersonRepository = Depends(get_person_repo),
+) -> ApiResponse[list[SourceRecordEntityFacet]]:
+    """Per-entity source-record counts for a person (for filter chips)."""
+    facets = await repo.get_source_record_entity_facets(person_id)
+    return envelope(facets, request)
 
 
 @router.get("/{person_id}/bankruptcy-cases", response_model=ApiResponse[list[BankruptcyCase]])

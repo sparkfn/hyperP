@@ -79,6 +79,8 @@ GET_PERSON_SOURCE_RECORDS = """
 MATCH (sr:SourceRecord)-[:LINKED_TO]->(p:Person {person_id: $person_id})
 MATCH (sr)-[:FROM_SOURCE]->(ss:SourceSystem)
 OPTIONAL MATCH (ss)-[:OPERATED_BY]->(entity:Entity)
+WHERE ($entity_key IS NULL OR entity.entity_key = $entity_key)
+  AND ($record_type IS NULL OR sr.record_type = $record_type)
 RETURN sr {
   .source_record_pk, .source_record_id, .source_record_version,
   .record_type, .extraction_confidence, .extraction_method,
@@ -91,6 +93,17 @@ entity.entity_key AS entity_key,
 entity.display_name AS entity_display_name
 ORDER BY sr.observed_at DESC
 SKIP $skip LIMIT $limit
+"""
+
+GET_PERSON_SOURCE_RECORD_ENTITY_FACETS = """
+MATCH (sr:SourceRecord)-[:LINKED_TO]->(:Person {person_id: $person_id})
+MATCH (sr)-[:FROM_SOURCE]->(ss:SourceSystem)
+OPTIONAL MATCH (ss)-[:OPERATED_BY]->(entity:Entity)
+RETURN ss.source_key AS source_system,
+       entity.entity_key AS entity_key,
+       entity.display_name AS entity_display_name,
+       count(sr) AS count
+ORDER BY source_system, entity_display_name
 """
 
 GET_PERSON_BANKRUPTCY_CASES = """
@@ -407,6 +420,10 @@ SKIP $skip LIMIT $limit
 
 COUNT_PERSON_SOURCE_RECORDS = """
 MATCH (sr:SourceRecord)-[:LINKED_TO]->(p:Person {person_id: $person_id})
+MATCH (sr)-[:FROM_SOURCE]->(ss:SourceSystem)
+OPTIONAL MATCH (ss)-[:OPERATED_BY]->(entity:Entity)
+WHERE ($entity_key IS NULL OR entity.entity_key = $entity_key)
+  AND ($record_type IS NULL OR sr.record_type = $record_type)
 RETURN count(sr) AS total
 """
 

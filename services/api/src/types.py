@@ -200,6 +200,39 @@ class SourceRecord(BaseModel):
     normalized_payload: dict[str, JsonValue] | None = None
 
 
+class ChatMessage(BaseModel):
+    """One parsed message from a conversation source record's transcript."""
+
+    timestamp: str
+    timestamp_display: str
+    speaker: str
+    phone: str | None = None
+    role: str | None = None
+    text: str
+
+
+class SourceRecordView(SourceRecord):
+    """v2 presentation model: SourceRecord plus API-formatted display strings.
+
+    Kept separate from SourceRecord so the public person-page contract (which
+    returns SourceRecord) is unaffected.
+    """
+
+    observed_at_display: str
+    ingested_at_display: str
+    extraction_confidence_display: str | None = None
+    chat_transcript: list[ChatMessage] | None = None
+
+
+class SourceRecordEntityFacet(BaseModel):
+    """Per-entity source-record count for a person, for filter chips."""
+
+    source_system: str
+    entity_key: str | None = None
+    entity_display_name: str | None = None
+    count: int
+
+
 class SharedIdentifierGroup(BaseModel):
     identifier_type: str
     normalized_value: str
@@ -347,6 +380,7 @@ class KnowsRelationship(BaseModel):
 
 class ConnectionSource(BaseModel):
     """Source system + entity that established a particular connection."""
+
     source_system_key: str
     entity_display_name: str | None = None
 

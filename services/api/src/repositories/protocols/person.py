@@ -19,6 +19,7 @@ from src.types import (
     PersonTimelineGroup,
     PossibleMatchDetail,
     SourceRecord,
+    SourceRecordEntityFacet,
 )
 
 
@@ -64,8 +65,17 @@ class PersonRepository(Protocol):
     async def get_by_id(self, person_id: str) -> Person | None: ...
 
     async def get_source_records(
-        self, person_id: str, skip: int, limit: int
+        self,
+        person_id: str,
+        skip: int,
+        limit: int,
+        entity_key: str | None = None,
+        record_type: str | None = None,
     ) -> tuple[list[SourceRecord], int]: ...
+
+    async def get_source_record_entity_facets(
+        self, person_id: str
+    ) -> list[SourceRecordEntityFacet]: ...
 
     async def get_bankruptcy_cases(
         self, person_id: str, skip: int, limit: int
