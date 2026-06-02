@@ -26,6 +26,7 @@ from src.types import (
     AddressSummary,
     AuditEvent,
     BankruptcyCase,
+    ConnectionSource,
     DownstreamEvent,
     GraphEdge,
     GraphNode,
@@ -435,6 +436,7 @@ def _map_shared_addresses(value: GraphValue) -> list[SharedAddress]:
         SharedAddress(
             address_id=to_str(d.get("address_id")),
             normalized_full=to_optional_str(d.get("normalized_full")),
+            source_system_key=to_optional_str(d.get("source_system_key")),
         )
         for raw in value
         if (d := _as_dict(raw)).get("address_id")
@@ -448,9 +450,23 @@ def _map_knows_relationships(value: GraphValue) -> list[KnowsRelationship]:
         KnowsRelationship(
             relationship_label=to_optional_str(d.get("relationship_label")),
             relationship_category=to_str(d.get("relationship_category")),
+            source_system_key=to_optional_str(d.get("source_system_key")),
         )
         for raw in value
         if (d := _as_dict(raw)).get("relationship_category")
+    ]
+
+
+def _map_connection_sources(value: GraphValue) -> list[ConnectionSource]:
+    if not isinstance(value, list):
+        return []
+    return [
+        ConnectionSource(
+            source_system_key=to_str(d.get("source_system_key")),
+            entity_display_name=to_optional_str(d.get("entity_display_name")),
+        )
+        for raw in value
+        if (d := _as_dict(raw)).get("source_system_key")
     ]
 
 
@@ -463,6 +479,7 @@ def map_connection(record: GraphRecord) -> PersonConnection:
         shared_identifiers=_map_shared_identifiers(record.get("shared_identifiers")),
         shared_addresses=_map_shared_addresses(record.get("shared_addresses")),
         knows_relationships=_map_knows_relationships(record.get("knows_relationships")),
+        connection_sources=_map_connection_sources(record.get("connection_sources")),
     )
 
 
