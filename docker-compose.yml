@@ -160,23 +160,18 @@ services:
     build:
       context: .
       dockerfile: services/frontend2/Dockerfile
-    # Not exposed externally — ingress goes through the nginx web service on a separate host port.
-    command: sh -c "npm install --legacy-peer-deps && npm run dev"
+    # Not exposed externally — all ingress goes through the nginx web service.
     environment:
       # Mirrors frontend (v1): base includes the /api prefix; buildApiUrl prepends
       # /app/v2 so server-side calls reach the FastAPI /api/app/v2 mount.
       API_BASE_URL: ${FRONTEND2_API_BASE_URL:-http://api:3000/api}
-      NODE_ENV: development
+      NODE_ENV: production
       PORT: 3002
       AUTH_SECRET: ${AUTH_SECRET:-}
       AUTH_GOOGLE_ID: ${AUTH_GOOGLE_ID:-}
       AUTH_GOOGLE_SECRET: ${AUTH_GOOGLE_SECRET:-}
       NEXTAUTH_URL: ${NEXTAUTH_URL:-http://localhost}
       AUTH_TRUST_HOST: "true"
-    volumes:
-      - ./services/frontend2:/app
-      - /app/node_modules
-      - /app/.next
     depends_on:
       - api
 
