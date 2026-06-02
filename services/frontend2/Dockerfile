@@ -5,6 +5,12 @@ RUN npm install --legacy-peer-deps
 
 FROM node:22-alpine AS builder
 WORKDIR /app
+# Single knob for the web base path, baked in at build time (default "" = web
+# root). Override with --build-arg NEXT_PUBLIC_BASE_PATH=/app/v2 and update the
+# matching nginx `location` to serve under a sub-path. Consumed by next.config.ts
+# and src/lib/route-paths.ts.
+ARG NEXT_PUBLIC_BASE_PATH=""
+ENV NEXT_PUBLIC_BASE_PATH=$NEXT_PUBLIC_BASE_PATH
 COPY --from=deps /app/node_modules ./node_modules
 COPY services/frontend2/ ./
 RUN npm run build

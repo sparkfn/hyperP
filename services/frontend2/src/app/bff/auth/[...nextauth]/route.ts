@@ -16,12 +16,13 @@ interface CloneInit {
   duplex?: "half";
 }
 
-// Next.js strips the framework basePath (/app/v2) before route handlers run, but
+// Next.js strips the framework basePath (BASE_PATH) before route handlers run, but
 // next-auth's basePath includes it (so OAuth signin/callback URLs carry the prefix
-// and the two app versions don't collide at /bff/auth). Re-add the prefix to the
+// and multiple app versions don't collide at /bff/auth). Re-add the prefix to the
 // request URL here so @auth/core can parse the action from the otherwise-stripped
-// path. Method, headers, and body are copied explicitly so POST sign-in requests
-// survive the reconstruction. See the basePath note in src/auth.ts.
+// path. When BASE_PATH is "" (served at the web root) there is no prefix to strip,
+// so this becomes a pass-through. Method, headers, and body are copied explicitly
+// so POST sign-in requests survive the reconstruction. See the note in src/auth.ts.
 function withBasePath(handler: RouteHandler): RouteHandler {
   return (req: NextRequest): Promise<Response> => {
     const url = new URL(req.url);

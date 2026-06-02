@@ -8,6 +8,7 @@ import Google from "next-auth/providers/google";
 import type { JWT } from "next-auth/jwt";
 
 import {
+  BASE_PATH,
   BFF_AUTH_BASE_PATH,
   BFF_ME_PATH,
   isAdminPath,
@@ -108,11 +109,13 @@ async function fetchMe(idToken: string): Promise<MeResponseBody["data"] | null> 
 
 export const authConfig: NextAuthConfig = {
   // Full auth-route path including the Next.js basePath. next-auth builds OAuth
-  // signin/callback URLs as origin + basePath + action, so this MUST include the
-  // /app/v2 prefix (otherwise both apps collide at /bff/auth and Google's
-  // redirect_uri is wrong). The route handler re-adds the prefix that Next strips
-  // before next-auth parses the action — see app/bff/auth/[...nextauth]/route.ts.
-  basePath: `/app/v2${BFF_AUTH_BASE_PATH}`,
+  // signin/callback URLs as origin + basePath + action, so this MUST carry the
+  // same BASE_PATH prefix the app is served under (when non-empty, this keeps
+  // multiple app versions from colliding at /bff/auth and keeps Google's
+  // redirect_uri correct). Derived from the single BASE_PATH knob; at the web
+  // root this is simply "/bff/auth". The route handler re-adds any prefix Next
+  // strips before next-auth parses the action — see app/bff/auth/[...nextauth]/route.ts.
+  basePath: `${BASE_PATH}${BFF_AUTH_BASE_PATH}`,
   providers: [Google],
   session: { strategy: "jwt", maxAge: 60 * 60 },
   pages: { signIn: "/login" },

@@ -1,7 +1,16 @@
-// Next.js basePath this app is served under. Under a basePath, middleware sees
-// request paths that still carry the prefix, so route checks must compare the
-// app-relative path (see toRelativePath) and redirects must re-add the prefix.
-export const BASE_PATH = "/app/v2";
+// Single source of truth for the web path this app is served under, read from
+// the NEXT_PUBLIC_BASE_PATH build-time env (default "" = web root; set e.g.
+// "/app/v2" to serve under a sub-path). next.config.ts reads the SAME var, so
+// this one knob drives the Next.js basePath, next-auth's basePath (src/auth.ts),
+// the middleware, and every client/server path helper below. (The nginx
+// `location` block and the FastAPI mount are infra and must be kept in sync
+// separately — see services/nginx/nginx.conf.)
+//
+// Under a non-empty basePath, middleware sees request paths that still carry the
+// prefix, so route checks compare the app-relative path (toRelativePath) and
+// redirects re-add the prefix (toBasePath). With BASE_PATH = "" both helpers are
+// identities and the basePath-aware shims become no-ops.
+export const BASE_PATH = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
 
 export const BFF_AUTH_BASE_PATH = "/bff/auth";
 export const API_HEALTH_PATH = "/api/health";
