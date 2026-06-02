@@ -1,3 +1,4 @@
+import { bffFetch } from "@/lib/api-client";
 import type { Person } from "@/lib/api-types";
 import type { PersonIdentifier, PersonSourceRecord } from "@/lib/api-types-person";
 
@@ -30,6 +31,7 @@ export interface GoldenProfileChoice {
   sourceLabel: string;
   personId: string;
   isSurvivorDefault: boolean;
+  observedAt: string;
 }
 
 export interface GoldenProfileEvidence {
@@ -81,6 +83,15 @@ export function buildGoldenProfileChoices(
 
 export function appendPageLimit(path: string): string {
   return `${path}${path.includes("?") ? "&" : "?"}limit=100`;
+}
+
+export async function loadGoldenProfileEvidence(personId: string): Promise<GoldenProfileEvidence> {
+  const [person, sourceRecords, identifiers] = await Promise.all([
+    bffFetch<Person>(`/bff/persons/${encodeURIComponent(personId)}`),
+    bffFetch<PersonSourceRecord[]>(appendPageLimit(`/bff/persons/${encodeURIComponent(personId)}/source-records`)),
+    bffFetch<PersonIdentifier[]>(appendPageLimit(`/bff/persons/${encodeURIComponent(personId)}/identifiers`)),
+  ]);
+  return { person, sourceRecords, identifiers };
 }
 
 export function selectionBody(choice: GoldenProfileChoice): GoldenProfileSelectionBody {
@@ -142,6 +153,7 @@ function sourceRecordFactChoices(
           sourceRecordPk: record.source_record_pk,
           identifierType: null,
           sourceLabel: `${record.source_system} ${record.source_record_id}`,
+          observedAt: record.observed_at,
         }),
       ];
     }),
@@ -167,6 +179,7 @@ function sourceRecordAddressChoices(
         sourceRecordPk: record.source_record_pk,
         identifierType: null,
         sourceLabel: `${record.source_system} ${record.source_record_id}`,
+        observedAt: "",
       }),
     ];
   });
@@ -191,6 +204,7 @@ function identifierChoices(
         sourceRecordPk: identifier.source_record_pks[0] ?? null,
         identifierType: identifier.identifier_type,
         sourceLabel: `${identifier.identifier_type} identifier`,
+        observedAt: "",
       }),
     ];
   });
@@ -205,6 +219,7 @@ function makeChoice(args: {
   sourceRecordPk: string | null;
   identifierType: string | null;
   sourceLabel: string;
+  observedAt: string;
 }): GoldenProfileChoice {
   return {
     key: [args.personId, args.fieldName, args.sourceKind, args.sourceRecordPk ?? "", args.value].join("|"),
@@ -217,6 +232,7 @@ function makeChoice(args: {
     sourceLabel: args.sourceLabel,
     personId: args.personId,
     isSurvivorDefault: args.personId === args.survivorPersonId,
+    observedAt: args.observedAt,
   };
 }
 

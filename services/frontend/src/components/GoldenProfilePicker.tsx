@@ -23,32 +23,59 @@ const FIELD_ORDER: readonly GoldenProfileFieldName[] = [
   "preferred_nric",
 ];
 
+const CHANGED_SX = {
+  "& .MuiOutlinedInput-root .MuiOutlinedInput-notchedOutline": { borderColor: "primary.main", borderWidth: 2 },
+  "& .MuiOutlinedInput-root:hover .MuiOutlinedInput-notchedOutline": { borderColor: "primary.main", borderWidth: 2 },
+  "& .MuiOutlinedInput-root.Mui-focused .MuiOutlinedInput-notchedOutline": { borderColor: "primary.main", borderWidth: 2 },
+  "& .MuiInputLabel-root": { color: "primary.main" },
+  "& .MuiInputLabel-root.Mui-focused": { color: "primary.main" },
+} as const;
+
 interface Props {
   choices: GoldenProfileChoice[];
   selectedChoiceKeys: Partial<Record<GoldenProfileFieldName, string>>;
+  originalChoiceKeys?: Partial<Record<GoldenProfileFieldName, string>>;
+  readOnlyValues?: Partial<Record<GoldenProfileFieldName, string>>;
   onChange: (fieldName: GoldenProfileFieldName, choiceKey: string) => void;
   disabled: boolean;
+  description?: string;
 }
 
 export default function GoldenProfilePicker({
   choices,
   selectedChoiceKeys,
+  originalChoiceKeys,
+  readOnlyValues,
   onChange,
   disabled,
+  description = "Choose the values to keep before confirming the merge.",
 }: Props): ReactElement {
   return (
     <Stack spacing={2}>
       <Box>
         <Typography variant="subtitle2">Golden profile values</Typography>
         <Typography variant="caption" color="text.secondary">
-          Choose the values to keep before confirming the merge.
+          {description}
         </Typography>
       </Box>
       {FIELD_ORDER.map((fieldName) => {
         const fieldChoices = choices.filter((choice) => choice.fieldName === fieldName);
         if (fieldChoices.length === 0) {
-          return null;
+          const readOnly = readOnlyValues?.[fieldName];
+          if (!readOnly) return null;
+          return (
+            <TextField
+              key={fieldName}
+              label={goldenProfileFieldLabel(fieldName)}
+              value={readOnly}
+              disabled
+              fullWidth
+            />
+          );
         }
+        const isChanged =
+          originalChoiceKeys !== undefined &&
+          selectedChoiceKeys[fieldName] !== originalChoiceKeys[fieldName];
         return (
           <TextField
             key={fieldName}
@@ -58,6 +85,7 @@ export default function GoldenProfilePicker({
             onChange={(event) => onChange(fieldName, event.target.value)}
             disabled={disabled}
             fullWidth
+            sx={isChanged ? CHANGED_SX : undefined}
           >
             {fieldChoices.map((choice) => (
               <MenuItem key={choice.key} value={choice.key}>

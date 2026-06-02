@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import time
@@ -15,6 +16,12 @@ from src.config import config
 # and Google's token-issuing servers. Google itself recommends 5 minutes;
 # we use 5 minutes so any plausible drift is absorbed.
 _NBF_TOLERANCE_SECS = 300
+
+# Google's cert endpoint carries Cache-Control: max-age=21600 (6 hours).
+# We cache for 1 hour to stay well within that window.
+_CERT_CACHE_TTL = 3600
+_cert_cache: dict[str, str] = {}
+_cert_cache_expires: float = 0.0
 
 
 class GoogleClaims(BaseModel):
@@ -70,6 +77,16 @@ def _get_google_public_certs() -> dict[str, str]:
     return certs
 
 
+async def _get_google_public_certs_cached() -> dict[str, str]:
+    global _cert_cache, _cert_cache_expires
+    if time.time() < _cert_cache_expires and _cert_cache:
+        return _cert_cache
+    certs = await asyncio.to_thread(_get_google_public_certs)
+    _cert_cache = certs
+    _cert_cache_expires = time.time() + _CERT_CACHE_TTL
+    return certs
+
+
 def _verify_rs256(signed_bytes: bytes, signature: bytes, public_key_pem: str) -> bool:
     """Verify an RS256 JWT signature using a PEM-encoded RSA public key."""
     from google.auth.crypt import rsa
@@ -78,7 +95,7 @@ def _verify_rs256(signed_bytes: bytes, signature: bytes, public_key_pem: str) ->
     return verifier.verify(signed_bytes, signature)
 
 
-def verify_google_id_token(token: str) -> GoogleClaims:
+async def verify_google_id_token(token: str) -> GoogleClaims:
     """Verify a Google OAuth 2.0 ID token. Raises ValueError on failure."""
     client_id = config.google_oauth_client_id
     if not client_id:
@@ -121,7 +138,7 @@ def verify_google_id_token(token: str) -> GoogleClaims:
 
     # --- Step 5: verify signature with Google's public keys ---
     kid = header.get("kid")
-    certs = _get_google_public_certs()
+    certs = await _get_google_public_certs_cached()
 
     # Build the signed content using the original (unmodified) header+payload
     signed_content = (token.split(".")[0] + "." + token.split(".")[1]).encode()

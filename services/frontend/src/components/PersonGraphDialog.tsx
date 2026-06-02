@@ -45,7 +45,6 @@ export default function PersonGraphDialog({
             initialPersonId={personId}
             initialElementId={elementId}
             initialTitle={title}
-            height="100%"
           />
         ) : null}
       </DialogContent>

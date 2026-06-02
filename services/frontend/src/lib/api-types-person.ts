@@ -257,6 +257,22 @@ export interface SurvivorshipOverrideRequestBody {
   reason: string;
 }
 
+export interface SurvivorshipOverrideBatchItem {
+  attribute_name: string;
+  selected_source_record_pk: string;
+}
+
+export interface SurvivorshipOverrideBatchRequestBody {
+  overrides: SurvivorshipOverrideBatchItem[];
+  reason: string;
+}
+
+export interface SurvivorshipOverrideBatchResponseBody {
+  person_id: string;
+  applied: string[];
+  status: string;
+}
+
 // --- Response bodies ---
 
 export interface ManualMergeResponseBody {

@@ -11,11 +11,13 @@ from src.graph.converters import to_str
 from src.graph.golden_profile import recompute_golden_profile_tx
 from src.graph.queries import (
     CHECK_SOURCE_RECORD_LINKED,
+    CREATE_OVERRIDE_AUDIT,
     GET_FACT_VALUE,
     GET_PERSON_OVERRIDES_FULL,
     UPDATE_GOLDEN_FIELD,
     UPDATE_OVERRIDES,
 )
+from src.repositories.protocols.survivorship import BatchOverrideResult
 
 
 def _parse_overrides(raw: object) -> dict[str, dict[str, str]]:
@@ -55,6 +57,22 @@ class Neo4jSurvivorshipRepository:
                 person_id,
                 attribute_name,
                 source_record_pk,
+                reason,
+                actor_id,
+            )
+
+    async def create_batch_overrides(
+        self,
+        person_id: str,
+        items: list[tuple[str, str]],
+        reason: str,
+        actor_id: str,
+    ) -> BatchOverrideResult:
+        async with get_session(write=True) as session:
+            return await session.execute_write(
+                _batch_override_tx,
+                person_id,
+                items,
                 reason,
                 actor_id,
             )
@@ -116,4 +134,81 @@ async def _override_tx(
         field_name=field_name,
         value=selected_value,
     )
+    await tx.run(
+        CREATE_OVERRIDE_AUDIT,
+        person_id=person_id,
+        actor_id=actor_id,
+        reason=reason,
+    )
     return "ok"
+
+
+async def _batch_override_tx(
+    tx: AsyncManagedTransaction,
+    person_id: str,
+    items: list[tuple[str, str]],
+    reason: str,
+    actor_id: str,
+) -> BatchOverrideResult:
+    person_record = await (await tx.run(GET_PERSON_OVERRIDES_FULL, person_id=person_id)).single()
+    if person_record is None:
+        return BatchOverrideResult(outcome="person_not_found")
+
+    # Validate every item before writing anything — keeps the transaction atomic.
+    validated: list[tuple[str, str, object]] = []
+    for attribute_name, source_record_pk in items:
+        linked = await (
+            await tx.run(
+                CHECK_SOURCE_RECORD_LINKED,
+                source_record_pk=source_record_pk,
+                person_id=person_id,
+            )
+        ).single()
+        if linked is None:
+            return BatchOverrideResult(outcome="sr_not_found", failed_attribute=attribute_name)
+
+        bare_attr = attribute_name.removeprefix("preferred_")
+        fact_record = await (
+            await tx.run(
+                GET_FACT_VALUE,
+                person_id=person_id,
+                attribute_name=bare_attr,
+                source_record_pk=source_record_pk,
+            )
+        ).single()
+        if fact_record is None:
+            return BatchOverrideResult(outcome="fact_not_found", failed_attribute=attribute_name)
+
+        validated.append((attribute_name, source_record_pk, fact_record["value"]))
+
+    now = datetime.now(UTC).isoformat()
+    overrides = _parse_overrides(person_record["overrides"])
+    for attribute_name, source_record_pk, _ in validated:
+        overrides[attribute_name] = {
+            "source_record_pk": source_record_pk,
+            "reason": reason,
+            "actor_type": "admin",
+            "actor_id": actor_id,
+            "created_at": now,
+        }
+    await tx.run(UPDATE_OVERRIDES, person_id=person_id, overrides=overrides)
+
+    for attribute_name, _, fact_value in validated:
+        field_name = (
+            attribute_name if attribute_name.startswith("preferred_") else f"preferred_{attribute_name}"
+        )
+        await tx.run(
+            UPDATE_GOLDEN_FIELD,
+            person_id=person_id,
+            field_name=field_name,
+            value=_fact_value_to_str(fact_value),
+        )
+
+    await tx.run(
+        CREATE_OVERRIDE_AUDIT,
+        person_id=person_id,
+        actor_id=actor_id,
+        reason=reason,
+    )
+
+    return BatchOverrideResult(outcome="ok")

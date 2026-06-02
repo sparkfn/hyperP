@@ -85,6 +85,7 @@ from src.graph.queries.persons import (
     SEARCH_PERSONS,
 )
 from src.graph.queries.persons_list import (
+    CREATE_PERSON_COMPLETENESS_INDEX,
     build_count_persons_query,
     build_list_persons_query,
 )
@@ -109,6 +110,7 @@ from src.graph.queries.sales import COUNT_PERSON_SALES, GET_PERSON_SALES
 from src.graph.queries.survivorship import (
     CHECK_PERSON_ACTIVE,
     CHECK_SOURCE_RECORD_LINKED,
+    CREATE_OVERRIDE_AUDIT,
     CREATE_RECOMPUTE_AUDIT,
     GET_BEST_ADDRESS,
     GET_BEST_IDENTIFIER,
@@ -146,6 +148,7 @@ __all__ = [
     "CREATE_INGEST_RUN_INLINE",
     "CREATE_NO_MATCH_LOCK_FROM_REVIEW",
     "CREATE_PERSON_PAIR_LOCK",
+    "CREATE_OVERRIDE_AUDIT",
     "CREATE_RECOMPUTE_AUDIT",
     "CREATE_REPORT",
     "CREATE_SOURCE_RECORD",
@@ -206,6 +209,7 @@ __all__ = [
     "UPDATE_REPORT",
     "build_count_persons_query",
     "build_list_persons_query",
+    "CREATE_PERSON_COMPLETENESS_INDEX",
     "get_entity_persons_query",
     "get_graph_query",
     "get_node_graph_query",
