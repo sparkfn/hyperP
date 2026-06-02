@@ -1,6 +1,8 @@
 // Hand-mirrored from services/api/src/types.py and routes/{merge,survivorship}.py.
 // Lives outside api-types.ts so the shared module stays untouched.
 
+import type { PersonEntitySummary } from "./api-types";
+
 export type SourceRecordType = "system" | "conversation";
 
 export interface PersonBankruptcyCase {
@@ -107,6 +109,8 @@ export interface PersonIdentifier {
   last_confirmed_at: string | null;
   source_system_key: string | null;
   source_record_ids: string[] | null;
+  entities: PersonEntitySummary[];
+  source_records: PersonSourceRecord[];
 }
 
 // --- Request bodies ---
@@ -150,4 +154,32 @@ export interface SurvivorshipOverrideResponseBody {
   attribute_name: string;
   selected_source_record_pk: string;
   status: string;
+}
+
+// --- Possible matches (shared-identifiers) ---
+
+export interface PersonSharedIdentifierCandidate {
+  person_id: string;
+  status: string;
+  preferred_full_name: string | null;
+  preferred_phone: string | null;
+  preferred_email: string | null;
+  preferred_dob: string | null;
+  profile_completeness_score: number;
+  /** "strong" = high-confidence identifiers (NRIC, phone); "weak" = lower-confidence */
+  identifier_strength: "strong" | "weak";
+  identifiers: Array<{ identifier_type: string; normalized_value: string }>;
+}
+
+export interface SharedIdentifierGroup {
+  identifier_type: string;
+  normalized_value: string;
+  candidate_source_records: PersonSourceRecord[];
+  current_person_source_records: PersonSourceRecord[];
+}
+
+export interface PossibleMatchDetail {
+  candidate_person_id: string;
+  candidate_name: string | null;
+  shared_identifier_groups: SharedIdentifierGroup[];
 }

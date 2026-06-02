@@ -336,11 +336,19 @@ class SharedIdentifier(BaseModel):
 class SharedAddress(BaseModel):
     address_id: str
     normalized_full: str | None = None
+    source_system_key: str | None = None
 
 
 class KnowsRelationship(BaseModel):
     relationship_label: str | None = None
     relationship_category: str
+    source_system_key: str | None = None
+
+
+class ConnectionSource(BaseModel):
+    """Source system + entity that established a particular connection."""
+    source_system_key: str
+    entity_display_name: str | None = None
 
 
 class PersonConnection(BaseModel):
@@ -351,6 +359,7 @@ class PersonConnection(BaseModel):
     shared_identifiers: list[SharedIdentifier] = Field(default_factory=list)
     shared_addresses: list[SharedAddress] = Field(default_factory=list)
     knows_relationships: list[KnowsRelationship] = Field(default_factory=list)
+    connection_sources: list[ConnectionSource] = Field(default_factory=list)
 
 
 class AuditEvent(BaseModel):

@@ -27,7 +27,8 @@ export const MOCK_PERSON_CONNECTIONS_BY_PERSON_ID: Record<string, PersonConnecti
       hops: 1,
       shared_identifiers: [{ identifier_type: "phone", normalized_value: "+6591234567" }],
       shared_addresses: [],
-      knows_relationships: [{ relationship_label: "Emergency contact", relationship_category: "family" }],
+      knows_relationships: [{ relationship_label: "Emergency contact", relationship_category: "family", source_system_key: "fundbox_consumer_backend" }],
+      connection_sources: [{ source_system_key: "fundbox_consumer_backend", entity_display_name: "Fundbox Consumer" }],
     },
     {
       person_id: "p-005",
@@ -35,8 +36,9 @@ export const MOCK_PERSON_CONNECTIONS_BY_PERSON_ID: Record<string, PersonConnecti
       preferred_full_name: "James Ong Beng Kiat",
       hops: 1,
       shared_identifiers: [],
-      shared_addresses: [{ address_id: "a-1", normalized_full: "18 Orchard Road #05-12, Singapore 238801" }],
-      knows_relationships: [{ relationship_label: "Referrer", relationship_category: "business" }],
+      shared_addresses: [{ address_id: "a-1", normalized_full: "18 Orchard Road #05-12, Singapore 238801", source_system_key: "speedzone_phppos" }],
+      knows_relationships: [{ relationship_label: "Referrer", relationship_category: "business", source_system_key: "speedzone_phppos" }],
+      connection_sources: [{ source_system_key: "speedzone_phppos", entity_display_name: "SpeedZone Retail" }],
     },
     {
       person_id: "p-007",
@@ -45,7 +47,8 @@ export const MOCK_PERSON_CONNECTIONS_BY_PERSON_ID: Record<string, PersonConnecti
       hops: 2,
       shared_identifiers: [],
       shared_addresses: [],
-      knows_relationships: [{ relationship_label: "Introduced by sales", relationship_category: "business" }],
+      knows_relationships: [{ relationship_label: "Introduced by sales", relationship_category: "business", source_system_key: "fundbox_consumer_backend" }],
+      connection_sources: [{ source_system_key: "fundbox_consumer_backend", entity_display_name: "Fundbox Consumer" }],
     },
   ],
   "p-002": [
@@ -56,7 +59,8 @@ export const MOCK_PERSON_CONNECTIONS_BY_PERSON_ID: Record<string, PersonConnecti
       hops: 1,
       shared_identifiers: [{ identifier_type: "phone", normalized_value: "+6591234567" }],
       shared_addresses: [],
-      knows_relationships: [{ relationship_label: "Emergency contact", relationship_category: "family" }],
+      knows_relationships: [{ relationship_label: "Emergency contact", relationship_category: "family", source_system_key: "fundbox_consumer_backend" }],
+      connection_sources: [{ source_system_key: "fundbox_consumer_backend", entity_display_name: "Fundbox Consumer" }],
     },
   ],
   "p-004": [
@@ -66,8 +70,9 @@ export const MOCK_PERSON_CONNECTIONS_BY_PERSON_ID: Record<string, PersonConnecti
       preferred_full_name: "James Ong Beng Kiat",
       hops: 1,
       shared_identifiers: [],
-      shared_addresses: [{ address_id: "a-4", normalized_full: "22 Jurong West St 41, Singapore 649414" }],
-      knows_relationships: [{ relationship_label: "Former housemate", relationship_category: "household" }],
+      shared_addresses: [{ address_id: "a-4", normalized_full: "22 Jurong West St 41, Singapore 649414", source_system_key: "eko_phppos" }],
+      knows_relationships: [{ relationship_label: "Former housemate", relationship_category: "household", source_system_key: "eko_phppos" }],
+      connection_sources: [{ source_system_key: "eko_phppos", entity_display_name: "EKO Commerce" }],
     },
     {
       person_id: "p-006",
@@ -77,6 +82,7 @@ export const MOCK_PERSON_CONNECTIONS_BY_PERSON_ID: Record<string, PersonConnecti
       shared_identifiers: [],
       shared_addresses: [],
       knows_relationships: [],
+      connection_sources: [],
     },
   ],
   "p-005": [
@@ -86,8 +92,9 @@ export const MOCK_PERSON_CONNECTIONS_BY_PERSON_ID: Record<string, PersonConnecti
       preferred_full_name: "Tan Wei Ming",
       hops: 1,
       shared_identifiers: [],
-      shared_addresses: [{ address_id: "a-1", normalized_full: "18 Orchard Road #05-12, Singapore 238801" }],
-      knows_relationships: [{ relationship_label: "Referrer", relationship_category: "business" }],
+      shared_addresses: [{ address_id: "a-1", normalized_full: "18 Orchard Road #05-12, Singapore 238801", source_system_key: "speedzone_phppos" }],
+      knows_relationships: [{ relationship_label: "Referrer", relationship_category: "business", source_system_key: "speedzone_phppos" }],
+      connection_sources: [{ source_system_key: "speedzone_phppos", entity_display_name: "SpeedZone Retail" }],
     },
     {
       person_id: "p-004",
@@ -95,8 +102,9 @@ export const MOCK_PERSON_CONNECTIONS_BY_PERSON_ID: Record<string, PersonConnecti
       preferred_full_name: "Sarah Lim Hui Ling",
       hops: 1,
       shared_identifiers: [],
-      shared_addresses: [{ address_id: "a-4", normalized_full: "22 Jurong West St 41, Singapore 649414" }],
-      knows_relationships: [{ relationship_label: "Former housemate", relationship_category: "household" }],
+      shared_addresses: [{ address_id: "a-4", normalized_full: "22 Jurong West St 41, Singapore 649414", source_system_key: "eko_phppos" }],
+      knows_relationships: [{ relationship_label: "Former housemate", relationship_category: "household", source_system_key: "eko_phppos" }],
+      connection_sources: [{ source_system_key: "eko_phppos", entity_display_name: "EKO Commerce" }],
     },
     {
       person_id: "p-007",
@@ -105,7 +113,8 @@ export const MOCK_PERSON_CONNECTIONS_BY_PERSON_ID: Record<string, PersonConnecti
       hops: 1,
       shared_identifiers: [{ identifier_type: "email", normalized_value: "james.ong@gmail.com" }],
       shared_addresses: [],
-      knows_relationships: [{ relationship_label: "Co-borrower", relationship_category: "finance" }],
+      knows_relationships: [{ relationship_label: "Co-borrower", relationship_category: "finance", source_system_key: "fundbox_consumer_backend" }],
+      connection_sources: [{ source_system_key: "fundbox_consumer_backend", entity_display_name: "Fundbox Consumer" }],
     },
     {
       person_id: "p-002",
@@ -114,7 +123,8 @@ export const MOCK_PERSON_CONNECTIONS_BY_PERSON_ID: Record<string, PersonConnecti
       hops: 2,
       shared_identifiers: [],
       shared_addresses: [],
-      knows_relationships: [{ relationship_label: "Referral lead", relationship_category: "business" }],
+      knows_relationships: [{ relationship_label: "Referral lead", relationship_category: "business", source_system_key: "fundbox_consumer_backend" }],
+      connection_sources: [{ source_system_key: "fundbox_consumer_backend", entity_display_name: "Fundbox Consumer" }],
     },
     {
       person_id: "p-008",
@@ -124,6 +134,7 @@ export const MOCK_PERSON_CONNECTIONS_BY_PERSON_ID: Record<string, PersonConnecti
       shared_identifiers: [],
       shared_addresses: [],
       knows_relationships: [],
+      connection_sources: [],
     },
   ],
   "p-007": [
@@ -134,7 +145,8 @@ export const MOCK_PERSON_CONNECTIONS_BY_PERSON_ID: Record<string, PersonConnecti
       hops: 2,
       shared_identifiers: [],
       shared_addresses: [],
-      knows_relationships: [{ relationship_label: "Introduced by sales", relationship_category: "business" }],
+      knows_relationships: [{ relationship_label: "Introduced by sales", relationship_category: "business", source_system_key: "fundbox_consumer_backend" }],
+      connection_sources: [{ source_system_key: "fundbox_consumer_backend", entity_display_name: "Fundbox Consumer" }],
     },
     {
       person_id: "p-002",
@@ -143,7 +155,8 @@ export const MOCK_PERSON_CONNECTIONS_BY_PERSON_ID: Record<string, PersonConnecti
       hops: 1,
       shared_identifiers: [],
       shared_addresses: [],
-      knows_relationships: [{ relationship_label: "Spouse", relationship_category: "family" }],
+      knows_relationships: [{ relationship_label: "Spouse", relationship_category: "family", source_system_key: "fundbox_consumer_backend" }],
+      connection_sources: [{ source_system_key: "fundbox_consumer_backend", entity_display_name: "Fundbox Consumer" }],
     },
     {
       person_id: "p-003",
@@ -152,7 +165,8 @@ export const MOCK_PERSON_CONNECTIONS_BY_PERSON_ID: Record<string, PersonConnecti
       hops: 1,
       shared_identifiers: [{ identifier_type: "phone", normalized_value: "+6593456789" }],
       shared_addresses: [],
-      knows_relationships: [{ relationship_label: "Guarantor", relationship_category: "finance" }],
+      knows_relationships: [{ relationship_label: "Guarantor", relationship_category: "finance", source_system_key: "fundbox_consumer_backend" }],
+      connection_sources: [{ source_system_key: "fundbox_consumer_backend", entity_display_name: "Fundbox Consumer" }],
     },
     {
       person_id: "p-004",
@@ -161,7 +175,8 @@ export const MOCK_PERSON_CONNECTIONS_BY_PERSON_ID: Record<string, PersonConnecti
       hops: 2,
       shared_identifiers: [],
       shared_addresses: [],
-      knows_relationships: [{ relationship_label: "Past employee", relationship_category: "business" }],
+      knows_relationships: [{ relationship_label: "Past employee", relationship_category: "business", source_system_key: "fundbox_consumer_backend" }],
+      connection_sources: [{ source_system_key: "fundbox_consumer_backend", entity_display_name: "Fundbox Consumer" }],
     },
     {
       person_id: "p-005",
@@ -170,7 +185,8 @@ export const MOCK_PERSON_CONNECTIONS_BY_PERSON_ID: Record<string, PersonConnecti
       hops: 1,
       shared_identifiers: [{ identifier_type: "email", normalized_value: "james.ong@gmail.com" }],
       shared_addresses: [],
-      knows_relationships: [{ relationship_label: "Co-borrower", relationship_category: "finance" }],
+      knows_relationships: [{ relationship_label: "Co-borrower", relationship_category: "finance", source_system_key: "fundbox_consumer_backend" }],
+      connection_sources: [{ source_system_key: "fundbox_consumer_backend", entity_display_name: "Fundbox Consumer" }],
     },
     {
       person_id: "p-006",
@@ -178,8 +194,9 @@ export const MOCK_PERSON_CONNECTIONS_BY_PERSON_ID: Record<string, PersonConnecti
       preferred_full_name: "Nurul Ain Binte Aziz",
       hops: 2,
       shared_identifiers: [],
-      shared_addresses: [{ address_id: "a-7", normalized_full: "1 Marina Bay FC #25-01, Singapore 018981" }],
-      knows_relationships: [{ relationship_label: "Emergency contact", relationship_category: "family" }],
+      shared_addresses: [{ address_id: "a-7", normalized_full: "1 Marina Bay FC #25-01, Singapore 018981", source_system_key: "speedzone_phppos" }],
+      knows_relationships: [{ relationship_label: "Emergency contact", relationship_category: "family", source_system_key: "fundbox_consumer_backend" }],
+      connection_sources: [{ source_system_key: "fundbox_consumer_backend", entity_display_name: "Fundbox Consumer" }, { source_system_key: "speedzone_phppos", entity_display_name: "SpeedZone Retail" }],
     },
     {
       person_id: "p-008",
@@ -188,7 +205,8 @@ export const MOCK_PERSON_CONNECTIONS_BY_PERSON_ID: Record<string, PersonConnecti
       hops: 1,
       shared_identifiers: [],
       shared_addresses: [],
-      knows_relationships: [{ relationship_label: "Fraud review link", relationship_category: "risk" }],
+      knows_relationships: [{ relationship_label: "Fraud review link", relationship_category: "risk", source_system_key: "fundbox_consumer_backend" }],
+      connection_sources: [{ source_system_key: "fundbox_consumer_backend", entity_display_name: "Fundbox Consumer" }],
     },
     {
       person_id: "p-009",
@@ -198,6 +216,7 @@ export const MOCK_PERSON_CONNECTIONS_BY_PERSON_ID: Record<string, PersonConnecti
       shared_identifiers: [],
       shared_addresses: [],
       knows_relationships: [],
+      connection_sources: [],
     },
     {
       person_id: "p-010",
@@ -206,7 +225,8 @@ export const MOCK_PERSON_CONNECTIONS_BY_PERSON_ID: Record<string, PersonConnecti
       hops: 2,
       shared_identifiers: [{ identifier_type: "phone", normalized_value: "+6597890123" }],
       shared_addresses: [],
-      knows_relationships: [{ relationship_label: "Portfolio contact", relationship_category: "business" }],
+      knows_relationships: [{ relationship_label: "Portfolio contact", relationship_category: "business", source_system_key: "fundbox_consumer_backend" }],
+      connection_sources: [{ source_system_key: "fundbox_consumer_backend", entity_display_name: "Fundbox Consumer" }],
     },
   ],
 };
@@ -396,12 +416,12 @@ export const MOCK_OAUTH_CLIENTS: OAuthClient[] = [
 // ── Person Detail: Identifiers ────────────────────────────────────────────────
 
 export const MOCK_IDENTIFIERS: PersonIdentifier[] = [
-  { identifier_type: "phone",  normalized_value: "+6591234567",           is_active: true,  is_verified: true,  last_confirmed_at: "2026-05-06T08:00:00Z", source_system_key: "speedzone-phppos", source_record_ids: ["SPZ-CUST-00123"] },
-  { identifier_type: "phone",  normalized_value: "+6587654321",           is_active: false, is_verified: false, last_confirmed_at: "2026-04-18T09:30:00Z", source_system_key: "whatsapp-main",    source_record_ids: ["WA-2026-05-001"] },
-  { identifier_type: "email",  normalized_value: "weiming.tan@gmail.com", is_active: true,  is_verified: true,  last_confirmed_at: "2026-05-01T00:00:00Z", source_system_key: "fundbox-bitrix",   source_record_ids: ["BITRIX-CONTACT-8821"] },
-  { identifier_type: "email",  normalized_value: "wm.tan@company.sg",     is_active: false, is_verified: false, last_confirmed_at: null,                   source_system_key: "speedzone-phppos", source_record_ids: ["BITRIX-CONTACT-8821"] },
-  { identifier_type: "nric",   normalized_value: "S8512****C",            is_active: true,  is_verified: true,  last_confirmed_at: "2024-01-10T00:00:00Z", source_system_key: "fundbox-bitrix",   source_record_ids: ["BITRIX-CONTACT-8821"] },
-  { identifier_type: "member", normalized_value: "SPZ-00123",             is_active: true,  is_verified: false, last_confirmed_at: "2025-08-15T00:00:00Z", source_system_key: "speedzone-phppos", source_record_ids: ["SPZ-CUST-00123"] },
+  { identifier_type: "phone",  normalized_value: "+6591234567",           is_active: true,  is_verified: true,  last_confirmed_at: "2026-05-06T08:00:00Z", source_system_key: "speedzone_phppos", source_record_ids: ["SPZ-CUST-00123"],      entities: [{ entity_key: "speedzone", display_name: "SpeedZone Retail",  entity_type: "retail", country_code: "SG", is_active: true, source_record_count: 1 }], source_records: [] },
+  { identifier_type: "phone",  normalized_value: "+6587654321",           is_active: false, is_verified: false, last_confirmed_at: "2026-04-18T09:30:00Z", source_system_key: "whatsapp_chat",    source_record_ids: ["WA-2026-05-001"],       entities: [], source_records: [] },
+  { identifier_type: "email",  normalized_value: "weiming.tan@gmail.com", is_active: true,  is_verified: true,  last_confirmed_at: "2026-05-01T00:00:00Z", source_system_key: "fundbox_consumer_backend", source_record_ids: ["BITRIX-CONTACT-8821"], entities: [{ entity_key: "fundbox", display_name: "Fundbox Consumer",   entity_type: "crm",    country_code: "SG", is_active: true, source_record_count: 1 }], source_records: [] },
+  { identifier_type: "email",  normalized_value: "wm.tan@company.sg",     is_active: false, is_verified: false, last_confirmed_at: null,                   source_system_key: "speedzone_phppos", source_record_ids: ["BITRIX-CONTACT-8821"], entities: [{ entity_key: "speedzone", display_name: "SpeedZone Retail",  entity_type: "retail", country_code: "SG", is_active: true, source_record_count: 1 }], source_records: [] },
+  { identifier_type: "nric",   normalized_value: "S8512345C",             is_active: true,  is_verified: true,  last_confirmed_at: "2024-01-10T00:00:00Z", source_system_key: "fundbox_consumer_backend", source_record_ids: ["BITRIX-CONTACT-8821"], entities: [{ entity_key: "fundbox", display_name: "Fundbox Consumer",   entity_type: "crm",    country_code: "SG", is_active: true, source_record_count: 1 }], source_records: [] },
+  { identifier_type: "member", normalized_value: "SPZ-00123",             is_active: true,  is_verified: false, last_confirmed_at: "2025-08-15T00:00:00Z", source_system_key: "speedzone_phppos", source_record_ids: ["SPZ-CUST-00123"],      entities: [{ entity_key: "speedzone", display_name: "SpeedZone Retail",  entity_type: "retail", country_code: "SG", is_active: true, source_record_count: 1 }], source_records: [] },
 ];
 
 // ── Person Detail: Source Records ────────────────────────────────────────────

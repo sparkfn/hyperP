@@ -168,24 +168,34 @@ RETURN other.person_id AS person_id,
        1 AS hops,
        shared_identifiers,
        [] AS shared_addresses,
-       [] AS knows_relationships
+       [] AS knows_relationships,
+       [] AS connection_sources
 ORDER BY other.preferred_full_name
 SKIP $skip LIMIT $limit
 """
 
 GET_PERSON_CONNECTIONS_ADDRESS = """
-MATCH (p:Person {person_id: $person_id})-[:LIVES_AT]->(addr:Address)
-  <-[:LIVES_AT]-(other:Person)
+MATCH (p:Person {person_id: $person_id})-[:LIVES_AT]->(addr:Address)<-[la:LIVES_AT]-(other:Person)
 WHERE other.person_id <> p.person_id
   AND other.status <> 'merged'
-WITH other, collect(DISTINCT {address_id: addr.address_id, normalized_full: addr.normalized_full}) AS shared_addresses
+WITH other,
+     collect(DISTINCT {address_id: addr.address_id, normalized_full: addr.normalized_full, source_system_key: la.source_system_key}) AS shared_addresses,
+     [k IN collect(DISTINCT la.source_system_key) WHERE k IS NOT NULL] AS source_keys
+CALL {
+  WITH source_keys
+  UNWIND source_keys AS ssk
+  OPTIONAL MATCH (ss:SourceSystem {source_key: ssk})-[:OPERATED_BY]->(e:Entity)
+  WITH ssk, e.display_name AS entity_display_name
+  RETURN collect({source_system_key: ssk, entity_display_name: entity_display_name}) AS connection_sources
+}
 RETURN other.person_id AS person_id,
        other.status AS status,
        other.preferred_full_name AS preferred_full_name,
        1 AS hops,
        [] AS shared_identifiers,
        shared_addresses,
-       [] AS knows_relationships
+       [] AS knows_relationships,
+       connection_sources
 ORDER BY other.preferred_full_name
 SKIP $skip LIMIT $limit
 """
@@ -197,39 +207,62 @@ WHERE other.person_id <> p.person_id
 WITH other,
   collect(DISTINCT {
     relationship_label: k.relationship_label,
-    relationship_category: k.relationship_category
-  }) AS knows_rels
+    relationship_category: k.relationship_category,
+    source_system_key: k.source_system_key
+  }) AS knows_rels,
+  [sk IN collect(DISTINCT k.source_system_key) WHERE sk IS NOT NULL] AS source_keys
+CALL {
+  WITH source_keys
+  UNWIND source_keys AS ssk
+  OPTIONAL MATCH (ss:SourceSystem {source_key: ssk})-[:OPERATED_BY]->(e:Entity)
+  WITH ssk, e.display_name AS entity_display_name
+  RETURN collect({source_system_key: ssk, entity_display_name: entity_display_name}) AS connection_sources
+}
 RETURN other.person_id AS person_id,
        other.status AS status,
        other.preferred_full_name AS preferred_full_name,
        1 AS hops,
        [] AS shared_identifiers,
        [] AS shared_addresses,
-       knows_rels AS knows_relationships
+       knows_rels AS knows_relationships,
+       connection_sources
 ORDER BY other.preferred_full_name
 SKIP $skip LIMIT $limit
 """
 
 GET_PERSON_CONNECTIONS_ALL = """
 MATCH (p:Person {person_id: $person_id})
-OPTIONAL MATCH (p)-[:LIVES_AT]->(addr:Address)<-[:LIVES_AT]-(oa:Person)
+OPTIONAL MATCH (p)-[:LIVES_AT]->(addr:Address)<-[la:LIVES_AT]-(oa:Person)
   WHERE oa.person_id <> p.person_id AND oa.status <> 'merged'
 OPTIONAL MATCH (p)-[k:KNOWS]-(ok:Person)
   WHERE ok.person_id <> p.person_id AND ok.status <> 'merged'
 WITH p,
-  collect(DISTINCT CASE WHEN oa IS NOT NULL THEN {person_id: oa.person_id, status: oa.status, preferred_full_name: oa.preferred_full_name, address_id: addr.address_id, normalized_full: addr.normalized_full} END) AS addr_links,
-  collect(DISTINCT CASE WHEN ok IS NOT NULL THEN {person_id: ok.person_id, status: ok.status, preferred_full_name: ok.preferred_full_name, relationship_label: k.relationship_label, relationship_category: k.relationship_category} END) AS knows_links
+  collect(DISTINCT CASE WHEN oa IS NOT NULL THEN {person_id: oa.person_id, status: oa.status, preferred_full_name: oa.preferred_full_name, address_id: addr.address_id, normalized_full: addr.normalized_full, source_system_key: la.source_system_key} END) AS addr_links,
+  collect(DISTINCT CASE WHEN ok IS NOT NULL THEN {person_id: ok.person_id, status: ok.status, preferred_full_name: ok.preferred_full_name, relationship_label: k.relationship_label, relationship_category: k.relationship_category, source_system_key: k.source_system_key} END) AS knows_links
 UNWIND (addr_links + knows_links) AS link
 WITH link WHERE link IS NOT NULL
 WITH link.person_id AS person_id,
      link.status AS status,
      link.preferred_full_name AS preferred_full_name,
-     collect(DISTINCT CASE WHEN link.address_id IS NOT NULL THEN {address_id: link.address_id, normalized_full: link.normalized_full} END) AS shared_addresses_raw,
-     collect(DISTINCT CASE WHEN link.relationship_category IS NOT NULL THEN {relationship_label: link.relationship_label, relationship_category: link.relationship_category} END) AS knows_raw
+     collect(DISTINCT CASE WHEN link.address_id IS NOT NULL THEN {address_id: link.address_id, normalized_full: link.normalized_full, source_system_key: link.source_system_key} END) AS shared_addresses_raw,
+     collect(DISTINCT CASE WHEN link.relationship_category IS NOT NULL THEN {relationship_label: link.relationship_label, relationship_category: link.relationship_category, source_system_key: link.source_system_key} END) AS knows_raw,
+     [sk IN collect(DISTINCT link.source_system_key) WHERE sk IS NOT NULL] AS source_keys
+WITH person_id, status, preferred_full_name,
+     [x IN shared_addresses_raw WHERE x IS NOT NULL] AS shared_addresses,
+     [x IN knows_raw WHERE x IS NOT NULL] AS knows_relationships,
+     source_keys
+CALL {
+  WITH source_keys
+  UNWIND source_keys AS ssk
+  OPTIONAL MATCH (ss:SourceSystem {source_key: ssk})-[:OPERATED_BY]->(e:Entity)
+  WITH ssk, e.display_name AS entity_display_name
+  RETURN collect({source_system_key: ssk, entity_display_name: entity_display_name}) AS connection_sources
+}
 RETURN person_id, status, preferred_full_name, 1 AS hops,
        [] AS shared_identifiers,
-       [x IN shared_addresses_raw WHERE x IS NOT NULL] AS shared_addresses,
-       [x IN knows_raw WHERE x IS NOT NULL] AS knows_relationships
+       shared_addresses,
+       knows_relationships,
+       connection_sources
 ORDER BY preferred_full_name
 SKIP $skip LIMIT $limit
 """

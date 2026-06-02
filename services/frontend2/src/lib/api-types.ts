@@ -83,11 +83,18 @@ export interface SharedIdentifier {
 export interface SharedAddress {
   address_id: string;
   normalized_full: string | null;
+  source_system_key: string | null;
 }
 
 export interface KnowsRelationship {
   relationship_label: string | null;
   relationship_category: string;
+  source_system_key: string | null;
+}
+
+export interface ConnectionSource {
+  source_system_key: string;
+  entity_display_name: string | null;
 }
 
 export interface PersonConnection {
@@ -98,6 +105,7 @@ export interface PersonConnection {
   shared_identifiers: SharedIdentifier[];
   shared_addresses: SharedAddress[];
   knows_relationships: KnowsRelationship[];
+  connection_sources: ConnectionSource[];
 }
 
 export interface SalesProduct {
