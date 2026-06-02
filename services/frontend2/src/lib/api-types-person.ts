@@ -54,6 +54,15 @@ export interface SourceRecordNormalizedPayload {
   summary?: string;
 }
 
+export interface ChatMessage {
+  timestamp: string;
+  timestamp_display: string;
+  speaker: string;
+  phone: string | null;
+  role: string | null;
+  text: string;
+}
+
 export interface PersonSourceRecord {
   source_record_pk: string;
   source_system: string;
@@ -69,6 +78,14 @@ export interface PersonSourceRecord {
   observed_at: string;
   ingested_at: string;
   normalized_payload: SourceRecordNormalizedPayload | null;
+  // raw_payload/conversation_ref are free-form source JSON with no fixed schema;
+  // the UI only pretty-prints them via JSON.stringify, never indexes them by key.
+  raw_payload: Record<string, unknown> | null;
+  conversation_ref: Record<string, unknown> | null;
+  observed_at_display: string;
+  ingested_at_display: string;
+  extraction_confidence_display: string | null;
+  chat_transcript: ChatMessage[] | null;
 }
 
 export interface PersonAuditEvent {
@@ -182,4 +199,11 @@ export interface PossibleMatchDetail {
   candidate_person_id: string;
   candidate_name: string | null;
   shared_identifier_groups: SharedIdentifierGroup[];
+}
+
+export interface SourceRecordEntityFacet {
+  source_system: string;
+  entity_key: string | null;
+  entity_display_name: string | null;
+  count: number;
 }

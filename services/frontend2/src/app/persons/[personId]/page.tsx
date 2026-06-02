@@ -5,6 +5,7 @@ import Link from "next/link";
 import { notFound, useSearchParams } from "next/navigation";
 import type { Person, PersonConnection, SalesOrder } from "@/lib/api-types";
 import type {
+  ChatMessage,
   ManualMergeRequestBody,
   ManualMergeResponseBody,
   PersonAuditEvent,
@@ -15,6 +16,7 @@ import type {
   PersonSourceRecord,
   PossibleMatchDetail,
   SharedIdentifierGroup,
+  SourceRecordEntityFacet,
   SurvivorshipOverrideRequestBody,
 } from "@/lib/api-types-person";
 import { bffFetch, BffError, bffFetchEnvelope } from "@/lib/api-client";
@@ -27,7 +29,7 @@ import PersonFocusedGraph from "@/components/PersonFocusedGraph";
 import PersonGraphDialog from "@/components/PersonGraphDialog";
 import styles from "./person.module.css";
 
-type Tab = "sales" | "connections" | "identifiers" | "matches" | "timeline" | "graph";
+type Tab = "sales" | "connections" | "identifiers" | "source-records" | "matches" | "timeline" | "graph";
 
 type DetailData = {
   identifiers: PersonIdentifier[];
@@ -35,6 +37,7 @@ type DetailData = {
   sales: SalesOrder[];
   audit: PersonAuditEvent[];
   bankruptcyCases: PersonBankruptcyCase[];
+  sourceRecordFacets: SourceRecordEntityFacet[];
 };
 
 
@@ -1744,6 +1747,241 @@ function ConnMetaLine({ hops, sharedIdentifiers, sharedAddresses }: ConnMetaLine
 }
 
 
+function srEntityLabel(facet: SourceRecordEntityFacet): string {
+  return facet.entity_display_name ?? facet.entity_key ?? titleCase(facet.source_system);
+}
+
+/** Staff/agent/sender messages align right; everyone else (customer/prospect/unknown) left. */
+function srChatSide(role: string | null): "agent" | "customer" {
+  if (role === null) return "customer";
+  const r = role.toLowerCase();
+  return r.includes("staff") || r.includes("agent") || r.includes("sender") ? "agent" : "customer";
+}
+
+/** Distinct bubble colors assigned per speaker, by order of first appearance — so
+ *  several unknown-role speakers (all on the left) stay visually distinguishable. */
+const CHAT_BUBBLE_COLORS = ["#4361ee", "#7c3aed", "#0891b2", "#059669", "#d97706", "#db2777", "#0d9488", "#9333ea"] as const;
+const CHAT_FALLBACK_COLOR = "#4361ee";
+
+function buildSpeakerColors(messages: ChatMessage[]): Map<string, string> {
+  const map = new Map<string, string>();
+  messages.forEach((m) => {
+    if (!map.has(m.speaker)) {
+      map.set(m.speaker, CHAT_BUBBLE_COLORS[map.size % CHAT_BUBBLE_COLORS.length] ?? CHAT_FALLBACK_COLOR);
+    }
+  });
+  return map;
+}
+
+function SourceRecordRow({ record }: { record: PersonSourceRecord }): ReactElement {
+  const [open, setOpen] = useState(false);
+  const [rawOpen, setRawOpen] = useState(false);
+  const speakerColors = useMemo(() => buildSpeakerColors(record.chat_transcript ?? []), [record.chat_transcript]);
+  const entity = record.entity_display_name ?? record.entity_key ?? "Unknown entity";
+  const payload = record.normalized_payload;
+  const identifiers = payload?.identifiers ?? [];
+  const attributes = payload?.attributes ?? [];
+  const address = payload?.address?.normalized_full ?? null;
+
+  const meta: Array<[string, string]> = [
+    ["Source system", titleCase(record.source_system)],
+    ["Entity", entity],
+    ["Record ID", record.source_record_id],
+    ["Version", record.source_record_version ?? "—"],
+    ["Type", titleCase(record.record_type)],
+    ["Link status", titleCase(record.link_status)],
+    ["Observed", record.observed_at_display || "—"],
+    ["Ingested", record.ingested_at_display || "—"],
+    ["Record PK", record.source_record_pk],
+  ];
+  if (record.record_type === "conversation") {
+    if (record.extraction_method) meta.push(["Extraction", titleCase(record.extraction_method)]);
+    if (record.extraction_confidence_display) meta.push(["Confidence", record.extraction_confidence_display]);
+  }
+
+  return (
+    <div className={`${styles.srcRow} ${open ? styles.srcRowOpen : ""}`}>
+      <div
+        className={styles.srcMain}
+        onClick={() => setOpen((v) => !v)}
+        role="button"
+        tabIndex={0}
+        onKeyDown={(e) => e.key === "Enter" && setOpen((v) => !v)}
+      >
+        <div className={styles.idBody}>
+          <span className={styles.idValue}>{titleCase(record.source_system)}</span>
+          <div className={styles.connMeta}>
+            <span>{entity}</span>
+            <span className={styles.connMetaSep}>·</span>
+            <span>{record.source_record_id}</span>
+            {record.source_record_version && (
+              <><span className={styles.connMetaSep}>·</span><span>v{record.source_record_version}</span></>
+            )}
+            <span className={styles.connMetaSep}>·</span>
+            <span>{record.observed_at_display || "—"}</span>
+          </div>
+        </div>
+        <div className={styles.idBadges}>
+          <span className={record.record_type === "conversation" ? styles.srBadgeConv : styles.srBadgeSys}>{record.record_type}</span>
+          <span className={styles.srBadgeLink}>{record.link_status}</span>
+          <svg className={`${styles.srcChevron} ${open ? styles.srcChevronOpen : ""}`} width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <path d="M6 9l6 6 6-6" />
+          </svg>
+        </div>
+      </div>
+      {open && (
+        <div className={styles.idDetailPanel}>
+          <div className={styles.idDetailSection}>
+            <div className={styles.idDetailSectionTitle}>Record</div>
+            <div className={styles.srMetaGrid}>
+              {meta.map(([label, value]) => (
+                <div key={label} className={styles.srMetaRow}>
+                  <span className={styles.srMetaLabel}>{label}</span>
+                  <span className={styles.srMetaValue}>{value}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div className={styles.idDetailSection}>
+            <div className={styles.idDetailSectionTitle}>Normalized payload</div>
+            {identifiers.length === 0 && attributes.length === 0 && address === null ? (
+              <div className={styles.srMetaValue}>—</div>
+            ) : (
+              <>
+                {identifiers.length > 0 && (
+                  <div className={styles.srPills}>
+                    {identifiers.map((id, i) => (
+                      <span key={`id-${i}`} className={styles.srPill}>
+                        {titleCase(id.identifier_type ?? "")} · {id.normalized_value ?? "—"}{id.is_verified ? " ✓" : ""}
+                      </span>
+                    ))}
+                  </div>
+                )}
+                {address !== null && (
+                  <div className={styles.srMetaRow}><span className={styles.srMetaLabel}>Address</span><span className={styles.srMetaValue}>{address}</span></div>
+                )}
+                {attributes.length > 0 && (
+                  <div className={styles.srPills}>
+                    {attributes.map((attr, i) => (
+                      <span key={`attr-${i}`} className={styles.srPill}>{titleCase(attr.attribute_name ?? "")} · {attr.attribute_value ?? "—"}</span>
+                    ))}
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+
+          {record.chat_transcript !== null && record.chat_transcript.length > 0 && (
+            <div className={styles.idDetailSection}>
+              <div className={styles.idDetailSectionTitle}>Conversation <span className={styles.srMetaLabel}>· {record.chat_transcript.length} {record.chat_transcript.length === 1 ? "message" : "messages"}</span></div>
+              <div className={styles.srChat}>
+                {record.chat_transcript.map((m, i) => {
+                  const color = speakerColors.get(m.speaker) ?? CHAT_FALLBACK_COLOR;
+                  return (
+                    <div
+                      key={i}
+                      className={`${styles.srMsg} ${srChatSide(m.role) === "agent" ? styles.srMsgAgent : styles.srMsgCustomer}`}
+                      style={{ borderColor: color, background: `${color}1f` }}
+                    >
+                      <div className={styles.srMsgHead}>
+                        <span className={styles.srMsgSpeaker} style={{ color }}>{m.speaker || "Unknown"}</span>
+                        {m.phone !== null && <span className={styles.srMsgPhone}>{m.phone}</span>}
+                        {m.role !== null && <span className={styles.srMsgRole}>{titleCase(m.role)}</span>}
+                        <span className={styles.srMsgTime}>{m.timestamp_display || m.timestamp}</span>
+                      </div>
+                      <div className={styles.srMsgText}>{m.text}</div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {record.raw_payload !== null && (
+            <div className={styles.idDetailSection}>
+              <button type="button" className={styles.srRawToggle} onClick={() => setRawOpen((v) => !v)} aria-expanded={rawOpen}>
+                <svg className={`${styles.srcChevron} ${rawOpen ? styles.srcChevronOpen : ""}`} width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M6 9l6 6 6-6" /></svg>
+                Raw payload <span className={styles.srMetaLabel}>(original source JSON)</span>
+              </button>
+              {rawOpen && <pre className={styles.srJson}>{JSON.stringify(record.raw_payload, null, 2)}</pre>}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** List + pagination for one entity filter. Owns the paginated hook so the
+ *  parent can remount it (key=activeEntity) to reset pagination on filter change. */
+function SourceRecordsList({ basePath }: { basePath: string }): ReactElement {
+  const { rows, loading, error, from, to, total, hasPrev, hasNext, goNext, goPrev } =
+    usePaginatedFetch<PersonSourceRecord>(basePath);
+  const records = rows ?? [];
+
+  if (loading) return <SkeletonRows />;
+  if (error !== null) return <div className={styles.tabError}>{error}</div>;
+  if (records.length === 0) return <TabEmptyState message="No source records on file." />;
+
+  return (
+    <>
+      <div className={styles.idList}>
+        {records.map((record) => (
+          <SourceRecordRow key={record.source_record_pk} record={record} />
+        ))}
+      </div>
+      {(hasPrev || hasNext) && <TabPagination from={from} to={to} total={total} hasPrev={hasPrev} hasNext={hasNext} onPrev={goPrev} onNext={goNext} />}
+    </>
+  );
+}
+
+function SourceRecordsTab({ personId, facets, onTotalLoaded }: { personId: string; facets: SourceRecordEntityFacet[]; onTotalLoaded: (n: number) => void }): ReactElement {
+  const [activeEntity, setActiveEntity] = useState<string | null>(null);
+  const facetTotal = facets.reduce((sum, f) => sum + f.count, 0);
+  const basePath = activeEntity === null
+    ? `/bff/persons/${encodeURIComponent(personId)}/source-records`
+    : `/bff/persons/${encodeURIComponent(personId)}/source-records?entity_key=${encodeURIComponent(activeEntity)}`;
+
+  useEffect(() => { onTotalLoaded(facetTotal); }, [facetTotal, onTotalLoaded]);
+
+  return (
+    <section className={styles.contentCard}>
+      <div className={styles.connHeader}>
+        <span className={styles.connHeaderTitle}>Source records</span>
+        <span className={styles.connHeaderDot}>·</span>
+        <span className={styles.connHeaderCount}>{facetTotal} {facetTotal === 1 ? "record" : "records"}</span>
+      </div>
+
+      {facets.length > 0 && (
+        <div className={styles.srFilter}>
+          <button type="button" className={`${styles.srChip} ${activeEntity === null ? styles.srChipOn : ""}`} onClick={() => setActiveEntity(null)}>
+            All · {facetTotal}
+          </button>
+          {facets.map((f) => {
+            const key = f.entity_key ?? f.source_system;
+            return (
+              <button
+                key={`${f.source_system}:${key}`}
+                type="button"
+                className={`${styles.srChip} ${activeEntity === f.entity_key && f.entity_key !== null ? styles.srChipOn : ""}`}
+                onClick={() => setActiveEntity(f.entity_key)}
+                disabled={f.entity_key === null}
+                title={f.entity_key === null ? "No entity key — cannot filter" : undefined}
+              >
+                {srEntityLabel(f)} · {f.count}
+              </button>
+            );
+          })}
+        </div>
+      )}
+
+      {/* key remounts the list when the filter changes, resetting pagination to page 1 */}
+      <SourceRecordsList key={activeEntity ?? "__all__"} basePath={basePath} />
+    </section>
+  );
+}
+
 function IdentifiersTab({ identifiers }: { identifiers: PersonIdentifier[] }): ReactElement {
   const count = identifiers.length;
   const [revealedSet, setRevealedSet] = useState<Set<number>>(new Set());
@@ -2190,9 +2428,10 @@ const EMPTY_DETAIL: DetailData = {
   sales: [],
   audit: [],
   bankruptcyCases: [],
+  sourceRecordFacets: [],
 };
 
-const VALID_TABS = new Set<Tab>(["sales", "connections", "identifiers", "matches", "timeline", "graph"]);
+const VALID_TABS = new Set<Tab>(["sales", "connections", "identifiers", "source-records", "matches", "timeline", "graph"]);
 
 function parseTabParam(value: string | null): Tab {
   if (value !== null && VALID_TABS.has(value as Tab)) return value as Tab;
@@ -2394,7 +2633,7 @@ export default function PersonDetailPage({ params }: { params: Promise<{ personI
         if (cancelled) return;
         setPerson(p);
 
-        const [idEnv, srcEnv, salesEnv, auditEnv, matchesEnv, connsEnv, bkEnv, sharedEnv] = await Promise.all([
+        const [idEnv, srcEnv, salesEnv, auditEnv, matchesEnv, connsEnv, bkEnv, sharedEnv, facetsEnv] = await Promise.all([
           bffFetchEnvelope<PersonIdentifier[]>(`/bff/persons/${encodeURIComponent(personId)}/identifiers`).catch(catchNotFound),
           bffFetchEnvelope<PersonSourceRecord[]>(`/bff/persons/${encodeURIComponent(personId)}/source-records`).catch(catchNotFound),
           bffFetchEnvelope<SalesOrder[]>(`/bff/persons/${encodeURIComponent(personId)}/sales`).catch(catchNotFound),
@@ -2403,6 +2642,7 @@ export default function PersonDetailPage({ params }: { params: Promise<{ personI
           bffFetchEnvelope<unknown[]>(`/bff/persons/${encodeURIComponent(personId)}/connections?limit=1`).catch(catchNotFound),
           bffFetchEnvelope<PersonBankruptcyCase[]>(`/bff/persons/${encodeURIComponent(personId)}/bankruptcy-cases`).catch(catchNotFound),
           bffFetchEnvelope<unknown[]>(`/bff/persons/${encodeURIComponent(personId)}/shared-identifiers?limit=1`).catch(catchNotFound),
+          bffFetchEnvelope<SourceRecordEntityFacet[]>(`/bff/persons/${encodeURIComponent(personId)}/source-record-entities`).catch(catchNotFound),
         ]);
 
         if (cancelled) return;
@@ -2412,6 +2652,7 @@ export default function PersonDetailPage({ params }: { params: Promise<{ personI
           sales: salesEnv?.data ?? [],
           audit: auditEnv?.data ?? [],
           bankruptcyCases: bkEnv?.data ?? [],
+          sourceRecordFacets: facetsEnv?.data ?? [],
         });
         const decisionsCount = matchesEnv?.meta.total_count ?? 0;
         const candidatesCount = sharedEnv?.meta.total_count ?? 0;
@@ -2439,6 +2680,7 @@ export default function PersonDetailPage({ params }: { params: Promise<{ personI
   const onMatchesTotal     = useCallback((n: number) => { setTabTotals((p) => ({ ...p, matches:     n })); }, []);
   const onConnectionsTotal = useCallback((n: number) => { setTabTotals((p) => ({ ...p, connections: n })); }, []);
   const onSalesTotal       = useCallback((n: number) => { setTabTotals((p) => ({ ...p, sales:       n })); }, []);
+  const onSourceRecordsTotal = useCallback((n: number) => { setTabTotals((p) => ({ ...p, "source-records": n })); }, []);
 
   if (notFoundFlag) notFound();
 
@@ -2454,6 +2696,7 @@ export default function PersonDetailPage({ params }: { params: Promise<{ personI
     { id: "sales",       label: "Sales",       count: tabTotals.sales       ?? detailData.sales.length },
     { id: "connections", label: "Connections", count: tabTotals.connections ?? person.connection_count },
     { id: "identifiers", label: "Identifiers", count: detailData.identifiers.length || undefined },
+    { id: "source-records", label: "Source records", count: tabTotals["source-records"] ?? (detailData.sourceRecordFacets.reduce((sum, f) => sum + f.count, 0) || undefined) },
     { id: "matches",     label: "Matches",     count: tabTotals.matches },
     { id: "timeline",    label: "Timeline" },
     { id: "graph",       label: "Graph" },
@@ -2472,6 +2715,7 @@ export default function PersonDetailPage({ params }: { params: Promise<{ personI
         {activeTab === "sales"        && shell(<SalesTab personId={personId} onTotalLoaded={onSalesTotal} />)}
         {activeTab === "connections"  && shell(<ConnectionsTab personId={personId} onTotalLoaded={onConnectionsTotal} />)}
         {activeTab === "identifiers"  && shell(<IdentifiersTab identifiers={detailData.identifiers} />)}
+        {activeTab === "source-records" && shell(<SourceRecordsTab personId={personId} facets={detailData.sourceRecordFacets} onTotalLoaded={onSourceRecordsTotal} />)}
         {activeTab === "matches"      && shell(<MatchesTab personId={personId} onTotalLoaded={onMatchesTotal} onMergeWith={openMergeWithCandidate} />)}
         {activeTab === "timeline"    && shell(<TimelineTab person={person} detailData={detailData} personId={personId} />)}
         {activeTab === "graph" && (
