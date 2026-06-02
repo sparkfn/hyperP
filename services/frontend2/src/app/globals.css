@@ -8,6 +8,9 @@
 
 /* ── Light theme (CI: Direction B / Variation A) ── */
 :root {
+  /* Drives native UI (scrollbars, form controls) so they match the app theme. */
+  color-scheme: light;
+
   --bg-app:        #f6f6f5;
   --bg-sidebar:    #ffffff;
   --bg-navbar:     #ffffff;
@@ -46,6 +49,9 @@
 
 /* ── Dark theme (CI: dark default) ── */
 :root[data-theme="dark"] {
+  /* Make native scrollbars / form controls render dark to match the theme. */
+  color-scheme: dark;
+
   --bg-app:        #0b1020;
   --bg-sidebar:    #0f172a;
   --bg-navbar:     #0f172a;

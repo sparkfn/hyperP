@@ -233,6 +233,55 @@ class SourceRecordEntityFacet(BaseModel):
     count: int
 
 
+GoldenFieldName = Literal[
+    "preferred_full_name",
+    "preferred_dob",
+    "preferred_phone",
+    "preferred_email",
+    "preferred_nric",
+    "preferred_address",
+]
+
+GoldenSourceKind = Literal["source_record_fact", "identifier", "address"]
+
+
+class FieldOption(BaseModel):
+    """One candidate value for an editable golden-profile field.
+
+    Computed server-side from the appropriate graph relationship (HAS_FACT,
+    IDENTIFIED_BY, or LIVES_AT) so the frontend never has to map field names
+    onto the source record's normalized payload itself.
+    """
+
+    source_record_pk: str
+    source_kind: GoldenSourceKind
+    identifier_type: str | None = None
+    value: str
+    value_display: str
+    source_system: str
+    entity_display_name: str | None = None
+    observed_at_display: str | None = None
+    is_current: bool = False
+
+
+class EditableFieldOptions(BaseModel):
+    """All candidate values for one editable golden-profile field."""
+
+    field_name: GoldenFieldName
+    label: str
+    source_kind: GoldenSourceKind
+    current_value_display: str | None = None
+    is_overridden: bool = False
+    options: list[FieldOption] = Field(default_factory=list)
+
+
+class PersonFieldOptions(BaseModel):
+    """Editable golden-profile fields and their selectable source values."""
+
+    person_id: str
+    fields: list[EditableFieldOptions] = Field(default_factory=list)
+
+
 class SharedIdentifierGroup(BaseModel):
     identifier_type: str
     normalized_value: str

@@ -89,6 +89,86 @@ MATCH (p:Person {person_id: $person_id})-[f:HAS_FACT {attribute_name: $attribute
 RETURN f.attribute_value AS value
 """
 
+GET_IDENTIFIER_VALUE_FOR_SR = """
+MATCH (p:Person {person_id: $person_id})-[rel:IDENTIFIED_BY {source_record_pk: $source_record_pk}]->(id:Identifier {identifier_type: $identifier_type})
+RETURN id.normalized_value AS value
+LIMIT 1
+"""
+
+GET_ADDRESS_FOR_SR = """
+MATCH (p:Person {person_id: $person_id})-[la:LIVES_AT {source_record_pk: $source_record_pk}]->(a:Address)
+RETURN a.address_id AS address_id, a.normalized_full AS normalized_full
+LIMIT 1
+"""
+
+GET_FIELD_OPTIONS = """
+MATCH (p:Person {person_id: $person_id, status: 'active'})
+CALL {
+  WITH p
+  MATCH (p)-[f:HAS_FACT]->(sr:SourceRecord)
+  WHERE f.attribute_name IN ['full_name', 'dob']
+    AND coalesce(f.quality_flag, 'valid') <> 'invalid_format'
+    AND coalesce(f.quality_flag, 'valid') <> 'placeholder_value'
+  MATCH (sr)-[:FROM_SOURCE]->(ss:SourceSystem)
+  OPTIONAL MATCH (ss)-[:OPERATED_BY]->(e:Entity)
+  RETURN collect({
+    field_name: 'preferred_' + f.attribute_name,
+    source_kind: 'source_record_fact',
+    identifier_type: null,
+    value: toString(f.attribute_value),
+    address_id: null,
+    source_record_pk: sr.source_record_pk,
+    source_system: ss.source_key,
+    entity_display_name: e.display_name,
+    observed_at: toString(f.observed_at)
+  }) AS fact_opts
+}
+CALL {
+  WITH p
+  MATCH (p)-[rel:IDENTIFIED_BY]->(id:Identifier)
+  WHERE id.identifier_type IN ['phone', 'email', 'nric'] AND rel.is_active = true
+  MATCH (sr:SourceRecord {source_record_pk: rel.source_record_pk})-[:FROM_SOURCE]->(ss:SourceSystem)
+  OPTIONAL MATCH (ss)-[:OPERATED_BY]->(e:Entity)
+  RETURN collect({
+    field_name: 'preferred_' + id.identifier_type,
+    source_kind: 'identifier',
+    identifier_type: id.identifier_type,
+    value: id.normalized_value,
+    address_id: null,
+    source_record_pk: rel.source_record_pk,
+    source_system: ss.source_key,
+    entity_display_name: e.display_name,
+    observed_at: toString(rel.last_seen_at)
+  }) AS id_opts
+}
+CALL {
+  WITH p
+  MATCH (p)-[la:LIVES_AT]->(a:Address)
+  WHERE la.is_active = true AND la.quality_flag IN ['valid', 'partial_parse']
+  MATCH (sr:SourceRecord {source_record_pk: la.source_record_pk})-[:FROM_SOURCE]->(ss:SourceSystem)
+  OPTIONAL MATCH (ss)-[:OPERATED_BY]->(e:Entity)
+  RETURN collect({
+    field_name: 'preferred_address',
+    source_kind: 'address',
+    identifier_type: null,
+    value: a.normalized_full,
+    address_id: a.address_id,
+    source_record_pk: la.source_record_pk,
+    source_system: ss.source_key,
+    entity_display_name: e.display_name,
+    observed_at: toString(la.last_seen_at)
+  }) AS addr_opts
+}
+RETURN p.preferred_full_name AS preferred_full_name,
+       p.preferred_dob AS preferred_dob,
+       p.preferred_phone AS preferred_phone,
+       p.preferred_email AS preferred_email,
+       p.preferred_nric AS preferred_nric,
+       p.preferred_address_id AS preferred_address_id,
+       p.survivorship_overrides AS overrides,
+       fact_opts + id_opts + addr_opts AS options
+"""
+
 UPDATE_OVERRIDES = """
 MATCH (p:Person {person_id: $person_id})
 SET p.survivorship_overrides = $overrides, p.updated_at = datetime()

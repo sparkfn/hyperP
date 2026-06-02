@@ -8,7 +8,7 @@ from typing import Literal
 from pydantic import BaseModel, Field, model_validator
 
 from src.repositories.protocols.merge import GoldenProfileSelection
-from src.types import ApiReviewActionType, TrustTier
+from src.types import ApiReviewActionType, GoldenFieldName, TrustTier
 
 
 class GoldenProfileSelectionRequest(BaseModel):
@@ -75,14 +75,14 @@ class LockRequest(BaseModel):
 
 
 class SurvivorshipOverrideRequest(BaseModel):
-    attribute_name: str
-    selected_source_record_pk: str
+    field_name: GoldenFieldName
+    source_record_pk: str
     reason: str
 
 
 class SurvivorshipOverrideBatchItem(BaseModel):
-    attribute_name: str
-    selected_source_record_pk: str
+    field_name: GoldenFieldName
+    source_record_pk: str
 
 
 class SurvivorshipOverrideBatchRequest(BaseModel):
