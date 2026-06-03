@@ -132,11 +132,22 @@ export interface PersonIdentifier {
 
 // --- Request bodies ---
 
+export type GoldenProfileSelectionSourceKind = "source_record_fact" | "identifier" | "address" | "literal";
+
+export interface GoldenProfileSelectionRequestBody {
+  field_name: "preferred_full_name" | "preferred_dob" | "preferred_phone" | "preferred_email" | "preferred_address" | "preferred_nric";
+  source_kind: GoldenProfileSelectionSourceKind;
+  selected_value: string;
+  source_record_pk?: string | null;
+  identifier_type?: string | null;
+}
+
 export interface ManualMergeRequestBody {
   from_person_id: string;
   to_person_id: string;
   reason: string;
   recompute_golden_profile: boolean;
+  golden_profile_selections?: GoldenProfileSelectionRequestBody[];
 }
 
 export interface UnmergeRequestBody {

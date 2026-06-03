@@ -6,6 +6,7 @@ import { notFound, useSearchParams } from "next/navigation";
 import type { Person, PersonConnection, SalesOrder } from "@/lib/api-types";
 import type {
   ChatMessage,
+  GoldenProfileSelectionRequestBody,
   ManualMergeRequestBody,
   ManualMergeResponseBody,
   PersonAuditEvent,
@@ -98,6 +99,28 @@ function fmtCurrency(amount: number | null, currency: string | null): string {
 
 /** Parses "computed-2026-05-21T23:36:59Z" → "Computed · 21 May 2026" */
 type EditableField = "full_name" | "phone" | "email" | "dob" | "address";
+
+type MergeProfileChoice = "this" | "candidate";
+type MergeGoldenField = GoldenProfileSelectionRequestBody["field_name"];
+
+interface MergeTargetProfile {
+  person_id: string;
+  preferred_full_name: string | null;
+  preferred_phone: string | null;
+  preferred_email: string | null;
+  preferred_dob: string | null;
+  preferred_address: Person["preferred_address"];
+  preferred_nric: string | null;
+}
+
+interface MergeFieldDraft {
+  key: MergeGoldenField;
+  label: string;
+  thisRaw: string | null;
+  thisDisplay: string | null;
+  candidateRaw: string | null;
+  candidateDisplay: string | null;
+}
 
 /** Pull the value for the chosen field from a source record's normalized payload */
 function extractSrValue(sr: PersonSourceRecord, field: EditableField): string {
@@ -1218,7 +1241,7 @@ function CandidateRow({
             Direct link
           </Link>
           <button type="button" className={styles.candidateMergeBtn} onClick={onMerge}>
-            Merge into
+            Merge
           </button>
           <button type="button" className={styles.candidateExpandButton} onClick={() => onToggle(candidate.person_id)} aria-expanded={isOpen} aria-label={isOpen ? "Hide match reasons" : "Show match reasons"}>
             <svg className={styles.candidateChevron} width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -1719,7 +1742,7 @@ type ConnMetaLineProps = {
 
 function ConnMetaLine({ hops, sharedIdentifiers, sharedAddresses }: ConnMetaLineProps): ReactElement {
   const items: ReactElement[] = [
-    <span key="hops">{hops} hop{hops !== 1 ? "s" : ""}</span>,
+    <span key="hops">{hops} record{hops !== 1 ? "s" : ""}</span>,
     ...sharedIdentifiers.map((id, i) => (
       <span key={`id-${i}`} className={styles.connMetaWithIcon}>
         {identifierIcon(id.identifier_type)}
@@ -2509,16 +2532,19 @@ export default function PersonDetailPage({ params }: { params: Promise<{ personI
   const [mergeQuery, setMergeQuery] = useState("");
   const [mergeResults, setMergeResults] = useState<Person[]>([]);
   const [mergeSearching, setMergeSearching] = useState(false);
-  const [mergeTarget, setMergeTarget] = useState<{
-    person_id: string;
-    preferred_full_name: string | null;
-    preferred_phone: string | null;
-    preferred_email: string | null;
-    preferred_dob: string | null;
-  } | null>(null);
+  const [mergeTarget, setMergeTarget] = useState<MergeTargetProfile | null>(null);
+  const [mergeFieldChoices, setMergeFieldChoices] = useState<Record<MergeGoldenField, MergeProfileChoice>>({
+    preferred_full_name: "candidate",
+    preferred_dob: "candidate",
+    preferred_phone: "candidate",
+    preferred_email: "candidate",
+    preferred_address: "candidate",
+    preferred_nric: "candidate",
+  });
   const [mergeReason, setMergeReason] = useState("");
   const [mergeSubmitting, setMergeSubmitting] = useState(false);
   const [mergeError, setMergeError] = useState<string | null>(null);
+  const [mergeSuccessMessage, setMergeSuccessMessage] = useState<string | null>(null);
   const [mergeSuccess, setMergeSuccess] = useState(false);
 
   useEffect(() => {
@@ -2533,6 +2559,55 @@ export default function PersonDetailPage({ params }: { params: Promise<{ personI
     return () => { cancelled = true; };
   }, [mergeQuery, mergeOpen, personId]);
 
+  function buildMergeFields(target: MergeTargetProfile): MergeFieldDraft[] {
+    if (person === null) return [];
+    return [
+      { key: "preferred_full_name", label: "Name", thisRaw: person.preferred_full_name, thisDisplay: person.preferred_full_name, candidateRaw: target.preferred_full_name, candidateDisplay: target.preferred_full_name },
+      { key: "preferred_phone", label: "Phone", thisRaw: person.preferred_phone, thisDisplay: person.preferred_phone, candidateRaw: target.preferred_phone, candidateDisplay: target.preferred_phone },
+      { key: "preferred_email", label: "Email", thisRaw: person.preferred_email, thisDisplay: person.preferred_email, candidateRaw: target.preferred_email, candidateDisplay: target.preferred_email },
+      { key: "preferred_dob", label: "DOB", thisRaw: person.preferred_dob, thisDisplay: person.preferred_dob ? fmtDate(person.preferred_dob) : null, candidateRaw: target.preferred_dob, candidateDisplay: target.preferred_dob ? fmtDate(target.preferred_dob) : null },
+      { key: "preferred_nric", label: "NRIC", thisRaw: person.preferred_nric, thisDisplay: person.preferred_nric ? maskNric(person.preferred_nric) : null, candidateRaw: target.preferred_nric, candidateDisplay: target.preferred_nric ? maskNric(target.preferred_nric) : null },
+    ];
+  }
+
+  function chooseMergeTarget(target: MergeTargetProfile): void {
+    const nextChoices: Record<MergeGoldenField, MergeProfileChoice> = {
+      preferred_full_name: "candidate",
+      preferred_dob: "candidate",
+      preferred_phone: "candidate",
+      preferred_email: "candidate",
+      preferred_address: "candidate",
+      preferred_nric: "candidate",
+    };
+    for (const field of buildMergeFields(target)) {
+      nextChoices[field.key] = field.candidateRaw !== null ? "candidate" : "this";
+    }
+    setMergeTarget(target);
+    setMergeFieldChoices(nextChoices);
+  }
+
+  function setMergeFieldChoice(field: MergeGoldenField, choice: MergeProfileChoice): void {
+    setMergeFieldChoices((current) => ({ ...current, [field]: choice }));
+  }
+
+  function buildGoldenProfileSelections(target: MergeTargetProfile): GoldenProfileSelectionRequestBody[] {
+    return buildMergeFields(target).flatMap((field): GoldenProfileSelectionRequestBody[] => {
+      const choice = mergeFieldChoices[field.key];
+      if (choice === "candidate") return [];
+      if (field.thisRaw === null) return [];
+      if (field.key === "preferred_phone") {
+        return [{ field_name: field.key, source_kind: "identifier", selected_value: field.thisRaw, source_record_pk: null, identifier_type: "phone" }];
+      }
+      if (field.key === "preferred_email") {
+        return [{ field_name: field.key, source_kind: "identifier", selected_value: field.thisRaw, source_record_pk: null, identifier_type: "email" }];
+      }
+      if (field.key === "preferred_nric") {
+        return [{ field_name: field.key, source_kind: "identifier", selected_value: field.thisRaw, source_record_pk: null, identifier_type: "nric" }];
+      }
+      return [];
+    });
+  }
+
   async function handleMergeSubmit(): Promise<void> {
     if (!mergeTarget || !mergeReason.trim()) return;
     setMergeSubmitting(true);
@@ -2543,16 +2618,20 @@ export default function PersonDetailPage({ params }: { params: Promise<{ personI
         to_person_id: mergeTarget.person_id,
         reason: mergeReason.trim(),
         recompute_golden_profile: true,
+        golden_profile_selections: buildGoldenProfileSelections(mergeTarget),
       };
       const res = await bffFetchEnvelope<ManualMergeResponseBody>("/bff/persons/manual-merge", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
       });
-      if (res.data.status === "merged") {
+      if (res.data.status === "merged" || res.data.status === "completed") {
         setMergeSuccess(true);
-        mergeRedirectTimerRef.current = setTimeout(() => window.location.replace(toBasePath(`/persons/${mergeTarget.person_id}`)), 1500);
+        setMergeSuccessMessage(`Merged successfully. Opening ${mergeTarget.preferred_full_name ?? "survivor profile"}…`);
+        mergeRedirectTimerRef.current = setTimeout(() => window.location.replace(toBasePath(`/persons/${mergeTarget.person_id}`)), 900);
+        return;
       }
+      setMergeError(`Merge request returned status: ${res.data.status}.`);
     } catch (e) {
       setMergeError(e instanceof BffError ? e.message : "Failed to merge.");
     } finally {
@@ -2565,23 +2644,35 @@ export default function PersonDetailPage({ params }: { params: Promise<{ personI
     setMergeQuery("");
     setMergeResults([]);
     setMergeTarget(null);
+    setMergeFieldChoices({
+      preferred_full_name: "candidate",
+      preferred_dob: "candidate",
+      preferred_phone: "candidate",
+      preferred_email: "candidate",
+      preferred_address: "candidate",
+      preferred_nric: "candidate",
+    });
     setMergeReason("");
     setMergeError(null);
+    setMergeSuccessMessage(null);
     setMergeSuccess(false);
   }
 
   function openMergeWithCandidate(candidate: PersonSharedIdentifierCandidate): void {
-    setMergeTarget({
+    chooseMergeTarget({
       person_id: candidate.person_id,
       preferred_full_name: candidate.preferred_full_name,
       preferred_phone: candidate.preferred_phone,
       preferred_email: candidate.preferred_email,
       preferred_dob: candidate.preferred_dob,
+      preferred_address: null,
+      preferred_nric: null,
     });
     setMergeQuery("");
     setMergeResults([]);
     setMergeReason("");
     setMergeError(null);
+    setMergeSuccessMessage(null);
     setMergeSuccess(false);
     setMergeOpen(true);
   }
@@ -2734,16 +2825,16 @@ export default function PersonDetailPage({ params }: { params: Promise<{ personI
 
       {mergeOpen && (
         <div className={styles.shareOverlay} onClick={closeMerge}>
-          <div className={styles.overrideModal} onClick={(e) => e.stopPropagation()}>
+          <div className={`${styles.overrideModal} ${styles.mergeModal}`} onClick={(e) => e.stopPropagation()}>
             {mergeSubmitting && <MergeLoadingOverlay />}
             <div className={styles.shareModalHeader}>
               <span className={styles.shareModalTitle}>Merge duplicate profiles</span>
-              <button type="button" className={styles.shareModalClose} onClick={closeMerge} aria-label="Close">×</button>
+              <button type="button" className={styles.shareModalClose} onClick={closeMerge} disabled={mergeSubmitting || mergeSuccess} aria-label="Close">×</button>
             </div>
 
             {mergeSuccess ? (
               <div className={styles.mergeSuccess}>
-                ✓ Merged successfully. Redirecting…
+                {mergeSuccessMessage ?? "Merged successfully. Redirecting…"}
               </div>
             ) : (
               <>
@@ -2773,10 +2864,10 @@ export default function PersonDetailPage({ params }: { params: Promise<{ personI
                           <div
                             key={p.person_id}
                             className={styles.overrideSrRow}
-                            onClick={() => setMergeTarget(p)}
+                            onClick={() => chooseMergeTarget(p)}
                             role="button"
                             tabIndex={0}
-                            onKeyDown={(e) => e.key === "Enter" && setMergeTarget(p)}
+                            onKeyDown={(e) => e.key === "Enter" && chooseMergeTarget(p)}
                           >
                             <div className={styles.overrideSrInfo}>
                               <span className={styles.overrideSrId}>{p.preferred_full_name ?? p.person_id}</span>
@@ -2791,42 +2882,49 @@ export default function PersonDetailPage({ params }: { params: Promise<{ personI
                   </div>
                 )}
 
-                {/* Profile + field comparison: this profile + candidate = after merge */}
+                {/* Profile + field comparison: this profile | candidate | after merge */}
                 {mergeTarget !== null && (() => {
-                  const fields = [
-                    { label: "Phone", thisVal: person.preferred_phone,  candVal: mergeTarget.preferred_phone },
-                    { label: "Email", thisVal: person.preferred_email,  candVal: mergeTarget.preferred_email },
-                    { label: "DOB",   thisVal: person.preferred_dob ? fmtDate(person.preferred_dob) : null, candVal: mergeTarget.preferred_dob ? fmtDate(mergeTarget.preferred_dob) : null },
-                  ].map(({ label, thisVal, candVal }) => ({
-                    label,
-                    thisVal,
-                    candVal,
-                    after: candVal ?? thisVal,
-                    isNew: candVal === null && thisVal !== null,
-                  })).filter(({ after }) => after !== null);
-
+                  const fields = buildMergeFields(mergeTarget).filter((field) => field.thisRaw !== null || field.candidateRaw !== null);
                   return (
                     <div className={styles.mergeCompare}>
                       <div className={styles.mergeFieldHeader}>
                         <span />
                         <span className={styles.mergeFieldHeaderRole}>This profile</span>
-                        <span className={styles.mergeFieldHeaderOp}>+</span>
                         <span className={styles.mergeFieldHeaderRole}>Candidate</span>
-                        <span className={styles.mergeFieldHeaderOp}>=</span>
                         <span className={`${styles.mergeFieldHeaderRole} ${styles.mergeFieldHeaderRoleAfter}`}>After merge</span>
                       </div>
                       {fields.length > 0 && (
                         <div className={styles.mergeFieldList}>
-                          {fields.map(({ label, thisVal, candVal, after, isNew }) => (
-                            <div key={label} className={styles.mergeFieldRow}>
-                              <span className={styles.mergeFieldLabel}>{label}</span>
-                              <span className={thisVal ? styles.mergeFieldVal : styles.mergeFieldEmpty}>{thisVal ?? "—"}</span>
-                              <span className={styles.mergeFieldOp}>+</span>
-                              <span className={candVal ? styles.mergeFieldVal : styles.mergeFieldEmpty}>{candVal ?? "—"}</span>
-                              <span className={styles.mergeFieldOp}>=</span>
-                              <span className={isNew ? styles.mergeFieldAfterNew : styles.mergeFieldAfter}>{after}</span>
-                            </div>
-                          ))}
+                          {fields.map((field) => {
+                            const selectedChoice = mergeFieldChoices[field.key];
+                            const afterDisplay = selectedChoice === "this" ? field.thisDisplay : field.candidateDisplay;
+                            return (
+                              <div key={field.key} className={styles.mergeFieldRow}>
+                                <span className={styles.mergeFieldLabel}>{field.label}</span>
+                                <label className={styles.mergeFieldOption}>
+                                  <input
+                                    type="radio"
+                                    name={`merge-field-${field.key}`}
+                                    checked={selectedChoice === "this"}
+                                    disabled={field.thisRaw === null}
+                                    onChange={() => setMergeFieldChoice(field.key, "this")}
+                                  />
+                                  <span className={field.thisDisplay ? styles.mergeFieldVal : styles.mergeFieldEmpty}>{field.thisDisplay ?? "—"}</span>
+                                </label>
+                                <label className={styles.mergeFieldOption}>
+                                  <input
+                                    type="radio"
+                                    name={`merge-field-${field.key}`}
+                                    checked={selectedChoice === "candidate"}
+                                    disabled={field.candidateRaw === null}
+                                    onChange={() => setMergeFieldChoice(field.key, "candidate")}
+                                  />
+                                  <span className={field.candidateDisplay ? styles.mergeFieldVal : styles.mergeFieldEmpty}>{field.candidateDisplay ?? "—"}</span>
+                                </label>
+                                <span className={afterDisplay ? styles.mergeFieldAfter : styles.mergeFieldEmpty}>{afterDisplay ?? "—"}</span>
+                              </div>
+                            );
+                          })}
                         </div>
                       )}
                     </div>

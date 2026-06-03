@@ -15,7 +15,7 @@ class GoldenProfileSelection(TypedDict):
         "preferred_address",
         "preferred_nric",
     ]
-    source_kind: Literal["source_record_fact", "identifier", "address"]
+    source_kind: Literal["source_record_fact", "identifier", "address", "literal"]
     selected_value: str
     source_record_pk: str | None
     identifier_type: str | None

@@ -117,6 +117,17 @@ IDENTIFIER_FIELD_BY_TYPE: dict[str, str] = {
     "nric": "preferred_nric",
 }
 
+VALID_LITERAL_GOLDEN_FIELDS: frozenset[str] = frozenset(
+    {
+        "preferred_full_name",
+        "preferred_dob",
+        "preferred_phone",
+        "preferred_email",
+        "preferred_nric",
+    }
+)
+
+
 FACT_FIELDS: frozenset[str] = frozenset(
     {"preferred_full_name", "preferred_dob", "preferred_phone", "preferred_email"}
 )
@@ -134,6 +145,8 @@ def _is_valid_golden_profile_selection(selection: GoldenProfileSelection) -> boo
         return field_name in FACT_FIELDS and selection["source_record_pk"] is not None
     if source_kind == "address":
         return field_name == "preferred_address" and selection["source_record_pk"] is not None
+    if source_kind == "literal":
+        return field_name in VALID_LITERAL_GOLDEN_FIELDS and selection["selected_value"].strip() != ""
     return False
 
 
