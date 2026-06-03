@@ -61,3 +61,21 @@ def test_count_query_includes_address_join_when_addr_filter_active() -> None:
     query = build_count_persons_query(has_q=False, has_addr_filter=True)
 
     assert "OPTIONAL MATCH (p)-[:LIVES_AT]->(addr:Address)\n" in query
+
+
+def test_list_query_filters_dob_by_component() -> None:
+    query = build_list_persons_query("profile_completeness_score", "desc", has_q=False)
+
+    # Year/month/day each guarded by IS NULL and matched via substring on YYYY-MM-DD.
+    assert "$dob_year  IS NULL OR substring(p.preferred_dob, 0, 4) = $dob_year" in query
+    assert "$dob_month IS NULL OR substring(p.preferred_dob, 5, 2) = $dob_month" in query
+    assert "$dob_day   IS NULL OR substring(p.preferred_dob, 8, 2) = $dob_day" in query
+
+
+def test_count_query_filters_dob_by_component() -> None:
+    query = build_count_persons_query(has_q=False, has_addr_filter=False)
+
+    # The count query must apply the same component filters as the list query.
+    assert "substring(p.preferred_dob, 0, 4) = $dob_year" in query
+    assert "substring(p.preferred_dob, 5, 2) = $dob_month" in query
+    assert "substring(p.preferred_dob, 8, 2) = $dob_day" in query

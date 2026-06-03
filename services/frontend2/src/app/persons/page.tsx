@@ -648,7 +648,31 @@ function PaginationBar({
 }
 
 type PresenceFilter = "any" | "has" | "none";
-type DobMode = "single" | "range";
+type DobMode = "single" | "range" | "parts";
+
+const MONTH_OPTIONS: readonly { value: string; label: string }[] = [
+  { value: "01", label: "January" },
+  { value: "02", label: "February" },
+  { value: "03", label: "March" },
+  { value: "04", label: "April" },
+  { value: "05", label: "May" },
+  { value: "06", label: "June" },
+  { value: "07", label: "July" },
+  { value: "08", label: "August" },
+  { value: "09", label: "September" },
+  { value: "10", label: "October" },
+  { value: "11", label: "November" },
+  { value: "12", label: "December" },
+] as const;
+
+// 01–31, zero-padded to match the substring comparison against "YYYY-MM-DD".
+const DAY_OPTIONS: readonly string[] = Array.from({ length: 31 }, (_, i) =>
+  String(i + 1).padStart(2, "0"),
+);
+
+function parseDobMode(value: string | null): DobMode {
+  return value === "range" || value === "parts" ? value : "single";
+}
 type SortKey = "name" | "dob" | "entity" | "relations" | "matches" | "orders" | "quality";
 type SortDir = "asc" | "desc";
 type FlagFilter = "any" | "high_value" | "high_risk" | "no_contact";
@@ -781,10 +805,13 @@ function PersonsInner(): ReactElement {
   });
   const [addressFilter, setAddressFilter] = useState<PresenceFilter>(() => parsePresenceFilter(searchParams.get("has_address")));
   const [dobFilter, setDobFilter] = useState<PresenceFilter>(() => parsePresenceFilter(searchParams.get("has_dob")));
-  const [dobMode, setDobMode] = useState<DobMode>(() => (searchParams.get("dob_mode") === "range" ? "range" : "single"));
+  const [dobMode, setDobMode] = useState<DobMode>(() => parseDobMode(searchParams.get("dob_mode")));
   const [dobSingleDate, setDobSingleDate] = useState(searchParams.get("dob") ?? "");
   const [dobStartDate, setDobStartDate] = useState(searchParams.get("dob_from") ?? "");
   const [dobEndDate, setDobEndDate] = useState(searchParams.get("dob_to") ?? "");
+  const [dobYear, setDobYear] = useState(searchParams.get("dob_year") ?? "");
+  const [dobMonth, setDobMonth] = useState(searchParams.get("dob_month") ?? "");
+  const [dobDay, setDobDay] = useState(searchParams.get("dob_day") ?? "");
   const [flagFilter, setFlagFilter] = useState<FlagFilter>(() => parseFlagFilter(searchParams));
   const [hasBankruptcy, setHasBankruptcy] = useState<boolean | null>(() => {
     const value = searchParams.get("has_bankruptcy_case");
@@ -991,6 +1018,7 @@ function PersonsInner(): ReactElement {
     dobFilter !== "any",
     dobFilter === "has" && dobMode === "single" && dobSingleDate !== "",
     dobFilter === "has" && dobMode === "range" && (dobStartDate !== "" || dobEndDate !== ""),
+    dobFilter === "has" && dobMode === "parts" && (dobYear !== "" || dobMonth !== "" || dobDay !== ""),
     addressFilter !== "any",
     flagFilter !== "any",
     hasBankruptcy !== null,
@@ -1007,11 +1035,7 @@ function PersonsInner(): ReactElement {
     setSourceSearch("");
     setIdentityFilter([]);
     setAddressFilter("any");
-    setDobFilter("any");
-    setDobMode("single");
-    setDobSingleDate("");
-    setDobStartDate("");
-    setDobEndDate("");
+    clearDobFilter();
     setFlagFilter("any");
     setHasBankruptcy(null);
     setUpdatedAfter("");
@@ -1019,6 +1043,44 @@ function PersonsInner(): ReactElement {
     setAddrCity("");
     setAddrPostal("");
     setAddrCountry("");
+  }
+
+  function clearDobFilter(): void {
+    setDobFilter("any");
+    setDobMode("single");
+    setDobSingleDate("");
+    setDobStartDate("");
+    setDobEndDate("");
+    setDobYear("");
+    setDobMonth("");
+    setDobDay("");
+  }
+
+  function selectDobMode(mode: DobMode): void {
+    // Switching modes clears the inputs that belong to the other modes, so only
+    // the active mode's params ever reach apiQuery.
+    setDobMode(mode);
+    if (mode !== "single") setDobSingleDate("");
+    if (mode !== "range") { setDobStartDate(""); setDobEndDate(""); }
+    if (mode !== "parts") { setDobYear(""); setDobMonth(""); setDobDay(""); }
+  }
+
+  function dobActiveLabel(): string {
+    if (dobFilter === "none") return "No DOB";
+    if (dobMode === "single" && dobSingleDate) return `DOB: ${dobSingleDate}`;
+    if (dobMode === "range" && (dobStartDate || dobEndDate)) {
+      return `DOB: ${dobStartDate || "…"} → ${dobEndDate || "…"}`;
+    }
+    if (dobMode === "parts") {
+      const monthLabel = MONTH_OPTIONS.find((m) => m.value === dobMonth)?.label;
+      const pieces: string[] = [];
+      if (monthLabel && dobDay) pieces.push(`${monthLabel} ${Number(dobDay)}`);
+      else if (monthLabel) pieces.push(monthLabel);
+      else if (dobDay) pieces.push(`Day ${Number(dobDay)}`);
+      if (/^\d{4}$/.test(dobYear)) pieces.push(dobYear);
+      if (pieces.length > 0) return `DOB: ${pieces.join(" ")}`;
+    }
+    return "Has DOB";
   }
 
   const apiQuery = useMemo(() => {
@@ -1038,6 +1100,11 @@ function PersonsInner(): ReactElement {
       } else if (dobMode === "range") {
         if (dobStartDate) params.set("dob_from", dobStartDate);
         if (dobEndDate) params.set("dob_to", dobEndDate);
+      } else if (dobMode === "parts") {
+        // Any subset matches: year alone, month alone, or month+day (birthday).
+        if (/^\d{4}$/.test(dobYear)) params.set("dob_year", dobYear);
+        if (dobMonth) params.set("dob_month", dobMonth);
+        if (dobDay) params.set("dob_day", dobDay);
       }
     } else if (dobFilter === "none") {
       params.set("has_dob", "false");
@@ -1057,7 +1124,7 @@ function PersonsInner(): ReactElement {
     if (addrCountry) params.set("addr_country", addrCountry);
     params.set("limit", String(pageSize));
     return params.toString();
-  }, [search, entityFilter, sourceFilter, identityFilter, addressFilter, dobFilter, dobMode, dobSingleDate, dobStartDate, dobEndDate, flagFilter, hasBankruptcy, updatedAfter, updatedBefore, addrCity, addrPostal, addrCountry, sortKey, sortDir, pageSize]);
+  }, [search, entityFilter, sourceFilter, identityFilter, addressFilter, dobFilter, dobMode, dobSingleDate, dobStartDate, dobEndDate, dobYear, dobMonth, dobDay, flagFilter, hasBankruptcy, updatedAfter, updatedBefore, addrCity, addrPostal, addrCountry, sortKey, sortDir, pageSize]);
 
   const urlQuery = useMemo(() => {
     const params = new URLSearchParams(apiQuery);
@@ -1449,16 +1516,8 @@ function PersonsInner(): ReactElement {
           <FilterPill
             label="Date of Birth"
             isActive={dobFilter !== "any"}
-            activeLabel={
-              dobFilter === "none"
-                ? "No DOB"
-                : dobMode === "single" && dobSingleDate
-                  ? `DOB: ${dobSingleDate}`
-                  : dobMode === "range" && (dobStartDate || dobEndDate)
-                    ? `DOB: ${dobStartDate || "…"} → ${dobEndDate || "…"}`
-                    : "Has DOB"
-            }
-            onClear={() => { setDobFilter("any"); setDobMode("single"); setDobSingleDate(""); setDobStartDate(""); setDobEndDate(""); }}
+            activeLabel={dobActiveLabel()}
+            onClear={clearDobFilter}
             open={openFilter === "dob"}
             onToggle={() => toggleFilter("dob")}
           >
@@ -1482,19 +1541,26 @@ function PersonsInner(): ReactElement {
                     <button
                       type="button"
                       className={`${styles.fpSegmentedBtn} ${dobMode === "single" ? styles.fpSegmentedBtnActive : ""}`}
-                      onClick={() => { setDobMode("single"); setDobStartDate(""); setDobEndDate(""); }}
+                      onClick={() => selectDobMode("single")}
                     >
                       Pick date
                     </button>
                     <button
                       type="button"
+                      className={`${styles.fpSegmentedBtn} ${dobMode === "parts" ? styles.fpSegmentedBtnActive : ""}`}
+                      onClick={() => selectDobMode("parts")}
+                    >
+                      By parts
+                    </button>
+                    <button
+                      type="button"
                       className={`${styles.fpSegmentedBtn} ${dobMode === "range" ? styles.fpSegmentedBtnActive : ""}`}
-                      onClick={() => { setDobMode("range"); setDobSingleDate(""); }}
+                      onClick={() => selectDobMode("range")}
                     >
                       Range
                     </button>
                   </div>
-                  {dobMode === "single" ? (
+                  {dobMode === "single" && (
                     <div className={styles.dateInputWrap}>
                       <input
                         className={styles.dateInput}
@@ -1503,7 +1569,8 @@ function PersonsInner(): ReactElement {
                         onChange={(e) => setDobSingleDate(e.target.value)}
                       />
                     </div>
-                  ) : (
+                  )}
+                  {dobMode === "range" && (
                     <div className={styles.dateFieldsRow}>
                       <div className={`${styles.dateFieldGroup} ${styles.compactFieldGroup}`}>
                         <label className={styles.dateFieldLabel}>From</label>
@@ -1530,6 +1597,70 @@ function PersonsInner(): ReactElement {
                         </div>
                       </div>
                     </div>
+                  )}
+                  {dobMode === "parts" && (
+                    <>
+                      <div className={styles.dobPartsRow}>
+                        <div className={`${styles.dateFieldGroup} ${styles.compactFieldGroup}`}>
+                          <label className={styles.dateFieldLabel}>Year</label>
+                          <div className={`${styles.dateInputWrap} ${styles.numberInputWrap}`}>
+                            <input
+                              aria-label="DOB year"
+                              className={`${styles.dateInput} ${styles.partScheme}`}
+                              type="number"
+                              inputMode="numeric"
+                              min={1900}
+                              max={new Date().getUTCFullYear()}
+                              placeholder="Any"
+                              value={dobYear}
+                              onChange={(e) => setDobYear(e.target.value)}
+                            />
+                            {dobYear && (
+                              <button type="button" className={styles.fieldClear} aria-label="Clear year" onClick={() => setDobYear("")}>×</button>
+                            )}
+                          </div>
+                        </div>
+                        <div className={`${styles.dateFieldGroup} ${styles.compactFieldGroup}`}>
+                          <label className={styles.dateFieldLabel}>Month</label>
+                          <div className={styles.dateInputWrap}>
+                            <select
+                              aria-label="DOB month"
+                              className={`${styles.dateInput} ${styles.partScheme}`}
+                              value={dobMonth}
+                              onChange={(e) => setDobMonth(e.target.value)}
+                            >
+                              <option value="">Any</option>
+                              {MONTH_OPTIONS.map((m) => (
+                                <option key={m.value} value={m.value}>{m.label}</option>
+                              ))}
+                            </select>
+                            {dobMonth && (
+                              <button type="button" className={styles.fieldClear} aria-label="Clear month" onClick={() => setDobMonth("")}>×</button>
+                            )}
+                          </div>
+                        </div>
+                        <div className={`${styles.dateFieldGroup} ${styles.compactFieldGroup}`}>
+                          <label className={styles.dateFieldLabel}>Day</label>
+                          <div className={styles.dateInputWrap}>
+                            <select
+                              aria-label="DOB day"
+                              className={`${styles.dateInput} ${styles.partScheme}`}
+                              value={dobDay}
+                              onChange={(e) => setDobDay(e.target.value)}
+                            >
+                              <option value="">Any</option>
+                              {DAY_OPTIONS.map((d) => (
+                                <option key={d} value={d}>{Number(d)}</option>
+                              ))}
+                            </select>
+                            {dobDay && (
+                              <button type="button" className={styles.fieldClear} aria-label="Clear day" onClick={() => setDobDay("")}>×</button>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                      <p className={styles.fpHint}>Combine any: e.g. Month + Day finds shared birthdays.</p>
+                    </>
                   )}
                 </>
               )}
