@@ -27,6 +27,9 @@ WHERE p.status <> 'merged'
        OR ($has_dob = false AND p.preferred_dob IS NULL))
   AND ($dob_from IS NULL OR p.preferred_dob >= $dob_from)
   AND ($dob_to   IS NULL OR p.preferred_dob <= $dob_to)
+  AND ($dob_year  IS NULL OR substring(p.preferred_dob, 0, 4) = $dob_year)
+  AND ($dob_month IS NULL OR substring(p.preferred_dob, 5, 2) = $dob_month)
+  AND ($dob_day   IS NULL OR substring(p.preferred_dob, 8, 2) = $dob_day)
   AND ($has_address IS NULL
        OR ($has_address = true  AND p.preferred_address_id IS NOT NULL)
        OR ($has_address = false AND p.preferred_address_id IS NULL))

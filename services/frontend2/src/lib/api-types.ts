@@ -175,6 +175,9 @@ export interface ListedPerson extends EntityPerson {
   connection_count: number;
   possible_match_count: number;
   order_count: number;
+  // Server-computed DOB presentation — render verbatim, no client-side parsing.
+  preferred_dob_display: string;
+  preferred_dob_invalid: boolean;
 }
 
 // --- Reports (stretchy reports) ---

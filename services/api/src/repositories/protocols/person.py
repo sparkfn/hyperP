@@ -43,6 +43,9 @@ class PersonListFilters(TypedDict, total=False):
     has_dob: bool | None
     dob_from: str | None
     dob_to: str | None
+    dob_year: str | None
+    dob_month: str | None
+    dob_day: str | None
     sort_by: str | None
     sort_order: str | None
 
