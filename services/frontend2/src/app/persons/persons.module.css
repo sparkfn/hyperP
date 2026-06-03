@@ -1501,6 +1501,46 @@
   font-size: 11px;
 }
 
+/* ── Matches ─────────────────────────────────────────────── */
+.matchesTrigger {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  font-family: inherit;
+  text-decoration: none;
+  cursor: pointer;
+  transition: color 0.12s;
+}
+
+.matchesTrigger:hover {
+  color: var(--accent-text);
+}
+
+.matchesCount {
+  font-size: 12px;
+  font-weight: 600;
+  color: inherit;
+}
+
+.matchesLabel {
+  font-size: 11px;
+  color: var(--text-muted);
+  letter-spacing: 0.1px;
+}
+
+.matchesTrigger:hover .matchesLabel {
+  color: var(--accent-text);
+}
+
+.matchesZero {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
 .ordersValue,
 .ordersTrigger {
   display: inline-flex;

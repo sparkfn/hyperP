@@ -29,6 +29,7 @@ const COLS: ColDef[] = [
   { key: "address", minWidth: 120, resizable: true  },
   { key: "entity",  minWidth: 80,  resizable: true  },
   { key: "relations", minWidth: 96, resizable: true },
+  { key: "matches", minWidth: 88, resizable: true },
   { key: "orders", minWidth: 84, resizable: true },
   { key: "quality", minWidth: 108, resizable: true  },
   { key: "graph",   minWidth: 48,  resizable: false },
@@ -448,6 +449,21 @@ function PersonRow({
         )}
       </td>
       <td className={`${styles.td} ${styles.tdMetric}`}>
+        {p.possible_match_count > 0 ? (
+          <Link
+            href={`/persons/${p.person_id}?tab=matches`}
+            className={styles.matchesTrigger}
+            onClick={(event) => event.stopPropagation()}
+            aria-label={`Open ${p.possible_match_count} matches for ${p.preferred_full_name ?? p.person_id}`}
+          >
+            <span className={styles.matchesCount}>{p.possible_match_count}</span>
+            <span className={styles.matchesLabel}>matches</span>
+          </Link>
+        ) : (
+          <span className={styles.matchesZero}>No matches</span>
+        )}
+      </td>
+      <td className={`${styles.td} ${styles.tdMetric}`}>
         {p.order_count > 0 ? (
           <button
             type="button"
@@ -567,17 +583,17 @@ function PersonCardMobile({
 }
 
 const SKELETON_WIDTHS: readonly number[][] = [
-  [55, 90, 70, 80, 75, 110, 140, 60, 40, 36, 80],
-  [70, 80, 60, 90, 85, 130, 100, 80, 50, 44, 65],
-  [60, 95, 75, 70, 90, 120, 160, 70, 42, 40, 72],
-  [50, 85, 65, 85, 80, 100, 130, 55, 38, 48, 58],
-  [65, 100, 80, 75, 70, 140, 110, 75, 46, 36, 68],
-  [72, 78, 68, 88, 95, 115, 150, 65, 44, 52, 76],
-  [58, 92, 72, 78, 78, 125, 120, 68, 40, 40, 62],
-  [68, 86, 58, 82, 82, 135, 145, 72, 48, 44, 70],
+  [55, 90, 70, 80, 75, 110, 140, 60, 40, 36, 40, 80],
+  [70, 80, 60, 90, 85, 130, 100, 80, 50, 44, 50, 65],
+  [60, 95, 75, 70, 90, 120, 160, 70, 42, 40, 42, 72],
+  [50, 85, 65, 85, 80, 100, 130, 55, 38, 48, 38, 58],
+  [65, 100, 80, 75, 70, 140, 110, 75, 46, 36, 46, 68],
+  [72, 78, 68, 88, 95, 115, 150, 65, 44, 52, 44, 76],
+  [58, 92, 72, 78, 78, 125, 120, 68, 40, 40, 40, 62],
+  [68, 86, 58, 82, 82, 135, 145, 72, 48, 44, 48, 70],
 ] as const;
 
-const FALLBACK_WIDTHS: readonly number[] = [55, 90, 70, 80, 75, 110, 140, 60, 40, 36, 80] as const;
+const FALLBACK_WIDTHS: readonly number[] = [55, 90, 70, 80, 75, 110, 140, 60, 40, 36, 40, 80] as const;
 
 function SkeletonRow({ index, colWidths }: { index: number; colWidths: number[] }): ReactElement {
   const row = SKELETON_WIDTHS[index % SKELETON_WIDTHS.length] ?? FALLBACK_WIDTHS;
@@ -597,8 +613,8 @@ function SkeletonRow({ index, colWidths }: { index: number; colWidths: number[] 
           </div>
         </div>
       </td>
-      {/* nric, phone, dob, email, address, entity, relations, orders */}
-      {([1, 2, 3, 4, 5, 6, 7, 8] as const).map((wi) => (
+      {/* nric, phone, dob, email, address, entity, relations, matches, orders */}
+      {([1, 2, 3, 4, 5, 6, 7, 8, 9] as const).map((wi) => (
         <td key={wi} className={styles.td}>
           <span className={styles.skeletonLine} style={{ width: w(wi) }} />
         </td>
@@ -645,7 +661,7 @@ function PaginationBar({
 
 type PresenceFilter = "any" | "has" | "none";
 type DobMode = "single" | "range";
-type SortKey = "name" | "dob" | "orders" | "quality";
+type SortKey = "name" | "dob" | "entity" | "relations" | "matches" | "orders" | "quality";
 type SortDir = "asc" | "desc";
 type FilterKey = "entity" | "source" | "identity" | "dob" | "address" | "flags" | "bankruptcy" | "updated" | "location";
 
@@ -985,6 +1001,9 @@ function PersonsInner(): ReactElement {
     const sortByMap: Record<SortKey, string> = {
       name: "preferred_full_name",
       dob: "preferred_dob",
+      entity: "entity_count",
+      relations: "connection_count",
+      matches: "possible_match_count",
       orders: "order_count",
       quality: "profile_completeness_score",
     };
@@ -1670,8 +1689,8 @@ function PersonsInner(): ReactElement {
                 <th className={`${styles.th} ${styles.thCheck}`}>
                   <input type="checkbox" ref={checkAllRef} checked={allChecked} onChange={toggleAll} className={styles.checkbox} />
                 </th>
-                {(["Name", "NRIC", "Phone", "Date of Birth", "Email", "Address", "Entity", "Relations", "Orders"] as const).map((h, i) => {
-                  const sk: SortKey | null = h === "Name" ? "name" : h === "Date of Birth" ? "dob" : h === "Orders" ? "orders" : null;
+                {(["Name", "NRIC", "Phone", "Date of Birth", "Email", "Address", "Entity", "Relations", "Matches", "Orders"] as const).map((h, i) => {
+                  const sk: SortKey | null = h === "Name" ? "name" : h === "Date of Birth" ? "dob" : h === "Entity" ? "entity" : h === "Relations" ? "relations" : h === "Matches" ? "matches" : h === "Orders" ? "orders" : null;
                   return (
                     <th key={h} className={styles.th}>
                       {sk ? (
@@ -1689,7 +1708,7 @@ function PersonsInner(): ReactElement {
                     Completeness
                     <SortIcon active={sortKey === "quality"} dir={sortDir} />
                   </button>
-                  <div className={styles.resizeHandle} onMouseDown={(e) => startColResize(10, e)} />
+                  <div className={styles.resizeHandle} onMouseDown={(e) => startColResize(11, e)} />
                 </th>
                 <th className={`${styles.th} ${styles.thSticky} ${styles.stickyGraph}`}>Graph</th>
               </tr>

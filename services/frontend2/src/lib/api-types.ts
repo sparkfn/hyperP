@@ -172,6 +172,8 @@ export interface ListedPerson extends EntityPerson {
   entities: PersonEntitySummary[];
   entity_count: number;
   identifier_count: number;
+  connection_count: number;
+  possible_match_count: number;
   order_count: number;
 }
 
