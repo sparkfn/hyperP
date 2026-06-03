@@ -663,7 +663,48 @@ type PresenceFilter = "any" | "has" | "none";
 type DobMode = "single" | "range";
 type SortKey = "name" | "dob" | "entity" | "relations" | "matches" | "orders" | "quality";
 type SortDir = "asc" | "desc";
+type FlagFilter = "any" | "high_value" | "high_risk" | "no_contact";
 type FilterKey = "entity" | "source" | "identity" | "dob" | "address" | "flags" | "bankruptcy" | "updated" | "location";
+
+const SORT_PARAM_BY_KEY: Record<SortKey, string> = {
+  name: "preferred_full_name",
+  dob: "preferred_dob",
+  entity: "entity_count",
+  relations: "connection_count",
+  matches: "possible_match_count",
+  orders: "order_count",
+  quality: "profile_completeness_score",
+};
+
+const SORT_KEY_BY_PARAM: Record<string, SortKey> = Object.fromEntries(
+  Object.entries(SORT_PARAM_BY_KEY).map(([key, value]) => [value, key]),
+) as Record<string, SortKey>;
+
+function parsePresenceFilter(value: string | null): PresenceFilter {
+  if (value === "true") return "has";
+  if (value === "false") return "none";
+  return "any";
+}
+
+function parseSortKey(value: string | null): SortKey | null {
+  return value ? (SORT_KEY_BY_PARAM[value] ?? null) : null;
+}
+
+function parseSortDir(value: string | null): SortDir {
+  return value === "asc" ? "asc" : "desc";
+}
+
+function parsePageSize(value: string | null): number {
+  const parsed = Number(value);
+  return [25, 50, 100].includes(parsed) ? parsed : 25;
+}
+
+function parseFlagFilter(params: URLSearchParams): FlagFilter {
+  if (params.get("is_high_value") === "true") return "high_value";
+  if (params.get("is_high_risk") === "true") return "high_risk";
+  if (params.get("has_phone") === "false" && params.get("has_email") === "false") return "no_contact";
+  return "any";
+}
 
 function FilterPill({
   label,
@@ -734,29 +775,40 @@ const IDENTITY_FILTERS = [
 
 
 function PersonsInner(): ReactElement {
+  const router = useRouter();
   const searchParams = useSearchParams();
   const [search, setSearch] = useState(searchParams.get("q") ?? "");
-  const [entityFilter, setEntityFilter] = useState<string[]>([]);
-  const [sourceFilter, setSourceFilter] = useState<string[]>([]);
+  const [entityFilter, setEntityFilter] = useState<string[]>(() => searchParams.getAll("entity_key"));
+  const [sourceFilter, setSourceFilter] = useState<string[]>(() => searchParams.getAll("source_key"));
   const [sourceSearch, setSourceSearch] = useState("");
-  const [identityFilter, setIdentityFilter] = useState<string[]>([]);
-  const [addressFilter, setAddressFilter] = useState<PresenceFilter>("any");
-  const [dobFilter, setDobFilter] = useState<PresenceFilter>("any");
-  const [dobMode, setDobMode] = useState<DobMode>("single");
-  const [dobSingleDate, setDobSingleDate] = useState("");
-  const [dobStartDate, setDobStartDate] = useState("");
-  const [dobEndDate, setDobEndDate] = useState("");
-  const [flagFilter, setFlagFilter] = useState<"any" | "high_value" | "high_risk" | "no_contact">("any");
-  const [hasBankruptcy, setHasBankruptcy] = useState<boolean | null>(null);
-  const [updatedAfter, setUpdatedAfter] = useState("");
-  const [updatedBefore, setUpdatedBefore] = useState("");
-  const [addrCity, setAddrCity] = useState("");
-  const [addrPostal, setAddrPostal] = useState("");
-  const [addrCountry, setAddrCountry] = useState("");
+  const [identityFilter, setIdentityFilter] = useState<string[]>(() => {
+    const values: string[] = [];
+    if (searchParams.get("has_email") === "true") values.push("email");
+    if (searchParams.get("has_phone") === "true") values.push("phone");
+    return values;
+  });
+  const [addressFilter, setAddressFilter] = useState<PresenceFilter>(() => parsePresenceFilter(searchParams.get("has_address")));
+  const [dobFilter, setDobFilter] = useState<PresenceFilter>(() => parsePresenceFilter(searchParams.get("has_dob")));
+  const [dobMode, setDobMode] = useState<DobMode>(() => (searchParams.get("dob_mode") === "range" ? "range" : "single"));
+  const [dobSingleDate, setDobSingleDate] = useState(searchParams.get("dob") ?? "");
+  const [dobStartDate, setDobStartDate] = useState(searchParams.get("dob_from") ?? "");
+  const [dobEndDate, setDobEndDate] = useState(searchParams.get("dob_to") ?? "");
+  const [flagFilter, setFlagFilter] = useState<FlagFilter>(() => parseFlagFilter(searchParams));
+  const [hasBankruptcy, setHasBankruptcy] = useState<boolean | null>(() => {
+    const value = searchParams.get("has_bankruptcy_case");
+    if (value === "true") return true;
+    if (value === "false") return false;
+    return null;
+  });
+  const [updatedAfter, setUpdatedAfter] = useState(searchParams.get("updated_after") ?? "");
+  const [updatedBefore, setUpdatedBefore] = useState(searchParams.get("updated_before") ?? "");
+  const [addrCity, setAddrCity] = useState(searchParams.get("addr_city") ?? "");
+  const [addrPostal, setAddrPostal] = useState(searchParams.get("addr_postal") ?? "");
+  const [addrCountry, setAddrCountry] = useState(searchParams.get("addr_country") ?? "");
 
   const [openFilter, setOpenFilter] = useState<FilterKey | null>(null);
-  const [sortKey, setSortKey] = useState<SortKey | null>(null);
-  const [sortDir, setSortDir] = useState<SortDir>("desc");
+  const [sortKey, setSortKey] = useState<SortKey | null>(() => parseSortKey(searchParams.get("sort_by")));
+  const [sortDir, setSortDir] = useState<SortDir>(() => parseSortDir(searchParams.get("sort_order")));
   const [apiRows, setApiRows] = useState<ListedPerson[]>([]);
   const [total, setTotal] = useState<number | null>(null);
   const [fetchLoading, setFetchLoading] = useState(true); // always true initially; cache hydration happens in effect
@@ -795,12 +847,12 @@ function PersonsInner(): ReactElement {
   }
 
   const [selected, setSelected] = useState<Set<string>>(new Set());
-  const [pageSize, setPageSize] = useState(25);
+  const [pageSize, setPageSize] = useState(() => parsePageSize(searchParams.get("limit")));
   const listLoadId = useId();
   const setGlobalLoading = useSetLoading();
   useEffect(() => {
-    if (window.innerWidth <= 768) setPageSize(25);
-  }, []);
+    if (searchParams.get("limit") === null && window.innerWidth <= 768) setPageSize(25);
+  }, [searchParams]);
   const [canScrollRight, setCanScrollRight] = useState(false);
   const [canScrollLeft, setCanScrollLeft] = useState(false);
   const [colWidths, setColWidths] = useState<number[]>(DEFAULT_WIDTHS);
@@ -998,17 +1050,8 @@ function PersonsInner(): ReactElement {
     } else if (dobFilter === "none") {
       params.set("has_dob", "false");
     }
-    const sortByMap: Record<SortKey, string> = {
-      name: "preferred_full_name",
-      dob: "preferred_dob",
-      entity: "entity_count",
-      relations: "connection_count",
-      matches: "possible_match_count",
-      orders: "order_count",
-      quality: "profile_completeness_score",
-    };
     if (sortKey) {
-      params.set("sort_by", sortByMap[sortKey]);
+      params.set("sort_by", SORT_PARAM_BY_KEY[sortKey]);
       params.set("sort_order", sortDir);
     }
     if (flagFilter === "high_value") params.set("is_high_value", "true");
@@ -1024,8 +1067,22 @@ function PersonsInner(): ReactElement {
     return params.toString();
   }, [search, entityFilter, sourceFilter, identityFilter, addressFilter, dobFilter, dobMode, dobSingleDate, dobStartDate, dobEndDate, flagFilter, hasBankruptcy, updatedAfter, updatedBefore, addrCity, addrPostal, addrCountry, sortKey, sortDir, pageSize]);
 
+  const urlQuery = useMemo(() => {
+    const params = new URLSearchParams(apiQuery);
+    if (search.trim()) params.set("q", search.trim());
+    else params.delete("q");
+    if (dobFilter === "has") params.set("dob_mode", dobMode);
+    else params.delete("dob_mode");
+    return params.toString();
+  }, [apiQuery, dobFilter, dobMode, search]);
+
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect
+    const current = searchParams.toString();
+    if (current === urlQuery) return;
+    router.replace(urlQuery ? `/persons?${urlQuery}` : "/persons", { scroll: false });
+  }, [router, searchParams, urlQuery]);
+
+  useEffect(() => {
     setCurrentCursor(null);
     setCursorStack([]);
   }, [apiQuery]);
