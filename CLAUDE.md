@@ -52,7 +52,7 @@ Test paths are configured in the root `pyproject.toml`.
 ```bash
 cd services/frontend2          # or services/frontend for v1
 npm install          # already done in Docker; run locally for typecheck/lint only
-npm run dev         # dev server (frontend2 :3002, frontend :3001)
+npm run dev         # dev server (frontend2 :3001, frontend :3001)
 npm run typecheck   # tsc --noEmit
 npm run lint       # eslint src (ESLint 9 flat config, max-warnings 9)
 npm run build      # production build (runs in Docker for deployment)
@@ -73,7 +73,7 @@ Eight Docker containers defined in `docker-compose.yml`:
 | `redis` | `redis:7-alpine` | `redis://redis:6379` | Celery broker (db 0) + results (db 1) + token revocation store + public share-link tokens (TTL auto-cleanup) |
 | `api` | `services/api/Dockerfile` | `http://api:3000` | FastAPI/uvicorn; not exposed directly |
 | `frontend` | `services/frontend/Dockerfile` | `http://frontend:3001` | Next.js **v1** (legacy); served under `/app/v1`; not exposed directly |
-| `frontend2` | `services/frontend2/Dockerfile` | `http://frontend2:3002` | Next.js **v2** (active app); served at the web root; not exposed directly |
+| `frontend2` | `services/frontend2/Dockerfile` | `http://frontend2:3001` | Next.js **v2** (active app); served at the web root; not exposed directly |
 | `web` | `nginx:1.27-alpine` | exposed on `:80` | Reverse proxy. Longest-prefix routing: `/api/app/*` → FastAPI mounts (path preserved, no strip); `/api/*` → FastAPI (strips `/api`, root_path `/api`); `/app/v1` → `frontend`; `/` (catch-all) → `frontend2` |
 | `worker` | `services/ingestion/Dockerfile` | — | Celery worker; `celery -A src.celery_app worker` |
 | `beat` | `services/ingestion/Dockerfile` | — | Celery beat scheduler; cron schedules from env vars |

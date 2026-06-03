@@ -166,7 +166,7 @@ services:
       # /app/v2 so server-side calls reach the FastAPI /api/app/v2 mount.
       API_BASE_URL: ${FRONTEND2_API_BASE_URL:-http://api:3000/api}
       NODE_ENV: production
-      PORT: 3002
+      PORT: 3001
       AUTH_SECRET: ${AUTH_SECRET:-}
       AUTH_GOOGLE_ID: ${AUTH_GOOGLE_ID:-}
       AUTH_GOOGLE_SECRET: ${AUTH_GOOGLE_SECRET:-}
