@@ -37,17 +37,6 @@ const COLS: ColDef[] = [
 const DEFAULT_WIDTHS = [36, 180, 110, 110, 110, 160, 200, 120, 112, 84, 124, 54];
 
 
-function parseDob(dob: string | null): { display: string; invalid: boolean } {
-  if (!dob) return { display: "—", invalid: false };
-  const year = parseInt(dob.slice(0, 4), 10);
-  if (year < 1920 || year > 2026) return { display: dob, invalid: true };
-  const d = new Date(dob + "T00:00:00");
-  return {
-    display: d.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" }),
-    invalid: false,
-  };
-}
-
 type RelationPopoverState = {
   personId: string;
   anchorTop: number;
@@ -338,7 +327,6 @@ function PersonRow({
 }): ReactElement {
   const initials = getInitials(p.preferred_full_name);
   const pct = Math.round(p.profile_completeness_score * 100);
-  const dob = parseDob(p.preferred_dob);
   const labels = getLabels(p);
   const router = useRouter();
   const personHref = `/persons/${p.person_id}`;
@@ -398,8 +386,8 @@ function PersonRow({
       </td>
       <td className={styles.td}>
         <div className={styles.dobCell}>
-          <span className={dob.invalid ? styles.dobBad : styles.dobText}>{dob.display}</span>
-          {dob.invalid && (
+          <span className={p.preferred_dob_invalid ? styles.dobBad : styles.dobText}>{p.preferred_dob_display}</span>
+          {p.preferred_dob_invalid && (
             <span className={styles.dobWarn} title="Invalid or placeholder date of birth">⚠️</span>
           )}
         </div>

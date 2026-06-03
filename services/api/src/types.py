@@ -530,3 +530,7 @@ class ListedPerson(EntityPerson):
     possible_match_count: int = 0
     order_count: int = 0
     bankruptcy_case_count: int = 0
+    # Server-computed DOB presentation: ready-to-render string + validity flag,
+    # so the frontend does no date parsing/formatting. See format_display_dob.
+    preferred_dob_display: str = "—"
+    preferred_dob_invalid: bool = False
