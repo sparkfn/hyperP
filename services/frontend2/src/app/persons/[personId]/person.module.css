@@ -3674,6 +3674,16 @@
   font-weight: 600;
 }
 
+.overridePillDot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-left: 6px;
+  vertical-align: middle;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
 .overrideSrList {
   display: flex;
   flex-direction: column;
@@ -3748,6 +3758,18 @@
 .overrideSrMeta {
   font-size: 11px;
   color: var(--text-muted);
+}
+
+.overrideCurrentTag {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 1px 7px;
+  border-radius: 10px;
+  font-size: 10px;
+  font-weight: 600;
+  vertical-align: middle;
+  background: color-mix(in srgb, var(--accent) 16%, var(--bg-card));
+  color: var(--accent-text);
 }
 
 .overrideSrValue {
@@ -4191,6 +4213,37 @@
   background: color-mix(in srgb, var(--text-muted) 7%, transparent);
   max-height: 420px;
   overflow-y: auto;
+}
+
+/* Theme-aware scrollbars for the scrollable boxes inside a source record:
+   the raw source-record JSON and the conversation transcript. The thumb is
+   derived from --text-muted, which is redefined per data-theme, so it tracks
+   dark/light automatically. */
+.srChat,
+.srJson {
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--text-muted) 45%, transparent) transparent;
+}
+.srChat::-webkit-scrollbar,
+.srJson::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+.srChat::-webkit-scrollbar-track,
+.srJson::-webkit-scrollbar-track {
+  background: transparent;
+}
+.srChat::-webkit-scrollbar-thumb,
+.srJson::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--text-muted) 38%, transparent);
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+.srChat::-webkit-scrollbar-thumb:hover,
+.srJson::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--text-muted) 60%, transparent);
+  background-clip: padding-box;
 }
 .srMsg {
   display: flex;

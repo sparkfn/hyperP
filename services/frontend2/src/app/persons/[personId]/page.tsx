@@ -6,11 +6,14 @@ import { notFound, useSearchParams } from "next/navigation";
 import type { Person, PersonConnection, SalesOrder } from "@/lib/api-types";
 import type {
   ChatMessage,
+  EditableFieldOptions,
+  GoldenFieldName,
   GoldenProfileSelectionRequestBody,
   ManualMergeRequestBody,
   ManualMergeResponseBody,
   PersonAuditEvent,
   PersonBankruptcyCase,
+  PersonFieldOptions,
   PersonIdentifier,
   PersonMatchDecision,
   PersonSharedIdentifierCandidate,
@@ -97,9 +100,6 @@ function fmtCurrency(amount: number | null, currency: string | null): string {
   return `${currency ?? "SGD"} ${amount.toFixed(2)}`;
 }
 
-/** Parses "computed-2026-05-21T23:36:59Z" → "Computed · 21 May 2026" */
-type EditableField = "full_name" | "phone" | "email" | "dob" | "address";
-
 type MergeProfileChoice = "this" | "candidate";
 type MergeGoldenField = GoldenProfileSelectionRequestBody["field_name"];
 
@@ -120,25 +120,6 @@ interface MergeFieldDraft {
   thisDisplay: string | null;
   candidateRaw: string | null;
   candidateDisplay: string | null;
-}
-
-/** Pull the value for the chosen field from a source record's normalized payload */
-function extractSrValue(sr: PersonSourceRecord, field: EditableField): string {
-  const payload = sr.normalized_payload;
-  if (!payload) return "—";
-  if (field === "address") {
-    return payload.address?.normalized_full ?? "—";
-  }
-  const identifierTypeMap: Record<Exclude<EditableField, "address">, string> = {
-    full_name: "full_name",
-    phone: "phone",
-    email: "email",
-    dob: "dob",
-  };
-  const target = identifierTypeMap[field];
-  const found = payload.identifiers?.find((id) => id.identifier_type === target);
-  if (!found?.normalized_value) return "—";
-  return field === "dob" ? fmtDate(found.normalized_value) : found.normalized_value;
 }
 
 /** Masks middle digits of NRIC: "S9436749B" → "S****749B" */
@@ -2678,12 +2659,38 @@ export default function PersonDetailPage({ params }: { params: Promise<{ personI
   }
 
   const [overrideOpen, setOverrideOpen] = useState(false);
-  const [overrideField, setOverrideField] = useState<EditableField>("full_name");
+  const [overrideField, setOverrideField] = useState<GoldenFieldName>("preferred_full_name");
   const [overrideSrPk, setOverrideSrPk] = useState<string>("");
   const [overrideReason, setOverrideReason] = useState("");
   const [overrideSubmitting, setOverrideSubmitting] = useState(false);
   const [overrideError, setOverrideError] = useState<string | null>(null);
   const [overrideSuccess, setOverrideSuccess] = useState(false);
+  const [fieldOptions, setFieldOptions] = useState<PersonFieldOptions | null>(null);
+  const [fieldOptionsLoading, setFieldOptionsLoading] = useState(false);
+
+  const activeFieldOptions: EditableFieldOptions | null =
+    fieldOptions?.fields.find((f) => f.field_name === overrideField) ?? null;
+
+  // Lazy-load the editable field options whenever the modal opens, so the
+  // server-computed candidate values always reflect the current graph state.
+  useEffect(() => {
+    if (!overrideOpen) return;
+    let cancelled = false;
+    async function loadFieldOptions(): Promise<void> {
+      setFieldOptionsLoading(true);
+      setOverrideError(null);
+      try {
+        const env = await bffFetchEnvelope<PersonFieldOptions>(`/bff/persons/${encodeURIComponent(personId)}/field-options`);
+        if (!cancelled) setFieldOptions(env.data);
+      } catch (e) {
+        if (!cancelled) setOverrideError(e instanceof BffError ? e.message : "Failed to load field options.");
+      } finally {
+        if (!cancelled) setFieldOptionsLoading(false);
+      }
+    }
+    void loadFieldOptions();
+    return () => { cancelled = true; };
+  }, [overrideOpen, personId]);
 
   async function handleOverrideSubmit(): Promise<void> {
     if (!overrideSrPk || !overrideReason.trim()) return;
@@ -2691,8 +2698,8 @@ export default function PersonDetailPage({ params }: { params: Promise<{ personI
     setOverrideError(null);
     try {
       const body: SurvivorshipOverrideRequestBody = {
-        attribute_name: overrideField,
-        selected_source_record_pk: overrideSrPk,
+        field_name: overrideField,
+        source_record_pk: overrideSrPk,
         reason: overrideReason.trim(),
       };
       await bffFetchEnvelope(`/bff/persons/${encodeURIComponent(personId)}/survivorship-overrides`, {
@@ -2700,6 +2707,13 @@ export default function PersonDetailPage({ params }: { params: Promise<{ personI
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
       });
+      // Refresh the sidebar (preferred values) and the option list (current/overridden flags).
+      const [refreshed, refreshedOptions] = await Promise.all([
+        bffFetch<Person>(`/bff/persons/${encodeURIComponent(personId)}`).catch(() => null),
+        bffFetchEnvelope<PersonFieldOptions>(`/bff/persons/${encodeURIComponent(personId)}/field-options`).catch(() => null),
+      ]);
+      if (refreshed) setPerson(refreshed);
+      if (refreshedOptions) setFieldOptions(refreshedOptions.data);
       setOverrideSuccess(true);
       setTimeout(() => {
         setOverrideOpen(false);
@@ -2976,20 +2990,15 @@ export default function PersonDetailPage({ params }: { params: Promise<{ personI
             <div className={styles.overrideFieldGroup}>
               <div className={styles.overrideLabel}>Field</div>
               <div className={styles.overrideFieldPills}>
-                {([
-                  { key: "full_name", label: "Full name" },
-                  { key: "phone",     label: "Phone" },
-                  { key: "email",     label: "Email" },
-                  { key: "dob",       label: "Date of birth" },
-                  { key: "address",   label: "Address" },
-                ] as const).map(({ key, label }) => (
+                {(fieldOptions?.fields ?? []).map((f) => (
                   <button
-                    key={key}
+                    key={f.field_name}
                     type="button"
-                    className={`${styles.overridePill} ${overrideField === key ? styles.overridePillActive : ""}`}
-                    onClick={() => { setOverrideField(key); setOverrideSrPk(""); }}
+                    className={`${styles.overridePill} ${overrideField === f.field_name ? styles.overridePillActive : ""}`}
+                    onClick={() => { setOverrideField(f.field_name); setOverrideSrPk(""); }}
                   >
-                    {label}
+                    {f.label}
+                    {f.is_overridden && <span className={styles.overridePillDot} title="Pinned override" aria-hidden="true" />}
                   </button>
                 ))}
               </div>
@@ -2999,38 +3008,36 @@ export default function PersonDetailPage({ params }: { params: Promise<{ personI
             <div className={styles.overrideFieldGroup}>
               <div className={styles.overrideLabel}>Choose value</div>
               <div className={styles.overrideSrList}>
-                {(() => {
-                  const filtered = detailData.sourceRecords.filter(
-                    (sr) => extractSrValue(sr, overrideField) !== "—",
-                  );
-                  if (filtered.length === 0) {
+                {fieldOptionsLoading ? (
+                  <div className={styles.overrideSrEmpty}>Loading source values…</div>
+                ) : (activeFieldOptions?.options.length ?? 0) === 0 ? (
+                  <div className={styles.overrideSrEmpty}>
+                    No source records have a value for this field.
+                  </div>
+                ) : (
+                  activeFieldOptions?.options.map((opt) => {
+                    const sourceMeta = [opt.source_system, opt.entity_display_name].filter(Boolean).join(" · ");
                     return (
-                      <div className={styles.overrideSrEmpty}>
-                        No source records have a value for this field.
-                      </div>
-                    );
-                  }
-                  return filtered.map((sr) => {
-                    const newValue = extractSrValue(sr, overrideField);
-                    const sourceMeta = [sr.source_system, sr.entity_display_name].filter(Boolean).join(" · ");
-                    return (
-                      <label key={sr.source_record_pk} className={`${styles.overrideSrRow} ${overrideSrPk === sr.source_record_pk ? styles.overrideSrRowActive : ""}`}>
+                      <label key={`${opt.source_record_pk}-${opt.value}`} className={`${styles.overrideSrRow} ${overrideSrPk === opt.source_record_pk ? styles.overrideSrRowActive : ""}`}>
                         <input
                           type="radio"
                           name="override-sr"
-                          value={sr.source_record_pk}
-                          checked={overrideSrPk === sr.source_record_pk}
-                          onChange={() => setOverrideSrPk(sr.source_record_pk)}
+                          value={opt.source_record_pk}
+                          checked={overrideSrPk === opt.source_record_pk}
+                          onChange={() => setOverrideSrPk(opt.source_record_pk)}
                           className={styles.overrideSrRadio}
                         />
                         <div className={styles.overrideSrInfo}>
-                          <span className={styles.overrideSrValuePrimary}>{newValue}</span>
+                          <span className={styles.overrideSrValuePrimary}>
+                            {opt.value_display}
+                            {opt.is_current && <span className={styles.overrideCurrentTag}>Current</span>}
+                          </span>
                           <span className={styles.overrideSrMeta}>{sourceMeta}</span>
                         </div>
                       </label>
                     );
-                  });
-                })()}
+                  })
+                )}
               </div>
             </div>
 

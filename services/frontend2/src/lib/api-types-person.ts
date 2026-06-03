@@ -155,9 +155,45 @@ export interface UnmergeRequestBody {
   reason: string;
 }
 
+export type GoldenFieldName =
+  | "preferred_full_name"
+  | "preferred_dob"
+  | "preferred_phone"
+  | "preferred_email"
+  | "preferred_nric"
+  | "preferred_address";
+
+export type GoldenSourceKind = "source_record_fact" | "identifier" | "address";
+
+export interface FieldOption {
+  source_record_pk: string;
+  source_kind: GoldenSourceKind;
+  identifier_type: string | null;
+  value: string;
+  value_display: string;
+  source_system: string;
+  entity_display_name: string | null;
+  observed_at_display: string | null;
+  is_current: boolean;
+}
+
+export interface EditableFieldOptions {
+  field_name: GoldenFieldName;
+  label: string;
+  source_kind: GoldenSourceKind;
+  current_value_display: string | null;
+  is_overridden: boolean;
+  options: FieldOption[];
+}
+
+export interface PersonFieldOptions {
+  person_id: string;
+  fields: EditableFieldOptions[];
+}
+
 export interface SurvivorshipOverrideRequestBody {
-  attribute_name: string;
-  selected_source_record_pk: string;
+  field_name: GoldenFieldName;
+  source_record_pk: string;
   reason: string;
 }
 
@@ -179,8 +215,8 @@ export interface UnmergeResponseBody {
 
 export interface SurvivorshipOverrideResponseBody {
   person_id: string;
-  attribute_name: string;
-  selected_source_record_pk: string;
+  field_name: string;
+  source_record_pk: string;
   status: string;
 }
 
