@@ -59,7 +59,7 @@ export default function EntitiesPage(): ReactElement {
           const init = getInitials(e.display_name, e.entity_key);
           const typeLabel = entityTypeLabel(e.entity_type);
           return (
-            <Link key={e.entity_key} href={`/persons?entity=${encodeURIComponent(e.entity_key)}`} className={styles.card}>
+            <Link key={e.entity_key} href={`/persons?entity_key=${encodeURIComponent(e.entity_key)}`} className={styles.card}>
               {/* Logo + name */}
               <div className={styles.cardTop}>
                 <div className={styles.avatar} style={{ background: color }}>{init}</div>

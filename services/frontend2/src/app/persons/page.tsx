@@ -696,7 +696,7 @@ function parseSortDir(value: string | null): SortDir {
 
 function parsePageSize(value: string | null): number {
   const parsed = Number(value);
-  return [25, 50, 100].includes(parsed) ? parsed : 25;
+  return [25, 50, 100, 200].includes(parsed) ? parsed : 25;
 }
 
 function parseFlagFilter(params: URLSearchParams): FlagFilter {
@@ -778,7 +778,11 @@ function PersonsInner(): ReactElement {
   const router = useRouter();
   const searchParams = useSearchParams();
   const [search, setSearch] = useState(searchParams.get("q") ?? "");
-  const [entityFilter, setEntityFilter] = useState<string[]>(() => searchParams.getAll("entity_key"));
+  const [entityFilter, setEntityFilter] = useState<string[]>(() => {
+    const values = searchParams.getAll("entity_key");
+    const legacy = searchParams.get("entity");
+    return values.length > 0 || legacy === null ? values : [legacy];
+  });
   const [sourceFilter, setSourceFilter] = useState<string[]>(() => searchParams.getAll("source_key"));
   const [sourceSearch, setSourceSearch] = useState("");
   const [identityFilter, setIdentityFilter] = useState<string[]>(() => {
