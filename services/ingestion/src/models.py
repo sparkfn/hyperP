@@ -202,6 +202,12 @@ class MatchResult(BaseModel):
     engine_type: EngineType = EngineType.DETERMINISTIC
     engine_version: str = "v0.1.0"
     matched_person_id: str | None = None
+    # When an incoming record independently matches (MERGE band) more than one
+    # distinct active person, the record and its extracted evidence are linked to
+    # ALL of them — ``matched_person_id`` (the primary) plus every id here — but
+    # the persons are NOT merged (they may legitimately share an identifier).
+    # Empty in the common single-match case.
+    additional_linked_person_ids: list[str] = Field(default_factory=list)
     is_new_person: bool = False
     feature_snapshot: dict[str, JsonValue] = Field(default_factory=dict)
 

@@ -198,6 +198,14 @@ class IngestPipeline:
         )
         match_decision_id = persist_match_decision(tx, match_result, source_record_pk)
         review_case_id = create_review_case_if_needed(tx, match_result, match_decision_id)
+        # A REVIEW-band match against an *existing* candidate is provisional: the
+        # record is linked so the reviewer can compare it, but its identifiers /
+        # addresses / facts must NOT be wired onto the candidate person — nor the
+        # golden profile recomputed — until a human approves the merge. Otherwise
+        # an unconfirmed record silently commingles into the candidate and cannot
+        # be cleanly split off on reject. (Reviewer-workflow Side-Effect Matrix:
+        # a record only becomes "linked" on a merge action.)
+        provisional_review = match_result.decision == MatchDecision.REVIEW and not is_new_person
         link_record_to_graph(
             tx,
             envelope=envelope,
@@ -206,14 +214,34 @@ class IngestPipeline:
             attributes=attributes,
             person_id=person_id,
             source_record_pk=source_record_pk,
+            attach_evidence=not provisional_review,
         )
-        materialize_bankruptcy_case(
-            tx,
-            envelope=envelope,
-            person_id=person_id,
-            source_record_pk=source_record_pk,
-        )
-        compute_golden_profile(tx, person_id)
+        if not provisional_review:
+            materialize_bankruptcy_case(
+                tx,
+                envelope=envelope,
+                person_id=person_id,
+                source_record_pk=source_record_pk,
+            )
+            compute_golden_profile(tx, person_id)
+        # Multi-match: the record reached the merge band against more than one
+        # distinct person. Link the record + its extracted evidence to every
+        # other matched person too — WITHOUT merging the persons, which may
+        # legitimately share an identifier — and recompute each golden profile.
+        for other_person_id in match_result.additional_linked_person_ids:
+            if other_person_id == person_id:
+                continue
+            link_record_to_graph(
+                tx,
+                envelope=envelope,
+                identifiers=identifiers,
+                addresses=addresses,
+                attributes=attributes,
+                person_id=other_person_id,
+                source_record_pk=source_record_pk,
+                attach_evidence=True,
+            )
+            compute_golden_profile(tx, other_person_id)
         if match_result.decision == MatchDecision.MERGE and not is_new_person:
             record_auto_merge_event(
                 tx,

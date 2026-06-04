@@ -49,12 +49,29 @@ RETURN p.person_id AS person_id
 LIMIT 1
 """
 
+# Government-ID hard rules require a VALID-quality edge on the candidate side
+# too — symmetric with the incoming filter (only VALID incoming NRICs reach
+# these checks). A partial_parse / low-quality NRIC edge must not drive a
+# confidence-1.0 auto-merge or a hard no-match block.
+_PERSON_HAS_VALID_GOVT_ID = """
+MATCH (p:Person {person_id: $person_id})
+      -[rel:IDENTIFIED_BY]->(id:Identifier {
+          identifier_type: 'nric',
+          normalized_value: $normalized_value
+      })
+WHERE rel.is_active = true
+  AND rel.quality_flag = 'valid'
+RETURN p.person_id AS person_id
+LIMIT 1
+"""
+
 _PERSON_HAS_CONFLICTING_GOVT_ID = """
 MATCH (p:Person {person_id: $person_id})
       -[rel:IDENTIFIED_BY]->(id:Identifier {
           identifier_type: 'nric'
       })
 WHERE rel.is_active = true
+  AND rel.quality_flag = 'valid'
   AND id.normalized_value <> $normalized_value
 RETURN id.normalized_value AS conflicting_value
 LIMIT 1
@@ -151,9 +168,8 @@ def _check_government_id(
     ]
     for govt_id in govt_ids:
         if tx.run(
-            _PERSON_HAS_IDENTIFIER,
+            _PERSON_HAS_VALID_GOVT_ID,
             person_id=candidate_person_id,
-            identifier_type="nric",
             normalized_value=govt_id.normalized_value,
         ).single():
             logger.info(

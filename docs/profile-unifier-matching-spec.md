@@ -143,6 +143,35 @@ Hard rules must execute before heuristic or LLM logic.
 The current proposed defaults for hard merges and hard blockers are documented
 in [profile-unifier-policy-decisions.md](./profile-unifier-policy-decisions.md).
 
+## Multi-Match Resolution (Link-to-All, No Person Merge)
+
+The engine evaluates **every** candidate, not only the first. When an incoming
+source record independently reaches the **merge** band against more than one
+*distinct* active person, the engine must not silently attach to one and discard
+the rest — but it must also **not** merge those persons. Two persons sharing the
+identifier the record matched on may be genuinely different people (e.g. a shared
+household phone), so collapsing them on the strength of one bridging record would
+risk a false merge, which the precision-first policy forbids.
+
+Resolution:
+
+- choose a **primary** = highest-confidence merge, ties broken deterministically
+  by `person_id` so the outcome does not depend on candidate iteration order
+- link the incoming record and its extracted evidence (source record,
+  identifiers, addresses, facts) to the primary **and to every other
+  merge-matched person** — each person keeps its own `LINKED_TO` /
+  `IDENTIFIED_BY` / `LIVES_AT` / `HAS_FACT` edges for the record
+- recompute each affected person's golden profile
+- the persons remain **separate** — no `MERGED_INTO`, no `merged` status, no
+  person-to-person rewiring
+
+The extra person ids are carried on `MatchResult.additional_linked_person_ids`.
+This applies to both deterministic (confidence 1.0) and heuristic (≥ 0.90) merge
+matches. Hard NO_MATCH rules still drop a conflicting candidate before it can
+become a merge target. Whether the shared evidence means the persons should
+ultimately be merged is left to human review / later analysis, not decided
+automatically here.
+
 ## Heuristic Feature Catalog
 
 ### Positive Evidence
@@ -203,6 +232,12 @@ stronger conversation observation — never as deterministic confirmation.
 }
 ```
 
+The persisted feature snapshot is built from **structured scoring signals** that
+each scoring function sets directly — it is never derived by parsing the
+human-readable decision `reasons`. Merge-gating logic (e.g. conversation
+promotion) and the stored audit/ML record therefore depend on typed fields, not
+on log wording, so reason text can change without altering decisions.
+
 ## Example Heuristic Scoring Model
 
 Illustrative only. Tune on labeled data. The weights below are simple additive
@@ -236,6 +271,24 @@ weak signals must not produce auto-merge confidence.
 - `>= 0.90`: auto-merge
 - `0.60 - 0.89`: review
 - `< 0.60`: no-match
+
+### Name Similarity Bands (Jaro–Winkler)
+
+Name weights are keyed off Jaro–Winkler similarity, whose distribution is *not*
+linear — it credits string length and shared prefixes, so unrelated name pairs
+floor around **0.35–0.49** rather than near zero, while same-person variants sit
+at/above **0.50** (e.g. Bob/Robert ≈ 0.50, Li Wei/Wei Li ≈ 0.67, typos ≈ 0.85+).
+Thresholds are therefore calibrated to that distribution, not to an intuitive
+"percent similar":
+
+- `> 0.80` → high similarity (`+0.20`)
+- `0.50 – 0.80` → medium similarity (`+0.10`)
+- `< 0.50` → strong name mismatch (`-0.25`)
+
+The strong-mismatch cutoff sits just below the same-person floor so clearly
+different names penalize without catching legitimate variants. A false mismatch
+only routes a pair to review (never a false merge), so the cutoff errs high on
+purpose. Retune on labeled benchmark data.
 
 ## LLM Adjudication Contract
 
