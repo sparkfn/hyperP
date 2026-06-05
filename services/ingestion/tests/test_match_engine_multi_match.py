@@ -54,7 +54,7 @@ def test_multi_match_picks_primary_and_lists_extra_links() -> None:
         _nric(),
         None,
         [],
-        record_type=RecordType.SYSTEM,
+        record_type=RecordType.IDENTITY,
     )
 
     assert result.decision == MatchDecision.MERGE
@@ -71,7 +71,7 @@ def test_single_match_has_no_additional_links() -> None:
         _nric(),
         None,
         [],
-        record_type=RecordType.SYSTEM,
+        record_type=RecordType.IDENTITY,
     )
 
     assert result.decision == MatchDecision.MERGE

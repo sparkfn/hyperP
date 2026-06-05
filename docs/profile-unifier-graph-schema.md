@@ -241,7 +241,7 @@ CREATE (sr:SourceRecord {
   source_record_pk: randomUUID(),
   source_record_id: '12345',
   source_record_version: null,
-  record_type: 'system',           // system | conversation | sales
+  record_type: 'identity',         // identity | public_record | relationship | conversation | sales
   link_status: 'pending_review',   // linked | pending_review | pending_customer | rejected | suppressed
   observed_at: datetime(),
   ingested_at: datetime(),
@@ -249,8 +249,8 @@ CREATE (sr:SourceRecord {
   raw_payload: {},                 // native map, not a JSON string
   normalized_payload: {},
   metadata: {},
-  extraction_confidence: null,     // 0.0–1.0; required when record_type='conversation', null for 'system'
-  extraction_method: null,         // e.g. 'llm_extractor_v1', 'regex_v2'; null for 'system'
+  extraction_confidence: null,     // 0.0–1.0; required when record_type='conversation', null otherwise
+  extraction_method: null,         // e.g. 'llm_extractor_v1', 'regex_v2'; null for non-conversation
   conversation_ref: null,          // map: {channel, thread_id, message_id, ...} for 'conversation'
   retention_expires_at: null
 })
@@ -259,10 +259,23 @@ CREATE (sr:SourceRecord {
 `record_type` distinguishes the provenance of the record's identifiers and
 attributes:
 
-- **`system`** — extracted deterministically from another service's structured
-  system of record (e.g. Bitrix CRM row, POS transaction, Fundbox `users`
-  table). Identifiers and attributes are taken at face value and may participate
-  in deterministic merge rules.
+The **system family** — `identity`, `public_record`, `relationship` — replaced
+the former single `system` value. All three are deterministic extracts that share
+matching behaviour today (via `models.SYSTEM_FAMILY`); they exist as distinct
+values so they can carry different matching criteria later. A startup data
+migration (`graph/migrations.py:backfill_record_type_subtypes`) reclassifies
+legacy `system` records by `source_system`.
+
+- **`identity`** — first-party identity extracted deterministically from another
+  service's structured system of record (e.g. Fundbox `users`/`legacy`/`merged`,
+  Eko/SpeedZone POS customers). Identifiers and attributes are taken at face value
+  and may participate in deterministic merge rules.
+- **`public_record`** — government / third-party register about a person or place
+  (e.g. SG bankruptcy, SG rental flats). Same matching behaviour as `identity`
+  today.
+- **`relationship`** — a record whose subject is a *different* person, e.g. a
+  Fundbox emergency contact that feeds a `KNOWS` edge. Same matching behaviour as
+  `identity` today.
 - **`conversation`** — extracted heuristically from free-text chat or voice
   transcripts. Identifiers and attributes are model-extracted and inherently
   noisy. These records are **never eligible for deterministic auto-merge**

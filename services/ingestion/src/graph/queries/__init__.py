@@ -34,6 +34,7 @@ from src.graph.queries.machine_units import (
     RESOLVE_EXISTING_MACHINE_UNIT_FOR_CHAT,
     UPSERT_MACHINE_UNIT,
 )
+from src.graph.queries.maintenance import BACKFILL_RECORD_TYPE_SUBTYPES
 from src.graph.queries.matching import (
     CHECK_IDENTIFIER_FANOUT,
     CHECK_NO_MATCH_LOCK,
@@ -103,6 +104,7 @@ from src.graph.queries.source_records import (
 )
 
 __all__ = [
+    "BACKFILL_RECORD_TYPE_SUBTYPES",
     "CHECK_IDENTIFIER_FANOUT",
     "CHECK_NO_MATCH_LOCK",
     "CHECK_OPEN_PERSON_PAIR_CASE",

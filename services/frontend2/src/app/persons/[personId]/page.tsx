@@ -1826,7 +1826,7 @@ function SourceRecordRow({ record }: { record: PersonSourceRecord }): ReactEleme
           </div>
         </div>
         <div className={styles.idBadges}>
-          <span className={record.record_type === "conversation" ? styles.srBadgeConv : styles.srBadgeSys}>{record.record_type}</span>
+          <span className={record.record_type === "conversation" ? styles.srBadgeConv : styles.srBadgeSys}>{titleCase(record.record_type)}</span>
           <span className={styles.srBadgeLink}>{record.link_status}</span>
           <svg className={`${styles.srcChevron} ${open ? styles.srcChevronOpen : ""}`} width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
             <path d="M6 9l6 6 6-6" />
@@ -2139,7 +2139,7 @@ function IdentifiersTab({ identifiers }: { identifiers: PersonIdentifier[] }): R
                                   {sr.entity_display_name !== null && (
                                     <span className={styles.idSrcChip}>{sr.entity_display_name}</span>
                                   )}
-                                  <span className={`${styles.idSrcChip} ${sr.record_type === "conversation" ? styles.idSrcChipConv : ""}`}>{sr.record_type}</span>
+                                  <span className={`${styles.idSrcChip} ${sr.record_type === "conversation" ? styles.idSrcChipConv : ""}`}>{titleCase(sr.record_type)}</span>
                                   <span className={styles.idSrcChip}>{sr.link_status}</span>
                                 </div>
                                 <div className={styles.idSrcRecordMeta}>

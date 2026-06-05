@@ -8,7 +8,12 @@ from typing import Literal
 from pydantic import BaseModel, Field, model_validator
 
 from src.repositories.protocols.merge import GoldenProfileSelection
-from src.types import ApiReviewActionType, GoldenFieldName, TrustTier
+from src.types import (
+    ApiReviewActionType,
+    GoldenFieldName,
+    SourceRecordTypeLiteral,
+    TrustTier,
+)
 
 
 class GoldenProfileSelectionRequest(BaseModel):
@@ -99,7 +104,7 @@ class IngestIdentifier(BaseModel):
 class IngestRecord(BaseModel):
     source_record_id: str
     source_record_version: str | None = None
-    record_type: Literal["system", "conversation"] = "system"
+    record_type: SourceRecordTypeLiteral = "identity"
     extraction_confidence: float | None = None
     extraction_method: str | None = None
     conversation_ref: dict[str, str | int | float | bool | None] | None = None
@@ -111,7 +116,7 @@ class IngestRecord(BaseModel):
 
     @model_validator(mode="after")
     def _check_record_type_invariants(self) -> IngestRecord:
-        """Validate conversation vs system record field constraints."""
+        """Validate conversation vs non-conversation record field constraints."""
         if self.record_type == "conversation":
             if self.extraction_confidence is None or self.extraction_method is None:
                 raise ValueError(

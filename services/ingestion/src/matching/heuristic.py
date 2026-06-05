@@ -96,7 +96,7 @@ def evaluate_heuristic(
     identifiers: list[NormalizedIdentifier],
     address: NormalizedAddress | None,
     attributes: list[NormalizedAttribute],
-    record_type: RecordType = RecordType.SYSTEM,
+    record_type: RecordType = RecordType.IDENTITY,
 ) -> MatchResult:
     """Conditional-weight heuristic scoring across phone/email/DOB/name/address."""
     snapshot = fetch_candidate_snapshot(tx, candidate_person_id)

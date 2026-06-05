@@ -39,7 +39,7 @@ def _envelope() -> SourceRecordEnvelope:
     return SourceRecordEnvelope(
         source_system="bitrix_chat",
         source_record_id="rec-1",
-        record_type=RecordType.SYSTEM,
+        record_type=RecordType.IDENTITY,
         observed_at="2026-01-01T00:00:00Z",
         record_hash="hash-1",
     )

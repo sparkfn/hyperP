@@ -62,12 +62,23 @@ export interface Person {
   updated_at: string;
 }
 
+// Provenance class of a SourceRecord. The first three ("system family")
+// replaced the former single "system" value; they share matching behaviour
+// today but are distinct so they can diverge later. Mirrors the API
+// SourceRecordTypeLiteral / ingestion RecordType.
+export type SourceRecordType =
+  | "identity"
+  | "public_record"
+  | "relationship"
+  | "conversation"
+  | "sales";
+
 export interface SourceRecord {
   source_record_pk: string;
   source_system: string;
   source_record_id: string;
   source_record_version: string | null;
-  record_type: "system" | "conversation";
+  record_type: SourceRecordType;
   extraction_confidence: number | null;
   link_status: string;
   linked_person_id: string | null;

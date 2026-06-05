@@ -624,6 +624,7 @@ def _build_fundbox_contact(row: DumpRow) -> dict[str, JsonValue]:
         source_record_id=f"fundbox_consumer_backend-contact-{row.id}",
         observed_at=to_iso(row.updated_at or row.created_at),
         identifiers=ids.items,
+        record_type="relationship",
         attributes={
             "full_name": row.full_name,
             "relationship_to_referrer": row.relationship,

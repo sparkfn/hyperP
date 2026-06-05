@@ -47,7 +47,17 @@ class EngineType(StrEnum):
 class RecordType(StrEnum):
     """Provenance class of a SourceRecord.
 
-    ``system`` — deterministic extract from another service's system of record.
+    The "system family" — ``identity``, ``public_record``, ``relationship`` —
+    are all deterministic extracts from a system of record and share identical
+    matching behaviour today (see :data:`SYSTEM_FAMILY`). They are kept as
+    distinct values so they can carry different matching criteria later:
+
+    ``identity`` — first-party identity from a transactional system of record
+    (Fundbox users/legacy/merged, Eko, SpeedZone).
+    ``public_record`` — government / third-party register about a person or place
+    (SG bankruptcy, SG rental flats).
+    ``relationship`` — a record whose subject is a different person, e.g. a
+    Fundbox emergency contact that feeds ``KNOWS``.
     ``conversation`` — heuristic extract from chat / voice transcripts.
     Conversation records are never eligible for deterministic auto-merge.
     ``sales`` — order/line-item/product extract from a commerce system. Linked
@@ -55,9 +65,20 @@ class RecordType(StrEnum):
     identity resolution on their own and never auto-merge.
     """
 
-    SYSTEM = "system"
+    IDENTITY = "identity"
+    PUBLIC_RECORD = "public_record"
+    RELATIONSHIP = "relationship"
     CONVERSATION = "conversation"
     SALES = "sales"
+
+
+#: Record types that descend from the former ``system`` provenance class. Every
+#: matching branch that historically tested ``record_type == SYSTEM`` (or its
+#: negation) now tests membership here, so these three behave identically until
+#: deliberately diverged.
+SYSTEM_FAMILY: frozenset[RecordType] = frozenset(
+    {RecordType.IDENTITY, RecordType.PUBLIC_RECORD, RecordType.RELATIONSHIP}
+)
 
 
 # ---------------------------------------------------------------------------
@@ -97,7 +118,7 @@ class SourceRecordEnvelope(BaseModel):
     source_system: str
     source_record_id: str
     source_record_version: str | None = None
-    record_type: RecordType = RecordType.SYSTEM
+    record_type: RecordType = RecordType.IDENTITY
     ingest_type: str = "batch"
     observed_at: str  # ISO-8601 datetime string
     record_hash: str
@@ -113,13 +134,13 @@ class SourceRecordEnvelope(BaseModel):
 
     @model_validator(mode="after")
     def _check_record_type_invariants(self) -> SourceRecordEnvelope:
-        """Conversation records must declare extraction provenance; system records must not.
+        """Conversation records must declare extraction provenance; others must not.
 
         - ``conversation`` envelopes require ``extraction_confidence`` (in
           ``[0.0, 1.0]``) and ``extraction_method``.
-        - ``system`` envelopes must leave all three conversation-only fields
-          unset, so that downstream code can rely on them being ``None``
-          whenever ``record_type == SYSTEM``.
+        - Every non-conversation envelope must leave all three conversation-only
+          fields unset, so that downstream code can rely on them being ``None``
+          whenever ``record_type != CONVERSATION``.
         """
         if self.record_type == RecordType.CONVERSATION:
             if self.extraction_confidence is None or self.extraction_method is None:

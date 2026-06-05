@@ -15,6 +15,7 @@ from neo4j import ManagedTransaction
 
 from src.graph import queries
 from src.models import (
+    SYSTEM_FAMILY,
     EngineType,
     MatchDecision,
     MatchResult,
@@ -104,9 +105,9 @@ def evaluate_deterministic(
         # records; only the MERGE branch is suppressed below.
         if govt.decision == MatchDecision.NO_MATCH:
             return govt
-        if record_type == RecordType.SYSTEM:
+        if record_type in SYSTEM_FAMILY:
             return govt
-    if record_type != RecordType.SYSTEM:
+    if record_type not in SYSTEM_FAMILY:
         return None
     if trusted := _check_trusted_id(tx, candidate_person_id, identifiers):
         return trusted

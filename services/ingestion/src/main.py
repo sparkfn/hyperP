@@ -39,6 +39,7 @@ from src.exclusions import (
 from src.graph import queries
 from src.graph.bootstrap import bootstrap_entities_and_sources
 from src.graph.client import Neo4jClient
+from src.graph.migrations import apply_data_migrations
 from src.graph.schema_init import apply_schema
 from src.models import IngestResult, RecordType, SourceRecordEnvelope
 from src.pipeline import IngestPipeline
@@ -286,6 +287,7 @@ def initialize_ingestion_graph() -> None:
         client.verify_connectivity()
         apply_schema(client)
         bootstrap_entities_and_sources(client)
+        apply_data_migrations(client)
     finally:
         client.close()
 

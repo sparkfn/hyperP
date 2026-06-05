@@ -45,7 +45,7 @@ class MatchEngine:
         identifiers: list[NormalizedIdentifier],
         address: NormalizedAddress | None,
         attributes: list[NormalizedAttribute],
-        record_type: RecordType = RecordType.SYSTEM,
+        record_type: RecordType = RecordType.IDENTITY,
     ) -> MatchResult:
         """Run the full match chain and return the final result.
 

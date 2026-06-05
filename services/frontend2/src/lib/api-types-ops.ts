@@ -1,3 +1,4 @@
+import type { SourceRecordType } from "./api-types";
 import type { Role } from "./permissions";
 
 export interface UserResponse {
@@ -50,7 +51,7 @@ export function isTrustTier(value: string): value is TrustTier {
   return (TRUST_TIERS as readonly string[]).includes(value);
 }
 
-export type IngestRecordType = "system" | "conversation";
+export type IngestRecordType = SourceRecordType;
 
 export interface IngestIdentifier {
   type: string;
