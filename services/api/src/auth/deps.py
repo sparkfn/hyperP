@@ -322,16 +322,47 @@ async def require_mutator_for_entity(
 
 def require_scope(
     required: str,
-) -> Callable[
-    [Request, AuthUser | OAuthClientUser], Awaitable[AuthUser | OAuthClientUser]
-]:
+) -> Callable[[Request, AuthUser | OAuthClientUser], Awaitable[AuthUser | OAuthClientUser]]:
     """Return a dependency that checks OAuth scopes for OAuth clients only."""
+
     async def _dep(
         request: Request,
         user: AuthUser | OAuthClientUser = Depends(get_current_user_or_oauth_client),
     ) -> AuthUser | OAuthClientUser:
         if not isinstance(user, OAuthClientUser):
             return user
+        if not check_scope(user.key_scopes, required):
+            raise http_error(
+                403, "forbidden", f"OAuth client lacks required scope: {required}", request
+            )
+        return user
+
+    return _dep
+
+
+def require_oauth_client_scope(
+    required: str,
+) -> Callable[[Request, AuthUser | OAuthClientUser], Awaitable[AuthUser | OAuthClientUser]]:
+    """Return a dependency requiring a HyperP OAuth client token with *required* scope.
+
+    Unlike `require_scope`, this rejects human/Google principals — the dedicated
+    machine API surface accepts OAuth2 client credentials only. The dev-bypass
+    principal (auth disabled) is allowed through so local development is unaffected.
+    """
+
+    async def _dep(
+        request: Request,
+        user: AuthUser | OAuthClientUser = Depends(get_current_user_or_oauth_client),
+    ) -> AuthUser | OAuthClientUser:
+        if not config.auth_enabled:
+            return user
+        if not isinstance(user, OAuthClientUser):
+            raise http_error(
+                403,
+                "forbidden",
+                "This endpoint requires OAuth2 client credentials.",
+                request,
+            )
         if not check_scope(user.key_scopes, required):
             raise http_error(
                 403, "forbidden", f"OAuth client lacks required scope: {required}", request

@@ -20,6 +20,28 @@ Base path:
 /v1
 ```
 
+## Serving topology
+
+The FastAPI application separates concerns by mount. The **root app** exposes
+only cross-cutting and unauthenticated surfaces:
+
+- `GET /api/health` — health check.
+- `POST /api/v1/oauth/token`, `GET /api/v1/oauth/jwks` — machine OAuth2 token flow.
+- `GET /api/v1/public/persons/{token}/...` — unauthenticated share-link pages.
+
+Every **authenticated** endpoint in this spec (the `/v1/...` paths below) is
+served through mounted sub-applications, not the root app:
+
+- **Frontend contract** — mounted at `/api/app/v1` (legacy UI) and `/api/app/v2`
+  (active UI) with the `/v1` prefix stripped. A spec path such as
+  `/v1/persons/{person_id}` is served at `/api/app/v2/persons/{person_id}`.
+- **Machine contract** — a read-only subset mounted at `/api/oauth2/v1`
+  (`token`, `jwks`, `persons`, `persons/{person_id}`), accepting OAuth2 client
+  credentials only.
+
+The `/v1/...` paths in the remainder of this document describe the canonical
+contract regardless of which mount serves it.
+
 ## Design Principles
 
 - write APIs should be idempotent where retries are expected
@@ -116,6 +138,31 @@ Authorization: Bearer eyJ...
 
 Public signing keys for HyperP-issued machine JWTs are available at
 `GET /v1/oauth/jwks`.
+
+## Machine API surface (`/oauth2/v1`)
+
+Alongside the per-version frontend contracts, HyperP exposes a dedicated
+machine-facing API for server-to-server callers, mounted at `/oauth2/v1` and
+served externally under `/api/oauth2/v1`. It reuses the core API handlers but is
+deliberately narrow and **OAuth2-client-only**: the person endpoints reject
+human Google ID tokens and require a client-credentials access token carrying
+the `persons:read` scope.
+
+Endpoints:
+
+- `POST /api/oauth2/v1/token`: issue a client-credentials access token. Same
+  contract as `POST /v1/oauth/token`; the redundant `oauth` path segment is
+  dropped because the mount already conveys it. Unauthenticated.
+- `GET /api/oauth2/v1/jwks`: public signing keys, identical to
+  `GET /v1/oauth/jwks`. Unauthenticated.
+- `GET /api/oauth2/v1/persons`: paginated person list, with the same filters as
+  the authenticated person list. Requires `persons:read`.
+- `GET /api/oauth2/v1/persons/{person_id}`: canonical person detail. Requires
+  `persons:read`.
+
+The person endpoints return `401` when no bearer token is supplied, `403` for
+human users (client credentials required), and `403` for clients lacking
+`persons:read`. Person detail returns `404` for unknown IDs.
 
 ## Admin OAuth client management
 
