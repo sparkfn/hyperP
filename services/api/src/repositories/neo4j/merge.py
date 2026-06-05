@@ -22,6 +22,10 @@ from src.graph.queries import (
     REVERT_MERGE,
     UPDATE_GOLDEN_FIELD,
 )
+from src.repositories.neo4j._merge_side_effects import (
+    apply_merge_review_side_effects,
+    revert_merge_review_side_effects,
+)
 from src.repositories.protocols.merge import GoldenProfileSelection, MergeOutcome
 
 
@@ -107,7 +111,9 @@ async def _manual_merge_tx(
     record = await merge_result.single()
     if record is None:
         return MergeOutcome(not_found=True)
-    return MergeOutcome(merge_event_id=to_str(record["merge_event_id"]))
+    merge_event_id = to_str(record["merge_event_id"])
+    await apply_merge_review_side_effects(tx, merge_event_id, from_id, to_id)
+    return MergeOutcome(merge_event_id=merge_event_id)
 
 
 IDENTIFIER_FIELD_BY_TYPE: dict[str, str] = {
@@ -193,6 +199,7 @@ async def _unmerge_tx(
         actor_id=actor_id,
     )
     await tx.run(FLAG_AFFECTED_RECORDS_FOR_REVIEW, merge_event_id=merge_event_id)
+    await revert_merge_review_side_effects(tx, merge_event_id)
     return absorbed_id, current_survivor_id
 
 

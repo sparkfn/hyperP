@@ -10,13 +10,17 @@ from src.graph.queries import (
     CHECK_BOTH_PERSONS_ACTIVE,
     CHECK_EXISTING_LOCK,
     CHECK_NO_MATCH_LOCK,
+    CLOSE_PERSON_PAIR_CASES_FOR_ABSORBED,
     CREATE_PERSON_PAIR_LOCK,
     CREATE_UNMERGE_AUDIT,
     DELETE_LOCK,
     EXECUTE_MANUAL_MERGE,
     FLAG_AFFECTED_RECORDS_FOR_REVIEW,
     GET_UNMERGE_TARGET,
+    REDIRECT_RECORD_PERSON_CASES_FOR_ABSORBED,
     REVERT_MERGE,
+    REVERT_PERSON_PAIR_CASE_CLOSURES,
+    REVERT_RECORD_PERSON_CASE_REDIRECTS,
 )
 from src.repositories.neo4j import merge as merge_module
 from src.repositories.neo4j.merge import (
@@ -128,12 +132,20 @@ async def test_manual_merge_success_returns_merge_event_id() -> None:
         CHECK_NO_MATCH_LOCK,
         CHECK_BOTH_PERSONS_ACTIVE,
         EXECUTE_MANUAL_MERGE,
+        CLOSE_PERSON_PAIR_CASES_FOR_ABSORBED,
+        REDIRECT_RECORD_PERSON_CASES_FOR_ABSORBED,
     ]
     assert tx.calls[2].params == {
         "from_id": "person-a",
         "to_id": "person-b",
         "reason": "same customer",
         "actor_id": "admin@example.com",
+    }
+    # Side-effects target the absorbed person and survivor, stamped with the event.
+    assert tx.calls[4].params == {
+        "absorbed_id": "person-a",
+        "survivor_id": "person-b",
+        "merge_event_id": "merge-1",
     }
 
 
@@ -217,6 +229,8 @@ async def test_unmerge_reactivates_absorbed_flags_records_and_audits() -> None:
         REVERT_MERGE,
         CREATE_UNMERGE_AUDIT,
         FLAG_AFFECTED_RECORDS_FOR_REVIEW,
+        REVERT_RECORD_PERSON_CASE_REDIRECTS,
+        REVERT_PERSON_PAIR_CASE_CLOSURES,
     ]
     assert tx.calls[1].params == {
         "absorbed_id": "person-a",

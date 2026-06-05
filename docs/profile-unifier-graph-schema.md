@@ -303,7 +303,7 @@ Immutable decision record from any engine path.
 ```cypher
 CREATE (md:MatchDecision {
   match_decision_id: randomUUID(),
-  engine_type: 'heuristic',       // deterministic | heuristic | llm | manual
+  engine_type: 'heuristic',       // deterministic | heuristic | llm | manual | pair_audit
   engine_version: 'v1.0.0',
   decision: 'review',             // merge | review | no_match
   confidence: 0.78,
@@ -358,6 +358,21 @@ The `review_action_type` values include both API-submitted actions (`merge`,
 `reject`, `defer`, `escalate`, `manual_no_match`) and system-recorded actions
 (`assign`, `unassign`, `cancel`, `reopen`). The API layer exposes only the
 API-submitted subset.
+
+**Merge side-effect provenance (nullable).** When a person merge closes or
+redirects a still-open case as a side effect, the case carries provenance so an
+`unmerge` of the same `MergeEvent` can reverse the change (and only then):
+
+- `closed_by_merge_event_id` — set when a person↔person case is auto-cancelled
+  because one of its persons was absorbed by a merge (`queue_state = cancelled`,
+  `resolution = cancelled_superseded`). Unmerge reopens the case **iff** it is
+  still in exactly that system-set state (no human acted since).
+- `redirected_by_merge_event_id` / `redirected_from_person_id` — set when a
+  record↔person case's person side (`ABOUT_RIGHT`) is repointed from the
+  absorbed person to the survivor. Unmerge repoints it back **iff** the case is
+  still open. These are audit side-effects, not human operational decisions, so
+  reversing them in place does not violate the Reopen Policy (which governs
+  human-resolved/cancelled cases).
 
 ### MergeEvent
 

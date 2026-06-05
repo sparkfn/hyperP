@@ -19,6 +19,7 @@ from src.graph.queries import (
     LIST_REVIEW_CASES,
     build_review_action_cypher,
 )
+from src.repositories.neo4j._merge_side_effects import apply_merge_review_side_effects
 from src.repositories.neo4j.merge import (
     _apply_golden_profile_selections_tx,
     are_valid_golden_profile_selections,
@@ -200,13 +201,17 @@ async def _action_tx(
             actor_id=actor_id,
         )
     elif action_type == ApiReviewActionType.MERGE.value and absorbed_id and survivor_id:
-        await tx.run(
+        merge_result = await tx.run(
             EXECUTE_MANUAL_MERGE,
             from_id=absorbed_id,
             to_id=survivor_id,
             reason=notes or "Review merge",
             actor_id=actor_id,
         )
+        merge_record = await merge_result.single()
+        merge_event_id = to_str(merge_record["merge_event_id"]) if merge_record else ""
+        if merge_event_id:
+            await apply_merge_review_side_effects(tx, merge_event_id, absorbed_id, survivor_id)
         out["survivor_person_id"] = survivor_id
         out["golden_profile_selections"] = golden_profile_selections
 
