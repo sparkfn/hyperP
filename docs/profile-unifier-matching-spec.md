@@ -172,6 +172,40 @@ become a merge target. Whether the shared evidence means the persons should
 ultimately be merged is left to human review / later analysis, not decided
 automatically here.
 
+## Person-Pair Auditing (Shared-Identifier Bridges)
+
+The decision *not* to auto-merge persons that share an identifier must not mean
+the possibility goes unexamined. After a record is ingested and linked, the
+engine audits whether any identifier the record carries now connects **two or
+more distinct active persons**, and opens a **person↔person review case** for
+each bridged pair so a human can adjudicate.
+
+This runs synchronously inside the ingest transaction, immediately after linking
+(including the Multi-Match link-to-all step), and only **creates audit cases** —
+it never merges or links persons.
+
+Rules:
+
+- **Trigger** is identifier-level, not match-band-level: any usable identifier
+  the record carries that is `IDENTIFIED_BY` ≥ 2 active persons. The bridge may
+  pre-date the incoming record.
+- **Pairwise** cases. A set of *n* bridged persons yields the `C(n, 2)` ordered
+  pairs `{(a, b) : a.person_id < b.person_id}`. The `MatchDecision` uses
+  `engine_type = 'pair_audit'`, `decision = 'review'`, with both `ABOUT_LEFT`
+  and `ABOUT_RIGHT` pointing at `Person` nodes (lower `person_id` on the left).
+  The bridging identifier is recorded in `feature_snapshot`.
+- **Fanout cap** — the same per-identifier-type cardinality cap used for
+  candidate generation applies. A non-discriminating identifier (e.g. a shared
+  household/business phone above its cap) produces no pairs.
+- **Deduplication / suppression** — a pair is skipped when an unresolved
+  (`open` / `assigned` / `deferred`) person↔person case already exists for it,
+  when an active `NO_MATCH_LOCK` exists for it (a reviewer already said "not the
+  same person"), or when either person is no longer active.
+
+Resolution of a person-pair case (merge / reject / manual_no_match) follows the
+normal reviewer workflow, including the merge and unmerge review-case
+side-effects defined there.
+
 ## Heuristic Feature Catalog
 
 ### Positive Evidence

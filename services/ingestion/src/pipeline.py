@@ -49,6 +49,7 @@ from src.pipeline_normalization import (
     normalize_envelope_attributes,
     normalize_envelope_identifiers,
 )
+from src.pipeline_person_pairs import audit_person_pairs
 from src.pipeline_writes import (
     create_person,
     create_review_case_if_needed,
@@ -242,6 +243,10 @@ class IngestPipeline:
                 attach_evidence=True,
             )
             compute_golden_profile(tx, other_person_id)
+        # Person↔person audit: any usable identifier this record carries that now
+        # links 2+ active persons opens a pairwise review case (deduped, fanout-
+        # capped). Audit-only — never merges or links persons.
+        audit_person_pairs(tx, identifiers)
         if match_result.decision == MatchDecision.MERGE and not is_new_person:
             record_auto_merge_event(
                 tx,
