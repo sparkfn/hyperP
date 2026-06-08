@@ -224,7 +224,8 @@ INSERT INTO `phppos_customers` VALUES
     records = list(connector.fetch_records())
 
     assert len(records) == 1
-    assert records[0]["source_record_id"] == "eko_phppos-customer-11"
+    # Keyed on person_id (7), not customers.id (11) — see EkoConnector._build_one.
+    assert records[0]["source_record_id"] == "eko_phppos-customer-7"
     assert records[0]["record_type"] == "identity"
     assert records[0]["attributes"] == {
         "full_name": "Ada Lovelace",
@@ -302,7 +303,8 @@ INSERT INTO `phppos_customers` VALUES
     records = list(connector.fetch_records())
 
     assert len(records) == 1
-    assert records[0]["source_record_id"] == "speedzone_phppos-customer-12"
+    # Keyed on person_id (8), not customers.id (12).
+    assert records[0]["source_record_id"] == "speedzone_phppos-customer-8"
     assert records[0]["attributes"] == {
         "full_name": "Grace Hopper",
         "address": "Three, Four, Singapore, SG, 654321, SG",
