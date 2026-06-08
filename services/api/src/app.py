@@ -79,15 +79,15 @@ def build_app() -> FastAPI:
         version="0.1.0",
         lifespan=_lifespan,
         root_path=config.root_path,
-        swagger_ui_parameters={"operationsSorter": "alpha"},
-        openapi_tags=[
-            {"name": "System", "description": "Health check endpoint."},
-            {
-                "name": "OAuth",
-                "description": "Machine-to-machine OAuth2 client credentials token flow.",
-            },
-            {"name": "Public", "description": "Unauthenticated share-link person page endpoints."},
-        ],
+        # Interactive API docs are disabled on the root app — it exposes only
+        # health, the machine OAuth2 token flow, and public share-link pages, so
+        # there is no contract worth publishing here. Authenticated business
+        # routes live on the mounted sub-apps (which keep their own docs).
+        # openapi.json is left off too so the root surface publishes no schema at
+        # all; openapi_tags is omitted with it since no schema is generated.
+        docs_url=None,
+        redoc_url=None,
+        openapi_url=None,
     )
 
     app.add_middleware(
