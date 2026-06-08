@@ -14,7 +14,11 @@ from dataclasses import dataclass
 from neo4j import ManagedTransaction
 
 from src.graph import queries
-from src.matching.similarity import jaro_winkler_similarity
+from src.matching.names import (
+    NAME_PARTIAL_THRESHOLD,
+    best_name_similarity,
+    incoming_names,
+)
 from src.matching.snapshot import CandidateSnapshot, fetch_candidate_snapshot
 from src.models import (
     EngineType,
@@ -52,13 +56,18 @@ NAME_MEDIUM_WEIGHT = 0.10
 # strong-mismatch penalty for clearly different names without catching variants.
 # A false mismatch only routes to review (never a false merge), so erring toward
 # the higher cutoff is precision-favoring.
-NAME_MISMATCH_THRESHOLD = 0.50
+NAME_MISMATCH_THRESHOLD = NAME_PARTIAL_THRESHOLD
 NAME_MISMATCH_PENALTY = -0.25
 ADDRESS_MATCH_WEIGHT = 0.10
 
 CONFIDENCE_AUTO_MERGE = 0.90
 CONFIDENCE_REVIEW = 0.60
-CONVERSATION_PROMOTED_CONFIDENCE = 0.91
+#: Confidence assigned when a record-type promotion fires (conversation,
+#: relationship, ...). Just above the auto-merge band so a promoted pair merges.
+PROMOTED_CONFIDENCE = 0.91
+#: Back-compat alias — referenced by monitoring/tests that predate the generalized
+#: promotion dispatch.
+CONVERSATION_PROMOTED_CONFIDENCE = PROMOTED_CONFIDENCE
 CONVERSATION_PROMOTION_NAME_THRESHOLD = 0.80
 
 
@@ -115,7 +124,7 @@ def evaluate_heuristic(
 
     confidence = max(0.0, min(1.0, score))
     features = _build_feature_snapshot(candidate_person_id, signals, raw_score=score)
-    confidence = _promote_conversation_confidence(record_type, confidence, reasons, features)
+    confidence = _promote_by_record_type(record_type, confidence, reasons, features)
 
     logger.info(
         "Heuristic score for candidate %s: %.2f (raw=%.2f, reasons=%s)",
@@ -231,19 +240,11 @@ def _score_name(
     snapshot: CandidateSnapshot,
 ) -> float:
     """Return the best name similarity in [0, 1]; reasons appended by _score_name_band."""
-    incoming = [
-        a.attribute_value
-        for a in attributes
-        if a.attribute_name in ("full_name", "preferred_name", "legal_name")
-    ]
+    incoming = incoming_names(attributes)
     cand_names = snapshot.names()
     if not incoming or not cand_names:
         return 0.0
-    best = 0.0
-    for inc in incoming:
-        for cand in cand_names:
-            best = max(best, jaro_winkler_similarity(inc, cand))
-    return best
+    return best_name_similarity(incoming, cand_names)
 
 
 def _score_name_band(
@@ -254,9 +255,7 @@ def _score_name_band(
     signals: HeuristicSignals,
 ) -> float:
     # Only apply when both sides actually had names — otherwise best_sim is 0.
-    has_incoming = any(
-        a.attribute_name in ("full_name", "preferred_name", "legal_name") for a in attributes
-    )
+    has_incoming = bool(incoming_names(attributes))
     if not has_incoming or not snapshot.names():
         return 0.0
     signals.name_similarity = best_sim
@@ -322,22 +321,60 @@ def _build_feature_snapshot(
     }
 
 
-def _promote_conversation_confidence(
+def _has_hard_conflict(features: dict[str, JsonValue]) -> bool:
+    """Conflict signals that veto any record-type promotion.
+
+    Strong name mismatch (JW < threshold), DOB conflict, or a high-fanout phone
+    each block a sub-auto-merge pair from being promoted, regardless of the
+    record type's positive criteria.
+    """
+    return (
+        features["dob_conflict"] is True
+        or features["name_mismatch"] is True
+        or features["phone_high_fanout"] is True
+    )
+
+
+def _promote_by_record_type(
     record_type: RecordType,
     confidence: float,
     reasons: list[str],
     features: dict[str, JsonValue],
 ) -> float:
-    if record_type != RecordType.CONVERSATION:
-        return confidence
+    """Apply the per-record-type auto-merge promotion (if any) to a sub-0.90 pair.
+
+    Each promotable type defines its own positive criteria; all share the
+    :func:`_has_hard_conflict` blocker set. Types without a rule (identity,
+    bankruptcy, sales today) are returned unchanged.
+    """
     if confidence >= CONFIDENCE_AUTO_MERGE:
         return confidence
-    if not _can_promote_conversation(features):
+    if record_type == RecordType.CONVERSATION:
+        if _can_promote_conversation(features):
+            return _apply_promotion(confidence, reasons, features, "conversation")
         return confidence
-    features["conversation_promotion"] = True
+    if record_type == RecordType.RELATIONSHIP:
+        phone = features["phone_exact_match"] is True
+        partial_name = _float_feature(features.get("name_similarity")) >= NAME_PARTIAL_THRESHOLD
+        if phone and partial_name and not _has_hard_conflict(features):
+            return _apply_promotion(confidence, reasons, features, "relationship")
+        return confidence
+    return confidence
+
+
+def _apply_promotion(
+    confidence: float,
+    reasons: list[str],
+    features: dict[str, JsonValue],
+    label: str,
+) -> float:
+    # ``conversation_promotion`` is retained for back-compat with persisted
+    # feature snapshots and monitoring; ``promotion`` carries the record type.
+    features["conversation_promotion"] = label == "conversation"
+    features["promotion"] = label
     features["pre_promotion_confidence"] = confidence
-    reasons.append("Conversation evidence promoted to merge")
-    return CONVERSATION_PROMOTED_CONFIDENCE
+    reasons.append(f"{label.capitalize()} evidence promoted to merge")
+    return PROMOTED_CONFIDENCE
 
 
 def _can_promote_conversation(features: dict[str, JsonValue]) -> bool:
@@ -348,9 +385,6 @@ def _can_promote_conversation(features: dict[str, JsonValue]) -> bool:
     )
     address_match = features["address_match"] is True
     dob_exact = features["dob_exact_match"] is True
-    dob_conflict = features["dob_conflict"] is True
-    name_mismatch = features["name_mismatch"] is True
-    high_fanout_phone = features["phone_high_fanout"] is True
     system_corroborated = features["identifier_system_corroborated"] is True
     has_identifier = phone_exact or email_exact
     corroborated = (phone_exact and email_exact) or (
@@ -360,15 +394,8 @@ def _can_promote_conversation(features: dict[str, JsonValue]) -> bool:
     # independent identifier, (b) that identifier is backed by a non-conversation
     # source on the candidate side — a pair whose evidence is *exclusively*
     # conversation-sourced must stay in review (matching-spec) — and (c) no hard
-    # conflict signal is present (strong name mismatch, DOB conflict, or
-    # high-fanout phone all block promotion).
-    return (
-        corroborated
-        and system_corroborated
-        and not dob_conflict
-        and not name_mismatch
-        and not high_fanout_phone
-    )
+    # conflict signal is present (shared blocker set).
+    return corroborated and system_corroborated and not _has_hard_conflict(features)
 
 
 def _float_feature(value: JsonValue | None) -> float:

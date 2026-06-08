@@ -238,7 +238,8 @@ should not require walking through `HAS_FACT` / `SourceRecord`. The
 ### `SourceRecord.record_type` extension
 
 `"sales"` sits in the `record_type` enum alongside the system family
-(`"identity"`, `"public_record"`, `"relationship"`) and `"conversation"`:
+(`"identity"`, `"bankruptcy"`, `"relationship"`), the place register
+(`"rental_flat"`), and `"conversation"`:
 
 - **`sales`** — extracted deterministically from a POS/commerce system's
   sales or order rows. Never eligible for deterministic auto-merge on its

@@ -1,9 +1,12 @@
-"""Regression: the three system-family record types match identically.
+"""Regression: system-family matching, with the per-record-type divergences.
 
-`identity`, `public_record`, and `relationship` replaced the former single
-`system` record type. They must behave byte-for-byte the same in the match
-engine until deliberately diverged — this test pins that invariant so a future
-edit cannot silently change one subtype's matching without failing here.
+`identity`, `bankruptcy`, and `relationship` make up the system family (they
+replaced the former single `system` record type). They still share the same
+deterministic NRIC merge when no incoming name is present. The deliberate
+divergences (Spec 2) are pinned here: `bankruptcy` gates the NRIC merge on a
+partial name (tested in `test_bankruptcy_name_gate.py`), and `relationship`
+adds a Layer-2 phone + partial-name auto-merge promotion. `identity` keeps the
+plain additive behaviour.
 """
 
 from __future__ import annotations
@@ -23,13 +26,14 @@ from src.models import (
     RecordType,
 )
 
-_FAMILY = (RecordType.IDENTITY, RecordType.PUBLIC_RECORD, RecordType.RELATIONSHIP)
+_FAMILY = (RecordType.IDENTITY, RecordType.BANKRUPTCY, RecordType.RELATIONSHIP)
 
 
 def test_system_family_membership_is_exactly_the_three_subtypes() -> None:
     assert SYSTEM_FAMILY == frozenset(_FAMILY)
     assert RecordType.CONVERSATION not in SYSTEM_FAMILY
     assert RecordType.SALES not in SYSTEM_FAMILY
+    assert RecordType.RENTAL_FLAT not in SYSTEM_FAMILY
 
 
 class _Result:
@@ -82,7 +86,7 @@ def _assert_all_equal(results: list[MatchResult]) -> None:
 def test_deterministic_nric_merge_identical_across_system_family() -> None:
     tx = _NricTx()
     results = [
-        evaluate_deterministic(tx, "person-1", _nric(), rt)  # type: ignore[arg-type]
+        evaluate_deterministic(tx, "person-1", _nric(), [], rt)  # type: ignore[arg-type]
         for rt in _FAMILY
     ]
     assert all(r is not None for r in results)
@@ -95,7 +99,7 @@ def test_deterministic_nric_merge_identical_across_system_family() -> None:
 def test_non_system_family_does_not_deterministically_merge_on_nric() -> None:
     tx = _NricTx()
     for rt in (RecordType.CONVERSATION, RecordType.SALES):
-        assert evaluate_deterministic(tx, "person-1", _nric(), rt) is None  # type: ignore[arg-type]
+        assert evaluate_deterministic(tx, "person-1", _nric(), [], rt) is None  # type: ignore[arg-type]
 
 
 class _HeuristicTx:
@@ -177,9 +181,15 @@ def _evaluate(record_type: RecordType) -> MatchResult:
     )
 
 
-def test_heuristic_result_identical_across_system_family() -> None:
-    results = [_evaluate(rt) for rt in _FAMILY]
-    _assert_all_equal(results)
-    # And — unlike conversation — the system family never gets the promotion.
-    for result in results:
-        assert "Conversation evidence promoted to merge" not in result.reasons
+def test_heuristic_identity_and_bankruptcy_identical_relationship_promotes() -> None:
+    # identity and bankruptcy still score identically in Layer 2 (bankruptcy only
+    # diverges in the deterministic NRIC name-gate, not here).
+    identity = _evaluate(RecordType.IDENTITY)
+    bankruptcy = _evaluate(RecordType.BANKRUPTCY)
+    _assert_all_equal([identity, bankruptcy])
+    assert "Conversation evidence promoted to merge" not in identity.reasons
+
+    # relationship adds a phone + partial-name promotion, so it diverges to MERGE.
+    relationship = _evaluate(RecordType.RELATIONSHIP)
+    assert relationship.decision == MatchDecision.MERGE
+    assert any("promot" in r.lower() for r in relationship.reasons)

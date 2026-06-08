@@ -12,7 +12,7 @@ from pydantic.types import JsonValue
 # the former single "system" value; they share matching behaviour today but are
 # distinct so they can diverge later. Mirrors ingestion's ``RecordType`` enum.
 SourceRecordTypeLiteral = Literal[
-    "identity", "public_record", "relationship", "conversation", "sales"
+    "identity", "bankruptcy", "rental_flat", "relationship", "conversation", "sales"
 ]
 
 # --- Enums ---

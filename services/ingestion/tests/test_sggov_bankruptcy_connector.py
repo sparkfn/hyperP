@@ -96,7 +96,7 @@ def test_bankruptcy_connector_yields_case_envelope(tmp_path: Path) -> None:
     record = records[0]
     assert record["source_record_id"] == "bankruptcy_case:1"
     assert record["observed_at"] == "2026-05-05T13:05:42.351832+00:00"
-    assert record["record_type"] == "public_record"
+    assert record["record_type"] == "bankruptcy"
     assert record["identifiers"] == [{"type": "nric", "value": "S9350236A", "is_verified": True}]
     assert isinstance(record["attributes"], dict)
     attributes = record["attributes"]

@@ -58,6 +58,7 @@ def test_valid_candidate_nric_hard_merges() -> None:
         _Tx(candidate_has_valid_nric=True),  # type: ignore[arg-type]
         "person-1",
         _nric(),
+        [],
         RecordType.IDENTITY,
     )
     assert result is not None
@@ -69,6 +70,7 @@ def test_low_quality_candidate_nric_does_not_hard_merge() -> None:
         _Tx(candidate_has_valid_nric=False),  # type: ignore[arg-type]
         "person-1",
         _nric(),
+        [],
         RecordType.IDENTITY,
     )
     # Falls through to heuristic scoring instead of an unsafe confidence-1.0 merge.

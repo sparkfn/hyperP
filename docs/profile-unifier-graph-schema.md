@@ -241,7 +241,7 @@ CREATE (sr:SourceRecord {
   source_record_pk: randomUUID(),
   source_record_id: '12345',
   source_record_version: null,
-  record_type: 'identity',         // identity | public_record | relationship | conversation | sales
+  record_type: 'identity',         // identity | bankruptcy | rental_flat | relationship | conversation | sales
   link_status: 'pending_review',   // linked | pending_review | pending_customer | rejected | suppressed
   observed_at: datetime(),
   ingested_at: datetime(),
@@ -259,20 +259,25 @@ CREATE (sr:SourceRecord {
 `record_type` distinguishes the provenance of the record's identifiers and
 attributes:
 
-The **system family** — `identity`, `public_record`, `relationship` — replaced
-the former single `system` value. All three are deterministic extracts that share
-matching behaviour today (via `models.SYSTEM_FAMILY`); they exist as distinct
-values so they can carry different matching criteria later. A startup data
-migration (`graph/migrations.py:backfill_record_type_subtypes`) reclassifies
-legacy `system` records by `source_system`.
+The **system family** — `identity`, `bankruptcy`, `relationship` — are
+deterministic extracts that share matching behaviour today (via
+`models.SYSTEM_FAMILY`); they exist as distinct values so they can carry
+different matching criteria later. `rental_flat` is a place register and is
+**not** a member of the system family. A startup data migration
+(`graph/migrations.py:backfill_record_type_subtypes`) reclassifies legacy
+`system` and intermediate `public_record` records by `source_system`.
 
 - **`identity`** — first-party identity extracted deterministically from another
   service's structured system of record (e.g. Fundbox `users`/`legacy`/`merged`,
   Eko/SpeedZone POS customers). Identifiers and attributes are taken at face value
   and may participate in deterministic merge rules.
-- **`public_record`** — government / third-party register about a person or place
-  (e.g. SG bankruptcy, SG rental flats). Same matching behaviour as `identity`
-  today.
+- **`bankruptcy`** — government register about a person (SG Bankruptcy Register).
+  Carries a verified NRIC + name, runs the person pipeline, and is a member of the
+  system family (same matching behaviour as `identity` today).
+- **`rental_flat`** — government register about a place (SG Rental Flats). Address
+  attributes only, no person identifier; routed address-only by `source_system`
+  (`ingest_address_record`), so it never reaches the match engine and never
+  creates a Person. Not a member of the system family.
 - **`relationship`** — a record whose subject is a *different* person, e.g. a
   Fundbox emergency contact that feeds a `KNOWS` edge. Same matching behaviour as
   `identity` today.

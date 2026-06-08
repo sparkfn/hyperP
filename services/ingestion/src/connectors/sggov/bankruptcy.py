@@ -115,7 +115,7 @@ class SGGovernmentBankruptcyConnector(SourceConnector):
             source_record_id=f"bankruptcy_case:{case_id}",
             observed_at=observed_at,
             identifiers=identifiers.items,
-            record_type="public_record",
+            record_type="bankruptcy",
             attributes={
                 "full_name": person_name,
                 "bankruptcy_case_number": _str_value(case, "case_number"),

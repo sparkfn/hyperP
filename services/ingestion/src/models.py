@@ -47,15 +47,22 @@ class EngineType(StrEnum):
 class RecordType(StrEnum):
     """Provenance class of a SourceRecord.
 
-    The "system family" — ``identity``, ``public_record``, ``relationship`` —
-    are all deterministic extracts from a system of record and share identical
-    matching behaviour today (see :data:`SYSTEM_FAMILY`). They are kept as
-    distinct values so they can carry different matching criteria later:
+    The "system family" — ``identity``, ``bankruptcy``, ``relationship`` —
+    are all deterministic extracts from a system of record that share the same
+    generic matching behaviour (see :data:`SYSTEM_FAMILY`), and are kept as
+    distinct values so they can carry their own criteria: ``bankruptcy`` gates
+    its exact-NRIC merge on a partial name match, and ``relationship`` adds a
+    phone + partial-name auto-merge promotion. Per-type detail:
 
     ``identity`` — first-party identity from a transactional system of record
     (Fundbox users/legacy/merged, Eko, SpeedZone).
-    ``public_record`` — government / third-party register about a person or place
-    (SG bankruptcy, SG rental flats).
+    ``bankruptcy`` — government register about a person (SG Bankruptcy Register);
+    carries a verified NRIC + name, runs the person pipeline, member of the
+    system family.
+    ``rental_flat`` — government register about a place (SG Rental Flats); address
+    attributes only, no person identifier; routed address-only by
+    ``source_system`` so it never reaches the match engine; NOT in the system
+    family.
     ``relationship`` — a record whose subject is a different person, e.g. a
     Fundbox emergency contact that feeds ``KNOWS``.
     ``conversation`` — heuristic extract from chat / voice transcripts.
@@ -66,7 +73,8 @@ class RecordType(StrEnum):
     """
 
     IDENTITY = "identity"
-    PUBLIC_RECORD = "public_record"
+    BANKRUPTCY = "bankruptcy"
+    RENTAL_FLAT = "rental_flat"
     RELATIONSHIP = "relationship"
     CONVERSATION = "conversation"
     SALES = "sales"
@@ -75,9 +83,10 @@ class RecordType(StrEnum):
 #: Record types that descend from the former ``system`` provenance class. Every
 #: matching branch that historically tested ``record_type == SYSTEM`` (or its
 #: negation) now tests membership here, so these three behave identically until
-#: deliberately diverged.
+#: deliberately diverged. ``rental_flat`` is deliberately excluded — it is a
+#: place register routed address-only, never reaching the person match engine.
 SYSTEM_FAMILY: frozenset[RecordType] = frozenset(
-    {RecordType.IDENTITY, RecordType.PUBLIC_RECORD, RecordType.RELATIONSHIP}
+    {RecordType.IDENTITY, RecordType.BANKRUPTCY, RecordType.RELATIONSHIP}
 )
 
 

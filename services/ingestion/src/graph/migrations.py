@@ -19,11 +19,12 @@ logger = logging.getLogger(__name__)
 
 
 def backfill_record_type_subtypes(client: Neo4jClient) -> int:
-    """Reclassify legacy ``record_type='system'`` records into subtypes.
+    """Reclassify legacy ``system`` / ``public_record`` records into subtypes.
 
-    Maps existing SourceRecords by ``source_system`` to the three subtypes that
-    replaced ``system`` (identity / public_record / relationship). Returns the
-    number of records updated; ``0`` once the backfill has already run.
+    Maps existing SourceRecords with ``record_type`` of ``system`` or the
+    intermediate ``public_record`` by ``source_system`` to the current subtypes
+    (identity / bankruptcy / rental_flat / relationship). Returns the number of
+    records updated; ``0`` once the backfill has already run.
     """
 
     def _work(tx: ManagedTransaction) -> int:

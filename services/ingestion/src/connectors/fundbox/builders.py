@@ -188,7 +188,7 @@ def build_envelope(
     raw_payload: dict[str, JsonValue],
     addresses: list[dict[str, JsonValue]] | None = None,
     record_type: Literal[
-        "identity", "public_record", "relationship", "conversation", "sales"
+        "identity", "bankruptcy", "rental_flat", "relationship", "conversation", "sales"
     ] = "identity",
     extraction_confidence: float | None = None,
     extraction_method: str | None = None,
@@ -199,8 +199,9 @@ def build_envelope(
     ``record_type`` defaults to ``"identity"`` (first-party identity extract —
     the common case for Fundbox table connectors). Use ``"relationship"`` for
     records describing a different person (e.g. emergency contacts),
-    ``"public_record"`` for government / third-party registers, and
-    ``"conversation"`` for heuristic chat/voice extracts. Conversation
+    ``"bankruptcy"`` for a government register about a person (SG bankruptcy),
+    ``"rental_flat"`` for a government register about a place (SG rental flats),
+    and ``"conversation"`` for heuristic chat/voice extracts. Conversation
     envelopes must also supply ``extraction_confidence`` and
     ``extraction_method``; conversation_ref carries channel/thread metadata.
     """

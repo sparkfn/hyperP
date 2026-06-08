@@ -264,6 +264,27 @@ pairs at the top of the review band. Two independent conversation records
 that corroborate the same identifier are treated as a single, slightly
 stronger conversation observation — never as deterministic confirmation.
 
+**Per-record-type merge criteria**: some record types carry their own
+auto-merge rule layered onto the generic engine. All promotions share one
+hard-conflict blocker set — strong name mismatch (Jaro-Winkler < 0.50), DOB
+conflict, or a high-fanout phone (> cap) — on top of the deterministic blockers
+(conflicting NRIC, `NO_MATCH_LOCK`).
+
+- **`bankruptcy`** (Layer 1 gate) — the exact-NRIC deterministic merge
+  additionally requires a **partial name match** (JW ≥ 0.50) when *both* sides
+  carry a name. A matching NRIC with a strongly conflicting name does **not**
+  auto-merge (it falls through to Layer 2 → typically a new person + a
+  person-pair review on the shared NRIC). NRIC-alone still merges when a name is
+  absent on either side.
+- **`relationship`** (Layer 2 promotion) — a pair matching on **phone + partial
+  name** (JW ≥ 0.50) is promoted to auto-merge even below the 0.90 band, unless a
+  blocker fires. This mirrors the conversation-promotion mechanism
+  (`_promote_by_record_type`).
+- **`sales`** — *(planned)* phone + partial-name fallback resolution for orders
+  that cannot resolve a customer via the POS foreign key.
+
+`identity` keeps the plain additive behaviour with the unconditional NRIC merge.
+
 ## Example Feature Vector
 
 ```json

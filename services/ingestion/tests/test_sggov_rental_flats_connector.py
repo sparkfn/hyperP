@@ -46,7 +46,7 @@ def test_rental_flats_connector_yields_address_envelope(tmp_path: Path) -> None:
     assert len(records) == 1
     record = records[0]
     assert record["source_record_id"] == "rental_flat:33"
-    assert record["record_type"] == "public_record"
+    assert record["record_type"] == "rental_flat"
     assert record["observed_at"] == "2026-05-08T09:47:25.177976+00:00"
     assert record["identifiers"] == []
     assert record["attributes"] == {

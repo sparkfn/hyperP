@@ -11,11 +11,13 @@ from src.graph.migrations import apply_data_migrations, backfill_record_type_sub
 
 def test_backfill_query_is_exported_and_maps_sources_to_subtypes() -> None:
     query = queries.BACKFILL_RECORD_TYPE_SUBTYPES
-    # Only legacy 'system' rows are touched (idempotent on re-run).
-    assert "WHERE sr.record_type = 'system'" in query
+    # Both legacy 'system' rows and intermediate 'public_record' rows are
+    # reclassified (idempotent on re-run).
+    assert "sr.record_type IN ['system', 'public_record']" in query
     # Mapping mirrors what the connectors now emit.
     assert "ENDS WITH ':contacts' THEN 'relationship'" in query
-    assert "IN ['sgbankruptcy', 'sgrentalflats'] THEN 'public_record'" in query
+    assert "= 'sgbankruptcy'  THEN 'bankruptcy'" in query
+    assert "= 'sgrentalflats' THEN 'rental_flat'" in query
     assert "ELSE 'identity'" in query
 
 

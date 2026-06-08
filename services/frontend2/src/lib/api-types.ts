@@ -62,13 +62,15 @@ export interface Person {
   updated_at: string;
 }
 
-// Provenance class of a SourceRecord. The first three ("system family")
-// replaced the former single "system" value; they share matching behaviour
-// today but are distinct so they can diverge later. Mirrors the API
-// SourceRecordTypeLiteral / ingestion RecordType.
+// Provenance class of a SourceRecord. `identity` / `bankruptcy` /
+// `relationship` form the "system family" (bankruptcy + rental_flat replaced
+// the former single "public_record" value); `rental_flat` is a place register
+// routed address-only. Mirrors the API SourceRecordTypeLiteral / ingestion
+// RecordType. Labels are derived via titleCase ("Bankruptcy", "Rental Flat").
 export type SourceRecordType =
   | "identity"
-  | "public_record"
+  | "bankruptcy"
+  | "rental_flat"
   | "relationship"
   | "conversation"
   | "sales";

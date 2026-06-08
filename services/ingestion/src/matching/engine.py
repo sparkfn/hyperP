@@ -95,6 +95,7 @@ class MatchEngine:
             tx,
             candidate_person_id,
             identifiers,
+            attributes,
             record_type,
         )
         if det is not None:
