@@ -3,9 +3,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from fastapi.testclient import TestClient
-from src.app import build_app
 from src.auth.deps import require_active_user, require_admin
 from src.auth.models import AuthUser
+from src.frontend_app import build_frontend_app
 from src.repositories.deps import get_merge_repo
 from src.repositories.protocols.merge import GoldenProfileSelection, MergeOutcome
 
@@ -57,9 +57,7 @@ class _MergeRepo:
     ) -> tuple[str, str | None]:
         if self.create_lock_calls is None:
             self.create_lock_calls = []
-        self.create_lock_calls.append(
-            (left, right, lock_type, reason, expires_at, actor_id)
-        )
+        self.create_lock_calls.append((left, right, lock_type, reason, expires_at, actor_id))
         return self.create_lock_result
 
     async def delete_lock(self, lock_id: str) -> bool:
@@ -78,7 +76,7 @@ async def _admin_user() -> AuthUser:
 
 
 def _client(repo: _MergeRepo) -> TestClient:
-    app = build_app()
+    app = build_frontend_app()
     app.dependency_overrides[require_active_user] = _admin_user
     app.dependency_overrides[require_admin] = _admin_user
     app.dependency_overrides[get_merge_repo] = lambda: repo
@@ -90,7 +88,7 @@ def test_manual_merge_endpoint_returns_enveloped_success() -> None:
     client = _client(repo)
 
     res = client.post(
-        "/v1/persons/manual-merge",
+        "/persons/manual-merge",
         json={
             "from_person_id": "person-a",
             "to_person_id": "person-b",
@@ -116,7 +114,7 @@ def test_manual_merge_endpoint_passes_golden_profile_selections() -> None:
     client = _client(repo)
 
     res = client.post(
-        "/v1/persons/manual-merge",
+        "/persons/manual-merge",
         json={
             "from_person_id": "person-a",
             "to_person_id": "person-b",
@@ -170,7 +168,7 @@ def test_manual_merge_endpoint_passes_golden_profile_selections() -> None:
     client = _client(repo)
 
     res = client.post(
-        "/v1/persons/manual-merge",
+        "/persons/manual-merge",
         json={
             "from_person_id": "person-a",
             "to_person_id": "person-a",
@@ -186,7 +184,7 @@ def test_manual_merge_endpoint_passes_golden_profile_selections() -> None:
     client = _client(repo)
 
     res = client.post(
-        "/v1/persons/manual-merge",
+        "/persons/manual-merge",
         json={
             "from_person_id": "person-a",
             "to_person_id": "person-b",
@@ -203,7 +201,7 @@ def test_unmerge_endpoint_returns_conservative_unmerge_result() -> None:
     client = _client(repo)
 
     res = client.post(
-        "/v1/persons/unmerge",
+        "/persons/unmerge",
         json={"merge_event_id": "merge-1", "reason": "false merge"},
     )
 
@@ -223,7 +221,7 @@ def test_create_person_pair_lock_endpoint_orders_pair_before_repo_call() -> None
     client = _client(repo)
 
     res = client.post(
-        "/v1/locks/person-pair",
+        "/locks/person-pair",
         json={
             "left_person_id": "person-b",
             "right_person_id": "person-a",
@@ -256,7 +254,7 @@ def test_create_person_pair_lock_endpoint_rejects_same_person_request() -> None:
     client = _client(repo)
 
     res = client.post(
-        "/v1/locks/person-pair",
+        "/locks/person-pair",
         json={
             "left_person_id": "person-a",
             "right_person_id": "person-a",
@@ -272,7 +270,7 @@ def test_create_person_pair_lock_endpoint_rejects_same_person_request() -> None:
     repo = _MergeRepo()
     client = _client(repo)
 
-    res = client.delete("/v1/locks/lock-1")
+    res = client.delete("/locks/lock-1")
 
     assert res.status_code == 200
     assert res.json()["data"] == {"lock_id": "lock-1", "status": "deleted"}

@@ -21,6 +21,7 @@ from src.auth.deps import (
 from src.auth.models import AuthUser
 from src.auth.oauth_client_models import OAuthClient
 from src.auth.oauth_tokens import OAuthClientClaims
+from src.frontend_app import build_frontend_app
 from src.repositories.deps import (
     get_admin_repo,
     get_entity_repo,
@@ -638,14 +639,14 @@ def test_jwks_endpoint_returns_keys() -> None:
 
 
 def test_events_route_rejects_oauth_client_without_persons_read_scope_before_repo_call() -> None:
-    app = build_app()
+    app = build_frontend_app()
     app.dependency_overrides[require_active_user] = _override_oauth_ingest_writer
     app.dependency_overrides[get_current_user_or_oauth_client] = _override_oauth_ingest_writer
     app.dependency_overrides[get_event_repo] = _override_event_repo
     _EVENT_REPO.get_page_calls = 0
     client = TestClient(app)
 
-    res = client.get("/v1/events?since=2026-01-01T00:00:00Z")
+    res = client.get("/events?since=2026-01-01T00:00:00Z")
 
     assert res.status_code == 403
     assert res.json()["error"]["message"] == "OAuth client lacks required scope: persons:read"
@@ -653,14 +654,14 @@ def test_events_route_rejects_oauth_client_without_persons_read_scope_before_rep
 
 
 def test_source_systems_route_rejects_oauth_client_without_admin_scope_before_repo_call() -> None:
-    app = build_app()
+    app = build_frontend_app()
     app.dependency_overrides[require_active_user] = _override_oauth_persons_reader
     app.dependency_overrides[get_current_user_or_oauth_client] = _override_oauth_persons_reader
     app.dependency_overrides[get_admin_repo] = _override_admin_repo
     _ADMIN_REPO.get_all_source_systems_calls = 0
     client = TestClient(app)
 
-    res = client.get("/v1/source-systems")
+    res = client.get("/source-systems")
 
     assert res.status_code == 403
     assert res.json()["error"]["message"] == "This action requires administrator privileges."
@@ -668,14 +669,14 @@ def test_source_systems_route_rejects_oauth_client_without_admin_scope_before_re
 
 
 def test_source_systems_route_allows_oauth_admin_client_with_mocked_repo() -> None:
-    app = build_app()
+    app = build_frontend_app()
     app.dependency_overrides[require_active_user] = _override_oauth_admin_client
     app.dependency_overrides[get_current_user_or_oauth_client] = _override_oauth_admin_client
     app.dependency_overrides[get_admin_repo] = _override_admin_repo
     _ADMIN_REPO.get_all_source_systems_calls = 0
     client = TestClient(app)
 
-    res = client.get("/v1/source-systems")
+    res = client.get("/source-systems")
 
     assert res.status_code == 200
     assert res.json()["data"] == [
@@ -693,27 +694,27 @@ def test_source_systems_route_allows_oauth_admin_client_with_mocked_repo() -> No
     ]
     assert _ADMIN_REPO.get_all_source_systems_calls == 1
 
-    app = build_app()
+    app = build_frontend_app()
     app.dependency_overrides[require_active_user] = _override_oauth_ingest_writer
     app.dependency_overrides[get_current_user_or_oauth_client] = _override_oauth_ingest_writer
     app.dependency_overrides[get_person_repo] = _override_person_repo
     client = TestClient(app)
 
-    res = client.get("/v1/persons/p1")
+    res = client.get("/persons/p1")
 
     assert res.status_code == 403
     assert res.json()["error"]["message"] == "OAuth client lacks required scope: persons:read"
 
 
 def test_entities_route_allows_oauth_client_with_persons_read_scope() -> None:
-    app = build_app()
+    app = build_frontend_app()
     app.dependency_overrides[require_active_user] = _override_oauth_persons_reader
     app.dependency_overrides[get_current_user_or_oauth_client] = _override_oauth_persons_reader
     app.dependency_overrides[get_entity_repo] = _override_entity_repo
     _ENTITY_REPO.get_all_calls = 0
     client = TestClient(app)
 
-    res = client.get("/v1/entities")
+    res = client.get("/entities")
 
     assert res.status_code == 200
     assert res.json()["data"] == [
@@ -733,103 +734,103 @@ def test_entities_route_allows_oauth_client_with_persons_read_scope() -> None:
 
 
 def test_persons_read_route_allows_human_user_with_mocked_repo() -> None:
-    app = build_app()
+    app = build_frontend_app()
     app.dependency_overrides[require_active_user] = _override_employee
     app.dependency_overrides[get_current_user_or_oauth_client] = _override_employee
     app.dependency_overrides[get_person_repo] = _override_person_repo
     client = TestClient(app)
 
-    res = client.get("/v1/persons/p1")
+    res = client.get("/persons/p1")
 
     assert res.status_code == 200
     assert res.json()["data"]["person_id"] == "p1"
 
 
 def test_entities_route_rejects_oauth_client_without_persons_read_scope_before_repo_call() -> None:
-    app = build_app()
+    app = build_frontend_app()
     app.dependency_overrides[require_active_user] = _override_oauth_ingest_writer
     app.dependency_overrides[get_current_user_or_oauth_client] = _override_oauth_ingest_writer
     app.dependency_overrides[get_entity_repo] = _override_entity_repo
     _ENTITY_REPO.get_all_calls = 0
     client = TestClient(app)
 
-    res = client.get("/v1/entities")
+    res = client.get("/entities")
 
     assert res.status_code == 403
     assert res.json()["error"]["message"] == "OAuth client lacks required scope: persons:read"
     assert _ENTITY_REPO.get_all_calls == 0
 
-    app = build_app()
+    app = build_frontend_app()
     app.dependency_overrides[require_active_user] = _override_oauth_persons_reader
     app.dependency_overrides[get_current_user_or_oauth_client] = _override_oauth_persons_reader
     app.dependency_overrides[get_ingest_repo] = _override_ingest_repo
     client = TestClient(app)
 
     with patch("src.auth.deps.get_entity_for_source", new=AsyncMock(return_value="fundbox")):
-        res = client.post("/v1/ingest/fundbox_pos/runs", json={"run_type": "batch"})
+        res = client.post("/ingest/fundbox_pos/runs", json={"run_type": "batch"})
 
     assert res.status_code == 403
     assert res.json()["error"]["message"] == "OAuth client lacks required scope: ingest:write"
 
 
 def test_ingest_write_route_allows_human_user_with_mocked_repo() -> None:
-    app = build_app()
+    app = build_frontend_app()
     app.dependency_overrides[require_active_user] = _override_employee
     app.dependency_overrides[get_current_user_or_oauth_client] = _override_employee
     app.dependency_overrides[get_ingest_repo] = _override_ingest_repo
     client = TestClient(app)
 
     with patch("src.auth.deps.get_entity_for_source", new=AsyncMock(return_value="fundbox")):
-        res = client.post("/v1/ingest/fundbox_pos/runs", json={"run_type": "batch"})
+        res = client.post("/ingest/fundbox_pos/runs", json={"run_type": "batch"})
 
     assert res.status_code == 201
     assert res.json()["data"]["ingest_run_id"] == "run-1"
 
 
 def test_ingest_run_detail_route_rejects_oauth_client_without_ingest_write_scope() -> None:
-    app = build_app()
+    app = build_frontend_app()
     app.dependency_overrides[require_active_user] = _override_oauth_persons_reader
     app.dependency_overrides[get_current_user_or_oauth_client] = _override_oauth_persons_reader
     app.dependency_overrides[get_ingest_repo] = _override_ingest_repo
     client = TestClient(app)
 
-    res = client.get("/v1/ingest/runs/run-1")
+    res = client.get("/ingest/runs/run-1")
 
     assert res.status_code == 403
     assert res.json()["error"]["message"] == "OAuth client lacks required scope: ingest:write"
 
-    app = build_app()
+    app = build_frontend_app()
     app.dependency_overrides[require_active_user] = _override_oauth_ingest_writer
     app.dependency_overrides[get_current_user_or_oauth_client] = _override_oauth_ingest_writer
     app.dependency_overrides[get_report_repo] = _override_report_repo
     client = TestClient(app)
 
-    res = client.post("/v1/reports/entity_person_summary/execute", json={})
+    res = client.post("/reports/entity_person_summary/execute", json={})
 
     assert res.status_code == 403
     assert res.json()["error"]["message"] == "OAuth client lacks required scope: persons:read"
 
 
 def test_reports_metadata_route_rejects_oauth_client_without_persons_read_scope() -> None:
-    app = build_app()
+    app = build_frontend_app()
     app.dependency_overrides[require_active_user] = _override_oauth_ingest_writer
     app.dependency_overrides[get_current_user_or_oauth_client] = _override_oauth_ingest_writer
     app.dependency_overrides[get_report_repo] = _override_report_repo
     client = TestClient(app)
 
-    res = client.get("/v1/reports")
+    res = client.get("/reports")
 
     assert res.status_code == 403
     assert res.json()["error"]["message"] == "OAuth client lacks required scope: persons:read"
 
-    app = build_app()
+    app = build_frontend_app()
     app.dependency_overrides[require_active_user] = _override_oauth_persons_reader
     app.dependency_overrides[get_current_user_or_oauth_client] = _override_oauth_persons_reader
     app.dependency_overrides[get_review_repo] = _override_review_repo
     _REVIEW_REPO.get_page_calls = 0
     client = TestClient(app)
 
-    res = client.get("/v1/review-cases")
+    res = client.get("/review-cases")
 
     assert res.status_code == 403
     assert res.json()["error"]["message"] == "OAuth clients cannot access human workflow routes."
@@ -837,14 +838,14 @@ def test_reports_metadata_route_rejects_oauth_client_without_persons_read_scope(
 
 
 def test_public_link_route_rejects_oauth_client_before_repo_call() -> None:
-    app = build_app()
+    app = build_frontend_app()
     app.dependency_overrides[require_active_user] = _override_oauth_persons_reader
     app.dependency_overrides[get_current_user_or_oauth_client] = _override_oauth_persons_reader
     app.dependency_overrides[get_person_repo] = _override_person_repo
     client = TestClient(app)
 
     with patch.object(_PersonRouteRepo, "get_by_id", new_callable=AsyncMock) as get_by_id:
-        res = client.post("/v1/persons/p1/public-link")
+        res = client.post("/persons/p1/public-link")
 
     assert res.status_code == 403
     assert res.json()["error"]["message"] == "OAuth clients cannot access human workflow routes."
@@ -852,19 +853,19 @@ def test_public_link_route_rejects_oauth_client_before_repo_call() -> None:
 
 
 def test_oauth_client_management_rejects_admin_scoped_oauth_client() -> None:
-    app = build_app()
+    app = build_frontend_app()
     app.dependency_overrides[require_active_user] = _override_oauth_admin_client
     app.dependency_overrides[get_current_user_or_oauth_client] = _override_oauth_admin_client
     client = TestClient(app)
 
-    res = client.get("/v1/admin/oauth-clients")
+    res = client.get("/admin/oauth-clients")
 
     assert res.status_code == 403
     assert res.json()["error"]["message"] == "OAuth clients cannot access human workflow routes."
 
 
 def test_oauth_client_secret_route_returns_not_found_for_human_admin() -> None:
-    app = build_app()
+    app = build_frontend_app()
     app.dependency_overrides[require_active_user] = _override_admin
     app.dependency_overrides[require_human_admin] = _override_admin
     client = TestClient(app)
@@ -874,7 +875,7 @@ def test_oauth_client_secret_route_returns_not_found_for_human_admin() -> None:
         new=AsyncMock(return_value=None),
     ):
         res = client.post(
-            "/v1/admin/oauth-clients/hpc_missing/secrets",
+            "/admin/oauth-clients/hpc_missing/secrets",
             json={"expires_in_days": 30},
         )
 

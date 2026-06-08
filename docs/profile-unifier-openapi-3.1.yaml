@@ -6,7 +6,16 @@ info:
   description: >
     Machine-readable representation of the main profile unifier API. This file
     covers the primary ingestion, search, person read, review workflow, merge,
-    lock, and survivorship operations described in the companion API spec.
+    lock, and survivorship operations described in the companion API spec. It
+    also documents the dedicated machine-facing OAuth2 surface mounted at
+    `/oauth2/v1` (served externally under `/api/oauth2/v1`).
+
+    Serving topology: the root app exposes only `/api/health`, the OAuth2 token
+    flow (`/api/v1/oauth/{token,jwks}`), and the unauthenticated public pages
+    (`/api/v1/public/...`). Every authenticated `/v1/...` path below is the
+    canonical contract served through mounted sub-apps — the frontend mounts
+    `/api/app/v1` and `/api/app/v2` (with `/v1` stripped, e.g. `/v1/persons` is
+    served at `/api/app/v2/persons`) and, for the machine subset, `/api/oauth2/v1`.
 servers:
   - url: https://api.example.internal
     description: Example internal deployment
@@ -22,6 +31,11 @@ tags:
   - name: Locks
   - name: Survivorship
   - name: OAuth
+  - name: OAuth2 Machine API
+    description: >
+      Dedicated server-to-server surface mounted at /oauth2/v1. Token and JWKS
+      endpoints mirror the root /v1/oauth flow; person endpoints are
+      OAuth2-client-only and require the persons:read scope.
   - name: Admin
 paths:
   /v1/ingest/{source_key}/records:
@@ -491,6 +505,138 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/JsonWebKeySet'
+  # ── Machine OAuth2 API surface (mounted at /oauth2/v1) ──────────────────────
+  # Dedicated server-to-server mount, served externally at /api/oauth2/v1. The
+  # token/JWKS endpoints mirror the root /v1/oauth flow without the redundant
+  # /oauth path segment; the person endpoints are OAuth2-client-only (human
+  # Google tokens are rejected) and require the persons:read scope.
+  /oauth2/v1/token:
+    post:
+      tags: [OAuth2 Machine API]
+      summary: Issue an OAuth2 client-credentials access token (machine surface)
+      operationId: createOAuthTokenMachine
+      description: |
+        Identical contract to `POST /v1/oauth/token`, exposed on the dedicated
+        machine mount. Uses OAuth-compatible top-level JSON responses rather than
+        the standard HyperP envelope. Response carries `Cache-Control: no-store`
+        and `Pragma: no-cache`.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/OAuthTokenRequest'
+            encoding:
+              grant_type:
+                style: form
+              client_id:
+                style: form
+              client_secret:
+                style: form
+              scope:
+                style: form
+      responses:
+        '200':
+          description: Access token issued.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthTokenResponse'
+        '400':
+          description: Failed with `invalid_request`, `invalid_scope`, or `unsupported_grant_type`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthErrorResponse'
+        '401':
+          description: Failed with `invalid_client`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthErrorResponse'
+  /oauth2/v1/jwks:
+    get:
+      tags: [OAuth2 Machine API]
+      summary: Public signing keys for HyperP-issued access tokens (machine surface)
+      operationId: getOAuthJwksMachine
+      description: Identical to `GET /v1/oauth/jwks`, exposed on the machine mount.
+      security: []
+      responses:
+        '200':
+          description: JSON Web Key Set containing active OAuth signing keys.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JsonWebKeySet'
+  /oauth2/v1/persons:
+    get:
+      tags: [OAuth2 Machine API]
+      summary: List canonical persons (machine surface)
+      operationId: listPersonsMachine
+      description: |
+        Paginated canonical person list for machine callers, with the same
+        filters as the authenticated person list. Requires a HyperP OAuth2
+        client-credentials token with the `persons:read` scope; human Google ID
+        tokens are rejected.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+        - name: q
+          in: query
+          description: Free-text search (min 3 chars) across name, NRIC, email, phone.
+          schema:
+            type: string
+        - name: cursor
+          in: query
+          description: Opaque pagination cursor.
+          schema:
+            type: string
+        - name: limit
+          in: query
+          description: Page size.
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Paginated person list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PersonSearchResponseEnvelope'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /oauth2/v1/persons/{person_id}:
+    get:
+      tags: [OAuth2 Machine API]
+      summary: Get canonical person detail (machine surface)
+      operationId: getPersonMachine
+      description: |
+        Requires a HyperP OAuth2 client-credentials token with the `persons:read`
+        scope; human Google ID tokens are rejected.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/PersonId'
+        - $ref: '#/components/parameters/RequestId'
+      responses:
+        '200':
+          description: Person detail
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PersonDetailResponseEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/PersonNotFound'
   # ── OAuth client management (admin only) ────────────────────────────────────
   /v1/admin/oauth-clients:
     get:
