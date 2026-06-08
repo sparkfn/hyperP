@@ -13,6 +13,8 @@ def test_person_pair_query_constants_exist() -> None:
     assert "ABOUT_LEFT" in queries.CREATE_PERSON_PAIR_REVIEW_CASE
     assert "ABOUT_RIGHT" in queries.CREATE_PERSON_PAIR_REVIEW_CASE
     assert "pair_audit" in queries.CREATE_PERSON_PAIR_REVIEW_CASE
+    # Confidence is now the heuristic score, passed as a parameter (not a literal).
+    assert "confidence: $confidence" in queries.CREATE_PERSON_PAIR_REVIEW_CASE
     assert "queue_state IN ['open', 'assigned', 'deferred']" in queries.CHECK_OPEN_PERSON_PAIR_CASE
     assert "IDENTIFIED_BY" in queries.FIND_PERSONS_SHARING_IDENTIFIER
 
@@ -38,17 +40,31 @@ class _ScriptedTx:
         person_ids: list[str],
         is_locked: bool = False,
         existing_case: str | None = None,
+        idents: list[dict[str, object]] | None = None,
+        facts: list[dict[str, object]] | None = None,
+        addrs: list[dict[str, object]] | None = None,
     ) -> None:
         self.fanout = fanout
         self.person_ids = person_ids
         self.is_locked = is_locked
         self.existing_case = existing_case
+        # Candidate-snapshot rows returned for every person (content-dispatched,
+        # so both sides of a pair see the same rows — enough to exercise scoring).
+        self.idents = idents or []
+        self.facts = facts or []
+        self.addrs = addrs or []
         self.create_calls: list[dict[str, object]] = []
         self._created = 0
 
     def run(self, query: str, **params: object) -> _Result:
         if "RETURN count(DISTINCT p) AS fanout" in query:
             return _Result([{"fanout": self.fanout}])
+        if "RETURN id.identifier_type AS identifier_type" in query:
+            return _Result(list(self.idents))
+        if "RETURN f.attribute_name AS attribute_name" in query:
+            return _Result(list(self.facts))
+        if "addr.address_id AS address_id" in query:
+            return _Result(list(self.addrs))
         if "collect(DISTINCT p.person_id) AS person_ids" in query:
             return _Result([{"person_ids": list(self.person_ids)}])
         if "RETURN count(lock) > 0 AS is_locked" in query:
@@ -88,6 +104,34 @@ def test_two_active_persons_open_one_ordered_pair_case() -> None:
     assert call["left_person_id"] == "person-a"
     assert call["right_person_id"] == "person-b"
     assert "nric" in str(call["feature_snapshot"])
+    # No snapshot rows -> heuristic finds no shared evidence -> confidence 0.0.
+    assert call["confidence"] == 0.0
+
+
+def test_pair_case_carries_heuristic_confidence() -> None:
+    # Both persons (content-dispatched mock) share a verified phone and the same
+    # name, so the reused record-engine scorer yields a real confidence:
+    # verified phone (+0.35) + high name similarity (+0.20) = 0.55.
+    tx = _ScriptedTx(
+        fanout=2,
+        person_ids=["person-a", "person-b"],
+        idents=[
+            {"identifier_type": "phone", "normalized_value": "+6580000000", "is_verified": True}
+        ],
+        facts=[{"attribute_name": "full_name", "attribute_value": "Alice Tan"}],
+    )
+    created = audit_person_pairs(tx, _nric())  # type: ignore[arg-type]
+    assert created == ["rc-1"]
+    call = tx.create_calls[0]
+    confidence = call["confidence"]
+    assert isinstance(confidence, float)
+    assert confidence > 0.5
+    # Heuristic signals are merged into the persisted feature snapshot, and the
+    # bridging-identifier provenance is preserved alongside them.
+    snap = str(call["feature_snapshot"])
+    assert "phone_exact_match" in snap
+    assert "heuristic_band" in snap
+    assert "bridging_identifier_value" in snap
 
 
 def test_existing_open_case_suppresses_duplicate() -> None:

@@ -20,7 +20,8 @@ from datetime import UTC, datetime, timedelta
 from neo4j import ManagedTransaction
 
 from src.graph import queries
-from src.models import NormalizedIdentifier
+from src.matching.pair_score import score_person_pair
+from src.models import JsonValue, NormalizedIdentifier
 from src.pipeline_normalization import is_usable
 from src.pipeline_writes import exceeds_fanout_cap
 
@@ -94,15 +95,23 @@ def _create_pair_case_if_needed(
         return None
 
     sla_due_at = (datetime.now(UTC) + timedelta(days=_SLA_DAYS)).isoformat()
-    feature_snapshot = json.dumps(
-        {
-            "bridging_identifier_type": ident.identifier_type,
-            "bridging_identifier_value": ident.normalized_value,
-        }
-    )
+
+    # Reuse the record match engine's scoring criteria so the case carries a real
+    # confidence for reviewer triage. The decision stays 'review' regardless of
+    # the band — a shared-identifier bridge never auto-merges persons.
+    score = score_person_pair(tx, left_person_id, right_person_id)
+    snapshot: dict[str, JsonValue] = {
+        "bridging_identifier_type": ident.identifier_type,
+        "bridging_identifier_value": ident.normalized_value,
+        # Band the heuristic score *would* fall in, surfaced for triage only.
+        "heuristic_band": score.decision.value,
+        **score.feature_snapshot,
+    }
+    feature_snapshot = json.dumps(snapshot)
     reasons = [
         f"Shared {ident.identifier_type} links 2 active persons "
-        f"({left_person_id}, {right_person_id})"
+        f"({left_person_id}, {right_person_id})",
+        *score.reasons,
     ]
     record = tx.run(
         queries.CREATE_PERSON_PAIR_REVIEW_CASE,
@@ -112,6 +121,7 @@ def _create_pair_case_if_needed(
         sla_due_at=sla_due_at,
         engine_version=_ENGINE_VERSION,
         policy_version=_POLICY_VERSION,
+        confidence=score.confidence,
         reasons=reasons,
         feature_snapshot=feature_snapshot,
     ).single()

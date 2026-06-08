@@ -194,6 +194,23 @@ Rules:
   `engine_type = 'pair_audit'`, `decision = 'review'`, with both `ABOUT_LEFT`
   and `ABOUT_RIGHT` pointing at `Person` nodes (lower `person_id` on the left).
   The bridging identifier is recorded in `feature_snapshot`.
+- **Confidence (advisory triage)** — the case carries a real `confidence`, not a
+  placeholder. It reuses the **Layer 2 heuristic scorer** unchanged: the left
+  person is treated as the "incoming record" (its golden identifiers, facts, and
+  address) and scored against the right person's candidate snapshot. The
+  resulting score, the band it would fall in (`heuristic_band`), and the
+  heuristic signals/reasons are merged into the case's `feature_snapshot` so a
+  reviewer can tell a same-name/same-phone duplicate from two distinct people who
+  merely share a phone. The score is **strictly advisory**: `decision` stays
+  `review` regardless of the band — a shared-identifier bridge never auto-merges
+  persons (precision over recall; many bridges are `relationship`-sourced contact
+  rows whose subject is a *different* person). Conversation-promotion does **not**
+  apply to pair audits (the scorer is called with the default `record_type`).
+  *Limitation*: the heuristic layer weights only phone/email as identifier
+  evidence — **govt-ID (NRIC) bridges are scored on name/DOB/address corroboration
+  only**, since exact govt-ID matching belongs to the deterministic layer. The
+  bridge type is still recorded in `feature_snapshot` and the reason string, so a
+  govt-ID bridge is never *hidden* by a low corroboration score.
 - **Fanout cap** — the same per-identifier-type cardinality cap used for
   candidate generation applies. A non-discriminating identifier (e.g. a shared
   household/business phone above its cap) produces no pairs.

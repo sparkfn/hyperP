@@ -29,7 +29,7 @@ CREATE (md:MatchDecision {
     engine_type: 'pair_audit',
     engine_version: $engine_version,
     decision: 'review',
-    confidence: 0.0,
+    confidence: $confidence,
     reasons: $reasons,
     blocking_conflicts: [],
     feature_snapshot: $feature_snapshot,
