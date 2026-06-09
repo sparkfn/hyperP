@@ -7,6 +7,7 @@ from pydantic import BaseModel
 
 from src.auth.deps import require_human_user, require_mutator_for_review_case
 from src.auth.models import AuthUser
+from src.graph.queries import REVIEW_SORT_KEYS
 from src.http_utils import envelope, http_error, next_cursor, page_window
 from src.repositories.deps import get_review_repo
 from src.repositories.protocols.review import ReviewListFilters, ReviewRepository
@@ -49,20 +50,58 @@ async def list_review_cases(
     queue_state: str | None = Query(default=None),
     assigned_to: str | None = Query(default=None),
     priority_lte: int | None = Query(default=None),
+    priority_gte: int | None = Query(default=None),
+    decision: str | None = Query(default=None),
+    engine_type: str | None = Query(default=None),
+    confidence_gte: float | None = Query(default=None),
+    confidence_lte: float | None = Query(default=None),
+    created_after: str | None = Query(default=None),
+    created_before: str | None = Query(default=None),
+    sla_due_after: str | None = Query(default=None),
+    sla_due_before: str | None = Query(default=None),
+    overdue_sla: bool | None = Query(default=None),
+    q: str | None = Query(default=None),
+    sort_by: str | None = Query(default=None),
+    sort_order: str | None = Query(default=None),
     cursor: str | None = Query(default=None),
     limit: int | None = Query(default=None),
     _user: AuthUser = Depends(require_human_user),
     repo: ReviewRepository = Depends(get_review_repo),
 ) -> ApiResponse[list[ReviewCaseSummary]]:
-    """List review cases with optional filters."""
+    """List review cases with optional search, filters, sort, and pagination."""
+    q_clean: str | None = q.strip() if q else None
+    if q_clean is not None and len(q_clean) < 3:
+        raise http_error(
+            400,
+            "invalid_request",
+            "Search query q requires at least 3 characters.",
+            request,
+        )
+    if sort_by is not None and sort_by not in REVIEW_SORT_KEYS:
+        raise http_error(400, "invalid_request", f"Unknown sort_by: {sort_by}", request)
+
     skip, page_limit = page_window(cursor, limit)
     filters: ReviewListFilters = {
         "queue_state": queue_state,
         "assigned_to": assigned_to,
         "priority_lte": priority_lte,
+        "priority_gte": priority_gte,
+        "decision": decision,
+        "engine_type": engine_type,
+        "confidence_gte": confidence_gte,
+        "confidence_lte": confidence_lte,
+        "created_after": created_after,
+        "created_before": created_before,
+        "sla_due_after": sla_due_after,
+        "sla_due_before": sla_due_before,
+        "overdue_sla": overdue_sla,
+        "q": q_clean,
+        "sort_by": sort_by,
+        "sort_order": sort_order,
     }
-    items, has_more = await repo.get_page(filters, skip, page_limit)
-    return envelope(items, request, next_cursor(skip, page_limit, has_more))
+    items, total = await repo.get_page(filters, skip, page_limit)
+    has_more = skip + page_limit < total
+    return envelope(items, request, next_cursor(skip, page_limit, has_more), total_count=total)
 
 
 @router.get("/{review_case_id}", response_model=ApiResponse[ReviewCaseDetail])

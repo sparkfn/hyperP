@@ -636,9 +636,20 @@ List review cases.
 
 - `queue_state`
 - `assigned_to`
-- `follow_up_before`
+- `q` — case-insensitive search (min 3 chars) over `review_case_id`, `decision`, `engine_type`, `assigned_to`, and the linked left/right person name, phone, and email
+- `priority_gte`
 - `priority_lte`
-- `source_system`
+- `decision`
+- `engine_type`
+- `confidence_gte`
+- `confidence_lte`
+- `created_after`
+- `created_before`
+- `sla_due_after`
+- `sla_due_before`
+- `overdue_sla` — when `true`, only cases past their SLA and not yet resolved/cancelled
+- `sort_by` — one of `priority` (default), `confidence`, `sla_due_at`, `created_at`, `updated_at`, `queue_state`
+- `sort_order` — `asc` or `desc`
 - `cursor`
 - `limit`
 

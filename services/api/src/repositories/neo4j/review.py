@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 from neo4j import AsyncManagedTransaction
 
 from src.graph.client import get_session
@@ -16,7 +18,8 @@ from src.graph.queries import (
     EXECUTE_MANUAL_MERGE,
     GET_PERSONS_FOR_REVIEW_MERGE,
     GET_REVIEW_CASE,
-    LIST_REVIEW_CASES,
+    build_count_review_cases_query,
+    build_list_review_cases_query,
     build_review_action_cypher,
 )
 from src.repositories.neo4j._merge_side_effects import apply_merge_review_side_effects
@@ -28,25 +31,42 @@ from src.repositories.protocols.merge import GoldenProfileSelection
 from src.repositories.protocols.review import ActionResult, AssignResult, ReviewListFilters
 from src.types import ApiReviewActionType, ReviewCaseDetail, ReviewCaseSummary
 
-from ._utils import record_to_dict
+from ._utils import record_to_dict, to_total
+
+# ReviewListFilters keys consumed only when building the query string, never
+# bound as Cypher parameters.
+_NON_CYPHER_KEYS: frozenset[str] = frozenset({"sort_by", "sort_order"})
 
 
 class Neo4jReviewRepository:
     async def get_page(
         self, filters: ReviewListFilters, skip: int, limit: int
-    ) -> tuple[list[ReviewCaseSummary], bool]:
-        async with get_session() as session:
-            result = await session.run(
-                LIST_REVIEW_CASES,
-                queue_state=filters.get("queue_state"),
-                assigned_to=filters.get("assigned_to"),
-                priority_lte=filters.get("priority_lte"),
-                skip=skip,
-                limit=limit + 1,
-            )
-            records = [record_to_dict(r.keys(), list(r.values())) async for r in result]
-        has_more = len(records) > limit
-        return [map_review_case_summary(rec) for rec in records[:limit]], has_more
+    ) -> tuple[list[ReviewCaseSummary], int]:
+        has_q = filters.get("q") is not None
+        list_query = build_list_review_cases_query(
+            filters.get("sort_by"), filters.get("sort_order"), has_q=has_q
+        )
+        count_query = build_count_review_cases_query(has_q=has_q)
+        cypher_params: dict[str, str | int | float | bool | None] = {
+            k: v  # type: ignore[misc]  # TypedDict values are object; known-safe filter keys
+            for k, v in filters.items()
+            if k not in _NON_CYPHER_KEYS
+        }
+        list_params = {**cypher_params, "skip": skip, "limit": limit}
+
+        async def _run_list() -> list[GraphRecord]:
+            async with get_session() as session:
+                result = await session.run(list_query, list_params)
+                return [record_to_dict(r.keys(), list(r.values())) async for r in result]
+
+        async def _run_count() -> int:
+            async with get_session() as session:
+                result = await session.run(count_query, cypher_params)
+                record = await result.single()
+                return to_total(record)
+
+        records, total = await asyncio.gather(_run_list(), _run_count())
+        return [map_review_case_summary(rec) for rec in records], total
 
     async def get_by_id(self, review_case_id: str) -> ReviewCaseDetail | None:
         async with get_session() as session:

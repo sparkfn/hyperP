@@ -803,19 +803,77 @@ paths:
           in: query
           schema:
             type: string
-        - name: follow_up_before
+        - name: q
           in: query
+          description: >-
+            Case-insensitive search (min 3 chars) over review_case_id, decision,
+            engine_type, assigned_to, and the linked left/right person name,
+            phone, and email.
           schema:
             type: string
-            format: date-time
+            minLength: 3
+        - name: priority_gte
+          in: query
+          schema:
+            type: integer
         - name: priority_lte
           in: query
           schema:
             type: integer
-        - name: source_system
+        - name: decision
           in: query
           schema:
             type: string
+        - name: engine_type
+          in: query
+          schema:
+            type: string
+        - name: confidence_gte
+          in: query
+          schema:
+            type: number
+            format: float
+        - name: confidence_lte
+          in: query
+          schema:
+            type: number
+            format: float
+        - name: created_after
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: created_before
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: sla_due_after
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: sla_due_before
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: overdue_sla
+          in: query
+          description: When true, only cases past their SLA and not yet resolved/cancelled.
+          schema:
+            type: boolean
+        - name: sort_by
+          in: query
+          schema:
+            type: string
+            enum: [priority, confidence, sla_due_at, created_at, updated_at, queue_state]
+            default: priority
+        - name: sort_order
+          in: query
+          schema:
+            type: string
+            enum: [asc, desc]
         - $ref: '#/components/parameters/Cursor'
         - $ref: '#/components/parameters/Limit'
       responses:
