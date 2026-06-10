@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, patch
 from fastapi.testclient import TestClient
 from src.auth.deps import OAuthClientUser, get_current_user_or_oauth_client
 from src.auth.models import AuthUser
-from src.auth.oauth_client_models import OAuthClient
+from src.auth.oauth_client_models import OAuthClient, OAuthClientSecret
 from src.oauth2_app import build_oauth2_app
 from src.repositories.deps import get_person_repo
 from src.repositories.protocols.person import PersonListFilters, PersonRepository
@@ -25,7 +25,15 @@ def _client() -> OAuthClient:
         created_at=datetime.now(UTC).replace(tzinfo=None),
         disabled_at=None,
         last_used_at=None,
-        secrets=[],
+        secrets=[
+            OAuthClientSecret(
+                secret_id="sec_1",
+                secret_prefix="hps_xxxxxx",
+                created_at=datetime.now(UTC).replace(tzinfo=None),
+                revoked_at=None,
+                last_used_at=None,
+            )
+        ],
     )
 
 
@@ -91,6 +99,7 @@ def test_oauth2_token_endpoint_issues_access_token() -> None:
             new=AsyncMock(return_value=(_client(), ["persons:read"])),
         ),
         patch("src.routes.oauth.issue_client_access_token", return_value="jwt-token"),
+        patch("src.routes.oauth.register_token", new=AsyncMock(return_value=None)),
     ):
         res = client.post(
             "/token",

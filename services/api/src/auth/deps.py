@@ -15,7 +15,8 @@ from src.auth.oauth_client_models import (
     OAuthClient,
     OAuthClientUser,
 )
-from src.auth.oauth_clients import check_scope, get_oauth_client_by_id
+from src.auth.oauth_clients import active_secret, check_scope, get_oauth_client_by_id
+from src.auth.oauth_token_registry import touch_token
 from src.auth.oauth_tokens import verify_client_access_token
 from src.auth.revoke import decode_jwt_claims, is_token_revoked
 from src.auth.store import (
@@ -25,7 +26,7 @@ from src.auth.store import (
 )
 from src.auth.verify import verify_google_id_token
 from src.config import config
-from src.http_utils import http_error
+from src.http_utils import client_ip, http_error
 
 log = logging.getLogger(__name__)
 
@@ -81,8 +82,9 @@ async def get_current_user(
     if jti is not None and await is_token_revoked(jti):
         raise http_error(401, "token_revoked", "Token has been revoked.", request)
 
-    cached = _USER_CACHE.get(jti if jti is not None else token)
-    if cached is not None:
+    cache_key = jti if jti is not None else token
+    cached = _USER_CACHE.get(cache_key)
+    if cached is not None and cached[0] == token:
         return cached[1]
 
     try:
@@ -94,7 +96,7 @@ async def get_current_user(
     user = await upsert_user_on_login(
         email=claims.email, google_sub=claims.sub, display_name=claims.name
     )
-    _USER_CACHE[jti if jti is not None else token] = (token, user)
+    _USER_CACHE[cache_key] = (token, user)
     return user
 
 
@@ -136,6 +138,18 @@ def _reconciled_oauth_entity_key(
     return client.entity_key
 
 
+def _current_secret_id(client: OAuthClient) -> str | None:
+    secret = active_secret(client)
+    return secret.secret_id if secret is not None else None
+
+
+async def _touch_token_last_used(jti: str, request: Request) -> None:
+    try:
+        await touch_token(jti, last_used_ip=client_ip(request))
+    except Exception:  # noqa: BLE001 — token tracking is best-effort
+        log.debug("Failed to update OAuth token last-used", exc_info=True)
+
+
 async def get_current_user_or_oauth_client(
     request: Request,
     credentials: HTTPAuthorizationCredentials | None = _BEARER_CREDENTIALS,
@@ -172,8 +186,18 @@ async def get_current_user_or_oauth_client(
             request,
         )
 
+    current_secret_id = _current_secret_id(client)
+    if current_secret_id is None or claims.secret_id != current_secret_id:
+        raise http_error(
+            401,
+            "unauthorized",
+            "OAuth client secret has been rotated; token is no longer valid.",
+            request,
+        )
+
     reconciled_scopes = _reconciled_oauth_scopes(claims.scopes, client, request)
     reconciled_entity_key = _reconciled_oauth_entity_key(claims.entity_key, client, request)
+    await _touch_token_last_used(claims.jti, request)
     role: Role = "admin" if "admin" in reconciled_scopes else "employee"
     return OAuthClientUser(
         email=f"oauth:{claims.client_id}",

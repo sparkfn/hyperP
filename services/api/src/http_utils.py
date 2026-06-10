@@ -49,6 +49,20 @@ def envelope[T](
     )
 
 
+def client_ip(request: Request) -> str | None:
+    """Return the originating client IP, trusting nginx's X-Forwarded-For.
+
+    nginx forwards X-Forwarded-For on the /api/oauth2/ block; the left-most
+    entry is the original client. Falls back to the direct socket host.
+    """
+    forwarded = request.headers.get("x-forwarded-for")
+    if forwarded:
+        first = forwarded.split(",")[0].strip()
+        if first:
+            return first
+    return request.client.host if request.client else None
+
+
 def http_error(
     status_code: int,
     code: str,

@@ -310,7 +310,6 @@ export interface OAuthClientSecret {
   secret_id: string;
   secret_prefix: string;
   created_at: string | null;
-  expires_at: string | null;
   revoked_at: string | null;
   last_used_at: string | null;
 }
@@ -324,6 +323,7 @@ export interface OAuthClient {
   created_at: string | null;
   disabled_at: string | null;
   last_used_at: string | null;
+  access_token_ttl_seconds: number;
   secrets: OAuthClientSecret[];
 }
 
@@ -334,26 +334,35 @@ export interface OAuthClientCreated {
   secret_prefix: string;
   name: string;
   scopes: string[];
-  secret_expires_at: string | null;
 }
 
 export interface CreateOAuthClientRequest {
   name: string;
   entity_key: string | null;
   scopes: string[];
-  secret_expires_in_days: number | null;
+  access_token_ttl_seconds: number;
 }
 
-export interface CreateOAuthClientSecretRequest {
-  expires_in_days: number | null;
+export interface UpdateOAuthClientRequest {
+  name?: string;
+  scopes?: string[];
+  access_token_ttl_seconds?: number;
 }
 
-export interface OAuthClientSecretCreated {
+export interface RotateSecretResponse {
   client_id: string;
   client_secret: string;
   secret_id: string;
   secret_prefix: string;
-  expires_at: string | null;
+}
+
+export interface OAuthAccessToken {
+  jti: string;
+  scope: string;
+  issued_at: number;
+  expires_at: number;
+  last_used_at: number | null;
+  last_used_ip: string | null;
 }
 
 export const OAUTH_CLIENT_SCOPES: readonly string[] = [

@@ -29,8 +29,6 @@ _MIN_ENV = {
     "REFRESH_TOKEN_EXPIRY_MINUTES": "43200",
     "OAUTH_ISSUER": "http://testserver/api",
     "OAUTH_AUDIENCE": "hyperp-api-test",
-    "OAUTH_ACCESS_TOKEN_EXPIRY_MINUTES": "15",
-    "OAUTH_MAX_ACCESS_TOKEN_EXPIRY_MINUTES": "60",
     "OAUTH_ACTIVE_KEY_ID": "test-key",
     "OAUTH_PRIVATE_KEY_PEM": "dummy-private-pem",
     "OAUTH_PUBLIC_KEY_PEM": "dummy-public-pem",

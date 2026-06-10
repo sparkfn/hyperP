@@ -8,6 +8,8 @@ import { OAUTH_CLIENT_SCOPES } from "@/lib/api-types-ops";
 import { relativeTime } from "@/lib/display";
 import { useBffList } from "@/lib/useBffList";
 import styles from "../admin.module.css";
+import { ClientManagePanel } from "./ClientManagePanel";
+import { ttlMinutesToSeconds, ttlSecondsToMinutes } from "./ttl";
 
 // ── Skeleton ──────────────────────────────────────────────────────────────────
 
@@ -29,8 +31,8 @@ function SkeletonCard(): ReactElement {
 
 function OAuthClientCard({ c, onRefresh }: { c: OAuthClient; onRefresh: () => void }): ReactElement {
   const isDisabled = !!c.disabled_at;
-  const activeSecrets = c.secrets.filter((s) => !s.revoked_at).length;
   const [busy, setBusy] = useState(false);
+  const [manageOpen, setManageOpen] = useState(false);
 
   async function handleDelete(): Promise<void> {
     if (!confirm(`Delete client "${c.name}"? This cannot be undone.`)) return;
@@ -57,15 +59,19 @@ function OAuthClientCard({ c, onRefresh }: { c: OAuthClient; onRefresh: () => vo
       </div>
       <div className={styles.cardMeta}>
         {c.scopes.map((sc) => <span key={sc} className={styles.scopePill}>{sc}</span>)}
-        <span className={styles.metaItem}>{activeSecrets} active secret{activeSecrets !== 1 ? "s" : ""}</span>
+        <span className={styles.metaItem}>{ttlSecondsToMinutes(c.access_token_ttl_seconds)}m token TTL</span>
         {c.last_used_at && <span className={styles.metaItem}>Used {relativeTime(c.last_used_at)}</span>}
         <span className={styles.metaItem}>by {c.created_by}</span>
       </div>
       <div className={styles.cardActions}>
+        <button type="button" className={styles.actionBtnEdit} onClick={() => setManageOpen((o) => !o)}>
+          {manageOpen ? "Hide" : "Manage"}
+        </button>
         <button type="button" className={styles.actionBtnDanger} disabled={busy} onClick={() => void handleDelete()}>
           {busy ? "Deleting…" : "Delete"}
         </button>
       </div>
+      {manageOpen && <ClientManagePanel c={c} onRefresh={onRefresh} />}
     </div>
   );
 }
@@ -75,7 +81,7 @@ function OAuthClientCard({ c, onRefresh }: { c: OAuthClient; onRefresh: () => vo
 function CreateModal({ onClose }: { onClose: () => void }): ReactElement {
   const [name, setName] = useState("");
   const [scopes, setScopes] = useState<string[]>([]);
-  const [expireDays, setExpireDays] = useState("");
+  const [ttlMinutes, setTtlMinutes] = useState("15");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [created, setCreated] = useState<OAuthClientCreated | null>(null);
@@ -95,7 +101,7 @@ function CreateModal({ onClose }: { onClose: () => void }): ReactElement {
         name: name.trim(),
         entity_key: null,
         scopes,
-        secret_expires_in_days: expireDays ? parseInt(expireDays, 10) : null,
+        access_token_ttl_seconds: ttlMinutesToSeconds(ttlMinutes),
       };
       const res = await bffFetch<OAuthClientCreated>("/bff/admin/oauth-clients", {
         method: "POST",
@@ -161,8 +167,8 @@ function CreateModal({ onClose }: { onClose: () => void }): ReactElement {
               <input className={styles.formInput} type="text" value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Data Pipeline" required autoFocus />
             </div>
             <div className={styles.formField}>
-              <label className={styles.formLabel}>Expires in <span className={styles.optional}>(days, optional)</span></label>
-              <input className={styles.formInput} type="number" min="1" value={expireDays} onChange={(e) => setExpireDays(e.target.value)} placeholder="Never" />
+              <label className={styles.formLabel}>Access token lifetime <span className={styles.optional}>(minutes)</span></label>
+              <input className={styles.formInput} type="number" min="5" max="1440" value={ttlMinutes} onChange={(e) => setTtlMinutes(e.target.value)} placeholder="15" />
             </div>
             <div className={styles.formField}>
               <label className={styles.formLabel}>Scopes <span className={styles.required}>*</span></label>

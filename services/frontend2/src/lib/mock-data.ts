@@ -387,7 +387,8 @@ export const MOCK_OAUTH_CLIENTS: OAuthClient[] = [
     created_at: "2025-03-01T00:00:00Z",
     disabled_at: null,
     last_used_at: "2026-05-07T06:30:00Z",
-    secrets: [{ secret_id: "sec-001", secret_prefix: "hps_prod_", created_at: "2025-03-01T00:00:00Z", expires_at: null, revoked_at: null, last_used_at: "2026-05-07T06:30:00Z" }],
+    access_token_ttl_seconds: 900,
+    secrets: [{ secret_id: "sec-001", secret_prefix: "hps_prod_", created_at: "2025-03-01T00:00:00Z", revoked_at: null, last_used_at: "2026-05-07T06:30:00Z" }],
   },
   {
     client_id: "cli-002",
@@ -398,7 +399,8 @@ export const MOCK_OAUTH_CLIENTS: OAuthClient[] = [
     created_at: "2025-06-15T00:00:00Z",
     disabled_at: null,
     last_used_at: "2026-05-06T14:00:00Z",
-    secrets: [{ secret_id: "sec-002", secret_prefix: "hps_anal_", created_at: "2025-06-15T00:00:00Z", expires_at: "2027-06-15T00:00:00Z", revoked_at: null, last_used_at: "2026-05-06T14:00:00Z" }],
+    access_token_ttl_seconds: 1800,
+    secrets: [{ secret_id: "sec-002", secret_prefix: "hps_anal_", created_at: "2025-06-15T00:00:00Z", revoked_at: null, last_used_at: "2026-05-06T14:00:00Z" }],
   },
   {
     client_id: "cli-003",
@@ -409,6 +411,7 @@ export const MOCK_OAUTH_CLIENTS: OAuthClient[] = [
     created_at: "2024-01-10T00:00:00Z",
     disabled_at: "2026-04-01T00:00:00Z",
     last_used_at: "2026-03-30T00:00:00Z",
+    access_token_ttl_seconds: 900,
     secrets: [],
   },
 ];

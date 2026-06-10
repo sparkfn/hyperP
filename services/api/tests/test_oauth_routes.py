@@ -19,7 +19,7 @@ from src.auth.deps import (
     require_scope,
 )
 from src.auth.models import AuthUser
-from src.auth.oauth_client_models import OAuthClient
+from src.auth.oauth_client_models import OAuthClient, OAuthClientSecret
 from src.auth.oauth_tokens import OAuthClientClaims
 from src.frontend_app import build_frontend_app
 from src.repositories.deps import (
@@ -70,6 +70,8 @@ def _client(
     client_id: str = "hpc_test",
     entity_key: str | None = None,
     scopes: list[str] | None = None,
+    secret_id: str = "sec_1",
+    access_token_ttl_seconds: int = 900,
 ) -> OAuthClient:
     return OAuthClient(
         client_id=client_id,
@@ -80,7 +82,16 @@ def _client(
         created_at=datetime.now(UTC).replace(tzinfo=None),
         disabled_at=None,
         last_used_at=None,
-        secrets=[],
+        access_token_ttl_seconds=access_token_ttl_seconds,
+        secrets=[
+            OAuthClientSecret(
+                secret_id=secret_id,
+                secret_prefix="hps_xxxxxx",
+                created_at=datetime.now(UTC).replace(tzinfo=None),
+                revoked_at=None,
+                last_used_at=None,
+            )
+        ],
     )
 
 
@@ -109,6 +120,7 @@ def _claims(
     client_id: str = "hpc_reader",
     scopes: list[str] | None = None,
     jti: str = "jti-1",
+    secret_id: str = "sec_1",
     entity_key: str | None = "fundbox",
 ) -> OAuthClientClaims:
     token_scopes = scopes or ["persons:read"]
@@ -123,6 +135,7 @@ def _claims(
         nbf=1,
         exp=9999999999,
         jti=jti,
+        secret_id=secret_id,
         entity_key=entity_key,
     )
 
@@ -140,6 +153,7 @@ async def _resolve_oauth_principal(
         patch("src.auth.deps.verify_client_access_token", return_value=claims),
         patch("src.auth.deps.is_token_revoked", new=AsyncMock(return_value=revoked)),
         patch("src.auth.deps.get_oauth_client_by_id", new=AsyncMock(return_value=client)),
+        patch("src.auth.deps.touch_token", new=AsyncMock(return_value=None)),
     ):
         return await get_current_user_or_oauth_client(request, credentials)
 
@@ -581,6 +595,7 @@ def test_token_endpoint_issues_access_token() -> None:
             new=AsyncMock(return_value=(_client(), ["persons:read"])),
         ),
         patch("src.routes.oauth.issue_client_access_token", return_value="jwt-token"),
+        patch("src.routes.oauth.register_token", new=AsyncMock(return_value=None)),
     ):
         res = client.post(
             "/v1/oauth/token",
@@ -601,6 +616,38 @@ def test_token_endpoint_issues_access_token() -> None:
         "expires_in": 900,
         "scope": "persons:read",
     }
+
+
+def test_token_endpoint_uses_client_ttl_and_registers() -> None:
+    app = build_app()
+    client = TestClient(app)
+    client_obj = _client(client_id="hpc_a", scopes=["persons:read"], secret_id="sec_1")
+    client_obj = client_obj.model_copy(update={"access_token_ttl_seconds": 1800})
+
+    register = AsyncMock(return_value=None)
+    with (
+        patch(
+            "src.routes.oauth.validate_client_credentials",
+            new=AsyncMock(return_value=(client_obj, ["persons:read"])),
+        ),
+        patch("src.routes.oauth.issue_client_access_token", return_value="jwt-token"),
+        patch("src.routes.oauth.register_token", new=register),
+    ):
+        res = client.post(
+            "/v1/oauth/token",
+            data={
+                "grant_type": "client_credentials",
+                "client_id": "hpc_a",
+                "client_secret": "hps_secret",
+                "scope": "persons:read",
+            },
+        )
+
+    assert res.status_code == 200
+    assert res.json()["expires_in"] == 1800
+    register.assert_awaited_once()
+    assert register.await_args is not None
+    assert register.await_args.kwargs["secret_id"] == "sec_1"
 
 
 def test_token_endpoint_rejects_invalid_requested_scope() -> None:
@@ -871,13 +918,10 @@ def test_oauth_client_secret_route_returns_not_found_for_human_admin() -> None:
     client = TestClient(app)
 
     with patch(
-        "src.routes.oauth_clients.create_oauth_client_secret",
+        "src.routes.oauth_clients.rotate_oauth_client_secret",
         new=AsyncMock(return_value=None),
     ):
-        res = client.post(
-            "/admin/oauth-clients/hpc_missing/secrets",
-            json={"expires_in_days": 30},
-        )
+        res = client.post("/admin/oauth-clients/hpc_missing/rotate-secret")
 
     assert res.status_code == 404
     assert res.json()["error"]["code"] == "not_found"
@@ -1021,6 +1065,7 @@ async def test_get_current_user_or_oauth_client_returns_oauth_client_user() -> N
         nbf=1,
         exp=9999999999,
         jti="jti-1",
+        secret_id="sec_1",
         entity_key="fundbox",
     )
 
@@ -1031,6 +1076,7 @@ async def test_get_current_user_or_oauth_client_returns_oauth_client_user() -> N
             "src.auth.deps.get_oauth_client_by_id",
             new=AsyncMock(return_value=_client(client_id="hpc_reader", entity_key="fundbox")),
         ),
+        patch("src.auth.deps.touch_token", new=AsyncMock(return_value=None)),
     ):
         principal = await get_current_user_or_oauth_client(request, credentials)
 
@@ -1073,6 +1119,21 @@ async def test_old_admin_oauth_token_rejected_after_client_loses_admin_scope() -
 
     assert exc.status_code == 403
     assert exc.detail["error"]["code"] == "forbidden"
+
+
+@pytest.mark.asyncio
+async def test_oauth_token_rejected_when_secret_id_no_longer_current() -> None:
+    with pytest.raises(HTTPException) as exc:
+        await _resolve_oauth_principal(
+            _claims(
+                client_id="hpc_a",
+                scopes=["persons:read"],
+                entity_key=None,
+                secret_id="sec_OLD",
+            ),
+            _client(client_id="hpc_a", scopes=["persons:read"], secret_id="sec_NEW"),
+        )
+    assert exc.value.status_code == 401
 
 
 @pytest.mark.asyncio
@@ -1134,6 +1195,7 @@ async def test_oauth_token_missing_client_is_rejected_without_google_fallback() 
         nbf=1,
         exp=9999999999,
         jti="jti-missing",
+        secret_id="sec_1",
         entity_key="fundbox",
     )
 
@@ -1166,6 +1228,7 @@ async def test_oauth_token_disabled_client_is_rejected_without_google_fallback()
         nbf=1,
         exp=9999999999,
         jti="jti-disabled",
+        secret_id="sec_1",
         entity_key="fundbox",
     )
     disabled_client = _client().model_copy(
