@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import json
+from datetime import UTC, datetime
 
 from neo4j import AsyncManagedTransaction
 
@@ -36,6 +38,19 @@ from ._utils import record_to_dict, to_total
 # ReviewListFilters keys consumed only when building the query string, never
 # bound as Cypher parameters.
 _NON_CYPHER_KEYS: frozenset[str] = frozenset({"sort_by", "sort_order"})
+
+
+def _action_entry_json(action_type: str, actor_type: str, actor_id: str, notes: str | None) -> str:
+    """Serialize one review-action audit entry; rc.actions stores JSON strings."""
+    return json.dumps(
+        {
+            "action_type": action_type,
+            "actor_type": actor_type,
+            "actor_id": actor_id,
+            "notes": notes,
+            "created_at": datetime.now(UTC).isoformat(),
+        }
+    )
 
 
 class Neo4jReviewRepository:
@@ -138,7 +153,10 @@ async def _assign_tx(
     tx: AsyncManagedTransaction, review_case_id: str, assigned_to: str
 ) -> GraphRecord | None:
     result = await tx.run(
-        ASSIGN_REVIEW_CASE, review_case_id=review_case_id, assigned_to=assigned_to
+        ASSIGN_REVIEW_CASE,
+        review_case_id=review_case_id,
+        assigned_to=assigned_to,
+        action_json=_action_entry_json("assign", "system", assigned_to, None),
     )
     record = await result.single()
     if record is None:
@@ -196,11 +214,9 @@ async def _action_tx(
         cypher,
         review_case_id=review_case_id,
         new_state=new_state,
-        action_type=action_type,
-        notes=notes,
         resolution=resolution,
         follow_up_at=follow_up_at,
-        actor_id=actor_id,
+        action_json=_action_entry_json(action_type, "reviewer", actor_id, notes),
     )
     record = await result.single()
     if record is None:

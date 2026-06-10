@@ -350,7 +350,7 @@ CREATE (rc:ReviewCase {
   sla_due_at: datetime(),
   resolution: null,               // merge | reject | manual_no_match | cancelled_superseded
   resolved_at: null,
-  // review actions stored as an ordered list of maps — no separate node
+  // review actions stored as an ordered list of JSON strings — no separate node
   actions: [],
   created_at: datetime(),
   updated_at: datetime()
@@ -359,17 +359,15 @@ CREATE (rc:ReviewCase {
 
 Why actions as a list: review actions are only ever read in the context of
 their case, never queried across cases. They are an append-only audit log on
-the case. Each entry is a map:
+the case. Each entry is a JSON-serialized map — Neo4j cannot store maps as
+node properties, so the entry is serialized by the application and appended
+as a string parameter:
 
 ```cypher
-// Appending an action:
-SET rc.actions = rc.actions + [{
-  action_type: 'merge',
-  actor_type: 'reviewer',
-  actor_id: 'reviewer_123',
-  notes: 'Phone and DOB align.',
-  created_at: datetime()
-}]
+// Appending an action ($action_json is a JSON string built by the API, e.g.
+// '{"action_type": "merge", "actor_type": "reviewer", "actor_id": "reviewer_123",
+//   "notes": "Phone and DOB align.", "created_at": "2026-06-11T08:00:00+00:00"}'):
+SET rc.actions = rc.actions + [$action_json]
 ```
 
 The `review_action_type` values include both API-submitted actions (`merge`,

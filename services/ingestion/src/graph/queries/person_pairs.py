@@ -48,7 +48,7 @@ CREATE (rc:ReviewCase {
     sla_due_at: datetime($sla_due_at),
     resolution: null,
     resolved_at: null,
-    actions: '[]',
+    actions: [],
     created_at: datetime(),
     updated_at: datetime()
 })-[:FOR_DECISION]->(md)

@@ -705,9 +705,16 @@ def map_review_case_detail(record: GraphRecord) -> ReviewCaseDetail:
     actions_raw = rc.get("actions")
     actions: list[dict[str, str | None]] = []
     if isinstance(actions_raw, list):
+        # Each entry is a JSON string (Neo4j cannot store maps as properties).
         for raw in actions_raw:
-            item = _as_dict(raw)
-            actions.append({to_str(k): to_optional_str(v) for k, v in item.items()})
+            if not isinstance(raw, str):
+                continue
+            try:
+                loaded: object = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(loaded, dict):
+                actions.append({to_str(k): to_optional_str(v) for k, v in loaded.items()})
     return ReviewCaseDetail(
         review_case_id=to_str(rc.get("review_case_id")),
         queue_state=to_str(rc.get("queue_state")),

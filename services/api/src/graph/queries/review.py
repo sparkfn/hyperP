@@ -6,6 +6,13 @@ from typing import LiteralString
 
 _REVIEW_MATCH = "MATCH (rc:ReviewCase)-[:FOR_DECISION]->(md:MatchDecision)\n"
 
+# Review actions are stored as a list of JSON strings (Neo4j cannot store maps
+# as properties). Legacy nodes hold the literal string '[]', so coerce any
+# non-list value to an empty list before appending.
+_ACTIONS_AS_LIST: LiteralString = (
+    "(CASE WHEN rc.actions IS :: STRING THEN [] ELSE coalesce(rc.actions, []) END)"
+)
+
 # Person joins are only added when `q` is present (search needs left/right
 # names). ABOUT_LEFT/ABOUT_RIGHT only bind to :Person nodes, so source-record
 # sides yield null and are coalesced away. The WITH turns the following filter
@@ -161,24 +168,22 @@ CASE WHEN right:Person
 right_addr { .address_id, .unit_number, .street_number, .street_name, .city, .postal_code, .country_code, .normalized_full } AS right_address
 """
 
-ASSIGN_REVIEW_CASE = """
+ASSIGN_REVIEW_CASE = (
+    """
 MATCH (rc:ReviewCase {review_case_id: $review_case_id})
 WHERE rc.queue_state IN ['open', 'assigned']
 SET rc.assigned_to = $assigned_to,
     rc.queue_state = 'assigned',
     rc.updated_at = datetime(),
-    rc.actions = rc.actions + [{
-      action_type: 'assign',
-      actor_type: 'system',
-      actor_id: $assigned_to,
-      notes: null,
-      created_at: toString(datetime())
-    }]
+    rc.actions = """
+    + _ACTIONS_AS_LIST
+    + """ + [$action_json]
 RETURN rc {
   .review_case_id, .queue_state, .assigned_to, .priority,
   .follow_up_at, .sla_due_at, .updated_at
 } AS review_case
 """
+)
 
 GET_PERSONS_FOR_REVIEW_MERGE = """
 MATCH (rc:ReviewCase {review_case_id: $review_case_id})-[:FOR_DECISION]->(md:MatchDecision)
@@ -214,9 +219,7 @@ def build_review_action_cypher(
     clauses: list[LiteralString] = [
         "rc.queue_state = $new_state",
         "rc.updated_at = datetime()",
-        "rc.actions = rc.actions + [{"
-        " action_type: $action_type, actor_type: 'reviewer', actor_id: $actor_id,"
-        " notes: $notes, created_at: toString(datetime())}]",
+        "rc.actions = " + _ACTIONS_AS_LIST + " + [$action_json]",
     ]
     if resolution is not None:
         clauses.append("rc.resolution = $resolution")
