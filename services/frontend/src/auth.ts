@@ -52,12 +52,17 @@ interface GoogleRefreshResponse {
   expires_in: number;
 }
 
+type GoogleRefreshOutcome =
+  | { idToken: string; expiresAt: number }
+  | "rejected"
+  | "transient";
+
 async function refreshGoogleIdToken(
   refreshToken: string,
-): Promise<{ idToken: string; expiresAt: number } | null> {
+): Promise<GoogleRefreshOutcome> {
   const clientId = process.env.AUTH_GOOGLE_ID;
   const clientSecret = process.env.AUTH_GOOGLE_SECRET;
-  if (!clientId || !clientSecret) return null;
+  if (!clientId || !clientSecret) return "rejected";
   try {
     const res: Response = await fetch("https://oauth2.googleapis.com/token", {
       method: "POST",
@@ -70,15 +75,28 @@ async function refreshGoogleIdToken(
       }),
       cache: "no-store",
     });
-    if (!res.ok) return null;
+    if (!res.ok) {
+      // 4xx (e.g. invalid_grant) means the refresh token is dead — sign out.
+      // 5xx is a Google-side hiccup — keep the session and retry next request.
+      return res.status < 500 ? "rejected" : "transient";
+    }
     const data = (await res.json()) as GoogleRefreshResponse;
     return {
       idToken: data.id_token,
       expiresAt: Math.floor(Date.now() / 1000) + data.expires_in,
     };
   } catch {
-    return null;
+    return "transient";
   }
+}
+
+// Rolling idle window for the NextAuth session cookie, in seconds. The cookie
+// expiry is re-issued on each request, so this is an inactivity timeout, not an
+// absolute cap. Defaults to 1 hour when the env var is unset or invalid.
+function sessionMaxAgeSeconds(): number {
+  const raw = process.env.AUTH_SESSION_MAX_AGE_SECONDS;
+  const parsed = raw === undefined ? NaN : Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 60 * 60;
 }
 
 async function fetchMe(idToken: string): Promise<MeResponseBody["data"] | null> {
@@ -104,8 +122,20 @@ export const authConfig: NextAuthConfig = {
   // uses this verbatim and does not auto-prepend the framework basePath, so the
   // value must match where the handler is actually served: /app/v1/bff/auth.
   basePath: `/app/v1${BFF_AUTH_BASE_PATH}`,
-  providers: [Google],
-  session: { strategy: "jwt", maxAge: 60 * 60 },
+  providers: [
+    Google({
+      // access_type=offline makes Google issue a refresh_token, which the jwt
+      // callback uses to silently renew the ID token past its 1 h lifetime.
+      // prompt=consent is required because tokens live only in the JWT cookie
+      // (no DB): Google returns a refresh_token solely on consent, so every
+      // sign-in must re-consent or a re-login would leave the session
+      // refresh-less and back to hourly expiry.
+      authorization: {
+        params: { access_type: "offline", prompt: "consent" },
+      },
+    }),
+  ],
+  session: { strategy: "jwt", maxAge: sessionMaxAgeSeconds() },
   pages: { signIn: "/login" },
   cookies: {
     sessionToken: {
@@ -145,13 +175,14 @@ export const authConfig: NextAuthConfig = {
         Date.now() / 1000 > expiresAt - 60
       ) {
         const refreshed = await refreshGoogleIdToken(refreshToken);
-        if (refreshed) {
+        if (typeof refreshed === "object") {
           token.googleIdToken = refreshed.idToken;
           token.googleIdTokenExpiresAt = refreshed.expiresAt;
-        } else {
-          // Refresh token is expired or invalid — signal NextAuth to sign out.
+        } else if (refreshed === "rejected") {
+          // Refresh token is expired or revoked — signal NextAuth to sign out.
           token.error = "RefreshTokenError";
         }
+        // "transient": keep the current token; the next request retries.
       }
 
       if (trigger === "update" && typeof token.googleIdToken === "string") {
