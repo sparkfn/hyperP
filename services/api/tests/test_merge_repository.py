@@ -156,22 +156,18 @@ def test_merge_event_queries_store_metadata_as_string_properties() -> None:
 
 
 def test_manual_merge_copies_relationship_properties_before_deleting_relationships() -> None:
-    assert (
-        "WITH absorbed, survivor, me, id, old_id, properties(old_id) AS old_id_props"
-        in EXECUTE_MANUAL_MERGE
-    )
+    # Properties must be captured into *_props while the old relationship still
+    # exists — i.e. before the FOREACH that deletes it.
+    def captured_before_delete(capture: str, delete: str) -> bool:
+        return EXECUTE_MANUAL_MERGE.index(capture) < EXECUTE_MANUAL_MERGE.index(delete)
+
+    assert captured_before_delete("properties(old_id) AS old_id_props", "DELETE old_id")
     assert "CREATE (survivor)-[new_id:IDENTIFIED_BY]->(id)" in EXECUTE_MANUAL_MERGE
     assert "SET new_id = old_id_props" in EXECUTE_MANUAL_MERGE
-    assert (
-        "WITH absorbed, survivor, me, addr, old_addr, properties(old_addr) AS old_addr_props"
-        in EXECUTE_MANUAL_MERGE
-    )
+    assert captured_before_delete("properties(old_addr) AS old_addr_props", "DELETE old_addr")
     assert "CREATE (survivor)-[new_addr:LIVES_AT]->(addr)" in EXECUTE_MANUAL_MERGE
     assert "SET new_addr = old_addr_props" in EXECUTE_MANUAL_MERGE
-    assert (
-        "WITH absorbed, survivor, me, sr_fact, old_fact, properties(old_fact) AS old_fact_props"
-        in EXECUTE_MANUAL_MERGE
-    )
+    assert captured_before_delete("properties(old_fact) AS old_fact_props", "DELETE old_fact")
     assert "CREATE (survivor)-[new_fact:HAS_FACT]->(sr_fact)" in EXECUTE_MANUAL_MERGE
     assert "SET new_fact = old_fact_props" in EXECUTE_MANUAL_MERGE
     assert "old_id.is_verified" not in EXECUTE_MANUAL_MERGE

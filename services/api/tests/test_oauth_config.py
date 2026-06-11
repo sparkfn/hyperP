@@ -14,7 +14,9 @@ def test_oauth_config_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("OAUTH_PRIVATE_KEY_PEM", raising=False)
     monkeypatch.delenv("OAUTH_PUBLIC_KEY_PEM", raising=False)
     monkeypatch.delenv("OAUTH_SECRET_HASH_KEY", raising=False)
-    cfg = AppConfig(NEO4J_PASSWORD="pw")
+    # _env_file=None keeps the test hermetic when a local .env populates the
+    # OAuth keys (AppConfig reads .env, which monkeypatch.delenv cannot clear).
+    cfg = AppConfig(NEO4J_PASSWORD="pw", _env_file=None)
 
     assert not hasattr(cfg, "api_keys_enabled")
     assert not hasattr(cfg, "api_key_secret")
