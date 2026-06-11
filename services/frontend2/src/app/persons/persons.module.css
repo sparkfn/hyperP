@@ -364,6 +364,14 @@
   color: var(--text-primary);
 }
 
+.fpSegmentedBtnDisabled,
+.fpSegmentedBtnDisabled:hover:not(.fpSegmentedBtnActive) {
+  background: transparent;
+  color: var(--text-muted);
+  cursor: not-allowed;
+  opacity: 0.48;
+}
+
 /* ── Filter lists ─────────────────────────────────────────── */
 .filterGroups {
   display: grid;
@@ -861,6 +869,22 @@
   border-color: var(--accent);
   color: var(--accent-text);
   font-weight: 600;
+}
+
+.filterChipDisabled {
+  opacity: 0.48;
+  cursor: not-allowed;
+}
+
+.filterChipDisabled:hover {
+  border-color: var(--border);
+  color: var(--text-secondary);
+}
+
+.filterNote {
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1.4;
 }
 
 .activeBadges {

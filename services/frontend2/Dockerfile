@@ -1,3 +1,10 @@
+FROM node:22-alpine AS dev
+WORKDIR /app
+COPY services/frontend2/package.json services/frontend2/package-lock.json ./
+RUN npm install --legacy-peer-deps
+EXPOSE 3001
+CMD ["npm", "run", "dev"]
+
 FROM node:22-alpine AS deps
 WORKDIR /app
 COPY services/frontend2/package.json services/frontend2/package-lock.json ./

@@ -2,15 +2,18 @@
 
 import { Fragment, use, useCallback, useEffect, useId, useMemo, useRef, useState, type ReactElement } from "react";
 import Link from "next/link";
-import { notFound, useSearchParams } from "next/navigation";
+import { notFound } from "next/navigation";
 import type { Person, PersonConnection, SalesOrder } from "@/lib/api-types";
 import type {
   ChatMessage,
   EditableFieldOptions,
+  FieldOption,
   GoldenFieldName,
   GoldenProfileSelectionRequestBody,
   ManualMergeRequestBody,
   ManualMergeResponseBody,
+  UnmergeRequestBody,
+  UnmergeResponseBody,
   PersonAuditEvent,
   PersonBankruptcyCase,
   PersonFieldOptions,
@@ -33,7 +36,7 @@ import PersonFocusedGraph from "@/components/PersonFocusedGraph";
 import PersonGraphDialog from "@/components/PersonGraphDialog";
 import styles from "./person.module.css";
 
-type Tab = "sales" | "connections" | "identifiers" | "source-records" | "matches" | "timeline" | "graph";
+type Tab = "sales" | "connections" | "identifiers" | "decision-history" | "source-records" | "matches" | "timeline" | "graph";
 
 type DetailData = {
   identifiers: PersonIdentifier[];
@@ -45,11 +48,15 @@ type DetailData = {
 };
 
 
-type TabConfig = {
-  id: Tab;
-  label: string;
-  count?: number;
-};
+type SectionConfig = { id: string; label: string; count?: number };
+
+interface BentoSectionProps {
+  section: SectionConfig;
+  className?: string;
+  highlighted: boolean;
+  action?: ReactElement;
+  children: ReactElement;
+}
 
 
 const DATE_FORMATTER = new Intl.DateTimeFormat("en-SG", {
@@ -111,6 +118,10 @@ interface MergeTargetProfile {
   preferred_dob: string | null;
   preferred_address: Person["preferred_address"];
   preferred_nric: string | null;
+  matchSourceLabel?: string;
+  matchEvidence?: string;
+  currentEvidence?: string;
+  candidateEvidence?: string;
 }
 
 interface MergeFieldDraft {
@@ -230,7 +241,7 @@ function PersonBreadcrumb({ personName, onShare, shareLoading }: { personName: s
   );
 }
 
-function PersonSidebar({ person, detailData, onOverride }: { person: Person; detailData: DetailData; onOverride: () => void }): ReactElement {
+function PersonSidebar({ person, detailData, personId, onOverride, onGraphOpen }: { person: Person; detailData: DetailData; personId: string; onOverride: () => void; onGraphOpen: () => void }): ReactElement {
   const [detailOpen, setDetailOpen] = useState(false);
   const [nricRevealed, setNricRevealed] = useState(false);
   const completeness = Math.round(person.profile_completeness_score * 100);
@@ -292,25 +303,14 @@ function PersonSidebar({ person, detailData, onOverride }: { person: Person; det
             {priorityLabel !== null && (
               <span className={`${styles.priorityLabel} ${priorityLabel.className}`}>{priorityLabel.label}</span>
             )}
+            <button type="button" className={styles.editFieldBtn} onClick={onOverride}>
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
+                <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
+              </svg>
+              <span>Edit field</span>
+            </button>
           </div>
-
-          <div className={styles.profileHeroCompleteness}>
-            <div className={styles.profileHeroBar}>
-              <div
-                className={styles.completenessFill}
-                style={{ width: `${completeness}%`, background: completenessColor(person.profile_completeness_score) }}
-              />
-            </div>
-            <span className={styles.profileHeroCompPct}>{completeness}%</span>
-          </div>
-
-          <button type="button" className={styles.editFieldBtn} onClick={onOverride}>
-            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-              <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
-              <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
-            </svg>
-            Edit field
-          </button>
         </div>
 
         {/* ── Section 2: Golden profile fields ── */}
@@ -350,7 +350,16 @@ function PersonSidebar({ person, detailData, onOverride }: { person: Person; det
           </div>
         </div>
 
-        {/* ── Section 3: Detail (collapsible) ── */}
+        <div className={styles.profileHeroCompleteness} aria-label={`Profile completeness ${completeness}%`}>
+          <div className={styles.profileHeroCompletenessMeta}>
+            <span className={styles.profileHeroCompletenessLabel}>Profile filled</span>
+            <span className={styles.profileHeroCompPct}>{completeness}%</span>
+          </div>
+          <div className={styles.profileHeroBar} aria-hidden="true">
+            <span style={{ width: `${completeness}%` }} />
+          </div>
+        </div>
+
         <div className={styles.profileSection}>
           <button
             type="button"
@@ -387,7 +396,37 @@ function PersonSidebar({ person, detailData, onOverride }: { person: Person; det
       </section>
 
       <BankruptcySidebarCard cases={detailData.bankruptcyCases} />
-      <SourceEntitySidebarCard sourceRecords={detailData.sourceRecords} />
+      <section className={styles.sidebarCard}>
+        <div className={`${styles.sourceEntityHeader} ${styles.sidebarGraphHeader}`}>
+          <span className={styles.bkSectionLabel}>Graph</span>
+          <button type="button" className={styles.sidebarGraphExpand} onClick={onGraphOpen} aria-label="Expand graph">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="M15 3h6v6" />
+              <path d="M10 14 21 3" />
+              <path d="M9 21H3v-6" />
+              <path d="M14 10 3 21" />
+            </svg>
+          </button>
+        </div>
+        <div className={styles.sidebarGraphBody}>
+          <PersonFocusedGraph
+            initialPersonId={person.person_id}
+            initialTitle={person.preferred_full_name ?? person.person_id}
+            overlayMode
+            pureGraph
+            onMaximize={onGraphOpen}
+          />
+        </div>
+      </section>
+      <section className={styles.sidebarCard}>
+        <div className={styles.sourceEntityHeader}>
+          <span className={styles.bkSectionLabel}>Timeline</span>
+          <span className={styles.sourceEntityBadge}>{buildTimeline(detailData).length} activity</span>
+        </div>
+        <div className={styles.sidebarTimelineBody}>
+          <TimelineTab person={person} detailData={detailData} personId={personId} />
+        </div>
+      </section>
     </aside>
   );
 }
@@ -553,18 +592,44 @@ function SourceEntitySidebarCard({ sourceRecords }: { sourceRecords: PersonSourc
   );
 }
 
-function PersonTabs({ tabs, activeTab, onChange }: { tabs: TabConfig[]; activeTab: Tab; onChange: (tab: Tab) => void }): ReactElement {
+function SectionNav({ sections, scrollRef, onJump }: { sections: SectionConfig[]; scrollRef: { current: HTMLDivElement | null }; onJump: (id: string) => void }): ReactElement {
+  const [activeId, setActiveId] = useState(sections[0]?.id ?? "");
+  const sectionIdsKey = sections.map((s) => s.id).join(",");
+
+  useEffect(() => {
+    const root = scrollRef.current;
+    if (!root) return;
+    const ids = sectionIdsKey.split(",");
+    const observers: IntersectionObserver[] = [];
+    for (const id of ids) {
+      const el = document.getElementById(id);
+      if (!el) continue;
+      const obs = new IntersectionObserver(
+        ([entry]) => { if (entry?.isIntersecting) setActiveId(id); },
+        { root, rootMargin: "0px 0px -70% 0px", threshold: 0 },
+      );
+      obs.observe(el);
+      observers.push(obs);
+    }
+    return () => { observers.forEach((o) => o.disconnect()); };
+  }, [sectionIdsKey, scrollRef]);
+
+  function scrollTo(id: string): void {
+    document.getElementById(id)?.scrollIntoView({ behavior: "smooth", block: "start" });
+    window.history.replaceState(null, "", `#${id}`);
+  }
+
   return (
     <div className={styles.tabs}>
-      {tabs.map((tab) => (
+      {sections.map(({ id, label, count }) => (
         <button
-          key={tab.id}
+          key={id}
           type="button"
-          className={`${styles.tab} ${activeTab === tab.id ? styles.tabActive : ""}`}
-          onClick={() => onChange(tab.id)}
+          className={`${styles.tab} ${activeId === id ? styles.tabActive : ""}`}
+          onClick={() => { setActiveId(id); scrollTo(id); onJump(id); }}
         >
-          <span>{tab.label}</span>
-          {!!tab.count && <span className={styles.tabCount}>{tab.count}</span>}
+          <span>{label}</span>
+          {count != null && count > 0 && <span className={styles.tabCount}>{count}</span>}
         </button>
       ))}
     </div>
@@ -578,7 +643,7 @@ interface TopStat {
   valueStyle?: { color: string };
 }
 
-function RightRail({ person, detailData, salesTotal, tabs, activeTab, onChange, children }: { person: Person; detailData: DetailData; salesTotal: number | undefined; tabs: TabConfig[]; activeTab: Tab; onChange: (tab: Tab) => void; children: ReactElement }): ReactElement {
+function RightRail({ person, detailData, salesTotal, sections, scrollRef, onSectionJump, children }: { person: Person; detailData: DetailData; salesTotal: number | undefined; sections: SectionConfig[]; scrollRef: { current: HTMLDivElement | null }; onSectionJump: (id: string) => void; children: ReactElement }): ReactElement {
   const totalSales = detailData.sales.reduce((sum, order) => sum + (order.total_amount ?? 0), 0);
   const completeness = Math.round(person.profile_completeness_score * 100);
   const latestActivityAt = detailData.sourceRecords[0]?.observed_at ?? person.updated_at;
@@ -611,21 +676,10 @@ function RightRail({ person, detailData, salesTotal, tabs, activeTab, onChange, 
 
   return (
     <div className={styles.mainColumn}>
-      <section className={styles.summaryStrip}>
-        {topStats.map((stat) => (
-          <div key={stat.label} className={styles.summaryCard}>
-            <div className={styles.summaryCardLabel}>{stat.label}</div>
-            <div className={styles.summaryCardValue} style={stat.valueStyle}>{stat.value}</div>
-            <div className={styles.summaryCardNote}>{stat.note}</div>
-          </div>
-        ))}
-      </section>
-
       <div className={styles.rightTabsInline}>
-        <PersonTabs tabs={tabs} activeTab={activeTab} onChange={onChange} />
+        <SectionNav sections={sections} scrollRef={scrollRef} onJump={onSectionJump} />
       </div>
-
-      <div className={styles.tabPanelScroll}>{children}</div>
+      <div className={styles.tabPanelScroll} ref={(el) => { scrollRef.current = el; }}>{children}</div>
     </div>
   );
 }
@@ -743,11 +797,6 @@ function TimelineActivity({ person, detailData }: { person: Person; detailData: 
 
   return (
     <>
-      <div className={styles.connHeader}>
-        <span className={styles.connHeaderTitle}>Activity</span>
-        <span className={styles.connHeaderDot}>·</span>
-        <span className={styles.connHeaderCount}>{events.length} events</span>
-      </div>
       <div className={styles.tlGroups}>
         {grouped.map(({ day, evts }) => {
           const isCollapsed = collapsedDates.has(day);
@@ -791,14 +840,33 @@ function TimelineActivity({ person, detailData }: { person: Person; detailData: 
   );
 }
 
-function DetailShell({ person, detailData, salesTotal, children, tabs, activeTab, onTabChange, onOverride }: { person: Person; detailData: DetailData; salesTotal: number | undefined; children: ReactElement; tabs: TabConfig[]; activeTab: Tab; onTabChange: (tab: Tab) => void; onOverride: () => void }): ReactElement {
+function DetailShell({ person, detailData, personId, salesTotal, children, sections, scrollRef, onSectionJump, onOverride, onGraphOpen }: { person: Person; detailData: DetailData; personId: string; salesTotal: number | undefined; children: ReactElement; sections: SectionConfig[]; scrollRef: { current: HTMLDivElement | null }; onSectionJump: (id: string) => void; onOverride: () => void; onGraphOpen: () => void }): ReactElement {
   return (
     <div className={styles.detailLayout}>
-      <PersonSidebar person={person} detailData={detailData} onOverride={onOverride} />
-      <RightRail person={person} detailData={detailData} salesTotal={salesTotal} tabs={tabs} activeTab={activeTab} onChange={onTabChange}>
+      <PersonSidebar person={person} detailData={detailData} personId={personId} onOverride={onOverride} onGraphOpen={onGraphOpen} />
+      <RightRail person={person} detailData={detailData} salesTotal={salesTotal} sections={sections} scrollRef={scrollRef} onSectionJump={onSectionJump}>
         {children}
       </RightRail>
     </div>
+  );
+}
+
+function BentoSection({ section, className, highlighted, action, children }: BentoSectionProps): ReactElement {
+  const sectionClassName = `${styles.collapsibleSection}${className ? ` ${className}` : ""}${highlighted ? ` ${styles.collapsibleSectionHighlight}` : ""}`;
+
+  return (
+    <section id={section.id} className={sectionClassName}>
+      <div className={styles.collapsibleHeader}>
+        <span className={styles.collapsibleTitleWrap}>
+          <span className={styles.collapsibleTitle}>{section.label}</span>
+          {typeof section.count === "number" && <span className={styles.collapsibleCount}>{section.count}</span>}
+        </span>
+        {action}
+      </div>
+      <div className={styles.collapsibleBody}>
+        {children}
+      </div>
+    </section>
   );
 }
 
@@ -1013,6 +1081,10 @@ function OverrideLoadingOverlay(): ReactElement {
   );
 }
 
+function MatchEmptyState({ message }: { message: string }): ReactElement {
+  return <p className={styles.matchEmptyTextOnly}>{message}</p>;
+}
+
 function TabEmptyState({ message }: { message: string }): ReactElement {
   return (
     <div className={styles.tabEmptyState}>
@@ -1152,20 +1224,17 @@ function CandidateSourceRecords({ title, records, group }: { title: string; reco
 function CandidateDetailPanel({ detail }: { detail: PossibleMatchDetail }): ReactElement {
   return (
     <div className={styles.candidateDetailPanel}>
-      <div className={styles.candidateWhyHeader}>
-        <span>Why this is a possible duplicate</span>
-        <Link href={`/persons/${detail.candidate_person_id}`} className={styles.candidateProfileLink}>Open candidate profile</Link>
-      </div>
       <div className={styles.candidateReasonList}>
         {detail.shared_identifier_groups.map((group) => (
           <div key={`${group.identifier_type}-${group.normalized_value}`} className={styles.candidateReasonCard}>
             <div className={styles.candidateReasonTop}>
-              <span className={styles.candidateReasonLabel}>{titleCase(group.identifier_type)}</span>
+              <span className={styles.candidateReasonLabel}>Shared {titleCase(group.identifier_type)}</span>
               <span className={`${styles.candidateReasonValue} ${styles.mono}`}>{group.normalized_value}</span>
             </div>
+            <div className={styles.candidateReasonSummary}>The same {titleCase(group.identifier_type).toLowerCase()} appears in source records for both profiles.</div>
             <div className={styles.matchSourceGrid}>
-              <CandidateSourceRecords title="Current person data" records={group.current_person_source_records} group={group} />
-              <CandidateSourceRecords title="Candidate data" records={group.candidate_source_records} group={group} />
+              <CandidateSourceRecords title="Current profile evidence" records={group.current_person_source_records} group={group} />
+              <CandidateSourceRecords title="Candidate evidence" records={group.candidate_source_records} group={group} />
             </div>
           </div>
         ))}
@@ -1200,26 +1269,25 @@ function CandidateRow({
           </div>
           <div className={styles.connBody}>
             <div className={styles.sharedName}>{candidate.preferred_full_name ?? candidate.person_id}</div>
-            <div className={styles.connMetaRow}>
+            <div className={styles.candidateMetaText}>
               {candidate.identifiers.slice(0, 3).map((id, j) => (
-                <span key={j} className={styles.connSourceChip}>
-                  <span className={styles.connSourceKey}>{titleCase(id.identifier_type)}: {id.normalized_value}</span>
+                <span key={j} className={styles.candidateMetaItem}>
+                  {titleCase(id.identifier_type)} · {id.normalized_value}
                 </span>
               ))}
               {candidate.identifiers.length > 3 && (
-                <span className={styles.connSourceChip}>
-                  <span className={styles.connSourceKey}>+{candidate.identifiers.length - 3} more</span>
-                </span>
+                <span className={styles.candidateMetaItem}>+{candidate.identifiers.length - 3} more</span>
               )}
             </div>
           </div>
-          <span className={candidate.identifier_strength === "strong" ? styles.strengthStrong : styles.strengthWeak}>
-            {candidate.identifier_strength === "strong" ? "Strong match" : "Possible"}
-          </span>
         </button>
         <div className={styles.candidateRowActions}>
-          <Link href={`/persons/${candidate.person_id}`} className={styles.candidateDirectLink}>
-            Direct link
+          <Link href={`/persons/${candidate.person_id}`} className={styles.candidateDirectLink} aria-label="Open linked profile" title="Open linked profile">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="M14 3h7v7" />
+              <path d="M21 3l-9 9" />
+              <path d="M10 5H5a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-5" />
+            </svg>
           </Link>
           <button type="button" className={styles.candidateMergeBtn} onClick={onMerge}>
             Merge
@@ -1241,89 +1309,111 @@ function CandidateRow({
   );
 }
 
-function MatchesTab({ personId, onTotalLoaded, onMergeWith }: { personId: string; onTotalLoaded: (n: number) => void; onMergeWith: (candidate: PersonSharedIdentifierCandidate) => void }): ReactElement {
-  const [expandedMatch, setExpandedMatch] = useState<string | null>(null);
+function MatchesTab({ personId, activeMatchesTab, onTotalLoaded, onMergeWith }: { personId: string; activeMatchesTab: "candidates" | "merge-history"; onTotalLoaded: (n: number) => void; onMergeWith: (candidate: PersonSharedIdentifierCandidate, detail: PossibleMatchDetail | undefined) => void }): ReactElement {
   const [expandedCandidate, setExpandedCandidate] = useState<string | null>(null);
   const [candidateDetails, setCandidateDetails] = useState<Record<string, PossibleMatchDetail>>({});
   const [candidateErrors, setCandidateErrors] = useState<Record<string, string>>({});
   const [loadingCandidateId, setLoadingCandidateId] = useState<string | null>(null);
+  const [unmergeTarget, setUnmergeTarget] = useState<PersonAuditEvent | null>(null);
+  const [unmergeReason, setUnmergeReason] = useState("");
+  const [unmergeSubmitting, setUnmergeSubmitting] = useState(false);
+  const [unmergeError, setUnmergeError] = useState<string | null>(null);
 
   const candidatesResult = usePaginatedFetch<PersonSharedIdentifierCandidate>(
     `/bff/persons/${encodeURIComponent(personId)}/shared-identifiers`,
   );
-  const decisionsResult = usePaginatedFetch<PersonMatchDecision>(
-    `/bff/persons/${encodeURIComponent(personId)}/matches`,
+  const mergeHistoryResult = usePaginatedFetch<PersonAuditEvent>(
+    `/bff/persons/${encodeURIComponent(personId)}/audit`,
   );
 
   const candidates = candidatesResult.rows ?? [];
-  const decisions  = decisionsResult.rows  ?? [];
+  const mergeHistoryRows = (mergeHistoryResult.rows ?? []).filter((event) => event.event_type === "manual_merge" || event.event_type === "unmerge");
 
   useEffect(() => {
-    if (!candidatesResult.loading && !decisionsResult.loading) {
-      onTotalLoaded(
-        (candidatesResult.total ?? candidates.length) +
-        (decisionsResult.total  ?? decisions.length),
-      );
+    if (!candidatesResult.loading) {
+      onTotalLoaded(candidatesResult.total ?? candidates.length);
     }
-  }, [
-    candidatesResult.loading, candidatesResult.total,
-    decisionsResult.loading,  decisionsResult.total,
-    candidates.length, decisions.length, onTotalLoaded,
-  ]);
+  }, [candidatesResult.loading, candidatesResult.total, candidates.length, onTotalLoaded]);
 
-  const toggleCandidate = useCallback((candidateId: string) => {
+  const loadCandidateDetail = useCallback(async (candidateId: string): Promise<PossibleMatchDetail | undefined> => {
+    if (candidateDetails[candidateId]) return candidateDetails[candidateId];
+    setLoadingCandidateId(candidateId);
+    setCandidateErrors((prev) => ({ ...prev, [candidateId]: "" }));
+    try {
+      const detail = await bffFetch<PossibleMatchDetail>(`/bff/persons/${encodeURIComponent(personId)}/shared-identifiers/${encodeURIComponent(candidateId)}/detail`);
+      setCandidateDetails((prev) => ({ ...prev, [candidateId]: detail }));
+      return detail;
+    } catch (e) {
+      setCandidateErrors((prev) => ({ ...prev, [candidateId]: e instanceof Error ? e.message : "Failed to load match detail." }));
+      return undefined;
+    } finally {
+      setLoadingCandidateId(null);
+    }
+  }, [candidateDetails, personId]);
+
+  const toggleCandidate = useCallback((candidateId: string): void => {
     if (expandedCandidate === candidateId) {
       setExpandedCandidate(null);
       return;
     }
     setExpandedCandidate(candidateId);
-    if (candidateDetails[candidateId] || loadingCandidateId === candidateId) return;
+    void loadCandidateDetail(candidateId);
+  }, [expandedCandidate, loadCandidateDetail]);
 
-    setLoadingCandidateId(candidateId);
-    setCandidateErrors((prev) => {
-      if (!(candidateId in prev)) return prev;
-      const next = { ...prev };
-      delete next[candidateId];
-      return next;
-    });
-    void bffFetch<PossibleMatchDetail>(
-      `/bff/persons/${encodeURIComponent(personId)}/shared-identifiers/${encodeURIComponent(candidateId)}/detail`,
-    ).then((detail) => {
-      setCandidateDetails((prev) => ({ ...prev, [candidateId]: detail }));
-    }).catch((err: unknown) => {
-      const message = err instanceof BffError ? err.message : "Could not load match reasons.";
-      setCandidateErrors((prev) => ({ ...prev, [candidateId]: message }));
-    }).finally(() => {
-      setLoadingCandidateId((current) => current === candidateId ? null : current);
-    });
-  }, [candidateDetails, expandedCandidate, loadingCandidateId, personId]);
-
-  const allLoading = candidatesResult.loading && decisionsResult.loading;
-  if (allLoading) return <TabSkelShell title="Matches"><SkeletonMatches /></TabSkelShell>;
-  if (candidatesResult.error && decisionsResult.error) {
-    return <section className={styles.contentCard}><div className={styles.tabError}>{candidatesResult.error}</div></section>;
+  async function submitUnmerge(): Promise<void> {
+    if (unmergeTarget === null || !unmergeReason.trim()) return;
+    setUnmergeSubmitting(true);
+    setUnmergeError(null);
+    try {
+      const body: UnmergeRequestBody = { merge_event_id: unmergeTarget.merge_event_id, reason: unmergeReason.trim() };
+      await bffFetchEnvelope<UnmergeResponseBody>("/bff/persons/unmerge", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      window.location.reload();
+    } catch (e) {
+      setUnmergeError(e instanceof BffError ? e.message : "Failed to unmerge profiles.");
+    } finally {
+      setUnmergeSubmitting(false);
+    }
   }
 
-  const combinedTotal = (candidatesResult.total ?? candidates.length) + (decisionsResult.total ?? decisions.length);
+  const unmergedMergeEventIds = useMemo(() =>
+    new Set(mergeHistoryRows.filter((event) => event.event_type === "unmerge").map((event) => event.metadata?.original_merge_event_id).filter((id): id is string => Boolean(id))),
+  [mergeHistoryRows]);
 
-  return (
-    <section className={styles.contentCard}>
-      <div className={styles.connHeader}>
-        <span className={styles.connHeaderTitle}>Matches</span>
-        <span className={styles.connHeaderDot}>·</span>
-        <span className={styles.connHeaderCount}>{combinedTotal} total</span>
-      </div>
+  const recommendationCount = 0;
+  const hasRecommendations = recommendationCount > 0;
+  const hasPossibleDuplicates = candidates.length > 0;
 
-      {/* ── Possible Duplicates ── */}
-      {(candidatesResult.loading || candidates.length > 0) && (
-        <div className={styles.connSection}>
-          <div className={styles.connSectionLabel}>
-            Possible Duplicates
-            <span className={styles.connSectionCount}>{candidatesResult.total ?? candidates.length}</span>
-          </div>
-          {candidatesResult.loading ? <SkeletonConnections /> : (
-            <>
-              <div className={styles.sharedList}>
+  let tabContent: ReactElement;
+  if (activeMatchesTab === "candidates") {
+    if (candidatesResult.loading) {
+      tabContent = <TabSkelShell title="Matches"><SkeletonMatches /></TabSkelShell>;
+    } else if (candidatesResult.error) {
+      tabContent = <section className={styles.contentCard}><div className={styles.tabError}>{candidatesResult.error}</div></section>;
+    } else if (!hasRecommendations && !hasPossibleDuplicates) {
+      tabContent = <MatchEmptyState message="No matches found." />;
+    } else {
+      tabContent = (
+        <div className={styles.matchStack}>
+          {hasRecommendations && (
+            <div className={styles.matchSubsection}>
+              <div className={styles.matchSubheader}>
+                Recommendation match
+                <span className={styles.connSectionCount}>{recommendationCount}</span>
+              </div>
+            </div>
+          )}
+
+          {hasPossibleDuplicates && (
+            <div className={styles.matchSubsection}>
+              <div className={styles.matchSubheader}>
+                Possible Duplicates
+                <span className={styles.connSectionCount}>{candidatesResult.total ?? candidates.length}</span>
+              </div>
+              <div className={styles.matchList}>
                 {candidates.map((c) => (
                   <CandidateRow
                     key={c.person_id}
@@ -1333,110 +1423,155 @@ function MatchesTab({ personId, onTotalLoaded, onMergeWith }: { personId: string
                     isLoading={loadingCandidateId === c.person_id}
                     isOpen={expandedCandidate === c.person_id}
                     onToggle={toggleCandidate}
-                    onMerge={() => onMergeWith(c)}
+                    onMerge={() => { void loadCandidateDetail(c.person_id).then((detail) => onMergeWith(c, detail)); }}
                   />
                 ))}
               </div>
               {(candidatesResult.hasPrev || candidatesResult.hasNext) && (
                 <TabPagination from={candidatesResult.from} to={candidatesResult.to} total={candidatesResult.total} hasPrev={candidatesResult.hasPrev} hasNext={candidatesResult.hasNext} onPrev={candidatesResult.goPrev} onNext={candidatesResult.goNext} />
               )}
-            </>
+            </div>
           )}
         </div>
-      )}
-
-      {/* ── Decision History ── */}
-      {(decisionsResult.loading || decisions.length > 0) && (
-        <div className={styles.connSection}>
-          <div className={styles.connSectionLabel}>
-            Decision History
-            <span className={styles.connSectionCount}>{decisionsResult.total ?? decisions.length}</span>
+      );
+    }
+  } else if (mergeHistoryResult.loading) {
+    tabContent = <TabSkelShell title="Merge History"><SkeletonMatches /></TabSkelShell>;
+  } else if (mergeHistoryResult.error) {
+    tabContent = <section className={styles.contentCard}><div className={styles.tabError}>{mergeHistoryResult.error}</div></section>;
+  } else if (mergeHistoryRows.length === 0) {
+    tabContent = <MatchEmptyState message="No merge history yet." />;
+  } else {
+    tabContent = (
+      <div className={styles.auditList}>
+        {mergeHistoryRows.map((event, i) => (
+          <div key={event.merge_event_id} className={styles.auditItem}>
+            <div className={styles.auditRail}>
+              <div className={styles.auditDot} />
+              {i < mergeHistoryRows.length - 1 && <div className={styles.auditLine} />}
+            </div>
+            <div className={styles.auditBody}>
+              <div className={styles.auditTop}>
+                <span className={styles.auditEventType}>{event.event_type}</span>
+                <span className={styles.auditTime}>{fmtDateTime(event.created_at)}</span>
+              </div>
+              <div className={styles.auditActor}>{event.actor_type}:{event.actor_id}</div>
+              {event.reason && <div className={styles.auditReason}>{event.reason}</div>}
+              {event.event_type === "manual_merge" && !unmergedMergeEventIds.has(event.merge_event_id) && (
+                <button type="button" className={styles.auditUnmergeBtn} onClick={() => { setUnmergeTarget(event); setUnmergeReason(""); setUnmergeError(null); }}>Unmerge</button>
+              )}
+            </div>
           </div>
-          {decisionsResult.loading ? <SkeletonMatches /> : (
-            <>
-              <div className={styles.matchList}>
-                <div className={styles.matchHeaderRow}>
-                  <span>Decision</span>
-                  <span>Engine</span>
-                  <span>Counterpart</span>
-                  <span>Confidence</span>
-                  <span>Created</span>
-                </div>
-                {decisions.map((match) => {
-                  const isOpen = expandedMatch === match.match_decision_id;
-                  const otherPersonId = match.left_person_id === personId ? match.right_person_id : match.left_person_id;
-                  return (
-                    <div key={match.match_decision_id} className={`${styles.matchRow} ${isOpen ? styles.matchRowOpen : ""}`}>
-                      <button
-                        type="button"
-                        className={styles.matchRowButton}
-                        onClick={() => setExpandedMatch(isOpen ? null : match.match_decision_id)}
-                        aria-expanded={isOpen}
-                      >
-                        <span className={styles.matchDecisionCell}>
-                          <span className={[styles.matchDecisionBadge, decisionBadgeClass(match.decision)].filter(Boolean).join(" ")}>
-                            {titleCase(match.decision)}
-                          </span>
-                          <span className={`${styles.matchId} ${styles.mono}`}>{match.match_decision_id}</span>
-                        </span>
-                        <span className={styles.matchEngineCell}>
-                          <span>{titleCase(match.engine_type)}</span>
-                          <span className={`${styles.matchSubText} ${styles.mono}`}>{match.engine_version}</span>
-                        </span>
-                        <span className={`${styles.matchPersonCell} ${styles.mono}`}>{otherPersonId ?? "—"}</span>
-                        <span className={styles.matchConfidenceCell}>
-                          <span className={styles.matchConfidenceValue}>{(match.confidence * 100).toFixed(1)}%</span>
-                          <span className={styles.matchConfidenceTrack}>
-                            <span className={styles.matchConfidenceFill} style={{ width: `${Math.max(0, Math.min(100, match.confidence * 100))}%` }} />
-                          </span>
-                        </span>
-                        <span className={styles.matchCreatedCell}>{fmtDateTime(match.created_at)}</span>
-                        <svg className={`${styles.matchChevron} ${isOpen ? styles.matchChevronOpen : ""}`} width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                          <path d="M6 9l6 6 6-6" />
-                        </svg>
-                      </button>
-                      {isOpen && (
-                        <div className={styles.matchDetail}>
-                          <div className={styles.matchMetaGrid}>
-                            {[
-                              { label: "Policy",    value: match.policy_version },
-                              { label: "Left",      value: match.left_person_id },
-                              { label: "Right",     value: match.right_person_id },
-                              { label: "Conflicts", value: match.blocking_conflicts.length ? match.blocking_conflicts.join(", ") : "None" },
-                            ].map(({ label, value }) => (
-                              <div key={label} className={styles.matchMetaItem}>
-                                <span className={styles.matchMetaLabel}>{label}</span>
-                                <span className={`${styles.matchMetaValue} ${styles.mono}`}>{value ?? "—"}</span>
-                              </div>
-                            ))}
-                          </div>
-                          <div className={styles.matchReasonsBlock}>
-                            <span className={styles.matchMetaLabel}>Reasons</span>
-                            <div className={styles.matchReasonList}>
-                              {match.reasons.length > 0 ? match.reasons.map((reason) => (
-                                <span key={reason} className={styles.matchReasonChip}>{reason}</span>
-                              )) : <span className={styles.matchEmptyText}>No reasons recorded.</span>}
-                            </div>
+        ))}
+        {(mergeHistoryResult.hasPrev || mergeHistoryResult.hasNext) && (
+          <TabPagination from={mergeHistoryResult.from} to={mergeHistoryResult.to} total={mergeHistoryResult.total} hasPrev={mergeHistoryResult.hasPrev} hasNext={mergeHistoryResult.hasNext} onPrev={mergeHistoryResult.goPrev} onNext={mergeHistoryResult.goNext} />
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <>
+      {tabContent}
+      {unmergeTarget !== null && (
+        <div className={styles.shareOverlay} onClick={() => setUnmergeTarget(null)}>
+          <div className={`${styles.overrideModal} ${styles.mergeModal} ${styles.unmergeModal}`} onClick={(e) => e.stopPropagation()}>
+            <div className={styles.shareModalHeader}>
+              <span className={styles.shareModalTitle}>Unmerge profiles</span>
+              <button type="button" className={styles.shareModalClose} onClick={() => setUnmergeTarget(null)} disabled={unmergeSubmitting} aria-label="Close">×</button>
+            </div>
+            <p className={styles.shareModalDesc}>This will reverse the merge event and restore the absorbed profile. Please provide a reason for the audit trail.</p>
+            <label className={styles.mergeReasonLabel}>
+              Reason
+              <textarea className={styles.mergeReasonInput} value={unmergeReason} onChange={(e) => setUnmergeReason(e.target.value)} placeholder="Why are you unmerging these profiles?" autoFocus />
+            </label>
+            {unmergeError !== null && <div className={styles.mergeErrorBox}><span className={styles.mergeErrorIcon} aria-hidden="true">!</span><span>{unmergeError}</span></div>}
+            <div className={styles.mergeModalActions}>
+              <button type="button" className={styles.secondaryBtn} onClick={() => setUnmergeTarget(null)} disabled={unmergeSubmitting}>Cancel</button>
+              <button type="button" className={styles.dangerBtn} onClick={() => void submitUnmerge()} disabled={!unmergeReason.trim() || unmergeSubmitting}>Unmerge profiles</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
+function DecisionHistoryTab({ personId, onTotalLoaded }: { personId: string; onTotalLoaded: (n: number) => void }): ReactElement {
+  const [expandedMatch, setExpandedMatch] = useState<string | null>(null);
+  const decisionsResult = usePaginatedFetch<PersonMatchDecision>(
+    `/bff/persons/${encodeURIComponent(personId)}/matches`,
+  );
+  const decisions = decisionsResult.rows ?? [];
+
+  useEffect(() => {
+    if (!decisionsResult.loading) {
+      onTotalLoaded(decisionsResult.total ?? decisions.length);
+    }
+  }, [decisionsResult.loading, decisionsResult.total, decisions.length, onTotalLoaded]);
+
+  if (decisionsResult.loading) return <TabSkelShell title="Decision History"><SkeletonMatches /></TabSkelShell>;
+  if (decisionsResult.error) return <section className={styles.contentCard}><div className={styles.tabError}>{decisionsResult.error}</div></section>;
+
+  return (
+    <div className={styles.decisionHistorySection}>
+      {decisions.length === 0 ? (
+        <MatchEmptyState message="No decision history recorded." />
+      ) : (
+        <>
+          <div className={styles.matchList}>
+            {decisions.map((match) => {
+              const isExpanded = expandedMatch === match.match_decision_id;
+              return (
+                <div key={match.match_decision_id} className={`${styles.matchRow} ${isExpanded ? styles.matchRowOpen : ""}`}>
+                  <button type="button" className={styles.matchRowButton} onClick={() => setExpandedMatch(isExpanded ? null : match.match_decision_id)} aria-expanded={isExpanded}>
+                    <span className={styles.matchDecisionCell}>{match.decision}</span>
+                    <span className={styles.matchEngineCell}>{titleCase(match.engine_type)}</span>
+                    <span className={styles.matchPersonCell}>{match.left_person_id ?? "—"} ↔ {match.right_person_id ?? "—"}</span>
+                    <span className={styles.matchConfidenceCell}>{Math.round(match.confidence * 100)}%</span>
+                    <span className={styles.matchCreatedCell}>{fmtDate(match.created_at)}</span>
+                    <span className={`${styles.matchChevron} ${isExpanded ? styles.matchChevronOpen : ""}`}>⌄</span>
+                  </button>
+                  {isExpanded && (
+                    <div className={styles.matchDetail}>
+                      <div className={styles.matchMetaGrid}>
+                        <div className={styles.matchMetaItem}>
+                          <span className={styles.matchMetaLabel}>Engine version</span>
+                          <span className={styles.matchMetaValue}>{match.engine_version || "—"}</span>
+                        </div>
+                        <div className={styles.matchMetaItem}>
+                          <span className={styles.matchMetaLabel}>Policy</span>
+                          <span className={styles.matchMetaValue}>{match.policy_version || "—"}</span>
+                        </div>
+                        <div className={styles.matchReasonsBlock}>
+                          <span className={styles.matchMetaLabel}>Reasons</span>
+                          <div className={styles.matchReasonList}>
+                            {match.reasons.length > 0 ? match.reasons.map((reason) => (
+                              <span key={reason} className={styles.matchReasonChip}>{reason}</span>
+                            )) : <span className={styles.matchEmptyText}>No reasons recorded.</span>}
                           </div>
                         </div>
-                      )}
+                        <div className={styles.matchReasonsBlock}>
+                          <span className={styles.matchMetaLabel}>Blocking conflicts</span>
+                          <div className={styles.matchReasonList}>
+                            {match.blocking_conflicts.length > 0 ? match.blocking_conflicts.map((conflict) => (
+                              <span key={conflict} className={styles.matchReasonChip}>{conflict}</span>
+                            )) : <span className={styles.matchEmptyText}>No conflicts recorded.</span>}
+                          </div>
+                        </div>
+                      </div>
                     </div>
-                  );
-                })}
-              </div>
-              {(decisionsResult.hasPrev || decisionsResult.hasNext) && (
-                <TabPagination from={decisionsResult.from} to={decisionsResult.to} total={decisionsResult.total} hasPrev={decisionsResult.hasPrev} hasNext={decisionsResult.hasNext} onPrev={decisionsResult.goPrev} onNext={decisionsResult.goNext} />
-              )}
-            </>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+          {(decisionsResult.hasPrev || decisionsResult.hasNext) && (
+            <TabPagination from={decisionsResult.from} to={decisionsResult.to} total={decisionsResult.total} hasPrev={decisionsResult.hasPrev} hasNext={decisionsResult.hasNext} onPrev={decisionsResult.goPrev} onNext={decisionsResult.goNext} />
           )}
-        </div>
+        </>
       )}
-
-      {/* Both empty */}
-      {!candidatesResult.loading && !decisionsResult.loading && candidates.length === 0 && decisions.length === 0 && (
-        <TabEmptyState message="No match data on record." />
-      )}
-    </section>
+    </div>
   );
 }
 
@@ -1638,19 +1773,42 @@ function AuditTab({ personId, onTotalLoaded }: { personId: string; onTotalLoaded
   const { rows, loading, error, from, to, total, hasPrev, hasNext, goNext, goPrev } =
     usePaginatedFetch<PersonAuditEvent>(`/bff/persons/${encodeURIComponent(personId)}/audit`);
   const audit = rows ?? [];
+  const [unmergeTarget, setUnmergeTarget] = useState<PersonAuditEvent | null>(null);
+  const [unmergeReason, setUnmergeReason] = useState("");
+  const [unmergeSubmitting, setUnmergeSubmitting] = useState(false);
+  const [unmergeError, setUnmergeError] = useState<string | null>(null);
+
+  async function submitUnmerge(): Promise<void> {
+    if (unmergeTarget === null || !unmergeReason.trim()) return;
+    setUnmergeSubmitting(true);
+    setUnmergeError(null);
+    try {
+      const body: UnmergeRequestBody = { merge_event_id: unmergeTarget.merge_event_id, reason: unmergeReason.trim() };
+      await bffFetchEnvelope<UnmergeResponseBody>("/bff/persons/unmerge", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      window.location.reload();
+    } catch (e) {
+      setUnmergeError(e instanceof BffError ? e.message : "Failed to unmerge profiles.");
+    } finally {
+      setUnmergeSubmitting(false);
+    }
+  }
 
   useEffect(() => { if (total !== null) onTotalLoaded(total); }, [total, onTotalLoaded]);
 
-  if (loading) return <><div className={styles.connHeader}><span className={styles.connHeaderTitle}>Audit trail</span></div><SkeletonAudit /></>;
+  const unmergedMergeEventIds = useMemo(() => new Set(audit
+    .filter((event) => event.event_type === "unmerge")
+    .map((event) => event.metadata.original_merge_event_id)
+    .filter((mergeEventId): mergeEventId is string => Boolean(mergeEventId))), [audit]);
+
+  if (loading) return <SkeletonAudit />;
   if (error) return <div className={styles.tabError}>{error}</div>;
 
   return (
     <>
-      <div className={styles.connHeader}>
-        <span className={styles.connHeaderTitle}>Audit trail</span>
-        <span className={styles.connHeaderDot}>·</span>
-        <span className={styles.connHeaderCount}>{total ?? audit.length} {(total ?? audit.length) === 1 ? "event" : "events"}</span>
-      </div>
       {audit.length === 0 && <TabEmptyState message="No audit events on record." />}
       <div className={styles.auditList}>
         {audit.map((event, i) => (
@@ -1668,11 +1826,31 @@ function AuditTab({ personId, onTotalLoaded }: { personId: string; onTotalLoaded
                 {event.actor_type}:{event.actor_id}
               </div>
               {event.reason && <div className={styles.auditReason}>{event.reason}</div>}
+              {event.event_type === "manual_merge" && !unmergedMergeEventIds.has(event.merge_event_id) && <button type="button" className={styles.auditUnmergeBtn} onClick={() => { setUnmergeTarget(event); setUnmergeReason(""); setUnmergeError(null); }}>Unmerge</button>}
             </div>
           </div>
         ))}
       </div>
       {(hasPrev || hasNext) && <TabPagination from={from} to={to} total={total} hasPrev={hasPrev} hasNext={hasNext} onPrev={goPrev} onNext={goNext} />}
+      {unmergeTarget !== null && (
+        <div className={styles.shareOverlay} onClick={() => setUnmergeTarget(null)}>
+          <div className={`${styles.overrideModal} ${styles.mergeModal} ${styles.unmergeModal}`} onClick={(e) => e.stopPropagation()}>
+            <div className={styles.shareModalHeader}>
+              <span className={styles.shareModalTitle}>Unmerge profiles</span>
+              <button type="button" className={styles.shareModalClose} onClick={() => setUnmergeTarget(null)} disabled={unmergeSubmitting} aria-label="Close">×</button>
+            </div>
+            <div className={styles.overrideFieldGroup}>
+              <div className={styles.overrideLabel}>Reason</div>
+              <textarea className={styles.mergeReasonInput} value={unmergeReason} onChange={(e) => setUnmergeReason(e.target.value)} placeholder="Why are you unmerging these profiles?" autoFocus />
+            </div>
+            {unmergeError !== null && <div className={styles.mergeError}>{unmergeError}</div>}
+            <div className={styles.mergeModalActions}>
+              <button type="button" className={styles.secondaryBtn} onClick={() => setUnmergeTarget(null)} disabled={unmergeSubmitting}>Cancel</button>
+              <button type="button" className={styles.dangerBtn} onClick={() => void submitUnmerge()} disabled={!unmergeReason.trim() || unmergeSubmitting}>Unmerge profiles</button>
+            </div>
+          </div>
+        </div>
+      )}
     </>
   );
 }
@@ -2435,13 +2613,6 @@ const EMPTY_DETAIL: DetailData = {
   sourceRecordFacets: [],
 };
 
-const VALID_TABS = new Set<Tab>(["sales", "connections", "identifiers", "source-records", "matches", "timeline", "graph"]);
-
-function parseTabParam(value: string | null): Tab {
-  if (value !== null && VALID_TABS.has(value as Tab)) return value as Tab;
-  return "sales";
-}
-
 // Swallows 404 (optional data not present) but re-throws everything else
 // so 401/500 errors surface rather than silently showing zero counts.
 function catchNotFound(err: unknown): null {
@@ -2451,7 +2622,6 @@ function catchNotFound(err: unknown): null {
 
 export default function PersonDetailPage({ params }: { params: Promise<{ personId: string }> }): ReactElement {
   const { personId } = use(params);
-  const searchParams = useSearchParams();
 
   const [person, setPerson] = useState<Person | null>(null);
   const [detailData, setDetailData] = useState<DetailData>(EMPTY_DETAIL);
@@ -2461,8 +2631,11 @@ export default function PersonDetailPage({ params }: { params: Promise<{ personI
   const setGlobalLoading = useSetLoading();
   const [loadError, setLoadError] = useState<string | null>(null);
   const [notFoundFlag, setNotFoundFlag] = useState(false);
-  const [activeTab, setActiveTab] = useState<Tab>(() => parseTabParam(searchParams.get("tab")));
+  const sectionScrollRef = useRef<HTMLDivElement | null>(null);
+  const [highlightedSectionId, setHighlightedSectionId] = useState<string | null>(null);
+  const highlightTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [graphOpen, setGraphOpen] = useState(false);
+  const [activeMatchesTab, setActiveMatchesTab] = useState<"candidates" | "merge-history">("candidates");
   const [shareOpen, setShareOpen] = useState(false);
   const [shareLoading, setShareLoading] = useState(false);
   const [shareUrl, setShareUrl] = useState<string | null>(null);
@@ -2474,7 +2647,76 @@ export default function PersonDetailPage({ params }: { params: Promise<{ personI
   useEffect(() => () => {
     if (copyTimerRef.current !== null) clearTimeout(copyTimerRef.current);
     if (mergeRedirectTimerRef.current !== null) clearTimeout(mergeRedirectTimerRef.current);
+    if (highlightTimerRef.current !== null) clearTimeout(highlightTimerRef.current);
   }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setLoadError(null);
+    setNotFoundFlag(false);
+    setGlobalLoading(pageLoadId, true);
+
+    async function loadPersonDetail(): Promise<void> {
+      const encodedPersonId = encodeURIComponent(personId);
+      try {
+        const [personRes, identifiersRes] = await Promise.all([
+          bffFetch<Person>(`/bff/persons/${encodedPersonId}`),
+          bffFetchEnvelope<PersonIdentifier[]>(`/bff/persons/${encodedPersonId}/identifiers?limit=200`),
+        ]);
+
+        if (cancelled) return;
+        setPerson(personRes);
+        setDetailData((current) => ({ ...current, identifiers: identifiersRes.data }));
+        setLoading(false);
+      } catch (err) {
+        if (cancelled) return;
+        setGlobalLoading(pageLoadId, false);
+        if (err instanceof BffError && err.status === 404) {
+          setNotFoundFlag(true);
+          return;
+        }
+        setLoadError(err instanceof Error ? err.message : "Failed to load person detail.");
+        setLoading(false);
+        return;
+      }
+
+      try {
+        const [sourceRecordsRes, salesRes, auditRes, bankruptcyRes, sourceRecordFacetsRes] = await Promise.all([
+          bffFetchEnvelope<PersonSourceRecord[]>(`/bff/persons/${encodedPersonId}/source-records?limit=20`),
+          bffFetchEnvelope<SalesOrder[]>(`/bff/persons/${encodedPersonId}/sales?limit=20`).catch(catchNotFound),
+          bffFetchEnvelope<PersonAuditEvent[]>(`/bff/persons/${encodedPersonId}/audit?limit=20`).catch(catchNotFound),
+          bffFetchEnvelope<PersonBankruptcyCase[]>(`/bff/persons/${encodedPersonId}/bankruptcy-cases?limit=20`).catch(catchNotFound),
+          bffFetchEnvelope<SourceRecordEntityFacet[]>(`/bff/persons/${encodedPersonId}/source-record-entities`).catch(catchNotFound),
+        ]);
+
+        if (cancelled) return;
+        setDetailData((current) => ({
+          ...current,
+          sourceRecords: sourceRecordsRes.data,
+          sales: salesRes?.data ?? [],
+          audit: auditRes?.data ?? [],
+          bankruptcyCases: bankruptcyRes?.data ?? [],
+          sourceRecordFacets: sourceRecordFacetsRes?.data ?? [],
+        }));
+      } catch (err) {
+        if (cancelled) return;
+        setLoadError(err instanceof Error ? err.message : "Failed to load person detail.");
+      } finally {
+        if (!cancelled) {
+          setGlobalLoading(pageLoadId, false);
+        }
+      }
+    }
+
+    void loadPersonDetail();
+
+    return () => {
+      cancelled = true;
+      setGlobalLoading(pageLoadId, false);
+    };
+  }, [pageLoadId, personId, setGlobalLoading]);
+
   const [shareError, setShareError] = useState<string | null>(null);
 
   async function handleShare(): Promise<void> {
@@ -2608,8 +2850,7 @@ export default function PersonDetailPage({ params }: { params: Promise<{ personI
       });
       if (res.data.status === "merged" || res.data.status === "completed") {
         setMergeSuccess(true);
-        setMergeSuccessMessage(`Merged successfully. Opening ${mergeTarget.preferred_full_name ?? "survivor profile"}…`);
-        mergeRedirectTimerRef.current = setTimeout(() => window.location.replace(toBasePath(`/persons/${mergeTarget.person_id}`)), 900);
+        setMergeSuccessMessage(`Merged successfully. Click OK to open ${mergeTarget.preferred_full_name ?? "the survivor profile"}.`);
         return;
       }
       setMergeError(`Merge request returned status: ${res.data.status}.`);
@@ -2639,7 +2880,13 @@ export default function PersonDetailPage({ params }: { params: Promise<{ personI
     setMergeSuccess(false);
   }
 
-  function openMergeWithCandidate(candidate: PersonSharedIdentifierCandidate): void {
+  function openMergeWithCandidate(candidate: PersonSharedIdentifierCandidate, detail: PossibleMatchDetail | undefined): void {
+    const firstGroup = detail?.shared_identifier_groups[0];
+    const currentRecord = firstGroup?.current_person_source_records[0];
+    const candidateRecord = firstGroup?.candidate_source_records[0];
+    const evidenceLabel = firstGroup
+      ? `${titleCase(firstGroup.identifier_type)}: ${firstGroup.normalized_value}`
+      : candidate.identifiers.map((id) => `${titleCase(id.identifier_type)}: ${id.normalized_value}`).join(" · ");
     chooseMergeTarget({
       person_id: candidate.person_id,
       preferred_full_name: candidate.preferred_full_name,
@@ -2648,6 +2895,10 @@ export default function PersonDetailPage({ params }: { params: Promise<{ personI
       preferred_dob: candidate.preferred_dob,
       preferred_address: null,
       preferred_nric: null,
+      matchSourceLabel: "Possible Duplicates",
+      matchEvidence: evidenceLabel,
+      currentEvidence: currentRecord ? `${sourceRecordMeta(currentRecord)} · observed ${fmtDate(currentRecord.observed_at)}` : undefined,
+      candidateEvidence: candidateRecord ? `${sourceRecordMeta(candidateRecord)} · observed ${fmtDate(candidateRecord.observed_at)}` : undefined,
     });
     setMergeQuery("");
     setMergeResults([]);
@@ -2659,17 +2910,13 @@ export default function PersonDetailPage({ params }: { params: Promise<{ personI
   }
 
   const [overrideOpen, setOverrideOpen] = useState(false);
-  const [overrideField, setOverrideField] = useState<GoldenFieldName>("preferred_full_name");
-  const [overrideSrPk, setOverrideSrPk] = useState<string>("");
+  const [overrideSelections, setOverrideSelections] = useState<Partial<Record<GoldenFieldName, string>>>({});
   const [overrideReason, setOverrideReason] = useState("");
   const [overrideSubmitting, setOverrideSubmitting] = useState(false);
   const [overrideError, setOverrideError] = useState<string | null>(null);
   const [overrideSuccess, setOverrideSuccess] = useState(false);
   const [fieldOptions, setFieldOptions] = useState<PersonFieldOptions | null>(null);
   const [fieldOptionsLoading, setFieldOptionsLoading] = useState(false);
-
-  const activeFieldOptions: EditableFieldOptions | null =
-    fieldOptions?.fields.find((f) => f.field_name === overrideField) ?? null;
 
   // Lazy-load the editable field options whenever the modal opens, so the
   // server-computed candidate values always reflect the current graph state.
@@ -2681,7 +2928,10 @@ export default function PersonDetailPage({ params }: { params: Promise<{ personI
       setOverrideError(null);
       try {
         const env = await bffFetchEnvelope<PersonFieldOptions>(`/bff/persons/${encodeURIComponent(personId)}/field-options`);
-        if (!cancelled) setFieldOptions(env.data);
+        if (!cancelled) {
+          setFieldOptions(env.data);
+          setOverrideSelections(Object.fromEntries(env.data.fields.map((field) => [field.field_name, field.options.find((option) => option.is_current)?.source_record_pk ?? field.options[0]?.source_record_pk ?? ""])) as Partial<Record<GoldenFieldName, string>>);
+        }
       } catch (e) {
         if (!cancelled) setOverrideError(e instanceof BffError ? e.message : "Failed to load field options.");
       } finally {
@@ -2692,22 +2942,35 @@ export default function PersonDetailPage({ params }: { params: Promise<{ personI
     return () => { cancelled = true; };
   }, [overrideOpen, personId]);
 
+  const selectedOverrideFields = useMemo(() => {
+    if (fieldOptions === null) return [];
+    return fieldOptions.fields
+      .map((field) => {
+        const selectedPk = overrideSelections[field.field_name];
+        const currentPk = field.options.find((option) => option.is_current)?.source_record_pk ?? "";
+        if (!selectedPk || selectedPk === currentPk) return null;
+        return { field, sourceRecordPk: selectedPk };
+      })
+      .filter((item): item is { field: EditableFieldOptions; sourceRecordPk: string } => item !== null);
+  }, [fieldOptions, overrideSelections]);
+
   async function handleOverrideSubmit(): Promise<void> {
-    if (!overrideSrPk || !overrideReason.trim()) return;
+    if (selectedOverrideFields.length === 0 || !overrideReason.trim()) return;
     setOverrideSubmitting(true);
     setOverrideError(null);
     try {
-      const body: SurvivorshipOverrideRequestBody = {
-        field_name: overrideField,
-        source_record_pk: overrideSrPk,
-        reason: overrideReason.trim(),
-      };
-      await bffFetchEnvelope(`/bff/persons/${encodeURIComponent(personId)}/survivorship-overrides`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
-      // Refresh the sidebar (preferred values) and the option list (current/overridden flags).
+      await Promise.all(selectedOverrideFields.map(({ field, sourceRecordPk }) => {
+        const body: SurvivorshipOverrideRequestBody = {
+          field_name: field.field_name,
+          source_record_pk: sourceRecordPk,
+          reason: overrideReason.trim(),
+        };
+        return bffFetchEnvelope(`/bff/persons/${encodeURIComponent(personId)}/survivorship-overrides`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        });
+      }));
       const [refreshed, refreshedOptions] = await Promise.all([
         bffFetch<Person>(`/bff/persons/${encodeURIComponent(personId)}`).catch(() => null),
         bffFetchEnvelope<PersonFieldOptions>(`/bff/persons/${encodeURIComponent(personId)}/field-options`).catch(() => null),
@@ -2719,73 +2982,34 @@ export default function PersonDetailPage({ params }: { params: Promise<{ personI
         setOverrideOpen(false);
         setOverrideSuccess(false);
         setOverrideReason("");
-        setOverrideSrPk("");
-      }, 1200);
+        setOverrideSelections({});
+      }, 900);
     } catch (e) {
-      setOverrideError(e instanceof BffError ? e.message : "Failed to save changes.");
+      setOverrideError(e instanceof BffError ? e.message : "Failed to save override.");
     } finally {
       setOverrideSubmitting(false);
     }
   }
 
-  useEffect(() => {
-    let cancelled = false;
-    setGlobalLoading(pageLoadId, true);
-
-    async function load(): Promise<void> {
-      try {
-        const p = await bffFetch<Person>(`/bff/persons/${encodeURIComponent(personId)}`);
-        if (cancelled) return;
-        setPerson(p);
-
-        const [idEnv, srcEnv, salesEnv, auditEnv, matchesEnv, connsEnv, bkEnv, sharedEnv, facetsEnv] = await Promise.all([
-          bffFetchEnvelope<PersonIdentifier[]>(`/bff/persons/${encodeURIComponent(personId)}/identifiers`).catch(catchNotFound),
-          bffFetchEnvelope<PersonSourceRecord[]>(`/bff/persons/${encodeURIComponent(personId)}/source-records`).catch(catchNotFound),
-          bffFetchEnvelope<SalesOrder[]>(`/bff/persons/${encodeURIComponent(personId)}/sales`).catch(catchNotFound),
-          bffFetchEnvelope<PersonAuditEvent[]>(`/bff/persons/${encodeURIComponent(personId)}/audit`).catch(catchNotFound),
-          bffFetchEnvelope<unknown[]>(`/bff/persons/${encodeURIComponent(personId)}/matches?limit=1`).catch(catchNotFound),
-          bffFetchEnvelope<unknown[]>(`/bff/persons/${encodeURIComponent(personId)}/connections?limit=1`).catch(catchNotFound),
-          bffFetchEnvelope<PersonBankruptcyCase[]>(`/bff/persons/${encodeURIComponent(personId)}/bankruptcy-cases`).catch(catchNotFound),
-          bffFetchEnvelope<unknown[]>(`/bff/persons/${encodeURIComponent(personId)}/shared-identifiers?limit=1`).catch(catchNotFound),
-          bffFetchEnvelope<SourceRecordEntityFacet[]>(`/bff/persons/${encodeURIComponent(personId)}/source-record-entities`).catch(catchNotFound),
-        ]);
-
-        if (cancelled) return;
-        setDetailData({
-          identifiers: idEnv?.data ?? [],
-          sourceRecords: srcEnv?.data ?? [],
-          sales: salesEnv?.data ?? [],
-          audit: auditEnv?.data ?? [],
-          bankruptcyCases: bkEnv?.data ?? [],
-          sourceRecordFacets: facetsEnv?.data ?? [],
-        });
-        const decisionsCount = matchesEnv?.meta.total_count ?? 0;
-        const candidatesCount = sharedEnv?.meta.total_count ?? 0;
-        setTabTotals({
-          sales:       salesEnv?.meta.total_count ?? undefined,
-          matches:     (decisionsCount + candidatesCount) || undefined,
-          connections: connsEnv?.meta.total_count  ?? undefined,
-        });
-      } catch (err) {
-        if (cancelled) return;
-        if (err instanceof BffError && err.status === 404) {
-          setNotFoundFlag(true);
-        } else {
-          setLoadError(err instanceof BffError ? err.message : "Failed to load person.");
-        }
-      } finally {
-        if (!cancelled) { setLoading(false); setGlobalLoading(pageLoadId, false); }
-      }
-    }
-
-    void load();
-    return () => { cancelled = true; setGlobalLoading(pageLoadId, false); };
-  }, [personId, pageLoadId, setGlobalLoading]);
-
   const onMatchesTotal     = useCallback((n: number) => { setTabTotals((p) => ({ ...p, matches:     n })); }, []);
+  const onDecisionHistoryTotal = useCallback((n: number) => { setTabTotals((p) => ({ ...p, "decision-history": n })); }, []);
   const onConnectionsTotal = useCallback((n: number) => { setTabTotals((p) => ({ ...p, connections: n })); }, []);
   const onSalesTotal       = useCallback((n: number) => { setTabTotals((p) => ({ ...p, sales:       n })); }, []);
   const onSourceRecordsTotal = useCallback((n: number) => { setTabTotals((p) => ({ ...p, "source-records": n })); }, []);
+  const handleSectionJump = useCallback((id: string): void => {
+    setHighlightedSectionId(id);
+    if (highlightTimerRef.current !== null) clearTimeout(highlightTimerRef.current);
+    highlightTimerRef.current = setTimeout(() => setHighlightedSectionId(null), 2600);
+  }, []);
+
+  const sections: SectionConfig[] = useMemo(() => [
+    { id: "section-matches",        label: "Matches",        count: tabTotals.matches },
+    { id: "section-sales",          label: "Sales",          count: tabTotals.sales          ?? detailData.sales.length },
+    { id: "section-connections",    label: "Connections",    count: tabTotals.connections    ?? (person?.connection_count ?? 0) },
+    { id: "section-identifiers",    label: "Identifiers",    count: detailData.identifiers.length || undefined },
+    { id: "section-decision-history", label: "Decision History", count: tabTotals["decision-history"] },
+    { id: "section-source-records", label: "Source records", count: tabTotals["source-records"] ?? (detailData.sourceRecordFacets.reduce((sum, f) => sum + f.count, 0) || undefined) },
+  ], [tabTotals, detailData, person?.connection_count]);
 
   if (notFoundFlag) notFound();
 
@@ -2797,49 +3021,61 @@ export default function PersonDetailPage({ params }: { params: Promise<{ personI
     return <div style={{ padding: "2rem", color: "var(--text-muted)", fontSize: 14 }}>{loadError}</div>;
   }
 
-  const tabs: TabConfig[] = [
-    { id: "sales",       label: "Sales",       count: tabTotals.sales       ?? detailData.sales.length },
-    { id: "connections", label: "Connections", count: tabTotals.connections ?? person.connection_count },
-    { id: "identifiers", label: "Identifiers", count: detailData.identifiers.length || undefined },
-    { id: "source-records", label: "Source records", count: tabTotals["source-records"] ?? (detailData.sourceRecordFacets.reduce((sum, f) => sum + f.count, 0) || undefined) },
-    { id: "matches",     label: "Matches",     count: tabTotals.matches },
-    { id: "timeline",    label: "Timeline" },
-    { id: "graph",       label: "Graph" },
-  ];
-
-  const shell = (children: ReactElement): ReactElement => (
-    <DetailShell person={person} detailData={detailData} salesTotal={tabTotals.sales} tabs={tabs} activeTab={activeTab} onTabChange={setActiveTab} onOverride={() => setOverrideOpen(true)}>
-      {children}
-    </DetailShell>
-  );
-
   return (
     <div className={styles.page}>
       <PersonBreadcrumb personName={person.preferred_full_name} onShare={() => void handleShare()} shareLoading={shareLoading} />
       <div className={styles.tabContent}>
-        {activeTab === "sales"        && shell(<SalesTab personId={personId} onTotalLoaded={onSalesTotal} />)}
-        {activeTab === "connections"  && shell(<ConnectionsTab personId={personId} onTotalLoaded={onConnectionsTotal} />)}
-        {activeTab === "identifiers"  && shell(<IdentifiersTab identifiers={detailData.identifiers} />)}
-        {activeTab === "source-records" && shell(<SourceRecordsTab personId={personId} facets={detailData.sourceRecordFacets} onTotalLoaded={onSourceRecordsTotal} />)}
-        {activeTab === "matches"      && shell(<MatchesTab personId={personId} onTotalLoaded={onMatchesTotal} onMergeWith={openMergeWithCandidate} />)}
-        {activeTab === "timeline"    && shell(<TimelineTab person={person} detailData={detailData} personId={personId} />)}
-        {activeTab === "graph" && (
-          <DetailShell person={person} detailData={detailData} salesTotal={tabTotals.sales} tabs={tabs} activeTab={activeTab} onTabChange={setActiveTab} onOverride={() => setOverrideOpen(true)}>
-            <div style={{ height: "max(calc(100vh - 340px), 480px)", border: "1px solid var(--border)", borderRadius: "10px", overflow: "hidden" }}>
-              <PersonFocusedGraph
-                initialPersonId={person.person_id}
-                initialTitle={person.preferred_full_name ?? person.person_id}
-                overlayMode
-                onMaximize={() => setGraphOpen(true)}
-              />
-            </div>
-          </DetailShell>
-        )}
+        <DetailShell person={person} detailData={detailData} personId={personId} salesTotal={tabTotals.sales} sections={sections} scrollRef={sectionScrollRef} onSectionJump={handleSectionJump} onOverride={() => setOverrideOpen(true)} onGraphOpen={() => setGraphOpen(true)}>
+          <div className={styles.collapsibleSectionsContainer}>
+            {sections.map((section) => {
+              let content: ReactElement;
+              switch (section.id) {
+                case "section-matches":
+                  content = <MatchesTab personId={personId} activeMatchesTab={activeMatchesTab} onTotalLoaded={onMatchesTotal} onMergeWith={openMergeWithCandidate} />;
+                  break;
+                case "section-sales":
+                  content = <SalesTab personId={personId} onTotalLoaded={onSalesTotal} />;
+                  break;
+                case "section-connections":
+                  content = <ConnectionsTab personId={personId} onTotalLoaded={onConnectionsTotal} />;
+                  break;
+                case "section-identifiers":
+                  content = <IdentifiersTab identifiers={detailData.identifiers} />;
+                  break;
+                case "section-decision-history":
+                  content = <DecisionHistoryTab personId={personId} onTotalLoaded={onDecisionHistoryTotal} />;
+                  break;
+                case "section-source-records":
+                  content = <SourceRecordsTab personId={personId} facets={detailData.sourceRecordFacets} onTotalLoaded={onSourceRecordsTotal} />;
+                  break;
+                default:
+                  return null;
+              }
+
+              const bentoClass = section.id === "section-source-records"
+                ? styles.collapsibleSectionWide
+                : "";
+
+              const sectionAction = section.id === "section-matches" ? (
+                <div className={styles.matchInnerTabs}>
+                  <button type="button" className={`${styles.matchInnerTab}${activeMatchesTab === "candidates" ? ` ${styles.matchInnerTabActive}` : ""}`} onClick={() => setActiveMatchesTab("candidates")}>Match Candidates</button>
+                  <button type="button" className={`${styles.matchInnerTab}${activeMatchesTab === "merge-history" ? ` ${styles.matchInnerTabActive}` : ""}`} onClick={() => setActiveMatchesTab("merge-history")}>Merge History</button>
+                </div>
+              ) : undefined;
+
+              return (
+                <BentoSection key={section.id} section={section} className={bentoClass} highlighted={highlightedSectionId === section.id} action={sectionAction}>
+                  {content}
+                </BentoSection>
+              );
+            })}
+          </div>
+        </DetailShell>
       </div>
 
       {mergeOpen && (
         <div className={styles.shareOverlay} onClick={closeMerge}>
-          <div className={`${styles.overrideModal} ${styles.mergeModal}`} onClick={(e) => e.stopPropagation()}>
+          <div className={`${styles.overrideModal} ${styles.mergeModal}${mergeSuccess ? ` ${styles.mergeResultModal}` : ""}`} onClick={(e) => e.stopPropagation()}>
             {mergeSubmitting && <MergeLoadingOverlay />}
             <div className={styles.shareModalHeader}>
               <span className={styles.shareModalTitle}>Merge duplicate profiles</span>
@@ -2847,14 +3083,39 @@ export default function PersonDetailPage({ params }: { params: Promise<{ personI
             </div>
 
             {mergeSuccess ? (
-              <div className={styles.mergeSuccess}>
-                {mergeSuccessMessage ?? "Merged successfully. Redirecting…"}
+              <div className={styles.mergeResultState}>
+                <div className={`${styles.mergeResultIcon} ${styles.mergeResultIconSuccess}`} aria-hidden="true">
+                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M20 6L9 17l-5-5" />
+                  </svg>
+                </div>
+                <div className={styles.mergeResultTitle}>Merge successful</div>
+                <div className={styles.mergeResultMessage}>{mergeSuccessMessage ?? "Merged successfully."}</div>
+                <button
+                  type="button"
+                  className={styles.primaryBtn}
+                  onClick={() => {
+                    if (mergeTarget !== null) window.location.replace(toBasePath(`/persons/${mergeTarget.person_id}`));
+                    else window.location.reload();
+                  }}
+                >
+                  OK
+                </button>
               </div>
             ) : (
               <>
-                <div className={styles.mergeWarning}>
-                  ⚠ This cannot be undone. Both profiles will be combined into one. The "after merge" profile will include data from both.
-                </div>
+                {mergeTarget !== null && mergeTarget.currentEvidence && mergeTarget.candidateEvidence && (
+                  <div className={styles.mergeEvidenceGrid}>
+                    <div className={styles.mergeEvidenceCard}>
+                      <span className={styles.mergeSourceLabel}>Current profile evidence</span>
+                      <span className={styles.mergeEvidenceValue}>{mergeTarget.currentEvidence}</span>
+                    </div>
+                    <div className={styles.mergeEvidenceCard}>
+                      <span className={styles.mergeSourceLabel}>Candidate evidence</span>
+                      <span className={styles.mergeEvidenceValue}>{mergeTarget.candidateEvidence}</span>
+                    </div>
+                  </div>
+                )}
 
                 {/* Search — hidden when target already pre-selected from candidate row */}
                 {mergeTarget === null && (
@@ -2958,7 +3219,12 @@ export default function PersonDetailPage({ params }: { params: Promise<{ personI
                   />
                 </div>
 
-                {mergeError && <div className={styles.overrideError}>{mergeError}</div>}
+                {mergeError && (
+                  <div className={styles.mergeErrorBox}>
+                    <span className={styles.mergeErrorIcon} aria-hidden="true">!</span>
+                    <span>{mergeError}</span>
+                  </div>
+                )}
 
                 <button
                   type="button"
@@ -2986,59 +3252,46 @@ export default function PersonDetailPage({ params }: { params: Promise<{ personI
               Pin a golden profile field to a value from a specific source record.
             </p>
 
-            {/* Field selector */}
-            <div className={styles.overrideFieldGroup}>
-              <div className={styles.overrideLabel}>Field</div>
-              <div className={styles.overrideFieldPills}>
-                {(fieldOptions?.fields ?? []).map((f) => (
-                  <button
-                    key={f.field_name}
-                    type="button"
-                    className={`${styles.overridePill} ${overrideField === f.field_name ? styles.overridePillActive : ""}`}
-                    onClick={() => { setOverrideField(f.field_name); setOverrideSrPk(""); }}
-                  >
-                    {f.label}
-                    {f.is_overridden && <span className={styles.overridePillDot} title="Pinned override" aria-hidden="true" />}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            {/* Value selector */}
-            <div className={styles.overrideFieldGroup}>
-              <div className={styles.overrideLabel}>Choose value</div>
-              <div className={styles.overrideSrList}>
-                {fieldOptionsLoading ? (
-                  <div className={styles.overrideSrEmpty}>Loading source values…</div>
-                ) : (activeFieldOptions?.options.length ?? 0) === 0 ? (
-                  <div className={styles.overrideSrEmpty}>
-                    No source records have a value for this field.
+            <div className={styles.overrideFormRows}>
+              {fieldOptionsLoading && <div className={styles.overrideLoadingText}>Loading field values…</div>}
+              {!fieldOptionsLoading && (fieldOptions?.fields ?? []).map((field) => {
+                const currentOption = field.options.find((option) => option.is_current) ?? field.options[0];
+                const candidateOptions = field.options.filter((option) => option.source_record_pk !== currentOption?.source_record_pk);
+                const selectedPk = overrideSelections[field.field_name] ?? currentOption?.source_record_pk ?? "";
+                const selectedCandidatePk = candidateOptions.some((option) => option.source_record_pk === selectedPk) ? selectedPk : "";
+                const currentMeta = currentOption
+                  ? `${currentOption.entity_display_name ?? currentOption.source_system}${currentOption.observed_at_display ? ` · ${currentOption.observed_at_display}` : ""}`
+                  : "No current value";
+                return (
+                  <div key={field.field_name} className={styles.overrideFormRow}>
+                    <span className={styles.overrideFormLabel}>{field.label}</span>
+                    <div className={styles.overrideSimpleValues}>
+                      <div className={styles.overrideCurrentValue}>
+                        <span className={styles.overrideCurrentText}>{currentOption?.value_display ?? "No value"}</span>
+                        <span className={styles.overrideCurrentMeta}>{currentMeta}</span>
+                      </div>
+                      <select
+                        className={styles.overrideCandidateSelect}
+                        name={`override-field-${field.field_name}`}
+                        value={selectedCandidatePk}
+                        disabled={candidateOptions.length === 0}
+                        onChange={(event) => {
+                          const nextPk = event.target.value || (currentOption?.source_record_pk ?? "");
+                          setOverrideSelections((current) => ({ ...current, [field.field_name]: nextPk }));
+                        }}
+                      >
+                        <option value="">{candidateOptions.length > 0 ? "Use current value" : "No candidate value"}</option>
+                        {candidateOptions.map((option) => (
+                          <option key={`${field.field_name}-${option.source_record_pk}`} value={option.source_record_pk}>
+                            {option.value_display} · {option.entity_display_name ?? option.source_system}
+                            {option.observed_at_display ? ` · ${option.observed_at_display}` : ""}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
                   </div>
-                ) : (
-                  activeFieldOptions?.options.map((opt) => {
-                    const sourceMeta = [opt.source_system, opt.entity_display_name].filter(Boolean).join(" · ");
-                    return (
-                      <label key={`${opt.source_record_pk}-${opt.value}`} className={`${styles.overrideSrRow} ${overrideSrPk === opt.source_record_pk ? styles.overrideSrRowActive : ""}`}>
-                        <input
-                          type="radio"
-                          name="override-sr"
-                          value={opt.source_record_pk}
-                          checked={overrideSrPk === opt.source_record_pk}
-                          onChange={() => setOverrideSrPk(opt.source_record_pk)}
-                          className={styles.overrideSrRadio}
-                        />
-                        <div className={styles.overrideSrInfo}>
-                          <span className={styles.overrideSrValuePrimary}>
-                            {opt.value_display}
-                            {opt.is_current && <span className={styles.overrideCurrentTag}>Current</span>}
-                          </span>
-                          <span className={styles.overrideSrMeta}>{sourceMeta}</span>
-                        </div>
-                      </label>
-                    );
-                  })
-                )}
-              </div>
+                );
+              })}
             </div>
 
             {/* Reason */}
@@ -3059,7 +3312,7 @@ export default function PersonDetailPage({ params }: { params: Promise<{ personI
               type="button"
               className={styles.overrideSubmit}
               onClick={() => void handleOverrideSubmit()}
-              disabled={!overrideSrPk || !overrideReason.trim() || overrideSubmitting}
+              disabled={selectedOverrideFields.length === 0 || !overrideReason.trim() || overrideSubmitting}
             >
               {overrideSuccess ? "✓ Saved" : overrideSubmitting ? "Saving…" : "Save changes"}
             </button>

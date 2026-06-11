@@ -41,20 +41,28 @@ FOREACH (_ IN CASE WHEN old_link IS NOT NULL THEN [1] ELSE [] END |
 
 WITH DISTINCT absorbed, survivor, me
 OPTIONAL MATCH (absorbed)-[old_id:IDENTIFIED_BY]->(id:Identifier)
-WITH absorbed, survivor, me, id, old_id, properties(old_id) AS old_id_props
+OPTIONAL MATCH (id_sr:SourceRecord {source_record_pk: old_id.source_record_pk})
+WITH absorbed, survivor, me, id, id_sr, old_id, properties(old_id) AS old_id_props
 FOREACH (_ IN CASE WHEN old_id IS NOT NULL THEN [1] ELSE [] END |
   CREATE (survivor)-[new_id:IDENTIFIED_BY]->(id)
   SET new_id = old_id_props
   DELETE old_id
 )
+FOREACH (_ IN CASE WHEN id_sr IS NOT NULL THEN [1] ELSE [] END |
+  MERGE (me)-[:AFFECTED_RECORD]->(id_sr)
+)
 
 WITH DISTINCT absorbed, survivor, me
 OPTIONAL MATCH (absorbed)-[old_addr:LIVES_AT]->(addr:Address)
-WITH absorbed, survivor, me, addr, old_addr, properties(old_addr) AS old_addr_props
+OPTIONAL MATCH (addr_sr:SourceRecord {source_record_pk: old_addr.source_record_pk})
+WITH absorbed, survivor, me, addr, addr_sr, old_addr, properties(old_addr) AS old_addr_props
 FOREACH (_ IN CASE WHEN old_addr IS NOT NULL THEN [1] ELSE [] END |
   CREATE (survivor)-[new_addr:LIVES_AT]->(addr)
   SET new_addr = old_addr_props
   DELETE old_addr
+)
+FOREACH (_ IN CASE WHEN addr_sr IS NOT NULL THEN [1] ELSE [] END |
+  MERGE (me)-[:AFFECTED_RECORD]->(addr_sr)
 )
 
 WITH DISTINCT absorbed, survivor, me
@@ -87,6 +95,9 @@ FOREACH (_ IN CASE WHEN old_fact IS NOT NULL THEN [1] ELSE [] END |
   CREATE (survivor)-[new_fact:HAS_FACT]->(sr_fact)
   SET new_fact = old_fact_props
   DELETE old_fact
+)
+FOREACH (_ IN CASE WHEN sr_fact IS NOT NULL THEN [1] ELSE [] END |
+  MERGE (me)-[:AFFECTED_RECORD]->(sr_fact)
 )
 
 WITH DISTINCT absorbed, survivor, me
@@ -122,7 +133,9 @@ RETURN absorbed.person_id AS absorbed_id, survivor.person_id AS survivor_id
 """
 
 REVERT_MERGE = """
-MATCH (absorbed:Person {person_id: $absorbed_id})-[mi:MERGED_INTO]->(current_survivor:Person)
+MATCH (absorbed:Person {person_id: $absorbed_id})-[mi:MERGED_INTO]->(merge_survivor:Person)
+MATCH (merge_survivor)-[:MERGED_INTO*0..]->(current_survivor:Person)
+WHERE NOT (current_survivor)-[:MERGED_INTO]->(:Person)
 WITH absorbed, mi, current_survivor, current_survivor.person_id AS current_survivor_id
 OPTIONAL MATCH (merge_event:MergeEvent {merge_event_id: mi.merge_event_id})-[:AFFECTED_RECORD]->(affected_sr:SourceRecord)
 WITH absorbed, mi, current_survivor, current_survivor_id, collect(affected_sr.source_record_pk) AS affected_pks

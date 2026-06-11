@@ -535,6 +535,7 @@ class ListedPerson(EntityPerson):
     entity_count: int = 0
     identifier_count: int = 0
     possible_match_count: int = 0
+    system_match_count: int = 0
     order_count: int = 0
     bankruptcy_case_count: int = 0
     # Server-computed DOB presentation: ready-to-render string + validity flag,

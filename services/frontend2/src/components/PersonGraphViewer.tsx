@@ -239,6 +239,14 @@ interface PersonGraphViewerProps {
   elementId?: string;
   /** When true: full-canvas layout with overlay controls; no left panel. */
   overlayMode?: boolean;
+  /** Scale canvas node/icon/label size. */
+  nodeSizeScale?: number;
+  /** Scale force layout distances. */
+  layoutScale?: number;
+  /** Padding used by zoom-to-fit. */
+  fitPadding?: number;
+  /** Hide hop selector and legend overlays. */
+  hideControls?: boolean;
   /** Extra overlay nodes rendered inside the canvas container (e.g. maximize button). */
   extraOverlay?: ReactNode;
   onNavigateNode?: (elementId: string, label: string, displayName: string) => void;
@@ -256,6 +264,10 @@ export default function PersonGraphViewer({
   personId,
   elementId,
   overlayMode = false,
+  nodeSizeScale = 1,
+  layoutScale = 1,
+  fitPadding = 90,
+  hideControls = false,
   extraOverlay,
   onNavigateNode,
   onNodeContextMenu,
@@ -332,12 +344,12 @@ export default function PersonGraphViewer({
 
     const linkForce = graph.d3Force("link");
     if (linkForce && "distance" in linkForce && typeof linkForce.distance === "function") {
-      linkForce.distance(LINK_DISTANCE);
+      linkForce.distance(LINK_DISTANCE * layoutScale);
     }
 
     const chargeForce = graph.d3Force("charge");
     if (chargeForce && "strength" in chargeForce && typeof chargeForce.strength === "function") {
-      chargeForce.strength(MANY_BODY_STRENGTH);
+      chargeForce.strength(MANY_BODY_STRENGTH * layoutScale);
     }
 
     graph.d3Force("collide", ((alpha: number) => {
@@ -351,7 +363,7 @@ export default function PersonGraphViewer({
           const dx = (b.x ?? 0) - (a.x ?? 0);
           const dy = (b.y ?? 0) - (a.y ?? 0);
           const distance = Math.hypot(dx, dy) || 1;
-          const overlap = NODE_COLLISION_RADIUS - distance;
+          const overlap = NODE_COLLISION_RADIUS * nodeSizeScale - distance;
           if (overlap <= 0) continue;
           const move = (overlap / distance) * alpha * 0.5;
           const mx = dx * move;
@@ -364,9 +376,9 @@ export default function PersonGraphViewer({
       }
     }) as never);
     graph.d3ReheatSimulation();
-    const zoomTimer = window.setTimeout(() => graph.zoomToFit(500, 90), 150);
+    const zoomTimer = window.setTimeout(() => graph.zoomToFit(500, fitPadding), 150);
     return () => clearTimeout(zoomTimer);
-  }, [graphData, dimensions.width, dimensions.height]);
+  }, [graphData, dimensions.width, dimensions.height, layoutScale, nodeSizeScale, fitPadding]);
 
   const handleNodeClick = useCallback(
     (raw: AnyNode) => {
@@ -414,9 +426,9 @@ export default function PersonGraphViewer({
         linkSource="source"
         linkTarget="target"
         nodeVal={() => NODE_SIZE * 3}
-        nodeCanvasObject={paintNode}
+        nodeCanvasObject={(node, ctx, scale) => paintNode(node, ctx, scale, nodeSizeScale)}
         nodeCanvasObjectMode={() => "replace"}
-        nodePointerAreaPaint={paintNodePointerArea}
+        nodePointerAreaPaint={(node, color, ctx) => paintNodePointerArea(node, color, ctx, nodeSizeScale)}
         linkLabel={(raw: AnyLink) => (raw as unknown as FGLink).type}
         linkColor={() => "#b0bec5"}
         linkWidth={1.5}
@@ -470,7 +482,8 @@ export default function PersonGraphViewer({
         ) : null}
 
         {/* Top-left: hops selector */}
-        <Box sx={{ position: "absolute", top: 12, left: 12, zIndex: 10 }}>
+        {!hideControls && (
+          <Box sx={{ position: "absolute", top: 12, left: 12, zIndex: 10 }}>
           <TextField
             id="graph-max-hops-overlay"
             select
@@ -487,10 +500,9 @@ export default function PersonGraphViewer({
               </MenuItem>
             ))}
           </TextField>
-        </Box>
-
-        {/* Bottom-left: node type legend */}
-        {uniqueLabels.length > 0 ? (
+          </Box>
+        )}
+        {!hideControls && uniqueLabels.length > 0 ? (
           <Box
             sx={{
               position: "absolute",

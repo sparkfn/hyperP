@@ -144,7 +144,6 @@ export default function GlobalSearch(): ReactElement {
             color: "var(--text-primary)",
             fontSize: 13,
             outline: "none",
-            transition: "border-color 0.15s, box-shadow 0.15s",
             boxSizing: "border-box",
           }}
           onFocusCapture={(e) => {
@@ -195,7 +194,6 @@ export default function GlobalSearch(): ReactElement {
                     padding: "8px 12px",
                     cursor: "pointer",
                     background: highlighted === i ? "var(--bg-surface-2, rgba(0,0,0,0.04))" : "transparent",
-                    transition: "background 0.1s",
                   }}
                 >
                   <AvatarRing name={r.name} completeness={r.completeness} />

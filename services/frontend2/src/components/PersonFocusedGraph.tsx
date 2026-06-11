@@ -75,6 +75,8 @@ interface PersonFocusedGraphProps {
   initialTitle: string;
   /** When true: full-canvas layout with overlay controls, no left panel. */
   overlayMode?: boolean;
+  /** Hide breadcrumbs and graph overlay controls for embedded cards. */
+  pureGraph?: boolean;
   /** Called when the user clicks the maximize button (only shown in overlayMode). */
   onMaximize?: () => void;
 }
@@ -89,6 +91,7 @@ export default function PersonFocusedGraph({
   initialElementId,
   initialTitle,
   overlayMode = false,
+  pureGraph = false,
   onMaximize,
 }: PersonFocusedGraphProps): ReactElement {
   const [navStack, setNavStack] = useState<NavEntry[]>([
@@ -185,7 +188,7 @@ export default function PersonFocusedGraph({
     "&:hover": { bgcolor: "var(--bg-surface-2)", color: "var(--text-primary)" },
   };
 
-  const navOverlay = (canGoBack || (overlayMode && onMaximize)) ? (
+  const navOverlay = (!pureGraph && (canGoBack || (overlayMode && onMaximize))) ? (
     <Box sx={{ position: "absolute", top: 12, right: 12, zIndex: 10, display: "flex", gap: 1 }}>
       {canGoBack && (
         <Tooltip title="Back">
@@ -376,7 +379,7 @@ export default function PersonFocusedGraph({
 
   return (
     <Box sx={{ height: "100%", minHeight: 0, color: "var(--text-primary)", display: "flex", flexDirection: "column", gap: "18px" }}>
-      <Box sx={{ px: 1.5, pt: "18px", pb: 0.5 }}>{breadcrumb}</Box>
+      {!pureGraph && <Box sx={{ px: 1.5, pt: "18px", pb: 0.5 }}>{breadcrumb}</Box>}
       <Box sx={{ flex: 1, minHeight: 0 }}>
       <PersonGraphViewer
         key={`${current.elementId ?? ""}-${current.personId ?? ""}`}
@@ -384,6 +387,10 @@ export default function PersonFocusedGraph({
         elementId={current.elementId}
         title={current.title}
         overlayMode={overlayMode}
+        nodeSizeScale={pureGraph ? 0.78 : 1}
+        layoutScale={pureGraph ? 0.72 : 1}
+        fitPadding={pureGraph ? 42 : 90}
+        hideControls={pureGraph}
         extraOverlay={navOverlay}
         onNavigateNode={handleNavigateNode}
         onNodeContextMenu={handleNodeContextMenu}
