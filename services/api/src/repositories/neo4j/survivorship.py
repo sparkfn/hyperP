@@ -21,6 +21,7 @@ from src.graph.queries import (
     CHECK_SOURCE_RECORD_LINKED,
     CREATE_OVERRIDE_AUDIT,
     GET_FIELD_OPTIONS,
+    GET_OVERRIDE_SOURCE_METADATA,
     GET_PERSON_OVERRIDES_FULL,
     UPDATE_GOLDEN_FIELD,
     UPDATE_OVERRIDES,
@@ -177,15 +178,60 @@ async def _field_options_tx(
                 )
             )
 
+    preferred_full_name = to_optional_str(record["preferred_full_name"])
+    preferred_dob = to_optional_str(record["preferred_dob"])
+    preferred_phone = to_optional_str(record["preferred_phone"])
+    preferred_email = to_optional_str(record["preferred_email"])
+    preferred_nric = to_optional_str(record["preferred_nric"])
+    preferred_address_id = to_optional_str(record["preferred_address_id"])
+    preferred_address_value = to_optional_str(record["preferred_address_value"])
+    overrides = parse_overrides(record["overrides"])
+    current_values = {
+        "preferred_full_name": preferred_full_name,
+        "preferred_dob": preferred_dob,
+        "preferred_phone": preferred_phone,
+        "preferred_email": preferred_email,
+        "preferred_nric": preferred_nric,
+        "preferred_address": preferred_address_value,
+    }
+    existing_keys = {(row.field_name, row.source_record_pk) for row in rows}
+    for field_name, override in overrides.items():
+        source_record_pk = override.get("source_record_pk")
+        current_value = current_values.get(field_name)
+        if not source_record_pk or current_value is None:
+            continue
+        if (field_name, source_record_pk) in existing_keys:
+            continue
+        source_kind, key = GOLDEN_FIELD_SPEC.get(field_name, ("source_record_fact", None))
+        metadata = await (
+            await tx.run(GET_OVERRIDE_SOURCE_METADATA, source_record_pk=source_record_pk)
+        ).single()
+        if metadata is None:
+            continue
+        rows.append(
+            FieldOptionRow(
+                field_name=field_name,
+                source_kind=source_kind,
+                identifier_type=key if source_kind == "identifier" else None,
+                value=current_value,
+                address_id=preferred_address_id if field_name == "preferred_address" else None,
+                source_record_pk=source_record_pk,
+                source_system=to_optional_str(metadata["source_system"]) or "",
+                entity_display_name=to_optional_str(metadata["entity_display_name"]),
+                observed_at=to_optional_str(metadata["observed_at"]),
+            )
+        )
+
     return FieldOptionsData(
         person_id=person_id,
-        preferred_full_name=to_optional_str(record["preferred_full_name"]),
-        preferred_dob=to_optional_str(record["preferred_dob"]),
-        preferred_phone=to_optional_str(record["preferred_phone"]),
-        preferred_email=to_optional_str(record["preferred_email"]),
-        preferred_nric=to_optional_str(record["preferred_nric"]),
-        preferred_address_id=to_optional_str(record["preferred_address_id"]),
-        overrides=parse_overrides(record["overrides"]),
+        preferred_full_name=preferred_full_name,
+        preferred_dob=preferred_dob,
+        preferred_phone=preferred_phone,
+        preferred_email=preferred_email,
+        preferred_nric=preferred_nric,
+        preferred_address_id=preferred_address_id,
+        preferred_address_value=preferred_address_value,
+        overrides=overrides,
         options=rows,
     )
 

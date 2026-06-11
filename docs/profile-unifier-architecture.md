@@ -78,6 +78,29 @@ Responsible for:
 - validation and rejection handling
 - source-specific quality tagging
 
+Normalization runs per identifier type via a registry (phone, email, NRIC; an
+unknown type falls back to whitespace-trim passthrough). It produces the
+canonical `normalized_value` stored on both the `SourceRecord.normalized_payload`
+and the shared `Identifier` node, so matching always compares cleaned values.
+
+**Junk `x`/`X` edge markers.** Some sources pad masked or placeholder
+identifiers with runs of `x`/`X` at the start or end (`xxx+6589251818`,
+`xxxS7012164F`). These are stripped before parsing:
+
+- **Phone** — strip leading **and** trailing `x`/`X` runs (a phone is digits/`+`
+  only, so neither end is ever a legitimate `x`), then parse to E.164. This
+  recovers numbers that previously failed parsing and dropped out.
+- **NRIC** — strip **leading** `x`/`X` runs only, then upper-case every
+  character (`xxxS7012164F` → `S7012164F`, `s8929303j` → `S8929303J`). The
+  **trailing** character is left intact because a valid NRIC/FIN check letter may
+  itself be `X` (e.g. `F1234567X`). No checksum validation is performed. This
+  cleaned, upper-cased value is the canonical NRIC used for deterministic
+  government-ID matching (and is the value that salted-hash storage hashes, where
+  applied — so cleaning must happen before any hashing so equal NRICs hash equal).
+- **Email** — **not** cleaned. `x` is frequently a legitimate part of an email
+  local part (names like `xabby@…`, handles like `xxangel86xx@…`, Apple relay
+  addresses), so stripping it would corrupt real addresses.
+
 ### Candidate Generation Service
 
 Responsible for creating a manageable set of plausible record pairs or

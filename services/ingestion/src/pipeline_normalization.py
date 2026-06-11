@@ -21,6 +21,7 @@ from src.models import (
 from src.normalizers.address import NormalizedAddress, normalize_address, normalize_raw_addresses
 from src.normalizers.email import normalize_email
 from src.normalizers.name import normalize_name
+from src.normalizers.nric import normalize_nric
 from src.normalizers.phone import normalize_phone
 
 logger = logging.getLogger(__name__)
@@ -32,6 +33,7 @@ NormalizerFn = Callable[[str], tuple[str | None, QualityFlag]]
 _IDENTIFIER_NORMALIZERS: dict[str, NormalizerFn] = {
     "phone": normalize_phone,
     "email": normalize_email,
+    "nric": normalize_nric,
 }
 
 # Registry: attribute_name -> normalizer.

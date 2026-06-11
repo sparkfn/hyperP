@@ -742,20 +742,35 @@
 }
 
 .collapsibleSectionsContainer {
-  display: flex;
-  flex-direction: column;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 14px;
 }
 
 .collapsibleSection,
 .collapsibleSectionWide,
 .collapsibleSectionLarge {
+  grid-column: 1 / -1;
   min-width: 0;
   border: 1px solid var(--border-subtle);
   border-radius: 12px;
   background: var(--bg-card);
   padding: 16px;
   scroll-margin-top: 18px;
+}
+
+.collapsibleSectionTop {
+  grid-column: auto;
+}
+
+@media (max-width: 900px) {
+  .collapsibleSectionsContainer {
+    grid-template-columns: 1fr;
+  }
+
+  .collapsibleSectionTop {
+    grid-column: 1 / -1;
+  }
 }
 
 .collapsibleSectionHighlight {
@@ -3245,7 +3260,8 @@
 }
 
 .srcMain {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   gap: 12px;
   padding: 10px 0;
@@ -3253,8 +3269,63 @@
   user-select: none;
 }
 
-.srcMain:hover .idValue {
+.srcBody {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.srcTitle {
+  font-size: 13px;
+  font-weight: 700;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  color: var(--text-primary);
+  overflow-wrap: anywhere;
+}
+
+.srcMetaLine {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+  min-width: 0;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.srcMetaLine span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.srcBadges {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+}
+
+.srcMain:hover .srcTitle {
   color: var(--accent-text);
+}
+
+@media (max-width: 1200px) {
+  .srcMain {
+    grid-template-columns: 1fr;
+    align-items: flex-start;
+    gap: 8px;
+  }
+
+  .srcBadges {
+    justify-content: flex-start;
+  }
+}
+
+.srcRow .idDetailPanel {
+  margin-left: 0;
 }
 
 .srcChevron {
@@ -4805,6 +4876,21 @@
 }
 
 /* ── Source Records tab ── */
+.srFilterGroup {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 10px 0;
+}
+
+.srFilterLabel {
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
 .srFilter {
   display: flex;
   flex-wrap: wrap;
@@ -4836,23 +4922,30 @@
 
 .srMetaGrid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 4px 20px;
+  grid-template-columns: repeat(2, minmax(260px, 1fr));
+  gap: 6px 20px;
 }
+
+.collapsibleSectionTop .srMetaGrid {
+  grid-template-columns: 1fr;
+}
+
 .srMetaRow {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(110px, 0.45fr) minmax(0, 1fr);
   gap: 10px;
   font-size: 12.5px;
   padding: 2px 0;
 }
 .srMetaLabel {
   color: var(--text-muted);
-  flex: none;
-  min-width: 96px;
+  min-width: 0;
 }
 .srMetaValue {
   color: var(--text-primary);
-  word-break: break-word;
+  min-width: 0;
+  overflow-wrap: break-word;
+  word-break: normal;
 }
 
 .srPills {
@@ -4896,11 +4989,17 @@
   width: 100%;
   background: none;
   border: none;
+  border-radius: 6px;
   padding: 4px 0;
   cursor: pointer;
   color: var(--text-primary);
   font-size: 12.5px;
   text-align: left;
+  outline: none;
+}
+
+.srRawToggle:focus-visible {
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 20%, transparent);
 }
 .srJson {
   margin: 6px 0 0;

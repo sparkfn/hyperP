@@ -237,7 +237,9 @@ should not require walking through `HAS_FACT` / `SourceRecord`. The
 
 ### `SourceRecord.record_type` extension
 
-Add `"sales"` to the enum alongside `"system"` and `"conversation"`:
+`"sales"` sits in the `record_type` enum alongside the system family
+(`"identity"`, `"bankruptcy"`, `"relationship"`), the place register
+(`"rental_flat"`), and `"conversation"`:
 
 - **`sales`** — extracted deterministically from a POS/commerce system's
   sales or order rows. Never eligible for deterministic auto-merge on its

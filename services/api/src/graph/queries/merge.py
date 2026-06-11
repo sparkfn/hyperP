@@ -298,3 +298,54 @@ MATCH ()-[lock:NO_MATCH_LOCK {lock_id: $lock_id}]->()
 DELETE lock
 RETURN $lock_id AS deleted_lock_id
 """
+
+CLOSE_PERSON_PAIR_CASES_FOR_ABSORBED = """
+MATCH (rc:ReviewCase)-[:FOR_DECISION]->(md:MatchDecision)
+MATCH (md)-[:ABOUT_LEFT {entity_type: 'person'}]->(a:Person)
+MATCH (md)-[:ABOUT_RIGHT {entity_type: 'person'}]->(b:Person)
+WHERE rc.queue_state IN ['open', 'assigned', 'deferred']
+  AND (a.person_id = $absorbed_id OR b.person_id = $absorbed_id)
+SET rc.queue_state = 'cancelled',
+    rc.resolution = 'cancelled_superseded',
+    rc.resolved_at = datetime(),
+    rc.closed_by_merge_event_id = $merge_event_id,
+    rc.updated_at = datetime()
+"""
+
+REDIRECT_RECORD_PERSON_CASES_FOR_ABSORBED = """
+MATCH (rc:ReviewCase)-[:FOR_DECISION]->(md:MatchDecision)
+WHERE rc.queue_state IN ['open', 'assigned', 'deferred']
+MATCH (md)-[old_right:ABOUT_RIGHT {entity_type: 'person'}]->(absorbed:Person {person_id: $absorbed_id})
+MATCH (md)-[:ABOUT_LEFT {entity_type: 'source_record'}]->(:SourceRecord)
+MATCH (survivor:Person {person_id: $survivor_id})
+CREATE (md)-[:ABOUT_RIGHT {entity_type: 'person'}]->(survivor)
+DELETE old_right
+SET rc.redirected_by_merge_event_id = $merge_event_id,
+    rc.redirected_from_person_id = $absorbed_id,
+    rc.updated_at = datetime()
+"""
+
+REVERT_RECORD_PERSON_CASE_REDIRECTS = """
+MATCH (rc:ReviewCase)-[:FOR_DECISION]->(md:MatchDecision)
+WHERE rc.redirected_by_merge_event_id = $merge_event_id
+  AND rc.queue_state IN ['open', 'assigned', 'deferred']
+MATCH (md)-[cur_right:ABOUT_RIGHT {entity_type: 'person'}]->(:Person)
+MATCH (absorbed:Person {person_id: rc.redirected_from_person_id})
+CREATE (md)-[:ABOUT_RIGHT {entity_type: 'person'}]->(absorbed)
+DELETE cur_right
+SET rc.redirected_by_merge_event_id = null,
+    rc.redirected_from_person_id = null,
+    rc.updated_at = datetime()
+"""
+
+REVERT_PERSON_PAIR_CASE_CLOSURES = """
+MATCH (rc:ReviewCase)
+WHERE rc.closed_by_merge_event_id = $merge_event_id
+  AND rc.queue_state = 'cancelled'
+  AND rc.resolution = 'cancelled_superseded'
+SET rc.queue_state = 'open',
+    rc.resolution = null,
+    rc.resolved_at = null,
+    rc.closed_by_merge_event_id = null,
+    rc.updated_at = datetime()
+"""

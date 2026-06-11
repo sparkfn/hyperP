@@ -27,6 +27,9 @@ WHERE p.status <> 'merged'
        OR ($has_dob = false AND p.preferred_dob IS NULL))
   AND ($dob_from IS NULL OR p.preferred_dob >= $dob_from)
   AND ($dob_to   IS NULL OR p.preferred_dob <= $dob_to)
+  AND ($dob_year  IS NULL OR substring(p.preferred_dob, 0, 4) = $dob_year)
+  AND ($dob_month IS NULL OR substring(p.preferred_dob, 5, 2) = $dob_month)
+  AND ($dob_day   IS NULL OR substring(p.preferred_dob, 8, 2) = $dob_day)
   AND ($has_address IS NULL
        OR ($has_address = true  AND p.preferred_address_id IS NOT NULL)
        OR ($has_address = false AND p.preferred_address_id IS NULL))
@@ -76,7 +79,10 @@ WITH p, score, addr WHERE ($entity_keys IS NULL OR EXISTS {
   MATCH (sr_s:SourceRecord)-[:LINKED_TO]->(p)
   MATCH (sr_s)-[:FROM_SOURCE]->(ss:SourceSystem)
   WHERE ss.source_key IN $source_keys
-})
+  }) AND ($source_record_type IS NULL OR EXISTS {
+    MATCH (sr_t:SourceRecord)-[:LINKED_TO]->(p)
+    WHERE sr_t.record_type = $source_record_type
+  })
 WITH DISTINCT p, score
 OPTIONAL MATCH (p)-[:LIVES_AT]->(addr:Address {address_id: p.preferred_address_id})
 """

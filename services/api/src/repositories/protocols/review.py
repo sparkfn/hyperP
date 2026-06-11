@@ -11,7 +11,22 @@ from src.types import ReviewCaseDetail, ReviewCaseSummary
 class ReviewListFilters(TypedDict, total=False):
     queue_state: str | None
     assigned_to: str | None
+    person_id: str | None
     priority_lte: int | None
+    priority_gte: int | None
+    decision: str | None
+    engine_type: str | None
+    confidence_gte: float | None
+    confidence_lte: float | None
+    created_after: str | None
+    created_before: str | None
+    sla_due_after: str | None
+    sla_due_before: str | None
+    overdue_sla: bool | None
+    resolved: bool | None
+    q: str | None
+    sort_by: str | None
+    sort_order: str | None
 
 
 class AssignResult(TypedDict):
@@ -33,8 +48,8 @@ class ActionResult(TypedDict, total=False):
 class ReviewRepository(Protocol):
     async def get_page(
         self, filters: ReviewListFilters, skip: int, limit: int
-    ) -> tuple[list[ReviewCaseSummary], bool]:
-        """Returns (items, has_more). has_more detected via +1 fetch."""
+    ) -> tuple[list[ReviewCaseSummary], int]:
+        """Returns (items, total). Route computes has_more = skip + limit < total."""
         ...
 
     async def get_by_id(self, review_case_id: str) -> ReviewCaseDetail | None: ...

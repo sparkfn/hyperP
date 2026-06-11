@@ -1,9 +1,9 @@
 // Hand-mirrored from services/api/src/types.py and routes/{merge,survivorship}.py.
 // Lives outside api-types.ts so the shared module stays untouched.
 
-import type { PersonEntitySummary } from "./api-types";
+import type { PersonEntitySummary, SourceRecordType } from "./api-types";
 
-export type SourceRecordType = "system" | "conversation";
+export type { SourceRecordType };
 
 export interface PersonBankruptcyCase {
   bankruptcy_case_id: string;

@@ -194,10 +194,10 @@ async def test_source_records_forwards_filters(
 ) -> None:
     app, repo = source_app
     async with _client(app) as client:
-        await client.get("/v1/persons/p1/source-records?entity_key=eko&record_type=system")
+        await client.get("/v1/persons/p1/source-records?entity_key=eko&record_type=identity")
 
     assert repo.last_entity_key == "eko"
-    assert repo.last_record_type == "system"
+    assert repo.last_record_type == "identity"
 
 
 @pytest.mark.anyio

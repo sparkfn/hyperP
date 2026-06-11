@@ -810,6 +810,7 @@ function PersonsInner(): ReactElement {
     return values.length > 0 || legacy === null ? values : [legacy];
   });
   const [sourceFilter, setSourceFilter] = useState<string[]>(() => searchParams.getAll("source_key"));
+  const [hasConversationSource, setHasConversationSource] = useState(() => searchParams.get("source_record_type") === "conversation");
   const [sourceSearch, setSourceSearch] = useState("");
   const [identityFilter, setIdentityFilter] = useState<string[]>(() => {
     const values: string[] = [];
@@ -1037,6 +1038,7 @@ function PersonsInner(): ReactElement {
     dobFilter !== "any",
     dobFilter === "has" && dobMode === "single" && dobSingleDate !== "",
     dobFilter === "has" && dobMode === "range" && (dobStartDate !== "" || dobEndDate !== ""),
+    hasConversationSource,
     addressFilter !== "any",
     flagFilter !== "any",
     hasBankruptcy !== null,
@@ -1050,6 +1052,7 @@ function PersonsInner(): ReactElement {
   function clearAllFilters(): void {
     setEntityFilter([]);
     setSourceFilter([]);
+    setHasConversationSource(false);
     setSourceSearch("");
     setIdentityFilter([]);
     setAddressFilter("any");
@@ -1074,6 +1077,7 @@ function PersonsInner(): ReactElement {
     if (search.trim().length >= 3) params.set("q", search.trim());
     entityFilter.forEach((key) => params.append("entity_key", key));
     sourceFilter.forEach((key) => params.append("source_key", key));
+    if (hasConversationSource) params.set("source_record_type", "conversation");
     if (identityFilter.includes("email")) params.set("has_email", "true");
     if (identityFilter.includes("phone")) params.set("has_phone", "true");
     if (addressFilter === "has") params.set("has_address", "true");
@@ -1110,7 +1114,7 @@ function PersonsInner(): ReactElement {
     if (addrCountry) params.set("addr_country", addrCountry);
     params.set("limit", String(pageSize));
     return params.toString();
-  }, [search, entityFilter, sourceFilter, identityFilter, addressFilter, dobFilter, dobMode, dobSingleDate, dobStartDate, dobEndDate, flagFilter, hasBankruptcy, matchPresence, updatedAfter, updatedBefore, addrCity, addrPostal, addrCountry, sortKey, sortDir, pageSize]);
+  }, [search, entityFilter, sourceFilter, hasConversationSource, identityFilter, addressFilter, dobFilter, dobMode, dobSingleDate, dobStartDate, dobEndDate, flagFilter, hasBankruptcy, matchPresence, updatedAfter, updatedBefore, addrCity, addrPostal, addrCountry, sortKey, sortDir, pageSize]);
 
   const urlQuery = useMemo(() => {
     const params = new URLSearchParams(apiQuery);
@@ -1462,19 +1466,32 @@ function PersonsInner(): ReactElement {
 
           <FilterPill
             label="Source"
-            isActive={sourceFilter.length > 0}
+            isActive={sourceFilter.length > 0 || hasConversationSource}
             activeLabel={
-              sourceFilter.length === 1
-                ? (sourceSystems.find((s) => s.source_key === sourceFilter[0])?.display_name ?? "Source")
-                : `${sourceFilter.length} sources`
+              hasConversationSource && sourceFilter.length === 0
+                ? "Chat records"
+                : sourceFilter.length === 1
+                  ? (sourceSystems.find((s) => s.source_key === sourceFilter[0])?.display_name ?? "Source")
+                  : `${sourceFilter.length} sources`
             }
             count={sourceFilter.length > 1 ? sourceFilter.length : undefined}
-            onClear={() => { setSourceFilter([]); setSourceSearch(""); }}
+            onClear={() => { setSourceFilter([]); setHasConversationSource(false); setSourceSearch(""); }}
             open={openFilter === "source"}
             onToggle={() => toggleFilter("source")}
             wide
           >
             <div className={styles.fpInner}>
+              <div className={styles.fpSectionLabel}>Record type</div>
+              <div className={styles.filterOptions}>
+                <button
+                  type="button"
+                  className={`${styles.filterChip} ${hasConversationSource ? styles.filterChipActive : ""}`}
+                  onClick={() => setHasConversationSource((current) => !current)}
+                >
+                  Chat / conversation
+                </button>
+              </div>
+              <div className={styles.fpSectionLabel}>Source system</div>
               <div className={styles.sourceSearchBox}>
                 <svg className={styles.sourceSearchIcon} width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                   <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>

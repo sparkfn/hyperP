@@ -30,6 +30,10 @@ ALLOWED_OAUTH_CLIENT_SCOPES = frozenset(
     }
 )
 
+ACCESS_TOKEN_TTL_MIN_SECONDS = 300
+ACCESS_TOKEN_TTL_MAX_SECONDS = 86400
+DEFAULT_ACCESS_TOKEN_TTL_SECONDS = 900
+
 
 def validate_oauth_client_scopes(scopes: list[str]) -> list[str]:
     """Validate OAuth client scopes against supported machine scopes."""
@@ -59,7 +63,6 @@ class OAuthClientSecret(BaseModel):
     secret_id: str
     secret_prefix: str
     created_at: datetime | None = None
-    expires_at: datetime | None = None
     revoked_at: datetime | None = None
     last_used_at: datetime | None = None
 
@@ -75,6 +78,7 @@ class OAuthClient(BaseModel):
     created_at: datetime | None = None
     disabled_at: datetime | None = None
     last_used_at: datetime | None = None
+    access_token_ttl_seconds: int = DEFAULT_ACCESS_TOKEN_TTL_SECONDS
     secrets: list[OAuthClientSecret] = Field(default_factory=list)
 
     @field_validator("scopes")
@@ -90,13 +94,33 @@ class CreateOAuthClientRequest(BaseModel):
     name: str = Field(min_length=1, max_length=128)
     entity_key: str | None = None
     scopes: list[str] = Field(min_length=1)
-    secret_expires_in_days: int | None = Field(default=365, ge=1, le=730)
+    access_token_ttl_seconds: int = Field(
+        default=DEFAULT_ACCESS_TOKEN_TTL_SECONDS,
+        ge=ACCESS_TOKEN_TTL_MIN_SECONDS,
+        le=ACCESS_TOKEN_TTL_MAX_SECONDS,
+    )
 
     @field_validator("scopes")
     @classmethod
     def validate_scopes(cls, scopes: list[str]) -> list[str]:
         """Validate supported, unique, non-blank scopes."""
         return validate_oauth_client_scopes(scopes)
+
+
+class UpdateOAuthClientRequest(BaseModel):
+    """Patch an existing OAuth client. All fields optional."""
+
+    name: str | None = Field(default=None, min_length=1, max_length=128)
+    scopes: list[str] | None = None
+    access_token_ttl_seconds: int | None = Field(
+        default=None, ge=ACCESS_TOKEN_TTL_MIN_SECONDS, le=ACCESS_TOKEN_TTL_MAX_SECONDS
+    )
+
+    @field_validator("scopes")
+    @classmethod
+    def validate_scopes(cls, scopes: list[str] | None) -> list[str] | None:
+        """Validate supported, unique, non-blank scopes when provided."""
+        return None if scopes is None else validate_oauth_client_scopes(scopes)
 
 
 class OAuthClientCreatedResponse(BaseModel):
@@ -108,23 +132,26 @@ class OAuthClientCreatedResponse(BaseModel):
     secret_prefix: str
     name: str
     scopes: list[str]
-    secret_expires_at: datetime | None = None
 
 
-class CreateOAuthClientSecretRequest(BaseModel):
-    """Request body for rotating an OAuth client secret."""
+class OAuthAccessTokenView(BaseModel):
+    """One live access token's tracked metadata for the admin UI."""
 
-    expires_in_days: int | None = Field(default=365, ge=1, le=730)
+    jti: str
+    scope: str
+    issued_at: int
+    expires_at: int
+    last_used_at: int | None = None
+    last_used_ip: str | None = None
 
 
-class OAuthClientSecretCreatedResponse(BaseModel):
-    """Secret rotation response; plain secret is shown once only."""
+class RotateSecretResponse(BaseModel):
+    """One-time plaintext for a rotated secret."""
 
     client_id: str
     client_secret: str
     secret_id: str
     secret_prefix: str
-    expires_at: datetime | None = None
 
 
 class OAuthTokenRequest(BaseModel):

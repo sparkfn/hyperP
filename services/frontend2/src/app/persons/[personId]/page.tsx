@@ -3,7 +3,7 @@
 import { Fragment, use, useCallback, useEffect, useId, useMemo, useRef, useState, type ReactElement } from "react";
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import type { Person, PersonConnection, SalesOrder } from "@/lib/api-types";
+import type { Person, PersonConnection, SalesOrder, SourceRecordType } from "@/lib/api-types";
 import type {
   ChatMessage,
   EditableFieldOptions,
@@ -134,6 +134,28 @@ function validateCustomOverrideValue(fieldName: GoldenFieldName, value: string):
   return null;
 }
 
+function customOverrideInputType(fieldName: GoldenFieldName): string {
+  if (fieldName === "preferred_email") return "email";
+  if (fieldName === "preferred_dob") return "date";
+  if (fieldName === "preferred_phone") return "tel";
+  return "text";
+}
+
+function customOverrideInputMode(fieldName: GoldenFieldName): "text" | "email" | "tel" | undefined {
+  if (fieldName === "preferred_email") return "email";
+  if (fieldName === "preferred_phone") return "tel";
+  return undefined;
+}
+
+function customOverridePlaceholder(fieldName: GoldenFieldName): string {
+  if (fieldName === "preferred_full_name") return "Type full name";
+  if (fieldName === "preferred_phone") return "+6581234567";
+  if (fieldName === "preferred_email") return "name@example.com";
+  if (fieldName === "preferred_dob") return "YYYY-MM-DD";
+  if (fieldName === "preferred_nric") return "Type NRIC";
+  return "Type address";
+}
+
 type OverrideFieldSelection =
   | { field: EditableFieldOptions; sourceRecordPk: string }
   | { field: EditableFieldOptions; customValue: string };
@@ -195,6 +217,8 @@ function CopyableId({ value }: { value: string }): ReactElement {
     </div>
   );
 }
+
+const SOURCE_RECORD_TYPE_FILTERS: readonly SourceRecordType[] = ["identity", "sales", "relationship", "conversation", "bankruptcy", "rental_flat"];
 
 function titleCase(value: string): string {
   return value
@@ -2004,9 +2028,9 @@ function SourceRecordRow({ record }: { record: PersonSourceRecord }): ReactEleme
         tabIndex={0}
         onKeyDown={(e) => e.key === "Enter" && setOpen((v) => !v)}
       >
-        <div className={styles.idBody}>
-          <span className={styles.idValue}>{titleCase(record.source_system)}</span>
-          <div className={styles.connMeta}>
+        <div className={styles.srcBody}>
+          <span className={styles.srcTitle}>{titleCase(record.source_system)}</span>
+          <div className={styles.srcMetaLine}>
             <span>{entity}</span>
             <span className={styles.connMetaSep}>·</span>
             <span>{record.source_record_id}</span>
@@ -2017,7 +2041,7 @@ function SourceRecordRow({ record }: { record: PersonSourceRecord }): ReactEleme
             <span>{record.observed_at_display || "—"}</span>
           </div>
         </div>
-        <div className={styles.idBadges}>
+        <div className={styles.srcBadges}>
           <span className={record.record_type === "conversation" ? styles.srBadgeConv : styles.srBadgeSys}>{record.record_type}</span>
           <span className={styles.srBadgeLink}>{record.link_status}</span>
           <svg className={`${styles.srcChevron} ${open ? styles.srcChevronOpen : ""}`} width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -2134,10 +2158,13 @@ function SourceRecordsList({ basePath }: { basePath: string }): ReactElement {
 
 function SourceRecordsTab({ personId, facets, onTotalLoaded }: { personId: string; facets: SourceRecordEntityFacet[]; onTotalLoaded: (n: number) => void }): ReactElement {
   const [activeEntity, setActiveEntity] = useState<string | null>(null);
+  const [activeRecordType, setActiveRecordType] = useState<SourceRecordType | null>(null);
   const facetTotal = facets.reduce((sum, f) => sum + f.count, 0);
-  const basePath = activeEntity === null
-    ? `/bff/persons/${encodeURIComponent(personId)}/source-records`
-    : `/bff/persons/${encodeURIComponent(personId)}/source-records?entity_key=${encodeURIComponent(activeEntity)}`;
+  const sourceRecordParams = new URLSearchParams();
+  if (activeEntity !== null) sourceRecordParams.set("entity_key", activeEntity);
+  if (activeRecordType !== null) sourceRecordParams.set("record_type", activeRecordType);
+  const queryString = sourceRecordParams.toString();
+  const basePath = `/bff/persons/${encodeURIComponent(personId)}/source-records${queryString ? `?${queryString}` : ""}`;
 
   useEffect(() => { onTotalLoaded(facetTotal); }, [facetTotal, onTotalLoaded]);
 
@@ -2149,31 +2176,48 @@ function SourceRecordsTab({ personId, facets, onTotalLoaded }: { personId: strin
         <span className={styles.connHeaderCount}>{facetTotal} {facetTotal === 1 ? "record" : "records"}</span>
       </div>
 
-      {facets.length > 0 && (
+      <div className={styles.srFilterGroup}>
+        <span className={styles.srFilterLabel}>Type</span>
         <div className={styles.srFilter}>
-          <button type="button" className={`${styles.srChip} ${activeEntity === null ? styles.srChipOn : ""}`} onClick={() => setActiveEntity(null)}>
-            All · {facetTotal}
+          <button type="button" className={`${styles.srChip} ${activeRecordType === null ? styles.srChipOn : ""}`} onClick={() => setActiveRecordType(null)}>
+            All types
           </button>
-          {facets.map((f) => {
-            const key = f.entity_key ?? f.source_system;
-            return (
-              <button
-                key={`${f.source_system}:${key}`}
-                type="button"
-                className={`${styles.srChip} ${activeEntity === f.entity_key && f.entity_key !== null ? styles.srChipOn : ""}`}
-                onClick={() => setActiveEntity(f.entity_key)}
-                disabled={f.entity_key === null}
-                title={f.entity_key === null ? "No entity key — cannot filter" : undefined}
-              >
-                {srEntityLabel(f)} · {f.count}
-              </button>
-            );
-          })}
+          {SOURCE_RECORD_TYPE_FILTERS.map((recordType) => (
+            <button key={recordType} type="button" className={`${styles.srChip} ${activeRecordType === recordType ? styles.srChipOn : ""}`} onClick={() => setActiveRecordType(recordType)}>
+              {titleCase(recordType)}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {facets.length > 0 && (
+        <div className={styles.srFilterGroup}>
+          <span className={styles.srFilterLabel}>Source</span>
+          <div className={styles.srFilter}>
+            <button type="button" className={`${styles.srChip} ${activeEntity === null ? styles.srChipOn : ""}`} onClick={() => setActiveEntity(null)}>
+              All · {facetTotal}
+            </button>
+            {facets.map((f) => {
+              const key = f.entity_key ?? f.source_system;
+              return (
+                <button
+                  key={`${f.source_system}:${key}`}
+                  type="button"
+                  className={`${styles.srChip} ${activeEntity === f.entity_key && f.entity_key !== null ? styles.srChipOn : ""}`}
+                  onClick={() => setActiveEntity(f.entity_key)}
+                  disabled={f.entity_key === null}
+                  title={f.entity_key === null ? "No entity key — cannot filter" : undefined}
+                >
+                  {srEntityLabel(f)} · {f.count}
+                </button>
+              );
+            })}
+          </div>
         </div>
       )}
 
       {/* key remounts the list when the filter changes, resetting pagination to page 1 */}
-      <SourceRecordsList key={activeEntity ?? "__all__"} basePath={basePath} />
+      <SourceRecordsList key={`${activeEntity ?? "__all__"}:${activeRecordType ?? "__all__"}`} basePath={basePath} />
     </section>
   );
 }
@@ -2803,6 +2847,7 @@ export default function PersonDetailPage({ params }: { params: Promise<{ personI
       { key: "preferred_phone", label: "Phone", thisRaw: person.preferred_phone, thisDisplay: person.preferred_phone, candidateRaw: target.preferred_phone, candidateDisplay: target.preferred_phone },
       { key: "preferred_email", label: "Email", thisRaw: person.preferred_email, thisDisplay: person.preferred_email, candidateRaw: target.preferred_email, candidateDisplay: target.preferred_email },
       { key: "preferred_dob", label: "DOB", thisRaw: person.preferred_dob, thisDisplay: person.preferred_dob ? fmtDate(person.preferred_dob) : null, candidateRaw: target.preferred_dob, candidateDisplay: target.preferred_dob ? fmtDate(target.preferred_dob) : null },
+      { key: "preferred_address", label: "Address", thisRaw: person.preferred_address?.address_id ?? null, thisDisplay: person.preferred_address?.normalized_full ?? null, candidateRaw: target.preferred_address?.address_id ?? null, candidateDisplay: target.preferred_address?.normalized_full ?? null },
       { key: "preferred_nric", label: "NRIC", thisRaw: person.preferred_nric, thisDisplay: person.preferred_nric ? maskNric(person.preferred_nric) : null, candidateRaw: target.preferred_nric, candidateDisplay: target.preferred_nric ? maskNric(target.preferred_nric) : null },
     ];
   }
@@ -2840,6 +2885,9 @@ export default function PersonDetailPage({ params }: { params: Promise<{ personI
       }
       if (field.key === "preferred_nric") {
         return [{ field_name: field.key, source_kind: "identifier", selected_value: field.thisRaw, source_record_pk: null, identifier_type: "nric" }];
+      }
+      if (field.key === "preferred_address") {
+        return [{ field_name: field.key, source_kind: "address", selected_value: field.thisRaw, source_record_pk: null, identifier_type: null }];
       }
       return [];
     });
@@ -2944,6 +2992,7 @@ export default function PersonDetailPage({ params }: { params: Promise<{ personI
     let cancelled = false;
     const cachedOptions = fieldOptionsRef.current?.person_id === personId ? fieldOptionsRef.current : null;
     const applyOptions = (options: PersonFieldOptions): void => {
+      fieldOptionsRef.current = options;
       setFieldOptions(options);
       setOverrideSelections(Object.fromEntries(options.fields.map((field) => [field.field_name, field.options.find((option) => option.is_current)?.source_record_pk ?? field.options[0]?.source_record_pk ?? ""])) as Partial<Record<GoldenFieldName, string>>);
       setOverrideCustomValues({});
@@ -3008,7 +3057,10 @@ export default function PersonDetailPage({ params }: { params: Promise<{ personI
         bffFetchEnvelope<PersonFieldOptions>(`/bff/persons/${encodeURIComponent(personId)}/field-options`).catch(() => null),
       ]);
       if (refreshed) setPerson(refreshed);
-      if (refreshedOptions) setFieldOptions(refreshedOptions.data);
+      if (refreshedOptions) {
+        fieldOptionsRef.current = refreshedOptions.data;
+        setFieldOptions(refreshedOptions.data);
+      }
       setOverrideSuccess(true);
       setTimeout(() => {
         setOverrideOpen(false);
@@ -3037,11 +3089,11 @@ export default function PersonDetailPage({ params }: { params: Promise<{ personI
 
   const sections: SectionConfig[] = useMemo(() => [
     { id: "section-matches",        label: "Matches",        count: tabTotals.matches },
+    { id: "section-source-records", label: "Source records", count: tabTotals["source-records"] ?? (detailData.sourceRecordFacets.reduce((sum, f) => sum + f.count, 0) || undefined) },
     { id: "section-sales",          label: "Sales",          count: tabTotals.sales          ?? detailData.sales.length },
     { id: "section-connections",    label: "Connections",    count: tabTotals.connections    ?? (person?.connection_count ?? 0) },
     { id: "section-identifiers",    label: "Identifiers",    count: detailData.identifiers.length || undefined },
     { id: "section-decision-history", label: "Decision History", count: tabTotals["decision-history"] },
-    { id: "section-source-records", label: "Source records", count: tabTotals["source-records"] ?? (detailData.sourceRecordFacets.reduce((sum, f) => sum + f.count, 0) || undefined) },
   ], [tabTotals, detailData, person?.connection_count]);
 
   if (notFoundFlag) notFound();
@@ -3085,8 +3137,8 @@ export default function PersonDetailPage({ params }: { params: Promise<{ personI
                   return null;
               }
 
-              const bentoClass = section.id === "section-source-records"
-                ? styles.collapsibleSectionWide
+              const bentoClass = section.id === "section-matches" || section.id === "section-source-records"
+                ? styles.collapsibleSectionTop
                 : "";
 
               const sectionAction = section.id === "section-matches" ? (
@@ -3292,12 +3344,12 @@ export default function PersonDetailPage({ params }: { params: Promise<{ personI
                 const candidateOptions = field.options.filter((option) => option.source_record_pk !== currentOption?.source_record_pk);
                 const selectedPk = overrideSelections[field.field_name] ?? currentOption?.source_record_pk ?? "";
                 const canUseCustomValue = true;
-                const selectedCandidatePk = selectedPk === "__custom__" ? "__custom__" : candidateOptions.some((option) => option.source_record_pk === selectedPk) ? selectedPk : "";
+                const selectedCandidatePk = selectedPk === "__custom__" ? "__custom__" : candidateOptions.some((option) => option.source_record_pk === selectedPk) ? selectedPk : currentOption?.source_record_pk ?? "";
                 const currentDisplay = field.current_value_display ?? currentOption?.value_display ?? "No value";
-                const currentMeta = field.is_overridden
-                  ? "Custom override"
-                  : currentOption
-                    ? `${currentOption.entity_display_name ?? currentOption.source_system}${currentOption.observed_at_display ? ` · ${currentOption.observed_at_display}` : ""}`
+                const currentMeta = currentOption
+                  ? `${currentOption.entity_display_name ?? currentOption.source_system}${currentOption.observed_at_display ? ` · ${currentOption.observed_at_display}` : ""}`
+                  : field.is_overridden
+                    ? "Custom override"
                     : "No current value";
                 return (
                   <div key={field.field_name} className={styles.overrideFormRow}>
@@ -3317,7 +3369,7 @@ export default function PersonDetailPage({ params }: { params: Promise<{ personI
                           setOverrideSelections((current) => ({ ...current, [field.field_name]: nextPk }));
                         }}
                       >
-                        <option value="">{candidateOptions.length > 0 ? "Use current value" : "No candidate value"}</option>
+                        <option value={currentOption?.source_record_pk ?? ""}>{currentDisplay}</option>
                         {candidateOptions.map((option) => (
                           <option key={`${field.field_name}-${option.source_record_pk}`} value={option.source_record_pk}>
                             {option.value_display} · {option.entity_display_name ?? option.source_system}
@@ -3329,8 +3381,10 @@ export default function PersonDetailPage({ params }: { params: Promise<{ personI
                       {selectedPk === "__custom__" && (
                         <input
                           className={styles.overrideCustomInput}
+                          type={customOverrideInputType(field.field_name)}
+                          inputMode={customOverrideInputMode(field.field_name)}
                           value={overrideCustomValues[field.field_name] ?? ""}
-                          placeholder="Type custom value"
+                          placeholder={customOverridePlaceholder(field.field_name)}
                           onChange={(event) => setOverrideCustomValues((current) => ({ ...current, [field.field_name]: event.target.value }))}
                         />
                       )}

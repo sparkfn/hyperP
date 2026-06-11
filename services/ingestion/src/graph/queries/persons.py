@@ -148,10 +148,12 @@ RETURN f.attribute_name AS attribute_name,
 FETCH_PERSON_IDENTIFIERS = """
 MATCH (p:Person {person_id: $person_id})-[rel:IDENTIFIED_BY]->(id:Identifier)
 WHERE rel.is_active = true
+OPTIONAL MATCH (src:SourceRecord {source_record_pk: rel.source_record_pk})
 RETURN id.identifier_type AS identifier_type,
        id.normalized_value AS normalized_value,
        rel.is_verified AS is_verified,
-       rel.last_confirmed_at AS last_confirmed_at
+       rel.last_confirmed_at AS last_confirmed_at,
+       src.record_type AS source_record_type
 """
 
 FETCH_PERSON_ADDRESSES = """

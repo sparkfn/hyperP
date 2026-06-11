@@ -74,6 +74,17 @@ def test_frontend_app_docs_are_mounted_under_app_v2() -> None:
     assert openapi.json()["info"]["title"] == "HyperP Frontend API"
 
 
+def test_root_app_does_not_publish_docs_or_schema() -> None:
+    # The root app carries only health, the machine OAuth2 token flow, and public
+    # share-link pages — no contract worth exposing. Interactive docs and the
+    # OpenAPI schema must stay disabled there (sub-app docs are unaffected).
+    client = TestClient(build_app())
+
+    assert client.get("/docs").status_code == 404
+    assert client.get("/redoc").status_code == 404
+    assert client.get("/openapi.json").status_code == 404
+
+
 def test_frontend_app_v2_requires_active_user() -> None:
     app = build_app()
     app.dependency_overrides[get_entity_repo] = _entity_repo

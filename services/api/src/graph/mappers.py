@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime
-from typing import Literal
+from typing import Literal, cast, get_args
 
 from neo4j.time import DateTime as Neo4jDateTime
 from pydantic.types import JsonValue
@@ -50,8 +50,23 @@ from src.types import (
     SharedIdentifierGroup,
     SourceRecord,
     SourceRecordEntityFacet,
+    SourceRecordTypeLiteral,
     TimelineFact,
 )
+
+_RECORD_TYPES: frozenset[str] = frozenset(get_args(SourceRecordTypeLiteral))
+
+
+def _to_record_type(value: GraphValue) -> SourceRecordTypeLiteral:
+    """Coerce a stored ``record_type`` to the current literal.
+
+    Legacy ``'system'`` rows (pre-backfill) and any unknown value fall back to
+    ``'identity'`` — the behaviour-preserving default for the system family.
+    """
+    raw = to_str(value)
+    if raw in _RECORD_TYPES:
+        return cast("SourceRecordTypeLiteral", raw)
+    return "identity"
 
 
 def _as_dict(value: GraphValue) -> GraphRecord:
@@ -110,7 +125,7 @@ def map_source_record(record: GraphRecord) -> SourceRecord:
         source_record_version=to_optional_str(sr.get("source_record_version")),
         entity_key=to_optional_str(record.get("entity_key")),
         entity_display_name=to_optional_str(record.get("entity_display_name")),
-        record_type="conversation" if to_str(sr.get("record_type")) == "conversation" else "system",
+        record_type=_to_record_type(sr.get("record_type")),
         extraction_confidence=(
             to_float(sr.get("extraction_confidence"))
             if sr.get("extraction_confidence") is not None
@@ -317,7 +332,7 @@ def map_timeline_group(record: GraphRecord) -> PersonTimelineGroup:
         source_system=to_str(record.get("source_system")),
         source_record_id=to_str(sr.get("source_record_id")),
         source_record_version=to_optional_str(sr.get("source_record_version")),
-        record_type="conversation" if to_str(sr.get("record_type")) == "conversation" else "system",
+        record_type=_to_record_type(sr.get("record_type")),
         extraction_confidence=(
             to_float(sr.get("extraction_confidence"))
             if sr.get("extraction_confidence") is not None
@@ -690,9 +705,16 @@ def map_review_case_detail(record: GraphRecord) -> ReviewCaseDetail:
     actions_raw = rc.get("actions")
     actions: list[dict[str, str | None]] = []
     if isinstance(actions_raw, list):
+        # Each entry is a JSON string (Neo4j cannot store maps as properties).
         for raw in actions_raw:
-            item = _as_dict(raw)
-            actions.append({to_str(k): to_optional_str(v) for k, v in item.items()})
+            if not isinstance(raw, str):
+                continue
+            try:
+                loaded: object = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(loaded, dict):
+                actions.append({to_str(k): to_optional_str(v) for k, v in loaded.items()})
     return ReviewCaseDetail(
         review_case_id=to_str(rc.get("review_case_id")),
         queue_state=to_str(rc.get("queue_state")),

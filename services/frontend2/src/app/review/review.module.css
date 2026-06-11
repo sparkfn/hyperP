@@ -194,6 +194,49 @@
   font-weight: 600;
 }
 
+/* ── Advanced filter bar ─────────────────────────────────── */
+.advancedBar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 14px;
+  align-items: flex-end;
+  padding: 4px 0 12px;
+  border-top: 1px solid var(--border-subtle, var(--border));
+  margin-top: 2px;
+}
+
+.advField {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.advLabel {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+
+.advSelect,
+.advInput {
+  min-height: 32px;
+  padding: 0 8px;
+  border-radius: 7px;
+  border: 1px solid var(--border-subtle, var(--border));
+  background: var(--bg-app);
+  color: var(--text-primary);
+  font-size: 12px;
+  font-family: inherit;
+  outline: none;
+  transition: border-color 0.15s;
+}
+.advSelect { cursor: pointer; min-width: 130px; }
+.advInput { width: 130px; }
+.advSelect:focus,
+.advInput:focus { border-color: var(--accent); }
+
 /* ── Table section (inside filterSection card) ───────────── */
 .tableSection {
   margin: 0 -14px;

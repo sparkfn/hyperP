@@ -76,6 +76,7 @@ def _current_value(data: FieldOptionsData, field_name: str) -> str | None:
         "preferred_email": data.preferred_email,
         "preferred_dob": data.preferred_dob,
         "preferred_nric": data.preferred_nric,
+        "preferred_address": data.preferred_address_value,
     }.get(field_name)
 
 
@@ -118,7 +119,8 @@ def _build_field_options(data: FieldOptionsData) -> PersonFieldOptions:
                     is_current=is_current,
                 )
             )
-        if current_value is not None and _custom_override_value(data, field_name) is not None:
+        has_current_option = any(option.is_current for option in options)
+        if current_value is not None and not has_current_option:
             options.append(
                 FieldOption(
                     source_record_pk=f"custom:{field_name}",
@@ -276,12 +278,26 @@ async def create_survivorship_override_batch(
     if not body.overrides:
         raise http_error(422, "unprocessable_entity", "overrides must not be empty.", request)
 
-    items: list[tuple[str, str]] = [
-        (item.field_name, item.source_record_pk) for item in body.overrides
-    ]
-    result = await repo.create_batch_overrides(person_id, items, body.reason, user.email)
-    if result.outcome != "ok":
-        _override_error(result.outcome, request, result.failed_field)
+    for item in body.overrides:
+        if item.custom_value is not None:
+            outcome = await repo.create_custom_override(
+                person_id,
+                item.field_name,
+                item.custom_value,
+                body.reason,
+                user.email,
+            )
+        else:
+            source_record_pk = item.source_record_pk or ""
+            outcome = await repo.create_override(
+                person_id,
+                item.field_name,
+                source_record_pk,
+                body.reason,
+                user.email,
+            )
+        if outcome != "ok":
+            _override_error(outcome, request, item.field_name)
 
     return envelope(
         BatchOverrideResponse(

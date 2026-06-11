@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
+from datetime import UTC, datetime
+
 from neo4j import AsyncManagedTransaction
 
 from src.graph.client import get_session
@@ -16,9 +20,11 @@ from src.graph.queries import (
     EXECUTE_MANUAL_MERGE,
     GET_PERSONS_FOR_REVIEW_MERGE,
     GET_REVIEW_CASE,
-    LIST_REVIEW_CASES,
+    build_count_review_cases_query,
+    build_list_review_cases_query,
     build_review_action_cypher,
 )
+from src.repositories.neo4j._merge_side_effects import apply_merge_review_side_effects
 from src.repositories.neo4j.merge import (
     _apply_golden_profile_selections_tx,
     are_valid_golden_profile_selections,
@@ -27,25 +33,56 @@ from src.repositories.protocols.merge import GoldenProfileSelection
 from src.repositories.protocols.review import ActionResult, AssignResult, ReviewListFilters
 from src.types import ApiReviewActionType, ReviewCaseDetail, ReviewCaseSummary
 
-from ._utils import record_to_dict
+from ._utils import record_to_dict, to_total
+
+# ReviewListFilters keys consumed only when building the query string, never
+# bound as Cypher parameters.
+_NON_CYPHER_KEYS: frozenset[str] = frozenset({"sort_by", "sort_order"})
+
+
+def _action_entry_json(action_type: str, actor_type: str, actor_id: str, notes: str | None) -> str:
+    """Serialize one review-action audit entry; rc.actions stores JSON strings."""
+    return json.dumps(
+        {
+            "action_type": action_type,
+            "actor_type": actor_type,
+            "actor_id": actor_id,
+            "notes": notes,
+            "created_at": datetime.now(UTC).isoformat(),
+        }
+    )
 
 
 class Neo4jReviewRepository:
     async def get_page(
         self, filters: ReviewListFilters, skip: int, limit: int
-    ) -> tuple[list[ReviewCaseSummary], bool]:
-        async with get_session() as session:
-            result = await session.run(
-                LIST_REVIEW_CASES,
-                queue_state=filters.get("queue_state"),
-                assigned_to=filters.get("assigned_to"),
-                priority_lte=filters.get("priority_lte"),
-                skip=skip,
-                limit=limit + 1,
-            )
-            records = [record_to_dict(r.keys(), list(r.values())) async for r in result]
-        has_more = len(records) > limit
-        return [map_review_case_summary(rec) for rec in records[:limit]], has_more
+    ) -> tuple[list[ReviewCaseSummary], int]:
+        has_q = filters.get("q") is not None
+        has_person = filters.get("person_id") is not None
+        list_query = build_list_review_cases_query(
+            filters.get("sort_by"), filters.get("sort_order"), has_q=has_q, has_person=has_person
+        )
+        count_query = build_count_review_cases_query(has_q=has_q, has_person=has_person)
+        cypher_params: dict[str, str | int | float | bool | None] = {
+            k: v  # type: ignore[misc]  # TypedDict values are object; known-safe filter keys
+            for k, v in filters.items()
+            if k not in _NON_CYPHER_KEYS
+        }
+        list_params = {**cypher_params, "skip": skip, "limit": limit}
+
+        async def _run_list() -> list[GraphRecord]:
+            async with get_session() as session:
+                result = await session.run(list_query, list_params)
+                return [record_to_dict(r.keys(), list(r.values())) async for r in result]
+
+        async def _run_count() -> int:
+            async with get_session() as session:
+                result = await session.run(count_query, cypher_params)
+                record = await result.single()
+                return to_total(record)
+
+        records, total = await asyncio.gather(_run_list(), _run_count())
+        return [map_review_case_summary(rec) for rec in records], total
 
     async def get_by_id(self, review_case_id: str) -> ReviewCaseDetail | None:
         async with get_session() as session:
@@ -117,7 +154,10 @@ async def _assign_tx(
     tx: AsyncManagedTransaction, review_case_id: str, assigned_to: str
 ) -> GraphRecord | None:
     result = await tx.run(
-        ASSIGN_REVIEW_CASE, review_case_id=review_case_id, assigned_to=assigned_to
+        ASSIGN_REVIEW_CASE,
+        review_case_id=review_case_id,
+        assigned_to=assigned_to,
+        action_json=_action_entry_json("assign", "system", assigned_to, None),
     )
     record = await result.single()
     if record is None:
@@ -175,11 +215,9 @@ async def _action_tx(
         cypher,
         review_case_id=review_case_id,
         new_state=new_state,
-        action_type=action_type,
-        notes=notes,
         resolution=resolution,
         follow_up_at=follow_up_at,
-        actor_id=actor_id,
+        action_json=_action_entry_json(action_type, "reviewer", actor_id, notes),
     )
     record = await result.single()
     if record is None:
@@ -200,13 +238,17 @@ async def _action_tx(
             actor_id=actor_id,
         )
     elif action_type == ApiReviewActionType.MERGE.value and absorbed_id and survivor_id:
-        await tx.run(
+        merge_result = await tx.run(
             EXECUTE_MANUAL_MERGE,
             from_id=absorbed_id,
             to_id=survivor_id,
             reason=notes or "Review merge",
             actor_id=actor_id,
         )
+        merge_record = await merge_result.single()
+        merge_event_id = to_str(merge_record["merge_event_id"]) if merge_record else ""
+        if merge_event_id:
+            await apply_merge_review_side_effects(tx, merge_event_id, absorbed_id, survivor_id)
         out["survivor_person_id"] = survivor_id
         out["golden_profile_selections"] = golden_profile_selections
 

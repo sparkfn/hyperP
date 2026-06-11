@@ -654,9 +654,70 @@
   opacity: 0.72;
 }
 
+/* Native popups (select option list, number spinners) must follow the app
+   theme. .dateInput pins color-scheme:light at equal specificity, so re-assert
+   per theme here with a higher-specificity selector that wins regardless of
+   source order. */
+.partScheme {
+  color-scheme: light;
+}
+
+:global(:root[data-theme="dark"]) .partScheme {
+  color-scheme: dark;
+}
+
+/* color-scheme alone does NOT reliably theme the <select> popup (notably on
+   Windows/Chromium), so paint the option list explicitly from theme tokens.
+   These variables flip with [data-theme], so this covers both modes. */
+.partScheme option {
+  background-color: var(--bg-card);
+  color: var(--text-primary);
+}
+
+.fieldClear {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  margin-left: 2px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-faint);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.fieldClear:hover {
+  background: var(--bg-hover);
+  color: var(--text-secondary);
+}
+
 .dateRangeSep {
   color: var(--text-muted);
   font-size: 12px;
+}
+
+.dobPartsRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 7px;
+}
+
+.dobPartsRow .dateFieldGroup {
+  min-width: 92px;
+}
+
+.fpHint {
+  margin: 7px 0 0;
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1.4;
 }
 
 .qualityRangeHeader {

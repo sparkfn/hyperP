@@ -34,6 +34,7 @@ dev = [
     "types-requests>=2.31.0.0",
     "pytest>=8.0,<9",
     "pytest-asyncio>=0.23,<1",
+    "fakeredis>=2.36.1",
 ]
 
 # Shared ruff/mypy/pytest config inherited from the workspace root pyproject.toml.

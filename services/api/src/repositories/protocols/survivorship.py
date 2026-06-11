@@ -40,6 +40,7 @@ class FieldOptionsData:
     preferred_email: str | None
     preferred_nric: str | None
     preferred_address_id: str | None
+    preferred_address_value: str | None
     overrides: dict[str, dict[str, str]]
     options: list[FieldOptionRow]
 

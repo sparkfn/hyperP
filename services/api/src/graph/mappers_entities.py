@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from src.display_format import format_display_dob
 from src.graph.converters import (
     GraphRecord,
     GraphValue,
@@ -79,6 +80,7 @@ def map_listed_person(record: GraphRecord) -> ListedPerson:
     entities: list[PersonEntitySummary] = (
         [map_person_entity_dict(e) for e in raw_entities] if isinstance(raw_entities, list) else []
     )
+    dob_display, dob_invalid = format_display_dob(ep.preferred_dob)
     return ListedPerson(
         **ep.model_dump(),
         entities=entities,
@@ -88,4 +90,6 @@ def map_listed_person(record: GraphRecord) -> ListedPerson:
         system_match_count=to_int(record.get("system_match_count")),
         order_count=to_int(record.get("order_count")),
         bankruptcy_case_count=to_int(record.get("bankruptcy_case_count")),
+        preferred_dob_display=dob_display,
+        preferred_dob_invalid=dob_invalid,
     )

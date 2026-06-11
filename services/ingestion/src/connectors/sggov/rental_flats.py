@@ -65,6 +65,7 @@ class SGGovernmentRentalFlatsConnector(SourceConnector):
                 source_record_id=f"rental_flat:{flat_id}",
                 observed_at=observed_at,
                 identifiers=[],
+                record_type="rental_flat",
                 attributes={
                     "country_code": "SG",
                     "postal_code": _str_value(flat, "postal_code"),

@@ -795,3 +795,81 @@
   transition: border-color 0.12s, color 0.12s;
 }
 .actionBtnEdit:hover { border-color: var(--accent); color: var(--accent-text); }
+
+/* ── OAuth manage panel ──────────────────────────── */
+.managePanel {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  margin-top: 8px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border-subtle, var(--border));
+}
+
+.manageSection {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.manageLabel {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+}
+
+.ttlRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.ttlInput {
+  width: 80px;
+  height: 30px;
+  padding: 0 8px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg-card);
+  color: var(--text-primary);
+  font-size: 13px;
+  font-family: inherit;
+}
+.ttlInput:focus { border-color: var(--accent); outline: none; }
+
+.ttlUnit { font-size: 12px; color: var(--text-secondary); }
+
+.tokenTable {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+.tokenTable th {
+  text-align: left;
+  font-weight: 600;
+  color: var(--text-muted);
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--border-subtle, var(--border));
+  white-space: nowrap;
+}
+.tokenTable td {
+  padding: 5px 8px;
+  border-bottom: 1px solid var(--border-subtle, var(--border));
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.tokenEmpty {
+  font-size: 12px;
+  color: var(--text-muted);
+  padding: 6px 2px;
+}
+
+.tokenHint {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin: 0;
+  padding: 2px 2px 4px;
+}

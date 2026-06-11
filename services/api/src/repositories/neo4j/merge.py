@@ -22,6 +22,10 @@ from src.graph.queries import (
     REVERT_MERGE,
     UPDATE_GOLDEN_FIELD,
 )
+from src.repositories.neo4j._merge_side_effects import (
+    apply_merge_review_side_effects,
+    revert_merge_review_side_effects,
+)
 from src.repositories.protocols.merge import GoldenProfileSelection, MergeOutcome
 
 
@@ -107,7 +111,9 @@ async def _manual_merge_tx(
     record = await merge_result.single()
     if record is None:
         return MergeOutcome(not_found=True)
-    return MergeOutcome(merge_event_id=to_str(record["merge_event_id"]))
+    merge_event_id = to_str(record["merge_event_id"])
+    await apply_merge_review_side_effects(tx, merge_event_id, from_id, to_id)
+    return MergeOutcome(merge_event_id=merge_event_id)
 
 
 IDENTIFIER_FIELD_BY_TYPE: dict[str, str] = {
@@ -144,7 +150,7 @@ def _is_valid_golden_profile_selection(selection: GoldenProfileSelection) -> boo
     if source_kind == "source_record_fact":
         return field_name in FACT_FIELDS and selection["source_record_pk"] is not None
     if source_kind == "address":
-        return field_name == "preferred_address" and selection["source_record_pk"] is not None
+        return field_name == "preferred_address" and selection["selected_value"].strip() != ""
     if source_kind == "literal":
         return field_name in VALID_LITERAL_GOLDEN_FIELDS and selection["selected_value"].strip() != ""
     return False
@@ -160,10 +166,13 @@ async def _apply_golden_profile_selections_tx(
     selections: list[GoldenProfileSelection],
 ) -> str:
     for selection in selections:
+        field_name = selection["field_name"]
+        if field_name == "preferred_address":
+            field_name = "preferred_address_id"
         await tx.run(
             UPDATE_GOLDEN_FIELD,
             person_id=person_id,
-            field_name=selection["field_name"],
+            field_name=field_name,
             value=selection["selected_value"],
         )
     return "ok"
@@ -193,6 +202,7 @@ async def _unmerge_tx(
         actor_id=actor_id,
     )
     await tx.run(FLAG_AFFECTED_RECORDS_FOR_REVIEW, merge_event_id=merge_event_id)
+    await revert_merge_review_side_effects(tx, merge_event_id)
     return absorbed_id, current_survivor_id
 
 

@@ -42,6 +42,7 @@ class JwtPayloadFixture(TypedDict):
     nbf: int
     exp: int
     jti: str
+    secret_id: str
 
 
 JsonFixtureValue = str | int | list[str]
@@ -108,6 +109,7 @@ def _signed_token(
         nbf=now,
         exp=now + 900,
         jti="jti-test",
+        secret_id="sec_test",
     )
     signing_input = f"{_json_b64(token_header)}.{_json_b64(token_payload)}".encode()
     private_key = serialization.load_pem_private_key(private_pem.encode(), password=None)
@@ -140,7 +142,9 @@ def test_issue_and_verify_client_access_token() -> None:
         patch("src.auth.oauth_tokens.config.oauth_issuer", "http://issuer"),
         patch("src.auth.oauth_tokens.config.oauth_audience", "hyperp-api"),
     ):
-        token = issue_client_access_token(_client(), ["persons:read"], expires_in_seconds=900)
+        token = issue_client_access_token(
+            _client(), ["persons:read"], secret_id="sec_test", expires_in_seconds=900
+        )
         claims = verify_client_access_token(token)
 
     assert isinstance(claims, OAuthClientClaims)
@@ -150,6 +154,24 @@ def test_issue_and_verify_client_access_token() -> None:
     assert claims.scope == "persons:read"
     assert claims.entity_key == "fundbox"
     assert claims.aud == "hyperp-api"
+
+
+def test_token_carries_and_verifies_secret_id() -> None:
+    private_pem, public_pem = _pem_pair()
+
+    with (
+        patch("src.auth.oauth_tokens.config.oauth_private_key_pem", private_pem),
+        patch("src.auth.oauth_tokens.config.oauth_public_key_pem", public_pem),
+        patch("src.auth.oauth_tokens.config.oauth_active_key_id", "kid-test"),
+        patch("src.auth.oauth_tokens.config.oauth_issuer", "http://issuer"),
+        patch("src.auth.oauth_tokens.config.oauth_audience", "hyperp-api"),
+    ):
+        token = issue_client_access_token(
+            _client(), ["persons:read"], secret_id="sec_1", expires_in_seconds=600
+        )
+        claims = verify_client_access_token(token)
+
+    assert claims.secret_id == "sec_1"
 
 
 def test_build_jwks_exposes_public_key_with_kid() -> None:
@@ -178,7 +200,9 @@ def test_expired_token_is_rejected() -> None:
         patch("src.auth.oauth_tokens.config.oauth_issuer", "http://issuer"),
         patch("src.auth.oauth_tokens.config.oauth_audience", "hyperp-api"),
     ):
-        token = issue_client_access_token(_client(), ["persons:read"], expires_in_seconds=-1)
+        token = issue_client_access_token(
+            _client(), ["persons:read"], secret_id="sec_test", expires_in_seconds=-1
+        )
         with pytest.raises(ValueError, match="expired"):
             verify_client_access_token(token)
 
@@ -192,7 +216,9 @@ def test_wrong_audience_is_rejected() -> None:
         patch("src.auth.oauth_tokens.config.oauth_issuer", "http://issuer"),
         patch("src.auth.oauth_tokens.config.oauth_audience", "expected"),
     ):
-        token = issue_client_access_token(_client(), ["persons:read"], expires_in_seconds=900)
+        token = issue_client_access_token(
+            _client(), ["persons:read"], secret_id="sec_test", expires_in_seconds=900
+        )
         with patch("src.auth.oauth_tokens.config.oauth_audience", "different"):
             with pytest.raises(ValueError, match="audience"):
                 verify_client_access_token(token)
@@ -267,6 +293,7 @@ def test_future_nbf_beyond_skew_is_rejected() -> None:
         nbf=now + 600,
         exp=now + 900,
         jti="jti-test",
+        secret_id="sec_test",
     )
     token = _signed_token(private_pem, payload=payload)
 

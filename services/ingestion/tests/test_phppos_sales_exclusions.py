@@ -5,7 +5,7 @@ from sqlalchemy.engine import Connection
 from src.connectors.phppos_sales_common import fetch_phppos_sales
 
 
-def test_fetch_phppos_sales_filters_excluded_customer_ids_in_sales_query() -> None:
+def test_fetch_phppos_sales_filters_excluded_person_ids_in_sales_query() -> None:
     engine = create_engine("sqlite:///:memory:")
     metadata = MetaData()
     sales = Table(
@@ -51,7 +51,7 @@ def test_fetch_phppos_sales_filters_excluded_customer_ids_in_sales_query() -> No
                 conn=conn,
                 source_system_key="eko_phppos",
                 chunk_size=100,
-                excluded_customer_ids={10},
+                excluded_person_ids={10},
             )
         )
     event.remove(engine, "before_cursor_execute", capture_sales_select)

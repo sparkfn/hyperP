@@ -7,6 +7,7 @@ from pathlib import Path
 from pytest import MonkeyPatch
 from src.connectors.dumps.connectors import (
     FundboxSalesDumpConnector,
+    _build_fundbox_contact,
     _build_fundbox_legacy,
     _fetch_phppos_dump_sales,
     get_dump_connector,
@@ -168,7 +169,7 @@ INSERT INTO `agent_chat` VALUES (5,400);
     ]
 
 
-def test_eko_dump_connector_yields_system_envelope(tmp_path: Path) -> None:
+def test_eko_dump_connector_yields_identity_envelope(tmp_path: Path) -> None:
     dump_path = tmp_path / "eko.sql"
     dump_path.write_text(
         """
@@ -223,7 +224,9 @@ INSERT INTO `phppos_customers` VALUES
     records = list(connector.fetch_records())
 
     assert len(records) == 1
-    assert records[0]["source_record_id"] == "eko_phppos-customer-11"
+    # Keyed on person_id (7), not customers.id (11) — see EkoConnector._build_one.
+    assert records[0]["source_record_id"] == "eko_phppos-customer-7"
+    assert records[0]["record_type"] == "identity"
     assert records[0]["attributes"] == {
         "full_name": "Ada Lovelace",
         "address": "One, Two, Singapore, SG, 123456, SG",
@@ -300,7 +303,8 @@ INSERT INTO `phppos_customers` VALUES
     records = list(connector.fetch_records())
 
     assert len(records) == 1
-    assert records[0]["source_record_id"] == "speedzone_phppos-customer-12"
+    # Keyed on person_id (8), not customers.id (12).
+    assert records[0]["source_record_id"] == "speedzone_phppos-customer-8"
     assert records[0]["attributes"] == {
         "full_name": "Grace Hopper",
         "address": "Three, Four, Singapore, SG, 654321, SG",
@@ -331,6 +335,26 @@ INSERT INTO `phppos_customers` VALUES
     assert raw_person["custom_field_8_value"] == "SBA1234A"
     assert raw_person["custom_field_9_value"] == "1992-02-29"
     assert raw_person["custom_field_10_value"] == "SBB5678B"
+
+
+def test_fundbox_contact_dump_is_relationship_record() -> None:
+    record = _build_fundbox_contact(
+        DumpRow(
+            {
+                "id": 9,
+                "user_id": 7,
+                "mobile_number": "6599990000",
+                "full_name": "Next Of Kin",
+                "relationship": "mother",
+                "updated_at": "2026-05-06 10:00:00",
+                "created_at": "2026-05-01 10:00:00",
+            }
+        )
+    )
+
+    assert record["source_record_id"] == "fundbox_consumer_backend-contact-9"
+    assert record["record_type"] == "relationship"
+    assert record["attributes"]["relationship_to_referrer"] == "mother"
 
 
 def test_fundbox_legacy_dump_preserves_multiple_addresses() -> None:
@@ -517,21 +541,22 @@ def test_fundbox_dump_keeps_device_ids_out_of_identifiers() -> None:
 
 def test_real_non_chat_dumps_yield_first_records() -> None:
     cases = [
-        ("fundbox_consumer_backend", "fundbox_2026-05-06.sql"),
-        ("fundbox_consumer_backend:contacts", "fundbox_2026-05-06.sql"),
-        ("fundbox_consumer_backend:legacy", "fundbox_2026-05-06.sql"),
-        ("fundbox_consumer_backend:merged", "fundbox_2026-05-06.sql"),
-        ("fundbox_consumer_backend:sales", "fundbox_2026-05-06.sql"),
-        ("eko_phppos", "eko_phppos_2026-05-06.sql"),
-        ("eko_phppos:sales", "eko_phppos_2026-05-06.sql"),
-        ("speedzone_phppos", "speedzone_phppos_2026-05-06.sql"),
-        ("speedzone_phppos:sales", "speedzone_phppos_2026-05-06.sql"),
+        ("fundbox_consumer_backend", "fundbox_2026-05-06.sql", "identity"),
+        ("fundbox_consumer_backend:contacts", "fundbox_2026-05-06.sql", "relationship"),
+        ("fundbox_consumer_backend:legacy", "fundbox_2026-05-06.sql", "identity"),
+        ("fundbox_consumer_backend:merged", "fundbox_2026-05-06.sql", "identity"),
+        ("fundbox_consumer_backend:sales", "fundbox_2026-05-06.sql", "sales"),
+        ("eko_phppos", "eko_phppos_2026-05-06.sql", "identity"),
+        ("eko_phppos:sales", "eko_phppos_2026-05-06.sql", "sales"),
+        ("speedzone_phppos", "speedzone_phppos_2026-05-06.sql", "identity"),
+        ("speedzone_phppos:sales", "speedzone_phppos_2026-05-06.sql", "sales"),
     ]
-    for source_key, dump_file in cases:
+    for source_key, dump_file, expected_record_type in cases:
         connector = get_dump_connector(source_key, Path(".dumps") / dump_file)
         record = next(connector.fetch_records(), None)
         assert record is not None, source_key
         assert record["source_record_id"]
+        assert record["record_type"] == expected_record_type, source_key
 
 
 def test_sggov_sources_are_registered_for_dump_mode(tmp_path: Path) -> None:
