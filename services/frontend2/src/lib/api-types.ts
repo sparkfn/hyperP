@@ -174,6 +174,7 @@ export interface ListedPerson extends EntityPerson {
   identifier_count: number;
   connection_count: number;
   possible_match_count: number;
+  system_match_count: number;
   order_count: number;
 }
 

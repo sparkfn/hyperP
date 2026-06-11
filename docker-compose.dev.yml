@@ -1,0 +1,19 @@
+# Development overlay for hot-reload. Use with:
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build frontend2
+#
+# Source files are mounted directly so Next.js HMR picks up changes without rebuild.
+# node_modules is kept in a named volume so it survives restarts independently.
+services:
+  frontend2:
+    build:
+      context: .
+      dockerfile: services/frontend2/Dockerfile
+      target: dev
+    volumes:
+      - ./services/frontend2:/app
+      - frontend2_nm:/app/node_modules
+    environment:
+      NODE_ENV: development
+
+volumes:
+  frontend2_nm:

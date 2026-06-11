@@ -33,6 +33,33 @@ WHERE p.status <> 'merged'
   AND ($has_bankruptcy_case IS NULL
        OR ($has_bankruptcy_case = true AND EXISTS { (p)-[:HAS_BANKRUPTCY_CASE]->(:BankruptcyCase) })
        OR ($has_bankruptcy_case = false AND NOT EXISTS { (p)-[:HAS_BANKRUPTCY_CASE]->(:BankruptcyCase) }))
+  AND ($has_any_match IS NULL
+       OR ($has_any_match = true AND (
+         EXISTS {
+           MATCH (p)-[:IDENTIFIED_BY]->(:Identifier)<-[:IDENTIFIED_BY]-(am:Person)
+           WHERE am.person_id <> p.person_id AND am.status <> 'merged'
+         }
+         OR EXISTS { MATCH (:MatchDecision)-[:ABOUT_LEFT|ABOUT_RIGHT]->(p) }
+       ))
+       OR ($has_any_match = false AND NOT (
+         EXISTS {
+           MATCH (p)-[:IDENTIFIED_BY]->(:Identifier)<-[:IDENTIFIED_BY]-(am:Person)
+           WHERE am.person_id <> p.person_id AND am.status <> 'merged'
+         }
+         OR EXISTS { MATCH (:MatchDecision)-[:ABOUT_LEFT|ABOUT_RIGHT]->(p) }
+       )))
+  AND ($has_possible_match IS NULL
+       OR ($has_possible_match = true AND EXISTS {
+         MATCH (p)-[:IDENTIFIED_BY]->(:Identifier)<-[:IDENTIFIED_BY]-(pm:Person)
+         WHERE pm.person_id <> p.person_id AND pm.status <> 'merged'
+       })
+       OR ($has_possible_match = false AND NOT EXISTS {
+         MATCH (p)-[:IDENTIFIED_BY]->(:Identifier)<-[:IDENTIFIED_BY]-(pm:Person)
+         WHERE pm.person_id <> p.person_id AND pm.status <> 'merged'
+       }))
+  AND ($has_system_match IS NULL
+       OR ($has_system_match = true AND EXISTS { MATCH (:MatchDecision)-[:ABOUT_LEFT|ABOUT_RIGHT]->(p) })
+       OR ($has_system_match = false AND NOT EXISTS { MATCH (:MatchDecision)-[:ABOUT_LEFT|ABOUT_RIGHT]->(p) }))
   AND ($addr_street IS NULL  OR toLower(addr.street_name)     CONTAINS toLower($addr_street))
   AND ($addr_unit   IS NULL   OR toLower(addr.unit_number)    CONTAINS toLower($addr_unit))
   AND ($addr_city   IS NULL   OR toLower(addr.city)           CONTAINS toLower($addr_city))
@@ -111,6 +138,10 @@ CALL (p) {
   RETURN count(DISTINCT other) AS possible_match_count
 }
 CALL (p) {
+  OPTIONAL MATCH (md:MatchDecision)-[:ABOUT_LEFT|ABOUT_RIGHT]->(p)
+  RETURN count(DISTINCT md) AS system_match_count
+}
+CALL (p) {
   RETURN count{ (p)-[:PURCHASED]->(:Order) } AS order_count
 }
 CALL (p) {
@@ -127,7 +158,7 @@ addr {
   .city, .postal_code, .country_code, .normalized_full
 } AS preferred_address,
 source_record_count, connection_count, phone_confidence, entities,
-size(entities) AS entity_count, identifier_count, possible_match_count, order_count, bankruptcy_case_count, score
+size(entities) AS entity_count, identifier_count, possible_match_count, system_match_count, order_count, bankruptcy_case_count, score
 """
 
 _SORT_COLUMNS: dict[str, str] = {
@@ -140,6 +171,7 @@ _SORT_COLUMNS: dict[str, str] = {
     "connection_count": "connection_count",
     "entity_count": "entity_count",
     "possible_match_count": "possible_match_count",
+    "system_match_count": "system_match_count",
     "order_count": "order_count",
     "bankruptcy_case_count": "bankruptcy_case_count",
     "phone_confidence": "phone_confidence",
