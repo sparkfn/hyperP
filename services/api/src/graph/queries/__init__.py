@@ -112,6 +112,7 @@ from src.graph.queries.survivorship import (
     CHECK_SOURCE_RECORD_LINKED,
     CREATE_OVERRIDE_AUDIT,
     CREATE_RECOMPUTE_AUDIT,
+    GET_ADDRESS_BY_NORMALIZED,
     GET_ADDRESS_FOR_SR,
     GET_BEST_ADDRESS,
     GET_BEST_IDENTIFIER,
@@ -124,6 +125,7 @@ from src.graph.queries.survivorship import (
     UPDATE_GOLDEN_FIELD,
     UPDATE_GOLDEN_PROFILE,
     UPDATE_OVERRIDES,
+    UPSERT_CUSTOM_ADDRESS,
 )
 
 __all__ = [
@@ -162,6 +164,7 @@ __all__ = [
     "EXECUTE_MANUAL_MERGE",
     "FIND_PERSON_BY_IDENTIFIER",
     "FLAG_AFFECTED_RECORDS_FOR_REVIEW",
+    "GET_ADDRESS_BY_NORMALIZED",
     "GET_ADDRESS_FOR_SR",
     "GET_BEST_ADDRESS",
     "GET_BEST_IDENTIFIER",
@@ -214,6 +217,7 @@ __all__ = [
     "UPDATE_INGEST_RUN_COUNTERS",
     "UPDATE_OVERRIDES",
     "UPDATE_REPORT",
+    "UPSERT_CUSTOM_ADDRESS",
     "build_count_persons_query",
     "build_list_persons_query",
     "get_entity_persons_query",

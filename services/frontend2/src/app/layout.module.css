@@ -7,7 +7,7 @@
 /* ── Sidebar ── */
 .sidebar {
   width: var(--sidebar-width);
-  transition: width 0.2s ease, border-color 0.2s ease;
+  transition: width 0.2s ease;
   flex-shrink: 0;
   background: var(--bg-sidebar);
   border-right: 1px solid var(--border);
@@ -93,7 +93,6 @@
   font-weight: 500;
   white-space: nowrap;
   overflow: hidden;
-  transition: background 0.12s, color 0.12s;
   position: relative;
 }
 
@@ -203,7 +202,6 @@
   justify-content: center;
   color: var(--text-secondary);
   flex-shrink: 0;
-  transition: background 0.12s, color 0.12s;
 }
 
 .navbarToggle:hover {
@@ -255,7 +253,6 @@
   align-items: center;
   justify-content: center;
   color: var(--text-secondary);
-  transition: background 0.12s;
 }
 
 .navbarIconBtn:hover {
@@ -356,7 +353,6 @@
   font-weight: 500;
   color: var(--bad);
   text-align: left;
-  transition: background 0.12s;
 }
 
 .profilePopoverLogout:hover {

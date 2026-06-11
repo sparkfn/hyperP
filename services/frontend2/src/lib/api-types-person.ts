@@ -193,7 +193,8 @@ export interface PersonFieldOptions {
 
 export interface SurvivorshipOverrideRequestBody {
   field_name: GoldenFieldName;
-  source_record_pk: string;
+  source_record_pk?: string;
+  custom_value?: string;
   reason: string;
 }
 

@@ -65,6 +65,17 @@ class SurvivorshipRepository(Protocol):
         """Returns one of the BatchOverrideResult outcome strings (excluding batch-only ones)."""
         ...
 
+    async def create_custom_override(
+        self,
+        person_id: str,
+        field_name: str,
+        custom_value: str,
+        reason: str,
+        actor_id: str,
+    ) -> str:
+        """Pin a golden-profile field to a manually entered literal value."""
+        ...
+
     async def create_batch_overrides(
         self,
         person_id: str,

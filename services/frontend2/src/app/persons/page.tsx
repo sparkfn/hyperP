@@ -21,20 +21,27 @@ let statsCache: StatsCache | null = null;
 interface ColDef { key: string; minWidth: number; resizable: boolean }
 const COLS: ColDef[] = [
   { key: "check",   minWidth: 36,  resizable: false },
-  { key: "name",    minWidth: 120, resizable: true  },
+  { key: "name",    minWidth: 360, resizable: true  },
   { key: "nric",    minWidth: 80,  resizable: true  },
-  { key: "phone",   minWidth: 80,  resizable: true  },
+  { key: "phone",   minWidth: 112, resizable: true  },
   { key: "dob",     minWidth: 90,  resizable: true  },
   { key: "email",   minWidth: 100, resizable: true  },
-  { key: "address", minWidth: 120, resizable: true  },
+  { key: "address", minWidth: 96, resizable: true  },
   { key: "entity",  minWidth: 80,  resizable: true  },
   { key: "relations", minWidth: 96, resizable: true },
-  { key: "matches", minWidth: 88, resizable: true },
   { key: "orders", minWidth: 84, resizable: true },
+  { key: "matches", minWidth: 88, resizable: true },
+  { key: "decisionHistory", minWidth: 112, resizable: true },
   { key: "quality", minWidth: 108, resizable: true  },
   { key: "graph",   minWidth: 48,  resizable: false },
 ];
-const DEFAULT_WIDTHS = [36, 180, 110, 110, 110, 160, 200, 120, 112, 84, 124, 54];
+const DEFAULT_WIDTHS = [36, 480, 110, 132, 110, 160, 140, 120, 112, 84, 88, 112, 124, 54];
+const NAME_COL_OVERHEAD = 74; // left-pad(14) + avatar(36) + gap(10) + right-pad(14)
+const NAME_COL_MIN = 360;
+const NAME_COL_MAX = 500;
+const ADDR_COL_OVERHEAD = 28; // left-pad(14) + right-pad(14)
+const ADDR_COL_MIN = 96;
+const ADDR_COL_MAX = 180;
 
 
 function parseDob(dob: string | null): { display: string; invalid: boolean } {
@@ -449,21 +456,6 @@ function PersonRow({
         )}
       </td>
       <td className={`${styles.td} ${styles.tdMetric}`}>
-        {p.possible_match_count > 0 ? (
-          <Link
-            href={`/persons/${p.person_id}?tab=matches`}
-            className={styles.matchesTrigger}
-            onClick={(event) => event.stopPropagation()}
-            aria-label={`Open ${p.possible_match_count} matches for ${p.preferred_full_name ?? p.person_id}`}
-          >
-            <span className={styles.matchesCount}>{p.possible_match_count}</span>
-            <span className={styles.matchesLabel}>matches</span>
-          </Link>
-        ) : (
-          <span className={styles.matchesZero}>No matches</span>
-        )}
-      </td>
-      <td className={`${styles.td} ${styles.tdMetric}`}>
         {p.order_count > 0 ? (
           <button
             type="button"
@@ -480,6 +472,36 @@ function PersonRow({
           </button>
         ) : (
           <span className={styles.ordersZero}>No orders</span>
+        )}
+      </td>
+      <td className={`${styles.td} ${styles.tdMetric}`}>
+        {p.possible_match_count > 0 ? (
+          <Link
+            href={`/persons/${p.person_id}?tab=matches`}
+            className={styles.matchesTrigger}
+            onClick={(event) => event.stopPropagation()}
+            aria-label={`Open ${p.possible_match_count} matches for ${p.preferred_full_name ?? p.person_id}`}
+          >
+            <span className={styles.matchesCount}>{p.possible_match_count}</span>
+            <span className={styles.matchesLabel}>matches</span>
+          </Link>
+        ) : (
+          <span className={styles.matchesZero}>No matches</span>
+        )}
+      </td>
+      <td className={`${styles.td} ${styles.tdMetric}`}>
+        {p.system_match_count > 0 ? (
+          <Link
+            href={`/persons/${p.person_id}#section-decision-history`}
+            className={styles.matchesTrigger}
+            onClick={(event) => event.stopPropagation()}
+            aria-label={`Open ${p.system_match_count} decision history entries for ${p.preferred_full_name ?? p.person_id}`}
+          >
+            <span className={styles.matchesCount}>{p.system_match_count}</span>
+            <span className={styles.matchesLabel}>decisions</span>
+          </Link>
+        ) : (
+          <span className={styles.matchesZero}>No decisions</span>
         )}
       </td>
       <td className={`${styles.td} ${styles.td}`}>
@@ -613,8 +635,8 @@ function SkeletonRow({ index, colWidths }: { index: number; colWidths: number[] 
           </div>
         </div>
       </td>
-      {/* nric, phone, dob, email, address, entity, relations, matches, orders */}
-      {([1, 2, 3, 4, 5, 6, 7, 8, 9] as const).map((wi) => (
+      {/* nric, phone, dob, email, address, entity, relations, orders, matches, decision history */}
+      {([1, 2, 3, 4, 5, 6, 7, 8, 9, 10] as const).map((wi) => (
         <td key={wi} className={styles.td}>
           <span className={styles.skeletonLine} style={{ width: w(wi) }} />
         </td>
@@ -661,10 +683,13 @@ function PaginationBar({
 
 type PresenceFilter = "any" | "has" | "none";
 type DobMode = "single" | "range";
-type SortKey = "name" | "dob" | "entity" | "relations" | "matches" | "orders" | "quality";
+type SortKey = "name" | "dob" | "entity" | "relations" | "matches" | "decisionHistory" | "orders" | "quality";
 type SortDir = "asc" | "desc";
 type FlagFilter = "any" | "high_value" | "high_risk" | "no_contact";
-type FilterKey = "entity" | "source" | "identity" | "dob" | "address" | "flags" | "bankruptcy" | "updated" | "location";
+type FilterKey = "entity" | "source" | "identity" | "matches" | "dob" | "address" | "flags" | "bankruptcy" | "updated" | "location";
+
+type MatchPresenceFilter = "any" | "has" | "none";
+type MatchTypeFilter = "possible" | "recommendation" | "both";
 
 const SORT_PARAM_BY_KEY: Record<SortKey, string> = {
   name: "preferred_full_name",
@@ -672,6 +697,7 @@ const SORT_PARAM_BY_KEY: Record<SortKey, string> = {
   entity: "entity_count",
   relations: "connection_count",
   matches: "possible_match_count",
+  decisionHistory: "system_match_count",
   orders: "order_count",
   quality: "profile_completeness_score",
 };
@@ -809,6 +835,14 @@ function PersonsInner(): ReactElement {
   const [addrCity, setAddrCity] = useState(searchParams.get("addr_city") ?? "");
   const [addrPostal, setAddrPostal] = useState(searchParams.get("addr_postal") ?? "");
   const [addrCountry, setAddrCountry] = useState(searchParams.get("addr_country") ?? "");
+  const [matchPresence, setMatchPresence] = useState<MatchPresenceFilter>(() => {
+    const value = searchParams.get("matches");
+    return value === "has" || value === "has_any" || value === "possible" ? "has" : value === "none" ? "none" : "any";
+  });
+  const [matchType, setMatchType] = useState<MatchTypeFilter>(() => {
+    const value = searchParams.get("match_type");
+    return value === "recommendation" || value === "both" ? value : "possible";
+  });
 
   const [openFilter, setOpenFilter] = useState<FilterKey | null>(null);
   const [sortKey, setSortKey] = useState<SortKey | null>(() => parseSortKey(searchParams.get("sort_by")));
@@ -1031,6 +1065,8 @@ function PersonsInner(): ReactElement {
     setAddrCity("");
     setAddrPostal("");
     setAddrCountry("");
+    setMatchPresence("any");
+    setMatchType("possible");
   }
 
   const apiQuery = useMemo(() => {
@@ -1062,6 +1098,11 @@ function PersonsInner(): ReactElement {
     if (flagFilter === "high_risk") params.set("is_high_risk", "true");
     if (flagFilter === "no_contact") { params.set("has_phone", "false"); params.set("has_email", "false"); }
     if (hasBankruptcy !== null) params.set("has_bankruptcy_case", String(hasBankruptcy));
+    if (matchPresence === "has") {
+      params.set("has_possible_match", "true");
+    } else if (matchPresence === "none") {
+      params.set("has_possible_match", "false");
+    }
     if (updatedAfter) params.set("updated_after", updatedAfter);
     if (updatedBefore) params.set("updated_before", updatedBefore);
     if (addrCity) params.set("addr_city", addrCity);
@@ -1069,7 +1110,7 @@ function PersonsInner(): ReactElement {
     if (addrCountry) params.set("addr_country", addrCountry);
     params.set("limit", String(pageSize));
     return params.toString();
-  }, [search, entityFilter, sourceFilter, identityFilter, addressFilter, dobFilter, dobMode, dobSingleDate, dobStartDate, dobEndDate, flagFilter, hasBankruptcy, updatedAfter, updatedBefore, addrCity, addrPostal, addrCountry, sortKey, sortDir, pageSize]);
+  }, [search, entityFilter, sourceFilter, identityFilter, addressFilter, dobFilter, dobMode, dobSingleDate, dobStartDate, dobEndDate, flagFilter, hasBankruptcy, matchPresence, updatedAfter, updatedBefore, addrCity, addrPostal, addrCountry, sortKey, sortDir, pageSize]);
 
   const urlQuery = useMemo(() => {
     const params = new URLSearchParams(apiQuery);
@@ -1077,8 +1118,16 @@ function PersonsInner(): ReactElement {
     else params.delete("q");
     if (dobFilter === "has") params.set("dob_mode", dobMode);
     else params.delete("dob_mode");
+    if (matchPresence !== "any") {
+      params.set("matches", matchPresence);
+      if (matchPresence === "has") params.set("match_type", matchType);
+      else params.delete("match_type");
+    } else {
+      params.delete("matches");
+      params.delete("match_type");
+    }
     return params.toString();
-  }, [apiQuery, dobFilter, dobMode, search]);
+  }, [apiQuery, dobFilter, dobMode, matchPresence, matchType, search]);
 
   useEffect(() => {
     const current = searchParams.toString();
@@ -1202,6 +1251,36 @@ function PersonsInner(): ReactElement {
     return () => controller.abort();
   }, [ordersPopover?.personId]);
 
+  useEffect(() => {
+    if (pageRows.length === 0) return;
+    const canvas = document.createElement("canvas");
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+
+    ctx.font = `600 13px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif`;
+    let maxNameW = 0;
+    for (const p of pageRows) {
+      const w = ctx.measureText(p.preferred_full_name ?? p.person_id).width;
+      if (w > maxNameW) maxNameW = w;
+    }
+    const nameW = Math.round(Math.min(NAME_COL_MAX, Math.max(NAME_COL_MIN, maxNameW + NAME_COL_OVERHEAD)));
+
+    ctx.font = `400 12px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif`;
+    let maxAddrW = 0;
+    for (const p of pageRows) {
+      const addr = p.preferred_address?.normalized_full ?? "";
+      const w = ctx.measureText(addr).width;
+      if (w > maxAddrW) maxAddrW = w;
+    }
+    const addrW = Math.round(Math.min(ADDR_COL_MAX, Math.max(ADDR_COL_MIN, maxAddrW + ADDR_COL_OVERHEAD)));
+
+    setColWidths((prev) => prev.map((c, i) => {
+      if (i === 1) return nameW;
+      if (i === 6) return addrW;
+      return c;
+    }));
+  }, [pageRows]);
+
   function closeRelationPopover(): void {
     setRelationPopover(null);
   }
@@ -1245,6 +1324,10 @@ function PersonsInner(): ReactElement {
   }
 
   const tableWidth = colWidths.reduce((sum, width) => sum + width, 0);
+  const matchFilterLabel = matchPresence === "has"
+    ? matchType === "possible" ? "Has Possible Match" : matchType === "recommendation" ? "Has Recommendation Match" : "Has Possible + Recommendation"
+    : matchPresence === "none" ? "No Matches"
+    : "Matches";
 
   return (
     <div className={styles.page}>
@@ -1455,6 +1538,58 @@ function PersonsInner(): ReactElement {
                   );
                 })}
               </div>
+            </div>
+          </FilterPill>
+
+          <FilterPill
+            label="Matches"
+            isActive={matchPresence !== "any"}
+            activeLabel={matchFilterLabel}
+            onClear={() => { setMatchPresence("any"); setMatchType("possible"); }}
+            open={openFilter === "matches"}
+            onToggle={() => toggleFilter("matches")}
+            wide
+          >
+            <div className={styles.fpInner}>
+              <div className={styles.fpSegmented}>
+                {(["any", "has", "none"] as const).map((value) => (
+                  <button
+                    key={value}
+                    type="button"
+                    className={`${styles.fpSegmentedBtn} ${matchPresence === value ? styles.fpSegmentedBtnActive : ""}`}
+                    onClick={() => setMatchPresence(value)}
+                  >
+                    {value === "any" ? "Any" : value === "has" ? "Has Matches" : "No Matches"}
+                  </button>
+                ))}
+              </div>
+              {matchPresence === "has" && (
+                <div className={styles.filterOptions}>
+                  <button
+                    type="button"
+                    className={`${styles.filterChip} ${matchType === "possible" ? styles.filterChipActive : ""}`}
+                    onClick={() => setMatchType("possible")}
+                  >
+                    Possible Match
+                  </button>
+                  <button
+                    type="button"
+                    className={`${styles.filterChip} ${styles.filterChipDisabled}`}
+                    disabled
+                    title="Recommendation Match is not implemented yet"
+                  >
+                    Recommendation Match
+                  </button>
+                  <button
+                    type="button"
+                    className={`${styles.filterChip} ${styles.filterChipDisabled}`}
+                    disabled
+                    title="Recommendation Match is not implemented yet"
+                  >
+                    Both
+                  </button>
+                </div>
+              )}
             </div>
           </FilterPill>
 
@@ -1750,8 +1885,8 @@ function PersonsInner(): ReactElement {
                 <th className={`${styles.th} ${styles.thCheck}`}>
                   <input type="checkbox" ref={checkAllRef} checked={allChecked} onChange={toggleAll} className={styles.checkbox} />
                 </th>
-                {(["Name", "NRIC", "Phone", "Date of Birth", "Email", "Address", "Entity", "Relations", "Matches", "Orders"] as const).map((h, i) => {
-                  const sk: SortKey | null = h === "Name" ? "name" : h === "Date of Birth" ? "dob" : h === "Entity" ? "entity" : h === "Relations" ? "relations" : h === "Matches" ? "matches" : h === "Orders" ? "orders" : null;
+                {(["Name", "NRIC", "Phone", "Date of Birth", "Email", "Address", "Entity", "Relations", "Orders", "Matches", "Decision History"] as const).map((h, i) => {
+                  const sk: SortKey | null = h === "Name" ? "name" : h === "Date of Birth" ? "dob" : h === "Entity" ? "entity" : h === "Relations" ? "relations" : h === "Matches" ? "matches" : h === "Decision History" ? "decisionHistory" : h === "Orders" ? "orders" : null;
                   return (
                     <th key={h} className={styles.th}>
                       {sk ? (
@@ -1769,7 +1904,7 @@ function PersonsInner(): ReactElement {
                     Completeness
                     <SortIcon active={sortKey === "quality"} dir={sortDir} />
                   </button>
-                  <div className={styles.resizeHandle} onMouseDown={(e) => startColResize(11, e)} />
+                  <div className={styles.resizeHandle} onMouseDown={(e) => startColResize(12, e)} />
                 </th>
                 <th className={`${styles.th} ${styles.thSticky} ${styles.stickyGraph}`}>Graph</th>
               </tr>

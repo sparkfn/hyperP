@@ -33,6 +33,9 @@ class PersonListFilters(TypedDict, total=False):
     has_email: bool | None
     has_address: bool | None
     has_bankruptcy_case: bool | None
+    has_any_match: bool | None
+    has_possible_match: bool | None
+    has_system_match: bool | None
     addr_street: str | None
     addr_unit: str | None
     addr_city: str | None

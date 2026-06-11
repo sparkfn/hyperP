@@ -95,6 +95,12 @@ RETURN id.normalized_value AS value
 LIMIT 1
 """
 
+GET_ADDRESS_BY_NORMALIZED = """
+MATCH (a:Address {normalized_full: $normalized_full})
+RETURN a.address_id AS address_id
+LIMIT 1
+"""
+
 GET_ADDRESS_FOR_SR = """
 MATCH (p:Person {person_id: $person_id})-[la:LIVES_AT {source_record_pk: $source_record_pk}]->(a:Address)
 RETURN a.address_id AS address_id, a.normalized_full AS normalized_full
@@ -177,6 +183,15 @@ SET p.survivorship_overrides = $overrides, p.updated_at = datetime()
 UPDATE_GOLDEN_FIELD = """
 MATCH (p:Person {person_id: $person_id})
 SET p[$field_name] = $value, p.updated_at = datetime()
+"""
+
+UPSERT_CUSTOM_ADDRESS = """
+MERGE (a:Address {normalized_full: $normalized_full})
+ON CREATE SET
+  a.address_id = randomUUID(),
+  a.created_at = datetime()
+SET a.updated_at = datetime()
+RETURN a.address_id AS address_id
 """
 
 CREATE_OVERRIDE_AUDIT = """

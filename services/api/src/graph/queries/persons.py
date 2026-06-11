@@ -317,9 +317,10 @@ SKIP $skip LIMIT $limit
 """
 
 GET_PERSON_AUDIT = """
-MATCH (me:MergeEvent)
-WHERE (me)-[:ABSORBED]->(:Person {person_id: $person_id})
-   OR (me)-[:SURVIVOR]->(:Person {person_id: $person_id})
+MATCH (p:Person {person_id: $person_id})
+MATCH (me:MergeEvent)-[:ABSORBED|SURVIVOR]->(event_person:Person)
+WHERE event_person = p OR (event_person)-[:MERGED_INTO*1..]->(p)
+WITH DISTINCT me
 OPTIONAL MATCH (me)-[:ABSORBED]->(absorbed:Person)
 OPTIONAL MATCH (me)-[:SURVIVOR]->(survivor:Person)
 OPTIONAL MATCH (me)-[:TRIGGERED_BY]->(md:MatchDecision)
@@ -330,7 +331,7 @@ RETURN me {
 absorbed.person_id AS absorbed_person_id,
 survivor.person_id AS survivor_person_id,
 md.match_decision_id AS triggered_by_decision_id
-ORDER BY me.created_at DESC
+ORDER BY me.created_at DESC, me.merge_event_id DESC
 SKIP $skip LIMIT $limit
 """
 
@@ -441,10 +442,10 @@ RETURN count(DISTINCT other) AS total
 """
 
 COUNT_PERSON_AUDIT = """
-MATCH (me:MergeEvent)
-WHERE (me)-[:ABSORBED]->(:Person {person_id: $person_id})
-   OR (me)-[:SURVIVOR]->(:Person {person_id: $person_id})
-RETURN count(me) AS total
+MATCH (p:Person {person_id: $person_id})
+MATCH (me:MergeEvent)-[:ABSORBED|SURVIVOR]->(event_person:Person)
+WHERE event_person = p OR (event_person)-[:MERGED_INTO*1..]->(p)
+RETURN count(DISTINCT me) AS total
 """
 
 COUNT_PERSON_CONNECTIONS_IDENTIFIER = """
@@ -490,6 +491,7 @@ GET_PERSON_POSSIBLE_MATCH_DETAIL = """
 MATCH (p:Person {person_id: $person_id})-[:IDENTIFIED_BY]->(id:Identifier)
   <-[:IDENTIFIED_BY]-(candidate:Person {person_id: $candidate_person_id})
 WHERE candidate.status <> 'merged'
+WITH DISTINCT p, candidate, id
 CALL {
   WITH p, id
   MATCH (p)-[rel:IDENTIFIED_BY]->(id)

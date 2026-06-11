@@ -59,7 +59,17 @@ def _value_display(field_name: str, value: str) -> str:
     return value
 
 
+def _custom_override_value(data: FieldOptionsData, field_name: str) -> str | None:
+    override = data.overrides.get(field_name)
+    if override is None:
+        return None
+    return override.get("custom_value")
+
+
 def _current_value(data: FieldOptionsData, field_name: str) -> str | None:
+    custom_value = _custom_override_value(data, field_name)
+    if custom_value is not None:
+        return custom_value
     return {
         "preferred_full_name": data.preferred_full_name,
         "preferred_phone": data.preferred_phone,
@@ -82,7 +92,10 @@ def _build_field_options(data: FieldOptionsData) -> PersonFieldOptions:
             if dedup_key in seen:
                 continue
             seen.add(dedup_key)
-            if field_name == "preferred_address":
+            custom_value = _custom_override_value(data, field_name)
+            if custom_value is not None:
+                is_current = False
+            elif field_name == "preferred_address":
                 is_current = (
                     data.preferred_address_id is not None
                     and row.address_id == data.preferred_address_id
@@ -103,6 +116,20 @@ def _build_field_options(data: FieldOptionsData) -> PersonFieldOptions:
                     entity_display_name=row.entity_display_name,
                     observed_at_display=observed_display,
                     is_current=is_current,
+                )
+            )
+        if current_value is not None and _custom_override_value(data, field_name) is not None:
+            options.append(
+                FieldOption(
+                    source_record_pk=f"custom:{field_name}",
+                    source_kind=source_kind,
+                    identifier_type=None,
+                    value=current_value,
+                    value_display=_value_display(field_name, current_value),
+                    source_system="Custom override",
+                    entity_display_name=None,
+                    observed_at_display=None,
+                    is_current=True,
                 )
             )
         options.sort(key=lambda o: (not o.is_current, o.source_system, o.value))
@@ -201,14 +228,25 @@ async def create_survivorship_override(
     user: AuthUser = Depends(require_admin),
     repo: SurvivorshipRepository = Depends(get_survivorship_repo),
 ) -> ApiResponse[OverrideResponse]:
-    """Pin a golden-profile field value to a specific source record."""
-    outcome = await repo.create_override(
-        person_id,
-        body.field_name,
-        body.source_record_pk,
-        body.reason,
-        user.email,
-    )
+    """Pin a golden-profile field value to a specific source record or literal value."""
+    if body.custom_value is not None:
+        outcome = await repo.create_custom_override(
+            person_id,
+            body.field_name,
+            body.custom_value,
+            body.reason,
+            user.email,
+        )
+        source_record_pk = ""
+    else:
+        source_record_pk = body.source_record_pk or ""
+        outcome = await repo.create_override(
+            person_id,
+            body.field_name,
+            source_record_pk,
+            body.reason,
+            user.email,
+        )
     if outcome != "ok":
         _override_error(outcome, request)
 
@@ -216,7 +254,7 @@ async def create_survivorship_override(
         OverrideResponse(
             person_id=person_id,
             field_name=body.field_name,
-            source_record_pk=body.source_record_pk,
+            source_record_pk=source_record_pk,
             status="applied",
         ),
         request,
