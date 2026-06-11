@@ -11,6 +11,7 @@ from src.types import ReviewCaseDetail, ReviewCaseSummary
 class ReviewListFilters(TypedDict, total=False):
     queue_state: str | None
     assigned_to: str | None
+    person_id: str | None
     priority_lte: int | None
     priority_gte: int | None
     decision: str | None
@@ -22,6 +23,7 @@ class ReviewListFilters(TypedDict, total=False):
     sla_due_after: str | None
     sla_due_before: str | None
     overdue_sla: bool | None
+    resolved: bool | None
     q: str | None
     sort_by: str | None
     sort_order: str | None

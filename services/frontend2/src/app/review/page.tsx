@@ -10,12 +10,15 @@ import { completenessColor, relativeTime } from "@/lib/display";
 import { useSetLoading } from "@/lib/LoadingContext";
 import styles from "./review.module.css";
 
-type QueueState = "open" | "assigned" | "deferred" | "resolved" | "all";
+type QueueState = "unresolved" | "open" | "assigned" | "deferred" | "resolved" | "all";
 type Priority = "all" | "high" | "medium" | "low";
 type SortKey = "priority" | "confidence" | "queue_state" | "sla_due_at";
 type SortDir = "asc" | "desc";
 
+// "unresolved"/"resolved" map to the server-side `resolved` boolean (resolved
+// includes cancelled cases); the named states map to exact `queue_state`.
 const QUEUE_FILTERS: { value: QueueState; label: string }[] = [
+  { value: "unresolved", label: "Unresolved" },
   { value: "open", label: "Open" },
   { value: "assigned", label: "Assigned" },
   { value: "deferred", label: "Deferred" },
@@ -88,6 +91,7 @@ function buildApiQuery(args: {
   queue: QueueState;
   priority: Priority;
   assigned: string;
+  personId: string;
   decision: string;
   engine: string;
   confMin: string;
@@ -102,11 +106,14 @@ function buildApiQuery(args: {
   sortDir: SortDir;
 }): URLSearchParams {
   const p = new URLSearchParams();
-  if (args.queue !== "all") p.set("queue_state", args.queue);
+  if (args.queue === "unresolved") p.set("resolved", "false");
+  else if (args.queue === "resolved") p.set("resolved", "true");
+  else if (args.queue !== "all") p.set("queue_state", args.queue);
   const pr = PRIORITY_FILTERS.find((f) => f.value === args.priority);
   if (pr?.gte != null) p.set("priority_gte", String(pr.gte));
   if (pr?.lte != null) p.set("priority_lte", String(pr.lte));
   if (args.assigned.trim()) p.set("assigned_to", args.assigned.trim());
+  if (args.personId.trim()) p.set("person_id", args.personId.trim());
   if (args.decision) p.set("decision", args.decision);
   if (args.engine) p.set("engine_type", args.engine);
   if (args.confMin.trim()) p.set("confidence_gte", args.confMin.trim());
@@ -128,6 +135,7 @@ export default function ReviewPage(): ReactElement {
   const [queueFilter, setQueueFilter] = useState<QueueState>("open");
   const [priorityFilter, setPriorityFilter] = useState<Priority>("all");
   const [assignedFilter, setAssignedFilter] = useState("");
+  const [personIdFilter, setPersonIdFilter] = useState("");
   const [decision, setDecision] = useState("");
   const [engine, setEngine] = useState("");
   const [confMin, setConfMin] = useState("");
@@ -185,6 +193,7 @@ export default function ReviewPage(): ReactElement {
         queue: queueFilter,
         priority: priorityFilter,
         assigned: assignedFilter,
+        personId: personIdFilter,
         decision,
         engine,
         confMin,
@@ -198,7 +207,7 @@ export default function ReviewPage(): ReactElement {
         sortKey,
         sortDir,
       }).toString(),
-    [queueFilter, priorityFilter, assignedFilter, decision, engine, confMin, confMax, createdAfter, createdBefore, slaAfter, slaBefore, overdue, debouncedSearch, sortKey, sortDir],
+    [queueFilter, priorityFilter, assignedFilter, personIdFilter, decision, engine, confMin, confMax, createdAfter, createdBefore, slaAfter, slaBefore, overdue, debouncedSearch, sortKey, sortDir],
   );
 
   // Reset to page 1 when filters/sort change
@@ -261,7 +270,7 @@ export default function ReviewPage(): ReactElement {
   const pageEnd = cursorStack.length * pageSize + rows.length;
 
   const advancedActive =
-    decision !== "" || engine !== "" || confMin !== "" || confMax !== "" ||
+    personIdFilter !== "" || decision !== "" || engine !== "" || confMin !== "" || confMax !== "" ||
     createdAfter !== "" || createdBefore !== "" || slaAfter !== "" || slaBefore !== "" || overdue;
   const hasFilters =
     search !== "" || assignedFilter !== "" || queueFilter !== "open" ||
@@ -275,6 +284,7 @@ export default function ReviewPage(): ReactElement {
   function clearAll(): void {
     setSearch("");
     setAssignedFilter("");
+    setPersonIdFilter("");
     setQueueFilter("open");
     setPriorityFilter("all");
     setDecision("");
@@ -350,6 +360,11 @@ export default function ReviewPage(): ReactElement {
         {/* Advanced filters */}
         {showMore && (
           <div className={styles.advancedBar}>
+            <label className={styles.advField}>
+              <span className={styles.advLabel}>Person ID</span>
+              <input className={styles.advInput} type="text" value={personIdFilter}
+                onChange={(e) => setPersonIdFilter(e.target.value)} placeholder="person id…" />
+            </label>
             <label className={styles.advField}>
               <span className={styles.advLabel}>Decision</span>
               <select className={styles.advSelect} value={decision} onChange={(e) => setDecision(e.target.value)}>

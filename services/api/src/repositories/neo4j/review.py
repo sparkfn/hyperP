@@ -58,10 +58,11 @@ class Neo4jReviewRepository:
         self, filters: ReviewListFilters, skip: int, limit: int
     ) -> tuple[list[ReviewCaseSummary], int]:
         has_q = filters.get("q") is not None
+        has_person = filters.get("person_id") is not None
         list_query = build_list_review_cases_query(
-            filters.get("sort_by"), filters.get("sort_order"), has_q=has_q
+            filters.get("sort_by"), filters.get("sort_order"), has_q=has_q, has_person=has_person
         )
-        count_query = build_count_review_cases_query(has_q=has_q)
+        count_query = build_count_review_cases_query(has_q=has_q, has_person=has_person)
         cypher_params: dict[str, str | int | float | bool | None] = {
             k: v  # type: ignore[misc]  # TypedDict values are object; known-safe filter keys
             for k, v in filters.items()

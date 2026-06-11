@@ -16,7 +16,9 @@ import { QUEUE_STATES } from "@/lib/api-types-ops";
 
 export interface ReviewFilterValues {
   queue_state: string;
+  resolved: string;
   assigned_to: string;
+  person_id: string;
   q: string;
   decision: string;
   engine_type: string;
@@ -64,7 +66,7 @@ export default function ReviewQueueFilters({ initial }: Props): ReactElement {
     const params = new URLSearchParams();
     // String filters — only set when non-empty (cursor is intentionally dropped → page 1).
     const stringKeys: (keyof ReviewFilterValues)[] = [
-      "queue_state", "assigned_to", "q", "decision", "engine_type",
+      "queue_state", "resolved", "assigned_to", "person_id", "q", "decision", "engine_type",
       "priority_gte", "priority_lte", "confidence_gte", "confidence_lte",
       "created_after", "created_before", "sla_due_after", "sla_due_before",
       "sort_by", "sort_order", "limit",
@@ -110,11 +112,31 @@ export default function ReviewQueueFilters({ initial }: Props): ReactElement {
               ))}
             </TextField>
             <TextField
+              select
+              size="small"
+              label="Resolution"
+              value={v.resolved}
+              onChange={(e) => set("resolved", e.target.value)}
+              sx={{ minWidth: 140 }}
+            >
+              <MenuItem value="">Any</MenuItem>
+              <MenuItem value="false">Unresolved</MenuItem>
+              <MenuItem value="true">Resolved</MenuItem>
+            </TextField>
+            <TextField
               size="small"
               label="Assigned to"
               value={v.assigned_to}
               onChange={(e) => set("assigned_to", e.target.value)}
               placeholder="reviewer id"
+              sx={{ minWidth: 160 }}
+            />
+            <TextField
+              size="small"
+              label="Person ID"
+              value={v.person_id}
+              onChange={(e) => set("person_id", e.target.value)}
+              placeholder="person id"
               sx={{ minWidth: 160 }}
             />
             <TextField

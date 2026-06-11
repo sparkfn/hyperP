@@ -25,7 +25,7 @@ interface PageProps {
 
 // Server-side params forwarded verbatim to the API list endpoint.
 const FILTER_KEYS: readonly string[] = [
-  "queue_state", "assigned_to", "q", "decision", "engine_type",
+  "queue_state", "resolved", "assigned_to", "person_id", "q", "decision", "engine_type",
   "priority_gte", "priority_lte", "confidence_gte", "confidence_lte",
   "created_after", "created_before", "sla_due_after", "sla_due_before",
   "overdue_sla", "sort_by", "sort_order",
@@ -108,7 +108,9 @@ export default async function ReviewQueuePage({ searchParams }: PageProps): Prom
   // Build filter form initial values (everything except cursor).
   const filterInitial: ReviewFilterValues = {
     queue_state: pickString(params, "queue_state"),
+    resolved: pickString(params, "resolved"),
     assigned_to: pickString(params, "assigned_to"),
+    person_id: pickString(params, "person_id"),
     q: pickString(params, "q"),
     decision: pickString(params, "decision"),
     engine_type: pickString(params, "engine_type"),

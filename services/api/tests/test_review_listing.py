@@ -72,6 +72,31 @@ def test_search_path_includes_person_joins() -> None:
     assert "right.preferred_email" in query
 
 
+def test_person_filter_path_includes_joins_without_search_predicate() -> None:
+    # person_id alone pulls in the person joins and its predicate, but not the
+    # q search predicate.
+    list_q = build_list_review_cases_query(None, None, has_q=False, has_person=True)
+    count_q = build_count_review_cases_query(has_q=False, has_person=True)
+    for query in (list_q, count_q):
+        assert "OPTIONAL MATCH (md)-[:ABOUT_LEFT]->(left:Person)" in query
+        assert "left.person_id = $person_id" in query
+        assert "right.person_id = $person_id" in query
+        assert "toLower($q)" not in query
+
+
+def test_no_person_filter_path_skips_person_predicate() -> None:
+    query = build_list_review_cases_query(None, None, has_q=False, has_person=False)
+    assert "$person_id" not in query
+
+
+def test_person_filter_combines_with_search() -> None:
+    query = build_list_review_cases_query(None, None, has_q=True, has_person=True)
+    assert "toLower($q)" in query
+    assert "left.person_id = $person_id" in query
+    # Joins must appear exactly once even when both flags are set.
+    assert query.count("OPTIONAL MATCH (md)-[:ABOUT_LEFT]->(left:Person)") == 1
+
+
 def test_count_query_shares_filter_clause() -> None:
     count = build_count_review_cases_query(has_q=True)
     assert "RETURN count(rc) AS total" in count
@@ -99,9 +124,18 @@ def test_filter_clause_covers_all_new_filters() -> None:
         "$sla_due_after",
         "$sla_due_before",
         "$overdue_sla",
+        "$resolved",
         "$q IS NULL",
     ):
         assert param in query, f"missing filter param {param}"
+
+
+def test_resolved_filter_in_base_clause_without_joins() -> None:
+    # The resolved filter only touches rc.queue_state, so it must be present
+    # even on the no-search path (which skips the person joins).
+    query = build_list_review_cases_query(None, None, has_q=False, has_person=False)
+    assert "(rc.queue_state IN ['resolved', 'cancelled']) = $resolved" in query
+    assert "OPTIONAL MATCH" not in query
 
 
 # ── Route-level tests ───────────────────────────────────────────────────────
@@ -169,6 +203,7 @@ async def test_list_forwards_filters_and_returns_total() -> None:
             "/v1/review-cases",
             params={
                 "queue_state": "open",
+                "person_id": "p-123",
                 "priority_gte": "50",
                 "priority_lte": "90",
                 "decision": "review",
@@ -176,6 +211,7 @@ async def test_list_forwards_filters_and_returns_total() -> None:
                 "confidence_gte": "0.6",
                 "confidence_lte": "0.95",
                 "overdue_sla": "true",
+                "resolved": "false",
                 "q": "ana tan",
                 "sort_by": "confidence",
                 "sort_order": "desc",
@@ -191,6 +227,7 @@ async def test_list_forwards_filters_and_returns_total() -> None:
 
     assert repo.captured is not None
     assert repo.captured["queue_state"] == "open"
+    assert repo.captured["person_id"] == "p-123"
     assert repo.captured["priority_gte"] == 50
     assert repo.captured["priority_lte"] == 90
     assert repo.captured["decision"] == "review"
@@ -198,6 +235,7 @@ async def test_list_forwards_filters_and_returns_total() -> None:
     assert repo.captured["confidence_gte"] == 0.6
     assert repo.captured["confidence_lte"] == 0.95
     assert repo.captured["overdue_sla"] is True
+    assert repo.captured["resolved"] is False
     assert repo.captured["q"] == "ana tan"
     assert repo.captured["sort_by"] == "confidence"
     assert repo.captured["sort_order"] == "desc"

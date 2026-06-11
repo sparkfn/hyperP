@@ -803,6 +803,12 @@ paths:
           in: query
           schema:
             type: string
+        - name: person_id
+          in: query
+          description: >-
+            Only cases whose match decision involves this person (either side).
+          schema:
+            type: string
         - name: q
           in: query
           description: >-
@@ -861,6 +867,13 @@ paths:
         - name: overdue_sla
           in: query
           description: When true, only cases past their SLA and not yet resolved/cancelled.
+          schema:
+            type: boolean
+        - name: resolved
+          in: query
+          description: >-
+            True for closed cases (queue_state resolved or cancelled); false
+            for unresolved cases (open, assigned, deferred).
           schema:
             type: boolean
         - name: sort_by

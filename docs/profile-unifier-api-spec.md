@@ -636,6 +636,7 @@ List review cases.
 
 - `queue_state`
 - `assigned_to`
+- `person_id` — only cases whose match decision involves this person (either side)
 - `q` — case-insensitive search (min 3 chars) over `review_case_id`, `decision`, `engine_type`, `assigned_to`, and the linked left/right person name, phone, and email
 - `priority_gte`
 - `priority_lte`
@@ -648,6 +649,7 @@ List review cases.
 - `sla_due_after`
 - `sla_due_before`
 - `overdue_sla` — when `true`, only cases past their SLA and not yet resolved/cancelled
+- `resolved` — `true` for closed cases (`queue_state` of `resolved` or `cancelled`); `false` for unresolved cases (`open`, `assigned`, `deferred`)
 - `sort_by` — one of `priority` (default), `confidence`, `sla_due_at`, `created_at`, `updated_at`, `queue_state`
 - `sort_order` — `asc` or `desc`
 - `cursor`

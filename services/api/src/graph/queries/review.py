@@ -13,19 +13,23 @@ _ACTIONS_AS_LIST: LiteralString = (
     "(CASE WHEN rc.actions IS :: STRING THEN [] ELSE coalesce(rc.actions, []) END)"
 )
 
-# Person joins are only added when `q` is present (search needs left/right
-# names). ABOUT_LEFT/ABOUT_RIGHT only bind to :Person nodes, so source-record
-# sides yield null and are coalesced away. The WITH turns the following filter
-# WHERE into a standalone row filter (a bare WHERE after OPTIONAL MATCH would
-# otherwise attach to the optional match instead of filtering rows).
+# Person joins are only added when `q` or `person_id` is present (search needs
+# left/right names; the person filter needs their ids). ABOUT_LEFT/ABOUT_RIGHT
+# only bind to :Person nodes, so source-record sides yield null and are
+# coalesced away. The WITH turns the following filter WHERE into a standalone
+# row filter (a bare WHERE after OPTIONAL MATCH would otherwise attach to the
+# optional match instead of filtering rows).
 _REVIEW_SEARCH_JOINS = """OPTIONAL MATCH (md)-[:ABOUT_LEFT]->(left:Person)
 OPTIONAL MATCH (md)-[:ABOUT_RIGHT]->(right:Person)
 WITH rc, md, left, right
 """
 
+# Queue states that count as closed for the `resolved` and `overdue_sla` filters.
+_CLOSED_STATES = "['resolved', 'cancelled']"
+
 # Non-search filters, shared by list and count. Every condition is a
 # parameterised IS NULL guard so absent filters pass harmlessly.
-_REVIEW_FILTER_BASE = """WHERE ($queue_state IS NULL OR rc.queue_state = $queue_state)
+_REVIEW_FILTER_BASE = f"""WHERE ($queue_state IS NULL OR rc.queue_state = $queue_state)
   AND ($assigned_to IS NULL OR rc.assigned_to = $assigned_to)
   AND ($priority_lte IS NULL OR rc.priority <= $priority_lte)
   AND ($priority_gte IS NULL OR rc.priority >= $priority_gte)
@@ -39,7 +43,8 @@ _REVIEW_FILTER_BASE = """WHERE ($queue_state IS NULL OR rc.queue_state = $queue_
   AND ($sla_due_before IS NULL OR rc.sla_due_at <= datetime($sla_due_before))
   AND ($overdue_sla IS NULL OR $overdue_sla = false
        OR (rc.sla_due_at IS NOT NULL AND rc.sla_due_at < datetime()
-           AND NOT rc.queue_state IN ['resolved', 'cancelled']))
+           AND NOT rc.queue_state IN {_CLOSED_STATES}))
+  AND ($resolved IS NULL OR (rc.queue_state IN {_CLOSED_STATES}) = $resolved)
 """
 
 # Appended only when searching; references the joined left/right persons.
@@ -56,16 +61,29 @@ _REVIEW_SEARCH_FILTER = """  AND ($q IS NULL
        OR toLower(coalesce(right.preferred_email, '')) CONTAINS toLower($q))
 """
 
+# Appended only when filtering by person; matches either side of the decision.
+_REVIEW_PERSON_FILTER = """  AND ($person_id IS NULL
+       OR left.person_id = $person_id
+       OR right.person_id = $person_id)
+"""
 
-def _review_body(*, has_q: bool) -> str:
+
+def _review_body(*, has_q: bool, has_person: bool) -> str:
     """MATCH + filter prefix shared by the list and count queries.
 
-    With ``has_q`` the person joins and the search predicate are included;
-    without it the query never touches the ABOUT_LEFT/ABOUT_RIGHT persons.
+    ``has_q`` adds the search predicate, ``has_person`` the person-id filter;
+    either one pulls in the person joins. Without both, the query never touches
+    the ABOUT_LEFT/ABOUT_RIGHT persons.
     """
+    parts: list[str] = [_REVIEW_MATCH]
+    if has_q or has_person:
+        parts.append(_REVIEW_SEARCH_JOINS)
+    parts.append(_REVIEW_FILTER_BASE)
     if has_q:
-        return _REVIEW_MATCH + _REVIEW_SEARCH_JOINS + _REVIEW_FILTER_BASE + _REVIEW_SEARCH_FILTER
-    return _REVIEW_MATCH + _REVIEW_FILTER_BASE
+        parts.append(_REVIEW_SEARCH_FILTER)
+    if has_person:
+        parts.append(_REVIEW_PERSON_FILTER)
+    return "".join(parts)
 
 
 _REVIEW_RETURN = """
@@ -115,7 +133,7 @@ def _resolve_sort(sort_by: str | None, sort_order: str | None) -> tuple[str, str
 
 
 def build_list_review_cases_query(
-    sort_by: str | None, sort_order: str | None, *, has_q: bool
+    sort_by: str | None, sort_order: str | None, *, has_q: bool, has_person: bool = False
 ) -> str:
     """Build the paginated list query for ``GET /v1/review-cases``.
 
@@ -125,12 +143,13 @@ def build_list_review_cases_query(
     """
     col, direction = _resolve_sort(sort_by, sort_order)
     order_by = f"ORDER BY {col} {direction}, rc.sla_due_at ASC, rc.created_at ASC\n"
-    return _review_body(has_q=has_q) + _REVIEW_RETURN + order_by + "SKIP $skip LIMIT $limit\n"
+    body = _review_body(has_q=has_q, has_person=has_person)
+    return body + _REVIEW_RETURN + order_by + "SKIP $skip LIMIT $limit\n"
 
 
-def build_count_review_cases_query(*, has_q: bool) -> str:
+def build_count_review_cases_query(*, has_q: bool, has_person: bool = False) -> str:
     """Build the total-count query matching the list query's filters."""
-    return _review_body(has_q=has_q) + "RETURN count(rc) AS total\n"
+    return _review_body(has_q=has_q, has_person=has_person) + "RETURN count(rc) AS total\n"
 
 
 GET_REVIEW_CASE = """
