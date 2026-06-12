@@ -3,7 +3,7 @@
 import { Fragment, use, useCallback, useEffect, useId, useMemo, useRef, useState, type ReactElement } from "react";
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import type { Person, PersonConnection, SalesOrder, SourceRecordType } from "@/lib/api-types";
+import type { Person, PersonConnection, SalesOrder } from "@/lib/api-types";
 import type {
   ChatMessage,
   EditableFieldOptions,
@@ -218,7 +218,6 @@ function CopyableId({ value }: { value: string }): ReactElement {
   );
 }
 
-const SOURCE_RECORD_TYPE_FILTERS: readonly SourceRecordType[] = ["identity", "sales", "relationship", "conversation", "bankruptcy", "rental_flat"];
 
 function titleCase(value: string): string {
   return value
@@ -1158,11 +1157,14 @@ function SkeletonRows(): ReactElement {
     <>
       {SKEL_N.map((i) => (
         <div key={i} className={styles.tabSkelItem}>
-          <div className={styles.tabSkelStack}>
+          <div className={styles.tabSkelStack} style={{ flex: 1 }}>
             <span className={styles.tabSkelLine} style={{ width: `${55 + (i % 3) * 12}%` }} />
-            <span className={styles.tabSkelLine} style={{ width: `${35 + (i % 4) * 10}%`, height: 10 }} />
+            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              <span className={styles.tabSkelLine} style={{ width: `${35 + (i % 4) * 10}%`, height: 10 }} />
+              <span className={styles.tabSkelLine} style={{ width: 24, height: 10 }} />
+            </div>
           </div>
-          <span className={styles.tabSkelBadge} style={{ width: 52 }} />
+          <span className={styles.tabSkelBadge} style={{ width: 64 }} />
         </div>
       ))}
     </>
@@ -1174,10 +1176,10 @@ function SkeletonConnections(): ReactElement {
     <>
       {SKEL_N.map((i) => (
         <div key={i} className={styles.tabSkelItem}>
-          <div className={styles.tabSkelAvatar} />
-          <div className={styles.tabSkelStack}>
+          <span className={styles.tabSkelAvatar} />
+          <div className={styles.tabSkelStack} style={{ flex: 1 }}>
             <span className={styles.tabSkelLine} style={{ width: `${50 + (i % 3) * 15}%` }} />
-            <span className={styles.tabSkelLine} style={{ width: `${65 + (i % 3) * 8}%`, height: 10 }} />
+            <span className={styles.tabSkelLine} style={{ width: `${40 + (i % 2) * 20}%`, height: 10 }} />
           </div>
         </div>
       ))}
@@ -1206,11 +1208,14 @@ function SkeletonMatches(): ReactElement {
     <>
       {SKEL_N.map((i) => (
         <div key={i} className={styles.tabSkelItem}>
-          <span className={styles.tabSkelBadge} style={{ width: 64 }} />
-          <span className={styles.tabSkelLine} style={{ width: 72 }} />
-          <span className={styles.tabSkelLine} style={{ flex: 1 }} />
-          <span className={styles.tabSkelLine} style={{ width: 80 }} />
-          <span className={styles.tabSkelLine} style={{ width: 90 }} />
+          <span className={styles.tabSkelAvatar} />
+          <div className={styles.tabSkelStack} style={{ flex: 1 }}>
+            <span className={styles.tabSkelLine} style={{ width: `${55 + (i % 3) * 12}%` }} />
+            <span className={styles.tabSkelLine} style={{ width: `${35 + (i % 2) * 15}%`, height: 10 }} />
+          </div>
+          <div style={{ display: "flex", gap: 6 }}>
+            <span className={styles.tabSkelBadge} style={{ width: 48 }} />
+          </div>
         </div>
       ))}
     </>
@@ -2158,11 +2163,9 @@ function SourceRecordsList({ basePath }: { basePath: string }): ReactElement {
 
 function SourceRecordsTab({ personId, facets, onTotalLoaded }: { personId: string; facets: SourceRecordEntityFacet[]; onTotalLoaded: (n: number) => void }): ReactElement {
   const [activeEntity, setActiveEntity] = useState<string | null>(null);
-  const [activeRecordType, setActiveRecordType] = useState<SourceRecordType | null>(null);
   const facetTotal = facets.reduce((sum, f) => sum + f.count, 0);
   const sourceRecordParams = new URLSearchParams();
   if (activeEntity !== null) sourceRecordParams.set("entity_key", activeEntity);
-  if (activeRecordType !== null) sourceRecordParams.set("record_type", activeRecordType);
   const queryString = sourceRecordParams.toString();
   const basePath = `/bff/persons/${encodeURIComponent(personId)}/source-records${queryString ? `?${queryString}` : ""}`;
 
@@ -2174,20 +2177,6 @@ function SourceRecordsTab({ personId, facets, onTotalLoaded }: { personId: strin
         <span className={styles.connHeaderTitle}>Source records</span>
         <span className={styles.connHeaderDot}>·</span>
         <span className={styles.connHeaderCount}>{facetTotal} {facetTotal === 1 ? "record" : "records"}</span>
-      </div>
-
-      <div className={styles.srFilterGroup}>
-        <span className={styles.srFilterLabel}>Type</span>
-        <div className={styles.srFilter}>
-          <button type="button" className={`${styles.srChip} ${activeRecordType === null ? styles.srChipOn : ""}`} onClick={() => setActiveRecordType(null)}>
-            All types
-          </button>
-          {SOURCE_RECORD_TYPE_FILTERS.map((recordType) => (
-            <button key={recordType} type="button" className={`${styles.srChip} ${activeRecordType === recordType ? styles.srChipOn : ""}`} onClick={() => setActiveRecordType(recordType)}>
-              {titleCase(recordType)}
-            </button>
-          ))}
-        </div>
       </div>
 
       {facets.length > 0 && (
@@ -2217,7 +2206,7 @@ function SourceRecordsTab({ personId, facets, onTotalLoaded }: { personId: strin
       )}
 
       {/* key remounts the list when the filter changes, resetting pagination to page 1 */}
-      <SourceRecordsList key={`${activeEntity ?? "__all__"}:${activeRecordType ?? "__all__"}`} basePath={basePath} />
+      <SourceRecordsList key={activeEntity ?? "__all__"} basePath={basePath} />
     </section>
   );
 }
@@ -2579,6 +2568,7 @@ function ConnectionsTab({ personId, onTotalLoaded }: { personId: string; onTotal
 
 
 function PersonDetailSkeleton(): ReactElement {
+  const sectionLabels = ["Matches", "Source records", "Sales", "Connections", "Identifiers", "Decision History"];
   return (
     <div className={styles.page}>
       {/* breadcrumb */}
@@ -2590,71 +2580,134 @@ function PersonDetailSkeleton(): ReactElement {
         {/* ── Sidebar ── */}
         <aside className={styles.sidebar}>
           <section className={styles.sidebarHeroCard}>
-            <div className={styles.sidebarHeroTop}>
-              {/* avatar ring */}
-              <span className={styles.skelRing} style={{ width: 64, height: 64, flexShrink: 0 }} />
-              <div className={styles.sidebarHeroIdentity} style={{ gap: 8 }}>
-                <span className={styles.skel} style={{ width: "75%", height: 16 }} />
-                <span className={styles.skel} style={{ width: "55%", height: 11 }} />
-                <span className={styles.skel} style={{ width: "40%", height: 8, marginTop: 4 }} />
+            {/* avatar + name + badges */}
+            <div className={styles.profileHero}>
+              <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                <span className={styles.skelRing} style={{ width: 64, height: 64, flexShrink: 0 }} />
+                <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                  <span className={styles.skel} style={{ width: 140, height: 16 }} />
+                  <div style={{ display: "flex", gap: 6 }}>
+                    <span className={styles.skel} style={{ width: 52, height: 20, borderRadius: 6 }} />
+                    <span className={styles.skel} style={{ width: 68, height: 20, borderRadius: 6 }} />
+                    <span className={styles.skel} style={{ width: 80, height: 20, borderRadius: 6 }} />
+                  </div>
+                </div>
               </div>
             </div>
-            <div className={styles.sidebarHeroSummaryRows} style={{ marginTop: 12 }}>
-              {[80, 60, 70, 90, 65, 75].map((w, i) => (
+
+            {/* GP fields */}
+            <div className={styles.sidebarHeroSummary}>
+              {["Phone", "Email", "DOB", "NRIC"].map((_, i) => (
                 <div key={i} className={styles.sidebarHeroSummaryRow}>
-                  <span className={styles.skel} style={{ width: 48, height: 11 }} />
-                  <span className={styles.skel} style={{ width: w, height: 11 }} />
+                  <span className={styles.skel} style={{ width: 48, height: 10 }} />
+                  <span className={styles.skel} style={{ width: [120, 150, 90, 110][i], height: 12 }} />
                 </div>
               ))}
             </div>
-          </section>
-          <section className={styles.sidebarCard} style={{ paddingTop: 10, paddingBottom: 10 }}>
-            <span className={styles.skel} style={{ width: 60, height: 11, marginBottom: 10 }} />
-            <span className={styles.skel} style={{ width: "90%", height: 11, marginBottom: 6 }} />
-            <span className={styles.skel} style={{ width: "70%", height: 11 }} />
-          </section>
-        </aside>
 
-        {/* ── Right rail ── */}
-        <div className={styles.mainColumn}>
-          {/* summary strip */}
-          <section className={styles.summaryStrip}>
-            {[0, 1, 2, 3].map((i) => (
-              <div key={i} className={styles.summaryCard}>
-                <span className={styles.skel} style={{ width: 70, height: 10, marginBottom: 8 }} />
-                <span className={styles.skel} style={{ width: 52, height: 20, marginBottom: 6 }} />
-                <span className={styles.skel} style={{ width: 80, height: 10 }} />
+            {/* Detail toggle */}
+            <div style={{ borderTop: "1px solid var(--border)", paddingTop: 10 }}>
+              <span className={styles.skel} style={{ width: 50, height: 12 }} />
+            </div>
+          </section>
+
+          {/* Bankruptcy sidebar card */}
+          <section className={styles.sidebarCard}>
+            <span className={styles.skel} style={{ width: 100, height: 12, marginBottom: 8 }} />
+            <span className={styles.skel} style={{ width: 160, height: 11 }} />
+          </section>
+
+          {/* Graph card */}
+          <section className={styles.sidebarCard}>
+            <div className={styles.sourceEntityHeader}>
+              <span className={styles.skel} style={{ width: 80, height: 12 }} />
+            </div>
+            <div style={{ height: 160, display: "flex", alignItems: "center", justifyContent: "center" }}>
+              <span className={styles.skelCircle} style={{ width: 100, height: 100 }} />
+            </div>
+          </section>
+
+          {/* Timeline card */}
+          <section className={styles.sidebarCard}>
+            <div className={styles.sourceEntityHeader}>
+              <span className={styles.skel} style={{ width: 60, height: 12 }} />
+            </div>
+            {SKEL_N.slice(0, 3).map((i) => (
+              <div key={i} style={{ display: "flex", gap: 8, alignItems: "flex-start", padding: "6px 0" }}>
+                <span className={styles.skel} style={{ width: 8, height: 8, borderRadius: 4, flexShrink: 0, marginTop: 3 }} />
+                <div style={{ display: "flex", flexDirection: "column", gap: 4, flex: 1 }}>
+                  <span className={styles.skel} style={{ width: `${70 + (i % 3) * 15}%`, height: 11 }} />
+                  <span className={styles.skel} style={{ width: `${50 + (i % 2) * 20}%`, height: 9 }} />
+                </div>
               </div>
             ))}
           </section>
+        </aside>
 
-          {/* tabs row */}
+        {/* ── Main column ── */}
+        <div className={styles.mainColumn}>
+          {/* Section nav tabs */}
           <div className={styles.rightTabsInline}>
             <div className={styles.tabs}>
-              {[72, 56, 64, 36, 52, 44, 72, 40, 44].map((w, i) => (
-                <span key={i} className={styles.skel} style={{ width: w, height: 28, borderRadius: 6 }} />
+              {sectionLabels.map((label) => (
+                <span key={label} className={styles.tab} style={{ cursor: "default" }}>
+                  <span className={styles.skel} style={{ width: label.length * 7, height: 13 }} />
+                </span>
               ))}
             </div>
           </div>
 
-          {/* content area */}
+          {/* Bento sections grid */}
           <div className={styles.tabPanelScroll}>
-            <section className={styles.contentCard}>
-              <div className={styles.connHeader}>
-                <span className={styles.skel} style={{ width: 60, height: 13 }} />
-              </div>
-              <div style={{ display: "flex", flexDirection: "column", gap: 14, padding: "4px 0" }}>
-                {[0, 1, 2, 3, 4].map((i) => (
-                  <div key={i} style={{ display: "flex", flexDirection: "column", gap: 6, paddingBottom: 14, borderBottom: "1px solid var(--border)" }}>
-                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                      <span className={styles.skel} style={{ width: [120, 90, 110, 80, 100][i], height: 13 }} />
-                      <span className={styles.skel} style={{ width: 60, height: 11 }} />
-                    </div>
-                    <span className={styles.skel} style={{ width: [200, 160, 180, 140, 170][i], height: 11 }} />
-                  </div>
-                ))}
-              </div>
-            </section>
+            <div className={styles.collapsibleSectionsContainer}>
+              {/* Matches — full width */}
+              <section className={styles.collapsibleSection}>
+                <div className={styles.collapsibleHeader}>
+                  <span className={styles.skel} style={{ width: 80, height: 14 }} />
+                </div>
+                <SkeletonMatches />
+              </section>
+
+              {/* Source records — full width */}
+              <section className={styles.collapsibleSection}>
+                <div className={styles.collapsibleHeader}>
+                  <span className={styles.skel} style={{ width: 100, height: 14 }} />
+                </div>
+                <SkeletonRows />
+              </section>
+
+              {/* Sales — top half */}
+              <section className={`${styles.collapsibleSection} ${styles.collapsibleSectionTop}`}>
+                <div className={styles.collapsibleHeader}>
+                  <span className={styles.skel} style={{ width: 100, height: 14 }} />
+                </div>
+                <SkeletonRows />
+              </section>
+
+              {/* Connections — top half */}
+              <section className={`${styles.collapsibleSection} ${styles.collapsibleSectionTop}`}>
+                <div className={styles.collapsibleHeader}>
+                  <span className={styles.skel} style={{ width: 90, height: 14 }} />
+                </div>
+                <SkeletonConnections />
+              </section>
+
+              {/* Identifiers — full width */}
+              <section className={styles.collapsibleSection}>
+                <div className={styles.collapsibleHeader}>
+                  <span className={styles.skel} style={{ width: 80, height: 14 }} />
+                </div>
+                <SkeletonRows />
+              </section>
+
+              {/* Decision History — full width */}
+              <section className={styles.collapsibleSection}>
+                <div className={styles.collapsibleHeader}>
+                  <span className={styles.skel} style={{ width: 120, height: 14 }} />
+                </div>
+                <SkeletonAudit />
+              </section>
+            </div>
           </div>
         </div>
       </div>
