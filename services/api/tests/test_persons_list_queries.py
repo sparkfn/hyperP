@@ -6,9 +6,15 @@ from src.graph.queries.persons_list import build_count_persons_query, build_list
 def test_person_listing_connection_count_excludes_identifier_only_connections() -> None:
     query = build_list_persons_query("connection_count", "desc", has_q=False)
 
-    assert "[:IDENTIFIED_BY]->(:Identifier)<-[:IDENTIFIED_BY]" not in query
-    assert "[:LIVES_AT]->(:Address)<-[:LIVES_AT]" in query
-    assert "[:KNOWS]-(ck:Person)" in query
+    # Shared identifiers legitimately appear elsewhere in the query (match
+    # filters, possible_match_count) — only the connection_count subquery must
+    # exclude identifier-only connections.
+    conn_block = next(
+        block for block in query.split("CALL (p) {") if "AS connection_count" in block
+    )
+    assert "[:IDENTIFIED_BY]->(:Identifier)<-[:IDENTIFIED_BY]" not in conn_block
+    assert "[:LIVES_AT]->(:Address)<-[:LIVES_AT]" in conn_block
+    assert "[:KNOWS]-(ck:Person)" in conn_block
 
 
 def test_person_listing_includes_and_sorts_by_possible_match_count() -> None:

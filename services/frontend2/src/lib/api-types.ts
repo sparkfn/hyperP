@@ -62,12 +62,25 @@ export interface Person {
   updated_at: string;
 }
 
+// Provenance class of a SourceRecord. `identity` / `bankruptcy` /
+// `relationship` form the "system family" (bankruptcy + rental_flat replaced
+// the former single "public_record" value); `rental_flat` is a place register
+// routed address-only. Mirrors the API SourceRecordTypeLiteral / ingestion
+// RecordType. Labels are derived via titleCase ("Bankruptcy", "Rental Flat").
+export type SourceRecordType =
+  | "identity"
+  | "bankruptcy"
+  | "rental_flat"
+  | "relationship"
+  | "conversation"
+  | "sales";
+
 export interface SourceRecord {
   source_record_pk: string;
   source_system: string;
   source_record_id: string;
   source_record_version: string | null;
-  record_type: "system" | "conversation";
+  record_type: SourceRecordType;
   extraction_confidence: number | null;
   link_status: string;
   linked_person_id: string | null;
@@ -174,6 +187,7 @@ export interface ListedPerson extends EntityPerson {
   identifier_count: number;
   connection_count: number;
   possible_match_count: number;
+  system_match_count: number;
   order_count: number;
   // Server-computed DOB presentation — render verbatim, no client-side parsing.
   preferred_dob_display: string;

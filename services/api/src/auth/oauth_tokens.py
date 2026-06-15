@@ -36,6 +36,7 @@ class OAuthClientClaims:
     nbf: int
     exp: int
     jti: str
+    secret_id: str
     entity_key: str | None = None
 
 
@@ -78,6 +79,7 @@ class JwtPayload(TypedDict, total=False):
     nbf: int
     exp: int
     jti: str
+    secret_id: str
 
 
 type JsonValue = str | int | list[str] | None
@@ -185,6 +187,8 @@ def issue_client_access_token(
     client: OAuthClient,
     scopes: list[str],
     *,
+    secret_id: str,
+    jti: str | None = None,
     expires_in_seconds: int = _DEFAULT_ACCESS_TOKEN_SECONDS,
 ) -> str:
     """Issue an RS256 JWT access token for an OAuth client."""
@@ -199,7 +203,8 @@ def issue_client_access_token(
         iat=now,
         nbf=now,
         exp=now + expires_in_seconds,
-        jti=str(uuid.uuid4()),
+        jti=jti if jti is not None else str(uuid.uuid4()),
+        secret_id=secret_id,
     )
     if client.entity_key is not None:
         payload["entity_key"] = client.entity_key
@@ -243,6 +248,7 @@ def _verified_payload(raw_payload: JsonObject) -> JwtPayload:
         nbf=_require_int(raw_payload, "nbf"),
         exp=_require_int(raw_payload, "exp"),
         jti=_require_str(raw_payload, "jti"),
+        secret_id=_require_str(raw_payload, "secret_id"),
     )
     entity_key = raw_payload.get("entity_key")
     if entity_key is not None:
@@ -294,6 +300,7 @@ def verify_client_access_token(token: str) -> OAuthClientClaims:
         nbf=payload["nbf"],
         exp=payload["exp"],
         jti=payload["jti"],
+        secret_id=payload["secret_id"],
         entity_key=payload.get("entity_key"),
     )
 

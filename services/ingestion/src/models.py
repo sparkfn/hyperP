@@ -47,7 +47,24 @@ class EngineType(StrEnum):
 class RecordType(StrEnum):
     """Provenance class of a SourceRecord.
 
-    ``system`` — deterministic extract from another service's system of record.
+    The "system family" — ``identity``, ``bankruptcy``, ``relationship`` —
+    are all deterministic extracts from a system of record that share the same
+    generic matching behaviour (see :data:`SYSTEM_FAMILY`), and are kept as
+    distinct values so they can carry their own criteria: ``bankruptcy`` gates
+    its exact-NRIC merge on a partial name match, and ``relationship`` adds a
+    phone + partial-name auto-merge promotion. Per-type detail:
+
+    ``identity`` — first-party identity from a transactional system of record
+    (Fundbox users/legacy/merged, Eko, SpeedZone).
+    ``bankruptcy`` — government register about a person (SG Bankruptcy Register);
+    carries a verified NRIC + name, runs the person pipeline, member of the
+    system family.
+    ``rental_flat`` — government register about a place (SG Rental Flats); address
+    attributes only, no person identifier; routed address-only by
+    ``source_system`` so it never reaches the match engine; NOT in the system
+    family.
+    ``relationship`` — a record whose subject is a different person, e.g. a
+    Fundbox emergency contact that feeds ``KNOWS``.
     ``conversation`` — heuristic extract from chat / voice transcripts.
     Conversation records are never eligible for deterministic auto-merge.
     ``sales`` — order/line-item/product extract from a commerce system. Linked
@@ -55,9 +72,22 @@ class RecordType(StrEnum):
     identity resolution on their own and never auto-merge.
     """
 
-    SYSTEM = "system"
+    IDENTITY = "identity"
+    BANKRUPTCY = "bankruptcy"
+    RENTAL_FLAT = "rental_flat"
+    RELATIONSHIP = "relationship"
     CONVERSATION = "conversation"
     SALES = "sales"
+
+
+#: Record types that descend from the former ``system`` provenance class. Every
+#: matching branch that historically tested ``record_type == SYSTEM`` (or its
+#: negation) now tests membership here, so these three behave identically until
+#: deliberately diverged. ``rental_flat`` is deliberately excluded — it is a
+#: place register routed address-only, never reaching the person match engine.
+SYSTEM_FAMILY: frozenset[RecordType] = frozenset(
+    {RecordType.IDENTITY, RecordType.BANKRUPTCY, RecordType.RELATIONSHIP}
+)
 
 
 # ---------------------------------------------------------------------------
@@ -97,7 +127,7 @@ class SourceRecordEnvelope(BaseModel):
     source_system: str
     source_record_id: str
     source_record_version: str | None = None
-    record_type: RecordType = RecordType.SYSTEM
+    record_type: RecordType = RecordType.IDENTITY
     ingest_type: str = "batch"
     observed_at: str  # ISO-8601 datetime string
     record_hash: str
@@ -113,13 +143,13 @@ class SourceRecordEnvelope(BaseModel):
 
     @model_validator(mode="after")
     def _check_record_type_invariants(self) -> SourceRecordEnvelope:
-        """Conversation records must declare extraction provenance; system records must not.
+        """Conversation records must declare extraction provenance; others must not.
 
         - ``conversation`` envelopes require ``extraction_confidence`` (in
           ``[0.0, 1.0]``) and ``extraction_method``.
-        - ``system`` envelopes must leave all three conversation-only fields
-          unset, so that downstream code can rely on them being ``None``
-          whenever ``record_type == SYSTEM``.
+        - Every non-conversation envelope must leave all three conversation-only
+          fields unset, so that downstream code can rely on them being ``None``
+          whenever ``record_type != CONVERSATION``.
         """
         if self.record_type == RecordType.CONVERSATION:
             if self.extraction_confidence is None or self.extraction_method is None:
@@ -202,6 +232,12 @@ class MatchResult(BaseModel):
     engine_type: EngineType = EngineType.DETERMINISTIC
     engine_version: str = "v0.1.0"
     matched_person_id: str | None = None
+    # When an incoming record independently matches (MERGE band) more than one
+    # distinct active person, the record and its extracted evidence are linked to
+    # ALL of them — ``matched_person_id`` (the primary) plus every id here — but
+    # the persons are NOT merged (they may legitimately share an identifier).
+    # Empty in the common single-match case.
+    additional_linked_person_ids: list[str] = Field(default_factory=list)
     is_new_person: bool = False
     feature_snapshot: dict[str, JsonValue] = Field(default_factory=dict)
 

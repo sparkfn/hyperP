@@ -241,7 +241,7 @@ CREATE (sr:SourceRecord {
   source_record_pk: randomUUID(),
   source_record_id: '12345',
   source_record_version: null,
-  record_type: 'system',           // system | conversation | sales
+  record_type: 'identity',         // identity | bankruptcy | rental_flat | relationship | conversation | sales
   link_status: 'pending_review',   // linked | pending_review | pending_customer | rejected | suppressed
   observed_at: datetime(),
   ingested_at: datetime(),
@@ -249,8 +249,8 @@ CREATE (sr:SourceRecord {
   raw_payload: {},                 // native map, not a JSON string
   normalized_payload: {},
   metadata: {},
-  extraction_confidence: null,     // 0.0–1.0; required when record_type='conversation', null for 'system'
-  extraction_method: null,         // e.g. 'llm_extractor_v1', 'regex_v2'; null for 'system'
+  extraction_confidence: null,     // 0.0–1.0; required when record_type='conversation', null otherwise
+  extraction_method: null,         // e.g. 'llm_extractor_v1', 'regex_v2'; null for non-conversation
   conversation_ref: null,          // map: {channel, thread_id, message_id, ...} for 'conversation'
   retention_expires_at: null
 })
@@ -259,10 +259,28 @@ CREATE (sr:SourceRecord {
 `record_type` distinguishes the provenance of the record's identifiers and
 attributes:
 
-- **`system`** — extracted deterministically from another service's structured
-  system of record (e.g. Bitrix CRM row, POS transaction, Fundbox `users`
-  table). Identifiers and attributes are taken at face value and may participate
-  in deterministic merge rules.
+The **system family** — `identity`, `bankruptcy`, `relationship` — are
+deterministic extracts that share matching behaviour today (via
+`models.SYSTEM_FAMILY`); they exist as distinct values so they can carry
+different matching criteria later. `rental_flat` is a place register and is
+**not** a member of the system family. A startup data migration
+(`graph/migrations.py:backfill_record_type_subtypes`) reclassifies legacy
+`system` and intermediate `public_record` records by `source_system`.
+
+- **`identity`** — first-party identity extracted deterministically from another
+  service's structured system of record (e.g. Fundbox `users`/`legacy`/`merged`,
+  Eko/SpeedZone POS customers). Identifiers and attributes are taken at face value
+  and may participate in deterministic merge rules.
+- **`bankruptcy`** — government register about a person (SG Bankruptcy Register).
+  Carries a verified NRIC + name, runs the person pipeline, and is a member of the
+  system family (same matching behaviour as `identity` today).
+- **`rental_flat`** — government register about a place (SG Rental Flats). Address
+  attributes only, no person identifier; routed address-only by `source_system`
+  (`ingest_address_record`), so it never reaches the match engine and never
+  creates a Person. Not a member of the system family.
+- **`relationship`** — a record whose subject is a *different* person, e.g. a
+  Fundbox emergency contact that feeds a `KNOWS` edge. Same matching behaviour as
+  `identity` today.
 - **`conversation`** — extracted heuristically from free-text chat or voice
   transcripts. Identifiers and attributes are model-extracted and inherently
   noisy. These records are **never eligible for deterministic auto-merge**
@@ -303,7 +321,7 @@ Immutable decision record from any engine path.
 ```cypher
 CREATE (md:MatchDecision {
   match_decision_id: randomUUID(),
-  engine_type: 'heuristic',       // deterministic | heuristic | llm | manual
+  engine_type: 'heuristic',       // deterministic | heuristic | llm | manual | pair_audit
   engine_version: 'v1.0.0',
   decision: 'review',             // merge | review | no_match
   confidence: 0.78,
@@ -332,7 +350,7 @@ CREATE (rc:ReviewCase {
   sla_due_at: datetime(),
   resolution: null,               // merge | reject | manual_no_match | cancelled_superseded
   resolved_at: null,
-  // review actions stored as an ordered list of maps — no separate node
+  // review actions stored as an ordered list of JSON strings — no separate node
   actions: [],
   created_at: datetime(),
   updated_at: datetime()
@@ -341,23 +359,36 @@ CREATE (rc:ReviewCase {
 
 Why actions as a list: review actions are only ever read in the context of
 their case, never queried across cases. They are an append-only audit log on
-the case. Each entry is a map:
+the case. Each entry is a JSON-serialized map — Neo4j cannot store maps as
+node properties, so the entry is serialized by the application and appended
+as a string parameter:
 
 ```cypher
-// Appending an action:
-SET rc.actions = rc.actions + [{
-  action_type: 'merge',
-  actor_type: 'reviewer',
-  actor_id: 'reviewer_123',
-  notes: 'Phone and DOB align.',
-  created_at: datetime()
-}]
+// Appending an action ($action_json is a JSON string built by the API, e.g.
+// '{"action_type": "merge", "actor_type": "reviewer", "actor_id": "reviewer_123",
+//   "notes": "Phone and DOB align.", "created_at": "2026-06-11T08:00:00+00:00"}'):
+SET rc.actions = rc.actions + [$action_json]
 ```
 
 The `review_action_type` values include both API-submitted actions (`merge`,
 `reject`, `defer`, `escalate`, `manual_no_match`) and system-recorded actions
 (`assign`, `unassign`, `cancel`, `reopen`). The API layer exposes only the
 API-submitted subset.
+
+**Merge side-effect provenance (nullable).** When a person merge closes or
+redirects a still-open case as a side effect, the case carries provenance so an
+`unmerge` of the same `MergeEvent` can reverse the change (and only then):
+
+- `closed_by_merge_event_id` — set when a person↔person case is auto-cancelled
+  because one of its persons was absorbed by a merge (`queue_state = cancelled`,
+  `resolution = cancelled_superseded`). Unmerge reopens the case **iff** it is
+  still in exactly that system-set state (no human acted since).
+- `redirected_by_merge_event_id` / `redirected_from_person_id` — set when a
+  record↔person case's person side (`ABOUT_RIGHT`) is repointed from the
+  absorbed person to the survivor. Unmerge repoints it back **iff** the case is
+  still open. These are audit side-effects, not human operational decisions, so
+  reversing them in place does not violate the Reopen Policy (which governs
+  human-resolved/cancelled cases).
 
 ### MergeEvent
 

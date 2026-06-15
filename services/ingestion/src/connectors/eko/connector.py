@@ -196,7 +196,10 @@ class EkoConnector(SourceConnector):
         dob = _date_string_to_iso(row.custom_field_9_value)
 
         return build_envelope(
-            source_record_id=f"eko_phppos-customer-{row.customer_id}",
+            # Keyed on person_id (not customers.id): phppos_sales.customer_id is a
+            # person_id, so sales link to `-customer-{person_id}`. Both sides must
+            # agree on person_id. person_id is unique among non-deleted customers.
+            source_record_id=f"eko_phppos-customer-{row.person_id}",
             observed_at=to_iso(row.last_modified or row.create_date),
             identifiers=ids.items,
             attributes={

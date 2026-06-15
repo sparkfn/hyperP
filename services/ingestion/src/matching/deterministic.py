@@ -14,10 +14,14 @@ import logging
 from neo4j import ManagedTransaction
 
 from src.graph import queries
+from src.matching.names import is_partial_name_match
+from src.matching.snapshot import fetch_candidate_snapshot
 from src.models import (
+    SYSTEM_FAMILY,
     EngineType,
     MatchDecision,
     MatchResult,
+    NormalizedAttribute,
     NormalizedIdentifier,
     QualityFlag,
     RecordType,
@@ -49,12 +53,29 @@ RETURN p.person_id AS person_id
 LIMIT 1
 """
 
+# Government-ID hard rules require a VALID-quality edge on the candidate side
+# too — symmetric with the incoming filter (only VALID incoming NRICs reach
+# these checks). A partial_parse / low-quality NRIC edge must not drive a
+# confidence-1.0 auto-merge or a hard no-match block.
+_PERSON_HAS_VALID_GOVT_ID = """
+MATCH (p:Person {person_id: $person_id})
+      -[rel:IDENTIFIED_BY]->(id:Identifier {
+          identifier_type: 'nric',
+          normalized_value: $normalized_value
+      })
+WHERE rel.is_active = true
+  AND rel.quality_flag = 'valid'
+RETURN p.person_id AS person_id
+LIMIT 1
+"""
+
 _PERSON_HAS_CONFLICTING_GOVT_ID = """
 MATCH (p:Person {person_id: $person_id})
       -[rel:IDENTIFIED_BY]->(id:Identifier {
           identifier_type: 'nric'
       })
 WHERE rel.is_active = true
+  AND rel.quality_flag = 'valid'
   AND id.normalized_value <> $normalized_value
 RETURN id.normalized_value AS conflicting_value
 LIMIT 1
@@ -72,6 +93,7 @@ def evaluate_deterministic(
     tx: ManagedTransaction,
     candidate_person_id: str,
     identifiers: list[NormalizedIdentifier],
+    attributes: list[NormalizedAttribute],
     record_type: RecordType,
 ) -> MatchResult | None:
     """Apply hard rules. Returns a result or ``None`` to fall through.
@@ -82,14 +104,14 @@ def evaluate_deterministic(
     """
     if locked := _check_no_match_lock(tx, candidate_person_id, identifiers):
         return locked
-    if govt := _check_government_id(tx, candidate_person_id, identifiers):
+    if govt := _check_government_id(tx, candidate_person_id, identifiers, attributes, record_type):
         # Conflicting govt IDs (hard NO_MATCH) still apply for conversation
         # records; only the MERGE branch is suppressed below.
         if govt.decision == MatchDecision.NO_MATCH:
             return govt
-        if record_type == RecordType.SYSTEM:
+        if record_type in SYSTEM_FAMILY:
             return govt
-    if record_type != RecordType.SYSTEM:
+    if record_type not in SYSTEM_FAMILY:
         return None
     if trusted := _check_trusted_id(tx, candidate_person_id, identifiers):
         return trusted
@@ -142,8 +164,16 @@ def _check_government_id(
     tx: ManagedTransaction,
     candidate_person_id: str,
     identifiers: list[NormalizedIdentifier],
+    attributes: list[NormalizedAttribute],
+    record_type: RecordType,
 ) -> MatchResult | None:
-    """Government ID hash: exact match → hard MERGE; conflict → hard NO_MATCH."""
+    """Government ID hash: exact match → hard MERGE; conflict → hard NO_MATCH.
+
+    For ``bankruptcy`` records the exact-NRIC merge is additionally gated on a
+    partial name match when both sides carry a name (matching-spec per-record-type
+    criteria): a matching NRIC with a strongly conflicting name does not
+    auto-merge. NRIC-alone still merges when a name is absent on either side.
+    """
     govt_ids = [
         i
         for i in identifiers
@@ -151,11 +181,20 @@ def _check_government_id(
     ]
     for govt_id in govt_ids:
         if tx.run(
-            _PERSON_HAS_IDENTIFIER,
+            _PERSON_HAS_VALID_GOVT_ID,
             person_id=candidate_person_id,
-            identifier_type="nric",
             normalized_value=govt_id.normalized_value,
         ).single():
+            if record_type == RecordType.BANKRUPTCY:
+                verdict = is_partial_name_match(
+                    attributes, fetch_candidate_snapshot(tx, candidate_person_id).names()
+                )
+                if verdict is False:
+                    logger.info(
+                        "Bankruptcy NRIC match for candidate %s blocked: name conflict",
+                        candidate_person_id,
+                    )
+                    return None  # fall through to heuristic (→ no-match / pair review)
             logger.info(
                 "Deterministic hard merge: candidate %s shares govt ID hash",
                 candidate_person_id,

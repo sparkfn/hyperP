@@ -8,6 +8,13 @@ from typing import Literal
 from pydantic import BaseModel, Field
 from pydantic.types import JsonValue
 
+# Provenance class of a SourceRecord. The first three ("system family") replaced
+# the former single "system" value; they share matching behaviour today but are
+# distinct so they can diverge later. Mirrors ingestion's ``RecordType`` enum.
+SourceRecordTypeLiteral = Literal[
+    "identity", "bankruptcy", "rental_flat", "relationship", "conversation", "sales"
+]
+
 # --- Enums ---
 
 
@@ -188,7 +195,7 @@ class SourceRecord(BaseModel):
     source_record_version: str | None = None
     entity_key: str | None = None
     entity_display_name: str | None = None
-    record_type: Literal["system", "conversation"] = "system"
+    record_type: SourceRecordTypeLiteral = "identity"
     extraction_confidence: float | None = None
     extraction_method: str | None = None
     link_status: str
@@ -339,7 +346,7 @@ class PersonTimelineGroup(BaseModel):
     source_system: str
     source_record_id: str
     source_record_version: str | None = None
-    record_type: Literal["system", "conversation"] = "system"
+    record_type: SourceRecordTypeLiteral = "identity"
     extraction_confidence: float | None = None
     link_status: str
     linked_person_id: str | None = None
@@ -528,6 +535,7 @@ class ListedPerson(EntityPerson):
     entity_count: int = 0
     identifier_count: int = 0
     possible_match_count: int = 0
+    system_match_count: int = 0
     order_count: int = 0
     bankruptcy_case_count: int = 0
     # Server-computed DOB presentation: ready-to-render string + validity flag,

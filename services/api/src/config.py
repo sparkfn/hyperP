@@ -18,6 +18,7 @@ class AppConfig(BaseSettings):
     log_level: str = Field(default="info", alias="LOG_LEVEL")
     root_path: str = Field(default="", alias="ROOT_PATH")
     dumps_root: str = Field(default="/app/dumps", alias="DUMPS_ROOT")
+    forwarded_allow_ips: str = Field(default="*", alias="FORWARDED_ALLOW_IPS")
 
     auth_enabled: bool = Field(default=True, alias="AUTH_ENABLED")
     # Same OAuth client the frontend uses via Auth.js (AUTH_GOOGLE_ID).
@@ -35,12 +36,8 @@ class AppConfig(BaseSettings):
     public_page_expiry_minutes: int = Field(default=30, alias="PUBLIC_PAGE_EXPIRY_MINUTES")
     oauth_issuer: str = Field(default="http://localhost/api", alias="OAUTH_ISSUER")
     oauth_audience: str = Field(default="hyperp-api", alias="OAUTH_AUDIENCE")
-    oauth_access_token_expiry_minutes: int = Field(
-        default=15, alias="OAUTH_ACCESS_TOKEN_EXPIRY_MINUTES"
-    )
-    oauth_max_access_token_expiry_minutes: int = Field(
-        default=60, alias="OAUTH_MAX_ACCESS_TOKEN_EXPIRY_MINUTES"
-    )
+    # Access-token lifetime is per-client (OAuthClient.access_token_ttl_seconds,
+    # bounded 300–86400 in the model), not a global env var.
     oauth_active_key_id: str = Field(default="local-dev", alias="OAUTH_ACTIVE_KEY_ID")
     oauth_private_key_pem: str = Field(default="", alias="OAUTH_PRIVATE_KEY_PEM")
     oauth_public_key_pem: str = Field(default="", alias="OAUTH_PUBLIC_KEY_PEM")

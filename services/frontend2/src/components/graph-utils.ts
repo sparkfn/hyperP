@@ -214,13 +214,14 @@ export function paintNode(
   raw: Record<string, unknown>,
   ctx: CanvasRenderingContext2D,
   globalScale: number,
+  sizeScale = 1,
 ): void {
   const node = raw as unknown as FGNode & { x?: number; y?: number };
   const { x, y, color, icon, isFocus } = node;
   if (x === undefined || y === undefined) return;
 
-  const nodeRadius = isFocus ? NODE_SIZE * 1.35 : NODE_SIZE;
-  const fontSize = Math.max(10 / globalScale, 3);
+  const nodeRadius = (isFocus ? NODE_SIZE * 1.35 : NODE_SIZE) * sizeScale;
+  const fontSize = Math.max((10 * sizeScale) / globalScale, 3);
 
   // Focus ring
   if (isFocus) {
@@ -250,7 +251,7 @@ export function paintNode(
     const path2d = getIconPath2D(icon);
     if (path2d) {
       ctx.save();
-      const s = ICON_SCALE_FACTOR * (isFocus ? 1.25 : 1);
+      const s = ICON_SCALE_FACTOR * sizeScale * (isFocus ? 1.25 : 1);
       ctx.translate(x - 12 * s, y - 12 * s);
       ctx.scale(s, s);
       ctx.fillStyle = "#fff";
@@ -280,10 +281,10 @@ export function paintNode(
   }
 }
 
-export function paintNodePointerArea(raw: Record<string, unknown>, color: string, ctx: CanvasRenderingContext2D): void {
+export function paintNodePointerArea(raw: Record<string, unknown>, color: string, ctx: CanvasRenderingContext2D, sizeScale = 1): void {
   const node = raw as unknown as FGNode & { x?: number; y?: number };
   ctx.beginPath();
-  ctx.arc(node.x ?? 0, node.y ?? 0, NODE_SIZE + 2, 0, 2 * Math.PI);
+  ctx.arc(node.x ?? 0, node.y ?? 0, (NODE_SIZE + 2) * sizeScale, 0, 2 * Math.PI);
   ctx.fillStyle = color;
   ctx.fill();
 }

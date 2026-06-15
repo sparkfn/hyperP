@@ -267,7 +267,7 @@ def test_display_item_helpers_format_popover_text() -> None:
     )
     assert _source_record_display_items(source_records)[0].primary == "crm"
     assert _source_record_display_items(source_records)[0].secondary == (
-        "crm-1 · system · 2026-05-02T00:00:00Z"
+        "crm-1 · identity · 2026-05-02T00:00:00Z"
     )
 
 

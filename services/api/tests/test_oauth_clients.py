@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from types import TracebackType
 from unittest.mock import patch
 
@@ -12,16 +12,14 @@ from src.auth import oauth_clients
 from src.auth.models import AuthUser
 from src.auth.oauth_client_models import (
     CreateOAuthClientRequest,
-    CreateOAuthClientSecretRequest,
     OAuthClient,
     OAuthClientCreatedResponse,
     OAuthClientSecret,
-    OAuthClientSecretCreatedResponse,
+    UpdateOAuthClientRequest,
 )
 from src.auth.oauth_clients import (
     check_scope,
     create_oauth_client,
-    create_oauth_client_secret,
     disable_oauth_client,
     ensure_oauth_client_constraints,
     generate_client_id,
@@ -29,6 +27,8 @@ from src.auth.oauth_clients import (
     hash_client_secret,
     is_secret_usable,
     requested_scopes_or_default,
+    rotate_oauth_client_secret,
+    update_oauth_client,
     validate_client_credentials,
     verify_client_secret,
 )
@@ -99,42 +99,19 @@ def test_requested_scopes_rejects_duplicate_scope_for_admin_client() -> None:
     assert requested_scopes_or_default("persons:read persons:read", ["admin"]) is None
 
 
-def test_secret_usable_requires_not_revoked_and_not_expired() -> None:
+def test_secret_usable_requires_not_revoked() -> None:
     now = datetime.now(UTC).replace(tzinfo=None)
     usable = OAuthClientSecret(
         secret_id="sec_1",
         secret_prefix="hps_abc",
         created_at=now,
-        expires_at=now + timedelta(days=1),
         revoked_at=None,
         last_used_at=None,
     )
-    expired = usable.model_copy(update={"expires_at": now - timedelta(seconds=1)})
     revoked = usable.model_copy(update={"revoked_at": now})
 
-    assert is_secret_usable(usable, now=now)
-    assert not is_secret_usable(expired, now=now)
-    assert not is_secret_usable(revoked, now=now)
-
-
-def test_secret_usable_accepts_timezone_aware_now_with_naive_and_aware_expiry() -> None:
-    aware_now = datetime.now(UTC)
-    naive_expiry = aware_now.replace(tzinfo=None) + timedelta(days=1)
-    aware_expiry = aware_now + timedelta(days=1)
-    naive_secret = OAuthClientSecret(
-        secret_id="sec_naive",
-        secret_prefix="hps_naive",
-        created_at=aware_now.replace(tzinfo=None),
-        expires_at=naive_expiry,
-        revoked_at=None,
-        last_used_at=None,
-    )
-    aware_secret = naive_secret.model_copy(
-        update={"secret_id": "sec_aware", "expires_at": aware_expiry}
-    )
-
-    assert is_secret_usable(naive_secret, now=aware_now)
-    assert is_secret_usable(aware_secret, now=aware_now)
+    assert is_secret_usable(usable)
+    assert not is_secret_usable(revoked)
 
 
 def test_create_oauth_client_request_rejects_blank_duplicate_and_unknown_scopes() -> None:
@@ -240,7 +217,6 @@ def _validation_client_record(
     client_secret: str,
     disabled_at: datetime | None = None,
     revoked_at: datetime | None = None,
-    expires_at: datetime | None = None,
 ) -> dict[str, GraphValue]:
     now = datetime.now(UTC).replace(tzinfo=None)
     return {
@@ -253,12 +229,12 @@ def _validation_client_record(
             "created_at": now,
             "disabled_at": disabled_at,
             "last_used_at": None,
+            "access_token_ttl_seconds": 900,
             "secret": {
                 "secret_id": "sec_valid",
                 "secret_prefix": client_secret[:10],
                 "secret_hash": hash_client_secret(client_secret, hash_key=TEST_HASH_KEY),
                 "created_at": now,
-                "expires_at": expires_at or now + timedelta(days=1),
                 "revoked_at": revoked_at,
                 "last_used_at": None,
             },
@@ -302,7 +278,7 @@ async def test_create_oauth_client_stores_client_and_first_secret() -> None:
         name="POS sync",
         entity_key="fundbox",
         scopes=["persons:read"],
-        secret_expires_in_days=30,
+        access_token_ttl_seconds=900,
     )
 
     with patch("src.auth.oauth_clients.get_session", return_value=session):
@@ -319,30 +295,40 @@ async def test_create_oauth_client_stores_client_and_first_secret() -> None:
 
 
 @pytest.mark.asyncio
-async def test_create_oauth_client_secret_returns_one_time_secret() -> None:
-    session = _FakeSession(_FakeResult([{"created": True}]))
-    req = CreateOAuthClientSecretRequest(expires_in_days=60)
+async def test_rotate_secret_revokes_previous_and_returns_new() -> None:
+    session = _FakeSession(_FakeResult([{"secret_id": "sec_2"}]))
 
     with patch("src.auth.oauth_clients.get_session", return_value=session):
-        created = await create_oauth_client_secret("hpc_123", req)
+        result = await rotate_oauth_client_secret("hpc_a")
 
-    assert isinstance(created, OAuthClientSecretCreatedResponse)
-    assert created.client_id == "hpc_123"
-    assert created.client_secret.startswith("hps_")
-    assert session.calls[0][1]["client_id"] == "hpc_123"
-    assert session.calls[0][1]["secret_hash"] != created.client_secret
+    assert result is not None
+    assert result.client_id == "hpc_a"
+    assert result.client_secret.startswith("hps_")
+    assert result.secret_id.startswith("sec_")
+    assert session.calls[0][1]["client_id"] == "hpc_a"
+    assert session.calls[0][1]["secret_hash"] != result.client_secret
 
 
 @pytest.mark.asyncio
-async def test_create_oauth_client_secret_returns_none_when_client_missing_or_disabled() -> None:
+async def test_rotate_secret_returns_none_for_missing_or_disabled_client() -> None:
     session = _FakeSession(_FakeResult([]))
-    req = CreateOAuthClientSecretRequest(expires_in_days=60)
 
     with patch("src.auth.oauth_clients.get_session", return_value=session):
-        created = await create_oauth_client_secret("hpc_missing", req)
+        result = await rotate_oauth_client_secret("ghost")
 
-    assert created is None
-    assert session.calls[0][1]["client_id"] == "hpc_missing"
+    assert result is None
+    assert session.calls[0][1]["client_id"] == "ghost"
+
+
+@pytest.mark.asyncio
+async def test_update_oauth_client_returns_false_for_missing() -> None:
+    session = _FakeSession(_FakeResult([]))
+
+    with patch("src.auth.oauth_clients.get_session", return_value=session):
+        result = await update_oauth_client("ghost", UpdateOAuthClientRequest(name="y"))
+
+    assert result is False
+    assert session.calls[0][1]["client_id"] == "ghost"
 
 
 @pytest.mark.asyncio
@@ -452,29 +438,6 @@ async def test_validate_client_credentials_rejects_revoked_secret() -> None:
                 _validation_client_record(
                     client_secret=client_secret,
                     revoked_at=datetime.now(UTC).replace(tzinfo=None),
-                )
-            ]
-        )
-    )
-
-    with (
-        patch("src.auth.oauth_clients.config.oauth_secret_hash_key", TEST_HASH_KEY),
-        patch("src.auth.oauth_clients.get_session", return_value=validation_session),
-        patch("src.auth.oauth_clients._touch_last_used", _ignore_touch_last_used),
-    ):
-        assert await validate_client_credentials("hpc_valid", client_secret) is None
-
-
-@pytest.mark.asyncio
-async def test_validate_client_credentials_rejects_expired_secret() -> None:
-    client_secret = "hps_valid_secret"
-    validation_session = _FakeSession(
-        _FakeResult(
-            [
-                _validation_client_record(
-                    client_secret=client_secret,
-                    expires_at=datetime.now(UTC).replace(tzinfo=None)
-                    - timedelta(seconds=1),
                 )
             ]
         )

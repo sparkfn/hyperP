@@ -9,9 +9,11 @@ from neo4j import AsyncManagedTransaction
 from src.graph.queries import (
     CHECK_BOTH_PERSONS_ACTIVE,
     CHECK_NO_MATCH_LOCK,
+    CLOSE_PERSON_PAIR_CASES_FOR_ABSORBED,
     CREATE_NO_MATCH_LOCK_FROM_REVIEW,
     EXECUTE_MANUAL_MERGE,
     GET_PERSONS_FOR_REVIEW_MERGE,
+    REDIRECT_RECORD_PERSON_CASES_FOR_ABSORBED,
 )
 from src.repositories.neo4j.review import _action_tx
 from src.repositories.protocols.merge import GoldenProfileSelection
@@ -91,12 +93,22 @@ async def test_review_merge_uses_requested_survivor_person() -> None:
         CHECK_BOTH_PERSONS_ACTIVE,
         CHECK_NO_MATCH_LOCK,
     ]
-    assert tx.calls[-1].query == EXECUTE_MANUAL_MERGE
-    assert tx.calls[-1].params == {
+    merge_call = next(c for c in tx.calls if c.query == EXECUTE_MANUAL_MERGE)
+    assert merge_call.params == {
         "from_id": "person-a",
         "to_id": "person-b",
         "reason": "same person",
         "actor_id": "reviewer@example.com",
+    }
+    # Merge side-effects run after the merge, scoped to the merge event.
+    assert [c.query for c in tx.calls[-2:]] == [
+        CLOSE_PERSON_PAIR_CASES_FOR_ABSORBED,
+        REDIRECT_RECORD_PERSON_CASES_FOR_ABSORBED,
+    ]
+    assert tx.calls[-1].params == {
+        "absorbed_id": "person-a",
+        "survivor_id": "person-b",
+        "merge_event_id": "merge-1",
     }
 
 

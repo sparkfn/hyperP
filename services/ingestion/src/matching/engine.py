@@ -45,7 +45,7 @@ class MatchEngine:
         identifiers: list[NormalizedIdentifier],
         address: NormalizedAddress | None,
         attributes: list[NormalizedAttribute],
-        record_type: RecordType = RecordType.SYSTEM,
+        record_type: RecordType = RecordType.IDENTITY,
     ) -> MatchResult:
         """Run the full match chain and return the final result.
 
@@ -62,6 +62,10 @@ class MatchEngine:
         unique_candidates = {c.person_id: c for c in candidates}
         collected: list[MatchResult] = []
 
+        # Evaluate every candidate (no short-circuit on the first deterministic
+        # MERGE): an incoming record that independently MERGE-matches more than
+        # one distinct person must be linked to all of them, so every match has
+        # to be collected rather than dropped after the first.
         for person_id in unique_candidates:
             per_candidate = self._evaluate_one(
                 tx,
@@ -73,12 +77,6 @@ class MatchEngine:
             )
             if per_candidate is None:
                 continue
-            # Deterministic MERGE is authoritative — short-circuit immediately.
-            if (
-                per_candidate.decision == MatchDecision.MERGE
-                and per_candidate.engine_type == EngineType.DETERMINISTIC
-            ):
-                return per_candidate
             collected.append(per_candidate)
 
         return self._pick_best(collected)
@@ -97,6 +95,7 @@ class MatchEngine:
             tx,
             candidate_person_id,
             identifiers,
+            attributes,
             record_type,
         )
         if det is not None:
@@ -150,8 +149,7 @@ class MatchEngine:
 
         merges = [r for r in collected if r.decision == MatchDecision.MERGE]
         if merges:
-            merges.sort(key=lambda r: r.confidence, reverse=True)
-            return merges[0]
+            return MatchEngine._resolve_merges(merges)
 
         reviews = [r for r in collected if r.decision == MatchDecision.REVIEW]
         if reviews:
@@ -164,6 +162,40 @@ class MatchEngine:
             reasons=["No candidate scored above 0.60 — creating separate person"],
             engine_type=EngineType.HEURISTIC,
             is_new_person=True,
+        )
+
+    @staticmethod
+    def _resolve_merges(merges: list[MatchResult]) -> MatchResult:
+        """Pick the primary match and, on a multi-person match, the extra links.
+
+        Primary = highest confidence, ties broken by ``person_id`` so the
+        outcome is deterministic regardless of candidate iteration order. When
+        the record MERGE-matched more than one distinct person, the record and
+        its evidence are linked to all of them (the extras are returned in
+        ``additional_linked_person_ids``); the persons are NOT merged, since
+        they may legitimately share an identifier.
+        """
+        merges.sort(key=lambda r: (-r.confidence, r.matched_person_id or ""))
+        primary = merges[0]
+        additional = sorted(
+            {
+                r.matched_person_id
+                for r in merges[1:]
+                if r.matched_person_id is not None
+                and r.matched_person_id != primary.matched_person_id
+            }
+        )
+        if not additional:
+            return primary
+        reasons = [
+            *primary.reasons,
+            (
+                f"Record also MERGE-matched {len(additional)} other person(s) "
+                f"{additional} — linking record + evidence to all (persons not merged)"
+            ),
+        ]
+        return primary.model_copy(
+            update={"additional_linked_person_ids": additional, "reasons": reasons}
         )
 
     def _evaluate_llm(

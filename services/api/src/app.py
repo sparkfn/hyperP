@@ -6,12 +6,15 @@ import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
-from fastapi import Depends, FastAPI
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.params import Depends as DependsMarker
 
-from src.auth.deps import require_active_user
-from src.auth.oauth_clients import ensure_oauth_client_constraints
+from src.auth.oauth_clients import (
+    claim_oauth_wipe_migration,
+    ensure_oauth_client_constraints,
+    wipe_oauth_clients,
+)
+from src.auth.oauth_token_registry import clear_all_tokens
 from src.auth.oauth_tokens import validate_oauth_runtime_config
 from src.config import config
 from src.error_handlers import register_error_handlers
@@ -19,26 +22,10 @@ from src.frontend_app import build_frontend_app
 from src.graph.client import close_driver, get_session
 from src.graph.queries.users import CREATE_USER_CONSTRAINT
 from src.llm.service import close_llm_service
+from src.oauth2_app import build_oauth2_app
 from src.redis_client import close_redis
-from src.routes import (
-    admin,
-    dumps,
-    entities,
-    events,
-    health,
-    ingest,
-    merge,
-    oauth,
-    person_sales,
-    persons,
-    reports,
-    review,
-    survivorship,
-)
-from src.routes import auth as auth_routes
-from src.routes import oauth_clients as oauth_client_routes
-from src.routes import users as users_routes
-from src.routes.public_pages import person_links_router, public_router
+from src.routes import health, oauth
+from src.routes.public_pages import public_router
 
 logger = logging.getLogger("profile_unifier_api")
 
@@ -55,6 +42,23 @@ async def _ensure_user_constraint() -> None:
 async def _ensure_oauth_client_constraints() -> None:
     """Create OAuth client uniqueness constraints if they do not exist."""
     await ensure_oauth_client_constraints()
+
+
+async def _wipe_oauth_clients_on_startup() -> None:
+    """One-time remodel migration: drop legacy multi-secret OAuth data once.
+
+    Existing clients predate the single-active-secret + per-client-TTL model and
+    have no clean upgrade path, so they are wiped on first boot after the remodel;
+    admins re-provision. A marker node makes this idempotent so later
+    legitimately-created clients are not wiped on subsequent deploys.
+    """
+    try:
+        if await claim_oauth_wipe_migration():
+            await wipe_oauth_clients()
+            await clear_all_tokens()
+            logger.info("Wiped legacy OAuth clients and token registry (remodel migration)")
+    except Exception:  # noqa: BLE001 — best-effort; never block startup
+        logger.exception("Failed to wipe legacy OAuth clients")
 
 
 _PERSON_INDEXES = [
@@ -81,6 +85,7 @@ async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
     validate_oauth_runtime_config()
     await _ensure_user_constraint()
     await _ensure_oauth_client_constraints()
+    await _wipe_oauth_clients_on_startup()
     await _ensure_person_indexes()
     yield
     await close_driver()
@@ -97,20 +102,15 @@ def build_app() -> FastAPI:
         version="0.1.0",
         lifespan=_lifespan,
         root_path=config.root_path,
-        swagger_ui_parameters={"operationsSorter": "alpha"},
-        openapi_tags=[
-            {"name": "Admin", "description": "User management, OAuth client registry, and source-system field trust."},
-            {"name": "Auth", "description": "Session authentication: current user info and logout."},
-            {"name": "Entities", "description": "Source entity (business unit) directory and their person links."},
-            {"name": "Events", "description": "Downstream event polling for external integrations."},
-            {"name": "Ingestion", "description": "Source record ingest runs and raw record submission."},
-            {"name": "OAuth", "description": "Machine-to-machine OAuth2 client credentials token flow."},
-            {"name": "Persons", "description": "Person profiles, identifiers, connections, timeline, matches, merge, and survivorship."},
-            {"name": "Public", "description": "Unauthenticated share-link person page endpoints."},
-            {"name": "Reports", "description": "Saved Cypher report definitions and execution."},
-            {"name": "Review", "description": "Human review queue: assign, action, and resolve match decisions."},
-            {"name": "System", "description": "Health check and internal data dump endpoints."},
-        ],
+        # Interactive API docs are disabled on the root app — it exposes only
+        # health, the machine OAuth2 token flow, and public share-link pages, so
+        # there is no contract worth publishing here. Authenticated business
+        # routes live on the mounted sub-apps (which keep their own docs).
+        # openapi.json is left off too so the root surface publishes no schema at
+        # all; openapi_tags is omitted with it since no schema is generated.
+        docs_url=None,
+        redoc_url=None,
+        openapi_url=None,
     )
 
     app.add_middleware(
@@ -121,35 +121,25 @@ def build_app() -> FastAPI:
         allow_headers=["*"],
     )
 
-    # Health, auth, and public (share-link) endpoints — no auth required.
-    app.include_router(health.router)
-    app.include_router(auth_routes.router)
-    app.include_router(oauth.router)
-    app.include_router(public_router)
-    # The users router is admin-only via its handlers.
-    app.include_router(users_routes.router)
-
-    # All other routes require an active (non-first_time) user by default.
-    active: list[DependsMarker] = [Depends(require_active_user)]
-    app.include_router(person_links_router, dependencies=active)
-    app.include_router(entities.router, dependencies=active)
-    app.include_router(reports.router, dependencies=active)
-    app.include_router(persons.router, dependencies=active)
-    app.include_router(person_sales.router, dependencies=active)
-    app.include_router(review.router, dependencies=active)
-    app.include_router(merge.router, dependencies=active)
-    app.include_router(survivorship.router, dependencies=active)
-    app.include_router(ingest.router, dependencies=active)
-    app.include_router(dumps.router, dependencies=active)
-    app.include_router(admin.router, dependencies=active)
-    app.include_router(oauth_client_routes.router, dependencies=active)
-    app.include_router(events.router, dependencies=active)
+    # The root app exposes only cross-cutting and unauthenticated surfaces.
+    # Every authenticated business route is served exclusively through the
+    # mounted sub-apps below — /app/v1 + /app/v2 (frontend contracts) and
+    # /oauth2/v1 (machine clients). The business routers live in src/routes/*
+    # and are copied into those mounts; the root app no longer registers them.
+    app.include_router(health.router)  # infra healthcheck — /api/health
+    app.include_router(oauth.router)  # machine OAuth2 token + JWKS — /v1/oauth/*
+    app.include_router(public_router)  # unauthenticated public pages — /v1/public/*
 
     # Frontend-facing API contract, mounted once per UI version. Each mount is a
     # fresh FastAPI instance exposing the same authenticated router set with the
     # /v1 prefix stripped: frontend (v1) -> /app/v1, frontend2 (v2) -> /app/v2.
     app.mount("/app/v1", build_frontend_app())
     app.mount("/app/v2", build_frontend_app())
+
+    # Machine-facing OAuth2 contract: token flow + read-only person list/detail,
+    # accepting OAuth2 client credentials only. Served externally at
+    # /api/oauth2/v1/... via the existing /api/ nginx route.
+    app.mount("/oauth2/v1", build_oauth2_app())
 
     register_error_handlers(app)
     return app

@@ -397,13 +397,23 @@ def link_record_to_graph(
     attributes: list[NormalizedAttribute],
     person_id: str,
     source_record_pk: str,
+    attach_evidence: bool = True,
 ) -> None:
-    """Steps 8–11: wire the source record into the Person subgraph."""
+    """Steps 8–11: wire the source record into the Person subgraph.
+
+    The SourceRecord → Person provenance edge (``LINKED_TO``) is always created.
+    When ``attach_evidence`` is ``False`` the identifier / address / fact edges
+    are *not* written onto ``person_id`` — used for a provisional REVIEW-band
+    match so an unconfirmed record does not commingle into an existing
+    candidate's subgraph (and golden profile) before a human approves the merge.
+    """
     tx.run(
         queries.LINK_SOURCE_RECORD_TO_PERSON,
         source_record_pk=source_record_pk,
         person_id=person_id,
     )
+    if not attach_evidence:
+        return
     _link_identifiers(tx, identifiers, person_id, envelope.source_system, source_record_pk)
     for address in addresses:
         if is_usable(address.quality_flag):

@@ -3,9 +3,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from fastapi.testclient import TestClient
-from src.app import build_app
 from src.auth.deps import require_active_user, require_admin
 from src.auth.models import AuthUser
+from src.frontend_app import build_frontend_app
 from src.repositories.deps import get_survivorship_repo
 from src.repositories.protocols.survivorship import (
     BatchOverrideResult,
@@ -116,7 +116,7 @@ async def _admin_user() -> AuthUser:
 
 
 def _client(repo: _SurvRepo) -> TestClient:
-    app = build_app()
+    app = build_frontend_app()
     app.dependency_overrides[require_active_user] = _admin_user
     app.dependency_overrides[require_admin] = _admin_user
     app.dependency_overrides[get_survivorship_repo] = lambda: repo
@@ -127,7 +127,7 @@ def test_field_options_maps_all_fields_with_display_and_current_flags() -> None:
     repo = _SurvRepo(options=_sample_options("person-1"))
     client = _client(repo)
 
-    res = client.get("/v1/persons/person-1/field-options")
+    res = client.get("/persons/person-1/field-options")
 
     assert res.status_code == 200
     fields = {f["field_name"]: f for f in res.json()["data"]["fields"]}
@@ -156,7 +156,7 @@ def test_field_options_maps_all_fields_with_display_and_current_flags() -> None:
 def test_field_options_404_when_person_missing() -> None:
     repo = _SurvRepo(options=None)
     client = _client(repo)
-    res = client.get("/v1/persons/ghost/field-options")
+    res = client.get("/persons/ghost/field-options")
     assert res.status_code == 404
 
 
@@ -165,7 +165,7 @@ def test_create_override_uses_field_name_contract() -> None:
     client = _client(repo)
 
     res = client.post(
-        "/v1/persons/person-1/survivorship-overrides",
+        "/persons/person-1/survivorship-overrides",
         json={"field_name": "preferred_nric", "source_record_pk": "sr-2", "reason": "verified"},
     )
 
@@ -186,7 +186,7 @@ def test_create_override_value_not_found_returns_422() -> None:
     client = _client(repo)
 
     res = client.post(
-        "/v1/persons/person-1/survivorship-overrides",
+        "/persons/person-1/survivorship-overrides",
         json={"field_name": "preferred_dob", "source_record_pk": "sr-9", "reason": "x"},
     )
 
@@ -198,7 +198,7 @@ def test_create_override_rejects_unknown_field() -> None:
     client = _client(repo)
 
     res = client.post(
-        "/v1/persons/person-1/survivorship-overrides",
+        "/persons/person-1/survivorship-overrides",
         json={"field_name": "preferred_unknown", "source_record_pk": "sr-1", "reason": "x"},
     )
 

@@ -34,6 +34,7 @@ from src.graph.queries.machine_units import (
     RESOLVE_EXISTING_MACHINE_UNIT_FOR_CHAT,
     UPSERT_MACHINE_UNIT,
 )
+from src.graph.queries.maintenance import BACKFILL_RECORD_TYPE_SUBTYPES
 from src.graph.queries.matching import (
     CHECK_IDENTIFIER_FANOUT,
     CHECK_NO_MATCH_LOCK,
@@ -59,6 +60,11 @@ from src.graph.queries.merge import (
     REWIRE_IDENTIFIED_BY,
     REWIRE_LINKED_TO,
     REWIRE_LIVES_AT,
+)
+from src.graph.queries.person_pairs import (
+    CHECK_OPEN_PERSON_PAIR_CASE,
+    CREATE_PERSON_PAIR_REVIEW_CASE,
+    FIND_PERSONS_SHARING_IDENTIFIER,
 )
 from src.graph.queries.persons import (
     CREATE_ATTRIBUTE_FACT,
@@ -98,8 +104,10 @@ from src.graph.queries.source_records import (
 )
 
 __all__ = [
+    "BACKFILL_RECORD_TYPE_SUBTYPES",
     "CHECK_IDENTIFIER_FANOUT",
     "CHECK_NO_MATCH_LOCK",
+    "CHECK_OPEN_PERSON_PAIR_CASE",
     "CHECK_SOURCE_RECORD_EXISTS",
     "CLEAR_SUPERSEDED_SALES_LINKS",
     "FIND_PENDING_CUSTOMER_SALES",
@@ -110,6 +118,7 @@ __all__ = [
     "CREATE_MERGE_EVENT_PERSON_CREATED",
     "CREATE_MERGED_INTO",
     "CREATE_PERSON",
+    "CREATE_PERSON_PAIR_REVIEW_CASE",
     "CREATE_REVIEW_CASE",
     "CREATE_SOURCE_RECORD",
     "FETCH_PERSON_ADDRESSES",
@@ -117,6 +126,7 @@ __all__ = [
     "FETCH_PERSON_IDENTIFIERS",
     "FIND_CANDIDATES_BY_ADDRESS",
     "FIND_CANDIDATES_BY_IDENTIFIER",
+    "FIND_PERSONS_SHARING_IDENTIFIER",
     "FLAG_MACHINE_UNIT_OWNER_CONFLICTS",
     "GET_AFFECTED_SOURCE_RECORDS",
     "GET_LATEST_SOURCE_RECORD",

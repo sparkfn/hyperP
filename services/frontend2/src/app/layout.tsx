@@ -44,7 +44,7 @@ export default async function RootLayout({ children }: { children: ReactNode }):
     return (
       <html lang="en" suppressHydrationWarning>
         <head><script dangerouslySetInnerHTML={{ __html: themeScript }}/></head>
-        <body><SessionProviderClient>{children}</SessionProviderClient></body>
+        <body><SessionProviderClient session={session}>{children}</SessionProviderClient></body>
       </html>
     );
   }
@@ -54,7 +54,7 @@ export default async function RootLayout({ children }: { children: ReactNode }):
       <head><script dangerouslySetInnerHTML={{ __html: themeScript }}/></head>
       <body>
         <LoadingProvider>
-          <SessionProviderClient>
+          <SessionProviderClient session={session}>
             <AppShell initials={initials} email={email} displayName={displayName}>
               {children}
             </AppShell>

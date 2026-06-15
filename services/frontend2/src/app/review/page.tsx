@@ -10,27 +10,45 @@ import { completenessColor, relativeTime } from "@/lib/display";
 import { useSetLoading } from "@/lib/LoadingContext";
 import styles from "./review.module.css";
 
-type QueueState = "open" | "assigned" | "deferred" | "all";
-type Priority   = "all" | "high" | "medium" | "low";
+type QueueState = "unresolved" | "open" | "assigned" | "deferred" | "resolved" | "all";
+type Priority = "all" | "high" | "medium" | "low";
+type SortKey = "priority" | "confidence" | "queue_state" | "sla_due_at";
+type SortDir = "asc" | "desc";
 
+// "unresolved"/"resolved" map to the server-side `resolved` boolean (resolved
+// includes cancelled cases); the named states map to exact `queue_state`.
 const QUEUE_FILTERS: { value: QueueState; label: string }[] = [
-  { value: "open",     label: "Open" },
+  { value: "unresolved", label: "Unresolved" },
+  { value: "open", label: "Open" },
   { value: "assigned", label: "Assigned" },
   { value: "deferred", label: "Deferred" },
-  { value: "all",      label: "All" },
+  { value: "resolved", label: "Resolved" },
+  { value: "all", label: "All" },
 ];
 
-const PRIORITY_FILTERS: { value: Priority; label: string; lte: number | null }[] = [
-  { value: "all",    label: "All priority", lte: null },
-  { value: "high",   label: "High",         lte: 100 },
-  { value: "medium", label: "Medium",       lte: 75 },
-  { value: "low",    label: "Low",          lte: 50 },
+// Priority pills map to a server-side priority range, aligned with priorityLabel().
+const PRIORITY_FILTERS: { value: Priority; label: string; gte: number | null; lte: number | null }[] = [
+  { value: "all", label: "All priority", gte: null, lte: null },
+  { value: "high", label: "High", gte: 80, lte: null },
+  { value: "medium", label: "Medium", gte: 50, lte: 79 },
+  { value: "low", label: "Low", gte: null, lte: 49 },
 ];
+
+const DECISION_OPTIONS = ["merge", "review", "no_match"] as const;
+const ENGINE_OPTIONS = ["deterministic", "heuristic", "pair_audit", "llm", "manual"] as const;
 
 const PAGE_SIZES = [25, 50, 100];
 
+// Default sort direction per column when first activated.
+const DEFAULT_DIR: Record<SortKey, SortDir> = {
+  priority: "asc",
+  confidence: "desc",
+  queue_state: "asc",
+  sla_due_at: "asc",
+};
+
 function queueStateColor(s: string): string {
-  if (s === "open")     return "#3b82f6";
+  if (s === "open") return "#3b82f6";
   if (s === "assigned") return "#f59e0b";
   if (s === "deferred") return "#94a3b8";
   return "#22c55e";
@@ -46,44 +64,153 @@ function priorityColor(p: number): string {
   return "var(--text-muted)";
 }
 
-const HEADERS = ["Case ID", "State", "Priority", "Decision", "Confidence", "Assigned To", "SLA Due"];
+interface HeaderDef {
+  label: string;
+  sortKey?: SortKey;
+}
+const HEADERS: HeaderDef[] = [
+  { label: "Case ID" },
+  { label: "State", sortKey: "queue_state" },
+  { label: "Priority", sortKey: "priority" },
+  { label: "Decision" },
+  { label: "Confidence", sortKey: "confidence" },
+  { label: "Assigned To" },
+  { label: "SLA Due", sortKey: "sla_due_at" },
+];
 
-function buildApiQuery(queue: QueueState, priority: Priority, assigned: string): URLSearchParams {
+function SortIcon({ active, dir }: { active: boolean; dir: SortDir }): ReactElement {
+  return (
+    <svg width="11" height="11" viewBox="0 0 16 16" fill="none" aria-hidden="true" style={{ flexShrink: 0, marginLeft: 4, verticalAlign: "middle" }}>
+      <path d="M5 7L8 4L11 7" stroke={active && dir === "asc" ? "var(--accent)" : "var(--text-faint, #94a3b8)"} strokeWidth={active && dir === "asc" ? 2 : 1.5} strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M5 9L8 12L11 9" stroke={active && dir === "desc" ? "var(--accent)" : "var(--text-faint, #94a3b8)"} strokeWidth={active && dir === "desc" ? 2 : 1.5} strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+function buildApiQuery(args: {
+  queue: QueueState;
+  priority: Priority;
+  assigned: string;
+  personId: string;
+  decision: string;
+  engine: string;
+  confMin: string;
+  confMax: string;
+  createdAfter: string;
+  createdBefore: string;
+  slaAfter: string;
+  slaBefore: string;
+  overdue: boolean;
+  search: string;
+  sortKey: SortKey | null;
+  sortDir: SortDir;
+}): URLSearchParams {
   const p = new URLSearchParams();
-  if (queue !== "all") p.set("queue_state", queue);
-  const pr = PRIORITY_FILTERS.find((f) => f.value === priority);
-  if (pr?.lte !== null && pr?.lte !== undefined) p.set("priority_lte", String(pr.lte));
-  if (assigned.trim()) p.set("assigned_to", assigned.trim());
+  if (args.queue === "unresolved") p.set("resolved", "false");
+  else if (args.queue === "resolved") p.set("resolved", "true");
+  else if (args.queue !== "all") p.set("queue_state", args.queue);
+  const pr = PRIORITY_FILTERS.find((f) => f.value === args.priority);
+  if (pr?.gte != null) p.set("priority_gte", String(pr.gte));
+  if (pr?.lte != null) p.set("priority_lte", String(pr.lte));
+  if (args.assigned.trim()) p.set("assigned_to", args.assigned.trim());
+  if (args.personId.trim()) p.set("person_id", args.personId.trim());
+  if (args.decision) p.set("decision", args.decision);
+  if (args.engine) p.set("engine_type", args.engine);
+  if (args.confMin.trim()) p.set("confidence_gte", args.confMin.trim());
+  if (args.confMax.trim()) p.set("confidence_lte", args.confMax.trim());
+  if (args.createdAfter) p.set("created_after", args.createdAfter);
+  if (args.createdBefore) p.set("created_before", args.createdBefore);
+  if (args.slaAfter) p.set("sla_due_after", args.slaAfter);
+  if (args.slaBefore) p.set("sla_due_before", args.slaBefore);
+  if (args.overdue) p.set("overdue_sla", "true");
+  if (args.search.trim().length >= 3) p.set("q", args.search.trim());
+  if (args.sortKey) {
+    p.set("sort_by", args.sortKey);
+    p.set("sort_order", args.sortDir);
+  }
   return p;
 }
 
 export default function ReviewPage(): ReactElement {
-  const [queueFilter,    setQueueFilter]    = useState<QueueState>("open");
+  const [queueFilter, setQueueFilter] = useState<QueueState>("open");
   const [priorityFilter, setPriorityFilter] = useState<Priority>("all");
   const [assignedFilter, setAssignedFilter] = useState("");
-  const [search,         setSearch]         = useState("");
-  const [pageSize,       setPageSize]       = useState(25);
+  const [personIdFilter, setPersonIdFilter] = useState("");
+  const [decision, setDecision] = useState("");
+  const [engine, setEngine] = useState("");
+  const [confMin, setConfMin] = useState("");
+  const [confMax, setConfMax] = useState("");
+  const [createdAfter, setCreatedAfter] = useState("");
+  const [createdBefore, setCreatedBefore] = useState("");
+  const [slaAfter, setSlaAfter] = useState("");
+  const [slaBefore, setSlaBefore] = useState("");
+  const [overdue, setOverdue] = useState(false);
+  const [search, setSearch] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
+  const [showMore, setShowMore] = useState(false);
+  const [sortKey, setSortKey] = useState<SortKey | null>(null);
+  const [sortDir, setSortDir] = useState<SortDir>("asc");
+  const [pageSize, setPageSize] = useState(25);
 
   // Cursor-based pagination
   const [currentCursor, setCurrentCursor] = useState<string | null>(null);
-  const [cursorStack,   setCursorStack]   = useState<(string | null)[]>([]);
-  const [nextCursor,    setNextCursor]    = useState<string | null>(null);
+  const [cursorStack, setCursorStack] = useState<(string | null)[]>([]);
+  const [nextCursor, setNextCursor] = useState<string | null>(null);
 
   // Data state
-  const [rows,    setRows]    = useState<ReviewCaseSummary[]>([]);
+  const [rows, setRows] = useState<ReviewCaseSummary[]>([]);
+  const [total, setTotal] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
-  const [error,   setError]   = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
   const loadId = useId();
   const setGlobalLoading = useSetLoading();
 
-  // Base query (server-side filters)
+  // Debounce the free-text search before it reaches the server query.
+  useEffect(() => {
+    const handle = window.setTimeout(() => setDebouncedSearch(search), 300);
+    return () => window.clearTimeout(handle);
+  }, [search]);
+
+  function toggleSort(key: SortKey): void {
+    if (sortKey !== key) {
+      setSortKey(key);
+      setSortDir(DEFAULT_DIR[key]);
+      return;
+    }
+    const next: SortDir = sortDir === "asc" ? "desc" : "asc";
+    if (next === DEFAULT_DIR[key]) {
+      setSortKey(null); // third click → reset to server default
+    } else {
+      setSortDir(next);
+    }
+  }
+
+  // Base query (all server-side params except cursor/limit)
   const apiQuery = useMemo(
-    () => buildApiQuery(queueFilter, priorityFilter, assignedFilter).toString(),
-    [queueFilter, priorityFilter, assignedFilter],
+    () =>
+      buildApiQuery({
+        queue: queueFilter,
+        priority: priorityFilter,
+        assigned: assignedFilter,
+        personId: personIdFilter,
+        decision,
+        engine,
+        confMin,
+        confMax,
+        createdAfter,
+        createdBefore,
+        slaAfter,
+        slaBefore,
+        overdue,
+        search: debouncedSearch,
+        sortKey,
+        sortDir,
+      }).toString(),
+    [queueFilter, priorityFilter, assignedFilter, personIdFilter, decision, engine, confMin, confMax, createdAfter, createdBefore, slaAfter, slaBefore, overdue, debouncedSearch, sortKey, sortDir],
   );
 
-  // Reset to page 1 when filters change
+  // Reset to page 1 when filters/sort change
   const prevQuery = useRef(apiQuery);
   useEffect(() => {
     if (prevQuery.current !== apiQuery) {
@@ -109,6 +236,7 @@ export default function ReviewPage(): ReactElement {
       .then((res: ApiResponse<ReviewCaseSummary[]>) => {
         if (!signal.aborted) {
           setRows(res.data ?? []);
+          setTotal(res.meta.total_count ?? null);
           setNextCursor(res.meta.next_cursor ?? null);
         }
       })
@@ -123,18 +251,6 @@ export default function ReviewPage(): ReactElement {
 
     return () => { controller.abort(); setGlobalLoading(loadId, false); };
   }, [apiQuery, currentCursor, pageSize, loadId, setGlobalLoading]);
-
-  // Client-side search
-  const filtered = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    if (!q) return rows;
-    return rows.filter(
-      (c) =>
-        c.review_case_id.toLowerCase().includes(q) ||
-        c.match_decision.decision.toLowerCase().includes(q) ||
-        (c.assigned_to?.toLowerCase().includes(q) ?? false),
-    );
-  }, [rows, search]);
 
   const goNext = useCallback(() => {
     if (!nextCursor) return;
@@ -151,11 +267,36 @@ export default function ReviewPage(): ReactElement {
   const hasPrev = cursorStack.length > 0;
   const hasNext = nextCursor !== null;
   const pageStart = cursorStack.length * pageSize + 1;
-  const pageEnd   = cursorStack.length * pageSize + filtered.length;
+  const pageEnd = cursorStack.length * pageSize + rows.length;
 
-  const hasFilters = search || assignedFilter || queueFilter !== "open" || priorityFilter !== "all";
+  const advancedActive =
+    personIdFilter !== "" || decision !== "" || engine !== "" || confMin !== "" || confMax !== "" ||
+    createdAfter !== "" || createdBefore !== "" || slaAfter !== "" || slaBefore !== "" || overdue;
+  const hasFilters =
+    search !== "" || assignedFilter !== "" || queueFilter !== "open" ||
+    priorityFilter !== "all" || sortKey !== null || advancedActive;
+
+  function resetPage(): void {
+    setCurrentCursor(null);
+    setCursorStack([]);
+  }
+
   function clearAll(): void {
-    setSearch(""); setAssignedFilter(""); setQueueFilter("open"); setPriorityFilter("all");
+    setSearch("");
+    setAssignedFilter("");
+    setPersonIdFilter("");
+    setQueueFilter("open");
+    setPriorityFilter("all");
+    setDecision("");
+    setEngine("");
+    setConfMin("");
+    setConfMax("");
+    setCreatedAfter("");
+    setCreatedBefore("");
+    setSlaAfter("");
+    setSlaBefore("");
+    setOverdue(false);
+    setSortKey(null);
   }
 
   return (
@@ -163,7 +304,7 @@ export default function ReviewPage(): ReactElement {
 
       <div className={styles.heading}>
         <h1 className={styles.title}>Review Queue</h1>
-        {!loading && <span className={styles.count}>{filtered.length}</span>}
+        {!loading && total !== null && <span className={styles.count}>{total}</span>}
       </div>
 
       <div className={styles.filterSection}>
@@ -175,12 +316,17 @@ export default function ReviewPage(): ReactElement {
               <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
             </svg>
             <input className={styles.searchInput} type="text" value={search}
-              onChange={(e) => setSearch(e.target.value)} placeholder="Search by case ID, decision…" />
+              onChange={(e) => setSearch(e.target.value)} placeholder="Search by case ID, decision, person name…" />
           </div>
           <div className={styles.assignedBox}>
             <input className={styles.assignedInput} type="text" value={assignedFilter}
               onChange={(e) => setAssignedFilter(e.target.value)} placeholder="Assigned to…" />
           </div>
+          <button type="button"
+            className={`${styles.filterPill} ${showMore ? styles.filterPillActive : ""}`}
+            onClick={() => setShowMore((v) => !v)} aria-expanded={showMore}>
+            More filters{advancedActive ? " •" : ""}
+          </button>
           {hasFilters && (
             <button type="button" className={styles.clearBtn} onClick={clearAll}>Clear all</button>
           )}
@@ -203,7 +349,64 @@ export default function ReviewPage(): ReactElement {
               {label}
             </button>
           ))}
+          <div className={styles.filterSep} />
+          <button type="button"
+            className={`${styles.filterPill} ${overdue ? styles.filterPillActive : ""}`}
+            onClick={() => setOverdue((v) => !v)}>
+            Overdue SLA
+          </button>
         </div>
+
+        {/* Advanced filters */}
+        {showMore && (
+          <div className={styles.advancedBar}>
+            <label className={styles.advField}>
+              <span className={styles.advLabel}>Person ID</span>
+              <input className={styles.advInput} type="text" value={personIdFilter}
+                onChange={(e) => setPersonIdFilter(e.target.value)} placeholder="person id…" />
+            </label>
+            <label className={styles.advField}>
+              <span className={styles.advLabel}>Decision</span>
+              <select className={styles.advSelect} value={decision} onChange={(e) => setDecision(e.target.value)}>
+                <option value="">Any</option>
+                {DECISION_OPTIONS.map((d) => <option key={d} value={d}>{d}</option>)}
+              </select>
+            </label>
+            <label className={styles.advField}>
+              <span className={styles.advLabel}>Engine</span>
+              <select className={styles.advSelect} value={engine} onChange={(e) => setEngine(e.target.value)}>
+                <option value="">Any</option>
+                {ENGINE_OPTIONS.map((e2) => <option key={e2} value={e2}>{e2}</option>)}
+              </select>
+            </label>
+            <label className={styles.advField}>
+              <span className={styles.advLabel}>Confidence ≥</span>
+              <input className={styles.advInput} type="number" min={0} max={1} step={0.05}
+                value={confMin} onChange={(e) => setConfMin(e.target.value)} placeholder="0.0" />
+            </label>
+            <label className={styles.advField}>
+              <span className={styles.advLabel}>Confidence ≤</span>
+              <input className={styles.advInput} type="number" min={0} max={1} step={0.05}
+                value={confMax} onChange={(e) => setConfMax(e.target.value)} placeholder="1.0" />
+            </label>
+            <label className={styles.advField}>
+              <span className={styles.advLabel}>Created after</span>
+              <input className={styles.advInput} type="date" value={createdAfter} onChange={(e) => setCreatedAfter(e.target.value)} />
+            </label>
+            <label className={styles.advField}>
+              <span className={styles.advLabel}>Created before</span>
+              <input className={styles.advInput} type="date" value={createdBefore} onChange={(e) => setCreatedBefore(e.target.value)} />
+            </label>
+            <label className={styles.advField}>
+              <span className={styles.advLabel}>SLA due after</span>
+              <input className={styles.advInput} type="date" value={slaAfter} onChange={(e) => setSlaAfter(e.target.value)} />
+            </label>
+            <label className={styles.advField}>
+              <span className={styles.advLabel}>SLA due before</span>
+              <input className={styles.advInput} type="date" value={slaBefore} onChange={(e) => setSlaBefore(e.target.value)} />
+            </label>
+          </div>
+        )}
 
         {/* Count + pagination bar */}
         <div className={styles.tableSection}>
@@ -211,13 +414,15 @@ export default function ReviewPage(): ReactElement {
             <span className={styles.resultCount}>
               {loading
                 ? "Loading…"
-                : `Showing ${filtered.length === 0 ? 0 : pageStart}–${pageEnd}`}
+                : rows.length === 0
+                  ? "No results"
+                  : `Showing ${pageStart}–${pageEnd}${total !== null ? ` of ${total}` : ""}`}
             </span>
             <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 8 }}>
               <select
                 className={styles.pageSizeSelect}
                 value={pageSize}
-                onChange={(e) => { setPageSize(Number(e.target.value)); setCurrentCursor(null); setCursorStack([]); }}
+                onChange={(e) => { setPageSize(Number(e.target.value)); resetPage(); }}
               >
                 {PAGE_SIZES.map((n) => <option key={n} value={n}>{n} / page</option>)}
               </select>
@@ -234,7 +439,16 @@ export default function ReviewPage(): ReactElement {
 
           <table className={styles.table}>
             <thead>
-              <tr>{HEADERS.map((h) => <th key={h} className={styles.th}>{h}</th>)}</tr>
+              <tr>
+                {HEADERS.map((h) => (
+                  <th key={h.label} className={styles.th}
+                    style={h.sortKey ? { cursor: "pointer" } : undefined}
+                    onClick={h.sortKey ? () => toggleSort(h.sortKey as SortKey) : undefined}>
+                    {h.label}
+                    {h.sortKey && <SortIcon active={sortKey === h.sortKey} dir={sortKey === h.sortKey ? sortDir : "asc"} />}
+                  </th>
+                ))}
+              </tr>
             </thead>
             <tbody>
               {loading ? (
@@ -247,12 +461,12 @@ export default function ReviewPage(): ReactElement {
                     ))}
                   </tr>
                 ))
-              ) : filtered.length === 0 ? (
+              ) : rows.length === 0 ? (
                 <tr><td colSpan={HEADERS.length} className={styles.empty}>
-                  {search ? `No results for "${search}"` : "No review cases found."}
+                  {debouncedSearch ? `No results for "${debouncedSearch}"` : "No review cases found."}
                 </td></tr>
               ) : (
-                filtered.map((c) => (
+                rows.map((c) => (
                   <tr key={c.review_case_id} className={styles.tr}>
                     <td className={styles.td}>
                       <Link href={`/review/${c.review_case_id}`} className={styles.caseLink}>
