@@ -14,12 +14,13 @@ from dataclasses import dataclass
 from neo4j import ManagedTransaction
 
 from src.graph import queries
+from src.matching.identifier_similarity import email_near_match, phone_near_match
 from src.matching.names import (
     NAME_PARTIAL_THRESHOLD,
     best_name_similarity,
     incoming_names,
 )
-from src.matching.snapshot import CandidateSnapshot, fetch_candidate_snapshot
+from src.matching.snapshot import CandidateSnapshot, RecordDict, fetch_candidate_snapshot
 from src.models import (
     EngineType,
     JsonValue,
@@ -43,6 +44,8 @@ PHONE_VERIFIED_WEIGHT = 0.35
 PHONE_UNVERIFIED_WEIGHT = 0.20
 EMAIL_VERIFIED_WEIGHT = 0.35
 EMAIL_UNVERIFIED_WEIGHT = 0.20
+PHONE_APPROX_WEIGHT = 0.10  # half of PHONE_UNVERIFIED_WEIGHT — weak corroborating signal
+EMAIL_APPROX_WEIGHT = 0.10  # half of EMAIL_UNVERIFIED_WEIGHT — weak corroborating signal
 DOB_MATCH_WEIGHT = 0.25
 DOB_CONFLICT_PENALTY = -0.30
 NAME_HIGH_THRESHOLD = 0.8
@@ -88,8 +91,10 @@ class HeuristicSignals:
     """
 
     phone_exact_match: bool = False
+    phone_approx_match: bool = False
     phone_high_fanout: bool = False
     email_exact_match: bool = False
+    email_approx_match: bool = False
     dob_exact_match: bool = False
     dob_conflict: bool = False
     address_match: bool = False
@@ -203,6 +208,50 @@ def _score_identifiers(
             reasons.append(
                 f"Email match ({'verified' if verified else 'unverified'}: +{weight:.2f})"
             )
+
+    evidence += _score_approx_identifiers(
+        identifiers, snapshot, cand_phones, cand_emails, reasons, signals
+    )
+    return evidence
+
+
+def _score_approx_identifiers(
+    identifiers: list[NormalizedIdentifier],
+    snapshot: CandidateSnapshot,
+    cand_phones: dict[str, RecordDict],
+    cand_emails: dict[str, RecordDict],
+    reasons: list[str],
+    signals: HeuristicSignals,
+) -> float:
+    """Second pass: near-miss phone/email scoring for non-exact-matched identifiers.
+
+    Weak, corroborating-only evidence (matching-spec "Approximate Identifier
+    Matching"). Tracked via separate ``*_approx_match`` signals — distinct from
+    ``*_exact_match`` and ``identifier_system_corroborated`` — so it can never
+    satisfy a promotion criterion or affect fanout checks.
+    """
+    evidence = 0.0
+    for ident in identifiers:
+        if ident.identifier_type == "phone" and ident.normalized_value not in cand_phones:
+            if not signals.phone_approx_match and any(
+                phone_near_match(ident.normalized_value, str(cand["normalized_value"]))
+                for cand in snapshot.phones()
+            ):
+                evidence += PHONE_APPROX_WEIGHT
+                signals.phone_approx_match = True
+                reasons.append(
+                    f"Phone near-match (NSN edit-distance=1: +{PHONE_APPROX_WEIGHT:.2f})"
+                )
+        elif ident.identifier_type == "email" and ident.normalized_value not in cand_emails:
+            if not signals.email_approx_match and any(
+                email_near_match(ident.normalized_value, str(cand["normalized_value"]))
+                for cand in snapshot.emails()
+            ):
+                evidence += EMAIL_APPROX_WEIGHT
+                signals.email_approx_match = True
+                reasons.append(
+                    f"Email near-match (domain/local-part near-miss: +{EMAIL_APPROX_WEIGHT:.2f})"
+                )
     return evidence
 
 
@@ -302,8 +351,10 @@ def _build_feature_snapshot(
     return {
         "candidate_person_id": candidate_person_id,
         "phone_exact_match": signals.phone_exact_match,
+        "phone_approx_match": signals.phone_approx_match,
         "phone_high_fanout": signals.phone_high_fanout,
         "email_exact_match": signals.email_exact_match,
+        "email_approx_match": signals.email_approx_match,
         "dob_exact_match": signals.dob_exact_match,
         "dob_conflict": signals.dob_conflict,
         "name_similarity": signals.name_similarity,

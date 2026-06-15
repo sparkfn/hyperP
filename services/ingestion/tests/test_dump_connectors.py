@@ -248,6 +248,67 @@ INSERT INTO `phppos_customers` VALUES
     assert raw_person["custom_field_10_value"] == "Y"
 
 
+def test_eko_dump_connector_derives_phone_region_hint(tmp_path: Path) -> None:
+    dump_path = tmp_path / "eko_my.sql"
+    dump_path.write_text(
+        """
+CREATE TABLE `phppos_people` (
+  `person_id` int NOT NULL,
+  `first_name` varchar(255),
+  `last_name` varchar(255),
+  `full_name` varchar(255),
+  `phone_number` varchar(255),
+  `email` varchar(255),
+  `address_1` varchar(255),
+  `address_2` varchar(255),
+  `city` varchar(255),
+  `state` varchar(255),
+  `zip` varchar(255),
+  `country` varchar(255),
+  `comments` text,
+  `create_date` datetime,
+  `last_modified` datetime,
+  `title` varchar(255),
+  `phone_code` varchar(255)
+);
+CREATE TABLE `phppos_customers` (
+  `id` int NOT NULL,
+  `person_id` int,
+  `deleted` int,
+  `account_number` varchar(255),
+  `company_name` varchar(255),
+  `custom_field_1_value` varchar(255),
+  `custom_field_2_value` varchar(255),
+  `custom_field_3_value` varchar(255),
+  `custom_field_4_value` varchar(255),
+  `custom_field_5_value` varchar(255),
+  `custom_field_6_value` varchar(255),
+  `custom_field_7_value` varchar(255),
+  `custom_field_8_value` varchar(255),
+  `custom_field_9_value` varchar(255),
+  `custom_field_10_value` varchar(255)
+);
+INSERT INTO `phppos_people` VALUES
+(9,'Wei','Tan','Wei Tan','96542555','wei@example.test','One','Two',
+'Kuala Lumpur','KL','50000','Malaysia','notes','2026-05-01 01:00:00','2026-05-06 02:00:00',
+'Mr','60');
+INSERT INTO `phppos_customers` VALUES
+(13,9,0,'ACC-13','Wei Co','S1234568A','unused-2','unused-3','2026-12-31','15',
+'unused-6','unused-7','KL','1991-02-02','Y');
+""".strip(),
+        encoding="utf-8",
+    )
+
+    connector = get_dump_connector("eko_phppos", dump_path)
+    records = list(connector.fetch_records())
+
+    assert len(records) == 1
+    phone_items = [item for item in records[0]["identifiers"] if item["type"] == "phone"]
+    assert phone_items == [
+        {"type": "phone", "value": "96542555", "is_verified": False, "region_hint": "MY"}
+    ]
+
+
 def test_speedzone_dump_connector_preserves_custom_field_mapping(tmp_path: Path) -> None:
     dump_path = tmp_path / "speedzone.sql"
     dump_path.write_text(
@@ -335,6 +396,67 @@ INSERT INTO `phppos_customers` VALUES
     assert raw_person["custom_field_8_value"] == "SBA1234A"
     assert raw_person["custom_field_9_value"] == "1992-02-29"
     assert raw_person["custom_field_10_value"] == "SBB5678B"
+
+
+def test_speedzone_dump_connector_derives_phone_region_hint(tmp_path: Path) -> None:
+    dump_path = tmp_path / "speedzone_my.sql"
+    dump_path.write_text(
+        """
+CREATE TABLE `phppos_people` (
+  `person_id` int NOT NULL,
+  `first_name` varchar(255),
+  `last_name` varchar(255),
+  `full_name` varchar(255),
+  `phone_number` varchar(255),
+  `email` varchar(255),
+  `address_1` varchar(255),
+  `address_2` varchar(255),
+  `city` varchar(255),
+  `state` varchar(255),
+  `zip` varchar(255),
+  `country` varchar(255),
+  `comments` text,
+  `create_date` datetime,
+  `last_modified` datetime,
+  `title` varchar(255),
+  `phone_code` varchar(255)
+);
+CREATE TABLE `phppos_customers` (
+  `id` int NOT NULL,
+  `person_id` int,
+  `deleted` int,
+  `account_number` varchar(255),
+  `company_name` varchar(255),
+  `custom_field_1_value` varchar(255),
+  `custom_field_2_value` varchar(255),
+  `custom_field_3_value` varchar(255),
+  `custom_field_4_value` varchar(255),
+  `custom_field_5_value` varchar(255),
+  `custom_field_6_value` varchar(255),
+  `custom_field_7_value` varchar(255),
+  `custom_field_8_value` varchar(255),
+  `custom_field_9_value` varchar(255),
+  `custom_field_10_value` varchar(255)
+);
+INSERT INTO `phppos_people` VALUES
+(10,'Wei','Tan','Wei Tan','96542555','wei@example.test','One','Two',
+'Kuala Lumpur','KL','50000','Malaysia','notes','2026-05-01 01:00:00','2026-05-06 02:00:00',
+'Mr','60');
+INSERT INTO `phppos_customers` VALUES
+(14,10,0,'ACC-14','Wei Co','S1234569A','unused-2','unused-3','2026-12-31','15',
+'unused-6','unused-7','KL','1991-02-02','Y');
+""".strip(),
+        encoding="utf-8",
+    )
+
+    connector = get_dump_connector("speedzone_phppos", dump_path)
+    records = list(connector.fetch_records())
+
+    assert len(records) == 1
+    phone_items = [item for item in records[0]["identifiers"] if item["type"] == "phone"]
+    assert phone_items == [
+        {"type": "phone", "value": "96542555", "is_verified": False, "region_hint": "MY"}
+    ]
 
 
 def test_fundbox_contact_dump_is_relationship_record() -> None:

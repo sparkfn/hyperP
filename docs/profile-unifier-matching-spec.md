@@ -229,6 +229,8 @@ side-effects defined there.
 
 - exact verified phone match
 - exact verified email match
+- approximate (near-miss) phone match (same region, NSN edit-distance 1)
+- approximate (near-miss) email match (domain-typo or local-part near-miss)
 - DOB exact match
 - high full-name similarity
 - high address similarity
@@ -285,13 +287,49 @@ conflict, or a high-fanout phone (> cap) — on top of the deterministic blocker
 
 `identity` keeps the plain additive behaviour with the unconditional NRIC merge.
 
+### Approximate Identifier Matching
+
+Two normalization-correctness prerequisites make *exact*-match identifiers more
+correct before any approximate scoring runs:
+
+- **Region-hint phone normalization**: eko/speedzone connectors derive an ISO
+  region hint from the source row's `phone_code`/`country` columns and pass it
+  to `normalize_phone`, falling back to the SG default if the hinted region
+  produces `invalid_format`. This resolves the region-ambiguity where an
+  8-digit local number normalizes to a different, both-"valid" E.164 value
+  depending on default region.
+- **Gmail/Googlemail canonicalization**: `john.tan+promo@googlemail.com` and
+  `johntan@gmail.com` normalize to the same `normalized_value` (`+tag`
+  stripped, dots removed from the local part, domain folded to `gmail.com`) —
+  a true equivalence, so these match **exactly** via existing graph traversal,
+  not via approximate scoring.
+
+On top of these, the heuristic scorer runs a second pass over incoming
+phone/email identifiers that did **not** get an exact match: a same-region
+phone whose national significant number is Damerau-Levenshtein distance 1 from
+one of the candidate's phones (`phone_approx_match`), or an email that is a
+single-axis domain-typo or local-part near-miss of one of the candidate's
+emails (`email_approx_match`). Each contributes a small `+0.10` weight.
+
+**Approximate signals are excluded from all promotion paths.** Conversation
+promotion (`_can_promote_conversation`) and the `relationship` promotion branch
+of `_promote_by_record_type` both key off `phone_exact_match`/`email_exact_match
+is True` — `phone_approx_match`/`email_approx_match` are distinct fields that
+neither function reads, so an approximate match can never by itself satisfy a
+promotion criterion. Approximate evidence is also excluded from
+`identifier_system_corroborated` and from fanout checks (fanout concerns the
+*candidate's* value being widely shared, not a value that doesn't match it
+exactly).
+
 ## Example Feature Vector
 
 ```json
 {
   "phone_exact_match": true,
+  "phone_approx_match": false,
   "phone_verified_both": false,
   "email_exact_match": false,
+  "email_approx_match": false,
   "dob_exact_match": true,
   "dob_conflict": false,
   "name_similarity": 0.82,
@@ -324,6 +362,8 @@ weak signals must not produce auto-merge confidence.
 - verified government ID exact match: hard merge
 - exact verified phone: `+0.35`
 - exact verified email: `+0.35`
+- approximate phone match: `+0.10`
+- approximate email match: `+0.10`
 - DOB exact match: `+0.25`
 - high name similarity: `+0.20`
 - high address similarity: `+0.10`
@@ -417,6 +457,9 @@ Include:
 - name abbreviation cases
 - stale or outdated emails
 - conflicting source records
+- single-digit phone typos and transposed-digit phone numbers (same region)
+- gmail dot/plus-addressing variants (e.g. `john.tan+promo@googlemail.com` vs `johntan@gmail.com`)
+- common email domain typos (e.g. `gmial.com`, `hotmial.com`, `yahooo.com`)
 
 ### Metrics
 

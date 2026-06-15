@@ -75,3 +75,34 @@ def jaro_winkler_similarity(s1: str, s2: str, prefix_weight: float = 0.1) -> flo
             break
 
     return jaro + prefix_len * prefix_weight * (1 - jaro)
+
+
+def damerau_levenshtein_distance(s1: str, s2: str) -> int:
+    """Optimal string alignment (OSA) Damerau-Levenshtein edit distance.
+
+    Counts each adjacent transposition as 1 edit. Returns the minimum number
+    of single-character insertions, deletions, substitutions, or adjacent
+    transpositions required to transform s1 into s2.
+    """
+    len1, len2 = len(s1), len(s2)
+    if len1 == 0:
+        return len2
+    if len2 == 0:
+        return len1
+    # dp[i][j] = distance between s1[:i] and s2[:j]
+    dp: list[list[int]] = [[0] * (len2 + 1) for _ in range(len1 + 1)]
+    for i in range(len1 + 1):
+        dp[i][0] = i
+    for j in range(len2 + 1):
+        dp[0][j] = j
+    for i in range(1, len1 + 1):
+        for j in range(1, len2 + 1):
+            cost = 0 if s1[i - 1] == s2[j - 1] else 1
+            dp[i][j] = min(
+                dp[i - 1][j] + 1,  # deletion
+                dp[i][j - 1] + 1,  # insertion
+                dp[i - 1][j - 1] + cost,  # substitution
+            )
+            if i > 1 and j > 1 and s1[i - 1] == s2[j - 2] and s1[i - 2] == s2[j - 1]:
+                dp[i][j] = min(dp[i][j], dp[i - 2][j - 2] + 1)  # transposition
+    return dp[len1][len2]

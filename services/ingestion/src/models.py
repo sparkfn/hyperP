@@ -101,6 +101,7 @@ class RawIdentifier(BaseModel):
     type: str
     value: str
     is_verified: bool = False
+    region_hint: str | None = None
 
 
 class RawAddress(BaseModel):

@@ -80,14 +80,35 @@ def _passthrough_normalize(raw: str) -> tuple[str | None, QualityFlag]:
     return (value, QualityFlag.VALID) if value else (None, QualityFlag.INVALID_FORMAT)
 
 
+def _normalize_phone_with_hint(
+    value: str, region_hint: str | None
+) -> tuple[str | None, QualityFlag]:
+    """Normalize a phone number, preferring a connector-supplied region hint.
+
+    Falls back to :func:`normalize_phone`'s default region (SG) when the
+    hinted region fails to produce a usable number — a noisy or wrong
+    ``country``/``phone_code`` hint can therefore never make a number that
+    normalizes fine today start failing.
+    """
+    if region_hint is None:
+        return normalize_phone(value)
+    hinted = normalize_phone(value, region=region_hint)
+    if hinted[1] != QualityFlag.INVALID_FORMAT:
+        return hinted
+    return normalize_phone(value)
+
+
 def normalize_envelope_identifiers(
     envelope: SourceRecordEnvelope,
 ) -> list[NormalizedIdentifier]:
     results: list[NormalizedIdentifier] = []
     for raw_id in envelope.identifiers:
         id_type = raw_id.type.lower().strip()
-        normalizer = _IDENTIFIER_NORMALIZERS.get(id_type, _passthrough_normalize)
-        normalized, flag = normalizer(raw_id.value)
+        if id_type == "phone":
+            normalized, flag = _normalize_phone_with_hint(raw_id.value, raw_id.region_hint)
+        else:
+            normalizer = _IDENTIFIER_NORMALIZERS.get(id_type, _passthrough_normalize)
+            normalized, flag = normalizer(raw_id.value)
         if normalized:
             results.append(
                 NormalizedIdentifier(

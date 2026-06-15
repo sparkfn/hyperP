@@ -11,8 +11,42 @@ import json
 from datetime import date, datetime
 from typing import Any, Literal
 
+import phonenumbers
+
 from src.connectors.fundbox.junk import is_junk_identifier, should_filter
 from src.models import JsonValue
+
+_COUNTRY_NAME_TO_REGION: dict[str, str] = {
+    "singapore": "SG",
+    "sg": "SG",
+    "malaysia": "MY",
+    "malaysian": "MY",
+    "indonesia": "ID",
+    "indonesian": "ID",
+    "philippines": "PH",
+    "filipino": "PH",
+}
+
+
+def phone_region_hint(phone_code: object, country: object) -> str | None:
+    """Derive an ISO region hint for phone normalization from POS columns.
+
+    Prefers the numeric calling code (``phone_code``, e.g. ``"60"``); falls
+    back to a free-text ``country`` column. Returns ``None`` when neither
+    yields a recognized region, so the normalizer falls back to its default
+    (SG).
+    """
+    if phone_code is not None:
+        code_str = str(phone_code).strip()
+        if code_str.isdigit():
+            region = phonenumbers.region_code_for_country_code(int(code_str))
+            if region and region != "ZZ":
+                return region
+    if country is not None:
+        country_key = str(country).strip().lower()
+        if country_key in _COUNTRY_NAME_TO_REGION:
+            return _COUNTRY_NAME_TO_REGION[country_key]
+    return None
 
 
 def _json_default(value: object) -> str:
@@ -154,6 +188,7 @@ class IdentifierBag:
         *,
         verified: bool = False,
         last_confirmed_at: str | None = None,
+        region_hint: str | None = None,
     ) -> None:
         if value is None:
             return
@@ -173,6 +208,8 @@ class IdentifierBag:
         }
         if last_confirmed_at is not None:
             item["last_confirmed_at"] = last_confirmed_at
+        if region_hint is not None:
+            item["region_hint"] = region_hint
         self.items.append(item)
 
     def __len__(self) -> int:

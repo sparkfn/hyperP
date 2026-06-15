@@ -29,6 +29,7 @@ from src.connectors.fundbox.builders import (
     address_from_row,
     build_envelope,
     format_address,
+    phone_region_hint,
     serialize_row,
     to_iso,
 )
@@ -171,7 +172,11 @@ class SpeedZoneConnector(SourceConnector):
         ids = IdentifierBag()
         ids.add("nric", row.custom_field_1_value, verified=True)
         ids.add("email", row.email)
-        ids.add("phone", row.phone_number)
+        ids.add(
+            "phone",
+            row.phone_number,
+            region_hint=phone_region_hint(row.phone_code, row.country),
+        )
 
         if row.custom_field_2_value:
             ids.add("external:bitrix", row.custom_field_2_value)
@@ -199,7 +204,11 @@ class SpeedZoneConnector(SourceConnector):
     def _build_envelope_people_only(row: Any) -> dict[str, JsonValue]:
         ids = IdentifierBag()
         ids.add("email", row.email)
-        ids.add("phone", row.phone_number)
+        ids.add(
+            "phone",
+            row.phone_number,
+            region_hint=phone_region_hint(row.phone_code, row.country),
+        )
 
         address = format_address(row)
         address_row = address_from_row(row)
