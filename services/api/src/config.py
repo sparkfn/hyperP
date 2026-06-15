@@ -49,6 +49,10 @@ class AppConfig(BaseSettings):
     )
     llm_api_key: str | None = Field(default=None, alias="LLM_API_KEY")
     llm_default_model: str | None = Field(default=None, alias="LLM_DEFAULT_MODEL")
+    # Proclaude service (proxy-claude-v2 Anthropic Messages API)
+    proclaude_api_base_url: str | None = Field(default=None, alias="PROCLAUDE_API_BASE_URL")
+    proclaude_api_key: str | None = Field(default=None, alias="PROCLAUDE_API_KEY")
+    proclaude_default_model: str | None = Field(default=None, alias="PROCLAUDE_DEFAULT_MODEL")
 
     @property
     def bootstrap_admin_email_set(self) -> frozenset[str]:

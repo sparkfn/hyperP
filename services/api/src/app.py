@@ -23,6 +23,7 @@ from src.graph.client import close_driver, get_session
 from src.graph.queries.users import CREATE_USER_CONSTRAINT
 from src.llm.service import close_llm_service
 from src.oauth2_app import build_oauth2_app
+from src.proclaude.service import close_proclaude_service
 from src.redis_client import close_redis
 from src.routes import health, oauth
 from src.routes.public_pages import public_router
@@ -91,6 +92,7 @@ async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
     await close_driver()
     await close_redis()
     await close_llm_service()
+    await close_proclaude_service()
 
 
 def build_app() -> FastAPI:
