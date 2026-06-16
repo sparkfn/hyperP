@@ -30,6 +30,9 @@ next-env.d.ts.bak
 Thumbs.db
 desktop.ini
 
+# GitHub Actions runner
+.github/actions-runner/
+
 # Docker
 data/neo4j/
 data/redis/

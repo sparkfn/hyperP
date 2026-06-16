@@ -1,0 +1,56 @@
+name: CI/CD Staging
+
+on:
+  push:
+    branches: [staging]
+  workflow_dispatch:
+
+concurrency:
+  group: cicd-staging
+  cancel-in-progress: false
+
+jobs:
+  build-and-deploy:
+    name: Build & Deploy
+    runs-on: [self-hosted, linux, x64, staging]
+    environment: staging
+    steps:
+      - name: Deploy on staging
+        shell: bash
+        run: |
+          set -e
+          REPO_DIR="${{ secrets.STAGING_REPO_DIR }}"
+          cd "$REPO_DIR"
+
+          git -c safe.directory="$REPO_DIR" fetch \
+            "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" staging
+          git -c safe.directory="$REPO_DIR" checkout staging
+          git -c safe.directory="$REPO_DIR" merge --ff-only FETCH_HEAD
+
+          COMPOSE="docker compose -f .docker/staging/docker-compose.yml"
+
+          $COMPOSE build --no-cache api frontend frontend2 worker beat
+
+          $COMPOSE up -d --no-deps --force-recreate api frontend frontend2 worker beat
+          $COMPOSE restart web
+
+          echo 'Running health check...'
+          HEALTH_OK=false
+          for i in 1 2 3 4 5 6 7 8 9 10; do
+            BODY=$(curl -sf "${{ secrets.STAGING_HEALTH_URL }}" 2>/dev/null || echo 'FAIL')
+            if echo "$BODY" | grep -q '"status":.*"ok"'; then
+              HEALTH_OK=true
+              echo "Health check passed on attempt $i"
+              break
+            fi
+            echo "Health check attempt $i: $BODY"
+            sleep 5
+          done
+
+          if [ "$HEALTH_OK" = 'false' ]; then
+            echo 'HEALTH CHECK FAILED'
+            exit 1
+          fi
+
+          docker image prune -a --filter 'until=168h' -f || true
+          echo "Deployed: ${{ github.sha }}"
