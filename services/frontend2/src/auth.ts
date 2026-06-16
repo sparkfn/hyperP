@@ -171,7 +171,7 @@ export const authConfig: NextAuthConfig = {
           token.role = me.role;
           token.entityKey = me.entity_key;
           token.displayName = me.display_name;
-        } else {
+        } else if (!token.role) {
           token.role = "first_time";
           token.entityKey = null;
         }
@@ -197,7 +197,7 @@ export const authConfig: NextAuthConfig = {
         // "transient": keep the current token; the next request retries.
       }
 
-      if (trigger === "update" && typeof token.googleIdToken === "string") {
+      if ((trigger === "update" || token.role === "first_time") && typeof token.googleIdToken === "string") {
         const me = await fetchMe(token.googleIdToken);
         if (me) {
           token.role = me.role;

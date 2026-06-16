@@ -124,6 +124,42 @@ interface MergeTargetProfile {
   candidateEvidence?: string;
 }
 
+function validateCustomOverrideValue(fieldName: GoldenFieldName, value: string): string | null {
+  const trimmed = value.trim();
+  if (!trimmed) return "Custom value cannot be empty.";
+  if (fieldName === "preferred_phone" && !/^\+?[0-9][0-9\s-]{5,19}$/.test(trimmed)) return "Phone must contain only numbers, spaces, hyphens, and an optional leading +.";
+  if (fieldName === "preferred_email" && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmed)) return "Email must be a valid email address.";
+  if (fieldName === "preferred_dob" && (!/^\d{4}-\d{2}-\d{2}$/.test(trimmed) || Number.isNaN(Date.parse(trimmed)))) return "Date of birth must use YYYY-MM-DD.";
+  if (fieldName === "preferred_nric" && !/^[A-Za-z0-9*\-\s]{4,32}$/.test(trimmed)) return "NRIC must contain only letters, numbers, spaces, hyphens, or *.";
+  return null;
+}
+
+function customOverrideInputType(fieldName: GoldenFieldName): string {
+  if (fieldName === "preferred_email") return "email";
+  if (fieldName === "preferred_dob") return "date";
+  if (fieldName === "preferred_phone") return "tel";
+  return "text";
+}
+
+function customOverrideInputMode(fieldName: GoldenFieldName): "text" | "email" | "tel" | undefined {
+  if (fieldName === "preferred_email") return "email";
+  if (fieldName === "preferred_phone") return "tel";
+  return undefined;
+}
+
+function customOverridePlaceholder(fieldName: GoldenFieldName): string {
+  if (fieldName === "preferred_full_name") return "Type full name";
+  if (fieldName === "preferred_phone") return "+6581234567";
+  if (fieldName === "preferred_email") return "name@example.com";
+  if (fieldName === "preferred_dob") return "YYYY-MM-DD";
+  if (fieldName === "preferred_nric") return "Type NRIC";
+  return "Type address";
+}
+
+type OverrideFieldSelection =
+  | { field: EditableFieldOptions; sourceRecordPk: string }
+  | { field: EditableFieldOptions; customValue: string };
+
 interface MergeFieldDraft {
   key: MergeGoldenField;
   label: string;
@@ -181,6 +217,7 @@ function CopyableId({ value }: { value: string }): ReactElement {
     </div>
   );
 }
+
 
 function titleCase(value: string): string {
   return value
@@ -1120,11 +1157,14 @@ function SkeletonRows(): ReactElement {
     <>
       {SKEL_N.map((i) => (
         <div key={i} className={styles.tabSkelItem}>
-          <div className={styles.tabSkelStack}>
+          <div className={styles.tabSkelStack} style={{ flex: 1 }}>
             <span className={styles.tabSkelLine} style={{ width: `${55 + (i % 3) * 12}%` }} />
-            <span className={styles.tabSkelLine} style={{ width: `${35 + (i % 4) * 10}%`, height: 10 }} />
+            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              <span className={styles.tabSkelLine} style={{ width: `${35 + (i % 4) * 10}%`, height: 10 }} />
+              <span className={styles.tabSkelLine} style={{ width: 24, height: 10 }} />
+            </div>
           </div>
-          <span className={styles.tabSkelBadge} style={{ width: 52 }} />
+          <span className={styles.tabSkelBadge} style={{ width: 64 }} />
         </div>
       ))}
     </>
@@ -1136,10 +1176,10 @@ function SkeletonConnections(): ReactElement {
     <>
       {SKEL_N.map((i) => (
         <div key={i} className={styles.tabSkelItem}>
-          <div className={styles.tabSkelAvatar} />
-          <div className={styles.tabSkelStack}>
+          <span className={styles.tabSkelAvatar} />
+          <div className={styles.tabSkelStack} style={{ flex: 1 }}>
             <span className={styles.tabSkelLine} style={{ width: `${50 + (i % 3) * 15}%` }} />
-            <span className={styles.tabSkelLine} style={{ width: `${65 + (i % 3) * 8}%`, height: 10 }} />
+            <span className={styles.tabSkelLine} style={{ width: `${40 + (i % 2) * 20}%`, height: 10 }} />
           </div>
         </div>
       ))}
@@ -1168,11 +1208,14 @@ function SkeletonMatches(): ReactElement {
     <>
       {SKEL_N.map((i) => (
         <div key={i} className={styles.tabSkelItem}>
-          <span className={styles.tabSkelBadge} style={{ width: 64 }} />
-          <span className={styles.tabSkelLine} style={{ width: 72 }} />
-          <span className={styles.tabSkelLine} style={{ flex: 1 }} />
-          <span className={styles.tabSkelLine} style={{ width: 80 }} />
-          <span className={styles.tabSkelLine} style={{ width: 90 }} />
+          <span className={styles.tabSkelAvatar} />
+          <div className={styles.tabSkelStack} style={{ flex: 1 }}>
+            <span className={styles.tabSkelLine} style={{ width: `${55 + (i % 3) * 12}%` }} />
+            <span className={styles.tabSkelLine} style={{ width: `${35 + (i % 2) * 15}%`, height: 10 }} />
+          </div>
+          <div style={{ display: "flex", gap: 6 }}>
+            <span className={styles.tabSkelBadge} style={{ width: 48 }} />
+          </div>
         </div>
       ))}
     </>
@@ -1990,9 +2033,9 @@ function SourceRecordRow({ record }: { record: PersonSourceRecord }): ReactEleme
         tabIndex={0}
         onKeyDown={(e) => e.key === "Enter" && setOpen((v) => !v)}
       >
-        <div className={styles.idBody}>
-          <span className={styles.idValue}>{titleCase(record.source_system)}</span>
-          <div className={styles.connMeta}>
+        <div className={styles.srcBody}>
+          <span className={styles.srcTitle}>{titleCase(record.source_system)}</span>
+          <div className={styles.srcMetaLine}>
             <span>{entity}</span>
             <span className={styles.connMetaSep}>·</span>
             <span>{record.source_record_id}</span>
@@ -2003,8 +2046,8 @@ function SourceRecordRow({ record }: { record: PersonSourceRecord }): ReactEleme
             <span>{record.observed_at_display || "—"}</span>
           </div>
         </div>
-        <div className={styles.idBadges}>
-          <span className={record.record_type === "conversation" ? styles.srBadgeConv : styles.srBadgeSys}>{titleCase(record.record_type)}</span>
+        <div className={styles.srcBadges}>
+          <span className={record.record_type === "conversation" ? styles.srBadgeConv : styles.srBadgeSys}>{record.record_type}</span>
           <span className={styles.srBadgeLink}>{record.link_status}</span>
           <svg className={`${styles.srcChevron} ${open ? styles.srcChevronOpen : ""}`} width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
             <path d="M6 9l6 6 6-6" />
@@ -2121,9 +2164,10 @@ function SourceRecordsList({ basePath }: { basePath: string }): ReactElement {
 function SourceRecordsTab({ personId, facets, onTotalLoaded }: { personId: string; facets: SourceRecordEntityFacet[]; onTotalLoaded: (n: number) => void }): ReactElement {
   const [activeEntity, setActiveEntity] = useState<string | null>(null);
   const facetTotal = facets.reduce((sum, f) => sum + f.count, 0);
-  const basePath = activeEntity === null
-    ? `/bff/persons/${encodeURIComponent(personId)}/source-records`
-    : `/bff/persons/${encodeURIComponent(personId)}/source-records?entity_key=${encodeURIComponent(activeEntity)}`;
+  const sourceRecordParams = new URLSearchParams();
+  if (activeEntity !== null) sourceRecordParams.set("entity_key", activeEntity);
+  const queryString = sourceRecordParams.toString();
+  const basePath = `/bff/persons/${encodeURIComponent(personId)}/source-records${queryString ? `?${queryString}` : ""}`;
 
   useEffect(() => { onTotalLoaded(facetTotal); }, [facetTotal, onTotalLoaded]);
 
@@ -2136,25 +2180,28 @@ function SourceRecordsTab({ personId, facets, onTotalLoaded }: { personId: strin
       </div>
 
       {facets.length > 0 && (
-        <div className={styles.srFilter}>
-          <button type="button" className={`${styles.srChip} ${activeEntity === null ? styles.srChipOn : ""}`} onClick={() => setActiveEntity(null)}>
-            All · {facetTotal}
-          </button>
-          {facets.map((f) => {
-            const key = f.entity_key ?? f.source_system;
-            return (
-              <button
-                key={`${f.source_system}:${key}`}
-                type="button"
-                className={`${styles.srChip} ${activeEntity === f.entity_key && f.entity_key !== null ? styles.srChipOn : ""}`}
-                onClick={() => setActiveEntity(f.entity_key)}
-                disabled={f.entity_key === null}
-                title={f.entity_key === null ? "No entity key — cannot filter" : undefined}
-              >
-                {srEntityLabel(f)} · {f.count}
-              </button>
-            );
-          })}
+        <div className={styles.srFilterGroup}>
+          <span className={styles.srFilterLabel}>Source</span>
+          <div className={styles.srFilter}>
+            <button type="button" className={`${styles.srChip} ${activeEntity === null ? styles.srChipOn : ""}`} onClick={() => setActiveEntity(null)}>
+              All · {facetTotal}
+            </button>
+            {facets.map((f) => {
+              const key = f.entity_key ?? f.source_system;
+              return (
+                <button
+                  key={`${f.source_system}:${key}`}
+                  type="button"
+                  className={`${styles.srChip} ${activeEntity === f.entity_key && f.entity_key !== null ? styles.srChipOn : ""}`}
+                  onClick={() => setActiveEntity(f.entity_key)}
+                  disabled={f.entity_key === null}
+                  title={f.entity_key === null ? "No entity key — cannot filter" : undefined}
+                >
+                  {srEntityLabel(f)} · {f.count}
+                </button>
+              );
+            })}
+          </div>
         </div>
       )}
 
@@ -2317,7 +2364,7 @@ function IdentifiersTab({ identifiers }: { identifiers: PersonIdentifier[] }): R
                                   {sr.entity_display_name !== null && (
                                     <span className={styles.idSrcChip}>{sr.entity_display_name}</span>
                                   )}
-                                  <span className={`${styles.idSrcChip} ${sr.record_type === "conversation" ? styles.idSrcChipConv : ""}`}>{titleCase(sr.record_type)}</span>
+                                  <span className={`${styles.idSrcChip} ${sr.record_type === "conversation" ? styles.idSrcChipConv : ""}`}>{sr.record_type}</span>
                                   <span className={styles.idSrcChip}>{sr.link_status}</span>
                                 </div>
                                 <div className={styles.idSrcRecordMeta}>
@@ -2521,6 +2568,7 @@ function ConnectionsTab({ personId, onTotalLoaded }: { personId: string; onTotal
 
 
 function PersonDetailSkeleton(): ReactElement {
+  const sectionLabels = ["Matches", "Source records", "Sales", "Connections", "Identifiers", "Decision History"];
   return (
     <div className={styles.page}>
       {/* breadcrumb */}
@@ -2532,71 +2580,134 @@ function PersonDetailSkeleton(): ReactElement {
         {/* ── Sidebar ── */}
         <aside className={styles.sidebar}>
           <section className={styles.sidebarHeroCard}>
-            <div className={styles.sidebarHeroTop}>
-              {/* avatar ring */}
-              <span className={styles.skelRing} style={{ width: 64, height: 64, flexShrink: 0 }} />
-              <div className={styles.sidebarHeroIdentity} style={{ gap: 8 }}>
-                <span className={styles.skel} style={{ width: "75%", height: 16 }} />
-                <span className={styles.skel} style={{ width: "55%", height: 11 }} />
-                <span className={styles.skel} style={{ width: "40%", height: 8, marginTop: 4 }} />
+            {/* avatar + name + badges */}
+            <div className={styles.profileHero}>
+              <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                <span className={styles.skelRing} style={{ width: 64, height: 64, flexShrink: 0 }} />
+                <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                  <span className={styles.skel} style={{ width: 140, height: 16 }} />
+                  <div style={{ display: "flex", gap: 6 }}>
+                    <span className={styles.skel} style={{ width: 52, height: 20, borderRadius: 6 }} />
+                    <span className={styles.skel} style={{ width: 68, height: 20, borderRadius: 6 }} />
+                    <span className={styles.skel} style={{ width: 80, height: 20, borderRadius: 6 }} />
+                  </div>
+                </div>
               </div>
             </div>
-            <div className={styles.sidebarHeroSummaryRows} style={{ marginTop: 12 }}>
-              {[80, 60, 70, 90, 65, 75].map((w, i) => (
+
+            {/* GP fields */}
+            <div className={styles.sidebarHeroSummary}>
+              {["Phone", "Email", "DOB", "NRIC"].map((_, i) => (
                 <div key={i} className={styles.sidebarHeroSummaryRow}>
-                  <span className={styles.skel} style={{ width: 48, height: 11 }} />
-                  <span className={styles.skel} style={{ width: w, height: 11 }} />
+                  <span className={styles.skel} style={{ width: 48, height: 10 }} />
+                  <span className={styles.skel} style={{ width: [120, 150, 90, 110][i], height: 12 }} />
                 </div>
               ))}
             </div>
-          </section>
-          <section className={styles.sidebarCard} style={{ paddingTop: 10, paddingBottom: 10 }}>
-            <span className={styles.skel} style={{ width: 60, height: 11, marginBottom: 10 }} />
-            <span className={styles.skel} style={{ width: "90%", height: 11, marginBottom: 6 }} />
-            <span className={styles.skel} style={{ width: "70%", height: 11 }} />
-          </section>
-        </aside>
 
-        {/* ── Right rail ── */}
-        <div className={styles.mainColumn}>
-          {/* summary strip */}
-          <section className={styles.summaryStrip}>
-            {[0, 1, 2, 3].map((i) => (
-              <div key={i} className={styles.summaryCard}>
-                <span className={styles.skel} style={{ width: 70, height: 10, marginBottom: 8 }} />
-                <span className={styles.skel} style={{ width: 52, height: 20, marginBottom: 6 }} />
-                <span className={styles.skel} style={{ width: 80, height: 10 }} />
+            {/* Detail toggle */}
+            <div style={{ borderTop: "1px solid var(--border)", paddingTop: 10 }}>
+              <span className={styles.skel} style={{ width: 50, height: 12 }} />
+            </div>
+          </section>
+
+          {/* Bankruptcy sidebar card */}
+          <section className={styles.sidebarCard}>
+            <span className={styles.skel} style={{ width: 100, height: 12, marginBottom: 8 }} />
+            <span className={styles.skel} style={{ width: 160, height: 11 }} />
+          </section>
+
+          {/* Graph card */}
+          <section className={styles.sidebarCard}>
+            <div className={styles.sourceEntityHeader}>
+              <span className={styles.skel} style={{ width: 80, height: 12 }} />
+            </div>
+            <div style={{ height: 160, display: "flex", alignItems: "center", justifyContent: "center" }}>
+              <span className={styles.skelCircle} style={{ width: 100, height: 100 }} />
+            </div>
+          </section>
+
+          {/* Timeline card */}
+          <section className={styles.sidebarCard}>
+            <div className={styles.sourceEntityHeader}>
+              <span className={styles.skel} style={{ width: 60, height: 12 }} />
+            </div>
+            {SKEL_N.slice(0, 3).map((i) => (
+              <div key={i} style={{ display: "flex", gap: 8, alignItems: "flex-start", padding: "6px 0" }}>
+                <span className={styles.skel} style={{ width: 8, height: 8, borderRadius: 4, flexShrink: 0, marginTop: 3 }} />
+                <div style={{ display: "flex", flexDirection: "column", gap: 4, flex: 1 }}>
+                  <span className={styles.skel} style={{ width: `${70 + (i % 3) * 15}%`, height: 11 }} />
+                  <span className={styles.skel} style={{ width: `${50 + (i % 2) * 20}%`, height: 9 }} />
+                </div>
               </div>
             ))}
           </section>
+        </aside>
 
-          {/* tabs row */}
+        {/* ── Main column ── */}
+        <div className={styles.mainColumn}>
+          {/* Section nav tabs */}
           <div className={styles.rightTabsInline}>
             <div className={styles.tabs}>
-              {[72, 56, 64, 36, 52, 44, 72, 40, 44].map((w, i) => (
-                <span key={i} className={styles.skel} style={{ width: w, height: 28, borderRadius: 6 }} />
+              {sectionLabels.map((label) => (
+                <span key={label} className={styles.tab} style={{ cursor: "default" }}>
+                  <span className={styles.skel} style={{ width: label.length * 7, height: 13 }} />
+                </span>
               ))}
             </div>
           </div>
 
-          {/* content area */}
+          {/* Bento sections grid */}
           <div className={styles.tabPanelScroll}>
-            <section className={styles.contentCard}>
-              <div className={styles.connHeader}>
-                <span className={styles.skel} style={{ width: 60, height: 13 }} />
-              </div>
-              <div style={{ display: "flex", flexDirection: "column", gap: 14, padding: "4px 0" }}>
-                {[0, 1, 2, 3, 4].map((i) => (
-                  <div key={i} style={{ display: "flex", flexDirection: "column", gap: 6, paddingBottom: 14, borderBottom: "1px solid var(--border)" }}>
-                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                      <span className={styles.skel} style={{ width: [120, 90, 110, 80, 100][i], height: 13 }} />
-                      <span className={styles.skel} style={{ width: 60, height: 11 }} />
-                    </div>
-                    <span className={styles.skel} style={{ width: [200, 160, 180, 140, 170][i], height: 11 }} />
-                  </div>
-                ))}
-              </div>
-            </section>
+            <div className={styles.collapsibleSectionsContainer}>
+              {/* Matches — full width */}
+              <section className={styles.collapsibleSection}>
+                <div className={styles.collapsibleHeader}>
+                  <span className={styles.skel} style={{ width: 80, height: 14 }} />
+                </div>
+                <SkeletonMatches />
+              </section>
+
+              {/* Source records — full width */}
+              <section className={styles.collapsibleSection}>
+                <div className={styles.collapsibleHeader}>
+                  <span className={styles.skel} style={{ width: 100, height: 14 }} />
+                </div>
+                <SkeletonRows />
+              </section>
+
+              {/* Sales — top half */}
+              <section className={`${styles.collapsibleSection} ${styles.collapsibleSectionTop}`}>
+                <div className={styles.collapsibleHeader}>
+                  <span className={styles.skel} style={{ width: 100, height: 14 }} />
+                </div>
+                <SkeletonRows />
+              </section>
+
+              {/* Connections — top half */}
+              <section className={`${styles.collapsibleSection} ${styles.collapsibleSectionTop}`}>
+                <div className={styles.collapsibleHeader}>
+                  <span className={styles.skel} style={{ width: 90, height: 14 }} />
+                </div>
+                <SkeletonConnections />
+              </section>
+
+              {/* Identifiers — full width */}
+              <section className={styles.collapsibleSection}>
+                <div className={styles.collapsibleHeader}>
+                  <span className={styles.skel} style={{ width: 80, height: 14 }} />
+                </div>
+                <SkeletonRows />
+              </section>
+
+              {/* Decision History — full width */}
+              <section className={styles.collapsibleSection}>
+                <div className={styles.collapsibleHeader}>
+                  <span className={styles.skel} style={{ width: 120, height: 14 }} />
+                </div>
+                <SkeletonAudit />
+              </section>
+            </div>
           </div>
         </div>
       </div>
@@ -2789,6 +2900,7 @@ export default function PersonDetailPage({ params }: { params: Promise<{ personI
       { key: "preferred_phone", label: "Phone", thisRaw: person.preferred_phone, thisDisplay: person.preferred_phone, candidateRaw: target.preferred_phone, candidateDisplay: target.preferred_phone },
       { key: "preferred_email", label: "Email", thisRaw: person.preferred_email, thisDisplay: person.preferred_email, candidateRaw: target.preferred_email, candidateDisplay: target.preferred_email },
       { key: "preferred_dob", label: "DOB", thisRaw: person.preferred_dob, thisDisplay: person.preferred_dob ? fmtDate(person.preferred_dob) : null, candidateRaw: target.preferred_dob, candidateDisplay: target.preferred_dob ? fmtDate(target.preferred_dob) : null },
+      { key: "preferred_address", label: "Address", thisRaw: person.preferred_address?.address_id ?? null, thisDisplay: person.preferred_address?.normalized_full ?? null, candidateRaw: target.preferred_address?.address_id ?? null, candidateDisplay: target.preferred_address?.normalized_full ?? null },
       { key: "preferred_nric", label: "NRIC", thisRaw: person.preferred_nric, thisDisplay: person.preferred_nric ? maskNric(person.preferred_nric) : null, candidateRaw: target.preferred_nric, candidateDisplay: target.preferred_nric ? maskNric(target.preferred_nric) : null },
     ];
   }
@@ -2826,6 +2938,9 @@ export default function PersonDetailPage({ params }: { params: Promise<{ personI
       }
       if (field.key === "preferred_nric") {
         return [{ field_name: field.key, source_kind: "identifier", selected_value: field.thisRaw, source_record_pk: null, identifier_type: "nric" }];
+      }
+      if (field.key === "preferred_address") {
+        return [{ field_name: field.key, source_kind: "address", selected_value: field.thisRaw, source_record_pk: null, identifier_type: null }];
       }
       return [];
     });
@@ -2911,29 +3026,39 @@ export default function PersonDetailPage({ params }: { params: Promise<{ personI
 
   const [overrideOpen, setOverrideOpen] = useState(false);
   const [overrideSelections, setOverrideSelections] = useState<Partial<Record<GoldenFieldName, string>>>({});
+  const [overrideCustomValues, setOverrideCustomValues] = useState<Partial<Record<GoldenFieldName, string>>>({});
   const [overrideReason, setOverrideReason] = useState("");
   const [overrideSubmitting, setOverrideSubmitting] = useState(false);
   const [overrideError, setOverrideError] = useState<string | null>(null);
   const [overrideSuccess, setOverrideSuccess] = useState(false);
   const [fieldOptions, setFieldOptions] = useState<PersonFieldOptions | null>(null);
+  const fieldOptionsRef = useRef<PersonFieldOptions | null>(null);
   const [fieldOptionsLoading, setFieldOptionsLoading] = useState(false);
 
-  // Lazy-load the editable field options whenever the modal opens, so the
-  // server-computed candidate values always reflect the current graph state.
+  useEffect(() => {
+    fieldOptionsRef.current = fieldOptions;
+  }, [fieldOptions]);
+
+  // Show cached editable fields immediately, then refresh them in the background.
   useEffect(() => {
     if (!overrideOpen) return;
     let cancelled = false;
+    const cachedOptions = fieldOptionsRef.current?.person_id === personId ? fieldOptionsRef.current : null;
+    const applyOptions = (options: PersonFieldOptions): void => {
+      fieldOptionsRef.current = options;
+      setFieldOptions(options);
+      setOverrideSelections(Object.fromEntries(options.fields.map((field) => [field.field_name, field.options.find((option) => option.is_current)?.source_record_pk ?? field.options[0]?.source_record_pk ?? ""])) as Partial<Record<GoldenFieldName, string>>);
+      setOverrideCustomValues({});
+    };
     async function loadFieldOptions(): Promise<void> {
-      setFieldOptionsLoading(true);
+      setFieldOptionsLoading(cachedOptions === null);
       setOverrideError(null);
+      if (cachedOptions !== null) applyOptions(cachedOptions);
       try {
         const env = await bffFetchEnvelope<PersonFieldOptions>(`/bff/persons/${encodeURIComponent(personId)}/field-options`);
-        if (!cancelled) {
-          setFieldOptions(env.data);
-          setOverrideSelections(Object.fromEntries(env.data.fields.map((field) => [field.field_name, field.options.find((option) => option.is_current)?.source_record_pk ?? field.options[0]?.source_record_pk ?? ""])) as Partial<Record<GoldenFieldName, string>>);
-        }
+        if (!cancelled) applyOptions(env.data);
       } catch (e) {
-        if (!cancelled) setOverrideError(e instanceof BffError ? e.message : "Failed to load field options.");
+        if (!cancelled) setOverrideError(e instanceof BffError ? e.message : "Failed to load editable fields.");
       } finally {
         if (!cancelled) setFieldOptionsLoading(false);
       }
@@ -2944,26 +3069,35 @@ export default function PersonDetailPage({ params }: { params: Promise<{ personI
 
   const selectedOverrideFields = useMemo(() => {
     if (fieldOptions === null) return [];
-    return fieldOptions.fields
-      .map((field) => {
-        const selectedPk = overrideSelections[field.field_name];
-        const currentPk = field.options.find((option) => option.is_current)?.source_record_pk ?? "";
-        if (!selectedPk || selectedPk === currentPk) return null;
-        return { field, sourceRecordPk: selectedPk };
-      })
-      .filter((item): item is { field: EditableFieldOptions; sourceRecordPk: string } => item !== null);
-  }, [fieldOptions, overrideSelections]);
+    return fieldOptions.fields.reduce<OverrideFieldSelection[]>((items, field) => {
+      const selectedPk = overrideSelections[field.field_name];
+      const currentPk = field.options.find((option) => option.is_current)?.source_record_pk ?? "";
+      if (selectedPk === "__custom__") {
+        const customValue = overrideCustomValues[field.field_name]?.trim() ?? "";
+        if (customValue) items.push({ field, customValue });
+        return items;
+      }
+      if (selectedPk && selectedPk !== currentPk) items.push({ field, sourceRecordPk: selectedPk });
+      return items;
+    }, []);
+  }, [fieldOptions, overrideCustomValues, overrideSelections]);
 
   async function handleOverrideSubmit(): Promise<void> {
     if (selectedOverrideFields.length === 0 || !overrideReason.trim()) return;
     setOverrideSubmitting(true);
     setOverrideError(null);
+    const invalidCustom = selectedOverrideFields.find((item) => "customValue" in item && validateCustomOverrideValue(item.field.field_name, item.customValue) !== null);
+    if (invalidCustom !== undefined && "customValue" in invalidCustom) {
+      setOverrideSubmitting(false);
+      setOverrideError(validateCustomOverrideValue(invalidCustom.field.field_name, invalidCustom.customValue));
+      return;
+    }
     try {
-      await Promise.all(selectedOverrideFields.map(({ field, sourceRecordPk }) => {
+      await Promise.all(selectedOverrideFields.map((item) => {
         const body: SurvivorshipOverrideRequestBody = {
-          field_name: field.field_name,
-          source_record_pk: sourceRecordPk,
+          field_name: item.field.field_name,
           reason: overrideReason.trim(),
+          ...("customValue" in item ? { custom_value: item.customValue } : { source_record_pk: item.sourceRecordPk }),
         };
         return bffFetchEnvelope(`/bff/persons/${encodeURIComponent(personId)}/survivorship-overrides`, {
           method: "POST",
@@ -2976,13 +3110,17 @@ export default function PersonDetailPage({ params }: { params: Promise<{ personI
         bffFetchEnvelope<PersonFieldOptions>(`/bff/persons/${encodeURIComponent(personId)}/field-options`).catch(() => null),
       ]);
       if (refreshed) setPerson(refreshed);
-      if (refreshedOptions) setFieldOptions(refreshedOptions.data);
+      if (refreshedOptions) {
+        fieldOptionsRef.current = refreshedOptions.data;
+        setFieldOptions(refreshedOptions.data);
+      }
       setOverrideSuccess(true);
       setTimeout(() => {
         setOverrideOpen(false);
         setOverrideSuccess(false);
         setOverrideReason("");
         setOverrideSelections({});
+        setOverrideCustomValues({});
       }, 900);
     } catch (e) {
       setOverrideError(e instanceof BffError ? e.message : "Failed to save override.");
@@ -3004,11 +3142,11 @@ export default function PersonDetailPage({ params }: { params: Promise<{ personI
 
   const sections: SectionConfig[] = useMemo(() => [
     { id: "section-matches",        label: "Matches",        count: tabTotals.matches },
+    { id: "section-source-records", label: "Source records", count: tabTotals["source-records"] ?? (detailData.sourceRecordFacets.reduce((sum, f) => sum + f.count, 0) || undefined) },
     { id: "section-sales",          label: "Sales",          count: tabTotals.sales          ?? detailData.sales.length },
     { id: "section-connections",    label: "Connections",    count: tabTotals.connections    ?? (person?.connection_count ?? 0) },
     { id: "section-identifiers",    label: "Identifiers",    count: detailData.identifiers.length || undefined },
     { id: "section-decision-history", label: "Decision History", count: tabTotals["decision-history"] },
-    { id: "section-source-records", label: "Source records", count: tabTotals["source-records"] ?? (detailData.sourceRecordFacets.reduce((sum, f) => sum + f.count, 0) || undefined) },
   ], [tabTotals, detailData, person?.connection_count]);
 
   if (notFoundFlag) notFound();
@@ -3052,8 +3190,8 @@ export default function PersonDetailPage({ params }: { params: Promise<{ personI
                   return null;
               }
 
-              const bentoClass = section.id === "section-source-records"
-                ? styles.collapsibleSectionWide
+              const bentoClass = section.id === "section-matches" || section.id === "section-source-records"
+                ? styles.collapsibleSectionTop
                 : "";
 
               const sectionAction = section.id === "section-matches" ? (
@@ -3258,36 +3396,51 @@ export default function PersonDetailPage({ params }: { params: Promise<{ personI
                 const currentOption = field.options.find((option) => option.is_current) ?? field.options[0];
                 const candidateOptions = field.options.filter((option) => option.source_record_pk !== currentOption?.source_record_pk);
                 const selectedPk = overrideSelections[field.field_name] ?? currentOption?.source_record_pk ?? "";
-                const selectedCandidatePk = candidateOptions.some((option) => option.source_record_pk === selectedPk) ? selectedPk : "";
+                const canUseCustomValue = true;
+                const selectedCandidatePk = selectedPk === "__custom__" ? "__custom__" : candidateOptions.some((option) => option.source_record_pk === selectedPk) ? selectedPk : currentOption?.source_record_pk ?? "";
+                const currentDisplay = field.current_value_display ?? currentOption?.value_display ?? "No value";
                 const currentMeta = currentOption
                   ? `${currentOption.entity_display_name ?? currentOption.source_system}${currentOption.observed_at_display ? ` · ${currentOption.observed_at_display}` : ""}`
-                  : "No current value";
+                  : field.is_overridden
+                    ? "Custom override"
+                    : "No current value";
                 return (
                   <div key={field.field_name} className={styles.overrideFormRow}>
-                    <span className={styles.overrideFormLabel}>{field.label}</span>
-                    <div className={styles.overrideSimpleValues}>
-                      <div className={styles.overrideCurrentValue}>
-                        <span className={styles.overrideCurrentText}>{currentOption?.value_display ?? "No value"}</span>
-                        <span className={styles.overrideCurrentMeta}>{currentMeta}</span>
-                      </div>
+                    <div className={styles.overrideCurrentValue}>
+                      <span className={styles.overrideFormLabel}>{field.label}</span>
+                      <span className={styles.overrideCurrentText}>{currentDisplay}</span>
+                      <span className={styles.overrideCurrentMeta}>{currentMeta}</span>
+                    </div>
+                    <div className={styles.overrideCandidateValue}>
                       <select
                         className={styles.overrideCandidateSelect}
                         name={`override-field-${field.field_name}`}
                         value={selectedCandidatePk}
-                        disabled={candidateOptions.length === 0}
+                        disabled={candidateOptions.length === 0 && !canUseCustomValue}
                         onChange={(event) => {
                           const nextPk = event.target.value || (currentOption?.source_record_pk ?? "");
                           setOverrideSelections((current) => ({ ...current, [field.field_name]: nextPk }));
                         }}
                       >
-                        <option value="">{candidateOptions.length > 0 ? "Use current value" : "No candidate value"}</option>
+                        <option value={currentOption?.source_record_pk ?? ""}>{currentDisplay}</option>
                         {candidateOptions.map((option) => (
                           <option key={`${field.field_name}-${option.source_record_pk}`} value={option.source_record_pk}>
                             {option.value_display} · {option.entity_display_name ?? option.source_system}
                             {option.observed_at_display ? ` · ${option.observed_at_display}` : ""}
                           </option>
                         ))}
+                        {canUseCustomValue && <option value="__custom__">Custom value…</option>}
                       </select>
+                      {selectedPk === "__custom__" && (
+                        <input
+                          className={styles.overrideCustomInput}
+                          type={customOverrideInputType(field.field_name)}
+                          inputMode={customOverrideInputMode(field.field_name)}
+                          value={overrideCustomValues[field.field_name] ?? ""}
+                          placeholder={customOverridePlaceholder(field.field_name)}
+                          onChange={(event) => setOverrideCustomValues((current) => ({ ...current, [field.field_name]: event.target.value }))}
+                        />
+                      )}
                     </div>
                   </div>
                 );

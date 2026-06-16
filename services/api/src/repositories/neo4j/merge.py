@@ -150,7 +150,7 @@ def _is_valid_golden_profile_selection(selection: GoldenProfileSelection) -> boo
     if source_kind == "source_record_fact":
         return field_name in FACT_FIELDS and selection["source_record_pk"] is not None
     if source_kind == "address":
-        return field_name == "preferred_address" and selection["source_record_pk"] is not None
+        return field_name == "preferred_address" and selection["selected_value"].strip() != ""
     if source_kind == "literal":
         return field_name in VALID_LITERAL_GOLDEN_FIELDS and selection["selected_value"].strip() != ""
     return False
@@ -166,10 +166,13 @@ async def _apply_golden_profile_selections_tx(
     selections: list[GoldenProfileSelection],
 ) -> str:
     for selection in selections:
+        field_name = selection["field_name"]
+        if field_name == "preferred_address":
+            field_name = "preferred_address_id"
         await tx.run(
             UPDATE_GOLDEN_FIELD,
             person_id=person_id,
-            field_name=selection["field_name"],
+            field_name=field_name,
             value=selection["selected_value"],
         )
     return "ok"

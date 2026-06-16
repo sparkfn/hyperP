@@ -79,7 +79,10 @@ WITH p, score, addr WHERE ($entity_keys IS NULL OR EXISTS {
   MATCH (sr_s:SourceRecord)-[:LINKED_TO]->(p)
   MATCH (sr_s)-[:FROM_SOURCE]->(ss:SourceSystem)
   WHERE ss.source_key IN $source_keys
-})
+  }) AND ($source_record_type IS NULL OR EXISTS {
+    MATCH (sr_t:SourceRecord)-[:LINKED_TO]->(p)
+    WHERE sr_t.record_type = $source_record_type
+  })
 WITH DISTINCT p, score
 OPTIONAL MATCH (p)-[:LIVES_AT]->(addr:Address {address_id: p.preferred_address_id})
 """

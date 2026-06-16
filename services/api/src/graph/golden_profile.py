@@ -19,6 +19,7 @@ from src.graph.converters import GraphValue, to_optional_str, to_str, to_str_dic
 from src.graph.queries import (
     CHECK_PERSON_ACTIVE,
     CREATE_RECOMPUTE_AUDIT,
+    GET_ADDRESS_BY_NORMALIZED,
     GET_ADDRESS_FOR_SR,
     GET_BEST_ADDRESS,
     GET_BEST_IDENTIFIER,
@@ -86,6 +87,10 @@ def _field_trust_tier(field_trust: GraphValue, attribute_name: str) -> str:
 
 def _empty_fact() -> _BestFact:
     return _BestFact(value=None, trust_rank=99, observed_at="")
+
+
+def _normalize_custom_address(value: str) -> str:
+    return " ".join(value.strip().lower().split())
 
 
 def _completeness_score(
@@ -201,15 +206,25 @@ async def _gather_best_facts(
             continue
 
         override = overrides.get(f"preferred_{attr_name}")
-        if override is not None and override.get("source_record_pk") == source_pk:
-            best[attr_name] = _BestFact(value=attr_value, trust_rank=0, observed_at=observed_at)
-            continue
+        if override is not None:
+            custom_value = override.get("custom_value")
+            if custom_value:
+                best[attr_name] = _BestFact(value=custom_value, trust_rank=0, observed_at=observed_at)
+                continue
+            if override.get("source_record_pk") == source_pk:
+                best[attr_name] = _BestFact(value=attr_value, trust_rank=0, observed_at=observed_at)
+                continue
 
         rank = TRUST_RANK.get(trust_tier, 4)
         best[attr_name] = _select_best_fact(
             best.get(attr_name),
             _BestFact(value=attr_value, trust_rank=rank, observed_at=observed_at),
         )
+    for attr_name in GOLDEN_FACT_FIELDS:
+        override = overrides.get(f"preferred_{attr_name}")
+        custom_value = override.get("custom_value") if override is not None else None
+        if custom_value:
+            best[attr_name] = _BestFact(value=custom_value, trust_rank=0, observed_at="")
     return best
 
 
@@ -220,6 +235,9 @@ async def _resolve_identifier(
     override: dict[str, str] | None,
 ) -> str | None:
     if override is not None:
+        custom_value = override.get("custom_value")
+        if custom_value:
+            return custom_value
         source_record_pk = override.get("source_record_pk")
         if source_record_pk:
             record = await (
@@ -247,6 +265,18 @@ async def _resolve_best_address(
     override: dict[str, str] | None,
 ) -> str | None:
     if override is not None:
+        custom_value = override.get("custom_value")
+        if custom_value:
+            record = await (
+                await tx.run(
+                    GET_ADDRESS_BY_NORMALIZED,
+                    normalized_full=_normalize_custom_address(custom_value),
+                )
+            ).single()
+            if record is not None:
+                address_id = to_optional_str(record["address_id"])
+                if address_id is not None:
+                    return address_id
         source_record_pk = override.get("source_record_pk")
         if source_record_pk:
             record = await (

@@ -40,6 +40,7 @@ class FieldOptionsData:
     preferred_email: str | None
     preferred_nric: str | None
     preferred_address_id: str | None
+    preferred_address_value: str | None
     overrides: dict[str, dict[str, str]]
     options: list[FieldOptionRow]
 
@@ -63,6 +64,17 @@ class SurvivorshipRepository(Protocol):
         actor_id: str,
     ) -> str:
         """Returns one of the BatchOverrideResult outcome strings (excluding batch-only ones)."""
+        ...
+
+    async def create_custom_override(
+        self,
+        person_id: str,
+        field_name: str,
+        custom_value: str,
+        reason: str,
+        actor_id: str,
+    ) -> str:
+        """Pin a golden-profile field to a manually entered literal value."""
         ...
 
     async def create_batch_overrides(

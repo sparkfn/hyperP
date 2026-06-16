@@ -95,10 +95,24 @@ RETURN id.normalized_value AS value
 LIMIT 1
 """
 
+GET_ADDRESS_BY_NORMALIZED = """
+MATCH (a:Address {normalized_full: $normalized_full})
+RETURN a.address_id AS address_id
+LIMIT 1
+"""
+
 GET_ADDRESS_FOR_SR = """
 MATCH (p:Person {person_id: $person_id})-[la:LIVES_AT {source_record_pk: $source_record_pk}]->(a:Address)
 RETURN a.address_id AS address_id, a.normalized_full AS normalized_full
 LIMIT 1
+"""
+
+GET_OVERRIDE_SOURCE_METADATA = """
+MATCH (sr:SourceRecord {source_record_pk: $source_record_pk})-[:FROM_SOURCE]->(ss:SourceSystem)
+OPTIONAL MATCH (ss)-[:OPERATED_BY]->(e:Entity)
+RETURN ss.source_key AS source_system,
+       e.display_name AS entity_display_name,
+       toString(sr.observed_at) AS observed_at
 """
 
 GET_FIELD_OPTIONS = """
@@ -159,12 +173,14 @@ CALL {
     observed_at: toString(la.last_seen_at)
   }) AS addr_opts
 }
+OPTIONAL MATCH (preferred_addr:Address {address_id: p.preferred_address_id})
 RETURN p.preferred_full_name AS preferred_full_name,
        p.preferred_dob AS preferred_dob,
        p.preferred_phone AS preferred_phone,
        p.preferred_email AS preferred_email,
        p.preferred_nric AS preferred_nric,
        p.preferred_address_id AS preferred_address_id,
+       preferred_addr.normalized_full AS preferred_address_value,
        p.survivorship_overrides AS overrides,
        fact_opts + id_opts + addr_opts AS options
 """
@@ -177,6 +193,15 @@ SET p.survivorship_overrides = $overrides, p.updated_at = datetime()
 UPDATE_GOLDEN_FIELD = """
 MATCH (p:Person {person_id: $person_id})
 SET p[$field_name] = $value, p.updated_at = datetime()
+"""
+
+UPSERT_CUSTOM_ADDRESS = """
+MERGE (a:Address {normalized_full: $normalized_full})
+ON CREATE SET
+  a.address_id = randomUUID(),
+  a.created_at = datetime()
+SET a.updated_at = datetime()
+RETURN a.address_id AS address_id
 """
 
 CREATE_OVERRIDE_AUDIT = """
