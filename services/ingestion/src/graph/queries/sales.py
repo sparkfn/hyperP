@@ -192,3 +192,23 @@ MERGE (survivor)-[rel:PURCHASED {
 ON CREATE SET rel += props
 RETURN count(o) AS rewired_count
 """
+
+#: Find active Person candidates who share a MachineUnit with a pending-customer
+#: sales SourceRecord (via the INVOLVES_UNIT edges already written by
+#: _write_machine_unit_observations). Used by propose_machine_unit_matches_for_pending_sales.
+FIND_MACHINE_UNIT_CANDIDATES_FOR_SALES = """
+MATCH (sr:SourceRecord {source_record_pk: $sales_source_record_pk, link_status: 'pending_customer'})
+MATCH (o:Order)-[unit_rel:INVOLVES_UNIT {source_record_pk: $sales_source_record_pk}]->(u:MachineUnit)
+MATCH (u)<-[rel:BOUGHT_UNIT|OWNS_UNIT]-(p:Person {status: 'active'})
+RETURN p.person_id AS person_id, u.machine_unit_id AS machine_unit_id,
+       type(rel) AS rel_type, rel.is_active AS is_active,
+       u.conflict_flag AS conflict_flag, rel.last_confirmed_at AS last_confirmed_at
+"""
+
+#: Transition a pending-customer sales SourceRecord to pending_review once a
+#: machine-unit-based MatchDecision + ReviewCase have been created for it.
+MARK_SALES_RECORD_PENDING_REVIEW = """
+MATCH (sr:SourceRecord {source_record_pk: $source_record_pk})
+SET sr.link_status = 'pending_review',
+    sr.updated_at  = datetime()
+"""

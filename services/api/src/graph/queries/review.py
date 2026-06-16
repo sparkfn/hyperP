@@ -158,6 +158,16 @@ OPTIONAL MATCH (md)-[:ABOUT_LEFT]->(left)
 OPTIONAL MATCH (md)-[:ABOUT_RIGHT]->(right)
 OPTIONAL MATCH (left_addr:Address) WHERE left:Person AND left_addr.address_id = left.preferred_address_id
 OPTIONAL MATCH (right_addr:Address) WHERE right:Person AND right_addr.address_id = right.preferred_address_id
+OPTIONAL MATCH (sales_o:Order)-[:INVOLVES_UNIT {source_record_pk: left.source_record_pk}]->(sales_u:MachineUnit)
+  WHERE left:SourceRecord AND left.record_type = 'sales'
+WITH rc, md, left, right, left_addr, right_addr,
+     collect(DISTINCT CASE WHEN sales_o IS NOT NULL
+       THEN sales_o { .order_id, .order_no, .total_amount, .currency, ordered_at: toString(sales_o.ordered_at) }
+       END) AS sales_orders,
+     collect(DISTINCT CASE WHEN sales_u IS NOT NULL
+       THEN sales_u { .machine_unit_id, .machine_product, .normalized_lta_tag, .normalized_serial_number,
+                      conflict_flag: coalesce(sales_u.conflict_flag, false) }
+       END) AS sales_units
 RETURN rc {
   .review_case_id, .queue_state, .priority, .assigned_to,
   .follow_up_at, .sla_due_at, .resolution, .resolved_at,
@@ -184,7 +194,9 @@ CASE WHEN right:Person
      WHEN right:SourceRecord
      THEN right { .source_record_pk, .source_record_id, .normalized_payload, .observed_at }
      ELSE null END AS right_entity,
-right_addr { .address_id, .unit_number, .street_number, .street_name, .city, .postal_code, .country_code, .normalized_full } AS right_address
+right_addr { .address_id, .unit_number, .street_number, .street_name, .city, .postal_code, .country_code, .normalized_full } AS right_address,
+sales_orders[0] AS sales_order,
+sales_units AS sales_units
 """
 
 ASSIGN_REVIEW_CASE = (
@@ -252,3 +264,57 @@ def build_review_action_cypher(
         "SET " + joined + " "
         "RETURN rc {.review_case_id, .queue_state, .resolution} AS review_case"
     )
+
+
+# ---------------------------------------------------------------------------
+# Sales-record approval / rejection — no-op naturally for person-vs-person cases
+# because the ABOUT_LEFT SourceRecord MATCH simply finds nothing.
+# ---------------------------------------------------------------------------
+
+LINK_REVIEW_SALES_PURCHASED_ORDER = """
+MATCH (rc:ReviewCase {review_case_id: $review_case_id})-[:FOR_DECISION]->(md:MatchDecision)
+MATCH (md)-[:ABOUT_LEFT]->(sr:SourceRecord {record_type: 'sales'})
+MATCH (md)-[:ABOUT_RIGHT]->(p:Person {status: 'active'})
+WITH sr, p
+MATCH (o:Order)-[:INVOLVES_UNIT {source_record_pk: sr.source_record_pk}]->(:MachineUnit)
+WITH DISTINCT sr, p, o
+MERGE (p)-[rel:PURCHASED {
+    source_system_key: o.source_system_key,
+    source_order_id:   o.source_order_id
+}]->(o)
+ON CREATE SET rel.first_seen_at = datetime(), rel.created_at = datetime()
+SET rel.source_record_pk  = sr.source_record_pk,
+    rel.last_seen_at      = datetime(),
+    rel.last_confirmed_at = datetime()
+"""
+
+LINK_REVIEW_SALES_BOUGHT_UNIT = """
+MATCH (rc:ReviewCase {review_case_id: $review_case_id})-[:FOR_DECISION]->(md:MatchDecision)
+MATCH (md)-[:ABOUT_LEFT]->(sr:SourceRecord {record_type: 'sales'})
+MATCH (md)-[:ABOUT_RIGHT]->(p:Person {status: 'active'})
+MATCH (o:Order)-[:INVOLVES_UNIT {source_record_pk: sr.source_record_pk}]->(u:MachineUnit)
+MERGE (p)-[rel:BOUGHT_UNIT {
+    source_system_key: o.source_system_key,
+    source_order_id:   o.source_order_id
+}]->(u)
+ON CREATE SET rel.created_at = datetime(), rel.first_seen_at = datetime()
+SET rel.source_record_pk  = sr.source_record_pk,
+    rel.last_seen_at      = datetime(),
+    rel.last_confirmed_at = datetime(),
+    rel.updated_at        = datetime()
+"""
+
+MARK_REVIEW_SALES_RECORD_LINKED = """
+MATCH (rc:ReviewCase {review_case_id: $review_case_id})-[:FOR_DECISION]->(md:MatchDecision)
+MATCH (md)-[:ABOUT_LEFT]->(sr:SourceRecord {record_type: 'sales'})
+SET sr.link_status = 'linked',
+    sr.updated_at  = datetime()
+RETURN sr.source_record_pk AS source_record_pk
+"""
+
+MARK_REVIEW_SALES_RECORD_UNRESOLVED = """
+MATCH (rc:ReviewCase {review_case_id: $review_case_id})-[:FOR_DECISION]->(md:MatchDecision)
+MATCH (md)-[:ABOUT_LEFT]->(sr:SourceRecord {record_type: 'sales'})
+SET sr.link_status = 'unresolved',
+    sr.updated_at  = datetime()
+"""

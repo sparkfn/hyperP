@@ -20,6 +20,10 @@ from src.graph.queries import (
     EXECUTE_MANUAL_MERGE,
     GET_PERSONS_FOR_REVIEW_MERGE,
     GET_REVIEW_CASE,
+    LINK_REVIEW_SALES_BOUGHT_UNIT,
+    LINK_REVIEW_SALES_PURCHASED_ORDER,
+    MARK_REVIEW_SALES_RECORD_LINKED,
+    MARK_REVIEW_SALES_RECORD_UNRESOLVED,
     build_count_review_cases_query,
     build_list_review_cases_query,
     build_review_action_cypher,
@@ -165,6 +169,42 @@ async def _assign_tx(
     return dict(record["review_case"])
 
 
+async def _sales_link_merge_tx(
+    tx: AsyncManagedTransaction,
+    review_case_id: str,
+    new_state: str,
+    resolution: str | None,
+    follow_up_at: str | None,
+    action_type: str,
+    actor_id: str,
+    notes: str | None,
+) -> ActionResult:
+    """Approve a sales-record review case: link Order+Units to the candidate Person."""
+    await tx.run(LINK_REVIEW_SALES_PURCHASED_ORDER, review_case_id=review_case_id)
+    await tx.run(LINK_REVIEW_SALES_BOUGHT_UNIT, review_case_id=review_case_id)
+    linked_result = await tx.run(MARK_REVIEW_SALES_RECORD_LINKED, review_case_id=review_case_id)
+    if await linked_result.single() is None:
+        return ActionResult(merge_not_applicable=True)
+    cypher = build_review_action_cypher(resolution, follow_up_at)
+    rc_result = await tx.run(
+        cypher,
+        review_case_id=review_case_id,
+        new_state=new_state,
+        resolution=resolution,
+        follow_up_at=follow_up_at,
+        action_json=_action_entry_json(action_type, "reviewer", actor_id, notes),
+    )
+    rc_record = await rc_result.single()
+    if rc_record is None:
+        return ActionResult(merge_not_applicable=True)
+    rc = dict(rc_record["review_case"])
+    return ActionResult(
+        review_case_id=to_str(rc.get("review_case_id")),
+        queue_state=to_str(rc.get("queue_state")),
+        resolution=to_optional_str(rc.get("resolution")),
+    )
+
+
 async def _action_tx(
     tx: AsyncManagedTransaction,
     review_case_id: str,
@@ -184,7 +224,10 @@ async def _action_tx(
         persons_result = await tx.run(GET_PERSONS_FOR_REVIEW_MERGE, review_case_id=review_case_id)
         persons_record = await persons_result.single()
         if persons_record is None:
-            return ActionResult(merge_not_applicable=True)
+            return await _sales_link_merge_tx(
+                tx, review_case_id, new_state, resolution, follow_up_at,
+                action_type, actor_id, notes,
+            )
 
         left_id = to_str(persons_record["left_person_id"])
         right_id = to_str(persons_record["right_person_id"])
@@ -251,5 +294,8 @@ async def _action_tx(
             await apply_merge_review_side_effects(tx, merge_event_id, absorbed_id, survivor_id)
         out["survivor_person_id"] = survivor_id
         out["golden_profile_selections"] = golden_profile_selections
+
+    if action_type in (ApiReviewActionType.MANUAL_NO_MATCH.value, ApiReviewActionType.REJECT.value):
+        await tx.run(MARK_REVIEW_SALES_RECORD_UNRESOLVED, review_case_id=review_case_id)
 
     return out

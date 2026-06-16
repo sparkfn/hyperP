@@ -13,6 +13,10 @@ from src.graph.queries import (
     CREATE_NO_MATCH_LOCK_FROM_REVIEW,
     EXECUTE_MANUAL_MERGE,
     GET_PERSONS_FOR_REVIEW_MERGE,
+    LINK_REVIEW_SALES_BOUGHT_UNIT,
+    LINK_REVIEW_SALES_PURCHASED_ORDER,
+    MARK_REVIEW_SALES_RECORD_LINKED,
+    MARK_REVIEW_SALES_RECORD_UNRESOLVED,
     REDIRECT_RECORD_PERSON_CASES_FOR_ABSORBED,
 )
 from src.repositories.neo4j.review import _action_tx
@@ -243,9 +247,120 @@ async def test_manual_no_match_creates_review_lock_after_action() -> None:
         "queue_state": "resolved",
         "resolution": "manual_no_match",
     }
-    assert tx.calls[-1].query == CREATE_NO_MATCH_LOCK_FROM_REVIEW
-    assert tx.calls[-1].params == {
+    assert tx.calls[-2].query == CREATE_NO_MATCH_LOCK_FROM_REVIEW
+    assert tx.calls[-2].params == {
         "review_case_id": "case-1",
         "notes": "not the same person",
         "actor_id": "reviewer@example.com",
     }
+    assert tx.calls[-1].query == MARK_REVIEW_SALES_RECORD_UNRESOLVED
+
+
+@pytest.mark.asyncio
+async def test_merge_sales_link_approves_and_links() -> None:
+    """MERGE on a sales review case (no person pair) links Order+Units and returns ActionResult."""
+    tx = _Tx(
+        [
+            None,  # GET_PERSONS_FOR_REVIEW_MERGE → no person pair → sales path
+            None,  # LINK_REVIEW_SALES_PURCHASED_ORDER (result not used)
+            None,  # LINK_REVIEW_SALES_BOUGHT_UNIT (result not used)
+            {"source_record_pk": "sr-42"},  # MARK_REVIEW_SALES_RECORD_LINKED → success
+            {
+                "review_case": {
+                    "review_case_id": "rc-sales",
+                    "queue_state": "resolved",
+                    "resolution": "merge",
+                }
+            },
+        ]
+    )
+
+    result = await _action_tx(
+        cast(AsyncManagedTransaction, tx),
+        "rc-sales",
+        ApiReviewActionType.MERGE.value,
+        "resolved",
+        "merge",
+        None,
+        None,
+        "reviewer@example.com",
+        None,
+        [],
+    )
+
+    assert result == {
+        "review_case_id": "rc-sales",
+        "queue_state": "resolved",
+        "resolution": "merge",
+    }
+    query_seq = [c.query for c in tx.calls]
+    assert query_seq[0] == GET_PERSONS_FOR_REVIEW_MERGE
+    assert query_seq[1] == LINK_REVIEW_SALES_PURCHASED_ORDER
+    assert query_seq[2] == LINK_REVIEW_SALES_BOUGHT_UNIT
+    assert query_seq[3] == MARK_REVIEW_SALES_RECORD_LINKED
+
+
+@pytest.mark.asyncio
+async def test_merge_returns_not_applicable_when_no_persons_and_no_sales_link() -> None:
+    """MERGE with no person pair and no sales SourceRecord yields merge_not_applicable."""
+    tx = _Tx(
+        [
+            None,  # GET_PERSONS_FOR_REVIEW_MERGE
+            None,  # LINK_REVIEW_SALES_PURCHASED_ORDER
+            None,  # LINK_REVIEW_SALES_BOUGHT_UNIT
+            None,  # MARK_REVIEW_SALES_RECORD_LINKED → no match → not applicable
+        ]
+    )
+
+    result = await _action_tx(
+        cast(AsyncManagedTransaction, tx),
+        "rc-1",
+        ApiReviewActionType.MERGE.value,
+        "resolved",
+        "merge",
+        None,
+        None,
+        "reviewer@example.com",
+        None,
+        [],
+    )
+
+    assert result == {"merge_not_applicable": True}
+    assert tx.calls[3].query == MARK_REVIEW_SALES_RECORD_LINKED
+
+
+@pytest.mark.asyncio
+async def test_reject_marks_sales_record_unresolved() -> None:
+    """REJECT action marks any attached sales SourceRecord as unresolved."""
+    tx = _Tx(
+        [
+            {
+                "review_case": {
+                    "review_case_id": "rc-2",
+                    "queue_state": "resolved",
+                    "resolution": "reject",
+                }
+            },
+            None,  # MARK_REVIEW_SALES_RECORD_UNRESOLVED (result not used)
+        ]
+    )
+
+    result = await _action_tx(
+        cast(AsyncManagedTransaction, tx),
+        "rc-2",
+        ApiReviewActionType.REJECT.value,
+        "resolved",
+        "reject",
+        None,
+        None,
+        "reviewer@example.com",
+        None,
+        [],
+    )
+
+    assert result == {
+        "review_case_id": "rc-2",
+        "queue_state": "resolved",
+        "resolution": "reject",
+    }
+    assert tx.calls[-1].query == MARK_REVIEW_SALES_RECORD_UNRESOLVED

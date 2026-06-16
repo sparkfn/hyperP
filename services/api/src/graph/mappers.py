@@ -45,6 +45,8 @@ from src.types import (
     PossibleMatchDetail,
     ReviewCaseDetail,
     ReviewCaseSummary,
+    SalesOrderSummary,
+    SalesUnitSummary,
     SharedAddress,
     SharedIdentifier,
     SharedIdentifierGroup,
@@ -561,15 +563,51 @@ def map_review_case_summary(record: GraphRecord) -> ReviewCaseSummary:
     )
 
 
+def _map_sales_summary(
+    sales_order: GraphValue,
+    sales_units: GraphValue,
+) -> SalesOrderSummary | None:
+    order = _as_dict(sales_order)
+    if not order:
+        return None
+    units: list[SalesUnitSummary] = []
+    if isinstance(sales_units, list):
+        for raw in sales_units:
+            u = _as_dict(raw)
+            if not u:
+                continue
+            units.append(
+                SalesUnitSummary(
+                    machine_unit_id=to_str(u.get("machine_unit_id")),
+                    machine_product=to_optional_str(u.get("machine_product")),
+                    normalized_lta_tag=to_optional_str(u.get("normalized_lta_tag")),
+                    normalized_serial_number=to_optional_str(u.get("normalized_serial_number")),
+                    conflict_flag=bool(u.get("conflict_flag", False)),
+                )
+            )
+    return SalesOrderSummary(
+        order_id=to_str(order.get("order_id")),
+        order_no=to_optional_str(order.get("order_no")),
+        total_amount=to_optional_float(order.get("total_amount")),
+        currency=to_optional_str(order.get("currency")),
+        ordered_at=to_optional_str(order.get("ordered_at")),
+        units=units,
+    )
+
+
 def _map_comparison_entity(
-    kind: GraphValue, entity: GraphValue, address: GraphValue
+    kind: GraphValue,
+    entity: GraphValue,
+    address: GraphValue,
+    sales_order: GraphValue = None,
+    sales_units: GraphValue = None,
 ) -> PersonComparisonEntity | None:
     e = _as_dict(entity)
     if not e:
         return None
     kind_str = to_optional_str(kind)
     if kind_str == "source_record":
-        return _map_source_record_comparison(e)
+        return _map_source_record_comparison(e, sales_order=sales_order, sales_units=sales_units)
     return PersonComparisonEntity(
         entity_kind="person",
         person_id=to_optional_str(e.get("person_id")),
@@ -582,7 +620,11 @@ def _map_comparison_entity(
     )
 
 
-def _map_source_record_comparison(e: GraphRecord) -> PersonComparisonEntity:
+def _map_source_record_comparison(
+    e: GraphRecord,
+    sales_order: GraphValue = None,
+    sales_units: GraphValue = None,
+) -> PersonComparisonEntity:
     payload = _parse_normalized_payload(e.get("normalized_payload"))
     return PersonComparisonEntity(
         entity_kind="source_record",
@@ -594,6 +636,7 @@ def _map_source_record_comparison(e: GraphRecord) -> PersonComparisonEntity:
         preferred_email=_identifier_value(payload, "email"),
         preferred_dob=_attribute_value(payload, "dob"),
         preferred_address=_source_record_address(payload),
+        sales_summary=_map_sales_summary(sales_order, sales_units),
     )
 
 
@@ -727,7 +770,11 @@ def map_review_case_detail(record: GraphRecord) -> ReviewCaseDetail:
         actions=actions,
         match_decision=map_match_decision(record),
         comparison_left=_map_comparison_entity(
-            record.get("left_kind"), record.get("left_entity"), record.get("left_address")
+            record.get("left_kind"),
+            record.get("left_entity"),
+            record.get("left_address"),
+            sales_order=record.get("sales_order"),
+            sales_units=record.get("sales_units"),
         ),
         comparison_right=_map_comparison_entity(
             record.get("right_kind"), record.get("right_entity"), record.get("right_address")

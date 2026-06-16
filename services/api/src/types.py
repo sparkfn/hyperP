@@ -387,6 +387,23 @@ class ReviewCaseSummary(BaseModel):
     match_decision: MatchDecisionSummary
 
 
+class SalesUnitSummary(BaseModel):
+    machine_unit_id: str
+    machine_product: str | None = None
+    normalized_lta_tag: str | None = None
+    normalized_serial_number: str | None = None
+    conflict_flag: bool = False
+
+
+class SalesOrderSummary(BaseModel):
+    order_id: str
+    order_no: str | None = None
+    total_amount: float | None = None
+    currency: str | None = None
+    ordered_at: str | None = None
+    units: list[SalesUnitSummary] = Field(default_factory=list)
+
+
 class PersonComparisonEntity(BaseModel):
     entity_kind: Literal["person", "source_record"] = "person"
     person_id: str | None = None
@@ -398,6 +415,7 @@ class PersonComparisonEntity(BaseModel):
     preferred_email: str | None = None
     preferred_dob: str | None = None
     preferred_address: AddressSummary | None = None
+    sales_summary: SalesOrderSummary | None = None
 
 
 class ReviewCaseDetail(BaseModel):

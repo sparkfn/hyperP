@@ -48,7 +48,11 @@ from src.pipeline_knows import (
     materialize_knows_from_chat_relationships,
     materialize_knows_from_contacts,
 )
-from src.pipeline_sales import drain_pending_customer_sales, ingest_sales_record
+from src.pipeline_sales import (
+    drain_pending_customer_sales,
+    ingest_sales_record,
+    propose_machine_unit_matches_for_pending_sales,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -335,6 +339,9 @@ def run_ingestion(
             )
             if drained:
                 logger.info("Drained %d pending sales records", drained)
+            proposed = propose_machine_unit_matches_for_pending_sales(client)
+            if proposed:
+                logger.info("Proposed %d machine-unit review cases for pending sales", proposed)
             chat_knows_linked = materialize_knows_from_chat_relationships(client)
             if chat_knows_linked:
                 logger.info(

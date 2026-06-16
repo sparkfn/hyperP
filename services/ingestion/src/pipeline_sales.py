@@ -23,11 +23,17 @@ from src.machine_units import (
     normalize_machine_product,
     normalize_serial_number,
 )
+from src.matching.machine_unit_heuristic import (
+    MachineUnitCandidate,
+    build_machine_unit_match_result,
+    select_best_machine_unit_candidate,
+)
 from src.models import (
     IngestResult,
     JsonValue,
     SourceRecordEnvelope,
 )
+from src.pipeline_writes import create_review_case_if_needed, persist_match_decision
 
 logger = logging.getLogger(__name__)
 
@@ -570,3 +576,66 @@ def drain_pending_customer_sales(
     if linked_count:
         logger.info("Drained %d pending sales records into linked state", linked_count)
     return linked_count
+
+
+def _propose_one_pending_sale(tx: ManagedTransaction, source_record_pk: str) -> bool:
+    """Try to create a machine-unit ReviewCase for one pending-customer sales record.
+
+    Returns True if a ReviewCase was created (link_status → pending_review),
+    False if no active Person candidate shares a MachineUnit with the record.
+    """
+    result = tx.run(
+        queries.FIND_MACHINE_UNIT_CANDIDATES_FOR_SALES,
+        sales_source_record_pk=source_record_pk,
+    )
+    candidates: list[MachineUnitCandidate] = [
+        MachineUnitCandidate(
+            person_id=str(row["person_id"]),
+            machine_unit_id=str(row["machine_unit_id"]),
+            rel_type=str(row["rel_type"]),
+            is_active=bool(row.get("is_active", False)),
+            conflict_flag=bool(row.get("conflict_flag", False)),
+            last_confirmed_at=(
+                str(row["last_confirmed_at"]) if row["last_confirmed_at"] is not None else None
+            ),
+        )
+        for row in result
+    ]
+    best = select_best_machine_unit_candidate(candidates)
+    if best is None:
+        return False
+    match_result = build_machine_unit_match_result(best)
+    decision_id = persist_match_decision(tx, match_result, source_record_pk)
+    create_review_case_if_needed(tx, match_result, decision_id)
+    tx.run(queries.MARK_SALES_RECORD_PENDING_REVIEW, source_record_pk=source_record_pk)
+    return True
+
+
+def propose_machine_unit_matches_for_pending_sales(
+    client: Neo4jClient,
+    *,
+    batch_size: int = 200,
+) -> int:
+    """Create machine-unit ReviewCases for all pending-customer sales records.
+
+    Single-pass — records with no candidates stay pending_customer and are
+    retried on the next ingestion run. Returns the count of ReviewCases created.
+    """
+
+    def _get_pending_pks(tx: ManagedTransaction) -> list[str]:
+        rows = list(tx.run(queries.FIND_PENDING_CUSTOMER_SALES, limit=batch_size))
+        return [str(row["source_record_pk"]) for row in rows]
+
+    with client.session() as session:
+        pending_pks: list[str] = session.execute_write(_get_pending_pks)
+
+    proposed = 0
+    for pk in pending_pks:
+
+        def _propose(tx: ManagedTransaction, _pk: str = pk) -> bool:
+            return _propose_one_pending_sale(tx, _pk)
+
+        with client.session() as session:
+            if session.execute_write(_propose):
+                proposed += 1
+    return proposed
