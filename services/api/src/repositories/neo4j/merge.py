@@ -167,12 +167,11 @@ async def _apply_golden_profile_selections_tx(
 ) -> str:
     for selection in selections:
         field_name = selection["field_name"]
-        if field_name == "preferred_address":
-            field_name = "preferred_address_id"
+        graph_field_name: str = "preferred_address_id" if field_name == "preferred_address" else field_name
         await tx.run(
             UPDATE_GOLDEN_FIELD,
             person_id=person_id,
-            field_name=field_name,
+            field_name=graph_field_name,
             value=selection["selected_value"],
         )
     return "ok"

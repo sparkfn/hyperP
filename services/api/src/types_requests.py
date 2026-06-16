@@ -96,7 +96,16 @@ class SurvivorshipOverrideRequest(BaseModel):
 
 class SurvivorshipOverrideBatchItem(BaseModel):
     field_name: GoldenFieldName
-    source_record_pk: str
+    source_record_pk: str | None = None
+    custom_value: str | None = None
+
+    @model_validator(mode="after")
+    def _check_override_source(self) -> SurvivorshipOverrideBatchItem:
+        has_source = self.source_record_pk is not None and self.source_record_pk.strip() != ""
+        has_custom = self.custom_value is not None and self.custom_value.strip() != ""
+        if has_source == has_custom:
+            raise ValueError("Provide exactly one of source_record_pk or custom_value")
+        return self
 
 
 class SurvivorshipOverrideBatchRequest(BaseModel):
