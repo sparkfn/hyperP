@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState, type ReactElement } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactElement } from "react";
 import Link from "next/link";
 
 import ReviewActionsPanel from "@/components/ReviewActionsPanel";
@@ -231,11 +231,12 @@ export function ReviewCaseDetailModal({
 }: {
   open: boolean;
   reviewCaseId: string;
-  onClose: () => void;
+  onClose: (actioned: boolean) => void;
 }): ReactElement | null {
   const [detail, setDetail] = useState<ReviewCaseDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
+  const actioned = useRef(false);
 
   const loadDetail = useCallback((): void => {
     if (reviewCaseId.length === 0) {
@@ -255,19 +256,25 @@ export function ReviewCaseDetailModal({
       });
   }, [reviewCaseId]);
 
+  const handleChanged = useCallback((): void => {
+    actioned.current = true;
+    loadDetail();
+  }, [loadDetail]);
+
   useEffect(() => {
     if (!open) {
       setDetail(null);
       setError(null);
       return;
     }
+    actioned.current = false;
     queueMicrotask(loadDetail);
   }, [open, loadDetail]);
 
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent): void => {
-      if (e.key === "Escape") onClose();
+      if (e.key === "Escape") onClose(actioned.current);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -276,20 +283,20 @@ export function ReviewCaseDetailModal({
   if (!open) return null;
 
   return (
-    <div className={styles.reviewCaseOverlay} onClick={onClose}>
+    <div className={styles.reviewCaseOverlay} onClick={() => onClose(actioned.current)}>
       <div className={styles.reviewCaseModal} onClick={(e) => e.stopPropagation()}>
         <div className={styles.reviewCaseModalHeader}>
           <Link href={`/review/${encodeURIComponent(reviewCaseId)}`} className={styles.reviewCaseOpenFull} target="_blank" rel="noopener noreferrer">
             Open in full page ↗
           </Link>
-          <button type="button" className={styles.reviewCaseModalClose} onClick={onClose} aria-label="Close">×</button>
+          <button type="button" className={styles.reviewCaseModalClose} onClick={() => onClose(actioned.current)} aria-label="Close">×</button>
         </div>
         {loading && detail === null ? (
           <div className={styles.reviewCaseModalLoading}>Loading review case…</div>
         ) : error !== null && detail === null ? (
           <div className={styles.reviewCaseModalError}>{error}</div>
         ) : detail !== null ? (
-          <ReviewCaseDetailContent detail={detail} loading={loading} error={error} onChanged={loadDetail} />
+          <ReviewCaseDetailContent detail={detail} loading={loading} error={error} onChanged={handleChanged} />
         ) : null}
       </div>
     </div>
