@@ -813,6 +813,15 @@
   line-height: 1.5;
 }
 
+.reasonBoxLabel {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+  margin-bottom: 5px;
+}
+
 .actionSection {
   display: flex;
   flex-direction: column;
@@ -827,6 +836,79 @@
   font-size: 13px;
   font-weight: 700;
 }
+
+.cardHeaderRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.cardHeaderRow .cardHeader,
+.reviewCaseModal .cardHeaderRow .cardHeader {
+  margin-bottom: 0;
+}
+
+.assignToggleBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--bg-app);
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 500;
+  font-family: inherit;
+  cursor: pointer;
+  transition: border-color 0.12s, color 0.12s;
+}
+.assignToggleBtn:hover:not(:disabled) { border-color: var(--accent); color: var(--accent-text); }
+.assignToggleBtn:disabled { opacity: 0.4; cursor: default; }
+
+.actionSectionDisabled {
+  opacity: 0.4;
+  pointer-events: none;
+  user-select: none;
+}
+
+.assignInlineForm {
+  margin-top: 8px;
+}
+
+.assignInlineRow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.assignInlineRow .input {
+  flex: 1;
+  min-width: 0;
+  padding: 6px 8px;
+  font-size: 12px;
+}
+
+.assignInlineRow .primaryBtn {
+  flex-shrink: 0;
+  padding: 6px 10px;
+  min-height: unset;
+  font-size: 12px;
+}
+
+.assignCancelBtn {
+  flex-shrink: 0;
+  font-size: 13px;
+  line-height: 1;
+  color: var(--text-muted);
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-family: inherit;
+  padding: 4px;
+}
+.assignCancelBtn:hover { color: var(--text-primary); }
 
 .formRow {
   display: flex;
@@ -1109,6 +1191,59 @@
   border-top: 1px solid var(--border-subtle, var(--border));
 }
 
+/* Compact comparison card (used inside the modal) */
+.comparisonCompactHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.comparisonCompactName {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+}
+
+.comparisonCompactName .comparisonName {
+  font-size: 13px;
+  font-weight: 700;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.comparisonCompactFields {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border-subtle, var(--border));
+}
+
+.comparisonCompactRow {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  min-width: 0;
+}
+
+.comparisonCompactIcon {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  margin-top: 1px;
+  color: var(--text-muted);
+}
+
+.comparisonCompactValue {
+  font-size: 11px;
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+  line-height: 1.4;
+}
+
 .profileLinkButton {
   display: inline-flex;
   align-items: center;
@@ -1175,7 +1310,7 @@
   background: rgba(15, 23, 42, 0.45);
   z-index: 1100;
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: center;
   padding: 16px;
   overflow-y: auto;
@@ -1255,7 +1390,15 @@
 }
 
 /* ── Modal compaction overrides ──────────────────────────────────────── */
+/*
+  Spacing tokens used consistently throughout:
+    section vertical rhythm : 20px
+    content gap             : 8px
+    tight gap               : 6px
+    inline padding          : 14px (horizontal), 12px (rail)
+*/
 
+/* Hero bar */
 .reviewCaseModal .detailHero {
   padding: 12px 16px;
   border: none;
@@ -1272,38 +1415,26 @@
   font-size: 12px;
 }
 
-.reviewCaseModal .eyebrow {
-  font-size: 10px;
-}
+.reviewCaseModal .eyebrow { font-size: 10px; }
+.reviewCaseModal .detailTitle { font-size: 16px; margin: 2px 0; }
+.reviewCaseModal .detailMeta { display: none; }
+.reviewCaseModal .heroStats { gap: 6px; flex-shrink: 0; }
 
-.reviewCaseModal .detailTitle {
-  font-size: 16px;
-  margin: 2px 0;
-}
-
-.reviewCaseModal .detailMeta {
-  display: none;
-}
-
-.reviewCaseModal .heroStats {
-  gap: 6px;
-  flex-shrink: 0;
-}
-
+/* Body layout */
 .reviewCaseModal .detailBody {
-  grid-template-columns: minmax(0, 1fr) 420px;
+  grid-template-columns: minmax(0, 1fr) 400px;
   gap: 0;
   padding: 0;
 }
 
-/* Left column — flat sections separated by dividers, no card boxes */
+/* Left column — flat sections divided by hairlines */
 .reviewCaseModal .detailMainColumn {
   gap: 0;
-  padding: 0 16px;
+  padding: 0 20px;
 }
 
 .reviewCaseModal .detailMainColumn > * {
-  padding: 14px 0;
+  padding: 20px 0;
   border-bottom: 1px solid var(--border-subtle);
 }
 
@@ -1315,62 +1446,111 @@
   border: none;
   border-radius: 0;
   background: transparent;
-  padding: 0;
+  padding: 20px 0;
 }
 
+/* Section header */
 .reviewCaseModal .cardHeader {
-  font-size: 12px;
+  font-size: 10px;
   font-weight: 700;
-  margin-bottom: 10px;
+  margin-bottom: 8px;
   color: var(--text-muted);
   text-transform: uppercase;
   letter-spacing: 0.05em;
-  font-size: 10px;
 }
 
-.reviewCaseModal .kvGrid {
-  gap: 8px 12px;
+.reviewCaseModal .cardHeaderRow {
+  margin-bottom: 10px;
 }
 
-.reviewCaseModal .kvLabel {
-  font-size: 10px;
-}
+/* Key-value grid */
+.reviewCaseModal .kvGrid { gap: 6px 12px; }
+.reviewCaseModal .kvLabel { font-size: 10px; }
+.reviewCaseModal .kvValue { font-size: 12px; }
 
-.reviewCaseModal .kvValue {
-  font-size: 12px;
-}
-
+/* Reason / blocking conflicts box */
 .reviewCaseModal .reasonBox {
-  margin-top: 10px;
+  margin-top: 8px;
   padding: 0 0 0 10px;
-  font-size: 12px;
+  font-size: 11px;
   border: none;
   border-radius: 0;
   background: transparent;
   border-left: 2px solid var(--border);
 }
 
-/* Comparison cards — subtle tint instead of border */
-.reviewCaseModal .compareGrid {
-  gap: 8px;
-}
+/* Comparison cards */
+.reviewCaseModal .compareGrid { gap: 8px; }
 
 .reviewCaseModal .comparisonCard {
   border: none;
   border-radius: 8px;
   background: color-mix(in srgb, var(--bg-hover) 70%, transparent);
-  padding: 12px;
+  padding: 14px;
+  gap: 8px;
 }
 
-.reviewCaseModal .comparisonName {
-  font-size: 14px;
-}
+.reviewCaseModal .comparisonName { font-size: 13px; }
+.reviewCaseModal .comparisonCompactName .comparisonName { font-size: 13px; }
 
-/* Right rail — border-left separator, scrollable */
+/* Right rail */
 .reviewCaseModal .reviewActionRail {
   top: 0;
   border-left: 1px solid var(--border-subtle);
-  padding: 14px 16px;
+  padding: 14px;
   overflow-y: auto;
   max-height: calc(100vh - 120px);
+}
+
+.reviewCaseModal .reviewActionRail .detailCard { padding: 0; }
+
+/* Action section */
+.reviewCaseModal .actionSection {
+  gap: 6px;
+  padding-top: 10px;
+  margin-top: 10px;
+}
+
+.reviewCaseModal .sectionTitle {
+  font-size: 11px;
+}
+
+.reviewCaseModal .formRow { gap: 8px; }
+.reviewCaseModal .fieldGroup { gap: 4px; }
+.reviewCaseModal .fieldLabel { font-size: 10px; }
+
+/* fieldGroup in a column-flex (actionSection) has flex-basis:190px which balloons
+   the Notes field to 190px even when content is ~90px — override to content size */
+.reviewCaseModal .actionSection > .fieldGroup {
+  flex-basis: auto;
+}
+
+/* Inputs / selects / textarea — compact for the rail */
+.reviewCaseModal .input,
+.reviewCaseModal .select,
+.reviewCaseModal .textarea {
+  font-size: 12px;
+  padding: 7px 9px;
+  border-radius: 7px;
+}
+
+.reviewCaseModal .textarea {
+  min-height: 70px;
+}
+
+/* Submit button */
+.reviewCaseModal .primaryBtn {
+  font-size: 12px;
+  padding: 7px 12px;
+  min-height: 32px;
+  border-radius: 7px;
+}
+
+/* Banners */
+.reviewCaseModal .errorBanner,
+.reviewCaseModal .successBanner,
+.reviewCaseModal .infoBanner {
+  font-size: 11px;
+  padding: 8px 10px;
+  border-radius: 8px;
 }

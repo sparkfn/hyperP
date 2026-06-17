@@ -115,6 +115,7 @@ export default function ReviewActionsPanel({
   >({});
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
+  const [assignOpen, setAssignOpen] = useState<boolean>(false);
 
   // Assign section temporarily hidden — flip to true to restore it.
   const showAssignSection = false;
@@ -235,33 +236,41 @@ export default function ReviewActionsPanel({
 
   return (
     <section className={`${styles.detailCard} ${embedded ? styles.embeddedActionPanel : ""}`}>
-      <div className={styles.cardHeader}>Reviewer Actions</div>
+      <div className={styles.cardHeaderRow}>
+        <div className={styles.cardHeader}>Reviewer Actions</div>
+        {!resolved && !assignOpen && (
+          <button
+            type="button"
+            className={styles.assignToggleBtn}
+            onClick={() => setAssignOpen(true)}
+          >
+            {assignedTo !== null && assignedTo.length > 0 ? `Assigned: ${assignedTo}` : "Assign"}
+          </button>
+        )}
+      </div>
       {error !== null ? <div className={styles.errorBanner}>{error}</div> : null}
       {success !== null ? <div className={styles.successBanner}>{success}</div> : null}
       {resolved ? <div className={styles.infoBanner}>This review case is {queueState} and no longer accepts actions.</div> : null}
 
-      {showAssignSection ? (
-        <div className={styles.actionSection}>
-          <div className={styles.sectionTitle}>Assign</div>
-          <div className={styles.formRow}>
-            <label className={styles.fieldGroup}>
-              <span className={styles.fieldLabel}>Assignee</span>
-              <input
-                className={styles.input}
-                value={assignee}
-                onChange={(event) => setAssignee(event.target.value)}
-                placeholder="reviewer id"
-                disabled={resolved}
-              />
-            </label>
-            <button className={styles.primaryBtn} onClick={() => void onAssign()} disabled={assignBusy || resolved}>
-              {assignBusy ? "Assigning…" : "Assign"}
+      {assignOpen && (
+        <div className={styles.assignInlineForm}>
+          <div className={styles.assignInlineRow}>
+            <input
+              className={styles.input}
+              value={assignee}
+              onChange={(event) => setAssignee(event.target.value)}
+              placeholder="Reviewer ID"
+              disabled={resolved}
+            />
+            <button type="button" className={styles.primaryBtn} onClick={() => void onAssign()} disabled={assignBusy || resolved}>
+              {assignBusy ? "…" : "Assign"}
             </button>
+            <button type="button" className={styles.assignCancelBtn} onClick={() => setAssignOpen(false)}>✕</button>
           </div>
         </div>
-      ) : null}
+      )}
 
-      <div className={styles.actionSection}>
+      <div className={`${styles.actionSection} ${assignOpen ? styles.actionSectionDisabled : ""}`}>
         <div className={styles.sectionTitle}>Submit action</div>
         <div className={styles.formRow}>
           <label className={styles.fieldGroup}>
