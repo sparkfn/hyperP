@@ -62,11 +62,13 @@ interface BentoSectionProps {
 }
 
 
+const PAGE_TZ = process.env.NEXT_PUBLIC_TZ ?? "UTC";
+
 const DATE_FORMATTER = new Intl.DateTimeFormat("en-SG", {
   day: "2-digit",
   month: "short",
   year: "numeric",
-  timeZone: "UTC",
+  timeZone: PAGE_TZ,
 });
 
 const DATE_TIME_FORMATTER = new Intl.DateTimeFormat("en-SG", {
@@ -76,7 +78,7 @@ const DATE_TIME_FORMATTER = new Intl.DateTimeFormat("en-SG", {
   hour: "2-digit",
   minute: "2-digit",
   hour12: true,
-  timeZone: "UTC",
+  timeZone: PAGE_TZ,
 });
 
 function fmtDate(value: string | null): string {
@@ -101,7 +103,7 @@ function fmtTime(value: string | null): string {
     hour: "2-digit",
     minute: "2-digit",
     hour12: true,
-    timeZone: "UTC",
+    timeZone: PAGE_TZ,
   }).format(d);
 }
 
@@ -4233,7 +4235,7 @@ export default function PersonDetailPage({ params }: { params: Promise<{ personI
             </div>
             {shareExpiry && (
               <span className={styles.shareExpiry}>
-                Expires {new Date(shareExpiry).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}
+                Expires {new Date(shareExpiry).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", timeZone: PAGE_TZ })}
               </span>
             )}
           </div>

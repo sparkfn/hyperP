@@ -18,6 +18,9 @@ WORKDIR /app
 # and src/lib/route-paths.ts.
 ARG NEXT_PUBLIC_BASE_PATH=""
 ENV NEXT_PUBLIC_BASE_PATH=$NEXT_PUBLIC_BASE_PATH
+# Display timezone for all Intl.DateTimeFormat calls in the client bundle.
+ARG NEXT_PUBLIC_TZ="UTC"
+ENV NEXT_PUBLIC_TZ=$NEXT_PUBLIC_TZ
 COPY --from=deps /app/node_modules ./node_modules
 COPY services/frontend2/ ./
 RUN npm run build

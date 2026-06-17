@@ -205,6 +205,7 @@ function formatDateTime(value: string): string {
     year: "numeric",
     hour: "2-digit",
     minute: "2-digit",
+    timeZone: process.env.NEXT_PUBLIC_TZ ?? "UTC",
   }).format(parsed);
 }
 

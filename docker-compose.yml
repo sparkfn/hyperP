@@ -163,6 +163,8 @@ services:
     build:
       context: .
       dockerfile: services/frontend2/Dockerfile
+      args:
+        NEXT_PUBLIC_TZ: ${TZ:-UTC}
     # Not exposed externally — all ingress goes through the nginx web service.
     environment:
       # Mirrors frontend (v1): base includes the /api prefix; buildApiUrl prepends

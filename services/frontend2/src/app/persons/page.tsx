@@ -98,6 +98,7 @@ function formatOrderDate(date: string | null): string {
     day: "2-digit",
     month: "short",
     year: "numeric",
+    timeZone: process.env.NEXT_PUBLIC_TZ ?? "UTC",
   }).format(d);
 }
 
