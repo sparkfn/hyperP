@@ -20,6 +20,8 @@ from src.graph.queries import (
     EXECUTE_MANUAL_MERGE,
     GET_PERSONS_FOR_REVIEW_MERGE,
     GET_REVIEW_CASE,
+    GET_REVIEW_CASE_BY_MATCH_DECISION,
+    RECREATE_REVIEW_CASE,
     build_count_review_cases_query,
     build_list_review_cases_query,
     build_review_action_cypher,
@@ -91,6 +93,30 @@ class Neo4jReviewRepository:
         if record is None:
             return None
         return map_review_case_detail(record_to_dict(record.keys(), list(record.values())))
+
+    async def get_by_match_decision_id(self, match_decision_id: str) -> ReviewCaseDetail | None:
+        async with get_session() as session:
+            id_result = await session.run(
+                GET_REVIEW_CASE_BY_MATCH_DECISION,
+                match_decision_id=match_decision_id,
+            )
+            id_record = await id_result.single()
+        if id_record is None:
+            return None
+        return await self.get_by_id(to_str(id_record["review_case_id"]))
+
+    async def recreate(self, review_case_id: str, actor_id: str) -> ReviewCaseDetail | None:
+        action_json = _action_entry_json("recreate", "user", actor_id, None)
+        async with get_session(write=True) as session:
+            result = await session.run(
+                RECREATE_REVIEW_CASE,
+                review_case_id=review_case_id,
+                action_json=action_json,
+            )
+            record = await result.single()
+        if record is None:
+            return None
+        return await self.get_by_id(to_str(record["review_case_id"]))
 
     async def assign(self, review_case_id: str, assigned_to: str) -> AssignResult | None:
         async with get_session(write=True) as session:

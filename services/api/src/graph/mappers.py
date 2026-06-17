@@ -539,6 +539,9 @@ def map_match_decision(record: GraphRecord) -> MatchDecision:
         created_at=to_iso_or_empty(md.get("created_at")),
         left_person_id=to_optional_str(record.get("left_person_id")),
         right_person_id=to_optional_str(record.get("right_person_id")),
+        review_case_id=to_optional_str(record.get("review_case_id")),
+        review_case_queue_state=to_optional_str(record.get("review_case_queue_state")),
+        review_case_assigned_to=to_optional_str(record.get("review_case_assigned_to")),
     )
 
 
@@ -552,6 +555,12 @@ def map_review_case_summary(record: GraphRecord) -> ReviewCaseSummary:
         assigned_to=to_optional_str(rc.get("assigned_to")),
         follow_up_at=to_iso_or_none(rc.get("follow_up_at")),
         sla_due_at=to_iso_or_none(rc.get("sla_due_at")),
+        left_person_id=to_optional_str(record.get("left_person_id")),
+        left_person_name=to_optional_str(record.get("left_person_name")),
+        left_person_status=to_optional_str(record.get("left_person_status")),
+        right_person_id=to_optional_str(record.get("right_person_id")),
+        right_person_name=to_optional_str(record.get("right_person_name")),
+        right_person_status=to_optional_str(record.get("right_person_status")),
         match_decision=MatchDecisionSummary(
             match_decision_id=to_str(md.get("match_decision_id")),
             engine_type=to_str(md.get("engine_type")),

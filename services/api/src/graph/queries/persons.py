@@ -538,12 +538,16 @@ WHERE (md)-[:ABOUT_LEFT]->(:Person {person_id: $person_id})
    OR (md)-[:ABOUT_RIGHT]->(:Person {person_id: $person_id})
 OPTIONAL MATCH (md)-[:ABOUT_LEFT]->(left)
 OPTIONAL MATCH (md)-[:ABOUT_RIGHT]->(right)
+OPTIONAL MATCH (rc:ReviewCase)-[:FOR_DECISION]->(md)
 RETURN md {
   .match_decision_id, .engine_type, .engine_version, .policy_version,
   .decision, .confidence, .reasons, .blocking_conflicts, .created_at
 } AS match_decision,
 left.person_id AS left_person_id,
-right.person_id AS right_person_id
+right.person_id AS right_person_id,
+rc.review_case_id AS review_case_id,
+rc.queue_state AS review_case_queue_state,
+rc.assigned_to AS review_case_assigned_to
 ORDER BY md.created_at DESC
 SKIP $skip LIMIT $limit
 """

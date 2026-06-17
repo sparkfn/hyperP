@@ -108,6 +108,20 @@ async def list_review_cases(
     return envelope(items, request, next_cursor(skip, page_limit, has_more), total_count=total)
 
 
+@router.get("/by-match-decision/{match_decision_id}", response_model=ApiResponse[ReviewCaseDetail])
+async def get_review_case_by_match_decision(
+    match_decision_id: str,
+    request: Request,
+    _user: AuthUser = Depends(require_human_user),
+    repo: ReviewRepository = Depends(get_review_repo),
+) -> ApiResponse[ReviewCaseDetail]:
+    """Return the review case attached to a match decision."""
+    case = await repo.get_by_match_decision_id(match_decision_id)
+    if case is None:
+        raise http_error(404, "review_case_not_found", "Review case was not found.", request)
+    return envelope(case, request)
+
+
 @router.get("/{review_case_id}", response_model=ApiResponse[ReviewCaseDetail])
 async def get_review_case(
     review_case_id: str,
@@ -129,6 +143,20 @@ async def require_human_review_case_mutator(
     """Require both a human principal and review-case mutation permission."""
     _ = user
     return review_user
+
+
+@router.post("/{review_case_id}/recreate", response_model=ApiResponse[ReviewCaseDetail])
+async def recreate_review_case(
+    review_case_id: str,
+    request: Request,
+    user: AuthUser = Depends(require_human_review_case_mutator),
+    repo: ReviewRepository = Depends(get_review_repo),
+) -> ApiResponse[ReviewCaseDetail]:
+    """Create a new open review case from a resolved case without mutating history."""
+    case = await repo.recreate(review_case_id, user.email)
+    if case is None:
+        raise http_error(404, "review_case_not_found", "Review case was not found.", request)
+    return envelope(case, request)
 
 
 @router.post("/{review_case_id}/assign", response_model=ApiResponse[AssignResponse])

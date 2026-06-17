@@ -475,18 +475,18 @@ function PersonRow({
         )}
       </td>
       <td className={`${styles.td} ${styles.tdMetric}`}>
-        {p.possible_match_count > 0 ? (
+        {p.system_match_count > 0 ? (
           <Link
             href={`/persons/${p.person_id}?tab=matches`}
             className={styles.matchesTrigger}
             onClick={(event) => event.stopPropagation()}
-            aria-label={`Open ${p.possible_match_count} matches for ${p.preferred_full_name ?? p.person_id}`}
+            aria-label={`Open ${p.system_match_count} recommended matches for ${p.preferred_full_name ?? p.person_id}`}
           >
-            <span className={styles.matchesCount}>{p.possible_match_count}</span>
-            <span className={styles.matchesLabel}>matches</span>
+            <span className={styles.matchesCount}>{p.system_match_count}</span>
+            <span className={styles.matchesLabel}>recommended</span>
           </Link>
         ) : (
-          <span className={styles.matchesZero}>No matches</span>
+          <span className={styles.matchesZero}>No recommended</span>
         )}
       </td>
       <td className={`${styles.td} ${styles.tdMetric}`}>
@@ -689,14 +689,13 @@ type FlagFilter = "any" | "high_value" | "high_risk" | "no_contact";
 type FilterKey = "entity" | "source" | "identity" | "matches" | "dob" | "address" | "flags" | "bankruptcy" | "updated" | "location";
 
 type MatchPresenceFilter = "any" | "has" | "none";
-type MatchTypeFilter = "possible" | "recommendation" | "both";
 
 const SORT_PARAM_BY_KEY: Record<SortKey, string> = {
   name: "preferred_full_name",
   dob: "preferred_dob",
   entity: "entity_count",
   relations: "connection_count",
-  matches: "possible_match_count",
+  matches: "system_match_count",
   decisionHistory: "system_match_count",
   orders: "order_count",
   quality: "profile_completeness_score",
@@ -839,10 +838,6 @@ function PersonsInner(): ReactElement {
   const [matchPresence, setMatchPresence] = useState<MatchPresenceFilter>(() => {
     const value = searchParams.get("matches");
     return value === "has" || value === "has_any" || value === "possible" ? "has" : value === "none" ? "none" : "any";
-  });
-  const [matchType, setMatchType] = useState<MatchTypeFilter>(() => {
-    const value = searchParams.get("match_type");
-    return value === "recommendation" || value === "both" ? value : "possible";
   });
 
   const [openFilter, setOpenFilter] = useState<FilterKey | null>(null);
@@ -1069,7 +1064,6 @@ function PersonsInner(): ReactElement {
     setAddrPostal("");
     setAddrCountry("");
     setMatchPresence("any");
-    setMatchType("possible");
   }
 
   const apiQuery = useMemo(() => {
@@ -1103,9 +1097,9 @@ function PersonsInner(): ReactElement {
     if (flagFilter === "no_contact") { params.set("has_phone", "false"); params.set("has_email", "false"); }
     if (hasBankruptcy !== null) params.set("has_bankruptcy_case", String(hasBankruptcy));
     if (matchPresence === "has") {
-      params.set("has_possible_match", "true");
+      params.set("has_system_match", "true");
     } else if (matchPresence === "none") {
-      params.set("has_possible_match", "false");
+      params.set("has_system_match", "false");
     }
     if (updatedAfter) params.set("updated_after", updatedAfter);
     if (updatedBefore) params.set("updated_before", updatedBefore);
@@ -1124,14 +1118,13 @@ function PersonsInner(): ReactElement {
     else params.delete("dob_mode");
     if (matchPresence !== "any") {
       params.set("matches", matchPresence);
-      if (matchPresence === "has") params.set("match_type", matchType);
-      else params.delete("match_type");
+      params.delete("match_type");
     } else {
       params.delete("matches");
       params.delete("match_type");
     }
     return params.toString();
-  }, [apiQuery, dobFilter, dobMode, matchPresence, matchType, search]);
+  }, [apiQuery, dobFilter, dobMode, matchPresence, search]);
 
   useEffect(() => {
     const current = searchParams.toString();
@@ -1329,8 +1322,8 @@ function PersonsInner(): ReactElement {
 
   const tableWidth = colWidths.reduce((sum, width) => sum + width, 0);
   const matchFilterLabel = matchPresence === "has"
-    ? matchType === "possible" ? "Has Possible Match" : matchType === "recommendation" ? "Has Recommendation Match" : "Has Possible + Recommendation"
-    : matchPresence === "none" ? "No Matches"
+    ? "Has Recommended Match"
+    : matchPresence === "none" ? "No Recommended Matches"
     : "Matches";
 
   return (
@@ -1562,7 +1555,7 @@ function PersonsInner(): ReactElement {
             label="Matches"
             isActive={matchPresence !== "any"}
             activeLabel={matchFilterLabel}
-            onClear={() => { setMatchPresence("any"); setMatchType("possible"); }}
+            onClear={() => { setMatchPresence("any"); }}
             open={openFilter === "matches"}
             onToggle={() => toggleFilter("matches")}
             wide
@@ -1580,33 +1573,6 @@ function PersonsInner(): ReactElement {
                   </button>
                 ))}
               </div>
-              {matchPresence === "has" && (
-                <div className={styles.filterOptions}>
-                  <button
-                    type="button"
-                    className={`${styles.filterChip} ${matchType === "possible" ? styles.filterChipActive : ""}`}
-                    onClick={() => setMatchType("possible")}
-                  >
-                    Possible Match
-                  </button>
-                  <button
-                    type="button"
-                    className={`${styles.filterChip} ${styles.filterChipDisabled}`}
-                    disabled
-                    title="Recommendation Match is not implemented yet"
-                  >
-                    Recommendation Match
-                  </button>
-                  <button
-                    type="button"
-                    className={`${styles.filterChip} ${styles.filterChipDisabled}`}
-                    disabled
-                    title="Recommendation Match is not implemented yet"
-                  >
-                    Both
-                  </button>
-                </div>
-              )}
             </div>
           </FilterPill>
 

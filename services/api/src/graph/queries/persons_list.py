@@ -42,14 +42,22 @@ WHERE p.status <> 'merged'
            MATCH (p)-[:IDENTIFIED_BY]->(:Identifier)<-[:IDENTIFIED_BY]-(am:Person)
            WHERE am.person_id <> p.person_id AND am.status <> 'merged'
          }
-         OR EXISTS { MATCH (:MatchDecision)-[:ABOUT_LEFT|ABOUT_RIGHT]->(p) }
+         OR EXISTS {
+           MATCH (md:MatchDecision)-[:ABOUT_LEFT]->(:Person)
+           MATCH (md)-[:ABOUT_RIGHT]->(:Person)
+           WHERE (md)-[:ABOUT_LEFT|ABOUT_RIGHT]->(p)
+         }
        ))
        OR ($has_any_match = false AND NOT (
          EXISTS {
            MATCH (p)-[:IDENTIFIED_BY]->(:Identifier)<-[:IDENTIFIED_BY]-(am:Person)
            WHERE am.person_id <> p.person_id AND am.status <> 'merged'
          }
-         OR EXISTS { MATCH (:MatchDecision)-[:ABOUT_LEFT|ABOUT_RIGHT]->(p) }
+         OR EXISTS {
+           MATCH (md:MatchDecision)-[:ABOUT_LEFT]->(:Person)
+           MATCH (md)-[:ABOUT_RIGHT]->(:Person)
+           WHERE (md)-[:ABOUT_LEFT|ABOUT_RIGHT]->(p)
+         }
        )))
   AND ($has_possible_match IS NULL
        OR ($has_possible_match = true AND EXISTS {
@@ -61,8 +69,16 @@ WHERE p.status <> 'merged'
          WHERE pm.person_id <> p.person_id AND pm.status <> 'merged'
        }))
   AND ($has_system_match IS NULL
-       OR ($has_system_match = true AND EXISTS { MATCH (:MatchDecision)-[:ABOUT_LEFT|ABOUT_RIGHT]->(p) })
-       OR ($has_system_match = false AND NOT EXISTS { MATCH (:MatchDecision)-[:ABOUT_LEFT|ABOUT_RIGHT]->(p) }))
+       OR ($has_system_match = true AND EXISTS {
+         MATCH (md:MatchDecision)-[:ABOUT_LEFT]->(:Person)
+         MATCH (md)-[:ABOUT_RIGHT]->(:Person)
+         WHERE (md)-[:ABOUT_LEFT|ABOUT_RIGHT]->(p)
+       })
+       OR ($has_system_match = false AND NOT EXISTS {
+         MATCH (md:MatchDecision)-[:ABOUT_LEFT]->(:Person)
+         MATCH (md)-[:ABOUT_RIGHT]->(:Person)
+         WHERE (md)-[:ABOUT_LEFT|ABOUT_RIGHT]->(p)
+       }))
   AND ($addr_street IS NULL  OR toLower(addr.street_name)     CONTAINS toLower($addr_street))
   AND ($addr_unit   IS NULL   OR toLower(addr.unit_number)    CONTAINS toLower($addr_unit))
   AND ($addr_city   IS NULL   OR toLower(addr.city)           CONTAINS toLower($addr_city))
@@ -144,7 +160,9 @@ CALL (p) {
   RETURN count(DISTINCT other) AS possible_match_count
 }
 CALL (p) {
-  OPTIONAL MATCH (md:MatchDecision)-[:ABOUT_LEFT|ABOUT_RIGHT]->(p)
+  OPTIONAL MATCH (md:MatchDecision)-[:ABOUT_LEFT]->(:Person)
+  MATCH (md)-[:ABOUT_RIGHT]->(:Person)
+  WHERE (md)-[:ABOUT_LEFT|ABOUT_RIGHT]->(p)
   RETURN count(DISTINCT md) AS system_match_count
 }
 CALL (p) {

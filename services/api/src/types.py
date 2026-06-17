@@ -375,6 +375,9 @@ class MatchDecision(BaseModel):
     created_at: str = ""
     left_person_id: str | None = None
     right_person_id: str | None = None
+    review_case_id: str | None = None
+    review_case_queue_state: str | None = None
+    review_case_assigned_to: str | None = None
 
 
 class ReviewCaseSummary(BaseModel):
@@ -384,6 +387,12 @@ class ReviewCaseSummary(BaseModel):
     assigned_to: str | None = None
     follow_up_at: str | None = None
     sla_due_at: str | None = None
+    left_person_id: str | None = None
+    left_person_name: str | None = None
+    left_person_status: str | None = None
+    right_person_id: str | None = None
+    right_person_name: str | None = None
+    right_person_status: str | None = None
     match_decision: MatchDecisionSummary
 
 

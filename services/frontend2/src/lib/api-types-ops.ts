@@ -1,4 +1,5 @@
 import type { SourceRecordType } from "./api-types";
+import type { GoldenProfileSelectionRequestBody } from "./api-types-person";
 import type { Role } from "./permissions";
 
 export interface UserResponse {
@@ -204,6 +205,12 @@ export interface ReviewCaseSummary {
   assigned_to: string | null;
   follow_up_at: string | null;
   sla_due_at: string | null;
+  left_person_id?: string | null;
+  left_person_name?: string | null;
+  left_person_status?: string | null;
+  right_person_id?: string | null;
+  right_person_name?: string | null;
+  right_person_status?: string | null;
   match_decision: MatchDecisionSummary;
 }
 
@@ -276,6 +283,8 @@ export interface ReviewActionMetadataBody {
   create_manual_lock?: boolean;
   follow_up_at?: string | null;
   escalation_reason?: string | null;
+  survivor_person_id?: string | null;
+  golden_profile_selections?: GoldenProfileSelectionRequestBody[];
 }
 
 export interface ReviewActionRequestBody {
