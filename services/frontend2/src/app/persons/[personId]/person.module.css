@@ -1811,9 +1811,7 @@
   text-overflow: ellipsis;
 }
 
-.candidateRowButton:hover,
-.candidateExpandButton:hover,
-.candidateDirectLink:hover {
+.candidateRowButton:hover {
   opacity: 0.75;
 }
 
@@ -1857,10 +1855,12 @@
 }
 
 .recommendedConfidence {
-  font-size: 12px;
-  font-weight: 700;
-  color: var(--text-primary);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
   font-variant-numeric: tabular-nums;
+  min-width: 32px;
+  text-align: right;
 }
 
 .recommendedUnifiedCard {
@@ -2039,6 +2039,7 @@
   justify-content: flex-end;
   gap: 6px;
   flex: 0 0 auto;
+  padding-left: 8px;
 }
 
 .candidateDirectLink {
@@ -2050,26 +2051,37 @@
   justify-content: center;
   border: 1px solid var(--border, rgba(0, 0, 0, 0.12));
   border-radius: 999px;
-  color: var(--accent);
+  color: var(--text-muted);
   background: var(--bg-card);
   text-decoration: none;
   flex-shrink: 0;
+  transition: border-color 0.15s ease, color 0.15s ease;
+}
+
+.candidateDirectLink:hover {
+  border-color: var(--text-muted);
+  color: var(--text-primary);
 }
 
 .candidateMergeBtn {
-  padding: 4px 8px;
-  border: 1px solid var(--bad-soft, rgba(239, 68, 68, 0.25));
+  box-sizing: border-box;
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--border, rgba(0, 0, 0, 0.12));
   border-radius: 999px;
-  color: var(--bad);
+  color: var(--text-secondary);
   background: var(--bg-card);
+  font-family: inherit;
   font-size: 11px;
   font-weight: 600;
   white-space: nowrap;
   cursor: pointer;
+  transition: border-color 0.15s ease, color 0.15s ease;
 }
 
 .candidateMergeBtn:hover {
-  opacity: 0.75;
+  border-color: var(--text-muted);
+  color: var(--text-primary);
 }
 
 .candidateExpandButton {
