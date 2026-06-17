@@ -205,6 +205,8 @@ export interface ReviewCaseSummary {
   assigned_to: string | null;
   follow_up_at: string | null;
   sla_due_at: string | null;
+  resolution: string | null;
+  resolved_at: string | null;
   left_person_id?: string | null;
   left_person_name?: string | null;
   left_person_status?: string | null;

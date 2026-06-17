@@ -237,6 +237,24 @@ function decisionBadgeClass(decision: string): string | undefined {
   return styles.matchDecisionDefault;
 }
 
+function resolutionLabel(resolution: string): string {
+  switch (resolution) {
+    case "merge": return "Merged";
+    case "reject": return "Rejected";
+    case "manual_no_match": return "Marked no match";
+    case "defer": return "Deferred";
+    case "reopen": return "Reopened";
+    default: return titleCase(resolution);
+  }
+}
+
+function resolutionBadgeClass(resolution: string): string | undefined {
+  if (resolution === "merge") return styles.resolutionMerge;
+  if (resolution === "reject" || resolution === "manual_no_match") return styles.resolutionReject;
+  if (resolution === "reopen") return styles.resolutionReopen;
+  return styles.resolutionDefault;
+}
+
 function personInitials(name: string | null): string {
   return (name ?? "?")
     .split(" ")
@@ -1557,6 +1575,11 @@ function RecommendedReviewCaseRow({
             <span className={styles.recommendedConfidence}>{confidencePct}%</span>
             <span className={styles.confidenceLabel}>match</span>
           </div>
+          {reviewCase.queue_state === "resolved" && reviewCase.resolution !== null && (
+            <span className={`${styles.resolutionBadge} ${resolutionBadgeClass(reviewCase.resolution) ?? ""}`}>
+              {resolutionLabel(reviewCase.resolution)}
+            </span>
+          )}
           {reviewCase.queue_state === "resolved" ? (
             <>
               {onRecreateAndUnmerge !== null ? (

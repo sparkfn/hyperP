@@ -555,6 +555,8 @@ def map_review_case_summary(record: GraphRecord) -> ReviewCaseSummary:
         assigned_to=to_optional_str(rc.get("assigned_to")),
         follow_up_at=to_iso_or_none(rc.get("follow_up_at")),
         sla_due_at=to_iso_or_none(rc.get("sla_due_at")),
+        resolution=to_optional_str(rc.get("resolution")),
+        resolved_at=to_iso_or_none(rc.get("resolved_at")),
         left_person_id=to_optional_str(record.get("left_person_id")),
         left_person_name=to_optional_str(record.get("left_person_name")),
         left_person_status=to_optional_str(record.get("left_person_status")),
