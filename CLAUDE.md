@@ -258,8 +258,8 @@ The task enforces a Redis-backed cluster-wide concurrency cap (`MAX_CONCURRENT_I
 | `speedzone_phppos:sales` | dump | `limited-100/speedzone_sales_100.sql` |
 | `bitrix_chat` | dump | `limited-100/bitrix_chat_100.sql` |
 | `whatsapp_chat` | dump | `limited-100/whatsapp_chat_100.sql` |
-| `sgbankruptcy` | batch | *(uses configured data source directly)* |
-| `sgrentalflats` | batch | *(uses configured data source directly)* |
+| `sgbankruptcy` | dump | `limited-100/sgbankruptcy_100.sql` |
+| `sgrentalflats` | dump | `limited-100/sgrentalflats_100.sql` |
 
 `eko_phppos`, `bitrix_chat`, and `whatsapp_chat` need an SSH gateway in `batch` mode — without one, use `mode='dump'` with `dump_path`.
 

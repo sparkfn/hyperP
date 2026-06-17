@@ -22,10 +22,6 @@ from src.connectors.fundbox import (
     FundboxMergedUsersConnector,
     FundboxSalesConnector,
 )
-from src.connectors.sggov import (
-    SGGovernmentBankruptcyConnector,
-    SGGovernmentRentalFlatsConnector,
-)
 from src.connectors.speedzone import SpeedZoneConnector, SpeedZoneSalesConnector
 from src.connectors.whatsapp import WhatsAppChatConnector
 from src.exclusion_config import load_exclusion_file
@@ -71,8 +67,10 @@ _CONNECTOR_REGISTRY: dict[str, type[SourceConnector]] = {
     "eko_phppos:sales": EkoSalesConnector,
     "whatsapp_chat": WhatsAppChatConnector,
     "bitrix_chat": BitrixChatConnector,
-    "sgbankruptcy": SGGovernmentBankruptcyConnector,
-    "sgrentalflats": SGGovernmentRentalFlatsConnector,
+    # SG government registers (sgbankruptcy, sgrentalflats) are dump-only — they
+    # have no live source, so they are reached via get_dump_connector with an
+    # explicit dump_path passed in the task call (mode="dump"), not registered
+    # here for batch mode.
 }
 
 _ADDRESS_ONLY_SOURCES = frozenset({"sgrentalflats"})

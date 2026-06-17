@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from src.connectors.dumps.connectors import get_dump_connector
 from src.connectors.sggov.rental_flats import SGGovernmentRentalFlatsConnector
 from src.main import get_connector
 
@@ -71,19 +72,14 @@ def test_rental_flats_connector_yields_address_envelope(tmp_path: Path) -> None:
     assert record["record_hash"].startswith("sha256:")
 
 
-def test_rental_flats_connector_uses_dumps_root_env_by_default(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    dump = tmp_path / "sgrentalflats_2026-05-11.sql"
+def test_rental_flats_connector_dispatches_via_dump(tmp_path: Path) -> None:
+    dump = tmp_path / "sgrentalflats.sql"
     _write_dump(dump)
-    monkeypatch.setenv("DUMPS_ROOT", str(tmp_path))
-
-    records = list(SGGovernmentRentalFlatsConnector().fetch_records())
-
-    assert len(records) == 1
-    assert records[0]["source_record_id"] == "rental_flat:33"
+    assert isinstance(get_dump_connector("sgrentalflats", dump), SGGovernmentRentalFlatsConnector)
 
 
-def test_rental_flats_connector_is_registered() -> None:
-    assert isinstance(get_connector("sgrentalflats"), SGGovernmentRentalFlatsConnector)
+def test_rental_flats_connector_not_registered_for_batch() -> None:
+    # SG is dump-only: the dump_path must be supplied via the task call, so it
+    # is not available in batch mode.
+    with pytest.raises(ValueError, match="Unknown source key"):
+        get_connector("sgrentalflats")
