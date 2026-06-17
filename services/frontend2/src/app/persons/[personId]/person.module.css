@@ -1965,7 +1965,7 @@
 
 .recommendedEvidenceTable {
   display: grid;
-  grid-template-columns: minmax(120px, 0.72fr) repeat(2, minmax(0, 1fr));
+  grid-template-columns: 80px repeat(2, minmax(0, 1fr));
   row-gap: 2px;
   overflow: hidden;
   background: transparent;
@@ -1991,8 +1991,11 @@
 }
 
 .recommendedEvidenceSignal {
-  color: var(--text-secondary);
-  font-size: 11px;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--text-muted);
+  font-size: 10px;
   font-weight: 600;
   letter-spacing: 0.03em;
   text-transform: uppercase;

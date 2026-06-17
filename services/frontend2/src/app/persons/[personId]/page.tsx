@@ -1283,6 +1283,30 @@ function sourceSummaries(records: PersonSourceRecord[], group: SharedIdentifierG
   return records.map((record) => sourceSummary(record, group));
 }
 
+function signalShortLabel(label: string): string {
+  const lower = label.toLowerCase();
+  if (lower.includes("phone")) return "Phone";
+  if (lower.includes("email")) return "Email";
+  if (lower.includes("nric") || lower.includes("government") || lower.includes("id")) return "Govt ID";
+  if (lower.includes("name")) return "Name";
+  if (lower.includes("address")) return "Address";
+  if (lower.includes("dob") || lower.includes("birth")) return "DOB";
+  return label;
+}
+
+function SignalIcon({ label }: { label: string }): ReactElement {
+  const lower = label.toLowerCase();
+  const props = { width: 13, height: 13, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 2, strokeLinecap: "round" as const, strokeLinejoin: "round" as const, "aria-hidden": true };
+  if (lower.includes("phone")) return <svg {...props}><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07A19.5 19.5 0 0 1 4.69 12 19.79 19.79 0 0 1 1.61 3.41 2 2 0 0 1 3.6 1h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L7.91 8.6a16 16 0 0 0 6 6l.96-.96a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 22 16.92z" /></svg>;
+  if (lower.includes("email")) return <svg {...props}><rect width="20" height="16" x="2" y="4" rx="2" /><path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7" /></svg>;
+  if (lower.includes("nric") || lower.includes("government") || lower.includes("id")) return <svg {...props}><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" /></svg>;
+  if (lower.includes("name")) return <svg {...props}><circle cx="12" cy="8" r="4" /><path d="M4 20c0-4 3.6-7 8-7s8 3 8 7" /></svg>;
+  if (lower.includes("address")) return <svg {...props}><path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0Z" /><circle cx="12" cy="10" r="3" /></svg>;
+  if (lower.includes("dob") || lower.includes("birth")) return <svg {...props}><rect width="18" height="18" x="3" y="4" rx="2" /><line x1="16" x2="16" y1="2" y2="6" /><line x1="8" x2="8" y1="2" y2="6" /><line x1="3" x2="21" y1="10" y2="10" /></svg>;
+  if (lower.includes("source")) return <svg {...props}><ellipse cx="12" cy="5" rx="9" ry="3" /><path d="M3 5v14c0 1.66 4.03 3 9 3s9-1.34 9-3V5" /><path d="M3 12c0 1.66 4.03 3 9 3s9-1.34 9-3" /></svg>;
+  return <svg {...props}><circle cx="12" cy="12" r="10" /><line x1="12" x2="12" y1="8" y2="12" /><line x1="12" x2="12.01" y1="16" y2="16" /></svg>;
+}
+
 function RecommendedEvidenceCard({
   signals,
   currentSources,
@@ -1300,12 +1324,18 @@ function RecommendedEvidenceCard({
         <div className={styles.recommendedEvidenceHeader}>Candidate evidence</div>
         {signals.map((signal) => (
           <Fragment key={signal.label}>
-            <div className={styles.recommendedEvidenceSignal}>{signal.label}</div>
+            <div className={styles.recommendedEvidenceSignal} title={signal.label}>
+              <SignalIcon label={signal.label} />
+              <span>{signalShortLabel(signal.label)}</span>
+            </div>
             <div className={styles.recommendedEvidenceCellValue}>{signal.currentValue}</div>
             <div className={styles.recommendedEvidenceCellValue}>{signal.candidateValue}</div>
           </Fragment>
         ))}
-        <div className={styles.recommendedEvidenceSignal}>Source</div>
+        <div className={styles.recommendedEvidenceSignal}>
+          <SignalIcon label="source" />
+          <span>Source</span>
+        </div>
         <div className={styles.recommendedEvidenceSourceStack}>
           {(currentSources.length > 0 ? currentSources : ["No source record shown"]).map((source, i) => (
             <span key={`current-${source}-${i}`}>{source}</span>
