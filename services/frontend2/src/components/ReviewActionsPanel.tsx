@@ -38,6 +38,39 @@ function isReviewActionType(value: string): value is ReviewActionType {
   return (REVIEW_ACTION_TYPES as readonly string[]).includes(value);
 }
 
+// Sentinel value for the "Other" dropdown option that reveals a free-text note field.
+const OTHER_REASON = "__other__";
+
+// Preset reviewer notes/reasons offered per action type. "Other" lets the reviewer
+// type a custom note instead.
+const REVIEW_REASON_PRESETS: Record<ReviewActionType, readonly string[]> = {
+  merge: [
+    "Confirmed same person — matching government ID and name.",
+    "Confirmed same person — matching phone/email and date of birth.",
+    "Confirmed same person — supporting documentary evidence reviewed.",
+  ],
+  reject: [
+    "Different people — conflicting identity details.",
+    "Different people — name and date of birth mismatch.",
+    "Insufficient evidence to merge these records.",
+  ],
+  defer: [
+    "Awaiting additional information before deciding.",
+    "Pending verification with the source system.",
+    "Needs follow-up — flagged for later review.",
+  ],
+  escalate: [
+    "Ambiguous case — needs a senior reviewer.",
+    "Potential data-quality issue in the source record.",
+    "Possible duplicate involving sensitive data.",
+  ],
+  manual_no_match: [
+    "Confirmed not a match after manual review.",
+    "Shared identifier but clearly distinct individuals.",
+    "Coincidental identifier overlap (e.g. shared phone number).",
+  ],
+};
+
 function defaultRightChoiceByField(
   choices: readonly GoldenProfileChoice[],
   preferredPersonId: string,
@@ -71,6 +104,7 @@ export default function ReviewActionsPanel({
   const [assignee, setAssignee] = useState<string>(assignedTo ?? "");
   const [assignBusy, setAssignBusy] = useState<boolean>(false);
   const [actionType, setActionType] = useState<ReviewActionType>("merge");
+  const [reasonChoice, setReasonChoice] = useState<string>("");
   const [notes, setNotes] = useState<string>("");
   const [followUpAt, setFollowUpAt] = useState<string>("");
   const [actionBusy, setActionBusy] = useState<boolean>(false);
@@ -82,6 +116,8 @@ export default function ReviewActionsPanel({
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
 
+  // Assign section temporarily hidden — flip to true to restore it.
+  const showAssignSection = false;
   const resolved = queueState === "resolved" || queueState === "cancelled";
   const canLoadMergeChoices = leftPersonId !== null && rightPersonId !== null;
   const mergeRequiresUnmerge = actionType === "merge" && (
@@ -162,9 +198,10 @@ export default function ReviewActionsPanel({
     setSuccess(null);
     setActionBusy(true);
     try {
+      const reasonText = reasonChoice === OTHER_REASON ? notes.trim() : reasonChoice;
       const body: ReviewActionRequestBody = {
         action_type: actionType,
-        notes: notes.trim().length > 0 ? notes.trim() : null,
+        notes: reasonText.length > 0 ? reasonText : null,
         metadata: {
           follow_up_at: followUpAt.length > 0 ? `${followUpAt}T00:00:00Z` : null,
           survivor_person_id: actionType === "merge" ? mergeSurvivorPersonId : null,
@@ -185,6 +222,7 @@ export default function ReviewActionsPanel({
       setSuccess(
         `Action submitted. New state: ${result.queue_state}${result.resolution !== null ? ` (${result.resolution})` : ""}.`,
       );
+      setReasonChoice("");
       setNotes("");
       setFollowUpAt("");
       onChanged();
@@ -202,24 +240,26 @@ export default function ReviewActionsPanel({
       {success !== null ? <div className={styles.successBanner}>{success}</div> : null}
       {resolved ? <div className={styles.infoBanner}>This review case is {queueState} and no longer accepts actions.</div> : null}
 
-      <div className={styles.actionSection}>
-        <div className={styles.sectionTitle}>Assign</div>
-        <div className={styles.formRow}>
-          <label className={styles.fieldGroup}>
-            <span className={styles.fieldLabel}>Assignee</span>
-            <input
-              className={styles.input}
-              value={assignee}
-              onChange={(event) => setAssignee(event.target.value)}
-              placeholder="reviewer id"
-              disabled={resolved}
-            />
-          </label>
-          <button className={styles.primaryBtn} onClick={() => void onAssign()} disabled={assignBusy || resolved}>
-            {assignBusy ? "Assigning…" : "Assign"}
-          </button>
+      {showAssignSection ? (
+        <div className={styles.actionSection}>
+          <div className={styles.sectionTitle}>Assign</div>
+          <div className={styles.formRow}>
+            <label className={styles.fieldGroup}>
+              <span className={styles.fieldLabel}>Assignee</span>
+              <input
+                className={styles.input}
+                value={assignee}
+                onChange={(event) => setAssignee(event.target.value)}
+                placeholder="reviewer id"
+                disabled={resolved}
+              />
+            </label>
+            <button className={styles.primaryBtn} onClick={() => void onAssign()} disabled={assignBusy || resolved}>
+              {assignBusy ? "Assigning…" : "Assign"}
+            </button>
+          </div>
         </div>
-      </div>
+      ) : null}
 
       <div className={styles.actionSection}>
         <div className={styles.sectionTitle}>Submit action</div>
@@ -230,7 +270,11 @@ export default function ReviewActionsPanel({
               className={styles.select}
               value={actionType}
               onChange={(event) => {
-                if (isReviewActionType(event.target.value)) setActionType(event.target.value);
+                if (isReviewActionType(event.target.value)) {
+                  setActionType(event.target.value);
+                  setReasonChoice("");
+                  setNotes("");
+                }
               }}
               disabled={resolved}
             >
@@ -273,16 +317,34 @@ export default function ReviewActionsPanel({
         ) : null}
 
         <label className={styles.fieldGroup}>
-          <span className={styles.fieldLabel}>Notes</span>
-          <textarea
-            className={styles.textarea}
-            value={notes}
-            onChange={(event) => setNotes(event.target.value)}
-            rows={4}
+          <span className={styles.fieldLabel}>Notes / reason</span>
+          <select
+            className={styles.select}
+            value={reasonChoice}
+            onChange={(event) => setReasonChoice(event.target.value)}
             disabled={resolved}
-            placeholder="Reviewer notes"
-          />
+          >
+            <option value="">— No note —</option>
+            {REVIEW_REASON_PRESETS[actionType].map((reason) => (
+              <option key={reason} value={reason}>{reason}</option>
+            ))}
+            <option value={OTHER_REASON}>Other (write a custom note)…</option>
+          </select>
         </label>
+
+        {reasonChoice === OTHER_REASON ? (
+          <label className={styles.fieldGroup}>
+            <span className={styles.fieldLabel}>Custom note</span>
+            <textarea
+              className={styles.textarea}
+              value={notes}
+              onChange={(event) => setNotes(event.target.value)}
+              rows={4}
+              disabled={resolved}
+              placeholder="Reviewer notes"
+            />
+          </label>
+        ) : null}
 
         <button
           className={styles.primaryBtn}
