@@ -73,6 +73,10 @@ export function entityColor(key: string): string {
   return ENTITY_COLORS[h % ENTITY_COLORS.length] ?? "#4361ee";
 }
 
+export function isOverdue(iso: string | null): boolean {
+  return iso !== null && new Date(iso) < new Date();
+}
+
 export function relativeTime(iso: string | null): string {
   if (!iso) return "—";
   const diff = Date.now() - new Date(iso).getTime();

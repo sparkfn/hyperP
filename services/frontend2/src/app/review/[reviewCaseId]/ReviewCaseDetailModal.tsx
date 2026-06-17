@@ -6,7 +6,7 @@ import Link from "next/link";
 import ReviewActionsPanel from "@/components/ReviewActionsPanel";
 import { BffError, bffFetch } from "@/lib/api-client";
 import type { PersonComparisonEntity, ReviewCaseActionEntry, ReviewCaseDetail } from "@/lib/api-types-ops";
-import { completenessColor, formatDate, relativeTime } from "@/lib/display";
+import { completenessColor, formatDate, isOverdue, relativeTime } from "@/lib/display";
 import { toBasePath } from "@/lib/route-paths";
 import styles from "../review.module.css";
 
@@ -146,6 +146,7 @@ export function ReviewCaseDetailContent({
   const rightPersonId = detail.comparison_right?.person_id ?? null;
   const subjectTitle = reviewSubjectTitle(detail);
   const subjectSubtitle = reviewSubjectSubtitle(detail);
+  const slaOverdue = isOverdue(detail.sla_due_at);
   void loading;
 
   return (
@@ -185,8 +186,24 @@ export function ReviewCaseDetailContent({
               <KeyValue label="Decision" value={detail.match_decision.decision} />
               <KeyValue label="Engine" value={detail.match_decision.engine_type} />
               <KeyValue label="Assigned to" value={detail.assigned_to ?? "—"} />
-              <KeyValue label="Follow-up" value={detail.follow_up_at ?? "—"} />
-              <KeyValue label="SLA" value={detail.sla_due_at ?? "—"} />
+              <KeyValue label="Follow-up" value={formatDate(detail.follow_up_at)} />
+              <div className={styles.kvItem}>
+                <span className={styles.kvLabel}>SLA</span>
+                <span className={styles.kvValue} style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                  {detail.sla_due_at
+                    ? (
+                      <>
+                        <span className={slaOverdue ? styles.slaOverdue : undefined}>
+                          {formatDate(detail.sla_due_at)}
+                        </span>
+                        {slaOverdue && (
+                          <span className={styles.badge} style={{ background: "var(--bad-bg, #fef2f2)", color: "var(--bad, #ef4444)" }}>overdue</span>
+                        )}
+                      </>
+                    )
+                    : "—"}
+                </span>
+              </div>
               <KeyValue label="Resolution" value={detail.resolution ?? "—"} />
             </div>
             <div className={styles.reasonBox}>{detail.match_decision.reasons.join(" · ") || "No reasons recorded."}</div>

@@ -6,7 +6,7 @@ import Link from "next/link";
 import { BffError, bffFetchEnvelope } from "@/lib/api-client";
 import type { ApiResponse } from "@/lib/api-types";
 import type { ReviewCaseSummary } from "@/lib/api-types-ops";
-import { relativeTime } from "@/lib/display";
+import { isOverdue, relativeTime } from "@/lib/display";
 import { useSetLoading } from "@/lib/LoadingContext";
 import styles from "./review.module.css";
 
@@ -106,10 +106,6 @@ function priorityClass(p: number): string {
   if (p >= 80) return styles.priorityHigh ?? "";
   if (p >= 50) return styles.priorityMedium ?? "";
   return styles.priorityLow ?? "";
-}
-
-function isOverdue(iso: string | null): boolean {
-  return iso !== null && new Date(iso) < new Date();
 }
 
 interface HeaderDef {

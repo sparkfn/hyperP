@@ -166,7 +166,7 @@ export default function ReviewActionsPanel({
         action_type: actionType,
         notes: notes.trim().length > 0 ? notes.trim() : null,
         metadata: {
-          follow_up_at: followUpAt.length > 0 ? followUpAt : null,
+          follow_up_at: followUpAt.length > 0 ? `${followUpAt}T00:00:00Z` : null,
           survivor_person_id: actionType === "merge" ? mergeSurvivorPersonId : null,
           golden_profile_selections:
             actionType === "merge"
@@ -240,12 +240,12 @@ export default function ReviewActionsPanel({
             </select>
           </label>
           <label className={styles.fieldGroup}>
-            <span className={styles.fieldLabel}>Follow-up at (ISO)</span>
+            <span className={styles.fieldLabel}>Follow-up date</span>
             <input
               className={styles.input}
+              type="date"
               value={followUpAt}
               onChange={(event) => setFollowUpAt(event.target.value)}
-              placeholder="2026-04-15T12:00:00Z"
               disabled={resolved || actionType !== "defer"}
             />
           </label>
