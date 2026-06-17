@@ -1291,23 +1291,41 @@
 }
 
 .reviewCaseModal .detailBody {
-  grid-template-columns: minmax(0, 1fr) 340px;
-  gap: 12px;
-  padding: 14px 16px;
+  grid-template-columns: minmax(0, 1fr) 420px;
+  gap: 0;
+  padding: 0;
 }
 
+/* Left column — flat sections separated by dividers, no card boxes */
 .reviewCaseModal .detailMainColumn {
-  gap: 10px;
+  gap: 0;
+  padding: 0 16px;
+}
+
+.reviewCaseModal .detailMainColumn > * {
+  padding: 14px 0;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.reviewCaseModal .detailMainColumn > *:last-child {
+  border-bottom: none;
 }
 
 .reviewCaseModal .detailCard {
-  padding: 12px 14px;
-  border-radius: 10px;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  padding: 0;
 }
 
 .reviewCaseModal .cardHeader {
   font-size: 12px;
-  margin-bottom: 8px;
+  font-weight: 700;
+  margin-bottom: 10px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  font-size: 10px;
 }
 
 .reviewCaseModal .kvGrid {
@@ -1323,20 +1341,36 @@
 }
 
 .reviewCaseModal .reasonBox {
-  margin-top: 8px;
-  padding: 8px 10px;
+  margin-top: 10px;
+  padding: 0 0 0 10px;
   font-size: 12px;
-  border-radius: 8px;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  border-left: 2px solid var(--border);
 }
 
+/* Comparison cards — subtle tint instead of border */
 .reviewCaseModal .compareGrid {
-  gap: 10px;
+  gap: 8px;
+}
+
+.reviewCaseModal .comparisonCard {
+  border: none;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--bg-hover) 70%, transparent);
+  padding: 12px;
 }
 
 .reviewCaseModal .comparisonName {
   font-size: 14px;
 }
 
+/* Right rail — border-left separator, scrollable */
 .reviewCaseModal .reviewActionRail {
   top: 0;
+  border-left: 1px solid var(--border-subtle);
+  padding: 14px 16px;
+  overflow-y: auto;
+  max-height: calc(100vh - 120px);
 }

@@ -387,6 +387,8 @@ class ReviewCaseSummary(BaseModel):
     assigned_to: str | None = None
     follow_up_at: str | None = None
     sla_due_at: str | None = None
+    resolution: str | None = None
+    resolved_at: str | None = None
     left_person_id: str | None = None
     left_person_name: str | None = None
     left_person_status: str | None = None
