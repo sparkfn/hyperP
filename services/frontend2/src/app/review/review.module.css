@@ -1187,8 +1187,8 @@
   border-radius: 12px;
   box-shadow: 0 20px 50px rgba(15, 23, 42, 0.25);
   width: min(1280px, calc(100vw - 32px));
-  max-height: calc(100vh - 32px);
-  overflow: hidden;
+  max-height: calc(100vh - 64px);
+  overflow-y: auto;
   display: flex;
   flex-direction: column;
   margin: 16px 0;
@@ -1253,4 +1253,91 @@
 .reviewCaseModal > section:first-child,
 .reviewCaseModal > div {
   border-radius: 0;
+}
+
+/* ── Modal compaction overrides ──────────────────────────────────────── */
+
+.reviewCaseModal .detailHero {
+  padding: 12px 16px;
+  border: none;
+  border-bottom: 1px solid var(--border-subtle);
+  border-radius: 0;
+  box-shadow: none;
+  gap: 12px;
+}
+
+.reviewCaseModal .detailSubjectBlock .caseAvatar {
+  width: 30px;
+  height: 30px;
+  flex-basis: 30px;
+  font-size: 12px;
+}
+
+.reviewCaseModal .eyebrow {
+  font-size: 10px;
+}
+
+.reviewCaseModal .detailTitle {
+  font-size: 16px;
+  margin: 2px 0;
+}
+
+.reviewCaseModal .detailMeta {
+  display: none;
+}
+
+.reviewCaseModal .heroStats {
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.reviewCaseModal .detailBody {
+  grid-template-columns: minmax(0, 1fr) 340px;
+  gap: 12px;
+  padding: 14px 16px;
+}
+
+.reviewCaseModal .detailMainColumn {
+  gap: 10px;
+}
+
+.reviewCaseModal .detailCard {
+  padding: 12px 14px;
+  border-radius: 10px;
+}
+
+.reviewCaseModal .cardHeader {
+  font-size: 12px;
+  margin-bottom: 8px;
+}
+
+.reviewCaseModal .kvGrid {
+  gap: 8px 12px;
+}
+
+.reviewCaseModal .kvLabel {
+  font-size: 10px;
+}
+
+.reviewCaseModal .kvValue {
+  font-size: 12px;
+}
+
+.reviewCaseModal .reasonBox {
+  margin-top: 8px;
+  padding: 8px 10px;
+  font-size: 12px;
+  border-radius: 8px;
+}
+
+.reviewCaseModal .compareGrid {
+  gap: 10px;
+}
+
+.reviewCaseModal .comparisonName {
+  font-size: 14px;
+}
+
+.reviewCaseModal .reviewActionRail {
+  top: 0;
 }
