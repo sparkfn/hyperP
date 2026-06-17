@@ -330,6 +330,9 @@ Person statuses: `active`, `merged`, `suppressed` (no `under_review` — review 
 ### Coding workflow
 Before reporting work complete, perform a hostile review of the changed code: correctness regressions, edge cases, brittle tests, security issues, overfitting to the immediate bug. Also run a DRY check — centralize duplicated parsing, mapping, validation, or UI state logic into the existing appropriate layer rather than adding near-copy helpers.
 
+### Commit discipline
+**Never commit without explicit user confirmation.** After completing code changes, stop — do not stage or commit anything. Wait for the user to say "commit" or similar before proceeding. This rule applies even when executing a plan that includes commit steps: treat plan commit steps as reminders, not instructions. Always ask before committing.
+
 ### Worktrees
 Create worktrees from the current branch/HEAD, not from `origin/main`, so in-progress branch context is preserved.
 
