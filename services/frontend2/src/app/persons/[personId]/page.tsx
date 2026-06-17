@@ -1469,6 +1469,7 @@ function RecommendedReviewCaseRow({
   currentIdentifiers,
   candidateIdentifiers,
   detail,
+  reviewCaseDetail,
   error,
   isLoading,
   isOpen,
@@ -1485,6 +1486,7 @@ function RecommendedReviewCaseRow({
   currentIdentifiers: PersonIdentifier[] | undefined;
   candidateIdentifiers: PersonIdentifier[] | undefined;
   detail: PossibleMatchDetail | undefined;
+  reviewCaseDetail: ReviewCaseDetail | undefined;
   error: string | undefined;
   isLoading: boolean;
   isOpen: boolean;
@@ -1495,7 +1497,11 @@ function RecommendedReviewCaseRow({
   onRecreateAndUnmerge: (() => void) | null;
   needsUnmergeBeforeReview: boolean;
 }): ReactElement {
-  const name = reviewCase.right_person_name ?? reviewCase.left_person_name ?? "Recommended match";
+  const currentPersonId = currentPerson?.person_id;
+  const candidateFallbackName = reviewCase.right_person_id !== currentPersonId
+    ? reviewCase.right_person_name
+    : reviewCase.left_person_name;
+  const name = candidatePerson?.preferred_full_name ?? candidateFallbackName ?? "Recommended match";
   const subtitle = [
     titleCase(reviewCase.match_decision.engine_type),
     `Case ${reviewCase.review_case_id.slice(0, 12)}…`,
@@ -1556,13 +1562,13 @@ function RecommendedReviewCaseRow({
         <RecommendedMatchDetailPanel
           match={{
             match_decision_id: reviewCase.match_decision.match_decision_id,
-            engine_type: "heuristic",
+            engine_type: reviewCase.match_decision.engine_type,
             engine_version: "",
             policy_version: "",
             decision: reviewCase.match_decision.decision,
             confidence: reviewCase.match_decision.confidence,
-            reasons: ["Phone signal", "Name similarity"],
-            blocking_conflicts: [],
+            reasons: reviewCaseDetail?.match_decision.reasons ?? [],
+            blocking_conflicts: reviewCaseDetail?.match_decision.blocking_conflicts ?? [],
             created_at: "",
             left_person_id: reviewCase.left_person_id ?? null,
             right_person_id: reviewCase.right_person_id ?? null,
@@ -1818,8 +1824,14 @@ function MatchesTab({ personId, currentPerson, currentIdentifiers, activeMatches
   }, [personId]);
 
   const recommendedPersonIds = recommendedReviewCases
-    .map((reviewCase) => reviewCase.right_person_id ?? null)
-    .filter((id): id is string => id !== null && id !== personId);
+    .map((reviewCase) => {
+      const rightId = reviewCase.right_person_id ?? null;
+      const leftId = reviewCase.left_person_id ?? null;
+      if (rightId !== null && rightId !== personId) return rightId;
+      if (leftId !== null && leftId !== personId) return leftId;
+      return null;
+    })
+    .filter((id): id is string => id !== null);
   const mergeHistoryRows = (mergeHistoryResult.rows ?? []).filter((event) => event.event_type === "manual_merge" || event.event_type === "unmerge");
   const recommendedPersonIdsKey = recommendedPersonIds.join("|");
 
@@ -1876,9 +1888,21 @@ function MatchesTab({ personId, currentPerson, currentIdentifiers, activeMatches
     }
   }, [candidateDetails, personId]);
 
+  const loadReviewCaseDetail = useCallback(async (reviewCaseId: string): Promise<void> => {
+    if (reviewCaseDetails[reviewCaseId] !== undefined) return;
+    try {
+      const detail = await bffFetch<ReviewCaseDetail>(`/bff/review-cases/${encodeURIComponent(reviewCaseId)}`);
+      setReviewCaseDetails((prev) => ({ ...prev, [reviewCaseId]: detail }));
+    } catch {
+      // silently ignore — fall back to empty reasons/conflicts
+    }
+  }, [reviewCaseDetails]);
+
   useEffect(() => {
     for (const reviewCase of recommendedReviewCases) {
-      const candidateId = reviewCase.right_person_id ?? null;
+      const rightId = reviewCase.right_person_id ?? null;
+      const leftId = reviewCase.left_person_id ?? null;
+      const candidateId = (rightId !== null && rightId !== personId) ? rightId : leftId;
       if (candidateId === null || recommendedDetails[reviewCase.review_case_id] !== undefined || recommendedErrors[reviewCase.review_case_id] !== undefined) continue;
       setRecommendedErrors((prev) => ({ ...prev, [reviewCase.review_case_id]: "" }));
       void bffFetch<PossibleMatchDetail>(`/bff/persons/${encodeURIComponent(personId)}/shared-identifiers/${encodeURIComponent(candidateId)}/detail`)
@@ -2008,7 +2032,9 @@ function MatchesTab({ personId, currentPerson, currentIdentifiers, activeMatches
               {recommendedActionError !== null ? <div className={styles.tabError}>{recommendedActionError}</div> : null}
               <div className={styles.matchList}>
                 {recommendedReviewCases.map((reviewCase) => {
-                  const candidateId = reviewCase.right_person_id ?? "";
+                  const rightId = reviewCase.right_person_id ?? null;
+                  const leftId = reviewCase.left_person_id ?? null;
+                  const candidateId = (rightId !== null && rightId !== personId) ? rightId : (leftId ?? "");
                   const mergeEvent = mergeEventForReviewCase(reviewCase);
                   const hasOpenCase = openReviewDecisionIds.has(reviewCase.match_decision.match_decision_id);
                   const isActionableResolvedCase = !showResolvedReviewCases || actionableResolvedReviewCaseIds.has(reviewCase.review_case_id);
@@ -2023,10 +2049,15 @@ function MatchesTab({ personId, currentPerson, currentIdentifiers, activeMatches
                       currentIdentifiers={currentIdentifiers}
                       candidateIdentifiers={recommendedIdentifiers[candidateId]}
                       detail={recommendedDetails[reviewCase.review_case_id]}
+                      reviewCaseDetail={reviewCaseDetails[reviewCase.review_case_id]}
                       error={recommendedErrors[reviewCase.review_case_id] || undefined}
                       isLoading={recommendedDetails[reviewCase.review_case_id] === undefined && recommendedErrors[reviewCase.review_case_id] === ""}
                       isOpen={expandedRecommendedMatch === reviewCase.review_case_id}
-                      onToggle={() => setExpandedRecommendedMatch((current) => current === reviewCase.review_case_id ? null : reviewCase.review_case_id)}
+                      onToggle={() => {
+                        const isOpening = expandedRecommendedMatch !== reviewCase.review_case_id;
+                        setExpandedRecommendedMatch((current) => current === reviewCase.review_case_id ? null : reviewCase.review_case_id);
+                        if (isOpening) void loadReviewCaseDetail(reviewCase.review_case_id);
+                      }}
                       onReview={() => setReviewActionCase(reviewCase)}
                       onView={() => setViewingReviewCaseId(reviewCase.review_case_id)}
                       onRecreate={hasOpenCase || nonSurvivorIsInactive || !isActionableResolvedCase ? undefined : () => void recreateReviewCase(reviewCase.review_case_id)}
