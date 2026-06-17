@@ -34,6 +34,9 @@ import { avatarColor, completenessColor } from "@/lib/display";
 import { useSetLoading } from "@/lib/LoadingContext";
 import PersonFocusedGraph from "@/components/PersonFocusedGraph";
 import PersonGraphDialog from "@/components/PersonGraphDialog";
+import ReviewActionsPanel from "@/components/ReviewActionsPanel";
+import { ReviewCaseDetailModal } from "@/app/review/[reviewCaseId]/page";
+import type { ReviewCaseDetail, ReviewCaseSummary } from "@/lib/api-types-ops";
 import styles from "./person.module.css";
 
 type Tab = "sales" | "connections" | "identifiers" | "decision-history" | "source-records" | "matches" | "timeline" | "graph";
@@ -1248,18 +1251,90 @@ function sourceRecordEvidence(record: PersonSourceRecord, group: SharedIdentifie
   return titleCase(record.record_type);
 }
 
+function sourceRecordNameEvidence(record: PersonSourceRecord): string {
+  const nameAttribute = record.normalized_payload?.attributes?.find((attribute) =>
+    attribute.attribute_name?.toLowerCase().includes("name"),
+  );
+  return nameAttribute?.quality_flag ?? titleCase(record.record_type);
+}
+
 function CandidateSourceRecords({ title, records, group }: { title: string; records: PersonSourceRecord[]; group: SharedIdentifierGroup }): ReactElement {
   return (
     <div className={styles.matchSourceColumn}>
       <span className={styles.matchSourceTitle}>{title}</span>
+      <span className={styles.matchSourceMeta}>{group.normalized_value}</span>
       {records.length === 0 ? (
         <span className={styles.matchSourceEmpty}>No source record shown</span>
       ) : records.map((record) => (
-        <div key={record.source_record_pk} className={styles.matchSourceRecord}>
-          <span className={styles.matchSourceMeta}>{sourceRecordMeta(record)}</span>
-          <span className={styles.matchSourceSub}>{sourceRecordEvidence(record, group)} · observed {fmtDate(record.observed_at)}</span>
-        </div>
+        <span key={record.source_record_pk} className={styles.matchSourceSub}>
+          {sourceRecordMeta(record)} · {sourceRecordEvidence(record, group)} · observed {fmtDate(record.observed_at)}
+        </span>
       ))}
+    </div>
+  );
+}
+
+function sourceSummary(record: PersonSourceRecord, group: SharedIdentifierGroup | undefined): string {
+  const evidence = group ? sourceRecordEvidence(record, group) : sourceRecordNameEvidence(record);
+  return `${sourceRecordMeta(record)} · ${evidence} · observed ${fmtDate(record.observed_at)}`;
+}
+
+function sourceSummaries(records: PersonSourceRecord[], group: SharedIdentifierGroup | undefined): string[] {
+  return records.map((record) => sourceSummary(record, group));
+}
+
+
+function SignalIcon({ label }: { label: string }): ReactElement {
+  const lower = label.toLowerCase();
+  const props = { width: 13, height: 13, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 2, strokeLinecap: "round" as const, strokeLinejoin: "round" as const, "aria-hidden": true };
+  if (lower.includes("phone")) return <svg {...props}><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07A19.5 19.5 0 0 1 4.69 12 19.79 19.79 0 0 1 1.61 3.41 2 2 0 0 1 3.6 1h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L7.91 8.6a16 16 0 0 0 6 6l.96-.96a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 22 16.92z" /></svg>;
+  if (lower.includes("email")) return <svg {...props}><rect width="20" height="16" x="2" y="4" rx="2" /><path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7" /></svg>;
+  if (lower.includes("nric") || lower.includes("government") || lower.includes("id")) return <svg {...props}><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" /></svg>;
+  if (lower.includes("name")) return <svg {...props}><circle cx="12" cy="8" r="4" /><path d="M4 20c0-4 3.6-7 8-7s8 3 8 7" /></svg>;
+  if (lower.includes("address")) return <svg {...props}><path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0Z" /><circle cx="12" cy="10" r="3" /></svg>;
+  if (lower.includes("dob") || lower.includes("birth")) return <svg {...props}><rect width="18" height="18" x="3" y="4" rx="2" /><line x1="16" x2="16" y1="2" y2="6" /><line x1="8" x2="8" y1="2" y2="6" /><line x1="3" x2="21" y1="10" y2="10" /></svg>;
+  if (lower.includes("source")) return <svg {...props}><ellipse cx="12" cy="5" rx="9" ry="3" /><path d="M3 5v14c0 1.66 4.03 3 9 3s9-1.34 9-3V5" /><path d="M3 12c0 1.66 4.03 3 9 3s9-1.34 9-3" /></svg>;
+  return <svg {...props}><circle cx="12" cy="12" r="10" /><line x1="12" x2="12" y1="8" y2="12" /><line x1="12" x2="12.01" y1="16" y2="16" /></svg>;
+}
+
+function RecommendedEvidenceCard({
+  signals,
+  currentSources,
+  candidateSources,
+}: {
+  signals: { label: string; currentValue: string; candidateValue: string }[];
+  currentSources: string[];
+  candidateSources: string[];
+}): ReactElement {
+  return (
+    <div className={styles.recommendedEvidenceBlock}>
+      <div className={styles.recommendedEvidenceTable}>
+        <div className={styles.recommendedEvidenceHeader} />
+        <div className={styles.recommendedEvidenceHeader}>Current profile</div>
+        <div className={styles.recommendedEvidenceHeader}>Candidate evidence</div>
+        {signals.map((signal) => (
+          <Fragment key={signal.label}>
+            <div className={styles.recommendedEvidenceSignal} title={signal.label}>
+              <SignalIcon label={signal.label} />
+            </div>
+            <div className={styles.recommendedEvidenceCellValue}>{signal.currentValue}</div>
+            <div className={styles.recommendedEvidenceCellValue}>{signal.candidateValue}</div>
+          </Fragment>
+        ))}
+        <div className={styles.recommendedEvidenceSignal} title="Source">
+          <SignalIcon label="source" />
+        </div>
+        <div className={styles.recommendedEvidenceSourceStack}>
+          {(currentSources.length > 0 ? currentSources : ["No source record shown"]).map((source, i) => (
+            <span key={`current-${source}-${i}`}>{source}</span>
+          ))}
+        </div>
+        <div className={styles.recommendedEvidenceSourceStack}>
+          {(candidateSources.length > 0 ? candidateSources : ["No source record shown"]).map((source, i) => (
+            <span key={`candidate-${source}-${i}`}>{source}</span>
+          ))}
+        </div>
+      </div>
     </div>
   );
 }
@@ -1276,12 +1351,347 @@ function CandidateDetailPanel({ detail }: { detail: PossibleMatchDetail }): Reac
             </div>
             <div className={styles.candidateReasonSummary}>The same {titleCase(group.identifier_type).toLowerCase()} appears in source records for both profiles.</div>
             <div className={styles.matchSourceGrid}>
-              <CandidateSourceRecords title="Current profile evidence" records={group.current_person_source_records} group={group} />
+              <CandidateSourceRecords title="Current profile" records={group.current_person_source_records} group={group} />
               <CandidateSourceRecords title="Candidate evidence" records={group.candidate_source_records} group={group} />
             </div>
           </div>
         ))}
       </div>
+    </div>
+  );
+}
+
+function recommendationEvidenceLabel(reason: string): string {
+  const lower = reason.toLowerCase();
+  if (lower.includes("government") || lower.includes("nric") || lower.includes("id hash")) return "Government ID";
+  if (lower.includes("phone")) return "Phone signal";
+  if (lower.includes("email")) return "Email signal";
+  if (lower.includes("name")) return "Name similarity";
+  if (lower.includes("address")) return "Address signal";
+  if (lower.includes("dob") || lower.includes("birth")) return "DOB signal";
+  return "Match signal";
+}
+
+function reasonToShortLabel(reason: string): string {
+  const lower = reason.toLowerCase();
+  if (lower.includes("government") || lower.includes("nric") || lower.includes("id hash")) return "Govt ID match";
+  if (lower.includes("phone")) return "Same phone";
+  if (lower.includes("email")) return "Same email";
+  if (lower.includes("name")) return "Similar name";
+  if (lower.includes("address")) return "Same address";
+  if (lower.includes("dob") || lower.includes("birth")) return "Similar DOB";
+  return "Match signal";
+}
+
+function recommendedOtherPersonId(match: PersonMatchDecision, currentPersonId: string): string | null {
+  if (match.left_person_id === currentPersonId) return match.right_person_id;
+  if (match.right_person_id === currentPersonId) return match.left_person_id;
+  return match.right_person_id ?? match.left_person_id;
+}
+
+function governmentIdentifierValue(identifiers: PersonIdentifier[] | undefined): string {
+  const identifier = identifiers?.find((item) => {
+    const type = item.identifier_type.toLowerCase();
+    return type.includes("nric") || type.includes("government") || type.includes("govt") || type.includes("id");
+  });
+  return identifier?.normalized_value ?? "Value unavailable";
+}
+
+function recommendationEvidenceValue(reason: string, side: "current" | "candidate", identifiers?: PersonIdentifier[]): string {
+  const lower = reason.toLowerCase();
+  if (lower.includes("government") || lower.includes("nric") || lower.includes("id hash")) {
+    return governmentIdentifierValue(identifiers);
+  }
+  return reason;
+}
+
+function RecommendedMatchDetailPanel({
+  match,
+  detail,
+  error,
+  isLoading,
+  currentPerson,
+  candidatePerson,
+  currentIdentifiers,
+  candidateIdentifiers,
+}: {
+  match: PersonMatchDecision;
+  detail: PossibleMatchDetail | undefined;
+  error: string | undefined;
+  isLoading: boolean;
+  currentPerson: Person | undefined;
+  candidatePerson: Person | undefined;
+  currentIdentifiers: PersonIdentifier[] | undefined;
+  candidateIdentifiers: PersonIdentifier[] | undefined;
+}): ReactElement {
+  if (isLoading) return <div className={styles.candidateDetailStatus}>Loading match comparison…</div>;
+  const hasNameSignal = match.reasons.some((reason) => reason.toLowerCase().includes("name"));
+  const currentNameSource = detail?.shared_identifier_groups.flatMap((group) => group.current_person_source_records)[0];
+  const candidateNameSource = detail?.shared_identifier_groups.flatMap((group) => group.candidate_source_records)[0];
+  const sharedGroups = detail?.shared_identifier_groups ?? [];
+  const firstGroup = sharedGroups[0];
+  const combinedSignals = [
+    ...sharedGroups.map((group) => ({
+      label: `Shared ${titleCase(group.identifier_type)}`,
+      currentValue: group.normalized_value,
+      candidateValue: group.normalized_value,
+    })),
+    ...(hasNameSignal ? [{
+      label: "Name similarity",
+      currentValue: currentPerson?.preferred_full_name ?? "No current name",
+      candidateValue: candidatePerson?.preferred_full_name ?? "No candidate name",
+    }] : []),
+  ];
+
+  return (
+    <div className={styles.recommendedUnifiedCard}>
+      <div className={styles.recommendedUnifiedHeader}>
+        <span className={styles.candidateReasonLabel}>Pair decision</span>
+        <span className={`${styles.matchDecisionBadge} ${decisionBadgeClass(match.decision) ?? ""}`}>{titleCase(match.decision)}</span>
+        <span className={styles.recommendedConfidence}>{Math.round(match.confidence * 100)}%</span>
+      </div>
+
+      {combinedSignals.length > 0 ? (
+        <RecommendedEvidenceCard
+          signals={combinedSignals}
+          currentSources={firstGroup ? sourceSummaries(firstGroup.current_person_source_records, firstGroup) : currentNameSource ? [sourceSummary(currentNameSource, undefined)] : []}
+          candidateSources={firstGroup ? sourceSummaries(firstGroup.candidate_source_records, firstGroup) : candidateNameSource ? [sourceSummary(candidateNameSource, undefined)] : []}
+        />
+      ) : match.reasons.map((reason) => (
+        <div key={reason} className={styles.recommendedEvidenceBlock}>
+          <div className={styles.candidateReasonTop}>
+            <span className={styles.candidateReasonLabel}>{recommendationEvidenceLabel(reason)}</span>
+          </div>
+          <div className={styles.matchSourceGrid}>
+            <div className={styles.matchSourceColumn}>
+              <span className={styles.matchSourceTitle}>Current profile</span>
+              <span className={styles.matchSourceMeta}>{recommendationEvidenceValue(reason, "current", currentIdentifiers)}</span>
+              <span className={styles.matchSourceSub}>{titleCase(match.engine_type)} match engine</span>
+            </div>
+            <div className={styles.matchSourceColumn}>
+              <span className={styles.matchSourceTitle}>Candidate evidence</span>
+              <span className={styles.matchSourceMeta}>{recommendationEvidenceValue(reason, "candidate", candidateIdentifiers)}</span>
+              <span className={styles.matchSourceSub}>Pair-level match decision</span>
+            </div>
+          </div>
+        </div>
+      ))}
+
+      {match.blocking_conflicts.length > 0 && (
+        <div className={styles.recommendedSignalPanel}>
+          <div className={styles.recommendedSignalGroup}>
+            <span className={styles.matchSourceTitle}>Conflicts</span>
+            <div className={styles.recommendedConflictList}>
+              {match.blocking_conflicts.map((conflict) => <span key={conflict}>{conflict}</span>)}
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function RecommendedReviewCaseRow({
+  reviewCase,
+  currentPerson,
+  candidatePerson,
+  currentIdentifiers,
+  candidateIdentifiers,
+  detail,
+  reviewCaseDetail,
+  error,
+  isLoading,
+  isOpen,
+  onToggle,
+  onReview,
+  onView,
+  onRecreate,
+  onRecreateAndUnmerge,
+  needsUnmergeBeforeReview,
+}: {
+  reviewCase: ReviewCaseSummary;
+  currentPerson: Person | undefined;
+  candidatePerson: Person | undefined;
+  currentIdentifiers: PersonIdentifier[] | undefined;
+  candidateIdentifiers: PersonIdentifier[] | undefined;
+  detail: PossibleMatchDetail | undefined;
+  reviewCaseDetail: ReviewCaseDetail | undefined;
+  error: string | undefined;
+  isLoading: boolean;
+  isOpen: boolean;
+  onToggle: () => void;
+  onReview: () => void;
+  onView: () => void;
+  onRecreate?: () => void;
+  onRecreateAndUnmerge: (() => void) | null;
+  needsUnmergeBeforeReview: boolean;
+}): ReactElement {
+  const currentPersonId = currentPerson?.person_id;
+  const candidateFallbackName = reviewCase.right_person_id !== currentPersonId
+    ? reviewCase.right_person_name
+    : reviewCase.left_person_name;
+  const name = candidatePerson?.preferred_full_name ?? candidateFallbackName ?? "Recommended match";
+  const reasonLabels = Array.from(new Set((reviewCaseDetail?.match_decision.reasons ?? []).map(reasonToShortLabel)));
+  const visibleLabels = reasonLabels.slice(0, 3);
+  const extraCount = reasonLabels.length - visibleLabels.length;
+  const subtitle = visibleLabels.length > 0
+    ? `${visibleLabels.join(" · ")}${extraCount > 0 ? ` · +${extraCount} more` : ""}`
+    : [titleCase(reviewCase.match_decision.engine_type), `Case ${reviewCase.review_case_id.slice(0, 12)}…`].join(" · ");
+  const confidencePct = Math.round(reviewCase.match_decision.confidence * 100);
+  return (
+    <div className={styles.candidateCard}>
+      <div className={styles.candidateRowShell}>
+        <div className={styles.candidateRowButton}>
+          <div className={styles.sharedAvatar} style={{ background: avatarColor(name) }}>
+            {personInitials(name)}
+          </div>
+          <div className={styles.candidateMain}>
+            <div className={styles.candidateNameRow}>
+              <span className={styles.candidateName}>{name}</span>
+            </div>
+            <div className={styles.candidateReason}>{subtitle}</div>
+          </div>
+        </div>
+        <div className={styles.candidateRowActions}>
+          <div className={styles.confidenceBlock}>
+            <span className={styles.recommendedConfidence}>{confidencePct}%</span>
+            <span className={styles.confidenceLabel}>match</span>
+          </div>
+          {reviewCase.queue_state === "resolved" ? (
+            <>
+              {onRecreateAndUnmerge !== null ? (
+                <button type="button" className={styles.candidateMergeBtn} onClick={onRecreateAndUnmerge}>
+                  Recreate
+                </button>
+              ) : onRecreate !== undefined ? (
+                <button type="button" className={styles.candidateMergeBtn} onClick={onRecreate}>
+                  Recreate
+                </button>
+              ) : null}
+            </>
+          ) : needsUnmergeBeforeReview && onRecreateAndUnmerge !== null ? (
+            <button type="button" className={styles.candidateMergeBtn} onClick={onRecreateAndUnmerge}>
+              Recreate
+            </button>
+          ) : (
+            <button type="button" className={styles.candidateMergeBtn} onClick={onView}>
+              Review
+            </button>
+          )}
+          <button type="button" className={styles.candidateExpandButton} onClick={onToggle} aria-expanded={isOpen} aria-label="Toggle match detail">
+            <svg className={styles.candidateChevron} width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="M6 9l6 6 6-6" />
+            </svg>
+          </button>
+        </div>
+      </div>
+      {isOpen ? (
+        <RecommendedMatchDetailPanel
+          match={{
+            match_decision_id: reviewCase.match_decision.match_decision_id,
+            engine_type: reviewCase.match_decision.engine_type,
+            engine_version: "",
+            policy_version: "",
+            decision: reviewCase.match_decision.decision,
+            confidence: reviewCase.match_decision.confidence,
+            reasons: reviewCaseDetail?.match_decision.reasons ?? [],
+            blocking_conflicts: reviewCaseDetail?.match_decision.blocking_conflicts ?? [],
+            created_at: "",
+            left_person_id: reviewCase.left_person_id ?? null,
+            right_person_id: reviewCase.right_person_id ?? null,
+            review_case_id: reviewCase.review_case_id,
+            review_case_queue_state: reviewCase.queue_state,
+            review_case_assigned_to: reviewCase.assigned_to,
+          }}
+          detail={detail}
+          error={error}
+          isLoading={isLoading}
+          currentPerson={currentPerson}
+          candidatePerson={candidatePerson}
+          currentIdentifiers={currentIdentifiers}
+          candidateIdentifiers={candidateIdentifiers}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+function RecommendedMatchRow({
+  match,
+  currentPersonId,
+  currentPerson,
+  person,
+  currentIdentifiers,
+  candidateIdentifiers,
+  detail,
+  error,
+  isLoading,
+  isOpen,
+  onToggle,
+  onReview,
+}: {
+  match: PersonMatchDecision;
+  currentPersonId: string;
+  currentPerson: Person | undefined;
+  person: Person | undefined;
+  currentIdentifiers: PersonIdentifier[] | undefined;
+  candidateIdentifiers: PersonIdentifier[] | undefined;
+  detail: PossibleMatchDetail | undefined;
+  error: string | undefined;
+  isLoading: boolean;
+  isOpen: boolean;
+  onToggle: () => void;
+  onReview: () => void;
+}): ReactElement {
+  const otherPersonId = recommendedOtherPersonId(match, currentPersonId);
+  const confidencePct = Math.round(match.confidence * 100);
+  const evidenceLabels = Array.from(new Set(match.reasons.map((reason) => recommendationEvidenceLabel(reason))));
+  const rowLabels = evidenceLabels.slice(0, 2);
+  const hiddenReasonCount = Math.max(evidenceLabels.length - rowLabels.length, 0);
+  const reasonSummary = rowLabels.length > 0
+    ? `${rowLabels.join(" · ")}${hiddenReasonCount > 0 ? ` · +${hiddenReasonCount} more` : ""}`
+    : "Pair match recommendation";
+  const label = person?.preferred_full_name ?? otherPersonId ?? recommendationEvidenceLabel(match.reasons[0] ?? match.decision);
+
+  return (
+    <div className={`${styles.candidateCard} ${isOpen ? styles.candidateCardOpen : ""}`}>
+      <div className={styles.candidateRowShell}>
+        <button type="button" className={styles.candidateRowButton} onClick={onToggle} aria-expanded={isOpen}>
+          <div className={styles.sharedAvatar} style={{ background: avatarColor(label) }}>
+            {personInitials(label)}
+          </div>
+          <div className={styles.connBody}>
+            <div className={styles.sharedName}>{label}</div>
+            <div className={styles.candidateMetaText}>
+              <span className={styles.recommendedReasonChip}>{reasonSummary}</span>
+            </div>
+          </div>
+        </button>
+        <div className={styles.candidateRowActions}>
+          <div className={styles.confidenceBlock}>
+            <span className={styles.recommendedConfidence}>{confidencePct}%</span>
+            <span className={styles.confidenceLabel}>match</span>
+          </div>
+          <button type="button" className={styles.candidateMergeBtn} onClick={onReview}>
+            Review
+          </button>
+          {otherPersonId ? (
+            <Link href={`/persons/${encodeURIComponent(otherPersonId)}`} className={styles.candidateDirectLink} aria-label="Open recommended match person">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+                <polyline points="15 3 21 3 21 9" />
+                <path d="M10 14L21 3" />
+              </svg>
+            </Link>
+          ) : null}
+          <button type="button" className={styles.candidateExpandButton} onClick={onToggle} aria-expanded={isOpen} aria-label={isOpen ? "Hide recommended match details" : "Show recommended match details"}>
+            <svg className={styles.candidateChevron} width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="M6 9l6 6 6-6" />
+            </svg>
+          </button>
+        </div>
+      </div>
+      {isOpen && <RecommendedMatchDetailPanel match={match} detail={detail} error={error} isLoading={isLoading} currentPerson={currentPerson} candidatePerson={person} currentIdentifiers={currentIdentifiers} candidateIdentifiers={candidateIdentifiers} />}
     </div>
   );
 }
@@ -1352,8 +1762,23 @@ function CandidateRow({
   );
 }
 
-function MatchesTab({ personId, activeMatchesTab, onTotalLoaded, onMergeWith }: { personId: string; activeMatchesTab: "candidates" | "merge-history"; onTotalLoaded: (n: number) => void; onMergeWith: (candidate: PersonSharedIdentifierCandidate, detail: PossibleMatchDetail | undefined) => void }): ReactElement {
+function MatchesTab({ personId, currentPerson, currentIdentifiers, activeMatchesTab, onTotalLoaded, onMergeWith }: { personId: string; currentPerson: Person | undefined; currentIdentifiers: PersonIdentifier[]; activeMatchesTab: "candidates" | "resolved-cases" | "merge-history"; onTotalLoaded: (n: number) => void; onMergeWith: (candidate: PersonSharedIdentifierCandidate, detail: PossibleMatchDetail | undefined) => void }): ReactElement {
   const [expandedCandidate, setExpandedCandidate] = useState<string | null>(null);
+  const [expandedRecommendedMatch, setExpandedRecommendedMatch] = useState<string | null>(null);
+  const [recommendedPeople, setRecommendedPeople] = useState<Record<string, Person>>({});
+  const [recommendedIdentifiers, setRecommendedIdentifiers] = useState<Record<string, PersonIdentifier[]>>({});
+  const [recommendedDetails, setRecommendedDetails] = useState<Record<string, PossibleMatchDetail>>({});
+  const [recommendedErrors, setRecommendedErrors] = useState<Record<string, string>>({});
+  const [recommendedReviewCases, setRecommendedReviewCases] = useState<ReviewCaseSummary[]>([]);
+  const [recommendedReviewLoading, setRecommendedReviewLoading] = useState<boolean>(true);
+  const [recommendedReviewError, setRecommendedReviewError] = useState<string | null>(null);
+  const [recommendedActionError, setRecommendedActionError] = useState<string | null>(null);
+  const [openReviewDecisionIds, setOpenReviewDecisionIds] = useState<Set<string>>(new Set());
+  const showResolvedReviewCases = activeMatchesTab === "resolved-cases";
+  const [reviewActionCase, setReviewActionCase] = useState<ReviewCaseSummary | null>(null);
+  const [reviewCaseIdsByDecision, setReviewCaseIdsByDecision] = useState<Record<string, string>>({});
+  const [reviewCaseDetails, setReviewCaseDetails] = useState<Record<string, ReviewCaseDetail>>({});
+  const [reviewActionMatch, setReviewActionMatch] = useState<PersonMatchDecision | null>(null);
   const [candidateDetails, setCandidateDetails] = useState<Record<string, PossibleMatchDetail>>({});
   const [candidateErrors, setCandidateErrors] = useState<Record<string, string>>({});
   const [loadingCandidateId, setLoadingCandidateId] = useState<string | null>(null);
@@ -1361,22 +1786,121 @@ function MatchesTab({ personId, activeMatchesTab, onTotalLoaded, onMergeWith }: 
   const [unmergeReason, setUnmergeReason] = useState("");
   const [unmergeSubmitting, setUnmergeSubmitting] = useState(false);
   const [unmergeError, setUnmergeError] = useState<string | null>(null);
+  const [viewingReviewCaseId, setViewingReviewCaseId] = useState<string | null>(null);
 
-  const candidatesResult = usePaginatedFetch<PersonSharedIdentifierCandidate>(
-    `/bff/persons/${encodeURIComponent(personId)}/shared-identifiers`,
+  const recommendedResult = usePaginatedFetch<PersonMatchDecision>(
+    `/bff/persons/${encodeURIComponent(personId)}/matches`,
   );
   const mergeHistoryResult = usePaginatedFetch<PersonAuditEvent>(
     `/bff/persons/${encodeURIComponent(personId)}/audit`,
   );
 
-  const candidates = candidatesResult.rows ?? [];
-  const mergeHistoryRows = (mergeHistoryResult.rows ?? []).filter((event) => event.event_type === "manual_merge" || event.event_type === "unmerge");
+  const reloadRecommendedReviewCases = useCallback((): (() => void) => {
+    let ignore = false;
+    setRecommendedReviewLoading(true);
+    setRecommendedReviewError(null);
+    bffFetchEnvelope<ReviewCaseSummary[]>(
+      `/bff/review-cases?person_id=${encodeURIComponent(personId)}&resolved=${showResolvedReviewCases ? "true" : "false"}&sort_by=created_at&sort_order=DESC&limit=100`,
+    ).then((response) => {
+      if (ignore) return;
+      const filteredCases = response.data.filter(
+        (reviewCase) => reviewCase.left_person_id !== undefined && reviewCase.left_person_id !== null
+          && reviewCase.right_person_id !== undefined && reviewCase.right_person_id !== null,
+      );
+      const seenDecisionIds = new Set<string>();
+      const cases = showResolvedReviewCases
+        ? filteredCases
+        : filteredCases.filter((reviewCase) => {
+          const decisionId = reviewCase.match_decision.match_decision_id;
+          if (seenDecisionIds.has(decisionId)) return false;
+          seenDecisionIds.add(decisionId);
+          return true;
+        });
+      setRecommendedReviewCases(cases);
+      setReviewCaseIdsByDecision(Object.fromEntries(cases.map((reviewCase) => [
+        reviewCase.match_decision.match_decision_id,
+        reviewCase.review_case_id,
+      ])));
+      onTotalLoaded(cases.length);
+    }).catch((error: unknown) => {
+      if (!ignore) setRecommendedReviewError(error instanceof BffError ? error.message : "Failed to load recommended matches.");
+    }).finally(() => {
+      if (!ignore) setRecommendedReviewLoading(false);
+    });
+    return () => { ignore = true; };
+  }, [personId, onTotalLoaded, showResolvedReviewCases]);
 
   useEffect(() => {
-    if (!candidatesResult.loading) {
-      onTotalLoaded(candidatesResult.total ?? candidates.length);
-    }
-  }, [candidatesResult.loading, candidatesResult.total, candidates.length, onTotalLoaded]);
+    const cleanup = reloadRecommendedReviewCases();
+    return cleanup;
+  }, [reloadRecommendedReviewCases]);
+
+  const recommendedMatches = (recommendedResult.rows ?? []).filter(
+    (match) => (match.decision === "merge" || match.decision === "review")
+      && match.left_person_id !== null
+      && match.right_person_id !== null,
+  );
+  useEffect(() => {
+    let ignore = false;
+    void bffFetchEnvelope<ReviewCaseSummary[]>(
+      `/bff/review-cases?person_id=${encodeURIComponent(personId)}&resolved=false&limit=100`,
+    ).then((response) => {
+      if (ignore) return;
+      setOpenReviewDecisionIds(new Set(response.data.map((reviewCase) => reviewCase.match_decision.match_decision_id)));
+    }).catch(() => {
+      if (!ignore) setOpenReviewDecisionIds(new Set());
+    });
+    return () => { ignore = true; };
+  }, [personId]);
+
+  const recommendedPersonIds = recommendedReviewCases
+    .map((reviewCase) => {
+      const rightId = reviewCase.right_person_id ?? null;
+      const leftId = reviewCase.left_person_id ?? null;
+      if (rightId !== null && rightId !== personId) return rightId;
+      if (leftId !== null && leftId !== personId) return leftId;
+      return null;
+    })
+    .filter((id): id is string => id !== null);
+  const mergeHistoryRows = (mergeHistoryResult.rows ?? []).filter((event) => event.event_type === "manual_merge" || event.event_type === "unmerge");
+  const recommendedPersonIdsKey = recommendedPersonIds.join("|");
+
+  useEffect(() => {
+    const missingIds = recommendedPersonIds.filter((id) => recommendedPeople[id] === undefined);
+    if (missingIds.length === 0) return;
+    let ignore = false;
+    void Promise.all(
+      missingIds.map(async (id) => [id, await bffFetch<Person>(`/bff/persons/${encodeURIComponent(id)}`)] as const),
+    ).then((items) => {
+      if (ignore) return;
+      setRecommendedPeople((prev) => {
+        const next = { ...prev };
+        for (const [id, person] of items) next[id] = person;
+        return next;
+      });
+    }).catch(() => undefined);
+    return () => { ignore = true; };
+  }, [recommendedPersonIdsKey, recommendedPeople, recommendedPersonIds]);
+
+  useEffect(() => {
+    const missingIds = recommendedPersonIds.filter((id) => recommendedIdentifiers[id] === undefined);
+    if (missingIds.length === 0) return;
+    let ignore = false;
+    void Promise.all(
+      missingIds.map(async (id) => {
+        try {
+          const result = await bffFetchEnvelope<PersonIdentifier[]>(`/bff/persons/${encodeURIComponent(id)}/identifiers`);
+          return [id, result.data] as const;
+        } catch {
+          return [id, []] as const;
+        }
+      }),
+    ).then((items) => {
+      if (ignore) return;
+      setRecommendedIdentifiers((prev) => ({ ...prev, ...Object.fromEntries(items) }));
+    });
+    return () => { ignore = true; };
+  }, [recommendedPersonIdsKey, recommendedIdentifiers, recommendedPersonIds]);
 
   const loadCandidateDetail = useCallback(async (candidateId: string): Promise<PossibleMatchDetail | undefined> => {
     if (candidateDetails[candidateId]) return candidateDetails[candidateId];
@@ -1394,6 +1918,45 @@ function MatchesTab({ personId, activeMatchesTab, onTotalLoaded, onMergeWith }: 
     }
   }, [candidateDetails, personId]);
 
+  const loadReviewCaseDetail = useCallback(async (reviewCaseId: string): Promise<void> => {
+    if (reviewCaseDetails[reviewCaseId] !== undefined) return;
+    try {
+      const detail = await bffFetch<ReviewCaseDetail>(`/bff/review-cases/${encodeURIComponent(reviewCaseId)}`);
+      setReviewCaseDetails((prev) => ({ ...prev, [reviewCaseId]: detail }));
+    } catch {
+      // silently ignore — fall back to empty reasons/conflicts
+    }
+  }, [reviewCaseDetails]);
+
+  useEffect(() => {
+    for (const reviewCase of recommendedReviewCases) {
+      const rightId = reviewCase.right_person_id ?? null;
+      const leftId = reviewCase.left_person_id ?? null;
+      const candidateId = (rightId !== null && rightId !== personId) ? rightId : leftId;
+      if (candidateId === null || recommendedDetails[reviewCase.review_case_id] !== undefined || recommendedErrors[reviewCase.review_case_id] !== undefined) continue;
+      setRecommendedErrors((prev) => ({ ...prev, [reviewCase.review_case_id]: "" }));
+      void bffFetch<PossibleMatchDetail>(`/bff/persons/${encodeURIComponent(personId)}/shared-identifiers/${encodeURIComponent(candidateId)}/detail`)
+        .then((detail) => {
+          setRecommendedDetails((prev) => ({ ...prev, [reviewCase.review_case_id]: detail }));
+        })
+        .catch((e: unknown) => {
+          setRecommendedErrors((prev) => ({ ...prev, [reviewCase.review_case_id]: e instanceof Error ? e.message : "Failed to load match comparison." }));
+        });
+    }
+  }, [personId, recommendedDetails, recommendedErrors, recommendedReviewCases]);
+
+  useEffect(() => {
+    const missingIds = recommendedReviewCases
+      .map((rc) => rc.review_case_id)
+      .filter((id) => reviewCaseDetails[id] === undefined);
+    if (missingIds.length === 0) return;
+    for (const id of missingIds) {
+      void bffFetch<ReviewCaseDetail>(`/bff/review-cases/${encodeURIComponent(id)}`)
+        .then((detail) => { setReviewCaseDetails((prev) => ({ ...prev, [id]: detail })); })
+        .catch(() => undefined);
+    }
+  }, [recommendedReviewCases, reviewCaseDetails]);
+
   const toggleCandidate = useCallback((candidateId: string): void => {
     if (expandedCandidate === candidateId) {
       setExpandedCandidate(null);
@@ -1402,6 +1965,57 @@ function MatchesTab({ personId, activeMatchesTab, onTotalLoaded, onMergeWith }: 
     setExpandedCandidate(candidateId);
     void loadCandidateDetail(candidateId);
   }, [expandedCandidate, loadCandidateDetail]);
+
+  function mergeEventForReviewCase(reviewCase: ReviewCaseSummary): PersonAuditEvent | null {
+    const isClosed = reviewCase.queue_state === "resolved" || reviewCase.queue_state === "cancelled";
+    if (!isClosed) return null;
+    // For resolved cases, only look for a merge event when the decision was "merge".
+    // Cancelled cases (auto-closed by CLOSE_PERSON_PAIR_CASES_FOR_ABSORBED) always need the lookup.
+    if (reviewCase.queue_state === "resolved" && reviewCase.match_decision.decision !== "merge") return null;
+    const leftId = reviewCase.left_person_id ?? null;
+    const rightId = reviewCase.right_person_id ?? null;
+    if (leftId === null || rightId === null) return null;
+    return mergeHistoryRows.find((event) =>
+      event.event_type === "manual_merge"
+      && event.absorbed_person_id !== null
+      && event.survivor_person_id !== null
+      && ((event.absorbed_person_id === leftId && event.survivor_person_id === rightId)
+        || (event.absorbed_person_id === rightId && event.survivor_person_id === leftId)),
+    ) ?? null;
+  }
+
+  async function recreateReviewCase(reviewCaseId: string): Promise<void> {
+    setRecommendedActionError(null);
+    try {
+      await bffFetchEnvelope<ReviewCaseDetail>(`/bff/review-cases/${encodeURIComponent(reviewCaseId)}/recreate`, {
+        method: "POST",
+      });
+      window.location.reload();
+    } catch (error: unknown) {
+      setRecommendedActionError(error instanceof BffError ? error.message : "Failed to recreate review case.");
+    }
+  }
+
+  async function recreateAndUnmergeReviewCase(reviewCaseId: string, mergeEventId: string): Promise<void> {
+    setRecommendedActionError(null);
+    try {
+      const body: UnmergeRequestBody = {
+        merge_event_id: mergeEventId,
+        reason: "Recreate review case and unmerge profiles.",
+      };
+      await bffFetchEnvelope<UnmergeResponseBody>("/bff/persons/unmerge", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      await bffFetchEnvelope<ReviewCaseDetail>(`/bff/review-cases/${encodeURIComponent(reviewCaseId)}/recreate`, {
+        method: "POST",
+      });
+      window.location.reload();
+    } catch (error: unknown) {
+      setRecommendedActionError(error instanceof BffError ? error.message : "Failed to recreate and unmerge review case.");
+    }
+  }
 
   async function submitUnmerge(): Promise<void> {
     if (unmergeTarget === null || !unmergeReason.trim()) return;
@@ -1425,54 +2039,76 @@ function MatchesTab({ personId, activeMatchesTab, onTotalLoaded, onMergeWith }: 
   const unmergedMergeEventIds = useMemo(() =>
     new Set(mergeHistoryRows.filter((event) => event.event_type === "unmerge").map((event) => event.metadata?.original_merge_event_id).filter((id): id is string => Boolean(id))),
   [mergeHistoryRows]);
-
-  const recommendationCount = 0;
-  const hasRecommendations = recommendationCount > 0;
-  const hasPossibleDuplicates = candidates.length > 0;
+  const hasRecommendations = recommendedReviewCases.length > 0;
+  const recommendationCount = recommendedReviewCases.length;
+  const actionableResolvedReviewCaseIds = useMemo(() => {
+    if (!showResolvedReviewCases) return new Set<string>();
+    const seenDecisionIds = new Set<string>();
+    const ids = new Set<string>();
+    for (const reviewCase of recommendedReviewCases) {
+      const decisionId = reviewCase.match_decision.match_decision_id;
+      if (seenDecisionIds.has(decisionId)) continue;
+      seenDecisionIds.add(decisionId);
+      ids.add(reviewCase.review_case_id);
+    }
+    return ids;
+  }, [recommendedReviewCases, showResolvedReviewCases]);
 
   let tabContent: ReactElement;
-  if (activeMatchesTab === "candidates") {
-    if (candidatesResult.loading) {
-      tabContent = <TabSkelShell title="Matches"><SkeletonMatches /></TabSkelShell>;
-    } else if (candidatesResult.error) {
-      tabContent = <section className={styles.contentCard}><div className={styles.tabError}>{candidatesResult.error}</div></section>;
-    } else if (!hasRecommendations && !hasPossibleDuplicates) {
-      tabContent = <MatchEmptyState message="No matches found." />;
+  if (activeMatchesTab === "candidates" || activeMatchesTab === "resolved-cases") {
+    if (recommendedReviewLoading) {
+      tabContent = <TabSkelShell title="Recommended matches"><SkeletonMatches /></TabSkelShell>;
+    } else if (recommendedReviewError !== null) {
+      tabContent = <section className={styles.contentCard}><div className={styles.tabError}>{recommendedReviewError}</div></section>;
+    } else if (!hasRecommendations) {
+      tabContent = <MatchEmptyState message="No recommended matches found." />;
     } else {
       tabContent = (
         <div className={styles.matchStack}>
           {hasRecommendations && (
             <div className={styles.matchSubsection}>
               <div className={styles.matchSubheader}>
-                Recommendation match
+                {showResolvedReviewCases ? "Resolved review cases" : "Recommended matches"}
                 <span className={styles.connSectionCount}>{recommendationCount}</span>
               </div>
-            </div>
-          )}
-
-          {hasPossibleDuplicates && (
-            <div className={styles.matchSubsection}>
-              <div className={styles.matchSubheader}>
-                Possible Duplicates
-                <span className={styles.connSectionCount}>{candidatesResult.total ?? candidates.length}</span>
-              </div>
+              {recommendedActionError !== null ? <div className={styles.tabError}>{recommendedActionError}</div> : null}
               <div className={styles.matchList}>
-                {candidates.map((c) => (
-                  <CandidateRow
-                    key={c.person_id}
-                    candidate={c}
-                    detail={candidateDetails[c.person_id]}
-                    error={candidateErrors[c.person_id]}
-                    isLoading={loadingCandidateId === c.person_id}
-                    isOpen={expandedCandidate === c.person_id}
-                    onToggle={toggleCandidate}
-                    onMerge={() => { void loadCandidateDetail(c.person_id).then((detail) => onMergeWith(c, detail)); }}
-                  />
-                ))}
+                {recommendedReviewCases.map((reviewCase) => {
+                  const rightId = reviewCase.right_person_id ?? null;
+                  const leftId = reviewCase.left_person_id ?? null;
+                  const candidateId = (rightId !== null && rightId !== personId) ? rightId : (leftId ?? "");
+                  const mergeEvent = mergeEventForReviewCase(reviewCase);
+                  const hasOpenCase = openReviewDecisionIds.has(reviewCase.match_decision.match_decision_id);
+                  const isActionableResolvedCase = !showResolvedReviewCases || actionableResolvedReviewCaseIds.has(reviewCase.review_case_id);
+                  const nonSurvivorIsInactive = (reviewCase.left_person_status !== undefined && reviewCase.left_person_status !== null && reviewCase.left_person_status !== "active")
+                    || (reviewCase.right_person_status !== undefined && reviewCase.right_person_status !== null && reviewCase.right_person_status !== "active");
+                  return (
+                    <RecommendedReviewCaseRow
+                      key={reviewCase.review_case_id}
+                      reviewCase={reviewCase}
+                      currentPerson={currentPerson}
+                      candidatePerson={recommendedPeople[candidateId]}
+                      currentIdentifiers={currentIdentifiers}
+                      candidateIdentifiers={recommendedIdentifiers[candidateId]}
+                      detail={recommendedDetails[reviewCase.review_case_id]}
+                      reviewCaseDetail={reviewCaseDetails[reviewCase.review_case_id]}
+                      error={recommendedErrors[reviewCase.review_case_id] || undefined}
+                      isLoading={recommendedDetails[reviewCase.review_case_id] === undefined && recommendedErrors[reviewCase.review_case_id] === ""}
+                      isOpen={expandedRecommendedMatch === reviewCase.review_case_id}
+                      onToggle={() => {
+                        const isOpening = expandedRecommendedMatch !== reviewCase.review_case_id;
+                        setExpandedRecommendedMatch((current) => current === reviewCase.review_case_id ? null : reviewCase.review_case_id);
+                        if (isOpening) void loadReviewCaseDetail(reviewCase.review_case_id);
+                      }}
+                      onReview={() => setReviewActionCase(reviewCase)}
+                      onView={() => setViewingReviewCaseId(reviewCase.review_case_id)}
+                      onRecreate={hasOpenCase || nonSurvivorIsInactive || !isActionableResolvedCase ? undefined : () => void recreateReviewCase(reviewCase.review_case_id)}
+                      onRecreateAndUnmerge={isActionableResolvedCase && ((reviewCase.queue_state !== "resolved" && nonSurvivorIsInactive && mergeEvent !== null) || (!hasOpenCase && nonSurvivorIsInactive && mergeEvent !== null)) ? () => void recreateAndUnmergeReviewCase(reviewCase.review_case_id, mergeEvent.merge_event_id) : null}
+                      needsUnmergeBeforeReview={reviewCase.queue_state !== "resolved" && nonSurvivorIsInactive}
+                    />
+                  );
+                })}
               </div>
-              {(candidatesResult.hasPrev || candidatesResult.hasNext) && (
-                <TabPagination from={candidatesResult.from} to={candidatesResult.to} total={candidatesResult.total} hasPrev={candidatesResult.hasPrev} hasNext={candidatesResult.hasNext} onPrev={candidatesResult.goPrev} onNext={candidatesResult.goNext} />
-              )}
             </div>
           )}
         </div>
@@ -1513,9 +2149,34 @@ function MatchesTab({ personId, activeMatchesTab, onTotalLoaded, onMergeWith }: 
     );
   }
 
+  const reviewActionCaseId = reviewActionCase?.review_case_id ?? null;
+
   return (
     <>
       {tabContent}
+      {reviewActionCase !== null ? (
+        <div className={styles.shareOverlay} onClick={() => setReviewActionCase(null)}>
+          <div className={`${styles.overrideModal} ${styles.recommendedReviewModal}`} onClick={(event) => event.stopPropagation()}>
+            <div className={styles.shareModalHeader}>
+              <span className={styles.shareModalTitle}>Review recommended match</span>
+              <button type="button" className={styles.shareModalClose} onClick={() => setReviewActionCase(null)} aria-label="Close">×</button>
+            </div>
+            {reviewActionCaseId !== null ? (
+              <ReviewActionsPanel
+                reviewCaseId={reviewActionCaseId}
+                queueState={reviewActionCase.queue_state}
+                assignedTo={reviewActionCase.assigned_to}
+                leftPersonId={reviewActionCase.left_person_id ?? null}
+                rightPersonId={reviewActionCase.right_person_id ?? null}
+                leftPersonStatus={reviewActionCase.left_person_status ?? null}
+                rightPersonStatus={reviewActionCase.right_person_status ?? null}
+                onChanged={() => window.location.reload()}
+                embedded
+              />
+            ) : null}
+          </div>
+        </div>
+      ) : null}
       {unmergeTarget !== null && (
         <div className={styles.shareOverlay} onClick={() => setUnmergeTarget(null)}>
           <div className={`${styles.overrideModal} ${styles.mergeModal} ${styles.unmergeModal}`} onClick={(e) => e.stopPropagation()}>
@@ -1536,6 +2197,14 @@ function MatchesTab({ personId, activeMatchesTab, onTotalLoaded, onMergeWith }: 
           </div>
         </div>
       )}
+      <ReviewCaseDetailModal
+        open={viewingReviewCaseId !== null}
+        reviewCaseId={viewingReviewCaseId ?? ""}
+        onClose={() => {
+          setViewingReviewCaseId(null);
+          reloadRecommendedReviewCases();
+        }}
+      />
     </>
   );
 }
@@ -1563,11 +2232,12 @@ function DecisionHistoryTab({ personId, onTotalLoaded }: { personId: string; onT
       ) : (
         <>
           <div className={styles.matchList}>
-            {decisions.map((match) => {
-              const isExpanded = expandedMatch === match.match_decision_id;
+            {decisions.map((match, index) => {
+              const rowKey = `${match.match_decision_id}-${index}`;
+              const isExpanded = expandedMatch === rowKey;
               return (
-                <div key={match.match_decision_id} className={`${styles.matchRow} ${isExpanded ? styles.matchRowOpen : ""}`}>
-                  <button type="button" className={styles.matchRowButton} onClick={() => setExpandedMatch(isExpanded ? null : match.match_decision_id)} aria-expanded={isExpanded}>
+                <div key={rowKey} className={`${styles.matchRow} ${isExpanded ? styles.matchRowOpen : ""}`}>
+                  <button type="button" className={styles.matchRowButton} onClick={() => setExpandedMatch(isExpanded ? null : rowKey)} aria-expanded={isExpanded}>
                     <span className={styles.matchDecisionCell}>{match.decision}</span>
                     <span className={styles.matchEngineCell}>{titleCase(match.engine_type)}</span>
                     <span className={styles.matchPersonCell}>{match.left_person_id ?? "—"} ↔ {match.right_person_id ?? "—"}</span>
@@ -1998,9 +2668,16 @@ function buildSpeakerColors(messages: ChatMessage[]): Map<string, string> {
   return map;
 }
 
+type SourceRecordViewMode = "summary" | "conversation" | "raw";
+
 function SourceRecordRow({ record }: { record: PersonSourceRecord }): ReactElement {
   const [open, setOpen] = useState(false);
   const [rawOpen, setRawOpen] = useState(false);
+  const isConversation = record.record_type === "conversation" && (record.chat_transcript?.length ?? 0) > 0;
+  const hasSummary = (record.normalized_payload?.summary?.trim().length ?? 0) > 0;
+  const [viewMode, setViewMode] = useState<SourceRecordViewMode>(
+    isConversation ? "conversation" : "raw",
+  );
   const speakerColors = useMemo(() => buildSpeakerColors(record.chat_transcript ?? []), [record.chat_transcript]);
   const entity = record.entity_display_name ?? record.entity_key ?? "Unknown entity";
   const payload = record.normalized_payload;
@@ -2097,7 +2774,55 @@ function SourceRecordRow({ record }: { record: PersonSourceRecord }): ReactEleme
             )}
           </div>
 
-          {record.chat_transcript !== null && record.chat_transcript.length > 0 && (
+          {isConversation && (
+            <div className={styles.srViewSwitch} role="tablist" aria-label="Conversation view mode">
+              <button
+                type="button"
+                role="tab"
+                aria-selected={viewMode === "summary"}
+                className={`${styles.srViewSwitchBtn} ${viewMode === "summary" ? styles.srViewSwitchBtnOn : ""}`}
+                onClick={() => setViewMode("summary")}
+                disabled={!hasSummary}
+                title={hasSummary ? "Show summary" : "No summary available"}
+              >
+                Summary
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={viewMode === "conversation"}
+                className={`${styles.srViewSwitchBtn} ${viewMode === "conversation" ? styles.srViewSwitchBtnOn : ""}`}
+                onClick={() => setViewMode("conversation")}
+              >
+                Conversation
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={viewMode === "raw"}
+                className={`${styles.srViewSwitchBtn} ${viewMode === "raw" ? styles.srViewSwitchBtnOn : ""}`}
+                onClick={() => setViewMode("raw")}
+              >
+                Raw data
+              </button>
+            </div>
+          )}
+
+          {isConversation && hasSummary && viewMode === "summary" && (
+            <div className={styles.idDetailSection}>
+              <div className={styles.idDetailSectionTitle}>Summary</div>
+              <p className={styles.srSummary}>{record.normalized_payload?.summary}</p>
+            </div>
+          )}
+
+          {isConversation && viewMode === "summary" && !hasSummary && (
+            <div className={styles.idDetailSection}>
+              <div className={styles.idDetailSectionTitle}>Summary</div>
+              <div className={styles.srMetaValue}>No summary available for this record.</div>
+            </div>
+          )}
+
+          {record.chat_transcript !== null && record.chat_transcript.length > 0 && isConversation && viewMode === "conversation" && (
             <div className={styles.idDetailSection}>
               <div className={styles.idDetailSectionTitle}>Conversation <span className={styles.srMetaLabel}>· {record.chat_transcript.length} {record.chat_transcript.length === 1 ? "message" : "messages"}</span></div>
               <div className={styles.srChat}>
@@ -2123,13 +2848,13 @@ function SourceRecordRow({ record }: { record: PersonSourceRecord }): ReactEleme
             </div>
           )}
 
-          {record.raw_payload !== null && (
+          {record.raw_payload !== null && (isConversation ? viewMode === "raw" : true) && (
             <div className={styles.idDetailSection}>
-              <button type="button" className={styles.srRawToggle} onClick={() => setRawOpen((v) => !v)} aria-expanded={rawOpen}>
-                <svg className={`${styles.srcChevron} ${rawOpen ? styles.srcChevronOpen : ""}`} width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M6 9l6 6 6-6" /></svg>
+              <button type="button" className={styles.srRawToggle} onClick={() => setRawOpen((v) => !v)} aria-expanded={rawOpen || (isConversation && viewMode === "raw")}>
+                <svg className={`${styles.srcChevron} ${(rawOpen || (isConversation && viewMode === "raw")) ? styles.srcChevronOpen : ""}`} width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M6 9l6 6 6-6" /></svg>
                 Raw payload <span className={styles.srMetaLabel}>(original source JSON)</span>
               </button>
-              {rawOpen && <pre className={styles.srJson}>{JSON.stringify(record.raw_payload, null, 2)}</pre>}
+              {(rawOpen || (isConversation && viewMode === "raw")) && <pre className={styles.srJson}>{JSON.stringify(record.raw_payload, null, 2)}</pre>}
             </div>
           )}
         </div>
@@ -2746,7 +3471,7 @@ export default function PersonDetailPage({ params }: { params: Promise<{ personI
   const [highlightedSectionId, setHighlightedSectionId] = useState<string | null>(null);
   const highlightTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [graphOpen, setGraphOpen] = useState(false);
-  const [activeMatchesTab, setActiveMatchesTab] = useState<"candidates" | "merge-history">("candidates");
+  const [activeMatchesTab, setActiveMatchesTab] = useState<"candidates" | "resolved-cases" | "merge-history">("candidates");
   const [shareOpen, setShareOpen] = useState(false);
   const [shareLoading, setShareLoading] = useState(false);
   const [shareUrl, setShareUrl] = useState<string | null>(null);
@@ -3169,7 +3894,7 @@ export default function PersonDetailPage({ params }: { params: Promise<{ personI
               let content: ReactElement;
               switch (section.id) {
                 case "section-matches":
-                  content = <MatchesTab personId={personId} activeMatchesTab={activeMatchesTab} onTotalLoaded={onMatchesTotal} onMergeWith={openMergeWithCandidate} />;
+                  content = <MatchesTab personId={personId} currentPerson={person} currentIdentifiers={detailData.identifiers} activeMatchesTab={activeMatchesTab} onTotalLoaded={onMatchesTotal} onMergeWith={openMergeWithCandidate} />;
                   break;
                 case "section-sales":
                   content = <SalesTab personId={personId} onTotalLoaded={onSalesTotal} />;
@@ -3196,8 +3921,9 @@ export default function PersonDetailPage({ params }: { params: Promise<{ personI
 
               const sectionAction = section.id === "section-matches" ? (
                 <div className={styles.matchInnerTabs}>
-                  <button type="button" className={`${styles.matchInnerTab}${activeMatchesTab === "candidates" ? ` ${styles.matchInnerTabActive}` : ""}`} onClick={() => setActiveMatchesTab("candidates")}>Match Candidates</button>
-                  <button type="button" className={`${styles.matchInnerTab}${activeMatchesTab === "merge-history" ? ` ${styles.matchInnerTabActive}` : ""}`} onClick={() => setActiveMatchesTab("merge-history")}>Merge History</button>
+                  <button type="button" className={`${styles.matchInnerTab}${activeMatchesTab === "candidates" ? ` ${styles.matchInnerTabActive}` : ""}`} onClick={() => setActiveMatchesTab("candidates")}>Matches</button>
+                  <button type="button" className={`${styles.matchInnerTab}${activeMatchesTab === "resolved-cases" ? ` ${styles.matchInnerTabActive}` : ""}`} onClick={() => setActiveMatchesTab("resolved-cases")}>Resolved</button>
+                  <button type="button" className={`${styles.matchInnerTab}${activeMatchesTab === "merge-history" ? ` ${styles.matchInnerTabActive}` : ""}`} onClick={() => setActiveMatchesTab("merge-history")}>History</button>
                 </div>
               ) : undefined;
 

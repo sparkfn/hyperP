@@ -1,12 +1,12 @@
 "use client";
 
-import { useCallback, useEffect, useId, useMemo, useRef, useState, type ReactElement } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState, type ReactElement, type ReactNode } from "react";
 import Link from "next/link";
 
 import { BffError, bffFetchEnvelope } from "@/lib/api-client";
 import type { ApiResponse } from "@/lib/api-types";
 import type { ReviewCaseSummary } from "@/lib/api-types-ops";
-import { completenessColor, relativeTime } from "@/lib/display";
+import { relativeTime } from "@/lib/display";
 import { useSetLoading } from "@/lib/LoadingContext";
 import styles from "./review.module.css";
 
@@ -47,21 +47,69 @@ const DEFAULT_DIR: Record<SortKey, SortDir> = {
   sla_due_at: "asc",
 };
 
-function queueStateColor(s: string): string {
-  if (s === "open") return "#3b82f6";
-  if (s === "assigned") return "#f59e0b";
-  if (s === "deferred") return "#94a3b8";
-  return "#22c55e";
+function titleCase(value: string): string {
+  return value
+    .split("_")
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
 }
+
+function shortCaseId(value: string): string {
+  return value.length > 12 ? `${value.slice(0, 12)}…` : value;
+}
+
+function reviewSubjectTitle(c: ReviewCaseSummary): string {
+  if (c.left_person_name && c.right_person_name) return `${c.left_person_name} ↔ ${c.right_person_name}`;
+  if (c.left_person_name) return c.left_person_name;
+  if (c.right_person_name) return c.right_person_name;
+  return `${titleCase(c.match_decision.decision)} case`;
+}
+
+function reviewSubjectSubtitle(c: ReviewCaseSummary): string {
+  if (c.left_person_id && c.right_person_id) return `Pair audit · ${shortCaseId(c.review_case_id)} · ${titleCase(c.match_decision.engine_type)} engine`;
+  if (c.left_person_id || c.right_person_id) return `Person review · ${shortCaseId(c.review_case_id)} · ${titleCase(c.match_decision.engine_type)} engine`;
+  return `${shortCaseId(c.review_case_id)} · ${titleCase(c.match_decision.engine_type)} engine`;
+}
+
+function subjectInitials(value: string): string {
+  return value
+    .split(/\s+|↔/)
+    .filter(Boolean)
+    .map((part) => part.charAt(0))
+    .slice(0, 2)
+    .join("")
+    .toUpperCase() || "R";
+}
+
+function subjectAvatarColor(value: string): string {
+  const palette = ["#ef4444", "#f97316", "#8b5cf6", "#06b6d4", "#10b981", "#6366f1", "#ec4899"];
+  let hash = 0;
+  for (let i = 0; i < value.length; i += 1) hash = (hash * 31 + value.charCodeAt(i)) >>> 0;
+  return palette[hash % palette.length] ?? "#6366f1";
+}
+
+function queueStateClass(s: string): string {
+  if (s === "open") return styles.badgeOpen ?? "";
+  if (s === "assigned") return styles.badgeAssigned ?? "";
+  if (s === "deferred") return styles.badgeDeferred ?? "";
+  if (s === "resolved") return styles.badgeResolved ?? "";
+  return styles.badgeNeutral ?? "";
+}
+
 function priorityLabel(p: number): string {
   if (p >= 80) return "High";
   if (p >= 50) return "Medium";
   return "Low";
 }
-function priorityColor(p: number): string {
-  if (p >= 80) return "var(--bad, #ef4444)";
-  if (p >= 50) return "#f59e0b";
-  return "var(--text-muted)";
+function priorityClass(p: number): string {
+  if (p >= 80) return styles.priorityHigh ?? "";
+  if (p >= 50) return styles.priorityMedium ?? "";
+  return styles.priorityLow ?? "";
+}
+
+function isOverdue(iso: string | null): boolean {
+  return iso !== null && new Date(iso) < new Date();
 }
 
 interface HeaderDef {
@@ -131,6 +179,68 @@ function buildApiQuery(args: {
   return p;
 }
 
+type ReviewFilterKey = "state" | "priority" | "assigned" | "match" | "confidence" | "created" | "sla";
+
+function FilterPill({
+  label,
+  isActive,
+  activeLabel,
+  count,
+  open,
+  onToggle,
+  onClear,
+  children,
+}: {
+  label: string;
+  isActive: boolean;
+  activeLabel: string;
+  count?: number;
+  open: boolean;
+  onToggle: () => void;
+  onClear: () => void;
+  children: ReactNode;
+}): ReactElement {
+  return (
+    <div className={styles.filterGroup}>
+      <button
+        type="button"
+        className={`${styles.filterPill} ${isActive ? styles.filterPillActive : ""}`}
+        onClick={onToggle}
+        aria-expanded={open}
+        aria-haspopup="true"
+      >
+        <span className={styles.fpLabel}>
+          {isActive ? activeLabel : label}
+          {isActive && count !== undefined && count > 1 ? <span className={styles.fpCount}>{count}</span> : null}
+        </span>
+        {isActive ? (
+          <span
+            role="button"
+            className={styles.fpClear}
+            tabIndex={0}
+            aria-label={`Clear ${label} filter`}
+            onClick={(event) => { event.stopPropagation(); onClear(); }}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" || event.key === " ") {
+                event.preventDefault();
+                event.stopPropagation();
+                onClear();
+              }
+            }}
+          >
+            ×
+          </span>
+        ) : (
+          <svg width="9" height="9" viewBox="0 0 12 12" fill="none" aria-hidden="true">
+            <path d="M2.5 4.5L6 8L9.5 4.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
+        )}
+      </button>
+      {open ? <div className={styles.filterPopover}>{children}</div> : null}
+    </div>
+  );
+}
+
 export default function ReviewPage(): ReactElement {
   const [queueFilter, setQueueFilter] = useState<QueueState>("open");
   const [priorityFilter, setPriorityFilter] = useState<Priority>("all");
@@ -147,7 +257,7 @@ export default function ReviewPage(): ReactElement {
   const [overdue, setOverdue] = useState(false);
   const [search, setSearch] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
-  const [showMore, setShowMore] = useState(false);
+  const [openFilter, setOpenFilter] = useState<ReviewFilterKey | null>(null);
   const [sortKey, setSortKey] = useState<SortKey | null>(null);
   const [sortDir, setSortDir] = useState<SortDir>("asc");
   const [pageSize, setPageSize] = useState(25);
@@ -269,9 +379,12 @@ export default function ReviewPage(): ReactElement {
   const pageStart = cursorStack.length * pageSize + 1;
   const pageEnd = cursorStack.length * pageSize + rows.length;
 
+  const matchFilterCount = [personIdFilter, decision, engine].filter((value) => value !== "").length;
+  const confidenceFilterCount = [confMin, confMax].filter((value) => value !== "").length;
+  const createdFilterCount = [createdAfter, createdBefore].filter((value) => value !== "").length;
+  const slaFilterCount = [slaAfter, slaBefore].filter((value) => value !== "").length + (overdue ? 1 : 0);
   const advancedActive =
-    personIdFilter !== "" || decision !== "" || engine !== "" || confMin !== "" || confMax !== "" ||
-    createdAfter !== "" || createdBefore !== "" || slaAfter !== "" || slaBefore !== "" || overdue;
+    matchFilterCount > 0 || confidenceFilterCount > 0 || createdFilterCount > 0 || slaFilterCount > 0;
   const hasFilters =
     search !== "" || assignedFilter !== "" || queueFilter !== "open" ||
     priorityFilter !== "all" || sortKey !== null || advancedActive;
@@ -297,6 +410,7 @@ export default function ReviewPage(): ReactElement {
     setSlaBefore("");
     setOverdue(false);
     setSortKey(null);
+    setOpenFilter(null);
   }
 
   return (
@@ -318,95 +432,161 @@ export default function ReviewPage(): ReactElement {
             <input className={styles.searchInput} type="text" value={search}
               onChange={(e) => setSearch(e.target.value)} placeholder="Search by case ID, decision, person name…" />
           </div>
-          <div className={styles.assignedBox}>
-            <input className={styles.assignedInput} type="text" value={assignedFilter}
-              onChange={(e) => setAssignedFilter(e.target.value)} placeholder="Assigned to…" />
-          </div>
-          <button type="button"
-            className={`${styles.filterPill} ${showMore ? styles.filterPillActive : ""}`}
-            onClick={() => setShowMore((v) => !v)} aria-expanded={showMore}>
-            More filters{advancedActive ? " •" : ""}
-          </button>
           {hasFilters && (
             <button type="button" className={styles.clearBtn} onClick={clearAll}>Clear all</button>
           )}
         </div>
 
-        {/* Filter pills */}
         <div className={styles.filterBar}>
-          {QUEUE_FILTERS.map(({ value, label }) => (
-            <button key={value} type="button"
-              className={`${styles.filterPill} ${queueFilter === value ? styles.filterPillActive : ""}`}
-              onClick={() => setQueueFilter(value)}>
-              {label}
-            </button>
-          ))}
-          <div className={styles.filterSep} />
-          {PRIORITY_FILTERS.map(({ value, label }) => (
-            <button key={value} type="button"
-              className={`${styles.filterPill} ${priorityFilter === value ? styles.filterPillActive : ""}`}
-              onClick={() => setPriorityFilter(value)}>
-              {label}
-            </button>
-          ))}
-          <div className={styles.filterSep} />
-          <button type="button"
-            className={`${styles.filterPill} ${overdue ? styles.filterPillActive : ""}`}
-            onClick={() => setOverdue((v) => !v)}>
-            Overdue SLA
-          </button>
-        </div>
+          <FilterPill
+            label="State"
+            isActive={queueFilter !== "all"}
+            activeLabel={QUEUE_FILTERS.find((item) => item.value === queueFilter)?.label ?? "State"}
+            open={openFilter === "state"}
+            onToggle={() => setOpenFilter((current) => current === "state" ? null : "state")}
+            onClear={() => setQueueFilter("open")}
+          >
+            <div className={styles.fpInner}>
+              {QUEUE_FILTERS.map(({ value, label }) => (
+                <button key={value} type="button" className={`${styles.fpOption} ${queueFilter === value ? styles.fpOptionActive : ""}`} onClick={() => { setQueueFilter(value); setOpenFilter(null); }}>
+                  {label}
+                </button>
+              ))}
+            </div>
+          </FilterPill>
 
-        {/* Advanced filters */}
-        {showMore && (
-          <div className={styles.advancedBar}>
-            <label className={styles.advField}>
-              <span className={styles.advLabel}>Person ID</span>
-              <input className={styles.advInput} type="text" value={personIdFilter}
-                onChange={(e) => setPersonIdFilter(e.target.value)} placeholder="person id…" />
-            </label>
-            <label className={styles.advField}>
-              <span className={styles.advLabel}>Decision</span>
-              <select className={styles.advSelect} value={decision} onChange={(e) => setDecision(e.target.value)}>
-                <option value="">Any</option>
-                {DECISION_OPTIONS.map((d) => <option key={d} value={d}>{d}</option>)}
-              </select>
-            </label>
-            <label className={styles.advField}>
-              <span className={styles.advLabel}>Engine</span>
-              <select className={styles.advSelect} value={engine} onChange={(e) => setEngine(e.target.value)}>
-                <option value="">Any</option>
-                {ENGINE_OPTIONS.map((e2) => <option key={e2} value={e2}>{e2}</option>)}
-              </select>
-            </label>
-            <label className={styles.advField}>
-              <span className={styles.advLabel}>Confidence ≥</span>
-              <input className={styles.advInput} type="number" min={0} max={1} step={0.05}
-                value={confMin} onChange={(e) => setConfMin(e.target.value)} placeholder="0.0" />
-            </label>
-            <label className={styles.advField}>
-              <span className={styles.advLabel}>Confidence ≤</span>
-              <input className={styles.advInput} type="number" min={0} max={1} step={0.05}
-                value={confMax} onChange={(e) => setConfMax(e.target.value)} placeholder="1.0" />
-            </label>
-            <label className={styles.advField}>
-              <span className={styles.advLabel}>Created after</span>
-              <input className={styles.advInput} type="date" value={createdAfter} onChange={(e) => setCreatedAfter(e.target.value)} />
-            </label>
-            <label className={styles.advField}>
-              <span className={styles.advLabel}>Created before</span>
-              <input className={styles.advInput} type="date" value={createdBefore} onChange={(e) => setCreatedBefore(e.target.value)} />
-            </label>
-            <label className={styles.advField}>
-              <span className={styles.advLabel}>SLA due after</span>
-              <input className={styles.advInput} type="date" value={slaAfter} onChange={(e) => setSlaAfter(e.target.value)} />
-            </label>
-            <label className={styles.advField}>
-              <span className={styles.advLabel}>SLA due before</span>
-              <input className={styles.advInput} type="date" value={slaBefore} onChange={(e) => setSlaBefore(e.target.value)} />
-            </label>
-          </div>
-        )}
+          <FilterPill
+            label="Priority"
+            isActive={priorityFilter !== "all"}
+            activeLabel={PRIORITY_FILTERS.find((item) => item.value === priorityFilter)?.label ?? "Priority"}
+            open={openFilter === "priority"}
+            onToggle={() => setOpenFilter((current) => current === "priority" ? null : "priority")}
+            onClear={() => setPriorityFilter("all")}
+          >
+            <div className={styles.fpInner}>
+              {PRIORITY_FILTERS.map(({ value, label }) => (
+                <button key={value} type="button" className={`${styles.fpOption} ${priorityFilter === value ? styles.fpOptionActive : ""}`} onClick={() => { setPriorityFilter(value); setOpenFilter(null); }}>
+                  {label}
+                </button>
+              ))}
+            </div>
+          </FilterPill>
+
+          <FilterPill
+            label="Assigned"
+            isActive={assignedFilter.trim() !== ""}
+            activeLabel={assignedFilter.trim() || "Assigned"}
+            open={openFilter === "assigned"}
+            onToggle={() => setOpenFilter((current) => current === "assigned" ? null : "assigned")}
+            onClear={() => setAssignedFilter("")}
+          >
+            <div className={styles.fpInner}>
+              <label className={styles.advField}>
+                <span className={styles.advLabel}>Assigned to</span>
+                <input className={styles.advInputWide} type="text" value={assignedFilter} onChange={(e) => setAssignedFilter(e.target.value)} placeholder="Reviewer email or id…" />
+              </label>
+            </div>
+          </FilterPill>
+
+          <FilterPill
+            label="Match"
+            isActive={matchFilterCount > 0}
+            activeLabel="Match"
+            count={matchFilterCount}
+            open={openFilter === "match"}
+            onToggle={() => setOpenFilter((current) => current === "match" ? null : "match")}
+            onClear={() => { setPersonIdFilter(""); setDecision(""); setEngine(""); }}
+          >
+            <div className={styles.fpInner}>
+              <label className={styles.advField}>
+                <span className={styles.advLabel}>Person ID</span>
+                <input className={styles.advInputWide} type="text" value={personIdFilter} onChange={(e) => setPersonIdFilter(e.target.value)} placeholder="person id…" />
+              </label>
+              <label className={styles.advField}>
+                <span className={styles.advLabel}>Decision</span>
+                <select className={styles.advInputWide} value={decision} onChange={(e) => setDecision(e.target.value)}>
+                  <option value="">Any</option>
+                  {DECISION_OPTIONS.map((d) => <option key={d} value={d}>{d}</option>)}
+                </select>
+              </label>
+              <label className={styles.advField}>
+                <span className={styles.advLabel}>Engine</span>
+                <select className={styles.advInputWide} value={engine} onChange={(e) => setEngine(e.target.value)}>
+                  <option value="">Any</option>
+                  {ENGINE_OPTIONS.map((e2) => <option key={e2} value={e2}>{e2}</option>)}
+                </select>
+              </label>
+            </div>
+          </FilterPill>
+
+          <FilterPill
+            label="Confidence"
+            isActive={confidenceFilterCount > 0}
+            activeLabel="Confidence"
+            count={confidenceFilterCount}
+            open={openFilter === "confidence"}
+            onToggle={() => setOpenFilter((current) => current === "confidence" ? null : "confidence")}
+            onClear={() => { setConfMin(""); setConfMax(""); }}
+          >
+            <div className={styles.fpInner}>
+              <div className={styles.fpRow}>
+                <label className={styles.advField}>
+                  <span className={styles.advLabel}>Min</span>
+                  <input className={styles.advInput} type="number" min={0} max={1} step={0.05} value={confMin} onChange={(e) => setConfMin(e.target.value)} placeholder="0.0" />
+                </label>
+                <label className={styles.advField}>
+                  <span className={styles.advLabel}>Max</span>
+                  <input className={styles.advInput} type="number" min={0} max={1} step={0.05} value={confMax} onChange={(e) => setConfMax(e.target.value)} placeholder="1.0" />
+                </label>
+              </div>
+            </div>
+          </FilterPill>
+
+          <FilterPill
+            label="Created"
+            isActive={createdFilterCount > 0}
+            activeLabel="Created"
+            count={createdFilterCount}
+            open={openFilter === "created"}
+            onToggle={() => setOpenFilter((current) => current === "created" ? null : "created")}
+            onClear={() => { setCreatedAfter(""); setCreatedBefore(""); }}
+          >
+            <div className={styles.fpInner}>
+              <label className={styles.advField}>
+                <span className={styles.advLabel}>Created after</span>
+                <input className={styles.advInputWide} type="date" value={createdAfter} onChange={(e) => setCreatedAfter(e.target.value)} />
+              </label>
+              <label className={styles.advField}>
+                <span className={styles.advLabel}>Created before</span>
+                <input className={styles.advInputWide} type="date" value={createdBefore} onChange={(e) => setCreatedBefore(e.target.value)} />
+              </label>
+            </div>
+          </FilterPill>
+
+          <FilterPill
+            label="SLA"
+            isActive={slaFilterCount > 0}
+            activeLabel="SLA"
+            count={slaFilterCount}
+            open={openFilter === "sla"}
+            onToggle={() => setOpenFilter((current) => current === "sla" ? null : "sla")}
+            onClear={() => { setSlaAfter(""); setSlaBefore(""); setOverdue(false); }}
+          >
+            <div className={styles.fpInner}>
+              <button type="button" className={`${styles.fpOption} ${overdue ? styles.fpOptionActive : ""}`} onClick={() => setOverdue((value) => !value)}>
+                Overdue SLA
+              </button>
+              <label className={styles.advField}>
+                <span className={styles.advLabel}>SLA due after</span>
+                <input className={styles.advInputWide} type="date" value={slaAfter} onChange={(e) => setSlaAfter(e.target.value)} />
+              </label>
+              <label className={styles.advField}>
+                <span className={styles.advLabel}>SLA due before</span>
+                <input className={styles.advInputWide} type="date" value={slaBefore} onChange={(e) => setSlaBefore(e.target.value)} />
+              </label>
+            </div>
+          </FilterPill>
+        </div>
 
         {/* Count + pagination bar */}
         <div className={styles.tableSection}>
@@ -418,7 +598,7 @@ export default function ReviewPage(): ReactElement {
                   ? "No results"
                   : `Showing ${pageStart}–${pageEnd}${total !== null ? ` of ${total}` : ""}`}
             </span>
-            <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 8 }}>
+            <div className={styles.tableTools}>
               <select
                 className={styles.pageSizeSelect}
                 value={pageSize}
@@ -427,17 +607,18 @@ export default function ReviewPage(): ReactElement {
                 {PAGE_SIZES.map((n) => <option key={n} value={n}>{n} / page</option>)}
               </select>
               {(hasPrev || hasNext) && (
-                <>
+                <div className={styles.paginationInline}>
                   <button className={styles.pageBtn} disabled={!hasPrev} onClick={goPrev}>← Prev</button>
                   <button className={styles.pageBtn} disabled={!hasNext} onClick={goNext}>Next →</button>
-                </>
+                </div>
               )}
             </div>
           </div>
 
-          {error && <p className={styles.error} style={{ padding: "0 14px 12px" }}>{error}</p>}
+          {error && <p className={styles.errorBanner}>{error}</p>}
 
-          <table className={styles.table}>
+          <div className={styles.tableScroll}>
+            <table className={styles.table}>
             <thead>
               <tr>
                 {HEADERS.map((h) => (
@@ -466,42 +647,80 @@ export default function ReviewPage(): ReactElement {
                   {debouncedSearch ? `No results for "${debouncedSearch}"` : "No review cases found."}
                 </td></tr>
               ) : (
-                rows.map((c) => (
+                rows.map((c) => {
+                  const confidencePct = Math.round(c.match_decision.confidence * 100);
+                  const overdue = isOverdue(c.sla_due_at);
+                  const subjectTitle = reviewSubjectTitle(c);
+                  return (
                   <tr key={c.review_case_id} className={styles.tr}>
                     <td className={styles.td}>
-                      <Link href={`/review/${c.review_case_id}`} className={styles.caseLink}>
-                        {c.review_case_id.slice(0, 8)}…
+                      <Link href={`/review/${c.review_case_id}`} className={styles.caseCellLink}>
+                        <span className={styles.caseAvatar} style={{ background: subjectAvatarColor(subjectTitle) }}>
+                          {subjectInitials(subjectTitle)}
+                        </span>
+                        <span className={styles.caseCopy}>
+                          <span className={styles.caseTitle}>{subjectTitle}</span>
+                          <span className={styles.caseMeta}>{reviewSubjectSubtitle(c)}</span>
+                        </span>
                       </Link>
                     </td>
                     <td className={styles.td}>
-                      <span className={styles.badge} style={{ color: queueStateColor(c.queue_state), background: `${queueStateColor(c.queue_state)}18` }}>
+                      <span className={`${styles.badge} ${queueStateClass(c.queue_state)}`}>
                         {c.queue_state}
                       </span>
                     </td>
                     <td className={styles.td}>
-                      <span style={{ color: priorityColor(c.priority), fontWeight: 600, fontSize: 12 }}>
+                      <span className={`${styles.priorityText} ${priorityClass(c.priority)}`}>
                         {priorityLabel(c.priority)}
                       </span>
                     </td>
-                    <td className={styles.td}><span className={styles.mono}>{c.match_decision.decision}</span></td>
+                    <td className={styles.td}><span className={styles.decisionText}>{c.match_decision.decision}</span></td>
                     <td className={styles.td}>
-                      <span style={{ color: completenessColor(c.match_decision.confidence), fontWeight: 600, fontSize: 12 }}>
-                        {Math.round(c.match_decision.confidence * 100)}%
-                      </span>
+                      <div className={styles.confidenceCell} aria-label={`${confidencePct}% confidence`}>
+                        <div className={styles.confidenceTrack}>
+                          <span className={styles.confidenceFill} style={{ width: `${confidencePct}%` }} />
+                        </div>
+                        <span className={styles.confidenceValue}>{confidencePct}%</span>
+                      </div>
                     </td>
                     <td className={styles.td}>{c.assigned_to ?? <span className={styles.muted}>—</span>}</td>
                     <td className={styles.td}>
                       {c.sla_due_at
-                        ? <span style={{ color: new Date(c.sla_due_at) < new Date() ? "var(--bad, #ef4444)" : "var(--text-secondary)", fontSize: 12 }}>
+                        ? <span className={overdue ? styles.slaOverdue : styles.slaText}>
                             {relativeTime(c.sla_due_at)}
                           </span>
                         : <span className={styles.muted}>—</span>}
                     </td>
                   </tr>
-                ))
+                );})
               )}
             </tbody>
-          </table>
+            </table>
+          </div>
+
+          <div className={`${styles.countBar} ${styles.countBarBottom}`}>
+            <span className={styles.resultCount}>
+              {loading
+                ? "Loading…"
+                : rows.length === 0
+                  ? "No results"
+                  : `Showing ${pageStart}–${pageEnd}${total !== null ? ` of ${total}` : ""}`}
+            </span>
+            <div className={styles.tableTools}>
+              <select
+                className={styles.pageSizeSelect}
+                value={pageSize}
+                onChange={(e) => setPageSize(Number(e.target.value))}
+                aria-label="Rows per page"
+              >
+                {PAGE_SIZES.map((n) => <option key={n} value={n}>{n} / page</option>)}
+              </select>
+              <div className={styles.paginationInline}>
+                <button className={styles.pageBtn} disabled={!hasPrev} onClick={goPrev}>← Prev</button>
+                <button className={styles.pageBtn} disabled={!hasNext} onClick={goNext}>Next →</button>
+              </div>
+            </div>
+          </div>
         </div>
 
       </div>

@@ -86,6 +86,11 @@ def _review_body(*, has_q: bool, has_person: bool) -> str:
     return "".join(parts)
 
 
+_REVIEW_DISPLAY_JOINS = """OPTIONAL MATCH (md)-[:ABOUT_LEFT]->(left_display:Person)
+OPTIONAL MATCH (md)-[:ABOUT_RIGHT]->(right_display:Person)
+WITH rc, md, left_display, right_display
+"""
+
 _REVIEW_RETURN = """
 RETURN rc {
   .review_case_id, .queue_state, .priority, .assigned_to,
@@ -95,7 +100,13 @@ RETURN rc {
 md {
   .match_decision_id, .engine_type, .engine_version, .policy_version,
   .decision, .confidence, .reasons, .blocking_conflicts, .created_at
-} AS match_decision
+} AS match_decision,
+left_display.person_id AS left_person_id,
+left_display.preferred_full_name AS left_person_name,
+left_display.status AS left_person_status,
+right_display.person_id AS right_person_id,
+right_display.preferred_full_name AS right_person_name,
+right_display.status AS right_person_status
 """
 
 # Whitelist: API sort key -> Cypher ORDER BY expression. Anything outside this
@@ -144,7 +155,7 @@ def build_list_review_cases_query(
     col, direction = _resolve_sort(sort_by, sort_order)
     order_by = f"ORDER BY {col} {direction}, rc.sla_due_at ASC, rc.created_at ASC\n"
     body = _review_body(has_q=has_q, has_person=has_person)
-    return body + _REVIEW_RETURN + order_by + "SKIP $skip LIMIT $limit\n"
+    return body + _REVIEW_DISPLAY_JOINS + _REVIEW_RETURN + order_by + "SKIP $skip LIMIT $limit\n"
 
 
 def build_count_review_cases_query(*, has_q: bool, has_person: bool = False) -> str:
@@ -215,6 +226,44 @@ RETURN rc {
 } AS review_case
 """
 )
+
+RECREATE_REVIEW_CASE = """
+MATCH (old:ReviewCase {review_case_id: $review_case_id})-[:FOR_DECISION]->(md:MatchDecision)
+OPTIONAL MATCH (existing:ReviewCase)-[:FOR_DECISION]->(md)
+WHERE existing.queue_state IN ['open', 'assigned', 'deferred']
+WITH old, md, collect(existing)[0] AS existing
+CALL (old, md, existing) {
+  WITH old, md, existing
+  WHERE existing IS NOT NULL
+  RETURN existing.review_case_id AS review_case_id
+  UNION
+  WITH old, md, existing
+  WHERE existing IS NULL
+  CREATE (rc:ReviewCase {
+    review_case_id: randomUUID(),
+    priority: old.priority,
+    queue_state: 'open',
+    assigned_to: null,
+    follow_up_at: null,
+    sla_due_at: old.sla_due_at,
+    resolution: null,
+    resolved_at: null,
+    actions: [$action_json],
+    recreated_from_review_case_id: old.review_case_id,
+    created_at: datetime(),
+    updated_at: datetime()
+  })-[:FOR_DECISION]->(md)
+  RETURN rc.review_case_id AS review_case_id
+}
+RETURN review_case_id
+"""
+
+GET_REVIEW_CASE_BY_MATCH_DECISION = """
+MATCH (rc:ReviewCase)-[:FOR_DECISION]->(:MatchDecision {match_decision_id: $match_decision_id})
+RETURN rc.review_case_id AS review_case_id
+ORDER BY rc.updated_at DESC
+LIMIT 1
+"""
 
 GET_PERSONS_FOR_REVIEW_MERGE = """
 MATCH (rc:ReviewCase {review_case_id: $review_case_id})-[:FOR_DECISION]->(md:MatchDecision)

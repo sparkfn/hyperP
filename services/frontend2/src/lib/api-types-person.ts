@@ -116,6 +116,9 @@ export interface PersonMatchDecision {
   created_at: string;
   left_person_id: string | null;
   right_person_id: string | null;
+  review_case_id: string | null;
+  review_case_queue_state: string | null;
+  review_case_assigned_to: string | null;
 }
 
 export interface PersonIdentifier {
