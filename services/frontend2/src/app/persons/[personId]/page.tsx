@@ -1764,7 +1764,7 @@ function CandidateRow({
   );
 }
 
-function MatchesTab({ personId, currentPerson, currentIdentifiers, activeMatchesTab, onTotalLoaded, onMergeWith }: { personId: string; currentPerson: Person | undefined; currentIdentifiers: PersonIdentifier[]; activeMatchesTab: "candidates" | "resolved-cases" | "merge-history"; onTotalLoaded: (n: number) => void; onMergeWith: (candidate: PersonSharedIdentifierCandidate, detail: PossibleMatchDetail | undefined) => void }): ReactElement {
+function MatchesTab({ personId, currentPerson, currentIdentifiers, activeMatchesTab, onTotalLoaded, onMergeWith, onPersonRefresh }: { personId: string; currentPerson: Person | undefined; currentIdentifiers: PersonIdentifier[]; activeMatchesTab: "candidates" | "resolved-cases" | "merge-history"; onTotalLoaded: (n: number) => void; onMergeWith: (candidate: PersonSharedIdentifierCandidate, detail: PossibleMatchDetail | undefined) => void; onPersonRefresh: () => void }): ReactElement {
   const [expandedCandidate, setExpandedCandidate] = useState<string | null>(null);
   const [expandedRecommendedMatch, setExpandedRecommendedMatch] = useState<string | null>(null);
   const [recommendedPeople, setRecommendedPeople] = useState<Record<string, Person>>({});
@@ -2202,9 +2202,10 @@ function MatchesTab({ personId, currentPerson, currentIdentifiers, activeMatches
       <ReviewCaseDetailModal
         open={viewingReviewCaseId !== null}
         reviewCaseId={viewingReviewCaseId ?? ""}
-        onClose={() => {
+        onClose={(wasActioned) => {
           setViewingReviewCaseId(null);
           reloadRecommendedReviewCases();
+          if (wasActioned) onPersonRefresh();
         }}
       />
     </>
@@ -3466,6 +3467,7 @@ export default function PersonDetailPage({ params }: { params: Promise<{ personI
   const [detailData, setDetailData] = useState<DetailData>(EMPTY_DETAIL);
   const [tabTotals, setTabTotals] = useState<Partial<Record<Tab, number>>>({});
   const [loading, setLoading] = useState(true);
+  const [personRefreshKey, setPersonRefreshKey] = useState(0);
   const pageLoadId = useId();
   const setGlobalLoading = useSetLoading();
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -3558,7 +3560,7 @@ export default function PersonDetailPage({ params }: { params: Promise<{ personI
       cancelled = true;
       setGlobalLoading(pageLoadId, false);
     };
-  }, [pageLoadId, personId, setGlobalLoading]);
+  }, [pageLoadId, personId, setGlobalLoading, personRefreshKey]);
 
   const [shareError, setShareError] = useState<string | null>(null);
 
@@ -3861,6 +3863,7 @@ export default function PersonDetailPage({ params }: { params: Promise<{ personI
     }
   }
 
+  const handlePersonRefresh = useCallback((): void => { setPersonRefreshKey((k) => k + 1); }, []);
   const onMatchesTotal     = useCallback((n: number) => { setTabTotals((p) => ({ ...p, matches:     n })); }, []);
   const onDecisionHistoryTotal = useCallback((n: number) => { setTabTotals((p) => ({ ...p, "decision-history": n })); }, []);
   const onConnectionsTotal = useCallback((n: number) => { setTabTotals((p) => ({ ...p, connections: n })); }, []);
@@ -3901,7 +3904,7 @@ export default function PersonDetailPage({ params }: { params: Promise<{ personI
               let content: ReactElement;
               switch (section.id) {
                 case "section-matches":
-                  content = <MatchesTab personId={personId} currentPerson={person} currentIdentifiers={detailData.identifiers} activeMatchesTab={activeMatchesTab} onTotalLoaded={onMatchesTotal} onMergeWith={openMergeWithCandidate} />;
+                  content = <MatchesTab personId={personId} currentPerson={person} currentIdentifiers={detailData.identifiers} activeMatchesTab={activeMatchesTab} onTotalLoaded={onMatchesTotal} onMergeWith={openMergeWithCandidate} onPersonRefresh={handlePersonRefresh} />;
                   break;
                 case "section-sales":
                   content = <SalesTab personId={personId} onTotalLoaded={onSalesTotal} />;
