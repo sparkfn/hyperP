@@ -269,7 +269,15 @@ GET_PERSONS_FOR_REVIEW_MERGE = """
 MATCH (rc:ReviewCase {review_case_id: $review_case_id})-[:FOR_DECISION]->(md:MatchDecision)
 MATCH (md)-[:ABOUT_LEFT]->(left:Person)
 MATCH (md)-[:ABOUT_RIGHT]->(right:Person)
-RETURN left.person_id AS left_person_id, right.person_id AS right_person_id
+RETURN
+  left.person_id AS left_person_id,
+  right.person_id AS right_person_id,
+  size([x IN [left.preferred_full_name, left.preferred_phone, left.preferred_email,
+              left.preferred_dob, left.preferred_nric, left.preferred_address_id]
+        WHERE x IS NOT NULL]) AS left_completion,
+  size([x IN [right.preferred_full_name, right.preferred_phone, right.preferred_email,
+              right.preferred_dob, right.preferred_nric, right.preferred_address_id]
+        WHERE x IS NOT NULL]) AS right_completion
 """
 
 CREATE_NO_MATCH_LOCK_FROM_REVIEW = """

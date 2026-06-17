@@ -9,7 +9,7 @@ from datetime import UTC, datetime
 from neo4j import AsyncManagedTransaction
 
 from src.graph.client import get_session
-from src.graph.converters import GraphRecord, to_optional_str, to_str
+from src.graph.converters import GraphRecord, to_int, to_optional_str, to_str
 from src.graph.golden_profile import recompute_golden_profile_tx
 from src.graph.mappers import map_review_case_detail, map_review_case_summary
 from src.graph.queries import (
@@ -260,8 +260,17 @@ async def _action_tx(
 
         if survivor_person_id == right_id:
             survivor_id, absorbed_id = right_id, left_id
-        elif survivor_person_id == left_id or survivor_person_id is None:
+        elif survivor_person_id == left_id:
             survivor_id, absorbed_id = left_id, right_id
+        elif survivor_person_id is None:
+            # Default to whichever person has more golden fields filled in;
+            # fall back to left on a tie.
+            left_score = to_int(persons_record["left_completion"])
+            right_score = to_int(persons_record["right_completion"])
+            if right_score > left_score:
+                survivor_id, absorbed_id = right_id, left_id
+            else:
+                survivor_id, absorbed_id = left_id, right_id
         else:
             return ActionResult(merge_not_applicable=True)
 

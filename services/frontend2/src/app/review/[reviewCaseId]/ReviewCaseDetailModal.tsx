@@ -133,11 +133,13 @@ export function ReviewCaseDetailContent({
   loading,
   error,
   onChanged,
+  defaultSurvivorPersonId,
 }: {
   detail: ReviewCaseDetail;
   loading: boolean;
   error: string | null;
   onChanged: () => void;
+  defaultSurvivorPersonId?: string | null;
 }): ReactElement {
   const confidence = detail.match_decision.confidence;
   const leftPersonId = detail.comparison_left?.person_id ?? null;
@@ -216,6 +218,7 @@ export function ReviewCaseDetailContent({
             rightPersonId={rightPersonId}
             leftPersonStatus={detail.comparison_left?.status ?? null}
             rightPersonStatus={detail.comparison_right?.status ?? null}
+            defaultSurvivorPersonId={defaultSurvivorPersonId}
             onChanged={onChanged}
           />
         </aside>
@@ -228,10 +231,12 @@ export function ReviewCaseDetailModal({
   open,
   reviewCaseId,
   onClose,
+  defaultSurvivorPersonId,
 }: {
   open: boolean;
   reviewCaseId: string;
   onClose: (actioned: boolean) => void;
+  defaultSurvivorPersonId?: string | null;
 }): ReactElement | null {
   const [detail, setDetail] = useState<ReviewCaseDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -296,7 +301,7 @@ export function ReviewCaseDetailModal({
         ) : error !== null && detail === null ? (
           <div className={styles.reviewCaseModalError}>{error}</div>
         ) : detail !== null ? (
-          <ReviewCaseDetailContent detail={detail} loading={loading} error={error} onChanged={handleChanged} />
+          <ReviewCaseDetailContent detail={detail} loading={loading} error={error} onChanged={handleChanged} defaultSurvivorPersonId={defaultSurvivorPersonId} />
         ) : null}
       </div>
     </div>

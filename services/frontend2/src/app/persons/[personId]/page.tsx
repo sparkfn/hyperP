@@ -2225,6 +2225,7 @@ function MatchesTab({ personId, currentPerson, currentIdentifiers, activeMatches
       <ReviewCaseDetailModal
         open={viewingReviewCaseId !== null}
         reviewCaseId={viewingReviewCaseId ?? ""}
+        defaultSurvivorPersonId={personId}
         onClose={(wasActioned) => {
           setViewingReviewCaseId(null);
           reloadRecommendedReviewCases();

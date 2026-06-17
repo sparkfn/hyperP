@@ -29,6 +29,7 @@ interface ReviewActionsPanelProps {
   rightPersonId: string | null;
   leftPersonStatus?: string | null;
   rightPersonStatus?: string | null;
+  defaultSurvivorPersonId?: string | null;
   onChanged: () => void;
   embedded?: boolean;
 }
@@ -39,11 +40,11 @@ function isReviewActionType(value: string): value is ReviewActionType {
 
 function defaultRightChoiceByField(
   choices: readonly GoldenProfileChoice[],
-  rightPersonId: string,
+  preferredPersonId: string,
 ): Partial<Record<GoldenProfileFieldName, string>> {
   const defaults: Partial<Record<GoldenProfileFieldName, string>> = {};
   for (const choice of choices) {
-    if (choice.personId === rightPersonId && defaults[choice.fieldName] === undefined) {
+    if (choice.personId === preferredPersonId && defaults[choice.fieldName] === undefined) {
       defaults[choice.fieldName] = choice.key;
     }
   }
@@ -63,6 +64,7 @@ export default function ReviewActionsPanel({
   rightPersonId,
   leftPersonStatus,
   rightPersonStatus,
+  defaultSurvivorPersonId,
   onChanged,
   embedded = false,
 }: ReviewActionsPanelProps): ReactElement {
@@ -86,7 +88,11 @@ export default function ReviewActionsPanel({
     (leftPersonStatus !== undefined && leftPersonStatus !== null && leftPersonStatus !== "active") ||
     (rightPersonStatus !== undefined && rightPersonStatus !== null && rightPersonStatus !== "active")
   );
-  const mergeSurvivorPersonId = rightPersonId ?? leftPersonId ?? "";
+  const mergeSurvivorPersonId =
+    defaultSurvivorPersonId != null &&
+    (defaultSurvivorPersonId === leftPersonId || defaultSurvivorPersonId === rightPersonId)
+      ? defaultSurvivorPersonId
+      : (rightPersonId ?? leftPersonId ?? "");
 
   useEffect(() => {
     if (actionType !== "merge" || !canLoadMergeChoices || mergeRequiresUnmerge || mergeSurvivorPersonId.length === 0) {
@@ -108,7 +114,7 @@ export default function ReviewActionsPanel({
         if (cancelled) return;
         const nextChoices = buildGoldenProfileChoices(mergeSurvivorPersonId, evidences);
         setChoices(nextChoices);
-        setSelectedChoiceKeys(defaultRightChoiceByField(nextChoices, rightPersonId));
+        setSelectedChoiceKeys(defaultRightChoiceByField(nextChoices, mergeSurvivorPersonId));
       } catch (err: unknown) {
         if (cancelled) return;
         setError(err instanceof BffError ? err.message : "Could not load merge choices.");

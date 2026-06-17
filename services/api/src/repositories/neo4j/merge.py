@@ -18,6 +18,7 @@ from src.graph.queries import (
     DELETE_LOCK,
     EXECUTE_MANUAL_MERGE,
     FLAG_AFFECTED_RECORDS_FOR_REVIEW,
+    GET_ADDRESS_BY_NORMALIZED,
     GET_UNMERGE_TARGET,
     REVERT_MERGE,
     UPDATE_GOLDEN_FIELD,
@@ -167,13 +168,26 @@ async def _apply_golden_profile_selections_tx(
 ) -> str:
     for selection in selections:
         field_name = selection["field_name"]
-        graph_field_name: str = "preferred_address_id" if field_name == "preferred_address" else field_name
-        await tx.run(
-            UPDATE_GOLDEN_FIELD,
-            person_id=person_id,
-            field_name=graph_field_name,
-            value=selection["selected_value"],
-        )
+        if field_name == "preferred_address":
+            normalized = " ".join(selection["selected_value"].strip().lower().split())
+            record = await (
+                await tx.run(GET_ADDRESS_BY_NORMALIZED, normalized_full=normalized)
+            ).single()
+            if record is None:
+                continue
+            await tx.run(
+                UPDATE_GOLDEN_FIELD,
+                person_id=person_id,
+                field_name="preferred_address_id",
+                value=to_str(record["address_id"]),
+            )
+        else:
+            await tx.run(
+                UPDATE_GOLDEN_FIELD,
+                person_id=person_id,
+                field_name=field_name,
+                value=selection["selected_value"],
+            )
     return "ok"
 
 
