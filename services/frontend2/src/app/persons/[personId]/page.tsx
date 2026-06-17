@@ -1354,6 +1354,17 @@ function recommendationEvidenceLabel(reason: string): string {
   return "Match signal";
 }
 
+function reasonToShortLabel(reason: string): string {
+  const lower = reason.toLowerCase();
+  if (lower.includes("government") || lower.includes("nric") || lower.includes("id hash")) return "Govt ID match";
+  if (lower.includes("phone")) return "Same phone";
+  if (lower.includes("email")) return "Same email";
+  if (lower.includes("name")) return "Similar name";
+  if (lower.includes("address")) return "Same address";
+  if (lower.includes("dob") || lower.includes("birth")) return "Similar DOB";
+  return "Match signal";
+}
+
 function recommendedOtherPersonId(match: PersonMatchDecision, currentPersonId: string): string | null {
   if (match.left_person_id === currentPersonId) return match.right_person_id;
   if (match.right_person_id === currentPersonId) return match.left_person_id;
@@ -1502,10 +1513,12 @@ function RecommendedReviewCaseRow({
     ? reviewCase.right_person_name
     : reviewCase.left_person_name;
   const name = candidatePerson?.preferred_full_name ?? candidateFallbackName ?? "Recommended match";
-  const subtitle = [
-    titleCase(reviewCase.match_decision.engine_type),
-    `Case ${reviewCase.review_case_id.slice(0, 12)}…`,
-  ].join(" · ");
+  const reasonLabels = Array.from(new Set((reviewCaseDetail?.match_decision.reasons ?? []).map(reasonToShortLabel)));
+  const visibleLabels = reasonLabels.slice(0, 3);
+  const extraCount = reasonLabels.length - visibleLabels.length;
+  const subtitle = visibleLabels.length > 0
+    ? `${visibleLabels.join(" · ")}${extraCount > 0 ? ` · +${extraCount} more` : ""}`
+    : [titleCase(reviewCase.match_decision.engine_type), `Case ${reviewCase.review_case_id.slice(0, 12)}…`].join(" · ");
   const confidencePct = Math.round(reviewCase.match_decision.confidence * 100);
   return (
     <div className={styles.candidateCard}>
@@ -1914,6 +1927,18 @@ function MatchesTab({ personId, currentPerson, currentIdentifiers, activeMatches
         });
     }
   }, [personId, recommendedDetails, recommendedErrors, recommendedReviewCases]);
+
+  useEffect(() => {
+    const missingIds = recommendedReviewCases
+      .map((rc) => rc.review_case_id)
+      .filter((id) => reviewCaseDetails[id] === undefined);
+    if (missingIds.length === 0) return;
+    for (const id of missingIds) {
+      void bffFetch<ReviewCaseDetail>(`/bff/review-cases/${encodeURIComponent(id)}`)
+        .then((detail) => { setReviewCaseDetails((prev) => ({ ...prev, [id]: detail })); })
+        .catch(() => undefined);
+    }
+  }, [recommendedReviewCases, reviewCaseDetails]);
 
   const toggleCandidate = useCallback((candidateId: string): void => {
     if (expandedCandidate === candidateId) {
