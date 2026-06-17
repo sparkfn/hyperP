@@ -58,6 +58,9 @@ export interface Person {
   golden_profile_version: string | null;
   source_record_count: number;
   connection_count: number;
+  // Sum of all orders; only returned by the person-detail endpoint (absent on
+  // list/entity projections).
+  lifetime_value?: number | null;
   created_at: string;
   updated_at: string;
 }
