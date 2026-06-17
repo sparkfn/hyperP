@@ -1881,12 +1881,11 @@
 .recommendedUnifiedCard {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 10px;
   margin: 0 0 10px;
-  padding: 12px;
-  border: 1px solid var(--border-subtle);
-  border-radius: 12px;
-  background: color-mix(in srgb, var(--bg-card) 96%, var(--bg-hover));
+  padding: 12px 14px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--bg-card) 94%, var(--bg-hover));
 }
 
 .recommendedUnifiedHeader {
@@ -1897,13 +1896,11 @@
 }
 
 .recommendedEvidenceBlock {
-  padding-top: 10px;
-  border-top: 1px solid var(--border-subtle);
+  padding-top: 0;
 }
 
 .recommendedEvidenceBlock:first-of-type {
   padding-top: 0;
-  border-top: none;
 }
 
 .recommendedSignalHeader {
@@ -1967,9 +1964,9 @@
 .recommendedEvidenceTable {
   display: grid;
   grid-template-columns: minmax(120px, 0.72fr) repeat(2, minmax(0, 1fr));
-  gap: 0;
+  row-gap: 2px;
+  column-gap: 0;
   overflow: hidden;
-  border-top: 1px solid var(--border-subtle);
   background: transparent;
 }
 
@@ -1978,8 +1975,7 @@
 .recommendedEvidenceCellValue,
 .recommendedEvidenceSourceStack {
   min-width: 0;
-  padding: 8px 10px;
-  border-bottom: 1px solid var(--border-subtle);
+  padding: 5px 8px;
 }
 
 .recommendedEvidenceHeader {
@@ -2017,16 +2013,11 @@
   line-height: 1.35;
 }
 
-.recommendedEvidenceTable > :nth-last-child(-n + 3) {
-  border-bottom: none;
-}
 
 .recommendedSignalPanel {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 10px;
-  padding-top: 10px;
-  border-top: 1px solid var(--border-subtle);
 }
 
 .recommendedSignalGroup {
