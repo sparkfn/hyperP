@@ -853,7 +853,7 @@
 .mergeFieldHeader {
   min-width: 0;
   display: grid;
-  grid-template-columns: 132px minmax(0, 1fr) minmax(0, 1fr);
+  grid-template-columns: 36px minmax(0, 1fr) minmax(0, 1fr);
   align-items: center;
   gap: 8px;
   padding: 8px 12px;
@@ -884,7 +884,7 @@
 .mergeFieldRow {
   min-width: 0;
   display: grid;
-  grid-template-columns: 132px minmax(0, 1fr) minmax(0, 1fr);
+  grid-template-columns: 36px minmax(0, 1fr) minmax(0, 1fr);
   align-items: start;
   gap: 8px;
   padding: 7px 12px;
@@ -896,12 +896,11 @@
 }
 
 .mergeFieldLabel {
+  display: flex;
+  align-items: center;
+  justify-content: center;
   color: var(--text-muted);
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.06em;
-  line-height: 1.25;
-  text-transform: uppercase;
+  padding-top: 2px;
 }
 
 .mergeFieldChoiceStack {
