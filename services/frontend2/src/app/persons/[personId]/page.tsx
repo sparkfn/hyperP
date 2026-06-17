@@ -1283,16 +1283,6 @@ function sourceSummaries(records: PersonSourceRecord[], group: SharedIdentifierG
   return records.map((record) => sourceSummary(record, group));
 }
 
-function signalShortLabel(label: string): string {
-  const lower = label.toLowerCase();
-  if (lower.includes("phone")) return "Phone";
-  if (lower.includes("email")) return "Email";
-  if (lower.includes("nric") || lower.includes("government") || lower.includes("id")) return "Govt ID";
-  if (lower.includes("name")) return "Name";
-  if (lower.includes("address")) return "Address";
-  if (lower.includes("dob") || lower.includes("birth")) return "DOB";
-  return label;
-}
 
 function SignalIcon({ label }: { label: string }): ReactElement {
   const lower = label.toLowerCase();
@@ -1326,15 +1316,13 @@ function RecommendedEvidenceCard({
           <Fragment key={signal.label}>
             <div className={styles.recommendedEvidenceSignal} title={signal.label}>
               <SignalIcon label={signal.label} />
-              <span>{signalShortLabel(signal.label)}</span>
             </div>
             <div className={styles.recommendedEvidenceCellValue}>{signal.currentValue}</div>
             <div className={styles.recommendedEvidenceCellValue}>{signal.candidateValue}</div>
           </Fragment>
         ))}
-        <div className={styles.recommendedEvidenceSignal}>
+        <div className={styles.recommendedEvidenceSignal} title="Source">
           <SignalIcon label="source" />
-          <span>Source</span>
         </div>
         <div className={styles.recommendedEvidenceSourceStack}>
           {(currentSources.length > 0 ? currentSources : ["No source record shown"]).map((source, i) => (
