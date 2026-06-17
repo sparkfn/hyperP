@@ -1556,17 +1556,10 @@ function RecommendedReviewCaseRow({
               Recreate
             </button>
           ) : (
-            <button type="button" className={styles.candidateMergeBtn} onClick={onReview}>
+            <button type="button" className={styles.candidateMergeBtn} onClick={onView}>
               Review
             </button>
           )}
-          <button type="button" className={styles.candidateDirectLink} onClick={onView} aria-label="Open review case detail">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-              <path d="M14 3h7v7" />
-              <path d="M10 14L21 3" />
-              <path d="M21 14v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5" />
-            </svg>
-          </button>
           <button type="button" className={styles.candidateExpandButton} onClick={onToggle} aria-expanded={isOpen} aria-label="Toggle match detail">
             <svg className={styles.candidateChevron} width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
               <path d="M6 9l6 6 6-6" />
