@@ -1535,7 +1535,10 @@ function RecommendedReviewCaseRow({
           </div>
         </div>
         <div className={styles.candidateRowActions}>
-          <span className={styles.recommendedConfidence}>{confidencePct}%</span>
+          <div className={styles.confidenceBlock}>
+            <span className={styles.recommendedConfidence}>{confidencePct}%</span>
+            <span className={styles.confidenceLabel}>match</span>
+          </div>
           {reviewCase.queue_state === "resolved" ? (
             <>
               {onRecreateAndUnmerge !== null ? (
@@ -1654,7 +1657,10 @@ function RecommendedMatchRow({
           </div>
         </button>
         <div className={styles.candidateRowActions}>
-          <span className={styles.recommendedConfidence}>{confidencePct}%</span>
+          <div className={styles.confidenceBlock}>
+            <span className={styles.recommendedConfidence}>{confidencePct}%</span>
+            <span className={styles.confidenceLabel}>match</span>
+          </div>
           <button type="button" className={styles.candidateMergeBtn} onClick={onReview}>
             Review
           </button>
