@@ -1,4 +1,5 @@
 import { bffFetch } from "@/lib/api-client";
+import { formatDob } from "@/lib/display";
 import type { Person } from "@/lib/api-types";
 import type {
   GoldenProfileSelectionRequestBody,
@@ -14,6 +15,7 @@ export interface GoldenProfileChoice {
   fieldName: GoldenProfileFieldName;
   label: string;
   value: string;
+  displayValue: string;
   sourceKind: GoldenProfileSourceKind;
   sourceRecordPk: string | null;
   identifierType: string | null;
@@ -202,11 +204,13 @@ function makeChoice(args: {
   sourceLabel: string;
   observedAt: string;
 }): GoldenProfileChoice {
+  const displayValue = args.fieldName === "preferred_dob" ? formatDob(args.value.slice(0, 10)) : args.value;
   return {
     key: [args.personId, args.fieldName, args.sourceKind, args.sourceRecordPk ?? "", args.value].join("|"),
     fieldName: args.fieldName,
     label: FIELD_LABELS[args.fieldName],
     value: args.value,
+    displayValue,
     sourceKind: args.sourceKind,
     sourceRecordPk: args.sourceRecordPk,
     identifierType: args.identifierType,

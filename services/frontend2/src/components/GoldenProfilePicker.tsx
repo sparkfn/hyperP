@@ -93,7 +93,7 @@ export default function GoldenProfilePicker({
                       disabled={disabled}
                       onChange={() => onChange(fieldName, choice.key)}
                     />
-                    <span className={styles.mergeFieldVal}>{choice.value}</span>
+                    <span className={styles.mergeFieldVal}>{choice.displayValue}</span>
                   </label>
                 )) : <span className={styles.mergeFieldEmpty}>—</span>}
               </div>
@@ -107,7 +107,7 @@ export default function GoldenProfilePicker({
                       disabled={disabled}
                       onChange={() => onChange(fieldName, choice.key)}
                     />
-                    <span className={styles.mergeFieldVal}>{choice.value}</span>
+                    <span className={styles.mergeFieldVal}>{choice.displayValue}</span>
                   </label>
                 )) : <span className={styles.mergeFieldEmpty}>—</span>}
               </div>

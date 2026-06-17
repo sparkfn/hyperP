@@ -260,9 +260,15 @@ the absorbed person are reconciled in the same transaction, each stamped with
 the `merge_event_id` so the change is reversible on unmerge:
 
 - other **person↔person** cases referencing the absorbed person are
-  auto-cancelled (`queue_state = cancelled`, `resolution = cancelled_superseded`,
-  `closed_by_merge_event_id` set). The pair they described no longer exists as
-  two distinct active persons.
+  **redirected** to the survivor: the `ABOUT_LEFT` or `ABOUT_RIGHT` relationship
+  that pointed at the absorbed person is repointed to the survivor
+  (`redirected_pair_by_merge_event_id`, `redirected_pair_from_person_id`,
+  `redirected_pair_side` set). The case stays open so the reviewer can
+  evaluate the pair under the merged identity.
+  _Edge case_: if both sides of the case were already absorbed↔survivor (i.e.
+  a duplicate open case for the same pair), it is cancelled instead
+  (`cancelled_superseded`, `closed_by_merge_event_id` set) — redirecting
+  would produce survivor↔survivor, which is meaningless.
 - open **record↔person** cases whose person side is the absorbed person are
   **redirected** to the survivor (`ABOUT_RIGHT` repointed; `redirected_by_merge_event_id`
   and `redirected_from_person_id` set), so the record is still reviewed against
@@ -505,8 +511,10 @@ Recommended path:
 7. the merge cascade onto review cases is reversed for this `merge_event_id`,
    but only where a human has not acted since the merge: record↔person cases
    redirected to the survivor are repointed back to the absorbed person (if
-   still open), and person↔person cases auto-cancelled by the merge are reopened
-   (if still in their system-set `cancelled` / `cancelled_superseded` state)
+   still open); person↔person cases redirected to the survivor are repointed
+   back to the absorbed person (if still open, keyed by `redirected_pair_side`);
+   person↔person cases auto-cancelled for the absorbed↔survivor edge case are
+   reopened (if still in their system-set `cancelled` / `cancelled_superseded` state)
 
 ## Reopen Policy
 

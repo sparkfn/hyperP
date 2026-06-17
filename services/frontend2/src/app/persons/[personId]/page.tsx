@@ -2,7 +2,7 @@
 
 import { Fragment, use, useCallback, useEffect, useId, useMemo, useRef, useState, type ReactElement } from "react";
 import Link from "next/link";
-import { notFound } from "next/navigation";
+import { notFound, useRouter } from "next/navigation";
 import type { Person, PersonConnection, SalesOrder } from "@/lib/api-types";
 import type {
   ChatMessage,
@@ -35,7 +35,7 @@ import { useSetLoading } from "@/lib/LoadingContext";
 import PersonFocusedGraph from "@/components/PersonFocusedGraph";
 import PersonGraphDialog from "@/components/PersonGraphDialog";
 import ReviewActionsPanel from "@/components/ReviewActionsPanel";
-import { ReviewCaseDetailModal } from "@/app/review/[reviewCaseId]/page";
+import { ReviewCaseDetailModal } from "@/app/review/[reviewCaseId]/ReviewCaseDetailModal";
 import type { ReviewCaseDetail, ReviewCaseSummary } from "@/lib/api-types-ops";
 import styles from "./person.module.css";
 
@@ -3458,6 +3458,7 @@ function catchNotFound(err: unknown): null {
 
 export default function PersonDetailPage({ params }: { params: Promise<{ personId: string }> }): ReactElement {
   const { personId } = use(params);
+  const router = useRouter();
 
   const [person, setPerson] = useState<Person | null>(null);
   const [detailData, setDetailData] = useState<DetailData>(EMPTY_DETAIL);
@@ -3502,6 +3503,10 @@ export default function PersonDetailPage({ params }: { params: Promise<{ personI
         ]);
 
         if (cancelled) return;
+        if (personRes.person_id !== personId) {
+          router.replace(toBasePath(`/persons/${personRes.person_id}`));
+          return;
+        }
         setPerson(personRes);
         setDetailData((current) => ({ ...current, identifiers: identifiersRes.data }));
         setLoading(false);

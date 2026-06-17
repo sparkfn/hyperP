@@ -304,11 +304,74 @@ MATCH (rc:ReviewCase)-[:FOR_DECISION]->(md:MatchDecision)
 MATCH (md)-[:ABOUT_LEFT {entity_type: 'person'}]->(a:Person)
 MATCH (md)-[:ABOUT_RIGHT {entity_type: 'person'}]->(b:Person)
 WHERE rc.queue_state IN ['open', 'assigned', 'deferred']
-  AND (a.person_id = $absorbed_id OR b.person_id = $absorbed_id)
+  AND (
+    (a.person_id = $absorbed_id AND b.person_id = $survivor_id)
+    OR (b.person_id = $absorbed_id AND a.person_id = $survivor_id)
+  )
 SET rc.queue_state = 'cancelled',
     rc.resolution = 'cancelled_superseded',
     rc.resolved_at = datetime(),
     rc.closed_by_merge_event_id = $merge_event_id,
+    rc.updated_at = datetime()
+"""
+
+REDIRECT_PERSON_PAIR_CASES_ABSORBED_LEFT = """
+MATCH (rc:ReviewCase)-[:FOR_DECISION]->(md:MatchDecision)
+MATCH (md)-[old_left:ABOUT_LEFT {entity_type: 'person'}]->(:Person {person_id: $absorbed_id})
+MATCH (md)-[:ABOUT_RIGHT {entity_type: 'person'}]->(other:Person)
+WHERE rc.queue_state IN ['open', 'assigned', 'deferred']
+  AND other.person_id <> $survivor_id
+MATCH (survivor:Person {person_id: $survivor_id})
+CREATE (md)-[:ABOUT_LEFT {entity_type: 'person'}]->(survivor)
+DELETE old_left
+SET rc.redirected_pair_by_merge_event_id = $merge_event_id,
+    rc.redirected_pair_from_person_id = $absorbed_id,
+    rc.redirected_pair_side = 'left',
+    rc.updated_at = datetime()
+"""
+
+REDIRECT_PERSON_PAIR_CASES_ABSORBED_RIGHT = """
+MATCH (rc:ReviewCase)-[:FOR_DECISION]->(md:MatchDecision)
+MATCH (md)-[:ABOUT_LEFT {entity_type: 'person'}]->(other:Person)
+MATCH (md)-[old_right:ABOUT_RIGHT {entity_type: 'person'}]->(:Person {person_id: $absorbed_id})
+WHERE rc.queue_state IN ['open', 'assigned', 'deferred']
+  AND other.person_id <> $survivor_id
+MATCH (survivor:Person {person_id: $survivor_id})
+CREATE (md)-[:ABOUT_RIGHT {entity_type: 'person'}]->(survivor)
+DELETE old_right
+SET rc.redirected_pair_by_merge_event_id = $merge_event_id,
+    rc.redirected_pair_from_person_id = $absorbed_id,
+    rc.redirected_pair_side = 'right',
+    rc.updated_at = datetime()
+"""
+
+REVERT_PERSON_PAIR_REDIRECTS_LEFT = """
+MATCH (rc:ReviewCase)-[:FOR_DECISION]->(md:MatchDecision)
+WHERE rc.redirected_pair_by_merge_event_id = $merge_event_id
+  AND rc.redirected_pair_side = 'left'
+  AND rc.queue_state IN ['open', 'assigned', 'deferred']
+MATCH (md)-[cur_left:ABOUT_LEFT {entity_type: 'person'}]->(:Person)
+MATCH (absorbed:Person {person_id: rc.redirected_pair_from_person_id})
+CREATE (md)-[:ABOUT_LEFT {entity_type: 'person'}]->(absorbed)
+DELETE cur_left
+SET rc.redirected_pair_by_merge_event_id = null,
+    rc.redirected_pair_from_person_id = null,
+    rc.redirected_pair_side = null,
+    rc.updated_at = datetime()
+"""
+
+REVERT_PERSON_PAIR_REDIRECTS_RIGHT = """
+MATCH (rc:ReviewCase)-[:FOR_DECISION]->(md:MatchDecision)
+WHERE rc.redirected_pair_by_merge_event_id = $merge_event_id
+  AND rc.redirected_pair_side = 'right'
+  AND rc.queue_state IN ['open', 'assigned', 'deferred']
+MATCH (md)-[cur_right:ABOUT_RIGHT {entity_type: 'person'}]->(:Person)
+MATCH (absorbed:Person {person_id: rc.redirected_pair_from_person_id})
+CREATE (md)-[:ABOUT_RIGHT {entity_type: 'person'}]->(absorbed)
+DELETE cur_right
+SET rc.redirected_pair_by_merge_event_id = null,
+    rc.redirected_pair_from_person_id = null,
+    rc.redirected_pair_side = null,
     rc.updated_at = datetime()
 """
 

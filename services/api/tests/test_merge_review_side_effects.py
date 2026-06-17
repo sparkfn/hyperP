@@ -8,9 +8,13 @@ import pytest
 from neo4j import AsyncManagedTransaction
 from src.graph.queries import (
     CLOSE_PERSON_PAIR_CASES_FOR_ABSORBED,
+    REDIRECT_PERSON_PAIR_CASES_ABSORBED_LEFT,
+    REDIRECT_PERSON_PAIR_CASES_ABSORBED_RIGHT,
     REDIRECT_RECORD_PERSON_CASES_FOR_ABSORBED,
     REVERT_MERGE,
     REVERT_PERSON_PAIR_CASE_CLOSURES,
+    REVERT_PERSON_PAIR_REDIRECTS_LEFT,
+    REVERT_PERSON_PAIR_REDIRECTS_RIGHT,
     REVERT_RECORD_PERSON_CASE_REDIRECTS,
 )
 from src.repositories.neo4j._merge_side_effects import (
@@ -22,10 +26,23 @@ from src.repositories.neo4j.merge import _unmerge_tx
 # --- Query constant shape -------------------------------------------------
 
 
-def test_close_query_targets_open_person_pair_cases() -> None:
+def test_close_query_targets_only_absorbed_survivor_pair() -> None:
     assert "cancelled_superseded" in CLOSE_PERSON_PAIR_CASES_FOR_ABSORBED
     assert "closed_by_merge_event_id" in CLOSE_PERSON_PAIR_CASES_FOR_ABSORBED
     assert "queue_state IN ['open', 'assigned', 'deferred']" in CLOSE_PERSON_PAIR_CASES_FOR_ABSORBED
+    assert "$survivor_id" in CLOSE_PERSON_PAIR_CASES_FOR_ABSORBED
+
+
+def test_redirect_pair_queries_repoint_absorbed_side() -> None:
+    for q, side in [
+        (REDIRECT_PERSON_PAIR_CASES_ABSORBED_LEFT, "ABOUT_LEFT"),
+        (REDIRECT_PERSON_PAIR_CASES_ABSORBED_RIGHT, "ABOUT_RIGHT"),
+    ]:
+        assert side in q
+        assert "redirected_pair_by_merge_event_id" in q
+        assert "redirected_pair_side" in q
+        assert "$survivor_id" in q
+        assert "queue_state IN ['open', 'assigned', 'deferred']" in q
 
 
 def test_redirect_query_rewires_about_right_for_record_cases() -> None:
@@ -35,10 +52,15 @@ def test_redirect_query_rewires_about_right_for_record_cases() -> None:
 
 
 def test_revert_queries_are_event_scoped_and_state_guarded() -> None:
-    assert (
-        "redirected_by_merge_event_id = $merge_event_id" in REVERT_RECORD_PERSON_CASE_REDIRECTS
-    )
+    assert "redirected_by_merge_event_id = $merge_event_id" in REVERT_RECORD_PERSON_CASE_REDIRECTS
     assert "queue_state IN ['open', 'assigned', 'deferred']" in REVERT_RECORD_PERSON_CASE_REDIRECTS
+    for q, side in [
+        (REVERT_PERSON_PAIR_REDIRECTS_LEFT, "'left'"),
+        (REVERT_PERSON_PAIR_REDIRECTS_RIGHT, "'right'"),
+    ]:
+        assert "redirected_pair_by_merge_event_id = $merge_event_id" in q
+        assert side in q
+        assert "queue_state IN ['open', 'assigned', 'deferred']" in q
     assert "closed_by_merge_event_id = $merge_event_id" in REVERT_PERSON_PAIR_CASE_CLOSURES
     assert "rc.queue_state = 'cancelled'" in REVERT_PERSON_PAIR_CASE_CLOSURES
 
@@ -69,29 +91,32 @@ class _RecordingTx:
 
 
 @pytest.mark.asyncio
-async def test_apply_closes_then_redirects_with_event_stamp() -> None:
+async def test_apply_closes_moot_then_redirects_pair_then_record() -> None:
     tx = _RecordingTx()
     await apply_merge_review_side_effects(
         cast(AsyncManagedTransaction, tx), "merge-1", "person-a", "person-b"
     )
     assert [c.query for c in tx.calls] == [
         CLOSE_PERSON_PAIR_CASES_FOR_ABSORBED,
+        REDIRECT_PERSON_PAIR_CASES_ABSORBED_LEFT,
+        REDIRECT_PERSON_PAIR_CASES_ABSORBED_RIGHT,
         REDIRECT_RECORD_PERSON_CASES_FOR_ABSORBED,
     ]
-    assert tx.calls[0].params == {"absorbed_id": "person-a", "merge_event_id": "merge-1"}
-    assert tx.calls[1].params == {
-        "absorbed_id": "person-a",
-        "survivor_id": "person-b",
-        "merge_event_id": "merge-1",
-    }
+    pair_params = {"absorbed_id": "person-a", "survivor_id": "person-b", "merge_event_id": "merge-1"}
+    assert tx.calls[0].params == pair_params
+    assert tx.calls[1].params == pair_params
+    assert tx.calls[2].params == pair_params
+    assert tx.calls[3].params == pair_params
 
 
 @pytest.mark.asyncio
-async def test_revert_reverts_redirects_then_closures() -> None:
+async def test_revert_reverts_record_then_pair_redirects_then_closures() -> None:
     tx = _RecordingTx()
     await revert_merge_review_side_effects(cast(AsyncManagedTransaction, tx), "merge-1")
     assert [c.query for c in tx.calls] == [
         REVERT_RECORD_PERSON_CASE_REDIRECTS,
+        REVERT_PERSON_PAIR_REDIRECTS_LEFT,
+        REVERT_PERSON_PAIR_REDIRECTS_RIGHT,
         REVERT_PERSON_PAIR_CASE_CLOSURES,
     ]
     assert all(c.params == {"merge_event_id": "merge-1"} for c in tx.calls)
@@ -126,6 +151,8 @@ async def test_unmerge_reverts_review_side_effects() -> None:
             None,  # CREATE_UNMERGE_AUDIT
             None,  # FLAG_AFFECTED_RECORDS_FOR_REVIEW
             None,  # REVERT_RECORD_PERSON_CASE_REDIRECTS
+            None,  # REVERT_PERSON_PAIR_REDIRECTS_LEFT
+            None,  # REVERT_PERSON_PAIR_REDIRECTS_RIGHT
             None,  # REVERT_PERSON_PAIR_CASE_CLOSURES
         ]
     )
@@ -136,6 +163,7 @@ async def test_unmerge_reverts_review_side_effects() -> None:
 
     assert result == ("person-a", "person-b")
     assert REVERT_RECORD_PERSON_CASE_REDIRECTS in tx.queries
+    assert REVERT_PERSON_PAIR_REDIRECTS_LEFT in tx.queries
+    assert REVERT_PERSON_PAIR_REDIRECTS_RIGHT in tx.queries
     assert REVERT_PERSON_PAIR_CASE_CLOSURES in tx.queries
-    # Revert runs after the graph unmerge is reverted.
     assert tx.queries.index(REVERT_MERGE) < tx.queries.index(REVERT_RECORD_PERSON_CASE_REDIRECTS)

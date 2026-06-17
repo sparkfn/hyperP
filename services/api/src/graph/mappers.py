@@ -9,6 +9,7 @@ from typing import Literal, cast, get_args
 from neo4j.time import DateTime as Neo4jDateTime
 from pydantic.types import JsonValue
 
+from src.display_format import format_display_date
 from src.graph.converters import (
     GraphRecord,
     GraphValue,
@@ -422,7 +423,7 @@ def map_shared_identifier_candidate(record: GraphRecord) -> PersonSharedIdentifi
         preferred_full_name=to_optional_str(record.get("preferred_full_name")),
         preferred_phone=to_optional_str(record.get("preferred_phone")),
         preferred_email=to_optional_str(record.get("preferred_email")),
-        preferred_dob=to_optional_str(record.get("preferred_dob")),
+        preferred_dob=_fmt_dob(to_optional_str(record.get("preferred_dob"))),
         profile_completeness_score=to_float(record.get("profile_completeness_score")),
         identifier_strength=_identifier_strength(identifiers),
         identifiers=identifiers,
@@ -604,6 +605,13 @@ def _map_sales_summary(
     )
 
 
+def _fmt_dob(value: str | None) -> str | None:
+    if value is None:
+        return None
+    formatted = format_display_date(value)
+    return formatted if formatted else value
+
+
 def _map_comparison_entity(
     kind: GraphValue,
     entity: GraphValue,
@@ -624,7 +632,7 @@ def _map_comparison_entity(
         preferred_full_name=to_optional_str(e.get("preferred_full_name")),
         preferred_phone=to_optional_str(e.get("preferred_phone")),
         preferred_email=to_optional_str(e.get("preferred_email")),
-        preferred_dob=to_optional_str(e.get("preferred_dob")),
+        preferred_dob=_fmt_dob(to_optional_str(e.get("preferred_dob"))),
         preferred_address=map_address(address),
     )
 
@@ -643,7 +651,7 @@ def _map_source_record_comparison(
         preferred_full_name=_attribute_value(payload, "full_name"),
         preferred_phone=_identifier_value(payload, "phone"),
         preferred_email=_identifier_value(payload, "email"),
-        preferred_dob=_attribute_value(payload, "dob"),
+        preferred_dob=_fmt_dob(_attribute_value(payload, "dob")),
         preferred_address=_source_record_address(payload),
         sales_summary=_map_sales_summary(sales_order, sales_units),
     )
