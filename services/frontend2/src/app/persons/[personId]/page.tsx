@@ -32,6 +32,8 @@ import { toBasePath } from "@/lib/route-paths";
 import type { PublicLink } from "@/lib/api-types";
 import { avatarColor, completenessColor } from "@/lib/display";
 import { useSetLoading } from "@/lib/LoadingContext";
+import ActionToast from "@/components/ActionToast";
+import MergeOverlay from "@/components/MergeOverlay";
 import PersonFocusedGraph from "@/components/PersonFocusedGraph";
 import PersonGraphDialog from "@/components/PersonGraphDialog";
 import ReviewActionsPanel from "@/components/ReviewActionsPanel";
@@ -660,18 +662,26 @@ function SectionNav({ sections, scrollRef, onJump }: { sections: SectionConfig[]
     const root = scrollRef.current;
     if (!root) return;
     const ids = sectionIdsKey.split(",");
-    const observers: IntersectionObserver[] = [];
-    for (const id of ids) {
-      const el = document.getElementById(id);
-      if (!el) continue;
-      const obs = new IntersectionObserver(
-        ([entry]) => { if (entry?.isIntersecting) setActiveId(id); },
-        { root, rootMargin: "0px 0px -70% 0px", threshold: 0 },
-      );
-      obs.observe(el);
-      observers.push(obs);
+
+    function onScroll(): void {
+      const rootTop = root!.getBoundingClientRect().top;
+      let bestId = ids[0] ?? "";
+      let bestDist = Infinity;
+      for (const id of ids) {
+        const el = document.getElementById(id);
+        if (!el) continue;
+        const dist = Math.abs(el.getBoundingClientRect().top - rootTop);
+        if (dist < bestDist) {
+          bestDist = dist;
+          bestId = id;
+        }
+      }
+      setActiveId(bestId);
     }
-    return () => { observers.forEach((o) => o.disconnect()); };
+
+    root.addEventListener("scroll", onScroll, { passive: true });
+    onScroll();
+    return () => root.removeEventListener("scroll", onScroll);
   }, [sectionIdsKey, scrollRef]);
 
   function scrollTo(id: string): void {
@@ -1470,11 +1480,6 @@ function RecommendedMatchDetailPanel({
 
   return (
     <div className={styles.recommendedUnifiedCard}>
-      <div className={styles.recommendedUnifiedHeader}>
-        <span className={styles.candidateReasonLabel}>Pair decision</span>
-        <span className={`${styles.matchDecisionBadge} ${decisionBadgeClass(match.decision) ?? ""}`}>{titleCase(match.decision)}</span>
-        <span className={styles.recommendedConfidence}>{Math.round(match.confidence * 100)}%</span>
-      </div>
 
       {combinedSignals.length > 0 ? (
         <RecommendedEvidenceCard
@@ -1805,6 +1810,8 @@ function MatchesTab({ personId, currentPerson, currentIdentifiers, activeMatches
   const [recommendedActionError, setRecommendedActionError] = useState<string | null>(null);
   const [openReviewDecisionIds, setOpenReviewDecisionIds] = useState<Set<string>>(new Set());
   const showResolvedReviewCases = activeMatchesTab === "resolved-cases";
+  const [reviewCasesPage, setReviewCasesPage] = useState<number>(0);
+  useEffect(() => { setReviewCasesPage(0); }, [showResolvedReviewCases]);
   const [reviewActionCase, setReviewActionCase] = useState<ReviewCaseSummary | null>(null);
   const [reviewCaseIdsByDecision, setReviewCaseIdsByDecision] = useState<Record<string, string>>({});
   const [reviewCaseDetails, setReviewCaseDetails] = useState<Record<string, ReviewCaseDetail>>({});
@@ -1816,6 +1823,10 @@ function MatchesTab({ personId, currentPerson, currentIdentifiers, activeMatches
   const [unmergeReason, setUnmergeReason] = useState("");
   const [unmergeSubmitting, setUnmergeSubmitting] = useState(false);
   const [unmergeError, setUnmergeError] = useState<string | null>(null);
+  const [locallyUnmergedIds, setLocallyUnmergedIds] = useState<Set<string>>(new Set());
+  const [recreateBusy, setRecreateBusy] = useState(false);
+  const [recreateConfirm, setRecreateConfirm] = useState<{ reviewCaseId: string; mergeEventId: string | null; summary: ReviewCaseSummary } | null>(null);
+  const [operationToast, setOperationToast] = useState<{ type: "success" | "error"; message: string } | null>(null);
   const [viewingReviewCaseId, setViewingReviewCaseId] = useState<string | null>(null);
 
   const recommendedResult = usePaginatedFetch<PersonMatchDecision>(
@@ -1894,7 +1905,7 @@ function MatchesTab({ personId, currentPerson, currentIdentifiers, activeMatches
       return null;
     })
     .filter((id): id is string => id !== null);
-  const mergeHistoryRows = (mergeHistoryResult.rows ?? []).filter((event) => event.event_type === "manual_merge" || event.event_type === "unmerge");
+  const mergeHistoryRows = mergeHistoryResult.rows ?? [];
   const recommendedPersonIdsKey = recommendedPersonIds.join("|");
 
   useEffect(() => {
@@ -2018,18 +2029,24 @@ function MatchesTab({ personId, currentPerson, currentIdentifiers, activeMatches
 
   async function recreateReviewCase(reviewCaseId: string): Promise<void> {
     setRecommendedActionError(null);
+    setRecreateBusy(true);
     try {
       await bffFetchEnvelope<ReviewCaseDetail>(`/bff/review-cases/${encodeURIComponent(reviewCaseId)}/recreate`, {
         method: "POST",
       });
+      setOperationToast({ type: "success", message: "Review case recreated successfully." });
       window.location.reload();
     } catch (error: unknown) {
-      setRecommendedActionError(error instanceof BffError ? error.message : "Failed to recreate review case.");
+      const msg = error instanceof BffError ? error.message : "Failed to recreate review case.";
+      setRecommendedActionError(msg);
+      setOperationToast({ type: "error", message: msg });
+      setRecreateBusy(false);
     }
   }
 
   async function recreateAndUnmergeReviewCase(reviewCaseId: string, mergeEventId: string): Promise<void> {
     setRecommendedActionError(null);
+    setRecreateBusy(true);
     try {
       const body: UnmergeRequestBody = {
         merge_event_id: mergeEventId,
@@ -2043,9 +2060,13 @@ function MatchesTab({ personId, currentPerson, currentIdentifiers, activeMatches
       await bffFetchEnvelope<ReviewCaseDetail>(`/bff/review-cases/${encodeURIComponent(reviewCaseId)}/recreate`, {
         method: "POST",
       });
+      setOperationToast({ type: "success", message: "Unmerged and review case recreated." });
       window.location.reload();
     } catch (error: unknown) {
-      setRecommendedActionError(error instanceof BffError ? error.message : "Failed to recreate and unmerge review case.");
+      const msg = error instanceof BffError ? error.message : "Failed to recreate and unmerge review case.";
+      setRecommendedActionError(msg);
+      setOperationToast({ type: "error", message: msg });
+      setRecreateBusy(false);
     }
   }
 
@@ -2060,19 +2081,47 @@ function MatchesTab({ personId, currentPerson, currentIdentifiers, activeMatches
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
       });
+      setOperationToast({ type: "success", message: "Profiles unmerged successfully." });
+      await new Promise<void>((resolve) => setTimeout(resolve, 300));
       window.location.reload();
     } catch (e) {
-      setUnmergeError(e instanceof BffError ? e.message : "Failed to unmerge profiles.");
+      const msg = e instanceof BffError ? e.message : "Failed to unmerge profiles.";
+      if (msg.toLowerCase().includes("already unmerged") || msg.toLowerCase().includes("not found")) {
+        setLocallyUnmergedIds((prev) => new Set([...prev, unmergeTarget.merge_event_id]));
+        setUnmergeTarget(null);
+        setOperationToast({ type: "error", message: "This merge has already been reversed." });
+      } else {
+        setUnmergeError(msg);
+        setOperationToast({ type: "error", message: msg });
+      }
     } finally {
       setUnmergeSubmitting(false);
     }
   }
 
-  const unmergedMergeEventIds = useMemo(() =>
-    new Set(mergeHistoryRows.filter((event) => event.event_type === "unmerge").map((event) => event.metadata?.original_merge_event_id).filter((id): id is string => Boolean(id))),
-  [mergeHistoryRows]);
+  const [accumulatedUnmergedIds, setAccumulatedUnmergedIds] = useState<Set<string>>(new Set());
+  useEffect(() => {
+    const ids = mergeHistoryRows
+      .filter((event) => event.event_type === "unmerge")
+      .map((event) => event.metadata?.original_merge_event_id)
+      .filter((id): id is string => Boolean(id));
+    if (ids.length > 0) {
+      setAccumulatedUnmergedIds((prev) => {
+        const hasNew = ids.some((id) => !prev.has(id));
+        if (!hasNew) return prev;
+        return new Set([...prev, ...ids]);
+      });
+    }
+  }, [mergeHistoryRows]);
+  const unmergedMergeEventIds = new Set([...accumulatedUnmergedIds, ...locallyUnmergedIds]);
   const hasRecommendations = recommendedReviewCases.length > 0;
   const recommendationCount = recommendedReviewCases.length;
+  const REVIEW_CASES_PAGE_SIZE = 5;
+  const pagedReviewCases = recommendedReviewCases.slice(reviewCasesPage * REVIEW_CASES_PAGE_SIZE, (reviewCasesPage + 1) * REVIEW_CASES_PAGE_SIZE);
+  const reviewCasesHasPrev = reviewCasesPage > 0;
+  const reviewCasesHasNext = (reviewCasesPage + 1) * REVIEW_CASES_PAGE_SIZE < recommendedReviewCases.length;
+  const reviewCasesFrom = recommendedReviewCases.length > 0 ? reviewCasesPage * REVIEW_CASES_PAGE_SIZE + 1 : 0;
+  const reviewCasesTo = Math.min((reviewCasesPage + 1) * REVIEW_CASES_PAGE_SIZE, recommendedReviewCases.length);
   const actionableResolvedReviewCaseIds = useMemo(() => {
     if (!showResolvedReviewCases) return new Set<string>();
     const seenDecisionIds = new Set<string>();
@@ -2105,7 +2154,7 @@ function MatchesTab({ personId, currentPerson, currentIdentifiers, activeMatches
               </div>
               {recommendedActionError !== null ? <div className={styles.tabError}>{recommendedActionError}</div> : null}
               <div className={styles.matchList}>
-                {recommendedReviewCases.map((reviewCase) => {
+                {pagedReviewCases.map((reviewCase) => {
                   const rightId = reviewCase.right_person_id ?? null;
                   const leftId = reviewCase.left_person_id ?? null;
                   const candidateId = (rightId !== null && rightId !== personId) ? rightId : (leftId ?? "");
@@ -2134,13 +2183,24 @@ function MatchesTab({ personId, currentPerson, currentIdentifiers, activeMatches
                       }}
                       onReview={() => setReviewActionCase(reviewCase)}
                       onView={() => setViewingReviewCaseId(reviewCase.review_case_id)}
-                      onRecreate={hasOpenCase || nonSurvivorIsInactive || !isActionableResolvedCase ? undefined : () => void recreateReviewCase(reviewCase.review_case_id)}
-                      onRecreateAndUnmerge={isActionableResolvedCase && ((reviewCase.queue_state !== "resolved" && nonSurvivorIsInactive && mergeEvent !== null) || (!hasOpenCase && nonSurvivorIsInactive && mergeEvent !== null)) ? () => void recreateAndUnmergeReviewCase(reviewCase.review_case_id, mergeEvent.merge_event_id) : null}
+                      onRecreate={hasOpenCase || nonSurvivorIsInactive || !isActionableResolvedCase ? undefined : () => setRecreateConfirm({ reviewCaseId: reviewCase.review_case_id, mergeEventId: null, summary: reviewCase })}
+                      onRecreateAndUnmerge={isActionableResolvedCase && ((reviewCase.queue_state !== "resolved" && nonSurvivorIsInactive && mergeEvent !== null) || (!hasOpenCase && nonSurvivorIsInactive && mergeEvent !== null)) ? () => setRecreateConfirm({ reviewCaseId: reviewCase.review_case_id, mergeEventId: mergeEvent.merge_event_id, summary: reviewCase }) : null}
                       needsUnmergeBeforeReview={reviewCase.queue_state !== "resolved" && nonSurvivorIsInactive}
                     />
                   );
                 })}
               </div>
+              {(reviewCasesHasPrev || reviewCasesHasNext) && (
+                <TabPagination
+                  from={reviewCasesFrom}
+                  to={reviewCasesTo}
+                  total={recommendationCount}
+                  hasPrev={reviewCasesHasPrev}
+                  hasNext={reviewCasesHasNext}
+                  onPrev={() => setReviewCasesPage((p) => p - 1)}
+                  onNext={() => setReviewCasesPage((p) => p + 1)}
+                />
+              )}
             </div>
           )}
         </div>
@@ -2202,16 +2262,66 @@ function MatchesTab({ personId, currentPerson, currentIdentifiers, activeMatches
                 rightPersonId={reviewActionCase.right_person_id ?? null}
                 leftPersonStatus={reviewActionCase.left_person_status ?? null}
                 rightPersonStatus={reviewActionCase.right_person_status ?? null}
-                onChanged={() => window.location.reload()}
+                onChanged={async () => {
+                  await new Promise<void>((resolve) => setTimeout(resolve, 1500));
+                  window.location.reload();
+                }}
                 embedded
               />
             ) : null}
           </div>
         </div>
       ) : null}
+      {recreateConfirm !== null && (
+        <div className={styles.shareOverlay} onClick={() => { if (!recreateBusy) setRecreateConfirm(null); }}>
+          <div className={`${styles.overrideModal} ${styles.unmergeModal}`} onClick={(e) => e.stopPropagation()}>
+            {recreateBusy && <MergeOverlay label="Processing…" />}
+            <div className={styles.shareModalHeader}>
+              <span className={styles.shareModalTitle}>
+                {recreateConfirm.mergeEventId !== null ? "Recreate & unmerge" : "Recreate review case"}
+              </span>
+              <button type="button" className={styles.shareModalClose} onClick={() => setRecreateConfirm(null)} disabled={recreateBusy} aria-label="Close">×</button>
+            </div>
+            <div className={styles.recreatePreview}>
+              <div className={styles.recreatePreviewNames}>
+                <span>{recreateConfirm.summary.left_person_name ?? "—"}</span>
+                <span className={styles.recreatePreviewArrow}>↔</span>
+                <span>{recreateConfirm.summary.right_person_name ?? "—"}</span>
+              </div>
+              <div className={styles.recreatePreviewMeta}>
+                {Math.round(recreateConfirm.summary.match_decision.confidence * 100)}% confidence
+              </div>
+            </div>
+            <p className={styles.shareModalDesc}>
+              {recreateConfirm.mergeEventId !== null
+                ? "This will unmerge the profiles and open a new review case for re-evaluation."
+                : "This will reopen a new review case for this match pair so it can be reviewed again."}
+            </p>
+            <div className={styles.mergeModalActions}>
+              <button type="button" className={styles.secondaryBtn} onClick={() => setRecreateConfirm(null)} disabled={recreateBusy}>Cancel</button>
+              <button
+                type="button"
+                className={recreateConfirm.mergeEventId !== null ? styles.dangerBtn : styles.primaryBtn}
+                disabled={recreateBusy}
+                onClick={() => {
+                  const { reviewCaseId, mergeEventId } = recreateConfirm;
+                  if (mergeEventId !== null) {
+                    void recreateAndUnmergeReviewCase(reviewCaseId, mergeEventId);
+                  } else {
+                    void recreateReviewCase(reviewCaseId);
+                  }
+                }}
+              >
+                Confirm
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       {unmergeTarget !== null && (
         <div className={styles.shareOverlay} onClick={() => setUnmergeTarget(null)}>
           <div className={`${styles.overrideModal} ${styles.mergeModal} ${styles.unmergeModal}`} onClick={(e) => e.stopPropagation()}>
+            {unmergeSubmitting && <MergeOverlay label="Unmerging…" />}
             <div className={styles.shareModalHeader}>
               <span className={styles.shareModalTitle}>Unmerge profiles</span>
               <button type="button" className={styles.shareModalClose} onClick={() => setUnmergeTarget(null)} disabled={unmergeSubmitting} aria-label="Close">×</button>
@@ -2239,6 +2349,9 @@ function MatchesTab({ personId, currentPerson, currentIdentifiers, activeMatches
           if (wasActioned) onPersonRefresh();
         }}
       />
+      {operationToast !== null && (
+        <ActionToast type={operationToast.type} message={operationToast.message} onDismiss={() => setOperationToast(null)} />
+      )}
     </>
   );
 }
@@ -2533,6 +2646,8 @@ function AuditTab({ personId, onTotalLoaded }: { personId: string; onTotalLoaded
   const [unmergeReason, setUnmergeReason] = useState("");
   const [unmergeSubmitting, setUnmergeSubmitting] = useState(false);
   const [unmergeError, setUnmergeError] = useState<string | null>(null);
+  const [unmergeToast, setUnmergeToast] = useState<{ type: "success" | "error"; message: string } | null>(null);
+  const [locallyUnmergedIds, setLocallyUnmergedIds] = useState<Set<string>>(new Set());
 
   async function submitUnmerge(): Promise<void> {
     if (unmergeTarget === null || !unmergeReason.trim()) return;
@@ -2545,9 +2660,19 @@ function AuditTab({ personId, onTotalLoaded }: { personId: string; onTotalLoaded
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
       });
+      setUnmergeToast({ type: "success", message: "Profiles unmerged successfully." });
+      await new Promise<void>((resolve) => setTimeout(resolve, 300));
       window.location.reload();
     } catch (e) {
-      setUnmergeError(e instanceof BffError ? e.message : "Failed to unmerge profiles.");
+      const msg = e instanceof BffError ? e.message : "Failed to unmerge profiles.";
+      if (msg.toLowerCase().includes("already unmerged") || msg.toLowerCase().includes("not found")) {
+        setLocallyUnmergedIds((prev) => new Set([...prev, unmergeTarget.merge_event_id]));
+        setUnmergeTarget(null);
+        setUnmergeToast({ type: "error", message: "This merge has already been reversed." });
+      } else {
+        setUnmergeError(msg);
+        setUnmergeToast({ type: "error", message: msg });
+      }
     } finally {
       setUnmergeSubmitting(false);
     }
@@ -2555,10 +2680,21 @@ function AuditTab({ personId, onTotalLoaded }: { personId: string; onTotalLoaded
 
   useEffect(() => { if (total !== null) onTotalLoaded(total); }, [total, onTotalLoaded]);
 
-  const unmergedMergeEventIds = useMemo(() => new Set(audit
-    .filter((event) => event.event_type === "unmerge")
-    .map((event) => event.metadata.original_merge_event_id)
-    .filter((mergeEventId): mergeEventId is string => Boolean(mergeEventId))), [audit]);
+  const [accumulatedUnmergedIds, setAccumulatedUnmergedIds] = useState<Set<string>>(new Set());
+  useEffect(() => {
+    const ids = audit
+      .filter((event) => event.event_type === "unmerge")
+      .map((event) => event.metadata.original_merge_event_id)
+      .filter((id): id is string => Boolean(id));
+    if (ids.length > 0) {
+      setAccumulatedUnmergedIds((prev) => {
+        const hasNew = ids.some((id) => !prev.has(id));
+        if (!hasNew) return prev;
+        return new Set([...prev, ...ids]);
+      });
+    }
+  }, [audit]);
+  const unmergedMergeEventIds = new Set([...accumulatedUnmergedIds, ...locallyUnmergedIds]);
 
   if (loading) return <SkeletonAudit />;
   if (error) return <div className={styles.tabError}>{error}</div>;
@@ -2591,6 +2727,7 @@ function AuditTab({ personId, onTotalLoaded }: { personId: string; onTotalLoaded
       {unmergeTarget !== null && (
         <div className={styles.shareOverlay} onClick={() => setUnmergeTarget(null)}>
           <div className={`${styles.overrideModal} ${styles.mergeModal} ${styles.unmergeModal}`} onClick={(e) => e.stopPropagation()}>
+            {unmergeSubmitting && <MergeOverlay label="Unmerging…" />}
             <div className={styles.shareModalHeader}>
               <span className={styles.shareModalTitle}>Unmerge profiles</span>
               <button type="button" className={styles.shareModalClose} onClick={() => setUnmergeTarget(null)} disabled={unmergeSubmitting} aria-label="Close">×</button>
@@ -2606,6 +2743,9 @@ function AuditTab({ personId, onTotalLoaded }: { personId: string; onTotalLoaded
             </div>
           </div>
         </div>
+      )}
+      {unmergeToast !== null && (
+        <ActionToast type={unmergeToast.type} message={unmergeToast.message} onDismiss={() => setUnmergeToast(null)} />
       )}
     </>
   );

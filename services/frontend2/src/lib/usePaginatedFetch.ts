@@ -20,21 +20,23 @@ export interface PaginatedResult<T> {
   goPrev: () => void;
 }
 
-/** Page-0 data the caller already fetched, used to skip the initial network
- *  request. Must be a single `PAGE_SIZE` page so pagination stays consistent. */
 export interface PaginatedSeed<T> {
   rows: T[];
   nextCursor: string | null;
   total: number | null;
 }
 
-/** Build a page-0 seed from an already-fetched envelope (or null on a skipped /
- *  failed fetch). The envelope must come from a `PAGE_SIZE` request. */
 export function seedFromEnvelope<T>(res: ApiResponse<T[]> | null): PaginatedSeed<T> | null {
-  return res ? { rows: res.data, nextCursor: res.meta.next_cursor, total: res.meta.total_count ?? null } : null;
+  return res === null ? null : { rows: res.data, nextCursor: res.meta.next_cursor ?? null, total: res.meta.total_count ?? null };
 }
 
-export function usePaginatedFetch<T>(basePath: string, seed?: PaginatedSeed<T> | null): PaginatedResult<T> {
+export function usePaginatedFetch<T>(
+  basePath: string,
+  seedOrLimit?: PaginatedSeed<T> | null | number,
+  limitOverride?: number,
+): PaginatedResult<T> {
+  const seed = typeof seedOrLimit === "number" ? null : seedOrLimit;
+  const limit = typeof seedOrLimit === "number" ? seedOrLimit : (limitOverride ?? PAGE_SIZE);
   const [cursor, setCursor] = useState<string | null>(null);
   const [prevStack, setPrevStack] = useState<(string | null)[]>([]);
   const [nextCursor, setNextCursor] = useState<string | null>(seed?.nextCursor ?? null);
@@ -42,11 +44,8 @@ export function usePaginatedFetch<T>(basePath: string, seed?: PaginatedSeed<T> |
   const [total, setTotal] = useState<number | null>(seed?.total ?? null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState<boolean>(seed == null);
-  const id = useId();
   const setGlobalLoading = useSetLoading();
-  // Honour the seed only for the first render of the initial basePath + page 0.
-  // Once consumed (or once the caller paginates / changes basePath) we fetch
-  // normally. Callers that pass no seed are entirely unaffected.
+  const id = useId();
   const seedForBasePath = useRef<string | null>(seed != null ? basePath : null);
 
   useEffect(() => {
@@ -62,26 +61,28 @@ export function usePaginatedFetch<T>(basePath: string, seed?: PaginatedSeed<T> |
     setRows(null);
     setError(null);
     const sep = basePath.includes("?") ? "&" : "?";
-    const url = `${basePath}${sep}limit=${PAGE_SIZE}${cursor !== null ? `&cursor=${encodeURIComponent(cursor)}` : ""}`;
+    const url = `${basePath}${sep}limit=${limit}${cursor !== null ? `&cursor=${encodeURIComponent(cursor)}` : ""}`;
     const controller = new AbortController();
     const run = async (): Promise<void> => {
       try {
-        const envelope = await bffFetchEnvelope<T[]>(url, { signal: controller.signal });
+        const res = await bffFetchEnvelope<T[]>(url, { signal: controller.signal });
         if (!cancelled) {
-          setRows(envelope.data);
-          setNextCursor(envelope.meta.next_cursor);
-          setTotal(envelope.meta.total_count ?? null);
+          setRows(res.data);
+          setNextCursor(res.meta.next_cursor);
+          setTotal(res.meta.total_count ?? null);
         }
       } catch (err: unknown) {
-        if (cancelled) return;
-        if (err instanceof BffError && err.status === 404) {
+        if (!cancelled) {
           setRows([]);
-          setTotal(0);
-        } else {
-          setError(err instanceof BffError ? err.message : "Failed to load.");
+          setNextCursor(null);
+          setTotal(null);
+          setError(err instanceof BffError ? err.message : "Failed to load data.");
         }
       } finally {
-        if (!cancelled) { setLoading(false); setGlobalLoading(id, false); }
+        if (!cancelled) {
+          setLoading(false);
+          setGlobalLoading(id, false);
+        }
       }
     };
     void run();
@@ -90,7 +91,7 @@ export function usePaginatedFetch<T>(basePath: string, seed?: PaginatedSeed<T> |
       controller.abort();
       setGlobalLoading(id, false);
     };
-  }, [basePath, cursor, id, setGlobalLoading]);
+  }, [basePath, cursor, id, limit, setGlobalLoading]);
 
   const goNext = useCallback((): void => {
     if (nextCursor === null) return;
@@ -104,7 +105,7 @@ export function usePaginatedFetch<T>(basePath: string, seed?: PaginatedSeed<T> |
     setCursor(prevCursor);
   }, [prevStack]);
 
-  const pageStart = prevStack.length * PAGE_SIZE + 1;
+  const pageStart = prevStack.length * limit + 1;
   return {
     rows,
     error,

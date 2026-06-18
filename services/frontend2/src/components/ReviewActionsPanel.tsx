@@ -32,6 +32,8 @@ interface ReviewActionsPanelProps {
   defaultSurvivorPersonId?: string | null;
   onChanged: () => void;
   embedded?: boolean;
+  onActionBusy?: (busy: boolean) => void;
+  onActionDone?: (success: boolean, message: string) => void;
 }
 
 function isReviewActionType(value: string): value is ReviewActionType {
@@ -100,6 +102,8 @@ export default function ReviewActionsPanel({
   defaultSurvivorPersonId,
   onChanged,
   embedded = false,
+  onActionBusy,
+  onActionDone,
 }: ReviewActionsPanelProps): ReactElement {
   const [assignee, setAssignee] = useState<string>(assignedTo ?? "");
   const [assignBusy, setAssignBusy] = useState<boolean>(false);
@@ -198,6 +202,7 @@ export default function ReviewActionsPanel({
     setError(null);
     setSuccess(null);
     setActionBusy(true);
+    onActionBusy?.(true);
     try {
       const reasonText = reasonChoice === OTHER_REASON ? notes.trim() : reasonChoice;
       const body: ReviewActionRequestBody = {
@@ -220,17 +225,20 @@ export default function ReviewActionsPanel({
           body: JSON.stringify(body),
         },
       );
-      setSuccess(
-        `Action submitted. New state: ${result.queue_state}${result.resolution !== null ? ` (${result.resolution})` : ""}.`,
-      );
+      const successMessage = `Action submitted. New state: ${result.queue_state}${result.resolution !== null ? ` (${result.resolution})` : ""}.`;
+      setSuccess(successMessage);
       setReasonChoice("");
       setNotes("");
       setFollowUpAt("");
-      onChanged();
+      onActionDone?.(true, successMessage);
+      await onChanged();
     } catch (err: unknown) {
-      setError(err instanceof BffError || err instanceof Error ? err.message : "Action failed.");
+      const msg = err instanceof BffError || err instanceof Error ? err.message : "Action failed.";
+      setError(msg);
+      onActionDone?.(false, msg);
     } finally {
       setActionBusy(false);
+      onActionBusy?.(false);
     }
   }
 

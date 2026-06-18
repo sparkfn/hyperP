@@ -4787,6 +4787,36 @@
   max-width: 460px;
 }
 
+.recreatePreview {
+  background: var(--bg-app, #f8f9fb);
+  border: 1px solid var(--border, #e2e8f0);
+  border-radius: 8px;
+  padding: 10px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.recreatePreviewNames {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.recreatePreviewArrow {
+  color: var(--text-muted);
+  font-weight: 400;
+}
+
+.recreatePreviewMeta {
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
 .mergeReasonLabel {
   display: flex;
   flex-direction: column;

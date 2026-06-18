@@ -19,16 +19,16 @@ export default function ReviewCaseDetailPage(): ReactElement {
   const setGlobalLoading = useSetLoading();
   const loadId = useMemo(() => `review-case-${reviewCaseId}`, [reviewCaseId]);
 
-  const loadDetail = useCallback((): void => {
+  const loadDetail = useCallback((): Promise<void> => {
     if (reviewCaseId.length === 0) {
       setError("Review case id is missing.");
       setLoading(false);
-      return;
+      return Promise.resolve();
     }
     setLoading(true);
     setError(null);
     setGlobalLoading(loadId, true);
-    bffFetch<ReviewCaseDetail>(`/bff/review-cases/${encodeURIComponent(reviewCaseId)}`)
+    return bffFetch<ReviewCaseDetail>(`/bff/review-cases/${encodeURIComponent(reviewCaseId)}`)
       .then((res) => setDetail(res))
       .catch((err: unknown) => {
         setError(err instanceof BffError ? err.message : "Failed to load review case.");
