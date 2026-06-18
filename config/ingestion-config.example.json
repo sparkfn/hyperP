@@ -1,0 +1,20 @@
+{
+  "exclusions": {
+    "phones": [],
+    "emails": [],
+    "email_domains": [],
+    "names": [],
+    "source_ids": [],
+    "machine_unit_identifiers": []
+  },
+  "llm": {
+    "timeout_seconds": 90.0,
+    "request_delay_seconds": 0.5,
+    "max_retries": 6,
+    "retry_base_delay_seconds": 1.0,
+    "retry_max_delay_seconds": 30.0,
+    "chat_batch_max_chars": 6000,
+    "chat_batch_size": 6,
+    "chat_max_tokens": 8192
+  }
+}

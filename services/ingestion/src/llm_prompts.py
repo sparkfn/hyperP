@@ -54,9 +54,19 @@ Always output valid JSON.\
 """
 
 #: User prompt template for identity + transaction extraction.
-EXTRACTION_TEMPLATE = """\
-Extract customer identity and transaction information from the following conversation.
-Return a JSON object with these top-level keys:
+BATCH_EXTRACTION_TEMPLATE = """\
+Extract customer identity and transaction information from EACH numbered conversation below.
+Return a JSON object {{"conversations": [ ... ]}} with one object per conversation (any order).
+
+IMPORTANT: A line beginning with "[Deal]" is a CRM deal header that names the customer the
+conversation is about, formatted "[Deal] <Customer Name> - <Business> ...". ALWAYS extract that
+<Customer Name> as a possible_person (role primary_customer) even when the customer sent no
+message and the rest of the conversation is only automated agent/template outreach. The text
+before " - " in the deal header is the customer's name; the business name after it is NOT a
+customer.
+
+Each conversation object has:
+- "conversation_index": the integer index shown before the conversation
 - "persons": legacy array of customers, clients, prospects, or other external people whose
   identity should be attached to the customer profile. Prefer `possible_persons` for new
   grouped output. Do not include sales agents, staff, internal users, tenant or business
@@ -117,17 +127,40 @@ Return a JSON object with these top-level keys:
     - "person_name": associated customer name if stated
     - "confidence": confidence for this value from 0.0 to 1.0
     - "notes": short evidence context
-- "summary": thorough sectioned factual summary of the full conversation. Use these
-  headings when evidence exists: Customer / Participants, Identity Evidence,
-  Products / Machine Units, Orders / Commercial Terms, Timeline / Follow-ups,
-  Uncertainties
 - "confidence": your overall confidence (0.0-1.0) in this extraction
 
-Conversation (newest messages last):
+Conversations (each prefixed with "=== Conversation N ==="; newest messages last):
 
-{messages}
+{conversations}
 
-Return only valid JSON.\
+Return one JSON object with the "conversations" array and nothing else.\
+"""
+
+#: System prompt for conversation summarization (separate model from extraction).
+SUMMARY_SYSTEM = """\
+You are a conversation summarizer for a customer profile unification platform.
+Given message threads, write thorough, factual, sectioned summaries.
+Only state facts explicitly present in the messages — do not guess or infer.
+Output plain text only — never JSON or code fences (summaries are multi-line prose).\
+"""
+
+#: User prompt template for per-conversation summarization (plain-text, delimited).
+#: A delimited text protocol — not JSON — because multi-line markdown prose breaks
+#: JSON string escaping in models without a JSON mode.
+BATCH_SUMMARY_TEMPLATE = """\
+Summarize EACH numbered conversation below.
+For EACH conversation, output a line exactly "=== Summary N ===" where N is that
+conversation's integer index, followed by a thorough sectioned factual summary of
+the full conversation. Use these section headings when evidence exists:
+"Customer / Participants", "Identity Evidence", "Products / Machine Units",
+"Orders / Commercial Terms", "Timeline / Follow-ups", "Uncertainties".
+
+Output plain text only — no JSON, no code fences. Separate conversations with their
+"=== Summary N ===" markers.
+
+Conversations (each prefixed with "=== Conversation N ==="; newest messages last):
+
+{conversations}\
 """
 
 #: Template for confirming a person is a known tenant.
@@ -153,9 +186,24 @@ def build_address_normalization_prompt(addresses: list[str]) -> str:
     return ADDRESS_NORMALIZATION_TEMPLATE.format(addresses=address_lines)
 
 
-def build_extraction_prompt(messages: str) -> str:
-    """Build the user prompt for identity/transaction extraction."""
-    return EXTRACTION_TEMPLATE.format(messages=messages)
+def _number_conversations(texts: list[str]) -> str:
+    """Prefix each conversation with its index for ``conversation_index`` keying."""
+    blocks = [f"=== Conversation {index} ===\n{text}" for index, text in enumerate(texts)]
+    return "\n\n".join(blocks)
+
+
+def build_batch_extraction_prompt(texts: list[str]) -> str:
+    """Build one user prompt extracting structured data from all conversations.
+
+    Each conversation is prefixed with its index so the model can return one
+    object per conversation keyed by ``conversation_index``.
+    """
+    return BATCH_EXTRACTION_TEMPLATE.format(conversations=_number_conversations(texts))
+
+
+def build_batch_summary_prompt(texts: list[str]) -> str:
+    """Build one user prompt summarizing all conversations in a batch."""
+    return BATCH_SUMMARY_TEMPLATE.format(conversations=_number_conversations(texts))
 
 
 def build_tenant_match_prompt(name: str | None, phone: str | None, tenants: list[str]) -> str:

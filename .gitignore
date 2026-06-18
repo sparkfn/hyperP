@@ -10,7 +10,7 @@
 *.egg-info/
 **/.venv/
 data/
-config/ingestion-exclusions.local.json
+config/ingestion-config.local.json
 out
 *.tsbuildinfo
 next-env.d.ts.bak

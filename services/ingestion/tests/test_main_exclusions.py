@@ -9,6 +9,7 @@ from src.connectors.base import SourceConnector
 from src.exclusion_config import ExclusionFile
 from src.exclusions import ExclusionContext
 from src.graph.client import Neo4jClient
+from src.ingestion_config import IngestionConfig, LlmConfig
 from src.main import _ingest_all_records
 from src.models import IngestResult, JsonValue, MatchDecision, RecordType, SourceRecordEnvelope
 from src.pipeline import IngestPipeline
@@ -118,10 +119,10 @@ class _Pipeline:
 def test_ingest_all_records_uses_caller_supplied_exclusion_context(
     monkeypatch: MonkeyPatch,
 ) -> None:
-    def _fail_load_exclusion_file(path_value: str) -> ExclusionFile:
-        raise AssertionError(f"unexpected exclusion file load: {path_value}")
+    def _fail_get_ingestion_config() -> IngestionConfig:
+        raise AssertionError("unexpected ingestion config load")
 
-    monkeypatch.setattr("src.main.load_exclusion_file", _fail_load_exclusion_file)
+    monkeypatch.setattr("src.main.get_ingestion_config", _fail_get_ingestion_config)
     supplied_context = ExclusionContext(phones=frozenset({"+6588888888"}))
     pipeline = _Pipeline()
 
@@ -137,10 +138,12 @@ def test_ingest_all_records_uses_caller_supplied_exclusion_context(
     assert pipeline.ingested == ["fundbox_consumer_backend-contact-2"]
     assert pipeline.exclusion_contexts == [supplied_context]
 
+
 def test_ingest_all_records_skips_system_records_with_excluded_identifiers(
     monkeypatch: MonkeyPatch,
 ) -> None:
     monkeypatch.setattr("src.main.get_settings", lambda: _Settings())
+    monkeypatch.setattr("src.main.get_ingestion_config", lambda: IngestionConfig())
     pipeline = _Pipeline()
 
     success, errors, skipped = _ingest_all_records(
@@ -162,8 +165,10 @@ def test_ingest_all_records_skips_system_records_with_excluded_email_domains(
 ) -> None:
     monkeypatch.setattr("src.main.get_settings", lambda: _DomainSettings())
     monkeypatch.setattr(
-        "src.main.load_exclusion_file",
-        lambda _path: ExclusionFile(email_domains=["ekolife.asia"]),
+        "src.main.get_ingestion_config",
+        lambda: IngestionConfig(
+            exclusions=ExclusionFile(email_domains=["ekolife.asia"]), llm=LlmConfig()
+        ),
     )
     pipeline = _Pipeline()
 
@@ -186,6 +191,7 @@ def test_ingest_all_records_passes_exclusion_context_to_sales_pipeline(
     monkeypatch: MonkeyPatch,
 ) -> None:
     monkeypatch.setattr("src.main.get_settings", lambda: _DomainSettings())
+    monkeypatch.setattr("src.main.get_ingestion_config", lambda: IngestionConfig())
     captured_contexts: list[ExclusionContext | None] = []
 
     def _fake_ingest_sales_record(
