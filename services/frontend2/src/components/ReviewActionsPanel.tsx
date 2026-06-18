@@ -30,7 +30,7 @@ interface ReviewActionsPanelProps {
   leftPersonStatus?: string | null;
   rightPersonStatus?: string | null;
   defaultSurvivorPersonId?: string | null;
-  onChanged: () => void;
+  onChanged: () => Promise<void>;
   embedded?: boolean;
   onActionBusy?: (busy: boolean) => void;
   onActionDone?: (success: boolean, message: string) => void;
@@ -40,11 +40,8 @@ function isReviewActionType(value: string): value is ReviewActionType {
   return (REVIEW_ACTION_TYPES as readonly string[]).includes(value);
 }
 
-// Sentinel value for the "Other" dropdown option that reveals a free-text note field.
 const OTHER_REASON = "__other__";
 
-// Preset reviewer notes/reasons offered per action type. "Other" lets the reviewer
-// type a custom note instead.
 const REVIEW_REASON_PRESETS: Record<ReviewActionType, readonly string[]> = {
   merge: [
     "Confirmed same person — matching government ID and name.",
@@ -75,11 +72,11 @@ const REVIEW_REASON_PRESETS: Record<ReviewActionType, readonly string[]> = {
 
 function defaultRightChoiceByField(
   choices: readonly GoldenProfileChoice[],
-  preferredPersonId: string,
+  rightPersonId: string,
 ): Partial<Record<GoldenProfileFieldName, string>> {
   const defaults: Partial<Record<GoldenProfileFieldName, string>> = {};
   for (const choice of choices) {
-    if (choice.personId === preferredPersonId && defaults[choice.fieldName] === undefined) {
+    if (choice.personId === rightPersonId && defaults[choice.fieldName] === undefined) {
       defaults[choice.fieldName] = choice.key;
     }
   }
@@ -121,8 +118,6 @@ export default function ReviewActionsPanel({
   const [success, setSuccess] = useState<string | null>(null);
   const [assignOpen, setAssignOpen] = useState<boolean>(false);
 
-  // Assign section temporarily hidden — flip to true to restore it.
-  const showAssignSection = false;
   const resolved = queueState === "resolved" || queueState === "cancelled";
   const canLoadMergeChoices = leftPersonId !== null && rightPersonId !== null;
   const mergeRequiresUnmerge = actionType === "merge" && (
@@ -155,7 +150,7 @@ export default function ReviewActionsPanel({
         if (cancelled) return;
         const nextChoices = buildGoldenProfileChoices(mergeSurvivorPersonId, evidences);
         setChoices(nextChoices);
-        setSelectedChoiceKeys(defaultRightChoiceByField(nextChoices, mergeSurvivorPersonId));
+        setSelectedChoiceKeys(defaultRightChoiceByField(nextChoices, rightPersonId));
       } catch (err: unknown) {
         if (cancelled) return;
         setError(err instanceof BffError ? err.message : "Could not load merge choices.");
@@ -209,7 +204,7 @@ export default function ReviewActionsPanel({
         action_type: actionType,
         notes: reasonText.length > 0 ? reasonText : null,
         metadata: {
-          follow_up_at: followUpAt.length > 0 ? `${followUpAt}T00:00:00Z` : null,
+          follow_up_at: followUpAt.length > 0 ? followUpAt : null,
           survivor_person_id: actionType === "merge" ? mergeSurvivorPersonId : null,
           golden_profile_selections:
             actionType === "merge"
@@ -225,12 +220,12 @@ export default function ReviewActionsPanel({
           body: JSON.stringify(body),
         },
       );
-      const successMessage = `Action submitted. New state: ${result.queue_state}${result.resolution !== null ? ` (${result.resolution})` : ""}.`;
-      setSuccess(successMessage);
+      const msg = `${actionType === "merge" ? "Merged" : actionType === "reject" ? "Rejected" : actionType === "manual_no_match" ? "No-match recorded" : actionType === "defer" ? "Deferred" : "Escalated"} — state: ${result.queue_state}${result.resolution !== null ? ` (${result.resolution})` : ""}.`;
+      setSuccess(msg);
       setReasonChoice("");
       setNotes("");
       setFollowUpAt("");
-      onActionDone?.(true, successMessage);
+      onActionDone?.(true, msg);
       await onChanged();
     } catch (err: unknown) {
       const msg = err instanceof BffError || err instanceof Error ? err.message : "Action failed.";
@@ -300,16 +295,18 @@ export default function ReviewActionsPanel({
               ))}
             </select>
           </label>
-          <label className={styles.fieldGroup}>
-            <span className={styles.fieldLabel}>Follow-up date</span>
-            <input
-              className={styles.input}
-              type="date"
-              value={followUpAt}
-              onChange={(event) => setFollowUpAt(event.target.value)}
-              disabled={resolved || actionType !== "defer"}
-            />
-          </label>
+          {actionType === "defer" && (
+            <label className={styles.fieldGroup}>
+              <span className={styles.fieldLabel}>Follow-up at (ISO)</span>
+              <input
+                className={styles.input}
+                value={followUpAt}
+                onChange={(event) => setFollowUpAt(event.target.value)}
+                placeholder="2026-04-15T12:00:00Z"
+                disabled={resolved}
+              />
+            </label>
+          )}
         </div>
 
         {actionType === "merge" && canLoadMergeChoices ? (
@@ -334,18 +331,18 @@ export default function ReviewActionsPanel({
         ) : null}
 
         <label className={styles.fieldGroup}>
-          <span className={styles.fieldLabel}>Notes / reason</span>
+          <span className={styles.fieldLabel}>Review note</span>
           <select
             className={styles.select}
             value={reasonChoice}
             onChange={(event) => setReasonChoice(event.target.value)}
             disabled={resolved}
           >
-            <option value="">— No note —</option>
+            <option value="">Select a reason…</option>
             {REVIEW_REASON_PRESETS[actionType].map((reason) => (
               <option key={reason} value={reason}>{reason}</option>
             ))}
-            <option value={OTHER_REASON}>Other (write a custom note)…</option>
+            <option value={OTHER_REASON}>Other…</option>
           </select>
         </label>
 
@@ -356,9 +353,9 @@ export default function ReviewActionsPanel({
               className={styles.textarea}
               value={notes}
               onChange={(event) => setNotes(event.target.value)}
-              rows={4}
+              rows={3}
               disabled={resolved}
-              placeholder="Reviewer notes"
+              placeholder="Enter reviewer notes"
             />
           </label>
         ) : null}

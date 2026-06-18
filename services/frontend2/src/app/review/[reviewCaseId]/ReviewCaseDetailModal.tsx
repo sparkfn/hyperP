@@ -138,7 +138,7 @@ export function ReviewCaseDetailContent({
   detail: ReviewCaseDetail;
   loading: boolean;
   error: string | null;
-  onChanged: () => void;
+  onChanged: () => Promise<void>;
   defaultSurvivorPersonId?: string | null;
 }): ReactElement {
   const confidence = detail.match_decision.confidence;
@@ -260,7 +260,7 @@ export function ReviewCaseDetailModal({
   const [loading, setLoading] = useState<boolean>(true);
   const actioned = useRef(false);
 
-  const loadDetail = useCallback((): void => {
+  const loadDetail = useCallback(async (): Promise<void> => {
     if (reviewCaseId.length === 0) {
       setError("Review case id is missing.");
       setLoading(false);
@@ -268,19 +268,19 @@ export function ReviewCaseDetailModal({
     }
     setLoading(true);
     setError(null);
-    bffFetch<ReviewCaseDetail>(`/bff/review-cases/${encodeURIComponent(reviewCaseId)}`)
-      .then((res) => setDetail(res))
-      .catch((err: unknown) => {
-        setError(err instanceof BffError ? err.message : "Failed to load review case.");
-      })
-      .finally(() => {
-        setLoading(false);
-      });
+    try {
+      const res = await bffFetch<ReviewCaseDetail>(`/bff/review-cases/${encodeURIComponent(reviewCaseId)}`);
+      setDetail(res);
+    } catch (err: unknown) {
+      setError(err instanceof BffError ? err.message : "Failed to load review case.");
+    } finally {
+      setLoading(false);
+    }
   }, [reviewCaseId]);
 
-  const handleChanged = useCallback((): void => {
+  const handleChanged = useCallback(async (): Promise<void> => {
     actioned.current = true;
-    loadDetail();
+    await loadDetail();
   }, [loadDetail]);
 
   useEffect(() => {

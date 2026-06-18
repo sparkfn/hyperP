@@ -2,7 +2,7 @@
 
 import { Fragment, use, useCallback, useEffect, useId, useMemo, useRef, useState, type ReactElement } from "react";
 import Link from "next/link";
-import { notFound, useRouter } from "next/navigation";
+import { notFound } from "next/navigation";
 import type { Person, PersonConnection, SalesOrder } from "@/lib/api-types";
 import type {
   ChatMessage,
@@ -27,7 +27,7 @@ import type {
   SurvivorshipOverrideRequestBody,
 } from "@/lib/api-types-person";
 import { bffFetch, BffError, bffFetchEnvelope } from "@/lib/api-client";
-import { usePaginatedFetch, seedFromEnvelope, PAGE_SIZE, type PaginatedSeed } from "@/lib/usePaginatedFetch";
+import { usePaginatedFetch } from "@/lib/usePaginatedFetch";
 import { toBasePath } from "@/lib/route-paths";
 import type { PublicLink } from "@/lib/api-types";
 import { avatarColor, completenessColor } from "@/lib/display";
@@ -37,7 +37,7 @@ import MergeOverlay from "@/components/MergeOverlay";
 import PersonFocusedGraph from "@/components/PersonFocusedGraph";
 import PersonGraphDialog from "@/components/PersonGraphDialog";
 import ReviewActionsPanel from "@/components/ReviewActionsPanel";
-import { ReviewCaseDetailModal } from "@/app/review/[reviewCaseId]/ReviewCaseDetailModal";
+import { ReviewCaseDetailModal } from "@/app/review/[reviewCaseId]/page";
 import type { ReviewCaseDetail, ReviewCaseSummary } from "@/lib/api-types-ops";
 import styles from "./person.module.css";
 
@@ -64,13 +64,11 @@ interface BentoSectionProps {
 }
 
 
-const PAGE_TZ = process.env.NEXT_PUBLIC_TZ ?? "UTC";
-
 const DATE_FORMATTER = new Intl.DateTimeFormat("en-SG", {
   day: "2-digit",
   month: "short",
   year: "numeric",
-  timeZone: PAGE_TZ,
+  timeZone: "UTC",
 });
 
 const DATE_TIME_FORMATTER = new Intl.DateTimeFormat("en-SG", {
@@ -80,7 +78,7 @@ const DATE_TIME_FORMATTER = new Intl.DateTimeFormat("en-SG", {
   hour: "2-digit",
   minute: "2-digit",
   hour12: true,
-  timeZone: PAGE_TZ,
+  timeZone: "UTC",
 });
 
 function fmtDate(value: string | null): string {
@@ -105,7 +103,7 @@ function fmtTime(value: string | null): string {
     hour: "2-digit",
     minute: "2-digit",
     hour12: true,
-    timeZone: PAGE_TZ,
+    timeZone: "UTC",
   }).format(d);
 }
 
@@ -714,21 +712,16 @@ interface TopStat {
 }
 
 function RightRail({ person, detailData, salesTotal, sections, scrollRef, onSectionJump, children }: { person: Person; detailData: DetailData; salesTotal: number | undefined; sections: SectionConfig[]; scrollRef: { current: HTMLDivElement | null }; onSectionJump: (id: string) => void; children: ReactElement }): ReactElement {
+  const totalSales = detailData.sales.reduce((sum, order) => sum + (order.total_amount ?? 0), 0);
   const completeness = Math.round(person.profile_completeness_score * 100);
   const latestActivityAt = detailData.sourceRecords[0]?.observed_at ?? person.updated_at;
   const salesCount = salesTotal ?? detailData.sales.length;
   const idCount = detailData.identifiers.length;
-  // Prefer the server-computed lifetime value (sum of all orders) over summing
-  // the prefetched page, which only ever held the first page of sales.
-  const totalSales = person.lifetime_value
-    ?? detailData.sales.reduce((sum, order) => sum + (order.total_amount ?? 0), 0);
 
   const topStats: TopStat[] = [
     {
       label: "Lifetime value",
-      value: person.lifetime_value != null || detailData.sales.length
-        ? fmtCurrency(totalSales, detailData.sales[0]?.currency ?? "SGD")
-        : "—",
+      value: detailData.sales.length ? fmtCurrency(totalSales, detailData.sales[0]?.currency ?? "SGD") : "—",
       note: salesCount ? `${salesCount} orders` : "No orders yet",
     },
     {
@@ -1797,7 +1790,7 @@ function CandidateRow({
   );
 }
 
-function MatchesTab({ personId, currentPerson, currentIdentifiers, activeMatchesTab, onTotalLoaded, onMergeWith, onPersonRefresh, matchesSeed, auditSeed }: { personId: string; currentPerson: Person | undefined; currentIdentifiers: PersonIdentifier[]; activeMatchesTab: "candidates" | "resolved-cases" | "merge-history"; onTotalLoaded: (n: number) => void; onMergeWith: (candidate: PersonSharedIdentifierCandidate, detail: PossibleMatchDetail | undefined) => void; onPersonRefresh: () => void; matchesSeed: PaginatedSeed<PersonMatchDecision> | null; auditSeed: PaginatedSeed<PersonAuditEvent> | null }): ReactElement {
+function MatchesTab({ personId, currentPerson, currentIdentifiers, activeMatchesTab, onTotalLoaded, onMergeWith }: { personId: string; currentPerson: Person | undefined; currentIdentifiers: PersonIdentifier[]; activeMatchesTab: "candidates" | "resolved-cases" | "merge-history"; onTotalLoaded: (n: number) => void; onMergeWith: (candidate: PersonSharedIdentifierCandidate, detail: PossibleMatchDetail | undefined) => void }): ReactElement {
   const [expandedCandidate, setExpandedCandidate] = useState<string | null>(null);
   const [expandedRecommendedMatch, setExpandedRecommendedMatch] = useState<string | null>(null);
   const [recommendedPeople, setRecommendedPeople] = useState<Record<string, Person>>({});
@@ -1831,11 +1824,11 @@ function MatchesTab({ personId, currentPerson, currentIdentifiers, activeMatches
 
   const recommendedResult = usePaginatedFetch<PersonMatchDecision>(
     `/bff/persons/${encodeURIComponent(personId)}/matches`,
-    matchesSeed,
+    5,
   );
   const mergeHistoryResult = usePaginatedFetch<PersonAuditEvent>(
     `/bff/persons/${encodeURIComponent(personId)}/audit`,
-    auditSeed,
+    5,
   );
 
   const reloadRecommendedReviewCases = useCallback((): (() => void) => {
@@ -2342,11 +2335,9 @@ function MatchesTab({ personId, currentPerson, currentIdentifiers, activeMatches
       <ReviewCaseDetailModal
         open={viewingReviewCaseId !== null}
         reviewCaseId={viewingReviewCaseId ?? ""}
-        defaultSurvivorPersonId={personId}
-        onClose={(wasActioned) => {
+        onClose={() => {
           setViewingReviewCaseId(null);
           reloadRecommendedReviewCases();
-          if (wasActioned) onPersonRefresh();
         }}
       />
       {operationToast !== null && (
@@ -2356,11 +2347,11 @@ function MatchesTab({ personId, currentPerson, currentIdentifiers, activeMatches
   );
 }
 
-function DecisionHistoryTab({ personId, onTotalLoaded, seed }: { personId: string; onTotalLoaded: (n: number) => void; seed: PaginatedSeed<PersonMatchDecision> | null }): ReactElement {
+function DecisionHistoryTab({ personId, onTotalLoaded }: { personId: string; onTotalLoaded: (n: number) => void }): ReactElement {
   const [expandedMatch, setExpandedMatch] = useState<string | null>(null);
   const decisionsResult = usePaginatedFetch<PersonMatchDecision>(
     `/bff/persons/${encodeURIComponent(personId)}/matches`,
-    seed,
+    5,
   );
   const decisions = decisionsResult.rows ?? [];
 
@@ -2436,18 +2427,10 @@ function DecisionHistoryTab({ personId, onTotalLoaded, seed }: { personId: strin
   );
 }
 
-/** Gate the list behind the initial load so it mounts (and consumes the seed)
- *  only once the page-0 data has arrived — otherwise it would race ahead and
- *  fetch `/sales` itself before the seed lands. */
-function SalesTab({ personId, onTotalLoaded, seed, ready }: { personId: string; onTotalLoaded: (n: number) => void; seed: PaginatedSeed<SalesOrder> | null; ready: boolean }): ReactElement {
-  if (!ready) return <TabSkelShell title="Sales history"><SkeletonRows /></TabSkelShell>;
-  return <SalesList personId={personId} onTotalLoaded={onTotalLoaded} seed={seed} />;
-}
-
-function SalesList({ personId, onTotalLoaded, seed }: { personId: string; onTotalLoaded: (n: number) => void; seed: PaginatedSeed<SalesOrder> | null }): ReactElement {
+function SalesTab({ personId, onTotalLoaded }: { personId: string; onTotalLoaded: (n: number) => void }): ReactElement {
   const [expandedKey, setExpandedKey] = useState<string | null>(null);
   const { rows, loading, error, from, to, total, hasPrev, hasNext, goNext, goPrev } =
-    usePaginatedFetch<SalesOrder>(`/bff/persons/${encodeURIComponent(personId)}/sales`, seed);
+    usePaginatedFetch<SalesOrder>(`/bff/persons/${encodeURIComponent(personId)}/sales`);
   const sales = rows ?? [];
   const pageRevenue = sales.reduce((sum, o) => sum + (o.total_amount ?? 0), 0);
   const currency = sales[0]?.currency ?? "SGD";
@@ -3048,9 +3031,9 @@ function SourceRecordRow({ record }: { record: PersonSourceRecord }): ReactEleme
 
 /** List + pagination for one entity filter. Owns the paginated hook so the
  *  parent can remount it (key=activeEntity) to reset pagination on filter change. */
-function SourceRecordsList({ basePath, seed }: { basePath: string; seed?: PaginatedSeed<PersonSourceRecord> | null }): ReactElement {
+function SourceRecordsList({ basePath }: { basePath: string }): ReactElement {
   const { rows, loading, error, from, to, total, hasPrev, hasNext, goNext, goPrev } =
-    usePaginatedFetch<PersonSourceRecord>(basePath, seed);
+    usePaginatedFetch<PersonSourceRecord>(basePath);
   const records = rows ?? [];
 
   if (loading) return <SkeletonRows />;
@@ -3069,7 +3052,7 @@ function SourceRecordsList({ basePath, seed }: { basePath: string; seed?: Pagina
   );
 }
 
-function SourceRecordsTab({ personId, facets, onTotalLoaded, seed, ready }: { personId: string; facets: SourceRecordEntityFacet[]; onTotalLoaded: (n: number) => void; seed: PaginatedSeed<PersonSourceRecord> | null; ready: boolean }): ReactElement {
+function SourceRecordsTab({ personId, facets, onTotalLoaded }: { personId: string; facets: SourceRecordEntityFacet[]; onTotalLoaded: (n: number) => void }): ReactElement {
   const [activeEntity, setActiveEntity] = useState<string | null>(null);
   const facetTotal = facets.reduce((sum, f) => sum + f.count, 0);
   const sourceRecordParams = new URLSearchParams();
@@ -3113,13 +3096,8 @@ function SourceRecordsTab({ personId, facets, onTotalLoaded, seed, ready }: { pe
         </div>
       )}
 
-      {/* Gate the list on the initial load so it mounts (and consumes the seed)
-          only once page-0 data has arrived. key remounts the list when the
-          filter changes, resetting pagination to page 1. The seed only applies
-          to the default (unfiltered) view. */}
-      {!ready ? <SkeletonRows /> : (
-        <SourceRecordsList key={activeEntity ?? "__all__"} basePath={basePath} seed={activeEntity === null ? seed : null} />
-      )}
+      {/* key remounts the list when the filter changes, resetting pagination to page 1 */}
+      <SourceRecordsList key={activeEntity ?? "__all__"} basePath={basePath} />
     </section>
   );
 }
@@ -3646,22 +3624,11 @@ function catchNotFound(err: unknown): null {
 
 export default function PersonDetailPage({ params }: { params: Promise<{ personId: string }> }): ReactElement {
   const { personId } = use(params);
-  const router = useRouter();
 
   const [person, setPerson] = useState<Person | null>(null);
   const [detailData, setDetailData] = useState<DetailData>(EMPTY_DETAIL);
-  // Page-0 data captured during the initial load so the Sales / Source records
-  // sections render from it instead of re-fetching the same endpoints.
-  const [salesSeed, setSalesSeed] = useState<PaginatedSeed<SalesOrder> | null>(null);
-  const [sourceRecordsSeed, setSourceRecordsSeed] = useState<PaginatedSeed<PersonSourceRecord> | null>(null);
-  const [matchesSeed, setMatchesSeed] = useState<PaginatedSeed<PersonMatchDecision> | null>(null);
-  const [auditSeed, setAuditSeed] = useState<PaginatedSeed<PersonAuditEvent> | null>(null);
-  // True once the secondary resources (incl. the section seeds) have loaded, so
-  // the seeded sections wait for the seed instead of racing ahead to re-fetch.
-  const [secondaryLoaded, setSecondaryLoaded] = useState(false);
   const [tabTotals, setTabTotals] = useState<Partial<Record<Tab, number>>>({});
   const [loading, setLoading] = useState(true);
-  const [personRefreshKey, setPersonRefreshKey] = useState(0);
   const pageLoadId = useId();
   const setGlobalLoading = useSetLoading();
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -3690,45 +3657,21 @@ export default function PersonDetailPage({ params }: { params: Promise<{ personI
     setLoading(true);
     setLoadError(null);
     setNotFoundFlag(false);
-    setSecondaryLoaded(false);
     setGlobalLoading(pageLoadId, true);
 
     async function loadPersonDetail(): Promise<void> {
       const encodedPersonId = encodeURIComponent(personId);
-
-      // Kick off every request up-front so the secondary resources load in
-      // parallel with person/identifiers instead of waiting for a second wave.
-      // Sales / source records are fetched at PAGE_SIZE so their page-0 data can
-      // seed the matching sections (which would otherwise re-fetch the same
-      // endpoints). The shell still renders as soon as person + identifiers land.
-      const personPromise = bffFetch<Person>(`/bff/persons/${encodedPersonId}`);
-      const identifiersPromise = bffFetchEnvelope<PersonIdentifier[]>(`/bff/persons/${encodedPersonId}/identifiers?limit=200`);
-      // PAGE_SIZE fetches double as section seeds (sales, source records,
-      // matches, audit) so those sections don't re-fetch the same endpoints.
-      const sourceRecordsPromise = bffFetchEnvelope<PersonSourceRecord[]>(`/bff/persons/${encodedPersonId}/source-records?limit=${PAGE_SIZE}`).catch(catchNotFound);
-      const salesPromise = bffFetchEnvelope<SalesOrder[]>(`/bff/persons/${encodedPersonId}/sales?limit=${PAGE_SIZE}`).catch(catchNotFound);
-      const auditPromise = bffFetchEnvelope<PersonAuditEvent[]>(`/bff/persons/${encodedPersonId}/audit?limit=${PAGE_SIZE}`).catch(catchNotFound);
-      const matchesPromise = bffFetchEnvelope<PersonMatchDecision[]>(`/bff/persons/${encodedPersonId}/matches?limit=${PAGE_SIZE}`).catch(catchNotFound);
-      const bankruptcyPromise = bffFetchEnvelope<PersonBankruptcyCase[]>(`/bff/persons/${encodedPersonId}/bankruptcy-cases?limit=20`).catch(catchNotFound);
-      const facetsPromise = bffFetchEnvelope<SourceRecordEntityFacet[]>(`/bff/persons/${encodedPersonId}/source-record-entities`).catch(catchNotFound);
-      // Drain the secondary promises on every early return so a non-404
-      // rejection never becomes an unhandled promise rejection.
-      const secondary = [sourceRecordsPromise, salesPromise, auditPromise, matchesPromise, bankruptcyPromise, facetsPromise];
-
       try {
-        const [personRes, identifiersRes] = await Promise.all([personPromise, identifiersPromise]);
+        const [personRes, identifiersRes] = await Promise.all([
+          bffFetch<Person>(`/bff/persons/${encodedPersonId}`),
+          bffFetchEnvelope<PersonIdentifier[]>(`/bff/persons/${encodedPersonId}/identifiers?limit=200`),
+        ]);
 
-        if (cancelled) { void Promise.allSettled(secondary); return; }
-        if (personRes.person_id !== personId) {
-          void Promise.allSettled(secondary);
-          router.replace(toBasePath(`/persons/${personRes.person_id}`));
-          return;
-        }
+        if (cancelled) return;
         setPerson(personRes);
         setDetailData((current) => ({ ...current, identifiers: identifiersRes.data }));
         setLoading(false);
       } catch (err) {
-        void Promise.allSettled(secondary);
         if (cancelled) return;
         setGlobalLoading(pageLoadId, false);
         if (err instanceof BffError && err.status === 404) {
@@ -3741,35 +3684,29 @@ export default function PersonDetailPage({ params }: { params: Promise<{ personI
       }
 
       try {
-        const [sourceRecordsRes, salesRes, auditRes, matchesRes, bankruptcyRes, sourceRecordFacetsRes] = await Promise.all([
-          sourceRecordsPromise,
-          salesPromise,
-          auditPromise,
-          matchesPromise,
-          bankruptcyPromise,
-          facetsPromise,
+        const [sourceRecordsRes, salesRes, auditRes, bankruptcyRes, sourceRecordFacetsRes] = await Promise.all([
+          bffFetchEnvelope<PersonSourceRecord[]>(`/bff/persons/${encodedPersonId}/source-records?limit=20`),
+          bffFetchEnvelope<SalesOrder[]>(`/bff/persons/${encodedPersonId}/sales?limit=20`).catch(catchNotFound),
+          bffFetchEnvelope<PersonAuditEvent[]>(`/bff/persons/${encodedPersonId}/audit?limit=20`).catch(catchNotFound),
+          bffFetchEnvelope<PersonBankruptcyCase[]>(`/bff/persons/${encodedPersonId}/bankruptcy-cases?limit=20`).catch(catchNotFound),
+          bffFetchEnvelope<SourceRecordEntityFacet[]>(`/bff/persons/${encodedPersonId}/source-record-entities`).catch(catchNotFound),
         ]);
 
         if (cancelled) return;
         setDetailData((current) => ({
           ...current,
-          sourceRecords: sourceRecordsRes?.data ?? [],
+          sourceRecords: sourceRecordsRes.data,
           sales: salesRes?.data ?? [],
           audit: auditRes?.data ?? [],
           bankruptcyCases: bankruptcyRes?.data ?? [],
           sourceRecordFacets: sourceRecordFacetsRes?.data ?? [],
         }));
-        setSalesSeed(seedFromEnvelope(salesRes));
-        setSourceRecordsSeed(seedFromEnvelope(sourceRecordsRes));
-        setMatchesSeed(seedFromEnvelope(matchesRes));
-        setAuditSeed(seedFromEnvelope(auditRes));
       } catch (err) {
         if (cancelled) return;
         setLoadError(err instanceof Error ? err.message : "Failed to load person detail.");
       } finally {
         if (!cancelled) {
           setGlobalLoading(pageLoadId, false);
-          setSecondaryLoaded(true);
         }
       }
     }
@@ -3780,7 +3717,7 @@ export default function PersonDetailPage({ params }: { params: Promise<{ personI
       cancelled = true;
       setGlobalLoading(pageLoadId, false);
     };
-  }, [pageLoadId, personId, setGlobalLoading, personRefreshKey]);
+  }, [pageLoadId, personId, setGlobalLoading]);
 
   const [shareError, setShareError] = useState<string | null>(null);
 
@@ -4083,7 +4020,6 @@ export default function PersonDetailPage({ params }: { params: Promise<{ personI
     }
   }
 
-  const handlePersonRefresh = useCallback((): void => { setPersonRefreshKey((k) => k + 1); }, []);
   const onMatchesTotal     = useCallback((n: number) => { setTabTotals((p) => ({ ...p, matches:     n })); }, []);
   const onDecisionHistoryTotal = useCallback((n: number) => { setTabTotals((p) => ({ ...p, "decision-history": n })); }, []);
   const onConnectionsTotal = useCallback((n: number) => { setTabTotals((p) => ({ ...p, connections: n })); }, []);
@@ -4124,12 +4060,10 @@ export default function PersonDetailPage({ params }: { params: Promise<{ personI
               let content: ReactElement;
               switch (section.id) {
                 case "section-matches":
-                  content = secondaryLoaded
-                    ? <MatchesTab personId={personId} currentPerson={person} currentIdentifiers={detailData.identifiers} activeMatchesTab={activeMatchesTab} onTotalLoaded={onMatchesTotal} onMergeWith={openMergeWithCandidate} onPersonRefresh={handlePersonRefresh} matchesSeed={matchesSeed} auditSeed={auditSeed} />
-                    : <TabSkelShell title="Matches"><SkeletonMatches /></TabSkelShell>;
+                  content = <MatchesTab personId={personId} currentPerson={person} currentIdentifiers={detailData.identifiers} activeMatchesTab={activeMatchesTab} onTotalLoaded={onMatchesTotal} onMergeWith={openMergeWithCandidate} />;
                   break;
                 case "section-sales":
-                  content = <SalesTab personId={personId} onTotalLoaded={onSalesTotal} seed={salesSeed} ready={secondaryLoaded} />;
+                  content = <SalesTab personId={personId} onTotalLoaded={onSalesTotal} />;
                   break;
                 case "section-connections":
                   content = <ConnectionsTab personId={personId} onTotalLoaded={onConnectionsTotal} />;
@@ -4138,12 +4072,10 @@ export default function PersonDetailPage({ params }: { params: Promise<{ personI
                   content = <IdentifiersTab identifiers={detailData.identifiers} />;
                   break;
                 case "section-decision-history":
-                  content = secondaryLoaded
-                    ? <DecisionHistoryTab personId={personId} onTotalLoaded={onDecisionHistoryTotal} seed={matchesSeed} />
-                    : <TabSkelShell title="Decision History"><SkeletonMatches /></TabSkelShell>;
+                  content = <DecisionHistoryTab personId={personId} onTotalLoaded={onDecisionHistoryTotal} />;
                   break;
                 case "section-source-records":
-                  content = <SourceRecordsTab personId={personId} facets={detailData.sourceRecordFacets} onTotalLoaded={onSourceRecordsTotal} seed={sourceRecordsSeed} ready={secondaryLoaded} />;
+                  content = <SourceRecordsTab personId={personId} facets={detailData.sourceRecordFacets} onTotalLoaded={onSourceRecordsTotal} />;
                   break;
                 default:
                   return null;
@@ -4462,7 +4394,7 @@ export default function PersonDetailPage({ params }: { params: Promise<{ personI
             </div>
             {shareExpiry && (
               <span className={styles.shareExpiry}>
-                Expires {new Date(shareExpiry).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", timeZone: PAGE_TZ })}
+                Expires {new Date(shareExpiry).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}
               </span>
             )}
           </div>
