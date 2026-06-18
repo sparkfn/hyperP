@@ -128,14 +128,10 @@ class Settings(BaseSettings):
     company_mobile_numbers: list[str] = []
     company_email_addresses: list[str] = []
     internal_person_names: list[str] = []
-    ingestion_exclusions_file: str = ""
-
-    # LLM service -------------------------------------------------------------
-    llm_default_model: str = "Qwen/Qwen2.5-72B-Instruct"
-    llm_request_delay_seconds: float = 0.5
-    llm_max_retries: int = 6
-    llm_retry_base_delay_seconds: float = 1.0
-    llm_retry_max_delay_seconds: float = 30.0
+    # Consolidated ingestion config (exclusions + LLM call tuning). LLM service
+    # tuning (timeout/delay/retries) lives in this file's `llm` block; LLM
+    # provider secrets (GPT_*/PROCLAUDE_*) are read from the environment.
+    ingestion_config_file: str = ""
 
     # Birthday greeting task -------------------------------------------------
     # Daily Celery beat job that sends a WhatsApp birthday message to every

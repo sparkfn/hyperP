@@ -22,6 +22,7 @@ from src.connectors.whatsapp.connector import (
     _ChatBundle as WhatsAppBundle,
 )
 from src.exclusion_config import ExclusionFile
+from src.ingestion_config import IngestionConfig
 
 
 @dataclass
@@ -101,9 +102,7 @@ def test_bitrix_envelope_filters_agent_extraction() -> None:
 
 
 def test_bitrix_envelope_skips_when_only_agent_extracted() -> None:
-    extraction = _extraction(
-        [{"name": "Agent One", "phone": "+6568505434", "email": None}]
-    )
+    extraction = _extraction([{"name": "Agent One", "phone": "+6568505434", "email": None}])
 
     assert (
         BitrixChatConnector()._build_envelope(
@@ -119,24 +118,21 @@ def test_bitrix_repeated_envelope_builds_do_not_read_exclusion_file(
 ) -> None:
     calls = 0
 
-    def fake_load_exclusion_file(path_value: str) -> ExclusionFile:
+    def fake_get_ingestion_config() -> IngestionConfig:
         nonlocal calls
         calls += 1
-        assert path_value == "ignored.json"
-        return ExclusionFile()
+        return IngestionConfig()
 
     monkeypatch.setattr(
         "src.connectors.bitrix.connector.get_settings",
         lambda: _TestSettings(ingestion_exclusions_file="ignored.json"),
     )
     monkeypatch.setattr(
-        "src.connectors.bitrix.connector.load_exclusion_file",
-        fake_load_exclusion_file,
+        "src.connectors.bitrix.connector.get_ingestion_config",
+        fake_get_ingestion_config,
     )
     connector = BitrixChatConnector()
-    extraction = _extraction(
-        [{"name": "Customer One", "phone": "+6588889999", "email": None}]
-    )
+    extraction = _extraction([{"name": "Customer One", "phone": "+6588889999", "email": None}])
 
     connector._build_envelopes(
         bundle=_bitrix_bundle(chat_id=1, agent_names=[]),
@@ -166,9 +162,7 @@ def test_bitrix_agent_exclusions_do_not_mutate_shared_file_exclusions() -> None:
     )
     second_envelopes = connector._build_envelopes(
         bundle=_bitrix_bundle(chat_id=2, agent_names=[]),
-        extraction=_extraction(
-            [{"name": "Agent One", "phone": "+6568505434", "email": None}]
-        ),
+        extraction=_extraction([{"name": "Agent One", "phone": "+6568505434", "email": None}]),
         file_exclusions=file_exclusions,
     )
 
@@ -205,23 +199,20 @@ def test_whatsapp_repeated_envelope_builds_do_not_read_exclusion_file(
 ) -> None:
     calls = 0
 
-    def fake_load_exclusion_file(path_value: str) -> ExclusionFile:
+    def fake_get_ingestion_config() -> IngestionConfig:
         nonlocal calls
         calls += 1
-        assert path_value == "ignored.json"
-        return ExclusionFile()
+        return IngestionConfig()
 
     monkeypatch.setattr(
         "src.connectors.whatsapp.connector.get_settings",
         lambda: _TestSettings(ingestion_exclusions_file="ignored.json"),
     )
     monkeypatch.setattr(
-        "src.connectors.whatsapp.connector.load_exclusion_file",
-        fake_load_exclusion_file,
+        "src.connectors.whatsapp.connector.get_ingestion_config",
+        fake_get_ingestion_config,
     )
-    extraction = _extraction(
-        [{"name": "Customer One", "phone": "+6588889999", "email": None}]
-    )
+    extraction = _extraction([{"name": "Customer One", "phone": "+6588889999", "email": None}])
 
     build_whatsapp_envelopes(bundle=_whatsapp_bundle(), extraction=extraction)
     build_whatsapp_envelopes(bundle=_whatsapp_bundle(session_phone=None), extraction=extraction)

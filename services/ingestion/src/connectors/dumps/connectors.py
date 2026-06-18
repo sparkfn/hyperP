@@ -14,12 +14,15 @@ from src.connectors.bitrix.connector import (
     _AgentMember,
 )
 from src.connectors.bitrix.connector import (
-    LLM_BATCH_SIZE as BITRIX_LLM_BATCH_SIZE,
-)
-from src.connectors.bitrix.connector import (
     _ChatBundle as BitrixChatBundle,
 )
-from src.connectors.chat_helpers import ExtractionResult, run_extraction_batch
+from src.connectors.chat_helpers import (
+    ExtractionResult,
+    chat_batch_max_chars,
+    chat_batch_size,
+    iter_char_batches,
+    run_extraction_batch,
+)
 from src.connectors.dumps.reader import DumpRow, load_dump_tables
 from src.connectors.eko.connector import EkoConnector
 from src.connectors.fundbox.builders import (
@@ -35,9 +38,6 @@ from src.connectors.fundbox.users import FundboxConnector
 from src.connectors.sggov.bankruptcy import SGGovernmentBankruptcyConnector
 from src.connectors.sggov.rental_flats import SGGovernmentRentalFlatsConnector
 from src.connectors.speedzone.connector import SpeedZoneConnector
-from src.connectors.whatsapp.connector import (
-    LLM_BATCH_SIZE as WHATSAPP_LLM_BATCH_SIZE,
-)
 from src.connectors.whatsapp.connector import (
     ORG_TO_ENTITY,
     _first_str,
@@ -319,7 +319,8 @@ class WhatsAppDumpConnector(SourceConnector):
 
         for bundle, extraction in _run_batches(
             [bundle.msg_text for bundle in bundles],
-            WHATSAPP_LLM_BATCH_SIZE,
+            chat_batch_max_chars(),
+            chat_batch_size(),
             run_extraction_batch,
         ):
             if extraction is not None:
@@ -381,7 +382,8 @@ class BitrixDumpConnector(SourceConnector):
 
         for bundle_index, extraction in _run_batches(
             [bundle.conv_text for bundle in bundles],
-            BITRIX_LLM_BATCH_SIZE,
+            chat_batch_max_chars(),
+            chat_batch_size(),
             run_extraction_batch,
         ):
             if extraction is not None:
@@ -441,12 +443,12 @@ class SpeedZoneDumpConnector(SourceConnector):
 
 def _run_batches(
     texts: list[str],
-    batch_size: int,
+    max_chars: int,
+    max_count: int,
     extractor: Callable[[list[str]], list[ExtractionResult | None]],
 ) -> Iterator[tuple[int, ExtractionResult | None]]:
-    for start in range(0, len(texts), batch_size):
-        batch = texts[start : start + batch_size]
-        for offset, result in enumerate(extractor(batch)):
+    for start, end in iter_char_batches(texts, max_chars, max_count):
+        for offset, result in enumerate(extractor(texts[start:end])):
             yield start + offset, result
 
 

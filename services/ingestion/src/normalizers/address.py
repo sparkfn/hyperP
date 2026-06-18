@@ -13,7 +13,7 @@ import re
 from dataclasses import dataclass
 from typing import TypedDict
 
-from src.llm import ChatMessage, get_llm_service
+from src.llm import ChatMessage, get_address_llm_service
 from src.llm_prompts import ADDRESS_NORMALIZATION_SYSTEM, build_address_normalization_prompt
 from src.models import QualityFlag, RawAddress
 
@@ -187,12 +187,14 @@ def _normalize_with_llm(inputs: list[str]) -> dict[int, list[NormalizedAddress]]
     try:
         response_text = asyncio.run(_normalize_with_llm_async(inputs))
     except Exception as exc:
-        logger.warning("LLM address normalization failed: %s", exc)
+        logger.warning("LLM address normalization failed: %r", exc)
         return {}
     try:
         payload = json.loads(response_text)
     except json.JSONDecodeError:
-        logger.warning("LLM address normalization returned invalid JSON")
+        logger.warning(
+            "LLM address normalization returned invalid JSON (len=%d)", len(response_text)
+        )
         return {}
     if not isinstance(payload, dict):
         return {}
@@ -210,7 +212,7 @@ def _normalize_with_llm(inputs: list[str]) -> dict[int, list[NormalizedAddress]]
 
 
 async def _normalize_with_llm_async(inputs: list[str]) -> str:
-    svc = get_llm_service()
+    svc = get_address_llm_service()
     return await svc.chat_json(
         [
             ChatMessage(role="system", content=ADDRESS_NORMALIZATION_SYSTEM),

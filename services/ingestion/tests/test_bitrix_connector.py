@@ -82,6 +82,8 @@ def test_bitrix_fetch_uses_one_cursor_for_chunked_chat_scan(
     )
     monkeypatch.setattr(connector, "_build_conversation", lambda conn, chat_id, deal: "hello")
     monkeypatch.setattr(connector, "_load_agents", lambda conn, chat_id: [])
+    monkeypatch.setattr("src.connectors.bitrix.connector.chat_batch_size", lambda: 20)
+    monkeypatch.setattr("src.connectors.bitrix.connector.chat_batch_max_chars", lambda: 1_000_000)
     monkeypatch.setattr(
         "src.connectors.bitrix.connector.run_extraction_batch",
         lambda texts: [
@@ -165,6 +167,8 @@ def test_bitrix_chat_envelope_keeps_agent_identity_raw_only(monkeypatch: MonkeyP
     )
     monkeypatch.setattr(connector, "_build_conversation", lambda conn, chat_id, deal: "hello")
     monkeypatch.setattr(connector, "_load_agents", lambda conn, chat_id: [])
+    monkeypatch.setattr("src.connectors.bitrix.connector.chat_batch_size", lambda: 20)
+    monkeypatch.setattr("src.connectors.bitrix.connector.chat_batch_max_chars", lambda: 1_000_000)
     monkeypatch.setattr(
         "src.connectors.bitrix.connector.run_extraction_batch",
         lambda texts: [

@@ -56,6 +56,8 @@ COPY public.contacts (jid, phone_number, name) FROM stdin;
         encoding="utf-8",
     )
     monkeypatch.setattr("src.connectors.dumps.connectors.run_extraction_batch", _sample_extraction)
+    monkeypatch.setattr("src.connectors.dumps.connectors.chat_batch_size", lambda: 20)
+    monkeypatch.setattr("src.connectors.dumps.connectors.chat_batch_max_chars", lambda: 1_000_000)
     monkeypatch.setattr(
         "src.connectors.whatsapp.connector.extraction_method_label", lambda: "llm:test"
     )
@@ -143,6 +145,8 @@ INSERT INTO `agent_chat` VALUES (5,400);
         encoding="utf-8",
     )
     monkeypatch.setattr("src.connectors.dumps.connectors.run_extraction_batch", _sample_extraction)
+    monkeypatch.setattr("src.connectors.dumps.connectors.chat_batch_size", lambda: 20)
+    monkeypatch.setattr("src.connectors.dumps.connectors.chat_batch_max_chars", lambda: 1_000_000)
     monkeypatch.setattr(
         "src.connectors.bitrix.connector.extraction_method_label", lambda: "llm:test"
     )
