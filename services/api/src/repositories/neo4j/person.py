@@ -109,13 +109,15 @@ class Neo4jPersonRepository:
             filters.get(k) is not None
             for k in ("addr_street", "addr_unit", "addr_city", "addr_postal", "addr_country")
         )
-        list_query = build_list_persons_query(sort_by, sort_order, has_q=has_q)
-        count_query = build_count_persons_query(has_q=has_q, has_addr_filter=has_addr_filter)
-        # sort_by/sort_order are used to build the query string, not as Cypher params
+        entity_mode = filters.get("entity_key_mode") or "or"
+        source_mode = filters.get("source_key_mode") or "or"
+        list_query = build_list_persons_query(sort_by, sort_order, has_q=has_q, entity_mode=entity_mode, source_mode=source_mode)
+        count_query = build_count_persons_query(has_q=has_q, has_addr_filter=has_addr_filter, entity_mode=entity_mode, source_mode=source_mode)
+        # sort_by/sort_order/entity_key_mode/source_key_mode are used to build the query string, not as Cypher params
         cypher_params: dict[str, str | int | bool | list[str] | None] = {
             k: v  # type: ignore[misc]  # TypedDict values are object; known-safe filter keys
             for k, v in filters.items()
-            if k not in ("sort_by", "sort_order")
+            if k not in ("sort_by", "sort_order", "entity_key_mode", "source_key_mode")
         }
         list_params = {**cypher_params, "skip": skip, "limit": limit + 1}
         count_params = cypher_params

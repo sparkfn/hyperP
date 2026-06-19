@@ -20,6 +20,9 @@ WHERE p.status <> 'merged'
   AND ($has_email IS NULL
        OR ($has_email = true  AND p.preferred_email IS NOT NULL)
        OR ($has_email = false AND p.preferred_email IS NULL))
+  AND ($has_any_contact IS NULL
+       OR ($has_any_contact = true  AND (p.preferred_email IS NOT NULL OR p.preferred_phone IS NOT NULL))
+       OR ($has_any_contact = false AND p.preferred_email IS NULL AND p.preferred_phone IS NULL))
   AND ($updated_after  IS NULL OR p.updated_at >= datetime($updated_after))
   AND ($updated_before IS NULL OR p.updated_at <= datetime($updated_before))
   AND ($has_dob IS NULL
@@ -43,9 +46,10 @@ WHERE p.status <> 'merged'
            WHERE am.person_id <> p.person_id AND am.status <> 'merged'
          }
          OR EXISTS {
-           MATCH (md:MatchDecision)-[:ABOUT_LEFT|ABOUT_RIGHT]->(p)
+           MATCH (rc_am:ReviewCase)-[:FOR_DECISION]->(md:MatchDecision)-[:ABOUT_LEFT|ABOUT_RIGHT]->(p)
            WHERE EXISTS { (md)-[:ABOUT_LEFT]->(:Person) }
              AND EXISTS { (md)-[:ABOUT_RIGHT]->(:Person) }
+             AND NOT rc_am.queue_state IN ['resolved', 'cancelled']
          }
        ))
        OR ($has_any_match = false AND NOT (
@@ -54,9 +58,10 @@ WHERE p.status <> 'merged'
            WHERE am.person_id <> p.person_id AND am.status <> 'merged'
          }
          OR EXISTS {
-           MATCH (md:MatchDecision)-[:ABOUT_LEFT|ABOUT_RIGHT]->(p)
+           MATCH (rc_am:ReviewCase)-[:FOR_DECISION]->(md:MatchDecision)-[:ABOUT_LEFT|ABOUT_RIGHT]->(p)
            WHERE EXISTS { (md)-[:ABOUT_LEFT]->(:Person) }
              AND EXISTS { (md)-[:ABOUT_RIGHT]->(:Person) }
+             AND NOT rc_am.queue_state IN ['resolved', 'cancelled']
          }
        )))
   AND ($has_possible_match IS NULL
@@ -70,14 +75,16 @@ WHERE p.status <> 'merged'
        }))
   AND ($has_system_match IS NULL
        OR ($has_system_match = true AND EXISTS {
-         MATCH (md:MatchDecision)-[:ABOUT_LEFT|ABOUT_RIGHT]->(p)
+         MATCH (rc_sm:ReviewCase)-[:FOR_DECISION]->(md:MatchDecision)-[:ABOUT_LEFT|ABOUT_RIGHT]->(p)
          WHERE EXISTS { (md)-[:ABOUT_LEFT]->(:Person) }
            AND EXISTS { (md)-[:ABOUT_RIGHT]->(:Person) }
+           AND NOT rc_sm.queue_state IN ['resolved', 'cancelled']
        })
        OR ($has_system_match = false AND NOT EXISTS {
-         MATCH (md:MatchDecision)-[:ABOUT_LEFT|ABOUT_RIGHT]->(p)
+         MATCH (rc_sm:ReviewCase)-[:FOR_DECISION]->(md:MatchDecision)-[:ABOUT_LEFT|ABOUT_RIGHT]->(p)
          WHERE EXISTS { (md)-[:ABOUT_LEFT]->(:Person) }
            AND EXISTS { (md)-[:ABOUT_RIGHT]->(:Person) }
+           AND NOT rc_sm.queue_state IN ['resolved', 'cancelled']
        }))
   AND ($addr_street IS NULL  OR toLower(addr.street_name)     CONTAINS toLower($addr_street))
   AND ($addr_unit   IS NULL   OR toLower(addr.unit_number)    CONTAINS toLower($addr_unit))
@@ -86,21 +93,42 @@ WHERE p.status <> 'merged'
   AND ($addr_country IS NULL  OR toLower(addr.country_code)   CONTAINS toLower($addr_country))
 """
 
-_ENTITY_FILTER_CLAUSE = """
-WITH p, score, addr WHERE ($entity_keys IS NULL OR EXISTS {
+def _entity_filter_clause(entity_mode: str, source_mode: str) -> str:
+    if entity_mode == "and":
+        entity_part = """($entity_keys IS NULL OR ALL(ek IN $entity_keys WHERE EXISTS {
+  MATCH (sr_e:SourceRecord)-[:LINKED_TO]->(p)
+  MATCH (sr_e)-[:FROM_SOURCE]->(:SourceSystem)-[:OPERATED_BY]->(e:Entity)
+  WHERE e.entity_key = ek
+}))"""
+    else:
+        entity_part = """($entity_keys IS NULL OR EXISTS {
   MATCH (sr_e:SourceRecord)-[:LINKED_TO]->(p)
   MATCH (sr_e)-[:FROM_SOURCE]->(:SourceSystem)-[:OPERATED_BY]->(e:Entity)
   WHERE e.entity_key IN $entity_keys
-}) AND ($source_keys IS NULL OR EXISTS {
+})"""
+
+    if source_mode == "and":
+        source_part = """($source_keys IS NULL OR ALL(sk IN $source_keys WHERE EXISTS {
+  MATCH (sr_s:SourceRecord)-[:LINKED_TO]->(p)
+  MATCH (sr_s)-[:FROM_SOURCE]->(ss:SourceSystem)
+  WHERE ss.source_key = sk
+}))"""
+    else:
+        source_part = """($source_keys IS NULL OR EXISTS {
   MATCH (sr_s:SourceRecord)-[:LINKED_TO]->(p)
   MATCH (sr_s)-[:FROM_SOURCE]->(ss:SourceSystem)
   WHERE ss.source_key IN $source_keys
-  }) AND ($source_record_type IS NULL OR EXISTS {
+})"""
+
+    return f"""
+WITH p, score, addr WHERE {entity_part}
+AND {source_part}
+AND ($source_record_type IS NULL OR EXISTS {{
     MATCH (sr_t:SourceRecord)-[:LINKED_TO]->(p)
     WHERE sr_t.record_type = $source_record_type
-  })
+  }})
 WITH DISTINCT p, score
-OPTIONAL MATCH (p)-[:LIVES_AT]->(addr:Address {address_id: p.preferred_address_id})
+OPTIONAL MATCH (p)-[:LIVES_AT]->(addr:Address {{address_id: p.preferred_address_id}})
 """
 
 _ENRICH_AND_RETURN = """
@@ -160,9 +188,10 @@ CALL (p) {
   RETURN count(DISTINCT other) AS possible_match_count
 }
 CALL (p) {
-  OPTIONAL MATCH (md:MatchDecision)-[:ABOUT_LEFT|ABOUT_RIGHT]->(p)
+  OPTIONAL MATCH (rc:ReviewCase)-[:FOR_DECISION]->(md:MatchDecision)-[:ABOUT_LEFT|ABOUT_RIGHT]->(p)
   WHERE EXISTS { (md)-[:ABOUT_LEFT]->(:Person) }
     AND EXISTS { (md)-[:ABOUT_RIGHT]->(:Person) }
+    AND NOT rc.queue_state IN ['resolved', 'cancelled']
   RETURN count(DISTINCT md) AS system_match_count
 }
 CALL (p) {
@@ -234,7 +263,7 @@ def _resolve_sort(sort_by: str | None, sort_order: str | None, *, has_q: bool) -
     return _SORT_COLUMNS[col_key], direction
 
 
-def build_list_persons_query(sort_by: str | None, sort_order: str | None, *, has_q: bool) -> str:
+def build_list_persons_query(sort_by: str | None, sort_order: str | None, *, has_q: bool, entity_mode: str = "or", source_mode: str = "or") -> str:
     """Build the list query for ``GET /v1/persons``.
 
     When ``has_q`` is true, prefixes a fulltext index match; otherwise scans
@@ -247,25 +276,26 @@ def build_list_persons_query(sort_by: str | None, sort_order: str | None, *, has
     ordering, so the original structure is preserved.
     """
     col, direction = _resolve_sort(sort_by, sort_order, has_q=has_q)
+    entity_clause = _entity_filter_clause(entity_mode, source_mode)
     pre_col = _PRE_ENRICH_SORT_MAP.get(col)
     if pre_col:
         return (
             _head(has_q=has_q)
             + _COMMON_FILTER_CLAUSE
-            + _ENTITY_FILTER_CLAUSE
+            + entity_clause
             + f"WITH p, addr, score\nORDER BY {pre_col} {direction}\nSKIP $skip LIMIT $limit\n"
             + _ENRICH_AND_RETURN
         )
     return (
         _head(has_q=has_q)
         + _COMMON_FILTER_CLAUSE
-        + _ENTITY_FILTER_CLAUSE
+        + entity_clause
         + _ENRICH_AND_RETURN
         + f"ORDER BY {col} {direction}\nSKIP $skip LIMIT $limit\n"
     )
 
 
-def build_count_persons_query(*, has_q: bool, has_addr_filter: bool = False) -> str:
+def build_count_persons_query(*, has_q: bool, has_addr_filter: bool = False, entity_mode: str = "or", source_mode: str = "or") -> str:
     """Build the total-count query matching :func:`build_list_persons_query`'s filters.
 
     Skips the address OPTIONAL MATCH in the head when no ``addr_*`` filter
@@ -275,7 +305,7 @@ def build_count_persons_query(*, has_q: bool, has_addr_filter: bool = False) -> 
     return (
         _head(has_q=has_q, skip_address=not has_addr_filter)
         + _COMMON_FILTER_CLAUSE
-        + _ENTITY_FILTER_CLAUSE
+        + _entity_filter_clause(entity_mode, source_mode)
         + "RETURN count(p) AS total\n"
     )
 

@@ -700,7 +700,7 @@ function parseDobMode(value: string | null): DobMode {
 type SortKey = "name" | "dob" | "entity" | "relations" | "matches" | "decisionHistory" | "orders" | "quality";
 type SortDir = "asc" | "desc";
 type FlagFilter = "any" | "high_value" | "high_risk" | "no_contact";
-type FilterKey = "entity" | "source" | "identity" | "matches" | "dob" | "address" | "flags" | "bankruptcy" | "updated" | "location";
+type FilterKey = "entity" | "source" | "identity" | "matches" | "dob" | "address" | "flags" | "bankruptcy" | "updated";
 
 type MatchPresenceFilter = "any" | "has" | "none";
 
@@ -822,7 +822,9 @@ function PersonsInner(): ReactElement {
     const legacy = searchParams.get("entity");
     return values.length > 0 || legacy === null ? values : [legacy];
   });
+  const [entityFilterMode, setEntityFilterMode] = useState<"or" | "and">(() => searchParams.get("entity_key_mode") === "and" ? "and" : "or");
   const [sourceFilter, setSourceFilter] = useState<string[]>(() => searchParams.getAll("source_key"));
+  const [sourceFilterMode, setSourceFilterMode] = useState<"or" | "and">(() => searchParams.get("source_key_mode") === "and" ? "and" : "or");
   const [hasConversationSource, setHasConversationSource] = useState(() => searchParams.get("source_record_type") === "conversation");
   const [sourceSearch, setSourceSearch] = useState("");
   const [identityFilter, setIdentityFilter] = useState<string[]>(() => {
@@ -831,6 +833,7 @@ function PersonsInner(): ReactElement {
     if (searchParams.get("has_phone") === "true") values.push("phone");
     return values;
   });
+  const [identityFilterMode, setIdentityFilterMode] = useState<"or" | "and">(() => searchParams.get("identity_mode") === "and" ? "and" : "or");
   const [addressFilter, setAddressFilter] = useState<PresenceFilter>(() => parsePresenceFilter(searchParams.get("has_address")));
   const [dobFilter, setDobFilter] = useState<PresenceFilter>(() => parsePresenceFilter(searchParams.get("has_dob")));
   const [dobMode, setDobMode] = useState<DobMode>(() => parseDobMode(searchParams.get("dob_mode")));
@@ -1064,10 +1067,13 @@ function PersonsInner(): ReactElement {
 
   function clearAllFilters(): void {
     setEntityFilter([]);
+    setEntityFilterMode("or");
     setSourceFilter([]);
+    setSourceFilterMode("or");
     setHasConversationSource(false);
     setSourceSearch("");
     setIdentityFilter([]);
+    setIdentityFilterMode("or");
     setAddressFilter("any");
     setDobFilter("any");
     setDobMode("single");
@@ -1127,10 +1133,18 @@ function PersonsInner(): ReactElement {
     const params = new URLSearchParams();
     if (search.trim().length >= 3) params.set("q", search.trim());
     entityFilter.forEach((key) => params.append("entity_key", key));
+    if (entityFilter.length > 1 && entityFilterMode === "and") params.set("entity_key_mode", "and");
     sourceFilter.forEach((key) => params.append("source_key", key));
+    if (sourceFilter.length > 1 && sourceFilterMode === "and") params.set("source_key_mode", "and");
     if (hasConversationSource) params.set("source_record_type", "conversation");
-    if (identityFilter.includes("email")) params.set("has_email", "true");
-    if (identityFilter.includes("phone")) params.set("has_phone", "true");
+    const hasEmail = identityFilter.includes("email");
+    const hasPhone = identityFilter.includes("phone");
+    if (hasEmail && hasPhone && identityFilterMode === "or") {
+      params.set("has_any_contact", "true");
+    } else {
+      if (hasEmail) params.set("has_email", "true");
+      if (hasPhone) params.set("has_phone", "true");
+    }
     if (addressFilter === "has") params.set("has_address", "true");
     else if (addressFilter === "none") params.set("has_address", "false");
     if (dobFilter === "has") {
@@ -1169,7 +1183,7 @@ function PersonsInner(): ReactElement {
     if (addrCountry) params.set("addr_country", addrCountry);
     params.set("limit", String(pageSize));
     return params.toString();
-  }, [search, entityFilter, sourceFilter, hasConversationSource, identityFilter, addressFilter, dobFilter, dobMode, dobSingleDate, dobStartDate, dobEndDate, dobYear, dobMonth, dobDay, flagFilter, hasBankruptcy, matchPresence, updatedAfter, updatedBefore, addrCity, addrPostal, addrCountry, sortKey, sortDir, pageSize]);
+  }, [search, entityFilter, entityFilterMode, sourceFilter, sourceFilterMode, hasConversationSource, identityFilter, identityFilterMode, addressFilter, dobFilter, dobMode, dobSingleDate, dobStartDate, dobEndDate, dobYear, dobMonth, dobDay, flagFilter, hasBankruptcy, matchPresence, updatedAfter, updatedBefore, addrCity, addrPostal, addrCountry, sortKey, sortDir, pageSize]);
 
   const urlQuery = useMemo(() => {
     const params = new URLSearchParams(apiQuery);
@@ -1497,6 +1511,14 @@ function PersonsInner(): ReactElement {
             onToggle={() => toggleFilter("entity")}
           >
             <div className={styles.fpInner}>
+              <div className={styles.fpSectionLabel}>Show persons from</div>
+              <div className={styles.fpSegmented}>
+                <button type="button" className={`${styles.fpSegmentedBtn} ${entityFilterMode === "or" ? styles.fpSegmentedBtnActive : ""}`} onClick={() => setEntityFilterMode("or")}>Any selected</button>
+                <button type="button" className={`${styles.fpSegmentedBtn} ${entityFilterMode === "and" ? styles.fpSegmentedBtnActive : ""}`} onClick={() => setEntityFilterMode("and")}>All selected</button>
+              </div>
+              {entityFilterMode === "and" && entityFilter.length < 2 && (
+                <div className={styles.filterModeHint}>Select 2+ entities to use "All selected"</div>
+              )}
               <div className={styles.filterOptions}>
                 {entities.map((entity) => (
                   <button
@@ -1546,6 +1568,13 @@ function PersonsInner(): ReactElement {
                 </button>
               </div>
               <div className={styles.fpSectionLabel}>Source system</div>
+              <div className={styles.fpSegmented}>
+                <button type="button" className={`${styles.fpSegmentedBtn} ${sourceFilterMode === "or" ? styles.fpSegmentedBtnActive : ""}`} onClick={() => setSourceFilterMode("or")}>Any selected</button>
+                <button type="button" className={`${styles.fpSegmentedBtn} ${sourceFilterMode === "and" ? styles.fpSegmentedBtnActive : ""}`} onClick={() => setSourceFilterMode("and")}>All selected</button>
+              </div>
+              {sourceFilterMode === "and" && sourceFilter.length < 2 && (
+                <div className={styles.filterModeHint}>Select 2+ sources to use "All selected"</div>
+              )}
               <div className={styles.sourceSearchBox}>
                 <svg className={styles.sourceSearchIcon} width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                   <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
@@ -1584,12 +1613,24 @@ function PersonsInner(): ReactElement {
           <FilterPill
             label="Identity"
             isActive={identityFilter.length > 0}
-            activeLabel={identityFilter.map((k) => IDENTITY_FILTERS.find((f) => f.key === k)?.label ?? k).join(", ")}
-            onClear={() => setIdentityFilter([])}
+            activeLabel={
+              identityFilter.length === 2
+                ? `Email ${identityFilterMode === "or" ? "or" : "and"} Phone`
+                : identityFilter.map((k) => IDENTITY_FILTERS.find((f) => f.key === k)?.label ?? k).join(", ")
+            }
+            onClear={() => { setIdentityFilter([]); setIdentityFilterMode("or"); }}
             open={openFilter === "identity"}
             onToggle={() => toggleFilter("identity")}
           >
             <div className={styles.fpInner}>
+              <div className={styles.fpSectionLabel}>Show persons with</div>
+              <div className={styles.fpSegmented}>
+                <button type="button" className={`${styles.fpSegmentedBtn} ${identityFilterMode === "or" ? styles.fpSegmentedBtnActive : ""}`} onClick={() => setIdentityFilterMode("or")}>Any selected</button>
+                <button type="button" className={`${styles.fpSegmentedBtn} ${identityFilterMode === "and" ? styles.fpSegmentedBtnActive : ""}`} onClick={() => setIdentityFilterMode("and")}>All selected</button>
+              </div>
+              {identityFilterMode === "and" && identityFilter.length < 2 && (
+                <div className={styles.filterModeHint}>Select 2+ contact types to use "All selected"</div>
+              )}
               <div className={styles.filterOptions}>
                 {IDENTITY_FILTERS.map((filter) => {
                   const checked = identityFilter.includes(filter.key);
@@ -1793,13 +1834,18 @@ function PersonsInner(): ReactElement {
 
           <FilterPill
             label="Address"
-            isActive={addressFilter !== "any"}
-            activeLabel={addressFilter === "none" ? "No address" : "Has address"}
-            onClear={() => setAddressFilter("any")}
+            isActive={addressFilter !== "any" || addrCity !== "" || addrPostal !== "" || addrCountry !== ""}
+            activeLabel={
+              addrCity || addrPostal || addrCountry
+                ? [addrCity, addrPostal, addrCountry].filter(Boolean).join(", ")
+                : addressFilter === "none" ? "No address" : "Has address"
+            }
+            onClear={() => { setAddressFilter("any"); setAddrCity(""); setAddrPostal(""); setAddrCountry(""); }}
             open={openFilter === "address"}
             onToggle={() => toggleFilter("address")}
           >
             <div className={styles.fpInner}>
+              <div className={styles.fpSectionLabel}>Has address</div>
               <div className={styles.fpSegmented}>
                 {(["any", "has", "none"] as const).map((value) => (
                   <button
@@ -1812,6 +1858,50 @@ function PersonsInner(): ReactElement {
                   </button>
                 ))}
               </div>
+              {addressFilter === "has" && (
+              <>
+              <hr className={styles.fpSep} />
+              <div className={styles.fpSectionLabel}>Location details</div>
+              <div className={styles.dateFieldGroup}>
+                <label className={styles.dateFieldLabel}>City</label>
+                <div className={styles.dateInputWrap}>
+                  <input
+                    className={styles.dateInput}
+                    type="text"
+                    value={addrCity}
+                    onChange={(e) => setAddrCity(e.target.value)}
+                    placeholder="e.g. Singapore"
+                  />
+                </div>
+              </div>
+              <div className={styles.dateFieldsRow}>
+                <div className={`${styles.dateFieldGroup} ${styles.compactFieldGroup}`}>
+                  <label className={styles.dateFieldLabel}>Postal</label>
+                  <div className={styles.dateInputWrap}>
+                    <input
+                      className={styles.dateInput}
+                      type="text"
+                      value={addrPostal}
+                      onChange={(e) => setAddrPostal(e.target.value)}
+                      placeholder="e.g. 018982"
+                    />
+                  </div>
+                </div>
+                <div className={`${styles.dateFieldGroup} ${styles.compactFieldGroup}`}>
+                  <label className={styles.dateFieldLabel}>Country</label>
+                  <div className={styles.dateInputWrap}>
+                    <input
+                      className={styles.dateInput}
+                      type="text"
+                      value={addrCountry}
+                      onChange={(e) => setAddrCountry(e.target.value)}
+                      placeholder="e.g. SG"
+                    />
+                  </div>
+                </div>
+              </div>
+              </>
+              )}
             </div>
           </FilterPill>
 
@@ -1905,57 +1995,6 @@ function PersonsInner(): ReactElement {
             </div>
           </FilterPill>
 
-          <FilterPill
-            label="Location"
-            isActive={addrCity !== "" || addrPostal !== "" || addrCountry !== ""}
-            activeLabel={
-              [addrCity, addrPostal, addrCountry].filter(Boolean).join(", ")
-            }
-            onClear={() => { setAddrCity(""); setAddrPostal(""); setAddrCountry(""); }}
-            open={openFilter === "location"}
-            onToggle={() => toggleFilter("location")}
-          >
-            <div className={styles.fpInner}>
-              <div className={styles.dateFieldGroup}>
-                <label className={styles.dateFieldLabel}>City</label>
-                <div className={styles.dateInputWrap}>
-                  <input
-                    className={styles.dateInput}
-                    type="text"
-                    value={addrCity}
-                    onChange={(e) => setAddrCity(e.target.value)}
-                    placeholder="e.g. Singapore"
-                  />
-                </div>
-              </div>
-              <div className={styles.dateFieldsRow}>
-                <div className={`${styles.dateFieldGroup} ${styles.compactFieldGroup}`}>
-                  <label className={styles.dateFieldLabel}>Postal</label>
-                  <div className={styles.dateInputWrap}>
-                    <input
-                      className={styles.dateInput}
-                      type="text"
-                      value={addrPostal}
-                      onChange={(e) => setAddrPostal(e.target.value)}
-                      placeholder="e.g. 018982"
-                    />
-                  </div>
-                </div>
-                <div className={`${styles.dateFieldGroup} ${styles.compactFieldGroup}`}>
-                  <label className={styles.dateFieldLabel}>Country</label>
-                  <div className={styles.dateInputWrap}>
-                    <input
-                      className={styles.dateInput}
-                      type="text"
-                      value={addrCountry}
-                      onChange={(e) => setAddrCountry(e.target.value)}
-                      placeholder="e.g. SG"
-                    />
-                  </div>
-                </div>
-              </div>
-            </div>
-          </FilterPill>
 
         </div>
         {/* ── Count bar + Table ─────────────────────────────────── */}

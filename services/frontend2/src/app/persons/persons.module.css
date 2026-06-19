@@ -324,6 +324,12 @@
   margin: 2px -14px;
 }
 
+.filterModeHint {
+  font-size: 10px;
+  color: var(--text-muted);
+  margin-top: -4px;
+}
+
 /* Segmented control — for mutually exclusive choices */
 .fpSegmented {
   display: flex;

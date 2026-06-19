@@ -31,6 +31,7 @@ class PersonListFilters(TypedDict, total=False):
     is_high_risk: bool | None
     has_phone: bool | None
     has_email: bool | None
+    has_any_contact: bool | None
     has_address: bool | None
     has_bankruptcy_case: bool | None
     has_any_match: bool | None
@@ -49,6 +50,8 @@ class PersonListFilters(TypedDict, total=False):
     dob_year: str | None
     dob_month: str | None
     dob_day: str | None
+    entity_key_mode: str | None
+    source_key_mode: str | None
     sort_by: str | None
     sort_order: str | None
 
