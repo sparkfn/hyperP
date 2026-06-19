@@ -12,7 +12,23 @@ from src.auth.oauth_client_models import OAuthClient, OAuthClientSecret
 from src.oauth2_app import build_oauth2_app
 from src.repositories.deps import get_person_repo
 from src.repositories.protocols.person import PersonListFilters, PersonRepository
-from src.types import ListedPerson, Person
+from src.types import (
+    AuditEvent,
+    BankruptcyCase,
+    ConnectionType,
+    ListedPerson,
+    MatchDecision,
+    Person,
+    PersonConnection,
+    PersonEntitySummary,
+    PersonGraph,
+    PersonIdentifier,
+    PersonSharedIdentifierCandidate,
+    PersonTimelineGroup,
+    PossibleMatchDetail,
+    SourceRecord,
+    SourceRecordEntityFacet,
+)
 
 
 def _client() -> OAuthClient:
@@ -174,6 +190,152 @@ def test_oauth2_persons_rejects_human_user() -> None:
 
     assert res.status_code == 403
     assert res.json()["error"]["message"] == "This endpoint requires OAuth2 client credentials."
+
+
+def test_oauth2_persons_list_passes_filters() -> None:
+    """All list_persons filters flow through the /oauth2/v1 mount unchanged."""
+    app = build_oauth2_app()
+    app.dependency_overrides[get_current_user_or_oauth_client] = _override_oauth_persons_reader
+    client = TestClient(app)
+
+    captured_filters: PersonListFilters = {}
+    captured_skip: int | None = None
+    captured_limit: int | None = None
+
+    class _RecordingPersonRepo(PersonRepository):
+        async def get_page(
+            self, filters: PersonListFilters, skip: int, limit: int
+        ) -> tuple[list[ListedPerson], int]:
+            nonlocal captured_filters, captured_skip, captured_limit
+            captured_filters = filters
+            captured_skip = skip
+            captured_limit = limit
+            return [], 0
+
+        async def search_by_identifier(self, identifier_type: str, value: str) -> list[Person]:
+            raise NotImplementedError
+
+        async def search_by_query(
+            self, q: str, status: str | None, skip: int, limit: int
+        ) -> tuple[list[Person], bool]:
+            raise NotImplementedError
+
+        async def get_by_id(self, person_id: str) -> Person | None:
+            raise NotImplementedError
+
+        async def get_source_records(
+            self,
+            person_id: str,
+            skip: int,
+            limit: int,
+            entity_key: str | None = None,
+            record_type: str | None = None,
+        ) -> tuple[list[SourceRecord], int]:
+            raise NotImplementedError
+
+        async def get_source_record_entity_facets(
+            self, person_id: str
+        ) -> list[SourceRecordEntityFacet]:
+            raise NotImplementedError
+
+        async def get_bankruptcy_cases(
+            self, person_id: str, skip: int, limit: int
+        ) -> tuple[list[BankruptcyCase], int]:
+            raise NotImplementedError
+
+        async def get_identifiers(
+            self, person_id: str, skip: int, limit: int
+        ) -> tuple[list[PersonIdentifier], int]:
+            raise NotImplementedError
+
+        async def get_connections(
+            self,
+            person_id: str,
+            connection_type: ConnectionType,
+            identifier_type: str | None,
+            skip: int,
+            limit: int,
+        ) -> tuple[list[PersonConnection], int]:
+            raise NotImplementedError
+
+        async def get_relationships(self, person_id: str) -> list[dict[str, str]]:
+            raise NotImplementedError
+
+        async def get_shared_identifier_candidates(
+            self, person_id: str, skip: int, limit: int
+        ) -> tuple[list[PersonSharedIdentifierCandidate], int]:
+            raise NotImplementedError
+
+        async def get_possible_match_detail(
+            self, person_id: str, candidate_person_id: str
+        ) -> PossibleMatchDetail | None:
+            raise NotImplementedError
+
+        async def get_entities(self, person_id: str) -> list[PersonEntitySummary]:
+            raise NotImplementedError
+
+        async def get_graph(self, person_id: str, max_hops: int) -> PersonGraph | None:
+            raise NotImplementedError
+
+        async def get_node_graph(self, element_id: str, max_hops: int) -> PersonGraph | None:
+            raise NotImplementedError
+
+        async def get_audit(
+            self, person_id: str, skip: int, limit: int
+        ) -> tuple[list[AuditEvent], int]:
+            raise NotImplementedError
+
+        async def get_matches(
+            self, person_id: str, skip: int, limit: int
+        ) -> tuple[list[MatchDecision], int]:
+            raise NotImplementedError
+
+        async def get_timeline(
+            self, person_id: str, skip: int, limit: int
+        ) -> tuple[list[PersonTimelineGroup], int]:
+            raise NotImplementedError
+
+        async def get_timeline_target(
+            self, person_id: str, source_record_pk: str
+        ) -> PersonTimelineGroup | None:
+            raise NotImplementedError
+
+    app.dependency_overrides[get_person_repo] = lambda: _RecordingPersonRepo()
+
+    res = client.get(
+        "/persons",
+        params={
+            "q": "Tan Wei",
+            "entity_key": ["fundbox-sg"],
+            "source_key": ["fundbox_consumer_backend"],
+            "source_record_type": "identity",
+            "is_high_value": "true",
+            "has_phone": "true",
+            "addr_city": "Singapore",
+            "dob_from": "1980-01-01",
+            "sort_by": "preferred_full_name",
+            "sort_order": "asc",
+            "limit": "10",
+        },
+    )
+
+    assert res.status_code == 200
+    body = res.json()
+    assert body["data"] == []
+    assert body["meta"]["total_count"] == 0
+
+    assert captured_filters["q"] == "Tan Wei"
+    assert captured_filters["entity_keys"] == ["fundbox-sg"]
+    assert captured_filters["source_keys"] == ["fundbox_consumer_backend"]
+    assert captured_filters["source_record_type"] == "identity"
+    assert captured_filters["is_high_value"] is True
+    assert captured_filters["has_phone"] is True
+    assert captured_filters["addr_city"] == "Singapore"
+    assert captured_filters["dob_from"] == "1980-01-01"
+    assert captured_filters["sort_by"] == "preferred_full_name"
+    assert captured_filters["sort_order"] == "asc"
+    assert captured_skip == 0
+    assert captured_limit == 10
 
 
 def test_oauth2_does_not_expose_person_subresources() -> None:
