@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal, Protocol, TypedDict
 
 
@@ -26,6 +26,7 @@ class MergeOutcome:
     blocked: bool = False
     not_found: bool = False
     merge_event_id: str | None = None
+    redirected_review_case_ids: list[str] = field(default_factory=list)
 
 
 class MergeRepository(Protocol):

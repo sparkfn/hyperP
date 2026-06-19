@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 
 from neo4j import AsyncManagedTransaction
 
+from src.celery_client import enqueue_match_recalculation
 from src.graph.client import get_session
 from src.graph.converters import GraphRecord, to_int, to_optional_str, to_str
 from src.graph.golden_profile import recompute_golden_profile_tx
@@ -177,6 +178,8 @@ class Neo4jReviewRepository:
                         selections,
                     )
 
+        enqueue_match_recalculation(result.get("redirected_review_case_ids", []))
+
         return result
 
 
@@ -251,8 +254,14 @@ async def _action_tx(
         persons_record = await persons_result.single()
         if persons_record is None:
             return await _sales_link_merge_tx(
-                tx, review_case_id, new_state, resolution, follow_up_at,
-                action_type, actor_id, notes,
+                tx,
+                review_case_id,
+                new_state,
+                resolution,
+                follow_up_at,
+                action_type,
+                actor_id,
+                notes,
             )
 
         left_id = to_str(persons_record["left_person_id"])
@@ -306,6 +315,7 @@ async def _action_tx(
         review_case_id=to_str(rc.get("review_case_id")),
         queue_state=to_str(rc.get("queue_state")),
         resolution=to_optional_str(rc.get("resolution")),
+        redirected_review_case_ids=[],
     )
 
     if action_type == ApiReviewActionType.MANUAL_NO_MATCH.value:
@@ -326,7 +336,10 @@ async def _action_tx(
         merge_record = await merge_result.single()
         merge_event_id = to_str(merge_record["merge_event_id"]) if merge_record else ""
         if merge_event_id:
-            await apply_merge_review_side_effects(tx, merge_event_id, absorbed_id, survivor_id)
+            redirected_ids = await apply_merge_review_side_effects(
+                tx, merge_event_id, absorbed_id, survivor_id
+            )
+            out["redirected_review_case_ids"] = redirected_ids
         out["survivor_person_id"] = survivor_id
         out["golden_profile_selections"] = golden_profile_selections
 

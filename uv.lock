@@ -859,6 +859,7 @@ version = "0.1.0"
 source = { virtual = "services/api" }
 dependencies = [
     { name = "cachetools" },
+    { name = "celery", extra = ["redis"] },
     { name = "cryptography" },
     { name = "fastapi" },
     { name = "google-auth" },
@@ -887,6 +888,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "cachetools", specifier = ">=5.3,<6" },
+    { name = "celery", extras = ["redis"], specifier = ">=5.3,<6" },
     { name = "cryptography", specifier = ">=42,<47" },
     { name = "fastapi", specifier = ">=0.115,<1" },
     { name = "google-auth", specifier = ">=2.29,<3" },
