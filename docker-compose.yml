@@ -133,6 +133,7 @@ services:
       PROCLAUDE_DEFAULT_MODEL: ${PROCLAUDE_DEFAULT_MODEL:-}
       ROOT_PATH: /api
       DUMPS_ROOT: /app/dumps
+      CELERY_BROKER_URL: redis://redis:6379/0
     volumes:
       - ./.dumps:/app/dumps:ro
     depends_on:

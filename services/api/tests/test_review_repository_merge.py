@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import AsyncIterator, Mapping, Sequence
 from dataclasses import dataclass
 from typing import cast
 
@@ -9,7 +9,6 @@ from neo4j import AsyncManagedTransaction
 from src.graph.queries import (
     CHECK_BOTH_PERSONS_ACTIVE,
     CHECK_NO_MATCH_LOCK,
-    CLOSE_PERSON_PAIR_CASES_FOR_ABSORBED,
     CREATE_NO_MATCH_LOCK_FROM_REVIEW,
     EXECUTE_MANUAL_MERGE,
     GET_PERSONS_FOR_REVIEW_MERGE,
@@ -17,6 +16,8 @@ from src.graph.queries import (
     LINK_REVIEW_SALES_PURCHASED_ORDER,
     MARK_REVIEW_SALES_RECORD_LINKED,
     MARK_REVIEW_SALES_RECORD_UNRESOLVED,
+    REDIRECT_PERSON_PAIR_CASES_ABSORBED_LEFT,
+    REDIRECT_PERSON_PAIR_CASES_ABSORBED_RIGHT,
     REDIRECT_RECORD_PERSON_CASES_FOR_ABSORBED,
 )
 from src.repositories.neo4j.review import _action_tx
@@ -34,6 +35,18 @@ class _AsyncResult:
         self._record = record
 
     async def single(self) -> Record | None:
+        return self._record
+
+    def __aiter__(self) -> AsyncIterator[Record]:
+        self._iter_done = self._record is None
+        return self
+
+    async def __anext__(self) -> Record:
+        if self._iter_done:
+            raise StopAsyncIteration
+        self._iter_done = True
+        if self._record is None:
+            raise StopAsyncIteration
         return self._record
 
 
@@ -91,6 +104,7 @@ async def test_review_merge_uses_requested_survivor_person() -> None:
         "resolution": "merge",
         "survivor_person_id": "person-b",
         "golden_profile_selections": [],
+        "redirected_review_case_ids": [],
     }
     assert [call.query for call in tx.calls[:3]] == [
         GET_PERSONS_FOR_REVIEW_MERGE,
@@ -105,8 +119,9 @@ async def test_review_merge_uses_requested_survivor_person() -> None:
         "actor_id": "reviewer@example.com",
     }
     # Merge side-effects run after the merge, scoped to the merge event.
-    assert [c.query for c in tx.calls[-2:]] == [
-        CLOSE_PERSON_PAIR_CASES_FOR_ABSORBED,
+    assert [c.query for c in tx.calls[-3:]] == [
+        REDIRECT_PERSON_PAIR_CASES_ABSORBED_LEFT,
+        REDIRECT_PERSON_PAIR_CASES_ABSORBED_RIGHT,
         REDIRECT_RECORD_PERSON_CASES_FOR_ABSORBED,
     ]
     assert tx.calls[-1].params == {
@@ -162,6 +177,7 @@ async def test_review_merge_returns_survivor_and_golden_profile_selections() -> 
         "resolution": "merge",
         "survivor_person_id": "person-b",
         "golden_profile_selections": selections,
+        "redirected_review_case_ids": [],
     }
 
     tx = _Tx(
@@ -246,6 +262,7 @@ async def test_manual_no_match_creates_review_lock_after_action() -> None:
         "review_case_id": "case-1",
         "queue_state": "resolved",
         "resolution": "manual_no_match",
+        "redirected_review_case_ids": [],
     }
     assert tx.calls[-2].query == CREATE_NO_MATCH_LOCK_FROM_REVIEW
     assert tx.calls[-2].params == {
@@ -362,5 +379,6 @@ async def test_reject_marks_sales_record_unresolved() -> None:
         "review_case_id": "rc-2",
         "queue_state": "resolved",
         "resolution": "reject",
+        "redirected_review_case_ids": [],
     }
     assert tx.calls[-1].query == MARK_REVIEW_SALES_RECORD_UNRESOLVED

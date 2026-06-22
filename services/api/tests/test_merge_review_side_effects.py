@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import AsyncIterator, Mapping, Sequence
 from dataclasses import dataclass
 from typing import cast
 
@@ -80,6 +80,12 @@ class _AsyncResult:
     async def single(self) -> None:
         return None
 
+    def __aiter__(self) -> AsyncIterator[None]:
+        return self
+
+    async def __anext__(self) -> None:
+        raise StopAsyncIteration
+
 
 class _RecordingTx:
     def __init__(self) -> None:
@@ -93,7 +99,7 @@ class _RecordingTx:
 @pytest.mark.asyncio
 async def test_apply_closes_moot_then_redirects_pair_then_record() -> None:
     tx = _RecordingTx()
-    await apply_merge_review_side_effects(
+    result = await apply_merge_review_side_effects(
         cast(AsyncManagedTransaction, tx), "merge-1", "person-a", "person-b"
     )
     assert [c.query for c in tx.calls] == [
@@ -102,7 +108,12 @@ async def test_apply_closes_moot_then_redirects_pair_then_record() -> None:
         REDIRECT_PERSON_PAIR_CASES_ABSORBED_RIGHT,
         REDIRECT_RECORD_PERSON_CASES_FOR_ABSORBED,
     ]
-    pair_params = {"absorbed_id": "person-a", "survivor_id": "person-b", "merge_event_id": "merge-1"}
+    assert result == []
+    pair_params = {
+        "absorbed_id": "person-a",
+        "survivor_id": "person-b",
+        "merge_event_id": "merge-1",
+    }
     assert tx.calls[0].params == pair_params
     assert tx.calls[1].params == pair_params
     assert tx.calls[2].params == pair_params
@@ -112,7 +123,7 @@ async def test_apply_closes_moot_then_redirects_pair_then_record() -> None:
 @pytest.mark.asyncio
 async def test_revert_reverts_record_then_pair_redirects_then_closures() -> None:
     tx = _RecordingTx()
-    await revert_merge_review_side_effects(cast(AsyncManagedTransaction, tx), "merge-1")
+    result = await revert_merge_review_side_effects(cast(AsyncManagedTransaction, tx), "merge-1")
     assert [c.query for c in tx.calls] == [
         REVERT_RECORD_PERSON_CASE_REDIRECTS,
         REVERT_PERSON_PAIR_REDIRECTS_LEFT,
@@ -120,6 +131,7 @@ async def test_revert_reverts_record_then_pair_redirects_then_closures() -> None
         REVERT_PERSON_PAIR_CASE_CLOSURES,
     ]
     assert all(c.params == {"merge_event_id": "merge-1"} for c in tx.calls)
+    assert result == []
 
 
 # --- Unmerge wiring -------------------------------------------------------
@@ -133,6 +145,12 @@ async def test_unmerge_reverts_review_side_effects() -> None:
 
         async def single(self) -> Mapping[str, object] | None:
             return self._record
+
+        def __aiter__(self) -> AsyncIterator[None]:
+            return self
+
+        async def __anext__(self) -> None:
+            raise StopAsyncIteration
 
     class _ScriptedTx:
         def __init__(self, records: Sequence[Mapping[str, object] | None]) -> None:
@@ -161,7 +179,10 @@ async def test_unmerge_reverts_review_side_effects() -> None:
         cast(AsyncManagedTransaction, tx), "merge-1", "oops", "admin@example.com"
     )
 
-    assert result == ("person-a", "person-b")
+    assert result is not None
+    assert result.absorbed_id == "person-a"
+    assert result.current_survivor_id == "person-b"
+    assert result.reverted_review_case_ids == []
     assert REVERT_RECORD_PERSON_CASE_REDIRECTS in tx.queries
     assert REVERT_PERSON_PAIR_REDIRECTS_LEFT in tx.queries
     assert REVERT_PERSON_PAIR_REDIRECTS_RIGHT in tx.queries

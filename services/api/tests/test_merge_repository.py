@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import cast
 
@@ -17,9 +17,13 @@ from src.graph.queries import (
     EXECUTE_MANUAL_MERGE,
     FLAG_AFFECTED_RECORDS_FOR_REVIEW,
     GET_UNMERGE_TARGET,
+    REDIRECT_PERSON_PAIR_CASES_ABSORBED_LEFT,
+    REDIRECT_PERSON_PAIR_CASES_ABSORBED_RIGHT,
     REDIRECT_RECORD_PERSON_CASES_FOR_ABSORBED,
     REVERT_MERGE,
     REVERT_PERSON_PAIR_CASE_CLOSURES,
+    REVERT_PERSON_PAIR_REDIRECTS_LEFT,
+    REVERT_PERSON_PAIR_REDIRECTS_RIGHT,
     REVERT_RECORD_PERSON_CASE_REDIRECTS,
 )
 from src.repositories.neo4j import merge as merge_module
@@ -29,6 +33,7 @@ from src.repositories.neo4j.merge import (
     _delete_lock_tx,
     _manual_merge_tx,
     _unmerge_tx,
+    _UnmergeResult,
 )
 from src.repositories.protocols.merge import GoldenProfileSelection, MergeOutcome
 
@@ -43,6 +48,18 @@ class _AsyncResult:
         self._record = record
 
     async def single(self) -> Record | None:
+        return self._record
+
+    def __aiter__(self) -> AsyncIterator[Record]:
+        self._iter_done = self._record is None
+        return self
+
+    async def __anext__(self) -> Record:
+        if self._iter_done:
+            raise StopAsyncIteration
+        self._iter_done = True
+        if self._record is None:
+            raise StopAsyncIteration
         return self._record
 
 
@@ -133,6 +150,8 @@ async def test_manual_merge_success_returns_merge_event_id() -> None:
         CHECK_BOTH_PERSONS_ACTIVE,
         EXECUTE_MANUAL_MERGE,
         CLOSE_PERSON_PAIR_CASES_FOR_ABSORBED,
+        REDIRECT_PERSON_PAIR_CASES_ABSORBED_LEFT,
+        REDIRECT_PERSON_PAIR_CASES_ABSORBED_RIGHT,
         REDIRECT_RECORD_PERSON_CASES_FOR_ABSORBED,
     ]
     assert tx.calls[2].params == {
@@ -219,13 +238,19 @@ async def test_unmerge_reactivates_absorbed_flags_records_and_audits() -> None:
         "admin@example.com",
     )
 
-    assert result == ("person-a", "person-b")
+    assert result == _UnmergeResult(
+        absorbed_id="person-a",
+        current_survivor_id="person-b",
+        reverted_review_case_ids=[],
+    )
     assert [call.query for call in tx.calls] == [
         GET_UNMERGE_TARGET,
         REVERT_MERGE,
         CREATE_UNMERGE_AUDIT,
         FLAG_AFFECTED_RECORDS_FOR_REVIEW,
         REVERT_RECORD_PERSON_CASE_REDIRECTS,
+        REVERT_PERSON_PAIR_REDIRECTS_LEFT,
+        REVERT_PERSON_PAIR_REDIRECTS_RIGHT,
         REVERT_PERSON_PAIR_CASE_CLOSURES,
     ]
     assert tx.calls[1].params == {
@@ -253,7 +278,11 @@ async def test_unmerge_returns_actual_current_survivor_for_recompute() -> None:
         "admin@example.com",
     )
 
-    assert result == ("person-a", "person-c")
+    assert result == _UnmergeResult(
+        absorbed_id="person-a",
+        current_survivor_id="person-c",
+        reverted_review_case_ids=[],
+    )
 
     tx = _Tx(
         [
@@ -468,7 +497,17 @@ async def test_repository_manual_merge_skips_recompute_when_blocked(
 async def test_repository_unmerge_recomputes_absorbed_and_survivor_profiles(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    session = _Session([("person-a", "person-b"), None, None])
+    session = _Session(
+        [
+            _UnmergeResult(
+                absorbed_id="person-a",
+                current_survivor_id="person-b",
+                reverted_review_case_ids=[],
+            ),
+            None,
+            None,
+        ]
+    )
     factory = _SessionFactory([session])
 
     monkeypatch.setattr(merge_module, "get_session", factory)

@@ -328,6 +328,7 @@ SET rc.redirected_pair_by_merge_event_id = $merge_event_id,
     rc.redirected_pair_from_person_id = $absorbed_id,
     rc.redirected_pair_side = 'left',
     rc.updated_at = datetime()
+RETURN rc.review_case_id AS review_case_id
 """
 
 REDIRECT_PERSON_PAIR_CASES_ABSORBED_RIGHT = """
@@ -343,6 +344,7 @@ SET rc.redirected_pair_by_merge_event_id = $merge_event_id,
     rc.redirected_pair_from_person_id = $absorbed_id,
     rc.redirected_pair_side = 'right',
     rc.updated_at = datetime()
+RETURN rc.review_case_id AS review_case_id
 """
 
 REVERT_PERSON_PAIR_REDIRECTS_LEFT = """
@@ -358,6 +360,7 @@ SET rc.redirected_pair_by_merge_event_id = null,
     rc.redirected_pair_from_person_id = null,
     rc.redirected_pair_side = null,
     rc.updated_at = datetime()
+RETURN rc.review_case_id AS review_case_id
 """
 
 REVERT_PERSON_PAIR_REDIRECTS_RIGHT = """
@@ -373,6 +376,7 @@ SET rc.redirected_pair_by_merge_event_id = null,
     rc.redirected_pair_from_person_id = null,
     rc.redirected_pair_side = null,
     rc.updated_at = datetime()
+RETURN rc.review_case_id AS review_case_id
 """
 
 REDIRECT_RECORD_PERSON_CASES_FOR_ABSORBED = """
