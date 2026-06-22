@@ -1,5 +1,5 @@
 import type { SourceRecordType } from "./api-types";
-import type { GoldenProfileSelectionRequestBody } from "./api-types-person";
+import type { GoldenProfileSelectionRequestBody, SharedIdentifierGroup } from "./api-types-person";
 import type { Role } from "./permissions";
 
 export interface UserResponse {
@@ -248,6 +248,10 @@ export interface PersonComparisonEntity {
   person_id: string | null;
   source_record_pk: string | null;
   source_record_id: string | null;
+  source_system_key: string | null;
+  observed_at: string | null;
+  record_type: string | null;
+  linked_person_id: string | null;
   status: string | null;
   preferred_full_name: string | null;
   preferred_phone: string | null;
@@ -273,6 +277,7 @@ export interface ReviewCaseDetail {
   match_decision: ReviewMatchDecision;
   comparison_left: PersonComparisonEntity | null;
   comparison_right: PersonComparisonEntity | null;
+  shared_identifier_groups: SharedIdentifierGroup[];
   created_at: string;
   updated_at: string;
 }

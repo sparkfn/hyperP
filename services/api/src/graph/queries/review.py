@@ -169,9 +169,11 @@ OPTIONAL MATCH (md)-[:ABOUT_LEFT]->(left)
 OPTIONAL MATCH (md)-[:ABOUT_RIGHT]->(right)
 OPTIONAL MATCH (left_addr:Address) WHERE left:Person AND left_addr.address_id = left.preferred_address_id
 OPTIONAL MATCH (right_addr:Address) WHERE right:Person AND right_addr.address_id = right.preferred_address_id
+OPTIONAL MATCH (left)-[:FROM_SOURCE]->(left_src:SourceSystem)
+OPTIONAL MATCH (right)-[:FROM_SOURCE]->(right_src:SourceSystem)
 OPTIONAL MATCH (sales_o:Order)-[:INVOLVES_UNIT {source_record_pk: left.source_record_pk}]->(sales_u:MachineUnit)
   WHERE left:SourceRecord AND left.record_type = 'sales'
-WITH rc, md, left, right, left_addr, right_addr,
+WITH rc, md, left, right, left_addr, right_addr, left_src, right_src,
      collect(DISTINCT CASE WHEN sales_o IS NOT NULL
        THEN sales_o { .order_id, .order_no, .total_amount, .currency, ordered_at: toString(sales_o.ordered_at) }
        END) AS sales_orders,
@@ -194,7 +196,8 @@ CASE WHEN left:Person THEN 'person'
 CASE WHEN left:Person
      THEN left { .person_id, .status, .preferred_full_name, .preferred_phone, .preferred_email, .preferred_dob }
      WHEN left:SourceRecord
-     THEN left { .source_record_pk, .source_record_id, .normalized_payload, .observed_at }
+     THEN left { .source_record_pk, .source_record_id, .normalized_payload, .observed_at,
+                 .linked_person_id, .record_type, source_system_key: left_src.source_key }
      ELSE null END AS left_entity,
 left_addr { .address_id, .unit_number, .street_number, .street_name, .city, .postal_code, .country_code, .normalized_full } AS left_address,
 CASE WHEN right:Person THEN 'person'
@@ -203,7 +206,8 @@ CASE WHEN right:Person THEN 'person'
 CASE WHEN right:Person
      THEN right { .person_id, .status, .preferred_full_name, .preferred_phone, .preferred_email, .preferred_dob }
      WHEN right:SourceRecord
-     THEN right { .source_record_pk, .source_record_id, .normalized_payload, .observed_at }
+     THEN right { .source_record_pk, .source_record_id, .normalized_payload, .observed_at,
+                  .linked_person_id, .record_type, source_system_key: right_src.source_key }
      ELSE null END AS right_entity,
 right_addr { .address_id, .unit_number, .street_number, .street_name, .city, .postal_code, .country_code, .normalized_full } AS right_address,
 sales_orders[0] AS sales_order,

@@ -1511,13 +1511,22 @@ function PersonsInner(): ReactElement {
             onToggle={() => toggleFilter("entity")}
           >
             <div className={styles.fpInner}>
-              <div className={styles.fpSectionLabel}>Show persons from</div>
-              <div className={styles.fpSegmented}>
-                <button type="button" className={`${styles.fpSegmentedBtn} ${entityFilterMode === "or" ? styles.fpSegmentedBtnActive : ""}`} onClick={() => setEntityFilterMode("or")}>Any selected</button>
-                <button type="button" className={`${styles.fpSegmentedBtn} ${entityFilterMode === "and" ? styles.fpSegmentedBtnActive : ""}`} onClick={() => setEntityFilterMode("and")}>All selected</button>
+              <div className={styles.fpHeader}>
+                <span className={styles.fpHeaderLabel}>Show persons from</span>
+                <div className={styles.fpHeaderControls}>
+                  <button
+                    type="button"
+                    className={`${styles.fpModeToggle} ${entityFilterMode === "and" ? styles.fpModeToggleActive : ""}`}
+                    onClick={() => setEntityFilterMode((m) => (m === "and" ? "or" : "and"))}
+                    disabled={entityFilter.length < 2}
+                    title={entityFilter.length < 2 ? "Select 2+ entities to enable AND" : "Match all selected entities"}
+                  >
+                    {entityFilterMode === "and" ? "AND" : "OR"}
+                  </button>
+                </div>
               </div>
               {entityFilterMode === "and" && entityFilter.length < 2 && (
-                <div className={styles.filterModeHint}>Select 2+ entities to use "All selected"</div>
+                <div className={styles.filterModeHint}>Select 2+ entities to use "AND"</div>
               )}
               <div className={styles.filterOptions}>
                 {entities.map((entity) => (
@@ -1567,13 +1576,22 @@ function PersonsInner(): ReactElement {
                   Chat / conversation
                 </button>
               </div>
-              <div className={styles.fpSectionLabel}>Source system</div>
-              <div className={styles.fpSegmented}>
-                <button type="button" className={`${styles.fpSegmentedBtn} ${sourceFilterMode === "or" ? styles.fpSegmentedBtnActive : ""}`} onClick={() => setSourceFilterMode("or")}>Any selected</button>
-                <button type="button" className={`${styles.fpSegmentedBtn} ${sourceFilterMode === "and" ? styles.fpSegmentedBtnActive : ""}`} onClick={() => setSourceFilterMode("and")}>All selected</button>
+              <div className={styles.fpHeader}>
+                <span className={styles.fpHeaderLabel}>Source system</span>
+                <div className={styles.fpHeaderControls}>
+                  <button
+                    type="button"
+                    className={`${styles.fpModeToggle} ${sourceFilterMode === "and" ? styles.fpModeToggleActive : ""}`}
+                    onClick={() => setSourceFilterMode((m) => (m === "and" ? "or" : "and"))}
+                    disabled={sourceFilter.length < 2}
+                    title={sourceFilter.length < 2 ? "Select 2+ sources to enable AND" : "Match all selected sources"}
+                  >
+                    {sourceFilterMode === "and" ? "AND" : "OR"}
+                  </button>
+                </div>
               </div>
               {sourceFilterMode === "and" && sourceFilter.length < 2 && (
-                <div className={styles.filterModeHint}>Select 2+ sources to use "All selected"</div>
+                <div className={styles.filterModeHint}>Select 2+ sources to use "AND"</div>
               )}
               <div className={styles.sourceSearchBox}>
                 <svg className={styles.sourceSearchIcon} width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -1623,13 +1641,22 @@ function PersonsInner(): ReactElement {
             onToggle={() => toggleFilter("identity")}
           >
             <div className={styles.fpInner}>
-              <div className={styles.fpSectionLabel}>Show persons with</div>
-              <div className={styles.fpSegmented}>
-                <button type="button" className={`${styles.fpSegmentedBtn} ${identityFilterMode === "or" ? styles.fpSegmentedBtnActive : ""}`} onClick={() => setIdentityFilterMode("or")}>Any selected</button>
-                <button type="button" className={`${styles.fpSegmentedBtn} ${identityFilterMode === "and" ? styles.fpSegmentedBtnActive : ""}`} onClick={() => setIdentityFilterMode("and")}>All selected</button>
+              <div className={styles.fpHeader}>
+                <span className={styles.fpHeaderLabel}>Show persons with</span>
+                <div className={styles.fpHeaderControls}>
+                  <button
+                    type="button"
+                    className={`${styles.fpModeToggle} ${identityFilterMode === "and" ? styles.fpModeToggleActive : ""}`}
+                    onClick={() => setIdentityFilterMode((m) => (m === "and" ? "or" : "and"))}
+                    disabled={identityFilter.length < 2}
+                    title={identityFilter.length < 2 ? "Select 2+ contact types to enable AND" : "Match all selected contact types"}
+                  >
+                    {identityFilterMode === "and" ? "AND" : "OR"}
+                  </button>
+                </div>
               </div>
               {identityFilterMode === "and" && identityFilter.length < 2 && (
-                <div className={styles.filterModeHint}>Select 2+ contact types to use "All selected"</div>
+                <div className={styles.filterModeHint}>Select 2+ contact types to use "AND"</div>
               )}
               <div className={styles.filterOptions}>
                 {IDENTITY_FILTERS.map((filter) => {
@@ -1663,6 +1690,7 @@ function PersonsInner(): ReactElement {
             wide
           >
             <div className={styles.fpInner}>
+              <div className={styles.fpSectionLabel}>Match presence</div>
               <div className={styles.fpSegmented}>
                 {(["any", "has", "none"] as const).map((value) => (
                   <button
@@ -1687,6 +1715,7 @@ function PersonsInner(): ReactElement {
             onToggle={() => toggleFilter("dob")}
           >
             <div className={styles.fpInner}>
+              <div className={styles.fpSectionLabel}>DOB presence</div>
               <div className={styles.fpSegmented}>
                 {(["any", "has", "none"] as const).map((value) => (
                   <button
@@ -1702,6 +1731,7 @@ function PersonsInner(): ReactElement {
               {dobFilter === "has" && (
                 <>
                   <hr className={styles.fpSep} />
+                  <div className={styles.fpSectionLabel}>Match by</div>
                   <div className={styles.fpSegmented}>
                     <button
                       type="button"
@@ -1914,6 +1944,7 @@ function PersonsInner(): ReactElement {
             onToggle={() => toggleFilter("flags")}
           >
             <div className={styles.fpInner}>
+              <div className={styles.fpSectionLabel}>Person flag</div>
               <div className={styles.fpSegmented}>
                 {(["any", "high_value", "high_risk"] as const).map((value) => (
                   <button
@@ -1938,6 +1969,7 @@ function PersonsInner(): ReactElement {
             onToggle={() => toggleFilter("bankruptcy")}
           >
             <div className={styles.fpInner}>
+              <div className={styles.fpSectionLabel}>Bankruptcy case</div>
               <div className={styles.fpSegmented}>
                 {([null, true] as const).map((value) => (
                   <button
@@ -2170,3 +2202,4 @@ export default function PersonsPage(): ReactElement {
     </Suspense>
   );
 }
+// hot reload test marker 1782110348

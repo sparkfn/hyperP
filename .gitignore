@@ -45,5 +45,10 @@ data/celerybeat/
 .worktrees/
 services/frontend2/*.md
 
+# Local task trackers (personal scratchpad — not committed)
+/TASKS.md
+/TODO.md
+/TASKS-*.md
+
 # Dump files
 .dumps/

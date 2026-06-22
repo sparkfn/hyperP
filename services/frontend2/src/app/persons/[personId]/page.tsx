@@ -37,7 +37,7 @@ import MergeOverlay from "@/components/MergeOverlay";
 import PersonFocusedGraph from "@/components/PersonFocusedGraph";
 import PersonGraphDialog from "@/components/PersonGraphDialog";
 import ReviewActionsPanel from "@/components/ReviewActionsPanel";
-import { ReviewCaseDetailModal } from "@/app/review/[reviewCaseId]/page";
+import { ReviewCaseDetailModal } from "@/app/review/[reviewCaseId]/ReviewCaseDetailModal";
 import type { ReviewCaseDetail, ReviewCaseSummary } from "@/lib/api-types-ops";
 import styles from "./person.module.css";
 
@@ -1330,7 +1330,7 @@ function RecommendedEvidenceCard({
   currentSources,
   candidateSources,
 }: {
-  signals: { label: string; currentValue: string; candidateValue: string }[];
+  signals: { label: string; currentValue: string; candidateValue: string; confidence?: string | null }[];
   currentSources: string[];
   candidateSources: string[];
 }): ReactElement {
@@ -1346,22 +1346,31 @@ function RecommendedEvidenceCard({
               <SignalIcon label={signal.label} />
             </div>
             <div className={styles.recommendedEvidenceCellValue}>{signal.currentValue}</div>
-            <div className={styles.recommendedEvidenceCellValue}>{signal.candidateValue}</div>
+            <div className={styles.recommendedEvidenceCellValue}>
+              {signal.candidateValue}
+              {signal.confidence !== null && signal.confidence !== undefined && (
+                <span className={styles.candidateConfidenceBadge}>{signal.confidence}</span>
+              )}
+            </div>
           </Fragment>
         ))}
-        <div className={styles.recommendedEvidenceSignal} title="Source">
-          <SignalIcon label="source" />
-        </div>
-        <div className={styles.recommendedEvidenceSourceStack}>
-          {(currentSources.length > 0 ? currentSources : ["No source record shown"]).map((source, i) => (
-            <span key={`current-${source}-${i}`}>{source}</span>
-          ))}
-        </div>
-        <div className={styles.recommendedEvidenceSourceStack}>
-          {(candidateSources.length > 0 ? candidateSources : ["No source record shown"]).map((source, i) => (
-            <span key={`candidate-${source}-${i}`}>{source}</span>
-          ))}
-        </div>
+        {(currentSources.length > 0 || candidateSources.length > 0) && (
+          <>
+            <div className={styles.recommendedEvidenceSignal} title="Source">
+              <SignalIcon label="source" />
+            </div>
+            <div className={styles.recommendedEvidenceSourceStack}>
+              {(currentSources.length > 0 ? currentSources : ["No source record shown"]).map((source, i) => (
+                <span key={`current-${source}-${i}`}>{source}</span>
+              ))}
+            </div>
+            <div className={styles.recommendedEvidenceSourceStack}>
+              {(candidateSources.length > 0 ? candidateSources : ["No source record shown"]).map((source, i) => (
+                <span key={`candidate-${source}-${i}`}>{source}</span>
+              ))}
+            </div>
+          </>
+        )}
       </div>
     </div>
   );
@@ -1389,6 +1398,36 @@ function CandidateDetailPanel({ detail }: { detail: PossibleMatchDetail }): Reac
   );
 }
 
+function extractSignalConfidence(reasons: string[], identifierType: string): string | null {
+  // A single identifier type can be supported by multiple reasons
+  // (e.g. "name" → `name_partial:+0.10`, `name_similarity_high:+0.10`).
+  // Concatenate all matched contributions with a space so the UI shows
+  // "+10% +10%" for the combined contribution to that signal.
+  const t = identifierType.toLowerCase();
+  const scorePattern = /[+-]\d+\.\d+/g;
+  const matchesType = (r: string): boolean => {
+    const rl = r.toLowerCase();
+    if (t.includes("phone") && rl.includes("phone")) return true;
+    if (t.includes("email") && rl.includes("email")) return true;
+    if ((t.includes("nric") || t.includes("govt") || t.includes("id")) && (rl.includes("nric") || rl.includes("govt") || rl.includes("id"))) return true;
+    if (t.includes("name") && rl.includes("name")) return true;
+    if (t.includes("address") && rl.includes("address")) return true;
+    if ((t.includes("dob") || t.includes("birth")) && (rl.includes("dob") || rl.includes("birth"))) return true;
+    return false;
+  };
+  const pcts: string[] = [];
+  for (const reason of reasons) {
+    if (!matchesType(reason)) continue;
+    const found = reason.match(scorePattern);
+    if (found === null) continue;
+    for (const value of found) {
+      const pct = Math.round(parseFloat(value) * 100);
+      pcts.push(`${pct >= 0 ? "+" : ""}${pct}%`);
+    }
+  }
+  return pcts.length > 0 ? pcts.join(" ") : null;
+}
+
 function recommendationEvidenceLabel(reason: string): string {
   const lower = reason.toLowerCase();
   if (lower.includes("government") || lower.includes("nric") || lower.includes("id hash")) return "Government ID";
@@ -1398,6 +1437,35 @@ function recommendationEvidenceLabel(reason: string): string {
   if (lower.includes("address")) return "Address signal";
   if (lower.includes("dob") || lower.includes("birth")) return "DOB signal";
   return "Match signal";
+}
+
+interface ParsedReason {
+  label: string;
+  note: string | null;
+  contributionPct: number | null;
+}
+
+function parseReason(reason: string): ParsedReason {
+  // API returns strings like:
+  //   "Phone match (unverified: +0.20)"
+  //   "Medium name similarity (0.63: +0.10)"
+  //   "Shared phone links 2 active persons (uuid1, uuid2)"  — no contribution
+  // Capture label (before " ("), note (inside parens, before the trailing contribution),
+  // and contribution (trailing "+/-X.XX" inside the parens, if present).
+  const match = /^(.+?)\s*\(([^()]*?)\s*([+-]\d+\.\d+)?\)\s*$/.exec(reason);
+  if (match === null) {
+    return { label: recommendationEvidenceLabel(reason), note: null, contributionPct: null };
+  }
+  const rawLabel = (match[1] ?? "").trim();
+  const note = (match[2] ?? "").trim().replace(/:\s*$/, "");
+  const contributionStr = match[3];
+  const contributionPct =
+    contributionStr !== undefined ? Math.round(parseFloat(contributionStr) * 100) : null;
+  return {
+    label: rawLabel,
+    note: note.length > 0 ? note : null,
+    contributionPct,
+  };
 }
 
 function reasonToShortLabel(reason: string): string {
@@ -1440,6 +1508,8 @@ function RecommendedMatchDetailPanel({
   isLoading,
   currentPerson,
   candidatePerson,
+  candidateFallbackName,
+  reviewCaseDetail,
   currentIdentifiers,
   candidateIdentifiers,
 }: {
@@ -1449,6 +1519,8 @@ function RecommendedMatchDetailPanel({
   isLoading: boolean;
   currentPerson: Person | undefined;
   candidatePerson: Person | undefined;
+  candidateFallbackName?: string | null;
+  reviewCaseDetail?: ReviewCaseDetail;
   currentIdentifiers: PersonIdentifier[] | undefined;
   candidateIdentifiers: PersonIdentifier[] | undefined;
 }): ReactElement {
@@ -1458,16 +1530,39 @@ function RecommendedMatchDetailPanel({
   const candidateNameSource = detail?.shared_identifier_groups.flatMap((group) => group.candidate_source_records)[0];
   const sharedGroups = detail?.shared_identifier_groups ?? [];
   const firstGroup = sharedGroups[0];
+
+  // When shared identifier groups are empty (e.g. resolved/merged cases lose active identifiers),
+  // synthesize identifier signals from the review case comparison snapshot.
+  const synthesizedIdentifierSignals: { label: string; currentValue: string; candidateValue: string; confidence: string | null }[] = [];
+  if (sharedGroups.length === 0 && reviewCaseDetail !== undefined) {
+    const currentIsLeft = (match.left_person_id ?? "") === (currentPerson?.person_id ?? "\x00");
+    const currentComp = currentIsLeft ? reviewCaseDetail.comparison_left : reviewCaseDetail.comparison_right;
+    const candidateComp = currentIsLeft ? reviewCaseDetail.comparison_right : reviewCaseDetail.comparison_left;
+    const reasonsLower = match.reasons.map((r) => r.toLowerCase());
+    if (reasonsLower.some((r) => r.includes("phone")) && (currentComp?.preferred_phone ?? candidateComp?.preferred_phone) !== null) {
+      synthesizedIdentifierSignals.push({ label: "Shared Phone", currentValue: currentComp?.preferred_phone ?? "—", candidateValue: candidateComp?.preferred_phone ?? "—", confidence: extractSignalConfidence(match.reasons, "phone") });
+    }
+    if (reasonsLower.some((r) => r.includes("email")) && (currentComp?.preferred_email ?? candidateComp?.preferred_email) !== null) {
+      synthesizedIdentifierSignals.push({ label: "Shared Email", currentValue: currentComp?.preferred_email ?? "—", candidateValue: candidateComp?.preferred_email ?? "—", confidence: extractSignalConfidence(match.reasons, "email") });
+    }
+    if (reasonsLower.some((r) => r.includes("dob") || r.includes("birth")) && (currentComp?.preferred_dob ?? candidateComp?.preferred_dob) !== null) {
+      synthesizedIdentifierSignals.push({ label: "Shared DOB", currentValue: currentComp?.preferred_dob ?? "—", candidateValue: candidateComp?.preferred_dob ?? "—", confidence: extractSignalConfidence(match.reasons, "dob") });
+    }
+  }
+
   const combinedSignals = [
     ...sharedGroups.map((group) => ({
       label: `Shared ${titleCase(group.identifier_type)}`,
       currentValue: group.normalized_value,
       candidateValue: group.normalized_value,
+      confidence: extractSignalConfidence(match.reasons, group.identifier_type),
     })),
+    ...synthesizedIdentifierSignals,
     ...(hasNameSignal ? [{
       label: "Name similarity",
       currentValue: currentPerson?.preferred_full_name ?? "No current name",
-      candidateValue: candidatePerson?.preferred_full_name ?? "No candidate name",
+      candidateValue: candidatePerson?.preferred_full_name ?? candidateFallbackName ?? "No candidate name",
+      confidence: extractSignalConfidence(match.reasons, "name"),
     }] : []),
   ];
 
@@ -1480,10 +1575,15 @@ function RecommendedMatchDetailPanel({
           currentSources={firstGroup ? sourceSummaries(firstGroup.current_person_source_records, firstGroup) : currentNameSource ? [sourceSummary(currentNameSource, undefined)] : []}
           candidateSources={firstGroup ? sourceSummaries(firstGroup.candidate_source_records, firstGroup) : candidateNameSource ? [sourceSummary(candidateNameSource, undefined)] : []}
         />
-      ) : match.reasons.map((reason) => (
+      ) : match.reasons.map((reason) => {
+        const parsed = parseReason(reason);
+        const chipText = parsed.contributionPct !== null
+          ? `${parsed.label} ${parsed.contributionPct >= 0 ? "+" : ""}${parsed.contributionPct}%${parsed.note !== null ? ` (${parsed.note})` : ""}`
+          : parsed.label;
+        return (
         <div key={reason} className={styles.recommendedEvidenceBlock}>
           <div className={styles.candidateReasonTop}>
-            <span className={styles.candidateReasonLabel}>{recommendationEvidenceLabel(reason)}</span>
+            <span className={styles.candidateReasonLabel}>{chipText}</span>
           </div>
           <div className={styles.matchSourceGrid}>
             <div className={styles.matchSourceColumn}>
@@ -1498,7 +1598,8 @@ function RecommendedMatchDetailPanel({
             </div>
           </div>
         </div>
-      ))}
+        );
+      })}
 
       {match.blocking_conflicts.length > 0 && (
         <div className={styles.recommendedSignalPanel}>
@@ -1636,6 +1737,8 @@ function RecommendedReviewCaseRow({
           isLoading={isLoading}
           currentPerson={currentPerson}
           candidatePerson={candidatePerson}
+          candidateFallbackName={candidateFallbackName}
+          reviewCaseDetail={reviewCaseDetail}
           currentIdentifiers={currentIdentifiers}
           candidateIdentifiers={candidateIdentifiers}
         />
@@ -1816,6 +1919,9 @@ function MatchesTab({ personId, currentPerson, currentIdentifiers, activeMatches
   const [unmergeReason, setUnmergeReason] = useState("");
   const [unmergeSubmitting, setUnmergeSubmitting] = useState(false);
   const [unmergeError, setUnmergeError] = useState<string | null>(null);
+  const [unmergeRelatedCase, setUnmergeRelatedCase] = useState<ReviewCaseSummary | null>(null);
+  const [unmergeRelatedCaseLoading, setUnmergeRelatedCaseLoading] = useState(false);
+  const [unmergeAlsoRecreate, setUnmergeAlsoRecreate] = useState(false);
   const [locallyUnmergedIds, setLocallyUnmergedIds] = useState<Set<string>>(new Set());
   const [recreateBusy, setRecreateBusy] = useState(false);
   const [recreateConfirm, setRecreateConfirm] = useState<{ reviewCaseId: string; mergeEventId: string | null; summary: ReviewCaseSummary } | null>(null);
@@ -2063,6 +2169,32 @@ function MatchesTab({ personId, currentPerson, currentIdentifiers, activeMatches
     }
   }
 
+  async function openUnmergeModal(event: PersonAuditEvent): Promise<void> {
+    setUnmergeTarget(event);
+    setUnmergeReason("");
+    setUnmergeError(null);
+    setUnmergeAlsoRecreate(false);
+    setUnmergeRelatedCase(null);
+    setUnmergeRelatedCaseLoading(true);
+    try {
+      const response = await bffFetchEnvelope<ReviewCaseSummary[]>(
+        `/bff/review-cases?person_id=${encodeURIComponent(personId)}&resolved=true&sort_by=created_at&sort_order=DESC&limit=100`,
+      );
+      const absorbed = event.absorbed_person_id;
+      const survivor = event.survivor_person_id;
+      const match = response.data.find((reviewCase) => {
+        const left = reviewCase.left_person_id ?? null;
+        const right = reviewCase.right_person_id ?? null;
+        return (left === absorbed && right === survivor) || (left === survivor && right === absorbed);
+      }) ?? null;
+      setUnmergeRelatedCase(match);
+    } catch {
+      setUnmergeRelatedCase(null);
+    } finally {
+      setUnmergeRelatedCaseLoading(false);
+    }
+  }
+
   async function submitUnmerge(): Promise<void> {
     if (unmergeTarget === null || !unmergeReason.trim()) return;
     setUnmergeSubmitting(true);
@@ -2074,7 +2206,15 @@ function MatchesTab({ personId, currentPerson, currentIdentifiers, activeMatches
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
       });
-      setOperationToast({ type: "success", message: "Profiles unmerged successfully." });
+      if (unmergeAlsoRecreate && unmergeRelatedCase !== null) {
+        await bffFetchEnvelope<ReviewCaseDetail>(
+          `/bff/review-cases/${encodeURIComponent(unmergeRelatedCase.review_case_id)}/recreate`,
+          { method: "POST" },
+        );
+        setOperationToast({ type: "success", message: "Profiles unmerged and review case recreated." });
+      } else {
+        setOperationToast({ type: "success", message: "Profiles unmerged successfully." });
+      }
       await new Promise<void>((resolve) => setTimeout(resolve, 300));
       window.location.reload();
     } catch (e) {
@@ -2222,7 +2362,7 @@ function MatchesTab({ personId, currentPerson, currentIdentifiers, activeMatches
               <div className={styles.auditActor}>{event.actor_type}:{event.actor_id}</div>
               {event.reason && <div className={styles.auditReason}>{event.reason}</div>}
               {event.event_type === "manual_merge" && !unmergedMergeEventIds.has(event.merge_event_id) && (
-                <button type="button" className={styles.auditUnmergeBtn} onClick={() => { setUnmergeTarget(event); setUnmergeReason(""); setUnmergeError(null); }}>Unmerge</button>
+                <button type="button" className={styles.auditUnmergeBtn} onClick={() => { void openUnmergeModal(event); }}>Unmerge</button>
               )}
             </div>
           </div>
@@ -2324,6 +2464,17 @@ function MatchesTab({ personId, currentPerson, currentIdentifiers, activeMatches
               Reason
               <textarea className={styles.mergeReasonInput} value={unmergeReason} onChange={(e) => setUnmergeReason(e.target.value)} placeholder="Why are you unmerging these profiles?" autoFocus />
             </label>
+            {unmergeRelatedCase !== null && (
+              <label className={styles.unmergeRecreateOption}>
+                <input
+                  type="checkbox"
+                  checked={unmergeAlsoRecreate}
+                  onChange={(e) => setUnmergeAlsoRecreate(e.target.checked)}
+                  disabled={unmergeSubmitting}
+                />
+                <span>Also recreate the review case for this pair (reopens it for review without going to the Resolved tab).</span>
+              </label>
+            )}
             {unmergeError !== null && <div className={styles.mergeErrorBox}><span className={styles.mergeErrorIcon} aria-hidden="true">!</span><span>{unmergeError}</span></div>}
             <div className={styles.mergeModalActions}>
               <button type="button" className={styles.secondaryBtn} onClick={() => setUnmergeTarget(null)} disabled={unmergeSubmitting}>Cancel</button>
@@ -4403,3 +4554,4 @@ export default function PersonDetailPage({ params }: { params: Promise<{ personI
     </div>
   );
 }
+

@@ -2,13 +2,18 @@
 
 Centralized so the API can hand the frontend ready-to-render text (dates,
 percentages) and the frontend does no locale/number formatting. Output matches
-the existing frontend2 en-SG / UTC style: "02 Apr 2026" and
-"02 Apr 2026, 03:14 AM".
+the existing frontend2 en-SG style: "02 Apr 2026" and "02 Apr 2026, 03:14 AM".
+
+Date/time display follows the ``TZ`` environment variable (fallback ``UTC``).
+The variable is set in ``docker-compose.yml`` from ``.env`` — the frontend
+mirrors the same value via ``NEXT_PUBLIC_TZ`` so backend and UI agree.
 """
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+import os
+from datetime import UTC, datetime, timezone
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 _MONTHS: tuple[str, ...] = (
     "Jan",
@@ -26,8 +31,28 @@ _MONTHS: tuple[str, ...] = (
 )
 
 
+def _display_tz() -> timezone:
+    """Return the timezone used for display, sourced from the ``TZ`` env var.
+
+    Falls back to UTC when ``TZ`` is unset, empty, or unknown so the API
+    stays usable in environments that don't pin a timezone.
+    """
+    name = os.environ.get("TZ", "").strip()
+    if not name:
+        return UTC
+    try:
+        return ZoneInfo(name)
+    except ZoneInfoNotFoundError:
+        return UTC
+
+
 def _parse_utc(value: str) -> datetime | None:
-    """Parse an ISO-8601 string to a naive UTC datetime, or None if unparseable."""
+    """Parse an ISO-8601 string to a naive datetime in the display timezone, or None.
+
+    The value is assumed to be UTC (the on-disk format from Neo4j / FastAPI).
+    We strip the tzinfo after converting to the display zone so the existing
+    ``_format_date_part`` / ``hour12`` logic keeps working unchanged.
+    """
     if not value:
         return None
     text = value.replace("Z", "+00:00") if value.endswith("Z") else value
@@ -35,9 +60,9 @@ def _parse_utc(value: str) -> datetime | None:
         parsed = datetime.fromisoformat(text)
     except ValueError:
         return None
-    if parsed.tzinfo is not None:
-        parsed = parsed.astimezone(UTC).replace(tzinfo=None)
-    return parsed
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(_display_tz()).replace(tzinfo=None)
 
 
 def _format_date_part(dt: datetime) -> str:
@@ -73,7 +98,8 @@ def format_display_dob(value: str | None) -> tuple[str, bool]:
       - empty / ``None`` -> ``("—", False)`` — no DOB on file, not an error.
       - unparseable, in the future, or older than ~130 years ->
         ``(raw_value, True)`` — show the offending value so reviewers can spot it.
-      - otherwise -> ``("DD Mon YYYY", False)`` (UTC, matching ``format_display_date``).
+      - otherwise -> ``("DD Mon YYYY", False)`` (in the display timezone,
+        matching ``format_display_date``).
 
     Unlike a year-only guard, this validates the full date, so malformed values
     such as ``"1990-13-45"`` are flagged rather than rendered as "Invalid Date".
@@ -83,7 +109,7 @@ def format_display_dob(value: str | None) -> tuple[str, bool]:
     dt = _parse_utc(value)
     if dt is None:
         return (value, True)
-    today = datetime.now(UTC)
+    today = datetime.now(_display_tz())
     if dt.date() > today.date() or dt.year < today.year - _MAX_PLAUSIBLE_DOB_AGE_YEARS:
         return (value, True)
     return (_format_date_part(dt), False)

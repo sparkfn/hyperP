@@ -68,6 +68,7 @@ x-ingestion-env: &ingestion-env
   WHATSAPP_CHAT_DB_NAME: ${WHATSAPP_CHAT_DB_NAME:-whatsapp_api}
   WHATSAPP_CHAT_CHUNK_SIZE: ${WHATSAPP_CHAT_CHUNK_SIZE:-500}
   INGESTION_EXCLUSIONS_FILE: ${INGESTION_EXCLUSIONS_FILE:-/app/config/ingestion-exclusions.example.json}
+  TZ: ${TZ:-UTC}
 
 services:
   neo4j:
@@ -131,6 +132,7 @@ services:
       PROCLAUDE_DEFAULT_MODEL: ${PROCLAUDE_DEFAULT_MODEL:-}
       ROOT_PATH: /api
       DUMPS_ROOT: /app/dumps
+      TZ: ${TZ:-UTC}
     volumes:
       - ./.dumps:/app/dumps:ro
     depends_on:

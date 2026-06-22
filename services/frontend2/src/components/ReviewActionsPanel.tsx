@@ -6,11 +6,9 @@ import GoldenProfilePicker from "@/components/GoldenProfilePicker";
 import { BffError, bffFetch } from "@/lib/api-client";
 import {
   REVIEW_ACTION_TYPES,
-  type AssignReviewRequestBody,
   type ReviewActionRequestBody,
   type ReviewActionResponse,
   type ReviewActionType,
-  type ReviewAssignResponse,
 } from "@/lib/api-types-ops";
 import {
   buildGoldenProfileChoices,
@@ -30,6 +28,8 @@ interface ReviewActionsPanelProps {
   leftPersonStatus?: string | null;
   rightPersonStatus?: string | null;
   defaultSurvivorPersonId?: string | null;
+  leftLabel?: string;
+  rightLabel?: string;
   onChanged: () => Promise<void>;
   embedded?: boolean;
   onActionBusy?: (busy: boolean) => void;
@@ -91,22 +91,28 @@ function defaultRightChoiceByField(
 export default function ReviewActionsPanel({
   reviewCaseId,
   queueState,
-  assignedTo,
+  // assignedTo is received but currently unused — assign UI is hidden while the
+  // feature is unused. Kept in the props so callers don't need to change.
+  assignedTo: _assignedTo,
   leftPersonId,
   rightPersonId,
   leftPersonStatus,
   rightPersonStatus,
   defaultSurvivorPersonId,
+  leftLabel,
+  rightLabel,
   onChanged,
   embedded = false,
   onActionBusy,
   onActionDone,
 }: ReviewActionsPanelProps): ReactElement {
-  const [assignee, setAssignee] = useState<string>(assignedTo ?? "");
-  const [assignBusy, setAssignBusy] = useState<boolean>(false);
+  // `assignedTo` is received (renamed to `_assignedTo` to avoid the unused-var
+  // rule) but not used while the assign UI is hidden. Re-enable by restoring the
+  // toggle button + assignInlineForm block + the onAssign handler.
   const [actionType, setActionType] = useState<ReviewActionType>("merge");
   const [reasonChoice, setReasonChoice] = useState<string>("");
   const [notes, setNotes] = useState<string>("");
+  const reasonValid = reasonChoice !== "" && (reasonChoice !== OTHER_REASON || notes.trim() !== "");
   const [followUpAt, setFollowUpAt] = useState<string>("");
   const [actionBusy, setActionBusy] = useState<boolean>(false);
   const [loadingChoices, setLoadingChoices] = useState<boolean>(false);
@@ -116,7 +122,6 @@ export default function ReviewActionsPanel({
   >({});
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
-  const [assignOpen, setAssignOpen] = useState<boolean>(false);
 
   const resolved = queueState === "resolved" || queueState === "cancelled";
   const canLoadMergeChoices = leftPersonId !== null && rightPersonId !== null;
@@ -166,36 +171,10 @@ export default function ReviewActionsPanel({
     };
   }, [actionType, canLoadMergeChoices, leftPersonId, mergeSurvivorPersonId, mergeRequiresUnmerge, rightPersonId]);
 
-  async function onAssign(): Promise<void> {
-    setError(null);
-    setSuccess(null);
-    if (assignee.trim().length === 0) {
-      setError("Assignee is required.");
-      return;
-    }
-    setAssignBusy(true);
-    try {
-      const body: AssignReviewRequestBody = { assigned_to: assignee.trim() };
-      const result = await bffFetch<ReviewAssignResponse>(
-        `/bff/review-cases/${encodeURIComponent(reviewCaseId)}/assign`,
-        {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify(body),
-        },
-      );
-      setSuccess(`Assigned to ${result.assigned_to}.`);
-      onChanged();
-    } catch (err: unknown) {
-      setError(err instanceof BffError || err instanceof Error ? err.message : "Assign failed.");
-    } finally {
-      setAssignBusy(false);
-    }
-  }
-
   async function onSubmitAction(): Promise<void> {
     setError(null);
     setSuccess(null);
+    if (!reasonValid) return;
     setActionBusy(true);
     onActionBusy?.(true);
     try {
@@ -241,39 +220,14 @@ export default function ReviewActionsPanel({
     <section className={`${styles.detailCard} ${embedded ? styles.embeddedActionPanel : ""}`}>
       <div className={styles.cardHeaderRow}>
         <div className={styles.cardHeader}>Reviewer Actions</div>
-        {!resolved && !assignOpen && (
-          <button
-            type="button"
-            className={styles.assignToggleBtn}
-            onClick={() => setAssignOpen(true)}
-          >
-            {assignedTo !== null && assignedTo.length > 0 ? `Assigned: ${assignedTo}` : "Assign"}
-          </button>
-        )}
+        {/* Assign UI is disabled while the feature is unused.
+            Re-enable by restoring the toggle button + assignInlineForm block. */}
       </div>
       {error !== null ? <div className={styles.errorBanner}>{error}</div> : null}
       {success !== null ? <div className={styles.successBanner}>{success}</div> : null}
       {resolved ? <div className={styles.infoBanner}>This review case is {queueState} and no longer accepts actions.</div> : null}
 
-      {assignOpen && (
-        <div className={styles.assignInlineForm}>
-          <div className={styles.assignInlineRow}>
-            <input
-              className={styles.input}
-              value={assignee}
-              onChange={(event) => setAssignee(event.target.value)}
-              placeholder="Reviewer ID"
-              disabled={resolved}
-            />
-            <button type="button" className={styles.primaryBtn} onClick={() => void onAssign()} disabled={assignBusy || resolved}>
-              {assignBusy ? "…" : "Assign"}
-            </button>
-            <button type="button" className={styles.assignCancelBtn} onClick={() => setAssignOpen(false)}>✕</button>
-          </div>
-        </div>
-      )}
-
-      <div className={`${styles.actionSection} ${assignOpen ? styles.actionSectionDisabled : ""}`}>
+      <div className={styles.actionSection}>
         <div className={styles.sectionTitle}>Submit action</div>
         <div className={styles.formRow}>
           <label className={styles.fieldGroup}>
@@ -324,6 +278,8 @@ export default function ReviewActionsPanel({
                 setSelectedChoiceKeys((current) => ({ ...current, [fieldName]: choiceKey }))
               }
               disabled={resolved || actionBusy}
+              leftLabel={leftLabel}
+              rightLabel={rightLabel}
             />
           ) : (
             <div className={styles.infoBanner}>No golden profile choices available.</div>
@@ -363,7 +319,7 @@ export default function ReviewActionsPanel({
         <button
           className={styles.primaryBtn}
           onClick={() => void onSubmitAction()}
-          disabled={actionBusy || resolved || (actionType === "merge" && (!canLoadMergeChoices || mergeRequiresUnmerge))}
+          disabled={actionBusy || resolved || !reasonValid || (actionType === "merge" && (!canLoadMergeChoices || mergeRequiresUnmerge))}
         >
           {actionBusy ? "Submitting…" : "Submit action"}
         </button>

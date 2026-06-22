@@ -1272,6 +1272,96 @@
   padding: 10px 0;
 }
 
+.kvGridCompact {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px 12px;
+}
+
+.reasonChips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.reasonChip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 9px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--bg-hover);
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.reasonChipScore {
+  color: var(--accent-text, var(--accent));
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.reasonChipNote {
+  color: var(--text-muted);
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
+}
+
+.evidenceCols {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin-top: 8px;
+}
+
+.evidenceCol {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.evidenceColHead {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.evidenceEmpty {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+.evidenceRow {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 4px 6px;
+  border-radius: 6px;
+  background: var(--bg-hover, var(--bg-app));
+}
+
+.evidenceSource {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.evidenceObserved {
+  font-size: 10px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
 .actionList {
   display: flex;
   flex-direction: column;
@@ -1395,6 +1485,10 @@
   border-radius: 0;
 }
 
+.reviewCaseModalNarrow {
+  width: min(680px, calc(100vw - 32px));
+}
+
 /* ── Modal compaction overrides ──────────────────────────────────────── */
 /*
   Spacing tokens used consistently throughout:
@@ -1455,6 +1549,15 @@
   padding: 20px 0;
 }
 
+/* Hairlines between sections in the compact single-column layout */
+.reviewCaseModalNarrow .detailMainColumn > * {
+  border-bottom: 1px solid var(--border-subtle, var(--border));
+}
+
+.reviewCaseModalNarrow .detailMainColumn > *:last-child {
+  border-bottom: none;
+}
+
 /* Section header */
 .reviewCaseModal .cardHeader {
   font-size: 10px;
@@ -1477,12 +1580,11 @@
 /* Reason / blocking conflicts box */
 .reviewCaseModal .reasonBox {
   margin-top: 8px;
-  padding: 0 0 0 10px;
+  padding: 0;
   font-size: 11px;
   border: none;
   border-radius: 0;
   background: transparent;
-  border-left: 2px solid var(--border);
 }
 
 /* Comparison cards */

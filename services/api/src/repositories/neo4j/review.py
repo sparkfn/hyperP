@@ -6,18 +6,23 @@ import asyncio
 import json
 from datetime import UTC, datetime
 
-from neo4j import AsyncManagedTransaction
+from neo4j import AsyncManagedTransaction, AsyncSession
 
 from src.graph.client import get_session
 from src.graph.converters import GraphRecord, to_int, to_optional_str, to_str
 from src.graph.golden_profile import recompute_golden_profile_tx
-from src.graph.mappers import map_review_case_detail, map_review_case_summary
+from src.graph.mappers import (
+    map_possible_match_detail,
+    map_review_case_detail,
+    map_review_case_summary,
+)
 from src.graph.queries import (
     ASSIGN_REVIEW_CASE,
     CHECK_BOTH_PERSONS_ACTIVE,
     CHECK_NO_MATCH_LOCK,
     CREATE_NO_MATCH_LOCK_FROM_REVIEW,
     EXECUTE_MANUAL_MERGE,
+    GET_PERSON_POSSIBLE_MATCH_DETAIL,
     GET_PERSONS_FOR_REVIEW_MERGE,
     GET_REVIEW_CASE,
     GET_REVIEW_CASE_BY_MATCH_DECISION,
@@ -37,7 +42,7 @@ from src.repositories.neo4j.merge import (
 )
 from src.repositories.protocols.merge import GoldenProfileSelection
 from src.repositories.protocols.review import ActionResult, AssignResult, ReviewListFilters
-from src.types import ApiReviewActionType, ReviewCaseDetail, ReviewCaseSummary
+from src.types import ApiReviewActionType, ReviewCaseDetail, ReviewCaseSummary, SharedIdentifierGroup
 
 from ._utils import record_to_dict, to_total
 
@@ -94,9 +99,35 @@ class Neo4jReviewRepository:
         async with get_session() as session:
             result = await session.run(GET_REVIEW_CASE, review_case_id=review_case_id)
             record = await result.single()
-        if record is None:
-            return None
-        return map_review_case_detail(record_to_dict(record.keys(), list(record.values())))
+            if record is None:
+                return None
+            detail = map_review_case_detail(record_to_dict(record.keys(), list(record.values())))
+            detail.shared_identifier_groups = await self._fetch_evidence(session, detail)
+            return detail
+
+    async def _fetch_evidence(
+        self, session: AsyncSession, detail: ReviewCaseDetail
+    ) -> list[SharedIdentifierGroup]:
+        left = detail.comparison_left
+        right = detail.comparison_right
+        if left is None or right is None or left.person_id is None:
+            return []
+        candidate_person_id = (
+            right.person_id
+            if right.entity_kind == "person" and right.person_id is not None
+            else right.linked_person_id
+        )
+        if candidate_person_id is None or candidate_person_id == left.person_id:
+            return []
+        result = await session.run(
+            GET_PERSON_POSSIBLE_MATCH_DETAIL,
+            person_id=left.person_id,
+            candidate_person_id=candidate_person_id,
+        )
+        records = [record_to_dict(r.keys(), list(r.values())) async for r in result]
+        if not records:
+            return []
+        return map_possible_match_detail(records).shared_identifier_groups
 
     async def get_by_match_decision_id(self, match_decision_id: str) -> ReviewCaseDetail | None:
         async with get_session() as session:

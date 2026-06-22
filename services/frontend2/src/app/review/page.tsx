@@ -60,9 +60,11 @@ function shortCaseId(value: string): string {
 }
 
 function reviewSubjectTitle(c: ReviewCaseSummary): string {
-  if (c.left_person_name && c.right_person_name) return `${c.left_person_name} ↔ ${c.right_person_name}`;
-  if (c.left_person_name) return c.left_person_name;
-  if (c.right_person_name) return c.right_person_name;
+  const left = c.left_person_id ? (c.left_person_name ?? "Unknown name") : null;
+  const right = c.right_person_id ? (c.right_person_name ?? "Unknown name") : null;
+  if (left !== null && right !== null) return `${left} ↔ ${right}`;
+  if (left !== null) return left;
+  if (right !== null) return right;
   return `${titleCase(c.match_decision.decision)} case`;
 }
 

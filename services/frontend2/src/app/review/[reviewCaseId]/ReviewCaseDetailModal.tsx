@@ -1,12 +1,15 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState, type ReactElement } from "react";
+import { useCallback, useEffect, useState, type ReactElement } from "react";
 import Link from "next/link";
 
+import ActionToast, { type ToastState } from "@/components/ActionToast";
+import MergeOverlay from "@/components/MergeOverlay";
 import ReviewActionsPanel from "@/components/ReviewActionsPanel";
 import { BffError, bffFetch } from "@/lib/api-client";
 import type { PersonComparisonEntity, ReviewCaseActionEntry, ReviewCaseDetail } from "@/lib/api-types-ops";
-import { completenessColor, formatDate, isOverdue, relativeTime } from "@/lib/display";
+import type { PersonSourceRecord, SharedIdentifierGroup } from "@/lib/api-types-person";
+import { completenessColor, formatDate, relativeTime } from "@/lib/display";
 import { toBasePath } from "@/lib/route-paths";
 import styles from "../review.module.css";
 
@@ -75,6 +78,8 @@ function KeyValue({ label, value }: { label: string; value: string }): ReactElem
   );
 }
 
+const compactSvg = { width: 12, height: 12, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 2, strokeLinecap: "round" as const, strokeLinejoin: "round" as const, "aria-hidden": true };
+
 function ComparisonCard({ title, entity }: { title: string; entity: PersonComparisonEntity | null }): ReactElement {
   if (entity === null) {
     return (
@@ -89,6 +94,7 @@ function ComparisonCard({ title, entity }: { title: string; entity: PersonCompar
   const displayName = entity.preferred_full_name ?? entity.source_record_id ?? "Unknown";
   const entityLabel = titleCase(entity.entity_kind);
   const idLabel = entity.person_id ?? entity.source_record_id ?? entity.source_record_pk ?? "—";
+
   return (
     <section className={`${styles.detailCard} ${styles.comparisonCard}`}>
       <div className={styles.comparisonLabel}>{title}</div>
@@ -107,11 +113,95 @@ function ComparisonCard({ title, entity }: { title: string; entity: PersonCompar
         <KeyValue label="Email" value={entity.preferred_email ?? "—"} />
         <KeyValue label="DOB" value={entity.preferred_dob ?? "—"} />
         <KeyValue label="Address" value={entity.preferred_address?.normalized_full ?? "—"} />
+        {entity.entity_kind === "source_record" && entity.source_system_key !== null ? (
+          <KeyValue label="Source" value={entity.source_system_key} />
+        ) : null}
+        {entity.entity_kind === "source_record" && entity.observed_at !== null ? (
+          <KeyValue label="Observed" value={formatDate(entity.observed_at) || "—"} />
+        ) : null}
         <KeyValue label="Source record" value={entity.source_record_id ?? entity.source_record_pk ?? "—"} />
       </div>
       {personHref !== null ? <Link className={styles.profileLinkButton} href={personHref}>Open person profile</Link> : null}
     </section>
   );
+}
+
+interface SourceRow {
+  key: string;
+  label: string;
+  observed: string;
+}
+
+function toSourceRows(records: PersonSourceRecord[]): SourceRow[] {
+  const latest = new Map<string, SourceRow>();
+  for (const record of records) {
+    const key = record.source_system ?? record.record_type ?? record.source_record_pk;
+    const label = record.entity_display_name ?? record.source_system ?? (record.record_type ? titleCase(record.record_type) : null) ?? "source";
+    const observed = record.observed_at ?? "";
+    const existing = latest.get(key);
+    if (existing === undefined || (observed !== "" && observed > existing.observed)) {
+      latest.set(key, { key, label, observed });
+    }
+  }
+  return [...latest.values()];
+}
+
+function SourceColumn({ heading, rows }: { heading: string; rows: SourceRow[] }): ReactElement {
+  return (
+    <div className={styles.evidenceCol}>
+      <span className={styles.evidenceColHead}>{heading}</span>
+      {rows.length === 0 ? (
+        <span className={styles.evidenceEmpty}>No source record</span>
+      ) : (
+        rows.map((row) => (
+          <span key={row.key} className={styles.evidenceRow}>
+            <span className={styles.evidenceSource}>{row.label}</span>
+            {row.observed !== "" ? (
+              <span className={styles.evidenceObserved}>{formatDate(row.observed)}</span>
+            ) : null}
+          </span>
+        ))
+      )}
+    </div>
+  );
+}
+
+function EvidenceSection({ groups }: { groups: SharedIdentifierGroup[] }): ReactElement {
+  const current = toSourceRows(groups.flatMap((group) => group.current_person_source_records));
+  const candidate = toSourceRows(groups.flatMap((group) => group.candidate_source_records));
+  if (current.length === 0 && candidate.length === 0) {
+    return <></>;
+  }
+  return (
+    <section className={styles.detailCard}>
+      <div className={styles.cardHeader}>Source · where the data came from</div>
+      <div className={styles.evidenceCols}>
+        <SourceColumn heading="Current profile" rows={current} />
+        <SourceColumn heading="Candidate evidence" rows={candidate} />
+      </div>
+    </section>
+  );
+}
+
+function parseReason(reason: string): { label: string; score: string; note: string | null } | null {
+  // API returns strings like "Phone match (unverified: +0.20)" or
+  // "Medium name similarity (0.63: +0.10)" or
+  // "Shared phone links 2 active persons (uuid1, uuid2)" (no score).
+  // We extract label, score, and note so the chip can render as
+  // "Phone match +20% (unverified)".
+  const match = /^(.+?)\s*\(([^()]*?)\s*([+-]\d+\.\d+)?\)\s*$/.exec(reason);
+  if (match === null) return null;
+  const rawLabel = (match[1] ?? "").trim();
+  const note = (match[2] ?? "").trim().replace(/:\s*$/, "");
+  const contributionStr = match[3];
+  if (contributionStr === undefined) return null;
+  const pct = Math.round(parseFloat(contributionStr) * 100);
+  const score = `${pct >= 0 ? "+" : ""}${pct}%`;
+  return {
+    label: rawLabel.length > 0 ? rawLabel : reason,
+    score,
+    note: note.length > 0 ? note : null,
+  };
 }
 
 function ActionEntry({ action }: { action: ReviewCaseActionEntry }): ReactElement {
@@ -133,21 +223,87 @@ export function ReviewCaseDetailContent({
   loading,
   error,
   onChanged,
-  defaultSurvivorPersonId,
+  compact = false,
+  onActionBusy,
+  onActionDone,
 }: {
   detail: ReviewCaseDetail;
   loading: boolean;
   error: string | null;
   onChanged: () => Promise<void>;
-  defaultSurvivorPersonId?: string | null;
+  compact?: boolean;
+  onActionBusy?: (busy: boolean) => void;
+  onActionDone?: (success: boolean, message: string) => void;
 }): ReactElement {
   const confidence = detail.match_decision.confidence;
   const leftPersonId = detail.comparison_left?.person_id ?? null;
   const rightPersonId = detail.comparison_right?.person_id ?? null;
   const subjectTitle = reviewSubjectTitle(detail);
   const subjectSubtitle = reviewSubjectSubtitle(detail);
-  const slaOverdue = isOverdue(detail.sla_due_at);
   void loading;
+
+  const decisionCard = (
+    <section className={styles.detailCard}>
+      <div className={styles.cardHeader}>Decision</div>
+      <div className={styles.kvGridCompact}>
+        <KeyValue label="Outcome" value={detail.match_decision.decision} />
+        <KeyValue label="Engine" value={detail.match_decision.engine_type} />
+        <KeyValue label="Assigned to" value={detail.assigned_to ?? "—"} />
+        <KeyValue label="Follow-up" value={formatDate(detail.follow_up_at ?? "") || "—"} />
+        <KeyValue label="SLA" value={formatDate(detail.sla_due_at ?? "") || "—"} />
+        <KeyValue label="Resolution" value={detail.resolution ?? "—"} />
+      </div>
+      <div className={styles.reasonBox}>
+        <div className={styles.reasonBoxLabel}>Reasons</div>
+        {(() => {
+          const parsed = detail.match_decision.reasons
+            .map(parseReason)
+            .filter((r): r is { label: string; score: string; note: string | null } => r !== null);
+          if (parsed.length === 0) return <span>{detail.match_decision.reasons.join(" · ") || "No reasons recorded."}</span>;
+          return (
+            <div className={styles.reasonChips}>
+              {parsed.map((r, i) => (
+                <span key={i} className={styles.reasonChip}>
+                  {r.label} {r.score}
+                  {r.note !== null ? <span className={styles.reasonChipNote}> ({r.note})</span> : null}
+                </span>
+              ))}
+            </div>
+          );
+        })()}
+      </div>
+    </section>
+  );
+
+  const actionHistoryCard = (
+    <section className={styles.detailCard}>
+      <div className={styles.cardHeader}>Action history</div>
+      {detail.actions.length === 0 ? (
+        <div className={styles.emptyCompact}>No actions yet.</div>
+      ) : (
+        <div className={styles.actionList}>
+          {detail.actions.map((action, index) => <ActionEntry key={index} action={action} />)}
+        </div>
+      )}
+    </section>
+  );
+
+  const actionsPanel = (
+    <ReviewActionsPanel
+      reviewCaseId={detail.review_case_id}
+      queueState={detail.queue_state}
+      assignedTo={detail.assigned_to}
+      leftPersonId={leftPersonId}
+      rightPersonId={rightPersonId}
+      leftPersonStatus={detail.comparison_left?.status ?? null}
+      rightPersonStatus={detail.comparison_right?.status ?? null}
+      leftLabel={compact ? "Current profile" : undefined}
+      rightLabel={compact ? "Candidate evidence" : undefined}
+      onChanged={onChanged}
+      onActionBusy={onActionBusy}
+      onActionDone={onActionDone}
+    />
+  );
 
   return (
     <>
@@ -178,68 +334,35 @@ export function ReviewCaseDetailContent({
 
       {error !== null ? <div className={styles.errorBanner}>{error}</div> : null}
 
-      <div className={styles.detailBody}>
+      {compact ? (
+        // Single-column modal layout: Decision → Evidence → Reviewer Actions → Action history
         <div className={styles.detailMainColumn}>
-          <section className={styles.detailCard}>
-            <div className={styles.cardHeader}>Decision</div>
-            <div className={styles.kvGrid}>
-              <KeyValue label="Decision" value={detail.match_decision.decision} />
-              <KeyValue label="Engine" value={detail.match_decision.engine_type} />
-              <KeyValue label="Assigned to" value={detail.assigned_to ?? "—"} />
-              <KeyValue label="Follow-up" value={formatDate(detail.follow_up_at)} />
-              <div className={styles.kvItem}>
-                <span className={styles.kvLabel}>SLA</span>
-                <span className={styles.kvValue} style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                  {detail.sla_due_at
-                    ? (
-                      <>
-                        <span className={slaOverdue ? styles.slaOverdue : undefined}>
-                          {formatDate(detail.sla_due_at)}
-                        </span>
-                        {slaOverdue && (
-                          <span className={styles.badge} style={{ background: "var(--bad-bg, #fef2f2)", color: "var(--bad, #ef4444)" }}>overdue</span>
-                        )}
-                      </>
-                    )
-                    : "—"}
-                </span>
-              </div>
-              <KeyValue label="Resolution" value={detail.resolution ?? "—"} />
-            </div>
-            <div className={styles.reasonBox}>{detail.match_decision.reasons.join(" · ") || "No reasons recorded."}</div>
-          </section>
-
-          <div className={styles.compareGrid}>
-            <ComparisonCard title="Left" entity={detail.comparison_left} />
-            <ComparisonCard title="Right" entity={detail.comparison_right} />
-          </div>
-
-          <section className={styles.detailCard}>
-            <div className={styles.cardHeader}>Action history</div>
-            {detail.actions.length === 0 ? (
-              <div className={styles.emptyCompact}>No actions yet.</div>
-            ) : (
-              <div className={styles.actionList}>
-                {detail.actions.map((action, index) => <ActionEntry key={index} action={action} />)}
-              </div>
-            )}
-          </section>
+          {decisionCard}
+          {detail.shared_identifier_groups.length > 0 ? (
+            <EvidenceSection groups={detail.shared_identifier_groups} />
+          ) : null}
+          {actionsPanel}
+          {actionHistoryCard}
         </div>
-
-        <aside className={styles.reviewActionRail}>
-          <ReviewActionsPanel
-            reviewCaseId={detail.review_case_id}
-            queueState={detail.queue_state}
-            assignedTo={detail.assigned_to}
-            leftPersonId={leftPersonId}
-            rightPersonId={rightPersonId}
-            leftPersonStatus={detail.comparison_left?.status ?? null}
-            rightPersonStatus={detail.comparison_right?.status ?? null}
-            defaultSurvivorPersonId={defaultSurvivorPersonId}
-            onChanged={onChanged}
-          />
-        </aside>
-      </div>
+      ) : (
+        // Full-page two-column layout with comparison cards
+        <div className={styles.detailBody}>
+          <div className={styles.detailMainColumn}>
+            {decisionCard}
+            <div className={styles.compareGrid}>
+              <ComparisonCard title="Left" entity={detail.comparison_left} />
+              <ComparisonCard title="Right" entity={detail.comparison_right} />
+            </div>
+            {detail.shared_identifier_groups.length > 0 ? (
+              <EvidenceSection groups={detail.shared_identifier_groups} />
+            ) : null}
+            {actionHistoryCard}
+          </div>
+          <aside className={styles.reviewActionRail}>
+            {actionsPanel}
+          </aside>
+        </div>
+      )}
     </>
   );
 }
@@ -248,40 +371,34 @@ export function ReviewCaseDetailModal({
   open,
   reviewCaseId,
   onClose,
-  defaultSurvivorPersonId,
 }: {
   open: boolean;
   reviewCaseId: string;
-  onClose: (actioned: boolean) => void;
-  defaultSurvivorPersonId?: string | null;
+  onClose: () => void;
 }): ReactElement | null {
   const [detail, setDetail] = useState<ReviewCaseDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
-  const actioned = useRef(false);
+  const [actionBusy, setActionBusy] = useState<boolean>(false);
+  const [toast, setToast] = useState<ToastState | null>(null);
 
-  const loadDetail = useCallback(async (): Promise<void> => {
+  const loadDetail = useCallback((): Promise<void> => {
     if (reviewCaseId.length === 0) {
       setError("Review case id is missing.");
       setLoading(false);
-      return;
+      return Promise.resolve();
     }
     setLoading(true);
     setError(null);
-    try {
-      const res = await bffFetch<ReviewCaseDetail>(`/bff/review-cases/${encodeURIComponent(reviewCaseId)}`);
-      setDetail(res);
-    } catch (err: unknown) {
-      setError(err instanceof BffError ? err.message : "Failed to load review case.");
-    } finally {
-      setLoading(false);
-    }
+    return bffFetch<ReviewCaseDetail>(`/bff/review-cases/${encodeURIComponent(reviewCaseId)}`)
+      .then((res) => setDetail(res))
+      .catch((err: unknown) => {
+        setError(err instanceof BffError ? err.message : "Failed to load review case.");
+      })
+      .finally(() => {
+        setLoading(false);
+      });
   }, [reviewCaseId]);
-
-  const handleChanged = useCallback(async (): Promise<void> => {
-    actioned.current = true;
-    await loadDetail();
-  }, [loadDetail]);
 
   useEffect(() => {
     if (!open) {
@@ -289,14 +406,13 @@ export function ReviewCaseDetailModal({
       setError(null);
       return;
     }
-    actioned.current = false;
     queueMicrotask(loadDetail);
   }, [open, loadDetail]);
 
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent): void => {
-      if (e.key === "Escape") onClose(actioned.current);
+      if (e.key === "Escape") onClose();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -305,22 +421,43 @@ export function ReviewCaseDetailModal({
   if (!open) return null;
 
   return (
-    <div className={styles.reviewCaseOverlay} onClick={() => onClose(actioned.current)}>
-      <div className={styles.reviewCaseModal} onClick={(e) => e.stopPropagation()}>
+    <div className={styles.reviewCaseOverlay} onClick={onClose}>
+      <div className={`${styles.reviewCaseModal} ${styles.reviewCaseModalNarrow}`} onClick={(e) => e.stopPropagation()}>
+        {actionBusy && <MergeOverlay label="Processing…" />}
         <div className={styles.reviewCaseModalHeader}>
           <Link href={`/review/${encodeURIComponent(reviewCaseId)}`} className={styles.reviewCaseOpenFull} target="_blank" rel="noopener noreferrer">
             Open in full page ↗
           </Link>
-          <button type="button" className={styles.reviewCaseModalClose} onClick={() => onClose(actioned.current)} aria-label="Close">×</button>
+          <button type="button" className={styles.reviewCaseModalClose} onClick={onClose} aria-label="Close">×</button>
         </div>
         {loading && detail === null ? (
-          <div className={styles.reviewCaseModalLoading}>Loading review case…</div>
+          <div className={styles.reviewCaseModalLoading}>
+            <MergeOverlay label="Loading…" />
+          </div>
         ) : error !== null && detail === null ? (
           <div className={styles.reviewCaseModalError}>{error}</div>
         ) : detail !== null ? (
-          <ReviewCaseDetailContent detail={detail} loading={loading} error={error} onChanged={handleChanged} defaultSurvivorPersonId={defaultSurvivorPersonId} />
+          <ReviewCaseDetailContent
+            detail={detail}
+            loading={loading}
+            error={error}
+            onChanged={async () => {
+              await new Promise<void>((resolve) => setTimeout(resolve, 1500));
+              window.location.reload();
+            }}
+            compact
+            onActionBusy={setActionBusy}
+            onActionDone={(success, message) => setToast({ type: success ? "success" : "error", message })}
+          />
         ) : null}
       </div>
+      {toast !== null && (
+        <ActionToast
+          type={toast.type}
+          message={toast.message}
+          onDismiss={() => setToast(null)}
+        />
+      )}
     </div>
   );
 }

@@ -420,6 +420,10 @@ class PersonComparisonEntity(BaseModel):
     person_id: str | None = None
     source_record_pk: str | None = None
     source_record_id: str | None = None
+    source_system_key: str | None = None
+    observed_at: str | None = None
+    record_type: str | None = None
+    linked_person_id: str | None = None
     status: str | None = None
     preferred_full_name: str | None = None
     preferred_phone: str | None = None
@@ -442,6 +446,7 @@ class ReviewCaseDetail(BaseModel):
     match_decision: MatchDecision
     comparison_left: PersonComparisonEntity | None = None
     comparison_right: PersonComparisonEntity | None = None
+    shared_identifier_groups: list[SharedIdentifierGroup] = Field(default_factory=list)
     created_at: str = ""
     updated_at: str = ""
 

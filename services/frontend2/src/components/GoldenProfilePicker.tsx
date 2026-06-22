@@ -54,6 +54,8 @@ interface GoldenProfilePickerProps {
   rightPersonId: string;
   onChange: (fieldName: GoldenProfileFieldName, choiceKey: string) => void;
   disabled: boolean;
+  leftLabel?: string;
+  rightLabel?: string;
 }
 
 export default function GoldenProfilePicker({
@@ -63,13 +65,15 @@ export default function GoldenProfilePicker({
   rightPersonId,
   onChange,
   disabled,
+  leftLabel = "Left person",
+  rightLabel = "Right person",
 }: GoldenProfilePickerProps): ReactElement {
   return (
     <div className={styles.mergeCompare}>
       <div className={styles.mergeFieldHeader}>
         <span />
-        <span className={styles.mergeFieldHeaderRole}>Left person</span>
-        <span className={styles.mergeFieldHeaderRole}>Right person</span>
+        <span className={styles.mergeFieldHeaderRole}>{leftLabel}</span>
+        <span className={styles.mergeFieldHeaderRole}>{rightLabel}</span>
       </div>
       <div className={styles.mergeFieldList}>
         {FIELD_ORDER.map((fieldName) => {

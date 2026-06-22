@@ -496,10 +496,12 @@ CALL {
   WITH p, id
   MATCH (p)-[rel:IDENTIFIED_BY]->(id)
   MATCH (sr:SourceRecord {source_record_pk: rel.source_record_pk})
+  OPTIONAL MATCH (sr)-[:FROM_SOURCE]->(ss:SourceSystem)
   RETURN collect(DISTINCT sr {
-    .source_record_pk, .source_system, .source_record_id, .source_record_version,
-    .entity_key, .entity_display_name, .record_type, .extraction_confidence,
-    .extraction_method, .link_status, .linked_person_id, .observed_at, .ingested_at,
+    .source_record_pk, .source_record_id, .source_record_version,
+    .entity_key, source_system: ss.source_key, entity_display_name: ss.display_name,
+    .record_type, .extraction_confidence, .extraction_method,
+    .link_status, .linked_person_id, .observed_at, .ingested_at,
     .conversation_ref, .raw_payload, .normalized_payload
   }) AS current_person_source_records
 }
@@ -507,10 +509,12 @@ CALL {
   WITH candidate, id
   MATCH (candidate)-[rel:IDENTIFIED_BY]->(id)
   MATCH (sr:SourceRecord {source_record_pk: rel.source_record_pk})
+  OPTIONAL MATCH (sr)-[:FROM_SOURCE]->(ss:SourceSystem)
   RETURN collect(DISTINCT sr {
-    .source_record_pk, .source_system, .source_record_id, .source_record_version,
-    .entity_key, .entity_display_name, .record_type, .extraction_confidence,
-    .extraction_method, .link_status, .linked_person_id, .observed_at, .ingested_at,
+    .source_record_pk, .source_record_id, .source_record_version,
+    .entity_key, source_system: ss.source_key, entity_display_name: ss.display_name,
+    .record_type, .extraction_confidence, .extraction_method,
+    .link_status, .linked_person_id, .observed_at, .ingested_at,
     .conversation_ref, .raw_payload, .normalized_payload
   }) AS candidate_source_records
 }
