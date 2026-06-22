@@ -576,18 +576,21 @@ paths:
       operationId: listPersonsMachine
       description: |
         Paginated canonical person list for machine callers, with the same
-        filters as the authenticated person list. Requires a HyperP OAuth2
-        client-credentials token with the `persons:read` scope; human Google ID
-        tokens are rejected.
+        filters and sorting as the authenticated person list. Requires a HyperP
+        OAuth2 client-credentials token with the `persons:read` scope; human
+        Google ID tokens are rejected.
       security:
         - bearerAuth: []
       parameters:
         - $ref: '#/components/parameters/RequestId'
         - name: q
           in: query
-          description: Free-text search (min 3 chars) across name, NRIC, email, phone.
+          description: |
+            Free-text search (min 3 chars) across `preferred_full_name`,
+            `preferred_nric`, `preferred_email`, and `preferred_phone`.
           schema:
             type: string
+          example: "Tan Wei Ming"
         - name: cursor
           in: query
           description: Opaque pagination cursor.
@@ -598,6 +601,177 @@ paths:
           description: Page size.
           schema:
             type: integer
+            minimum: 1
+            maximum: 100
+        - name: entity_key
+          in: query
+          description: Filter to persons associated with this entity key. Repeatable.
+          schema:
+            type: array
+            items:
+              type: string
+          example: ["fundbox-sg"]
+        - name: source_key
+          in: query
+          description: Filter to persons with at least one source record from this source. Repeatable.
+          schema:
+            type: array
+            items:
+              type: string
+          example: ["fundbox_consumer_backend"]
+        - name: source_record_type
+          in: query
+          description: Filter by linked source-record subtype.
+          schema:
+            type: string
+        - name: is_high_value
+          in: query
+          description: Filter by high-value flag.
+          schema:
+            type: boolean
+        - name: is_high_risk
+          in: query
+          description: Filter by high-risk flag.
+          schema:
+            type: boolean
+        - name: has_phone
+          in: query
+          description: Filter by presence of a phone identifier.
+          schema:
+            type: boolean
+        - name: has_email
+          in: query
+          description: Filter by presence of an email identifier.
+          schema:
+            type: boolean
+        - name: has_address
+          in: query
+          description: Filter by presence of a linked address.
+          schema:
+            type: boolean
+        - name: has_bankruptcy_case
+          in: query
+          description: Filter by presence of a bankruptcy case.
+          schema:
+            type: boolean
+        - name: has_any_match
+          in: query
+          description: Filter by presence of any match decision.
+          schema:
+            type: boolean
+        - name: has_possible_match
+          in: query
+          description: Filter by presence of a possible (review) match.
+          schema:
+            type: boolean
+        - name: has_system_match
+          in: query
+          description: Filter by presence of a system (auto) match.
+          schema:
+            type: boolean
+        - name: addr_street
+          in: query
+          description: Filter by normalized street address (case-insensitive substring).
+          schema:
+            type: string
+        - name: addr_unit
+          in: query
+          description: Filter by unit/floor.
+          schema:
+            type: string
+        - name: addr_city
+          in: query
+          description: Filter by city.
+          schema:
+            type: string
+        - name: addr_postal
+          in: query
+          description: Filter by postal code.
+          schema:
+            type: string
+        - name: addr_country
+          in: query
+          description: Filter by country code.
+          schema:
+            type: string
+        - name: updated_after
+          in: query
+          description: Inclusive lower bound on person `updated_at` (ISO-8601).
+          schema:
+            type: string
+            format: date-time
+        - name: updated_before
+          in: query
+          description: Inclusive upper bound on person `updated_at` (ISO-8601).
+          schema:
+            type: string
+            format: date-time
+        - name: has_dob
+          in: query
+          description: Filter by presence of a date of birth.
+          schema:
+            type: boolean
+        - name: dob_from
+          in: query
+          description: Inclusive lower bound on date of birth (YYYY-MM-DD).
+          schema:
+            type: string
+            format: date
+        - name: dob_to
+          in: query
+          description: Inclusive upper bound on date of birth (YYYY-MM-DD).
+          schema:
+            type: string
+            format: date
+        - name: dob_year
+          in: query
+          description: Exact year of birth.
+          schema:
+            type: integer
+        - name: dob_month
+          in: query
+          description: Exact month of birth (1-12).
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 12
+        - name: dob_day
+          in: query
+          description: Exact day of birth (1-31).
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 31
+        - name: sort_by
+          in: query
+          description: Sort column.
+          schema:
+            type: string
+            enum:
+              [
+                preferred_full_name,
+                preferred_phone,
+                preferred_email,
+                preferred_dob,
+                preferred_nric,
+                source_record_count,
+                connection_count,
+                entity_count,
+                possible_match_count,
+                system_match_count,
+                order_count,
+                bankruptcy_case_count,
+                phone_confidence,
+                updated_at,
+                profile_completeness_score,
+                relevance,
+              ]
+        - name: sort_order
+          in: query
+          description: Sort direction. Defaults to `desc`.
+          schema:
+            type: string
+            enum: [asc, desc]
       responses:
         '200':
           description: Paginated person list

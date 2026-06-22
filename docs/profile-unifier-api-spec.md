@@ -155,8 +155,8 @@ Endpoints:
   dropped because the mount already conveys it. Unauthenticated.
 - `GET /api/oauth2/v1/jwks`: public signing keys, identical to
   `GET /v1/oauth/jwks`. Unauthenticated.
-- `GET /api/oauth2/v1/persons`: paginated person list, with the same filters as
-  the authenticated person list. Requires `persons:read`.
+- `GET /api/oauth2/v1/persons`: paginated person list, with the same filters and
+  sorting as the authenticated person list. Requires `persons:read`.
 - `GET /api/oauth2/v1/persons/{person_id}`: canonical person detail. Requires
   `persons:read`.
 
