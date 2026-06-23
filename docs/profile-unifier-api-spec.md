@@ -32,9 +32,9 @@ only cross-cutting and unauthenticated surfaces:
 Every **authenticated** endpoint in this spec (the `/v1/...` paths below) is
 served through mounted sub-applications, not the root app:
 
-- **Frontend contract** — mounted at `/api/app/v1` (legacy UI) and `/api/app/v2`
-  (active UI) with the `/v1` prefix stripped. A spec path such as
-  `/v1/persons/{person_id}` is served at `/api/app/v2/persons/{person_id}`.
+- **Frontend contract** — mounted at `/api/app/v2` (active UI) with the `/v1`
+  prefix stripped. A spec path such as `/v1/persons/{person_id}` is served at
+  `/api/app/v2/persons/{person_id}`.
 - **Machine contract** — a read-only subset mounted at `/api/oauth2/v1`
   (`token`, `jwks`, `persons`, `persons/{person_id}`), accepting OAuth2 client
   credentials only.

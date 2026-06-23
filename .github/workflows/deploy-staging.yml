@@ -38,7 +38,7 @@ jobs:
           # npm install) reuse the host layer cache; source changes still bust
           # the COPY layer. We additionally skip services whose code did not
           # change in this deploy's commit range.
-          ALL="api frontend frontend2 worker beat"
+          ALL="api frontend2 worker beat"
           REBUILD_ALL=false
           # Manual runs and no-op fast-forwards rebuild everything (safe default).
           if [ "$EVENT_NAME" = "workflow_dispatch" ] || [ "$BEFORE" = "$AFTER" ]; then
@@ -54,7 +54,6 @@ jobs:
               services/api/*)         NEED[api]=1 ;;
               services/ingestion/*)   NEED[worker]=1; NEED[beat]=1 ;;
               services/frontend2/*)   NEED[frontend2]=1 ;;
-              services/frontend/*)    NEED[frontend]=1 ;;
               # Root uv workspace files affect the api + ingestion images.
               pyproject.toml|uv.lock) NEED[api]=1; NEED[worker]=1; NEED[beat]=1 ;;
               # Compose / build infra: rebuild everything to be safe.

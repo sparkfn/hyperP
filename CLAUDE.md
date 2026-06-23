@@ -20,7 +20,7 @@ docker compose logs -f api                                 # stream logs from a 
 docker compose stop                                        # stop containers while preserving them for log inspection
 docker compose down                                        # remove containers and network only when explicitly requested
 ```
-**Two frontends:** `frontend2` is the **active** app (served at the web root); `frontend` is the legacy v1 app (served under `/app/v1`). Most UI work happens in `services/frontend2` — rebuild `frontend2` (not `frontend`) unless you are specifically touching v1.
+**Single active frontend:** `frontend2` is the active app served at the web root; all UI work happens in `services/frontend2`. The legacy v1 app under `services/frontend/` is retired (no longer built or routed); its source is kept for reference only.
 If the user says "stop containers", run `docker compose stop`, not `docker compose down`. Only remove containers when the user explicitly says to remove containers.
 Always pass `--no-cache` when rebuilding after Python or TypeScript changes — Docker layer caching can serve stale source even when files change.
 
@@ -48,11 +48,11 @@ uv run pytest services/api/tests/test_foo.py        # single file
 Test paths are configured in the root `pyproject.toml`.
 
 ### Frontend
-`services/frontend2` is the active app (web root); `services/frontend` is legacy v1 (`/app/v1`). Substitute the directory for the one you're touching — commands are identical.
+`services/frontend2` is the active app (web root). The legacy `services/frontend/` (v1) is retired and no longer built or routed; do not run its commands.
 ```bash
-cd services/frontend2          # or services/frontend for v1
+cd services/frontend2
 npm install          # already done in Docker; run locally for typecheck/lint only
-npm run dev         # dev server (frontend2 :3001, frontend :3001)
+npm run dev         # dev server (frontend2 :3001)
 npm run typecheck   # tsc --noEmit
 npm run lint       # eslint src (ESLint 9 flat config, max-warnings 9)
 npm run build      # production build (runs in Docker for deployment)
@@ -72,15 +72,14 @@ Eight Docker containers defined in `docker-compose.yml`:
 | `neo4j` | `neo4j:5.26-community` | `bolt://neo4j:7687` | HTTP browser at `:7474`; 5.11+ required for vector index support |
 | `redis` | `redis:7-alpine` | `redis://redis:6379` | Celery broker (db 0) + results (db 1) + token revocation store + public share-link tokens (TTL auto-cleanup) |
 | `api` | `services/api/Dockerfile` | `http://api:3000` | FastAPI/uvicorn; not exposed directly |
-| `frontend` | `services/frontend/Dockerfile` | `http://frontend:3001` | Next.js **v1** (legacy); served under `/app/v1`; not exposed directly |
 | `frontend2` | `services/frontend2/Dockerfile` | `http://frontend2:3001` | Next.js **v2** (active app); served at the web root; not exposed directly |
-| `web` | `nginx:1.27-alpine` | exposed on `:80` | Reverse proxy. Longest-prefix routing: `/api/app/*` and `/api/oauth2/*` → FastAPI mounts (path preserved, no strip — mounts need the `/api` prefix kept); `/api/*` → FastAPI (strips `/api`, root_path `/api`); `/app/v1` → `frontend`; `/` (catch-all) → `frontend2` |
+| `web` | `nginx:1.27-alpine` | exposed on `:80` | Reverse proxy. Longest-prefix routing: `/api/app/*` and `/api/oauth2/*` → FastAPI mounts (path preserved, no strip — mounts need the `/api` prefix kept); `/api/*` → FastAPI (strips `/api`, root_path `/api`); `/` (catch-all) → `frontend2` |
 | `worker` | `services/ingestion/Dockerfile` | — | Celery worker; `celery -A src.celery_app worker` |
 | `beat` | `services/ingestion/Dockerfile` | — | Celery beat scheduler; cron schedules from env vars |
 
-**FastAPI mounts & root surface:** the root app (`src/app.py`) registers only cross-cutting and unauthenticated routes — `GET /api/health`, the machine OAuth2 token flow (`/api/v1/oauth/{token,jwks}`), and the public share-link pages (`/api/v1/public/...`). Every **authenticated business route is mount-only** — the root app no longer serves `/api/v1/persons`, `/api/v1/entities`, etc. Three sub-apps built from the same `src/routes/*` routers carry the authenticated contract: `/app/v1` + `/app/v2` (frontend contracts, `/v1` stripped — `frontend_app.py`) and `/oauth2/v1` (machine OAuth2 — token/jwks + read-only persons list/detail, client-credentials only, `/v1/oauth` → `/oauth2/v1/{token,jwks}` — `oauth2_app.py`). `src/router_copy.py` centralizes the route-copying (strip-`/v1` by default, with optional path filter/transform). To add or remove an endpoint from a mount, change the router membership in the relevant builder, not `app.py`.
+**FastAPI mounts & root surface:** the root app (`src/app.py`) registers only cross-cutting and unauthenticated routes — `GET /api/health`, the machine OAuth2 token flow (`/api/v1/oauth/{token,jwks}`), and the public share-link pages (`/api/v1/public/...`). Every **authenticated business route is mount-only** — the root app no longer serves `/api/v1/persons`, `/api/v1/entities`, etc. Two sub-apps built from the same `src/routes/*` routers carry the authenticated contract: `/app/v2` (the active frontend2 UI contract, `/v1` stripped — `frontend_app.py`) and `/oauth2/v1` (machine OAuth2 — token/jwks + read-only persons list/detail, client-credentials only, `/v1/oauth` → `/oauth2/v1/{token,jwks}` — `oauth2_app.py`). The legacy `/app/v1` frontend contract has been retired along with the v1 frontend. `src/router_copy.py` centralizes the route-copying (strip-`/v1` by default, with optional path filter/transform). To add or remove an endpoint from a mount, change the router membership in the relevant builder, not `app.py`.
 
-**Frontend ↔ API wiring:** each frontend's BFF calls `buildApiUrl` (`src/lib/api-url.ts`), prefixing the FastAPI mount for its contract (`frontend`→`/app/v1`, `frontend2`→`/app/v2`) onto `API_BASE_URL` (`…/api`) → `/api/app/vN/...`. This is **independent** of the UI's web base path: `frontend2` serves at the web root (`NEXT_PUBLIC_BASE_PATH=""`) while still calling `/app/v2`. Public (unauthenticated) endpoints route to `/api/v1/public/...` instead. `NEXT_PUBLIC_BASE_PATH` (`src/lib/route-paths.ts`) is the single knob for the UI base path, driving `next.config.ts` `basePath`, NextAuth, and middleware; nginx `location` blocks and FastAPI mounts are kept in sync separately.
+**Frontend ↔ API wiring:** frontend2's BFF calls `buildApiUrl` (`src/lib/api-url.ts`), prefixing the FastAPI mount for its contract (`/app/v2`) onto `API_BASE_URL` (`…/api`) → `/api/app/v2/...`. This is **independent** of the UI's web base path: `frontend2` serves at the web root (`NEXT_PUBLIC_BASE_PATH=""`) while still calling `/app/v2`. Public (unauthenticated) endpoints route to `/api/v1/public/...` instead. `NEXT_PUBLIC_BASE_PATH` (`src/lib/route-paths.ts`) is the single knob for the UI base path, driving `next.config.ts` `basePath`, NextAuth, and middleware; nginx `location` blocks and FastAPI mounts are kept in sync separately.
 
 **Startup:** `logging.basicConfig(level=...)` in `src/app.py` also silences the `neo4j.notifications` logger (Cypher deprecation warnings) so they don't flood the API container logs. Real Neo4j errors at ERROR level are unaffected.
 
@@ -356,7 +355,7 @@ These rules apply to all Python code in the repository (`services/api/`, `servic
 
 ## TypeScript / Next.js Coding Standards
 
-These rules apply to all TypeScript code in the repository (`services/frontend2/` — the active app — and legacy `services/frontend/`):
+These rules apply to all TypeScript code in the active app (`services/frontend2/`). The retired `services/frontend/` (v1) source is kept for reference only and is no longer built or routed; do not add new code there.
 
 - **Strict TypeScript**: `tsconfig.json` enables `strict`, `noUncheckedIndexedAccess`, `noImplicitOverride`, `noFallthroughCasesInSwitch`; code compiles clean under `tsc --noEmit`.
 - **No `any`, no unsafe casts**: never `any`, `as any`, or `as unknown as T`. Parse external data (fetch responses, `JSON.parse`, route params) via type guards or schema validators (e.g. zod) before narrowing. A bare `as` cast on `unknown` is OK only immediately after a type guard.
@@ -373,7 +372,7 @@ These rules apply to all TypeScript code in the repository (`services/frontend2/
 - **Component / module size**: React components under ~150 lines, modules under ~300 — extract subcomponents and pull pure helpers out of components.
 - **MUI usage**: import from per-component paths (`@mui/material/Button`), not the barrel, to keep bundles tight. Use `sx` for one-off styling, the theme for shared tokens. Wrap the App Router with `AppRouterCacheProvider` (`@mui/material-nextjs/v15-appRouter`) exactly once in `layout.tsx`.
 - **Project standards**: format with Prettier, lint with `eslint src` (ESLint 9 flat config). Import order: node/external → `next/*`/`@mui/*` → `@/*` aliases → relative; use `@/` instead of long relative paths.
-- **Package manager — npm**: both `services/frontend2/` and `services/frontend/` use npm — always `npm install` (locally and in Docker), never `npm ci`, no `pnpm-lock.yaml`/`yarn.lock`.
+- **Package manager — npm**: `services/frontend2/` uses npm — always `npm install` (locally and in Docker), never `npm ci`, no `pnpm-lock.yaml`/`yarn.lock`.
 
 ### Interactive graph viewer
 

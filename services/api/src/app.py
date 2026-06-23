@@ -125,17 +125,18 @@ def build_app() -> FastAPI:
 
     # The root app exposes only cross-cutting and unauthenticated surfaces.
     # Every authenticated business route is served exclusively through the
-    # mounted sub-apps below — /app/v1 + /app/v2 (frontend contracts) and
+    # mounted sub-apps below — /app/v2 (active frontend2 UI contract) and
     # /oauth2/v1 (machine clients). The business routers live in src/routes/*
     # and are copied into those mounts; the root app no longer registers them.
     app.include_router(health.router)  # infra healthcheck — /api/health
     app.include_router(oauth.router)  # machine OAuth2 token + JWKS — /v1/oauth/*
     app.include_router(public_router)  # unauthenticated public pages — /v1/public/*
 
-    # Frontend-facing API contract, mounted once per UI version. Each mount is a
-    # fresh FastAPI instance exposing the same authenticated router set with the
-    # /v1 prefix stripped: frontend (v1) -> /app/v1, frontend2 (v2) -> /app/v2.
-    app.mount("/app/v1", build_frontend_app())
+    # Frontend-facing API contract. A fresh FastAPI instance exposing the
+    # authenticated router set with the /v1 prefix stripped, mounted for the
+    # active frontend2 UI at /app/v2. (The legacy v1 frontend and its /app/v1
+    # mount have been retired; services/frontend/ source is kept but no longer
+    # built or routed.)
     app.mount("/app/v2", build_frontend_app())
 
     # Machine-facing OAuth2 contract: token flow + read-only person list/detail,

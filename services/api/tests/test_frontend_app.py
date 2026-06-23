@@ -52,17 +52,6 @@ def _entity_repo() -> EntityRepository:
     return _EntityRepo()
 
 
-def test_frontend_app_docs_are_mounted_under_app_v1() -> None:
-    client = TestClient(build_app())
-
-    docs = client.get("/app/v1/docs")
-    openapi = client.get("/app/v1/openapi.json")
-
-    assert docs.status_code == 200
-    assert openapi.status_code == 200
-    assert openapi.json()["info"]["title"] == "HyperP Frontend API"
-
-
 def test_frontend_app_docs_are_mounted_under_app_v2() -> None:
     client = TestClient(build_app())
 
@@ -107,16 +96,6 @@ def test_frontend_app_openapi_uses_unversioned_contract_paths() -> None:
     assert "/v1/review-cases" not in paths
 
 
-def test_frontend_app_requires_active_user() -> None:
-    app = build_app()
-    app.dependency_overrides[get_entity_repo] = _entity_repo
-    client = TestClient(app)
-
-    response = client.get("/app/v1/entities")
-
-    assert response.status_code == 401
-
-
 def test_frontend_app_allows_authenticated_frontend_route() -> None:
     app = build_app()
     frontend_app = mounted_frontend_app(app)
@@ -125,7 +104,7 @@ def test_frontend_app_allows_authenticated_frontend_route() -> None:
     frontend_app.dependency_overrides[get_entity_repo] = _entity_repo
     client = TestClient(app)
 
-    response = client.get("/app/v1/entities")
+    response = client.get("/app/v2/entities")
 
     assert response.status_code == 200
     assert response.json()["data"] == [
@@ -146,15 +125,15 @@ def test_frontend_app_allows_authenticated_frontend_route() -> None:
 def test_frontend_app_excludes_public_and_oauth_token_routes() -> None:
     client = TestClient(build_app())
 
-    oauth_response = client.post("/app/v1/oauth/token")
-    public_response = client.get("/app/v1/public/persons/token")
+    oauth_response = client.post("/app/v2/oauth/token")
+    public_response = client.get("/app/v2/public/persons/token")
 
     assert oauth_response.status_code == 404
     assert public_response.status_code == 404
 
 
 def openapi_paths(client: TestClient) -> dict[str, object]:
-    payload = client.get("/app/v1/openapi.json").json()
+    payload = client.get("/app/v2/openapi.json").json()
     paths = payload["paths"]
     assert isinstance(paths, dict)
     return paths
@@ -162,6 +141,6 @@ def openapi_paths(client: TestClient) -> dict[str, object]:
 
 def mounted_frontend_app(app: FastAPI) -> FastAPI:
     for route in app.routes:
-        if isinstance(route, Mount) and route.path == "/app/v1":
+        if isinstance(route, Mount) and route.path == "/app/v2":
             return cast(FastAPI, route.app)
-    raise AssertionError("/app/v1 mount not found")
+    raise AssertionError("/app/v2 mount not found")
