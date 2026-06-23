@@ -178,21 +178,41 @@ paths:
           schema:
             type: string
           example: "fundbox-pos"
-        - name: entity_key
+        - name: entity_key_mode
           in: query
-          description: Filter to persons associated with this entity key.
+          description: >-
+            How to combine multiple `entity_key` values. `or` means any match;
+            `and` means the person must be associated with all supplied entities.
           schema:
             type: string
-          example: "fundbox-sg"
-        - name: status
+            enum: [or, and]
+            default: or
+        - name: source_key
           in: query
-          description: Filter by canonical person status.
+          description: Filter to persons with source records from any of these source systems.
           schema:
-            $ref: '#/components/schemas/PersonStatus'
-          example: active
-        - name: has_dob
+            type: array
+            items:
+              type: string
+          example: ["fundbox-pos"]
+        - name: source_key_mode
           in: query
-          description: Filter persons by presence of a date of birth.
+          description: >-
+            How to combine multiple `source_key` values. `or` means any match;
+            `and` means the person must have source records from all supplied systems.
+          schema:
+            type: string
+            enum: [or, and]
+            default: or
+        - name: source_record_type
+          in: query
+          description: Filter by source record type.
+          schema:
+            type: string
+            enum: [identity, bankruptcy, relationship, rental_flat, conversation, sales]
+        - name: is_high_value
+          in: query
+          description: Filter by high-value flag.
           schema:
             type: boolean
         - name: dob_from
@@ -644,6 +664,11 @@ paths:
           description: Filter by presence of an email identifier.
           schema:
             type: boolean
+        - name: has_any_contact
+          in: query
+          description: Filter by presence of any contact identifier (phone or email).
+          schema:
+            type: boolean
         - name: has_address
           in: query
           description: Filter by presence of a linked address.
@@ -656,17 +681,17 @@ paths:
             type: boolean
         - name: has_any_match
           in: query
-          description: Filter by presence of any match decision.
+          description: Filter by presence of any candidate match (identifier overlap or active system review case).
           schema:
             type: boolean
         - name: has_possible_match
           in: query
-          description: Filter by presence of a possible (review) match.
+          description: Filter by presence of a shared-identifier candidate person.
           schema:
             type: boolean
         - name: has_system_match
           in: query
-          description: Filter by presence of a system (auto) match.
+          description: Filter by presence of an active system (auto) match review case.
           schema:
             type: boolean
         - name: addr_street
@@ -1807,8 +1832,95 @@ components:
           properties:
             comparison:
               type: object
+              properties:
+                left:
+                  $ref: '#/components/schemas/PersonComparisonEntity'
+                right:
+                  $ref: '#/components/schemas/PersonComparisonEntity'
               additionalProperties: true
+            shared_identifier_groups:
+              type: array
+              items:
+                $ref: '#/components/schemas/SharedIdentifierGroup'
           required: [comparison]
+    PersonComparisonEntity:
+      type: object
+      properties:
+        entity_kind:
+          type: string
+          enum: [person, source_record]
+          default: person
+        person_id:
+          type:
+            - string
+            - 'null'
+          format: uuid
+        source_record_pk:
+          type:
+            - string
+            - 'null'
+          format: uuid
+        source_record_id:
+          type:
+            - string
+            - 'null'
+        source_system_key:
+          type:
+            - string
+            - 'null'
+        observed_at:
+          type:
+            - string
+            - 'null'
+          format: date-time
+        record_type:
+          type:
+            - string
+            - 'null'
+        linked_person_id:
+          type:
+            - string
+            - 'null'
+          format: uuid
+        status:
+          type:
+            - string
+            - 'null'
+        preferred_full_name:
+          type:
+            - string
+            - 'null'
+        preferred_phone:
+          type:
+            - string
+            - 'null'
+        preferred_email:
+          type:
+            - string
+            - 'null'
+        preferred_dob:
+          type:
+            - string
+            - 'null'
+          format: date
+      additionalProperties: false
+    SharedIdentifierGroup:
+      type: object
+      properties:
+        identifier_type:
+          type: string
+        normalized_value:
+          type: string
+        candidate_source_records:
+          type: array
+          items:
+            $ref: '#/components/schemas/SourceRecord'
+        current_person_source_records:
+          type: array
+          items:
+            $ref: '#/components/schemas/SourceRecord'
+      required: [identifier_type, normalized_value]
+      additionalProperties: false
     AuditEvent:
       type: object
       properties:

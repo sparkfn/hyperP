@@ -2,7 +2,7 @@
 
 import { Fragment, use, useCallback, useEffect, useId, useMemo, useRef, useState, type ReactElement } from "react";
 import Link from "next/link";
-import { notFound } from "next/navigation";
+import { notFound, useRouter } from "next/navigation";
 import type { Person, PersonConnection, SalesOrder } from "@/lib/api-types";
 import type {
   ChatMessage,
@@ -30,7 +30,7 @@ import { bffFetch, BffError, bffFetchEnvelope } from "@/lib/api-client";
 import { usePaginatedFetch } from "@/lib/usePaginatedFetch";
 import { toBasePath } from "@/lib/route-paths";
 import type { PublicLink } from "@/lib/api-types";
-import { avatarColor, completenessColor } from "@/lib/display";
+import { APP_TZ, avatarColor, completenessColor, formatDob } from "@/lib/display";
 import { useSetLoading } from "@/lib/LoadingContext";
 import ActionToast from "@/components/ActionToast";
 import MergeOverlay from "@/components/MergeOverlay";
@@ -68,7 +68,7 @@ const DATE_FORMATTER = new Intl.DateTimeFormat("en-SG", {
   day: "2-digit",
   month: "short",
   year: "numeric",
-  timeZone: "UTC",
+  timeZone: APP_TZ,
 });
 
 const DATE_TIME_FORMATTER = new Intl.DateTimeFormat("en-SG", {
@@ -78,11 +78,17 @@ const DATE_TIME_FORMATTER = new Intl.DateTimeFormat("en-SG", {
   hour: "2-digit",
   minute: "2-digit",
   hour12: true,
-  timeZone: "UTC",
+  timeZone: APP_TZ,
 });
 
 function fmtDate(value: string | null): string {
   if (!value) return "—";
+  // Date-only ISO strings are calendar days (e.g. a DOB) and must not shift
+  // across the display timezone — `new Date("1985-03-12")` parses as UTC midnight
+  // and formatting with a non-UTC APP_TZ would move it to the wrong day.
+  if (/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    return formatDob(value);
+  }
   const d = new Date(value);
   if (Number.isNaN(d.getTime())) return "—";
   return DATE_FORMATTER.format(d);
@@ -103,7 +109,7 @@ function fmtTime(value: string | null): string {
     hour: "2-digit",
     minute: "2-digit",
     hour12: true,
-    timeZone: "UTC",
+    timeZone: APP_TZ,
   }).format(d);
 }
 
@@ -1909,6 +1915,12 @@ function MatchesTab({ personId, currentPerson, currentIdentifiers, activeMatches
   const [reviewCasesPage, setReviewCasesPage] = useState<number>(0);
   useEffect(() => { setReviewCasesPage(0); }, [showResolvedReviewCases]);
   const [reviewActionCase, setReviewActionCase] = useState<ReviewCaseSummary | null>(null);
+  // True once a review action has been successfully submitted in the modal. The
+  // person detail page must reload when the modal closes so that, if the current
+  // person was absorbed by a merge, the absorbed-person redirect re-runs against
+  // fresh data and sends the user to the survivor (otherwise the absorbed
+  // person's page keeps rendering survivor-sourced Matches data).
+  const [reviewActionDirty, setReviewActionDirty] = useState(false);
   const [reviewCaseIdsByDecision, setReviewCaseIdsByDecision] = useState<Record<string, string>>({});
   const [reviewCaseDetails, setReviewCaseDetails] = useState<Record<string, ReviewCaseDetail>>({});
   const [reviewActionMatch, setReviewActionMatch] = useState<PersonMatchDecision | null>(null);
@@ -2314,7 +2326,7 @@ function MatchesTab({ personId, currentPerson, currentIdentifiers, activeMatches
                         setExpandedRecommendedMatch((current) => current === reviewCase.review_case_id ? null : reviewCase.review_case_id);
                         if (isOpening) void loadReviewCaseDetail(reviewCase.review_case_id);
                       }}
-                      onReview={() => setReviewActionCase(reviewCase)}
+                      onReview={() => { setReviewActionDirty(false); setReviewActionCase(reviewCase); }}
                       onView={() => setViewingReviewCaseId(reviewCase.review_case_id)}
                       onRecreate={hasOpenCase || nonSurvivorIsInactive || !isActionableResolvedCase ? undefined : () => setRecreateConfirm({ reviewCaseId: reviewCase.review_case_id, mergeEventId: null, summary: reviewCase })}
                       onRecreateAndUnmerge={isActionableResolvedCase && ((reviewCase.queue_state !== "resolved" && nonSurvivorIsInactive && mergeEvent !== null) || (!hasOpenCase && nonSurvivorIsInactive && mergeEvent !== null)) ? () => setRecreateConfirm({ reviewCaseId: reviewCase.review_case_id, mergeEventId: mergeEvent.merge_event_id, summary: reviewCase }) : null}
@@ -2376,15 +2388,24 @@ function MatchesTab({ personId, currentPerson, currentIdentifiers, activeMatches
 
   const reviewActionCaseId = reviewActionCase?.review_case_id ?? null;
 
+  function closeReviewActionModal(): void {
+    setReviewActionCase(null);
+    if (reviewActionDirty) {
+      // A review action was submitted — reload so the absorbed-person redirect
+      // re-runs against fresh data (merges may have changed the survivor).
+      window.location.reload();
+    }
+  }
+
   return (
     <>
       {tabContent}
       {reviewActionCase !== null ? (
-        <div className={styles.shareOverlay} onClick={() => setReviewActionCase(null)}>
+        <div className={styles.shareOverlay} onClick={closeReviewActionModal}>
           <div className={`${styles.overrideModal} ${styles.recommendedReviewModal}`} onClick={(event) => event.stopPropagation()}>
             <div className={styles.shareModalHeader}>
               <span className={styles.shareModalTitle}>Review recommended match</span>
-              <button type="button" className={styles.shareModalClose} onClick={() => setReviewActionCase(null)} aria-label="Close">×</button>
+              <button type="button" className={styles.shareModalClose} onClick={closeReviewActionModal} aria-label="Close">×</button>
             </div>
             {reviewActionCaseId !== null ? (
               <ReviewActionsPanel
@@ -2395,9 +2416,12 @@ function MatchesTab({ personId, currentPerson, currentIdentifiers, activeMatches
                 rightPersonId={reviewActionCase.right_person_id ?? null}
                 leftPersonStatus={reviewActionCase.left_person_status ?? null}
                 rightPersonStatus={reviewActionCase.right_person_status ?? null}
+                onActionDone={(success) => {
+                  if (success) setReviewActionDirty(true);
+                }}
                 onChanged={async () => {
-                  await new Promise<void>((resolve) => setTimeout(resolve, 1500));
-                  window.location.reload();
+                  // Reload is deferred to modal close (see closeReviewActionModal)
+                  // so the reviewer can read the success banner first.
                 }}
                 embedded
               />
@@ -3775,6 +3799,7 @@ function catchNotFound(err: unknown): null {
 
 export default function PersonDetailPage({ params }: { params: Promise<{ personId: string }> }): ReactElement {
   const { personId } = use(params);
+  const router = useRouter();
 
   const [person, setPerson] = useState<Person | null>(null);
   const [detailData, setDetailData] = useState<DetailData>(EMPTY_DETAIL);
@@ -3819,6 +3844,10 @@ export default function PersonDetailPage({ params }: { params: Promise<{ personI
         ]);
 
         if (cancelled) return;
+        if (personRes.person_id !== personId) {
+          router.replace(toBasePath(`/persons/${personRes.person_id}`));
+          return;
+        }
         setPerson(personRes);
         setDetailData((current) => ({ ...current, identifiers: identifiersRes.data }));
         setLoading(false);
@@ -3868,7 +3897,7 @@ export default function PersonDetailPage({ params }: { params: Promise<{ personI
       cancelled = true;
       setGlobalLoading(pageLoadId, false);
     };
-  }, [pageLoadId, personId, setGlobalLoading]);
+  }, [pageLoadId, personId, router, setGlobalLoading]);
 
   const [shareError, setShareError] = useState<string | null>(null);
 

@@ -2,7 +2,7 @@ import type { PersonConnection, PersonStatus, SalesOrder, SourceRecord } from ".
 import type { PersonIdentifier } from "./api-types-person";
 import type { CountCardItem } from "@/components/CountCardsCell";
 
-const APP_TZ = process.env.NEXT_PUBLIC_TZ ?? "UTC";
+export const APP_TZ = process.env.NEXT_PUBLIC_TZ ?? "UTC";
 
 export function statusColor(status: PersonStatus | string): "success" | "default" | "warning" {
   if (status === "active") return "success";
@@ -19,6 +19,10 @@ export function confidenceColor(value: number | null): "success" | "warning" | "
 
 export function formatDate(value: string | null): string {
   if (!value) return "—";
+  // Date-only ISO strings represent calendar days and must not be shifted by a display timezone.
+  if (/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    return formatDob(value);
+  }
   const parsed = new Date(value);
   if (Number.isNaN(parsed.getTime())) return value;
   return parsed.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric", timeZone: APP_TZ });

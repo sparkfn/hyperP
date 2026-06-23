@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
+from pytest import MonkeyPatch
 from src.display_format import (
     format_confidence_pct,
     format_display_date,
@@ -46,6 +47,17 @@ def test_format_display_dob_empty_is_not_invalid() -> None:
     # No DOB on file is a blank, not an error.
     assert format_display_dob(None) == ("—", False)
     assert format_display_dob("") == ("—", False)
+
+
+def test_format_display_date_date_only_not_timezone_shifted(monkeypatch: MonkeyPatch) -> None:
+    # Date-only ISO strings are calendar days and must not shift across the display timezone.
+    monkeypatch.setenv("TZ", "America/New_York")
+    assert format_display_date("2026-04-02") == "02 Apr 2026"
+
+
+def test_format_display_dob_date_only_not_timezone_shifted(monkeypatch: MonkeyPatch) -> None:
+    monkeypatch.setenv("TZ", "America/New_York")
+    assert format_display_dob("1990-04-02") == ("02 Apr 1990", False)
 
 
 def test_format_display_dob_unparseable_is_invalid() -> None:

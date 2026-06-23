@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState, type ReactElement } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 
 import ActionToast, { type ToastState } from "@/components/ActionToast";
 import MergeOverlay from "@/components/MergeOverlay";
@@ -9,7 +10,7 @@ import ReviewActionsPanel from "@/components/ReviewActionsPanel";
 import { BffError, bffFetch } from "@/lib/api-client";
 import type { PersonComparisonEntity, ReviewCaseActionEntry, ReviewCaseDetail } from "@/lib/api-types-ops";
 import type { PersonSourceRecord, SharedIdentifierGroup } from "@/lib/api-types-person";
-import { completenessColor, formatDate, relativeTime } from "@/lib/display";
+import { completenessColor, formatDate, formatDob, relativeTime } from "@/lib/display";
 import { toBasePath } from "@/lib/route-paths";
 import styles from "../review.module.css";
 
@@ -111,7 +112,7 @@ function ComparisonCard({ title, entity }: { title: string; entity: PersonCompar
         <KeyValue label="Status" value={entity.status ?? "—"} />
         <KeyValue label="Phone" value={entity.preferred_phone ?? "—"} />
         <KeyValue label="Email" value={entity.preferred_email ?? "—"} />
-        <KeyValue label="DOB" value={entity.preferred_dob ?? "—"} />
+        <KeyValue label="DOB" value={formatDob(entity.preferred_dob)} />
         <KeyValue label="Address" value={entity.preferred_address?.normalized_full ?? "—"} />
         {entity.entity_kind === "source_record" && entity.source_system_key !== null ? (
           <KeyValue label="Source" value={entity.source_system_key} />
@@ -189,16 +190,21 @@ function parseReason(reason: string): { label: string; score: string; note: stri
   // "Shared phone links 2 active persons (uuid1, uuid2)" (no score).
   // We extract label, score, and note so the chip can render as
   // "Phone match +20% (unverified)".
-  const match = /^(.+?)\s*\(([^()]*?)\s*([+-]\d+\.\d+)?\)\s*$/.exec(reason);
-  if (match === null) return null;
-  const rawLabel = (match[1] ?? "").trim();
-  const note = (match[2] ?? "").trim().replace(/:\s*$/, "");
-  const contributionStr = match[3];
+  const lastClose = reason.lastIndexOf(")");
+  if (lastClose <= 0 || !reason.endsWith(")")) return null;
+  const firstOpen = reason.indexOf("(");
+  if (firstOpen < 0) return null;
+  const label = reason.slice(0, firstOpen).trim();
+  const inner = reason.slice(firstOpen + 1, lastClose).trim();
+  const scoreMatch = /([+-]\d+\.\d+)\s*$/.exec(inner);
+  if (scoreMatch === null) return null;
+  const contributionStr = scoreMatch[1];
   if (contributionStr === undefined) return null;
+  const note = inner.slice(0, inner.length - contributionStr.length).replace(/:\s*$/, "").trim();
   const pct = Math.round(parseFloat(contributionStr) * 100);
   const score = `${pct >= 0 ? "+" : ""}${pct}%`;
   return {
-    label: rawLabel.length > 0 ? rawLabel : reason,
+    label: label.length > 0 ? label : reason,
     score,
     note: note.length > 0 ? note : null,
   };
@@ -371,16 +377,19 @@ export function ReviewCaseDetailModal({
   open,
   reviewCaseId,
   onClose,
+  onActionComplete,
 }: {
   open: boolean;
   reviewCaseId: string;
   onClose: () => void;
+  onActionComplete?: () => void;
 }): ReactElement | null {
   const [detail, setDetail] = useState<ReviewCaseDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
   const [actionBusy, setActionBusy] = useState<boolean>(false);
   const [toast, setToast] = useState<ToastState | null>(null);
+  const router = useRouter();
 
   const loadDetail = useCallback((): Promise<void> => {
     if (reviewCaseId.length === 0) {
@@ -443,7 +452,9 @@ export function ReviewCaseDetailModal({
             error={error}
             onChanged={async () => {
               await new Promise<void>((resolve) => setTimeout(resolve, 1500));
-              window.location.reload();
+              await loadDetail();
+              router.refresh();
+              onActionComplete?.();
             }}
             compact
             onActionBusy={setActionBusy}

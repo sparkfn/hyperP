@@ -70,6 +70,14 @@ const REVIEW_REASON_PRESETS: Record<ReviewActionType, readonly string[]> = {
   ],
 };
 
+const REVIEW_ACTION_LABELS: Record<ReviewActionType, string> = {
+  merge: 'Merge',
+  reject: 'Reject (no match)',
+  defer: 'Defer',
+  escalate: 'Escalate',
+  manual_no_match: 'Manual no-match',
+};
+
 function defaultRightChoiceByField(
   choices: readonly GoldenProfileChoice[],
   rightPersonId: string,
@@ -245,7 +253,7 @@ export default function ReviewActionsPanel({
               disabled={resolved}
             >
               {REVIEW_ACTION_TYPES.map((type) => (
-                <option key={type} value={type}>{type}</option>
+                <option key={type} value={type}>{REVIEW_ACTION_LABELS[type]}</option>
               ))}
             </select>
           </label>
@@ -317,6 +325,7 @@ export default function ReviewActionsPanel({
         ) : null}
 
         <button
+          type="button"
           className={styles.primaryBtn}
           onClick={() => void onSubmitAction()}
           disabled={actionBusy || resolved || !reasonValid || (actionType === "merge" && (!canLoadMergeChoices || mergeRequiresUnmerge))}

@@ -43,7 +43,12 @@ from src.repositories.neo4j.merge import (
 )
 from src.repositories.protocols.merge import GoldenProfileSelection
 from src.repositories.protocols.review import ActionResult, AssignResult, ReviewListFilters
-from src.types import ApiReviewActionType, ReviewCaseDetail, ReviewCaseSummary, SharedIdentifierGroup
+from src.types import (
+    ApiReviewActionType,
+    ReviewCaseDetail,
+    ReviewCaseSummary,
+    SharedIdentifierGroup,
+)
 
 from ._utils import record_to_dict, to_total
 
@@ -120,9 +125,22 @@ class Neo4jReviewRepository:
         )
         if candidate_person_id is None or candidate_person_id == left.person_id:
             return []
-        result = await session.run(
-            GET_PERSON_POSSIBLE_MATCH_DETAIL,
+        return await session.execute_read(
+            self._read_shared_identifier_groups,
             person_id=left.person_id,
+            candidate_person_id=candidate_person_id,
+        )
+
+    async def _read_shared_identifier_groups(
+        self,
+        tx: AsyncManagedTransaction,
+        *,
+        person_id: str,
+        candidate_person_id: str,
+    ) -> list[SharedIdentifierGroup]:
+        result = await tx.run(
+            GET_PERSON_POSSIBLE_MATCH_DETAIL,
+            person_id=person_id,
             candidate_person_id=candidate_person_id,
         )
         records = [record_to_dict(r.keys(), list(r.values())) async for r in result]
