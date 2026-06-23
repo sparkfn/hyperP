@@ -5,13 +5,20 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
+from collections.abc import Iterator, Sequence
 from datetime import UTC, datetime
 from typing import TypedDict
 
-from src.config import get_settings
 from src.connectors.fundbox.builders import IdentifierBag, to_iso
-from src.llm import ChatMessage, get_llm_service
-from src.llm_prompts import EXTRACTION_SYSTEM, build_extraction_prompt
+from src.ingestion_config import get_ingestion_config
+from src.llm import ChatMessage, get_chat_extraction_service, get_chat_summary_service
+from src.llm_prompts import (
+    EXTRACTION_SYSTEM,
+    SUMMARY_SYSTEM,
+    build_batch_extraction_prompt,
+    build_batch_summary_prompt,
+)
 from src.models import JsonValue, QualityFlag
 from src.normalizers.email import normalize_email
 from src.normalizers.phone import normalize_phone
@@ -113,176 +120,295 @@ class ExtractionResult(TypedDict):
     confidence: float
 
 
-async def _extract_one(text: str, delay_seconds: float, index: int) -> str:
-    if delay_seconds > 0 and index > 0:
-        await asyncio.sleep(delay_seconds * index)
-    svc = get_llm_service()
+async def _extract_structured(texts: list[str], max_tokens: int) -> str:
+    """GPT call: structured identity/transaction extraction (reliable JSON mode)."""
+    svc = get_chat_extraction_service()
     return await svc.chat_json(
         [
             ChatMessage(role="system", content=EXTRACTION_SYSTEM),
-            ChatMessage(role="user", content=build_extraction_prompt(text)),
+            ChatMessage(role="user", content=build_batch_extraction_prompt(texts)),
         ],
+        max_tokens=max_tokens,
     )
 
 
-async def _gather_extractions(texts: list[str]) -> list[str | BaseException]:
-    delay_seconds = get_settings().llm_request_delay_seconds
-    tasks = [_extract_one(text, delay_seconds, index) for index, text in enumerate(texts)]
-    return list(await asyncio.gather(*tasks, return_exceptions=True))
+async def _summarize_batch(texts: list[str], max_tokens: int) -> str:
+    """Proclaude call: narrative per-conversation summaries (prose quality)."""
+    svc = get_chat_summary_service()
+    return await svc.chat_json(
+        [
+            ChatMessage(role="system", content=SUMMARY_SYSTEM),
+            ChatMessage(role="user", content=build_batch_summary_prompt(texts)),
+        ],
+        max_tokens=max_tokens,
+    )
 
 
-def _summary_value_to_text(value: JsonValue) -> str | None:
-    if isinstance(value, str):
-        text = value.strip()
-        return text if text else None
-    if isinstance(value, int | float) and not isinstance(value, bool):
-        return str(value)
-    if isinstance(value, list):
-        items: list[str] = []
-        for item in value:
-            item_text = _summary_value_to_text(item)
-            if item_text is not None:
-                items.append(item_text)
-        return "\n".join(items) if items else None
-    return None
+#: Matches the "=== Summary N ===" markers proclaude emits between summaries.
+_SUMMARY_MARKER = re.compile(r"^[ \t]*===[ \t]*Summary[ \t]+(\d+)[ \t]*===[ \t]*$", re.MULTILINE)
 
 
-def _summary_to_text(value: JsonValue) -> str | None:
-    if isinstance(value, str):
-        text = value.strip()
-        return text if text else None
-    if isinstance(value, dict):
-        sections: list[str] = []
-        for key, section_value in value.items():
-            heading = key.strip()
-            section_text = _summary_value_to_text(section_value)
-            if heading and section_text is not None:
-                sections.append(f"{heading}:\n{section_text}")
-        return "\n\n".join(sections) if sections else None
-    return None
+def chat_batch_size() -> int:
+    """Max conversations per combined LLM call (safety cap), from the config."""
+    return get_ingestion_config().llm.chat_batch_size
+
+
+def chat_batch_max_chars() -> int:
+    """Combined transcript-character budget per combined LLM call, from the config."""
+    return get_ingestion_config().llm.chat_batch_max_chars
+
+
+def iter_char_batches(
+    texts: Sequence[str], max_chars: int, max_count: int
+) -> Iterator[tuple[int, int]]:
+    """Yield ``(start, end)`` slices of ``texts`` bounded by size.
+
+    A slice grows until adding the next text would push the combined character
+    length past ``max_chars`` or the count past ``max_count``. A single text
+    longer than ``max_chars`` still forms its own slice (never dropped).
+    """
+    total = len(texts)
+    start = 0
+    while start < total:
+        end = start
+        chars = 0
+        while end < total:
+            text_len = len(texts[end])
+            if end > start and (chars + text_len > max_chars or end - start >= max_count):
+                break
+            chars += text_len
+            end += 1
+        yield start, end
+        start = end
 
 
 def run_extraction_batch(texts: list[str]) -> list[ExtractionResult | None]:
-    raw_results = asyncio.run(_gather_extractions(texts))
+    """Extract every conversation: GPT for structured data, proclaude for summary.
 
-    results: list[ExtractionResult | None] = []
-    for raw in raw_results:
-        if isinstance(raw, BaseException):
-            logger.warning("LLM call failed: %s", raw)
-            results.append(None)
-            continue
-        if not raw:
-            results.append(None)
-            continue
-        try:
-            parsed: JsonValue = json.loads(raw)
-            if not isinstance(parsed, dict):
-                results.append(None)
-                continue
-            persons_raw = parsed.get("persons")
-            possible_persons_raw = parsed.get("possible_persons")
-            if not isinstance(persons_raw, list) and not isinstance(possible_persons_raw, list):
-                results.append(None)
-                continue
-            transactions_raw = parsed.get("transactions")
-            chat_members_raw = parsed.get("chat_members")
-            inquiries_raw = parsed.get("inquiries")
-            strong_raw = parsed.get("strong_identifiers")
-            weak_raw = parsed.get("weak_identifiers")
-            summary_raw = parsed.get("summary")
-            sentiment_raw = parsed.get("customer_sentiment")
-            confidence_raw = parsed.get("confidence")
-            persons: list[ExtractedPerson] = []
-            if isinstance(persons_raw, list):
-                for person_raw in persons_raw:
-                    person = _parse_person(person_raw)
-                    if person is not None:
-                        persons.append(person)
-            possible_persons: list[ExtractedPossiblePerson] = []
-            if isinstance(possible_persons_raw, list):
-                for possible_person_raw in possible_persons_raw:
-                    possible_person = _parse_possible_person(possible_person_raw)
-                    if possible_person is not None:
-                        possible_persons.append(possible_person)
-            if not possible_persons:
-                possible_persons = [_possible_person_from_legacy(person) for person in persons]
-            transactions: list[ExtractedTransaction] = []
-            if isinstance(transactions_raw, list):
-                for transaction_raw in transactions_raw:
-                    if isinstance(transaction_raw, dict):
-                        transaction: ExtractedTransaction = {}
-                        order_id = transaction_raw.get("order_id")
-                        if isinstance(order_id, str) or order_id is None:
-                            transaction["order_id"] = order_id
-                        product = transaction_raw.get("product")
-                        if isinstance(product, str) or product is None:
-                            transaction["product"] = product
-                        currency = transaction_raw.get("currency")
-                        if isinstance(currency, str):
-                            transaction["currency"] = currency
-                        status = transaction_raw.get("status")
-                        if isinstance(status, str) or status is None:
-                            transaction["status"] = status
-                        notes = transaction_raw.get("notes")
-                        if isinstance(notes, str) or notes is None:
-                            transaction["notes"] = notes
-                        amount = transaction_raw.get("amount")
-                        if isinstance(amount, int | float):
-                            transaction["amount"] = float(amount)
-                        elif amount is None:
-                            transaction["amount"] = None
-                        transactions.append(transaction)
-            chat_members: list[ExtractedChatMember] = []
-            if isinstance(chat_members_raw, list):
-                for member_raw in chat_members_raw:
-                    member = _parse_chat_member(member_raw)
-                    if member is not None:
-                        chat_members.append(member)
-            inquiries: list[ExtractedInquiry] = []
-            if isinstance(inquiries_raw, list):
-                for inquiry_raw in inquiries_raw:
-                    inquiry = _parse_inquiry(inquiry_raw)
-                    if inquiry is not None:
-                        inquiries.append(inquiry)
-            strong_identifiers: list[ExtractedStrongIdentifier] = []
-            if isinstance(strong_raw, list):
-                for identifier_raw in strong_raw:
-                    identifier = _parse_identifier(identifier_raw)
-                    if identifier is not None:
-                        strong_identifiers.append(identifier)
-            weak_identifiers: list[ExtractedWeakIdentifier] = []
-            if isinstance(weak_raw, list):
-                for identifier_raw in weak_raw:
-                    identifier = _parse_identifier(identifier_raw)
-                    if identifier is not None:
-                        weak_identifiers.append(identifier)
-            results.append(
-                ExtractionResult(
-                    persons=persons,
-                    possible_persons=possible_persons,
-                    transactions=transactions,
-                    chat_members=chat_members,
-                    inquiries=inquiries,
-                    strong_identifiers=strong_identifiers,
-                    weak_identifiers=weak_identifiers,
-                    summary=_summary_to_text(summary_raw),
-                    customer_sentiment=sentiment_raw if isinstance(sentiment_raw, str) else None,
-                    confidence=(
-                        float(confidence_raw) if isinstance(confidence_raw, int | float) else 0.0
-                    ),
-                )
-            )
-        except json.JSONDecodeError:
-            logger.warning("LLM returned non-JSON: %s", raw[:200])
-            results.append(None)
+    Returns one ``ExtractionResult | None`` per input, aligned to input order.
+    Structured extraction (identity/transactions) uses GPT's JSON mode for
+    reliability; a raised exception or unusable response drops the whole batch
+    (all ``None``), and an omitted conversation yields ``None`` at that index.
+    Summaries are a best-effort proclaude pass layered on top — a failed summary
+    call leaves ``summary`` ``None`` but keeps the GPT-extracted data.
+    """
+    if not texts:
+        return []
+    max_tokens = get_ingestion_config().llm.chat_max_tokens
+    try:
+        raw = asyncio.run(_extract_structured(texts, max_tokens))
+    except Exception as exc:  # noqa: BLE001 - one bad batch must not abort the run
+        logger.warning("LLM extraction call failed (%d conversations): %r", len(texts), exc)
+        return [None] * len(texts)
+    results = _split_batch_extraction(raw, len(texts))
+    _attach_summaries(texts, results, max_tokens)
     return results
+
+
+def _attach_summaries(
+    texts: list[str], results: list[ExtractionResult | None], max_tokens: int
+) -> None:
+    """Best-effort: fill each result's ``summary`` from a proclaude summary call."""
+    if not any(result is not None for result in results):
+        return
+    try:
+        raw = asyncio.run(_summarize_batch(texts, max_tokens))
+    except Exception as exc:  # noqa: BLE001 - summaries are best-effort, never fatal
+        logger.warning("LLM summary call failed (%d conversations): %r", len(texts), exc)
+        return
+    summaries = _split_batch_summaries(raw, len(texts))
+    for index, result in enumerate(results):
+        summary = summaries[index]
+        if result is not None and summary is not None:
+            result["summary"] = summary
+
+
+def _indexed_conversations(raw: str, count: int) -> list[tuple[int, dict[str, JsonValue]]] | None:
+    """Parse a ``{"conversations": [...]}`` response into ``(index, entry)`` pairs.
+
+    Tolerates a bare top-level array (no wrapper). Skips entries whose
+    ``conversation_index`` is missing, non-integer, or out of range. Returns
+    ``None`` only on a JSON decode failure so the caller can log the specifics.
+    """
+    if not raw:
+        return []
+    try:
+        parsed: JsonValue = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    if isinstance(parsed, dict):
+        conversations: JsonValue = parsed.get("conversations")
+    elif isinstance(parsed, list):
+        conversations = parsed
+    else:
+        return []
+    if not isinstance(conversations, list):
+        return []
+    pairs: list[tuple[int, dict[str, JsonValue]]] = []
+    for entry in conversations:
+        if not isinstance(entry, dict):
+            continue
+        index_raw = entry.get("conversation_index")
+        if not isinstance(index_raw, int) or isinstance(index_raw, bool):
+            continue
+        if 0 <= index_raw < count:
+            pairs.append((index_raw, entry))
+    return pairs
+
+
+def _split_batch_extraction(raw: str, count: int) -> list[ExtractionResult | None]:
+    """Parse a structured-extraction response, aligned to input order by index."""
+    results: list[ExtractionResult | None] = [None] * count
+    pairs = _indexed_conversations(raw, count)
+    if pairs is None:
+        # A leading "{" with a decode error usually means a truncated/invalid
+        # response — log the length to make that diagnosable.
+        logger.warning("LLM returned non-JSON extraction (len=%d): %s", len(raw), raw[:200])
+        return results
+    for index, entry in pairs:
+        results[index] = _parse_extraction_object(entry)
+    return results
+
+
+def _split_batch_summaries(raw: str, count: int) -> list[str | None]:
+    """Parse plain-text ``=== Summary N ===`` blocks into per-index summaries.
+
+    A delimited text protocol (not JSON): proclaude has no JSON mode, and a
+    multi-line markdown summary embedded in a JSON string reliably breaks
+    escaping. Splitting on the marker keeps the prose intact.
+    """
+    summaries: list[str | None] = [None] * count
+    if not raw:
+        return summaries
+    markers = list(_SUMMARY_MARKER.finditer(raw))
+    if not markers:
+        # Single-conversation batches often skip the marker — the whole response
+        # is that one summary. For multi-conversation batches we can't align, so
+        # drop them (best-effort).
+        text = raw.strip()
+        if count == 1 and text:
+            summaries[0] = text
+        else:
+            logger.warning(
+                "LLM summary had no '=== Summary N ===' markers (len=%d): %s", len(raw), raw[:200]
+            )
+        return summaries
+    for position, marker in enumerate(markers):
+        index = int(marker.group(1))
+        body_start = marker.end()
+        body_end = markers[position + 1].start() if position + 1 < len(markers) else len(raw)
+        text = raw[body_start:body_end].strip()
+        if 0 <= index < count and text:
+            summaries[index] = text
+    return summaries
+
+
+def _parse_extraction_object(obj: JsonValue) -> ExtractionResult | None:
+    """Parse one conversation's extraction object into an ``ExtractionResult``."""
+    if not isinstance(obj, dict):
+        return None
+    persons_raw = obj.get("persons")
+    possible_persons_raw = obj.get("possible_persons")
+    if not isinstance(persons_raw, list) and not isinstance(possible_persons_raw, list):
+        return None
+    persons: list[ExtractedPerson] = []
+    if isinstance(persons_raw, list):
+        for person_raw in persons_raw:
+            person = _parse_person(person_raw)
+            if person is not None:
+                persons.append(person)
+    possible_persons: list[ExtractedPossiblePerson] = []
+    if isinstance(possible_persons_raw, list):
+        for possible_person_raw in possible_persons_raw:
+            possible_person = _parse_possible_person(possible_person_raw)
+            if possible_person is not None:
+                possible_persons.append(possible_person)
+    if not possible_persons:
+        possible_persons = [_possible_person_from_legacy(person) for person in persons]
+    transactions = _parse_transactions(obj.get("transactions"))
+    chat_members: list[ExtractedChatMember] = []
+    chat_members_raw = obj.get("chat_members")
+    if isinstance(chat_members_raw, list):
+        for member_raw in chat_members_raw:
+            member = _parse_chat_member(member_raw)
+            if member is not None:
+                chat_members.append(member)
+    inquiries: list[ExtractedInquiry] = []
+    inquiries_raw = obj.get("inquiries")
+    if isinstance(inquiries_raw, list):
+        for inquiry_raw in inquiries_raw:
+            inquiry = _parse_inquiry(inquiry_raw)
+            if inquiry is not None:
+                inquiries.append(inquiry)
+    strong_identifiers: list[ExtractedStrongIdentifier] = []
+    strong_raw = obj.get("strong_identifiers")
+    if isinstance(strong_raw, list):
+        for identifier_raw in strong_raw:
+            identifier = _parse_identifier(identifier_raw)
+            if identifier is not None:
+                strong_identifiers.append(identifier)
+    weak_identifiers: list[ExtractedWeakIdentifier] = []
+    weak_raw = obj.get("weak_identifiers")
+    if isinstance(weak_raw, list):
+        for identifier_raw in weak_raw:
+            identifier = _parse_identifier(identifier_raw)
+            if identifier is not None:
+                weak_identifiers.append(identifier)
+    confidence_raw = obj.get("confidence")
+    sentiment_raw = obj.get("customer_sentiment")
+    return ExtractionResult(
+        persons=persons,
+        possible_persons=possible_persons,
+        transactions=transactions,
+        chat_members=chat_members,
+        inquiries=inquiries,
+        strong_identifiers=strong_identifiers,
+        weak_identifiers=weak_identifiers,
+        # Summary comes from the separate proclaude pass (_attach_summaries),
+        # not the GPT extraction response.
+        summary=None,
+        customer_sentiment=sentiment_raw if isinstance(sentiment_raw, str) else None,
+        confidence=(float(confidence_raw) if isinstance(confidence_raw, int | float) else 0.0),
+    )
+
+
+def _parse_transactions(raw: JsonValue) -> list[ExtractedTransaction]:
+    transactions: list[ExtractedTransaction] = []
+    if not isinstance(raw, list):
+        return transactions
+    for transaction_raw in raw:
+        if not isinstance(transaction_raw, dict):
+            continue
+        transaction: ExtractedTransaction = {}
+        order_id = transaction_raw.get("order_id")
+        if isinstance(order_id, str) or order_id is None:
+            transaction["order_id"] = order_id
+        product = transaction_raw.get("product")
+        if isinstance(product, str) or product is None:
+            transaction["product"] = product
+        currency = transaction_raw.get("currency")
+        if isinstance(currency, str):
+            transaction["currency"] = currency
+        status = transaction_raw.get("status")
+        if isinstance(status, str) or status is None:
+            transaction["status"] = status
+        notes = transaction_raw.get("notes")
+        if isinstance(notes, str) or notes is None:
+            transaction["notes"] = notes
+        amount = transaction_raw.get("amount")
+        if isinstance(amount, int | float) and not isinstance(amount, bool):
+            transaction["amount"] = float(amount)
+        elif amount is None:
+            transaction["amount"] = None
+        transactions.append(transaction)
+    return transactions
 
 
 def extraction_method_label() -> str:
     try:
-        model = get_settings().llm_default_model
+        model = get_chat_extraction_service().default_model
     except Exception:
-        model = "Qwen/Qwen2.5-72B-Instruct"
+        model = "gpt"
     return f"llm:{model}"
 
 

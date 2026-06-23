@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import json
+import logging
+from dataclasses import dataclass
 
 from neo4j import AsyncManagedTransaction
 
+from src.celery_client import enqueue_match_recalculation
 from src.graph.client import get_session
 from src.graph.converters import to_str
 from src.graph.golden_profile import recompute_golden_profile_tx
@@ -28,6 +31,16 @@ from src.repositories.neo4j._merge_side_effects import (
     revert_merge_review_side_effects,
 )
 from src.repositories.protocols.merge import GoldenProfileSelection, MergeOutcome
+
+
+@dataclass
+class _UnmergeResult:
+    absorbed_id: str
+    current_survivor_id: str
+    reverted_review_case_ids: list[str]
+
+
+logger = logging.getLogger(__name__)
 
 
 def _ordered_pair(left: str, right: str) -> tuple[str, str]:
@@ -57,6 +70,7 @@ class Neo4jMergeRepository:
                         to_id,
                         golden_profile_selections,
                     )
+            enqueue_match_recalculation(outcome.redirected_review_case_ids)
             return outcome
 
     async def unmerge(
@@ -65,10 +79,10 @@ class Neo4jMergeRepository:
         async with get_session(write=True) as session:
             result = await session.execute_write(_unmerge_tx, merge_event_id, reason, actor_id)
             if result is not None:
-                absorbed_id, survivor_id = result
-                await session.execute_write(recompute_golden_profile_tx, absorbed_id)
-                await session.execute_write(recompute_golden_profile_tx, survivor_id)
-            return result
+                await session.execute_write(recompute_golden_profile_tx, result.absorbed_id)
+                await session.execute_write(recompute_golden_profile_tx, result.current_survivor_id)
+                enqueue_match_recalculation(result.reverted_review_case_ids)
+            return (result.absorbed_id, result.current_survivor_id) if result is not None else None
 
     async def create_lock(
         self,
@@ -113,8 +127,8 @@ async def _manual_merge_tx(
     if record is None:
         return MergeOutcome(not_found=True)
     merge_event_id = to_str(record["merge_event_id"])
-    await apply_merge_review_side_effects(tx, merge_event_id, from_id, to_id)
-    return MergeOutcome(merge_event_id=merge_event_id)
+    redirected_ids = await apply_merge_review_side_effects(tx, merge_event_id, from_id, to_id)
+    return MergeOutcome(merge_event_id=merge_event_id, redirected_review_case_ids=redirected_ids)
 
 
 IDENTIFIER_FIELD_BY_TYPE: dict[str, str] = {
@@ -153,7 +167,9 @@ def _is_valid_golden_profile_selection(selection: GoldenProfileSelection) -> boo
     if source_kind == "address":
         return field_name == "preferred_address" and selection["selected_value"].strip() != ""
     if source_kind == "literal":
-        return field_name in VALID_LITERAL_GOLDEN_FIELDS and selection["selected_value"].strip() != ""
+        return (
+            field_name in VALID_LITERAL_GOLDEN_FIELDS and selection["selected_value"].strip() != ""
+        )
     return False
 
 
@@ -193,7 +209,7 @@ async def _apply_golden_profile_selections_tx(
 
 async def _unmerge_tx(
     tx: AsyncManagedTransaction, merge_event_id: str, reason: str, actor_id: str
-) -> tuple[str, str] | None:
+) -> _UnmergeResult | None:
     target_result = await tx.run(GET_UNMERGE_TARGET, merge_event_id=merge_event_id)
     target = await target_result.single()
     if target is None:
@@ -215,8 +231,12 @@ async def _unmerge_tx(
         actor_id=actor_id,
     )
     await tx.run(FLAG_AFFECTED_RECORDS_FOR_REVIEW, merge_event_id=merge_event_id)
-    await revert_merge_review_side_effects(tx, merge_event_id)
-    return absorbed_id, current_survivor_id
+    reverted_ids = await revert_merge_review_side_effects(tx, merge_event_id)
+    return _UnmergeResult(
+        absorbed_id=absorbed_id,
+        current_survivor_id=current_survivor_id,
+        reverted_review_case_ids=reverted_ids,
+    )
 
 
 async def _create_lock_tx(

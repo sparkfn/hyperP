@@ -24,7 +24,6 @@ from src.connectors.fundbox import (
 )
 from src.connectors.speedzone import SpeedZoneConnector, SpeedZoneSalesConnector
 from src.connectors.whatsapp import WhatsAppChatConnector
-from src.exclusion_config import load_exclusion_file
 from src.exclusions import (
     ExclusionContext,
     build_exclusion_context,
@@ -37,6 +36,7 @@ from src.graph.bootstrap import bootstrap_entities_and_sources
 from src.graph.client import Neo4jClient
 from src.graph.migrations import apply_data_migrations
 from src.graph.schema_init import apply_schema
+from src.ingestion_config import get_ingestion_config
 from src.models import IngestResult, RecordType, SourceRecordEnvelope
 from src.pipeline import IngestPipeline
 from src.pipeline_addresses import ingest_address_record
@@ -226,7 +226,7 @@ def _load_exclusion_context() -> ExclusionContext:
         company_mobile_numbers=settings.company_mobile_numbers,
         company_email_addresses=settings.company_email_addresses,
         internal_person_names=settings.internal_person_names,
-        file_exclusions=load_exclusion_file(settings.ingestion_exclusions_file),
+        file_exclusions=get_ingestion_config().exclusions,
     )
 
 

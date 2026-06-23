@@ -43,6 +43,7 @@ class ActionResult(TypedDict, total=False):
     golden_profile_selections: list[GoldenProfileSelection]
     merge_blocked: bool
     merge_not_applicable: bool
+    redirected_review_case_ids: list[str]
 
 
 class ReviewRepository(Protocol):

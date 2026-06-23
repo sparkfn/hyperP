@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-HyperP is a customer profile unification and relationship intelligence platform. It resolves the same real-world person across systems (POS, Bitrix CRM, third-party apps) and supports complex relationship use cases such as contact tracing. The initial use case is sales. The repository contains both design documentation (`docs/`) and implementation services (`services/api/`, `services/ingestion/`).
+HyperP is a customer profile unification and relationship intelligence platform. It resolves the same person across systems (POS, Bitrix CRM, third-party apps) for use cases like contact tracing and sales. Code lives in `services/api/` and `services/ingestion/`; design docs live in `docs/`.
 
 ## Development Commands
 
@@ -270,49 +270,43 @@ Date range filters use `DatePickerField` (wraps `@mui/x-date-pickers@7` `DatePic
 
 ## Repository Structure
 
-All documents live in `docs/` and follow the naming convention `profile-unifier-*.md` (plus one `.yaml`).
-
-**Recommended reading order**: PRD → Glossary → Architecture → Matching Spec → Policy Decisions → Graph Schema → Graph Model Diagram → API Spec → OpenAPI 3.1 → Reviewer Workflow → Sequence Diagrams → Roadmap → Scaffold Architecture
+All documents live in `docs/` and follow the naming convention `profile-unifier-*.md` (plus one `.yaml`). Recommended reading order: PRD → Glossary → Architecture → Matching Spec → Policy Decisions → Graph Schema → Graph Model Diagram → API Spec → OpenAPI 3.1 → Reviewer Workflow → Sequence Diagrams → Roadmap → Scaffold Architecture.
 
 ## Key Design Decisions
 
-- **Database**: Neo4j (decided) — the platform needs contact tracing and complex multi-hop relationship queries beyond simple identity resolution; Neo4j's native graph storage and Cypher are the right fit, with ACID transactions (Neo4j 4+).
-- **Database abstraction**: a `repositories/` layer sits between routes and Neo4j — `typing.Protocol` defines the contracts, Neo4j implementations live in `repositories/neo4j/`. To migrate databases, write a new implementation and change `deps.py`; routes are unaffected.
-- **Precision over recall**: optimize for low false-merge rates — false merges are costly.
+- **Database**: Neo4j (decided) — chosen for native graph storage and multi-hop relationship queries.
+- **Database abstraction**: a `repositories/` layer with `typing.Protocol` contracts and Neo4j implementations; swap backends by changing `deps.py`.
+- **Precision over recall**: optimize for low false-merge rates.
 - **Immutable source facts**: source records are never modified after ingestion; all changes create new records.
 - **Explainable decisions**: every merge/no-match has traceable reasons.
-- **4-layer matching**: Deterministic rules → Heuristic scoring → LLM adjudication (shadow-only in MVP) → Human review.
+- **4-layer matching**: deterministic rules → heuristic scoring → LLM adjudication (shadow-only in MVP) → human review.
 - **Confidence bands**: ≥0.90 auto-merge, 0.60–0.89 human review, <0.60 no-match (thresholds to be calibrated).
 - **Sensitive data**: NRIC and Singpass-linked data require special handling; govt IDs stored as salted hashes.
 - **Controlled rollout**: LLM starts in shadow/assist mode only — no autonomous production merges in MVP.
-- **Merge lineage**: merge history is stored as native graph relationships (`MERGED_INTO`) between Person nodes. Path compression via relationship rewiring guarantees max 1 hop for canonical person lookups.
-- **Multi-match resolution (link-to-all, no person merge)**: the match engine evaluates *every* candidate (no first-match short-circuit). If a record reaches the merge band against multiple distinct active persons, the engine picks a primary (highest confidence, ties broken by `person_id`) and links the record + evidence to the primary **and every other matched person**, recomputing each golden profile — without merging them (they may legitimately share an identifier; merging on one bridging record risks a false merge). Carried on `MatchResult.additional_linked_person_ids`; see matching-spec "Multi-Match Resolution".
+- **Merge lineage**: merge history stored as `MERGED_INTO` relationships; path compression keeps canonical lookups to ≤1 hop.
+- **Multi-match resolution (link-to-all, no person merge)**: the engine evaluates every candidate. If a record reaches the merge band against multiple active persons, pick a primary (highest confidence, ties by `person_id`) and link evidence to the primary **and every other matched person**, recomputing each golden profile without merging them. Carried on `MatchResult.additional_linked_person_ids`.
 - **Unmerge**: post-merge source records stay with the surviving person but are flagged for review.
 - **Concurrency**: ingestion partitioned by blocking key to avoid race conditions.
 - **Cardinality caps**: blocking keys with too many matches are skipped, per identifier type.
-- **Pair ordering**: lock relationships (`NO_MATCH_LOCK`) enforce `left.person_id < right.person_id` to prevent duplicates.
+- **Pair ordering**: `NO_MATCH_LOCK` relationships enforce `left.person_id < right.person_id` to prevent duplicates.
 - **Golden profile recomputation**: synchronous within the merge transaction (Neo4j ACID).
-- **Downstream events**: polling endpoint (`GET /v1/events?since=`) for now, designed for future push migration.
+- **Downstream events**: polling endpoint (`GET /v1/events?since=`) for now.
 - **Identifier aging**: time-based deactivation via `last_confirmed_at`, per-type configurable.
-- **Retention**: `retention_expires_at` property on relevant nodes (SourceRecord, MatchDecision, MergeEvent); NULL for legal holds.
-- **Scoring model**: must use conditional weighting or capping, not simple additive weights.
-- **Graph-native candidate generation**: candidate persons are found by traversing shared Identifier nodes in Neo4j, not by index-based blocking-key lookups. Composite blocking (DOB + name) falls back to index queries.
-- **Source record types**: every `SourceRecord` carries a `record_type` (ingestion `RecordType` enum in `services/ingestion/src/models.py`; mirrored as `SourceRecordTypeLiteral`/`SourceRecordType`). Six values: **system family** (`models.SYSTEM_FAMILY`) — `identity` (first-party identity from a transactional system), `bankruptcy` (SG Bankruptcy Register; verified NRIC + name, runs the person pipeline), `relationship` (record whose subject is a *different* person, e.g. a Fundbox emergency contact feeding `KNOWS`) — plus `rental_flat` (SG Rental Flats; address-only, **not** in the system family, routed via `ingest_address_record` so it never creates a Person), `conversation` (chat/voice extract with `extraction_confidence`/`extraction_method`/`conversation_ref`), and `sales` (order/line-item extract, linked to a Person indirectly). A startup migration (`graph/migrations.py:backfill_record_type_subtypes`) reclassifies legacy `system`/`public_record` records by `source_system`.
-
-  Conversation evidence is never eligible for **deterministic** auto-merge — always Layer 2. A conversation record promotes to auto-merge (`CONVERSATION_PROMOTED_CONFIDENCE`) only when: (a) an independent identifier match (phone/email) plus a second signal (name/DOB/address); (b) that identifier match is backed by a **non-conversation** source record (`identifier_system_corroborated`) — conversation-only evidence stays capped at review; and (c) no hard conflict (strong name mismatch, DOB conflict, high-fanout phone). Hard `NO_MATCH` rules (locks, conflicting govt IDs) still block conversation records.
-
-  **Per-record-type merge criteria**: `bankruptcy` gates the Layer-1 exact-NRIC merge on a partial name match (Jaro-Winkler ≥ 0.50) when both sides have a name — NRIC alone still merges if no name, a conflicting name falls to Layer 2 (`matching/deterministic.py`, `matching/names.py:is_partial_name_match`/`NAME_PARTIAL_THRESHOLD`). `relationship` auto-merges on phone + partial name via Layer-2 promotion, sharing `heuristic.py:_promote_by_record_type` and the `_has_hard_conflict` blockers with `conversation`. `sales` phone+name fallback is planned (needs connector changes).
-- **Social Person-to-Person relationship** (`KNOWS`): a directed `(:Person)-[:KNOWS]->(:Person)` edge mirrors the Fundbox `contacts` table (emergency contact / next-of-kin / referrer), with `relationship_label`, `relationship_category`, source provenance, and `status`/`approved_at`. Sourced, never inferred by the matching engine, and doesn't affect identity resolution — narrower types may be added later if needed.
-- **Interaction model** (post-MVP): Interaction nodes for contact tracing will connect to Person nodes in the same Neo4j graph.
+- **Retention**: `retention_expires_at` on relevant nodes; NULL for legal holds.
+- **Scoring model**: conditional weighting/capping, not simple additive weights.
+- **Graph-native candidate generation**: candidates found by traversing shared Identifier nodes; composite blocking (DOB + name) falls back to index queries.
+- **Source record types**: every `SourceRecord` has a `record_type` (`identity`, `bankruptcy`, `relationship`, `rental_flat`, `conversation`, `sales`). `rental_flat` is routed via `ingest_address_record` and never creates a Person. Conversation records are never deterministic auto-merge; they promote to auto-merge only with an independent, non-conversation-corroborated identifier match plus a second signal and no hard conflict. `bankruptcy` gates Layer-1 exact-NRIC merge on partial name match (Jaro-Winkler ≥ 0.50) when both sides have names. `relationship` auto-merges on phone + partial name via Layer-2 promotion. A startup migration reclassifies legacy `system`/`public_record` records by `source_system`.
+- **Social Person-to-Person relationship** (`KNOWS`): directed `(:Person)-[:KNOWS]->(:Person)` edges mirror the Fundbox `contacts` table; sourced, never inferred, and does not affect identity resolution.
+- **Interaction model** (post-MVP): Interaction nodes for contact tracing will connect to Person nodes.
 - **Data deletion**: graph deletion requires detaching all relationships before removing a Person node. Shared Identifier nodes survive individual person deletion.
 
 ## Architecture Summary
 
-Ingestion → Normalization → Candidate Generation (graph traversal through shared Identifier and Address nodes) → Match Engine → Person Graph (Neo4j) → Golden Profile → Review Operations → APIs
+Ingestion → Normalization → Candidate Generation (graph traversal through shared Identifier and Address nodes) → Match Engine → Person Graph (Neo4j) → Golden Profile → Review Operations → APIs.
 
-Core graph nodes: `Person` (golden profile inline), `Identifier`/`Address` (shared across persons — graph backbone for contact tracing / "who else lives here?"), `SourceRecord`, `MatchDecision`, `MergeEvent`, `ReviewCase`, `SourceSystem`, `IngestRun`. Many relational concepts are relationships: `IDENTIFIED_BY`, `LIVES_AT`, `LINKED_TO`, `MERGED_INTO`, `NO_MATCH_LOCK`, `HAS_FACT`, `FOR_DECISION`.
+Core graph nodes: `Person` (golden profile inline), `Identifier`, `Address`, `SourceRecord`, `MatchDecision`, `MergeEvent`, `ReviewCase`, `SourceSystem`, `IngestRun`. Key relationships: `IDENTIFIED_BY`, `LIVES_AT`, `LINKED_TO`, `MERGED_INTO`, `NO_MATCH_LOCK`, `HAS_FACT`, `FOR_DECISION`, `KNOWS`.
 
-Person statuses: `active`, `merged`, `suppressed` (no `under_review` — review state is tracked on `review_case`).
+Person statuses: `active`, `merged`, `suppressed` (review state lives on `review_case`).
 
 ## Implementation Roadmap
 
@@ -374,9 +368,9 @@ These rules apply to all TypeScript code in the repository (`services/frontend2/
   - Client components declare `"use client"` first and **must not** import server-only modules; browser code talks to the BFF via `src/lib/api-client.ts`.
   - Secrets (internal URLs, tokens, DB credentials) are server-side env vars **without** `NEXT_PUBLIC_` — anything `NEXT_PUBLIC_*` ships to the browser and is public.
 - **BFF pattern is mandatory**: the browser never calls FastAPI directly for UI data — all upstream traffic flows through Next.js Route Handlers under `src/app/bff/*` via `proxyToApi` (`src/lib/proxy.ts`). The public `/api/*` namespace is reserved for nginx to expose FastAPI to external services.
-- **Route handler shape**: each handler exports typed `GET`/`POST`/etc. returning `Promise<NextResponse>`, declares `export const dynamic = "force-dynamic"` when not cacheable, and types Next 15 async params as `{ params: Promise<{ ... }> }`. Keep handlers thin — delegate to `proxyToApi` or a service module (e.g. the logout handler at `src/app/bff/auth/logout/route.ts` calls `apiFetch` to revoke the token server-side).
+- **Route handler shape**: each handler exports typed `GET`/`POST`/etc. returning `Promise<NextResponse>`, declares `export const dynamic = "force-dynamic"` when not cacheable, and types Next 15 async params as `{ params: Promise<{ ... }> }`. Keep handlers thin — delegate to `proxyToApi` or a service module.
 - **Data fetching in Server Components**: prefer Server Components for read-only pages, calling `apiFetch` directly (no client round-trip); parallelize with `Promise.all` and translate upstream 404s to `notFound()`.
-- **Component / module size**: React components under ~150 lines, modules under ~300 — extract subcomponents (e.g. `PersonHeader`, `ConnectionsCard`) rather than ballooning a page, and pull pure helpers (`statusColor`, `buildSearchParams`) out of components.
+- **Component / module size**: React components under ~150 lines, modules under ~300 — extract subcomponents and pull pure helpers out of components.
 - **MUI usage**: import from per-component paths (`@mui/material/Button`), not the barrel, to keep bundles tight. Use `sx` for one-off styling, the theme for shared tokens. Wrap the App Router with `AppRouterCacheProvider` (`@mui/material-nextjs/v15-appRouter`) exactly once in `layout.tsx`.
 - **Project standards**: format with Prettier, lint with `eslint src` (ESLint 9 flat config). Import order: node/external → `next/*`/`@mui/*` → `@/*` aliases → relative; use `@/` instead of long relative paths.
 - **Package manager — npm**: both `services/frontend2/` and `services/frontend/` use npm — always `npm install` (locally and in Docker), never `npm ci`, no `pnpm-lock.yaml`/`yarn.lock`.

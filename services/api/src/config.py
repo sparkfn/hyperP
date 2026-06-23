@@ -18,6 +18,7 @@ class AppConfig(BaseSettings):
     log_level: str = Field(default="info", alias="LOG_LEVEL")
     root_path: str = Field(default="", alias="ROOT_PATH")
     dumps_root: str = Field(default="/app/dumps", alias="DUMPS_ROOT")
+    celery_broker_url: str = Field(default="redis://localhost:6379/0", alias="CELERY_BROKER_URL")
     forwarded_allow_ips: str = Field(default="*", alias="FORWARDED_ALLOW_IPS")
 
     auth_enabled: bool = Field(default=True, alias="AUTH_ENABLED")

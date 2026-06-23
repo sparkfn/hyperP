@@ -27,8 +27,7 @@ class _FakeLlmService:
                         "postal_code": "238863",
                         "country_code": "SG",
                         "normalized_full": (
-                            "#05-123, 10 orchard road, lucky plaza, "
-                            "singapore 238863, sg"
+                            "#05-123, 10 orchard road, lucky plaza, singapore 238863, sg"
                         ),
                     },
                     {
@@ -65,8 +64,7 @@ class _DuplicateLlmService:
                         "postal_code": "541163",
                         "country_code": "SG",
                         "normalized_full": (
-                            "#04-242, 163a rivervale crescent, "
-                            "singapore 541163, sg"
+                            "#04-242, 163a rivervale crescent, singapore 541163, sg"
                         ),
                     },
                     {
@@ -80,8 +78,7 @@ class _DuplicateLlmService:
                         "postal_code": "541163",
                         "country_code": "SG",
                         "normalized_full": (
-                            "#04-242, 163a rivervale crescent, "
-                            "singapore 541163, sg"
+                            "#04-242, 163a rivervale crescent, singapore 541163, sg"
                         ),
                     },
                 ]
@@ -99,7 +96,7 @@ class _CaptureLlmService:
 
 
 def test_normalize_raw_addresses_uses_llm_shape(monkeypatch: MonkeyPatch) -> None:
-    monkeypatch.setattr(address_normalizer, "get_llm_service", lambda: _FakeLlmService())
+    monkeypatch.setattr(address_normalizer, "get_address_llm_service", lambda: _FakeLlmService())
 
     results = normalize_raw_addresses(
         [
@@ -124,7 +121,7 @@ def test_normalize_raw_addresses_falls_back_when_llm_fails(monkeypatch: MonkeyPa
     def _raise() -> _FakeLlmService:
         raise RuntimeError("no llm")
 
-    monkeypatch.setattr(address_normalizer, "get_llm_service", _raise)
+    monkeypatch.setattr(address_normalizer, "get_address_llm_service", _raise)
 
     results = normalize_raw_addresses(
         [RawAddress(raw="#05-123 10 Example Street Singapore 123456")]
@@ -141,7 +138,9 @@ def test_normalize_raw_addresses_falls_back_when_llm_fails(monkeypatch: MonkeyPa
 def test_normalize_raw_addresses_deduplicates_equivalent_llm_outputs(
     monkeypatch: MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(address_normalizer, "get_llm_service", lambda: _DuplicateLlmService())
+    monkeypatch.setattr(
+        address_normalizer, "get_address_llm_service", lambda: _DuplicateLlmService()
+    )
 
     results = normalize_raw_addresses(
         [RawAddress(raw="#04-242, 163A Rivervale Crescent Singapore 541163")]
@@ -158,7 +157,7 @@ def test_normalize_raw_addresses_prefers_structured_fields_for_llm_prompt(
     monkeypatch: MonkeyPatch,
 ) -> None:
     service = _CaptureLlmService()
-    monkeypatch.setattr(address_normalizer, "get_llm_service", lambda: service)
+    monkeypatch.setattr(address_normalizer, "get_address_llm_service", lambda: service)
 
     results = normalize_raw_addresses(
         [

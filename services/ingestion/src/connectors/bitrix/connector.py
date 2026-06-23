@@ -38,10 +38,13 @@ from src.connectors.bitrix.schema import (
 )
 from src.connectors.chat_helpers import (
     ExtractionResult,
+    chat_batch_max_chars,
+    chat_batch_size,
     chat_members_payload,
     extraction_method_label,
     identifiers_from_possible_person,
     inquiries_payload,
+    iter_char_batches,
     latest_timestamp,
     person_address_payloads,
     possible_person_payload,
@@ -52,16 +55,14 @@ from src.connectors.chat_helpers import (
     weak_identifiers_for_possible_person,
     weak_identifiers_payload,
 )
-from src.exclusion_config import ExclusionFile, load_exclusion_file
+from src.exclusion_config import ExclusionFile
 from src.exclusions import build_exclusion_context, filter_extraction
+from src.ingestion_config import get_ingestion_config
 from src.models import JsonValue
 
 logger = logging.getLogger(__name__)
 
 BITRIX_SOURCE_KEY = "bitrix_chat"
-
-# LLM batch size — how many conversations to send in parallel.
-LLM_BATCH_SIZE = 20
 
 #: Map CRM category name → entity_key.
 CATEGORY_TO_ENTITY: dict[str, str] = {
@@ -176,26 +177,22 @@ class BitrixChatConnector(SourceConnector):
             company_mobile_numbers = list(settings.company_mobile_numbers)
             company_email_addresses = list(settings.company_email_addresses)
             internal_person_names = list(settings.internal_person_names)
-            exclusions_file = settings.ingestion_exclusions_file
+            file_exclusions = get_ingestion_config().exclusions
         except Exception:
             company_mobile_numbers = []
             company_email_addresses = []
             internal_person_names = []
-            exclusions_file = ""
-        file_exclusions = load_exclusion_file(exclusions_file)
+            file_exclusions = ExclusionFile()
 
-        # Phase 2: run LLM in batches.
+        # Phase 2: run LLM in batches (one combined call per char-bounded batch).
+        texts = [b.conv_text for b in all_bundles]
+        max_chars = chat_batch_max_chars()
+        max_count = chat_batch_size()
         extraction_cache: dict[int, ExtractionResult] = {}
-        for i in range(0, len(all_bundles), LLM_BATCH_SIZE):
-            batch = all_bundles[i : i + LLM_BATCH_SIZE]
-            batch_texts = [b.conv_text for b in batch]
-            batch_results = run_extraction_batch(batch_texts)
-            logger.info(
-                "LLM batch %d-%d/%d done",
-                i,
-                min(i + LLM_BATCH_SIZE, len(all_bundles)),
-                len(all_bundles),
-            )
+        for start, end in iter_char_batches(texts, max_chars, max_count):
+            batch = all_bundles[start:end]
+            batch_results = run_extraction_batch(texts[start:end])
+            logger.info("LLM batch %d-%d/%d done", start, end, len(all_bundles))
             for bundle, result in zip(batch, batch_results, strict=True):
                 if result is not None:
                     extraction_cache[bundle.chat_id] = result

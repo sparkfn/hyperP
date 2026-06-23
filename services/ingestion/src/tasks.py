@@ -10,6 +10,7 @@ the entire cluster, regardless of how many workers are deployed.
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 import uuid
@@ -19,11 +20,17 @@ from contextlib import contextmanager
 import redis
 from celery import Task
 from celery.exceptions import Reject
+from neo4j import ManagedTransaction
+from pydantic.types import JsonValue
 
 from src.birthday import BirthdayRunSummary, run_birthday_greetings
 from src.celery_app import celery_app
 from src.config import get_settings
+from src.graph import queries
+from src.graph.client import Neo4jClient
 from src.main import IngestionSummary, initialize_ingestion_graph, run_ingestion, setup_logging
+from src.matching.pair_score import score_person_pair
+from src.pipeline_person_pairs import _ENGINE_VERSION, _POLICY_VERSION
 
 logger = logging.getLogger(__name__)
 
@@ -203,3 +210,76 @@ def send_birthday_messages_task(self: Task) -> BirthdayRunSummary:
     except Exception as exc:
         logger.exception("Birthday greeting task failed")
         raise Reject(str(exc), requeue=False) from exc
+
+
+@celery_app.task(
+    name="src.tasks.recalculate_pair_audit_match_task",
+    bind=True,
+    max_retries=0,
+)
+def recalculate_pair_audit_match_task(self: Task, review_case_id: str) -> str:
+    """Re-score a person-pair review case after its persons changed (e.g. merge).
+
+    The current left/right persons are read from the review case, scored with the
+    Layer-2 heuristic engine used for pair audits, and the MatchDecision is
+    updated with the new confidence, reasons and feature snapshot. The review
+    case decision stays ``'review'``: pair audits are advisory and never
+    auto-merge persons.
+    """
+    settings = get_settings()
+    setup_logging(settings.log_level)
+    client = Neo4jClient(settings)
+    try:
+        client.execute_write(lambda tx: _recalculate_pair_audit_match_in_tx(tx, review_case_id))
+    except Exception as exc:
+        logger.exception("Pair-audit recalculation failed for %s", review_case_id)
+        raise Reject(str(exc), requeue=False) from exc
+    finally:
+        client.close()
+    return review_case_id
+
+
+def _recalculate_pair_audit_match_in_tx(tx: ManagedTransaction, review_case_id: str) -> str:
+    """Transaction body that re-scores a single person-pair review case."""
+    get_result = tx.run(
+        queries.GET_PERSON_PAIR_REVIEW_CASE,
+        review_case_id=review_case_id,
+    )
+    record = get_result.single()
+    if record is None:
+        logger.warning("No actionable person-pair review case found for %s", review_case_id)
+        return review_case_id
+    left_person_id = str(record["left_person_id"])
+    right_person_id = str(record["right_person_id"])
+    raw_snapshot = record.get("feature_snapshot")
+    old_snapshot = _parse_feature_snapshot(raw_snapshot) if isinstance(raw_snapshot, str) else {}
+    score = score_person_pair(tx, left_person_id, right_person_id)
+    new_snapshot: dict[str, JsonValue] = {
+        **old_snapshot,
+        "heuristic_band": score.decision.value,
+        **score.feature_snapshot,
+    }
+    update_result = tx.run(
+        queries.UPDATE_PAIR_AUDIT_MATCH_DECISION,
+        review_case_id=review_case_id,
+        confidence=score.confidence,
+        decision="review",
+        reasons=score.reasons,
+        feature_snapshot=json.dumps(new_snapshot),
+        engine_version=_ENGINE_VERSION,
+        policy_version=_POLICY_VERSION,
+    )
+    if update_result.single() is None:
+        logger.warning("Match decision update skipped for %s", review_case_id)
+    return review_case_id
+
+
+def _parse_feature_snapshot(raw: str) -> dict[str, JsonValue]:
+    """Parse a stored JSON feature snapshot, returning an empty dict on failure."""
+    try:
+        parsed = json.loads(raw)
+        if isinstance(parsed, dict):
+            return parsed
+    except json.JSONDecodeError:
+        logger.warning("Failed to decode feature snapshot: %r", raw)
+    return {}
