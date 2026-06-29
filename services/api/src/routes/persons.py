@@ -121,6 +121,23 @@ def _to_source_record_view(item: SourceRecord) -> SourceRecordView:
     )
 
 
+def _pad_dob_part(value: str | None) -> str | None:
+    """Normalize a DOB month/day query value to a two-digit, zero-padded string.
+
+    The underlying Cypher compares substrings of the ISO ``preferred_dob``
+    (``YYYY-MM-DD``), so callers must provide zero-padded values (``06``) to
+    match. This helper also accepts unpadded numeric inputs (``6``) so machine
+    callers and manual API consumers get the same results as the UI.
+    """
+    if value is None or value == "":
+        return None
+    stripped = value.strip()
+    try:
+        return str(int(stripped)).zfill(2)
+    except ValueError:
+        return stripped
+
+
 @router.get("", response_model=ApiResponse[list[ListedPerson]])
 async def list_persons(
     request: Request,
@@ -172,6 +189,8 @@ async def list_persons(
         raise http_error(400, "invalid_request", f"Unknown sort_by: {sort_by}", request)
 
     skip, page_limit = page_window(cursor, limit)
+    dob_month_padded = _pad_dob_part(dob_month)
+    dob_day_padded = _pad_dob_part(dob_day)
     filters: PersonListFilters = {
         "q": q_clean,
         "entity_keys": entity_key or None,
@@ -200,8 +219,8 @@ async def list_persons(
         "dob_from": dob_from,
         "dob_to": dob_to,
         "dob_year": dob_year,
-        "dob_month": dob_month,
-        "dob_day": dob_day,
+        "dob_month": dob_month_padded,
+        "dob_day": dob_day_padded,
         "sort_by": sort_by,
         "sort_order": sort_order,
     }

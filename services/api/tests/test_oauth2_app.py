@@ -311,8 +311,11 @@ def test_oauth2_persons_list_passes_filters() -> None:
             "source_record_type": "identity",
             "is_high_value": "true",
             "has_phone": "true",
+            "has_dob": "true",
             "addr_city": "Singapore",
             "dob_from": "1980-01-01",
+            "dob_month": "6",
+            "dob_day": "29",
             "sort_by": "preferred_full_name",
             "sort_order": "asc",
             "limit": "10",
@@ -330,8 +333,11 @@ def test_oauth2_persons_list_passes_filters() -> None:
     assert captured_filters["source_record_type"] == "identity"
     assert captured_filters["is_high_value"] is True
     assert captured_filters["has_phone"] is True
+    assert captured_filters["has_dob"] is True
     assert captured_filters["addr_city"] == "Singapore"
     assert captured_filters["dob_from"] == "1980-01-01"
+    assert captured_filters["dob_month"] == "06"
+    assert captured_filters["dob_day"] == "29"
     assert captured_filters["sort_by"] == "preferred_full_name"
     assert captured_filters["sort_order"] == "asc"
     assert captured_skip == 0
