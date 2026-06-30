@@ -323,6 +323,10 @@ Person statuses: `active`, `merged`, `suppressed` (review state lives on `review
 ### Coding workflow
 Before reporting work complete, perform a hostile review of the changed code: correctness regressions, edge cases, brittle tests, security issues, overfitting to the immediate bug. Also run a DRY check — centralize duplicated parsing, mapping, validation, or UI state logic into the existing appropriate layer rather than adding near-copy helpers.
 
+**Local dev commands vs. CI:** ruff (`check` + `format`), `mypy --strict`, `pytest`, and `npm run typecheck`/`lint`/`build` are all run by the Woodpecker PR/DEV pipelines (see *DevOps / CI Validation* below). Do **not** run them on the host to verify your changes — that duplicates what CI already checks and leaves project venvs/build artifacts on the host. Instead: make the change, commit, push to a PR branch, and read the pipeline verdict via `wpci home` (`wpci home pipeline show sparkfn/hyperP <n>` and `wpci home pipeline log show sparkfn/hyperP <n> <step>`). Iterate from the verdict until the pipeline is green. The hostile review and DRY check above are reasoning, not shell commands, and still apply on every change.
+
+Exception: a one-shot deterministic tool run to *generate* a fix the pipeline verdict cannot show (e.g. `ruff check --fix` for an I001 import sort, where the verdict only says "unsorted") is acceptable — that is generating the fix, not verifying it. Still push and let the pipeline verify.
+
 ### Commit discipline
 **Never commit without explicit user confirmation.** After completing code changes, stop — do not stage or commit anything. Wait for the user to say "commit" or similar before proceeding. This rule applies even when executing a plan that includes commit steps: treat plan commit steps as reminders, not instructions. Always ask before committing.
 
