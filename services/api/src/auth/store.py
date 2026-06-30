@@ -168,9 +168,7 @@ async def bulk_pre_register_users(rows: list[PreRegisterUserInput]) -> list[PreR
         for row in rows
     ]
     normalized_emails = [row.email for row in normalized_rows]
-    duplicate_emails = {
-        email for email in normalized_emails if normalized_emails.count(email) > 1
-    }
+    duplicate_emails = {email for email in normalized_emails if normalized_emails.count(email) > 1}
     existing_emails = await existing_user_emails(
         [row.email for row in normalized_rows if row.email not in duplicate_emails]
     )

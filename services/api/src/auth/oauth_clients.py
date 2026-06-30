@@ -89,9 +89,7 @@ def requested_scopes_or_default(requested: str | None, assigned: list[str]) -> l
     if any(scope not in ALLOWED_OAUTH_CLIENT_SCOPES for scope in requested_scopes):
         return None
     assigned_set = set(assigned)
-    if "admin" not in assigned_set and any(
-        scope not in assigned_set for scope in requested_scopes
-    ):
+    if "admin" not in assigned_set and any(scope not in assigned_set for scope in requested_scopes):
         return None
     return requested_scopes
 
