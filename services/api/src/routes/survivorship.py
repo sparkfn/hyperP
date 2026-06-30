@@ -30,6 +30,7 @@ _FIELD_META: tuple[tuple[GoldenFieldName, str, GoldenSourceKind], ...] = (
     ("preferred_email", "Email", "identifier"),
     ("preferred_dob", "Date of birth", "source_record_fact"),
     ("preferred_nric", "NRIC", "identifier"),
+    ("preferred_race_ethnicity", "Race / Ethnicity", "source_record_fact"),
     ("preferred_address", "Address", "address"),
 )
 
@@ -76,6 +77,7 @@ def _current_value(data: FieldOptionsData, field_name: str) -> str | None:
         "preferred_email": data.preferred_email,
         "preferred_dob": data.preferred_dob,
         "preferred_nric": data.preferred_nric,
+        "preferred_race_ethnicity": data.preferred_race_ethnicity,
         "preferred_address": data.preferred_address_value,
     }.get(field_name)
 

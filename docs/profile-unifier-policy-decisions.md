@@ -371,6 +371,34 @@ On-demand erasure requests (e.g. GDPR right to erasure) must:
 - not delete data that must be retained for legal or regulatory compliance
   (the conflict must be surfaced to the compliance team)
 
+## Policy 13: Race/Ethnicity Handling
+
+Race/ethnicity is captured for **display on the person profile only**. It is
+sourced from Fundbox (`basic_profiles.race`, `log_legacy_profiles.race`) and
+normalized to a trimmed, title-cased string (collapsing source inconsistencies
+like `MALAY`/`Malay`); empty/NULL values are omitted.
+
+- **Modeled as a `HAS_FACT` attribute** (`attribute_name = "race_ethnicity"`)
+  surfaced as the golden `:Person` property `preferred_race_ethnicity` — the
+  same shape as `dob`/`full_name`.
+- **Never an `Identifier` node.** Race has very few distinct values (millions of
+  people share each); a shared Identifier node would explode candidate
+  generation and place sensitive data at a relationship hub. ("Weak identifier"
+  in this system is a derived runtime notion — a person is "strong" only when an
+  NRIC is present — so race needs no flag to be "weak.")
+- **Excluded from matching.** It does not participate in deterministic or
+  heuristic scoring, candidate generation, or review similarity. Using race to
+  merge people is ethically fraught; it is intentionally a passive attribute.
+- **Excluded from profile-completeness.** Completeness counts core contact
+  fields only; race does not raise or lower a person's completeness score.
+- **Overridable** via the survivorship field-options endpoint, like other golden
+  fields. Custom values pass free-text validation (any non-empty string).
+- **Sensitive-data surface.** Race is shown on the authenticated person detail
+  page. It is deliberately **not** rendered on the unauthenticated public share
+  page, to avoid exposing sensitive demographic data via share links.
+- **No controlled vocabulary yet.** Title-casing preserves sub-ethnicity detail
+  (Javanese, Boyanese, etc.); a CMIO canonicalization map is deferred.
+
 ## Final Recommendation
 
 Adopt these defaults now so implementation can proceed without waiting on

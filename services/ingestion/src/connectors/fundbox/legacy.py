@@ -10,6 +10,7 @@ from sqlalchemy.engine import Connection
 from src.connectors.fundbox.base import FundboxConnectorBase
 from src.connectors.fundbox.builders import (
     IdentifierBag,
+    _norm_race,
     addresses_from_rows,
     build_envelope,
     format_address,
@@ -64,6 +65,7 @@ class FundboxLegacyConnector(FundboxConnectorBase):
                         "dob": to_iso(row.date_of_birth),
                         "gender": row.gender,
                         "nationality": row.nationality,
+                        "race_ethnicity": _norm_race(row.race),
                         "address": format_address(user_addresses[0]) if user_addresses else None,
                     },
                     raw_payload={

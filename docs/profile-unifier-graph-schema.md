@@ -452,9 +452,15 @@ this as a closed enum.
 
 ### Attribute Facts
 
-Non-address, non-identifier attributes (name, DOB, etc.) are stored as
-`HAS_FACT` relationships from Person to SourceRecord, with the fact data as
-relationship properties.
+Non-address, non-identifier attributes (name, DOB, race/ethnicity, etc.) are
+stored as `HAS_FACT` relationships from Person to SourceRecord, with the fact
+data as relationship properties. The canonical `attribute_name` values in use
+are `full_name`, `dob`, and `race_ethnicity` (others may appear for forward
+compatibility). `race_ethnicity` is sourced from Fundbox (`basic_profiles.race`
+/ `log_legacy_profiles.race`) and is **display-only** — it surfaces on the
+Person golden profile (`preferred_race_ethnicity`) but is excluded from match
+scoring and from profile-completeness; it is never modeled as an `Identifier`
+node (see [Policy Decisions](profile-unifier-policy-decisions.md)).
 
 ```cypher
 CREATE (p)-[:HAS_FACT {

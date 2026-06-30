@@ -11,6 +11,7 @@ from sqlalchemy.engine import Connection
 from src.connectors.fundbox.base import FundboxConnectorBase
 from src.connectors.fundbox.builders import (
     IdentifierBag,
+    _norm_race,
     addresses_from_rows,
     build_envelope,
     format_address,
@@ -54,6 +55,7 @@ class FundboxConnector(FundboxConnectorBase):
                 basic_profiles.c.date_of_birth,
                 basic_profiles.c.gender,
                 basic_profiles.c.nationality,
+                basic_profiles.c.race,
                 basic_profiles.c.email.label("profile_email"),
                 basic_profiles.c.mobile_number.label("profile_mobile"),
                 basic_plus_profiles.c.whatsapp_phone,
@@ -137,6 +139,7 @@ class FundboxConnector(FundboxConnectorBase):
                 "dob": to_iso(row.date_of_birth),
                 "gender": row.gender,
                 "nationality": row.nationality,
+                "race_ethnicity": _norm_race(row.race),
                 "address": primary_address,
             },
             raw_payload={
@@ -151,6 +154,7 @@ class FundboxConnector(FundboxConnectorBase):
                     "date_of_birth": to_iso(row.date_of_birth),
                     "gender": row.gender,
                     "nationality": row.nationality,
+                    "race": row.race,
                     "profile_email": row.profile_email,
                     "profile_mobile": row.profile_mobile,
                     "whatsapp_phone": row.whatsapp_phone,

@@ -98,6 +98,7 @@ CALL {
 RETURN p {
   .person_id, .status, .is_high_value, .is_high_risk,
   .preferred_full_name, .preferred_phone, .preferred_email, .preferred_dob,
+  .preferred_race_ethnicity,
   .profile_completeness_score, .created_at, .updated_at
 } AS person,
 addr {

@@ -43,6 +43,7 @@ basic_profiles = Table(
     Column("date_of_birth", Date),
     Column("gender", String(255)),
     Column("nationality", String(255)),
+    Column("race", String(255)),
     Column("email", String(255)),
     Column("mobile_number", String(255)),
 )
@@ -152,6 +153,7 @@ log_legacy_profiles = Table(
     Column("date_of_birth", Date),
     Column("gender", String(255)),
     Column("nationality", String(255)),
+    Column("race", String(255)),
     Column("email", String(255)),
     Column("mobile_number", String(255)),
     Column("whatsapp_phone", String(255)),

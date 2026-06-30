@@ -39,6 +39,7 @@ class FieldOptionsData:
     preferred_phone: str | None
     preferred_email: str | None
     preferred_nric: str | None
+    preferred_race_ethnicity: str | None
     preferred_address_id: str | None
     preferred_address_value: str | None
     overrides: dict[str, dict[str, str]]

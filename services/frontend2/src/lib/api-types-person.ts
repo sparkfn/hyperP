@@ -164,6 +164,7 @@ export type GoldenFieldName =
   | "preferred_phone"
   | "preferred_email"
   | "preferred_nric"
+  | "preferred_race_ethnicity"
   | "preferred_address";
 
 export type GoldenSourceKind = "source_record_fact" | "identifier" | "address";
