@@ -24,7 +24,13 @@ steps:
       - uv run --package profile-unifier-ingestion ruff format --check services/ingestion/src
       - uv run --package profile-unifier-api mypy --strict services/api/src
       - uv run --package profile-unifier-ingestion mypy --strict services/ingestion/src
-      - uv run pytest
+      # pytest per-package: each service's venv carries its own runtime deps
+      # (fastapi/neo4j/celery/redis/...) + dev deps (pytest/pytest-asyncio/fakeredis).
+      # The root workspace venv (uv sync) only has lint/type tools, so `uv run pytest`
+      # at the root can't import runtime code. Per-package also keeps api and
+      # ingestion `src` packages from colliding (both use a top-level `src`).
+      - uv run --package profile-unifier-api pytest services/api/tests
+      - uv run --package profile-unifier-ingestion pytest services/ingestion/tests
 
   # Frontend (services/frontend2 — active app): tsc --noEmit + eslint errors-only.
   # NOTE: `npm run lint` uses `--max-warnings 9` but the clean tree already carries

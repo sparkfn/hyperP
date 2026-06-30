@@ -30,7 +30,10 @@ steps:
       - uv run --package profile-unifier-ingestion ruff format --check services/ingestion/src
       - uv run --package profile-unifier-api mypy --strict services/api/src
       - uv run --package profile-unifier-ingestion mypy --strict services/ingestion/src
-      - uv run pytest
+      # pytest per-package (each venv has its runtime + dev deps); the root venv
+      # only has lint/type tools, so `uv run pytest` can't import runtime code.
+      - uv run --package profile-unifier-api pytest services/api/tests
+      - uv run --package profile-unifier-ingestion pytest services/ingestion/tests
       # Production runtime install (no dev group) — verifies the lockfile resolves for
       # the exact install the api/ingestion Dockerfiles run.
       - uv sync --frozen --no-dev --package profile-unifier-api
