@@ -22,13 +22,8 @@ from src.connectors.fundbox import (
     FundboxMergedUsersConnector,
     FundboxSalesConnector,
 )
-from src.connectors.sggov import (
-    SGGovernmentBankruptcyConnector,
-    SGGovernmentRentalFlatsConnector,
-)
 from src.connectors.speedzone import SpeedZoneConnector, SpeedZoneSalesConnector
 from src.connectors.whatsapp import WhatsAppChatConnector
-from src.exclusion_config import load_exclusion_file
 from src.exclusions import (
     ExclusionContext,
     build_exclusion_context,
@@ -39,7 +34,9 @@ from src.exclusions import (
 from src.graph import queries
 from src.graph.bootstrap import bootstrap_entities_and_sources
 from src.graph.client import Neo4jClient
+from src.graph.migrations import apply_data_migrations
 from src.graph.schema_init import apply_schema
+from src.ingestion_config import get_ingestion_config
 from src.models import IngestResult, RecordType, SourceRecordEnvelope
 from src.pipeline import IngestPipeline
 from src.pipeline_addresses import ingest_address_record
@@ -47,7 +44,11 @@ from src.pipeline_knows import (
     materialize_knows_from_chat_relationships,
     materialize_knows_from_contacts,
 )
-from src.pipeline_sales import drain_pending_customer_sales, ingest_sales_record
+from src.pipeline_sales import (
+    drain_pending_customer_sales,
+    ingest_sales_record,
+    propose_machine_unit_matches_for_pending_sales,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -66,8 +67,10 @@ _CONNECTOR_REGISTRY: dict[str, type[SourceConnector]] = {
     "eko_phppos:sales": EkoSalesConnector,
     "whatsapp_chat": WhatsAppChatConnector,
     "bitrix_chat": BitrixChatConnector,
-    "sgbankruptcy": SGGovernmentBankruptcyConnector,
-    "sgrentalflats": SGGovernmentRentalFlatsConnector,
+    # SG government registers (sgbankruptcy, sgrentalflats) are dump-only — they
+    # have no live source, so they are reached via get_dump_connector with an
+    # explicit dump_path passed in the task call (mode="dump"), not registered
+    # here for batch mode.
 }
 
 _ADDRESS_ONLY_SOURCES = frozenset({"sgrentalflats"})
@@ -223,7 +226,7 @@ def _load_exclusion_context() -> ExclusionContext:
         company_mobile_numbers=settings.company_mobile_numbers,
         company_email_addresses=settings.company_email_addresses,
         internal_person_names=settings.internal_person_names,
-        file_exclusions=load_exclusion_file(settings.ingestion_exclusions_file),
+        file_exclusions=get_ingestion_config().exclusions,
     )
 
 
@@ -286,6 +289,7 @@ def initialize_ingestion_graph() -> None:
         client.verify_connectivity()
         apply_schema(client)
         bootstrap_entities_and_sources(client)
+        apply_data_migrations(client)
     finally:
         client.close()
 
@@ -333,6 +337,9 @@ def run_ingestion(
             )
             if drained:
                 logger.info("Drained %d pending sales records", drained)
+            proposed = propose_machine_unit_matches_for_pending_sales(client)
+            if proposed:
+                logger.info("Proposed %d machine-unit review cases for pending sales", proposed)
             chat_knows_linked = materialize_knows_from_chat_relationships(client)
             if chat_knows_linked:
                 logger.info(

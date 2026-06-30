@@ -31,8 +31,9 @@ RETURN DISTINCT candidate.person_id AS person_id
 
 CHECK_IDENTIFIER_FANOUT = """
 MATCH (id:Identifier {identifier_type: $identifier_type, normalized_value: $normalized_value})
-      <-[:IDENTIFIED_BY]-(p:Person {status: 'active'})
-RETURN count(p) AS fanout
+      <-[rel:IDENTIFIED_BY]-(p:Person {status: 'active'})
+WHERE rel.is_active = true
+RETURN count(DISTINCT p) AS fanout
 """
 
 CHECK_NO_MATCH_LOCK = """
@@ -99,7 +100,7 @@ CREATE (rc:ReviewCase {
     sla_due_at: datetime($sla_due_at),
     resolution: null,
     resolved_at: null,
-    actions: '[]',
+    actions: [],
     created_at: datetime(),
     updated_at: datetime()
 })-[:FOR_DECISION]->(md)

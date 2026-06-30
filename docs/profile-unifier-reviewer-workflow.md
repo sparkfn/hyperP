@@ -79,6 +79,10 @@ A review case should be created when any of the following occurs:
 3. sensitive conflicts exist without meeting a hard block
 4. manual policy requires review for a source combination or customer segment
 5. the profile is high-value or high-risk and policy forbids auto-merge
+6. an ingested identifier bridges two or more distinct active persons — a
+   **person↔person** audit case is opened per pair (see the matching spec,
+   "Person-Pair Auditing"). These compare two `Person` entities rather than a
+   record against a person; resolving one with `merge` collapses the pair.
 
 ## Review Case Data Requirements
 
@@ -246,6 +250,29 @@ Side effects:
 5. close the review case with `queue_state = resolved` and `resolution = merge`
 6. recompute golden profile for all affected persons
 7. emit audit and downstream domain events if configured
+8. cascade review-case side effects for the absorbed person (see below)
+
+### Merge cascade onto other review cases
+
+Whenever a person is absorbed by a merge — whether via a person-pair review
+`merge` action or a direct admin merge — other still-open cases that reference
+the absorbed person are reconciled in the same transaction, each stamped with
+the `merge_event_id` so the change is reversible on unmerge:
+
+- other **person↔person** cases referencing the absorbed person are
+  **redirected** to the survivor: the `ABOUT_LEFT` or `ABOUT_RIGHT` relationship
+  that pointed at the absorbed person is repointed to the survivor
+  (`redirected_pair_by_merge_event_id`, `redirected_pair_from_person_id`,
+  `redirected_pair_side` set). The case stays open so the reviewer can
+  evaluate the pair under the merged identity.
+  _Edge case_: if both sides of the case were already absorbed↔survivor (i.e.
+  a duplicate open case for the same pair), it is cancelled instead
+  (`cancelled_superseded`, `closed_by_merge_event_id` set) — redirecting
+  would produce survivor↔survivor, which is meaningless.
+- open **record↔person** cases whose person side is the absorbed person are
+  **redirected** to the survivor (`ABOUT_RIGHT` repointed; `redirected_by_merge_event_id`
+  and `redirected_from_person_id` set), so the record is still reviewed against
+  the surviving person rather than a now-merged one.
 
 ## reject
 
@@ -481,6 +508,13 @@ Recommended path:
    the surviving person stay in place but are flagged for review, since their
    match confidence may have changed without the unmerged person's signals
 6. affected review cases are cancelled or recreated as needed
+7. the merge cascade onto review cases is reversed for this `merge_event_id`,
+   but only where a human has not acted since the merge: record↔person cases
+   redirected to the survivor are repointed back to the absorbed person (if
+   still open); person↔person cases redirected to the survivor are repointed
+   back to the absorbed person (if still open, keyed by `redirected_pair_side`);
+   person↔person cases auto-cancelled for the absorbed↔survivor edge case are
+   reopened (if still in their system-set `cancelled` / `cancelled_superseded` state)
 
 ## Reopen Policy
 
@@ -491,6 +525,14 @@ Resolved or cancelled cases should not be reopened in place. Instead:
 - preserve all prior actions for audit
 
 This avoids mutating historical operational decisions.
+
+**Carve-out — system merge-cascade reversals.** A case that was *auto-cancelled
+purely as a merge side effect* (`resolution = cancelled_superseded`,
+`closed_by_merge_event_id` set) was never a human operational decision. When the
+triggering merge is unmerged and the case is still in that exact system-set
+state, it is reopened in place. This reverses an automated side effect rather
+than mutating a reviewer's decision, so the no-reopen-in-place rule does not
+apply. A case a human touched after the merge is left untouched.
 
 ## Reporting Metrics
 

@@ -18,9 +18,10 @@ from src.models import (
     QualityFlag,
     SourceRecordEnvelope,
 )
-from src.normalizers.address import normalize_address
+from src.normalizers.address import NormalizedAddress, normalize_address, normalize_raw_addresses
 from src.normalizers.email import normalize_email
 from src.normalizers.name import normalize_name
+from src.normalizers.nric import normalize_nric
 from src.normalizers.phone import normalize_phone
 
 logger = logging.getLogger(__name__)
@@ -32,6 +33,7 @@ NormalizerFn = Callable[[str], tuple[str | None, QualityFlag]]
 _IDENTIFIER_NORMALIZERS: dict[str, NormalizerFn] = {
     "phone": normalize_phone,
     "email": normalize_email,
+    "nric": normalize_nric,
 }
 
 # Registry: attribute_name -> normalizer.
@@ -78,14 +80,35 @@ def _passthrough_normalize(raw: str) -> tuple[str | None, QualityFlag]:
     return (value, QualityFlag.VALID) if value else (None, QualityFlag.INVALID_FORMAT)
 
 
+def _normalize_phone_with_hint(
+    value: str, region_hint: str | None
+) -> tuple[str | None, QualityFlag]:
+    """Normalize a phone number, preferring a connector-supplied region hint.
+
+    Falls back to :func:`normalize_phone`'s default region (SG) when the
+    hinted region fails to produce a usable number — a noisy or wrong
+    ``country``/``phone_code`` hint can therefore never make a number that
+    normalizes fine today start failing.
+    """
+    if region_hint is None:
+        return normalize_phone(value)
+    hinted = normalize_phone(value, region=region_hint)
+    if hinted[1] != QualityFlag.INVALID_FORMAT:
+        return hinted
+    return normalize_phone(value)
+
+
 def normalize_envelope_identifiers(
     envelope: SourceRecordEnvelope,
 ) -> list[NormalizedIdentifier]:
     results: list[NormalizedIdentifier] = []
     for raw_id in envelope.identifiers:
         id_type = raw_id.type.lower().strip()
-        normalizer = _IDENTIFIER_NORMALIZERS.get(id_type, _passthrough_normalize)
-        normalized, flag = normalizer(raw_id.value)
+        if id_type == "phone":
+            normalized, flag = _normalize_phone_with_hint(raw_id.value, raw_id.region_hint)
+        else:
+            normalizer = _IDENTIFIER_NORMALIZERS.get(id_type, _passthrough_normalize)
+            normalized, flag = normalizer(raw_id.value)
         if normalized:
             results.append(
                 NormalizedIdentifier(
@@ -105,30 +128,44 @@ def normalize_envelope_identifiers(
     return results
 
 
+def normalize_envelope_addresses(
+    envelope: SourceRecordEnvelope,
+) -> list[NormalizedAddressModel]:
+    raw_addresses = list(envelope.addresses)
+    if not raw_addresses:
+        raw_address = envelope.attributes.get("address")
+        if raw_address and isinstance(raw_address, str):
+            parsed, flag = normalize_address(raw_address)
+            if parsed is None:
+                logger.warning(
+                    "Address normalization failed for record %s: %s",
+                    envelope.source_record_id,
+                    flag,
+                )
+                return []
+            return [_to_model(parsed, flag)]
+    normalized = normalize_raw_addresses(raw_addresses)
+    return [_to_model(address, flag) for address, flag in normalized]
+
+
 def normalize_envelope_address(
     envelope: SourceRecordEnvelope,
 ) -> NormalizedAddressModel | None:
-    raw_address = envelope.attributes.get("address")
-    if not raw_address or not isinstance(raw_address, str):
-        return None
+    addresses = normalize_envelope_addresses(envelope)
+    return addresses[0] if addresses else None
 
-    parsed, flag = normalize_address(raw_address)
-    if parsed is None:
-        logger.warning(
-            "Address normalization failed for record %s: %s", envelope.source_record_id, flag
-        )
-        return None
 
+def _to_model(address: NormalizedAddress, flag: QualityFlag) -> NormalizedAddressModel:
     return NormalizedAddressModel(
-        unit_number=parsed.unit_number,
-        street_number=parsed.street_number,
-        street_name=parsed.street_name,
-        building_name=parsed.building_name,
-        city=parsed.city,
-        state_province=parsed.state_province,
-        postal_code=parsed.postal_code,
-        country_code=parsed.country_code,
-        normalized_full=parsed.normalized_full,
+        unit_number=address.unit_number,
+        street_number=address.street_number,
+        street_name=address.street_name,
+        building_name=address.building_name,
+        city=address.city,
+        state_province=address.state_province,
+        postal_code=address.postal_code,
+        country_code=address.country_code,
+        normalized_full=address.normalized_full,
         quality_flag=flag,
     )
 

@@ -54,6 +54,31 @@ def sales_tables_present(engine: Engine) -> bool:
     return True
 
 
+def fetch_employee_person_ids(
+    conn: Connection,
+    *,
+    customers_t: Table,
+    employees_t: Table,
+    existing_tables: set[str],
+) -> set[int]:
+    """Person_ids of non-deleted customers who are also employees.
+
+    Used to exclude employee purchases from sales ingestion. Matched against
+    ``phppos_sales.customer_id`` (a person_id, not a ``phppos_customers.id``).
+    Shared by the Eko and SpeedZone sales connectors (identical phppos schema).
+    """
+    if "phppos_employees" not in existing_tables or "phppos_customers" not in existing_tables:
+        return set()
+    stmt = (
+        select(customers_t.c.person_id)
+        .select_from(
+            customers_t.join(employees_t, customers_t.c.person_id == employees_t.c.person_id)
+        )
+        .where(customers_t.c.deleted == 0)
+    )
+    return {int(row[0]) for row in conn.execute(stmt) if row[0] is not None}
+
+
 def _fetch_sale_items(
     sidecar: Connection,
     items_t: Table,
@@ -77,17 +102,22 @@ def fetch_phppos_sales(
     conn: Connection,
     source_system_key: str,
     chunk_size: int,
-    excluded_customer_ids: set[int] | None = None,
+    excluded_person_ids: set[int] | None = None,
 ) -> Iterator[dict[str, JsonValue]]:
     """Yield one sales envelope per phppos_sales row.
 
     A sidecar connection handles per-sale lookups to avoid aborting
     the primary streaming cursor (pymysql unbuffered result limitation).
+
+    ``excluded_person_ids`` are matched against ``phppos_sales.customer_id``,
+    which is a **person_id** (not a ``phppos_customers.id``). The customer
+    identity record is keyed on the same person_id (see EkoConnector._build_one),
+    so the sales ``customer_link`` references ``-customer-{customer_id}`` directly.
     """
     if not sales_tables_present(engine):
         return
 
-    excluded_customer_ids = excluded_customer_ids or set()
+    excluded_person_ids = excluded_person_ids or set()
     md = MetaData()
     sales_t = Table("phppos_sales", md, autoload_with=engine, resolve_fks=False)
     items_t = Table("phppos_sales_items", md, autoload_with=engine, resolve_fks=False)
@@ -97,13 +127,13 @@ def fetch_phppos_sales(
     item_cols = {c.name for c in item_t.columns}
 
     stmt = select(sales_t).order_by(sales_t.c.sale_id)
-    if excluded_customer_ids:
-        stmt = stmt.where(sales_t.c.customer_id.not_in(sorted(excluded_customer_ids)))
+    if excluded_person_ids:
+        stmt = stmt.where(sales_t.c.customer_id.not_in(sorted(excluded_person_ids)))
     result = conn.execute(stmt).mappings().yield_per(chunk_size)
     with engine.connect() as sidecar:
         for sale in result:
             customer_id_raw = sale.get("customer_id")
-            if customer_id_raw is not None and int(customer_id_raw) in excluded_customer_ids:
+            if customer_id_raw is not None and int(customer_id_raw) in excluded_person_ids:
                 continue
             sale_id = int(sale["sale_id"])
             line_rows, items_by_id = _fetch_sale_items(sidecar, items_t, item_t, sale_id)
@@ -153,6 +183,8 @@ def _build_envelope(
     # i.e. when the order/sale was released). Falls back to sale_time when invoice_date
     # is not present.
     release_date = to_iso(sale.get("invoice_date")) or ordered_at
+    # ``phppos_sales.customer_id`` is a person_id; the customer identity record is
+    # keyed on the same person_id, so we reference it directly.
     customer_id = sale.get("customer_id")
 
     return build_envelope(

@@ -6,6 +6,7 @@ Centralised so route handlers stay free of `Any`-typed conversion logic.
 from __future__ import annotations
 
 import base64
+import json
 from datetime import datetime
 
 from neo4j.time import DateTime as Neo4jDateTime
@@ -118,6 +119,20 @@ def to_str_list(value: GraphValue) -> list[str]:
     if isinstance(value, list):
         return [to_str(v) for v in value]
     return []
+
+
+def to_str_dict(value: GraphValue) -> dict[str, str]:
+    """Convert a graph map or JSON object string to a string dictionary."""
+    if isinstance(value, str):
+        try:
+            parsed: object = json.loads(value)
+        except json.JSONDecodeError:
+            return {}
+        if isinstance(parsed, dict):
+            return {str(k): to_str(v) for k, v in parsed.items()}
+    if isinstance(value, dict):
+        return {to_str(k): to_str(v) for k, v in value.items()}
+    return {}
 
 
 def encode_cursor(offset: int) -> str:

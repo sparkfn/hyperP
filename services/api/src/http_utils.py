@@ -24,7 +24,7 @@ def clamp_limit(raw: int | None, default: int, maximum: int) -> int:
 
 def page_window(cursor: str | None, raw_limit: int | None) -> tuple[int, int]:
     """Decode pagination params into (skip, limit)."""
-    return decode_cursor(cursor), clamp_limit(raw_limit, default=20, maximum=100)
+    return decode_cursor(cursor), clamp_limit(raw_limit, default=20, maximum=200)
 
 
 def next_cursor(skip: int, limit: int, has_more: bool) -> str | None:
@@ -47,6 +47,20 @@ def envelope[T](
             total_count=total_count,
         ),
     )
+
+
+def client_ip(request: Request) -> str | None:
+    """Return the originating client IP, trusting nginx's X-Forwarded-For.
+
+    nginx forwards X-Forwarded-For on the /api/oauth2/ block; the left-most
+    entry is the original client. Falls back to the direct socket host.
+    """
+    forwarded = request.headers.get("x-forwarded-for")
+    if forwarded:
+        first = forwarded.split(",")[0].strip()
+        if first:
+            return first
+    return request.client.host if request.client else None
 
 
 def http_error(

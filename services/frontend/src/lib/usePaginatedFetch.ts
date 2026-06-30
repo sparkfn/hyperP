@@ -16,6 +16,7 @@ export interface PaginatedResult<T> {
   hasNext: boolean;
   goNext: () => void;
   goPrev: () => void;
+  refresh: () => void;
 }
 
 export function usePaginatedFetch<T>(basePath: string): PaginatedResult<T> {
@@ -26,6 +27,7 @@ export function usePaginatedFetch<T>(basePath: string): PaginatedResult<T> {
   const [total, setTotal] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
+  const [refreshKey, setRefreshKey] = useState<number>(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -53,7 +55,7 @@ export function usePaginatedFetch<T>(basePath: string): PaginatedResult<T> {
     return () => {
       cancelled = true;
     };
-  }, [basePath, cursor]);
+  }, [basePath, cursor, refreshKey]);
 
   const goNext = useCallback((): void => {
     if (nextCursor === null) return;
@@ -67,6 +69,10 @@ export function usePaginatedFetch<T>(basePath: string): PaginatedResult<T> {
     setCursor(prevCursor);
   }, [prevStack]);
 
+  const refresh = useCallback((): void => {
+    setRefreshKey((current) => current + 1);
+  }, []);
+
   const pageStart = prevStack.length * PAGE_SIZE + 1;
   return {
     rows,
@@ -79,5 +85,6 @@ export function usePaginatedFetch<T>(basePath: string): PaginatedResult<T> {
     hasNext: nextCursor !== null,
     goNext,
     goPrev,
+    refresh,
   };
 }

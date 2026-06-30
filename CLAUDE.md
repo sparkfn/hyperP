@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-HyperP is a customer profile unification and relationship intelligence platform. It resolves the same real-world person across systems (POS, Bitrix CRM, third-party apps) and supports complex relationship use cases such as contact tracing. The initial use case is sales. The repository contains both design documentation (`docs/`) and implementation services (`services/api/`, `services/ingestion/`).
+HyperP is a customer profile unification and relationship intelligence platform. It resolves the same person across systems (POS, Bitrix CRM, third-party apps) for use cases like contact tracing and sales. Code lives in `services/api/` and `services/ingestion/`; design docs live in `docs/`.
 
 ## Development Commands
 
@@ -14,12 +14,13 @@ Use Bash as the default shell/terminal for Claude Code commands in this project.
 ### Docker (primary workflow)
 ```bash
 docker compose up -d                                        # start all services
-docker compose build --no-cache api frontend               # rebuild images (always use --no-cache for code changes)
-docker compose up -d api frontend                          # restart after rebuild
+docker compose build --no-cache api frontend2              # rebuild images (always use --no-cache for code changes)
+docker compose up -d api frontend2 web                     # restart after rebuild
 docker compose logs -f api                                 # stream logs from a service
 docker compose stop                                        # stop containers while preserving them for log inspection
 docker compose down                                        # remove containers and network only when explicitly requested
 ```
+**Single active frontend:** `frontend2` is the active app served at the web root; all UI work happens in `services/frontend2`. The legacy v1 app under `services/frontend/` is retired (no longer built or routed); its source is kept for reference only.
 If the user says "stop containers", run `docker compose stop`, not `docker compose down`. Only remove containers when the user explicitly says to remove containers.
 Always pass `--no-cache` when rebuilding after Python or TypeScript changes — Docker layer caching can serve stale source even when files change.
 
@@ -47,37 +48,44 @@ uv run pytest services/api/tests/test_foo.py        # single file
 Test paths are configured in the root `pyproject.toml`.
 
 ### Frontend
+`services/frontend2` is the active app (web root). The legacy `services/frontend/` (v1) is retired and no longer built or routed; do not run its commands.
 ```bash
-cd services/frontend
+cd services/frontend2
 npm install          # already done in Docker; run locally for typecheck/lint only
-npm run dev         # dev server on http://localhost:3001
+npm run dev         # dev server (frontend2 :3001)
 npm run typecheck   # tsc --noEmit
 npm run lint       # eslint src (ESLint 9 flat config, max-warnings 9)
 npm run build      # production build (runs in Docker for deployment)
 ```
 **Note:** `next lint` was removed in Next.js 15 and replaced with direct ESLint. If `npm run lint` fails, check that `eslint` and `eslint-config-next` are in `devDependencies` and that `eslint.config.mjs` exists.
-The frontend Dockerfile uses `npm install --legacy-peer-deps` because `@mui/x-date-pickers@7` has a peer dependency range that conflicts with `@mui/material@6`. Do not remove this flag.
-**ESLint warning budget**: `--max-warnings 9` is enforced. The budget is currently fully consumed by pre-existing `react-hooks/set-state-in-effect` warnings in existing pages. Any new `"use client"` page that follows the `useEffect(() => { void loadX(); }, [loadX])` data-fetching pattern must add `// eslint-disable-next-line react-hooks/set-state-in-effect` on the `void loadX()` line to avoid exceeding the limit.
+Both frontend Dockerfiles use `npm install --legacy-peer-deps` because `@mui/x-date-pickers@7` has a peer dependency range that conflicts with `@mui/material@6`. Do not remove this flag.
+**ESLint warning budget**: `--max-warnings 9` is enforced, but `frontend2`'s `npm run lint` **currently exceeds it on a clean tree** (~18 pre-existing `react-hooks/set-state-in-effect` warnings from the React-Compiler rule, 0 errors) — independent of your change. Verify your change adds **zero net warnings** (stash and compare counts), not a green exit. Don't add `eslint-disable-next-line react-hooks/set-state-in-effect` for a `useEffect` that only calls a callback prop — it doesn't trip the rule (see `SalesTab`).
 
 ---
 
 ## Service Topology
 
-Seven Docker containers defined in `docker-compose.yml`:
+Eight Docker containers defined in `docker-compose.yml`:
 
 | Service | Image / Build | Internal address | Notes |
 |---|---|---|---|
 | `neo4j` | `neo4j:5.26-community` | `bolt://neo4j:7687` | HTTP browser at `:7474`; 5.11+ required for vector index support |
 | `redis` | `redis:7-alpine` | `redis://redis:6379` | Celery broker (db 0) + results (db 1) + token revocation store + public share-link tokens (TTL auto-cleanup) |
 | `api` | `services/api/Dockerfile` | `http://api:3000` | FastAPI/uvicorn; not exposed directly |
-| `frontend` | `services/frontend/Dockerfile` | `http://frontend:3001` | Next.js; not exposed directly |
-| `web` | `nginx:1.27-alpine` | exposed on `:80` | Reverse proxy; routes `/api/*` → FastAPI (strips `/api` prefix, FastAPI root_path is `/api`), rest → frontend |
+| `frontend2` | `services/frontend2/Dockerfile` | `http://frontend2:3001` | Next.js **v2** (active app); served at the web root; not exposed directly |
+| `web` | `nginx:1.27-alpine` | exposed on `:80` | Reverse proxy. Longest-prefix routing: `/api/app/*` and `/api/oauth2/*` → FastAPI mounts (path preserved, no strip — mounts need the `/api` prefix kept); `/api/*` → FastAPI (strips `/api`, root_path `/api`); `/` (catch-all) → `frontend2` |
 | `worker` | `services/ingestion/Dockerfile` | — | Celery worker; `celery -A src.celery_app worker` |
 | `beat` | `services/ingestion/Dockerfile` | — | Celery beat scheduler; cron schedules from env vars |
 
+**FastAPI mounts & root surface:** the root app (`src/app.py`) registers only cross-cutting and unauthenticated routes — `GET /api/health`, the machine OAuth2 token flow (`/api/v1/oauth/{token,jwks}`), and the public share-link pages (`/api/v1/public/...`). Every **authenticated business route is mount-only** — the root app no longer serves `/api/v1/persons`, `/api/v1/entities`, etc. Two sub-apps built from the same `src/routes/*` routers carry the authenticated contract: `/app/v2` (the active frontend2 UI contract, `/v1` stripped — `frontend_app.py`) and `/oauth2/v1` (machine OAuth2 — token/jwks + read-only persons list/detail, client-credentials only, `/v1/oauth` → `/oauth2/v1/{token,jwks}` — `oauth2_app.py`). The legacy `/app/v1` frontend contract has been retired along with the v1 frontend. `src/router_copy.py` centralizes the route-copying (strip-`/v1` by default, with optional path filter/transform). To add or remove an endpoint from a mount, change the router membership in the relevant builder, not `app.py`.
+
+**Frontend ↔ API wiring:** frontend2's BFF calls `buildApiUrl` (`src/lib/api-url.ts`), prefixing the FastAPI mount for its contract (`/app/v2`) onto `API_BASE_URL` (`…/api`) → `/api/app/v2/...`. This is **independent** of the UI's web base path: `frontend2` serves at the web root (`NEXT_PUBLIC_BASE_PATH=""`) while still calling `/app/v2`. Public (unauthenticated) endpoints route to `/api/v1/public/...` instead. `NEXT_PUBLIC_BASE_PATH` (`src/lib/route-paths.ts`) is the single knob for the UI base path, driving `next.config.ts` `basePath`, NextAuth, and middleware; nginx `location` blocks and FastAPI mounts are kept in sync separately.
+
 **Startup:** `logging.basicConfig(level=...)` in `src/app.py` also silences the `neo4j.notifications` logger (Cypher deprecation warnings) so they don't flood the API container logs. Real Neo4j errors at ERROR level are unaffected.
 
-Auth flow: browser → next-auth (Google OAuth) → `googleIdToken` stored in JWT session → Next.js BFF attaches as `Authorization: Bearer` → FastAPI verifies via `require_active_user` dependency. Token revocation is backed by Redis: `POST /v1/auth/logout` adds the token's `jti` to a Redis SET (TTL auto-cleanup), and the in-process user cache is also evicted immediately. Google refresh tokens are revoked via Google's revocation endpoint. If the refresh token expires, NextAuth sets `session.error = "RefreshTokenError"` and auto-redirects to `/login`.
+Auth flow: browser → next-auth (Google OAuth) → `googleIdToken` in JWT session → Next.js BFF attaches `Authorization: Bearer` → FastAPI verifies via `require_active_user`. Revocation is Redis-backed: `POST /v1/auth/logout` adds the token's `jti` to a Redis SET (TTL auto-cleanup) and evicts the in-process user cache immediately; Google refresh tokens are revoked via Google's revocation endpoint.
+
+The Google provider requests `access_type=offline` + `prompt=consent` (refresh tokens issued only on consent; tokens live solely in the JWT cookie). The jwt callback silently renews the Google ID token ~60 s before its 1-hour expiry — a Google 4xx (`invalid_grant`) sets `session.error = "RefreshTokenError"` and auto-redirects to `/login`, while network errors/5xx keep the session and retry. The session cookie (`hyperP_refresh`) has a **rolling idle window** (`AUTH_SESSION_MAX_AGE_SECONDS`; compose default 18000 = 5 h, code fallback 1 h) — an inactivity timeout, not an absolute cap.
 
 **Auth bypass**: routes under `/public/**` and `/login`, `/api/health`, and `/bff/auth/**` are explicitly allowed through the NextAuth middleware without a session. The public person pages (`/public/persons/[token]`) are served entirely unauthenticated — they call `apiFetch` with `authToken: null` so no Bearer header is sent.
 
@@ -113,20 +121,20 @@ async def get_person(
     return envelope(person, request)
 ```
 
-**To swap the database backend**: write a new implementation class in `repositories/postgres/` (or similar) and change the singleton assignment in `deps.py`. Route code stays untouched.
+**To swap the database backend**: write a new implementation class (e.g. `repositories/postgres/`) and change the singleton in `deps.py` — route code stays untouched.
 
 **Protocol method naming**: avoid naming Protocol methods `list` — it shadows the `list` builtin in the class body, causing mypy `valid-type` errors. Use `get_page` (paginated) or `get_all` (non-paginated) instead.
 
-**Protocol types**: protocols use `dataclass` and `TypedDict` for domain types, not Pydantic `BaseModel`. `BaseModel.__init__` uses `Any` internally, which fails `mypy --strict` outside the `src.routes.*` override list. Key domain types defined in protocols:
+**Protocol types**: protocols use `dataclass`/`TypedDict` for domain types, not Pydantic `BaseModel` (`BaseModel.__init__` uses `Any` internally, failing `mypy --strict` outside the `src.routes.*` override list). Key domain types:
 - `protocols/person.py` — `PersonListFilters` (TypedDict)
 - `protocols/merge.py` — `MergeOutcome` (dataclass)
 - `protocols/review.py` — `ReviewListFilters`, `AssignResult`, `ActionResult` (TypedDict)
 - `protocols/admin.py` — `SourceSystemInfo`, `FieldTrustResponse` (dataclass)
 - `protocols/ingest.py` — `IngestRecordsResponse`, `IngestRunResponse`, `IngestRunDetailResponse`, `IngestRecordResult` (dataclass)
 
-**Pagination return conventions** (enforced across all implementations):
-- Methods with a count query return `tuple[list[T], int]` — (items, total). Route computes `has_more = skip + limit < total`.
-- Methods without a count query return `tuple[list[T], bool]` — (items, has_more). The implementation fetches `limit + 1` internally.
+**Pagination return conventions** (all implementations):
+- With a count query: `tuple[list[T], int]` (items, total) — route computes `has_more = skip + limit < total`.
+- Without a count query: `tuple[list[T], bool]` (items, has_more) — the implementation fetches `limit + 1` internally.
 
 ### Response envelope
 All FastAPI endpoints return `ApiResponse[T]`. Use `envelope()` from `src/http_utils.py`:
@@ -135,7 +143,7 @@ return envelope(data, request, cursor=next_cur, total_count=count)
 ```
 `ResponseMeta` carries `request_id`, `next_cursor`, and `total_count`. Frontend reads these via `bffFetchEnvelope` in `src/lib/api-client.ts`.
 
-**Exception — bare responses**: Admin management endpoints (e.g. `GET /v1/admin/oauth-clients`) return bare `list[T]` or bare objects without `envelope()`. This is intentional for machine-to-machine callers. `apiFetch` in `api-server.ts` handles all three non-envelope shapes automatically:
+**Exception — bare responses**: admin management endpoints (e.g. `GET /v1/admin/oauth-clients`) intentionally return bare `list[T]` or bare objects without `envelope()` for machine-to-machine callers. `apiFetch` in `api-server.ts` handles all three non-envelope shapes automatically:
 - `null` body (HTTP 204 No Content) → `{ data: null, meta: ... }`
 - bare array → `{ data: [...], meta: ... }`
 - bare object with no `"data"` key → `{ data: {...}, meta: ... }`
@@ -171,9 +179,9 @@ export async function GET(request: Request, context: RouteContext): Promise<Next
 Key BFF route groups: `bff/persons/` (list, search, profile sub-resources), `bff/review-cases/` (list, actions, assign), `bff/entities/`, `bff/ingest/`, `bff/admin/oauth-clients/`, `bff/auth/`, `bff/reports/`, `bff/dumps/`.
 
 ### Graph query modules
-All Cypher strings live as module-level string constants **or dynamic builder functions** in `services/api/src/graph/queries/` and `services/ingestion/src/graph/queries/`. The `E501` line-length rule is disabled for these files so queries aren't artificially wrapped. Neither routes nor repository implementations embed Cypher inline — implementations import query constants and builders by name from `src.graph.queries`.
+All Cypher strings live as module-level string constants **or dynamic builder functions** in `services/api/src/graph/queries/` and `services/ingestion/src/graph/queries/` (the `E501` line-length rule is disabled here so queries aren't artificially wrapped). Neither routes nor repository implementations embed Cypher inline — they import query constants and builders by name from `src.graph.queries`.
 
-Dynamic builders (e.g. `build_list_persons_query`, `build_review_action_cypher`) live in the same `queries/` modules and are exported via `__init__.py`. Use a builder only when the query structure itself varies by input; parameterised values always go through Cypher parameters, not string interpolation.
+Dynamic builders (e.g. `build_list_persons_query`, `build_review_action_cypher`) live alongside the constants and are exported via `__init__.py`. Use a builder only when the query structure itself varies by input; parameterised values always go through Cypher parameters, not string interpolation.
 
 ### Mappers vs converters
 - `graph/converters.py`: primitive type coercions (`to_str`, `to_int`, `to_float`, `to_optional_*`, `to_iso_or_none`, `to_datetime`, `to_str_list`, `encode_cursor`/`decode_cursor`). Also exports type aliases `GraphScalar`, `GraphValue`, `GraphRecord` — use these instead of `Any` when typing raw Neo4j records. Used by mappers.
@@ -184,21 +192,28 @@ Dynamic builders (e.g. `build_list_persons_query`, `build_review_action_cypher`)
 - **Booleans**: Cypher map projections return Python `bool`, not a string. Use `bool(record.get("field", False))` directly — never `to_str(record.get("field", "false")) == "true"`, which produces `"False"` / `"True"` and the comparison always fails.
 - **Datetimes**: `datetime()` in Cypher stores with timezone and `.to_native()` may return a timezone-aware Python `datetime`. When doing arithmetic against a naive `now`, strip timezone first: `expires_at.replace(tzinfo=None) if expires_at.tzinfo else expires_at`. The reference pattern is `is_secret_usable` in `auth/oauth_clients.py`.
 
+### API-side display formatting & v2 presentation models
+The API formats human-facing strings (dates, percentages) so the frontend renders them verbatim — no client-side locale/number formatting. Helpers live in `src/display_format.py` (`format_display_date` → `"02 Apr 2026"`, `format_display_datetime` → `"02 Apr 2026, 03:14 AM"`, `format_confidence_pct` → `"82%"`; all UTC, return `""`/`None` on empty/invalid input). Reuse these rather than reformatting in TS.
+
+When an endpoint needs presentation fields that the shared/public domain model must not carry, add a **v2 presentation model** that subclasses the domain model and is returned only by the authenticated route. Reference: `SourceRecordView(SourceRecord)` in `types.py` adds `*_display` fields (and a parsed `chat_transcript`) — the authenticated `GET /persons/{id}/source-records` returns `SourceRecordView` while the public `/persons/{token}/source-records` keeps `SourceRecord`. Map domain → view in the route (`_to_source_record_view` in `routes/persons.py`) via `**item.model_dump()` plus computed fields (relies on `src.routes.*` being in the mypy strict override list).
+
+Conversation source records (`bitrix_chat`, `whatsapp_chat`) store the chat as a single transcript string under `raw_payload.conversation_text`/`messages_text`. `src/chat_transcript.py:parse_chat_transcript` turns it into a typed `list[ChatMessage]` (splits `[timestamp] Speaker (+phone): text` lines, joins continuations, strips BBCode, maps speaker→role via `chat_members`); returns `None` for non-chat payloads. The frontend renders bubbles from this — it doesn't parse transcripts itself.
+
 ### JWT / Google ID token verification
-`services/api/src/auth/verify.py` uses a **self-contained** RS256 verifier with a 300-second clock-skew tolerance (absorb drift between our server and Google's token-issuing servers). It does NOT use `google-auth`'s `verify_oauth2_token` directly — that library has a strict `nbf` check that causes spurious 401s. Signature is verified against Google's public cert endpoint.
-Token revocation is handled in `auth/revoke.py`: the raw JWT is decoded (no verification) to extract `jti` and `exp`, then checked against Redis before hitting the signature verifier. The in-process user cache (`auth/deps.py:_USER_CACHE`) is keyed by `jti` and evicted immediately on `POST /v1/auth/logout` so revoked tokens cannot be served from a warm cache.
+`services/api/src/auth/verify.py` uses a **self-contained** RS256 verifier with a 300-second clock-skew tolerance (drift vs. Google's token servers) — not `google-auth`'s `verify_oauth2_token`, whose strict `nbf` check causes spurious 401s. Signature is checked against Google's public cert endpoint.
+Revocation (`auth/revoke.py`): the raw JWT is decoded (no verification) for `jti`/`exp`, checked against Redis before signature verification. The in-process user cache (`auth/deps.py:_USER_CACHE`) is keyed by `jti` and evicted immediately on `POST /v1/auth/logout`.
 
 ### Server-to-server OAuth2 client credentials
-Machine callers use OAuth2 client credentials, not API keys. Human/browser users still authenticate with Google ID tokens. Machine clients call `POST /v1/oauth/token` with `grant_type=client_credentials`, `client_id`, `client_secret`, and optional `scope`; the API returns a short-lived RS256 JWT access token for `Authorization: Bearer`.
+Machine callers use OAuth2 client credentials, not API keys (humans still use Google ID tokens). `POST /v1/oauth/token` with `grant_type=client_credentials`, `client_id`, `client_secret`, optional `scope` returns a short-lived RS256 JWT for `Authorization: Bearer`.
 
-OAuth clients are stored as `(:OAuthClient)` nodes with `(:OAuthClientSecret)` child nodes. Plain client secrets are returned once only on client creation or secret rotation; stored secrets are HMAC-SHA256 hashes using `OAUTH_SECRET_HASH_KEY`. Multiple active secrets are supported for rotation, and individual secrets can be revoked. Token signing uses `OAUTH_PRIVATE_KEY_PEM`/`OAUTH_PUBLIC_KEY_PEM` and publishes public keys at `GET /v1/oauth/jwks`.
+OAuth clients are stored as `(:OAuthClient)` nodes with `(:OAuthClientSecret)` child nodes. Plain client secrets are returned once only, on creation or rotation; stored secrets are HMAC-SHA256 hashes using `OAUTH_SECRET_HASH_KEY`. Each client has **at most one active secret** — rotation revokes the previous one (`active_secret` in `auth/oauth_clients.py`). Issued tokens are tracked in a Redis registry (last-used IP, manual revoke) with a per-client TTL. Token signing uses `OAUTH_PRIVATE_KEY_PEM`/`OAUTH_PUBLIC_KEY_PEM`, published at `GET /v1/oauth/jwks`.
 
-`auth/deps.py` defines `OAuthClientUser(AuthUser)` and `get_current_user_or_oauth_client()`. HyperP-issued OAuth JWTs are verified first; Google ID-token verification is used only when the bearer token is not a HyperP OAuth token. OAuth JWT validation checks signature, issuer, audience, expiry, `jti` revocation, current client existence, disabled state, current scopes, and current `entity_key` so old tokens cannot retain removed privileges until expiry.
+`auth/deps.py` defines `OAuthClientUser(AuthUser)` and `get_current_user_or_oauth_client()` — HyperP OAuth JWTs are verified first, falling back to Google ID-token verification. OAuth JWT validation checks signature, issuer, audience, expiry, `jti` revocation, client existence/disabled state, current scopes, and `entity_key`, so old tokens can't retain removed privileges.
 
-Machine access is explicit: routes intended for machine callers must use `require_scope("persons:read")`, `require_scope("persons:write")`, or `require_scope("ingest:write")`; `admin` is a scope superset for admin-gated machine access. Browser/human-only workflows use `require_human_user` or `require_human_admin`. OAuth client management endpoints under `/v1/admin/oauth-clients` are human-admin only — even admin-scoped machine clients cannot create, rotate, revoke, disable, or delete OAuth clients.
+Machine access is explicit: machine routes use `require_scope("persons:read"/"persons:write"/"ingest:write")` (`admin` is a superset); human-only routes use `require_human_user`/`require_human_admin`. `/v1/admin/oauth-clients` (create/rotate/revoke/disable/delete) is human-admin only — even admin-scoped machine clients can't call it.
 
 ### Public (unauthenticated) API endpoints
-When an endpoint must be publicly accessible (no Bearer token), register it on a separate router that is included in `app.py` **without** the `active` dependency list. The auth-gated action that produces the public resource (e.g. generating a share link) uses the normal `person_links_router` registered with `require_active_user`. Example from `src/routes/public_pages.py`:
+Public (no-Bearer) endpoints register on a separate router included in `app.py` **without** the `active` dependency list. The auth-gated action that produces the public resource (e.g. generating a share link) uses the normal `person_links_router` with `require_active_user`. Example from `src/routes/public_pages.py`:
 ```python
 public_router = APIRouter(prefix="/v1/public")      # no auth — included bare
 person_links_router = APIRouter(prefix="/v1/persons")  # included with active deps
@@ -207,66 +222,90 @@ person_links_router = APIRouter(prefix="/v1/persons")  # included with active de
 app.include_router(public_router)                          # no auth
 app.include_router(person_links_router, dependencies=active)
 ```
-Public share-link tokens are UUID strings stored in Redis with a TTL (`public_link:{token}` → `person_id`). The expiry is controlled by `PUBLIC_PAGE_EXPIRY_MINUTES` (default 30, set in `config.py` and passed via `docker-compose.yml`).
+Public share-link tokens are UUID strings in Redis with a TTL (`public_link:{token}` → `person_id`), expiry set by `PUBLIC_PAGE_EXPIRY_MINUTES` (default 30, `config.py` + `docker-compose.yml`).
 
 On the frontend, a Server Component page under `/public/**` fetches directly from the API with `authToken: null`:
 ```typescript
 const res = await apiFetch<Person>(`/public/persons/${token}`, { authToken: null });
 ```
-`authToken: null` skips the `auth()` call in `apiFetch` and sends no Authorization header. The client component for interactive sections (e.g. expandable sales rows) must be extracted to a separate `"use client"` file since the page itself is a Server Component.
+`authToken: null` skips `auth()` in `apiFetch` and sends no Authorization header. Interactive sections (e.g. expandable sales rows) must be extracted to a separate `"use client"` file since the page is a Server Component.
 
 ### Ingestion dispatch
 Always dispatch via Celery — never call `run_ingestion()` directly:
 ```python
+# Live source (pulls from configured SSH gateway / external DB):
 run_ingestion_task.delay(source_key, mode="batch")
+
+# File-based (dump): dump_path MUST be relative to DUMPS_ROOT (/app/dumps inside the worker container)
+run_ingestion_task.delay(source_key, mode="dump", dump_path="limited-100/fundbox_users_100.sql")
 ```
-The task enforces a Redis-backed cluster-wide concurrency cap (`MAX_CONCURRENT_INGESTIONS`, default 1) and retries automatically if a slot is busy.
+The task enforces a Redis-backed cluster-wide concurrency cap (`MAX_CONCURRENT_INGESTIONS`, default 1 in code, overridden to 4 in docker-compose) and retries automatically if a slot is busy.
+
+**⚠️ `limited-100` dumps are for local and development environments only — never use them in staging or production.**
+
+**Source keys** (from `src/connectors/dumps/connectors.py` factories dict and live connectors):
+| source_key | mode | limited-100 dump file (local/dev only) |
+|---|---|---|
+| `fundbox_consumer_backend` | dump | `limited-100/fundbox_users_100.sql` |
+| `fundbox_consumer_backend:legacy` | dump | `limited-100/fundbox_legacy_100.sql` |
+| `fundbox_consumer_backend:merged` | dump | `limited-100/fundbox_merged_100.sql` |
+| `fundbox_consumer_backend:contacts` | dump | `limited-100/fundbox_contacts_100.sql` |
+| `fundbox_consumer_backend:sales` | dump | `limited-100/fundbox_sales_100.sql` |
+| `eko_phppos` | dump | `limited-100/eko_customers_100.sql` |
+| `eko_phppos:sales` | dump | `limited-100/eko_sales_100.sql` |
+| `speedzone_phppos` | dump | `limited-100/speedzone_customers_100.sql` |
+| `speedzone_phppos:sales` | dump | `limited-100/speedzone_sales_100.sql` |
+| `bitrix_chat` | dump | `limited-100/bitrix_chat_100.sql` |
+| `whatsapp_chat` | dump | `limited-100/whatsapp_chat_100.sql` |
+| `sgbankruptcy` | dump | `limited-100/sgbankruptcy_100.sql` |
+| `sgrentalflats` | dump | `limited-100/sgrentalflats_100.sql` |
+
+`eko_phppos`, `bitrix_chat`, and `whatsapp_chat` need an SSH gateway in `batch` mode — without one, use `mode='dump'` with `dump_path`.
 
 ### Date picker fields
-Date range filters use `DatePickerField` (a wrapper around `@mui/x-date-pickers@7` `DatePicker` + `dayjs` adapter with `en-gb` locale). The display format is `DD MMM YYYY` (e.g. "28 Apr 2026"), matching `formatDob`/`formatDate` from `display.ts`. The component stores values internally as ISO `YYYY-MM-DD` strings for API compatibility. Use `DatePickerField` for any date input that should match the table row date format — do not fall back to `<TextField type="date">`.
+Date range filters use `DatePickerField` (wraps `@mui/x-date-pickers@7` `DatePicker` + `dayjs`, `en-gb` locale). Display format `DD MMM YYYY` matches `formatDob`/`formatDate` from `display.ts`; values are stored internally as ISO `YYYY-MM-DD`. Use it for any date input matching table-row date format — don't fall back to `<TextField type="date">`.
 
 ---
 
 ## Repository Structure
 
-All documents live in `docs/` and follow the naming convention `profile-unifier-*.md` (plus one `.yaml`).
-
-**Recommended reading order**: PRD → Glossary → Architecture → Matching Spec → Policy Decisions → Graph Schema → Graph Model Diagram → API Spec → OpenAPI 3.1 → Reviewer Workflow → Sequence Diagrams → Roadmap → Scaffold Architecture
+All documents live in `docs/` and follow the naming convention `profile-unifier-*.md` (plus one `.yaml`). Recommended reading order: PRD → Glossary → Architecture → Matching Spec → Policy Decisions → Graph Schema → Graph Model Diagram → API Spec → OpenAPI 3.1 → Reviewer Workflow → Sequence Diagrams → Roadmap → Scaffold Architecture.
 
 ## Key Design Decisions
 
-- **Database**: Neo4j (decided). The platform must support contact tracing and complex multi-hop relationship queries beyond simple identity resolution. Neo4j's native graph storage and Cypher query language are the right fit. ACID transactions are available in Neo4j 4+.
-- **Database abstraction**: a `repositories/` layer sits between routes and Neo4j. Protocols (`typing.Protocol`) define the contracts; Neo4j implementations live in `repositories/neo4j/`. To migrate databases, write a new implementation and change `deps.py` — routes are unaffected.
-- **Precision over recall**: optimize for low false-merge rates; false merges have high operational cost.
-- **Immutable source facts**: source records are never modified after ingestion — all changes create new records.
-- **Explainable decisions**: every merge/no-match must have traceable reasons.
-- **4-layer matching**: Deterministic rules → Heuristic scoring → LLM adjudication (shadow-only in MVP) → Human review.
+- **Database**: Neo4j (decided) — chosen for native graph storage and multi-hop relationship queries.
+- **Database abstraction**: a `repositories/` layer with `typing.Protocol` contracts and Neo4j implementations; swap backends by changing `deps.py`.
+- **Precision over recall**: optimize for low false-merge rates.
+- **Immutable source facts**: source records are never modified after ingestion; all changes create new records.
+- **Explainable decisions**: every merge/no-match has traceable reasons.
+- **4-layer matching**: deterministic rules → heuristic scoring → LLM adjudication (shadow-only in MVP) → human review.
 - **Confidence bands**: ≥0.90 auto-merge, 0.60–0.89 human review, <0.60 no-match (thresholds to be calibrated).
 - **Sensitive data**: NRIC and Singpass-linked data require special handling; govt IDs stored as salted hashes.
 - **Controlled rollout**: LLM starts in shadow/assist mode only — no autonomous production merges in MVP.
-- **Merge lineage**: merge history is stored as native graph relationships (`MERGED_INTO`) between Person nodes. Path compression via relationship rewiring guarantees max 1 hop for canonical person lookups.
+- **Merge lineage**: merge history stored as `MERGED_INTO` relationships; path compression keeps canonical lookups to ≤1 hop.
+- **Multi-match resolution (link-to-all, no person merge)**: the engine evaluates every candidate. If a record reaches the merge band against multiple active persons, pick a primary (highest confidence, ties by `person_id`) and link evidence to the primary **and every other matched person**, recomputing each golden profile without merging them. Carried on `MatchResult.additional_linked_person_ids`.
 - **Unmerge**: post-merge source records stay with the surviving person but are flagged for review.
-- **Concurrency**: ingestion partitioned by blocking key to prevent race conditions.
-- **Cardinality caps**: blocking keys with too many matches are skipped; configurable per identifier type.
-- **Pair ordering**: lock relationships (`NO_MATCH_LOCK`) enforce `left.person_id < right.person_id` to prevent duplicates.
-- **Golden profile recomputation**: synchronous within the merge transaction (Neo4j ACID transactions).
-- **Downstream events**: polling endpoint (`GET /v1/events?since=`) for now, designed for future push migration.
-- **Identifier aging**: time-based deactivation via `last_confirmed_at`, configurable per type.
-- **Retention**: `retention_expires_at` property on relevant nodes (SourceRecord, MatchDecision, MergeEvent); NULL for legal holds.
-- **Scoring model**: must use conditional weighting or capping, not simple additive weights.
-- **Graph-native candidate generation**: candidate persons are found by traversing shared Identifier nodes in Neo4j, not by index-based blocking-key lookups. Composite blocking (DOB + name) falls back to index queries.
-- **Source record types**: every `SourceRecord` carries `record_type` of either `system` (deterministic extract from another service's system of record) or `conversation` (heuristic extract from chat / voice transcripts, with `extraction_confidence`, `extraction_method`, `conversation_ref`). Conversation-sourced evidence is never eligible for deterministic auto-merge — it always flows through Layer 2 scoring and at most reaches the review band. Hard NO_MATCH rules (locks, conflicting govt IDs) still fire for conversation records as blockers.
-- **Social Person-to-Person relationship** (`KNOWS`): a directed `(:Person)-[:KNOWS]->(:Person)` edge mirrors the Fundbox `contacts` table (emergency contact / next-of-kin / referrer). Properties include `relationship_label`, `relationship_category`, source provenance, and `status`/`approved_at`. `KNOWS` is sourced, never inferred by the matching engine, and does not affect identity resolution. It supersedes the previously post-MVP `REFERRED_BY` / `WORKS_WITH` / `FAMILY_OF` proposal — narrower types may be added later if a use case needs them.
-- **Interaction model** (post-MVP): Interaction nodes for contact tracing will connect to Person nodes in the same Neo4j graph.
+- **Concurrency**: ingestion partitioned by blocking key to avoid race conditions.
+- **Cardinality caps**: blocking keys with too many matches are skipped, per identifier type.
+- **Pair ordering**: `NO_MATCH_LOCK` relationships enforce `left.person_id < right.person_id` to prevent duplicates.
+- **Golden profile recomputation**: synchronous within the merge transaction (Neo4j ACID).
+- **Downstream events**: polling endpoint (`GET /v1/events?since=`) for now.
+- **Identifier aging**: time-based deactivation via `last_confirmed_at`, per-type configurable.
+- **Retention**: `retention_expires_at` on relevant nodes; NULL for legal holds.
+- **Scoring model**: conditional weighting/capping, not simple additive weights.
+- **Graph-native candidate generation**: candidates found by traversing shared Identifier nodes; composite blocking (DOB + name) falls back to index queries.
+- **Source record types**: every `SourceRecord` has a `record_type` (`identity`, `bankruptcy`, `relationship`, `rental_flat`, `conversation`, `sales`). `rental_flat` is routed via `ingest_address_record` and never creates a Person. Conversation records are never deterministic auto-merge; they promote to auto-merge only with an independent, non-conversation-corroborated identifier match plus a second signal and no hard conflict. `bankruptcy` gates Layer-1 exact-NRIC merge on partial name match (Jaro-Winkler ≥ 0.50) when both sides have names. `relationship` auto-merges on phone + partial name via Layer-2 promotion. A startup migration reclassifies legacy `system`/`public_record` records by `source_system`.
+- **Social Person-to-Person relationship** (`KNOWS`): directed `(:Person)-[:KNOWS]->(:Person)` edges mirror the Fundbox `contacts` table; sourced, never inferred, and does not affect identity resolution.
+- **Interaction model** (post-MVP): Interaction nodes for contact tracing will connect to Person nodes.
 - **Data deletion**: graph deletion requires detaching all relationships before removing a Person node. Shared Identifier nodes survive individual person deletion.
 
 ## Architecture Summary
 
-Ingestion → Normalization → Candidate Generation (graph traversal through shared Identifier and Address nodes) → Match Engine → Person Graph (Neo4j) → Golden Profile → Review Operations → APIs
+Ingestion → Normalization → Candidate Generation (graph traversal through shared Identifier and Address nodes) → Match Engine → Person Graph (Neo4j) → Golden Profile → Review Operations → APIs.
 
-Core graph nodes: `Person` (with golden profile properties inline), `Identifier` (shared across persons — the graph backbone for contact tracing), `Address` (shared across persons — enables "who else lives here?" traversal), `SourceRecord`, `MatchDecision`, `MergeEvent`, `ReviewCase`, `SourceSystem`, `IngestRun`. Many relational concepts are modeled as relationships: `IDENTIFIED_BY`, `LIVES_AT`, `LINKED_TO`, `MERGED_INTO`, `NO_MATCH_LOCK`, `HAS_FACT`, `FOR_DECISION`.
+Core graph nodes: `Person` (golden profile inline), `Identifier`, `Address`, `SourceRecord`, `MatchDecision`, `MergeEvent`, `ReviewCase`, `SourceSystem`, `IngestRun`. Key relationships: `IDENTIFIED_BY`, `LIVES_AT`, `LINKED_TO`, `MERGED_INTO`, `NO_MATCH_LOCK`, `HAS_FACT`, `FOR_DECISION`, `KNOWS`.
 
-Person statuses: `active`, `merged`, `suppressed` (no `under_review` — review state is tracked on `review_case`).
+Person statuses: `active`, `merged`, `suppressed` (review state lives on `review_case`).
 
 ## Implementation Roadmap
 
@@ -281,11 +320,17 @@ Person statuses: `active`, `merged`, `suppressed` (no `under_review` — review 
 
 ## Working with This Repo
 
+### Coding workflow
+Before reporting work complete, perform a hostile review of the changed code: correctness regressions, edge cases, brittle tests, security issues, overfitting to the immediate bug. Also run a DRY check — centralize duplicated parsing, mapping, validation, or UI state logic into the existing appropriate layer rather than adding near-copy helpers.
+
+### Commit discipline
+**Never commit without explicit user confirmation.** After completing code changes, stop — do not stage or commit anything. Wait for the user to say "commit" or similar before proceeding. This rule applies even when executing a plan that includes commit steps: treat plan commit steps as reminders, not instructions. Always ask before committing.
+
 ### Worktrees
 Create worktrees from the current branch/HEAD, not from `origin/main`, so in-progress branch context is preserved.
 
 ### docker-compose.yml sync rule
-Any commit that modifies the root `docker-compose.yml` **must** also apply the equivalent change to every counterpart in `.docker/[environment]/docker-compose.yml`. Currently: `.docker/staging/docker-compose.yml`. The environment files differ only in build context paths (`../../`), project name (`name:`), and environment-specific volume paths — service definitions, image versions, and environment variables must stay in sync. Apply changes to both files in the same commit.
+Any commit modifying the root `docker-compose.yml` **must** apply the equivalent change to every counterpart in `.docker/[environment]/docker-compose.yml` (currently `.docker/staging/`) in the same commit. The environment files differ only in build context paths (`../../`), project `name:`, and volume paths — service definitions, image versions, and env vars must stay in sync.
 
 When editing or adding documentation:
 - Follow the existing `profile-unifier-*.md` naming convention.
@@ -299,35 +344,35 @@ When editing or adding documentation:
 
 These rules apply to all Python code in the repository (`services/api/`, `services/ingestion/`, etc.):
 
-- **Strict typing**: every variable, parameter, and attribute must have an explicit, concrete type. No untyped bindings, no implicit `Any`, no `typing.Any`. Use `TypedDict`, `pydantic.BaseModel`, `dataclass`, `Literal`, `Protocol`, generics, or unions instead.
-- **Return types required**: every function and method that returns a value must declare a return type annotation. Functions that return nothing must be annotated `-> None`.
-- **Type checker**: code must pass `mypy --strict` (or `pyright` in strict mode). `# type: ignore` is only acceptable with a narrow code and a comment explaining why. **Known pre-existing failures**: `types_sales.py` and `types_requests.py` contain `Any` annotations that predate strict enforcement — mypy reports them but they are not regressions introduced by new code.
-- **No `Any` escape hatches**: do not use `Any`, `cast(Any, …)`, `object` as a placeholder, or untyped `dict`/`list`. Prefer `dict[str, SomeModel]`, `list[Person]`, `Mapping[str, str | int]`, etc.
-- **Module / function size**: keep modules under ~400 lines and functions under ~50 lines. Refactor longer ones by extracting cohesive helpers, splitting routers by resource, and moving Cypher/SQL into dedicated query modules.
-- **Project standards**: follow PEP 8, PEP 257 (docstrings on public APIs), and PEP 484/695 typing. Format with `ruff format`, lint with `ruff check`, and prefer `from __future__ import annotations` only when needed for forward refs.
-- **FastAPI specifics**: request and response bodies must be Pydantic models (not raw `dict`). Path/query parameters must be typed. Dependencies (`Depends(...)`) must have annotated return types. Routers should be split per resource and registered in a single `app` factory.
-- **Package manager — uv**: every Python service uses [uv](https://github.com/astral-sh/uv) for dependency management. Each service has its own `pyproject.toml` + committed `uv.lock`. Use `uv add` / `uv remove` (never `pip install`), `uv sync` to install, and `uv run <cmd>` to execute. Do not introduce `requirements.txt`, `poetry.lock`, `Pipfile`, or any other manager's metadata. Dockerfiles install uv from `ghcr.io/astral-sh/uv` and use `uv sync --frozen --no-dev`.
+- **Strict typing**: every variable, parameter, and attribute has an explicit, concrete type — no untyped bindings, no `Any`. Use `TypedDict`, `pydantic.BaseModel`, `dataclass`, `Literal`, `Protocol`, generics, or unions.
+- **Return types required**: every function/method declares a return type annotation; functions returning nothing are `-> None`.
+- **Type checker**: code must pass `mypy --strict` (or `pyright` strict). `# type: ignore` only with a narrow code + comment explaining why. **Known pre-existing failures**: `types_sales.py`/`types_requests.py` have pre-strict `Any` annotations — not regressions.
+- **No `Any` escape hatches**: no `Any`, `cast(Any, …)`, `object` placeholders, or untyped `dict`/`list` — prefer `dict[str, SomeModel]`, `list[Person]`, `Mapping[str, str | int]`.
+- **Module / function size**: modules under ~400 lines, functions under ~50 — extract cohesive helpers, split routers by resource, move Cypher/SQL into query modules.
+- **Project standards**: PEP 8, PEP 257 (docstrings on public APIs), PEP 484/695 typing. Format with `ruff format`, lint with `ruff check`; use `from __future__ import annotations` only for forward refs.
+- **FastAPI specifics**: request/response bodies are Pydantic models (not raw `dict`); path/query params are typed; `Depends(...)` has annotated return types; routers split per resource, registered in a single `app` factory.
+- **Package manager — uv**: every Python service uses [uv](https://github.com/astral-sh/uv); each has its own `pyproject.toml` + committed `uv.lock`. Use `uv add`/`uv remove` (never `pip install`), `uv sync`, `uv run <cmd>` — no `requirements.txt`/`poetry.lock`/`Pipfile`. Dockerfiles install uv from `ghcr.io/astral-sh/uv` and run `uv sync --frozen --no-dev`.
 
 ## TypeScript / Next.js Coding Standards
 
-These rules apply to all TypeScript code in the repository (`services/frontend/`, etc.):
+These rules apply to all TypeScript code in the active app (`services/frontend2/`). The retired `services/frontend/` (v1) source is kept for reference only and is no longer built or routed; do not add new code there.
 
-- **Strict TypeScript**: `tsconfig.json` must enable `strict`, `noUncheckedIndexedAccess`, `noImplicitOverride`, and `noFallthroughCasesInSwitch`. Code must compile clean under `tsc --noEmit`.
-- **No `any`, no unsafe casts**: never use `any`, `as any`, or `as unknown as T`. Parse external data (fetch responses, `JSON.parse`, route params) through type guards or schema validators (e.g. zod) before narrowing. A bare `as` cast on an `unknown` value is acceptable only when immediately preceded by a type guard.
-- **Explicit return types**: every exported function, React component, route handler, and Server Action must declare its return type. Use `ReactElement` (not `React.JSX.Element` or implicit) for component returns; `Promise<NextResponse>` for route handlers; `Promise<void>` for handlers with no return value.
-- **Discriminated unions over enums**: prefer `type X = "a" | "b"` plus a type guard (`isX`) over TS `enum`. Define option lists as `readonly` tuples and derive types from them.
-- **No `Record<string, unknown>` escape hatches**: model payloads with `interface`s mirroring the API contract. Types live in three files — `src/lib/api-types.ts` (main contract: `Person`, `PersonConnection`, `SalesOrder`, etc.), `src/lib/api-types-person.ts` (person-detail sub-types: `PersonIdentifier`, `PersonSourceRecord`, merge/unmerge request/response bodies), and `src/lib/api-types-ops.ts` (admin/ops/ingestion/review payloads: `OAuthClient`, `ReviewCaseDetail`, `IngestRunResponse`, etc.). Hand-mirroring is the interim approach; long term, generate types from `docs/profile-unifier-openapi-3.1.yaml` via `openapi-typescript`.
+- **Strict TypeScript**: `tsconfig.json` enables `strict`, `noUncheckedIndexedAccess`, `noImplicitOverride`, `noFallthroughCasesInSwitch`; code compiles clean under `tsc --noEmit`.
+- **No `any`, no unsafe casts**: never `any`, `as any`, or `as unknown as T`. Parse external data (fetch responses, `JSON.parse`, route params) via type guards or schema validators (e.g. zod) before narrowing. A bare `as` cast on `unknown` is OK only immediately after a type guard.
+- **Explicit return types**: every exported function, React component, route handler, and Server Action declares its return type — `ReactElement` for components (not `React.JSX.Element`/implicit), `Promise<NextResponse>` for route handlers, `Promise<void>` for void handlers.
+- **Discriminated unions over enums**: prefer `type X = "a" | "b"` + a type guard (`isX`) over TS `enum`; define option lists as `readonly` tuples and derive types from them.
+- **No `Record<string, unknown>` escape hatches**: model payloads with `interface`s mirroring the API contract. Three type files — `src/lib/api-types.ts` (main: `Person`, `PersonConnection`, `SalesOrder`), `src/lib/api-types-person.ts` (person-detail: `PersonIdentifier`, `PersonSourceRecord`, merge/unmerge bodies), `src/lib/api-types-ops.ts` (admin/ops/ingestion/review: `OAuthClient`, `ReviewCaseDetail`, `IngestRunResponse`). Hand-mirroring is interim; long term, generate from `docs/profile-unifier-openapi-3.1.yaml` via `openapi-typescript`.
 - **Server / client boundary discipline** (App Router):
-  - Server-only modules (`src/lib/api-server.ts`, anything reading secret env vars, anything calling FastAPI directly) **must** import `"server-only"` at the top.
-  - Client components must declare `"use client"` on the first line and **must not** import server-only modules. Browser code talks to the BFF via `src/lib/api-client.ts`.
-  - Secrets (internal service URLs, tokens, DB credentials) are server-side env vars **without** the `NEXT_PUBLIC_` prefix. Anything `NEXT_PUBLIC_*` is shipped to the browser — treat it as public.
-- **BFF pattern is mandatory**: the browser must never call FastAPI directly for app UI data. All UI upstream traffic flows through Next.js Route Handlers under `src/app/bff/*`, which use `proxyToApi` from `src/lib/proxy.ts`. The public `/api/*` namespace is reserved for nginx to expose FastAPI directly for external services.
-- **Route handler shape**: each route handler exports typed `GET`/`POST`/etc. returning `Promise<NextResponse>`, declares `export const dynamic = "force-dynamic"` when it must not be cached, and types Next 15 async params as `{ params: Promise<{ ... }> }`. Keep handlers thin — delegate to `proxyToApi` or a service module. The logout BFF handler at `src/app/bff/auth/logout/route.ts` calls `apiFetch` to revoke the token server-side before returning.
-- **Data fetching in Server Components**: prefer Server Components for read-only pages and call `apiFetch` directly (no client round-trip). Parallelize independent fetches with `Promise.all`. Translate upstream 404s to `notFound()`.
-- **Component / module size**: keep React components under ~150 lines and modules under ~300 lines. Extract subcomponents (e.g. `PersonHeader`, `ConnectionsCard`) rather than letting a single page balloon. Extract pure helpers (`statusColor`, `buildSearchParams`) out of components.
-- **MUI usage**: import from per-component paths (`@mui/material/Button`) not the barrel (`@mui/material`) to keep bundles tight. Use the `sx` prop for one-off styling, the theme for shared tokens. Wrap the App Router with `AppRouterCacheProvider` from `@mui/material-nextjs/v15-appRouter` exactly once in `layout.tsx`.
-- **Project standards**: format with Prettier, lint with `eslint src` (ESLint 9 flat config). Imports ordered: node/external → `next/*` and `@mui/*` → `@/*` aliases → relative. Use the `@/` path alias instead of long relative paths.
-- **Package manager — npm**: `services/frontend/` uses npm. Always use `npm install` (locally and in Docker) — do not use `npm ci`. Do not introduce `pnpm-lock.yaml` or `yarn.lock`.
+  - Server-only modules (`src/lib/api-server.ts`, secret env vars, anything calling FastAPI directly) **must** import `"server-only"` at the top.
+  - Client components declare `"use client"` first and **must not** import server-only modules; browser code talks to the BFF via `src/lib/api-client.ts`.
+  - Secrets (internal URLs, tokens, DB credentials) are server-side env vars **without** `NEXT_PUBLIC_` — anything `NEXT_PUBLIC_*` ships to the browser and is public.
+- **BFF pattern is mandatory**: the browser never calls FastAPI directly for UI data — all upstream traffic flows through Next.js Route Handlers under `src/app/bff/*` via `proxyToApi` (`src/lib/proxy.ts`). The public `/api/*` namespace is reserved for nginx to expose FastAPI to external services.
+- **Route handler shape**: each handler exports typed `GET`/`POST`/etc. returning `Promise<NextResponse>`, declares `export const dynamic = "force-dynamic"` when not cacheable, and types Next 15 async params as `{ params: Promise<{ ... }> }`. Keep handlers thin — delegate to `proxyToApi` or a service module.
+- **Data fetching in Server Components**: prefer Server Components for read-only pages, calling `apiFetch` directly (no client round-trip); parallelize with `Promise.all` and translate upstream 404s to `notFound()`.
+- **Component / module size**: React components under ~150 lines, modules under ~300 — extract subcomponents and pull pure helpers out of components.
+- **MUI usage**: import from per-component paths (`@mui/material/Button`), not the barrel, to keep bundles tight. Use `sx` for one-off styling, the theme for shared tokens. Wrap the App Router with `AppRouterCacheProvider` (`@mui/material-nextjs/v15-appRouter`) exactly once in `layout.tsx`.
+- **Project standards**: format with Prettier, lint with `eslint src` (ESLint 9 flat config). Import order: node/external → `next/*`/`@mui/*` → `@/*` aliases → relative; use `@/` instead of long relative paths.
+- **Package manager — npm**: `services/frontend2/` uses npm — always `npm install` (locally and in Docker), never `npm ci`, no `pnpm-lock.yaml`/`yarn.lock`.
 
 ### Interactive graph viewer
 

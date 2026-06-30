@@ -6,7 +6,16 @@ info:
   description: >
     Machine-readable representation of the main profile unifier API. This file
     covers the primary ingestion, search, person read, review workflow, merge,
-    lock, and survivorship operations described in the companion API spec.
+    lock, and survivorship operations described in the companion API spec. It
+    also documents the dedicated machine-facing OAuth2 surface mounted at
+    `/oauth2/v1` (served externally under `/api/oauth2/v1`).
+
+    Serving topology: the root app exposes only `/api/health`, the OAuth2 token
+    flow (`/api/v1/oauth/{token,jwks}`), and the unauthenticated public pages
+    (`/api/v1/public/...`). Every authenticated `/v1/...` path below is the
+    canonical contract served through mounted sub-apps — the frontend mount is
+    `/api/app/v2` (with `/v1` stripped, e.g. `/v1/persons` is served at
+    `/api/app/v2/persons`) and, for the machine subset, `/api/oauth2/v1`.
 servers:
   - url: https://api.example.internal
     description: Example internal deployment
@@ -22,6 +31,11 @@ tags:
   - name: Locks
   - name: Survivorship
   - name: OAuth
+  - name: OAuth2 Machine API
+    description: >
+      Dedicated server-to-server surface mounted at /oauth2/v1. Token and JWKS
+      endpoints mirror the root /v1/oauth flow; person endpoints are
+      OAuth2-client-only and require the persons:read scope.
   - name: Admin
 paths:
   /v1/ingest/{source_key}/records:
@@ -164,21 +178,41 @@ paths:
           schema:
             type: string
           example: "fundbox-pos"
-        - name: entity_key
+        - name: entity_key_mode
           in: query
-          description: Filter to persons associated with this entity key.
+          description: >-
+            How to combine multiple `entity_key` values. `or` means any match;
+            `and` means the person must be associated with all supplied entities.
           schema:
             type: string
-          example: "fundbox-sg"
-        - name: status
+            enum: [or, and]
+            default: or
+        - name: source_key
           in: query
-          description: Filter by canonical person status.
+          description: Filter to persons with source records from any of these source systems.
           schema:
-            $ref: '#/components/schemas/PersonStatus'
-          example: active
-        - name: has_dob
+            type: array
+            items:
+              type: string
+          example: ["fundbox-pos"]
+        - name: source_key_mode
           in: query
-          description: Filter persons by presence of a date of birth.
+          description: >-
+            How to combine multiple `source_key` values. `or` means any match;
+            `and` means the person must have source records from all supplied systems.
+          schema:
+            type: string
+            enum: [or, and]
+            default: or
+        - name: source_record_type
+          in: query
+          description: Filter by source record type.
+          schema:
+            type: string
+            enum: [identity, bankruptcy, relationship, rental_flat, conversation, sales]
+        - name: is_high_value
+          in: query
+          description: Filter by high-value flag.
           schema:
             type: boolean
         - name: dob_from
@@ -491,6 +525,317 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/JsonWebKeySet'
+  # ── Machine OAuth2 API surface (mounted at /oauth2/v1) ──────────────────────
+  # Dedicated server-to-server mount, served externally at /api/oauth2/v1. The
+  # token/JWKS endpoints mirror the root /v1/oauth flow without the redundant
+  # /oauth path segment; the person endpoints are OAuth2-client-only (human
+  # Google tokens are rejected) and require the persons:read scope.
+  /oauth2/v1/token:
+    post:
+      tags: [OAuth2 Machine API]
+      summary: Issue an OAuth2 client-credentials access token (machine surface)
+      operationId: createOAuthTokenMachine
+      description: |
+        Identical contract to `POST /v1/oauth/token`, exposed on the dedicated
+        machine mount. Uses OAuth-compatible top-level JSON responses rather than
+        the standard HyperP envelope. Response carries `Cache-Control: no-store`
+        and `Pragma: no-cache`.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/OAuthTokenRequest'
+            encoding:
+              grant_type:
+                style: form
+              client_id:
+                style: form
+              client_secret:
+                style: form
+              scope:
+                style: form
+      responses:
+        '200':
+          description: Access token issued.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthTokenResponse'
+        '400':
+          description: Failed with `invalid_request`, `invalid_scope`, or `unsupported_grant_type`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthErrorResponse'
+        '401':
+          description: Failed with `invalid_client`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthErrorResponse'
+  /oauth2/v1/jwks:
+    get:
+      tags: [OAuth2 Machine API]
+      summary: Public signing keys for HyperP-issued access tokens (machine surface)
+      operationId: getOAuthJwksMachine
+      description: Identical to `GET /v1/oauth/jwks`, exposed on the machine mount.
+      security: []
+      responses:
+        '200':
+          description: JSON Web Key Set containing active OAuth signing keys.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JsonWebKeySet'
+  /oauth2/v1/persons:
+    get:
+      tags: [OAuth2 Machine API]
+      summary: List canonical persons (machine surface)
+      operationId: listPersonsMachine
+      description: |
+        Paginated canonical person list for machine callers, with the same
+        filters and sorting as the authenticated person list. Requires a HyperP
+        OAuth2 client-credentials token with the `persons:read` scope; human
+        Google ID tokens are rejected.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+        - name: q
+          in: query
+          description: |
+            Free-text search (min 3 chars) across `preferred_full_name`,
+            `preferred_nric`, `preferred_email`, and `preferred_phone`.
+          schema:
+            type: string
+          example: "Tan Wei Ming"
+        - name: cursor
+          in: query
+          description: Opaque pagination cursor.
+          schema:
+            type: string
+        - name: limit
+          in: query
+          description: Page size.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+        - name: entity_key
+          in: query
+          description: Filter to persons associated with this entity key. Repeatable.
+          schema:
+            type: array
+            items:
+              type: string
+          example: ["fundbox-sg"]
+        - name: source_key
+          in: query
+          description: Filter to persons with at least one source record from this source. Repeatable.
+          schema:
+            type: array
+            items:
+              type: string
+          example: ["fundbox_consumer_backend"]
+        - name: source_record_type
+          in: query
+          description: Filter by linked source-record subtype.
+          schema:
+            type: string
+        - name: is_high_value
+          in: query
+          description: Filter by high-value flag.
+          schema:
+            type: boolean
+        - name: is_high_risk
+          in: query
+          description: Filter by high-risk flag.
+          schema:
+            type: boolean
+        - name: has_phone
+          in: query
+          description: Filter by presence of a phone identifier.
+          schema:
+            type: boolean
+        - name: has_email
+          in: query
+          description: Filter by presence of an email identifier.
+          schema:
+            type: boolean
+        - name: has_any_contact
+          in: query
+          description: Filter by presence of any contact identifier (phone or email).
+          schema:
+            type: boolean
+        - name: has_address
+          in: query
+          description: Filter by presence of a linked address.
+          schema:
+            type: boolean
+        - name: has_bankruptcy_case
+          in: query
+          description: Filter by presence of a bankruptcy case.
+          schema:
+            type: boolean
+        - name: has_any_match
+          in: query
+          description: Filter by presence of any candidate match (identifier overlap or active system review case).
+          schema:
+            type: boolean
+        - name: has_possible_match
+          in: query
+          description: Filter by presence of a shared-identifier candidate person.
+          schema:
+            type: boolean
+        - name: has_system_match
+          in: query
+          description: Filter by presence of an active system (auto) match review case.
+          schema:
+            type: boolean
+        - name: addr_street
+          in: query
+          description: Filter by normalized street address (case-insensitive substring).
+          schema:
+            type: string
+        - name: addr_unit
+          in: query
+          description: Filter by unit/floor.
+          schema:
+            type: string
+        - name: addr_city
+          in: query
+          description: Filter by city.
+          schema:
+            type: string
+        - name: addr_postal
+          in: query
+          description: Filter by postal code.
+          schema:
+            type: string
+        - name: addr_country
+          in: query
+          description: Filter by country code.
+          schema:
+            type: string
+        - name: updated_after
+          in: query
+          description: Inclusive lower bound on person `updated_at` (ISO-8601).
+          schema:
+            type: string
+            format: date-time
+        - name: updated_before
+          in: query
+          description: Inclusive upper bound on person `updated_at` (ISO-8601).
+          schema:
+            type: string
+            format: date-time
+        - name: has_dob
+          in: query
+          description: Filter by presence of a date of birth.
+          schema:
+            type: boolean
+        - name: dob_from
+          in: query
+          description: Inclusive lower bound on date of birth (YYYY-MM-DD).
+          schema:
+            type: string
+            format: date
+        - name: dob_to
+          in: query
+          description: Inclusive upper bound on date of birth (YYYY-MM-DD).
+          schema:
+            type: string
+            format: date
+        - name: dob_year
+          in: query
+          description: Exact year of birth.
+          schema:
+            type: integer
+        - name: dob_month
+          in: query
+          description: Exact month of birth (1-12).
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 12
+        - name: dob_day
+          in: query
+          description: Exact day of birth (1-31).
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 31
+        - name: sort_by
+          in: query
+          description: Sort column.
+          schema:
+            type: string
+            enum:
+              [
+                preferred_full_name,
+                preferred_phone,
+                preferred_email,
+                preferred_dob,
+                preferred_nric,
+                source_record_count,
+                connection_count,
+                entity_count,
+                possible_match_count,
+                system_match_count,
+                order_count,
+                bankruptcy_case_count,
+                phone_confidence,
+                updated_at,
+                profile_completeness_score,
+                relevance,
+              ]
+        - name: sort_order
+          in: query
+          description: Sort direction. Defaults to `desc`.
+          schema:
+            type: string
+            enum: [asc, desc]
+      responses:
+        '200':
+          description: Paginated person list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PersonSearchResponseEnvelope'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /oauth2/v1/persons/{person_id}:
+    get:
+      tags: [OAuth2 Machine API]
+      summary: Get canonical person detail (machine surface)
+      operationId: getPersonMachine
+      description: |
+        Requires a HyperP OAuth2 client-credentials token with the `persons:read`
+        scope; human Google ID tokens are rejected.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/PersonId'
+        - $ref: '#/components/parameters/RequestId'
+      responses:
+        '200':
+          description: Person detail
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PersonDetailResponseEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/PersonNotFound'
   # ── OAuth client management (admin only) ────────────────────────────────────
   /v1/admin/oauth-clients:
     get:
@@ -657,19 +1002,90 @@ paths:
           in: query
           schema:
             type: string
-        - name: follow_up_before
+        - name: person_id
           in: query
+          description: >-
+            Only cases whose match decision involves this person (either side).
           schema:
             type: string
-            format: date-time
+        - name: q
+          in: query
+          description: >-
+            Case-insensitive search (min 3 chars) over review_case_id, decision,
+            engine_type, assigned_to, and the linked left/right person name,
+            phone, and email.
+          schema:
+            type: string
+            minLength: 3
+        - name: priority_gte
+          in: query
+          schema:
+            type: integer
         - name: priority_lte
           in: query
           schema:
             type: integer
-        - name: source_system
+        - name: decision
           in: query
           schema:
             type: string
+        - name: engine_type
+          in: query
+          schema:
+            type: string
+        - name: confidence_gte
+          in: query
+          schema:
+            type: number
+            format: float
+        - name: confidence_lte
+          in: query
+          schema:
+            type: number
+            format: float
+        - name: created_after
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: created_before
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: sla_due_after
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: sla_due_before
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: overdue_sla
+          in: query
+          description: When true, only cases past their SLA and not yet resolved/cancelled.
+          schema:
+            type: boolean
+        - name: resolved
+          in: query
+          description: >-
+            True for closed cases (queue_state resolved or cancelled); false
+            for unresolved cases (open, assigned, deferred).
+          schema:
+            type: boolean
+        - name: sort_by
+          in: query
+          schema:
+            type: string
+            enum: [priority, confidence, sla_due_at, created_at, updated_at, queue_state]
+            default: priority
+        - name: sort_order
+          in: query
+          schema:
+            type: string
+            enum: [asc, desc]
         - $ref: '#/components/parameters/Cursor'
         - $ref: '#/components/parameters/Limit'
       responses:
@@ -1416,8 +1832,95 @@ components:
           properties:
             comparison:
               type: object
+              properties:
+                left:
+                  $ref: '#/components/schemas/PersonComparisonEntity'
+                right:
+                  $ref: '#/components/schemas/PersonComparisonEntity'
               additionalProperties: true
+            shared_identifier_groups:
+              type: array
+              items:
+                $ref: '#/components/schemas/SharedIdentifierGroup'
           required: [comparison]
+    PersonComparisonEntity:
+      type: object
+      properties:
+        entity_kind:
+          type: string
+          enum: [person, source_record]
+          default: person
+        person_id:
+          type:
+            - string
+            - 'null'
+          format: uuid
+        source_record_pk:
+          type:
+            - string
+            - 'null'
+          format: uuid
+        source_record_id:
+          type:
+            - string
+            - 'null'
+        source_system_key:
+          type:
+            - string
+            - 'null'
+        observed_at:
+          type:
+            - string
+            - 'null'
+          format: date-time
+        record_type:
+          type:
+            - string
+            - 'null'
+        linked_person_id:
+          type:
+            - string
+            - 'null'
+          format: uuid
+        status:
+          type:
+            - string
+            - 'null'
+        preferred_full_name:
+          type:
+            - string
+            - 'null'
+        preferred_phone:
+          type:
+            - string
+            - 'null'
+        preferred_email:
+          type:
+            - string
+            - 'null'
+        preferred_dob:
+          type:
+            - string
+            - 'null'
+          format: date
+      additionalProperties: false
+    SharedIdentifierGroup:
+      type: object
+      properties:
+        identifier_type:
+          type: string
+        normalized_value:
+          type: string
+        candidate_source_records:
+          type: array
+          items:
+            $ref: '#/components/schemas/SourceRecord'
+        current_person_source_records:
+          type: array
+          items:
+            $ref: '#/components/schemas/SourceRecord'
+      required: [identifier_type, normalized_value]
+      additionalProperties: false
     AuditEvent:
       type: object
       properties:

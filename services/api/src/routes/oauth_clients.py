@@ -8,19 +8,27 @@ from src.auth.deps import require_human_admin
 from src.auth.models import AuthUser
 from src.auth.oauth_client_models import (
     CreateOAuthClientRequest,
-    CreateOAuthClientSecretRequest,
+    OAuthAccessTokenView,
     OAuthClient,
     OAuthClientCreatedResponse,
-    OAuthClientSecretCreatedResponse,
+    RotateSecretResponse,
+    UpdateOAuthClientRequest,
 )
 from src.auth.oauth_clients import (
     create_oauth_client,
-    create_oauth_client_secret,
     delete_oauth_client,
     disable_oauth_client,
     list_oauth_clients,
-    revoke_oauth_client_secret,
+    rotate_oauth_client_secret,
+    update_oauth_client,
 )
+from src.auth.oauth_token_registry import (
+    TokenRecord,
+    clear_client_tokens,
+    list_client_tokens,
+    revoke_token_entry,
+)
+from src.auth.revoke import revoke_token
 from src.http_utils import http_error
 
 router = APIRouter(prefix="/v1/admin/oauth-clients", tags=["Admin"])
@@ -44,33 +52,71 @@ async def list_oauth_clients_handler(
 
 
 @router.post(
-    "/{client_id}/secrets",
-    response_model=OAuthClientSecretCreatedResponse,
+    "/{client_id}/rotate-secret",
+    response_model=RotateSecretResponse,
     status_code=201,
 )
-async def create_oauth_secret_handler(
+async def rotate_oauth_secret_handler(
     client_id: str,
-    body: CreateOAuthClientSecretRequest,
     request: Request,
     _user: AuthUser = Depends(require_human_admin),
-) -> OAuthClientSecretCreatedResponse:
-    """Create another one-time secret for an OAuth client."""
-    created = await create_oauth_client_secret(client_id, body)
-    if created is None:
+) -> RotateSecretResponse:
+    """Rotate an OAuth client's secret, returning the new plaintext once."""
+    rotated = await rotate_oauth_client_secret(client_id)
+    if rotated is None:
         raise http_error(404, "not_found", "OAuth client not found.", request)
-    return created
+    # Old tokens are already dead via the secret_id kill-switch; purge their
+    # registry entries so the token list reflects only usable tokens.
+    await clear_client_tokens(client_id)
+    return rotated
 
 
-@router.post("/{client_id}/secrets/{secret_id}/revoke", status_code=204)
-async def revoke_oauth_secret_handler(
+@router.patch("/{client_id}", status_code=204)
+async def update_client_handler(
     client_id: str,
-    secret_id: str,
+    body: UpdateOAuthClientRequest,
     request: Request,
     _user: AuthUser = Depends(require_human_admin),
 ) -> None:
-    """Revoke one OAuth client secret."""
-    if not await revoke_oauth_client_secret(client_id, secret_id):
-        raise http_error(404, "not_found", "OAuth client secret not found.", request)
+    """Update a client's name, scopes, or access-token TTL."""
+    if not await update_oauth_client(client_id, body):
+        raise http_error(404, "not_found", "OAuth client not found.", request)
+
+
+@router.get("/{client_id}/tokens", response_model=list[OAuthAccessTokenView])
+async def list_tokens_handler(
+    client_id: str,
+    _user: AuthUser = Depends(require_human_admin),
+) -> list[OAuthAccessTokenView]:
+    """List a client's currently-valid access tokens."""
+    records: list[TokenRecord] = await list_client_tokens(client_id)
+    return [
+        OAuthAccessTokenView(
+            jti=r.jti,
+            scope=r.scope,
+            issued_at=r.issued_at,
+            expires_at=r.expires_at,
+            last_used_at=r.last_used_at,
+            last_used_ip=r.last_used_ip,
+        )
+        for r in records
+    ]
+
+
+@router.post("/{client_id}/tokens/{jti}/revoke", status_code=204)
+async def revoke_token_handler(
+    client_id: str,
+    jti: str,
+    request: Request,
+    _user: AuthUser = Depends(require_human_admin),
+) -> None:
+    """Revoke one access token immediately."""
+    records = await list_client_tokens(client_id)
+    match = next((r for r in records if r.jti == jti), None)
+    if match is None:
+        raise http_error(404, "not_found", "Token not found.", request)
+    await revoke_token(jti, match.expires_at)
+    await revoke_token_entry(client_id, jti)
 
 
 @router.post("/{client_id}/disable", status_code=204)

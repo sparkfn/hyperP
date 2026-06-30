@@ -10,7 +10,7 @@
 *.egg-info/
 **/.venv/
 data/
-config/ingestion-exclusions.local.json
+config/ingestion-config.local.json
 out
 *.tsbuildinfo
 next-env.d.ts.bak
@@ -30,6 +30,9 @@ next-env.d.ts.bak
 Thumbs.db
 desktop.ini
 
+# GitHub Actions runner
+.github/actions-runner/
+
 # Docker
 data/neo4j/
 data/redis/
@@ -40,6 +43,12 @@ data/celerybeat/
 .claude/
 .superpowers/
 .worktrees/
+services/frontend2/*.md
+
+# Local task trackers (personal scratchpad — not committed)
+/TASKS.md
+/TODO.md
+/TASKS-*.md
 
 # Dump files
 .dumps/

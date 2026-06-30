@@ -8,6 +8,13 @@ from typing import Literal
 from pydantic import BaseModel, Field
 from pydantic.types import JsonValue
 
+# Provenance class of a SourceRecord. The first three ("system family") replaced
+# the former single "system" value; they share matching behaviour today but are
+# distinct so they can diverge later. Mirrors ingestion's ``RecordType`` enum.
+SourceRecordTypeLiteral = Literal[
+    "identity", "bankruptcy", "rental_flat", "relationship", "conversation", "sales"
+]
+
 # --- Enums ---
 
 
@@ -99,9 +106,15 @@ class ResponseMeta(BaseModel):
     total_count: int | None = None
 
 
+class PopoverDisplayItem(BaseModel):
+    primary: str
+    secondary: str = ""
+
+
 class ApiResponse[DataT](BaseModel):
     data: DataT
     meta: ResponseMeta
+    display_items: list[PopoverDisplayItem] | None = None
 
 
 class ApiErrorBody(BaseModel):
@@ -145,6 +158,7 @@ class Person(BaseModel):
     golden_profile_version: str | None = None
     source_record_count: int = 0
     connection_count: int = 0
+    lifetime_value: float | None = None
     created_at: str = ""
     updated_at: str = ""
 
@@ -158,6 +172,20 @@ class PersonIdentifier(BaseModel):
     source_system_key: str | None = None
     source_record_pks: list[str] = Field(default_factory=list)
     source_record_ids: list[str] = Field(default_factory=list)
+    entities: list[PersonEntitySummary] = Field(default_factory=list)
+    source_records: list[SourceRecord] = Field(default_factory=list)
+
+
+class PersonSharedIdentifierCandidate(BaseModel):
+    person_id: str
+    status: str
+    preferred_full_name: str | None = None
+    preferred_phone: str | None = None
+    preferred_email: str | None = None
+    preferred_dob: str | None = None
+    profile_completeness_score: float = 0.0
+    identifier_strength: Literal["strong", "weak"]
+    identifiers: list[SharedIdentifier] = Field(default_factory=list)
 
 
 class SourceRecord(BaseModel):
@@ -167,7 +195,7 @@ class SourceRecord(BaseModel):
     source_record_version: str | None = None
     entity_key: str | None = None
     entity_display_name: str | None = None
-    record_type: Literal["system", "conversation"] = "system"
+    record_type: SourceRecordTypeLiteral = "identity"
     extraction_confidence: float | None = None
     extraction_method: str | None = None
     link_status: str
@@ -177,6 +205,101 @@ class SourceRecord(BaseModel):
     conversation_ref: dict[str, JsonValue] | None = None
     raw_payload: dict[str, JsonValue] | None = None
     normalized_payload: dict[str, JsonValue] | None = None
+
+
+class ChatMessage(BaseModel):
+    """One parsed message from a conversation source record's transcript."""
+
+    timestamp: str
+    timestamp_display: str
+    speaker: str
+    phone: str | None = None
+    role: str | None = None
+    text: str
+
+
+class SourceRecordView(SourceRecord):
+    """v2 presentation model: SourceRecord plus API-formatted display strings.
+
+    Kept separate from SourceRecord so the public person-page contract (which
+    returns SourceRecord) is unaffected.
+    """
+
+    observed_at_display: str
+    ingested_at_display: str
+    extraction_confidence_display: str | None = None
+    chat_transcript: list[ChatMessage] | None = None
+
+
+class SourceRecordEntityFacet(BaseModel):
+    """Per-entity source-record count for a person, for filter chips."""
+
+    source_system: str
+    entity_key: str | None = None
+    entity_display_name: str | None = None
+    count: int
+
+
+GoldenFieldName = Literal[
+    "preferred_full_name",
+    "preferred_dob",
+    "preferred_phone",
+    "preferred_email",
+    "preferred_nric",
+    "preferred_address",
+]
+
+GoldenSourceKind = Literal["source_record_fact", "identifier", "address"]
+
+
+class FieldOption(BaseModel):
+    """One candidate value for an editable golden-profile field.
+
+    Computed server-side from the appropriate graph relationship (HAS_FACT,
+    IDENTIFIED_BY, or LIVES_AT) so the frontend never has to map field names
+    onto the source record's normalized payload itself.
+    """
+
+    source_record_pk: str
+    source_kind: GoldenSourceKind
+    identifier_type: str | None = None
+    value: str
+    value_display: str
+    source_system: str
+    entity_display_name: str | None = None
+    observed_at_display: str | None = None
+    is_current: bool = False
+
+
+class EditableFieldOptions(BaseModel):
+    """All candidate values for one editable golden-profile field."""
+
+    field_name: GoldenFieldName
+    label: str
+    source_kind: GoldenSourceKind
+    current_value_display: str | None = None
+    is_overridden: bool = False
+    options: list[FieldOption] = Field(default_factory=list)
+
+
+class PersonFieldOptions(BaseModel):
+    """Editable golden-profile fields and their selectable source values."""
+
+    person_id: str
+    fields: list[EditableFieldOptions] = Field(default_factory=list)
+
+
+class SharedIdentifierGroup(BaseModel):
+    identifier_type: str
+    normalized_value: str
+    candidate_source_records: list[SourceRecord]
+    current_person_source_records: list[SourceRecord]
+
+
+class PossibleMatchDetail(BaseModel):
+    candidate_person_id: str
+    candidate_name: str | None = None
+    shared_identifier_groups: list[SharedIdentifierGroup]
 
 
 class BankruptcyCase(BaseModel):
@@ -223,7 +346,7 @@ class PersonTimelineGroup(BaseModel):
     source_system: str
     source_record_id: str
     source_record_version: str | None = None
-    record_type: Literal["system", "conversation"] = "system"
+    record_type: SourceRecordTypeLiteral = "identity"
     extraction_confidence: float | None = None
     link_status: str
     linked_person_id: str | None = None
@@ -252,6 +375,9 @@ class MatchDecision(BaseModel):
     created_at: str = ""
     left_person_id: str | None = None
     right_person_id: str | None = None
+    review_case_id: str | None = None
+    review_case_queue_state: str | None = None
+    review_case_assigned_to: str | None = None
 
 
 class ReviewCaseSummary(BaseModel):
@@ -261,7 +387,32 @@ class ReviewCaseSummary(BaseModel):
     assigned_to: str | None = None
     follow_up_at: str | None = None
     sla_due_at: str | None = None
+    resolution: str | None = None
+    resolved_at: str | None = None
+    left_person_id: str | None = None
+    left_person_name: str | None = None
+    left_person_status: str | None = None
+    right_person_id: str | None = None
+    right_person_name: str | None = None
+    right_person_status: str | None = None
     match_decision: MatchDecisionSummary
+
+
+class SalesUnitSummary(BaseModel):
+    machine_unit_id: str
+    machine_product: str | None = None
+    normalized_lta_tag: str | None = None
+    normalized_serial_number: str | None = None
+    conflict_flag: bool = False
+
+
+class SalesOrderSummary(BaseModel):
+    order_id: str
+    order_no: str | None = None
+    total_amount: float | None = None
+    currency: str | None = None
+    ordered_at: str | None = None
+    units: list[SalesUnitSummary] = Field(default_factory=list)
 
 
 class PersonComparisonEntity(BaseModel):
@@ -269,12 +420,17 @@ class PersonComparisonEntity(BaseModel):
     person_id: str | None = None
     source_record_pk: str | None = None
     source_record_id: str | None = None
+    source_system_key: str | None = None
+    observed_at: str | None = None
+    record_type: str | None = None
+    linked_person_id: str | None = None
     status: str | None = None
     preferred_full_name: str | None = None
     preferred_phone: str | None = None
     preferred_email: str | None = None
     preferred_dob: str | None = None
     preferred_address: AddressSummary | None = None
+    sales_summary: SalesOrderSummary | None = None
 
 
 class ReviewCaseDetail(BaseModel):
@@ -290,6 +446,7 @@ class ReviewCaseDetail(BaseModel):
     match_decision: MatchDecision
     comparison_left: PersonComparisonEntity | None = None
     comparison_right: PersonComparisonEntity | None = None
+    shared_identifier_groups: list[SharedIdentifierGroup] = Field(default_factory=list)
     created_at: str = ""
     updated_at: str = ""
 
@@ -302,11 +459,20 @@ class SharedIdentifier(BaseModel):
 class SharedAddress(BaseModel):
     address_id: str
     normalized_full: str | None = None
+    source_system_key: str | None = None
 
 
 class KnowsRelationship(BaseModel):
     relationship_label: str | None = None
     relationship_category: str
+    source_system_key: str | None = None
+
+
+class ConnectionSource(BaseModel):
+    """Source system + entity that established a particular connection."""
+
+    source_system_key: str
+    entity_display_name: str | None = None
 
 
 class PersonConnection(BaseModel):
@@ -317,6 +483,7 @@ class PersonConnection(BaseModel):
     shared_identifiers: list[SharedIdentifier] = Field(default_factory=list)
     shared_addresses: list[SharedAddress] = Field(default_factory=list)
     knows_relationships: list[KnowsRelationship] = Field(default_factory=list)
+    connection_sources: list[ConnectionSource] = Field(default_factory=list)
 
 
 class AuditEvent(BaseModel):
@@ -401,5 +568,11 @@ class ListedPerson(EntityPerson):
     entities: list[PersonEntitySummary] = Field(default_factory=list)
     entity_count: int = 0
     identifier_count: int = 0
+    possible_match_count: int = 0
+    system_match_count: int = 0
     order_count: int = 0
     bankruptcy_case_count: int = 0
+    # Server-computed DOB presentation: ready-to-render string + validity flag,
+    # so the frontend does no date parsing/formatting. See format_display_dob.
+    preferred_dob_display: str = "—"
+    preferred_dob_invalid: bool = False

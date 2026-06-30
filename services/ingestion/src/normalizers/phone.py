@@ -9,6 +9,7 @@ import phonenumbers
 from phonenumbers import NumberParseException
 
 from src.models import QualityFlag
+from src.normalizers.clean import strip_edge_x_markers
 
 DEFAULT_REGION = "SG"
 
@@ -33,7 +34,9 @@ def normalize_phone(
     Returns ``(None, 'invalid_format')`` when the input cannot be parsed,
     and ``(normalized, 'placeholder_value')`` for known placeholder numbers.
     """
-    stripped = raw.strip()
+    # Drop junk x/X edge markers (e.g. ``xxx+6589251818``) before parsing —
+    # phone numbers never legitimately begin or end with ``x``.
+    stripped = strip_edge_x_markers(raw)
     if not stripped:
         return None, QualityFlag.INVALID_FORMAT
 

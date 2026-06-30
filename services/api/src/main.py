@@ -14,6 +14,8 @@ def main() -> None:
         host="0.0.0.0",  # noqa: S104 — container service binds to all interfaces
         port=config.port,
         log_level=config.log_level.lower(),
+        proxy_headers=True,
+        forwarded_allow_ips=config.forwarded_allow_ips,
     )
 
 

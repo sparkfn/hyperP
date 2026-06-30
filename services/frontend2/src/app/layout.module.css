@@ -1,0 +1,456 @@
+.shell {
+  display: flex;
+  height: 100vh;
+  overflow: hidden;
+}
+
+/* ── Sidebar ── */
+.sidebar {
+  width: var(--sidebar-width);
+  transition: width 0.2s ease;
+  flex-shrink: 0;
+  background: var(--bg-sidebar);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  overflow: hidden;
+}
+
+.sidebarLogo {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: var(--navbar-height);
+  padding: 0 16px;
+  border-bottom: 1px solid var(--border);
+  text-decoration: none;
+  flex-shrink: 0;
+}
+
+.sidebarLogoMark {
+  width: 30px;
+  height: 30px;
+  background: var(--accent);
+  border-radius: 7px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: #fff;
+  flex-shrink: 0;
+}
+
+.sidebarLogoText {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-primary);
+  letter-spacing: -0.01em;
+}
+
+.sidebarNav {
+  flex: 1;
+  overflow-y: auto;
+  padding: 10px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.sidebarNav::-webkit-scrollbar { width: 4px; }
+.sidebarNav::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 2px;
+}
+
+.navSection {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin-bottom: 6px;
+}
+
+.navSectionLabel {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-muted);
+  letter-spacing: 0.8px;
+  text-transform: uppercase;
+  padding: 8px 10px 4px;
+}
+
+.navItem {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 10px;
+  border-radius: 8px;
+  text-decoration: none;
+  color: var(--text-sidebar);
+  font-size: 13.5px;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  position: relative;
+}
+
+.navItem:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.navItemActive {
+  background: var(--bg-active);
+  color: var(--text-sidebar-active);
+  font-weight: 600;
+}
+
+.navItemActive .navIcon {
+  color: var(--accent-text);
+}
+
+.navIcon {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+}
+
+/* ── Main ── */
+.main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--bg-app);
+  min-width: 0;
+}
+
+/* ── Sidebar collapsed (icon-only) ── */
+.shellCollapsed .sidebar {
+  width: 52px;
+  overflow: visible;
+  z-index: 10;
+}
+
+.shellCollapsed .sidebarNav {
+  overflow: visible;
+}
+
+.shellCollapsed .sidebarLogo {
+  justify-content: center;
+  padding: 0;
+}
+
+.shellCollapsed .sidebarLogoText {
+  display: none;
+}
+
+.shellCollapsed .navSectionLabel {
+  display: none;
+}
+
+.shellCollapsed .navItem {
+  justify-content: center;
+  padding: 9px 0;
+}
+
+.shellCollapsed .navItem {
+  overflow: visible;
+}
+
+.shellCollapsed .navLabel {
+  display: none;
+}
+
+/* Tooltip */
+.navTooltip {
+  display: none;
+}
+
+.shellCollapsed .navItem:hover .navTooltip {
+  display: flex;
+  align-items: center;
+  position: absolute;
+  left: calc(100% + 10px);
+  top: 50%;
+  transform: translateY(-50%);
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 5px 10px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-primary);
+  white-space: nowrap;
+  box-shadow: 0 4px 12px rgba(15, 23, 42, 0.12);
+  z-index: 200;
+  pointer-events: none;
+}
+
+/* ── Navbar toggle ── */
+.navbarToggle {
+  width: 30px;
+  height: 30px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: transparent;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-secondary);
+  flex-shrink: 0;
+}
+
+.navbarToggle:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+/* ── Navbar ── */
+.navbar {
+  height: var(--navbar-height);
+  flex-shrink: 0;
+  background: var(--bg-navbar);
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 0 20px;
+}
+
+.navbarLeft {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+.navbarBrand {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-muted);
+  letter-spacing: -0.2px;
+}
+
+.navbarRight {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+  margin-left: auto;
+}
+
+.navbarIconBtn {
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: transparent;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-secondary);
+}
+
+.navbarIconBtn:hover {
+  background: var(--bg-hover);
+}
+
+.navbarAvatar {
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  background: var(--accent);
+  border: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  font-weight: 700;
+  color: #fff;
+  flex-shrink: 0;
+  cursor: pointer;
+  transition: opacity 0.12s;
+}
+
+.navbarAvatar:hover { opacity: 0.85; }
+
+/* ── Profile popover ── */
+.profilePopover {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  width: 220px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 12px 32px rgba(15, 23, 42, 0.18);
+  z-index: 300;
+  overflow: hidden;
+}
+
+.profilePopoverHeader {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px;
+}
+
+.profilePopoverAvatar {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  background: var(--accent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  font-weight: 700;
+  color: #fff;
+  flex-shrink: 0;
+}
+
+.profilePopoverMeta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.profilePopoverInitials {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.profilePopoverEmail {
+  font-size: 11px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.profilePopoverDivider {
+  height: 1px;
+  background: var(--border);
+  margin: 0;
+}
+
+.profilePopoverLogout {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 9px 14px;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--bad);
+  text-align: left;
+}
+
+.profilePopoverLogout:hover {
+  background: var(--bad-soft, #fee2e2);
+}
+
+/* ── Mobile drawer ────────────────────────────────── */
+.mobileOverlay {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  z-index: 199;
+  backdrop-filter: blur(1px);
+  -webkit-backdrop-filter: blur(1px);
+}
+
+.mobileSidebar {
+  display: none;
+  position: fixed;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  width: 240px;
+  z-index: 200;
+  transform: translateX(-100%);
+  transition: transform 0.22s ease;
+}
+.mobileSidebarOpen {
+  transform: translateX(0);
+}
+
+/* Desktop sidebar wrapper — hidden on mobile */
+.desktopSidebar {
+  display: contents;
+}
+
+@media (max-width: 768px) {
+  /* Hide desktop sidebar wrapper */
+  .desktopSidebar { display: none; }
+
+  /* Show mobile drawer elements */
+  .mobileOverlay { display: block; }
+  .mobileSidebar {
+    display: flex;
+    flex-direction: column;
+  }
+}
+
+/* ── Content ── */
+.content {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.content::-webkit-scrollbar { width: 6px; }
+.content::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 3px;
+}
+
+@media (max-width: 768px) {
+  .content::after {
+    content: "";
+    display: block;
+    height: 40px;
+    flex-shrink: 0;
+  }
+}
+
+/* Padding lives here — scrollbar stays flush with the edge */
+.contentInner {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 24px 28px;
+}
+
+@media (max-width: 768px) {
+  .contentInner {
+    padding: 16px;
+  }
+}
+
+.bottomSpacer {
+  display: none;
+}
+
+@media (max-width: 768px) {
+  .bottomSpacer {
+    display: block;
+    height: 40px;
+    flex-shrink: 0;
+    width: 100%;
+  }
+}

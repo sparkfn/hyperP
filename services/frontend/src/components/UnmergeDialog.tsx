@@ -22,6 +22,7 @@ interface Props {
   mergeEventId: string;
   summary?: string;
   onClose: () => void;
+  onSuccess?: (mergeEventId: string) => void;
 }
 
 export default function UnmergeDialog({
@@ -29,6 +30,7 @@ export default function UnmergeDialog({
   mergeEventId,
   summary,
   onClose,
+  onSuccess,
 }: Props): ReactElement {
   const [reason, setReason] = useState<string>("");
   const [submitting, setSubmitting] = useState<boolean>(false);
@@ -50,6 +52,7 @@ export default function UnmergeDialog({
         body: JSON.stringify(body),
       });
       showToast(`Unmerged — survivor ${result.survivor_person_id}`, "success");
+      onSuccess?.(mergeEventId);
       onClose();
       setReason("");
       router.refresh();

@@ -24,11 +24,15 @@ from src.config import get_settings
 from src.connectors.base import SourceConnector
 from src.connectors.chat_helpers import (
     ExtractionResult,
+    chat_batch_max_chars,
+    chat_batch_size,
     chat_members_payload,
     extraction_method_label,
     identifiers_from_possible_person,
     inquiries_payload,
+    iter_char_batches,
     latest_timestamp,
+    person_address_payloads,
     possible_person_payload,
     possible_persons_from_extraction,
     run_extraction_batch,
@@ -39,14 +43,12 @@ from src.connectors.chat_helpers import (
 )
 from src.connectors.whatsapp.db import get_engine
 from src.connectors.whatsapp.schema import chats, contacts, messages, orgs, sessions
-from src.exclusion_config import ExclusionFile, load_exclusion_file
+from src.exclusion_config import ExclusionFile
 from src.exclusions import build_exclusion_context, filter_extraction
+from src.ingestion_config import get_ingestion_config
 from src.models import JsonValue
 
 logger = logging.getLogger(__name__)
-
-# LLM batch size — how many conversations to send in parallel.
-LLM_BATCH_SIZE = 20
 
 
 @dataclass
@@ -154,25 +156,22 @@ class WhatsAppChatConnector(SourceConnector):
             company_mobile_numbers = list(settings.company_mobile_numbers)
             company_email_addresses = list(settings.company_email_addresses)
             internal_person_names = list(settings.internal_person_names)
-            exclusions_file = settings.ingestion_exclusions_file
+            file_exclusions = get_ingestion_config().exclusions
         except Exception:
             company_mobile_numbers = []
             company_email_addresses = []
             internal_person_names = []
-            exclusions_file = ""
-        file_exclusions = load_exclusion_file(exclusions_file)
+            file_exclusions = ExclusionFile()
 
-        # Phase 2: run LLM in batches.
+        # Phase 2: run LLM in batches (one combined call per char-bounded batch).
+        texts = [b.msg_text for b in all_bundles]
+        max_chars = chat_batch_max_chars()
+        max_count = chat_batch_size()
         extraction_cache: dict[str, ExtractionResult] = {}
-        for i in range(0, len(all_bundles), LLM_BATCH_SIZE):
-            batch = all_bundles[i : i + LLM_BATCH_SIZE]
-            batch_results = run_extraction_batch([b.msg_text for b in batch])
-            logger.info(
-                "LLM batch %d-%d/%d done",
-                i,
-                min(i + LLM_BATCH_SIZE, len(all_bundles)),
-                len(all_bundles),
-            )
+        for start, end in iter_char_batches(texts, max_chars, max_count):
+            batch = all_bundles[start:end]
+            batch_results = run_extraction_batch(texts[start:end])
+            logger.info("LLM batch %d-%d/%d done", start, end, len(all_bundles))
             for bundle, result in zip(batch, batch_results, strict=True):
                 if result is not None:
                     extraction_cache[bundle.chat_id] = result
@@ -394,6 +393,7 @@ def _build_envelopes(
                 extraction_confidence=person.get("confidence") or extraction["confidence"],
                 extraction_method=extraction_method_label(),
                 conversation_ref=conversation_ref,
+                addresses=person_address_payloads(person),
             )
         )
     return envelopes
@@ -447,6 +447,8 @@ def _message_sort_key(msg: dict[str, object]) -> tuple[int, str, str]:
     ts = msg.get("timestamp")
     if isinstance(ts, datetime):
         return (0, ts.isoformat(), str(msg.get("id") or ""))
+    if isinstance(ts, str) and ts.strip():
+        return (0, ts.strip(), str(msg.get("id") or ""))
     return (1, "", str(msg.get("id") or ""))
 
 

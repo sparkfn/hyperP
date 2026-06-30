@@ -143,12 +143,94 @@ Hard rules must execute before heuristic or LLM logic.
 The current proposed defaults for hard merges and hard blockers are documented
 in [profile-unifier-policy-decisions.md](./profile-unifier-policy-decisions.md).
 
+## Multi-Match Resolution (Link-to-All, No Person Merge)
+
+The engine evaluates **every** candidate, not only the first. When an incoming
+source record independently reaches the **merge** band against more than one
+*distinct* active person, the engine must not silently attach to one and discard
+the rest — but it must also **not** merge those persons. Two persons sharing the
+identifier the record matched on may be genuinely different people (e.g. a shared
+household phone), so collapsing them on the strength of one bridging record would
+risk a false merge, which the precision-first policy forbids.
+
+Resolution:
+
+- choose a **primary** = highest-confidence merge, ties broken deterministically
+  by `person_id` so the outcome does not depend on candidate iteration order
+- link the incoming record and its extracted evidence (source record,
+  identifiers, addresses, facts) to the primary **and to every other
+  merge-matched person** — each person keeps its own `LINKED_TO` /
+  `IDENTIFIED_BY` / `LIVES_AT` / `HAS_FACT` edges for the record
+- recompute each affected person's golden profile
+- the persons remain **separate** — no `MERGED_INTO`, no `merged` status, no
+  person-to-person rewiring
+
+The extra person ids are carried on `MatchResult.additional_linked_person_ids`.
+This applies to both deterministic (confidence 1.0) and heuristic (≥ 0.90) merge
+matches. Hard NO_MATCH rules still drop a conflicting candidate before it can
+become a merge target. Whether the shared evidence means the persons should
+ultimately be merged is left to human review / later analysis, not decided
+automatically here.
+
+## Person-Pair Auditing (Shared-Identifier Bridges)
+
+The decision *not* to auto-merge persons that share an identifier must not mean
+the possibility goes unexamined. After a record is ingested and linked, the
+engine audits whether any identifier the record carries now connects **two or
+more distinct active persons**, and opens a **person↔person review case** for
+each bridged pair so a human can adjudicate.
+
+This runs synchronously inside the ingest transaction, immediately after linking
+(including the Multi-Match link-to-all step), and only **creates audit cases** —
+it never merges or links persons.
+
+Rules:
+
+- **Trigger** is identifier-level, not match-band-level: any usable identifier
+  the record carries that is `IDENTIFIED_BY` ≥ 2 active persons. The bridge may
+  pre-date the incoming record.
+- **Pairwise** cases. A set of *n* bridged persons yields the `C(n, 2)` ordered
+  pairs `{(a, b) : a.person_id < b.person_id}`. The `MatchDecision` uses
+  `engine_type = 'pair_audit'`, `decision = 'review'`, with both `ABOUT_LEFT`
+  and `ABOUT_RIGHT` pointing at `Person` nodes (lower `person_id` on the left).
+  The bridging identifier is recorded in `feature_snapshot`.
+- **Confidence (advisory triage)** — the case carries a real `confidence`, not a
+  placeholder. It reuses the **Layer 2 heuristic scorer** unchanged: the left
+  person is treated as the "incoming record" (its golden identifiers, facts, and
+  address) and scored against the right person's candidate snapshot. The
+  resulting score, the band it would fall in (`heuristic_band`), and the
+  heuristic signals/reasons are merged into the case's `feature_snapshot` so a
+  reviewer can tell a same-name/same-phone duplicate from two distinct people who
+  merely share a phone. The score is **strictly advisory**: `decision` stays
+  `review` regardless of the band — a shared-identifier bridge never auto-merges
+  persons (precision over recall; many bridges are `relationship`-sourced contact
+  rows whose subject is a *different* person). Conversation-promotion does **not**
+  apply to pair audits (the scorer is called with the default `record_type`).
+  *Limitation*: the heuristic layer weights only phone/email as identifier
+  evidence — **govt-ID (NRIC) bridges are scored on name/DOB/address corroboration
+  only**, since exact govt-ID matching belongs to the deterministic layer. The
+  bridge type is still recorded in `feature_snapshot` and the reason string, so a
+  govt-ID bridge is never *hidden* by a low corroboration score.
+- **Fanout cap** — the same per-identifier-type cardinality cap used for
+  candidate generation applies. A non-discriminating identifier (e.g. a shared
+  household/business phone above its cap) produces no pairs.
+- **Deduplication / suppression** — a pair is skipped when an unresolved
+  (`open` / `assigned` / `deferred`) person↔person case already exists for it,
+  when an active `NO_MATCH_LOCK` exists for it (a reviewer already said "not the
+  same person"), or when either person is no longer active.
+
+Resolution of a person-pair case (merge / reject / manual_no_match) follows the
+normal reviewer workflow, including the merge and unmerge review-case
+side-effects defined there.
+
 ## Heuristic Feature Catalog
 
 ### Positive Evidence
 
 - exact verified phone match
 - exact verified email match
+- approximate (near-miss) phone match (same region, NSN edit-distance 1)
+- approximate (near-miss) email match (domain-typo or local-part near-miss)
 - DOB exact match
 - high full-name similarity
 - high address similarity
@@ -184,13 +266,70 @@ pairs at the top of the review band. Two independent conversation records
 that corroborate the same identifier are treated as a single, slightly
 stronger conversation observation — never as deterministic confirmation.
 
+**Per-record-type merge criteria**: some record types carry their own
+auto-merge rule layered onto the generic engine. All promotions share one
+hard-conflict blocker set — strong name mismatch (Jaro-Winkler < 0.50), DOB
+conflict, or a high-fanout phone (> cap) — on top of the deterministic blockers
+(conflicting NRIC, `NO_MATCH_LOCK`).
+
+- **`bankruptcy`** (Layer 1 gate) — the exact-NRIC deterministic merge
+  additionally requires a **partial name match** (JW ≥ 0.50) when *both* sides
+  carry a name. A matching NRIC with a strongly conflicting name does **not**
+  auto-merge (it falls through to Layer 2 → typically a new person + a
+  person-pair review on the shared NRIC). NRIC-alone still merges when a name is
+  absent on either side.
+- **`relationship`** (Layer 2 promotion) — a pair matching on **phone + partial
+  name** (JW ≥ 0.50) is promoted to auto-merge even below the 0.90 band, unless a
+  blocker fires. This mirrors the conversation-promotion mechanism
+  (`_promote_by_record_type`).
+- **`sales`** — *(planned)* phone + partial-name fallback resolution for orders
+  that cannot resolve a customer via the POS foreign key.
+
+`identity` keeps the plain additive behaviour with the unconditional NRIC merge.
+
+### Approximate Identifier Matching
+
+Two normalization-correctness prerequisites make *exact*-match identifiers more
+correct before any approximate scoring runs:
+
+- **Region-hint phone normalization**: eko/speedzone connectors derive an ISO
+  region hint from the source row's `phone_code`/`country` columns and pass it
+  to `normalize_phone`, falling back to the SG default if the hinted region
+  produces `invalid_format`. This resolves the region-ambiguity where an
+  8-digit local number normalizes to a different, both-"valid" E.164 value
+  depending on default region.
+- **Gmail/Googlemail canonicalization**: `john.tan+promo@googlemail.com` and
+  `johntan@gmail.com` normalize to the same `normalized_value` (`+tag`
+  stripped, dots removed from the local part, domain folded to `gmail.com`) —
+  a true equivalence, so these match **exactly** via existing graph traversal,
+  not via approximate scoring.
+
+On top of these, the heuristic scorer runs a second pass over incoming
+phone/email identifiers that did **not** get an exact match: a same-region
+phone whose national significant number is Damerau-Levenshtein distance 1 from
+one of the candidate's phones (`phone_approx_match`), or an email that is a
+single-axis domain-typo or local-part near-miss of one of the candidate's
+emails (`email_approx_match`). Each contributes a small `+0.10` weight.
+
+**Approximate signals are excluded from all promotion paths.** Conversation
+promotion (`_can_promote_conversation`) and the `relationship` promotion branch
+of `_promote_by_record_type` both key off `phone_exact_match`/`email_exact_match
+is True` — `phone_approx_match`/`email_approx_match` are distinct fields that
+neither function reads, so an approximate match can never by itself satisfy a
+promotion criterion. Approximate evidence is also excluded from
+`identifier_system_corroborated` and from fanout checks (fanout concerns the
+*candidate's* value being widely shared, not a value that doesn't match it
+exactly).
+
 ## Example Feature Vector
 
 ```json
 {
   "phone_exact_match": true,
+  "phone_approx_match": false,
   "phone_verified_both": false,
   "email_exact_match": false,
+  "email_approx_match": false,
   "dob_exact_match": true,
   "dob_conflict": false,
   "name_similarity": 0.82,
@@ -202,6 +341,12 @@ stronger conversation observation — never as deterministic confirmation.
   "government_id_conflict": false
 }
 ```
+
+The persisted feature snapshot is built from **structured scoring signals** that
+each scoring function sets directly — it is never derived by parsing the
+human-readable decision `reasons`. Merge-gating logic (e.g. conversation
+promotion) and the stored audit/ML record therefore depend on typed fields, not
+on log wording, so reason text can change without altering decisions.
 
 ## Example Heuristic Scoring Model
 
@@ -217,6 +362,8 @@ weak signals must not produce auto-merge confidence.
 - verified government ID exact match: hard merge
 - exact verified phone: `+0.35`
 - exact verified email: `+0.35`
+- approximate phone match: `+0.10`
+- approximate email match: `+0.10`
 - DOB exact match: `+0.25`
 - high name similarity: `+0.20`
 - high address similarity: `+0.10`
@@ -236,6 +383,24 @@ weak signals must not produce auto-merge confidence.
 - `>= 0.90`: auto-merge
 - `0.60 - 0.89`: review
 - `< 0.60`: no-match
+
+### Name Similarity Bands (Jaro–Winkler)
+
+Name weights are keyed off Jaro–Winkler similarity, whose distribution is *not*
+linear — it credits string length and shared prefixes, so unrelated name pairs
+floor around **0.35–0.49** rather than near zero, while same-person variants sit
+at/above **0.50** (e.g. Bob/Robert ≈ 0.50, Li Wei/Wei Li ≈ 0.67, typos ≈ 0.85+).
+Thresholds are therefore calibrated to that distribution, not to an intuitive
+"percent similar":
+
+- `> 0.80` → high similarity (`+0.20`)
+- `0.50 – 0.80` → medium similarity (`+0.10`)
+- `< 0.50` → strong name mismatch (`-0.25`)
+
+The strong-mismatch cutoff sits just below the same-person floor so clearly
+different names penalize without catching legitimate variants. A false mismatch
+only routes a pair to review (never a false merge), so the cutoff errs high on
+purpose. Retune on labeled benchmark data.
 
 ## LLM Adjudication Contract
 
@@ -292,6 +457,9 @@ Include:
 - name abbreviation cases
 - stale or outdated emails
 - conflicting source records
+- single-digit phone typos and transposed-digit phone numbers (same region)
+- gmail dot/plus-addressing variants (e.g. `john.tan+promo@googlemail.com` vs `johntan@gmail.com`)
+- common email domain typos (e.g. `gmial.com`, `hotmial.com`, `yahooo.com`)
 
 ### Metrics
 

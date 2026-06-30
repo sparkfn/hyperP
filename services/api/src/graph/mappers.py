@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import json
 from datetime import datetime
-from typing import Literal
+from typing import Literal, cast, get_args
 
 from neo4j.time import DateTime as Neo4jDateTime
 from pydantic.types import JsonValue
 
+from src.display_format import format_display_date
 from src.graph.converters import (
     GraphRecord,
     GraphValue,
@@ -16,14 +17,17 @@ from src.graph.converters import (
     to_int,
     to_iso_or_empty,
     to_iso_or_none,
+    to_optional_float,
     to_optional_str,
     to_str,
+    to_str_dict,
     to_str_list,
 )
 from src.types import (
     AddressSummary,
     AuditEvent,
     BankruptcyCase,
+    ConnectionSource,
     DownstreamEvent,
     GraphEdge,
     GraphNode,
@@ -33,17 +37,39 @@ from src.types import (
     Person,
     PersonComparisonEntity,
     PersonConnection,
+    PersonEntitySummary,
     PersonGraph,
     PersonIdentifier,
+    PersonSharedIdentifierCandidate,
     PersonStatus,
     PersonTimelineGroup,
+    PossibleMatchDetail,
     ReviewCaseDetail,
     ReviewCaseSummary,
+    SalesOrderSummary,
+    SalesUnitSummary,
     SharedAddress,
     SharedIdentifier,
+    SharedIdentifierGroup,
     SourceRecord,
+    SourceRecordEntityFacet,
+    SourceRecordTypeLiteral,
     TimelineFact,
 )
+
+_RECORD_TYPES: frozenset[str] = frozenset(get_args(SourceRecordTypeLiteral))
+
+
+def _to_record_type(value: GraphValue) -> SourceRecordTypeLiteral:
+    """Coerce a stored ``record_type`` to the current literal.
+
+    Legacy ``'system'`` rows (pre-backfill) and any unknown value fall back to
+    ``'identity'`` — the behaviour-preserving default for the system family.
+    """
+    raw = to_str(value)
+    if raw in _RECORD_TYPES:
+        return cast("SourceRecordTypeLiteral", raw)
+    return "identity"
 
 
 def _as_dict(value: GraphValue) -> GraphRecord:
@@ -87,6 +113,7 @@ def map_person(record: GraphRecord, address_key: str = "preferred_address") -> P
         golden_profile_version=to_optional_str(p.get("golden_profile_version")),
         source_record_count=to_int(record.get("source_record_count")),
         connection_count=to_int(record.get("connection_count")),
+        lifetime_value=to_optional_float(record.get("lifetime_value")),
         created_at=to_iso_or_empty(p.get("created_at")),
         updated_at=to_iso_or_empty(p.get("updated_at")),
     )
@@ -101,7 +128,7 @@ def map_source_record(record: GraphRecord) -> SourceRecord:
         source_record_version=to_optional_str(sr.get("source_record_version")),
         entity_key=to_optional_str(record.get("entity_key")),
         entity_display_name=to_optional_str(record.get("entity_display_name")),
-        record_type="conversation" if to_str(sr.get("record_type")) == "conversation" else "system",
+        record_type=_to_record_type(sr.get("record_type")),
         extraction_confidence=(
             to_float(sr.get("extraction_confidence"))
             if sr.get("extraction_confidence") is not None
@@ -115,6 +142,15 @@ def map_source_record(record: GraphRecord) -> SourceRecord:
         conversation_ref=_parse_normalized_payload(sr.get("conversation_ref")) or None,
         raw_payload=_parse_normalized_payload(sr.get("raw_payload")) or None,
         normalized_payload=_parse_normalized_payload(sr.get("normalized_payload")),
+    )
+
+
+def map_source_record_entity_facet(record: GraphRecord) -> SourceRecordEntityFacet:
+    return SourceRecordEntityFacet(
+        source_system=to_str(record.get("source_system")),
+        entity_key=to_optional_str(record.get("entity_key")),
+        entity_display_name=to_optional_str(record.get("entity_display_name")),
+        count=to_int(record.get("count")),
     )
 
 
@@ -299,7 +335,7 @@ def map_timeline_group(record: GraphRecord) -> PersonTimelineGroup:
         source_system=to_str(record.get("source_system")),
         source_record_id=to_str(sr.get("source_record_id")),
         source_record_version=to_optional_str(sr.get("source_record_version")),
-        record_type="conversation" if to_str(sr.get("record_type")) == "conversation" else "system",
+        record_type=_to_record_type(sr.get("record_type")),
         extraction_confidence=(
             to_float(sr.get("extraction_confidence"))
             if sr.get("extraction_confidence") is not None
@@ -314,7 +350,38 @@ def map_timeline_group(record: GraphRecord) -> PersonTimelineGroup:
     )
 
 
+def map_person_entity_dict(raw: GraphValue) -> PersonEntitySummary:
+    entity = _as_dict(raw)
+    return PersonEntitySummary(
+        entity_key=to_str(entity.get("entity_key")),
+        display_name=to_optional_str(entity.get("display_name")),
+        entity_type=to_optional_str(entity.get("entity_type")),
+        country_code=to_optional_str(entity.get("country_code")),
+        is_active=bool(entity.get("is_active", True)),
+        source_record_count=to_int(entity.get("source_record_count")),
+    )
+
+
+def _map_source_records(value: GraphValue) -> list[SourceRecord]:
+    if not isinstance(value, list):
+        return []
+    records: list[SourceRecord] = []
+    for raw in value:
+        record = _as_dict(raw)
+        if "source_record" in record:
+            records.append(map_source_record(record))
+        elif "source_record_pk" in record:
+            records.append(map_source_record({"source_record": record, **record}))
+    return records
+
+
 def map_person_identifier(record: GraphRecord) -> PersonIdentifier:
+    raw_entities = record.get("entities")
+    entities = (
+        [map_person_entity_dict(raw) for raw in raw_entities]
+        if isinstance(raw_entities, list)
+        else []
+    )
     return PersonIdentifier(
         identifier_type=to_str(record.get("identifier_type")),
         normalized_value=to_str(record.get("normalized_value")),
@@ -324,6 +391,8 @@ def map_person_identifier(record: GraphRecord) -> PersonIdentifier:
         source_system_key=to_optional_str(record.get("source_system_key")),
         source_record_pks=to_str_list(record.get("source_record_pks")),
         source_record_ids=to_str_list(record.get("source_record_ids")),
+        entities=entities,
+        source_records=_map_source_records(record.get("source_records")),
     )
 
 
@@ -340,6 +409,54 @@ def _map_shared_identifiers(value: GraphValue) -> list[SharedIdentifier]:
     ]
 
 
+def _identifier_strength(identifiers: list[SharedIdentifier]) -> Literal["strong", "weak"]:
+    if any(identifier.identifier_type == "nric" for identifier in identifiers):
+        return "strong"
+    return "weak"
+
+
+def map_shared_identifier_candidate(record: GraphRecord) -> PersonSharedIdentifierCandidate:
+    identifiers = _map_shared_identifiers(record.get("identifiers"))
+    return PersonSharedIdentifierCandidate(
+        person_id=to_str(record.get("person_id")),
+        status=to_str(record.get("status")),
+        preferred_full_name=to_optional_str(record.get("preferred_full_name")),
+        preferred_phone=to_optional_str(record.get("preferred_phone")),
+        preferred_email=to_optional_str(record.get("preferred_email")),
+        preferred_dob=_fmt_dob(to_optional_str(record.get("preferred_dob"))),
+        profile_completeness_score=to_float(record.get("profile_completeness_score")),
+        identifier_strength=_identifier_strength(identifiers),
+        identifiers=identifiers,
+    )
+
+
+def _map_possible_match_source_records(value: GraphValue) -> list[SourceRecord]:
+    if not isinstance(value, list):
+        return []
+    return [map_source_record({"source_record": _as_dict(raw), **_as_dict(raw)}) for raw in value]
+
+
+def map_possible_match_detail(records: list[GraphRecord]) -> PossibleMatchDetail:
+    first = records[0]
+    return PossibleMatchDetail(
+        candidate_person_id=to_str(first.get("candidate_person_id")),
+        candidate_name=to_optional_str(first.get("candidate_name")),
+        shared_identifier_groups=[
+            SharedIdentifierGroup(
+                identifier_type=to_str(record.get("identifier_type")),
+                normalized_value=to_str(record.get("normalized_value")),
+                candidate_source_records=_map_possible_match_source_records(
+                    record.get("candidate_source_records")
+                ),
+                current_person_source_records=_map_possible_match_source_records(
+                    record.get("current_person_source_records")
+                ),
+            )
+            for record in records
+        ],
+    )
+
+
 def _map_shared_addresses(value: GraphValue) -> list[SharedAddress]:
     if not isinstance(value, list):
         return []
@@ -347,6 +464,7 @@ def _map_shared_addresses(value: GraphValue) -> list[SharedAddress]:
         SharedAddress(
             address_id=to_str(d.get("address_id")),
             normalized_full=to_optional_str(d.get("normalized_full")),
+            source_system_key=to_optional_str(d.get("source_system_key")),
         )
         for raw in value
         if (d := _as_dict(raw)).get("address_id")
@@ -360,9 +478,23 @@ def _map_knows_relationships(value: GraphValue) -> list[KnowsRelationship]:
         KnowsRelationship(
             relationship_label=to_optional_str(d.get("relationship_label")),
             relationship_category=to_str(d.get("relationship_category")),
+            source_system_key=to_optional_str(d.get("source_system_key")),
         )
         for raw in value
         if (d := _as_dict(raw)).get("relationship_category")
+    ]
+
+
+def _map_connection_sources(value: GraphValue) -> list[ConnectionSource]:
+    if not isinstance(value, list):
+        return []
+    return [
+        ConnectionSource(
+            source_system_key=to_str(d.get("source_system_key")),
+            entity_display_name=to_optional_str(d.get("entity_display_name")),
+        )
+        for raw in value
+        if (d := _as_dict(raw)).get("source_system_key")
     ]
 
 
@@ -375,15 +507,13 @@ def map_connection(record: GraphRecord) -> PersonConnection:
         shared_identifiers=_map_shared_identifiers(record.get("shared_identifiers")),
         shared_addresses=_map_shared_addresses(record.get("shared_addresses")),
         knows_relationships=_map_knows_relationships(record.get("knows_relationships")),
+        connection_sources=_map_connection_sources(record.get("connection_sources")),
     )
 
 
 def map_audit_event(record: GraphRecord) -> AuditEvent:
     me = _as_dict(record.get("merge_event"))
-    metadata_raw = me.get("metadata")
-    metadata: dict[str, str] = {}
-    if isinstance(metadata_raw, dict):
-        metadata = {to_str(k): to_str(v) for k, v in metadata_raw.items()}
+    metadata = to_str_dict(me.get("metadata"))
     return AuditEvent(
         merge_event_id=to_str(me.get("merge_event_id")),
         event_type=to_str(me.get("event_type")),
@@ -412,6 +542,9 @@ def map_match_decision(record: GraphRecord) -> MatchDecision:
         created_at=to_iso_or_empty(md.get("created_at")),
         left_person_id=to_optional_str(record.get("left_person_id")),
         right_person_id=to_optional_str(record.get("right_person_id")),
+        review_case_id=to_optional_str(record.get("review_case_id")),
+        review_case_queue_state=to_optional_str(record.get("review_case_queue_state")),
+        review_case_assigned_to=to_optional_str(record.get("review_case_assigned_to")),
     )
 
 
@@ -425,6 +558,14 @@ def map_review_case_summary(record: GraphRecord) -> ReviewCaseSummary:
         assigned_to=to_optional_str(rc.get("assigned_to")),
         follow_up_at=to_iso_or_none(rc.get("follow_up_at")),
         sla_due_at=to_iso_or_none(rc.get("sla_due_at")),
+        resolution=to_optional_str(rc.get("resolution")),
+        resolved_at=to_iso_or_none(rc.get("resolved_at")),
+        left_person_id=to_optional_str(record.get("left_person_id")),
+        left_person_name=to_optional_str(record.get("left_person_name")),
+        left_person_status=to_optional_str(record.get("left_person_status")),
+        right_person_id=to_optional_str(record.get("right_person_id")),
+        right_person_name=to_optional_str(record.get("right_person_name")),
+        right_person_status=to_optional_str(record.get("right_person_status")),
         match_decision=MatchDecisionSummary(
             match_decision_id=to_str(md.get("match_decision_id")),
             engine_type=to_str(md.get("engine_type")),
@@ -434,15 +575,58 @@ def map_review_case_summary(record: GraphRecord) -> ReviewCaseSummary:
     )
 
 
+def _map_sales_summary(
+    sales_order: GraphValue,
+    sales_units: GraphValue,
+) -> SalesOrderSummary | None:
+    order = _as_dict(sales_order)
+    if not order:
+        return None
+    units: list[SalesUnitSummary] = []
+    if isinstance(sales_units, list):
+        for raw in sales_units:
+            u = _as_dict(raw)
+            if not u:
+                continue
+            units.append(
+                SalesUnitSummary(
+                    machine_unit_id=to_str(u.get("machine_unit_id")),
+                    machine_product=to_optional_str(u.get("machine_product")),
+                    normalized_lta_tag=to_optional_str(u.get("normalized_lta_tag")),
+                    normalized_serial_number=to_optional_str(u.get("normalized_serial_number")),
+                    conflict_flag=bool(u.get("conflict_flag", False)),
+                )
+            )
+    return SalesOrderSummary(
+        order_id=to_str(order.get("order_id")),
+        order_no=to_optional_str(order.get("order_no")),
+        total_amount=to_optional_float(order.get("total_amount")),
+        currency=to_optional_str(order.get("currency")),
+        ordered_at=to_optional_str(order.get("ordered_at")),
+        units=units,
+    )
+
+
+def _fmt_dob(value: str | None) -> str | None:
+    if value is None:
+        return None
+    formatted = format_display_date(value)
+    return formatted if formatted else value
+
+
 def _map_comparison_entity(
-    kind: GraphValue, entity: GraphValue, address: GraphValue
+    kind: GraphValue,
+    entity: GraphValue,
+    address: GraphValue,
+    sales_order: GraphValue = None,
+    sales_units: GraphValue = None,
 ) -> PersonComparisonEntity | None:
     e = _as_dict(entity)
     if not e:
         return None
     kind_str = to_optional_str(kind)
     if kind_str == "source_record":
-        return _map_source_record_comparison(e)
+        return _map_source_record_comparison(e, sales_order=sales_order, sales_units=sales_units)
     return PersonComparisonEntity(
         entity_kind="person",
         person_id=to_optional_str(e.get("person_id")),
@@ -450,23 +634,32 @@ def _map_comparison_entity(
         preferred_full_name=to_optional_str(e.get("preferred_full_name")),
         preferred_phone=to_optional_str(e.get("preferred_phone")),
         preferred_email=to_optional_str(e.get("preferred_email")),
-        preferred_dob=to_optional_str(e.get("preferred_dob")),
+        preferred_dob=_fmt_dob(to_optional_str(e.get("preferred_dob"))),
         preferred_address=map_address(address),
     )
 
 
-def _map_source_record_comparison(e: GraphRecord) -> PersonComparisonEntity:
+def _map_source_record_comparison(
+    e: GraphRecord,
+    sales_order: GraphValue = None,
+    sales_units: GraphValue = None,
+) -> PersonComparisonEntity:
     payload = _parse_normalized_payload(e.get("normalized_payload"))
     return PersonComparisonEntity(
         entity_kind="source_record",
         source_record_pk=to_optional_str(e.get("source_record_pk")),
         source_record_id=to_optional_str(e.get("source_record_id")),
+        source_system_key=to_optional_str(e.get("source_system_key")),
+        observed_at=to_iso_or_none(e.get("observed_at")),
+        record_type=to_optional_str(e.get("record_type")),
+        linked_person_id=to_optional_str(e.get("linked_person_id")),
         status=None,
         preferred_full_name=_attribute_value(payload, "full_name"),
         preferred_phone=_identifier_value(payload, "phone"),
         preferred_email=_identifier_value(payload, "email"),
-        preferred_dob=_attribute_value(payload, "dob"),
+        preferred_dob=_fmt_dob(_attribute_value(payload, "dob")),
         preferred_address=_source_record_address(payload),
+        sales_summary=_map_sales_summary(sales_order, sales_units),
     )
 
 
@@ -578,9 +771,16 @@ def map_review_case_detail(record: GraphRecord) -> ReviewCaseDetail:
     actions_raw = rc.get("actions")
     actions: list[dict[str, str | None]] = []
     if isinstance(actions_raw, list):
+        # Each entry is a JSON string (Neo4j cannot store maps as properties).
         for raw in actions_raw:
-            item = _as_dict(raw)
-            actions.append({to_str(k): to_optional_str(v) for k, v in item.items()})
+            if not isinstance(raw, str):
+                continue
+            try:
+                loaded: object = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(loaded, dict):
+                actions.append({to_str(k): to_optional_str(v) for k, v in loaded.items()})
     return ReviewCaseDetail(
         review_case_id=to_str(rc.get("review_case_id")),
         queue_state=to_str(rc.get("queue_state")),
@@ -593,7 +793,11 @@ def map_review_case_detail(record: GraphRecord) -> ReviewCaseDetail:
         actions=actions,
         match_decision=map_match_decision(record),
         comparison_left=_map_comparison_entity(
-            record.get("left_kind"), record.get("left_entity"), record.get("left_address")
+            record.get("left_kind"),
+            record.get("left_entity"),
+            record.get("left_address"),
+            sales_order=record.get("sales_order"),
+            sales_units=record.get("sales_units"),
         ),
         comparison_right=_map_comparison_entity(
             record.get("right_kind"), record.get("right_entity"), record.get("right_address")
@@ -657,14 +861,10 @@ def map_person_graph(record: GraphRecord) -> PersonGraph:
 
 
 def map_downstream_event(record: GraphRecord) -> DownstreamEvent:
-    metadata_raw = record.get("metadata")
-    metadata: dict[str, str] = {}
-    if isinstance(metadata_raw, dict):
-        metadata = {to_str(k): to_str(v) for k, v in metadata_raw.items()}
     return DownstreamEvent(
         event_id=to_str(record.get("event_id")),
         event_type=to_str(record.get("event_type")),
         affected_person_ids=to_str_list(record.get("affected_person_ids")),
-        metadata=metadata,
+        metadata=to_str_dict(record.get("metadata")),
         created_at=to_str(record.get("created_at")),
     )

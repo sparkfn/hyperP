@@ -7,9 +7,12 @@ from pathlib import Path
 from pytest import MonkeyPatch
 from src.connectors.dumps.connectors import (
     FundboxSalesDumpConnector,
+    _build_fundbox_contact,
+    _build_fundbox_legacy,
     _fetch_phppos_dump_sales,
     get_dump_connector,
 )
+from src.connectors.dumps.reader import DumpRow
 from src.connectors.sggov.bankruptcy import SGGovernmentBankruptcyConnector
 from src.connectors.sggov.rental_flats import SGGovernmentRentalFlatsConnector
 
@@ -43,6 +46,7 @@ COPY public.chats (id, name, whatsapp_user_id) FROM stdin;
 6599990000@c.us	Ada Chat	6500000000@c.us
 \\.
 COPY public.messages (id, chat_id, from_id, to_id, author_id, body, timestamp, from_me) FROM stdin;
+msg-2	6599990000@c.us	6599990000@c.us	6500000000@c.us	\\N	Second message	2026-05-06 10:05:00	f
 msg-1	6599990000@c.us	6599990000@c.us	6500000000@c.us	\\N	Hi, I am Ada	2026-05-06 10:00:00	f
 \\.
 COPY public.contacts (jid, phone_number, name) FROM stdin;
@@ -52,6 +56,8 @@ COPY public.contacts (jid, phone_number, name) FROM stdin;
         encoding="utf-8",
     )
     monkeypatch.setattr("src.connectors.dumps.connectors.run_extraction_batch", _sample_extraction)
+    monkeypatch.setattr("src.connectors.dumps.connectors.chat_batch_size", lambda: 20)
+    monkeypatch.setattr("src.connectors.dumps.connectors.chat_batch_max_chars", lambda: 1_000_000)
     monkeypatch.setattr(
         "src.connectors.whatsapp.connector.extraction_method_label", lambda: "llm:test"
     )
@@ -62,9 +68,13 @@ COPY public.contacts (jid, phone_number, name) FROM stdin;
     assert len(records) == 1
     assert records[0]["source_record_id"] == "whatsapp-chat-6599990000@c.us-person-1"
     assert records[0]["record_type"] == "conversation"
-    assert records[0]["observed_at"] == "2026-05-06T10:00:00Z"
+    assert records[0]["observed_at"] == "2026-05-06T10:05:00Z"
     assert records[0]["attributes"] == {"full_name": "Ada Lovelace"}
     assert records[0]["identifiers"] == []
+    assert records[0]["raw_payload"]["messages_text"].splitlines() == [
+        "[2026-05-06 10:00:00] Ada Chat (+6599990000): Hi, I am Ada",
+        "[2026-05-06 10:05:00] Ada Chat (+6599990000): Second message",
+    ]
 
 
 def test_bitrix_dump_connector_yields_conversation_envelope(
@@ -126,7 +136,7 @@ INSERT INTO `categories` VALUES (1,'EkoSG');
 INSERT INTO `deals` VALUES (10,'B10','Deal for Ada','NEW',1,0,1);
 INSERT INTO `chats` VALUES (5,10,'chat-5','2026-05-06 10:00:00','2026-05-06 09:00:00');
 INSERT INTO `personalize_message_logs` VALUES
-(100,5,'Ada Lovelace','Hello Ada','LLM fallback','2026-05-06 09:30:00');
+(100,5,'Ada Lovelace','Hello Ada','LLM fallback','2026-05-06 09:50:00');
 INSERT INTO `sent_message_logs` VALUES (200,5,300,'2026-05-06 09:45:00');
 INSERT INTO `templates` VALUES (300,'Template body');
 INSERT INTO `agents` VALUES (400,'agent-1','Agent Smith',1);
@@ -135,6 +145,8 @@ INSERT INTO `agent_chat` VALUES (5,400);
         encoding="utf-8",
     )
     monkeypatch.setattr("src.connectors.dumps.connectors.run_extraction_batch", _sample_extraction)
+    monkeypatch.setattr("src.connectors.dumps.connectors.chat_batch_size", lambda: 20)
+    monkeypatch.setattr("src.connectors.dumps.connectors.chat_batch_max_chars", lambda: 1_000_000)
     monkeypatch.setattr(
         "src.connectors.bitrix.connector.extraction_method_label", lambda: "llm:test"
     )
@@ -153,9 +165,15 @@ INSERT INTO `agent_chat` VALUES (5,400);
         "bitrix_chat_id": "chat-5",
         "tenant": "eko",
     }
+    assert records[0]["raw_payload"]["conversation_text"].splitlines() == [
+        "[Deal] Deal for Ada",
+        "[2026-05-06 09:45:00] Template: Template body",
+        "[2026-05-06 09:50:00] Client: Ada Lovelace",
+        "[2026-05-06 09:50:00] Sent: Hello Ada",
+    ]
 
 
-def test_eko_dump_connector_yields_system_envelope(tmp_path: Path) -> None:
+def test_eko_dump_connector_yields_identity_envelope(tmp_path: Path) -> None:
     dump_path = tmp_path / "eko.sql"
     dump_path.write_text(
         """
@@ -210,7 +228,9 @@ INSERT INTO `phppos_customers` VALUES
     records = list(connector.fetch_records())
 
     assert len(records) == 1
-    assert records[0]["source_record_id"] == "eko_phppos-customer-11"
+    # Keyed on person_id (7), not customers.id (11) — see EkoConnector._build_one.
+    assert records[0]["source_record_id"] == "eko_phppos-customer-7"
+    assert records[0]["record_type"] == "identity"
     assert records[0]["attributes"] == {
         "full_name": "Ada Lovelace",
         "address": "One, Two, Singapore, SG, 123456, SG",
@@ -230,6 +250,67 @@ INSERT INTO `phppos_customers` VALUES
     assert raw_person["custom_field_5_value"] == "15"
     assert raw_person["custom_field_8_value"] == "East"
     assert raw_person["custom_field_10_value"] == "Y"
+
+
+def test_eko_dump_connector_derives_phone_region_hint(tmp_path: Path) -> None:
+    dump_path = tmp_path / "eko_my.sql"
+    dump_path.write_text(
+        """
+CREATE TABLE `phppos_people` (
+  `person_id` int NOT NULL,
+  `first_name` varchar(255),
+  `last_name` varchar(255),
+  `full_name` varchar(255),
+  `phone_number` varchar(255),
+  `email` varchar(255),
+  `address_1` varchar(255),
+  `address_2` varchar(255),
+  `city` varchar(255),
+  `state` varchar(255),
+  `zip` varchar(255),
+  `country` varchar(255),
+  `comments` text,
+  `create_date` datetime,
+  `last_modified` datetime,
+  `title` varchar(255),
+  `phone_code` varchar(255)
+);
+CREATE TABLE `phppos_customers` (
+  `id` int NOT NULL,
+  `person_id` int,
+  `deleted` int,
+  `account_number` varchar(255),
+  `company_name` varchar(255),
+  `custom_field_1_value` varchar(255),
+  `custom_field_2_value` varchar(255),
+  `custom_field_3_value` varchar(255),
+  `custom_field_4_value` varchar(255),
+  `custom_field_5_value` varchar(255),
+  `custom_field_6_value` varchar(255),
+  `custom_field_7_value` varchar(255),
+  `custom_field_8_value` varchar(255),
+  `custom_field_9_value` varchar(255),
+  `custom_field_10_value` varchar(255)
+);
+INSERT INTO `phppos_people` VALUES
+(9,'Wei','Tan','Wei Tan','96542555','wei@example.test','One','Two',
+'Kuala Lumpur','KL','50000','Malaysia','notes','2026-05-01 01:00:00','2026-05-06 02:00:00',
+'Mr','60');
+INSERT INTO `phppos_customers` VALUES
+(13,9,0,'ACC-13','Wei Co','S1234568A','unused-2','unused-3','2026-12-31','15',
+'unused-6','unused-7','KL','1991-02-02','Y');
+""".strip(),
+        encoding="utf-8",
+    )
+
+    connector = get_dump_connector("eko_phppos", dump_path)
+    records = list(connector.fetch_records())
+
+    assert len(records) == 1
+    phone_items = [item for item in records[0]["identifiers"] if item["type"] == "phone"]
+    assert phone_items == [
+        {"type": "phone", "value": "96542555", "is_verified": False, "region_hint": "MY"}
+    ]
 
 
 def test_speedzone_dump_connector_preserves_custom_field_mapping(tmp_path: Path) -> None:
@@ -287,12 +368,26 @@ INSERT INTO `phppos_customers` VALUES
     records = list(connector.fetch_records())
 
     assert len(records) == 1
-    assert records[0]["source_record_id"] == "speedzone_phppos-customer-12"
+    # Keyed on person_id (8), not customers.id (12).
+    assert records[0]["source_record_id"] == "speedzone_phppos-customer-8"
     assert records[0]["attributes"] == {
         "full_name": "Grace Hopper",
         "address": "Three, Four, Singapore, SG, 654321, SG",
         "dob": "1992-02-29",
     }
+    assert records[0]["addresses"] == [
+        {
+            "raw": "Three, Four, Singapore, SG, 654321, SG",
+            "street_number": None,
+            "street_name": "Three",
+            "unit_number": None,
+            "building_name": "Four",
+            "city": "Singapore",
+            "state_province": "SG",
+            "postal_code": "654321",
+            "country_code": "SG",
+        }
+    ]
     identifiers = {item["type"]: item["value"] for item in records[0]["identifiers"]}
     raw_person = records[0]["raw_payload"]["person"]
     assert identifiers["nric"] == "S7654321B"
@@ -305,6 +400,147 @@ INSERT INTO `phppos_customers` VALUES
     assert raw_person["custom_field_8_value"] == "SBA1234A"
     assert raw_person["custom_field_9_value"] == "1992-02-29"
     assert raw_person["custom_field_10_value"] == "SBB5678B"
+
+
+def test_speedzone_dump_connector_derives_phone_region_hint(tmp_path: Path) -> None:
+    dump_path = tmp_path / "speedzone_my.sql"
+    dump_path.write_text(
+        """
+CREATE TABLE `phppos_people` (
+  `person_id` int NOT NULL,
+  `first_name` varchar(255),
+  `last_name` varchar(255),
+  `full_name` varchar(255),
+  `phone_number` varchar(255),
+  `email` varchar(255),
+  `address_1` varchar(255),
+  `address_2` varchar(255),
+  `city` varchar(255),
+  `state` varchar(255),
+  `zip` varchar(255),
+  `country` varchar(255),
+  `comments` text,
+  `create_date` datetime,
+  `last_modified` datetime,
+  `title` varchar(255),
+  `phone_code` varchar(255)
+);
+CREATE TABLE `phppos_customers` (
+  `id` int NOT NULL,
+  `person_id` int,
+  `deleted` int,
+  `account_number` varchar(255),
+  `company_name` varchar(255),
+  `custom_field_1_value` varchar(255),
+  `custom_field_2_value` varchar(255),
+  `custom_field_3_value` varchar(255),
+  `custom_field_4_value` varchar(255),
+  `custom_field_5_value` varchar(255),
+  `custom_field_6_value` varchar(255),
+  `custom_field_7_value` varchar(255),
+  `custom_field_8_value` varchar(255),
+  `custom_field_9_value` varchar(255),
+  `custom_field_10_value` varchar(255)
+);
+INSERT INTO `phppos_people` VALUES
+(10,'Wei','Tan','Wei Tan','96542555','wei@example.test','One','Two',
+'Kuala Lumpur','KL','50000','Malaysia','notes','2026-05-01 01:00:00','2026-05-06 02:00:00',
+'Mr','60');
+INSERT INTO `phppos_customers` VALUES
+(14,10,0,'ACC-14','Wei Co','S1234569A','unused-2','unused-3','2026-12-31','15',
+'unused-6','unused-7','KL','1991-02-02','Y');
+""".strip(),
+        encoding="utf-8",
+    )
+
+    connector = get_dump_connector("speedzone_phppos", dump_path)
+    records = list(connector.fetch_records())
+
+    assert len(records) == 1
+    phone_items = [item for item in records[0]["identifiers"] if item["type"] == "phone"]
+    assert phone_items == [
+        {"type": "phone", "value": "96542555", "is_verified": False, "region_hint": "MY"}
+    ]
+
+
+def test_fundbox_contact_dump_is_relationship_record() -> None:
+    record = _build_fundbox_contact(
+        DumpRow(
+            {
+                "id": 9,
+                "user_id": 7,
+                "mobile_number": "6599990000",
+                "full_name": "Next Of Kin",
+                "relationship": "mother",
+                "updated_at": "2026-05-06 10:00:00",
+                "created_at": "2026-05-01 10:00:00",
+            }
+        )
+    )
+
+    assert record["source_record_id"] == "fundbox_consumer_backend-contact-9"
+    assert record["record_type"] == "relationship"
+    assert record["attributes"]["relationship_to_referrer"] == "mother"
+
+
+def test_fundbox_legacy_dump_preserves_multiple_addresses() -> None:
+    record = _build_fundbox_legacy(
+        DumpRow(
+            {
+                "id": 7,
+                "nric": "S1234567A",
+                "email": "ada@example.test",
+                "mobile_number": "6599990000",
+                "whatsapp_phone": None,
+                "facebook_id": None,
+                "updated_at": "2026-05-06 10:00:00",
+                "created_at": "2026-05-01 10:00:00",
+                "full_name": "Ada Lovelace",
+                "date_of_birth": "1992-02-29",
+                "gender": "F",
+                "nationality": "SG",
+            }
+        ),
+        [
+            DumpRow(
+                {
+                    "address_line_1": "10 Orchard Road",
+                    "address_line_2": "Lucky Plaza",
+                    "street": "Orchard Road",
+                    "building": "Lucky Plaza",
+                    "block": "10",
+                    "floor": "05",
+                    "unit": "123",
+                    "city": "Singapore",
+                    "state": None,
+                    "postal_code": "238863",
+                    "country": "SG",
+                }
+            ),
+            DumpRow(
+                {
+                    "address_line_1": "20 Second Street",
+                    "address_line_2": None,
+                    "street": "Second Street",
+                    "building": None,
+                    "block": "20",
+                    "floor": "07",
+                    "unit": "456",
+                    "city": "Singapore",
+                    "state": None,
+                    "postal_code": "654321",
+                    "country": "SG",
+                }
+            ),
+        ],
+    )
+
+    assert len(record["addresses"]) == 2
+    assert record["addresses"][0]["postal_code"] == "238863"
+    assert record["addresses"][0]["unit_number"] == "#05-123"
+    assert record["addresses"][1]["postal_code"] == "654321"
+    assert record["addresses"][1]["unit_number"] == "#07-456"
+    assert record["attributes"]["address"].startswith("10 Orchard Road")
 
 
 def test_fundbox_sales_dump_resolves_product_from_product_variant_id(tmp_path: Path) -> None:
@@ -431,21 +667,22 @@ def test_fundbox_dump_keeps_device_ids_out_of_identifiers() -> None:
 
 def test_real_non_chat_dumps_yield_first_records() -> None:
     cases = [
-        ("fundbox_consumer_backend", "fundbox_2026-05-06.sql"),
-        ("fundbox_consumer_backend:contacts", "fundbox_2026-05-06.sql"),
-        ("fundbox_consumer_backend:legacy", "fundbox_2026-05-06.sql"),
-        ("fundbox_consumer_backend:merged", "fundbox_2026-05-06.sql"),
-        ("fundbox_consumer_backend:sales", "fundbox_2026-05-06.sql"),
-        ("eko_phppos", "eko_phppos_2026-05-06.sql"),
-        ("eko_phppos:sales", "eko_phppos_2026-05-06.sql"),
-        ("speedzone_phppos", "speedzone_phppos_2026-05-06.sql"),
-        ("speedzone_phppos:sales", "speedzone_phppos_2026-05-06.sql"),
+        ("fundbox_consumer_backend", "fundbox_2026-05-06.sql", "identity"),
+        ("fundbox_consumer_backend:contacts", "fundbox_2026-05-06.sql", "relationship"),
+        ("fundbox_consumer_backend:legacy", "fundbox_2026-05-06.sql", "identity"),
+        ("fundbox_consumer_backend:merged", "fundbox_2026-05-06.sql", "identity"),
+        ("fundbox_consumer_backend:sales", "fundbox_2026-05-06.sql", "sales"),
+        ("eko_phppos", "eko_phppos_2026-05-06.sql", "identity"),
+        ("eko_phppos:sales", "eko_phppos_2026-05-06.sql", "sales"),
+        ("speedzone_phppos", "speedzone_phppos_2026-05-06.sql", "identity"),
+        ("speedzone_phppos:sales", "speedzone_phppos_2026-05-06.sql", "sales"),
     ]
-    for source_key, dump_file in cases:
+    for source_key, dump_file, expected_record_type in cases:
         connector = get_dump_connector(source_key, Path(".dumps") / dump_file)
         record = next(connector.fetch_records(), None)
         assert record is not None, source_key
         assert record["source_record_id"]
+        assert record["record_type"] == expected_record_type, source_key
 
 
 def test_sggov_sources_are_registered_for_dump_mode(tmp_path: Path) -> None:

@@ -1,0 +1,95 @@
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+/* ── Light theme (CI: Direction B / Variation A) ── */
+:root {
+  /* Drives native UI (scrollbars, form controls) so they match the app theme. */
+  color-scheme: light;
+
+  --bg-app:        #f6f6f5;
+  --bg-sidebar:    #ffffff;
+  --bg-navbar:     #ffffff;
+  --bg-card:       #ffffff;
+  --bg-surface-2:  #fafaf9;
+  --bg-surface-3:  #f4f4f5;
+  --bg-hover:      #f4f4f5;
+  --bg-active:     #f4f4f5;
+
+  --border:        #e7e5e4;
+  --border-subtle: #f0efee;
+  --border-strong: #d4d4d4;
+
+  --text-primary:  #18181b;
+  --text-secondary:#3f3f46;
+  --text-muted:    #71717a;
+  --text-faint:    #a1a1aa;
+  --text-sidebar:  #3f3f46;
+  --text-sidebar-active: #18181b;
+
+  --accent:        #18181b;
+  --accent-light:  #f4f4f5;
+  --accent-text:   #18181b;
+
+  --good:          #166534;
+  --good-soft:     #dcfce7;
+  --bad:           #b91c1c;
+  --bad-soft:      #fee2e2;
+  --warn-text:     #713f12;
+  --warn-bg:       #fef9c3;
+  --warn-border:   #fde68a;
+
+  --sidebar-width: 224px;
+  --navbar-height: 56px;
+}
+
+/* ── Dark theme (CI: dark default) ── */
+:root[data-theme="dark"] {
+  /* Make native scrollbars / form controls render dark to match the theme. */
+  color-scheme: dark;
+
+  --bg-app:        #0b1020;
+  --bg-sidebar:    #0f172a;
+  --bg-navbar:     #0f172a;
+  --bg-card:       #0f172a;
+  --bg-surface-2:  #0a1426;
+  --bg-surface-3:  #1e293b;
+  --bg-hover:      rgba(255,255,255,0.05);
+  --bg-active:     rgba(99,102,241,0.15);
+
+  --border:        rgba(255,255,255,0.08);
+  --border-subtle: rgba(255,255,255,0.04);
+  --border-strong: #334155;
+
+  --text-primary:  #f1f5f9;
+  --text-secondary:#94a3b8;
+  --text-muted:    #64748b;
+  --text-faint:    #475569;
+  --text-sidebar:  #64748b;
+  --text-sidebar-active: #f1f5f9;
+
+  --accent:        #6366f1;
+  --accent-light:  rgba(99,102,241,0.15);
+  --accent-text:   #818cf8;
+
+  --good:          #4ade80;
+  --good-soft:     rgba(34,197,94,0.15);
+  --bad:           #f87171;
+  --bad-soft:      rgba(239,68,68,0.15);
+  --warn-text:     #fbbf24;
+  --warn-bg:       rgba(245,158,11,0.10);
+  --warn-border:   rgba(245,158,11,0.30);
+}
+
+html, body {
+  height: 100%;
+  font-family: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", sans-serif;
+  font-size: 14px;
+  color: var(--text-primary);
+  background: var(--bg-app);
+  -webkit-font-smoothing: antialiased;
+}

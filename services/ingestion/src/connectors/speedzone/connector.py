@@ -26,8 +26,10 @@ from src.config import get_settings
 from src.connectors.base import SourceConnector
 from src.connectors.fundbox.builders import (
     IdentifierBag,
+    address_from_row,
     build_envelope,
     format_address,
+    phone_region_hint,
     serialize_row,
     to_iso,
 )
@@ -170,15 +172,23 @@ class SpeedZoneConnector(SourceConnector):
         ids = IdentifierBag()
         ids.add("nric", row.custom_field_1_value, verified=True)
         ids.add("email", row.email)
-        ids.add("phone", row.phone_number)
+        ids.add(
+            "phone",
+            row.phone_number,
+            region_hint=phone_region_hint(row.phone_code, row.country),
+        )
 
         if row.custom_field_2_value:
             ids.add("external:bitrix", row.custom_field_2_value)
 
         address = format_address(row)
+        address_row = address_from_row(row)
         dob = _date_string_to_iso(row.custom_field_9_value)
         return build_envelope(
-            source_record_id=f"speedzone_phppos-customer-{row.customer_id}",
+            # Keyed on person_id (not customers.id): phppos_sales.customer_id is a
+            # person_id, so sales link to `-customer-{person_id}`. Both sides must
+            # agree on person_id. person_id is unique among non-deleted customers.
+            source_record_id=f"speedzone_phppos-customer-{row.person_id}",
             observed_at=to_iso(row.last_modified or row.create_date),
             identifiers=ids.items,
             attributes={
@@ -187,15 +197,21 @@ class SpeedZoneConnector(SourceConnector):
                 "address": address,
             },
             raw_payload={"person": _person_raw_payload(row)},
+            addresses=[address_row] if address_row is not None else None,
         )
 
     @staticmethod
     def _build_envelope_people_only(row: Any) -> dict[str, JsonValue]:
         ids = IdentifierBag()
         ids.add("email", row.email)
-        ids.add("phone", row.phone_number)
+        ids.add(
+            "phone",
+            row.phone_number,
+            region_hint=phone_region_hint(row.phone_code, row.country),
+        )
 
         address = format_address(row)
+        address_row = address_from_row(row)
         return build_envelope(
             source_record_id=f"speedzone_phppos-person-{row.person_id}",
             observed_at=to_iso(row.last_modified or row.create_date),
@@ -205,4 +221,5 @@ class SpeedZoneConnector(SourceConnector):
                 "address": address,
             },
             raw_payload={"person": serialize_row(row)},
+            addresses=[address_row] if address_row is not None else None,
         )

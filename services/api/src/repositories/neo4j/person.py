@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
+
 from src.graph.client import get_session
+from src.graph.converters import GraphRecord
 from src.graph.mappers import (
     map_audit_event,
     map_bankruptcy_case,
@@ -11,7 +14,10 @@ from src.graph.mappers import (
     map_person,
     map_person_graph,
     map_person_identifier,
+    map_possible_match_detail,
+    map_shared_identifier_candidate,
     map_source_record,
+    map_source_record_entity_facet,
     map_timeline_group,
 )
 from src.graph.mappers_entities import map_listed_person, map_person_entity
@@ -23,6 +29,8 @@ from src.graph.queries import (
     COUNT_PERSON_CONNECTIONS_IDENTIFIER,
     COUNT_PERSON_CONNECTIONS_KNOWS,
     COUNT_PERSON_IDENTIFIERS,
+    COUNT_PERSON_MATCHES,
+    COUNT_PERSON_SHARED_IDENTIFIERS,
     COUNT_PERSON_SOURCE_RECORDS,
     COUNT_PERSON_TIMELINE,
     FIND_PERSON_BY_IDENTIFIER,
@@ -36,6 +44,9 @@ from src.graph.queries import (
     GET_PERSON_ENTITIES,
     GET_PERSON_IDENTIFIERS,
     GET_PERSON_MATCHES,
+    GET_PERSON_POSSIBLE_MATCH_DETAIL,
+    GET_PERSON_SHARED_IDENTIFIERS,
+    GET_PERSON_SOURCE_RECORD_ENTITY_FACETS,
     GET_PERSON_SOURCE_RECORDS,
     GET_PERSON_TIMELINE,
     GET_PERSON_TIMELINE_TARGET,
@@ -57,8 +68,11 @@ from src.types import (
     PersonEntitySummary,
     PersonGraph,
     PersonIdentifier,
+    PersonSharedIdentifierCandidate,
     PersonTimelineGroup,
+    PossibleMatchDetail,
     SourceRecord,
+    SourceRecordEntityFacet,
 )
 
 from ._utils import record_to_dict, to_total
@@ -91,22 +105,35 @@ class Neo4jPersonRepository:
         sort_by = filters.get("sort_by")
         sort_order = filters.get("sort_order")
         has_q = filters.get("q") is not None
-        list_query = build_list_persons_query(sort_by, sort_order, has_q=has_q)
-        count_query = build_count_persons_query(has_q=has_q)
-        # sort_by/sort_order are used to build the query string, not as Cypher params
+        has_addr_filter = any(
+            filters.get(k) is not None
+            for k in ("addr_street", "addr_unit", "addr_city", "addr_postal", "addr_country")
+        )
+        entity_mode = filters.get("entity_key_mode") or "or"
+        source_mode = filters.get("source_key_mode") or "or"
+        list_query = build_list_persons_query(sort_by, sort_order, has_q=has_q, entity_mode=entity_mode, source_mode=source_mode)
+        count_query = build_count_persons_query(has_q=has_q, has_addr_filter=has_addr_filter, entity_mode=entity_mode, source_mode=source_mode)
+        # sort_by/sort_order/entity_key_mode/source_key_mode are used to build the query string, not as Cypher params
         cypher_params: dict[str, str | int | bool | list[str] | None] = {
             k: v  # type: ignore[misc]  # TypedDict values are object; known-safe filter keys
             for k, v in filters.items()
-            if k not in ("sort_by", "sort_order")
+            if k not in ("sort_by", "sort_order", "entity_key_mode", "source_key_mode")
         }
         list_params = {**cypher_params, "skip": skip, "limit": limit + 1}
         count_params = cypher_params
-        async with get_session() as session:
-            list_result = await session.run(list_query, list_params)
-            records = [record_to_dict(r.keys(), list(r.values())) async for r in list_result]
-            count_result = await session.run(count_query, count_params)
-            count_record = await count_result.single()
-        total = to_total(count_record)
+
+        async def _run_list() -> list[GraphRecord]:
+            async with get_session() as session:
+                result = await session.run(list_query, list_params)
+                return [record_to_dict(r.keys(), list(r.values())) async for r in result]
+
+        async def _run_count() -> int:
+            async with get_session() as session:
+                result = await session.run(count_query, count_params)
+                record = await result.single()
+                return to_total(record)
+
+        records, total = await asyncio.gather(_run_list(), _run_count())
         return [map_listed_person(rec) for rec in records[:limit]], total
 
     async def search_by_identifier(self, identifier_type: str, value: str) -> list[Person]:
@@ -138,16 +165,39 @@ class Neo4jPersonRepository:
         return map_person(record_to_dict(record.keys(), list(record.values())))
 
     async def get_source_records(
-        self, person_id: str, skip: int, limit: int
+        self,
+        person_id: str,
+        skip: int,
+        limit: int,
+        entity_key: str | None = None,
+        record_type: str | None = None,
     ) -> tuple[list[SourceRecord], int]:
         async with get_session() as session:
             result = await session.run(
-                GET_PERSON_SOURCE_RECORDS, person_id=person_id, skip=skip, limit=limit + 1
+                GET_PERSON_SOURCE_RECORDS,
+                person_id=person_id,
+                skip=skip,
+                limit=limit + 1,
+                entity_key=entity_key,
+                record_type=record_type,
             )
             records = [record_to_dict(r.keys(), list(r.values())) async for r in result]
-            count_result = await session.run(COUNT_PERSON_SOURCE_RECORDS, person_id=person_id)
+            count_result = await session.run(
+                COUNT_PERSON_SOURCE_RECORDS,
+                person_id=person_id,
+                entity_key=entity_key,
+                record_type=record_type,
+            )
             count_record = await count_result.single()
         return [map_source_record(rec) for rec in records[:limit]], to_total(count_record)
+
+    async def get_source_record_entity_facets(
+        self, person_id: str
+    ) -> list[SourceRecordEntityFacet]:
+        async with get_session() as session:
+            result = await session.run(GET_PERSON_SOURCE_RECORD_ENTITY_FACETS, person_id=person_id)
+            records = [record_to_dict(r.keys(), list(r.values())) async for r in result]
+        return [map_source_record_entity_facet(rec) for rec in records]
 
     async def get_bankruptcy_cases(
         self, person_id: str, skip: int, limit: int
@@ -198,6 +248,36 @@ class Neo4jPersonRepository:
             count_record = await count_result.single()
         return [map_connection(rec) for rec in records[:limit]], to_total(count_record)
 
+    async def get_shared_identifier_candidates(
+        self, person_id: str, skip: int, limit: int
+    ) -> tuple[list[PersonSharedIdentifierCandidate], int]:
+        async with get_session() as session:
+            result = await session.run(
+                GET_PERSON_SHARED_IDENTIFIERS,
+                person_id=person_id,
+                skip=skip,
+                limit=limit + 1,
+            )
+            records = [record_to_dict(r.keys(), list(r.values())) async for r in result]
+            count_result = await session.run(COUNT_PERSON_SHARED_IDENTIFIERS, person_id=person_id)
+            count_record = await count_result.single()
+        candidates = [map_shared_identifier_candidate(rec) for rec in records[:limit]]
+        return candidates, to_total(count_record)
+
+    async def get_possible_match_detail(
+        self, person_id: str, candidate_person_id: str
+    ) -> PossibleMatchDetail | None:
+        async with get_session() as session:
+            result = await session.run(
+                GET_PERSON_POSSIBLE_MATCH_DETAIL,
+                person_id=person_id,
+                candidate_person_id=candidate_person_id,
+            )
+            records = [record_to_dict(r.keys(), list(r.values())) async for r in result]
+        if not records:
+            return None
+        return map_possible_match_detail(records)
+
     async def get_entities(self, person_id: str) -> list[PersonEntitySummary]:
         async with get_session() as session:
             result = await session.run(GET_PERSON_ENTITIES, person_id=person_id)
@@ -236,14 +316,15 @@ class Neo4jPersonRepository:
 
     async def get_matches(
         self, person_id: str, skip: int, limit: int
-    ) -> tuple[list[MatchDecision], bool]:
+    ) -> tuple[list[MatchDecision], int]:
         async with get_session() as session:
             result = await session.run(
-                GET_PERSON_MATCHES, person_id=person_id, skip=skip, limit=limit + 1
+                GET_PERSON_MATCHES, person_id=person_id, skip=skip, limit=limit
             )
             records = [record_to_dict(r.keys(), list(r.values())) async for r in result]
-        has_more = len(records) > limit
-        return [map_match_decision(rec) for rec in records[:limit]], has_more
+            count_result = await session.run(COUNT_PERSON_MATCHES, person_id=person_id)
+            count_record = await count_result.single()
+        return [map_match_decision(rec) for rec in records], to_total(count_record)
 
     async def get_timeline(
         self, person_id: str, skip: int, limit: int

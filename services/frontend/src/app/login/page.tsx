@@ -9,6 +9,8 @@ import Paper from "@mui/material/Paper";
 import Stack from "@mui/material/Stack";
 import Typography from "@mui/material/Typography";
 
+import { toBasePath } from "@/lib/route-paths";
+
 export default function LoginPage(): ReactElement {
   return (
     <Box
@@ -33,7 +35,7 @@ export default function LoginPage(): ReactElement {
             fullWidth
             size="large"
             onClick={() => {
-              void signIn("google", { callbackUrl: "/" });
+              void signIn("google", { callbackUrl: toBasePath("/") });
             }}
           >
             Continue with Google

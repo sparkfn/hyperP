@@ -15,8 +15,11 @@ from src.types import (
     PersonEntitySummary,
     PersonGraph,
     PersonIdentifier,
+    PersonSharedIdentifierCandidate,
     PersonTimelineGroup,
+    PossibleMatchDetail,
     SourceRecord,
+    SourceRecordEntityFacet,
 )
 
 
@@ -24,12 +27,17 @@ class PersonListFilters(TypedDict, total=False):
     q: str | None
     entity_keys: list[str] | None
     source_keys: list[str] | None
+    source_record_type: str | None
     is_high_value: bool | None
     is_high_risk: bool | None
     has_phone: bool | None
     has_email: bool | None
+    has_any_contact: bool | None
     has_address: bool | None
     has_bankruptcy_case: bool | None
+    has_any_match: bool | None
+    has_possible_match: bool | None
+    has_system_match: bool | None
     addr_street: str | None
     addr_unit: str | None
     addr_city: str | None
@@ -40,6 +48,11 @@ class PersonListFilters(TypedDict, total=False):
     has_dob: bool | None
     dob_from: str | None
     dob_to: str | None
+    dob_year: str | None
+    dob_month: str | None
+    dob_day: str | None
+    entity_key_mode: str | None
+    source_key_mode: str | None
     sort_by: str | None
     sort_order: str | None
 
@@ -62,8 +75,17 @@ class PersonRepository(Protocol):
     async def get_by_id(self, person_id: str) -> Person | None: ...
 
     async def get_source_records(
-        self, person_id: str, skip: int, limit: int
+        self,
+        person_id: str,
+        skip: int,
+        limit: int,
+        entity_key: str | None = None,
+        record_type: str | None = None,
     ) -> tuple[list[SourceRecord], int]: ...
+
+    async def get_source_record_entity_facets(
+        self, person_id: str
+    ) -> list[SourceRecordEntityFacet]: ...
 
     async def get_bankruptcy_cases(
         self, person_id: str, skip: int, limit: int
@@ -82,6 +104,14 @@ class PersonRepository(Protocol):
         limit: int,
     ) -> tuple[list[PersonConnection], int]: ...
 
+    async def get_shared_identifier_candidates(
+        self, person_id: str, skip: int, limit: int
+    ) -> tuple[list[PersonSharedIdentifierCandidate], int]: ...
+
+    async def get_possible_match_detail(
+        self, person_id: str, candidate_person_id: str
+    ) -> PossibleMatchDetail | None: ...
+
     async def get_entities(self, person_id: str) -> list[PersonEntitySummary]: ...
 
     async def get_graph(self, person_id: str, max_hops: int) -> PersonGraph | None: ...
@@ -94,9 +124,7 @@ class PersonRepository(Protocol):
 
     async def get_matches(
         self, person_id: str, skip: int, limit: int
-    ) -> tuple[list[MatchDecision], bool]:
-        """Returns (items, has_more). No count query — has_more via +1 fetch."""
-        ...
+    ) -> tuple[list[MatchDecision], int]: ...
 
     async def get_timeline(
         self, person_id: str, skip: int, limit: int

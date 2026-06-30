@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from src.display_format import format_display_dob
 from src.graph.converters import (
     GraphRecord,
     GraphValue,
@@ -11,7 +12,7 @@ from src.graph.converters import (
     to_optional_str,
     to_str,
 )
-from src.graph.mappers import _as_dict, map_person
+from src.graph.mappers import _as_dict, map_person, map_person_entity_dict
 from src.types import (
     EntityPerson,
     EntitySummary,
@@ -72,30 +73,23 @@ def map_entity_person(record: GraphRecord) -> EntityPerson:
     )
 
 
-def _map_person_entity_dict(raw: GraphValue) -> PersonEntitySummary:
-    d = _as_dict(raw)
-    return PersonEntitySummary(
-        entity_key=to_str(d.get("entity_key")),
-        display_name=to_optional_str(d.get("display_name")),
-        entity_type=to_optional_str(d.get("entity_type")),
-        country_code=to_optional_str(d.get("country_code")),
-        is_active=bool(d.get("is_active", True)),
-        source_record_count=to_int(d.get("source_record_count")),
-    )
-
-
 def map_listed_person(record: GraphRecord) -> ListedPerson:
     """Map a person record with inline entity list to a ListedPerson."""
     ep = map_entity_person(record)
     raw_entities: GraphValue = record.get("entities")
     entities: list[PersonEntitySummary] = (
-        [_map_person_entity_dict(e) for e in raw_entities] if isinstance(raw_entities, list) else []
+        [map_person_entity_dict(e) for e in raw_entities] if isinstance(raw_entities, list) else []
     )
+    dob_display, dob_invalid = format_display_dob(ep.preferred_dob)
     return ListedPerson(
         **ep.model_dump(),
         entities=entities,
         entity_count=to_int(record.get("entity_count", len(entities))),
         identifier_count=to_int(record.get("identifier_count")),
+        possible_match_count=to_int(record.get("possible_match_count")),
+        system_match_count=to_int(record.get("system_match_count")),
         order_count=to_int(record.get("order_count")),
         bankruptcy_case_count=to_int(record.get("bankruptcy_case_count")),
+        preferred_dob_display=dob_display,
+        preferred_dob_invalid=dob_invalid,
     )

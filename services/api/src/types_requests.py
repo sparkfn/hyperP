@@ -7,7 +7,37 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator
 
-from src.types import ApiReviewActionType, TrustTier
+from src.repositories.protocols.merge import GoldenProfileSelection
+from src.types import (
+    ApiReviewActionType,
+    GoldenFieldName,
+    SourceRecordTypeLiteral,
+    TrustTier,
+)
+
+
+class GoldenProfileSelectionRequest(BaseModel):
+    field_name: Literal[
+        "preferred_full_name",
+        "preferred_dob",
+        "preferred_phone",
+        "preferred_email",
+        "preferred_address",
+        "preferred_nric",
+    ]
+    source_kind: Literal["source_record_fact", "identifier", "address", "literal"]
+    selected_value: str
+    source_record_pk: str | None = None
+    identifier_type: str | None = None
+
+    def to_selection(self) -> GoldenProfileSelection:
+        return {
+            "field_name": self.field_name,
+            "source_kind": self.source_kind,
+            "selected_value": self.selected_value,
+            "source_record_pk": self.source_record_pk,
+            "identifier_type": self.identifier_type,
+        }
 
 
 class AssignReviewRequest(BaseModel):
@@ -19,6 +49,7 @@ class ReviewActionMetadata(BaseModel):
     follow_up_at: str | None = None
     escalation_reason: str | None = None
     survivor_person_id: str | None = None
+    golden_profile_selections: list[GoldenProfileSelectionRequest] = Field(default_factory=list)
 
 
 class ReviewActionRequest(BaseModel):
@@ -32,6 +63,7 @@ class ManualMergeRequest(BaseModel):
     to_person_id: str
     reason: str
     recompute_golden_profile: bool = True
+    golden_profile_selections: list[GoldenProfileSelectionRequest] = Field(default_factory=list)
 
 
 class UnmergeRequest(BaseModel):
@@ -48,8 +80,36 @@ class LockRequest(BaseModel):
 
 
 class SurvivorshipOverrideRequest(BaseModel):
-    attribute_name: str
-    selected_source_record_pk: str
+    field_name: GoldenFieldName
+    source_record_pk: str | None = None
+    custom_value: str | None = None
+    reason: str
+
+    @model_validator(mode="after")
+    def _check_override_source(self) -> SurvivorshipOverrideRequest:
+        has_source = self.source_record_pk is not None and self.source_record_pk.strip() != ""
+        has_custom = self.custom_value is not None and self.custom_value.strip() != ""
+        if has_source == has_custom:
+            raise ValueError("Provide exactly one of source_record_pk or custom_value")
+        return self
+
+
+class SurvivorshipOverrideBatchItem(BaseModel):
+    field_name: GoldenFieldName
+    source_record_pk: str | None = None
+    custom_value: str | None = None
+
+    @model_validator(mode="after")
+    def _check_override_source(self) -> SurvivorshipOverrideBatchItem:
+        has_source = self.source_record_pk is not None and self.source_record_pk.strip() != ""
+        has_custom = self.custom_value is not None and self.custom_value.strip() != ""
+        if has_source == has_custom:
+            raise ValueError("Provide exactly one of source_record_pk or custom_value")
+        return self
+
+
+class SurvivorshipOverrideBatchRequest(BaseModel):
+    overrides: list[SurvivorshipOverrideBatchItem]
     reason: str
 
 
@@ -62,7 +122,7 @@ class IngestIdentifier(BaseModel):
 class IngestRecord(BaseModel):
     source_record_id: str
     source_record_version: str | None = None
-    record_type: Literal["system", "conversation"] = "system"
+    record_type: SourceRecordTypeLiteral = "identity"
     extraction_confidence: float | None = None
     extraction_method: str | None = None
     conversation_ref: dict[str, str | int | float | bool | None] | None = None
@@ -74,7 +134,7 @@ class IngestRecord(BaseModel):
 
     @model_validator(mode="after")
     def _check_record_type_invariants(self) -> IngestRecord:
-        """Validate conversation vs system record field constraints."""
+        """Validate conversation vs non-conversation record field constraints."""
         if self.record_type == "conversation":
             if self.extraction_confidence is None or self.extraction_method is None:
                 raise ValueError(

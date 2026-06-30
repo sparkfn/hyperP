@@ -45,10 +45,11 @@ from src.models import (
 )
 from src.pipeline_bankruptcy import materialize_bankruptcy_case
 from src.pipeline_normalization import (
-    normalize_envelope_address,
+    normalize_envelope_addresses,
     normalize_envelope_attributes,
     normalize_envelope_identifiers,
 )
+from src.pipeline_person_pairs import audit_person_pairs
 from src.pipeline_writes import (
     create_person,
     create_review_case_if_needed,
@@ -97,9 +98,9 @@ class IngestPipeline:
             )
         envelope.source_record_version = str(next_version)
 
-        # Step 2: Normalize identifiers, address, attributes
+        # Step 2: Normalize identifiers, addresses, attributes
         identifiers = normalize_envelope_identifiers(envelope)
-        address = normalize_envelope_address(envelope)
+        addresses = normalize_envelope_addresses(envelope)
         attributes = normalize_envelope_attributes(envelope)
         active_exclusion_context = (
             exclusion_context if exclusion_context is not None else ExclusionContext()
@@ -111,7 +112,7 @@ class IngestPipeline:
                 tx,
                 envelope,
                 identifiers,
-                address,
+                addresses,
                 attributes,
                 ingest_run_id=ingest_run_id,
                 previous_source_record_pk=previous_pk,
@@ -153,7 +154,7 @@ class IngestPipeline:
         tx: ManagedTransaction,
         envelope: SourceRecordEnvelope,
         identifiers: list[NormalizedIdentifier],
-        address: NormalizedAddressModel | None,
+        addresses: list[NormalizedAddressModel],
         attributes: list[NormalizedAttribute],
         ingest_run_id: str | None = None,
         previous_source_record_pk: str | None = None,
@@ -163,13 +164,13 @@ class IngestPipeline:
         active_exclusion_context = (
             exclusion_context if exclusion_context is not None else ExclusionContext()
         )
-        upsert_nodes(tx, identifiers, address)
-        candidates = find_candidates(tx, identifiers, address)
+        upsert_nodes(tx, identifiers, addresses)
+        candidates = find_candidates(tx, identifiers, addresses)
         match_result = self._match_engine.evaluate(
             tx,
             candidates,
             identifiers,
-            address,
+            addresses[0] if addresses else None,
             attributes,
             record_type=envelope.record_type,
         )
@@ -178,7 +179,7 @@ class IngestPipeline:
             tx,
             envelope=envelope,
             identifiers=identifiers,
-            address=address,
+            addresses=addresses,
             attributes=attributes,
             match_result=match_result,
             is_new_person=is_new_person,
@@ -198,22 +199,54 @@ class IngestPipeline:
         )
         match_decision_id = persist_match_decision(tx, match_result, source_record_pk)
         review_case_id = create_review_case_if_needed(tx, match_result, match_decision_id)
+        # A REVIEW-band match against an *existing* candidate is provisional: the
+        # record is linked so the reviewer can compare it, but its identifiers /
+        # addresses / facts must NOT be wired onto the candidate person — nor the
+        # golden profile recomputed — until a human approves the merge. Otherwise
+        # an unconfirmed record silently commingles into the candidate and cannot
+        # be cleanly split off on reject. (Reviewer-workflow Side-Effect Matrix:
+        # a record only becomes "linked" on a merge action.)
+        provisional_review = match_result.decision == MatchDecision.REVIEW and not is_new_person
         link_record_to_graph(
             tx,
             envelope=envelope,
             identifiers=identifiers,
-            address=address,
+            addresses=addresses,
             attributes=attributes,
             person_id=person_id,
             source_record_pk=source_record_pk,
+            attach_evidence=not provisional_review,
         )
-        materialize_bankruptcy_case(
-            tx,
-            envelope=envelope,
-            person_id=person_id,
-            source_record_pk=source_record_pk,
-        )
-        compute_golden_profile(tx, person_id)
+        if not provisional_review:
+            materialize_bankruptcy_case(
+                tx,
+                envelope=envelope,
+                person_id=person_id,
+                source_record_pk=source_record_pk,
+            )
+            compute_golden_profile(tx, person_id)
+        # Multi-match: the record reached the merge band against more than one
+        # distinct person. Link the record + its extracted evidence to every
+        # other matched person too — WITHOUT merging the persons, which may
+        # legitimately share an identifier — and recompute each golden profile.
+        for other_person_id in match_result.additional_linked_person_ids:
+            if other_person_id == person_id:
+                continue
+            link_record_to_graph(
+                tx,
+                envelope=envelope,
+                identifiers=identifiers,
+                addresses=addresses,
+                attributes=attributes,
+                person_id=other_person_id,
+                source_record_pk=source_record_pk,
+                attach_evidence=True,
+            )
+            compute_golden_profile(tx, other_person_id)
+        # Person↔person audit: any usable identifier this record carries that now
+        # links 2+ active persons opens a pairwise review case (deduped, fanout-
+        # capped). Audit-only — never merges or links persons.
+        audit_person_pairs(tx, identifiers)
         if match_result.decision == MatchDecision.MERGE and not is_new_person:
             record_auto_merge_event(
                 tx,

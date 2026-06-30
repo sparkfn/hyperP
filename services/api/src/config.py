@@ -18,6 +18,8 @@ class AppConfig(BaseSettings):
     log_level: str = Field(default="info", alias="LOG_LEVEL")
     root_path: str = Field(default="", alias="ROOT_PATH")
     dumps_root: str = Field(default="/app/dumps", alias="DUMPS_ROOT")
+    celery_broker_url: str = Field(default="redis://localhost:6379/0", alias="CELERY_BROKER_URL")
+    forwarded_allow_ips: str = Field(default="*", alias="FORWARDED_ALLOW_IPS")
 
     auth_enabled: bool = Field(default=True, alias="AUTH_ENABLED")
     # Same OAuth client the frontend uses via Auth.js (AUTH_GOOGLE_ID).
@@ -35,12 +37,8 @@ class AppConfig(BaseSettings):
     public_page_expiry_minutes: int = Field(default=30, alias="PUBLIC_PAGE_EXPIRY_MINUTES")
     oauth_issuer: str = Field(default="http://localhost/api", alias="OAUTH_ISSUER")
     oauth_audience: str = Field(default="hyperp-api", alias="OAUTH_AUDIENCE")
-    oauth_access_token_expiry_minutes: int = Field(
-        default=15, alias="OAUTH_ACCESS_TOKEN_EXPIRY_MINUTES"
-    )
-    oauth_max_access_token_expiry_minutes: int = Field(
-        default=60, alias="OAUTH_MAX_ACCESS_TOKEN_EXPIRY_MINUTES"
-    )
+    # Access-token lifetime is per-client (OAuthClient.access_token_ttl_seconds,
+    # bounded 300–86400 in the model), not a global env var.
     oauth_active_key_id: str = Field(default="local-dev", alias="OAUTH_ACTIVE_KEY_ID")
     oauth_private_key_pem: str = Field(default="", alias="OAUTH_PRIVATE_KEY_PEM")
     oauth_public_key_pem: str = Field(default="", alias="OAUTH_PUBLIC_KEY_PEM")
@@ -52,6 +50,10 @@ class AppConfig(BaseSettings):
     )
     llm_api_key: str | None = Field(default=None, alias="LLM_API_KEY")
     llm_default_model: str | None = Field(default=None, alias="LLM_DEFAULT_MODEL")
+    # Proclaude service (proxy-claude-v2 Anthropic Messages API)
+    proclaude_api_base_url: str | None = Field(default=None, alias="PROCLAUDE_API_BASE_URL")
+    proclaude_api_key: str | None = Field(default=None, alias="PROCLAUDE_API_KEY")
+    proclaude_default_model: str | None = Field(default=None, alias="PROCLAUDE_DEFAULT_MODEL")
 
     @property
     def bootstrap_admin_email_set(self) -> frozenset[str]:

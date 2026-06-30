@@ -62,7 +62,7 @@ def test_persist_source_record_includes_chat_summary_in_normalized_payload() -> 
         cast(ManagedTransaction, tx),
         envelope=envelope,
         identifiers=[],
-        address=None,
+        addresses=[],
         attributes=[],
         match_result=match_result,
         is_new_person=False,

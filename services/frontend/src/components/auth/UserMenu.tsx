@@ -22,6 +22,7 @@ import Tooltip from "@mui/material/Tooltip";
 import Typography from "@mui/material/Typography";
 
 import type { Role } from "@/lib/permissions";
+import { toBasePath } from "@/lib/route-paths";
 
 interface UserMenuProps {
   email: string;
@@ -39,7 +40,7 @@ export function UserMenu(props: UserMenuProps): ReactElement {
   // Redirect to login immediately rather than leaving the user on a stale UI.
   useEffect(() => {
     if (props.sessionError === "RefreshTokenError") {
-      void signOut({ callbackUrl: "/login", redirect: true });
+      void signOut({ callbackUrl: toBasePath("/login"), redirect: true });
     }
   }, [props.sessionError]);
 
@@ -76,7 +77,7 @@ export function UserMenu(props: UserMenuProps): ReactElement {
         <MenuItem
           onClick={() => {
             close();
-            void signOut({ callbackUrl: "/login" });
+            void signOut({ callbackUrl: toBasePath("/login") });
           }}
         >
           <Typography color="error">Sign out</Typography>

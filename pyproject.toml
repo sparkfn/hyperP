@@ -123,6 +123,7 @@ module = [
     "src.routes.*",
     "src.graph.converters",
     "src.llm.*",
+    "src.proclaude.*",
 ]
 disallow_any_explicit = false
 disallow_any_generics = false

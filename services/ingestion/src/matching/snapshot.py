@@ -61,6 +61,14 @@ class CandidateSnapshot:
             }
         return self._emails_by_value
 
+    def phones(self) -> list[RecordDict]:
+        """All candidate phone identifier records (for approximate matching)."""
+        return [i for i in self.idents if i.get("identifier_type") == "phone"]
+
+    def emails(self) -> list[RecordDict]:
+        """All candidate email identifier records (for approximate matching)."""
+        return [i for i in self.idents if i.get("identifier_type") == "email"]
+
     def names(self) -> list[str]:
         if self._names is None:
             self._names = [

@@ -1,0 +1,46 @@
+.overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 10;
+  border-radius: inherit;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  background: color-mix(in srgb, var(--bg-card, #fff) 78%, transparent);
+  backdrop-filter: blur(3px);
+  -webkit-backdrop-filter: blur(3px);
+}
+
+.overlayFixed {
+  position: fixed;
+  inset: 0;
+  z-index: 2000;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  background: color-mix(in srgb, var(--bg-app, #f8f9fb) 82%, transparent);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+}
+
+.spinner {
+  width: min(45%, 120px);
+  height: min(45%, 120px);
+  color: var(--text-muted, #94a3b8);
+}
+
+.overlayFixed .spinner {
+  width: 140px;
+  height: 140px;
+}
+
+.label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-muted, #94a3b8);
+  letter-spacing: 0.02em;
+}

@@ -14,6 +14,7 @@ dependencies = [
     "cachetools>=5.3,<6",
     "requests>=2.31,<3",
     "redis[hiredis]>=5.0,<6",
+    "celery[redis]>=5.3,<6",
     "httpx>=0.27,<1",
     "cryptography>=42,<47",
     "python-multipart>=0.0.9,<1",
@@ -34,6 +35,7 @@ dev = [
     "types-requests>=2.31.0.0",
     "pytest>=8.0,<9",
     "pytest-asyncio>=0.23,<1",
+    "fakeredis>=2.36.1",
 ]
 
 # Shared ruff/mypy/pytest config inherited from the workspace root pyproject.toml.

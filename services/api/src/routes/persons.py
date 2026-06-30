@@ -5,6 +5,8 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, Query, Request
 
 from src.auth.deps import require_scope
+from src.chat_transcript import parse_chat_transcript
+from src.display_format import format_confidence_pct, format_display_datetime
 from src.http_utils import envelope, http_error, next_cursor, page_window
 from src.repositories.deps import get_person_repo
 from src.repositories.protocols.person import PersonListFilters, PersonRepository
@@ -20,12 +22,18 @@ from src.types import (
     PersonEntitySummary,
     PersonGraph,
     PersonIdentifier,
+    PersonSharedIdentifierCandidate,
     PersonTimelineGroup,
+    PopoverDisplayItem,
+    PossibleMatchDetail,
     SourceRecord,
+    SourceRecordEntityFacet,
+    SourceRecordView,
 )
 
 router = APIRouter(
     prefix="/v1/persons",
+    tags=["Persons"],
     dependencies=[Depends(require_scope("persons:read"))],
 )
 
@@ -39,7 +47,8 @@ _ALLOWED_SORT: frozenset[str] = frozenset(
         "source_record_count",
         "connection_count",
         "entity_count",
-        "identifier_count",
+        "possible_match_count",
+        "system_match_count",
         "order_count",
         "bankruptcy_case_count",
         "phone_confidence",
@@ -50,17 +59,103 @@ _ALLOWED_SORT: frozenset[str] = frozenset(
 )
 
 
+def _identifier_display_items(items: list[PersonIdentifier]) -> list[PopoverDisplayItem]:
+    return [
+        PopoverDisplayItem(
+            primary=f"{item.identifier_type}: {item.normalized_value}",
+            secondary=" · ".join(
+                filter(
+                    None,
+                    [
+                        "active" if item.is_active else "inactive",
+                        "verified" if item.is_verified else "unverified",
+                        item.source_system_key or "",
+                    ],
+                )
+            ),
+        )
+        for item in items
+    ]
+
+
+def _connection_display_items(items: list[PersonConnection]) -> list[PopoverDisplayItem]:
+    return [
+        PopoverDisplayItem(
+            primary=item.preferred_full_name or item.person_id,
+            secondary=" · ".join(
+                [
+                    f"{identifier.identifier_type}:{identifier.normalized_value}"
+                    for identifier in item.shared_identifiers
+                ]
+                + [
+                    f"address:{address.normalized_full or address.address_id}"
+                    for address in item.shared_addresses
+                ]
+                + [
+                    f"knows:{rel.relationship_label or rel.relationship_category}"
+                    for rel in item.knows_relationships
+                ]
+            ),
+        )
+        for item in items
+    ]
+
+
+def _source_record_display_items(items: list[SourceRecord]) -> list[PopoverDisplayItem]:
+    return [
+        PopoverDisplayItem(
+            primary=item.source_system,
+            secondary=" · ".join([item.source_record_id, item.record_type, item.ingested_at]),
+        )
+        for item in items
+    ]
+
+
+def _to_source_record_view(item: SourceRecord) -> SourceRecordView:
+    return SourceRecordView(
+        **item.model_dump(),
+        observed_at_display=format_display_datetime(item.observed_at),
+        ingested_at_display=format_display_datetime(item.ingested_at),
+        extraction_confidence_display=format_confidence_pct(item.extraction_confidence),
+        chat_transcript=parse_chat_transcript(item.raw_payload),
+    )
+
+
+def _pad_dob_part(value: str | None) -> str | None:
+    """Normalize a DOB month/day query value to a two-digit, zero-padded string.
+
+    The underlying Cypher compares substrings of the ISO ``preferred_dob``
+    (``YYYY-MM-DD``), so callers must provide zero-padded values (``06``) to
+    match. This helper also accepts unpadded numeric inputs (``6``) so machine
+    callers and manual API consumers get the same results as the UI.
+    """
+    if value is None or value == "":
+        return None
+    stripped = value.strip()
+    try:
+        return str(int(stripped)).zfill(2)
+    except ValueError:
+        return stripped
+
+
 @router.get("", response_model=ApiResponse[list[ListedPerson]])
 async def list_persons(
     request: Request,
     entity_key: list[str] | None = Query(default=None),
+    entity_key_mode: str | None = Query(default=None),
     source_key: list[str] | None = Query(default=None),
+    source_key_mode: str | None = Query(default=None),
+    source_record_type: str | None = Query(default=None),
     is_high_value: bool | None = Query(default=None),
     is_high_risk: bool | None = Query(default=None),
     has_phone: bool | None = Query(default=None),
     has_email: bool | None = Query(default=None),
+    has_any_contact: bool | None = Query(default=None),
     has_address: bool | None = Query(default=None),
     has_bankruptcy_case: bool | None = Query(default=None),
+    has_any_match: bool | None = Query(default=None),
+    has_possible_match: bool | None = Query(default=None),
+    has_system_match: bool | None = Query(default=None),
     addr_street: str | None = Query(default=None),
     addr_unit: str | None = Query(default=None),
     addr_city: str | None = Query(default=None),
@@ -71,6 +166,9 @@ async def list_persons(
     has_dob: bool | None = Query(default=None),
     dob_from: str | None = Query(default=None),
     dob_to: str | None = Query(default=None),
+    dob_year: str | None = Query(default=None),
+    dob_month: str | None = Query(default=None),
+    dob_day: str | None = Query(default=None),
     q: str | None = Query(default=None),
     sort_by: str | None = Query(default=None),
     sort_order: str | None = Query(default=None),
@@ -91,16 +189,25 @@ async def list_persons(
         raise http_error(400, "invalid_request", f"Unknown sort_by: {sort_by}", request)
 
     skip, page_limit = page_window(cursor, limit)
+    dob_month_padded = _pad_dob_part(dob_month)
+    dob_day_padded = _pad_dob_part(dob_day)
     filters: PersonListFilters = {
         "q": q_clean,
         "entity_keys": entity_key or None,
+        "entity_key_mode": entity_key_mode,
         "source_keys": source_key or None,
+        "source_key_mode": source_key_mode,
+        "source_record_type": source_record_type,
         "is_high_value": is_high_value,
         "is_high_risk": is_high_risk,
         "has_phone": has_phone,
         "has_email": has_email,
+        "has_any_contact": has_any_contact,
         "has_address": has_address,
         "has_bankruptcy_case": has_bankruptcy_case,
+        "has_any_match": has_any_match,
+        "has_possible_match": has_possible_match,
+        "has_system_match": has_system_match,
         "addr_street": addr_street,
         "addr_unit": addr_unit,
         "addr_city": addr_city,
@@ -111,6 +218,9 @@ async def list_persons(
         "has_dob": has_dob,
         "dob_from": dob_from,
         "dob_to": dob_to,
+        "dob_year": dob_year,
+        "dob_month": dob_month_padded,
+        "dob_day": dob_day_padded,
         "sort_by": sort_by,
         "sort_order": sort_order,
     }
@@ -166,19 +276,40 @@ async def get_person(
     return envelope(person, request)
 
 
-@router.get("/{person_id}/source-records", response_model=ApiResponse[list[SourceRecord]])
+@router.get("/{person_id}/source-records", response_model=ApiResponse[list[SourceRecordView]])
 async def get_person_source_records(
     person_id: str,
     request: Request,
+    entity_key: str | None = Query(default=None),
+    record_type: str | None = Query(default=None),
     cursor: str | None = Query(default=None),
     limit: int | None = Query(default=None),
     repo: PersonRepository = Depends(get_person_repo),
-) -> ApiResponse[list[SourceRecord]]:
-    """List source records linked to a person."""
+) -> ApiResponse[list[SourceRecordView]]:
+    """List source records linked to a person (optionally filtered by entity/type)."""
     skip, page_limit = page_window(cursor, limit)
-    items, total = await repo.get_source_records(person_id, skip, page_limit)
+    items, total = await repo.get_source_records(
+        person_id, skip, page_limit, entity_key=entity_key, record_type=record_type
+    )
+    views = [_to_source_record_view(item) for item in items]
     has_more = skip + page_limit < total
-    return envelope(items, request, next_cursor(skip, page_limit, has_more), total_count=total)
+    resp = envelope(views, request, next_cursor(skip, page_limit, has_more), total_count=total)
+    resp.display_items = _source_record_display_items(items)
+    return resp
+
+
+@router.get(
+    "/{person_id}/source-record-entities",
+    response_model=ApiResponse[list[SourceRecordEntityFacet]],
+)
+async def get_person_source_record_entities(
+    person_id: str,
+    request: Request,
+    repo: PersonRepository = Depends(get_person_repo),
+) -> ApiResponse[list[SourceRecordEntityFacet]]:
+    """Per-entity source-record counts for a person (for filter chips)."""
+    facets = await repo.get_source_record_entity_facets(person_id)
+    return envelope(facets, request)
 
 
 @router.get("/{person_id}/bankruptcy-cases", response_model=ApiResponse[list[BankruptcyCase]])
@@ -237,7 +368,9 @@ async def get_person_identifiers(
     skip, page_limit = page_window(cursor, limit)
     items, total = await repo.get_identifiers(person_id, skip, page_limit)
     has_more = skip + page_limit < total
-    return envelope(items, request, next_cursor(skip, page_limit, has_more), total_count=total)
+    resp = envelope(items, request, next_cursor(skip, page_limit, has_more), total_count=total)
+    resp.display_items = _identifier_display_items(items)
+    return resp
 
 
 @router.get("/{person_id}/connections", response_model=ApiResponse[list[PersonConnection]])
@@ -256,7 +389,49 @@ async def get_person_connections(
         person_id, connection_type, identifier_type, skip, page_limit
     )
     has_more = skip + page_limit < total
+    resp = envelope(items, request, next_cursor(skip, page_limit, has_more), total_count=total)
+    resp.display_items = _connection_display_items(items)
+    return resp
+
+
+@router.get(
+    "/{person_id}/shared-identifiers",
+    response_model=ApiResponse[list[PersonSharedIdentifierCandidate]],
+)
+async def get_person_shared_identifiers(
+    person_id: str,
+    request: Request,
+    cursor: str | None = Query(default=None),
+    limit: int | None = Query(default=None),
+    repo: PersonRepository = Depends(get_person_repo),
+) -> ApiResponse[list[PersonSharedIdentifierCandidate]]:
+    """Return active persons sharing identifiers with a person."""
+    skip, page_limit = page_window(cursor, limit)
+    items, total = await repo.get_shared_identifier_candidates(person_id, skip, page_limit)
+    has_more = skip + page_limit < total
     return envelope(items, request, next_cursor(skip, page_limit, has_more), total_count=total)
+
+
+@router.get(
+    "/{person_id}/shared-identifiers/{candidate_id}/detail",
+    response_model=ApiResponse[PossibleMatchDetail],
+)
+async def get_person_shared_identifier_detail(
+    person_id: str,
+    candidate_id: str,
+    request: Request,
+    repo: PersonRepository = Depends(get_person_repo),
+) -> ApiResponse[PossibleMatchDetail]:
+    """Return grouped source records for a shared-identifier possible match."""
+    detail = await repo.get_possible_match_detail(person_id, candidate_id)
+    if detail is None:
+        raise http_error(
+            404,
+            "no_shared_identifiers",
+            "No shared identifiers found between these persons.",
+            request,
+        )
+    return envelope(detail, request)
 
 
 @router.get("/{person_id}/entities", response_model=ApiResponse[list[PersonEntitySummary]])
@@ -332,5 +507,6 @@ async def get_person_matches(
 ) -> ApiResponse[list[MatchDecision]]:
     """Return recent match decisions involving a person."""
     skip, page_limit = page_window(cursor, limit)
-    items, has_more = await repo.get_matches(person_id, skip, page_limit)
-    return envelope(items, request, next_cursor(skip, page_limit, has_more))
+    items, total = await repo.get_matches(person_id, skip, page_limit)
+    has_more = skip + page_limit < total
+    return envelope(items, request, next_cursor(skip, page_limit, has_more), total_count=total)

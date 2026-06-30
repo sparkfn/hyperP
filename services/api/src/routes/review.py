@@ -7,13 +7,14 @@ from pydantic import BaseModel
 
 from src.auth.deps import require_human_user, require_mutator_for_review_case
 from src.auth.models import AuthUser
+from src.graph.queries import REVIEW_SORT_KEYS
 from src.http_utils import envelope, http_error, next_cursor, page_window
 from src.repositories.deps import get_review_repo
 from src.repositories.protocols.review import ReviewListFilters, ReviewRepository
 from src.types import ApiResponse, ApiReviewActionType, ReviewCaseDetail, ReviewCaseSummary
 from src.types_requests import AssignReviewRequest, ReviewActionRequest
 
-router = APIRouter(prefix="/v1/review-cases")
+router = APIRouter(prefix="/v1/review-cases", tags=["Review"])
 
 
 class AssignResponse(BaseModel):
@@ -48,21 +49,77 @@ async def list_review_cases(
     request: Request,
     queue_state: str | None = Query(default=None),
     assigned_to: str | None = Query(default=None),
+    person_id: str | None = Query(default=None),
     priority_lte: int | None = Query(default=None),
+    priority_gte: int | None = Query(default=None),
+    decision: str | None = Query(default=None),
+    engine_type: str | None = Query(default=None),
+    confidence_gte: float | None = Query(default=None),
+    confidence_lte: float | None = Query(default=None),
+    created_after: str | None = Query(default=None),
+    created_before: str | None = Query(default=None),
+    sla_due_after: str | None = Query(default=None),
+    sla_due_before: str | None = Query(default=None),
+    overdue_sla: bool | None = Query(default=None),
+    resolved: bool | None = Query(default=None),
+    q: str | None = Query(default=None),
+    sort_by: str | None = Query(default=None),
+    sort_order: str | None = Query(default=None),
     cursor: str | None = Query(default=None),
     limit: int | None = Query(default=None),
     _user: AuthUser = Depends(require_human_user),
     repo: ReviewRepository = Depends(get_review_repo),
 ) -> ApiResponse[list[ReviewCaseSummary]]:
-    """List review cases with optional filters."""
+    """List review cases with optional search, filters, sort, and pagination."""
+    q_clean: str | None = q.strip() if q else None
+    if q_clean is not None and len(q_clean) < 3:
+        raise http_error(
+            400,
+            "invalid_request",
+            "Search query q requires at least 3 characters.",
+            request,
+        )
+    if sort_by is not None and sort_by not in REVIEW_SORT_KEYS:
+        raise http_error(400, "invalid_request", f"Unknown sort_by: {sort_by}", request)
+
     skip, page_limit = page_window(cursor, limit)
     filters: ReviewListFilters = {
         "queue_state": queue_state,
         "assigned_to": assigned_to,
+        "person_id": person_id,
         "priority_lte": priority_lte,
+        "priority_gte": priority_gte,
+        "decision": decision,
+        "engine_type": engine_type,
+        "confidence_gte": confidence_gte,
+        "confidence_lte": confidence_lte,
+        "created_after": created_after,
+        "created_before": created_before,
+        "sla_due_after": sla_due_after,
+        "sla_due_before": sla_due_before,
+        "overdue_sla": overdue_sla,
+        "resolved": resolved,
+        "q": q_clean,
+        "sort_by": sort_by,
+        "sort_order": sort_order,
     }
-    items, has_more = await repo.get_page(filters, skip, page_limit)
-    return envelope(items, request, next_cursor(skip, page_limit, has_more))
+    items, total = await repo.get_page(filters, skip, page_limit)
+    has_more = skip + page_limit < total
+    return envelope(items, request, next_cursor(skip, page_limit, has_more), total_count=total)
+
+
+@router.get("/by-match-decision/{match_decision_id}", response_model=ApiResponse[ReviewCaseDetail])
+async def get_review_case_by_match_decision(
+    match_decision_id: str,
+    request: Request,
+    _user: AuthUser = Depends(require_human_user),
+    repo: ReviewRepository = Depends(get_review_repo),
+) -> ApiResponse[ReviewCaseDetail]:
+    """Return the review case attached to a match decision."""
+    case = await repo.get_by_match_decision_id(match_decision_id)
+    if case is None:
+        raise http_error(404, "review_case_not_found", "Review case was not found.", request)
+    return envelope(case, request)
 
 
 @router.get("/{review_case_id}", response_model=ApiResponse[ReviewCaseDetail])
@@ -86,6 +143,20 @@ async def require_human_review_case_mutator(
     """Require both a human principal and review-case mutation permission."""
     _ = user
     return review_user
+
+
+@router.post("/{review_case_id}/recreate", response_model=ApiResponse[ReviewCaseDetail])
+async def recreate_review_case(
+    review_case_id: str,
+    request: Request,
+    user: AuthUser = Depends(require_human_review_case_mutator),
+    repo: ReviewRepository = Depends(get_review_repo),
+) -> ApiResponse[ReviewCaseDetail]:
+    """Create a new open review case from a resolved case without mutating history."""
+    case = await repo.recreate(review_case_id, user.email)
+    if case is None:
+        raise http_error(404, "review_case_not_found", "Review case was not found.", request)
+    return envelope(case, request)
 
 
 @router.post("/{review_case_id}/assign", response_model=ApiResponse[AssignResponse])
@@ -134,6 +205,7 @@ async def submit_review_action(
         body.metadata.follow_up_at,
         user.email,
         body.metadata.survivor_person_id,
+        [selection.to_selection() for selection in body.metadata.golden_profile_selections],
     )
 
     if result is None:

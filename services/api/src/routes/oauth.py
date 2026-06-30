@@ -2,13 +2,20 @@
 
 from __future__ import annotations
 
+import time
+import uuid
+
 from fastapi import APIRouter, Form, status
 from fastapi.responses import JSONResponse
 
 from src.auth.oauth_client_models import OAuthTokenResponse
-from src.auth.oauth_clients import requested_scopes_or_default, validate_client_credentials
+from src.auth.oauth_clients import (
+    active_secret,
+    requested_scopes_or_default,
+    validate_client_credentials,
+)
+from src.auth.oauth_token_registry import register_token
 from src.auth.oauth_tokens import JsonWebKeySet, build_jwks, issue_client_access_token
-from src.config import config
 
 router = APIRouter(prefix="/v1/oauth", tags=["OAuth"])
 
@@ -73,18 +80,30 @@ async def token(
             "Requested scope is not assigned to this client.",
         )
 
-    expires_in = min(
-        config.oauth_access_token_expiry_minutes,
-        config.oauth_max_access_token_expiry_minutes,
-    ) * 60
+    secret = active_secret(client)
+    if secret is None:
+        return _oauth_error(
+            status.HTTP_401_UNAUTHORIZED, "invalid_client", "Invalid client credentials."
+        )
+    secret_id = secret.secret_id
+
+    expires_in = client.access_token_ttl_seconds
+    now = int(time.time())
+    jti = str(uuid.uuid4())
     access_token = issue_client_access_token(
-        client, granted_scopes, expires_in_seconds=expires_in
+        client, granted_scopes, secret_id=secret_id, expires_in_seconds=expires_in, jti=jti
+    )
+    await register_token(
+        jti=jti,
+        client_id=client.client_id,
+        secret_id=secret_id,
+        scope=" ".join(granted_scopes),
+        issued_at=now,
+        expires_at=now + expires_in,
     )
     return JSONResponse(
         OAuthTokenResponse(
-            access_token=access_token,
-            expires_in=expires_in,
-            scope=" ".join(granted_scopes),
+            access_token=access_token, expires_in=expires_in, scope=" ".join(granted_scopes)
         ).model_dump(),
         headers=_NO_CACHE_HEADERS,
     )

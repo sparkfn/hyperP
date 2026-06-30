@@ -3,6 +3,7 @@
 import {
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
   type ReactElement,
@@ -25,6 +26,8 @@ import AssignmentIcon from "@mui/icons-material/Assignment";
 import MergeTypeIcon from "@mui/icons-material/MergeType";
 import ReceiptIcon from "@mui/icons-material/Receipt";
 import InventoryIcon from "@mui/icons-material/Inventory";
+import FormatListBulletedIcon from "@mui/icons-material/FormatListBulleted";
+import PrecisionManufacturingIcon from "@mui/icons-material/PrecisionManufacturing";
 import CircleIcon from "@mui/icons-material/Circle";
 import StorageIcon from "@mui/icons-material/Storage";
 import GavelIcon from "@mui/icons-material/Gavel";
@@ -37,7 +40,7 @@ import type { PersonGraph } from "@/lib/api-types";
 import {
   colorForLabel,
   iconForLabel,
-  paintNode,
+  makePaintNode,
   paintNodePointerArea,
   toForceGraphData,
   NODE_SIZE,
@@ -48,6 +51,7 @@ import {
   type SelectedItem,
 } from "@/components/graph-utils";
 import GraphDetailPanel from "@/components/GraphDetailPanel";
+import { useThemeMode } from "@/lib/ThemeContext";
 
 const ForceGraph2D = dynamic(() => import("react-force-graph-2d"), {
   ssr: false,
@@ -70,6 +74,8 @@ const ICON_COMPONENTS: Record<NodeIcon, ReactElement> = {
   mergeType: <MergeTypeIcon />,
   receipt: <ReceiptIcon />,
   inventory: <InventoryIcon />,
+  formatListBulleted: <FormatListBulletedIcon />,
+  precisionManufacturing: <PrecisionManufacturingIcon />,
   bullet: <CircleIcon sx={{ fontSize: 12 }} />,
   dataSource: <StorageIcon />,
   gavel: <GavelIcon />,
@@ -130,6 +136,11 @@ export default function PersonGraphViewer({
   const graphRef = useRef<ForceGraphMethods>(undefined);
   const [dimensions, setDimensions] = useState({ width: 800, height: 600 });
   const lastClickRef = useRef<{ nodeId: string; time: number }>({ nodeId: "", time: 0 });
+
+  const { mode } = useThemeMode();
+  const nodeLabelColor = mode === "dark" ? "#cbd5e1" : "#334155";
+  const edgeColor = mode === "dark" ? "rgba(148,163,184,0.4)" : "#b0bec5";
+  const paintNodeFn = useMemo(() => makePaintNode(nodeLabelColor), [nodeLabelColor]);
 
   // Configure d3 forces for proper spacing once graph is loaded
   useEffect(() => {
@@ -258,13 +269,18 @@ export default function PersonGraphViewer({
         sx={{
           position: "relative",
           flexGrow: 1,
-          minHeight: 500,
+          minHeight: 0,
           border: 1,
           borderColor: "divider",
           borderRadius: 1,
           overflow: "hidden",
-          bgcolor: "#ffffff",
-          backgroundImage: "radial-gradient(circle, #d0d0d0 1px, transparent 1px)",
+          bgcolor: "background.paper",
+          backgroundImage: (theme) => {
+            const dot = theme.palette.mode === "dark"
+              ? "rgba(255,255,255,0.07)"
+              : "rgba(0,0,0,0.07)";
+            return `radial-gradient(circle, ${dot} 1px, transparent 1px)`;
+          },
           backgroundSize: "24px 24px",
         }}
       >
@@ -280,11 +296,11 @@ export default function PersonGraphViewer({
               linkSource="source"
               linkTarget="target"
               nodeVal={() => NODE_SIZE * 3}
-              nodeCanvasObject={paintNode}
+              nodeCanvasObject={paintNodeFn}
               nodeCanvasObjectMode={() => "replace"}
               nodePointerAreaPaint={paintNodePointerArea}
               linkLabel={(raw: AnyLink) => (raw as unknown as FGLink).type}
-              linkColor={() => "#b0bec5"}
+              linkColor={() => edgeColor}
               linkWidth={1.5}
               linkDirectionalArrowLength={4}
               linkDirectionalArrowRelPos={1}

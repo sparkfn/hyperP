@@ -2,6 +2,16 @@
 // FastAPI directly. Server-side code should use `lib/api-server` instead.
 
 import type { ApiError, ApiResponse } from "./api-types";
+import { BASE_PATH } from "./route-paths";
+
+// Next.js does NOT apply the framework basePath to raw fetch() calls (only to
+// <Link>/router/next-auth), so origin-relative BFF paths must be prefixed here.
+function withBasePath(path: string): string {
+  if (path.startsWith("/") && !path.startsWith(`${BASE_PATH}/`)) {
+    return `${BASE_PATH}${path}`;
+  }
+  return path;
+}
 
 export class BffError extends Error {
   public readonly status: number;
@@ -28,7 +38,7 @@ export async function bffFetch<T>(path: string, init?: RequestInit): Promise<T> 
 }
 
 export async function bffFetchEnvelope<T>(path: string, init?: RequestInit): Promise<ApiResponse<T>> {
-  const response: Response = await fetch(path, init);
+  const response: Response = await fetch(withBasePath(path), init);
   const json: unknown = await response.json();
 
   if (!response.ok) {

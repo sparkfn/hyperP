@@ -1,0 +1,290 @@
+.page {
+  min-height: 100vh;
+  background: #e8eeff;
+  background-image: radial-gradient(#c7d2fe 1px, transparent 1px);
+  background-size: 28px 28px;
+  display: flex;
+  flex-direction: column;
+  font-family: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", sans-serif;
+  position: relative;
+  overflow: hidden;
+}
+
+/* ── Navbar ── */
+.navbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 24px 60px;
+  flex-shrink: 0;
+}
+
+.logo {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  text-decoration: none;
+}
+
+.logoMark {
+  width: 48px;
+  height: 48px;
+  background: #4361ee;
+  border-radius: 13px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 22px;
+  font-weight: 800;
+  color: #fff;
+  letter-spacing: -1px;
+}
+
+.logoText {
+  font-size: 22px;
+  font-weight: 700;
+  color: #0f172a;
+  letter-spacing: -0.3px;
+}
+
+.logoText span { color: #4361ee; }
+
+.logoSub {
+  font-size: 12px;
+  color: #94a3b8;
+  font-weight: 500;
+  letter-spacing: 0.2px;
+  margin-top: 2px;
+}
+
+/* ── Main content ── */
+.content {
+  flex: 1;
+  display: flex;
+  align-items: stretch;
+  justify-content: center;
+  gap: 64px;
+  padding: 40px 140px 60px;
+  position: relative;
+  z-index: 1;
+}
+
+/* ── Left hero ── */
+.left {
+  flex: 1;
+  max-width: 560px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 0;
+}
+
+.illustrationBg {
+  width: 100%;
+  opacity: 0.99;
+  flex-shrink: 0;
+  will-change: transform;
+}
+
+.tagline {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: #dde5ff;
+  color: #4361ee;
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  padding: 5px 12px;
+  border-radius: 50px;
+  margin-bottom: 20px;
+  width: fit-content;
+}
+
+.taglineDot {
+  width: 6px;
+  height: 6px;
+  background: #4361ee;
+  border-radius: 50%;
+}
+
+.headline {
+  font-size: 56px;
+  font-weight: 800;
+  font-style: italic;
+  color: #0f172a;
+  line-height: 1.1;
+  letter-spacing: -2px;
+  margin-bottom: 16px;
+}
+
+.headline em {
+  font-style: normal;
+  color: #4361ee;
+}
+
+.subheadline {
+  font-size: 12px;
+  color: #64748b;
+  line-height: 1.65;
+  max-width: 290px;
+  font-weight: 400;
+  margin-bottom: 0px;
+}
+
+
+
+/* ── Right form card ── */
+.card {
+  width: 380px;
+  flex-shrink: 0;
+  padding: 40px 36px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+
+.cardLogo {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 28px;
+}
+
+.formEyebrow {
+  font-size: 12px;
+  font-weight: 600;
+  color: #94a3b8;
+  letter-spacing: 0.8px;
+  text-transform: uppercase;
+  margin-bottom: 10px;
+}
+
+.formTitle {
+  font-size: 26px;
+  font-weight: 800;
+  color: #0f172a;
+  letter-spacing: -0.8px;
+  margin-bottom: 8px;
+  line-height: 1.2;
+}
+
+.formSubtitle {
+  font-size: 14px;
+  color: #64748b;
+  line-height: 1.6;
+  margin-bottom: 32px;
+}
+
+.signInBtn {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 15px 20px;
+  background: #4361ee;
+  color: #fff;
+  border: none;
+  border-radius: 12px;
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+  font-family: inherit;
+  letter-spacing: 0.2px;
+  transition: all 0.15s ease;
+  box-shadow: 0 4px 16px rgba(67, 97, 238, 0.35);
+}
+
+.signInBtn:hover {
+  background: #3451d1;
+  box-shadow: 0 6px 24px rgba(67, 97, 238, 0.45);
+  transform: translateY(-1px);
+}
+
+.signInBtn:active {
+  transform: translateY(0);
+  box-shadow: 0 2px 8px rgba(67, 97, 238, 0.3);
+}
+
+.googleIcon {
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+}
+
+.notice {
+  margin-top: 24px;
+  padding-top: 20px;
+  border-top: 1px solid #f1f5f9;
+  font-size: 12px;
+  color: #94a3b8;
+  line-height: 1.6;
+  text-align: center;
+}
+
+/* Mobile illustration — hidden on desktop */
+.mobileIllustration {
+  display: none;
+}
+
+/* ══════════════════════════════
+   MOBILE
+══════════════════════════════ */
+@media (max-width: 768px) {
+  .page {
+    min-height: 100dvh;
+    justify-content: center;
+  }
+
+  .mobileIllustration {
+    display: block;
+    position: absolute;
+    bottom: -60px;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 520px;
+    opacity: 0.18;
+    pointer-events: none;
+    z-index: 0;
+  }
+
+  .content {
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 0;
+    padding: 48px 32px;
+    position: relative;
+    z-index: 1;
+  }
+
+  .left {
+    display: none;
+  }
+
+  .card {
+    width: 100%;
+    max-width: 380px;
+    padding: 0;
+    justify-content: center;
+  }
+
+  .cardLogo {
+    margin-bottom: 28px;
+  }
+
+  .formTitle {
+    font-size: 26px;
+  }
+
+  .formSubtitle {
+    margin-bottom: 28px;
+  }
+
+  .signInBtn {
+    padding: 16px 20px;
+    font-size: 15px;
+  }
+}

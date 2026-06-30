@@ -1,0 +1,162 @@
+import "server-only";
+import type { ReactElement } from "react";
+import { notFound } from "next/navigation";
+import { apiFetch } from "@/lib/api-server";
+import type { Person, PersonConnection, SalesOrder } from "@/lib/api-types";
+import { UpstreamError } from "@/lib/api-server";
+import { formatDate, formatDob, getInitials } from "@/lib/display";
+import styles from "./public-person.module.css";
+
+interface PageProps {
+  params: Promise<{ token: string }>;
+}
+
+function formatAmount(amount: number | null, currency: string | null): string {
+  if (amount == null) return "—";
+  return new Intl.NumberFormat("en-SG", {
+    style: "currency",
+    currency: currency ?? "SGD",
+    minimumFractionDigits: 2,
+  }).format(amount);
+}
+
+function maskNric(nric: string | null): string {
+  if (!nric) return "—";
+  return nric.length >= 4 ? `****${nric.slice(-4)}` : "****";
+}
+
+
+export default async function PublicPersonPage({ params }: PageProps): Promise<ReactElement> {
+  const { token } = await params;
+
+  let person: Person;
+  let connections: PersonConnection[];
+  let sales: SalesOrder[];
+
+  try {
+    const opts = { authToken: null as null };
+    [person, connections, sales] = await Promise.all([
+      apiFetch<Person>(`/public/persons/${token}`, opts).then((r) => r.data),
+      apiFetch<PersonConnection[]>(`/public/persons/${token}/connections`, opts).then((r) => r.data).catch(() => []),
+      apiFetch<SalesOrder[]>(`/public/persons/${token}/sales`, opts).then((r) => r.data).catch(() => []),
+    ]);
+  } catch (e) {
+    if (e instanceof UpstreamError && e.status === 404) notFound();
+    throw e;
+  }
+
+  return (
+    <div className={styles.page}>
+      <header className={styles.header}>
+        <div className={styles.headerInner}>
+          <div className={styles.wordmark}>HyperP</div>
+          <div className={styles.headerMeta}>Shared profile · read-only</div>
+        </div>
+      </header>
+
+      <main className={styles.main}>
+        {/* ── Person header ── */}
+        <div className={styles.personHeader}>
+          <div className={styles.avatar}>
+            {getInitials(person.preferred_full_name)}
+          </div>
+          <div className={styles.personInfo}>
+            <h1 className={styles.personName}>{person.preferred_full_name ?? "Unknown"}</h1>
+            <div className={styles.personMeta}>
+              {person.preferred_dob && <span>{formatDob(person.preferred_dob)}</span>}
+              {person.preferred_nric && <span>{maskNric(person.preferred_nric)}</span>}
+              <span className={`${styles.statusBadge} ${styles[`status_${person.status}`]}`}>
+                {person.status}
+              </span>
+            </div>
+          </div>
+        </div>
+
+        {/* ── Contact info ── */}
+        <section className={styles.section}>
+          <h2 className={styles.sectionTitle}>Contact information</h2>
+          <div className={styles.fieldGrid}>
+            <div className={styles.fieldGroup}>
+              <div className={styles.fieldLabel}>Phone</div>
+              <div className={styles.fieldValue}>{person.preferred_phone ?? "—"}</div>
+            </div>
+            <div className={styles.fieldGroup}>
+              <div className={styles.fieldLabel}>Email</div>
+              <div className={styles.fieldValue}>{person.preferred_email ?? "—"}</div>
+            </div>
+            {person.preferred_nric && (
+              <div className={styles.fieldGroup}>
+                <div className={styles.fieldLabel}>NRIC</div>
+                <div className={styles.fieldValue}>{maskNric(person.preferred_nric)}</div>
+              </div>
+            )}
+            {person.preferred_address && (
+              <div className={`${styles.fieldGroup} ${styles.fieldGroupFull}`}>
+                <div className={styles.fieldLabel}>Address</div>
+                <div className={styles.fieldValue}>{person.preferred_address.normalized_full ?? "—"}</div>
+              </div>
+            )}
+          </div>
+        </section>
+
+        {/* ── Connections ── */}
+        {connections.length > 0 && (
+          <section className={styles.section}>
+            <h2 className={styles.sectionTitle}>Connections <span className={styles.sectionCount}>{connections.length}</span></h2>
+            <div className={styles.connectionList}>
+              {connections.map((conn) => {
+                const rel = conn.knows_relationships[0];
+                const label = rel?.relationship_label ?? rel?.relationship_category ?? null;
+                return (
+                  <div key={conn.person_id} className={styles.connectionItem}>
+                    <div className={styles.connectionName}>{conn.preferred_full_name ?? conn.person_id}</div>
+                    {label && <div className={styles.connectionRel}>{label}</div>}
+                  </div>
+                );
+              })}
+            </div>
+          </section>
+        )}
+
+        {/* ── Sales ── */}
+        {sales.length > 0 && (
+          <section className={styles.section}>
+            <h2 className={styles.sectionTitle}>Order history <span className={styles.sectionCount}>{sales.length}</span></h2>
+            <table className={styles.salesTable}>
+              <colgroup>
+                <col /><col /><col /><col />
+              </colgroup>
+              <thead>
+                <tr>
+                  <th>Order</th>
+                  <th>Date</th>
+                  <th>Item</th>
+                  <th className={styles.colRight}>Amount</th>
+                </tr>
+              </thead>
+              <tbody>
+                {sales.map((order) => {
+                  const id = order.order_no ?? order.source_order_id ?? "—";
+                  const item = order.line_items[0]?.product?.display_name ?? "—";
+                  const extra = order.line_items.length > 1 ? ` +${order.line_items.length - 1} more` : "";
+                  return (
+                    <tr key={id}>
+                      <td className={styles.orderNo} title={id}>{id}</td>
+                      <td className={styles.dateCell}>{formatDate(order.order_date)}</td>
+                      <td className={styles.itemCell}>{item}{extra}</td>
+                      <td className={`${styles.colRight} ${styles.amountCell}`}>{formatAmount(order.total_amount, order.currency)}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </section>
+        )}
+
+        <footer className={styles.footer}>
+          Generated by HyperP · {new Date().toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" })}
+        </footer>
+      </main>
+    </div>
+  );
+}

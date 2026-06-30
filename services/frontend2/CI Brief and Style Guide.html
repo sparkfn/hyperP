@@ -1,0 +1,698 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>HyperP · CI Brief & Style Guide</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<style>
+  :root {
+    --bg-page: #f6f6f5; --bg-surface: #ffffff; --bg-surface-2: #fafaf9; --bg-surface-3: #f4f4f5;
+    --border-soft: #e7e5e4; --border-strong: #d4d4d4;
+    --text-strong: #18181b; --text: #3f3f46; --text-muted: #71717a; --text-faint: #a1a1aa;
+    --accent: #18181b; --accent-soft: #f4f4f5; --accent-on-soft: #18181b;
+    --warn-bg: #fef9c3; --warn-border: #fde68a; --warn-text: #713f12;
+    --good: #166534; --good-soft: #dcfce7;
+    --bad: #b91c1c; --bad-soft: #fee2e2;
+    --indigo: #6366f1; --indigo-soft: rgba(99,102,241,0.15);
+    --amber: #f59e0b;
+    --max: 1080px;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: var(--bg-page); color: var(--text); font-family: ui-sans-serif, -apple-system, system-ui, sans-serif; font-size: 14px; line-height: 1.55; }
+  .wrap { max-width: var(--max); margin: 0 auto; padding: 48px 28px 80px; }
+
+  /* Typography */
+  h1, h2, h3, h4 { color: var(--text-strong); margin: 0; font-weight: 600; letter-spacing: -0.02em; text-wrap: balance; }
+  h1 { font-size: 42px; line-height: 1.1; }
+  h2 { font-size: 24px; line-height: 1.2; margin-top: 56px; padding-bottom: 10px; border-bottom: 1px solid var(--border-soft); display: flex; align-items: baseline; gap: 12px; }
+  h2 .num { color: var(--text-faint); font-variant-numeric: tabular-nums; font-size: 13px; font-weight: 500; letter-spacing: 0.04em; }
+  h3 { font-size: 16px; margin-top: 28px; margin-bottom: 8px; }
+  h4 { font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-muted); margin-bottom: 6px; font-weight: 600; }
+  p { margin: 0 0 12px; max-width: 68ch; text-wrap: pretty; }
+  .lede { font-size: 17px; color: var(--text); max-width: 64ch; }
+  hr { border: 0; border-top: 1px solid var(--border-soft); margin: 32px 0; }
+  code, .mono { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 12px; }
+  .muted { color: var(--text-muted); }
+  .faint { color: var(--text-faint); }
+  strong { color: var(--text-strong); font-weight: 600; }
+
+  /* Identity strip at top */
+  .mast { display: grid; grid-template-columns: 1fr auto; gap: 24px; align-items: end; padding-bottom: 28px; border-bottom: 1px solid var(--border-soft); }
+  .mast .kicker { font-size: 12px; text-transform: uppercase; letter-spacing: 0.16em; color: var(--text-muted); font-weight: 600; margin-bottom: 18px; }
+  .mast .meta { font-size: 12px; color: var(--text-muted); text-align: right; }
+  .mast .meta div { font-family: ui-monospace, monospace; }
+
+  /* Logo mark */
+  .mark { display: inline-flex; align-items: center; gap: 10px; }
+  .mark .tile { width: 30px; height: 30px; border-radius: 7px; background: var(--text-strong); color: white; display: inline-flex; align-items: center; justify-content: center; font-weight: 700; font-size: 14px; letter-spacing: -0.02em; }
+  .mark .name { font-size: 15px; font-weight: 600; color: var(--text-strong); letter-spacing: -0.01em; }
+
+  /* Two-up content blocks */
+  .two { display: grid; grid-template-columns: 1fr 1fr; gap: 28px; align-items: start; }
+  .three { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+  .four { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+
+  /* Principle cards */
+  .principle { padding: 18px; border: 1px solid var(--border-soft); border-radius: 10px; background: var(--bg-surface); display: flex; flex-direction: column; gap: 6px; }
+  .principle .n { font-size: 11px; color: var(--text-faint); font-variant-numeric: tabular-nums; letter-spacing: 0.1em; font-weight: 600; }
+  .principle .t { font-size: 15px; font-weight: 600; color: var(--text-strong); }
+
+  /* Voice do/don't */
+  .voice { padding: 16px; border-radius: 10px; border: 1px solid var(--border-soft); background: var(--bg-surface); display: flex; flex-direction: column; gap: 8px; }
+  .voice .head { font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; font-weight: 600; }
+  .voice.do .head { color: var(--good); }
+  .voice.dont .head { color: var(--bad); }
+  .voice ul { margin: 0; padding-left: 18px; }
+  .voice li { margin: 2px 0; }
+  .voice .ex { padding: 8px 10px; background: var(--bg-surface-2); border-left: 2px solid var(--border-strong); font-style: italic; color: var(--text); }
+
+  /* Color swatch */
+  .swatch { border: 1px solid var(--border-soft); border-radius: 10px; overflow: hidden; background: var(--bg-surface); }
+  .swatch .chip { height: 80px; }
+  .swatch .meta { padding: 10px 12px; display: flex; flex-direction: column; gap: 2px; }
+  .swatch .name { font-size: 13px; font-weight: 600; color: var(--text-strong); }
+  .swatch .var { font-family: ui-monospace, monospace; font-size: 11px; color: var(--text-muted); }
+  .swatch .hex { font-family: ui-monospace, monospace; font-size: 11px; color: var(--text-faint); }
+
+  /* Type scale rows */
+  .type-row { display: grid; grid-template-columns: 120px 1fr; gap: 20px; padding: 14px 0; border-bottom: 1px solid var(--border-soft); align-items: baseline; }
+  .type-row:last-child { border-bottom: 0; }
+  .type-row .meta { font-family: ui-monospace, monospace; font-size: 11px; color: var(--text-muted); display: flex; flex-direction: column; gap: 2px; }
+  .type-row .meta .label { font-size: 11px; font-weight: 600; color: var(--text-strong); font-family: inherit; text-transform: uppercase; letter-spacing: 0.08em; }
+  .type-row .sample { color: var(--text-strong); }
+
+  /* Token table */
+  table.tokens { width: 100%; border-collapse: collapse; font-size: 12px; }
+  table.tokens th, table.tokens td { text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--border-soft); vertical-align: middle; }
+  table.tokens th { font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-muted); font-weight: 600; background: var(--bg-surface-2); }
+  table.tokens td.mono { font-family: ui-monospace, monospace; color: var(--text-muted); }
+  .dot { display: inline-block; width: 14px; height: 14px; border-radius: 3px; vertical-align: middle; margin-right: 8px; border: 1px solid rgba(0,0,0,0.06); }
+
+  /* Spacing scale */
+  .space-row { display: grid; grid-template-columns: 60px 60px 1fr; gap: 12px; padding: 6px 0; align-items: center; font-size: 12px; }
+  .space-row .box { height: 14px; background: var(--text-strong); border-radius: 2px; }
+  .space-row .token { font-family: ui-monospace, monospace; color: var(--text-muted); }
+
+  /* Buttons spec */
+  .btn-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 14px 0; }
+  .btn { display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; border-radius: 6px; font-size: 12px; font-family: inherit; cursor: pointer; font-weight: 500; border: 1px solid transparent; }
+  .btn.primary { background: var(--text-strong); color: white; border-color: var(--text-strong); }
+  .btn.secondary { background: var(--bg-surface); color: var(--text); border-color: var(--border-soft); }
+  .btn.ghost { background: transparent; color: var(--text-muted); }
+  .btn.icon { width: 28px; height: 28px; padding: 0; justify-content: center; }
+  .btn.danger { background: var(--bad-soft); color: var(--bad); border-color: var(--bad-soft); }
+
+  /* Pill, chip */
+  .pill { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 999px; font-size: 12px; background: var(--bg-surface); border: 1px solid var(--border-soft); color: var(--text); }
+  .pill.on { background: var(--accent-soft); border-color: var(--border-strong); color: var(--accent-on-soft); font-weight: 600; }
+  .pill.more { background: var(--bg-surface); border: 1px dashed var(--border-strong); color: var(--text-muted); }
+  .source-chip { display: inline-flex; align-items: center; gap: 4px; font-size: 10px; padding: 2px 7px; border-radius: 3px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; }
+  .sc-fundbox { background: #dbeafe; color: #1e40af; }
+  .sc-eko { background: #dcfce7; color: #166534; }
+  .sc-speedzone { background: #ffe4e6; color: #9f1239; }
+  .sc-bitrix { background: #fef3c7; color: #92400e; }
+  .badge { display: inline-flex; align-items: center; gap: 4px; font-size: 10px; padding: 1px 6px; border-radius: 3px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; }
+  .badge.verified { background: var(--good-soft); color: var(--good); }
+  .badge.primary { background: var(--accent-soft); color: var(--accent-on-soft); }
+  .flag { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; padding: 2px 8px; border-radius: 999px; font-weight: 600; }
+  .flag .dot { width: 5px; height: 5px; border-radius: 50%; }
+  .flag.dup { background: #fef3c7; color: #92400e; }
+  .flag.dup .dot { background: #d97706; }
+  .flag.low { background: #fee2e2; color: #b91c1c; }
+  .flag.low .dot { background: #b91c1c; }
+  .flag.stub { background: var(--bg-surface-3); color: var(--text-muted); }
+  .flag.stub .dot { background: var(--text-muted); }
+
+  /* Component preview frame */
+  .preview { padding: 22px; border-radius: 12px; border: 1px solid var(--border-soft); background: var(--bg-surface-2); display: flex; flex-direction: column; gap: 12px; }
+  .preview.dark { background: #0b1020; border-color: #1e293b; color: #e2e8f0; }
+  .preview.dark .pill { background: #0f172a; border-color: #1e293b; color: #e2e8f0; }
+  .preview.dark .pill.on { background: rgba(99,102,241,0.15); border-color: rgba(99,102,241,0.5); color: #c7d2fe; }
+  .preview.dark .pill.more { background: #0f172a; border-color: #334155; color: #94a3b8; }
+  .preview .pv-label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-muted); font-weight: 600; }
+  .preview.dark .pv-label { color: #94a3b8; }
+
+  /* KPI card preview */
+  .kpi { padding: 12px 14px; border-radius: 8px; background: var(--bg-surface-2); border: 1px solid var(--border-soft); display: flex; flex-direction: column; gap: 2px; }
+  .kpi.accent { background: var(--accent-soft); }
+  .kpi .k { font-size: 10px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.06em; font-weight: 600; }
+  .kpi .v { font-size: 22px; color: var(--text-strong); font-weight: 600; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
+  .kpi .sub { font-size: 11px; color: var(--text-muted); }
+
+  /* Avatar example */
+  .avatar { position: relative; width: 44px; height: 44px; flex-shrink: 0; }
+  .avatar .core { width: 44px; height: 44px; border-radius: 50%; background: #dbeafe; color: #1e40af; display: flex; align-items: center; justify-content: center; font-weight: 600; font-size: 16px; border: 1px solid var(--border-soft); }
+  .avatar .ring { position: absolute; inset: -2px; border-radius: 50%; background: conic-gradient(var(--good) 320deg, var(--border-soft) 0); -webkit-mask: radial-gradient(circle, transparent 20px, #000 20px, #000 23px, transparent 23px); mask: radial-gradient(circle, transparent 20px, #000 20px, #000 23px, transparent 23px); }
+
+  /* Layout example */
+  .layout-fig { border: 1px solid var(--border-soft); border-radius: 10px; padding: 14px; background: var(--bg-surface); }
+  .layout-fig svg { display: block; width: 100%; height: auto; }
+
+  /* Misc */
+  .callout { padding: 14px 16px; border-radius: 10px; background: var(--bg-surface-2); border-left: 3px solid var(--text-strong); font-size: 13px; }
+  .toc { margin: 24px 0 0; display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px 24px; font-size: 13px; }
+  .toc a { color: var(--text); text-decoration: none; padding: 4px 0; display: flex; justify-content: space-between; align-items: baseline; gap: 12px; border-bottom: 1px dotted var(--border-soft); }
+  .toc a:hover { color: var(--text-strong); }
+  .toc a .num { color: var(--text-faint); font-variant-numeric: tabular-nums; font-size: 12px; font-family: ui-monospace, monospace; }
+
+  /* Print */
+  @media print {
+    h2 { page-break-before: auto; break-before: auto; }
+    .preview, .layout-fig { break-inside: avoid; }
+    body { font-size: 11pt; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<!-- ================== MASTHEAD ================== -->
+<header class="mast">
+  <div>
+    <div class="kicker">Corporate Identity Brief · Style Guide</div>
+    <div class="mark">
+      <span class="tile">H</span>
+      <span class="name">HyperP</span>
+    </div>
+    <h1 style="margin-top:18px; max-width: 18ch;">Entity resolution, with the cluster in plain view.</h1>
+    <p class="lede" style="margin-top:14px;">A single specification for the visual and verbal identity of the HyperP product surface — derived from the <strong>Persons listing (Direction B — Bold)</strong> and <strong>Person detail (Variation A — Focused)</strong> designs.</p>
+  </div>
+  <div class="meta">
+    <div>v1.0</div>
+    <div>11 May 2026</div>
+    <div>Persons workspace</div>
+  </div>
+</header>
+
+<nav class="toc" aria-label="Contents">
+  <a href="#brand"><span>Brand foundations</span><span class="num">01</span></a>
+  <a href="#voice"><span>Voice & tone</span><span class="num">02</span></a>
+  <a href="#logo"><span>Logo & wordmark</span><span class="num">03</span></a>
+  <a href="#color"><span>Color tokens</span><span class="num">04</span></a>
+  <a href="#type"><span>Typography</span><span class="num">05</span></a>
+  <a href="#space"><span>Space, radius, elevation</span><span class="num">06</span></a>
+  <a href="#icon"><span>Iconography</span><span class="num">07</span></a>
+  <a href="#components"><span>Components</span><span class="num">08</span></a>
+  <a href="#patterns"><span>Domain patterns</span><span class="num">09</span></a>
+  <a href="#layout"><span>Layout & density</span><span class="num">10</span></a>
+  <a href="#data"><span>Data visualisation</span><span class="num">11</span></a>
+  <a href="#applications"><span>Applications</span><span class="num">12</span></a>
+</nav>
+
+<!-- ================== 01 BRAND ================== -->
+<h2 id="brand"><span class="num">01</span> Brand foundations</h2>
+
+<div class="two">
+  <div>
+    <h3>Positioning</h3>
+    <p>HyperP is an entity resolution workspace for teams whose data lives in many systems. Where most CRMs hide duplicates and conflicts, HyperP treats them as <strong>first-class objects</strong> — clusters, suspects, lineage — and lets operators reason about identity directly.</p>
+
+    <h3>Audience</h3>
+    <p>Data operators, fraud and KYC analysts, and engineers building on top of the resolution graph. The brand should feel <strong>capable, fast, and slightly opinionated</strong> — closer to a developer tool than a sales CRM.</p>
+
+    <h3>Mission</h3>
+    <p>Give every record one true identity, with every claim traceable to a source.</p>
+  </div>
+  <div>
+    <h3>Principles</h3>
+    <div class="three" style="grid-template-columns:1fr; gap:10px;">
+      <div class="principle"><span class="n">P · 01</span><span class="t">Density over decoration</span><span class="muted">Operators scan thousands of rows a day. Earn every pixel. No illustration, no gradients, no chrome that does not carry information.</span></div>
+      <div class="principle"><span class="n">P · 02</span><span class="t">Show the seam, not the smoothing</span><span class="muted">Conflicts, duplicates, and lineage are visible by default. We do not auto-merge what we cannot prove.</span></div>
+      <div class="principle"><span class="n">P · 03</span><span class="t">Every value has a source</span><span class="muted">If a field is on screen, the system it came from is one glance away. Source chips are non-negotiable.</span></div>
+      <div class="principle"><span class="n">P · 04</span><span class="t">Read like an engineer wrote it</span><span class="muted">IDs are monospace. Numbers are tabular. Labels are sparing. Tone is precise, never cute.</span></div>
+      <div class="principle"><span class="n">P · 05</span><span class="t">Two modes, one system</span><span class="muted">Light and dark are equal citizens. Every token must work in both; we never hard-code colors.</span></div>
+    </div>
+  </div>
+</div>
+
+<!-- ================== 02 VOICE ================== -->
+<h2 id="voice"><span class="num">02</span> Voice & tone</h2>
+<p>HyperP speaks the way a careful operator would brief a colleague: <strong>specific, qualified, and never breathless</strong>. Sentences carry numbers when numbers are available. Marketing words are demerits.</p>
+
+<div class="two">
+  <div class="voice do">
+    <span class="head">Do</span>
+    <ul>
+      <li>Lead with the noun and the count: "4 likely duplicates of Hanafie."</li>
+      <li>Qualify confidence: <em>likely</em>, <em>suspect</em>, <em>matched on</em>.</li>
+      <li>Name the source: "ingested from <code>eko_phppos</code>".</li>
+      <li>Use lowercase for system identifiers and ALL-CAPS only for section labels.</li>
+    </ul>
+    <div class="ex">"Cluster C-001 · 4 likely duplicates · matched on phone +6589193069."</div>
+  </div>
+  <div class="voice dont">
+    <span class="head">Don't</span>
+    <ul>
+      <li>Don't invent excitement: no exclamation marks, no "great news".</li>
+      <li>Don't use emoji or rounded illustrations in product surfaces.</li>
+      <li>Don't hide ambiguity behind a checkmark; show the conflict.</li>
+      <li>Don't call records "users", "leads", or "contacts" — they are <strong>persons</strong>.</li>
+    </ul>
+    <div class="ex">"🎉 You have new matches! Click here to magically merge them."</div>
+  </div>
+</div>
+
+<h4 style="margin-top:18px;">Lexicon</h4>
+<table class="tokens">
+  <thead><tr><th>Use</th><th>Not</th><th>Why</th></tr></thead>
+  <tbody>
+    <tr><td>Person, record</td><td>User, contact, lead</td><td class="muted">Records are subjects of investigation, not customers.</td></tr>
+    <tr><td>Cluster</td><td>Group, batch</td><td class="muted">Cluster has graph-theoretic weight; "group" is generic.</td></tr>
+    <tr><td>Suspect</td><td>Match</td><td class="muted">A suspect is a hypothesis, not a fact.</td></tr>
+    <tr><td>Source / ingest</td><td>Import / sync</td><td class="muted">Records have provenance, not transport.</td></tr>
+    <tr><td>Source of truth</td><td>Master record</td><td class="muted">SoT is per-field; "master" implies whole-row.</td></tr>
+    <tr><td>Completeness</td><td>Score / health</td><td class="muted">Measurable; specific to data coverage.</td></tr>
+    <tr><td>Connection</td><td>Friend, relation</td><td class="muted">Connection is symmetric and provable.</td></tr>
+  </tbody>
+</table>
+
+<!-- ================== 03 LOGO ================== -->
+<h2 id="logo"><span class="num">03</span> Logo & wordmark</h2>
+<div class="two">
+  <div>
+    <p>The mark is a square tile with an uppercase <strong>H</strong>, paired with the wordmark <strong>HyperP</strong>. It is built from the same primitives as the product UI — a 6 px-radius surface, the strong text color, and one letterform. No bespoke letter drawing; no ornament.</p>
+    <h4>Construction</h4>
+    <ul>
+      <li>Tile: <code>30 × 30</code> at 14 px text, scales linearly. Corner radius <code>7 px</code> at 30 px, <code>0.23 ×</code> tile size at larger.</li>
+      <li>Background: <code>--text-strong</code> in light mode, <code>--accent</code> (indigo) in dark mode.</li>
+      <li>Foreground: pure white. Letter weight 700, tracking <code>-0.02em</code>.</li>
+      <li>Wordmark gap: <code>10 px</code>. Wordmark uses the body font at <code>15 px / 600</code>.</li>
+    </ul>
+    <h4>Clearspace</h4>
+    <p>Reserve space equal to the tile's height on all sides. Do not letterspace the wordmark; do not outline the tile; do not place on textured backgrounds.</p>
+  </div>
+  <div class="layout-fig">
+    <div style="display:flex; flex-direction:column; gap:24px; align-items:flex-start;">
+      <div class="mark"><span class="tile">H</span><span class="name">HyperP</span></div>
+      <div class="mark"><span class="tile" style="width:48px;height:48px;font-size:22px;border-radius:11px;">H</span><span class="name" style="font-size:22px;">HyperP</span></div>
+      <div style="background:#0b1020; padding:18px 22px; border-radius:10px; width:100%; display:flex; align-items:center; gap:10px;">
+        <span class="tile" style="background:#6366f1;">H</span>
+        <span class="name" style="color:#f1f5f9;">HyperP</span>
+      </div>
+      <div class="mark" style="opacity:0.6;"><span class="tile" style="width:18px;height:18px;font-size:9px;border-radius:4px;">H</span><span class="name" style="font-size:11px;">HyperP</span><span class="muted" style="margin-left:8px;font-size:11px;">favicon · 16/32 px</span></div>
+    </div>
+  </div>
+</div>
+
+<!-- ================== 04 COLOR ================== -->
+<h2 id="color"><span class="num">04</span> Color tokens</h2>
+<p>Every color is a CSS variable. Authors must never write hex values into component styles; instead consume <code>--bg-surface</code>, <code>--text-strong</code>, etc. Two themes are defined; both must be tested for every component.</p>
+
+<h3>Light mode — surfaces & text</h3>
+<div class="four">
+  <div class="swatch"><div class="chip" style="background:#f6f6f5"></div><div class="meta"><span class="name">Page</span><span class="var">--bg-page</span><span class="hex">#f6f6f5</span></div></div>
+  <div class="swatch"><div class="chip" style="background:#ffffff;border-bottom:1px solid var(--border-soft);"></div><div class="meta"><span class="name">Surface</span><span class="var">--bg-surface</span><span class="hex">#ffffff</span></div></div>
+  <div class="swatch"><div class="chip" style="background:#fafaf9"></div><div class="meta"><span class="name">Surface 2</span><span class="var">--bg-surface-2</span><span class="hex">#fafaf9</span></div></div>
+  <div class="swatch"><div class="chip" style="background:#f4f4f5"></div><div class="meta"><span class="name">Surface 3</span><span class="var">--bg-surface-3</span><span class="hex">#f4f4f5</span></div></div>
+</div>
+<div class="four" style="margin-top:12px;">
+  <div class="swatch"><div class="chip" style="background:#18181b"></div><div class="meta"><span class="name">Text strong</span><span class="var">--text-strong</span><span class="hex">#18181b</span></div></div>
+  <div class="swatch"><div class="chip" style="background:#3f3f46"></div><div class="meta"><span class="name">Text</span><span class="var">--text</span><span class="hex">#3f3f46</span></div></div>
+  <div class="swatch"><div class="chip" style="background:#71717a"></div><div class="meta"><span class="name">Text muted</span><span class="var">--text-muted</span><span class="hex">#71717a</span></div></div>
+  <div class="swatch"><div class="chip" style="background:#a1a1aa"></div><div class="meta"><span class="name">Text faint</span><span class="var">--text-faint</span><span class="hex">#a1a1aa</span></div></div>
+</div>
+
+<h3>Dark mode — surfaces & text</h3>
+<div class="four">
+  <div class="swatch" style="background:#0b1020;"><div class="chip" style="background:#0b1020"></div><div class="meta" style="background:#0b1020;color:#f1f5f9;"><span class="name" style="color:#f1f5f9;">Page</span><span class="var">--bg-page</span><span class="hex" style="color:#94a3b8;">#0b1020</span></div></div>
+  <div class="swatch" style="background:#0b1020;"><div class="chip" style="background:#0f172a"></div><div class="meta" style="background:#0b1020;color:#f1f5f9;"><span class="name" style="color:#f1f5f9;">Surface</span><span class="var">--bg-surface</span><span class="hex" style="color:#94a3b8;">#0f172a</span></div></div>
+  <div class="swatch" style="background:#0b1020;"><div class="chip" style="background:#0a1426"></div><div class="meta" style="background:#0b1020;color:#f1f5f9;"><span class="name" style="color:#f1f5f9;">Surface 2</span><span class="var">--bg-surface-2</span><span class="hex" style="color:#94a3b8;">#0a1426</span></div></div>
+  <div class="swatch" style="background:#0b1020;"><div class="chip" style="background:#1e293b"></div><div class="meta" style="background:#0b1020;color:#f1f5f9;"><span class="name" style="color:#f1f5f9;">Surface 3</span><span class="var">--bg-surface-3</span><span class="hex" style="color:#94a3b8;">#1e293b</span></div></div>
+</div>
+
+<h3>Accent, semantic & source palette</h3>
+<table class="tokens">
+  <thead><tr><th>Role</th><th>Token</th><th>Light</th><th>Dark</th><th>Usage</th></tr></thead>
+  <tbody>
+    <tr><td><span class="dot" style="background:#18181b;"></span>Accent</td><td class="mono">--accent</td><td class="mono">#18181b</td><td class="mono">#6366f1</td><td class="muted">Primary action, active state, focused row.</td></tr>
+    <tr><td><span class="dot" style="background:#f4f4f5;"></span>Accent soft</td><td class="mono">--accent-soft</td><td class="mono">#f4f4f5</td><td class="mono">rgba(99,102,241,0.15)</td><td class="muted">Active backgrounds; selected pills.</td></tr>
+    <tr><td><span class="dot" style="background:#166534;"></span>Good</td><td class="mono">--good / --good-soft</td><td class="mono">#166534 / #dcfce7</td><td class="mono">#4ade80 / rgba(34,197,94,0.15)</td><td class="muted">Verified, fulfilled, healthy.</td></tr>
+    <tr><td><span class="dot" style="background:#fde68a;"></span>Warn</td><td class="mono">--warn-text / --warn-bg</td><td class="mono">#713f12 / #fef9c3</td><td class="mono">#fbbf24 / rgba(245,158,11,0.10)</td><td class="muted">Cluster suspects, duplicate flag, attention.</td></tr>
+    <tr><td><span class="dot" style="background:#b91c1c;"></span>Bad</td><td class="mono">--bad / --bad-soft</td><td class="mono">#b91c1c / #fee2e2</td><td class="mono">#f87171 / rgba(239,68,68,0.15)</td><td class="muted">Refunds, low-quality flag, destructive.</td></tr>
+  </tbody>
+</table>
+
+<h4 style="margin-top:18px;">Source-system palette</h4>
+<p>Each source system carries a fixed, low-saturation pair. These do not change between light and dark.</p>
+<div class="four">
+  <div class="swatch"><div class="chip" style="background:#dbeafe; color:#1e40af; display:flex; align-items:center; justify-content:center; font-weight:700; letter-spacing:0.06em;">FUNDBOX</div><div class="meta"><span class="name">Fundbox</span><span class="hex">bg #dbeafe · fg #1e40af</span></div></div>
+  <div class="swatch"><div class="chip" style="background:#dcfce7; color:#166534; display:flex; align-items:center; justify-content:center; font-weight:700; letter-spacing:0.06em;">EKO</div><div class="meta"><span class="name">Eko</span><span class="hex">bg #dcfce7 · fg #166534</span></div></div>
+  <div class="swatch"><div class="chip" style="background:#ffe4e6; color:#9f1239; display:flex; align-items:center; justify-content:center; font-weight:700; letter-spacing:0.06em;">SPEEDZONE</div><div class="meta"><span class="name">SpeedZone</span><span class="hex">bg #ffe4e6 · fg #9f1239</span></div></div>
+  <div class="swatch"><div class="chip" style="background:#fef3c7; color:#92400e; display:flex; align-items:center; justify-content:center; font-weight:700; letter-spacing:0.06em;">BITRIX</div><div class="meta"><span class="name">Bitrix</span><span class="hex">bg #fef3c7 · fg #92400e</span></div></div>
+</div>
+
+<div class="callout" style="margin-top:18px;">
+  <strong>Color contract.</strong> Every component must consume tokens, not hex values. The only exception is the source-system palette, which is constant across themes so an analyst can recognise <em>Fundbox blue</em> at a glance.
+</div>
+
+<!-- ================== 05 TYPE ================== -->
+<h2 id="type"><span class="num">05</span> Typography</h2>
+<p>One sans, one mono. The product uses the system UI stack (<code>ui-sans-serif, -apple-system, system-ui</code>) for body and headings — fast, neutral, available everywhere — and <code>ui-monospace</code> for IDs, codes, hex, phone numbers, currency, and any value that must align column-wise.</p>
+
+<h3>Scale</h3>
+<div>
+  <div class="type-row"><div class="meta"><span class="label">Display</span><span>32 / 38 · 600 · -0.4</span></div><div class="sample" style="font-size:32px; line-height:1.18; letter-spacing:-0.4px; font-weight:600;">Aisyah Binte Hanafie</div></div>
+  <div class="type-row"><div class="meta"><span class="label">H1</span><span>24 / 29 · 600 · -0.4</span></div><div class="sample" style="font-size:24px; line-height:1.2; letter-spacing:-0.4px; font-weight:600;">Person · 4a56e2ab</div></div>
+  <div class="type-row"><div class="meta"><span class="label">H2</span><span>18 / 24 · 600</span></div><div class="sample" style="font-size:18px; line-height:1.33; font-weight:600;">Identity & contact</div></div>
+  <div class="type-row"><div class="meta"><span class="label">Body</span><span>13 / 19 · 400</span></div><div class="sample" style="font-size:13px; line-height:1.45;">Phone +65 8919 3069 ingested from fundbox_consumer_backend.</div></div>
+  <div class="type-row"><div class="meta"><span class="label">Body sm</span><span>12 / 17 · 400</span></div><div class="sample" style="font-size:12px; line-height:1.4;">11 connections · 6 direct · 5 second-hop.</div></div>
+  <div class="type-row"><div class="meta"><span class="label">Caption</span><span>11 / 15 · 400 · muted</span></div><div class="sample muted" style="font-size:11px;">Updated 2 hours ago</div></div>
+  <div class="type-row"><div class="meta"><span class="label">Label</span><span>10–11 · 600 · 0.05em UPPERCASE</span></div><div class="sample muted" style="font-size:10px; text-transform:uppercase; letter-spacing:0.08em; font-weight:600;">Lifetime value</div></div>
+  <div class="type-row"><div class="meta"><span class="label">Mono</span><span>11–12 · 400 · monospace</span></div><div class="sample mono" style="font-size:12px; color: var(--text-strong);">S9234567H · +6589193069 · S$4,218.40</div></div>
+</div>
+
+<h4 style="margin-top:18px;">Type rules</h4>
+<ul>
+  <li><strong>Headings</strong> use tight tracking (<code>-0.2 to -0.4 px</code>); body text uses default tracking.</li>
+  <li><strong>Labels</strong> (column heads, section eyebrows) are always <code>UPPERCASE · 600 · letter-spacing 0.05–0.08em · text-muted</code>.</li>
+  <li><strong>Numbers</strong> use <code>font-variant-numeric: tabular-nums</code> wherever they sit in a column.</li>
+  <li><strong>Monospace</strong> is mandatory for IDs, NRIC, phone, hex, postal codes, and currency totals in tables.</li>
+  <li><strong>Line length</strong> caps at <code>68ch</code> for paragraphs; longer becomes hard to scan at 13 px.</li>
+</ul>
+
+<!-- ================== 06 SPACE ================== -->
+<h2 id="space"><span class="num">06</span> Space, radius & elevation</h2>
+<div class="two">
+  <div>
+    <h3>Spacing scale (4 px base)</h3>
+    <div>
+      <div class="space-row"><span class="token">--s1</span><div class="box" style="width:4px;"></div><span class="muted">4 px · icon ↔ label gap, dense lists.</span></div>
+      <div class="space-row"><span class="token">--s2</span><div class="box" style="width:8px;"></div><span class="muted">8 px · row internal padding.</span></div>
+      <div class="space-row"><span class="token">--s3</span><div class="box" style="width:12px;"></div><span class="muted">12 px · card padding (compact), KPI gap.</span></div>
+      <div class="space-row"><span class="token">--s4</span><div class="box" style="width:14px;"></div><span class="muted">14 px · default card padding.</span></div>
+      <div class="space-row"><span class="token">--s5</span><div class="box" style="width:16px;"></div><span class="muted">16 px · column gap, page padding (mobile).</span></div>
+      <div class="space-row"><span class="token">--s6</span><div class="box" style="width:20px;"></div><span class="muted">20 px · page padding (desktop), header padding.</span></div>
+      <div class="space-row"><span class="token">--s8</span><div class="box" style="width:28px;"></div><span class="muted">28 px · section spacing.</span></div>
+    </div>
+  </div>
+  <div>
+    <h3>Radius scale</h3>
+    <table class="tokens">
+      <tbody>
+        <tr><td style="width:60px;"><span style="display:inline-block; width:36px; height:24px; background:var(--bg-surface-3); border-radius:3px;"></span></td><td class="mono">3 px</td><td class="muted">Badges, inline source chips.</td></tr>
+        <tr><td><span style="display:inline-block; width:36px; height:24px; background:var(--bg-surface-3); border-radius:4px;"></span></td><td class="mono">4 px</td><td class="muted">Dropdown items, table rows.</td></tr>
+        <tr><td><span style="display:inline-block; width:36px; height:24px; background:var(--bg-surface-3); border-radius:6px;"></span></td><td class="mono">6 px</td><td class="muted">Buttons, segmented controls.</td></tr>
+        <tr><td><span style="display:inline-block; width:36px; height:24px; background:var(--bg-surface-3); border-radius:8px;"></span></td><td class="mono">8 px</td><td class="muted">KPI tiles, drawer cards.</td></tr>
+        <tr><td><span style="display:inline-block; width:36px; height:24px; background:var(--bg-surface-3); border-radius:10px;"></span></td><td class="mono">10 px</td><td class="muted">Cards, panels.</td></tr>
+        <tr><td><span style="display:inline-block; width:36px; height:24px; background:var(--bg-surface-3); border-radius:999px;"></span></td><td class="mono">999 px</td><td class="muted">Pills, filter chips, avatars.</td></tr>
+      </tbody>
+    </table>
+
+    <h3>Elevation</h3>
+    <table class="tokens">
+      <tbody>
+        <tr><td>Flat</td><td class="mono">1 px solid --border-soft</td><td class="muted">Cards, tables. No shadow.</td></tr>
+        <tr><td>Popover</td><td class="mono">0 12px 32px rgba(15,23,42,0.18)</td><td class="muted">Dropdowns, popovers.</td></tr>
+        <tr><td>Drawer</td><td class="mono">-12px 0 32px rgba(0,0,0,0.4)</td><td class="muted">Focus drawer on dark.</td></tr>
+        <tr><td>Floating</td><td class="mono">0 10px 28px rgba(15,23,42,0.18)</td><td class="muted">Floating workspace panels.</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- ================== 07 ICON ================== -->
+<h2 id="icon"><span class="num">07</span> Iconography</h2>
+<p>Icons are <strong>16 × 16 viewBox</strong>, drawn at <strong>1.5 px stroke</strong>, with <code>strokeLinecap: round</code> and <code>strokeLinejoin: round</code>. Render at 9, 10, 11, 13, 14 px in product surfaces. Color always <code>currentColor</code> so they inherit text tone.</p>
+<div class="three" style="grid-template-columns: repeat(8, 1fr); gap: 10px;">
+  <div class="swatch" style="padding:14px; text-align:center;"><svg width="20" height="20" viewBox="0 0 16 16"><circle cx="7" cy="7" r="5" fill="none" stroke="currentColor" stroke-width="1.5"/><line x1="11" y1="11" x2="14" y2="14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg><div class="muted" style="font-size:10px; margin-top:4px;">search</div></div>
+  <div class="swatch" style="padding:14px; text-align:center;"><svg width="20" height="20" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="6" r="2.5"/><path d="M3 14c0-2.8 2.2-5 5-5s5 2.2 5 5"/></svg><div class="muted" style="font-size:10px; margin-top:4px;">user</div></div>
+  <div class="swatch" style="padding:14px; text-align:center;"><svg width="20" height="20" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="5" cy="5" r="2"/><circle cx="11" cy="5" r="2"/><circle cx="8" cy="11" r="2"/><line x1="6.5" y1="6.5" x2="9.5" y2="9.5"/><line x1="9.5" y1="6.5" x2="6.5" y2="9.5"/></svg><div class="muted" style="font-size:10px; margin-top:4px;">cluster</div></div>
+  <div class="swatch" style="padding:14px; text-align:center;"><svg width="20" height="20" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M6 10l4-4M5 9l-1 1a2.5 2.5 0 003.5 3.5L9 12M11 7l1-1a2.5 2.5 0 00-3.5-3.5L7 4"/></svg><div class="muted" style="font-size:10px; margin-top:4px;">link</div></div>
+  <div class="swatch" style="padding:14px; text-align:center;"><svg width="20" height="20" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 2v3a3 3 0 003 3h0a3 3 0 013 3v3M11 2v3"/></svg><div class="muted" style="font-size:10px; margin-top:4px;">merge</div></div>
+  <div class="swatch" style="padding:14px; text-align:center;"><svg width="20" height="20" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="12" height="10" rx="1.5"/><circle cx="6" cy="7" r="1.5"/><line x1="9" y1="6" x2="12" y2="6"/><line x1="9" y1="9" x2="12" y2="9"/></svg><div class="muted" style="font-size:10px; margin-top:4px;">id</div></div>
+  <div class="swatch" style="padding:14px; text-align:center;"><svg width="20" height="20" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polygon points="9,1 3,9 8,9 7,15 13,7 8,7"/></svg><div class="muted" style="font-size:10px; margin-top:4px;">zap</div></div>
+  <div class="swatch" style="padding:14px; text-align:center;"><svg width="20" height="20" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="5" height="5"/><rect x="9" y="2" width="5" height="5"/><rect x="2" y="9" width="5" height="5"/><rect x="9" y="9" width="5" height="5"/></svg><div class="muted" style="font-size:10px; margin-top:4px;">grid</div></div>
+</div>
+<p class="muted" style="margin-top:14px;">Avoid filled icons, two-tone icons, and any icon larger than 16 px in dense table contexts. Brand-coloured icons are forbidden: tone is always inherited.</p>
+
+<!-- ================== 08 COMPONENTS ================== -->
+<h2 id="components"><span class="num">08</span> Components</h2>
+
+<h3>Buttons</h3>
+<div class="preview">
+  <div class="pv-label">Light</div>
+  <div class="btn-row">
+    <button class="btn primary">Apply</button>
+    <button class="btn secondary">Cancel</button>
+    <button class="btn ghost">Clear all</button>
+    <button class="btn danger">Merge</button>
+    <button class="btn icon secondary">+</button>
+  </div>
+</div>
+<div class="preview dark" style="margin-top:10px;">
+  <div class="pv-label">Dark</div>
+  <div class="btn-row">
+    <button class="btn primary" style="background:#6366f1; border-color:#6366f1;">Apply</button>
+    <button class="btn secondary" style="background:#0f172a; border-color:#1e293b; color:#e2e8f0;">Cancel</button>
+    <button class="btn ghost" style="color:#94a3b8;">Clear all</button>
+    <button class="btn danger">Merge</button>
+    <button class="btn icon secondary" style="background:#0f172a; border-color:#1e293b; color:#e2e8f0;">+</button>
+  </div>
+</div>
+<table class="tokens" style="margin-top:14px;">
+  <thead><tr><th>Variant</th><th>Use</th><th>BG</th><th>Border</th><th>Text</th></tr></thead>
+  <tbody>
+    <tr><td>primary</td><td class="muted">One per surface; the commit action.</td><td class="mono">--primary-bg</td><td class="mono">--primary-bg</td><td class="mono">--primary-fg</td></tr>
+    <tr><td>secondary</td><td class="muted">Default for everything else.</td><td class="mono">--bg-surface</td><td class="mono">--border-soft</td><td class="mono">--text</td></tr>
+    <tr><td>ghost</td><td class="muted">Tertiary; embedded in dense rows.</td><td class="mono">transparent</td><td class="mono">none</td><td class="mono">--text-muted</td></tr>
+    <tr><td>danger</td><td class="muted">Destructive (merge, delete, archive). Soft fill, not solid red.</td><td class="mono">--bad-soft</td><td class="mono">--bad-soft</td><td class="mono">--bad</td></tr>
+    <tr><td>icon</td><td class="muted">24 × 24 or 28 × 28; pair with a tooltip.</td><td class="mono">transparent</td><td class="mono">--border-soft</td><td class="mono">--text-muted</td></tr>
+  </tbody>
+</table>
+
+<h3>Filter pills, source chips, badges</h3>
+<div class="preview">
+  <div class="pv-label">Filter row — Persons listing</div>
+  <div class="btn-row">
+    <span class="pill">Entity</span>
+    <span class="pill on">Source <strong style="margin-left:4px;">2</strong></span>
+    <span class="pill">Completeness</span>
+    <span class="pill">Updated</span>
+    <span class="pill more">+ More</span>
+    <span class="pill on">View · My queue</span>
+  </div>
+  <div class="pv-label" style="margin-top:8px;">Source chips & status badges</div>
+  <div class="btn-row">
+    <span class="source-chip sc-fundbox">Fundbox</span>
+    <span class="source-chip sc-eko">Eko</span>
+    <span class="source-chip sc-speedzone">SpeedZone</span>
+    <span class="source-chip sc-bitrix">Bitrix</span>
+    <span class="badge verified">Verified</span>
+    <span class="badge primary">Primary</span>
+    <span class="flag dup"><span class="dot"></span>Duplicate suspect</span>
+    <span class="flag low"><span class="dot"></span>Low quality</span>
+    <span class="flag stub"><span class="dot"></span>Stub</span>
+  </div>
+</div>
+
+<h3>Avatar with completeness ring</h3>
+<div class="preview" style="flex-direction:row; align-items:center; gap:24px;">
+  <div class="avatar"><div class="core">AH</div><div class="ring"></div></div>
+  <div style="font-size:13px;">
+    <div><strong>Initials</strong> derived from name (2 chars, uppercase).</div>
+    <div class="muted">Background tone matches entity palette (Fundbox blue here).</div>
+    <div class="muted">Ring is a <code>conic-gradient</code> from <code>--good / warn / bad</code> based on completeness band: ≥90 good · 60–89 amber · 30–59 orange · &lt;30 red.</div>
+  </div>
+</div>
+
+<h3>KPI tiles</h3>
+<div class="preview" style="display:grid; grid-template-columns: repeat(4, 1fr); gap:10px;">
+  <div class="kpi accent"><span class="k">Lifetime value</span><span class="v">S$4,218.40</span><span class="sub">14 orders</span></div>
+  <div class="kpi"><span class="k">Last order</span><span class="v">07 Nov '25</span><span class="sub">11 days ago</span></div>
+  <div class="kpi"><span class="k">Connections</span><span class="v">11</span><span class="sub">6 direct · 5 second-hop</span></div>
+  <div class="kpi"><span class="k">Completeness</span><span class="v">88%</span><span class="sub">3 fields unverified</span></div>
+</div>
+<p class="muted" style="margin-top:8px;">First tile is <strong>accent-soft</strong> to anchor the strip; remaining tiles use <code>--bg-surface-2</code>. Values are 22 px / 600 / tabular-nums. Labels are 10 px UPPERCASE.</p>
+
+<h3>Cards & section headers</h3>
+<div class="preview">
+  <section style="background:var(--bg-surface); border:1px solid var(--border-soft); border-radius:10px;">
+    <header style="padding:10px 14px; border-bottom:1px solid var(--border-soft); display:flex; align-items:center; gap:8px;">
+      <svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="color:var(--text-muted);"><rect x="2" y="3" width="12" height="10" rx="1.5"/><circle cx="6" cy="7" r="1.5"/><line x1="9" y1="6" x2="12" y2="6"/><line x1="9" y1="9" x2="12" y2="9"/></svg>
+      <span style="font-size:10px; color:var(--text-muted); text-transform:uppercase; letter-spacing:0.08em; font-weight:600;">Identity & contact</span>
+      <div style="flex:1"></div>
+      <button class="btn ghost" style="font-size:11px; padding:0;">View all →</button>
+    </header>
+    <div style="padding:14px; display:flex; flex-direction:column; gap:8px;">
+      <div style="display:grid; grid-template-columns: 92px 1fr; gap:10px; align-items:baseline;"><span style="font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.05em;font-weight:600;">Phone</span><span style="font-size:13px;font-family:ui-monospace,monospace;color:var(--text-strong);">+65 8919 3069 <span class="source-chip sc-fundbox" style="margin-left:6px;">Fundbox</span> <span class="badge verified" style="margin-left:4px;">Verified</span> <span class="badge primary" style="margin-left:4px;">Primary</span></span></div>
+      <div style="display:grid; grid-template-columns: 92px 1fr; gap:10px; align-items:baseline;"><span style="font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.05em;font-weight:600;">Email</span><span style="font-size:13px;color:var(--text-strong);">aisyah.h@fundbox.sg <span class="source-chip sc-fundbox" style="margin-left:6px;">Fundbox</span></span></div>
+      <div style="display:grid; grid-template-columns: 92px 1fr; gap:10px; align-items:baseline;"><span style="font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.05em;font-weight:600;">NRIC</span><span style="font-size:13px;font-family:ui-monospace,monospace;color:var(--text-strong);">S9234567H <span class="source-chip sc-fundbox" style="margin-left:6px;">Fundbox</span> <span class="badge verified" style="margin-left:4px;">Verified</span></span></div>
+    </div>
+  </section>
+</div>
+
+<h3>Popovers</h3>
+<p>One popover surface for the entire product: <strong>--bg-surface</strong> with <strong>--border-soft</strong>, radius <strong>6 px</strong>, shadow <strong>0 12px 32px rgba(15,23,42,0.18)</strong>, padding <strong>6 px</strong>. Header is a UPPERCASE label at 10 px, optional count on the right. List items are 12 px text with 5–6 px vertical padding, radius 4 px, hover <code>--bg-surface-2</code>.</p>
+
+<h3>Tables</h3>
+<ul>
+  <li>Header row: <code>--bg-surface-2</code> background, 10 px UPPERCASE labels, 0.5 letter-spacing.</li>
+  <li>Body rows: <code>--bg-surface</code> with <code>1 px solid --border-soft</code> bottom rule. No zebra striping.</li>
+  <li>Hover: <code>--row-hover</code> background; active row gets a 2 px left border in <code>--accent</code> and <code>--row-active</code> background.</li>
+  <li>Right-align numeric columns; mono-format IDs and totals.</li>
+  <li>Padding: <code>10 px 14 px</code> per cell.</li>
+</ul>
+
+<!-- ================== 09 PATTERNS ================== -->
+<h2 id="patterns"><span class="num">09</span> Domain patterns</h2>
+
+<h3>The cluster banner</h3>
+<div class="preview">
+  <div style="display:flex; align-items:center; gap:10px; padding:10px 14px; background:#fef9c3; border:1px solid #fde68a; border-left: 2px solid #f59e0b; color:#713f12; border-radius: 6px;">
+    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="5" cy="5" r="2"/><circle cx="11" cy="5" r="2"/><circle cx="8" cy="11" r="2"/></svg>
+    <strong style="font-size:12px;">Cluster C-001</strong>
+    <span style="font-size:12px;">·</span>
+    <span style="font-size:12px;">4 likely duplicates of <strong>"Hanafie Bin Dolklifie"</strong></span>
+    <span style="font-size:12px;">·</span>
+    <span style="font-size:12px;">matched on phone <code>+6589193069</code></span>
+    <div style="flex:1"></div>
+    <button class="btn" style="background:#fff7d6; border:1px solid #fde68a; color:#713f12; font-size:11px; font-weight:600;">Review cluster →</button>
+  </div>
+</div>
+<p class="muted">Appears in the table immediately after the first row of the cluster. Always uses warn tokens. Reserved exclusively for resolution conflicts — never for general informational messages.</p>
+
+<h3>Source-of-truth notation</h3>
+<p>Wherever a value originates from one of several sources, show it as <code>value <span class="source-chip sc-fundbox">Fundbox</span></code>. In comparison tables, mark the chosen value with a <code class="mono">CHOSEN</code> badge in <code>--good</code> tones. The policy that produced the choice (e.g. "Fundbox-first") is stated once in the section header, not on every row.</p>
+
+<h3>Multi-value fields</h3>
+<p>When a field has more than one value (multiple phones, emails, addresses), show the primary and a <code>+N</code> chip. The chip opens a popover listing all values, with the primary highlighted in a <code>--good-soft</code> band and a <code>PRIMARY</code> badge.</p>
+
+<h3>Empty states</h3>
+<ul>
+  <li>Missing single value: em-dash <code>—</code> in <code>--text-faint</code>. Never "N/A" or "null".</li>
+  <li>Empty list: a single line of 11 px muted text — "No connections" — no illustrations.</li>
+  <li>Empty table: header row only + a 14 px muted message in the body area.</li>
+</ul>
+
+<h3>Confidence visualisation</h3>
+<p>Connection strength is a thin 4 px bar in <code>--accent</code>, sitting against a <code>--bg-surface-3</code> track. Completeness uses a wider bar (6 px) and the colour shifts by band, matching the avatar ring. Never use red/green/yellow icons for the same data — pick one channel and stick to it.</p>
+
+<!-- ================== 10 LAYOUT ================== -->
+<h2 id="layout"><span class="num">10</span> Layout & density</h2>
+<div class="two">
+  <div>
+    <h3>Listing — Direction B</h3>
+    <ul>
+      <li>Three-column shell: <strong>nav</strong> 224 px · <strong>main</strong> fluid · <strong>focus drawer</strong> 400 px (overlay).</li>
+      <li>Top bar: logo + global search + entity switcher + user.</li>
+      <li>Toolbar: search input · pinned filter pills · <strong>More</strong> · <strong>View</strong>.</li>
+      <li>Table: 9 columns; bulk action bar appears on selection; cluster banners interleave with rows.</li>
+      <li>Pagination at the foot of the table; rows-per-page select uses <code>--border-soft</code>.</li>
+    </ul>
+    <h3>Detail — Variation A</h3>
+    <ul>
+      <li>Two-column: <strong>identity</strong> 360 px · <strong>tabbed body</strong> fluid.</li>
+      <li>Header carries the breadcrumb, mode toggle and primary actions.</li>
+      <li>Right column opens with a 4-up KPI strip; tabs default to <strong>Orders</strong>.</li>
+      <li>Cluster review surfaces in the identity column <em>only</em> when the person is in a cluster.</li>
+    </ul>
+  </div>
+  <div class="layout-fig">
+    <svg viewBox="0 0 480 300">
+      <rect x="0" y="0" width="480" height="300" fill="var(--bg-page)"/>
+      <rect x="0" y="0" width="480" height="34" fill="var(--bg-surface)" stroke="var(--border-soft)"/>
+      <rect x="10" y="10" width="60" height="14" rx="3" fill="var(--text-strong)"/>
+      <rect x="0" y="34" width="80" height="266" fill="var(--bg-surface)" stroke="var(--border-soft)"/>
+      <g fill="var(--bg-surface-3)">
+        <rect x="10" y="48" width="60" height="10" rx="2"/>
+        <rect x="10" y="64" width="60" height="10" rx="2"/>
+        <rect x="10" y="80" width="60" height="10" rx="2"/>
+        <rect x="10" y="96" width="60" height="10" rx="2"/>
+      </g>
+      <rect x="90" y="44" width="380" height="32" fill="var(--bg-surface)" stroke="var(--border-soft)" rx="6"/>
+      <rect x="100" y="54" width="60" height="12" rx="6" fill="var(--bg-surface-3)"/>
+      <rect x="166" y="54" width="60" height="12" rx="6" fill="var(--accent-soft)"/>
+      <rect x="232" y="54" width="80" height="12" rx="6" fill="var(--bg-surface-3)"/>
+      <rect x="90" y="86" width="380" height="200" fill="var(--bg-surface)" stroke="var(--border-soft)" rx="6"/>
+      <rect x="90" y="86" width="380" height="22" fill="var(--bg-surface-2)" stroke="var(--border-soft)"/>
+      <g fill="var(--border-strong)">
+        <rect x="98" y="115" width="120" height="8" rx="2"/>
+        <rect x="98" y="135" width="120" height="8" rx="2"/>
+        <rect x="98" y="155" width="120" height="8" rx="2"/>
+      </g>
+      <rect x="90" y="135" width="380" height="18" fill="var(--warn-bg)" stroke="var(--warn-border)"/>
+      <text x="240" y="296" fill="var(--text-muted)" font-size="9" font-family="ui-sans-serif">Persons listing · Direction B</text>
+    </svg>
+  </div>
+</div>
+
+<h4 style="margin-top:18px;">Density rules</h4>
+<ul>
+  <li><strong>Row height</strong> in tables: 44 px (10 px vertical padding + 12 px line-height + content).</li>
+  <li><strong>Card padding</strong> defaults to 14 px; compact variant 10 px; comfortable 18 px (reserved for the identity hero only).</li>
+  <li><strong>Section gap</strong> within a column: 12 px; between columns: 16 px.</li>
+  <li><strong>No purely decorative whitespace</strong>: every gap maps to a token on the 4 px grid.</li>
+</ul>
+
+<!-- ================== 11 DATA VIZ ================== -->
+<h2 id="data"><span class="num">11</span> Data visualisation</h2>
+<p>Charts use a single accent (<code>--accent</code>) plus the source palette when category is the dimension. Axes are minimal: no gridlines unless the chart is &gt; 200 px tall; tick labels at 9–10 px <code>--text-faint</code>; tabular-nums.</p>
+
+<div class="two">
+  <div>
+    <h4>Bar chart (orders over time)</h4>
+    <div style="padding:16px; background:var(--bg-surface-2); border:1px solid var(--border-soft); border-radius:8px;">
+      <div style="display:grid; grid-template-columns: repeat(6, 1fr); gap:8px; align-items:end; height:90px;">
+        <div style="display:flex; flex-direction:column; align-items:center; gap:4px;"><span class="faint" style="font-size:10px;">184</span><div style="width:60%; height:14%; background:var(--accent); border-radius:3px 3px 0 0;"></div></div>
+        <div style="display:flex; flex-direction:column; align-items:center; gap:4px;"><span class="faint" style="font-size:10px;">1.3k</span><div style="width:60%; height:100%; background:var(--accent); border-radius:3px 3px 0 0;"></div></div>
+        <div style="display:flex; flex-direction:column; align-items:center; gap:4px;"><span class="faint" style="font-size:10px;">644</span><div style="width:60%; height:50%; background:var(--accent); border-radius:3px 3px 0 0;"></div></div>
+        <div style="display:flex; flex-direction:column; align-items:center; gap:4px;"><span class="faint" style="font-size:10px;">90</span><div style="width:60%; height:7%; background:var(--accent); border-radius:3px 3px 0 0;"></div></div>
+        <div style="display:flex; flex-direction:column; align-items:center; gap:4px;"><span class="faint" style="font-size:10px;">219</span><div style="width:60%; height:17%; background:var(--accent); border-radius:3px 3px 0 0;"></div></div>
+        <div style="display:flex; flex-direction:column; align-items:center; gap:4px;"><span class="faint" style="font-size:10px;">482</span><div style="width:60%; height:37%; background:var(--accent); border-radius:3px 3px 0 0;"></div></div>
+      </div>
+    </div>
+  </div>
+  <div>
+    <h4>Connection graph (mini)</h4>
+    <div style="padding:16px; background:var(--bg-surface-2); border:1px solid var(--border-soft); border-radius:8px;">
+      <svg width="100%" viewBox="0 0 240 140">
+        <line x1="120" y1="70" x2="40" y2="40" stroke="var(--text-strong)" stroke-width="1.6" opacity="0.6"/>
+        <line x1="120" y1="70" x2="200" y2="35" stroke="var(--text-strong)" stroke-width="1.3" opacity="0.6"/>
+        <line x1="120" y1="70" x2="60" y2="115" stroke="var(--text-strong)" stroke-width="1.0" opacity="0.6"/>
+        <line x1="120" y1="70" x2="190" y2="110" stroke="var(--text-strong)" stroke-width="0.9" opacity="0.6"/>
+        <circle cx="120" cy="70" r="22" fill="var(--text-strong)"/>
+        <text x="120" y="74" text-anchor="middle" fill="white" font-size="11" font-weight="600">AH</text>
+        <circle cx="40" cy="40" r="15" fill="var(--bg-surface)" stroke="var(--border-strong)"/><text x="40" y="44" text-anchor="middle" fill="var(--text-strong)" font-size="10" font-weight="600">MR</text>
+        <circle cx="200" cy="35" r="15" fill="var(--bg-surface)" stroke="var(--border-strong)"/><text x="200" y="39" text-anchor="middle" fill="var(--text-strong)" font-size="10" font-weight="600">AD</text>
+        <circle cx="60" cy="115" r="12" fill="var(--bg-surface)" stroke="var(--border-strong)"/><text x="60" y="119" text-anchor="middle" fill="var(--text-strong)" font-size="9" font-weight="600">NS</text>
+        <circle cx="190" cy="110" r="12" fill="var(--bg-surface)" stroke="var(--border-strong)"/><text x="190" y="114" text-anchor="middle" fill="var(--text-strong)" font-size="9" font-weight="600">KO</text>
+      </svg>
+    </div>
+  </div>
+</div>
+<ul style="margin-top:14px;">
+  <li><strong>Node radius</strong> encodes relative importance; <strong>edge stroke width</strong> encodes connection strength (0.5–3 px).</li>
+  <li><strong>Self-node</strong> is filled with <code>--accent</code>; others use <code>--bg-surface</code> with <code>--border-strong</code> outline.</li>
+  <li>Relationships read as <strong>11 px muted</strong> text beneath the node label.</li>
+</ul>
+
+<!-- ================== 12 APPLICATIONS ================== -->
+<h2 id="applications"><span class="num">12</span> Applications</h2>
+<p>The system is product-first. Marketing and document surfaces inherit from it rather than the other way around.</p>
+<table class="tokens">
+  <thead><tr><th>Surface</th><th>Mode</th><th>Notes</th></tr></thead>
+  <tbody>
+    <tr><td>Product app (Persons workspace)</td><td>Dark default, light optional</td><td class="muted">Operators run long sessions. Dark reduces fatigue; light is shipped for accessibility and document export.</td></tr>
+    <tr><td>Marketing site</td><td>Light only</td><td class="muted">Use the same tokens; allow display type up to 56 px / -0.6 letter-spacing.</td></tr>
+    <tr><td>Product docs</td><td>Light only</td><td class="muted">68 ch text column; code blocks use <code>--bg-surface-2</code> / <code>--border-soft</code>.</td></tr>
+    <tr><td>Exports (PDF, screenshots)</td><td>Light, 11 pt body</td><td class="muted">Source chips and IDs must remain legible at print resolution; tabular-nums are mandatory.</td></tr>
+    <tr><td>Email</td><td>Light, no dark variant</td><td class="muted">Inline styles only; one accent button per message; never use brand-orange as a primary.</td></tr>
+  </tbody>
+</table>
+
+<h3>Don'ts (gallery)</h3>
+<ul>
+  <li>Don't paint backgrounds with gradients.</li>
+  <li>Don't use rounded illustrations of people, robots, or hands.</li>
+  <li>Don't introduce a second accent color without retiring the first.</li>
+  <li>Don't render IDs in a proportional font.</li>
+  <li>Don't replace the source chip with the source's own logo.</li>
+  <li>Don't show a green check next to an unverified field.</li>
+</ul>
+
+<hr/>
+<p class="muted" style="font-size:12px;">HyperP · CI Brief & Style Guide · v1.0 · 11 May 2026. Owned by Design. Pair with the latest Persons listing (Direction B) and Person detail (Variation A) artboards for visual reference.</p>
+
+</div>
+</body>
+</html>

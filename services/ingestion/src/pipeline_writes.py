@@ -36,7 +36,7 @@ logger = logging.getLogger(__name__)
 def upsert_nodes(
     tx: ManagedTransaction,
     identifiers: list[NormalizedIdentifier],
-    address: NormalizedAddressModel | None,
+    addresses: list[NormalizedAddressModel],
 ) -> None:
     """Step 3: ensure Identifier and Address nodes exist."""
     for ident in identifiers:
@@ -45,7 +45,9 @@ def upsert_nodes(
             identifier_type=ident.identifier_type,
             normalized_value=ident.normalized_value,
         )
-    if address and is_usable(address.quality_flag):
+    for address in addresses:
+        if not is_usable(address.quality_flag):
+            continue
         tx.run(
             queries.UPSERT_ADDRESS,
             country_code=address.country_code,
@@ -66,10 +68,18 @@ def upsert_nodes(
 def find_candidates(
     tx: ManagedTransaction,
     identifiers: list[NormalizedIdentifier],
-    address: NormalizedAddressModel | None,
+    addresses: list[NormalizedAddressModel],
 ) -> list[CandidateResult]:
     """Step 4: graph traversal candidate generation with fanout caps."""
     candidates: list[CandidateResult] = []
+    seen: set[tuple[str, str]] = set()
+
+    def append_candidate(person_id: str, source: str) -> None:
+        key = (person_id, source)
+        if key in seen:
+            return
+        seen.add(key)
+        candidates.append(CandidateResult(person_id=person_id, source=source))
 
     for ident in identifiers:
         if not is_usable(ident.quality_flag):
@@ -82,9 +92,11 @@ def find_candidates(
             normalized_value=ident.normalized_value,
         )
         for record in result:
-            candidates.append(CandidateResult(person_id=record["person_id"], source="identifier"))
+            append_candidate(str(record["person_id"]), "identifier")
 
-    if address and is_usable(address.quality_flag):
+    for address in addresses:
+        if not is_usable(address.quality_flag):
+            continue
         result = tx.run(
             queries.FIND_CANDIDATES_BY_ADDRESS,
             country_code=address.country_code,
@@ -94,7 +106,7 @@ def find_candidates(
             unit_number=address.unit_number or "",
         )
         for record in result:
-            candidates.append(CandidateResult(person_id=record["person_id"], source="address"))
+            append_candidate(str(record["person_id"]), "address")
 
     return candidates
 
@@ -147,7 +159,7 @@ def persist_source_record(
     *,
     envelope: SourceRecordEnvelope,
     identifiers: list[NormalizedIdentifier],
-    address: NormalizedAddressModel | None,
+    addresses: list[NormalizedAddressModel],
     attributes: list[NormalizedAttribute],
     match_result: MatchResult,
     is_new_person: bool,
@@ -156,7 +168,8 @@ def persist_source_record(
     """Step 7 + 7b: persist SourceRecord and link to IngestRun."""
     normalized: dict[str, JsonValue] = {
         "identifiers": [i.model_dump() for i in identifiers],
-        "address": address.model_dump() if address else None,
+        "address": addresses[0].model_dump() if addresses else None,
+        "addresses": [address.model_dump() for address in addresses],
         "attributes": [a.model_dump() for a in attributes],
     }
     summary = envelope.raw_payload.get("summary")
@@ -304,6 +317,9 @@ def link_source_record_to_address(
         source_record_pk=source_record_pk,
         country_code=country_code,
         postal_code=postal_code,
+        street_name=street_name,
+        street_number=block_no,
+        unit_number="",
         source_system_key=envelope.source_system,
         flat_type=_attribute_str(envelope, "flat_type"),
         is_active=_attribute_bool(envelope, "is_active"),
@@ -358,6 +374,18 @@ def _link_address(
         source_system_key=source_system_key,
         source_record_pk=source_record_pk,
     )
+    tx.run(
+        queries.LINK_SOURCE_RECORD_TO_ADDRESS,
+        source_record_pk=source_record_pk,
+        country_code=address.country_code,
+        postal_code=address.postal_code,
+        street_name=address.street_name,
+        street_number=address.street_number,
+        unit_number=address.unit_number or "",
+        source_system_key=source_system_key,
+        flat_type=None,
+        is_active=True,
+    )
 
 
 def link_record_to_graph(
@@ -365,20 +393,31 @@ def link_record_to_graph(
     *,
     envelope: SourceRecordEnvelope,
     identifiers: list[NormalizedIdentifier],
-    address: NormalizedAddressModel | None,
+    addresses: list[NormalizedAddressModel],
     attributes: list[NormalizedAttribute],
     person_id: str,
     source_record_pk: str,
+    attach_evidence: bool = True,
 ) -> None:
-    """Steps 8–11: wire the source record into the Person subgraph."""
+    """Steps 8–11: wire the source record into the Person subgraph.
+
+    The SourceRecord → Person provenance edge (``LINKED_TO``) is always created.
+    When ``attach_evidence`` is ``False`` the identifier / address / fact edges
+    are *not* written onto ``person_id`` — used for a provisional REVIEW-band
+    match so an unconfirmed record does not commingle into an existing
+    candidate's subgraph (and golden profile) before a human approves the merge.
+    """
     tx.run(
         queries.LINK_SOURCE_RECORD_TO_PERSON,
         source_record_pk=source_record_pk,
         person_id=person_id,
     )
+    if not attach_evidence:
+        return
     _link_identifiers(tx, identifiers, person_id, envelope.source_system, source_record_pk)
-    if address and is_usable(address.quality_flag):
-        _link_address(tx, address, person_id, envelope.source_system, source_record_pk)
+    for address in addresses:
+        if is_usable(address.quality_flag):
+            _link_address(tx, address, person_id, envelope.source_system, source_record_pk)
 
     for attr in attributes:
         tx.run(
