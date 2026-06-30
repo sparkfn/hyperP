@@ -6,6 +6,10 @@
 # dependency install (mirrors the Dockerfile's `uv sync --frozen --no-dev`).
 # Inspect via:  wpci home pipeline last sparkfn/hyperP --branch development
 #
+# SYNC NOTE: the python-checks step below is deliberately duplicated in .woodpecker/pr.yaml
+# (Woodpecker has no cross-file includes). When changing a command here, apply the same
+# change there so PR and DEV do not silently diverge.
+#
 # DEFERRED (follow-up issue): Compose startup + health smoke + Docker image build are
 # stronger DEV signals but require a Docker socket mount / trusted repo, which the
 # PR/DEV boundary forbids (MAIN-only). They are tracked separately, not silently skipped.

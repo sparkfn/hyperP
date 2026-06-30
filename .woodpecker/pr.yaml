@@ -7,6 +7,10 @@
 # Executor: local Woodpecker (docker backend, untrusted repo — no host volumes/socket).
 # Tests are mock/fake-based (see services/api/tests/conftest.py, services/ingestion/tests/conftest.py)
 # so the full pytest suite runs without Neo4j/Redis service containers.
+#
+# SYNC NOTE: the python-checks step below is deliberately duplicated in .woodpecker/dev.yaml
+# (Woodpecker has no cross-file includes). When changing a command here, apply the same
+# change there so DEV does not silently diverge from PR.
 when:
   event:
     - pull_request

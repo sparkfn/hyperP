@@ -63,7 +63,8 @@ async def _wipe_oauth_clients_on_startup() -> None:
 
 
 _PERSON_INDEXES = [
-    "CREATE INDEX idx_person_completeness IF NOT EXISTS FOR (p:Person) ON (p.profile_completeness_score)",  # noqa: E501
+    "CREATE INDEX idx_person_completeness IF NOT EXISTS "
+    "FOR (p:Person) ON (p.profile_completeness_score)",
     "CREATE INDEX idx_person_high_value IF NOT EXISTS FOR (p:Person) ON (p.is_high_value)",
     "CREATE INDEX idx_person_high_risk IF NOT EXISTS FOR (p:Person) ON (p.is_high_risk)",
     "CREATE INDEX idx_person_updated_at IF NOT EXISTS FOR (p:Person) ON (p.updated_at)",

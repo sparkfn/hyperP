@@ -55,25 +55,16 @@ rename tests/checks to make CI pass.
 8. Never print secrets or tokens. Woodpecker secrets belong in Woodpecker, not YAML.
 
 ## Frontend lint gate
-`npm run lint` is `eslint src --max-warnings 9` but the clean tree already has ~18
-pre-existing warnings (0 errors), so it is red on a clean tree. PR/DEV CI run
-`npx eslint src` (errors only). The repo-local `npm run lint` stays the authoritative
-developer check; verify your changes add zero net warnings (stash and compare), not a
-green `npm run lint` exit. Getting warnings under 9 is a tracked follow-up.
+`npm run lint` (`--max-warnings 9`) is red on a clean tree (~18 pre-existing warnings, 0
+errors); PR/DEV CI run `npx eslint src` (errors only). Verify changes add zero net warnings
+(stash and compare). Full detail in CLAUDE.md (*Frontend lint gate*); keep both in sync.
 
 ## Inspecting CI
-```bash
-wpci home doctor --json
-wpci home repo ls
-wpci home pipeline last sparkfn/hyperP --branch <branch>
-wpci home pipeline show sparkfn/hyperP <pipeline-number>
-wpci home pipeline log show sparkfn/hyperP <pipeline-number> <step-name>
-```
-If a fresh CI run is needed and no code change is required, prefer the Woodpecker rerun
-path; only as a last resort create a clearly labelled empty commit
-(`ci: retrigger PR validation`) on the PR branch and validate the resulting pipeline SHA.
+Inspect Woodpecker **only** via `wpci home` — never the UI, tokens, or legacy wrappers.
+Commands and the CI-only-empty-commit retrigger path are documented in CLAUDE.md
+(*Inspecting CI*); keep both in sync.
 
 ## docker-compose sync
 Any commit modifying the root `docker-compose.yml` must apply the equivalent change to
-`.docker/staging/docker-compose.yml` in the same commit (paths/names/volumes differ
-only as documented in `CLAUDE.md`).
+`.docker/staging/docker-compose.yml` in the same commit. Full rule in CLAUDE.md
+(*docker-compose.yml sync rule*); keep both in sync.
