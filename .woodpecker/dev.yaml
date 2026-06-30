@@ -1,0 +1,46 @@
+# DEV/integration validation for sparkfn/hyperP — push to `development` only.
+# Triggers: push events on the `development` branch only. No main/production, no deploy,
+# no production secrets, no host volumes, no Docker socket, no image push.
+# Materially stronger than PR: re-validates python checks on the merge commit, plus a
+# real Next.js production build (catches what tsc-only misses) and a production
+# dependency install (mirrors the Dockerfile's `uv sync --frozen --no-dev`).
+# Inspect via:  wpci home pipeline last sparkfn/hyperP --branch development
+#
+# DEFERRED (follow-up issue): Compose startup + health smoke + Docker image build are
+# stronger DEV signals but require a Docker socket mount / trusted repo, which the
+# PR/DEV boundary forbids (MAIN-only). They are tracked separately, not silently skipped.
+#
+# Executor: local Woodpecker (docker backend, untrusted repo — no host volumes/socket).
+when:
+  event:
+    - push
+  branch:
+    - development
+
+steps:
+  # Re-run the PR python suite on the integration merge commit to catch merge breakage,
+  # then add the production-install signal (mirrors the Dockerfile runtime install).
+  - name: python-checks
+    image: ghcr.io/astral-sh/uv:python3.12-bookworm
+    commands:
+      - uv sync --frozen
+      - uv run --package profile-unifier-api ruff check services/api/src
+      - uv run --package profile-unifier-api ruff format --check services/api/src
+      - uv run --package profile-unifier-ingestion ruff check services/ingestion/src
+      - uv run --package profile-unifier-ingestion ruff format --check services/ingestion/src
+      - uv run --package profile-unifier-api mypy --strict services/api/src
+      - uv run --package profile-unifier-ingestion mypy --strict services/ingestion/src
+      - uv run pytest
+      # Production runtime install (no dev group) — verifies the lockfile resolves for
+      # the exact install the api/ingestion Dockerfiles run.
+      - uv sync --frozen --no-dev --package profile-unifier-api
+      - uv sync --frozen --no-dev --package profile-unifier-ingestion
+
+  # Real Next.js production build. `next build` runs TypeScript type-checking itself,
+  # so this is strictly stronger than the PR `npm run typecheck` step.
+  - name: frontend-build
+    image: node:22-bookworm
+    commands:
+      - cd services/frontend2
+      - npm install --legacy-peer-deps
+      - npm run build
