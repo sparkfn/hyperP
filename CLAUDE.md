@@ -340,6 +340,40 @@ When editing or adding documentation:
 - The API contract is defined in both prose (`api-spec.md`) and machine-readable (`openapi-3.1.yaml`) — keep them consistent.
 - The `review_action_type` enum includes both API-submitted actions and system-recorded actions — the API layer exposes only the API-submitted subset.
 
+## DevOps / CI Validation
+
+HyperP uses a **hybrid CI** setup: local **Woodpecker** for PR + DEV validation, and GitHub Actions (`.github/workflows/deploy-staging.yml`) for the staging deploy. Woodpecker runs on the local `corbu` host (`corbu-woodpecker-server`/`corbu-woodpecker-agent`, docker backend, `https://ci.corbu.dev`). Inspect pipelines only through `wpci home` — never open the Woodpecker UI, paste tokens, or run legacy wrapper scripts.
+
+### Branch boundaries (Woodpecker)
+| Boundary | File | Event | Branch | Purpose |
+|---|---|---|---|---|
+| PR | `.woodpecker/pr.yaml` | `pull_request` | any | Fast feedback: ruff, mypy --strict, pytest, frontend2 typecheck + eslint errors-only. Green = candidate for merge to `development`. |
+| DEV/integration | `.woodpecker/dev.yaml` | `push` | `development` | Materially stronger: re-runs python checks on the merge commit + frontend2 production `next build` + production `uv sync --frozen --no-dev` install. |
+| Staging deploy | `.github/workflows/deploy-staging.yml` | GitHub Actions | `staging` | Not Woodpecker; unchanged. |
+
+Woodpecker workflows must declare explicit `when:` targeting. PR is `event: pull_request` only (no `push`, no `main`, no deploy, no secrets). DEV is `event: push` + `branch: development` only (no `main`/production). The repo is **untrusted** in Woodpecker (`volumes/network/security: false`), so step containers cannot mount host volumes or the Docker socket — do not add `volumes:` or `docker compose up` steps to PR/DEV workflows; those belong to MAIN/staging deploy only. Branch filters are safe isolation here only because no privileged syntax exists; if a privileged MAIN workflow is ever added to `.woodpecker/`, it must be isolated by config-path or moved out of the autodiscovered path.
+
+### Agent rules (PR + DEV)
+- **Do not run project package/test/build/migration/app-server commands on the host** — no `uv run pytest`, `npm run build`, `npm test`, `venv`, migrations, or long-lived processes. Validate by pushing to a PR branch and reading the Woodpecker result via `wpci home`.
+- Agents may inspect/edit files, run Git commands, and run safe structural checks (`git diff --check`, `git status -sb`).
+- **Do not report PR work complete without PR pipeline evidence**: repo, branch/PR, commit SHA, pipeline number, status, and step names (from `wpci home pipeline show sparkfn/hyperP <n>`).
+- **Do not report DEV work complete without a `development`-branch pipeline evidence.** DEV validation only runs after an **authorized** merge/push to `development`; do not push to `development` without explicit user authorization. Until then, report PR-ready with DEV pending.
+- Missing, skipped, removed, or failing PR/DEV checks are blockers unless the user explicitly accepts partial/blocked adoption with a follow-up issue.
+- Do not recreate git-runner / GitHub runner / host-local dependency/test workflows. The existing GitHub Actions staging deploy stays as-is.
+
+### Frontend lint gate
+`npm run lint` is `eslint src --max-warnings 9`, but the clean tree carries ~18 pre-existing `react-hooks/set-state-in-effect` warnings (0 errors), so it is **red on a clean tree**. PR/DEV CI therefore run `npx eslint src` (errors only) — green on a clean tree, catches new errors. The repo-local `npm run lint` budget stays the authoritative developer check; getting the warning count back under 9 is a tracked follow-up. Verify your changes add **zero net warnings** (stash and compare), not a green `npm run lint` exit.
+
+### Inspecting CI
+```bash
+wpci home doctor --json
+wpci home repo ls
+wpci home pipeline last sparkfn/hyperP --branch <branch>
+wpci home pipeline show sparkfn/hyperP <pipeline-number>
+wpci home pipeline log show sparkfn/hyperP <pipeline-number> <step-name>
+```
+If CI needs a fresh run and no code change is needed, prefer the Woodpecker rerun path; only as a last resort create a clearly labelled empty commit (`ci: retrigger PR validation`) on the PR branch and validate the resulting pipeline SHA.
+
 ## Python Coding Standards
 
 These rules apply to all Python code in the repository (`services/api/`, `services/ingestion/`, etc.):
