@@ -38,9 +38,7 @@ class ExclusionContext:
     email_domains: frozenset[str] = field(default_factory=frozenset)
     names: frozenset[str] = field(default_factory=frozenset)
     source_ids: frozenset[str] = field(default_factory=frozenset)
-    machine_unit_identifiers: frozenset[MachineUnitIdentifierKey] = field(
-        default_factory=frozenset
-    )
+    machine_unit_identifiers: frozenset[MachineUnitIdentifierKey] = field(default_factory=frozenset)
 
 
 def normalize_excluded_phone(value: str | None) -> str | None:
@@ -177,10 +175,7 @@ def is_excluded_machine_unit_observation(
         excluded.machine_product == machine_product
         and (
             (excluded.lta_tag is not None and excluded.lta_tag == lta_tag)
-            or (
-                excluded.serial_number is not None
-                and excluded.serial_number == serial_number
-            )
+            or (excluded.serial_number is not None and excluded.serial_number == serial_number)
         )
         for excluded in context.machine_unit_identifiers
     )

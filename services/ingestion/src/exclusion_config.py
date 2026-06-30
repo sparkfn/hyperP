@@ -32,9 +32,7 @@ class ExclusionFile:
     email_domains: list[str] = field(default_factory=list)
     names: list[str] = field(default_factory=list)
     source_ids: list[str] = field(default_factory=list)
-    machine_unit_identifiers: list[MachineUnitIdentifierExclusion] = field(
-        default_factory=list
-    )
+    machine_unit_identifiers: list[MachineUnitIdentifierExclusion] = field(default_factory=list)
 
 
 def _str_list(raw: JsonValue, *, path: Path) -> list[str]:

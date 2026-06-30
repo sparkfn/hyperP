@@ -105,6 +105,7 @@ WHERE p.status <> 'merged'
   AND ($addr_country IS NULL  OR toLower(addr.country_code)   CONTAINS toLower($addr_country))
 """
 
+
 def _entity_filter_clause(entity_mode: str, source_mode: str) -> str:
     if entity_mode == "and":
         entity_part = """($entity_keys IS NULL OR ALL(ek IN $entity_keys WHERE EXISTS {
@@ -142,6 +143,7 @@ AND ($source_record_type IS NULL OR EXISTS {{
 WITH DISTINCT p, score
 OPTIONAL MATCH (p)-[:LIVES_AT]->(addr:Address {{address_id: p.preferred_address_id}})
 """
+
 
 _ENRICH_AND_RETURN = """
 CALL (p) {
@@ -278,7 +280,14 @@ def _resolve_sort(sort_by: str | None, sort_order: str | None, *, has_q: bool) -
     return _SORT_COLUMNS[col_key], direction
 
 
-def build_list_persons_query(sort_by: str | None, sort_order: str | None, *, has_q: bool, entity_mode: str = "or", source_mode: str = "or") -> str:
+def build_list_persons_query(
+    sort_by: str | None,
+    sort_order: str | None,
+    *,
+    has_q: bool,
+    entity_mode: str = "or",
+    source_mode: str = "or",
+) -> str:
     """Build the list query for ``GET /v1/persons``.
 
     When ``has_q`` is true, prefixes a fulltext index match; otherwise scans
@@ -310,7 +319,9 @@ def build_list_persons_query(sort_by: str | None, sort_order: str | None, *, has
     )
 
 
-def build_count_persons_query(*, has_q: bool, has_addr_filter: bool = False, entity_mode: str = "or", source_mode: str = "or") -> str:
+def build_count_persons_query(
+    *, has_q: bool, has_addr_filter: bool = False, entity_mode: str = "or", source_mode: str = "or"
+) -> str:
     """Build the total-count query matching :func:`build_list_persons_query`'s filters.
 
     Skips the address OPTIONAL MATCH in the head when no ``addr_*`` filter
@@ -338,10 +349,7 @@ def _head(*, has_q: bool, skip_address: bool = False) -> str:
             "WITH p, addr, score\n"
         )
     if skip_address:
-        return (
-            "MATCH (p:Person)\n"
-            "WITH p, null AS addr, null AS score\n"
-        )
+        return "MATCH (p:Person)\nWITH p, null AS addr, null AS score\n"
     return (
         "MATCH (p:Person)\n"
         "OPTIONAL MATCH (p)-[:LIVES_AT]->(addr:Address)\n"

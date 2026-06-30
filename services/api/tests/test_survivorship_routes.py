@@ -23,6 +23,7 @@ def _sample_options(person_id: str) -> FieldOptionsData:
         preferred_email="alice@example.com",
         preferred_nric="S9012345A",
         preferred_address_id="addr-1",
+        preferred_address_value="1 Orchard Rd, Singapore",
         overrides={"preferred_nric": {"source_record_pk": "sr-2"}},
         options=[
             FieldOptionRow(
@@ -149,8 +150,14 @@ def test_field_options_maps_all_fields_with_display_and_current_flags() -> None:
     assert fields["preferred_nric"]["options"][0]["is_current"] is True
     # Address option matches by address_id, not by string value.
     assert fields["preferred_address"]["options"][0]["is_current"] is True
-    # Phone has no source options here but the field still appears.
-    assert fields["preferred_phone"]["options"] == []
+    # Phone has no source options here, but the current value is surfaced as a
+    # custom-override option so the UI can still display/select it.
+    phone_opts = fields["preferred_phone"]["options"]
+    assert len(phone_opts) == 1
+    assert phone_opts[0]["source_record_pk"] == "custom:preferred_phone"
+    assert phone_opts[0]["is_current"] is True
+    assert phone_opts[0]["value"] == "+6591234567"
+    assert phone_opts[0]["source_system"] == "Custom override"
 
 
 def test_field_options_404_when_person_missing() -> None:

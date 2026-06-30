@@ -56,7 +56,9 @@ def build_frontend_app() -> FastAPI:
         openapi_tags=[
             {
                 "name": "Admin",
-                "description": "User management, OAuth client registry, and source-system field trust.",
+                "description": (
+                    "User management, OAuth client registry, and source-system field trust."
+                ),
             },
             {
                 "name": "Auth",
@@ -76,7 +78,10 @@ def build_frontend_app() -> FastAPI:
             },
             {
                 "name": "Persons",
-                "description": "Person profiles, identifiers, connections, timeline, matches, merge, and survivorship.",
+                "description": (
+                    "Person profiles, identifiers, connections, timeline, matches, "
+                    "merge, and survivorship."
+                ),
             },
             {"name": "Reports", "description": "Saved Cypher report definitions and execution."},
             {

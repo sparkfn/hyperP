@@ -119,6 +119,8 @@ warn_return_any = false
 [[tool.mypy.overrides]]
 module = [
     "src.types",
+    "src.types_sales",
+    "src.types_requests",
     "src.http_utils",
     "src.routes.*",
     "src.graph.converters",

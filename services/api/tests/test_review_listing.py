@@ -55,7 +55,11 @@ def test_no_search_path_skips_person_joins() -> None:
     list_q = build_list_review_cases_query(None, None, has_q=False)
     count_q = build_count_review_cases_query(has_q=False)
     for query in (list_q, count_q):
-        assert "OPTIONAL MATCH" not in query
+        # The search-only person joins (left:Person/right:Person) are absent on
+        # the no-search path. Display OPTIONAL MATCHes (left/right without label,
+        # for address/source/sales) are always present and checked separately.
+        assert "OPTIONAL MATCH (md)-[:ABOUT_LEFT]->(left:Person)" not in query
+        assert "OPTIONAL MATCH (md)-[:ABOUT_RIGHT]->(right:Person)" not in query
         # Note: "$q" is a substring of "$queue_state", so assert the real predicate.
         assert "$q IS NULL" not in query
         assert "toLower($q)" not in query
@@ -135,7 +139,10 @@ def test_resolved_filter_in_base_clause_without_joins() -> None:
     # even on the no-search path (which skips the person joins).
     query = build_list_review_cases_query(None, None, has_q=False, has_person=False)
     assert "(rc.queue_state IN ['resolved', 'cancelled']) = $resolved" in query
-    assert "OPTIONAL MATCH" not in query
+    # No-search path skips the search-only person joins (left:Person/right:Person);
+    # display OPTIONAL MATCHes are always present.
+    assert "OPTIONAL MATCH (md)-[:ABOUT_LEFT]->(left:Person)" not in query
+    assert "OPTIONAL MATCH (md)-[:ABOUT_RIGHT]->(right:Person)" not in query
 
 
 # ── Route-level tests ───────────────────────────────────────────────────────

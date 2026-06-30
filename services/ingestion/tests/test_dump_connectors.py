@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from pytest import MonkeyPatch
+from pytest import MonkeyPatch, mark, skip
 from src.connectors.dumps.connectors import (
     FundboxSalesDumpConnector,
     _build_fundbox_contact,
@@ -654,10 +654,10 @@ def test_phppos_sales_dump_puts_serialnumber_in_metadata(tmp_path: Path) -> None
 
 
 def test_fundbox_dump_keeps_device_ids_out_of_identifiers() -> None:
-    connector = get_dump_connector(
-        "fundbox_consumer_backend",
-        Path(".dumps") / "limited-100" / "fundbox_2026-05-06.sql",
-    )
+    dump_path = Path(".dumps") / "limited-100" / "fundbox_2026-05-06.sql"
+    if not dump_path.exists():
+        skip(f"local dump fixture missing: {dump_path}")
+    connector = get_dump_connector("fundbox_consumer_backend", dump_path)
     record = next(connector.fetch_records())
 
     identifier_types = {item["type"] for item in record["identifiers"]}
@@ -665,8 +665,12 @@ def test_fundbox_dump_keeps_device_ids_out_of_identifiers() -> None:
     assert record["raw_payload"]["device_ids"]
 
 
-def test_real_non_chat_dumps_yield_first_records() -> None:
-    cases = [
+# Each (source_key, dump_file, expected_record_type) is a separate test item, so a
+# missing local fixture skips only that case — connectors whose dump *is* present
+# still run and surface regressions (a whole-test skip would mask them).
+@mark.parametrize(
+    ("source_key", "dump_file", "expected_record_type"),
+    [
         ("fundbox_consumer_backend", "fundbox_2026-05-06.sql", "identity"),
         ("fundbox_consumer_backend:contacts", "fundbox_2026-05-06.sql", "relationship"),
         ("fundbox_consumer_backend:legacy", "fundbox_2026-05-06.sql", "identity"),
@@ -676,13 +680,19 @@ def test_real_non_chat_dumps_yield_first_records() -> None:
         ("eko_phppos:sales", "eko_phppos_2026-05-06.sql", "sales"),
         ("speedzone_phppos", "speedzone_phppos_2026-05-06.sql", "identity"),
         ("speedzone_phppos:sales", "speedzone_phppos_2026-05-06.sql", "sales"),
-    ]
-    for source_key, dump_file, expected_record_type in cases:
-        connector = get_dump_connector(source_key, Path(".dumps") / dump_file)
-        record = next(connector.fetch_records(), None)
-        assert record is not None, source_key
-        assert record["source_record_id"]
-        assert record["record_type"] == expected_record_type, source_key
+    ],
+)
+def test_real_non_chat_dumps_yield_first_records(
+    source_key: str, dump_file: str, expected_record_type: str
+) -> None:
+    dump_path = Path(".dumps") / dump_file
+    if not dump_path.exists():
+        skip(f"local dump fixture missing for {source_key}: {dump_path}")
+    connector = get_dump_connector(source_key, dump_path)
+    record = next(connector.fetch_records(), None)
+    assert record is not None, source_key
+    assert record["source_record_id"]
+    assert record["record_type"] == expected_record_type, source_key
 
 
 def test_sggov_sources_are_registered_for_dump_mode(tmp_path: Path) -> None:

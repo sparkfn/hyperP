@@ -1,0 +1,51 @@
+# PR validation for sparkfn/hyperP — fast feedback only.
+# Triggers: pull_request events only. No push, no main/production, no deploy, no secrets.
+# A green PR pipeline = candidate for merge to `development`; it is NOT a DEV, staging,
+# main, or production approval.
+# Inspect via:  wpci home pipeline last sparkfn/hyperP --branch <pr-branch>
+#
+# Executor: local Woodpecker (docker backend, untrusted repo — no host volumes/socket).
+# Tests are mock/fake-based (see services/api/tests/conftest.py, services/ingestion/tests/conftest.py)
+# so the full pytest suite runs without Neo4j/Redis service containers.
+#
+# SYNC NOTE: the python-checks step below is deliberately duplicated in .woodpecker/dev.yaml
+# (Woodpecker has no cross-file includes). When changing a command here, apply the same
+# change there so DEV does not silently diverge from PR.
+when:
+  event:
+    - pull_request
+
+steps:
+  # Python: lint + format check + strict typecheck + unit tests, all against the
+  # uv workspace venv (dev group includes ruff, mypy, pytest). One install, sequential.
+  - name: python-checks
+    image: ghcr.io/astral-sh/uv:python3.12-bookworm
+    commands:
+      - uv sync --frozen
+      - uv run --package profile-unifier-api ruff check services/api/src
+      - uv run --package profile-unifier-api ruff format --check services/api/src
+      - uv run --package profile-unifier-ingestion ruff check services/ingestion/src
+      - uv run --package profile-unifier-ingestion ruff format --check services/ingestion/src
+      - uv run --package profile-unifier-api mypy --strict services/api/src
+      - uv run --package profile-unifier-ingestion mypy --strict services/ingestion/src
+      # pytest per-package: each service's venv carries its own runtime deps
+      # (fastapi/neo4j/celery/redis/...) + dev deps (pytest/pytest-asyncio/fakeredis).
+      # The root workspace venv (uv sync) only has lint/type tools, so `uv run pytest`
+      # at the root can't import runtime code. Per-package also keeps api and
+      # ingestion `src` packages from colliding (both use a top-level `src`).
+      - uv run --package profile-unifier-api pytest services/api/tests
+      - uv run --package profile-unifier-ingestion pytest services/ingestion/tests
+
+  # Frontend (services/frontend2 — active app): tsc --noEmit + eslint errors-only.
+  # NOTE: `npm run lint` uses `--max-warnings 9` but the clean tree already carries
+  # ~18 pre-existing react-hooks/set-state-in-effect warnings (0 errors), so the
+  # project lint script is red on a clean tree. CI runs `npx eslint src` (errors
+  # only) so the gate is green on a clean tree and catches new errors. The repo-local
+  # `npm run lint` budget is a separate, known follow-up (see CLAUDE.md).
+  - name: frontend-checks
+    image: node:22-bookworm
+    commands:
+      - cd services/frontend2
+      - npm install --legacy-peer-deps
+      - npm run typecheck
+      - npx eslint src

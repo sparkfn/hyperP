@@ -111,9 +111,17 @@ class Neo4jPersonRepository:
         )
         entity_mode = filters.get("entity_key_mode") or "or"
         source_mode = filters.get("source_key_mode") or "or"
-        list_query = build_list_persons_query(sort_by, sort_order, has_q=has_q, entity_mode=entity_mode, source_mode=source_mode)
-        count_query = build_count_persons_query(has_q=has_q, has_addr_filter=has_addr_filter, entity_mode=entity_mode, source_mode=source_mode)
-        # sort_by/sort_order/entity_key_mode/source_key_mode are used to build the query string, not as Cypher params
+        list_query = build_list_persons_query(
+            sort_by, sort_order, has_q=has_q, entity_mode=entity_mode, source_mode=source_mode
+        )
+        count_query = build_count_persons_query(
+            has_q=has_q,
+            has_addr_filter=has_addr_filter,
+            entity_mode=entity_mode,
+            source_mode=source_mode,
+        )
+        # sort_by/sort_order/entity_key_mode/source_key_mode are used to build
+        # the query string, not as Cypher params
         cypher_params: dict[str, str | int | bool | list[str] | None] = {
             k: v  # type: ignore[misc]  # TypedDict values are object; known-safe filter keys
             for k, v in filters.items()
