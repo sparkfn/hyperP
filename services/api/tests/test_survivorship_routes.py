@@ -23,6 +23,7 @@ def _sample_options(person_id: str) -> FieldOptionsData:
         preferred_email="alice@example.com",
         preferred_nric="S9012345A",
         preferred_address_id="addr-1",
+        preferred_address_value="1 Orchard Rd, Singapore",
         overrides={"preferred_nric": {"source_record_pk": "sr-2"}},
         options=[
             FieldOptionRow(
