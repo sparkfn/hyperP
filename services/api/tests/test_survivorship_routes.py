@@ -19,7 +19,7 @@ def _sample_options(person_id: str) -> FieldOptionsData:
         person_id=person_id,
         preferred_full_name="ALICE TAN",
         preferred_dob="1990-04-02T00:00:00Z",
-        preferred_phone=None,
+        preferred_phone="+6591234567",
         preferred_email="alice@example.com",
         preferred_nric="S9012345A",
         preferred_race_ethnicity="Chinese",
