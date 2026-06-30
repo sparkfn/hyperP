@@ -53,6 +53,7 @@ export interface Person {
   preferred_dob: string | null;
   preferred_address: AddressSummary | null;
   preferred_nric: string | null;
+  preferred_race_ethnicity: string | null;
   profile_completeness_score: number;
   golden_profile_computed_at: string | null;
   golden_profile_version: string | null;

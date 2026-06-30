@@ -153,6 +153,7 @@ class Person(BaseModel):
     preferred_dob: str | None = None
     preferred_address: AddressSummary | None = None
     preferred_nric: str | None = None
+    preferred_race_ethnicity: str | None = None
     profile_completeness_score: float = 0.0
     golden_profile_computed_at: str | None = None
     golden_profile_version: str | None = None
@@ -247,6 +248,7 @@ GoldenFieldName = Literal[
     "preferred_email",
     "preferred_nric",
     "preferred_address",
+    "preferred_race_ethnicity",
 ]
 
 GoldenSourceKind = Literal["source_record_fact", "identifier", "address"]

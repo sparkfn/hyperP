@@ -19,9 +19,10 @@ def _sample_options(person_id: str) -> FieldOptionsData:
         person_id=person_id,
         preferred_full_name="ALICE TAN",
         preferred_dob="1990-04-02T00:00:00Z",
-        preferred_phone="+6591234567",
+        preferred_phone=None,
         preferred_email="alice@example.com",
         preferred_nric="S9012345A",
+        preferred_race_ethnicity="Chinese",
         preferred_address_id="addr-1",
         preferred_address_value="1 Orchard Rd, Singapore",
         overrides={"preferred_nric": {"source_record_pk": "sr-2"}},
@@ -42,6 +43,17 @@ def _sample_options(person_id: str) -> FieldOptionsData:
                 source_kind="source_record_fact",
                 identifier_type=None,
                 value="1990-04-02T00:00:00Z",
+                address_id=None,
+                source_record_pk="sr-1",
+                source_system="fundbox_consumer_backend",
+                entity_display_name="Fundbox",
+                observed_at="2026-01-01T00:00:00Z",
+            ),
+            FieldOptionRow(
+                field_name="preferred_race_ethnicity",
+                source_kind="source_record_fact",
+                identifier_type=None,
+                value="Chinese",
                 address_id=None,
                 source_record_pk="sr-1",
                 source_system="fundbox_consumer_backend",
@@ -132,19 +144,23 @@ def test_field_options_maps_all_fields_with_display_and_current_flags() -> None:
 
     assert res.status_code == 200
     fields = {f["field_name"]: f for f in res.json()["data"]["fields"]}
-    # All six editable fields are always present, in display order.
+    # All seven editable fields are always present, in display order.
     assert list(fields) == [
         "preferred_full_name",
         "preferred_phone",
         "preferred_email",
         "preferred_dob",
         "preferred_nric",
+        "preferred_race_ethnicity",
         "preferred_address",
     ]
     # DOB option value is formatted server-side.
     dob = fields["preferred_dob"]
     assert dob["options"][0]["value_display"] == "02 Apr 1990"
     assert dob["options"][0]["is_current"] is True
+    # Race/ethnicity fact option maps through and flags the current value.
+    assert fields["preferred_race_ethnicity"]["options"][0]["value_display"] == "Chinese"
+    assert fields["preferred_race_ethnicity"]["options"][0]["is_current"] is True
     # NRIC is flagged overridden; the matching value is current.
     assert fields["preferred_nric"]["is_overridden"] is True
     assert fields["preferred_nric"]["options"][0]["is_current"] is True

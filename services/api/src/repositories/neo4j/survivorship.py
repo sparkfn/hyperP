@@ -183,6 +183,7 @@ async def _field_options_tx(tx: AsyncManagedTransaction, person_id: str) -> Fiel
     preferred_phone = to_optional_str(record["preferred_phone"])
     preferred_email = to_optional_str(record["preferred_email"])
     preferred_nric = to_optional_str(record["preferred_nric"])
+    preferred_race_ethnicity = to_optional_str(record["preferred_race_ethnicity"])
     preferred_address_id = to_optional_str(record["preferred_address_id"])
     preferred_address_value = to_optional_str(record["preferred_address_value"])
     overrides = parse_overrides(record["overrides"])
@@ -192,6 +193,7 @@ async def _field_options_tx(tx: AsyncManagedTransaction, person_id: str) -> Fiel
         "preferred_phone": preferred_phone,
         "preferred_email": preferred_email,
         "preferred_nric": preferred_nric,
+        "preferred_race_ethnicity": preferred_race_ethnicity,
         "preferred_address": preferred_address_value,
     }
     existing_keys = {(row.field_name, row.source_record_pk) for row in rows}
@@ -229,6 +231,7 @@ async def _field_options_tx(tx: AsyncManagedTransaction, person_id: str) -> Fiel
         preferred_phone=preferred_phone,
         preferred_email=preferred_email,
         preferred_nric=preferred_nric,
+        preferred_race_ethnicity=preferred_race_ethnicity,
         preferred_address_id=preferred_address_id,
         preferred_address_value=preferred_address_value,
         overrides=overrides,

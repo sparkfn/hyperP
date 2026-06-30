@@ -67,6 +67,8 @@ def _apply_survivorship(
     fields["profile_completeness_score"] = round(filled / len(fields), 2)
     # NRIC is optional; not counted in completeness (not universally present)
     fields["preferred_nric"] = _pick_best_identifier(identifiers, "nric")
+    # Race/ethnicity is display-only; not counted in completeness.
+    fields["preferred_race_ethnicity"] = _pick_best_fact(facts, "race_ethnicity")
     fields["golden_profile_version"] = _GOLDEN_PROFILE_VERSION
     return fields
 

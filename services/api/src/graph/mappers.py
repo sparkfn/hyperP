@@ -108,6 +108,7 @@ def map_person(record: GraphRecord, address_key: str = "preferred_address") -> P
         preferred_dob=to_optional_str(p.get("preferred_dob")),
         preferred_address=map_address(record.get(address_key)),
         preferred_nric=to_optional_str(p.get("preferred_nric")),
+        preferred_race_ethnicity=to_optional_str(p.get("preferred_race_ethnicity")),
         profile_completeness_score=to_float(p.get("profile_completeness_score")),
         golden_profile_computed_at=to_iso_or_none(p.get("golden_profile_computed_at")),
         golden_profile_version=to_optional_str(p.get("golden_profile_version")),

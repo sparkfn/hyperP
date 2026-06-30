@@ -27,6 +27,7 @@ from src.connectors.dumps.reader import DumpRow, load_dump_tables
 from src.connectors.eko.connector import EkoConnector
 from src.connectors.fundbox.builders import (
     IdentifierBag,
+    _norm_race,
     addresses_from_rows,
     build_envelope,
     format_address,
@@ -598,6 +599,7 @@ def _join_fundbox_user(
             "date_of_birth": profile.date_of_birth if profile else None,
             "gender": profile.gender if profile else None,
             "nationality": profile.nationality if profile else None,
+            "race": profile.race if profile else None,
             "profile_email": profile.email if profile else None,
             "profile_mobile": profile.mobile_number if profile else None,
             "whatsapp_phone": profile.get("whatsapp_phone") if profile else None,
@@ -656,6 +658,7 @@ def _build_fundbox_legacy(row: DumpRow, user_addresses: list[DumpRow]) -> dict[s
             "dob": to_iso(row.date_of_birth),
             "gender": row.gender,
             "nationality": row.nationality,
+            "race_ethnicity": _norm_race(row.race),
             "address": format_address(user_addresses[0]) if user_addresses else None,
         },
         raw_payload={

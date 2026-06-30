@@ -40,6 +40,7 @@ GOLDEN_FACT_FIELDS: tuple[str, ...] = ("full_name", "phone", "email", "dob")
 GOLDEN_FIELD_SPEC: dict[str, tuple[str, str | None]] = {
     "preferred_full_name": ("source_record_fact", "full_name"),
     "preferred_dob": ("source_record_fact", "dob"),
+    "preferred_race_ethnicity": ("source_record_fact", "race_ethnicity"),
     "preferred_phone": ("identifier", "phone"),
     "preferred_email": ("identifier", "email"),
     "preferred_nric": ("identifier", "nric"),
@@ -220,7 +221,7 @@ async def _gather_best_facts(
             best.get(attr_name),
             _BestFact(value=attr_value, trust_rank=rank, observed_at=observed_at),
         )
-    for attr_name in GOLDEN_FACT_FIELDS:
+    for attr_name in (*GOLDEN_FACT_FIELDS, "race_ethnicity"):
         override = overrides.get(f"preferred_{attr_name}")
         custom_value = override.get("custom_value") if override is not None else None
         if custom_value:
@@ -310,6 +311,7 @@ async def recompute_golden_profile_tx(tx: AsyncManagedTransaction, person_id: st
     best_by_field = await _gather_best_facts(tx, person_id, overrides)
     full_name = best_by_field.get("full_name", _empty_fact()).value
     dob = best_by_field.get("dob", _empty_fact()).value
+    race_ethnicity = best_by_field.get("race_ethnicity", _empty_fact()).value
     phone = await _resolve_identifier(tx, person_id, "phone", overrides.get("preferred_phone"))
     email = await _resolve_identifier(tx, person_id, "email", overrides.get("preferred_email"))
     nric = await _resolve_identifier(tx, person_id, "nric", overrides.get("preferred_nric"))
@@ -324,6 +326,7 @@ async def recompute_golden_profile_tx(tx: AsyncManagedTransaction, person_id: st
         phone=phone,
         email=email,
         dob=dob,
+        race_ethnicity=race_ethnicity,
         address_id=address_id,
         nric=nric,
         completeness=completeness,

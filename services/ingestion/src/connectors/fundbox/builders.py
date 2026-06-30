@@ -49,6 +49,22 @@ def phone_region_hint(phone_code: object, country: object) -> str | None:
     return None
 
 
+def _norm_race(value: object) -> str | None:
+    """Normalize a Fundbox ``race`` value: trim, title-case, drop empties.
+
+    Fundbox stores race as free text with inconsistent casing
+    (``"MALAY"``/``"Malay"``). Title-casing collapses the duplicates while
+    preserving sub-ethnicity detail (Javanese, Boyanese, ...). Returns
+    ``None`` for empty/whitespace so ``build_envelope`` omits the attribute.
+    """
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    return text.title()
+
+
 def _json_default(value: object) -> str:
     if isinstance(value, datetime | date):
         return value.isoformat()

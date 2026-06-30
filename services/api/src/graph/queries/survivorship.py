@@ -54,6 +54,7 @@ SET p.preferred_full_name = $full_name,
     p.preferred_dob = $dob,
     p.preferred_address_id = $address_id,
     p.preferred_nric = $nric,
+    p.preferred_race_ethnicity = $race_ethnicity,
     p.profile_completeness_score = $completeness,
     p.golden_profile_computed_at = datetime(),
     p.golden_profile_version = $version,
@@ -120,7 +121,7 @@ MATCH (p:Person {person_id: $person_id, status: 'active'})
 CALL {
   WITH p
   MATCH (p)-[f:HAS_FACT]->(sr:SourceRecord)
-  WHERE f.attribute_name IN ['full_name', 'dob']
+  WHERE f.attribute_name IN ['full_name', 'dob', 'race_ethnicity']
     AND coalesce(f.quality_flag, 'valid') <> 'invalid_format'
     AND coalesce(f.quality_flag, 'valid') <> 'placeholder_value'
   MATCH (sr)-[:FROM_SOURCE]->(ss:SourceSystem)
@@ -179,6 +180,7 @@ RETURN p.preferred_full_name AS preferred_full_name,
        p.preferred_phone AS preferred_phone,
        p.preferred_email AS preferred_email,
        p.preferred_nric AS preferred_nric,
+       p.preferred_race_ethnicity AS preferred_race_ethnicity,
        p.preferred_address_id AS preferred_address_id,
        preferred_addr.normalized_full AS preferred_address_value,
        p.survivorship_overrides AS overrides,

@@ -164,6 +164,7 @@ function customOverridePlaceholder(fieldName: GoldenFieldName): string {
   if (fieldName === "preferred_email") return "name@example.com";
   if (fieldName === "preferred_dob") return "YYYY-MM-DD";
   if (fieldName === "preferred_nric") return "Type NRIC";
+  if (fieldName === "preferred_race_ethnicity") return "e.g. Chinese";
   return "Type address";
 }
 
@@ -336,6 +337,7 @@ function PersonSidebar({ person, detailData, personId, onOverride, onGraphOpen }
     { label: "Phone",   value: phone  ?? "—" },
     { label: "Email",   value: email  ?? "—" },
     { label: "Address", value: address ?? "—" },
+    { label: "Race / Ethnicity", value: person.preferred_race_ethnicity ?? "—" },
   ];
 
   const detailRows: Array<{ label: string; value: string; mono?: boolean; copyable?: boolean }> = [
