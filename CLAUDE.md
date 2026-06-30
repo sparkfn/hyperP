@@ -334,7 +334,7 @@ Before reporting work complete, perform a hostile review of the changed code: co
 **Never commit without explicit user confirmation.** After completing code changes, stop — do not stage or commit anything. Wait for the user to say "commit" or similar before proceeding. This rule applies even when executing a plan that includes commit steps: treat plan commit steps as reminders, not instructions. Always ask before committing.
 
 ### Worktrees
-Create worktrees from the current branch/HEAD, not from `origin/main`, so in-progress branch context is preserved.
+**Hard rule:** when creating a worktree — manually (`git worktree add`), via the `EnterWorktree` tool, or via any skill/agent — always branch it from the **current branch/HEAD**, never from `origin/main` (or `main`). This preserves in-progress branch context and avoids basing new work on a stale production branch. Do not pass a base ref that resolves to `main`/`origin/main`; if a tool or skill defaults to `main`, override it to the current branch. If a worktree was already created from `main` by mistake, recreate it from the current branch before doing any work in it.
 
 ### docker-compose.yml sync rule
 Any commit modifying the root `docker-compose.yml` **must** apply the equivalent change to every counterpart in `.docker/[environment]/docker-compose.yml` (currently `.docker/staging/`) in the same commit. The environment files differ only in build context paths (`../../`), project `name:`, and volume paths — service definitions, image versions, and env vars must stay in sync.

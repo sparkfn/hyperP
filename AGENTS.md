@@ -13,7 +13,7 @@ CI maps, evidence, and follow-ups in the relevant issue or PR.
 - `main` — production lineage (do not push directly).
 - `development` — integration branch. PRs merge here. DEV CI runs on push to this branch.
 - `staging` — staging deploy target (GitHub Actions `.github/workflows/deploy-staging.yml`).
-- Feature/fix work happens on worktrees/branches off the current branch/HEAD, **not** `origin/main`.
+- Feature/fix work happens on worktrees/branches off the current branch/HEAD, **not** `origin/main` (or `main`). **Hard rule:** any worktree creation — manual (`git worktree add`), via the `EnterWorktree` tool, or via a skill/agent — must branch from the current branch/HEAD; never force or default the base ref to `main`/`origin/main`. If a worktree was created from `main` by mistake, recreate it from the current branch before working in it.
 
 ## CI — hybrid (Woodpecker + GitHub Actions)
 - **PR + DEV validation** run in local **Woodpecker** (`corbu` host, docker backend,
