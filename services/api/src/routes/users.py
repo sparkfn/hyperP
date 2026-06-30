@@ -145,9 +145,7 @@ async def bulk_create_users(
 ) -> ApiResponse[UserBulkCreateResponse]:
     """Pre-register multiple users before their first Google login. Admin only."""
     normalized_emails = [normalize_email(row.email) for row in body.users]
-    duplicate_emails = {
-        email for email in normalized_emails if normalized_emails.count(email) > 1
-    }
+    duplicate_emails = {email for email in normalized_emails if normalized_emails.count(email) > 1}
     results: list[UserBulkCreateResult | None] = []
     valid_rows: list[PreRegisterUserInput] = []
     valid_indexes: list[int] = []
@@ -207,9 +205,7 @@ async def bulk_create_users(
             results[index] = _result_to_response(result)
 
     return envelope(
-        UserBulkCreateResponse(
-            results=[result for result in results if result is not None]
-        ),
+        UserBulkCreateResponse(results=[result for result in results if result is not None]),
         request,
     )
 

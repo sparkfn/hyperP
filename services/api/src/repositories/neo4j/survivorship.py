@@ -49,7 +49,9 @@ def _override_entry(
     }
 
 
-def _custom_override_entry(custom_value: str, reason: str, actor_id: str, created_at: str) -> dict[str, str]:
+def _custom_override_entry(
+    custom_value: str, reason: str, actor_id: str, created_at: str
+) -> dict[str, str]:
     return {
         "source_record_pk": "",
         "source_kind": "literal",
@@ -145,9 +147,7 @@ class Neo4jSurvivorshipRepository:
             )
 
 
-async def _field_options_tx(
-    tx: AsyncManagedTransaction, person_id: str
-) -> FieldOptionsData | None:
+async def _field_options_tx(tx: AsyncManagedTransaction, person_id: str) -> FieldOptionsData | None:
     record = await (await tx.run(GET_FIELD_OPTIONS, person_id=person_id)).single()
     if record is None:
         return None
@@ -301,7 +301,9 @@ async def _custom_override_tx(
     field_to_set = field_name
     if field_name == "preferred_address":
         record = await (
-            await tx.run(UPSERT_CUSTOM_ADDRESS, normalized_full=_normalize_custom_address(trimmed_value))
+            await tx.run(
+                UPSERT_CUSTOM_ADDRESS, normalized_full=_normalize_custom_address(trimmed_value)
+            )
         ).single()
         if record is None:
             return "value_not_found"

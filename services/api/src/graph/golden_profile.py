@@ -127,9 +127,7 @@ def parse_overrides(raw: object) -> dict[str, dict[str, str]]:
     }
 
 
-async def _load_overrides(
-    tx: AsyncManagedTransaction, person_id: str
-) -> dict[str, dict[str, str]]:
+async def _load_overrides(tx: AsyncManagedTransaction, person_id: str) -> dict[str, dict[str, str]]:
     result = await tx.run(GET_PERSON_OVERRIDES, person_id=person_id)
     record = await result.single()
     return parse_overrides(record["overrides"] if record else None)
@@ -209,7 +207,9 @@ async def _gather_best_facts(
         if override is not None:
             custom_value = override.get("custom_value")
             if custom_value:
-                best[attr_name] = _BestFact(value=custom_value, trust_rank=0, observed_at=observed_at)
+                best[attr_name] = _BestFact(
+                    value=custom_value, trust_rank=0, observed_at=observed_at
+                )
                 continue
             if override.get("source_record_pk") == source_pk:
                 best[attr_name] = _BestFact(value=attr_value, trust_rank=0, observed_at=observed_at)

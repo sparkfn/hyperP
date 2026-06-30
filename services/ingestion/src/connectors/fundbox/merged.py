@@ -44,23 +44,23 @@ class FundboxMergedUsersConnector(FundboxConnectorBase):
                 ids.add("phone", row.mobile_number)
 
                 yield build_envelope(
-                source_record_id=f"fundbox_consumer_backend-merged-{row.id}",
-                observed_at=to_iso(row.updated_at or row.created_at),
-                identifiers=ids.items,
-                attributes={},
-                raw_payload={
-                    "merged_user": serialize_row(row),
-                    "merge_hint": {
-                        "merged_into_source_record_id": (
-                            f"fundbox_consumer_backend-user-{row.new_user_id}"
-                            if row.new_user_id
-                            else None
-                        ),
-                        "surviving_identifiers": {
-                            "nric": row.new_nric,
-                            "email": row.new_email,
-                            "phone": row.new_mobile_number,
+                    source_record_id=f"fundbox_consumer_backend-merged-{row.id}",
+                    observed_at=to_iso(row.updated_at or row.created_at),
+                    identifiers=ids.items,
+                    attributes={},
+                    raw_payload={
+                        "merged_user": serialize_row(row),
+                        "merge_hint": {
+                            "merged_into_source_record_id": (
+                                f"fundbox_consumer_backend-user-{row.new_user_id}"
+                                if row.new_user_id
+                                else None
+                            ),
+                            "surviving_identifiers": {
+                                "nric": row.new_nric,
+                                "email": row.new_email,
+                                "phone": row.new_mobile_number,
+                            },
                         },
                     },
-                },
-            )
+                )
