@@ -57,8 +57,7 @@ def build_frontend_app() -> FastAPI:
             {
                 "name": "Admin",
                 "description": (
-                    "User management, OAuth client registry, "
-                    "and source-system field trust."
+                    "User management, OAuth client registry, and source-system field trust."
                 ),
             },
             {
