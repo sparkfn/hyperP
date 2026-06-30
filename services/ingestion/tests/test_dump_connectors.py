@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from pytest import MonkeyPatch
+from pytest import MonkeyPatch, skip
 from src.connectors.dumps.connectors import (
     FundboxSalesDumpConnector,
     _build_fundbox_contact,
@@ -654,10 +654,10 @@ def test_phppos_sales_dump_puts_serialnumber_in_metadata(tmp_path: Path) -> None
 
 
 def test_fundbox_dump_keeps_device_ids_out_of_identifiers() -> None:
-    connector = get_dump_connector(
-        "fundbox_consumer_backend",
-        Path(".dumps") / "limited-100" / "fundbox_2026-05-06.sql",
-    )
+    dump_path = Path(".dumps") / "limited-100" / "fundbox_2026-05-06.sql"
+    if not dump_path.exists():
+        skip(f"local dump fixture missing: {dump_path}")
+    connector = get_dump_connector("fundbox_consumer_backend", dump_path)
     record = next(connector.fetch_records())
 
     identifier_types = {item["type"] for item in record["identifiers"]}
@@ -677,6 +677,9 @@ def test_real_non_chat_dumps_yield_first_records() -> None:
         ("speedzone_phppos", "speedzone_phppos_2026-05-06.sql", "identity"),
         ("speedzone_phppos:sales", "speedzone_phppos_2026-05-06.sql", "sales"),
     ]
+    missing = [str(Path(".dumps") / df) for _, df, _ in cases if not (Path(".dumps") / df).exists()]
+    if missing:
+        skip(f"local dump fixtures missing: {missing}")
     for source_key, dump_file, expected_record_type in cases:
         connector = get_dump_connector(source_key, Path(".dumps") / dump_file)
         record = next(connector.fetch_records(), None)
