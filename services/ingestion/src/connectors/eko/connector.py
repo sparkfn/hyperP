@@ -22,7 +22,6 @@ from src.config import get_settings
 from src.connectors.base import SourceConnector
 from src.connectors.eko.db import get_engine
 from src.connectors.eko.schema import customers, employees, people
-from src.connectors.phppos_loyalty import loyalty_block_from_row
 from src.connectors.fundbox.builders import (
     IdentifierBag,
     address_from_row,
@@ -32,6 +31,7 @@ from src.connectors.fundbox.builders import (
     serialize_row,
     to_iso,
 )
+from src.connectors.phppos_loyalty import loyalty_block_from_row
 from src.models import JsonValue
 
 logger = logging.getLogger(__name__)

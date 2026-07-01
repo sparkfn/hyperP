@@ -24,7 +24,6 @@ from sqlalchemy.engine import Connection
 
 from src.config import get_settings
 from src.connectors.base import SourceConnector
-from src.connectors.phppos_loyalty import loyalty_block_from_row
 from src.connectors.fundbox.builders import (
     IdentifierBag,
     address_from_row,
@@ -34,6 +33,7 @@ from src.connectors.fundbox.builders import (
     serialize_row,
     to_iso,
 )
+from src.connectors.phppos_loyalty import loyalty_block_from_row
 from src.connectors.speedzone.db import get_engine
 from src.connectors.speedzone.schema import customers, employees, people
 from src.models import JsonValue
