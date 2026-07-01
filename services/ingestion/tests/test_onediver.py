@@ -96,7 +96,7 @@ INSERT INTO `profiles` (`id`, `user_id`, `ssi_master_id`, `email`, `first_name`,
 `Alternative_email`, `membership_id`, `dive_level`, `dives`, `last_dive`, `modified`, `created`, \
 `is_deleted`) VALUES
 (5, 2, 'SSI-001', 'ada@example.test', 'Ada', 'Lovelace', 'F', '1990-01-31', 'Ada Lovelace', \
-'E6975636L', 'S1234567A', 'SG', 'Chinese', 'One Street', 'Block 2', 'Singapore', 'SG', '123456', \
+'E6975636L', 'S1234567A', 'SG', 'Chinese', 'One Street', 'Block 2', 'Singapore', '', 'SG', '123456', \
 '6599990000', '65', '6500000000', '65', 'ada.alt@example.test', 'M-100', 'Open Water', '42', NULL, \
 '2026-05-06 02:00:00', '2026-05-01 01:00:00', 0);
 """
