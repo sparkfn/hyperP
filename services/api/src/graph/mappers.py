@@ -124,7 +124,9 @@ def _map_loyalty(rows: GraphValue) -> list[LoyaltySummary]:
                 points=to_optional_int(block.get("points")),
                 disable_loyalty=to_optional_bool(block.get("disable_loyalty")),
                 current_spend_for_points=to_optional_float(block.get("current_spend_for_points")),
-                current_sales_for_discount=to_optional_float(block.get("current_sales_for_discount")),
+                current_sales_for_discount=to_optional_float(
+                    block.get("current_sales_for_discount")
+                ),
                 observed_at=to_iso_or_none(row.get("observed_at")),
             )
         )
@@ -156,9 +158,7 @@ def _map_machine_units(rows: GraphValue) -> list[MachineUnitSummary]:
             continue
         seen.add(key)
         rel_type = to_str(row.get("rel_type")) or ""
-        relationship: Literal["OWNS", "BOUGHT"] = (
-            "OWNS" if rel_type == "OWNS_UNIT" else "BOUGHT"
-        )
+        relationship: Literal["OWNS", "BOUGHT"] = "OWNS" if rel_type == "OWNS_UNIT" else "BOUGHT"
         out.append(
             MachineUnitSummary(
                 machine_unit_id=key,

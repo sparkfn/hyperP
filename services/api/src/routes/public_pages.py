@@ -81,6 +81,7 @@ def _strip_public_source_record(sr: SourceRecord) -> SourceRecord:
         return sr
     return sr.model_copy(update={"raw_payload": scrubbed})
 
+
 # No auth — anyone with the token can access these endpoints.
 public_router = APIRouter(prefix="/v1/public", tags=["Public"])
 
