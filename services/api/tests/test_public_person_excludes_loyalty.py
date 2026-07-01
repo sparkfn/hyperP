@@ -50,6 +50,9 @@ def test_strip_public_source_record_removes_loyalty_from_raw_payload() -> None:
         source_record_pk="pk1",
         source_system="eko_phppos",
         source_record_id="eko_phppos-customer-1",
+        link_status="linked",
+        observed_at="2026-01-01",
+        ingested_at="2026-01-01",
         raw_payload={
             "person": {"full_name": "A B", "points": 5000, "disable_loyalty": False},
             "loyalty": {"points": 5000},
@@ -72,6 +75,9 @@ def test_strip_public_source_record_noop_without_loyalty() -> None:
         source_record_pk="pk1",
         source_system="eko_phppos",
         source_record_id="eko_phppos-customer-1",
+        link_status="linked",
+        observed_at="2026-01-01",
+        ingested_at="2026-01-01",
         raw_payload={"person": {"full_name": "A B"}},
     )
     stripped = _strip_public_source_record(sr)

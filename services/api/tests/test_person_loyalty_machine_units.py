@@ -101,7 +101,7 @@ def test_map_person_loyalty_dedup_per_source_latest() -> None:
 def test_map_person_loyalty_skips_records_without_block() -> None:
     rec = _record()  # raw_payload has no loyalty key
     p = map_person(rec)
-    assert p.loyalty == []
+    assert p.loyalty is None
 
 
 def test_map_person_loyalty_two_sources() -> None:
@@ -166,7 +166,7 @@ def test_map_person_machine_units() -> None:
 
 def test_map_person_machine_units_empty() -> None:
     p = map_person(_record())
-    assert p.machine_units == []
+    assert p.machine_units is None
 
 
 def test_map_person_machine_units_dedup_same_unit_multiple_rels() -> None:
