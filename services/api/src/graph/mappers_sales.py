@@ -48,5 +48,7 @@ def map_sales_order(record: GraphRecord) -> SalesOrder:
         currency=to_optional_str(record.get("currency")),
         source_system=to_optional_str(record.get("source_system")),
         entity_name=to_optional_str(record.get("entity_name")),
+        points_used=to_optional_int(record.get("points_used")),
+        points_gained=to_optional_int(record.get("points_gained")),
         line_items=line_items,
     )

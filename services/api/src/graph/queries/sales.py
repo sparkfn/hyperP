@@ -22,6 +22,8 @@ RETURN o.order_no AS order_no,
        o.release_date AS release_date,
        o.total_amount AS total_amount,
        o.currency AS currency,
+       o.points_used AS points_used,
+       o.points_gained AS points_gained,
        ss.source_key AS source_system,
        coalesce(entity.display_name, entity.entity_key) AS entity_name,
        [x IN raw_items WHERE x IS NOT NULL] AS line_items

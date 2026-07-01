@@ -94,6 +94,7 @@ module = [
     "src.connectors.fundbox.junk",
     "src.connectors.fundbox.schema",
     "src.connectors.phppos_sales_common",
+    "src.connectors.phppos_loyalty",
     "src.connectors.db_factory",
     "src.connectors.eko.connector",
     "src.connectors.eko.sales",

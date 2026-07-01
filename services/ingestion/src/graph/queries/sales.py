@@ -69,6 +69,10 @@ SET
     o.currency     = $currency,
     o.item_count   = $item_count,
     o.metadata     = $metadata,
+    o.points_used          = $points_used,
+    o.points_gained        = $points_gained,
+    o.did_redeem_discount  = $did_redeem_discount,
+    o.is_purchase_points   = $is_purchase_points,
     o.updated_at   = datetime()
 MERGE (o)-[:SOLD_THROUGH]->(ss)
 RETURN o.order_id AS order_id

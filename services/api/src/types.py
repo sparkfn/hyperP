@@ -142,6 +142,30 @@ class AddressSummary(BaseModel):
     normalized_full: str | None = None
 
 
+class LoyaltySummary(BaseModel):
+    """Per-source-system loyalty-points balance, read through from identity SourceRecords."""
+
+    source_system: str
+    points: int | None = None
+    disable_loyalty: bool | None = None
+    current_spend_for_points: float | None = None
+    current_sales_for_discount: float | None = None
+    observed_at: str | None = None
+
+
+class MachineUnitSummary(BaseModel):
+    """A MachineUnit linked to a person via OWNS_UNIT / BOUGHT_UNIT."""
+
+    machine_unit_id: str
+    machine_product: str | None = None
+    lta_tag: str | None = None
+    serial_number: str | None = None
+    relationship: Literal["OWNS", "BOUGHT"]
+    is_active: bool | None = None
+    conflict_flag: bool | None = None
+    observed_at: str | None = None
+
+
 class Person(BaseModel):
     person_id: str
     status: PersonStatus
@@ -160,6 +184,8 @@ class Person(BaseModel):
     source_record_count: int = 0
     connection_count: int = 0
     lifetime_value: float | None = None
+    loyalty: list[LoyaltySummary] | None = None
+    machine_units: list[MachineUnitSummary] | None = None
     created_at: str = ""
     updated_at: str = ""
 

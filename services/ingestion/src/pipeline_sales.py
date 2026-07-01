@@ -77,6 +77,7 @@ class _OrderPayload(TypedDict, total=False):
     currency: str
     item_count: int | None
     metadata: dict[str, JsonValue]
+    loyalty: dict[str, JsonValue]
 
 
 def _entity_key_for(source_system_key: str) -> str:
@@ -373,6 +374,7 @@ def _merge_order(
     source_system_key: str,
     order: _OrderPayload,
 ) -> None:
+    loyalty = order.get("loyalty") or {}
     tx.run(
         queries.MERGE_ORDER,
         source_system_key=source_system_key,
@@ -385,6 +387,10 @@ def _merge_order(
         currency=order.get("currency", "SGD"),
         item_count=order.get("item_count"),
         metadata=json.dumps(order.get("metadata", {}), default=str),
+        points_used=loyalty.get("points_used"),
+        points_gained=loyalty.get("points_gained"),
+        did_redeem_discount=loyalty.get("did_redeem_discount"),
+        is_purchase_points=loyalty.get("is_purchase_points"),
     )
 
 

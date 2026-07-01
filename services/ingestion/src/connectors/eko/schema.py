@@ -24,6 +24,7 @@ from sqlalchemy import (
     DateTime,
     Integer,
     MetaData,
+    Numeric,
     String,
     Table,
     Text,
@@ -61,6 +62,10 @@ customers = Table(
     Column("account_number", String(255)),
     Column("company_name", String(255)),
     Column("deleted", Integer),
+    Column("points", Numeric),  # loyalty points balance
+    Column("disable_loyalty", Integer),  # tinyint flag
+    Column("current_spend_for_points", Numeric),  # spend toward next points tier
+    Column("current_sales_for_discount", Numeric),  # sales toward next discount tier
     Column("custom_field_1_value", String(255)),  # NRIC / Passport No.
     Column("custom_field_2_value", String(255)),  # not in use
     Column("custom_field_3_value", String(255)),  # not in use
