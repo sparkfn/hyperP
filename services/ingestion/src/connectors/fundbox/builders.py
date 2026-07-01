@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import json
 from datetime import date, datetime
+from decimal import Decimal
 from typing import Any, Literal
 
 import phonenumbers
@@ -85,6 +86,16 @@ def to_iso(value: object) -> str | None:
         return value.isoformat()
     if isinstance(value, str):
         stripped = value.strip()
+        if stripped.startswith("0000-"):
+            # MySQL zero-date sentinel (non-strict-mode default for unset
+            # date/datetime columns, e.g. '0000-00-00', '0000-00-00 00:00:00')
+            # — year 0 is never a real timestamp; treat as missing. Shared-helper
+            # note: ``serialize_row`` routes every column through ``to_iso``, so
+            # any zero-date cell across every connector now serializes as None
+            # instead of the literal string, changing the computed ``record_hash``
+            # for affected rows — a deliberate one-time hash invalidation (the
+            # old literal was never a real timestamp).
+            return None
         try:
             d = datetime.fromisoformat(stripped)
         except ValueError:
@@ -99,6 +110,43 @@ def to_iso(value: object) -> str | None:
             return None
         return d.isoformat() + ("Z" if d.tzinfo is None else "")
     return str(value)
+
+
+def to_iso_first(*values: object) -> str | None:
+    """Return the first value among ``values`` that parses to a real ISO timestamp.
+
+    Unlike ``to_iso(a or b)``, each value is run through ``to_iso`` independently,
+    so a truthy-but-invalid MySQL zero-date sentinel in an earlier column does
+    not mask a valid later column (e.g. a zero-date ``modified`` falls back to
+    ``created``). Use this for multi-column ``observed_at`` resolution.
+    """
+    for value in values:
+        iso = to_iso(value)
+        if iso is not None:
+            return iso
+    return None
+
+
+def coerce_float(value: object) -> float | None:
+    """Coerce a source cell (``Decimal``/``int``/``float``/``str``) to ``float``.
+
+    Returns ``None`` for ``None``, empty/whitespace strings, or unparseable text.
+    Handles the string form dump-reader cells arrive in (the live-DB
+    ``_decimal_to_float`` helpers only accept ``Decimal``/``int``/``float``).
+    """
+    if value is None:
+        return None
+    if isinstance(value, int | float | Decimal):
+        return float(value)
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        try:
+            return float(text)
+        except ValueError:
+            return None
+    return None
 
 
 # SQLAlchemy Row objects are dynamic — `_mapping` is typed as a Mapping

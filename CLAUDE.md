@@ -264,6 +264,8 @@ The task enforces a Redis-backed cluster-wide concurrency cap (`MAX_CONCURRENT_I
 | `whatsapp_chat` | dump | `limited-100/whatsapp_chat_100.sql` |
 | `sgbankruptcy` | dump | `limited-100/sgbankruptcy_100.sql` |
 | `sgrentalflats` | dump | `limited-100/sgrentalflats_100.sql` |
+| `onediver` | dump | `limited-100/onediver_100.sql` |
+| `onediver:sales` | dump | `limited-100/onediver_sales_100.sql` |
 
 `eko_phppos`, `bitrix_chat`, and `whatsapp_chat` need an SSH gateway in `batch` mode — without one, use `mode='dump'` with `dump_path`.
 

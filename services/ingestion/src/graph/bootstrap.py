@@ -59,6 +59,12 @@ _ENTITIES: tuple[_EntitySeed, ...] = (
         "entity_type": "government",
         "country_code": "SG",
     },
+    {
+        "entity_key": "onediver",
+        "display_name": "OneDiver",
+        "entity_type": "retailer",
+        "country_code": "SG",
+    },
 )
 
 
@@ -93,6 +99,18 @@ _CHAT_TRUST: dict[str, str] = {
 
 _GOVERNMENT_REGISTRY_TRUST: dict[str, str] = {
     "full_name": "tier_4",
+    "nric": "tier_4",
+    "address": "tier_4",
+}
+
+#: OneDiver is a dive-school / water-sports customer platform: customer-entered
+#: profiles (self-claimed email/phone/name) plus sales orders. Govt IDs (NRIC)
+#: and address/DOB sit at tier_4 like the other consumer backends.
+_ONEDIVER_TRUST: dict[str, str] = {
+    "phone": "tier_3",
+    "email": "tier_3",
+    "full_name": "tier_3",
+    "dob": "tier_4",
     "nric": "tier_4",
     "address": "tier_4",
 }
@@ -189,6 +207,20 @@ _SOURCE_SYSTEMS: tuple[_SourceSystemSeed, ...] = (
         "system_type": "government_registry",
         "entity_key": "sggov",
         "field_trust": _GOVERNMENT_REGISTRY_TRUST,
+    },
+    {
+        "source_key": "onediver",
+        "display_name": "OneDiver",
+        "system_type": "consumer_backend",
+        "entity_key": "onediver",
+        "field_trust": _ONEDIVER_TRUST,
+    },
+    {
+        "source_key": "onediver:sales",
+        "display_name": "OneDiver Sales",
+        "system_type": "consumer_backend",
+        "entity_key": "onediver",
+        "field_trust": _ONEDIVER_TRUST,
     },
 )
 

@@ -36,6 +36,10 @@ from src.connectors.fundbox.builders import (
 )
 from src.connectors.fundbox.sales import FundboxSalesConnector, _variant_to_product
 from src.connectors.fundbox.users import FundboxConnector
+from src.connectors.onediver.connector import (
+    OneDiverDumpConnector,
+    OneDiverSalesDumpConnector,
+)
 from src.connectors.sggov.bankruptcy import SGGovernmentBankruptcyConnector
 from src.connectors.sggov.rental_flats import SGGovernmentRentalFlatsConnector
 from src.connectors.speedzone.connector import SpeedZoneConnector
@@ -127,6 +131,8 @@ def get_dump_connector(source_key: str, dump_path: str | Path) -> SourceConnecto
         "bitrix_chat": BitrixDumpConnector,
         "eko_phppos": EkoDumpConnector,
         "speedzone_phppos": SpeedZoneDumpConnector,
+        "onediver": OneDiverDumpConnector,
+        "onediver:sales": OneDiverSalesDumpConnector,
         "fundbox_consumer_backend": FundboxDumpConnector,
         "fundbox_consumer_backend:contacts": FundboxContactsDumpConnector,
         "fundbox_consumer_backend:legacy": FundboxLegacyDumpConnector,
