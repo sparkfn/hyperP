@@ -25,6 +25,10 @@ from src.connectors.chat_helpers import (
 )
 from src.connectors.dumps.reader import DumpRow, load_dump_tables
 from src.connectors.eko.connector import EkoConnector
+from src.connectors.onediver.connector import (
+    OneDiverDumpConnector,
+    OneDiverSalesDumpConnector,
+)
 from src.connectors.fundbox.builders import (
     IdentifierBag,
     _norm_race,
@@ -127,6 +131,8 @@ def get_dump_connector(source_key: str, dump_path: str | Path) -> SourceConnecto
         "bitrix_chat": BitrixDumpConnector,
         "eko_phppos": EkoDumpConnector,
         "speedzone_phppos": SpeedZoneDumpConnector,
+        "onediver": OneDiverDumpConnector,
+        "onediver:sales": OneDiverSalesDumpConnector,
         "fundbox_consumer_backend": FundboxDumpConnector,
         "fundbox_consumer_backend:contacts": FundboxContactsDumpConnector,
         "fundbox_consumer_backend:legacy": FundboxLegacyDumpConnector,

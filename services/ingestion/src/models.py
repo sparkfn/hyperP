@@ -130,7 +130,7 @@ class SourceRecordEnvelope(BaseModel):
     source_record_version: str | None = None
     record_type: RecordType = RecordType.IDENTITY
     ingest_type: str = "batch"
-    observed_at: str  # ISO-8601 datetime string
+    observed_at: str | None  # ISO-8601 datetime string; None when the source row carries no valid timestamp (MySQL zero-date sentinels on every timestamp column). Stored as a null graph property; the API mapper falls back to ``ingested_at`` for display.
     record_hash: str
     identifiers: list[RawIdentifier] = Field(default_factory=list)
     addresses: list[RawAddress] = Field(default_factory=list)
