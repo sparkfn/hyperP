@@ -1065,6 +1065,12 @@
   border-top: 1px solid var(--border-subtle);
 }
 
+/* Scrollable variant for long lists (e.g. machine units) — capped height, scrolls. */
+.bkCaseListScroll {
+  max-height: 360px;
+  overflow-y: auto;
+}
+
 .bkCaseBlock {
   border-bottom: 1px solid var(--border-subtle);
 }

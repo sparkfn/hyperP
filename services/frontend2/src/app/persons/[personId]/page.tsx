@@ -465,7 +465,6 @@ function PersonSidebar({ person, detailData, personId, onOverride, onGraphOpen }
 
       <BankruptcySidebarCard cases={detailData.bankruptcyCases} />
       <LoyaltySidebarCard loyalty={person.loyalty} />
-      <MachineUnitsSidebarCard units={person.machine_units} />
       <section className={styles.sidebarCard}>
         <div className={`${styles.sourceEntityHeader} ${styles.sidebarGraphHeader}`}>
           <span className={styles.bkSectionLabel}>Graph</span>
@@ -488,6 +487,7 @@ function PersonSidebar({ person, detailData, personId, onOverride, onGraphOpen }
           />
         </div>
       </section>
+      <MachineUnitsSidebarCard units={person.machine_units} />
       <section className={styles.sidebarCard}>
         <div className={styles.sourceEntityHeader}>
           <span className={styles.bkSectionLabel}>Timeline</span>
@@ -668,7 +668,12 @@ function MachineUnitsSidebarCard({ units }: { units: MachineUnitSummary[] | null
         <span className={styles.bkSectionLabel}>Machine units</span>
         <span className={styles.bkBadgeClear}>{units.length} {units.length === 1 ? "unit" : "units"}</span>
       </div>
-      <div className={styles.bkCaseList}>
+      <div
+        className={`${styles.bkCaseList} ${styles.bkCaseListScroll}`}
+        role="region"
+        aria-label="Machine units"
+        tabIndex={0}
+      >
         {units.map((u) => (
           <div key={u.machine_unit_id} className={styles.bkFieldGrid}>
             <div className={styles.bkFieldRow}>
