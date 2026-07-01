@@ -10,6 +10,7 @@ into the identity ``raw_payload`` is consistent across live and dump paths.
 
 from __future__ import annotations
 
+from decimal import Decimal
 from typing import Any
 
 from src.models import JsonValue
@@ -19,26 +20,36 @@ def to_int_or_none(value: object) -> int | None:
     """Coerce to int, preserving None. Handles Decimal (live) and numeric str (dump).
 
     ``int("300.000")`` raises, so fall back through float for decimal strings.
+    Narrowing by ``isinstance`` keeps the calls mypy-clean under strict without
+    ``type: ignore`` (whose error code differs between ``int`` and ``float``).
     """
     if value is None:
         return None
-    try:
-        return int(value)  # type: ignore[arg-type]  # value is Decimal|int|str
-    except (TypeError, ValueError):
+    if isinstance(value, bool | int | float | Decimal):
+        return int(value)
+    if isinstance(value, str):
         try:
-            return int(float(value))  # type: ignore[arg-type]  # decimal strings
-        except (TypeError, ValueError):
-            return None
+            return int(value)
+        except ValueError:
+            try:
+                return int(float(value))
+            except ValueError:
+                return None
+    return None
 
 
 def to_float_or_none(value: object) -> float | None:
     """Coerce to float, preserving None. Handles Decimal (live) and numeric str (dump)."""
     if value is None:
         return None
-    try:
-        return float(value)  # type: ignore[arg-type]  # value is Decimal|int|str
-    except (TypeError, ValueError):
-        return None
+    if isinstance(value, bool | int | float | Decimal):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value)
+        except ValueError:
+            return None
+    return None
 
 
 def to_bool_or_none(value: object) -> bool | None:
@@ -49,10 +60,16 @@ def to_bool_or_none(value: object) -> bool | None:
     """
     if value is None:
         return None
-    try:
-        return bool(int(value))  # type: ignore[arg-type]  # value is int|str|Decimal
-    except (TypeError, ValueError):
-        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int | float | Decimal):
+        return bool(int(value))
+    if isinstance(value, str):
+        try:
+            return bool(int(value))
+        except ValueError:
+            return None
+    return None
 
 
 def loyalty_block_from_row(row: Any) -> dict[str, JsonValue]:
