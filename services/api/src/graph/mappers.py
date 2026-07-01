@@ -88,7 +88,7 @@ def _map_loyalty(rows: GraphValue) -> list[LoyaltySummary]:
     if not isinstance(rows, list):
         return []
 
-    def _obs_key(row: dict[str, object]) -> tuple[str, str]:
+    def _obs_key(row: GraphRecord) -> tuple[str, str]:
         # Latest observed_at wins; tiebreak on source_record_pk so the choice is
         # deterministic across fetches (no flapping) rather than traversal-order.
         return (
@@ -143,7 +143,7 @@ def _map_machine_units(rows: GraphValue) -> list[MachineUnitSummary]:
     if not isinstance(rows, list):
         return []
 
-    def _owns_first(row: dict[str, object]) -> int:
+    def _owns_first(row: GraphRecord) -> int:
         return 0 if to_str(row.get("rel_type")) == "OWNS_UNIT" else 1
 
     ordered = sorted((r for r in rows if isinstance(r, dict)), key=_owns_first)

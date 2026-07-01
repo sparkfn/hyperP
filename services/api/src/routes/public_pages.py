@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel
+from pydantic.types import JsonValue
 
 from src.auth.deps import require_human_user
 from src.auth.models import AuthUser
@@ -54,10 +55,10 @@ _LOYALTY_RAW_KEYS: tuple[str, ...] = (
 )
 
 
-def _scrub_loyalty_from_raw_payload(raw: dict[str, object]) -> dict[str, object]:
+def _scrub_loyalty_from_raw_payload(raw: dict[str, JsonValue]) -> dict[str, JsonValue]:
     """Return a copy of ``raw`` with loyalty data removed, or ``raw`` unchanged."""
     changed = False
-    out: dict[str, object] = {}
+    out: dict[str, JsonValue] = {}
     for key, value in raw.items():
         if key == "loyalty":
             changed = True
