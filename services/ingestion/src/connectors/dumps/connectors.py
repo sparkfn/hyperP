@@ -25,10 +25,6 @@ from src.connectors.chat_helpers import (
 )
 from src.connectors.dumps.reader import DumpRow, load_dump_tables
 from src.connectors.eko.connector import EkoConnector
-from src.connectors.onediver.connector import (
-    OneDiverDumpConnector,
-    OneDiverSalesDumpConnector,
-)
 from src.connectors.fundbox.builders import (
     IdentifierBag,
     _norm_race,
@@ -40,6 +36,10 @@ from src.connectors.fundbox.builders import (
 )
 from src.connectors.fundbox.sales import FundboxSalesConnector, _variant_to_product
 from src.connectors.fundbox.users import FundboxConnector
+from src.connectors.onediver.connector import (
+    OneDiverDumpConnector,
+    OneDiverSalesDumpConnector,
+)
 from src.connectors.sggov.bankruptcy import SGGovernmentBankruptcyConnector
 from src.connectors.sggov.rental_flats import SGGovernmentRentalFlatsConnector
 from src.connectors.speedzone.connector import SpeedZoneConnector

@@ -196,12 +196,8 @@ def _build_relationship_envelopes(row: DumpRow) -> list[dict[str, JsonValue]]:
     return out
 
 
-def _build_sales_envelope(
-    row: DumpRow, profile_id: str | None
-) -> dict[str, JsonValue]:
-    observed_at = to_iso_first(
-        row.get("order_date"), row.get("accepted_date"), row.get("created")
-    )
+def _build_sales_envelope(row: DumpRow, profile_id: str | None) -> dict[str, JsonValue]:
+    observed_at = to_iso_first(row.get("order_date"), row.get("accepted_date"), row.get("created"))
     raw_payload: dict[str, JsonValue] = {
         "order": {
             "source_order_id": str(row.get("id")),
@@ -246,20 +242,14 @@ class OneDiverDumpConnector(SourceConnector):
         accounts_by_id = {_int(row, "id"): row for row in tables.rows("accounts")}
         emerg_by_profile: dict[int, list[DumpRow]] = {}
         for emergency in tables.rows("profile_emergencies"):
-            emerg_by_profile.setdefault(_int(emergency, "profile_id"), []).append(
-                emergency
-            )
+            emerg_by_profile.setdefault(_int(emergency, "profile_id"), []).append(emergency)
         for row in sorted(tables.rows("profiles"), key=lambda r: _int(r, "id")):
             if _int(row, "is_deleted") != 0:
                 continue
             if row.get("id") is None:
                 continue
             user = users_by_id.get(_int(row, "user_id"))
-            account = (
-                accounts_by_id.get(_int(user, "account_id"))
-                if user is not None
-                else None
-            )
+            account = accounts_by_id.get(_int(user, "account_id")) if user is not None else None
             yield _build_identity_envelope(row, user, account)
             for emergency in emerg_by_profile.get(_int(row, "id"), []):
                 yield from _build_relationship_envelopes(emergency)
