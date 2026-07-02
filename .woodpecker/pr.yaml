@@ -49,3 +49,4 @@ steps:
       - npm install --legacy-peer-deps
       - npm run typecheck
       - npx eslint src
+      - npm test

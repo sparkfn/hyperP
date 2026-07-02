@@ -6,6 +6,7 @@ import "server-only";
 import { auth } from "@/auth";
 import { buildApiUrl } from "./api-url";
 import type { ApiError, ApiResponse, ResponseMeta } from "./api-types";
+import { appendQueryParams, type QueryParams } from "./query-params";
 
 export class UpstreamError extends Error {
   public readonly status: number;
@@ -20,7 +21,7 @@ export class UpstreamError extends Error {
 
 export interface RequestOptions {
   method?: "GET" | "POST" | "PATCH" | "DELETE";
-  query?: Record<string, string | number | boolean | null | undefined>;
+  query?: QueryParams;
   body?: unknown;
   // Next.js fetch cache hint. Default: no cache (fresh data).
   revalidate?: number | false;
@@ -30,12 +31,7 @@ export interface RequestOptions {
 
 function buildUrl(path: string, query: RequestOptions["query"]): string {
   const url: URL = buildApiUrl(path);
-  if (query) {
-    for (const [key, value] of Object.entries(query)) {
-      if (value === null || value === undefined) continue;
-      url.searchParams.set(key, String(value));
-    }
-  }
+  appendQueryParams(url, query);
   return url.toString();
 }
 

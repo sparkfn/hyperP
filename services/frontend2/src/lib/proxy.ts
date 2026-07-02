@@ -44,10 +44,11 @@ export async function proxyToApi<T>(path: string, options: RequestOptions = {}):
   }
 }
 
-/** Convert a `URLSearchParams` instance to a plain string-valued query object. */
-export function searchParamsToQuery(searchParams: URLSearchParams): Record<string, string> {
-  return Object.fromEntries(searchParams.entries());
-}
+// Re-exported from the pure query-params module so BFF routes keep importing
+// `searchParamsToQuery` from "@/lib/proxy". The pure impl preserves repeated
+// keys (multi-value filters such as entity_key/source_key) instead of
+// collapsing them to the last value via Object.fromEntries.
+export { searchParamsToQuery } from "./query-params";
 
 /**
  * Helper for Server Components / Route Handlers that call apiFetch directly.

@@ -50,4 +50,5 @@ steps:
     commands:
       - cd services/frontend2
       - npm install --legacy-peer-deps
+      - npm test
       - npm run build

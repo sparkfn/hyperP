@@ -131,3 +131,32 @@ def test_has_any_match_keeps_identifier_branch_anchored_on_person() -> None:
     query = build_list_persons_query("profile_completeness_score", "desc", has_q=False)
 
     assert "MATCH (p)-[:IDENTIFIED_BY]->(:Identifier)<-[:IDENTIFIED_BY]-(am:Person)" in query
+
+
+def test_entity_and_mode_requires_every_key() -> None:
+    # AND mode emits ALL(... EXISTS ...) per key (intersection); it must NOT use
+    # the OR `entity_key IN $entity_keys` form. Guards the persons-list entity
+    # "and" toggle (multi-key AND vs OR) at the builder level.
+    query = build_list_persons_query(
+        "preferred_full_name", "asc", has_q=False, entity_mode="and", source_mode="or"
+    )
+    assert "ALL(ek IN $entity_keys WHERE EXISTS" in query
+    assert "WHERE e.entity_key = ek" in query
+    assert "e.entity_key IN $entity_keys" not in query
+
+
+def test_entity_or_mode_matches_any_key() -> None:
+    query = build_list_persons_query(
+        "preferred_full_name", "asc", has_q=False, entity_mode="or", source_mode="or"
+    )
+    assert "e.entity_key IN $entity_keys" in query
+    assert "ALL(ek IN $entity_keys" not in query
+
+
+def test_source_and_mode_requires_every_key() -> None:
+    query = build_list_persons_query(
+        "preferred_full_name", "asc", has_q=False, entity_mode="or", source_mode="and"
+    )
+    assert "ALL(sk IN $source_keys WHERE EXISTS" in query
+    assert "WHERE ss.source_key = sk" in query
+    assert "ss.source_key IN $source_keys" not in query
