@@ -62,8 +62,34 @@ export interface Person {
   // Sum of all orders; only returned by the person-detail endpoint (absent on
   // list/entity projections).
   lifetime_value?: number | null;
+  // Per-source loyalty-points balances, read through from identity source
+  // records. Only on the authenticated person-detail endpoint (null on public).
+  loyalty?: LoyaltySummary[] | null;
+  // Machine units owned/bought by the person. Only on the authenticated
+  // person-detail endpoint (null on public).
+  machine_units?: MachineUnitSummary[] | null;
   created_at: string;
   updated_at: string;
+}
+
+export interface LoyaltySummary {
+  source_system: string;
+  points: number | null;
+  disable_loyalty: boolean | null;
+  current_spend_for_points: number | null;
+  current_sales_for_discount: number | null;
+  observed_at: string | null;
+}
+
+export interface MachineUnitSummary {
+  machine_unit_id: string;
+  machine_product: string | null;
+  lta_tag: string | null;
+  serial_number: string | null;
+  relationship: "OWNS" | "BOUGHT";
+  is_active: boolean | null;
+  conflict_flag: boolean | null;
+  observed_at: string | null;
 }
 
 // Provenance class of a SourceRecord. `identity` / `bankruptcy` /
@@ -148,6 +174,8 @@ export interface SalesOrder {
   currency: string | null;
   source_system: string | null;
   entity_name: string | null;
+  points_used: number | null;
+  points_gained: number | null;
   line_items: SalesLineItem[];
 }
 

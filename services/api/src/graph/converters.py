@@ -92,6 +92,28 @@ def to_optional_str(value: GraphValue) -> str | None:
     return str(value)
 
 
+def to_optional_bool(value: GraphValue) -> bool | None:
+    """Convert to bool or None when input is None.
+
+    Parses string-stored booleans symmetrically with ``to_int``/``to_float``
+    (which also accept strings): ``"0"/"false"`` -> False, ``"1"/"true"`` -> True.
+    Needed because some graph values are written as text (e.g. dump-loaded flags).
+    """
+    if value is None:
+        return None
+    if isinstance(value, str):
+        try:
+            return bool(int(value))
+        except ValueError:
+            low = value.strip().lower()
+            if low in ("true", "t", "yes"):
+                return True
+            if low in ("false", "f", "no", ""):
+                return False
+            return None
+    return bool(value)
+
+
 def to_datetime(value: GraphValue) -> datetime | None:
     """Convert a graph value to datetime, returning None for None.
 

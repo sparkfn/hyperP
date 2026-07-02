@@ -61,6 +61,32 @@ CALL {
   OPTIONAL MATCH (person)-[:PURCHASED]->(o:Order)
   RETURN sum(o.total_amount) AS lifetime_value
 }
+CALL {
+  WITH person
+  MATCH (sr:SourceRecord {record_type: 'identity'})-[:LINKED_TO]->(person)
+  WHERE coalesce(sr.is_latest, true) = true
+  MATCH (sr)-[:FROM_SOURCE]->(ss:SourceSystem)
+  RETURN collect({
+    source_system: ss.source_key,
+    observed_at: sr.observed_at,
+    source_record_pk: sr.source_record_pk,
+    raw_payload: sr.raw_payload
+  }) AS loyalty_rows
+}
+CALL {
+  WITH person
+  OPTIONAL MATCH (person)-[rel:OWNS_UNIT|BOUGHT_UNIT]->(u:MachineUnit)
+  RETURN collect(CASE WHEN u IS NULL THEN NULL ELSE {
+    machine_unit_id: u.machine_unit_id,
+    machine_product: u.machine_product,
+    lta_tag: u.lta_tag,
+    serial_number: u.serial_number,
+    rel_type: type(rel),
+    is_active: rel.is_active,
+    conflict_flag: u.conflict_flag,
+    observed_at: rel.observed_at
+  } END) AS machine_units
+}
 RETURN person {
   .person_id, .status, .is_high_value, .is_high_risk,
   .preferred_full_name, .preferred_phone, .preferred_email, .preferred_dob, .preferred_nric,
@@ -74,7 +100,9 @@ addr {
 } AS preferred_address,
 source_record_count,
 connection_count,
-lifetime_value
+lifetime_value,
+loyalty_rows,
+machine_units
 """
 
 GET_PERSON_SOURCE_RECORDS = """

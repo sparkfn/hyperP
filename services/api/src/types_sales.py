@@ -28,4 +28,6 @@ class SalesOrder(BaseModel):
     currency: str | None = None
     source_system: str | None = None
     entity_name: str | None = None
+    points_used: int | None = None
+    points_gained: int | None = None
     line_items: list[SalesLineItem] = Field(default_factory=list)

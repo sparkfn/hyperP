@@ -15,7 +15,7 @@ from collections.abc import Iterator
 from datetime import date
 from typing import Any
 
-from sqlalchemy import inspect, select
+from sqlalchemy import Column, inspect, select
 from sqlalchemy.engine import Connection
 
 from src.config import get_settings
@@ -31,9 +31,21 @@ from src.connectors.fundbox.builders import (
     serialize_row,
     to_iso,
 )
+from src.connectors.phppos_loyalty import loyalty_block_from_row
 from src.models import JsonValue
 
 logger = logging.getLogger(__name__)
+
+
+# Loyalty columns added to the customer SELECT, guarded by column existence so
+# older phppos DBs lacking the loyalty subsystem don't crash ingestion. Mapped
+# DB column name -> SQLAlchemy column; only present columns are selected.
+_LOYALTY_COLUMNS: dict[str, Column] = {
+    "points": customers.c.points,
+    "disable_loyalty": customers.c.disable_loyalty,
+    "current_spend_for_points": customers.c.current_spend_for_points,
+    "current_sales_for_discount": customers.c.current_sales_for_discount,
+}
 
 
 def _raw_json_value(value: object) -> JsonValue:
@@ -104,7 +116,10 @@ class EkoConnector(SourceConnector):
             conn = conn.execution_options(stream_results=True)
             excluded_person_ids = self._fetch_employee_person_ids(conn, existing_tables)
             if use_customers:
-                yield from self._build_records(conn, chunk_size, excluded_person_ids)
+                customer_cols = {
+                    col["name"] for col in inspect(engine).get_columns("phppos_customers")
+                }
+                yield from self._build_records(conn, chunk_size, excluded_person_ids, customer_cols)
             else:
                 yield from self._build_records_people_only(conn, chunk_size, excluded_person_ids)
 
@@ -142,8 +157,15 @@ class EkoConnector(SourceConnector):
             )
 
     def _build_records(
-        self, conn: Connection, chunk_size: int, excluded_person_ids: set[int]
+        self,
+        conn: Connection,
+        chunk_size: int,
+        excluded_person_ids: set[int],
+        customer_cols: set[str],
     ) -> Iterator[dict[str, JsonValue]]:
+        loyalty_select_cols = [
+            col for name, col in _LOYALTY_COLUMNS.items() if name in customer_cols
+        ]
         stmt = (
             select(
                 people.c.person_id,
@@ -166,6 +188,7 @@ class EkoConnector(SourceConnector):
                 customers.c.id.label("customer_id"),
                 customers.c.account_number,
                 customers.c.company_name,
+                *loyalty_select_cols,
                 customers.c.custom_field_1_value,
                 customers.c.custom_field_2_value,
                 customers.c.custom_field_3_value,
@@ -218,6 +241,7 @@ class EkoConnector(SourceConnector):
             },
             raw_payload={
                 "person": _person_raw_payload(row),
+                "loyalty": loyalty_block_from_row(row),
             },
             addresses=[address_row] if address_row is not None else None,
         )

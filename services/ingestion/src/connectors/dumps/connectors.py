@@ -760,6 +760,12 @@ def _build_phppos_sales_envelope(
                 "status": sale.get("sale_status") or sale.get("suspended"),
                 "currency": "SGD",
                 "total_amount": sum(_json_float(item, "line_total") for item in line_items),
+                "loyalty": {
+                    "points_used": _int_or_none(sale.get("points_used")),
+                    "points_gained": _int_or_none(sale.get("points_gained")),
+                    "did_redeem_discount": _int_or_none(sale.get("did_redeem_discount")),
+                    "is_purchase_points": _int_or_none(sale.get("is_purchase_points")),
+                },
                 "raw": serialize_row(sale),
             },
             "line_items": line_items,
@@ -801,6 +807,10 @@ def _join_eko_row(person: DumpRow, customer: DumpRow) -> DumpRow:
             "customer_id": customer.id,
             "account_number": customer.account_number,
             "company_name": customer.company_name,
+            "points": customer.points,
+            "disable_loyalty": customer.disable_loyalty,
+            "current_spend_for_points": customer.current_spend_for_points,
+            "current_sales_for_discount": customer.current_sales_for_discount,
             "custom_field_1_value": customer.custom_field_1_value,
             "custom_field_2_value": customer.custom_field_2_value,
             "custom_field_3_value": customer.custom_field_3_value,
@@ -822,6 +832,10 @@ def _join_speedzone_row(person: DumpRow, customer: DumpRow) -> DumpRow:
             "customer_id": customer.id,
             "account_number": customer.account_number,
             "company_name": customer.company_name,
+            "points": customer.points,
+            "disable_loyalty": customer.disable_loyalty,
+            "current_spend_for_points": customer.current_spend_for_points,
+            "current_sales_for_discount": customer.current_sales_for_discount,
             "custom_field_1_value": customer.custom_field_1_value,
             "custom_field_2_value": customer.custom_field_2_value,
             "custom_field_3_value": customer.custom_field_3_value,
@@ -869,3 +883,16 @@ def _int_value(value: JsonValue) -> int:
     if isinstance(value, str) and value.strip().lstrip("-").isdigit():
         return int(value)
     return 0
+
+
+def _int_or_none(value: JsonValue) -> int | None:
+    """Coerce a dump column to int, preserving None (for nullable loyalty fields)."""
+    if value is None:
+        return None
+    try:
+        return int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        try:
+            return int(float(value))  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            return None

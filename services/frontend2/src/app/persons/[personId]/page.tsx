@@ -3,7 +3,7 @@
 import { Fragment, use, useCallback, useEffect, useId, useMemo, useRef, useState, type ReactElement } from "react";
 import Link from "next/link";
 import { notFound, useRouter } from "next/navigation";
-import type { Person, PersonConnection, SalesOrder } from "@/lib/api-types";
+import type { Person, PersonConnection, SalesOrder, LoyaltySummary, MachineUnitSummary } from "@/lib/api-types";
 import type {
   ChatMessage,
   EditableFieldOptions,
@@ -464,6 +464,7 @@ function PersonSidebar({ person, detailData, personId, onOverride, onGraphOpen }
       </section>
 
       <BankruptcySidebarCard cases={detailData.bankruptcyCases} />
+      <LoyaltySidebarCard loyalty={person.loyalty} />
       <section className={styles.sidebarCard}>
         <div className={`${styles.sourceEntityHeader} ${styles.sidebarGraphHeader}`}>
           <span className={styles.bkSectionLabel}>Graph</span>
@@ -486,6 +487,7 @@ function PersonSidebar({ person, detailData, personId, onOverride, onGraphOpen }
           />
         </div>
       </section>
+      <MachineUnitsSidebarCard units={person.machine_units} />
       <section className={styles.sidebarCard}>
         <div className={styles.sourceEntityHeader}>
           <span className={styles.bkSectionLabel}>Timeline</span>
@@ -583,6 +585,128 @@ function BankruptcySidebarCard({ cases }: { cases: PersonBankruptcyCase[] }): Re
       <div className={styles.bkCaseList}>
         {cases.map((bk) => (
           <BankruptcyCaseRow key={bk.bankruptcy_case_id} bk={bk} />
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function LoyaltySidebarCard({ loyalty }: { loyalty: LoyaltySummary[] | null | undefined }): ReactElement {
+  if (!loyalty || loyalty.length === 0) {
+    return (
+      <section className={styles.sidebarCard}>
+        <div className={styles.bkHeader}>
+          <span className={styles.bkSectionLabel}>Loyalty</span>
+          <span className={styles.bkBadgeClear}>— None</span>
+        </div>
+        <p className={styles.bkClearBody}>No loyalty-points balance on file.</p>
+      </section>
+    );
+  }
+
+  return (
+    <section className={styles.sidebarCard}>
+      <div className={styles.bkHeader}>
+        <span className={styles.bkSectionLabel}>Loyalty</span>
+        <span className={styles.bkBadgeClear}>{loyalty.length} {loyalty.length === 1 ? "source" : "sources"}</span>
+      </div>
+      <div className={styles.bkCaseList}>
+        {loyalty.map((row) => (
+          <div key={row.source_system} className={styles.bkListItem}>
+            <div className={styles.bkFieldGrid}>
+              <div className={styles.bkFieldRow}>
+                <span className={styles.bkFieldLabel}>Source</span>
+                <span className={styles.bkFieldValue}>{row.source_system}</span>
+              </div>
+              <div className={styles.bkFieldRow}>
+                <span className={styles.bkFieldLabel}>Points</span>
+                <span className={styles.bkFieldValue}>
+                  {row.points ?? "—"}
+                  {row.disable_loyalty ? " (disabled)" : ""}
+                </span>
+              </div>
+              {row.current_spend_for_points != null ? (
+                <div className={styles.bkFieldRow}>
+                  <span className={styles.bkFieldLabel}>Spend→points</span>
+                  <span className={styles.bkFieldValue}>{row.current_spend_for_points}</span>
+                </div>
+              ) : null}
+              {row.current_sales_for_discount != null ? (
+                <div className={styles.bkFieldRow}>
+                  <span className={styles.bkFieldLabel}>Sales→discount</span>
+                  <span className={styles.bkFieldValue}>{row.current_sales_for_discount}</span>
+                </div>
+              ) : null}
+              {row.observed_at ? (
+                <div className={styles.bkFieldRow}>
+                  <span className={styles.bkFieldLabel}>Observed</span>
+                  <span className={styles.bkFieldValue}>{fmtDate(row.observed_at)}</span>
+                </div>
+              ) : null}
+            </div>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function MachineUnitsSidebarCard({ units }: { units: MachineUnitSummary[] | null | undefined }): ReactElement {
+  if (!units || units.length === 0) {
+    return (
+      <section className={styles.sidebarCard}>
+        <div className={styles.bkHeader}>
+          <span className={styles.bkSectionLabel}>Machine units</span>
+          <span className={styles.bkBadgeClear}>— None</span>
+        </div>
+        <p className={styles.bkClearBody}>No machine units linked to this person.</p>
+      </section>
+    );
+  }
+
+  return (
+    <section className={styles.sidebarCard}>
+      <div className={styles.bkHeader}>
+        <span className={styles.bkSectionLabel}>Machine units</span>
+        <span className={styles.bkBadgeClear}>{units.length} {units.length === 1 ? "unit" : "units"}</span>
+      </div>
+      <div
+        className={`${styles.bkCaseList} ${styles.bkCaseListScroll}`}
+        role="region"
+        aria-label="Machine units"
+        tabIndex={0}
+      >
+        {units.map((u) => (
+          <div key={u.machine_unit_id} className={styles.bkListItem}>
+            <div className={styles.bkFieldGrid}>
+              <div className={styles.bkFieldRow}>
+                <span className={styles.bkFieldLabel}>Product</span>
+                <span className={styles.bkFieldValue}>{u.machine_product ?? "—"}</span>
+              </div>
+              <div className={styles.bkFieldRow}>
+                <span className={styles.bkFieldLabel}>LTA tag</span>
+                <span className={styles.bkFieldValue}>{u.lta_tag ?? "—"}</span>
+              </div>
+              <div className={styles.bkFieldRow}>
+                <span className={styles.bkFieldLabel}>Serial</span>
+                <span className={styles.bkFieldValue}>{u.serial_number ?? "—"}</span>
+              </div>
+              <div className={styles.bkFieldRow}>
+                <span className={styles.bkFieldLabel}>Link</span>
+                <span className={styles.bkFieldValue}>
+                  {u.relationship}
+                  {u.is_active === false ? " (inactive)" : ""}
+                  {u.conflict_flag ? " ⚠ conflict" : ""}
+                </span>
+              </div>
+              {u.observed_at ? (
+                <div className={styles.bkFieldRow}>
+                  <span className={styles.bkFieldLabel}>Observed</span>
+                  <span className={styles.bkFieldValue}>{fmtDate(u.observed_at)}</span>
+                </div>
+              ) : null}
+            </div>
+          </div>
         ))}
       </div>
     </section>
@@ -2655,6 +2779,8 @@ function SalesTab({ personId, onTotalLoaded }: { personId: string; onTotalLoaded
                 <div className={styles.idBadges}>
                   <span className={styles.salesTotal}>{fmtCurrency(order.total_amount, order.currency)}</span>
                   <span className={styles.salesItemCount}>{order.line_items.length} {order.line_items.length === 1 ? "item" : "items"}</span>
+                  {order.points_used ? <span className={styles.salesItemCount}>−{order.points_used} pts used</span> : null}
+                  {order.points_gained ? <span className={styles.salesItemCount}>+{order.points_gained} pts earned</span> : null}
                   <svg className={`${styles.srcChevron} ${isOpen ? styles.srcChevronOpen : ""}`} width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                     <path d="M6 9l6 6 6-6" />
                   </svg>

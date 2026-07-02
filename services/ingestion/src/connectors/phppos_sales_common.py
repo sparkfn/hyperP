@@ -294,6 +294,12 @@ def _build_order_payload(
             "sale_type_id": _col_or_none(sale, "sale_type_id", sales_cols),
             "comment": _col_or_none(sale, "comment", sales_cols),
         },
+        "loyalty": {
+            "points_used": _col_or_none(sale, "points_used", sales_cols),
+            "points_gained": _col_or_none(sale, "points_gained", sales_cols),
+            "did_redeem_discount": _col_or_none(sale, "did_redeem_discount", sales_cols),
+            "is_purchase_points": _col_or_none(sale, "is_purchase_points", sales_cols),
+        },
         "raw": serialize_row(sale),
     }
 

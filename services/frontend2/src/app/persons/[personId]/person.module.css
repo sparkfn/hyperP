@@ -1065,6 +1065,31 @@
   border-top: 1px solid var(--border-subtle);
 }
 
+/* Scrollable variant for long lists (e.g. machine units) — capped height, scrolls.
+   scrollbar-gutter reserves a stable, symmetric gutter on both inline edges, so
+   right-aligned content never slides under the vertical scrollbar AND card
+   widths don't reflow when the scrollbar appears/disappears. */
+.bkCaseListScroll {
+  max-height: 360px;
+  overflow-y: auto;
+  scrollbar-gutter: stable both-edges;
+}
+
+/* A boxed list item — surface fill + a visible border + a gap between items so
+   each entry reads as a distinct card. Shared by every sidebar list of
+   bkFieldGrid items (machine units, loyalty sources, …). */
+.bkListItem {
+  padding: 8px 10px;
+  margin-bottom: 8px;
+  background: var(--bg-surface-2);
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+}
+
+.bkListItem:last-child {
+  margin-bottom: 0;
+}
+
 .bkCaseBlock {
   border-bottom: 1px solid var(--border-subtle);
 }

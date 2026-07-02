@@ -17,7 +17,9 @@ from src.graph.converters import (
     to_int,
     to_iso_or_empty,
     to_iso_or_none,
+    to_optional_bool,
     to_optional_float,
+    to_optional_int,
     to_optional_str,
     to_str,
     to_str_dict,
@@ -32,6 +34,8 @@ from src.types import (
     GraphEdge,
     GraphNode,
     KnowsRelationship,
+    LoyaltySummary,
+    MachineUnitSummary,
     MatchDecision,
     MatchDecisionSummary,
     Person,
@@ -79,6 +83,97 @@ def _as_dict(value: GraphValue) -> GraphRecord:
     return {}
 
 
+def _map_loyalty(rows: GraphValue) -> list[LoyaltySummary]:
+    """Read-through loyalty balances: one entry per source system, latest observed wins."""
+    if not isinstance(rows, list):
+        return []
+
+    def _obs_key(row: GraphRecord) -> tuple[str, str]:
+        # Latest observed_at wins; tiebreak on source_record_pk so the choice is
+        # deterministic across fetches (no flapping) rather than traversal-order.
+        return (
+            to_iso_or_none(row.get("observed_at")) or "",
+            to_str(row.get("source_record_pk")) or "",
+        )
+
+    ordered = sorted(
+        (r for r in rows if isinstance(r, dict)),
+        key=_obs_key,
+        reverse=True,
+    )
+    seen: set[str] = set()
+    out: list[LoyaltySummary] = []
+    for row in ordered:
+        src = to_str(row.get("source_system")) or ""
+        if not src or src in seen:
+            continue
+        raw = row.get("raw_payload")
+        try:
+            raw_dict = json.loads(raw) if isinstance(raw, str) else None
+        except (TypeError, ValueError):
+            raw_dict = None
+        if not isinstance(raw_dict, dict):
+            continue
+        block = raw_dict.get("loyalty")
+        if not isinstance(block, dict):
+            continue
+        seen.add(src)
+        out.append(
+            LoyaltySummary(
+                source_system=src,
+                points=to_optional_int(block.get("points")),
+                disable_loyalty=to_optional_bool(block.get("disable_loyalty")),
+                current_spend_for_points=to_optional_float(block.get("current_spend_for_points")),
+                current_sales_for_discount=to_optional_float(
+                    block.get("current_sales_for_discount")
+                ),
+                observed_at=to_iso_or_none(row.get("observed_at")),
+            )
+        )
+    return out
+
+
+def _map_machine_units(rows: GraphValue) -> list[MachineUnitSummary]:
+    """Map MachineUnit + OWNS_UNIT/BOUGHT_UNIT edges to MachineUnitSummary.
+
+    Dedups by machine_unit_id — a person can have multiple edges to one unit
+    (e.g. two OWNS_UNIT rels MERGEd on distinct source_order_id). When a unit has
+    both OWNS and BOUGHT edges, OWNS wins (the stronger ownership claim).
+    """
+    if not isinstance(rows, list):
+        return []
+
+    def _owns_first(row: GraphRecord) -> int:
+        return 0 if to_str(row.get("rel_type")) == "OWNS_UNIT" else 1
+
+    ordered = sorted((r for r in rows if isinstance(r, dict)), key=_owns_first)
+    seen: set[str] = set()
+    out: list[MachineUnitSummary] = []
+    for row in ordered:
+        unit_id = row.get("machine_unit_id")
+        if unit_id is None:
+            continue
+        key = to_str(unit_id)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        rel_type = to_str(row.get("rel_type")) or ""
+        relationship: Literal["OWNS", "BOUGHT"] = "OWNS" if rel_type == "OWNS_UNIT" else "BOUGHT"
+        out.append(
+            MachineUnitSummary(
+                machine_unit_id=key,
+                machine_product=to_optional_str(row.get("machine_product")),
+                lta_tag=to_optional_str(row.get("lta_tag")),
+                serial_number=to_optional_str(row.get("serial_number")),
+                relationship=relationship,
+                is_active=to_optional_bool(row.get("is_active")),
+                conflict_flag=to_optional_bool(row.get("conflict_flag")),
+                observed_at=to_iso_or_none(row.get("observed_at")),
+            )
+        )
+    return out
+
+
 def map_address(value: GraphValue) -> AddressSummary | None:
     addr = _as_dict(value)
     if not addr.get("address_id"):
@@ -97,6 +192,8 @@ def map_address(value: GraphValue) -> AddressSummary | None:
 
 def map_person(record: GraphRecord, address_key: str = "preferred_address") -> Person:
     p = _as_dict(record.get("person"))
+    loyalty = _map_loyalty(record.get("loyalty_rows"))
+    machine_units = _map_machine_units(record.get("machine_units"))
     return Person(
         person_id=to_str(p.get("person_id")),
         status=PersonStatus(to_str(p.get("status"), "active")),
@@ -115,6 +212,8 @@ def map_person(record: GraphRecord, address_key: str = "preferred_address") -> P
         source_record_count=to_int(record.get("source_record_count")),
         connection_count=to_int(record.get("connection_count")),
         lifetime_value=to_optional_float(record.get("lifetime_value")),
+        loyalty=loyalty or None,
+        machine_units=machine_units or None,
         created_at=to_iso_or_empty(p.get("created_at")),
         updated_at=to_iso_or_empty(p.get("updated_at")),
     )

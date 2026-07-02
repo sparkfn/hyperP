@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel
+from pydantic.types import JsonValue
 
 from src.auth.deps import require_human_user
 from src.auth.models import AuthUser
@@ -29,6 +30,58 @@ from src.types_sales import SalesOrder
 
 _LINK_KEY_PREFIX = "public_link:"
 _PUBLIC_PAGE_LIMIT = 50
+
+
+def _strip_public_person(person: Person) -> Person:
+    """Omit customer-specific loyalty + machine-unit data from public share responses."""
+    return person.model_copy(update={"loyalty": None, "machine_units": None})
+
+
+def _strip_public_sales_order(order: SalesOrder) -> SalesOrder:
+    """Omit per-sale loyalty activity from public share responses."""
+    return order.model_copy(update={"points_used": None, "points_gained": None})
+
+
+# Loyalty keys that must not leave the authenticated endpoints. They ride the
+# identity raw_payload both as a structured top-level ``loyalty`` block AND
+# serialized inside the ``person`` sub-payload (serialize_row copies every
+# selected customer column). Public share responses must scrub both.
+_LOYALTY_RAW_KEYS: tuple[str, ...] = (
+    "loyalty",
+    "points",
+    "disable_loyalty",
+    "current_spend_for_points",
+    "current_sales_for_discount",
+)
+
+
+def _scrub_loyalty_from_raw_payload(raw: dict[str, JsonValue]) -> dict[str, JsonValue]:
+    """Return a copy of ``raw`` with loyalty data removed, or ``raw`` unchanged."""
+    changed = False
+    out: dict[str, JsonValue] = {}
+    for key, value in raw.items():
+        if key == "loyalty":
+            changed = True
+            continue
+        if key == "person" and isinstance(value, dict):
+            sub = {sk: sv for sk, sv in value.items() if sk not in _LOYALTY_RAW_KEYS}
+            if len(sub) != len(value):
+                changed = True
+                value = sub
+        out[key] = value
+    return out if changed else raw
+
+
+def _strip_public_source_record(sr: SourceRecord) -> SourceRecord:
+    """Omit the identity loyalty balance (carried in raw_payload) from public share responses."""
+    raw = sr.raw_payload
+    if not isinstance(raw, dict):
+        return sr
+    scrubbed = _scrub_loyalty_from_raw_payload(raw)
+    if scrubbed is raw:
+        return sr
+    return sr.model_copy(update={"raw_payload": scrubbed})
+
 
 # No auth — anyone with the token can access these endpoints.
 public_router = APIRouter(prefix="/v1/public", tags=["Public"])
@@ -85,7 +138,7 @@ async def get_public_person(
     person = await repo.get_by_id(person_id)
     if person is None:
         raise http_error(404, "person_not_found", "Person not found.", request)
-    return envelope(person, request)
+    return envelope(_strip_public_person(person), request)
 
 
 @public_router.get(
@@ -129,7 +182,7 @@ async def get_public_person_source_records(
     """Return source records for the person referenced by the share token."""
     person_id = await _resolve_person_id(token, request)
     items, _ = await repo.get_source_records(person_id, skip=0, limit=_PUBLIC_PAGE_LIMIT)
-    return envelope(items, request)
+    return envelope([_strip_public_source_record(sr) for sr in items], request)
 
 
 @public_router.get("/persons/{token}/sales", response_model=ApiResponse[list[SalesOrder]])
@@ -141,4 +194,4 @@ async def get_public_person_sales(
     """Return sales orders for the person referenced by the share token."""
     person_id = await _resolve_person_id(token, request)
     items, _ = await repo.get_person_sales(person_id, skip=0, limit=_PUBLIC_PAGE_LIMIT)
-    return envelope(items, request)
+    return envelope([_strip_public_sales_order(o) for o in items], request)
