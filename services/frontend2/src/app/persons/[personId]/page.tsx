@@ -612,36 +612,38 @@ function LoyaltySidebarCard({ loyalty }: { loyalty: LoyaltySummary[] | null | un
       </div>
       <div className={styles.bkCaseList}>
         {loyalty.map((row) => (
-          <div key={row.source_system} className={styles.bkFieldGrid}>
-            <div className={styles.bkFieldRow}>
-              <span className={styles.bkFieldLabel}>Source</span>
-              <span className={styles.bkFieldValue}>{row.source_system}</span>
+          <div key={row.source_system} className={styles.bkListItem}>
+            <div className={styles.bkFieldGrid}>
+              <div className={styles.bkFieldRow}>
+                <span className={styles.bkFieldLabel}>Source</span>
+                <span className={styles.bkFieldValue}>{row.source_system}</span>
+              </div>
+              <div className={styles.bkFieldRow}>
+                <span className={styles.bkFieldLabel}>Points</span>
+                <span className={styles.bkFieldValue}>
+                  {row.points ?? "—"}
+                  {row.disable_loyalty ? " (disabled)" : ""}
+                </span>
+              </div>
+              {row.current_spend_for_points != null ? (
+                <div className={styles.bkFieldRow}>
+                  <span className={styles.bkFieldLabel}>Spend→points</span>
+                  <span className={styles.bkFieldValue}>{row.current_spend_for_points}</span>
+                </div>
+              ) : null}
+              {row.current_sales_for_discount != null ? (
+                <div className={styles.bkFieldRow}>
+                  <span className={styles.bkFieldLabel}>Sales→discount</span>
+                  <span className={styles.bkFieldValue}>{row.current_sales_for_discount}</span>
+                </div>
+              ) : null}
+              {row.observed_at ? (
+                <div className={styles.bkFieldRow}>
+                  <span className={styles.bkFieldLabel}>Observed</span>
+                  <span className={styles.bkFieldValue}>{fmtDate(row.observed_at)}</span>
+                </div>
+              ) : null}
             </div>
-            <div className={styles.bkFieldRow}>
-              <span className={styles.bkFieldLabel}>Points</span>
-              <span className={styles.bkFieldValue}>
-                {row.points ?? "—"}
-                {row.disable_loyalty ? " (disabled)" : ""}
-              </span>
-            </div>
-            {row.current_spend_for_points != null ? (
-              <div className={styles.bkFieldRow}>
-                <span className={styles.bkFieldLabel}>Spend→points</span>
-                <span className={styles.bkFieldValue}>{row.current_spend_for_points}</span>
-              </div>
-            ) : null}
-            {row.current_sales_for_discount != null ? (
-              <div className={styles.bkFieldRow}>
-                <span className={styles.bkFieldLabel}>Sales→discount</span>
-                <span className={styles.bkFieldValue}>{row.current_sales_for_discount}</span>
-              </div>
-            ) : null}
-            {row.observed_at ? (
-              <div className={styles.bkFieldRow}>
-                <span className={styles.bkFieldLabel}>Observed</span>
-                <span className={styles.bkFieldValue}>{fmtDate(row.observed_at)}</span>
-              </div>
-            ) : null}
           </div>
         ))}
       </div>
@@ -675,33 +677,35 @@ function MachineUnitsSidebarCard({ units }: { units: MachineUnitSummary[] | null
         tabIndex={0}
       >
         {units.map((u) => (
-          <div key={u.machine_unit_id} className={styles.bkFieldGrid}>
-            <div className={styles.bkFieldRow}>
-              <span className={styles.bkFieldLabel}>Product</span>
-              <span className={styles.bkFieldValue}>{u.machine_product ?? "—"}</span>
-            </div>
-            <div className={styles.bkFieldRow}>
-              <span className={styles.bkFieldLabel}>LTA tag</span>
-              <span className={styles.bkFieldValue}>{u.lta_tag ?? "—"}</span>
-            </div>
-            <div className={styles.bkFieldRow}>
-              <span className={styles.bkFieldLabel}>Serial</span>
-              <span className={styles.bkFieldValue}>{u.serial_number ?? "—"}</span>
-            </div>
-            <div className={styles.bkFieldRow}>
-              <span className={styles.bkFieldLabel}>Link</span>
-              <span className={styles.bkFieldValue}>
-                {u.relationship}
-                {u.is_active === false ? " (inactive)" : ""}
-                {u.conflict_flag ? " ⚠ conflict" : ""}
-              </span>
-            </div>
-            {u.observed_at ? (
+          <div key={u.machine_unit_id} className={styles.bkListItem}>
+            <div className={styles.bkFieldGrid}>
               <div className={styles.bkFieldRow}>
-                <span className={styles.bkFieldLabel}>Observed</span>
-                <span className={styles.bkFieldValue}>{fmtDate(u.observed_at)}</span>
+                <span className={styles.bkFieldLabel}>Product</span>
+                <span className={styles.bkFieldValue}>{u.machine_product ?? "—"}</span>
               </div>
-            ) : null}
+              <div className={styles.bkFieldRow}>
+                <span className={styles.bkFieldLabel}>LTA tag</span>
+                <span className={styles.bkFieldValue}>{u.lta_tag ?? "—"}</span>
+              </div>
+              <div className={styles.bkFieldRow}>
+                <span className={styles.bkFieldLabel}>Serial</span>
+                <span className={styles.bkFieldValue}>{u.serial_number ?? "—"}</span>
+              </div>
+              <div className={styles.bkFieldRow}>
+                <span className={styles.bkFieldLabel}>Link</span>
+                <span className={styles.bkFieldValue}>
+                  {u.relationship}
+                  {u.is_active === false ? " (inactive)" : ""}
+                  {u.conflict_flag ? " ⚠ conflict" : ""}
+                </span>
+              </div>
+              {u.observed_at ? (
+                <div className={styles.bkFieldRow}>
+                  <span className={styles.bkFieldLabel}>Observed</span>
+                  <span className={styles.bkFieldValue}>{fmtDate(u.observed_at)}</span>
+                </div>
+              ) : null}
+            </div>
           </div>
         ))}
       </div>
