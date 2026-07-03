@@ -51,7 +51,6 @@ export function appendQueryParams(url: URL, query: QueryParams | undefined): voi
   for (const [key, value] of Object.entries(query)) {
     if (value === null || value === undefined) continue;
     if (Array.isArray(value)) {
-      if (value.length === 0) continue;
       for (const item of value) {
         if (item === null || item === undefined) continue;
         url.searchParams.append(key, String(item));
