@@ -75,11 +75,7 @@ def select_best_vehicle_candidate(
     # 2. Most-recent last_confirmed_at (None/empty sorts oldest).
     most_recent = max(top, key=lambda c: c.last_confirmed_at or "")
     # 3. Smallest person_id among ties.
-    tied = [
-        c
-        for c in top
-        if (c.last_confirmed_at or "") == (most_recent.last_confirmed_at or "")
-    ]
+    tied = [c for c in top if (c.last_confirmed_at or "") == (most_recent.last_confirmed_at or "")]
     return min(tied, key=lambda c: c.person_id)
 
 

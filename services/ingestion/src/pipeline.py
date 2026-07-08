@@ -23,11 +23,6 @@ from src.exclusions import ExclusionContext, is_excluded_vehicle_observation
 from src.golden_profile import compute_golden_profile
 from src.graph import queries
 from src.graph.client import Neo4jClient
-from src.vehicle_extraction import observations_from_chat_inquiries
-from src.vehicles import (
-    normalize_lta_tag,
-    normalize_serial_number,
-)
 from src.matching.engine import MatchEngine
 from src.models import (
     CandidateResult,
@@ -58,6 +53,11 @@ from src.pipeline_writes import (
     persist_source_record,
     record_auto_merge_event,
     upsert_nodes,
+)
+from src.vehicle_extraction import observations_from_chat_inquiries
+from src.vehicles import (
+    normalize_lta_tag,
+    normalize_serial_number,
 )
 
 logger = logging.getLogger(__name__)

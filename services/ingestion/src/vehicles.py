@@ -77,7 +77,7 @@ def valid_vehicle_observation(observation: VehicleObservation) -> bool:
 
 
 def valid_chat_vehicle_observation(observation: VehicleObservation) -> bool:
-    """Validator for chat-inquiry observations: requires a product NAME (not a SKU) + one identifier.
+    """Validator for chat-inquiry observations: a product NAME (not a SKU) + an identifier.
 
     Chat inquiries carry a free-text product name from LLM extraction, not a
     source-internal SKU. Resolution of an existing Vehicle is by LTA tag (global)

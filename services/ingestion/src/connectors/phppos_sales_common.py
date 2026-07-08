@@ -80,6 +80,7 @@ def _coerce_int(value: JsonValue) -> int | None:
         return int(value)
     return None
 
+
 _REQUIRED_SALES_TABLES: tuple[str, ...] = (
     "phppos_sales",
     "phppos_sales_items",
@@ -200,8 +201,7 @@ def fetch_phppos_sales(
     if has_categories:
         cat_t = Table("phppos_categories", md, autoload_with=engine, resolve_fks=False)
         categories = {
-            int(row["id"]): str(row["name"] or "")
-            for row in conn.execute(select(cat_t)).mappings()
+            int(row["id"]): str(row["name"] or "") for row in conn.execute(select(cat_t)).mappings()
         }
     if has_customers:
         cust_t = Table("phppos_customers", md, autoload_with=engine, resolve_fks=False)
@@ -275,9 +275,7 @@ def _build_envelope(
     # not the line's). NRIC feeds the matching heuristic's anti-match (Task 6);
     # the bike plate feeds ``lta_tag`` for SpeedZone only.
     line_nric = phppos_customer_nric(customer_row)
-    line_lta_tag = (
-        phppos_customer_bike_plate(customer_row) if extract_bike_plate else None
-    )
+    line_lta_tag = phppos_customer_bike_plate(customer_row) if extract_bike_plate else None
     # Sale-level customer contact channels — the vehicle matching heuristic
     # (Task 6) needs the customer's email/phone to find the active Person that
     # shares the Vehicle identity. ``phppos_people`` carries them (the customer

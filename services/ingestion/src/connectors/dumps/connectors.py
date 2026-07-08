@@ -818,9 +818,7 @@ def _build_phppos_sales_envelope(
     # heuristic's anti-match (Task 6); ``lta_tag`` carries the bike plate for
     # SpeedZone only.
     line_nric = phppos_customer_nric(customer_row)
-    line_lta_tag = (
-        phppos_customer_bike_plate(customer_row) if extract_bike_plate else None
-    )
+    line_lta_tag = phppos_customer_bike_plate(customer_row) if extract_bike_plate else None
     # Sale-level customer contact channels — the vehicle matching heuristic
     # (Task 6) needs the customer's email/phone to find the active Person that
     # shares the Vehicle identity. ``phppos_people`` carries them (the customer
@@ -838,9 +836,7 @@ def _build_phppos_sales_envelope(
     for line in line_rows:
         item = items_by_id.get(_row_int(line, "item_id"))
         product = (
-            _phppos_product_payload(item, source_system_key, resolved_categories)
-            if item
-            else None
+            _phppos_product_payload(item, source_system_key, resolved_categories) if item else None
         )
         quantity = _float_value(line.quantity_purchased)
         unit_price = _float_value(line.item_unit_price)

@@ -19,14 +19,6 @@ from src.exclusions import ExclusionContext, is_excluded_vehicle_observation
 from src.graph import queries
 from src.graph.bootstrap import SOURCE_KEY_TO_ENTITY
 from src.graph.client import Neo4jClient
-from src.normalizers.clean import str_or_none
-from src.raw_payload import decode_raw_payload
-from src.vehicle_categories import base_source_key, category_is_vehicle
-from src.vehicle_extraction import observations_from_sales_lines
-from src.vehicles import (
-    normalize_lta_tag,
-    normalize_serial_number,
-)
 from src.matching.vehicle_heuristic import (
     VEHICLE_MATCH_AUTO,
     VehicleCandidate,
@@ -41,7 +33,15 @@ from src.models import (
     QualityFlag,
     SourceRecordEnvelope,
 )
+from src.normalizers.clean import str_or_none
 from src.pipeline_writes import create_review_case_if_needed, persist_match_decision
+from src.raw_payload import decode_raw_payload
+from src.vehicle_categories import base_source_key, category_is_vehicle
+from src.vehicle_extraction import observations_from_sales_lines
+from src.vehicles import (
+    normalize_lta_tag,
+    normalize_serial_number,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -242,7 +242,9 @@ def _execute(
             source_order_id=source_order_id,
         )
 
-    non_vehicle_lines = _build_non_vehicle_lines(source_system_key, cast(list[JsonValue], line_items))
+    non_vehicle_lines = _build_non_vehicle_lines(
+        source_system_key, cast(list[JsonValue], line_items)
+    )
     _merge_order(
         tx,
         source_system_key=source_system_key,
@@ -445,15 +447,11 @@ def _build_non_vehicle_lines(
         line = cast(dict[str, JsonValue], raw_line)
         product_raw = line.get("product")
         product: dict[str, JsonValue] = (
-            cast(dict[str, JsonValue], product_raw)
-            if isinstance(product_raw, dict)
-            else {}
+            cast(dict[str, JsonValue], product_raw) if isinstance(product_raw, dict) else {}
         )
         metadata_raw = line.get("metadata")
         metadata: dict[str, JsonValue] = (
-            cast(dict[str, JsonValue], metadata_raw)
-            if isinstance(metadata_raw, dict)
-            else {}
+            cast(dict[str, JsonValue], metadata_raw) if isinstance(metadata_raw, dict) else {}
         )
         category = str_or_none(product.get("category"))
         serial_number = (
@@ -948,9 +946,7 @@ def propose_vehicle_matches_for_pending_sales(
     for pk, source_system_key, raw_payload in pending:
         order = raw_payload.get("order")
         if not isinstance(order, dict):
-            logger.warning(
-                "Skipping pending sale %s: raw_payload.order missing", pk
-            )
+            logger.warning("Skipping pending sale %s: raw_payload.order missing", pk)
             continue
         source_order_id = str(order.get("source_order_id") or "")
         if not source_order_id:
@@ -960,15 +956,23 @@ def propose_vehicle_matches_for_pending_sales(
         customer_emails = _str_list(raw_payload.get("customer_emails"))
         customer_phones = _str_list(raw_payload.get("customer_phones"))
 
-        def _propose(tx: ManagedTransaction, _pk: str = pk) -> bool:
+        def _propose(
+            tx: ManagedTransaction,
+            _pk: str = pk,
+            _ssk: str = source_system_key,
+            _oid: str = source_order_id,
+            _nric: str | None = customer_nric,
+            _emails: list[str] = customer_emails,
+            _phones: list[str] = customer_phones,
+        ) -> bool:
             return _propose_one_pending_sale(
                 tx,
                 source_record_pk=_pk,
-                source_system_key=source_system_key,
-                source_order_id=source_order_id,
-                customer_nric=customer_nric,
-                customer_emails=customer_emails,
-                customer_phones=customer_phones,
+                source_system_key=_ssk,
+                source_order_id=_oid,
+                customer_nric=_nric,
+                customer_emails=_emails,
+                customer_phones=_phones,
             )
 
         with client.session() as session:

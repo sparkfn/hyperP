@@ -18,9 +18,7 @@ class VehicleIdentifierExclusion(TypedDict, total=False):
     serial_number: str
 
 
-VEHICLE_IDENTIFIER_KEYS: frozenset[str] = frozenset(
-    {"vehicle_product", "lta_tag", "serial_number"}
-)
+VEHICLE_IDENTIFIER_KEYS: frozenset[str] = frozenset({"vehicle_product", "lta_tag", "serial_number"})
 
 
 @dataclass
@@ -48,9 +46,7 @@ def _str_list(raw: JsonValue, *, path: Path) -> list[str]:
     return values
 
 
-def _vehicle_identifier_list(
-    raw: JsonValue, *, path: Path
-) -> list[VehicleIdentifierExclusion]:
+def _vehicle_identifier_list(raw: JsonValue, *, path: Path) -> list[VehicleIdentifierExclusion]:
     if raw is None:
         return []
     if not isinstance(raw, list):
@@ -101,7 +97,5 @@ def load_exclusion_file(path_value: str) -> ExclusionFile:
         email_domains=_str_list(payload.get("email_domains"), path=path),
         names=_str_list(payload.get("names"), path=path),
         source_ids=_str_list(payload.get("source_ids"), path=path),
-        vehicle_identifiers=_vehicle_identifier_list(
-            payload.get("vehicle_identifiers"), path=path
-        ),
+        vehicle_identifiers=_vehicle_identifier_list(payload.get("vehicle_identifiers"), path=path),
     )

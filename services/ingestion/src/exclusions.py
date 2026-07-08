@@ -133,9 +133,7 @@ def build_exclusion_context(
         source_ids=frozenset(
             value.strip().lower() for value in file_exclusions.source_ids if value.strip()
         ),
-        vehicle_identifiers=normalized_vehicle_identifier_set(
-            file_exclusions.vehicle_identifiers
-        ),
+        vehicle_identifiers=normalized_vehicle_identifier_set(file_exclusions.vehicle_identifiers),
     )
 
 
