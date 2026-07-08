@@ -383,6 +383,15 @@ The PR pipeline runs `ruff check` + `ruff format --check` + `mypy --strict` + `p
 
 All four are deterministic-*generate* fixes (allowed by the Coding workflow exception); then push and let the pipeline verify `mypy --strict` / `pytest`.
 
+**mypy --strict findings (avoid during implementation):**
+
+- **`list[str]` into `dict[str, JsonValue]` (invariance):** `list` is invariant, so `list[str]` is NOT `list[JsonValue]` even though `str` is a `JsonValue`. When a `dict[str, JsonValue]` literal carries a `list[str]` value (e.g. `customer_emails`), `cast(list[JsonValue], the_list)` at the literal — or type the local `list[JsonValue]` from the start. The same invariance bites `dict[str, object]` vs `dict[str, JsonValue]`.
+- **Shared DB-row helper params:** helpers called by both the live path (SQLAlchemy `RowMapping`/`Row[Any]`) and the dump path (`DumpRow`) must NOT be typed bare `RowMapping` — the dump path can't satisfy it. Use a structural `_RowLike` Protocol with `def get(self, key: str, default: object = None) -> object` (return `object`, NOT `JsonValue` — `RowMapping.get` returns `Any`, and `Any` satisfies `object` but mypy's Protocol match rejects the narrower `JsonValue` return), OR a `Row = RowMapping | DumpRow` union. Note `dict[int, RowMapping]` return types are invariant — widening to `dict[int, Row]` requires the live builder to insert `RowMapping` into `dict[int, Row]` (works, `RowMapping` is a member).
+- **`redundant-cast`:** do not `cast(T, x)` when `x` is already `T` — mypy flags it. Drop the cast.
+- **`str | None` → `str` assignment:** a variable annotated `str` that receives `str | None` (from `.get()` or an optional field) is an error. Annotate `str | None`, guard with `str_or_none`, or narrow with an `isinstance(str)`/truthy check.
+- **Plain `dict` vs `TypedDict` params:** passing `dict[str, object]` to a `TypedDict` param fails mypy (a TypedDict is structurally narrower than `dict[str, object]`). `cast(TheTypedDict | None, the_dict)` when the shape matches — or build it as the TypedDict.
+- **TypedDict boundary > scattered `cast`:** prefer a `_coerce_customer_link(raw: object) -> _CustomerLink | None` validator at the parse boundary over `cast(_CustomerLink, customer_raw)` — the cast is documentation, not a contract, and forces every reader to re-guard with `str_or_none`. Validate once at the boundary; type the drain/propose path's `customer_link` as the TypedDict so string-ness is enforced by the type, not by per-field runtime guards.
+
 ### Inspecting CI
 ```bash
 wpci home doctor --json

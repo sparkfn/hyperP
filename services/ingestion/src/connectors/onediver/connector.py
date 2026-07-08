@@ -382,11 +382,17 @@ class OneDiverSalesDumpConnector(SourceConnector):
             if row.get("id") is None:
                 continue
             email = _str(row, "billing_contact_email")
-            profile_id = email_to_id.get(email.lower()) if email is not None else None
-            customer_nric = nric_by_profile_id.get(profile_id) if profile_id is not None else None
+            matched_profile_id: str | None = (
+                email_to_id.get(email.lower()) if email is not None else None
+            )
+            customer_nric = (
+                nric_by_profile_id.get(matched_profile_id)
+                if matched_profile_id is not None
+                else None
+            )
             yield _build_sales_envelope(
                 row,
-                profile_id,
+                matched_profile_id,
                 customer_nric,
                 lines_by_order.get(_int(row, "id"), []),
                 products_by_id,

@@ -12,7 +12,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Iterator, Mapping
 from decimal import Decimal
-from typing import Protocol, cast
+from typing import TYPE_CHECKING, cast
 
 from sqlalchemy import MetaData, Table, inspect, select
 from sqlalchemy.engine import Connection, Engine, RowMapping
@@ -24,16 +24,13 @@ from src.connectors.fundbox.builders import (
 )
 from src.models import JsonValue
 
+if TYPE_CHECKING:
+    from src.connectors.dumps.reader import DumpRow
+
 logger = logging.getLogger(__name__)
 
 
-class _RowLike(Protocol):
-    """Structural type for dict-like DB rows (DumpRow, RowMapping)."""
-
-    def get(self, key: str, default: JsonValue = None) -> JsonValue: ...
-
-
-def phppos_customer_bike_plate(customer: _RowLike | None) -> str | None:
+def phppos_customer_bike_plate(customer: RowMapping | DumpRow | None) -> str | None:
     """SpeedZone customer bike plate (custom_field_8_value / custom_field_10_value).
 
     Eko customer rows share the same schema but the plate columns are not
@@ -48,7 +45,7 @@ def phppos_customer_bike_plate(customer: _RowLike | None) -> str | None:
     return None
 
 
-def phppos_customer_nric(customer: _RowLike | None) -> str | None:
+def phppos_customer_nric(customer: RowMapping | DumpRow | None) -> str | None:
     """Customer NRIC (custom_field_1_value) for the matching anti-match (Task 6)."""
     if customer is None:
         return None
@@ -349,8 +346,8 @@ def _build_envelope(
             # (Task 6). ``customer_nric`` mirrors the per-line ``metadata.nric``
             # at the sale level so the heuristic can read it in one place.
             "customer_nric": line_nric,
-            "customer_emails": customer_emails,
-            "customer_phones": customer_phones,
+            "customer_emails": cast(list[JsonValue], customer_emails),
+            "customer_phones": cast(list[JsonValue], customer_phones),
         },
     )
 

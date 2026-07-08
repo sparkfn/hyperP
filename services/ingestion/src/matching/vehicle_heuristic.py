@@ -17,6 +17,7 @@ the heuristic can surface them in the match reason / feature snapshot.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import cast
 
 from src.models import EngineType, JsonValue, MatchDecision, MatchResult
 
@@ -150,7 +151,7 @@ def build_vehicle_review_result(
     feature_snapshot: dict[str, JsonValue] = {
         "candidate_person_id": best.person_id,
         "vehicle_id": best.vehicle_id,
-        "candidate_person_ids": sorted(person_ids),
+        "candidate_person_ids": cast(list[JsonValue], sorted(person_ids)),
         "candidate_count": len(person_ids),
         "signal_source": "vehicle",
     }

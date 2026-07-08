@@ -444,15 +444,11 @@ def _build_non_vehicle_lines(
     for raw_line in line_items:
         if not isinstance(raw_line, dict):
             continue
-        line = cast(dict[str, JsonValue], raw_line)
+        line = raw_line
         product_raw = line.get("product")
-        product: dict[str, JsonValue] = (
-            cast(dict[str, JsonValue], product_raw) if isinstance(product_raw, dict) else {}
-        )
+        product: dict[str, JsonValue] = product_raw if isinstance(product_raw, dict) else {}
         metadata_raw = line.get("metadata")
-        metadata: dict[str, JsonValue] = (
-            cast(dict[str, JsonValue], metadata_raw) if isinstance(metadata_raw, dict) else {}
-        )
+        metadata: dict[str, JsonValue] = metadata_raw if isinstance(metadata_raw, dict) else {}
         category = str_or_none(product.get("category"))
         serial_number = (
             str_or_none(metadata.get("serial_number"))

@@ -23,7 +23,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from decimal import Decimal
-from typing import TypedDict
+from typing import TypedDict, cast
 
 from sqlalchemy import select
 from sqlalchemy.engine import Connection, RowMapping
@@ -218,7 +218,7 @@ class FundboxSalesConnector(FundboxConnectorBase):
 
         user_rows: dict[int, RowMapping] = {}
         for r in target.execute(select(users).where(users.c.id.in_(ids))):
-            user_rows[int(r.id)] = r
+            user_rows[int(r.id)] = cast(RowMapping, r)
 
         # A user may have multiple basic_profiles; keep the first (lowest id)
         # deterministically.
@@ -231,7 +231,7 @@ class FundboxSalesConnector(FundboxConnectorBase):
         for r in target.execute(profile_stmt):
             uid = int(r.user_id)
             if uid not in profile_rows:
-                profile_rows[uid] = r
+                profile_rows[uid] = cast(RowMapping, r)
 
         contacts: dict[int, _CustomerContact] = {}
         for uid in ids:
@@ -274,13 +274,15 @@ class FundboxSalesConnector(FundboxConnectorBase):
             return {}
 
         variant_stmt = select(product_variants).where(product_variants.c.id.in_(variant_ids))
-        variants: dict[int, RowMapping] = {r.id: r for r in target.execute(variant_stmt)}
+        variants: dict[int, RowMapping] = {
+            r.id: cast(RowMapping, r) for r in target.execute(variant_stmt)
+        }
 
         product_ids = [v.product_id for v in variants.values() if v.product_id]
         products_map: dict[int, RowMapping] = {}
         if product_ids:
             product_stmt = select(products).where(products.c.id.in_(list(set(product_ids))))
-            products_map = {r.id: r for r in target.execute(product_stmt)}
+            products_map = {r.id: cast(RowMapping, r) for r in target.execute(product_stmt)}
 
         bundle: dict[int, dict[str, JsonValue]] = {}
         for mp in mp_rows:
@@ -360,7 +362,7 @@ class FundboxSalesConnector(FundboxConnectorBase):
                 # across the two tables; ``customer_nric`` comes from
                 # ``basic_profiles.nric``.
                 "customer_nric": customer_nric,
-                "customer_emails": customer_emails,
-                "customer_phones": customer_phones,
+                "customer_emails": cast(list[JsonValue], customer_emails),
+                "customer_phones": cast(list[JsonValue], customer_phones),
             },
         )

@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from pathlib import Path
-from typing import Protocol
+from typing import Protocol, cast
+
+from sqlalchemy.engine import RowMapping
 
 from src.connectors.base import SourceConnector
 from src.connectors.bitrix.connector import (
@@ -34,7 +36,11 @@ from src.connectors.fundbox.builders import (
     serialize_row,
     to_iso,
 )
-from src.connectors.fundbox.sales import FundboxSalesConnector, _variant_to_product
+from src.connectors.fundbox.sales import (
+    FundboxSalesConnector,
+    _CustomerContact,
+    _variant_to_product,
+)
 from src.connectors.fundbox.users import FundboxConnector
 from src.connectors.onediver.connector import (
     OneDiverDumpConnector,
@@ -260,11 +266,11 @@ class FundboxSalesDumpConnector(SourceConnector):
                 continue
             user_id = _row_int(row, "user_id")
             yield builder._build_one(
-                row,
-                line_rows.get(_row_int(row, "id"), []),
+                cast(RowMapping, row),
+                cast(list[RowMapping], line_rows.get(_row_int(row, "id"), [])),
                 merchants,
                 product_info,
-                customer_contacts.get(user_id),
+                cast(_CustomerContact | None, customer_contacts.get(user_id)),
             )
 
 
@@ -643,7 +649,10 @@ def _fundbox_product_info(tables: DumpTableReader) -> dict[int, dict[str, JsonVa
         if variant is None:
             continue
         product = products.get(_row_int(variant, "product_id"))
-        result[_row_int(merchant_product, "id")] = _variant_to_product(variant, product)
+        result[_row_int(merchant_product, "id")] = _variant_to_product(
+            cast(RowMapping, variant),
+            cast(RowMapping | None, product),
+        )
     return result
 
 
@@ -896,8 +905,8 @@ def _build_phppos_sales_envelope(
             # (Task 6). ``customer_nric`` mirrors the per-line ``metadata.nric``
             # at the sale level so the heuristic can read it in one place.
             "customer_nric": line_nric,
-            "customer_emails": customer_emails,
-            "customer_phones": customer_phones,
+            "customer_emails": cast(list[JsonValue], customer_emails),
+            "customer_phones": cast(list[JsonValue], customer_phones),
         },
     )
 
