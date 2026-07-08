@@ -154,3 +154,33 @@ def test_confidence_constants_in_expected_bands() -> None:
     # review band [0.60, 0.90).
     assert VEHICLE_MATCH_AUTO == 0.90
     assert 0.60 <= VEHICLE_MATCH_REVIEW < 0.90
+
+
+def test_build_review_result_filters_nric_blocked_from_additional() -> None:
+    """Finding #5: NRIC-blocked candidates must NOT appear on ``additional``.
+
+    The best candidate is preserved (it carries the review band primary);
+    any other blocked person must be filtered out of the evidence-link list
+    so they don't receive ``PURCHASED`` edges from a sale whose customer's
+    NRIC disagrees with theirs.
+    """
+    best = _c(person_id="person-a", vehicle_id="vehicle-1", last_confirmed_at="2026-06-10")
+    blocked = _c(
+        person_id="person-blocked",
+        vehicle_id="vehicle-2",
+        rel_type="OWNS_VEHICLE",
+        last_confirmed_at="2026-06-09",
+        nric_blocked=True,
+    )
+    other = _c(
+        person_id="person-c",
+        vehicle_id="vehicle-3",
+        rel_type="OWNS_VEHICLE",
+        last_confirmed_at="2026-06-08",
+    )
+    result = build_vehicle_review_result([best, blocked, other])
+    assert result.decision == MatchDecision.REVIEW
+    assert result.matched_person_id == "person-a"
+    # ``person-blocked`` is filtered out; ``person-c`` (not blocked) is kept.
+    assert result.additional_linked_person_ids == ["person-c"]
+    assert "person-blocked" not in result.additional_linked_person_ids

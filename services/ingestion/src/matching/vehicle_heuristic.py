@@ -139,11 +139,17 @@ def build_vehicle_review_result(
     The primary matched person is the best-ranked candidate; every other
     distinct person id is carried on ``additional_linked_person_ids`` so their
     evidence is linked without merging them (mirrors the multi-match policy).
+    NRIC-blocked candidates are filtered out of the ``additional`` list — a
+    Person whose NRIC disagrees with the sale's customer must never receive
+    evidence edges (the blocked Person is recorded on the ``best``'s NO_MATCH
+    pair above, not here).
     """
     best = select_best_vehicle_candidate(candidates)
     # ``best`` is non-None here -- callers guard the empty case.
     assert best is not None
-    person_ids = {c.person_id for c in candidates}
+    person_ids = {
+        c.person_id for c in candidates if not c.nric_blocked or c.person_id == best.person_id
+    }
     additional = sorted(pid for pid in person_ids if pid != best.person_id)
     feature_snapshot: dict[str, JsonValue] = {
         "candidate_person_id": best.person_id,

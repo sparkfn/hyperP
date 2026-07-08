@@ -253,6 +253,42 @@ def test_propose_nric_blocked_records_no_match() -> None:
     assert not any(q == _MARK_LINKED_QUERY for q, _ in tx.calls)
 
 
+def test_propose_blocked_best_drops_and_autolinks_next_unblocked() -> None:
+    """Finding #4: blocked best is dropped; next unblocked candidate auto-links.
+
+    The original ``test_propose_nric_blocked_records_no_match`` covers the
+    single-candidate case. When the candidate pool contains an unblocked
+    Person ranked below the blocked one, the pipeline must (1) NOT link to
+    the blocked Person, (2) NOT record NO_MATCH, and (3) auto-link the
+    unblocked Person at the normal ``VEHICLE_MATCH_AUTO`` confidence.
+    """
+    blocked = _candidate(person_id="person-blocked", nric_blocked=True, last_confirmed_at="2026-06-10")
+    unblocked = _candidate(person_id="person-unblocked", nric_blocked=False, last_confirmed_at="2026-06-01")
+    tx = _Tx(candidates=[blocked, unblocked])
+    with (
+        patch("src.pipeline_sales.persist_match_decision", return_value="md-x") as mock_persist,
+        patch("src.pipeline_sales.create_review_case_if_needed") as mock_create,
+    ):
+        result = _propose(tx, customer_nric="S9999999Z")
+    assert result is True
+    mock_persist.assert_called_once()
+    match_result_arg = mock_persist.call_args[0][1]
+    # Auto-link to the unblocked person — the blocked one was dropped.
+    assert match_result_arg.matched_person_id == "person-unblocked"
+    assert match_result_arg.decision.value == "merge"
+    assert mock_create.call_count == 0
+    # No NO_MATCH decision; the link edges are written for the unblocked person.
+    no_match_calls = [
+        c for c in mock_persist.call_args_list if c[0][1].decision.value == "no_match"
+    ]
+    assert no_match_calls == []
+    link_purchased_calls = [
+        kwargs for q, kwargs in tx.calls if q == _LINK_PURCHASED_QUERY
+    ]
+    assert link_purchased_calls
+    assert link_purchased_calls[0]["person_id"] == "person-unblocked"
+
+
 def test_propose_customer_nric_none_auto_links() -> None:
     """Case 8: customer_nric=None -> query returns nric_blocked=False -> auto-link."""
     tx = _Tx(candidates=[_candidate(nric_blocked=False)])

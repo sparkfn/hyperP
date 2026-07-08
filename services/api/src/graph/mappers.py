@@ -753,14 +753,14 @@ def _parse_non_vehicle_lines(value: GraphValue) -> list[NonVehicleLine]:
             raw_dict = {}
         out.append(
             NonVehicleLine(
-                product_sku=to_optional_str(item.get("product_sku")),
-                product=to_optional_str(item.get("product")),
+                product_sku=to_optional_str(item.get("sku")),
+                product=to_optional_str(item.get("product_name")),
                 merchant=to_optional_str(item.get("merchant")),
                 manufacturer=to_optional_str(item.get("manufacturer")),
                 serial_number=to_optional_str(item.get("serial_number")),
                 quantity=to_optional_float(item.get("quantity")),
                 unit_price=to_optional_float(item.get("unit_price")),
-                total_amount=to_optional_float(item.get("total_amount")),
+                total_amount=to_optional_float(item.get("line_total")),
                 currency=to_optional_str(item.get("currency")),
                 category=to_optional_str(item.get("category")),
                 raw=raw_dict,

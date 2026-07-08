@@ -132,6 +132,11 @@ PHPPOS_SALES_TABLES: TableSpec = {
     # + NRIC (custom_field_1_value for all phppos) used by the matching heuristic's
     # NRIC anti-match (Task 6).
     "phppos_customers": None,
+    # Customer contact channels (email + phone_number) — the live connector
+    # joins phppos_people to phppos_customers for these; the dump mirrors that
+    # so the Vehicle heuristic (Task 6) can read sale-level email/phone from
+    # raw_payload without re-joining.
+    "phppos_people": None,
 }
 
 
@@ -772,12 +777,19 @@ def _fetch_phppos_dump_sales(
     customers_by_person_id: dict[int, DumpRow] = {
         _row_int(row, "person_id"): row for row in tables.rows("phppos_customers")
     }
+    # phppos_people keyed by person_id — the live connector joins people to
+    # customers for sale-level email/phone. The dump mirrors that join so the
+    # Vehicle heuristic can read it from raw_payload without re-querying.
+    people_by_id: dict[int, DumpRow] = {
+        _row_int(row, "person_id"): row for row in tables.rows("phppos_people")
+    }
     # SpeedZone customer bike plate lives in custom_field_8/10_value; Eko shares
     # the schema but the columns are not bike plates, so only SpeedZone extracts.
     extract_bike_plate = source_system_key == "speedzone_phppos"
     for sale in sorted(tables.rows("phppos_sales"), key=lambda row: _row_int(row, "sale_id")):
         sale_id = _row_int(sale, "sale_id")
         customer_row = customers_by_person_id.get(_row_int(sale, "customer_id"))
+        people_row = people_by_id.get(_row_int(sale, "customer_id"))
         yield _build_phppos_sales_envelope(
             sale,
             lines_by_sale.get(sale_id, []),
@@ -786,6 +798,7 @@ def _fetch_phppos_dump_sales(
             categories,
             customer_row,
             extract_bike_plate,
+            people_row,
         )
 
 
@@ -797,6 +810,7 @@ def _build_phppos_sales_envelope(
     categories: Mapping[int, str] | None = None,
     customer_row: DumpRow | None = None,
     extract_bike_plate: bool = False,
+    people_row: DumpRow | None = None,
 ) -> dict[str, JsonValue]:
     source_order_id = str(sale.sale_id)
     resolved_categories: Mapping[int, str] = categories if categories is not None else {}
@@ -807,6 +821,19 @@ def _build_phppos_sales_envelope(
     line_lta_tag = (
         phppos_customer_bike_plate(customer_row) if extract_bike_plate else None
     )
+    # Sale-level customer contact channels — the vehicle matching heuristic
+    # (Task 6) needs the customer's email/phone to find the active Person that
+    # shares the Vehicle identity. ``phppos_people`` carries them (the customer
+    # row in ``phppos_customers`` only carries loyalty / custom-field data).
+    customer_emails: list[str] = []
+    customer_phones: list[str] = []
+    if people_row is not None:
+        email = people_row.get("email")
+        if isinstance(email, str) and email.strip():
+            customer_emails.append(email.strip())
+        phone = people_row.get("phone_number")
+        if isinstance(phone, str) and phone.strip():
+            customer_phones.append(phone.strip())
     line_items: list[JsonValue] = []
     for line in line_rows:
         item = items_by_id.get(_row_int(line, "item_id"))
@@ -869,6 +896,12 @@ def _build_phppos_sales_envelope(
                 ),
                 "source_system_key": source_system_key,
             },
+            # Sale-level customer contact for the vehicle matching heuristic
+            # (Task 6). ``customer_nric`` mirrors the per-line ``metadata.nric``
+            # at the sale level so the heuristic can read it in one place.
+            "customer_nric": line_nric,
+            "customer_emails": customer_emails,
+            "customer_phones": customer_phones,
         },
     )
 

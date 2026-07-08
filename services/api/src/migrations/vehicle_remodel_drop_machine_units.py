@@ -26,10 +26,19 @@ RETURN count(u) AS deleted_count
 
 #: Discover constraints that target the MachineUnit node label.
 _PROBE_MACHINE_UNIT_CONSTRAINTS = """
-SHOW CONSTRAINKS
+SHOW CONSTRAINTS
 YIELD name, entityType, labelsOrTypes
 WHERE entityType = 'NODE' AND 'MachineUnit' IN labelsOrTypes
 RETURN name AS name
+"""
+
+
+#: Drop a single constraint by name. The name is a Cypher parameter — never
+#: string-interpolate an identifier into a Cypher statement; Neo4j requires
+#: identifiers to come from parameters for plan caching and to avoid parser
+#: injection on untrusted input.
+_DROP_CONSTRAINT = """
+DROP CONSTRAINT $name IF EXISTS
 """
 
 
@@ -43,7 +52,13 @@ async def drop_machine_unit_nodes(session: AsyncSession) -> int:
 
 
 async def drop_machine_unit_constraints(session: AsyncSession) -> list[str]:
-    """Probe for MachineUnit constraints and drop each; return the dropped names."""
+    """Probe for MachineUnit constraints and drop each; return the dropped names.
+
+    Loops probe → drop-one → reprobe so a probe that races a concurrent drop
+    picks up any remaining constraints. Each ``DROP CONSTRAINT`` is issued
+    with ``$name`` as a Cypher parameter (the Neo4j driver requires
+    identifiers via parameters for plan caching).
+    """
     dropped: list[str] = []
     while True:
         cursor = await session.run(_PROBE_MACHINE_UNIT_CONSTRAINTS)
@@ -51,9 +66,12 @@ async def drop_machine_unit_constraints(session: AsyncSession) -> list[str]:
         await cursor.consume()
         if not names:
             return dropped
-        for name in names:
-            await session.run(f"DROP CONSTRAINT {name} IF EXISTS")
-            dropped.append(name)
+        # Drop one at a time, then re-probe. This keeps each DROP isolated
+        # so a failure leaves the probe-during-error in a known state, and
+        # makes the call pattern predictable (probe + drop per iteration).
+        name = names[0]
+        await session.run(_DROP_CONSTRAINT, name=name)
+        dropped.append(name)
 
 
 async def run() -> tuple[int, list[str]]:

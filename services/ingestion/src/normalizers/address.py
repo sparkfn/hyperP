@@ -16,6 +16,7 @@ from typing import TypedDict
 from src.llm import ChatMessage, get_address_llm_service
 from src.llm_prompts import ADDRESS_NORMALIZATION_SYSTEM, build_address_normalization_prompt
 from src.models import QualityFlag, RawAddress
+from src.normalizers.clean import str_or_none
 
 logger = logging.getLogger(__name__)
 
@@ -227,20 +228,20 @@ def _parse_llm_address(raw: object) -> tuple[int, NormalizedAddress] | None:
     input_index = raw.get("input_index")
     if not isinstance(input_index, int):
         return None
-    postal_code = _str_or_none(raw.get("postal_code"))
-    street_name = _str_or_none(raw.get("street_name"))
-    normalized_full = _str_or_none(raw.get("normalized_full"))
+    postal_code = str_or_none(raw.get("postal_code"))
+    street_name = str_or_none(raw.get("street_name"))
+    normalized_full = str_or_none(raw.get("normalized_full"))
     if not postal_code or not street_name or not normalized_full:
         return None
-    country_code = _str_or_none(raw.get("country_code")) or "SG"
-    city = _str_or_none(raw.get("city")) or "singapore"
+    country_code = str_or_none(raw.get("country_code")) or "SG"
+    city = str_or_none(raw.get("city")) or "singapore"
     address = NormalizedAddress(
-        unit_number=_str_or_none(raw.get("unit_number")),
-        street_number=_str_or_none(raw.get("street_number")) or "",
+        unit_number=str_or_none(raw.get("unit_number")),
+        street_number=str_or_none(raw.get("street_number")) or "",
         street_name=street_name.lower(),
-        building_name=_str_or_none(raw.get("building_name")),
+        building_name=str_or_none(raw.get("building_name")),
         city=city.lower(),
-        state_province=_str_or_none(raw.get("state_province")),
+        state_province=str_or_none(raw.get("state_province")),
         postal_code=postal_code,
         country_code=country_code.upper(),
         normalized_full=normalized_full.lower(),
@@ -290,10 +291,3 @@ def _dedupe_key(address: NormalizedAddress) -> tuple[str, str, str, str, str | N
         address.street_name,
         address.unit_number,
     )
-
-
-def _str_or_none(value: object) -> str | None:
-    if not isinstance(value, str):
-        return None
-    text = value.strip()
-    return text if text else None

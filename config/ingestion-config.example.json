@@ -5,7 +5,7 @@
     "email_domains": [],
     "names": [],
     "source_ids": [],
-    "machine_unit_identifiers": []
+    "vehicle_identifiers": []
   },
   "llm": {
     "timeout_seconds": 90.0,

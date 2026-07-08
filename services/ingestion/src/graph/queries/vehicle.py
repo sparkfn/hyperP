@@ -110,6 +110,12 @@ RETURN v.vehicle_id AS vehicle_id, coalesce(v.conflict_flag, false) AS conflict
 # Both branches are OR-ed in a single ``MATCH`` so LTA and serial matches
 # de-duplicate naturally. The caller links ``MENTIONS_VEHICLE`` only when
 # exactly one Vehicle matched.
+#
+# Identity rule (spec §3 "merges" — LTA-only Vehicles cross sources):
+#   The serial+product branch is a *fallback* that only fires when the caller
+#   also carries an LTA tag. LTA-tagged Vehicles are the only ones that may
+#   cross sources via chat; serial+product alone matches in-source identity
+#   exactly and is not used as a cross-source merge key.
 RESOLVE_EXISTING_VEHICLE_FOR_CHAT = """
 MATCH (v:Vehicle)
 WHERE (
@@ -117,8 +123,10 @@ WHERE (
     AND v.normalized_lta_tag = $normalized_lta_tag
   )
   OR (
-    $normalized_serial_number IS NOT NULL
+    $normalized_lta_tag IS NOT NULL
+    AND $normalized_serial_number IS NOT NULL
     AND $product IS NOT NULL
+    AND v.normalized_lta_tag = $normalized_lta_tag
     AND v.normalized_serial_number = $normalized_serial_number
     AND v.product IS NOT NULL
     AND toLower(trim(v.product)) = toLower(trim($product))

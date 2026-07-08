@@ -34,3 +34,14 @@ def strip_edge_x_markers(value: str) -> str:
     legitimately begin or end with ``x``.
     """
     return _TRAILING_X.sub("", _LEADING_X.sub("", value.strip()))
+
+
+def str_or_none(value: object) -> str | None:
+    """Return ``value`` iff it is a non-blank string; otherwise ``None``.
+
+    Shared by ingestion helpers that lift arbitrary ``JsonValue``/``object``
+    inputs to optional string fields (e.g. product SKUs, LTA tags, serials).
+    Use instead of ad-hoc ``isinstance(...) and str(...).strip()`` checks at
+    every call site.
+    """
+    return value if isinstance(value, str) and value.strip() else None

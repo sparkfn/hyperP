@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from src.models import JsonValue, QualityFlag
+from src.normalizers.clean import str_or_none
 from src.vehicle_categories import (
-    _VEHICLE_CATEGORIES,
+    base_source_key,
     category_is_vehicle,
+    vehicle_category_allowlist,
 )
 from src.vehicles import (
     VehicleObservation,
@@ -37,12 +39,8 @@ _CHAT_INQUIRY_VEHICLE_KEYWORDS: frozenset[str] = frozenset(
 )
 
 
-def _str_or_none(value: object) -> str | None:
-    return value if isinstance(value, str) and value.strip() else None
-
-
 def _append_unique_product_part(parts: list[str], value: object) -> None:
-    part = _str_or_none(value)
+    part = str_or_none(value)
     if part is not None and part not in parts:
         parts.append(part)
 
@@ -62,17 +60,6 @@ def _product_name(line: dict[str, JsonValue]) -> str | None:
     return None
 
 
-def _base_source_key(source_system_key: str) -> str:
-    """Strip a `:sales`/`:contacts` style suffix to get the base source key.
-
-    The per-source vehicle-category allowlist is keyed by the base source key
-    (e.g. `eko_phppos`), while ingest runs may carry a routed suffix
-    (e.g. `eko_phppos:sales`). This keeps `category_is_vehicle` verbatim while
-    accepting either form at the extraction call site.
-    """
-    return source_system_key.split(":", 1)[0] if ":" in source_system_key else source_system_key
-
-
 def _chat_inquiry_is_vehicle(source_system_key: str, product: str | None) -> bool:
     """Heuristically classify a free-text chat-inquiry product as a vehicle.
 
@@ -86,20 +73,13 @@ def _chat_inquiry_is_vehicle(source_system_key: str, product: str | None) -> boo
     name = product.strip().upper()
     if not name:
         return False
-    allow = _allowlist_for(source_system_key)
+    allow = vehicle_category_allowlist(source_system_key)
     if allow is not None:
         for category in allow:
             if category.upper() in name:
                 return True
         return False
     return any(keyword in name for keyword in _CHAT_INQUIRY_VEHICLE_KEYWORDS)
-
-
-def _allowlist_for(
-    source_system_key: str,
-) -> frozenset[str] | None:
-    """Return the per-source vehicle-category allowlist, if any (after suffix strip)."""
-    return _VEHICLE_CATEGORIES.get(_base_source_key(source_system_key))
 
 
 def observations_from_sales_lines(
@@ -110,28 +90,28 @@ def observations_from_sales_lines(
     lines: list[JsonValue],
 ) -> list[VehicleObservation]:
     observations: list[VehicleObservation] = []
-    base_key = _base_source_key(source_system_key)
+    base_key = base_source_key(source_system_key)
     for line in lines:
         if not isinstance(line, dict):
             continue
         product_raw = line.get("product")
         product: dict[str, JsonValue] = product_raw if isinstance(product_raw, dict) else {}
         category = product.get("category")
-        if not category_is_vehicle(base_key, _str_or_none(category)):
+        if not category_is_vehicle(base_key, str_or_none(category)):
             continue
         metadata_raw = line.get("metadata")
         metadata: dict[str, JsonValue] = metadata_raw if isinstance(metadata_raw, dict) else {}
         serial_number = (
-            _str_or_none(metadata.get("serial_number"))
-            or _str_or_none(metadata.get("serial_no"))
-            or _str_or_none(metadata.get("serialnumber"))
+            str_or_none(metadata.get("serial_number"))
+            or str_or_none(metadata.get("serial_no"))
+            or str_or_none(metadata.get("serialnumber"))
         )
-        lta_tag = _str_or_none(metadata.get("lta_tag"))
-        product_sku = _str_or_none(product.get("sku")) or _str_or_none(product.get("item_number"))
-        manufacturer = _str_or_none(product.get("manufacturer"))
-        model = _str_or_none(product.get("model"))
-        unit_label = _str_or_none(line.get("unit"))
-        raw_context = _str_or_none(line.get("source_line_item_id")) or _str_or_none(
+        lta_tag = str_or_none(metadata.get("lta_tag"))
+        product_sku = str_or_none(product.get("sku")) or str_or_none(product.get("item_number"))
+        manufacturer = str_or_none(product.get("manufacturer"))
+        model = str_or_none(product.get("model"))
+        unit_label = str_or_none(line.get("unit"))
+        raw_context = str_or_none(line.get("source_line_item_id")) or str_or_none(
             line.get("source_line_id")
         )
         observation = VehicleObservation(
@@ -166,24 +146,24 @@ def observations_from_chat_inquiries(
     for inquiry in inquiries:
         if not isinstance(inquiry, dict):
             continue
-        product = _str_or_none(inquiry.get("vehicle_product"))
+        product = str_or_none(inquiry.get("vehicle_product"))
         if not _chat_inquiry_is_vehicle(source_system_key, product):
             continue
         observation = VehicleObservation(
-            lta_tag=_str_or_none(inquiry.get("lta_tag")),
-            serial_number=_str_or_none(inquiry.get("serial_number")),
-            product_sku=_str_or_none(inquiry.get("product_sku")),
+            lta_tag=str_or_none(inquiry.get("lta_tag")),
+            serial_number=str_or_none(inquiry.get("serial_number")),
+            product_sku=str_or_none(inquiry.get("product_sku")),
             product=product,
-            manufacturer=_str_or_none(inquiry.get("manufacturer")),
-            model=_str_or_none(inquiry.get("model")),
-            unit_label=_str_or_none(inquiry.get("unit")),
+            manufacturer=str_or_none(inquiry.get("manufacturer")),
+            model=str_or_none(inquiry.get("model")),
+            unit_label=str_or_none(inquiry.get("unit")),
             source_kind="chat_inquiry",
             source_system_key=source_system_key,
             source_record_id=source_record_id,
             observed_at=observed_at,
             confidence=0.6,
             quality_flag=QualityFlag.PARTIAL_PARSE,
-            raw_context=_str_or_none(inquiry.get("notes")),
+            raw_context=str_or_none(inquiry.get("notes")),
         )
         if valid_chat_vehicle_observation(observation):
             observations.append(observation)

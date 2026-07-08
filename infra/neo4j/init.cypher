@@ -76,6 +76,13 @@ CREATE INDEX idx_source_record_link_state IF NOT EXISTS
 CREATE INDEX idx_vehicle_serial IF NOT EXISTS
   FOR (v:Vehicle) ON (v.normalized_serial_number);
 
+// Composite Vehicle lookup for the chat resolve path (queries/vehicle.py
+// RESOLVE_EXISTING_VEHICLE_FOR_CHAT). Both identifier columns are scanned
+// together — an LTA-tag + serial pair is the unique vehicle identity within
+// a source system.
+CREATE INDEX idx_vehicle_lta_serial IF NOT EXISTS
+  FOR (v:Vehicle) ON (v.normalized_lta_tag, v.normalized_serial_number);
+
 // Review queue
 CREATE INDEX idx_review_case_queue IF NOT EXISTS
   FOR (rc:ReviewCase) ON (rc.queue_state, rc.priority);

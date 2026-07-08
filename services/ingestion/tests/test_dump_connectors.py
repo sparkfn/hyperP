@@ -941,3 +941,103 @@ def test_fundbox_sales_dump_emits_empty_contact_when_user_missing(
     assert raw_payload["customer_emails"] == []
     assert raw_payload["customer_phones"] == []
     assert raw_payload["customer_nric"] is None
+
+
+def test_phppos_sales_dump_lifts_customer_contact_from_phppos_people(
+    tmp_path: Path,
+) -> None:
+    """Finding #2: phppos dump connector must carry sale-level customer contacts.
+
+    The live connector joins ``phppos_people`` (email + phone_number) to
+    ``phppos_customers`` (NRIC + custom fields). The dump mirrors that join
+    so the Vehicle heuristic can read the three top-level contact fields
+    from ``raw_payload`` without re-querying.
+    """
+    dump_path = tmp_path / "eko.sql"
+    dump_path.write_text(
+        "\n".join(
+            [
+                (
+                    "CREATE TABLE `phppos_sales` "
+                    "(`sale_id` int,`customer_id` int,`sale_time` datetime,"
+                    "`invoice_number` varchar(64),`sale_status` int,"
+                    "`suspended` int,`points_used` int,`points_gained` int,"
+                    "`did_redeem_discount` int,`is_purchase_points` int);"
+                ),
+                (
+                    "CREATE TABLE `phppos_sales_items` "
+                    "(`sale_id` int,`item_id` int,`item_variation_id` int,"
+                    "`quantity_purchased` decimal(10,2),`item_unit_price` decimal(10,2),"
+                    "`regular_price` decimal(10,2),`discount_percent` decimal(10,2),"
+                    "`line_total` decimal(10,2),`description` varchar(255),"
+                    "`serialnumber` varchar(64),"
+                    "`category_id` int,`lta_tag` varchar(64));"
+                ),
+                (
+                    "CREATE TABLE `phppos_items` (`item_id` int,`item_number` varchar(64),"
+                    "`name` varchar(255),`category` int,`size` varchar(64),"
+                    "`cost_price` decimal(10,2),`unit_price` decimal(10,2),"
+                    "`description` text);"
+                ),
+                "CREATE TABLE `phppos_categories` (`id` int,`name` varchar(64));",
+                (
+                    "CREATE TABLE `phppos_customers` "
+                    "(`id` int,`person_id` int,`deleted` int,"
+                    "`custom_field_1_value` varchar(255),"
+                    "`custom_field_8_value` varchar(255),"
+                    "`custom_field_10_value` varchar(255));"
+                ),
+                (
+                    "CREATE TABLE `phppos_people` "
+                    "(`person_id` int,`first_name` varchar(64),"
+                    "`last_name` varchar(64),`email` varchar(255),"
+                    "`phone_number` varchar(64),"
+                    "`address_1` varchar(255),`address_2` varchar(255),"
+                    "`city` varchar(64),`state` varchar(64),"
+                    "`zip` varchar(64),`country` varchar(64));"
+                ),
+                "INSERT INTO `phppos_categories` (`id`,`name`) VALUES (1,'Bicycles');",
+                (
+                    "INSERT INTO `phppos_people` (`person_id`,`first_name`,"
+                    "`last_name`,`email`,`phone_number`) VALUES "
+                    "(55,'Ada','Lovelace','ada@example.test','+6599990000');"
+                ),
+                (
+                    "INSERT INTO `phppos_customers` (`id`,`person_id`,"
+                    "`deleted`,`custom_field_1_value`) VALUES "
+                    "(7,55,0,'S1234567A');"
+                ),
+                (
+                    "INSERT INTO `phppos_sales` (`sale_id`,`customer_id`,"
+                    "`sale_time`,`invoice_number`,`sale_status`,`suspended`,"
+                    "`points_used`,`points_gained`,`did_redeem_discount`,"
+                    "`is_purchase_points`) VALUES (1,55,"
+                    "'2026-05-01 00:00:00','INV-1',0,0,0,0,0,0);"
+                ),
+                (
+                    "INSERT INTO `phppos_items` (`item_id`,`item_number`,"
+                    "`name`,`category`,`size`,`cost_price`,`unit_price`,"
+                    "`description`) VALUES (10,'BX-1','Bicycle',1,NULL,"
+                    "100.00,200.00,'bike');"
+                ),
+                (
+                    "INSERT INTO `phppos_sales_items` (`sale_id`,`item_id`,"
+                    "`item_variation_id`,`quantity_purchased`,`item_unit_price`,"
+                    "`regular_price`,`discount_percent`,`line_total`,"
+                    "`description`,`serialnumber`,`category_id`,`lta_tag`) "
+                    "VALUES (1,10,0,1.00,200.00,200.00,0.00,200.00,"
+                    "'bike',NULL,1,'SGX1234J');"
+                ),
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    records = list(_fetch_phppos_dump_sales(dump_path, "eko_phppos"))
+    assert len(records) == 1
+    raw_payload = records[0]["raw_payload"]
+    assert isinstance(raw_payload, dict)
+    # All three contact fields lifted from phppos_people + phppos_customers.
+    assert raw_payload["customer_nric"] == "S1234567A"
+    assert raw_payload["customer_emails"] == ["ada@example.test"]
+    assert raw_payload["customer_phones"] == ["+6599990000"]

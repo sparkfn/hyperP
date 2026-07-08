@@ -97,7 +97,11 @@ def test_map_sales_summary_non_vehicle_lines_empty_string() -> None:
 
 def test_map_sales_summary_non_vehicle_lines_json_string() -> None:
     order = {"order_id": "ord-6"}
-    raw = '[{"product_sku": "sku-1", "product": "Helmet", "merchant": "Acme"}]'
+    # The writer (``_build_non_vehicle_lines`` in pipeline_sales) emits these
+    # keys per the design spec (``sku``/``product_name``/``line_total``).
+    # The mapper translates to the API's NonVehicleLine field names
+    # (``product_sku``/``product``/``total_amount``).
+    raw = '[{"sku": "sku-1", "product_name": "Helmet", "merchant": "Acme"}]'
     result = _map_sales_summary(order, None, raw)
     assert result is not None
     assert len(result.non_vehicle_lines) == 1
@@ -110,7 +114,8 @@ def test_map_sales_summary_non_vehicle_lines_json_string() -> None:
 
 def test_map_sales_summary_non_vehicle_lines_list_passthrough() -> None:
     order = {"order_id": "ord-7"}
-    raw = [{"product_sku": "sku-1", "product": "Helmet"}]
+    # The list path accepts writer-keyed dicts directly (no JSON round-trip).
+    raw = [{"sku": "sku-1", "product_name": "Helmet"}]
     result = _map_sales_summary(order, None, raw)
     assert result is not None
     assert len(result.non_vehicle_lines) == 1
@@ -216,7 +221,7 @@ def test_map_review_case_detail_sales_source_record_carries_summary() -> None:
             "conflict_flag": False,
         }
     ]
-    record["non_vehicle_lines"] = '[{"product_sku": "sku-acc", "product": "Helmet"}]'
+    record["non_vehicle_lines"] = '[{"sku": "sku-acc", "product_name": "Helmet"}]'
     detail = map_review_case_detail(record)  # type: ignore[arg-type]
     left = detail.comparison_left
     assert left is not None

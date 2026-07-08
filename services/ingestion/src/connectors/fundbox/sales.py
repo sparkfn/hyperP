@@ -23,10 +23,10 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from decimal import Decimal
-from typing import Any
+from typing import TypedDict
 
 from sqlalchemy import select
-from sqlalchemy.engine import Connection
+from sqlalchemy.engine import Connection, RowMapping
 
 from src.connectors.fundbox.base import FundboxConnectorBase
 from src.connectors.fundbox.builders import (
@@ -49,6 +49,14 @@ from src.models import JsonValue
 _INGESTED_STATUSES: frozenset[str] = frozenset({"acknowledged", "to release", "completed"})
 
 
+class _CustomerContact(TypedDict):
+    """Sale-level customer contact channels for the Vehicle matching heuristic."""
+
+    customer_emails: list[str]
+    customer_phones: list[str]
+    customer_nric: str | None
+
+
 def _decimal_to_float(value: object) -> float | None:
     if value is None:
         return None
@@ -59,7 +67,10 @@ def _decimal_to_float(value: object) -> float | None:
     return None
 
 
-def _variant_to_product(variant: Any, product: Any | None) -> dict[str, JsonValue]:
+def _variant_to_product(
+    variant: RowMapping,
+    product: RowMapping | None,
+) -> dict[str, JsonValue]:
     """Build a product payload from a variant + optional parent product."""
     return {
         "source_product_id": f"variant-{variant.id}",
@@ -88,7 +99,7 @@ def _variant_to_product(variant: Any, product: Any | None) -> dict[str, JsonValu
 
 
 def _build_line_items(
-    line_rows: list[Any],
+    line_rows: list[RowMapping],
     source_order_id: str,
     product_info: dict[int, dict[str, JsonValue]],
     merchant_name: str | None,
@@ -186,7 +197,7 @@ class FundboxSalesConnector(FundboxConnectorBase):
         self,
         conn: Connection,
         user_ids: list[int],
-    ) -> dict[int, dict[str, object]]:
+    ) -> dict[int, _CustomerContact]:
         """Batch-load ``users`` + ``basic_profiles`` for a chunk of orders.
 
         Returns ``{user_id: {"customer_emails": [...], "customer_phones": [...],
@@ -205,13 +216,13 @@ class FundboxSalesConnector(FundboxConnectorBase):
         target = self._sidecar_conn or conn
         ids = list(set(user_ids))
 
-        user_rows: dict[int, Any] = {}
+        user_rows: dict[int, RowMapping] = {}
         for r in target.execute(select(users).where(users.c.id.in_(ids))):
             user_rows[int(r.id)] = r
 
         # A user may have multiple basic_profiles; keep the first (lowest id)
         # deterministically.
-        profile_rows: dict[int, Any] = {}
+        profile_rows: dict[int, RowMapping] = {}
         profile_stmt = (
             select(basic_profiles)
             .where(basic_profiles.c.user_id.in_(ids))
@@ -222,7 +233,7 @@ class FundboxSalesConnector(FundboxConnectorBase):
             if uid not in profile_rows:
                 profile_rows[uid] = r
 
-        contacts: dict[int, dict[str, object]] = {}
+        contacts: dict[int, _CustomerContact] = {}
         for uid in ids:
             u = user_rows.get(uid)
             p = profile_rows.get(uid)
@@ -263,10 +274,10 @@ class FundboxSalesConnector(FundboxConnectorBase):
             return {}
 
         variant_stmt = select(product_variants).where(product_variants.c.id.in_(variant_ids))
-        variants: dict[int, Any] = {r.id: r for r in target.execute(variant_stmt)}
+        variants: dict[int, RowMapping] = {r.id: r for r in target.execute(variant_stmt)}
 
         product_ids = [v.product_id for v in variants.values() if v.product_id]
-        products_map: dict[int, Any] = {}
+        products_map: dict[int, RowMapping] = {}
         if product_ids:
             product_stmt = select(products).where(products.c.id.in_(list(set(product_ids))))
             products_map = {r.id: r for r in target.execute(product_stmt)}
@@ -282,19 +293,23 @@ class FundboxSalesConnector(FundboxConnectorBase):
 
     def _build_one(
         self,
-        row: Any,
-        line_rows: list[Any],
+        row: RowMapping,
+        line_rows: list[RowMapping],
         merchant_names: dict[int, str],
         product_info: dict[int, dict[str, JsonValue]],
-        customer_contact: dict[str, object] | None,
+        customer_contact: _CustomerContact | None,
     ) -> dict[str, JsonValue]:
         source_order_id = str(row.id)
-        contact = customer_contact or {}
-        customer_emails = list(contact.get("customer_emails") or [])
-        customer_phones = list(contact.get("customer_phones") or [])
-        customer_nric = contact.get("customer_nric")
-        if not isinstance(customer_nric, str):
-            customer_nric = None
+        if customer_contact is None:
+            customer_emails: list[str] = []
+            customer_phones: list[str] = []
+            customer_nric: str | None = None
+        else:
+            customer_emails = list(customer_contact.get("customer_emails") or [])
+            customer_phones = list(customer_contact.get("customer_phones") or [])
+            customer_nric = customer_contact.get("customer_nric")
+            if not isinstance(customer_nric, str):
+                customer_nric = None
         return build_envelope(
             source_record_id=f"fundbox_consumer_backend-order-{row.id}",
             observed_at=to_iso(row.updated_at or row.created_at),

@@ -18,7 +18,8 @@ from src.exclusions import ExclusionContext, is_excluded_vehicle_observation
 from src.graph import queries
 from src.graph.bootstrap import SOURCE_KEY_TO_ENTITY
 from src.graph.client import Neo4jClient
-from src.vehicle_categories import category_is_vehicle
+from src.normalizers.clean import str_or_none
+from src.vehicle_categories import base_source_key, category_is_vehicle
 from src.vehicle_extraction import observations_from_sales_lines
 from src.vehicles import (
     normalize_lta_tag,
@@ -401,11 +402,6 @@ def _write_vehicle_observations(
             )
 
 
-def _str_or_none(value: object) -> str | None:
-    """Coerce to a stripped non-empty string or None (mirrors vehicle_extraction)."""
-    return value if isinstance(value, str) and value.strip() else None
-
-
 def _str_list(value: object) -> list[str]:
     """Coerce a raw_payload field into a ``list[str]`` of non-empty strings.
 
@@ -426,15 +422,6 @@ def _str_list(value: object) -> list[str]:
     return []
 
 
-def _base_source_key(source_system_key: str) -> str:
-    """Strip a ``:sales``/``:contacts`` suffix so the vehicle-category allowlist applies.
-
-    The per-source allowlist is keyed by the base key (e.g. ``eko_phppos``);
-    ingest runs may carry a routed suffix (e.g. ``eko_phppos:sales``).
-    """
-    return source_system_key.split(":", 1)[0] if ":" in source_system_key else source_system_key
-
-
 def _build_non_vehicle_lines(
     source_system_key: str,
     line_items: list[JsonValue],
@@ -448,7 +435,7 @@ def _build_non_vehicle_lines(
     all non-vehicle-category lines — is carried on the Order as a non-vehicle
     line detail dict.
     """
-    base_key = _base_source_key(source_system_key)
+    base_key = base_source_key(source_system_key)
     non_vehicle_lines: list[dict[str, JsonValue]] = []
     for raw_line in line_items:
         if not isinstance(raw_line, dict):
@@ -466,13 +453,13 @@ def _build_non_vehicle_lines(
             if isinstance(metadata_raw, dict)
             else {}
         )
-        category = _str_or_none(product.get("category"))
+        category = str_or_none(product.get("category"))
         serial_number = (
-            _str_or_none(metadata.get("serial_number"))
-            or _str_or_none(metadata.get("serial_no"))
-            or _str_or_none(metadata.get("serialnumber"))
+            str_or_none(metadata.get("serial_number"))
+            or str_or_none(metadata.get("serial_no"))
+            or str_or_none(metadata.get("serialnumber"))
         )
-        lta_tag = _str_or_none(metadata.get("lta_tag"))
+        lta_tag = str_or_none(metadata.get("lta_tag"))
         has_identifier = (
             normalize_lta_tag(lta_tag) is not None
             or normalize_serial_number(serial_number) is not None
@@ -486,14 +473,14 @@ def _build_non_vehicle_lines(
                 "sku": product.get("sku") or product.get("item_number"),
                 "product_name": product.get("display_name") or product.get("name"),
                 "category": category,
-                "manufacturer": _str_or_none(product.get("manufacturer")),
-                "model": _str_or_none(product.get("model")),
+                "manufacturer": str_or_none(product.get("manufacturer")),
+                "model": str_or_none(product.get("model")),
                 "serial_number": serial_number,
                 "lta_tag": lta_tag,
                 "quantity": line.get("quantity"),
                 "unit_price": line.get("unit_price"),
                 "line_total": line.get("line_total"),
-                "merchant": _str_or_none(metadata.get("merchant")),
+                "merchant": str_or_none(metadata.get("merchant")),
             }
         )
     return non_vehicle_lines
@@ -773,10 +760,20 @@ def _propose_one_pending_sale(
     # NRIC anti-match: record NO_MATCH for this pair and stop. The sale is NOT
     # linked; the decision prevents re-propose against the same person on the
     # next run (the MatchDecision is persisted against the source record).
+    # If the best candidate is NRIC-blocked, drop it from the candidate pool
+    # and re-select from the remainder — a blocked Person must never carry
+    # evidence edges from this sale. If no unblocked candidate remains, fall
+    # through to NO_MATCH against the last-blocked candidate.
     if best.nric_blocked:
-        no_match_result = build_vehicle_no_match_result(best)
-        persist_match_decision(tx, no_match_result, source_record_pk)
-        return True
+        blocked_ids = {best.person_id}
+        unblocked = [c for c in candidates if c.person_id not in blocked_ids]
+        next_best = select_best_vehicle_candidate(unblocked)
+        if next_best is None:
+            no_match_result = build_vehicle_no_match_result(best)
+            persist_match_decision(tx, no_match_result, source_record_pk)
+            return True
+        best = next_best
+        candidates = unblocked
 
     # Multiple distinct candidate persons → review band. Do not auto-link; the
     # best candidate is the primary, every other distinct person is carried on
@@ -853,7 +850,7 @@ def propose_vehicle_matches_for_pending_sales(
         if not source_order_id:
             logger.warning("Skipping pending sale %s: source_order_id missing", pk)
             continue
-        customer_nric = _str_or_none(raw_payload.get("customer_nric"))
+        customer_nric = str_or_none(raw_payload.get("customer_nric"))
         customer_emails = _str_list(raw_payload.get("customer_emails"))
         customer_phones = _str_list(raw_payload.get("customer_phones"))
 

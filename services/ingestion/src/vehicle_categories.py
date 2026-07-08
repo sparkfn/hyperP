@@ -30,9 +30,24 @@ _VEHICLE_CATEGORIES: dict[str, frozenset[str]] = {
 }
 
 
+def base_source_key(source_system_key: str) -> str:
+    """Strip a ``:sales``/``:contacts`` style suffix to get the base source key.
+
+    ``eko_phppos:sales`` → ``eko_phppos``; ``fundbox_consumer_backend`` → itself.
+    The base key is the lookup key into ``_VEHICLE_CATEGORIES`` so per-source
+    category allowlists apply uniformly to sales + contacts sources.
+    """
+    return source_system_key.split(":", 1)[0]
+
+
+def vehicle_category_allowlist(source_system_key: str) -> frozenset[str] | None:
+    """Return the vehicle-category allowlist for ``source_system_key``, or None."""
+    return _VEHICLE_CATEGORIES.get(base_source_key(source_system_key))
+
+
 def category_is_vehicle(source_system_key: str, category_name: str | None) -> bool:
     """True if the product category is a vehicle category for the source."""
     if not category_name:
         return False
-    allow = _VEHICLE_CATEGORIES.get(source_system_key)
+    allow = vehicle_category_allowlist(source_system_key)
     return bool(allow and category_name in allow)

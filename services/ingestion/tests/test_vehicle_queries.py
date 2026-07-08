@@ -173,6 +173,21 @@ def test_resolve_existing_vehicle_for_chat_matches_global_lta_or_serial_plus_pro
     assert "product_sku" not in query
 
 
+def test_resolve_existing_vehicle_for_chat_serial_branch_requires_lta() -> None:
+    """Finding #8: serial+product branch only fires when LTA is also present.
+
+    Cross-source merge key is the LTA tag. Serial+product alone matches
+    in-source identity exactly (a duplicate LTA-less unit); chat must not
+    bridge across sources on serial+product alone, per spec §3.
+    """
+    query = queries.RESOLVE_EXISTING_VEHICLE_FOR_CHAT
+    # The serial+product branch is the second OR clause — confirm both
+    # clauses are guarded by `$normalized_lta_tag IS NOT NULL`.
+    lta_required_occurrences = query.count("$normalized_lta_tag IS NOT NULL")
+    # Two: once on the global-LTA branch, once on the serial+product branch.
+    assert lta_required_occurrences >= 2
+
+
 # ---------------------------------------------------------------------------
 # Link edges
 # ---------------------------------------------------------------------------
