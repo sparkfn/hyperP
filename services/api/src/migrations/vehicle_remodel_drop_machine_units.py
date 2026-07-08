@@ -89,9 +89,7 @@ async def run() -> tuple[int, list[str]]:
 
 
 def main() -> None:
-    logging.basicConfig(
-        level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s"
-    )
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
     try:
         nodes, constraints = asyncio.run(run())
     finally:
