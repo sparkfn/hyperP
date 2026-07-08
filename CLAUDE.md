@@ -373,6 +373,16 @@ Woodpecker workflows must declare explicit `when:` targeting. PR is `event: pull
 ### Frontend lint gate
 `npm run lint` is `eslint src --max-warnings 9`, but the clean tree carries ~18 pre-existing `react-hooks/set-state-in-effect` warnings (0 errors), so it is **red on a clean tree**. PR/DEV CI therefore run `npx eslint src` (errors only) — green on a clean tree, catches new errors. The repo-local `npm run lint` budget stays the authoritative developer check; getting the warning count back under 9 is a tracked follow-up. Verify your changes add **zero net warnings** (stash and compare), not a green `npm run lint` exit.
 
+### CI lint findings (Python — observed, avoid during implementation)
+The PR pipeline runs `ruff check` + `ruff format --check` + `mypy --strict` + `pytest` on both `services/api/src` and `services/ingestion/src`. A long-lived branch that was never PR'd accumulated lint debt that CI surfaced all at once on first push — avoid this by **pushing to a PR branch early** so CI catches drift incrementally rather than at merge time. Specific findings to avoid while writing code:
+
+- **Trailing newline (W292):** every Python file MUST end with a trailing newline. The `Write`/`Edit` tools do **not** add one automatically — add it explicitly, or run `ruff check --fix` on changed files (a one-shot *generate* per the Coding workflow exception, not a verify).
+- **Line length (E501, limit 100):** keep lines ≤100 chars. `ruff format` wraps code lines but does **not** reformat docstrings/comments — keep docstring summary lines ≤100 manually.
+- **Closure-in-loop (B023):** a `def` inside a `for` loop that references loop variables captures them by reference (late binding). Bind **every** loop variable the closure uses as a default arg (`def f(tx, _pk=pk, _ssk=source_system_key, ...)`), not just one — ruff flags any unbound loop var even if the closure is called synchronously.
+- **Format drift:** `ruff format --check` fails on any file not matching `ruff format`'s style. Before committing changed Python files, run `ruff format services/<svc>/src/<changed>.py` (a one-shot *generate*) so the PR pipeline's `--check` passes. Do **not** run `ruff format` on the whole tree from an old branch — reformat drift on untouched files means the branch sat too long without a PR.
+
+All four are deterministic-*generate* fixes (allowed by the Coding workflow exception); then push and let the pipeline verify `mypy --strict` / `pytest`.
+
 ### Inspecting CI
 ```bash
 wpci home doctor --json
