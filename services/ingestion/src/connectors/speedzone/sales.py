@@ -42,4 +42,7 @@ class SpeedZoneSalesConnector(SourceConnector):
                 source_system_key="speedzone_phppos",
                 chunk_size=chunk_size,
                 excluded_person_ids=excluded_person_ids,
+                # SpeedZone customer ``custom_field_8/10_value`` holds the bike
+                # plate, emitted as the line ``lta_tag`` for vehicle extraction.
+                extract_bike_plate=True,
             )

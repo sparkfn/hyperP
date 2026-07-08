@@ -35,9 +35,9 @@ from src.types import (
     GraphNode,
     KnowsRelationship,
     LoyaltySummary,
-    MachineUnitSummary,
     MatchDecision,
     MatchDecisionSummary,
+    NonVehicleLine,
     Person,
     PersonComparisonEntity,
     PersonConnection,
@@ -51,7 +51,7 @@ from src.types import (
     ReviewCaseDetail,
     ReviewCaseSummary,
     SalesOrderSummary,
-    SalesUnitSummary,
+    SalesVehicleSummary,
     SharedAddress,
     SharedIdentifier,
     SharedIdentifierGroup,
@@ -59,6 +59,7 @@ from src.types import (
     SourceRecordEntityFacet,
     SourceRecordTypeLiteral,
     TimelineFact,
+    VehicleSummary,
 )
 
 _RECORD_TYPES: frozenset[str] = frozenset(get_args(SourceRecordTypeLiteral))
@@ -133,36 +134,39 @@ def _map_loyalty(rows: GraphValue) -> list[LoyaltySummary]:
     return out
 
 
-def _map_machine_units(rows: GraphValue) -> list[MachineUnitSummary]:
-    """Map MachineUnit + OWNS_UNIT/BOUGHT_UNIT edges to MachineUnitSummary.
+def _map_vehicles(rows: GraphValue) -> list[VehicleSummary]:
+    """Map Vehicle + OWNS_VEHICLE/BOUGHT_VEHICLE edges to VehicleSummary.
 
-    Dedups by machine_unit_id — a person can have multiple edges to one unit
-    (e.g. two OWNS_UNIT rels MERGEd on distinct source_order_id). When a unit has
-    both OWNS and BOUGHT edges, OWNS wins (the stronger ownership claim).
+    Dedups by vehicle_id — a person can have multiple edges to one vehicle
+    (e.g. two OWNS_VEHICLE rels MERGEd on distinct source_order_id). When a
+    vehicle has both OWNS and BOUGHT edges, OWNS wins (the stronger ownership claim).
     """
     if not isinstance(rows, list):
         return []
 
     def _owns_first(row: GraphRecord) -> int:
-        return 0 if to_str(row.get("rel_type")) == "OWNS_UNIT" else 1
+        return 0 if to_str(row.get("rel_type")) == "OWNS_VEHICLE" else 1
 
     ordered = sorted((r for r in rows if isinstance(r, dict)), key=_owns_first)
     seen: set[str] = set()
-    out: list[MachineUnitSummary] = []
+    out: list[VehicleSummary] = []
     for row in ordered:
-        unit_id = row.get("machine_unit_id")
-        if unit_id is None:
+        vehicle_id = row.get("vehicle_id")
+        if vehicle_id is None:
             continue
-        key = to_str(unit_id)
+        key = to_str(vehicle_id)
         if not key or key in seen:
             continue
         seen.add(key)
         rel_type = to_str(row.get("rel_type")) or ""
-        relationship: Literal["OWNS", "BOUGHT"] = "OWNS" if rel_type == "OWNS_UNIT" else "BOUGHT"
+        relationship: Literal["OWNS", "BOUGHT"] = "OWNS" if rel_type == "OWNS_VEHICLE" else "BOUGHT"
         out.append(
-            MachineUnitSummary(
-                machine_unit_id=key,
-                machine_product=to_optional_str(row.get("machine_product")),
+            VehicleSummary(
+                vehicle_id=key,
+                product=to_optional_str(row.get("product")),
+                product_sku=to_optional_str(row.get("product_sku")),
+                manufacturer=to_optional_str(row.get("manufacturer")),
+                model=to_optional_str(row.get("model")),
                 lta_tag=to_optional_str(row.get("lta_tag")),
                 serial_number=to_optional_str(row.get("serial_number")),
                 relationship=relationship,
@@ -193,7 +197,7 @@ def map_address(value: GraphValue) -> AddressSummary | None:
 def map_person(record: GraphRecord, address_key: str = "preferred_address") -> Person:
     p = _as_dict(record.get("person"))
     loyalty = _map_loyalty(record.get("loyalty_rows"))
-    machine_units = _map_machine_units(record.get("machine_units"))
+    vehicles = _map_vehicles(record.get("vehicles"))
     return Person(
         person_id=to_str(p.get("person_id")),
         status=PersonStatus(to_str(p.get("status"), "active")),
@@ -213,7 +217,7 @@ def map_person(record: GraphRecord, address_key: str = "preferred_address") -> P
         connection_count=to_int(record.get("connection_count")),
         lifetime_value=to_optional_float(record.get("lifetime_value")),
         loyalty=loyalty or None,
-        machine_units=machine_units or None,
+        vehicles=vehicles or None,
         created_at=to_iso_or_empty(p.get("created_at")),
         updated_at=to_iso_or_empty(p.get("updated_at")),
     )
@@ -677,33 +681,37 @@ def map_review_case_summary(record: GraphRecord) -> ReviewCaseSummary:
 
 def _map_sales_summary(
     sales_order: GraphValue,
-    sales_units: GraphValue,
+    sales_vehicles: GraphValue,
+    non_vehicle_lines: GraphValue = None,
 ) -> SalesOrderSummary | None:
     order = _as_dict(sales_order)
     if not order:
         return None
-    units: list[SalesUnitSummary] = []
-    if isinstance(sales_units, list):
-        for raw in sales_units:
+    vehicles: list[SalesVehicleSummary] = []
+    if isinstance(sales_vehicles, list):
+        for raw in sales_vehicles:
             u = _as_dict(raw)
             if not u:
                 continue
-            units.append(
-                SalesUnitSummary(
-                    machine_unit_id=to_str(u.get("machine_unit_id")),
-                    machine_product=to_optional_str(u.get("machine_product")),
+            vehicles.append(
+                SalesVehicleSummary(
+                    vehicle_id=to_str(u.get("vehicle_id")),
+                    product=to_optional_str(u.get("product")),
+                    product_sku=to_optional_str(u.get("product_sku")),
                     normalized_lta_tag=to_optional_str(u.get("normalized_lta_tag")),
                     normalized_serial_number=to_optional_str(u.get("normalized_serial_number")),
                     conflict_flag=bool(u.get("conflict_flag", False)),
                 )
             )
+    parsed_non_vehicle_lines: list[NonVehicleLine] = _parse_non_vehicle_lines(non_vehicle_lines)
     return SalesOrderSummary(
         order_id=to_str(order.get("order_id")),
         order_no=to_optional_str(order.get("order_no")),
         total_amount=to_optional_float(order.get("total_amount")),
         currency=to_optional_str(order.get("currency")),
         ordered_at=to_optional_str(order.get("ordered_at")),
-        units=units,
+        vehicles=vehicles,
+        non_vehicle_lines=parsed_non_vehicle_lines,
     )
 
 
@@ -714,19 +722,72 @@ def _fmt_dob(value: str | None) -> str | None:
     return formatted if formatted else value
 
 
+def _parse_non_vehicle_lines(value: GraphValue) -> list[NonVehicleLine]:
+    """Parse ``Order.non_vehicle_lines`` from Cypher into ``NonVehicleLine`` list.
+
+    Defensive parsing — Neo4j stores the list as a JSON string (cannot store
+    LIST<MAP>), but callers may also pass an already-parsed list. Accepts:
+    ``None``, ``""``, valid JSON string, invalid JSON string, list.
+    """
+    if isinstance(value, list):
+        raw_items = value
+    elif isinstance(value, str):
+        if not value:
+            return []
+        try:
+            parsed: object = json.loads(value)
+        except json.JSONDecodeError:
+            return []
+        if not isinstance(parsed, list):
+            return []
+        raw_items = parsed
+    else:
+        return []
+
+    out: list[NonVehicleLine] = []
+    for item in raw_items:
+        if not isinstance(item, dict):
+            continue
+        raw_dict = cast(dict[str, JsonValue], _to_json_value(item) or {})
+        if not isinstance(raw_dict, dict):
+            raw_dict = {}
+        out.append(
+            NonVehicleLine(
+                product_sku=to_optional_str(item.get("product_sku")),
+                product=to_optional_str(item.get("product")),
+                merchant=to_optional_str(item.get("merchant")),
+                manufacturer=to_optional_str(item.get("manufacturer")),
+                serial_number=to_optional_str(item.get("serial_number")),
+                quantity=to_optional_float(item.get("quantity")),
+                unit_price=to_optional_float(item.get("unit_price")),
+                total_amount=to_optional_float(item.get("total_amount")),
+                currency=to_optional_str(item.get("currency")),
+                category=to_optional_str(item.get("category")),
+                raw=raw_dict,
+            )
+        )
+    return out
+
+
 def _map_comparison_entity(
     kind: GraphValue,
     entity: GraphValue,
     address: GraphValue,
     sales_order: GraphValue = None,
-    sales_units: GraphValue = None,
+    sales_vehicles: GraphValue = None,
+    non_vehicle_lines: GraphValue = None,
 ) -> PersonComparisonEntity | None:
     e = _as_dict(entity)
     if not e:
         return None
     kind_str = to_optional_str(kind)
     if kind_str == "source_record":
-        return _map_source_record_comparison(e, sales_order=sales_order, sales_units=sales_units)
+        return _map_source_record_comparison(
+            e,
+            sales_order=sales_order,
+            sales_vehicles=sales_vehicles,
+            non_vehicle_lines=non_vehicle_lines,
+        )
     return PersonComparisonEntity(
         entity_kind="person",
         person_id=to_optional_str(e.get("person_id")),
@@ -742,7 +803,8 @@ def _map_comparison_entity(
 def _map_source_record_comparison(
     e: GraphRecord,
     sales_order: GraphValue = None,
-    sales_units: GraphValue = None,
+    sales_vehicles: GraphValue = None,
+    non_vehicle_lines: GraphValue = None,
 ) -> PersonComparisonEntity:
     payload = _parse_normalized_payload(e.get("normalized_payload"))
     return PersonComparisonEntity(
@@ -759,7 +821,7 @@ def _map_source_record_comparison(
         preferred_email=_identifier_value(payload, "email"),
         preferred_dob=_fmt_dob(_attribute_value(payload, "dob")),
         preferred_address=_source_record_address(payload),
-        sales_summary=_map_sales_summary(sales_order, sales_units),
+        sales_summary=_map_sales_summary(sales_order, sales_vehicles, non_vehicle_lines),
     )
 
 
@@ -897,7 +959,8 @@ def map_review_case_detail(record: GraphRecord) -> ReviewCaseDetail:
             record.get("left_entity"),
             record.get("left_address"),
             sales_order=record.get("sales_order"),
-            sales_units=record.get("sales_units"),
+            sales_vehicles=record.get("sales_vehicles"),
+            non_vehicle_lines=record.get("non_vehicle_lines"),
         ),
         comparison_right=_map_comparison_entity(
             record.get("right_kind"), record.get("right_entity"), record.get("right_address")

@@ -10,8 +10,8 @@ from typing import cast
 from src.config import get_settings
 from src.exclusion_config import (
     ExclusionFile,
-    _machine_unit_identifier_list,
     _str_list,
+    _vehicle_identifier_list,
 )
 from src.models import JsonValue
 
@@ -56,8 +56,8 @@ def _exclusion_file(raw: JsonValue, *, path: Path) -> ExclusionFile:
         email_domains=_str_list(payload.get("email_domains"), path=path),
         names=_str_list(payload.get("names"), path=path),
         source_ids=_str_list(payload.get("source_ids"), path=path),
-        machine_unit_identifiers=_machine_unit_identifier_list(
-            payload.get("machine_unit_identifiers"), path=path
+        vehicle_identifiers=_vehicle_identifier_list(
+            payload.get("vehicle_identifiers"), path=path
         ),
     )
 

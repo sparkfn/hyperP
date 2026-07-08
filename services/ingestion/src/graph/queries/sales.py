@@ -73,6 +73,7 @@ SET
     o.points_gained        = $points_gained,
     o.did_redeem_discount  = $did_redeem_discount,
     o.is_purchase_points   = $is_purchase_points,
+    o.non_vehicle_lines    = $non_vehicle_lines,
     o.updated_at   = datetime()
 MERGE (o)-[:SOLD_THROUGH]->(ss)
 RETURN o.order_id AS order_id
@@ -154,11 +155,11 @@ OPTIONAL MATCH (:Person)-[purchase:PURCHASED {source_system_key: $source_system_
 WHERE purchase.source_record_pk = $old_source_record_pk
 DELETE purchase
 WITH o
-OPTIONAL MATCH (o)-[unit_rel:INVOLVES_UNIT]->(:MachineUnit)
+OPTIONAL MATCH (o)-[unit_rel:INVOLVES_VEHICLE]->(:Vehicle)
 WHERE unit_rel.source_record_pk = $old_source_record_pk
 DELETE unit_rel
 WITH o
-OPTIONAL MATCH (:Person)-[bought:BOUGHT_UNIT {source_system_key: $source_system_key, source_order_id: $source_order_id}]->(:MachineUnit)
+OPTIONAL MATCH (:Person)-[bought:BOUGHT_VEHICLE {source_system_key: $source_system_key, source_order_id: $source_order_id}]->(:Vehicle)
 WHERE bought.source_record_pk = $old_source_record_pk
 DELETE bought
 """
@@ -197,20 +198,66 @@ ON CREATE SET rel += props
 RETURN count(o) AS rewired_count
 """
 
-#: Find active Person candidates who share a MachineUnit with a pending-customer
-#: sales SourceRecord (via the INVOLVES_UNIT edges already written by
-#: _write_machine_unit_observations). Used by propose_machine_unit_matches_for_pending_sales.
-FIND_MACHINE_UNIT_CANDIDATES_FOR_SALES = """
+#: Find active Person candidates who share a Vehicle with a pending-customer
+#: sales SourceRecord (via the INVOLVES_VEHICLE edges already written by the
+#: sales pipeline). Per the SDD task 2 brief, the minimum match is "vehicle
+#: identity AND (mobile OR email)" — so the contact-channel overlap is a
+#: REQUIRED filter, not optional metadata. Only persons who BOTH share a
+#: Vehicle identity with the sale AND have an email or phone identifier
+#: matching the sale's customer are returned. ``contact_channels`` records
+#: which channels matched (for the heuristic's scoring/feature_snapshot).
+#: ``nric_blocked`` flags candidates whose NRIC differs from the sale's
+#: ``customer_nric``. Used by propose_vehicle_matches_for_pending_sales.
+#:
+#: A pair (sale, person) that already has a ``MatchDecision`` (MATCH, REVIEW,
+#: or NO_MATCH — including the NRIC-block NO_MATCH recorded by
+#: ``_propose_one_pending_sale``) is excluded from re-proposal: once a decision
+#: exists for a ``(SourceRecord, Person)`` pair it is not re-proposed. This
+#: prevents the NRIC-block path from re-recording a duplicate NO_MATCH on every
+#: run. The filter mirrors ``persist_match_decision``'s wiring: the decision is
+#: linked to the sale's ``SourceRecord`` via ``ABOUT_LEFT {entity_type:
+#: 'source_record'}`` and to the candidate ``Person`` via ``ABOUT_RIGHT
+#: {entity_type: 'person'}``.
+#:
+#: If a sale's only candidate is NRIC-blocked, the exclusion returns zero
+#: candidates on the next run → ``_propose_one_pending_sale`` returns False and
+#: the sale stays ``pending_customer`` (no duplicate decision is written). That
+#: is acceptable: the sale is effectively terminal for the vehicle path; it can
+#: still be drained later if the customer identity resolves through another
+#: source and the MatchDecision is superseded.
+#:
+#: If a sale has NO customer emails and NO customer phones (both lists empty),
+#: the required MATCH on ``(pi:Identifier)`` yields zero rows and the query
+#: returns no candidates — vehicle identity alone is not enough.
+FIND_VEHICLE_CANDIDATES_FOR_SALES = """
 MATCH (sr:SourceRecord {source_record_pk: $sales_source_record_pk, link_status: 'pending_customer'})
-MATCH (o:Order)-[unit_rel:INVOLVES_UNIT {source_record_pk: $sales_source_record_pk}]->(u:MachineUnit)
-MATCH (u)<-[rel:BOUGHT_UNIT|OWNS_UNIT]-(p:Person {status: 'active'})
-RETURN p.person_id AS person_id, u.machine_unit_id AS machine_unit_id,
-       type(rel) AS rel_type, rel.is_active AS is_active,
-       u.conflict_flag AS conflict_flag, rel.last_confirmed_at AS last_confirmed_at
+MATCH (o:Order)-[inv:INVOLVES_VEHICLE {source_record_pk: $sales_source_record_pk}]->(v:Vehicle)
+MATCH (v)<-[rel:BOUGHT_VEHICLE|OWNS_VEHICLE]-(p:Person {status: 'active'})
+WHERE NOT EXISTS {
+    MATCH (md:MatchDecision)-[:ABOUT_LEFT {entity_type: 'source_record'}]->(sr)
+    MATCH (md)-[:ABOUT_RIGHT {entity_type: 'person'}]->(p)
+}
+MATCH (pi:Identifier)
+WHERE ((pi.value IN $customer_emails AND pi.kind IN ['email'])
+   OR (pi.value IN $customer_phones AND pi.kind IN ['mobile','phone']))
+  AND (p)-[:IDENTIFIED_BY]->(pi)
+WITH sr, v, p, rel, collect(DISTINCT pi.kind) AS contact_channels, $customer_nric AS customer_nric
+OPTIONAL MATCH (p)-[:IDENTIFIED_BY]->(ni:Identifier)
+WHERE ni.kind IN ['nric','nric_hash'] AND customer_nric IS NOT NULL AND customer_nric <> '' AND ni.value <> customer_nric
+WITH sr, v, p, rel, contact_channels, collect(DISTINCT ni.value) AS mismatched_nrics
+RETURN p.person_id AS person_id,
+       v.vehicle_id AS vehicle_id,
+       type(rel) AS rel_type,
+       rel.is_active AS is_active,
+       v.conflict_flag AS conflict_flag,
+       rel.last_confirmed_at AS last_confirmed_at,
+       contact_channels,
+       size(mismatched_nrics) > 0 AS nric_blocked
+ORDER BY rel_type, rel.is_active DESC, rel.last_confirmed_at DESC
 """
 
 #: Transition a pending-customer sales SourceRecord to pending_review once a
-#: machine-unit-based MatchDecision + ReviewCase have been created for it.
+#: vehicle-based MatchDecision + ReviewCase have been created for it.
 MARK_SALES_RECORD_PENDING_REVIEW = """
 MATCH (sr:SourceRecord {source_record_pk: $source_record_pk})
 SET sr.link_status = 'pending_review',

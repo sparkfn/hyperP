@@ -104,7 +104,7 @@ Each conversation object has:
     - "role": role in the conversation (e.g. agent, staff, sender, member)
     - "notes": relevant context about this chat member
 - "inquiries": array of machines, products, or units the customer asked about. Each has:
-    - "machine_product": machine/product model, product name, or description if stated
+    - "vehicle_product": vehicle/product model, product name, or description if stated
     - "unit": unit identifier, unit number, or stock/unit reference if stated
     - "lta_tag": LTA tag if stated
     - "serial_number": serial number if stated
@@ -119,8 +119,8 @@ Each conversation object has:
     - "notes": short evidence context
 - "weak_identifiers": array of contextual identifiers. Weak identifiers are evidence,
   not identity keys. Each has:
-    - "type": "name" | "address" | "dob" | "machine_lta_tag" |
-      "machine_serial_number" | "machine_unit" | "product" | "order_ref" |
+    - "type": "name" | "address" | "dob" | "vehicle_lta_tag" |
+      "vehicle_serial_number" | "vehicle" | "product" | "order_ref" |
       "relationship" | "other"
     - "value": exact extracted value
     - "label": optional source label
@@ -152,7 +152,7 @@ Summarize EACH numbered conversation below.
 For EACH conversation, output a line exactly "=== Summary N ===" where N is that
 conversation's integer index, followed by a thorough sectioned factual summary of
 the full conversation. Use these section headings when evidence exists:
-"Customer / Participants", "Identity Evidence", "Products / Machine Units",
+"Customer / Participants", "Identity Evidence", "Products / Vehicles",
 "Orders / Commercial Terms", "Timeline / Follow-ups", "Uncertainties".
 
 Output plain text only — no JSON, no code fences. Separate conversations with their

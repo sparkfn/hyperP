@@ -1,4 +1,4 @@
-"""Tests for public share-page exclusion of loyalty / machine units / sales points."""
+"""Tests for public share-page exclusion of loyalty / vehicles / sales points."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from src.routes.public_pages import (
     _strip_public_sales_order,
     _strip_public_source_record,
 )
-from src.types import LoyaltySummary, MachineUnitSummary, Person, PersonStatus, SourceRecord
+from src.types import LoyaltySummary, Person, PersonStatus, SourceRecord, VehicleSummary
 from src.types_sales import SalesOrder
 
 
@@ -22,20 +22,22 @@ def _person() -> Person:
                 observed_at=None,
             )
         ],
-        machine_units=[
-            MachineUnitSummary(
-                machine_unit_id="u1", machine_product=None, lta_tag=None,
-                serial_number=None, relationship="OWNS", is_active=True,
+        vehicles=[
+            VehicleSummary(
+                vehicle_id="v1", product=None, product_sku=None,
+                manufacturer=None, model=None,
+                lta_tag=None, serial_number=None,
+                relationship="OWNS", is_active=True,
                 conflict_flag=False, observed_at=None,
             )
         ],
     )
 
 
-def test_strip_public_person_clears_loyalty_and_machine_units() -> None:
+def test_strip_public_person_clears_loyalty_and_vehicles() -> None:
     stripped = _strip_public_person(_person())
     assert stripped.loyalty is None
-    assert stripped.machine_units is None
+    assert stripped.vehicles is None
 
 
 def test_strip_public_sales_order_clears_points() -> None:

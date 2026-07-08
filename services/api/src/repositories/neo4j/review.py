@@ -27,7 +27,7 @@ from src.graph.queries import (
     GET_PERSONS_FOR_REVIEW_MERGE,
     GET_REVIEW_CASE,
     GET_REVIEW_CASE_BY_MATCH_DECISION,
-    LINK_REVIEW_SALES_BOUGHT_UNIT,
+    LINK_REVIEW_SALES_BOUGHT_VEHICLE,
     LINK_REVIEW_SALES_PURCHASED_ORDER,
     MARK_REVIEW_SALES_RECORD_LINKED,
     MARK_REVIEW_SALES_RECORD_UNRESOLVED,
@@ -259,7 +259,7 @@ async def _sales_link_merge_tx(
 ) -> ActionResult:
     """Approve a sales-record review case: link Order+Units to the candidate Person."""
     await tx.run(LINK_REVIEW_SALES_PURCHASED_ORDER, review_case_id=review_case_id)
-    await tx.run(LINK_REVIEW_SALES_BOUGHT_UNIT, review_case_id=review_case_id)
+    await tx.run(LINK_REVIEW_SALES_BOUGHT_VEHICLE, review_case_id=review_case_id)
     linked_result = await tx.run(MARK_REVIEW_SALES_RECORD_LINKED, review_case_id=review_case_id)
     if await linked_result.single() is None:
         return ActionResult(merge_not_applicable=True)

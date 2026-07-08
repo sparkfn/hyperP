@@ -23,7 +23,7 @@ def _conversation_object(index: int) -> dict[str, object]:
         ],
         "inquiries": [
             {
-                "machine_product": "Forklift X",
+                "vehicle_product": "Forklift X",
                 "unit": "Unit 7",
                 "lta_tag": "LTA123",
                 "serial_number": "SN-9",
@@ -41,7 +41,7 @@ def _conversation_object(index: int) -> dict[str, object]:
         ],
         "weak_identifiers": [
             {
-                "type": "machine_lta_tag",
+                "type": "vehicle_lta_tag",
                 "value": "LTA123",
                 "confidence": 0.7,
                 "notes": "Asked about unit",
@@ -124,14 +124,14 @@ def test_chat_extraction_batch_splits_by_conversation_index(
         assert result["persons"][0]["name"] == "Ada"
         assert result["chat_members"][0]["name"] == "Ben"
         assert result["chat_members"][0]["phone"] == "+6588880000"
-        assert result["inquiries"][0]["machine_product"] == "Forklift X"
+        assert result["inquiries"][0]["vehicle_product"] == "Forklift X"
         assert result["inquiries"][0]["unit"] == "Unit 7"
         assert result["inquiries"][0]["lta_tag"] == "LTA123"
         assert result["inquiries"][0]["serial_number"] == "SN-9"
         assert result["customer_sentiment"] == "positive"
         assert result["summary"].startswith("Customer / Participants")
         assert result["strong_identifiers"][0]["type"] == "phone"
-        assert result["weak_identifiers"][0]["type"] == "machine_lta_tag"
+        assert result["weak_identifiers"][0]["type"] == "vehicle_lta_tag"
 
 
 def test_chat_extraction_batch_invalid_extraction_yields_all_none(
@@ -232,7 +232,7 @@ def test_chat_extraction_prompt_keeps_persons_customer_only() -> None:
     assert "chat_members" in prompt
     assert "Do not use chat_members as customer identifiers" in prompt
     assert "customer_sentiment" in prompt
-    assert "machine_product" in prompt
+    assert "vehicle_product" in prompt
     assert "lta_tag" in prompt
     assert "serial_number" in prompt
     assert "full conversation" in prompt
@@ -261,7 +261,7 @@ def test_chat_summary_prompt_uses_plain_text_markers() -> None:
     assert "no JSON" in prompt
     assert "Customer / Participants" in prompt
     assert "Identity Evidence" in prompt
-    assert "Products / Machine Units" in prompt
+    assert "Products / Vehicles" in prompt
     assert "Orders / Commercial Terms" in prompt
     assert "Timeline / Follow-ups" in prompt
     assert "Uncertainties" in prompt

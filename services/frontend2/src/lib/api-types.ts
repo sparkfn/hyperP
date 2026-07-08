@@ -65,9 +65,9 @@ export interface Person {
   // Per-source loyalty-points balances, read through from identity source
   // records. Only on the authenticated person-detail endpoint (null on public).
   loyalty?: LoyaltySummary[] | null;
-  // Machine units owned/bought by the person. Only on the authenticated
+  // Vehicles owned/bought by the person. Only on the authenticated
   // person-detail endpoint (null on public).
-  machine_units?: MachineUnitSummary[] | null;
+  vehicles?: VehicleSummary[] | null;
   created_at: string;
   updated_at: string;
 }
@@ -81,15 +81,41 @@ export interface LoyaltySummary {
   observed_at: string | null;
 }
 
-export interface MachineUnitSummary {
-  machine_unit_id: string;
-  machine_product: string | null;
+export interface VehicleSummary {
+  vehicle_id: string;
+  product: string | null;
+  product_sku: string | null;
+  manufacturer: string | null;
+  model: string | null;
   lta_tag: string | null;
   serial_number: string | null;
   relationship: "OWNS" | "BOUGHT";
   is_active: boolean | null;
   conflict_flag: boolean | null;
   observed_at: string | null;
+}
+
+export interface SalesVehicleSummary {
+  vehicle_id: string;
+  product: string | null;
+  product_sku: string | null;
+  normalized_lta_tag: string | null;
+  normalized_serial_number: string | null;
+  conflict_flag: boolean;
+}
+
+export interface NonVehicleLine {
+  product_sku: string | null;
+  product: string | null;
+  merchant: string | null;
+  manufacturer: string | null;
+  serial_number: string | null;
+  quantity: number | null;
+  unit_price: number | null;
+  total_amount: number | null;
+  currency: string | null;
+  category: string | null;
+  raw: Record<string, string | number | boolean | null>;
 }
 
 // Provenance class of a SourceRecord. `identity` / `bankruptcy` /
@@ -177,6 +203,8 @@ export interface SalesOrder {
   points_used: number | null;
   points_gained: number | null;
   line_items: SalesLineItem[];
+  vehicles: SalesVehicleSummary[];
+  non_vehicle_lines: NonVehicleLine[];
 }
 
 export interface EntitySummary {

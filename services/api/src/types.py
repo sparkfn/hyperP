@@ -153,11 +153,14 @@ class LoyaltySummary(BaseModel):
     observed_at: str | None = None
 
 
-class MachineUnitSummary(BaseModel):
-    """A MachineUnit linked to a person via OWNS_UNIT / BOUGHT_UNIT."""
+class VehicleSummary(BaseModel):
+    """A Vehicle linked to a person via OWNS_VEHICLE / BOUGHT_VEHICLE."""
 
-    machine_unit_id: str
-    machine_product: str | None = None
+    vehicle_id: str
+    product: str | None = None
+    product_sku: str | None = None
+    manufacturer: str | None = None
+    model: str | None = None
     lta_tag: str | None = None
     serial_number: str | None = None
     relationship: Literal["OWNS", "BOUGHT"]
@@ -185,7 +188,7 @@ class Person(BaseModel):
     connection_count: int = 0
     lifetime_value: float | None = None
     loyalty: list[LoyaltySummary] | None = None
-    machine_units: list[MachineUnitSummary] | None = None
+    vehicles: list[VehicleSummary] | None = None
     created_at: str = ""
     updated_at: str = ""
 
@@ -426,12 +429,29 @@ class ReviewCaseSummary(BaseModel):
     match_decision: MatchDecisionSummary
 
 
-class SalesUnitSummary(BaseModel):
-    machine_unit_id: str
-    machine_product: str | None = None
+class SalesVehicleSummary(BaseModel):
+    vehicle_id: str
+    product: str | None = None
+    product_sku: str | None = None
     normalized_lta_tag: str | None = None
     normalized_serial_number: str | None = None
     conflict_flag: bool = False
+
+
+class NonVehicleLine(BaseModel):
+    """One non-vehicle line item denormalized onto an Order."""
+
+    product_sku: str | None = None
+    product: str | None = None
+    merchant: str | None = None
+    manufacturer: str | None = None
+    serial_number: str | None = None
+    quantity: float | None = None
+    unit_price: float | None = None
+    total_amount: float | None = None
+    currency: str | None = None
+    category: str | None = None
+    raw: dict[str, JsonValue] = Field(default_factory=dict)
 
 
 class SalesOrderSummary(BaseModel):
@@ -440,7 +460,8 @@ class SalesOrderSummary(BaseModel):
     total_amount: float | None = None
     currency: str | None = None
     ordered_at: str | None = None
-    units: list[SalesUnitSummary] = Field(default_factory=list)
+    vehicles: list[SalesVehicleSummary] = Field(default_factory=list)
+    non_vehicle_lines: list[NonVehicleLine] = Field(default_factory=list)
 
 
 class PersonComparisonEntity(BaseModel):

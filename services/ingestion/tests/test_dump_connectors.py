@@ -7,12 +7,14 @@ from pathlib import Path
 from pytest import MonkeyPatch, mark, skip
 from src.connectors.dumps.connectors import (
     FundboxSalesDumpConnector,
+    PHPPOS_SALES_TABLES,
     _build_fundbox_contact,
     _build_fundbox_legacy,
     _fetch_phppos_dump_sales,
     get_dump_connector,
 )
 from src.connectors.dumps.reader import DumpRow
+from src.connectors.onediver.connector import ONEDIVER_SALES_TABLES
 from src.connectors.sggov.bankruptcy import SGGovernmentBankruptcyConnector
 from src.connectors.sggov.rental_flats import SGGovernmentRentalFlatsConnector
 
@@ -706,3 +708,236 @@ def test_sggov_sources_are_registered_for_dump_mode(tmp_path: Path) -> None:
 
     assert isinstance(bankruptcy, SGGovernmentBankruptcyConnector)
     assert isinstance(rental_flats, SGGovernmentRentalFlatsConnector)
+
+
+def test_phppos_sales_tables_include_categories_and_customers() -> None:
+    # The vehicle-extraction + NRIC anti-match pipeline reads category names
+    # (phppos_categories) and the customer's NRIC / bike plate (phppos_customers).
+    assert "phppos_categories" in PHPPOS_SALES_TABLES
+    assert "phppos_customers" in PHPPOS_SALES_TABLES
+
+
+def test_onediver_sales_tables_include_items_and_products() -> None:
+    # OneDiver Order ``non_vehicle_lines`` enrichment reads line items + the
+    # product catalogue.
+    assert "sales_order_items" in ONEDIVER_SALES_TABLES
+    assert "products" in ONEDIVER_SALES_TABLES
+
+
+def _write_phppos_sales_dump_with_customer(dump_path: Path, source_system_key: str) -> None:
+    """Write a phppos sales dump with a customer + category for field-emission tests."""
+    dump_path.write_text(
+        "\n".join(
+            [
+                (
+                    "INSERT INTO `phppos_sales` (`sale_id`,`customer_id`,`sale_time`,"
+                    "`invoice_date`,`invoice_number`,`sale_status`,`suspended`) "
+                    "VALUES (1,55,'2026-05-01 00:00:00','2026-05-01','INV-1','0','0');"
+                ),
+                (
+                    "INSERT INTO `phppos_sales_items` (`sale_id`,`item_id`,`line`,"
+                    "`quantity_purchased`,`item_unit_price`,`discount_percent`,"
+                    "`serialnumber`) VALUES (1,22,0,1.0,899.0,0.0,'SER-22');"
+                ),
+                (
+                    "INSERT INTO `phppos_items` (`item_id`,`item_number`,`name`,"
+                    "`category`,`subcategory`,`size`,`cost_price`,`unit_price`,"
+                    "`description`) VALUES (22,'SKU-22','Scooter Model',7,"
+                    "'Electric','Large',500.0,899.0,'');"
+                ),
+                (
+                    "INSERT INTO `phppos_categories` (`id`,`name`) VALUES (7,'Scooters');"
+                ),
+                (
+                    "INSERT INTO `phppos_customers` (`id`,`person_id`,`deleted`,"
+                    "`custom_field_1_value`,`custom_field_8_value`,"
+                    "`custom_field_10_value`) VALUES (10,55,0,'S9876543Z','SGX1234J',NULL);"
+                ),
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+
+def test_eko_sales_dump_emits_nric_and_resolves_category(tmp_path: Path) -> None:
+    dump_path = tmp_path / "eko.sql"
+    _write_phppos_sales_dump_with_customer(dump_path, "eko_phppos")
+
+    records = list(_fetch_phppos_dump_sales(dump_path, "eko_phppos"))
+    assert len(records) == 1
+    line = records[0]["raw_payload"]["line_items"][0]
+    assert isinstance(line, dict)
+    metadata = line["metadata"]
+    assert isinstance(metadata, dict)
+    # NRIC is emitted for all phppos sources (eko + speedzone).
+    assert metadata["nric"] == "S9876543Z"
+    # Eko is not SpeedZone — no bike plate under lta_tag.
+    assert metadata["lta_tag"] is None
+    # Existing serialnumber emission is preserved.
+    assert metadata["serialnumber"] == "SER-22"
+    product = line["product"]
+    assert isinstance(product, dict)
+    # Category FK (7) resolved to the name from phppos_categories.
+    assert product["category"] == "Scooters"
+
+
+def test_speedzone_sales_dump_emits_bike_plate_lta_tag_and_nric(tmp_path: Path) -> None:
+    dump_path = tmp_path / "speedzone.sql"
+    _write_phppos_sales_dump_with_customer(dump_path, "speedzone_phppos")
+
+    records = list(_fetch_phppos_dump_sales(dump_path, "speedzone_phppos"))
+    assert len(records) == 1
+    line = records[0]["raw_payload"]["line_items"][0]
+    assert isinstance(line, dict)
+    metadata = line["metadata"]
+    assert isinstance(metadata, dict)
+    # Bike plate (custom_field_8_value) emitted as lta_tag for SpeedZone only.
+    assert metadata["lta_tag"] == "SGX1234J"
+    # NRIC emitted for all phppos sources.
+    assert metadata["nric"] == "S9876543Z"
+    product = line["product"]
+    assert isinstance(product, dict)
+    assert product["category"] == "Scooters"
+
+
+def test_fundbox_sales_dump_emits_merchant_and_product_flags(tmp_path: Path) -> None:
+    dump_path = tmp_path / "fundbox.sql"
+    dump_path.write_text(
+        "\n".join(
+            [
+                (
+                    "INSERT INTO `orders` "
+                    "(`id`,`order_no`,`user_id`,`merchant_id`,`status`,"
+                    "`created_at`,`updated_at`,`deleted_at`) "
+                    "VALUES (10,'INV-10',123,1,'completed','2026-05-01 00:00:00',"
+                    "'2026-05-01 00:00:00',0);"
+                ),
+                (
+                    "INSERT INTO `order_items` "
+                    "(`id`,`order_id`,`merchant_product_id`,`quantity`,`price`,"
+                    "`lta_tag`,`serial_no`,`created_at`,`updated_at`) "
+                    "VALUES (77,10,501,1,1599.00,'X891','SN-891',"
+                    "'2026-05-01 00:00:00','2026-05-01 00:00:00');"
+                ),
+                (
+                    "INSERT INTO `merchant_products` "
+                    "(`id`,`merchant_id`,`product_variant_id`,`price`,`created_at`,"
+                    "`updated_at`) "
+                    "VALUES (501,1,701,1599.00,'2026-05-01 00:00:00',"
+                    "'2026-05-01 00:00:00');"
+                ),
+                (
+                    "INSERT INTO `product_variants` "
+                    "(`id`,`product_id`,`sku`,`name`,`active`,`attributes`) "
+                    "VALUES (701,801,'SKU-701','Variant Bike',1,'{}');"
+                ),
+                (
+                    "INSERT INTO `merchants` (`id`,`name`,`official_name`) "
+                    "VALUES (1,'Acme Bikes','Acme Bikes Pte Ltd');"
+                ),
+                (
+                    "INSERT INTO `products` "
+                    "(`id`,`product_id`,`name`,`image`,`type`,`sub_type`,`category`,"
+                    "`sub_category`,`description`,`make`,`model`,`has_serial_number`,"
+                    "`has_lta_tag`,`active`,`visible`,`deleted_at`,`created_at`,"
+                    "`updated_at`) "
+                    "VALUES (801,'P-801','Parent Bike','','Micro Mobility',NULL,"
+                    "'Bicycles',NULL,'','Brand','Model X',1,1,1,1,NULL,"
+                    "'2026-05-01 00:00:00','2026-05-01 00:00:00');"
+                ),
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    records = list(FundboxSalesDumpConnector(dump_path).fetch_records())
+    assert len(records) == 1
+    line = records[0]["raw_payload"]["line_items"][0]
+    assert isinstance(line, dict)
+    metadata = line["metadata"]
+    assert isinstance(metadata, dict)
+    # Merchant name resolved from the order's merchant_id.
+    assert metadata["merchant"] == "Acme Bikes"
+    product = line["product"]
+    assert isinstance(product, dict)
+    assert product["category"] == "Bicycles"
+    assert product["manufacturer"] == "Brand"
+    # Top-level model (vehicle_extraction reads product.model).
+    assert product["model"] == "Model X"
+    # Secondary product flags surfaced for future use.
+    assert product["has_serial_number"] is True
+    assert product["has_lta_tag"] is True
+
+
+def test_fundbox_sales_dump_emits_customer_contact_from_users_and_basic_profiles(
+    tmp_path: Path,
+) -> None:
+    """The fundbox sales dump must carry sale-level customer_emails /
+    customer_phones / customer_nric joined from ``users`` + ``basic_profiles``
+    by ``orders.user_id`` — the Vehicle heuristic reads these from
+    ``raw_payload`` to find candidates (Task 6 fix)."""
+    dump_path = tmp_path / "fundbox.sql"
+    dump_path.write_text(
+        "\n".join(
+            [
+                (
+                    "INSERT INTO `orders` "
+                    "(`id`,`order_no`,`user_id`,`merchant_id`,`status`,"
+                    "`created_at`,`updated_at`,`deleted_at`) "
+                    "VALUES (10,'INV-10',123,1,'completed',"
+                    "'2026-05-01 00:00:00','2026-05-01 00:00:00',NULL);"
+                ),
+                (
+                    "INSERT INTO `users` "
+                    "(`id`,`email`,`mobile_number`,`created_at`,`updated_at`) "
+                    "VALUES (123,'jane@fundbox.sg','+6591112222',"
+                    "'2026-05-01 00:00:00','2026-05-01 00:00:00');"
+                ),
+                (
+                    "INSERT INTO `basic_profiles` "
+                    "(`id`,`user_id`,`nric`,`email`,`mobile_number`) "
+                    "VALUES (1,123,'S9876543A','jane@fundbox.sg','+6591112222');"
+                ),
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    records = list(FundboxSalesDumpConnector(dump_path).fetch_records())
+    assert len(records) == 1
+    raw_payload = records[0]["raw_payload"]
+    assert isinstance(raw_payload, dict)
+    # customer_emails / customer_phones deduped across users + basic_profiles.
+    assert raw_payload["customer_emails"] == ["jane@fundbox.sg"]
+    assert raw_payload["customer_phones"] == ["+6591112222"]
+    assert raw_payload["customer_nric"] == "S9876543A"
+
+
+def test_fundbox_sales_dump_emits_empty_contact_when_user_missing(
+    tmp_path: Path,
+) -> None:
+    """An order whose user_id has no users/basic_profiles row still emits a
+    valid envelope with empty contact channels (graceful degradation)."""
+    dump_path = tmp_path / "fundbox.sql"
+    dump_path.write_text(
+        "\n".join(
+            [
+                (
+                    "INSERT INTO `orders` "
+                    "(`id`,`order_no`,`user_id`,`merchant_id`,`status`,"
+                    "`created_at`,`updated_at`,`deleted_at`) "
+                    "VALUES (11,'INV-11',999,1,'completed',"
+                    "'2026-05-01 00:00:00','2026-05-01 00:00:00',NULL);"
+                ),
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    records = list(FundboxSalesDumpConnector(dump_path).fetch_records())
+    assert len(records) == 1
+    raw_payload = records[0]["raw_payload"]
+    assert isinstance(raw_payload, dict)
+    assert raw_payload["customer_emails"] == []
+    assert raw_payload["customer_phones"] == []
+    assert raw_payload["customer_nric"] is None

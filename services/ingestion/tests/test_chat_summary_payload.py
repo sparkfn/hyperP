@@ -40,7 +40,7 @@ def test_persist_source_record_includes_chat_summary_in_normalized_payload() -> 
             ],
             "inquiries": [
                 {
-                    "machine_product": "Forklift X",
+                    "vehicle_product": "Forklift X",
                     "unit": "Unit 7",
                     "lta_tag": "LTA123",
                     "serial_number": "SN-9",
@@ -80,7 +80,7 @@ def test_persist_source_record_includes_chat_summary_in_normalized_payload() -> 
     ]
     assert payload["inquiries"] == [
         {
-            "machine_product": "Forklift X",
+            "vehicle_product": "Forklift X",
             "unit": "Unit 7",
             "lta_tag": "LTA123",
             "serial_number": "SN-9",

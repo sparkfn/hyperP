@@ -100,7 +100,7 @@ class ExtractedChatMember(TypedDict, total=False):
 
 
 class ExtractedInquiry(TypedDict, total=False):
-    machine_product: str | None
+    vehicle_product: str | None
     unit: str | None
     lta_tag: str | None
     serial_number: str | None
@@ -682,7 +682,7 @@ def _parse_inquiry(inquiry_raw: object) -> ExtractedInquiry | None:
     if not isinstance(inquiry_raw, dict):
         return None
     return ExtractedInquiry(
-        machine_product=_optional_str(inquiry_raw.get("machine_product")),
+        vehicle_product=_optional_str(inquiry_raw.get("vehicle_product")),
         unit=_optional_str(inquiry_raw.get("unit")),
         lta_tag=_optional_str(inquiry_raw.get("lta_tag")),
         serial_number=_optional_str(inquiry_raw.get("serial_number")),
@@ -709,7 +709,7 @@ def inquiries_payload(extraction: ExtractionResult) -> list[JsonValue]:
     for inquiry in extraction.get("inquiries", []):
         payload.append(
             {
-                "machine_product": inquiry.get("machine_product"),
+                "vehicle_product": inquiry.get("vehicle_product"),
                 "unit": inquiry.get("unit"),
                 "lta_tag": inquiry.get("lta_tag"),
                 "serial_number": inquiry.get("serial_number"),

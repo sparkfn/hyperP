@@ -12,7 +12,7 @@ from src.graph.queries import (
     CREATE_NO_MATCH_LOCK_FROM_REVIEW,
     EXECUTE_MANUAL_MERGE,
     GET_PERSONS_FOR_REVIEW_MERGE,
-    LINK_REVIEW_SALES_BOUGHT_UNIT,
+    LINK_REVIEW_SALES_BOUGHT_VEHICLE,
     LINK_REVIEW_SALES_PURCHASED_ORDER,
     MARK_REVIEW_SALES_RECORD_LINKED,
     MARK_REVIEW_SALES_RECORD_UNRESOLVED,
@@ -280,7 +280,7 @@ async def test_merge_sales_link_approves_and_links() -> None:
         [
             None,  # GET_PERSONS_FOR_REVIEW_MERGE → no person pair → sales path
             None,  # LINK_REVIEW_SALES_PURCHASED_ORDER (result not used)
-            None,  # LINK_REVIEW_SALES_BOUGHT_UNIT (result not used)
+            None,  # LINK_REVIEW_SALES_BOUGHT_VEHICLE (result not used)
             {"source_record_pk": "sr-42"},  # MARK_REVIEW_SALES_RECORD_LINKED → success
             {
                 "review_case": {
@@ -313,7 +313,7 @@ async def test_merge_sales_link_approves_and_links() -> None:
     query_seq = [c.query for c in tx.calls]
     assert query_seq[0] == GET_PERSONS_FOR_REVIEW_MERGE
     assert query_seq[1] == LINK_REVIEW_SALES_PURCHASED_ORDER
-    assert query_seq[2] == LINK_REVIEW_SALES_BOUGHT_UNIT
+    assert query_seq[2] == LINK_REVIEW_SALES_BOUGHT_VEHICLE
     assert query_seq[3] == MARK_REVIEW_SALES_RECORD_LINKED
 
 
@@ -324,7 +324,7 @@ async def test_merge_returns_not_applicable_when_no_persons_and_no_sales_link() 
         [
             None,  # GET_PERSONS_FOR_REVIEW_MERGE
             None,  # LINK_REVIEW_SALES_PURCHASED_ORDER
-            None,  # LINK_REVIEW_SALES_BOUGHT_UNIT
+            None,  # LINK_REVIEW_SALES_BOUGHT_VEHICLE
             None,  # MARK_REVIEW_SALES_RECORD_LINKED → no match → not applicable
         ]
     )

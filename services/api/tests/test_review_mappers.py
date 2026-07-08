@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 from src.graph.mappers import _map_sales_summary, map_review_case_detail
-from src.types import SalesOrderSummary, SalesUnitSummary
-
+from src.types import NonVehicleLine, SalesOrderSummary, SalesVehicleSummary
 
 # ---------------------------------------------------------------------------
 # _map_sales_summary
 # ---------------------------------------------------------------------------
+
 
 def test_map_sales_summary_none_when_no_order() -> None:
     assert _map_sales_summary(None, None) is None
@@ -16,7 +16,7 @@ def test_map_sales_summary_none_when_empty_dict() -> None:
     assert _map_sales_summary({}, []) is None
 
 
-def test_map_sales_summary_order_only_no_units() -> None:
+def test_map_sales_summary_order_only_no_vehicles() -> None:
     order = {
         "order_id": "ord-1",
         "order_no": "INV-001",
@@ -24,86 +24,147 @@ def test_map_sales_summary_order_only_no_units() -> None:
         "currency": "SGD",
         "ordered_at": "2026-01-15T10:00:00",
     }
-    result = _map_sales_summary(order, [])
+    result = _map_sales_summary(order, None, None)
     assert isinstance(result, SalesOrderSummary)
     assert result.order_id == "ord-1"
     assert result.order_no == "INV-001"
     assert result.total_amount == 299.90
     assert result.currency == "SGD"
     assert result.ordered_at == "2026-01-15T10:00:00"
-    assert result.units == []
+    assert result.vehicles == []
+    assert result.non_vehicle_lines == []
 
 
-def test_map_sales_summary_with_units() -> None:
-    order = {"order_id": "ord-2", "order_no": None, "total_amount": None, "currency": None, "ordered_at": None}
-    units = [
+def test_map_sales_summary_with_vehicles() -> None:
+    order = {
+        "order_id": "ord-2", "order_no": None, "total_amount": None,
+        "currency": None, "ordered_at": None,
+    }
+    vehicles = [
         {
-            "machine_unit_id": "mu-1",
-            "machine_product": "Segway X",
+            "vehicle_id": "v-1",
+            "product": "Segway X",
+            "product_sku": "sku-1",
             "normalized_lta_tag": "TAG001",
             "normalized_serial_number": "SN001",
             "conflict_flag": False,
         },
         {
-            "machine_unit_id": "mu-2",
-            "machine_product": None,
+            "vehicle_id": "v-2",
+            "product": None,
+            "product_sku": None,
             "normalized_lta_tag": None,
             "normalized_serial_number": "SN002",
             "conflict_flag": True,
         },
     ]
-    result = _map_sales_summary(order, units)
+    result = _map_sales_summary(order, vehicles, None)
     assert result is not None
-    assert len(result.units) == 2
-    u1 = result.units[0]
-    assert isinstance(u1, SalesUnitSummary)
-    assert u1.machine_unit_id == "mu-1"
-    assert u1.machine_product == "Segway X"
-    assert u1.normalized_lta_tag == "TAG001"
-    assert u1.conflict_flag is False
-    u2 = result.units[1]
-    assert u2.machine_unit_id == "mu-2"
-    assert u2.conflict_flag is True
+    assert len(result.vehicles) == 2
+    v1 = result.vehicles[0]
+    assert isinstance(v1, SalesVehicleSummary)
+    assert v1.vehicle_id == "v-1"
+    assert v1.product == "Segway X"
+    assert v1.product_sku == "sku-1"
+    assert v1.normalized_lta_tag == "TAG001"
+    assert v1.conflict_flag is False
+    v2 = result.vehicles[1]
+    assert v2.vehicle_id == "v-2"
+    assert v2.conflict_flag is True
 
 
-def test_map_sales_summary_skips_null_unit_entries() -> None:
+def test_map_sales_summary_skips_null_vehicle_entries() -> None:
     order = {"order_id": "ord-3"}
-    result = _map_sales_summary(order, [None, {}, {"machine_unit_id": "mu-good"}])
+    result = _map_sales_summary(order, [None, {}, {"vehicle_id": "v-good"}], None)
     assert result is not None
-    assert len(result.units) == 1
-    assert result.units[0].machine_unit_id == "mu-good"
+    assert len(result.vehicles) == 1
+    assert result.vehicles[0].vehicle_id == "v-good"
+
+
+def test_map_sales_summary_non_vehicle_lines_none() -> None:
+    order = {"order_id": "ord-4"}
+    result = _map_sales_summary(order, None, None)
+    assert result is not None
+    assert result.non_vehicle_lines == []
+
+
+def test_map_sales_summary_non_vehicle_lines_empty_string() -> None:
+    order = {"order_id": "ord-5"}
+    result = _map_sales_summary(order, None, "")
+    assert result is not None
+    assert result.non_vehicle_lines == []
+
+
+def test_map_sales_summary_non_vehicle_lines_json_string() -> None:
+    order = {"order_id": "ord-6"}
+    raw = '[{"product_sku": "sku-1", "product": "Helmet", "merchant": "Acme"}]'
+    result = _map_sales_summary(order, None, raw)
+    assert result is not None
+    assert len(result.non_vehicle_lines) == 1
+    line = result.non_vehicle_lines[0]
+    assert isinstance(line, NonVehicleLine)
+    assert line.product_sku == "sku-1"
+    assert line.product == "Helmet"
+    assert line.merchant == "Acme"
+
+
+def test_map_sales_summary_non_vehicle_lines_list_passthrough() -> None:
+    order = {"order_id": "ord-7"}
+    raw = [{"product_sku": "sku-1", "product": "Helmet"}]
+    result = _map_sales_summary(order, None, raw)
+    assert result is not None
+    assert len(result.non_vehicle_lines) == 1
+    assert result.non_vehicle_lines[0].product_sku == "sku-1"
+    assert result.non_vehicle_lines[0].product == "Helmet"
+
+
+def test_map_sales_summary_non_vehicle_lines_invalid_json() -> None:
+    order = {"order_id": "ord-8"}
+    result = _map_sales_summary(order, None, "not-json")
+    assert result is not None
+    assert result.non_vehicle_lines == []
+
+
+def test_map_sales_summary_vehicles_with_conflict_flag() -> None:
+    order = {"order_id": "ord-9"}
+    vehicles = [
+        {
+            "vehicle_id": "v-1",
+            "product": "Bike",
+            "product_sku": "sku-x",
+            "conflict_flag": True,
+        },
+    ]
+    result = _map_sales_summary(order, vehicles, None)
+    assert result is not None
+    assert result.vehicles[0].vehicle_id == "v-1"
+    assert result.vehicles[0].conflict_flag is True
 
 
 # ---------------------------------------------------------------------------
-# map_review_case_detail — sales left entity surfaces sales_summary
+# map_review_case_detail
 # ---------------------------------------------------------------------------
+
 
 def _base_record() -> dict[str, object]:
     return {
         "review_case": {
-            "review_case_id": "rc-test",
+            "review_case_id": "rc-1",
             "queue_state": "open",
             "priority": 5,
-            "assigned_to": None,
-            "follow_up_at": None,
-            "sla_due_at": None,
-            "resolution": None,
-            "resolved_at": None,
-            "actions": "[]",
-            "created_at": "2026-06-16T00:00:00Z",
-            "updated_at": "2026-06-16T00:00:00Z",
-        },
-        "match_decision": {
-            "match_decision_id": "md-test",
-            "engine_type": "heuristic",
-            "engine_version": None,
-            "policy_version": None,
-            "decision": "review",
-            "confidence": 0.65,
-            "reasons": ["same_machine_unit_owner_claim"],
-            "blocking_conflicts": None,
+            "actions": [],
             "created_at": "2026-06-16T00:00:00Z",
         },
+        "left_kind": "person",
+        "left_entity": {
+            "person_id": "person-2",
+            "status": "active",
+            "preferred_full_name": "Bob",
+            "preferred_phone": None,
+            "preferred_email": None,
+            "preferred_dob": None,
+        },
+        "left_address": None,
         "right_kind": "person",
         "right_entity": {
             "person_id": "person-1",
@@ -115,22 +176,13 @@ def _base_record() -> dict[str, object]:
         },
         "right_address": None,
         "sales_order": None,
-        "sales_units": [],
+        "sales_vehicles": [],
+        "non_vehicle_lines": None,
     }
 
 
 def test_map_review_case_detail_person_left_no_sales_summary() -> None:
     record = _base_record()
-    record["left_kind"] = "person"
-    record["left_entity"] = {
-        "person_id": "person-2",
-        "status": "active",
-        "preferred_full_name": "Bob",
-        "preferred_phone": None,
-        "preferred_email": None,
-        "preferred_dob": None,
-    }
-    record["left_address"] = None
     detail = map_review_case_detail(record)  # type: ignore[arg-type]
     assert detail.comparison_left is not None
     assert detail.comparison_left.entity_kind == "person"
@@ -149,32 +201,35 @@ def test_map_review_case_detail_sales_source_record_carries_summary() -> None:
     record["left_address"] = None
     record["sales_order"] = {
         "order_id": "ord-42",
-        "order_no": "INV-042",
-        "total_amount": 500.0,
+        "order_no": "INV-42",
+        "total_amount": 199.0,
         "currency": "SGD",
         "ordered_at": "2026-06-10T08:00:00",
     }
-    record["sales_units"] = [
+    record["sales_vehicles"] = [
         {
-            "machine_unit_id": "mu-42",
-            "machine_product": "EScooter Pro",
-            "normalized_lta_tag": "T42",
-            "normalized_serial_number": "SN42",
+            "vehicle_id": "v-42",
+            "product": "EScooter Pro",
+            "product_sku": "sku-42",
+            "normalized_lta_tag": "LTA-42",
+            "normalized_serial_number": "SN-42",
             "conflict_flag": False,
         }
     ]
+    record["non_vehicle_lines"] = '[{"product_sku": "sku-acc", "product": "Helmet"}]'
     detail = map_review_case_detail(record)  # type: ignore[arg-type]
     left = detail.comparison_left
     assert left is not None
     assert left.entity_kind == "source_record"
-    assert left.source_record_pk == "sr-42"
     summary = left.sales_summary
     assert summary is not None
     assert summary.order_id == "ord-42"
     assert summary.currency == "SGD"
-    assert len(summary.units) == 1
-    assert summary.units[0].machine_unit_id == "mu-42"
-    assert summary.units[0].conflict_flag is False
+    assert len(summary.vehicles) == 1
+    assert summary.vehicles[0].vehicle_id == "v-42"
+    assert summary.vehicles[0].conflict_flag is False
+    assert len(summary.non_vehicle_lines) == 1
+    assert summary.non_vehicle_lines[0].product_sku == "sku-acc"
 
 
 def test_map_review_case_detail_sales_order_none_gives_no_summary() -> None:

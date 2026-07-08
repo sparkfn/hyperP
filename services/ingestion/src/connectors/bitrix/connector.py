@@ -349,7 +349,7 @@ class BitrixChatConnector(SourceConnector):
             email_domains=list(base_exclusions.email_domains),
             names=[*base_exclusions.names, *agent_names],
             source_ids=list(base_exclusions.source_ids),
-            machine_unit_identifiers=list(base_exclusions.machine_unit_identifiers),
+            vehicle_identifiers=list(base_exclusions.vehicle_identifiers),
         )
         filtered = filter_extraction(
             extraction,

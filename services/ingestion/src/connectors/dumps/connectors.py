@@ -40,6 +40,11 @@ from src.connectors.onediver.connector import (
     OneDiverDumpConnector,
     OneDiverSalesDumpConnector,
 )
+from src.connectors.phppos_sales_common import (
+    phppos_customer_bike_plate,
+    phppos_customer_nric,
+    phppos_resolve_category_name,
+)
 from src.connectors.sggov.bankruptcy import SGGovernmentBankruptcyConnector
 from src.connectors.sggov.rental_flats import SGGovernmentRentalFlatsConnector
 from src.connectors.speedzone.connector import SpeedZoneConnector
@@ -120,6 +125,13 @@ PHPPOS_SALES_TABLES: TableSpec = {
     "phppos_sales": None,
     "phppos_sales_items": None,
     "phppos_items": None,
+    # category_id -> name for vehicle classification (resolves phppos_items.category
+    # from an integer FK to the human-readable category name).
+    "phppos_categories": None,
+    # Customer bike plate (custom_field_8_value/custom_field_10_value for speedzone)
+    # + NRIC (custom_field_1_value for all phppos) used by the matching heuristic's
+    # NRIC anti-match (Task 6).
+    "phppos_customers": None,
 }
 
 
@@ -236,15 +248,18 @@ class FundboxSalesDumpConnector(SourceConnector):
         }
         line_rows = _group_by_int(tables.rows("order_items"), "order_id")
         product_info = _fundbox_product_info(tables)
+        customer_contacts = _fundbox_customer_contacts(tables)
         builder = FundboxSalesConnector()
         for row in sorted(tables.rows("orders"), key=lambda item: _row_int(item, "id")):
             if str(row.status or "") not in FUNDBOX_ORDER_STATUSES:
                 continue
+            user_id = _row_int(row, "user_id")
             yield builder._build_one(
                 row,
                 line_rows.get(_row_int(row, "id"), []),
                 merchants,
                 product_info,
+                customer_contacts.get(user_id),
             )
 
 
@@ -627,6 +642,48 @@ def _fundbox_product_info(tables: DumpTableReader) -> dict[int, dict[str, JsonVa
     return result
 
 
+def _fundbox_customer_contacts(tables: DumpTableReader) -> dict[int, dict[str, object]]:
+    """Build ``user_id -> {customer_emails, customer_phones, customer_nric}``
+    from the dump's ``users`` + ``basic_profiles`` rows.
+
+    Mirrors ``FundboxSalesConnector._fetch_customer_contacts`` so the dump
+    path emits the same sale-level contact channels the live path does.
+    Emails/phones are deduped non-empty values across the two tables;
+    ``customer_nric`` comes from the first ``basic_profiles`` row per user
+    (lowest ``id``, matching the live connector's deterministic pick).
+    """
+    user_rows = _single_by_int(tables.rows("users"), "id")
+    # ``basic_profiles`` is 1-to-many on ``user_id``; keep the first by id.
+    profile_by_user: dict[int, DumpRow] = {}
+    for row in sorted(tables.rows("basic_profiles"), key=lambda r: _row_int(r, "id")):
+        uid = _row_int(row, "user_id")
+        if uid not in profile_by_user:
+            profile_by_user[uid] = row
+
+    contacts: dict[int, dict[str, object]] = {}
+    for uid, u in user_rows.items():
+        p = profile_by_user.get(uid)
+        emails: list[str] = []
+        phones: list[str] = []
+        for src in (u, p):
+            if src is None:
+                continue
+            email = src._mapping.get("email")
+            if isinstance(email, str) and email and email not in emails:
+                emails.append(email)
+            mobile = src._mapping.get("mobile_number")
+            if isinstance(mobile, str) and mobile and mobile not in phones:
+                phones.append(mobile)
+        nric_value = p._mapping.get("nric") if p is not None else None
+        nric: str | None = nric_value if isinstance(nric_value, str) and nric_value else None
+        contacts[uid] = {
+            "customer_emails": emails,
+            "customer_phones": phones,
+            "customer_nric": nric,
+        }
+    return contacts
+
+
 def _build_fundbox_contact(row: DumpRow) -> dict[str, JsonValue]:
     ids = IdentifierBag()
     ids.add("phone", row.mobile_number)
@@ -707,13 +764,28 @@ def _fetch_phppos_dump_sales(
     tables = load_dump_tables(dump_path, PHPPOS_SALES_TABLES)
     items_by_id = {_row_int(row, "item_id"): row for row in tables.rows("phppos_items")}
     lines_by_sale = _group_by_int(tables.rows("phppos_sales_items"), "sale_id")
+    # category_id -> name (phppos_categories) for vehicle classification.
+    categories: dict[int, str] = {
+        _row_int(row, "id"): str(row.get("name") or "") for row in tables.rows("phppos_categories")
+    }
+    # phppos_customers keyed by person_id (phppos_sales.customer_id is a person_id).
+    customers_by_person_id: dict[int, DumpRow] = {
+        _row_int(row, "person_id"): row for row in tables.rows("phppos_customers")
+    }
+    # SpeedZone customer bike plate lives in custom_field_8/10_value; Eko shares
+    # the schema but the columns are not bike plates, so only SpeedZone extracts.
+    extract_bike_plate = source_system_key == "speedzone_phppos"
     for sale in sorted(tables.rows("phppos_sales"), key=lambda row: _row_int(row, "sale_id")):
         sale_id = _row_int(sale, "sale_id")
+        customer_row = customers_by_person_id.get(_row_int(sale, "customer_id"))
         yield _build_phppos_sales_envelope(
             sale,
             lines_by_sale.get(sale_id, []),
             items_by_id,
             source_system_key,
+            categories,
+            customer_row,
+            extract_bike_plate,
         )
 
 
@@ -722,12 +794,27 @@ def _build_phppos_sales_envelope(
     line_rows: list[DumpRow],
     items_by_id: Mapping[int, DumpRow],
     source_system_key: str,
+    categories: Mapping[int, str] | None = None,
+    customer_row: DumpRow | None = None,
+    extract_bike_plate: bool = False,
 ) -> dict[str, JsonValue]:
     source_order_id = str(sale.sale_id)
+    resolved_categories: Mapping[int, str] = categories if categories is not None else {}
+    # Per-sale customer fields applied to every line. NRIC feeds the matching
+    # heuristic's anti-match (Task 6); ``lta_tag`` carries the bike plate for
+    # SpeedZone only.
+    line_nric = phppos_customer_nric(customer_row)
+    line_lta_tag = (
+        phppos_customer_bike_plate(customer_row) if extract_bike_plate else None
+    )
     line_items: list[JsonValue] = []
     for line in line_rows:
         item = items_by_id.get(_row_int(line, "item_id"))
-        product = _phppos_product_payload(item, source_system_key) if item else None
+        product = (
+            _phppos_product_payload(item, source_system_key, resolved_categories)
+            if item
+            else None
+        )
         quantity = _float_value(line.quantity_purchased)
         unit_price = _float_value(line.item_unit_price)
         discount = _float_value(line.discount_percent)
@@ -741,7 +828,12 @@ def _build_phppos_sales_envelope(
                 "discount_amount": None,
                 "line_total": line_total,
                 "serial_number": line.serialnumber,
-                "metadata": {"serialnumber": line.serialnumber},
+                "metadata": {
+                    "serialnumber": line.serialnumber,
+                    # Customer-level fields (same for every line of this sale).
+                    "nric": line_nric,
+                    "lta_tag": line_lta_tag,
+                },
                 "raw": serialize_row(line),
                 "product": product,
             }
@@ -781,13 +873,19 @@ def _build_phppos_sales_envelope(
     )
 
 
-def _phppos_product_payload(item: DumpRow, source_system_key: str) -> dict[str, JsonValue]:
+def _phppos_product_payload(
+    item: DumpRow, source_system_key: str, categories: Mapping[int, str]
+) -> dict[str, JsonValue]:
+    raw_category = item.get("category")
+    # ``phppos_items.category`` is an int FK into ``phppos_categories``; resolve
+    # to the name so ``vehicle_extraction`` can classify the line.
+    category = phppos_resolve_category_name(raw_category, categories)
     return {
         "source_product_id": f"{source_system_key}-item-{item.item_id}",
         "sku": item.get("item_number"),
         "name": item.get("name"),
         "display_name": item.get("name"),
-        "category": item.get("category"),
+        "category": category,
         "subcategory": item.get("subcategory"),
         "manufacturer": None,
         "is_active": True,

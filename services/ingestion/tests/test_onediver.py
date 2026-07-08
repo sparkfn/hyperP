@@ -213,6 +213,56 @@ INSERT INTO `sales_orders` (`id`, `order_id`, `order_date`, `accepted_date`, `cr
     assert "customer_link" not in unlinked["raw_payload"]
 
 
+def test_onediver_sales_envelope_emits_non_vehicle_lines_and_customer_nric(
+    tmp_path: Path,
+) -> None:
+    sales = """\
+INSERT INTO `sales_orders` (`id`, `order_id`, `order_date`, `accepted_date`, `created`, \
+`billing_contact_name`, `billing_contact_email`, `billing_contact_number`, `billing_country_code`, \
+`total`, `status_code`, `currency`, `modified`) VALUES
+(1, 'SO-1', '2026-05-02 03:00:00', NULL, '2026-05-02 03:05:00', 'Ada Lovelace', \
+'ada@example.test', '6599990000', '65', '329.00', 'ACCEPTED', 'SGD', '2026-05-02 03:05:00');
+"""
+    items = """\
+INSERT INTO `sales_order_items` (`id`, `sales_order_id`, `product_id`, `product_type`, \
+`product_type_id`, `name`, `reference`, `brand_sku`, `unit_price`, `quantity`, \
+`after_discount`, `price`, `is_deleted`) VALUES
+(901, 1, 42, 's', 3, 'Poseidon Black Line Mask', 'MASK-42', 'SKU-42', 329.0000, 1, \
+'329.0000', '329.0000', 0);
+"""
+    products = """\
+INSERT INTO `products` (`id`, `product_type`, `sku`, `name`, `model`, `is_deleted`) VALUES
+(42, 's', 'SKU-42', 'Poseidon Black Line Mask', 'LVSL', 0);
+"""
+    dump_path = _write_dump(tmp_path, _PROFILE_INSERT, sales, items, products)
+
+    records = list(get_dump_connector("onediver:sales", dump_path).fetch_records())
+    assert len(records) == 1
+    raw_payload = records[0]["raw_payload"]
+    assert isinstance(raw_payload, dict)
+    # Customer NRIC resolved from the profile's ic_number (anti-match, Task 6).
+    assert raw_payload["customer_nric"] == "S1234567A"
+    # OneDiver is all non-vehicle: line_items + non_vehicle_lines carry the lines.
+    non_vehicle_lines = raw_payload["non_vehicle_lines"]
+    assert isinstance(non_vehicle_lines, list)
+    assert len(non_vehicle_lines) == 1
+    line = non_vehicle_lines[0]
+    assert isinstance(line, dict)
+    assert line["metadata"]["nric"] == "S1234567A"
+    assert line["metadata"]["merchant"] is None
+    product = line["product"]
+    assert isinstance(product, dict)
+    assert product["name"] == "Poseidon Black Line Mask"
+    assert product["sku"] == "SKU-42"
+    assert product["model"] == "LVSL"
+    # No category mapping available for onediver (per brief).
+    assert product["category"] is None
+    # line_items mirrors non_vehicle_lines for pipeline uniformity.
+    assert raw_payload["line_items"] is non_vehicle_lines
+    # customer_link preserved.
+    assert raw_payload["customer_link"]["identity_source_record_id"] == "onediver-profile-5"
+
+
 def test_onediver_sales_skips_deleted_profile_email(tmp_path: Path) -> None:
     # A sales order billed to a *deleted* profile's email must NOT link: the
     # identity connector never emits a source record for deleted profiles, so

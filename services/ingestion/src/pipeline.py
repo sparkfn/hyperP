@@ -19,14 +19,13 @@ import logging
 
 from neo4j import ManagedTransaction
 
-from src.exclusions import ExclusionContext, is_excluded_machine_unit_observation
+from src.exclusions import ExclusionContext, is_excluded_vehicle_observation
 from src.golden_profile import compute_golden_profile
 from src.graph import queries
 from src.graph.client import Neo4jClient
-from src.machine_unit_extraction import observations_from_chat_inquiries
-from src.machine_units import (
+from src.vehicle_extraction import observations_from_chat_inquiries
+from src.vehicles import (
     normalize_lta_tag,
-    normalize_machine_product,
     normalize_serial_number,
 )
 from src.matching.engine import MatchEngine
@@ -191,7 +190,7 @@ class IngestPipeline:
                 old_source_record_pk=previous_source_record_pk,
                 new_source_record_pk=source_record_pk,
             )
-        self._write_chat_machine_unit_observations(
+        self._write_chat_vehicle_observations(
             tx,
             envelope=envelope,
             source_record_pk=source_record_pk,
@@ -275,7 +274,7 @@ class IngestPipeline:
             review_case_id=review_case_id,
         )
 
-    def _write_chat_machine_unit_observations(
+    def _write_chat_vehicle_observations(
         self,
         tx: ManagedTransaction,
         *,
@@ -295,26 +294,26 @@ class IngestPipeline:
             inquiries=inquiries_raw,
         )
         for observation in observations:
-            if is_excluded_machine_unit_observation(observation, exclusion_context):
+            if is_excluded_vehicle_observation(observation, exclusion_context):
                 continue
             row = tx.run(
-                queries.RESOLVE_EXISTING_MACHINE_UNIT_FOR_CHAT,
-                normalized_machine_product=normalize_machine_product(observation.machine_product),
+                queries.RESOLVE_EXISTING_VEHICLE_FOR_CHAT,
                 normalized_lta_tag=normalize_lta_tag(observation.lta_tag),
                 normalized_serial_number=normalize_serial_number(observation.serial_number),
+                product=observation.product,
             ).single()
             if row is None:
                 continue
-            machine_unit_ids = [str(item) for item in row["machine_unit_ids"]]
-            if len(machine_unit_ids) != 1:
+            vehicle_ids = [str(item) for item in row["vehicle_ids"]]
+            if len(vehicle_ids) != 1:
                 continue
-            machine_unit_id = machine_unit_ids[0]
+            vehicle_id = vehicle_ids[0]
             tx.run(
-                queries.LINK_CHAT_SOURCE_RECORD_MENTIONS_EXISTING_UNIT,
+                queries.LINK_CHAT_SOURCE_RECORD_MENTIONS_VEHICLE,
                 source_record_pk=source_record_pk,
                 source_system_key=observation.source_system_key,
                 source_record_id=observation.source_record_id,
-                machine_unit_id=machine_unit_id,
+                vehicle_id=vehicle_id,
                 raw_context=observation.raw_context,
                 observed_at=observation.observed_at,
                 confidence=observation.confidence,

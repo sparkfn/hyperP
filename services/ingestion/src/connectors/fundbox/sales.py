@@ -35,12 +35,14 @@ from src.connectors.fundbox.builders import (
     to_iso,
 )
 from src.connectors.fundbox.schema import (
+    basic_profiles,
     merchant_products,
     merchants,
     order_items,
     orders,
     product_variants,
     products,
+    users,
 )
 from src.models import JsonValue
 
@@ -67,6 +69,9 @@ def _variant_to_product(variant: Any, product: Any | None) -> dict[str, JsonValu
         "category": product.category if product else None,
         "subcategory": product.sub_category if product else None,
         "manufacturer": product.make if product else None,
+        # ``vehicle_extraction.observations_from_sales_lines`` reads ``model``
+        # from the top-level product dict, so mirror it out of ``attributes``.
+        "model": product.model if product else None,
         "is_active": bool(variant.active),
         "attributes": {
             "variant_attributes": variant.attributes,
@@ -74,6 +79,11 @@ def _variant_to_product(variant: Any, product: Any | None) -> dict[str, JsonValu
             "sub_type": product.sub_type if product else None,
             "model": product.model if product else None,
         },
+        "type": product.type if product else None,
+        "sub_type": product.sub_type if product else None,
+        # Secondary signals (vehicle extraction's primary gate is category).
+        "has_serial_number": bool(product.has_serial_number) if product else False,
+        "has_lta_tag": bool(product.has_lta_tag) if product else False,
     }
 
 
@@ -81,6 +91,7 @@ def _build_line_items(
     line_rows: list[Any],
     source_order_id: str,
     product_info: dict[int, dict[str, JsonValue]],
+    merchant_name: str | None,
 ) -> list[JsonValue]:
     """Build the line_items list for a Fundbox sales envelope."""
     items: list[JsonValue] = []
@@ -105,6 +116,10 @@ def _build_line_items(
                     "lta_tag": line.lta_tag,
                     "serial_no": line.serial_no,
                     "merchant_product_id": line.merchant_product_id,
+                    # Order-level merchant name — the pipeline assembles
+                    # ``non_vehicle_lines`` from line product fields + this
+                    # ``metadata.merchant`` (Task 5).
+                    "merchant": merchant_name,
                 },
                 "product": product,
             }
@@ -142,6 +157,9 @@ class FundboxSalesConnector(FundboxConnectorBase):
                 item.merchant_product_id for items in items_by_order.values() for item in items
             }
             product_info = self._fetch_product_info(conn, variant_ids)
+            customer_contacts = self._fetch_customer_contacts(
+                conn, [row.user_id for row in eligible_chunk if row.user_id is not None]
+            )
 
             for row in eligible_chunk:
                 yield self._build_one(
@@ -149,6 +167,7 @@ class FundboxSalesConnector(FundboxConnectorBase):
                     items_by_order.get(row.id, []),
                     merchant_names,
                     product_info,
+                    customer_contacts.get(row.user_id) if row.user_id is not None else None,
                 )
 
     def _fetch_merchant_names(self, conn: Connection, merchant_ids: list[int]) -> dict[int, str]:
@@ -162,6 +181,69 @@ class FundboxSalesConnector(FundboxConnectorBase):
         for row in target.execute(stmt):
             result[row[0]] = row[1] or row[2] or f"merchant-{row[0]}"
         return result
+
+    def _fetch_customer_contacts(
+        self,
+        conn: Connection,
+        user_ids: list[int],
+    ) -> dict[int, dict[str, object]]:
+        """Batch-load ``users`` + ``basic_profiles`` for a chunk of orders.
+
+        Returns ``{user_id: {"customer_emails": [...], "customer_phones": [...],
+        "customer_nric": str | None}}`` so the sales SourceRecord can carry the
+        customer's contact channels at sale level — the Vehicle heuristic
+        (``_propose_one_pending_sale``) reads ``raw_payload.customer_emails /
+        customer_phones / customer_nric`` to find candidates.
+
+        Emails and phones are deduped across the ``users`` and ``basic_profiles``
+        rows (non-empty only); ``customer_nric`` comes from
+        ``basic_profiles.nric`` (Task 4 emitted it per-line as
+        ``metadata.nric`` — this standardizes the sale-level access path).
+        """
+        if not user_ids:
+            return {}
+        target = self._sidecar_conn or conn
+        ids = list(set(user_ids))
+
+        user_rows: dict[int, Any] = {}
+        for r in target.execute(select(users).where(users.c.id.in_(ids))):
+            user_rows[int(r.id)] = r
+
+        # A user may have multiple basic_profiles; keep the first (lowest id)
+        # deterministically.
+        profile_rows: dict[int, Any] = {}
+        profile_stmt = (
+            select(basic_profiles)
+            .where(basic_profiles.c.user_id.in_(ids))
+            .order_by(basic_profiles.c.id)
+        )
+        for r in target.execute(profile_stmt):
+            uid = int(r.user_id)
+            if uid not in profile_rows:
+                profile_rows[uid] = r
+
+        contacts: dict[int, dict[str, object]] = {}
+        for uid in ids:
+            u = user_rows.get(uid)
+            p = profile_rows.get(uid)
+            emails: list[str] = []
+            phones: list[str] = []
+            for src in (u, p):
+                if src is None:
+                    continue
+                email = src.email
+                if email and email not in emails:
+                    emails.append(email)
+                mobile = src.mobile_number
+                if mobile and mobile not in phones:
+                    phones.append(mobile)
+            nric: str | None = p.nric if p is not None and p.nric else None
+            contacts[uid] = {
+                "customer_emails": emails,
+                "customer_phones": phones,
+                "customer_nric": nric,
+            }
+        return contacts
 
     def _fetch_product_info(
         self, conn: Connection, merchant_product_ids: set[int]
@@ -204,8 +286,15 @@ class FundboxSalesConnector(FundboxConnectorBase):
         line_rows: list[Any],
         merchant_names: dict[int, str],
         product_info: dict[int, dict[str, JsonValue]],
+        customer_contact: dict[str, object] | None,
     ) -> dict[str, JsonValue]:
         source_order_id = str(row.id)
+        contact = customer_contact or {}
+        customer_emails = list(contact.get("customer_emails") or [])
+        customer_phones = list(contact.get("customer_phones") or [])
+        customer_nric = contact.get("customer_nric")
+        if not isinstance(customer_nric, str):
+            customer_nric = None
         return build_envelope(
             source_record_id=f"fundbox_consumer_backend-order-{row.id}",
             observed_at=to_iso(row.updated_at or row.created_at),
@@ -231,7 +320,12 @@ class FundboxSalesConnector(FundboxConnectorBase):
                     },
                     "raw": serialize_row(row),
                 },
-                "line_items": _build_line_items(line_rows, source_order_id, product_info),
+                "line_items": _build_line_items(
+                    line_rows,
+                    source_order_id,
+                    product_info,
+                    merchant_names.get(row.merchant_id) if row.merchant_id else None,
+                ),
                 "customer_link": {
                     "identity_source_record_id": (
                         f"fundbox_consumer_backend-user-{row.user_id}"
@@ -240,5 +334,18 @@ class FundboxSalesConnector(FundboxConnectorBase):
                     ),
                     "source_system_key": "fundbox_consumer_backend",
                 },
+                # Sale-level customer contact for the vehicle matching
+                # heuristic (Task 6). Fundbox sales rows reference the customer
+                # by ``user_id`` (an identity FK); the customer's
+                # email/phone/nric live on the ``users``/``basic_profiles``
+                # tables, joined here by ``orders.user_id`` and emitted at sale
+                # level so ``_propose_one_pending_sale`` can read
+                # ``raw_payload.customer_emails / customer_phones /
+                # customer_nric``. Emails/phones are deduped non-empty values
+                # across the two tables; ``customer_nric`` comes from
+                # ``basic_profiles.nric``.
+                "customer_nric": customer_nric,
+                "customer_emails": customer_emails,
+                "customer_phones": customer_phones,
             },
         )

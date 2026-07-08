@@ -25,7 +25,7 @@ def test_nested_format_parses_exclusions_and_llm(tmp_path: Path) -> None:
                     "email_domains": ["b.com"],
                     "names": ["Acme"],
                     "source_ids": ["s1"],
-                    "machine_unit_identifiers": [{"machine_product": "Forklift X"}],
+                    "vehicle_identifiers": [{"vehicle_product": "Forklift X"}],
                 },
                 "llm": {
                     "timeout_seconds": 12.0,
@@ -42,7 +42,7 @@ def test_nested_format_parses_exclusions_and_llm(tmp_path: Path) -> None:
     )
     config = load_ingestion_config(str(path))
     assert config.exclusions.phones == ["+6511111111"]
-    assert config.exclusions.machine_unit_identifiers == [{"machine_product": "Forklift X"}]
+    assert config.exclusions.vehicle_identifiers == [{"vehicle_product": "Forklift X"}]
     assert config.llm == LlmConfig(
         timeout_seconds=12.0,
         request_delay_seconds=0.25,

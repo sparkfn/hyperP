@@ -3,7 +3,7 @@
 import { Fragment, use, useCallback, useEffect, useId, useMemo, useRef, useState, type ReactElement } from "react";
 import Link from "next/link";
 import { notFound, useRouter } from "next/navigation";
-import type { Person, PersonConnection, SalesOrder, LoyaltySummary, MachineUnitSummary } from "@/lib/api-types";
+import type { Person, PersonConnection, SalesOrder, LoyaltySummary, VehicleSummary } from "@/lib/api-types";
 import type {
   ChatMessage,
   EditableFieldOptions,
@@ -487,7 +487,7 @@ function PersonSidebar({ person, detailData, personId, onOverride, onGraphOpen }
           />
         </div>
       </section>
-      <MachineUnitsSidebarCard units={person.machine_units} />
+      <VehiclesSidebarCard vehicles={person.vehicles} />
       <section className={styles.sidebarCard}>
         <div className={styles.sourceEntityHeader}>
           <span className={styles.bkSectionLabel}>Timeline</span>
@@ -651,15 +651,15 @@ function LoyaltySidebarCard({ loyalty }: { loyalty: LoyaltySummary[] | null | un
   );
 }
 
-function MachineUnitsSidebarCard({ units }: { units: MachineUnitSummary[] | null | undefined }): ReactElement {
-  if (!units || units.length === 0) {
+function VehiclesSidebarCard({ vehicles }: { vehicles: VehicleSummary[] | null | undefined }): ReactElement {
+  if (!vehicles || vehicles.length === 0) {
     return (
       <section className={styles.sidebarCard}>
         <div className={styles.bkHeader}>
-          <span className={styles.bkSectionLabel}>Machine units</span>
+          <span className={styles.bkSectionLabel}>Vehicles</span>
           <span className={styles.bkBadgeClear}>— None</span>
         </div>
-        <p className={styles.bkClearBody}>No machine units linked to this person.</p>
+        <p className={styles.bkClearBody}>No vehicles linked to this person.</p>
       </section>
     );
   }
@@ -667,42 +667,54 @@ function MachineUnitsSidebarCard({ units }: { units: MachineUnitSummary[] | null
   return (
     <section className={styles.sidebarCard}>
       <div className={styles.bkHeader}>
-        <span className={styles.bkSectionLabel}>Machine units</span>
-        <span className={styles.bkBadgeClear}>{units.length} {units.length === 1 ? "unit" : "units"}</span>
+        <span className={styles.bkSectionLabel}>Vehicles</span>
+        <span className={styles.bkBadgeClear}>{vehicles.length} {vehicles.length === 1 ? "vehicle" : "vehicles"}</span>
       </div>
       <div
         className={`${styles.bkCaseList} ${styles.bkCaseListScroll}`}
         role="region"
-        aria-label="Machine units"
+        aria-label="Vehicles"
         tabIndex={0}
       >
-        {units.map((u) => (
-          <div key={u.machine_unit_id} className={styles.bkListItem}>
+        {vehicles.map((v) => (
+          <div key={v.vehicle_id} className={styles.bkListItem}>
             <div className={styles.bkFieldGrid}>
               <div className={styles.bkFieldRow}>
                 <span className={styles.bkFieldLabel}>Product</span>
-                <span className={styles.bkFieldValue}>{u.machine_product ?? "—"}</span>
+                <span className={styles.bkFieldValue}>{v.product ?? "—"}</span>
               </div>
+              {v.product_sku ? (
+                <div className={styles.bkFieldRow}>
+                  <span className={styles.bkFieldLabel}>SKU</span>
+                  <span className={styles.bkFieldValue}>{v.product_sku}</span>
+                </div>
+              ) : null}
+              {v.manufacturer || v.model ? (
+                <div className={styles.bkFieldRow}>
+                  <span className={styles.bkFieldLabel}>Make / Model</span>
+                  <span className={styles.bkFieldValue}>{v.manufacturer ?? "—"} / {v.model ?? "—"}</span>
+                </div>
+              ) : null}
               <div className={styles.bkFieldRow}>
                 <span className={styles.bkFieldLabel}>LTA tag</span>
-                <span className={styles.bkFieldValue}>{u.lta_tag ?? "—"}</span>
+                <span className={styles.bkFieldValue}>{v.lta_tag ?? "—"}</span>
               </div>
               <div className={styles.bkFieldRow}>
                 <span className={styles.bkFieldLabel}>Serial</span>
-                <span className={styles.bkFieldValue}>{u.serial_number ?? "—"}</span>
+                <span className={styles.bkFieldValue}>{v.serial_number ?? "—"}</span>
               </div>
               <div className={styles.bkFieldRow}>
                 <span className={styles.bkFieldLabel}>Link</span>
                 <span className={styles.bkFieldValue}>
-                  {u.relationship}
-                  {u.is_active === false ? " (inactive)" : ""}
-                  {u.conflict_flag ? " ⚠ conflict" : ""}
+                  {v.relationship}
+                  {v.is_active === false ? " (inactive)" : ""}
+                  {v.conflict_flag ? " ⚠ conflict" : ""}
                 </span>
               </div>
-              {u.observed_at ? (
+              {v.observed_at ? (
                 <div className={styles.bkFieldRow}>
                   <span className={styles.bkFieldLabel}>Observed</span>
-                  <span className={styles.bkFieldValue}>{fmtDate(u.observed_at)}</span>
+                  <span className={styles.bkFieldValue}>{fmtDate(v.observed_at)}</span>
                 </div>
               ) : null}
             </div>

@@ -171,16 +171,17 @@ OPTIONAL MATCH (left_addr:Address) WHERE left:Person AND left_addr.address_id = 
 OPTIONAL MATCH (right_addr:Address) WHERE right:Person AND right_addr.address_id = right.preferred_address_id
 OPTIONAL MATCH (left)-[:FROM_SOURCE]->(left_src:SourceSystem)
 OPTIONAL MATCH (right)-[:FROM_SOURCE]->(right_src:SourceSystem)
-OPTIONAL MATCH (sales_o:Order)-[:INVOLVES_UNIT {source_record_pk: left.source_record_pk}]->(sales_u:MachineUnit)
+OPTIONAL MATCH (sales_o:Order)-[:INVOLVES_VEHICLE {source_record_pk: left.source_record_pk}]->(sales_v:Vehicle)
   WHERE left:SourceRecord AND left.record_type = 'sales'
 WITH rc, md, left, right, left_addr, right_addr, left_src, right_src,
      collect(DISTINCT CASE WHEN sales_o IS NOT NULL
-       THEN sales_o { .order_id, .order_no, .total_amount, .currency, ordered_at: toString(sales_o.ordered_at) }
+       THEN sales_o { .order_id, .order_no, .total_amount, .currency, .non_vehicle_lines, ordered_at: toString(sales_o.ordered_at) }
        END) AS sales_orders,
-     collect(DISTINCT CASE WHEN sales_u IS NOT NULL
-       THEN sales_u { .machine_unit_id, .machine_product, .normalized_lta_tag, .normalized_serial_number,
-                      conflict_flag: coalesce(sales_u.conflict_flag, false) }
-       END) AS sales_units
+     collect(DISTINCT CASE WHEN sales_v IS NOT NULL
+       THEN sales_v { .vehicle_id, .product, .product_sku,
+                      .normalized_lta_tag, .normalized_serial_number,
+                      conflict_flag: coalesce(sales_v.conflict_flag, false) }
+       END) AS sales_vehicles
 RETURN rc {
   .review_case_id, .queue_state, .priority, .assigned_to,
   .follow_up_at, .sla_due_at, .resolution, .resolved_at,
@@ -211,7 +212,8 @@ CASE WHEN right:Person
      ELSE null END AS right_entity,
 right_addr { .address_id, .unit_number, .street_number, .street_name, .city, .postal_code, .country_code, .normalized_full } AS right_address,
 sales_orders[0] AS sales_order,
-sales_units AS sales_units
+sales_vehicles AS sales_vehicles,
+sales_orders[0].non_vehicle_lines AS non_vehicle_lines
 """
 
 ASSIGN_REVIEW_CASE = (
@@ -337,7 +339,7 @@ MATCH (rc:ReviewCase {review_case_id: $review_case_id})-[:FOR_DECISION]->(md:Mat
 MATCH (md)-[:ABOUT_LEFT]->(sr:SourceRecord {record_type: 'sales'})
 MATCH (md)-[:ABOUT_RIGHT]->(p:Person {status: 'active'})
 WITH sr, p
-MATCH (o:Order)-[:INVOLVES_UNIT {source_record_pk: sr.source_record_pk}]->(:MachineUnit)
+MATCH (o:Order)-[:INVOLVES_VEHICLE {source_record_pk: sr.source_record_pk}]->(:Vehicle)
 WITH DISTINCT sr, p, o
 MERGE (p)-[rel:PURCHASED {
     source_system_key: o.source_system_key,
@@ -349,15 +351,15 @@ SET rel.source_record_pk  = sr.source_record_pk,
     rel.last_confirmed_at = datetime()
 """
 
-LINK_REVIEW_SALES_BOUGHT_UNIT = """
+LINK_REVIEW_SALES_BOUGHT_VEHICLE = """
 MATCH (rc:ReviewCase {review_case_id: $review_case_id})-[:FOR_DECISION]->(md:MatchDecision)
 MATCH (md)-[:ABOUT_LEFT]->(sr:SourceRecord {record_type: 'sales'})
 MATCH (md)-[:ABOUT_RIGHT]->(p:Person {status: 'active'})
-MATCH (o:Order)-[:INVOLVES_UNIT {source_record_pk: sr.source_record_pk}]->(u:MachineUnit)
-MERGE (p)-[rel:BOUGHT_UNIT {
+MATCH (o:Order)-[:INVOLVES_VEHICLE {source_record_pk: sr.source_record_pk}]->(v:Vehicle)
+MERGE (p)-[rel:BOUGHT_VEHICLE {
     source_system_key: o.source_system_key,
     source_order_id:   o.source_order_id
-}]->(u)
+}]->(v)
 ON CREATE SET rel.created_at = datetime(), rel.first_seen_at = datetime()
 SET rel.source_record_pk  = sr.source_record_pk,
     rel.last_seen_at      = datetime(),

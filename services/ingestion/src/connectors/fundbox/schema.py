@@ -246,6 +246,11 @@ products = Table(
     Column("description", Text),
     Column("make", String(255)),
     Column("model", String(255)),
+    # Per-product flags (int(1) in the source DB) signalling that lines for this
+    # product carry a serial number / LTA tag. The vehicle-extraction primary gate
+    # is category; these are secondary signals for future use.
+    Column("has_serial_number", Integer),
+    Column("has_lta_tag", Integer),
     Column("active", Integer),
 )
 

@@ -75,17 +75,20 @@ CALL {
 }
 CALL {
   WITH person
-  OPTIONAL MATCH (person)-[rel:OWNS_UNIT|BOUGHT_UNIT]->(u:MachineUnit)
-  RETURN collect(CASE WHEN u IS NULL THEN NULL ELSE {
-    machine_unit_id: u.machine_unit_id,
-    machine_product: u.machine_product,
-    lta_tag: u.lta_tag,
-    serial_number: u.serial_number,
+  OPTIONAL MATCH (person)-[rel:OWNS_VEHICLE|BOUGHT_VEHICLE]->(v:Vehicle)
+  RETURN collect(CASE WHEN v IS NULL THEN NULL ELSE {
+    vehicle_id: v.vehicle_id,
+    product: v.product,
+    product_sku: v.product_sku,
+    manufacturer: v.manufacturer,
+    model: v.model,
+    lta_tag: v.lta_tag,
+    serial_number: v.serial_number,
     rel_type: type(rel),
     is_active: rel.is_active,
-    conflict_flag: u.conflict_flag,
+    conflict_flag: coalesce(v.conflict_flag, false),
     observed_at: rel.observed_at
-  } END) AS machine_units
+  } END) AS vehicles
 }
 RETURN person {
   .person_id, .status, .is_high_value, .is_high_risk,
@@ -102,7 +105,7 @@ source_record_count,
 connection_count,
 lifetime_value,
 loyalty_rows,
-machine_units
+vehicles
 """
 
 GET_PERSON_SOURCE_RECORDS = """

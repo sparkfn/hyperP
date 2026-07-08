@@ -10,9 +10,9 @@ whole task — identity ingestion continues unaffected.
 from __future__ import annotations
 
 import logging
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from decimal import Decimal
-from typing import cast
+from typing import Protocol, cast
 
 from sqlalchemy import MetaData, Table, inspect, select
 from sqlalchemy.engine import Connection, Engine, RowMapping
@@ -25,6 +25,60 @@ from src.connectors.fundbox.builders import (
 from src.models import JsonValue
 
 logger = logging.getLogger(__name__)
+
+
+class _RowLike(Protocol):
+    """Structural type for dict-like DB rows (DumpRow, RowMapping)."""
+
+    def get(self, key: str, default: JsonValue = None) -> JsonValue: ...
+
+
+def phppos_customer_bike_plate(customer: _RowLike | None) -> str | None:
+    """SpeedZone customer bike plate (custom_field_8_value / custom_field_10_value).
+
+    Eko customer rows share the same schema but the plate columns are not
+    bike plates there, so this helper is only invoked for the SpeedZone source.
+    """
+    if customer is None:
+        return None
+    for col in ("custom_field_8_value", "custom_field_10_value"):
+        value = customer.get(col)
+        if value:
+            return str(value)
+    return None
+
+
+def phppos_customer_nric(customer: _RowLike | None) -> str | None:
+    """Customer NRIC (custom_field_1_value) for the matching anti-match (Task 6)."""
+    if customer is None:
+        return None
+    value = customer.get("custom_field_1_value")
+    return str(value) if value else None
+
+
+def phppos_resolve_category_name(
+    raw_category: JsonValue, categories: Mapping[int, str]
+) -> str | None:
+    """Resolve ``phppos_items.category`` to the human-readable category name.
+
+    ``phppos_items.category`` is an integer FK into ``phppos_categories``. Some
+    dump fixtures store the name directly, so fall back to the raw value when it
+    is not a known category id.
+    """
+    if raw_category is None:
+        return None
+    cat_id = _coerce_int(raw_category)
+    if cat_id is not None and cat_id in categories:
+        return categories[cat_id]
+    return str(raw_category) if raw_category else None
+
+
+def _coerce_int(value: JsonValue) -> int | None:
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str) and value.strip().lstrip("-").isdigit():
+        return int(value)
+    return None
 
 _REQUIRED_SALES_TABLES: tuple[str, ...] = (
     "phppos_sales",
@@ -103,6 +157,8 @@ def fetch_phppos_sales(
     source_system_key: str,
     chunk_size: int,
     excluded_person_ids: set[int] | None = None,
+    *,
+    extract_bike_plate: bool = False,
 ) -> Iterator[dict[str, JsonValue]]:
     """Yield one sales envelope per phppos_sales row.
 
@@ -113,6 +169,11 @@ def fetch_phppos_sales(
     which is a **person_id** (not a ``phppos_customers.id``). The customer
     identity record is keyed on the same person_id (see EkoConnector._build_one),
     so the sales ``customer_link`` references ``-customer-{customer_id}`` directly.
+
+    ``extract_bike_plate`` is True only for SpeedZone — its customer
+    ``custom_field_8/10_value`` columns hold the bike plate emitted as the line
+    ``lta_tag``. Eko shares the schema but the columns are not bike plates, so
+    it is left False.
     """
     if not sales_tables_present(engine):
         return
@@ -126,6 +187,38 @@ def fetch_phppos_sales(
     items_cols = {c.name for c in items_t.columns}
     item_cols = {c.name for c in item_t.columns}
 
+    # Optional enrichment tables — older phppos fixtures may lack them, so guard
+    # with has_table. ``phppos_categories`` resolves the integer category FK on
+    # ``phppos_items`` to a name; ``phppos_customers`` carries the customer's NRIC
+    # (all phppos) and bike plate (SpeedZone).
+    categories: dict[int, str] = {}
+    customers_by_person_id: dict[int, RowMapping] = {}
+    people_by_person_id: dict[int, RowMapping] = {}
+    has_categories = inspect(engine).has_table("phppos_categories")
+    has_customers = inspect(engine).has_table("phppos_customers")
+    has_people = inspect(engine).has_table("phppos_people")
+    if has_categories:
+        cat_t = Table("phppos_categories", md, autoload_with=engine, resolve_fks=False)
+        categories = {
+            int(row["id"]): str(row["name"] or "")
+            for row in conn.execute(select(cat_t)).mappings()
+        }
+    if has_customers:
+        cust_t = Table("phppos_customers", md, autoload_with=engine, resolve_fks=False)
+        for row in conn.execute(select(cust_t)).mappings():
+            person_id_raw = row.get("person_id")
+            if person_id_raw is not None:
+                customers_by_person_id[int(person_id_raw)] = row
+    # ``phppos_people`` carries the customer's email/phone (the sales→customer
+    # join is on ``person_id``). The vehicle matching heuristic (Task 6) needs
+    # the customer's contact channels to find the Person sharing the Vehicle.
+    if has_people:
+        people_t = Table("phppos_people", md, autoload_with=engine, resolve_fks=False)
+        for row in conn.execute(select(people_t)).mappings():
+            person_id_raw = row.get("person_id")
+            if person_id_raw is not None:
+                people_by_person_id[int(person_id_raw)] = row
+
     stmt = select(sales_t).order_by(sales_t.c.sale_id)
     if excluded_person_ids:
         stmt = stmt.where(sales_t.c.customer_id.not_in(sorted(excluded_person_ids)))
@@ -137,6 +230,16 @@ def fetch_phppos_sales(
                 continue
             sale_id = int(sale["sale_id"])
             line_rows, items_by_id = _fetch_sale_items(sidecar, items_t, item_t, sale_id)
+            customer_row = (
+                customers_by_person_id.get(int(customer_id_raw))
+                if customer_id_raw is not None
+                else None
+            )
+            people_row = (
+                people_by_person_id.get(int(customer_id_raw))
+                if customer_id_raw is not None
+                else None
+            )
             yield _build_envelope(
                 sale=sale,
                 line_rows=line_rows,
@@ -145,6 +248,10 @@ def fetch_phppos_sales(
                 items_cols=items_cols,
                 item_cols=item_cols,
                 source_system_key=source_system_key,
+                categories=categories,
+                customer_row=customer_row,
+                people_row=people_row,
+                extract_bike_plate=extract_bike_plate,
             )
 
 
@@ -157,8 +264,33 @@ def _build_envelope(
     items_cols: set[str],
     item_cols: set[str],
     source_system_key: str,
+    categories: Mapping[int, str],
+    customer_row: RowMapping | None,
+    people_row: RowMapping | None,
+    extract_bike_plate: bool,
 ) -> dict[str, JsonValue]:
     source_order_id = str(sale["sale_id"])
+
+    # Per-sale customer fields applied to every line (the customer is the sale's,
+    # not the line's). NRIC feeds the matching heuristic's anti-match (Task 6);
+    # the bike plate feeds ``lta_tag`` for SpeedZone only.
+    line_nric = phppos_customer_nric(customer_row)
+    line_lta_tag = (
+        phppos_customer_bike_plate(customer_row) if extract_bike_plate else None
+    )
+    # Sale-level customer contact channels — the vehicle matching heuristic
+    # (Task 6) needs the customer's email/phone to find the active Person that
+    # shares the Vehicle identity. ``phppos_people`` carries them (the customer
+    # row in ``phppos_customers`` only carries loyalty / custom-field data).
+    customer_emails: list[str] = []
+    customer_phones: list[str] = []
+    if people_row is not None:
+        email = people_row.get("email")
+        if isinstance(email, str) and email.strip():
+            customer_emails.append(email.strip())
+        phone = people_row.get("phone_number")
+        if isinstance(phone, str) and phone.strip():
+            customer_phones.append(phone.strip())
 
     total = Decimal("0")
     line_items_payload: list[JsonValue] = []
@@ -173,6 +305,9 @@ def _build_envelope(
             items_cols,
             item_cols,
             source_system_key,
+            categories,
+            line_nric,
+            line_lta_tag,
         )
         if line_total_value is not None:
             total += Decimal(str(line_total_value))
@@ -212,6 +347,12 @@ def _build_envelope(
                 ),
                 "source_system_key": source_system_key,
             },
+            # Sale-level customer contact for the vehicle matching heuristic
+            # (Task 6). ``customer_nric`` mirrors the per-line ``metadata.nric``
+            # at the sale level so the heuristic can read it in one place.
+            "customer_nric": line_nric,
+            "customer_emails": customer_emails,
+            "customer_phones": customer_phones,
         },
     )
 
@@ -224,6 +365,9 @@ def _build_line_item(
     items_cols: set[str],
     item_cols: set[str],
     source_system_key: str,
+    categories: Mapping[int, str],
+    line_nric: str | None,
+    line_lta_tag: str | None,
 ) -> tuple[dict[str, JsonValue], float | None]:
     """Build a single line-item payload. Returns ``(payload, line_total)``."""
     unit_price = _decimal_to_float(line.get("item_unit_price"))
@@ -247,8 +391,13 @@ def _build_line_item(
             "item_variation_id": _col_or_none(line, "item_variation_id", items_cols),
             "serialnumber": _col_or_none(line, "serialnumber", items_cols),
             "description": _col_or_none(line, "description", items_cols),
+            # Customer-level fields (same for every line of this sale). NRIC
+            # feeds the matching heuristic's anti-match (Task 6); ``lta_tag``
+            # carries the customer's bike plate for SpeedZone.
+            "nric": line_nric,
+            "lta_tag": line_lta_tag,
         },
-        "product": _product_payload(item, source_system_key, item_cols)
+        "product": _product_payload(item, source_system_key, item_cols, categories)
         if item is not None
         else None,
     }
@@ -312,17 +461,24 @@ def _col_or_none(row: RowMapping, attr: str, available_cols: set[str]) -> JsonVa
 
 
 def _product_payload(
-    item: RowMapping, source_system_key: str, item_cols: set[str]
+    item: RowMapping,
+    source_system_key: str,
+    item_cols: set[str],
+    categories: Mapping[int, str],
 ) -> dict[str, JsonValue]:
     item_id = item["item_id"]
     sku = cast(str | None, item.get("item_number")) if "item_number" in item_cols else None
     name = cast(str | None, item.get("name"))
+    raw_category = _col_or_none(item, "category", item_cols)
+    # ``phppos_items.category`` is an integer FK into ``phppos_categories``; resolve
+    # it to the name so ``vehicle_extraction`` can classify the line.
+    category = phppos_resolve_category_name(raw_category, categories)
     return {
         "source_product_id": str(item_id),
         "sku": sku,
         "name": name,
         "display_name": name,
-        "category": _col_or_none(item, "category", item_cols),
+        "category": category,
         "subcategory": _col_or_none(item, "subcategory", item_cols),
         "manufacturer": None,
         "is_active": True,

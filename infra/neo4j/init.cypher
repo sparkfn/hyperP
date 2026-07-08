@@ -29,8 +29,11 @@ CREATE CONSTRAINT product_dedup_unique IF NOT EXISTS
 CREATE CONSTRAINT bankruptcy_case_dedup_unique IF NOT EXISTS
   FOR (bc:BankruptcyCase) REQUIRE (bc.source_system_key, bc.source_case_id) IS UNIQUE;
 
-CREATE CONSTRAINT machine_unit_id_unique IF NOT EXISTS
-  FOR (mu:MachineUnit) REQUIRE mu.machine_unit_id IS UNIQUE;
+CREATE CONSTRAINT vehicle_id_unique IF NOT EXISTS
+  FOR (v:Vehicle) REQUIRE v.vehicle_id IS UNIQUE;
+
+CREATE CONSTRAINT vehicle_lta_unique IF NOT EXISTS
+  FOR (v:Vehicle) REQUIRE v.normalized_lta_tag IS UNIQUE;
 
 CREATE CONSTRAINT source_record_pk_unique IF NOT EXISTS
   FOR (sr:SourceRecord) REQUIRE sr.source_record_pk IS UNIQUE;
@@ -69,12 +72,9 @@ CREATE INDEX idx_source_record_type IF NOT EXISTS
 CREATE INDEX idx_source_record_link_state IF NOT EXISTS
   FOR (sr:SourceRecord) ON (sr.record_type, sr.link_status);
 
-// Machine unit lookups
-CREATE INDEX idx_machine_unit_lta_tag IF NOT EXISTS
-  FOR (mu:MachineUnit) ON (mu.normalized_lta_tag);
-
-CREATE INDEX idx_machine_unit_serial_number IF NOT EXISTS
-  FOR (mu:MachineUnit) ON (mu.normalized_serial_number);
+// Vehicle lookups
+CREATE INDEX idx_vehicle_serial IF NOT EXISTS
+  FOR (v:Vehicle) ON (v.normalized_serial_number);
 
 // Review queue
 CREATE INDEX idx_review_case_queue IF NOT EXISTS

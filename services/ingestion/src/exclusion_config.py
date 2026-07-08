@@ -10,16 +10,16 @@ from typing import TypedDict, cast
 from src.models import JsonValue
 
 
-class MachineUnitIdentifierExclusion(TypedDict, total=False):
-    """Machine unit identifier exclusion values loaded from JSON."""
+class VehicleIdentifierExclusion(TypedDict, total=False):
+    """Vehicle identifier exclusion values loaded from JSON."""
 
-    machine_product: str
+    vehicle_product: str
     lta_tag: str
     serial_number: str
 
 
-MACHINE_UNIT_IDENTIFIER_KEYS: frozenset[str] = frozenset(
-    {"machine_product", "lta_tag", "serial_number"}
+VEHICLE_IDENTIFIER_KEYS: frozenset[str] = frozenset(
+    {"vehicle_product", "lta_tag", "serial_number"}
 )
 
 
@@ -32,7 +32,7 @@ class ExclusionFile:
     email_domains: list[str] = field(default_factory=list)
     names: list[str] = field(default_factory=list)
     source_ids: list[str] = field(default_factory=list)
-    machine_unit_identifiers: list[MachineUnitIdentifierExclusion] = field(default_factory=list)
+    vehicle_identifiers: list[VehicleIdentifierExclusion] = field(default_factory=list)
 
 
 def _str_list(raw: JsonValue, *, path: Path) -> list[str]:
@@ -48,26 +48,26 @@ def _str_list(raw: JsonValue, *, path: Path) -> list[str]:
     return values
 
 
-def _machine_unit_identifier_list(
+def _vehicle_identifier_list(
     raw: JsonValue, *, path: Path
-) -> list[MachineUnitIdentifierExclusion]:
+) -> list[VehicleIdentifierExclusion]:
     if raw is None:
         return []
     if not isinstance(raw, list):
         raise ValueError(f"Invalid ingestion exclusions JSON: {path}")
-    values: list[MachineUnitIdentifierExclusion] = []
+    values: list[VehicleIdentifierExclusion] = []
     for value in raw:
         if not isinstance(value, dict):
             raise ValueError(f"Invalid ingestion exclusions JSON: {path}")
         item = value
-        if not set(item).issubset(MACHINE_UNIT_IDENTIFIER_KEYS):
+        if not set(item).issubset(VEHICLE_IDENTIFIER_KEYS):
             raise ValueError(f"Invalid ingestion exclusions JSON: {path}")
-        exclusion: MachineUnitIdentifierExclusion = {}
-        if "machine_product" in item:
-            machine_product = item["machine_product"]
-            if not isinstance(machine_product, str):
+        exclusion: VehicleIdentifierExclusion = {}
+        if "vehicle_product" in item:
+            vehicle_product = item["vehicle_product"]
+            if not isinstance(vehicle_product, str):
                 raise ValueError(f"Invalid ingestion exclusions JSON: {path}")
-            exclusion["machine_product"] = machine_product
+            exclusion["vehicle_product"] = vehicle_product
         if "lta_tag" in item:
             lta_tag = item["lta_tag"]
             if not isinstance(lta_tag, str):
@@ -101,7 +101,7 @@ def load_exclusion_file(path_value: str) -> ExclusionFile:
         email_domains=_str_list(payload.get("email_domains"), path=path),
         names=_str_list(payload.get("names"), path=path),
         source_ids=_str_list(payload.get("source_ids"), path=path),
-        machine_unit_identifiers=_machine_unit_identifier_list(
-            payload.get("machine_unit_identifiers"), path=path
+        vehicle_identifiers=_vehicle_identifier_list(
+            payload.get("vehicle_identifiers"), path=path
         ),
     )
