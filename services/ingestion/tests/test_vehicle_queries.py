@@ -266,7 +266,9 @@ def test_flag_vehicle_owner_conflicts_flags_multiple_active_owners() -> None:
 def test_merge_order_writes_non_vehicle_lines() -> None:
     query = queries.MERGE_ORDER
 
-    assert "o.non_vehicle_lines = $non_vehicle_lines" in query
+    # MERGE_ORDER aligns its SET assignments for readability (multi-space "="),
+    # so collapse whitespace before the substring check.
+    assert "o.non_vehicle_lines = $non_vehicle_lines" in " ".join(query.split())
 
 
 def test_clear_superseded_sales_links_deletes_vehicle_rels() -> None:
