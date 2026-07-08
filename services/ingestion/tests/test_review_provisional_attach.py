@@ -7,6 +7,7 @@ addresses / facts onto the candidate person until a human approves the merge.
 
 from __future__ import annotations
 
+from _txmock import _RecordingTx
 from src.models import (
     NormalizedAddress,
     NormalizedAttribute,
@@ -23,15 +24,20 @@ class _Result:
         return None
 
 
-class _RecordingTx:
-    """Captures the Cypher constant each ``run`` was invoked with."""
+class _Tx(_RecordingTx):
+    """Captures the Cypher constant each ``run`` was invoked with.
 
-    def __init__(self) -> None:
-        self.queries: list[str] = []
+    Inherits the ``(query, kwargs)`` call recording from the shared
+    ``_txmock._RecordingTx``; exposes a ``queries`` view (query strings only) for
+    the assertions below.
+    """
+
+    @property
+    def queries(self) -> list[str]:
+        return [q for q, _ in self.calls]
 
     def run(self, query: str, **params: object) -> _Result:
-        _ = params
-        self.queries.append(query)
+        self._record(query, params)
         return _Result()
 
 
@@ -77,7 +83,7 @@ def _attributes() -> list[NormalizedAttribute]:
 
 
 def test_provisional_review_links_record_only() -> None:
-    tx = _RecordingTx()
+    tx = _Tx()
     link_record_to_graph(
         tx,  # type: ignore[arg-type]
         envelope=_envelope(),
@@ -99,7 +105,7 @@ def test_provisional_review_links_record_only() -> None:
 
 
 def test_confirmed_attach_wires_full_evidence() -> None:
-    tx = _RecordingTx()
+    tx = _Tx()
     link_record_to_graph(
         tx,  # type: ignore[arg-type]
         envelope=_envelope(),

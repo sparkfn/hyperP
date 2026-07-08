@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, cast
 from unittest.mock import patch
 
 import pytest
+from _txmock import _RecordingTx
 from neo4j import ManagedTransaction
 
 from src.exclusions import ExclusionContext
@@ -52,13 +53,14 @@ class _Result:
         return iter(self._rows)
 
 
-class _Tx:
+class _Tx(_RecordingTx):
     def __init__(
         self,
         *,
         candidates: list[dict[str, object]] | None = None,
         pending_rows: list[dict[str, object]] | None = None,
     ) -> None:
+        super().__init__()
         self._candidates: list[dict[str, object]] = candidates or []
         self._pending_rows: list[dict[str, object]] = (
             pending_rows
@@ -76,10 +78,9 @@ class _Tx:
                 }
             ]
         )
-        self.calls: list[tuple[str, dict[str, object]]] = []
 
     def run(self, query: str, **kwargs: object) -> _Result:
-        self.calls.append((query, dict(kwargs)))
+        self._record(query, kwargs)
         # FIND_VEHICLE_CANDIDATES_FOR_SALES: unique fragment.
         if "INVOLVES_VEHICLE {source_record_pk: $sales_source_record_pk}" in query:
             return _Result(rows=self._candidates)
@@ -401,7 +402,7 @@ class _VehicleResult:
         return self._row
 
 
-class _VehicleTx:
+class _VehicleTx(_RecordingTx):
     """Recording transaction for ``_write_vehicle_observations``.
 
     Returns a canned ``{vehicle_id, conflict}`` row from any ``run(...)`` call
@@ -410,12 +411,20 @@ class _VehicleTx:
     """
 
     def __init__(self, vehicle_id: str = "v-1", conflict: bool = False) -> None:
-        self.calls: list[tuple[str, dict[str, object]]] = []
+        super().__init__()
         self._row: dict[str, object] = {"vehicle_id": vehicle_id, "conflict": conflict}
 
     def run(self, query: str, **kwargs: object) -> _VehicleResult:
-        self.calls.append((query, dict(kwargs)))
+        self._record(query, kwargs)
         return _VehicleResult(self._row)
+
+
+class _OrderTx(_RecordingTx):
+    """Recording tx for ``_merge_order`` tests: returns a canned order_id row."""
+
+    def run(self, query: str, **kwargs: object) -> _VehicleResult:
+        self._record(query, kwargs)
+        return _VehicleResult({"order_id": "o-1"})
 
 
 def _vehicle_line(
@@ -510,14 +519,6 @@ def test_non_vehicle_lines_for_order_with_only_non_vehicle_lines() -> None:
 
 def test_merge_order_receives_non_vehicle_lines_param() -> None:
     """``_merge_order`` passes ``non_vehicle_lines`` through to ``MERGE_ORDER``."""
-    class _OrderTx:
-        def __init__(self) -> None:
-            self.calls: list[tuple[str, dict[str, object]]] = []
-
-        def run(self, query: str, **kwargs: object) -> _VehicleResult:
-            self.calls.append((query, dict(kwargs)))
-            return _VehicleResult({"order_id": "o-1"})
-
     tx = _OrderTx()
     order: dict[str, object] = {
         "source_order_id": "o-1",
@@ -543,14 +544,6 @@ def test_merge_order_receives_non_vehicle_lines_param() -> None:
 
 def test_merge_order_receives_empty_non_vehicle_lines_as_empty_json_string() -> None:
     """Empty non_vehicle_lines → ``non_vehicle_lines`` param is the string ``"[]"``."""
-
-    class _OrderTx:
-        def __init__(self) -> None:
-            self.calls: list[tuple[str, dict[str, object]]] = []
-
-        def run(self, query: str, **kwargs: object) -> _VehicleResult:
-            self.calls.append((query, dict(kwargs)))
-            return _VehicleResult({"order_id": "o-1"})
 
     tx = _OrderTx()
     order: dict[str, object] = {
@@ -713,50 +706,77 @@ def test_write_vehicle_observations_cross_source_lta_writes_both_source_systems(
 # never created and the sale stayed pending forever.
 
 
-class _DrainResult:
-    def __init__(self, single: dict[str, object] | None = None) -> None:
-        self._single = single
-
-    def single(self) -> dict[str, object] | None:
-        return self._single
-
-    def __iter__(self) -> Iterator[dict[str, object]]:
-        return iter([])
-
-
-class _DrainTx:
-    """Routes only the queries _drain_one_pending_sale issues.
+class _DrainTx(_RecordingTx):
+    """Routes only the queries ``_drain_one_pending_sale`` issues.
 
     ``line_items`` is empty so ``_write_vehicle_observations`` produces no
-    Vehicle upserts — keeps the mock surface tiny.
+    Vehicle upserts — keeps the mock surface tiny. Reuses ``_Result`` for query
+    results (no need for a separate result mock).
     """
 
     def __init__(self, *, person_id: str = "person-54") -> None:
+        super().__init__()
         self._person_id = person_id
-        self.calls: list[tuple[str, dict[str, object]]] = []
 
-    def run(self, query: str, **kwargs: object) -> _DrainResult:
-        self.calls.append((query, dict(kwargs)))
+    def run(self, query: str, **kwargs: object) -> _Result:
+        self._record(query, kwargs)
         if "FOR_CUSTOMER_RECORD" in query and "identity_source_record_id" in kwargs:
             # LINK_SALES_TO_IDENTITY_RECORD — no result needed.
-            return _DrainResult()
-        if "FOR_CUSTOMER_RECORD]->(identity_sr:SourceRecord)" in query or (
-            "LINKED_TO" in query and "person_id" in query and "sales_source_record_pk" in kwargs
-        ):
+            return _Result()
+        if "FOR_CUSTOMER_RECORD]->(identity_sr:SourceRecord)" in query:
             # RESOLVE_SALES_CUSTOMER — return the resolved person_id.
-            return _DrainResult(single={"person_id": self._person_id})
-        return _DrainResult()
+            return _Result(row={"person_id": self._person_id})
+        return _Result()
 
 
-def test_drain_uses_identity_source_system_key_for_cross_source_customer() -> None:
-    """Cross-source customer: drain passes customer_link.source_system_key."""
+@pytest.mark.parametrize(
+    "customer_link, expected_linked, expected_link_source",
+    [
+        pytest.param(
+            {
+                "identity_source_record_id": "fundbox_consumer_backend-user-54",
+                "source_system_key": "fundbox_consumer_backend",
+            },
+            True,
+            "fundbox_consumer_backend",
+            id="cross-source-uses-identity-source",
+        ),
+        pytest.param(
+            {
+                "identity_source_record_id": "fundbox_consumer_backend-user-54",
+                # No source_system_key — the sale must be skipped, not guessed.
+            },
+            False,
+            None,
+            id="missing-identity-source-skips",
+        ),
+        pytest.param(
+            {},  # No identity_source_record_id at all.
+            False,
+            None,
+            id="missing-identity-record-skips",
+        ),
+    ],
+)
+def test_drain_links_via_identity_source_key(
+    customer_link: dict[str, JsonValue],
+    expected_linked: bool,
+    expected_link_source: str | None,
+) -> None:
+    """Drain passes customer_link.source_system_key (the IDENTITY source) to
+    LINK_SALES_TO_IDENTITY_RECORD, and SKIPS the sale when that key (or the
+    identity record id) is absent rather than falling back to the sales source.
+
+    The sales source (e.g. ``fundbox_consumer_backend:sales``) is never the
+    identity source, so a sales-source fallback would silently fail the MATCH
+    against ``(:SourceSystem {source_key: $source_system_key})`` and leave the
+    sale pending forever — the exact bug this path exists to fix. Every
+    connector sets both fields, so the skip is defensive.
+    """
     tx = _DrainTx(person_id="person-54")
     raw_payload: dict[str, JsonValue] = {
         "order": {"source_order_id": "10"},
-        "customer_link": {
-            "identity_source_record_id": "fundbox_consumer_backend-user-54",
-            "source_system_key": "fundbox_consumer_backend",
-        },
+        "customer_link": customer_link,
         "customer_nric": None,
         "customer_emails": [],
         "customer_phones": [],
@@ -770,46 +790,17 @@ def test_drain_uses_identity_source_system_key_for_cross_source_customer() -> No
         raw_payload=raw_payload,
         exclusion_context=ExclusionContext(),
     )
-    assert linked is True
+    assert linked is expected_linked
     link_calls = [
         (q, kw)
         for q, kw in tx.calls
         if "FOR_CUSTOMER_RECORD" in q and "identity_source_record_id" in kw
     ]
-    assert len(link_calls) == 1
-    # The identity source (fundbox_consumer_backend), not the sales source
-    # (fundbox_consumer_backend:sales), is passed to the identity lookup.
-    assert link_calls[0][1]["source_system_key"] == "fundbox_consumer_backend"
-    assert link_calls[0][1]["identity_source_record_id"] == "fundbox_consumer_backend-user-54"
-
-
-def test_drain_falls_back_to_sales_source_when_customer_link_has_no_source() -> None:
-    """In-source customers (phppos): customer_link may omit source_system_key."""
-    tx = _DrainTx(person_id="person-230")
-    raw_payload: dict[str, JsonValue] = {
-        "order": {"source_order_id": "1136"},
-        "customer_link": {
-            "identity_source_record_id": "speedzone_phppos-customer-230",
-            # No source_system_key — legacy in-source case.
-        },
-        "customer_nric": None,
-        "customer_emails": [],
-        "customer_phones": [],
-        "line_items": [],
-    }
-    linked = _drain_one_pending_sale(
-        cast(ManagedTransaction, tx),
-        sales_pk="sr-sales-1136",
-        source_system_key="speedzone_phppos:sales",
-        raw_payload=raw_payload,
-        exclusion_context=ExclusionContext(),
-    )
-    assert linked is True
-    link_calls = [
-        (q, kw)
-        for q, kw in tx.calls
-        if "FOR_CUSTOMER_RECORD" in q and "identity_source_record_id" in kw
-    ]
-    assert len(link_calls) == 1
-    # Falls back to the sales source_system_key.
-    assert link_calls[0][1]["source_system_key"] == "speedzone_phppos:sales"
+    if expected_link_source is None:
+        # Skipped before the identity-link query ran — no FOR_CUSTOMER_RECORD
+        # edge was attempted.
+        assert link_calls == []
+    else:
+        assert len(link_calls) == 1
+        assert link_calls[0][1]["source_system_key"] == expected_link_source
+        assert link_calls[0][1]["identity_source_record_id"] == "fundbox_consumer_backend-user-54"

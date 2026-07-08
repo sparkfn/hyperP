@@ -6,6 +6,7 @@ import json
 from collections.abc import Mapping
 
 import pytest
+from _txmock import _RecordingTx
 from src.graph import queries
 from src.matching.heuristic import MatchResult
 from src.models import MatchDecision
@@ -20,14 +21,14 @@ class _FakeResult:
         return self._record
 
 
-class _FakeTx:
+class _FakeTx(_RecordingTx):
     def __init__(self, get_record: Mapping[str, object] | None, update_record: bool) -> None:
+        super().__init__()
         self.get_record = get_record
         self.update_record = update_record
-        self.calls: list[tuple[str, dict[str, object]]] = []
 
     def run(self, query: str, **params: object) -> _FakeResult:
-        self.calls.append((query, params))
+        self._record(query, params)
         if query is queries.GET_PERSON_PAIR_REVIEW_CASE:
             return _FakeResult(self.get_record)
         if query is queries.UPDATE_PAIR_AUDIT_MATCH_DECISION:

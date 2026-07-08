@@ -187,6 +187,21 @@ SET sr.link_status = 'linked',
     sr.updated_at  = datetime()
 """
 
+#: Mark a sales SourceRecord as permanently link-failed (a malformed customer_link,
+#: an undecodable raw_payload, a missing FROM_SOURCE edge, or a corrupt resolved
+#: Person). Transitioning to a terminal status stops FIND_PENDING_CUSTOMER_SALES
+#: (which filters ``link_status='pending_customer'``) from re-scanning the row on
+#: every drain tick, so the skip warning fires exactly once and the pending park
+#: queue only retries records that can still plausibly link (the transient
+#: "identity Person not yet resolved" path stays ``pending_customer`` and retries).
+MARK_SALES_RECORD_LINK_FAILED = """
+MATCH (sr:SourceRecord {source_record_pk: $source_record_pk})
+SET sr.link_status       = 'link_failed',
+    sr.link_failed_reason = $reason,
+    sr.link_failed_at     = datetime(),
+    sr.updated_at         = datetime()
+"""
+
 #: Rewire PURCHASED edges when ``absorbed`` is merged into ``survivor``.
 #: Mirrors the rewire pattern for IDENTIFIED_BY / LIVES_AT / KNOWS.
 REWIRE_PURCHASED = """

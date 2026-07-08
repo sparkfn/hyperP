@@ -11,6 +11,12 @@ _INGESTION_ROOT = _REPO_ROOT / "services" / "ingestion"
 if str(_INGESTION_ROOT) not in sys.path:
     sys.path.insert(0, str(_INGESTION_ROOT))
 
+# Make sibling test helper modules (e.g. ``_txmock``) importable from every
+# test file in this dir, regardless of pytest's import mode.
+_TESTS_ROOT = Path(__file__).resolve().parent
+if str(_TESTS_ROOT) not in sys.path:
+    sys.path.insert(0, str(_TESTS_ROOT))
+
 # src.celery_app imports config at module load time; provide a minimal env so
 # modules that import tasks can be collected without a real Neo4j connection.
 os.environ.setdefault("NEO4J_PASSWORD", "test-password")

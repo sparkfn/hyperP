@@ -2,17 +2,18 @@ from __future__ import annotations
 
 from typing import cast
 
+from _txmock import _RecordingTx
 from neo4j import ManagedTransaction
 from src.models import SourceRecordEnvelope
 from src.pipeline_bankruptcy import materialize_bankruptcy_case
 
 
-class _Tx:
+class _Tx(_RecordingTx):
     def __init__(self) -> None:
-        self.calls: list[tuple[str, dict[str, object]]] = []
+        super().__init__()
 
     def run(self, query: str, **kwargs: object) -> object:
-        self.calls.append((query, kwargs))
+        self._record(query, kwargs)
         return object()
 
 

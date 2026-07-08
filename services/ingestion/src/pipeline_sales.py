@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from typing import TypedDict, cast
 
@@ -19,6 +20,7 @@ from src.graph import queries
 from src.graph.bootstrap import SOURCE_KEY_TO_ENTITY
 from src.graph.client import Neo4jClient
 from src.normalizers.clean import str_or_none
+from src.raw_payload import decode_raw_payload
 from src.vehicle_categories import base_source_key, category_is_vehicle
 from src.vehicle_extraction import observations_from_sales_lines
 from src.vehicles import (
@@ -603,41 +605,44 @@ def _resolve_customer_person(tx: ManagedTransaction, *, sales_source_record_pk: 
     return person_id
 
 
-def _drain_one_pending_sale(
-    tx: ManagedTransaction,
-    sales_pk: str,
-    source_system_key: str,
-    raw_payload: dict[str, JsonValue],
-    exclusion_context: ExclusionContext,
-) -> bool:
-    """Try to resolve and link a single pending-customer sales record.
+def _row_pk_and_ssk(row: Mapping[str, object]) -> tuple[str, str | None]:
+    """Extract (source_record_pk, source_system_key) from a FIND_PENDING_CUSTOMER_SALES row.
 
-    ``source_system_key`` is the SALES source (e.g. ``fundbox_consumer_backend:sales``)
-    — kept for back-compat with the existing call site. The identity record's
-    source lives on ``customer_link.source_system_key`` (e.g.
-    ``fundbox_consumer_backend``); cross-source customers (fundbox sales →
-    fundbox user) carry the identity source there. We MUST pass the identity
-    source to ``LINK_SALES_TO_IDENTITY_RECORD`` so the MATCH against
-    ``(:SourceSystem {source_key: $source_system_key})`` finds the FROM_SOURCE
-    edge on the identity record. Previously we passed the sales key for every
-    record, which made fundbox sales never link even when their identity
-    records were already ingested.
+    ``source_system_key`` is read via the query's FROM_SOURCE traversal; ``str_or_none``
+    coerces it to a real string and rejects None/blank/non-string. The caller
+    decides whether to mark the sale link_failed (drain) or just skip (propose).
     """
-    customer_link = raw_payload.get("customer_link") or {}
-    identity_source_record_id = (
-        customer_link.get("identity_source_record_id") if isinstance(customer_link, dict) else None
-    )
-    if identity_source_record_id is None:
-        return False
+    return str(row["source_record_pk"]), str_or_none(row["source_system_key"])
 
-    # Fall back to the sales source_system_key for the (legacy) in-source case
-    # where the sales and identity tables share a SourceSystem (phppos).
-    identity_source_system_key = (
-        customer_link.get("source_system_key")
-        if isinstance(customer_link, dict)
-        else None
-    ) or source_system_key
 
+def _skip_sale_permanent(tx: ManagedTransaction, *, pk: str, reason: str) -> None:
+    """Warn once and mark a sales record ``link_failed`` so it stops re-queueing.
+
+    Permanent skips (malformed customer_link, non-string identity keys,
+    undecodable raw_payload, missing FROM_SOURCE, corrupt resolved Person) can
+    never link, so transitioning to a terminal status stops
+    FIND_PENDING_CUSTOMER_SALES from re-scanning the row every drain tick — the
+    warning fires exactly once and the pending queue only retries records that
+    can still plausibly link.
+    """
+    logger.warning("Skipping pending sale %s: %s", pk, reason)
+    tx.run(queries.MARK_SALES_RECORD_LINK_FAILED, source_record_pk=pk, reason=reason)
+
+
+def _resolve_customer_person_id(
+    tx: ManagedTransaction,
+    *,
+    sales_pk: str,
+    identity_source_record_id: str,
+    identity_source_system_key: str,
+) -> tuple[bool, str | None]:
+    """LINK the sale to its identity record and resolve the customer Person.
+
+    Returns ``(resolved, person_id)``: ``(False, None)`` is transient (the
+    identity Person isn't linked yet — leave pending and retry); ``(True, None)``
+    is permanent (the Person resolved but has no string person_id — corrupt);
+    ``(True, person_id)`` is success.
+    """
     tx.run(
         queries.LINK_SALES_TO_IDENTITY_RECORD,
         sales_source_record_pk=sales_pk,
@@ -646,13 +651,83 @@ def _drain_one_pending_sale(
     )
     resolved = tx.run(queries.RESOLVE_SALES_CUSTOMER, sales_source_record_pk=sales_pk).single()
     if resolved is None:
-        return False
-    person_id: str = resolved["person_id"]
+        return False, None
+    return True, str_or_none(resolved["person_id"])
 
-    order_payload = raw_payload.get("order") or {}
-    source_order_id = str(
-        order_payload.get("source_order_id", "") if isinstance(order_payload, dict) else ""
+
+def _drain_one_pending_sale(
+    tx: ManagedTransaction,
+    sales_pk: str,
+    source_system_key: str,
+    raw_payload: dict[str, JsonValue],
+    exclusion_context: ExclusionContext,
+) -> bool:
+    """Resolve and link one pending-customer sales record to its customer Person.
+
+    Permanent skips (malformed customer_link, non-string identity keys, or a
+    resolved Person missing person_id) mark the record ``link_failed``. The
+    transient case — identity Person not yet resolved — stays
+    ``pending_customer`` and retries silently; that is why the drain re-runs.
+    """
+    customer_link = raw_payload.get("customer_link")
+    if not isinstance(customer_link, dict):
+        _skip_sale_permanent(tx, pk=sales_pk, reason="customer_link missing or not a dict")
+        return False
+    # customer_link.source_system_key is the IDENTITY source (e.g.
+    # ``fundbox_consumer_backend``), never the sales source. str_or_none rejects
+    # None/blank/non-string; an empty/wrong source would silently fail the
+    # identity MATCH and leave the sale pending forever.
+    identity_source_record_id = str_or_none(customer_link.get("identity_source_record_id"))
+    identity_source_system_key = str_or_none(customer_link.get("source_system_key"))
+    if identity_source_record_id is None or identity_source_system_key is None:
+        _skip_sale_permanent(
+            tx,
+            pk=sales_pk,
+            reason="identity_source_record_id or source_system_key missing/not a string",
+        )
+        return False
+    resolved, person_id = _resolve_customer_person_id(
+        tx,
+        sales_pk=sales_pk,
+        identity_source_record_id=identity_source_record_id,
+        identity_source_system_key=identity_source_system_key,
     )
+    if not resolved:
+        # Transient: the identity Person isn't linked yet. Leave pending and retry.
+        return False
+    if person_id is None:
+        _skip_sale_permanent(tx, pk=sales_pk, reason="resolved person has no person_id")
+        return False
+    return _link_resolved_sale(
+        tx,
+        sales_pk=sales_pk,
+        person_id=person_id,
+        source_system_key=source_system_key,
+        raw_payload=raw_payload,
+        exclusion_context=exclusion_context,
+    )
+
+
+def _link_resolved_sale(
+    tx: ManagedTransaction,
+    *,
+    sales_pk: str,
+    person_id: str,
+    source_system_key: str,
+    raw_payload: dict[str, JsonValue],
+    exclusion_context: ExclusionContext,
+) -> bool:
+    """Write the PURCHASED + vehicle-observation edges for a resolved sale.
+
+    Returns False (leaving the sale pending) if the raw payload carries no
+    order id to key the PURCHASED edge on; True once the sale is marked linked.
+    """
+    order_raw = raw_payload.get("order")
+    order_payload: dict[str, JsonValue] = order_raw if isinstance(order_raw, dict) else {}
+    # ``or ""`` coalesces a present-but-None source_order_id (``.get(k, "")`` would
+    # return None for a present-None key, and ``str(None)``="None" is truthy —
+    # matching the safe pattern used by the propose path).
+    source_order_id = str(order_payload.get("source_order_id") or "")
     if not source_order_id:
         return False
 
@@ -701,14 +776,18 @@ def drain_pending_customer_sales(
                 return 0
             newly_linked = 0
             for row in rows:
-                try:
-                    raw_payload = json.loads(row["raw_payload"])
-                except (TypeError, ValueError):
+                pk, ssk = _row_pk_and_ssk(row)
+                if ssk is None:
+                    _skip_sale_permanent(tx, pk=pk, reason="source_system_key missing")
+                    continue
+                raw_payload = decode_raw_payload(row["raw_payload"])
+                if raw_payload is None:
+                    _skip_sale_permanent(tx, pk=pk, reason="raw_payload undecodable")
                     continue
                 if _drain_one_pending_sale(
                     tx,
-                    row["source_record_pk"],
-                    row["source_system_key"],
+                    pk,
+                    ssk,
                     raw_payload,
                     active_exclusion_context,
                 ):
@@ -849,23 +928,17 @@ def propose_vehicle_matches_for_pending_sales(
         rows = list(tx.run(queries.FIND_PENDING_CUSTOMER_SALES, limit=batch_size))
         out: list[tuple[str, str, dict[str, JsonValue]]] = []
         for row in rows:
-            pk = str(row["source_record_pk"])
-            # FIND_PENDING_CUSTOMER_SALES traverses FROM_SOURCE so this is the
-            # real sales source key (e.g. ``fundbox_consumer_backend:sales``).
-            # Guard against an unexpected NULL rather than coercing to "None".
-            ssk = row["source_system_key"]
-            raw = row["raw_payload"]
-            # Neo4j persists nested maps as JSON strings; decode defensively.
-            if isinstance(raw, str):
-                try:
-                    raw_dict: dict[str, JsonValue] = json.loads(raw)
-                except (TypeError, ValueError):
-                    continue
-            elif isinstance(raw, dict):
-                raw_dict = raw
-            else:
+            # Drain runs first and marks permanent skips link_failed, so those
+            # rows are excluded from FIND_PENDING here. Defensive skip (no
+            # mark) for any row that still lacks a usable ssk/raw_payload — the
+            # next drain tick will mark it.
+            pk, ssk = _row_pk_and_ssk(row)
+            if ssk is None:
                 continue
-            out.append((pk, ssk if isinstance(ssk, str) else None, raw_dict))
+            raw_payload = decode_raw_payload(row["raw_payload"])
+            if raw_payload is None:
+                continue
+            out.append((pk, ssk, raw_payload))
         return out
 
     with client.session() as session:

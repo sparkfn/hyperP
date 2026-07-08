@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import cast
 
+from _txmock import _RecordingTx
 from neo4j import ManagedTransaction
 from src.graph import queries
 from src.main import _is_address_only_source
@@ -32,12 +33,12 @@ class _Result:
         return self._row
 
 
-class _Tx:
+class _Tx(_RecordingTx):
     def __init__(self) -> None:
-        self.calls: list[tuple[str, dict[str, object]]] = []
+        super().__init__()
 
     def run(self, query: str, **kwargs: object) -> _Result:
-        self.calls.append((query, kwargs))
+        self._record(query, kwargs)
         if "RETURN sr.source_record_pk AS source_record_pk" in query:
             return _Result({"source_record_pk": "sr-1"})
         return _Result()

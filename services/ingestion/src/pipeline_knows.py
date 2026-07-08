@@ -14,28 +14,16 @@ resolution on its next tick without surgery on the identity path.
 
 from __future__ import annotations
 
-import json
 import logging
 
 from neo4j import ManagedTransaction
 
 from src.graph import queries
 from src.graph.client import Neo4jClient
+from src.models import JsonValue
+from src.raw_payload import decode_raw_payload
 
 logger = logging.getLogger(__name__)
-
-
-def _parse_contact_payload(raw_payload_str: object) -> dict[str, object] | None:
-    """Parse raw_payload JSON; return None on failure."""
-    try:
-        if isinstance(raw_payload_str, str):
-            parsed: object = json.loads(raw_payload_str)
-            return parsed if isinstance(parsed, dict) else None
-        if isinstance(raw_payload_str, dict):
-            return raw_payload_str
-        return None
-    except (TypeError, ValueError):
-        return None
 
 
 def _resolve_both_persons(
@@ -62,7 +50,7 @@ def _resolve_both_persons(
 def _link_one_contact(
     tx: ManagedTransaction,
     contact_source_record_pk: str,
-    raw_payload: dict[str, object],
+    raw_payload: dict[str, JsonValue],
 ) -> bool:
     """Resolve both sides of a contact record and MERGE the KNOWS edge."""
     declarer_sr_id = raw_payload.get("linked_to_source_record_id")
@@ -96,7 +84,7 @@ def _link_one_chat_relationship(
     tx: ManagedTransaction,
     contact_source_record_pk: str,
     source_system_key: str,
-    raw_payload: dict[str, object],
+    raw_payload: dict[str, JsonValue],
 ) -> bool:
     declarer_sr_id = raw_payload.get("primary_source_record_id")
     if not declarer_sr_id:
@@ -150,8 +138,9 @@ def materialize_knows_from_chat_relationships(
                 pk: str = row["source_record_pk"]
                 source_system_key: str = row["source_system_key"]
                 last_pk = pk
-                raw = _parse_contact_payload(row["raw_payload"])
+                raw = decode_raw_payload(row["raw_payload"])
                 if raw is None:
+                    logger.warning("Skipping source record %s: raw_payload undecodable", pk)
                     continue
                 if _link_one_chat_relationship(tx, pk, source_system_key, raw):
                     newly_linked += 1
@@ -197,8 +186,9 @@ def materialize_knows_from_contacts(client: Neo4jClient, *, batch_size: int = 50
             for row in rows:
                 pk: str = row["source_record_pk"]
                 last_pk = pk
-                raw = _parse_contact_payload(row["raw_payload"])
+                raw = decode_raw_payload(row["raw_payload"])
                 if raw is None:
+                    logger.warning("Skipping source record %s: raw_payload undecodable", pk)
                     continue
                 if _link_one_contact(tx, pk, raw):
                     newly_linked += 1
