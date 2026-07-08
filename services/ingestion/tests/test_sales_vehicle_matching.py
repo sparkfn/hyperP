@@ -14,6 +14,7 @@ from src.matching.vehicle_heuristic import VEHICLE_MATCH_AUTO, VEHICLE_MATCH_REV
 from src.models import JsonValue
 from src.pipeline_sales import (
     _build_non_vehicle_lines,
+    _drain_one_pending_sale,
     _merge_order,
     _propose_one_pending_sale,
     _write_vehicle_observations,
@@ -695,3 +696,120 @@ def test_write_vehicle_observations_cross_source_lta_writes_both_source_systems(
     sources = {kw["source_system_key"] for kw in upserts}
     assert sources == {"eko_phppos", "fundbox_consumer_backend"}
     assert all(kw["lta_tag"] == "LTA-SHARED" for kw in upserts)
+
+
+# ---------------------------------------------------------------------------
+# drain_pending_customer_sales — identity-source-key fix
+# ---------------------------------------------------------------------------
+#
+# Regression guard for the cross-source customer link bug: the fundbox sales
+# connector emits ``customer_link.source_system_key = "fundbox_consumer_backend"``
+# (the IDENTITY source) while the sales record itself belongs to
+# ``fundbox_consumer_backend:sales``. ``LINK_SALES_TO_IDENTITY_RECORD`` MATCHes
+# ``(:SourceSystem {source_key: $source_system_key})`` on the IDENTITY record's
+# FROM_SOURCE edge, so the drain MUST pass the identity source — not the sales
+# source. Previously the drain passed the sales source (or NULL when
+# ``sr.source_system_key`` was unread), so the FOR_CUSTOMER_RECORD edge was
+# never created and the sale stayed pending forever.
+
+
+class _DrainResult:
+    def __init__(self, single: dict[str, object] | None = None) -> None:
+        self._single = single
+
+    def single(self) -> dict[str, object] | None:
+        return self._single
+
+    def __iter__(self) -> Iterator[dict[str, object]]:
+        return iter([])
+
+
+class _DrainTx:
+    """Routes only the queries _drain_one_pending_sale issues.
+
+    ``line_items`` is empty so ``_write_vehicle_observations`` produces no
+    Vehicle upserts — keeps the mock surface tiny.
+    """
+
+    def __init__(self, *, person_id: str = "person-54") -> None:
+        self._person_id = person_id
+        self.calls: list[tuple[str, dict[str, object]]] = []
+
+    def run(self, query: str, **kwargs: object) -> _DrainResult:
+        self.calls.append((query, dict(kwargs)))
+        if "FOR_CUSTOMER_RECORD" in query and "identity_source_record_id" in kwargs:
+            # LINK_SALES_TO_IDENTITY_RECORD — no result needed.
+            return _DrainResult()
+        if "FOR_CUSTOMER_RECORD]->(identity_sr:SourceRecord)" in query or (
+            "LINKED_TO" in query and "person_id" in query and "sales_source_record_pk" in kwargs
+        ):
+            # RESOLVE_SALES_CUSTOMER — return the resolved person_id.
+            return _DrainResult(single={"person_id": self._person_id})
+        return _DrainResult()
+
+
+def test_drain_uses_identity_source_system_key_for_cross_source_customer() -> None:
+    """Cross-source customer: drain passes customer_link.source_system_key."""
+    tx = _DrainTx(person_id="person-54")
+    raw_payload: dict[str, JsonValue] = {
+        "order": {"source_order_id": "10"},
+        "customer_link": {
+            "identity_source_record_id": "fundbox_consumer_backend-user-54",
+            "source_system_key": "fundbox_consumer_backend",
+        },
+        "customer_nric": None,
+        "customer_emails": [],
+        "customer_phones": [],
+        "line_items": [],
+    }
+    linked = _drain_one_pending_sale(
+        cast(ManagedTransaction, tx),
+        sales_pk="sr-sales-10",
+        # SALES source — must NOT be used for the identity lookup.
+        source_system_key="fundbox_consumer_backend:sales",
+        raw_payload=raw_payload,
+        exclusion_context=ExclusionContext(),
+    )
+    assert linked is True
+    link_calls = [
+        (q, kw)
+        for q, kw in tx.calls
+        if "FOR_CUSTOMER_RECORD" in q and "identity_source_record_id" in kw
+    ]
+    assert len(link_calls) == 1
+    # The identity source (fundbox_consumer_backend), not the sales source
+    # (fundbox_consumer_backend:sales), is passed to the identity lookup.
+    assert link_calls[0][1]["source_system_key"] == "fundbox_consumer_backend"
+    assert link_calls[0][1]["identity_source_record_id"] == "fundbox_consumer_backend-user-54"
+
+
+def test_drain_falls_back_to_sales_source_when_customer_link_has_no_source() -> None:
+    """In-source customers (phppos): customer_link may omit source_system_key."""
+    tx = _DrainTx(person_id="person-230")
+    raw_payload: dict[str, JsonValue] = {
+        "order": {"source_order_id": "1136"},
+        "customer_link": {
+            "identity_source_record_id": "speedzone_phppos-customer-230",
+            # No source_system_key — legacy in-source case.
+        },
+        "customer_nric": None,
+        "customer_emails": [],
+        "customer_phones": [],
+        "line_items": [],
+    }
+    linked = _drain_one_pending_sale(
+        cast(ManagedTransaction, tx),
+        sales_pk="sr-sales-1136",
+        source_system_key="speedzone_phppos:sales",
+        raw_payload=raw_payload,
+        exclusion_context=ExclusionContext(),
+    )
+    assert linked is True
+    link_calls = [
+        (q, kw)
+        for q, kw in tx.calls
+        if "FOR_CUSTOMER_RECORD" in q and "identity_source_record_id" in kw
+    ]
+    assert len(link_calls) == 1
+    # Falls back to the sales source_system_key.
+    assert link_calls[0][1]["source_system_key"] == "speedzone_phppos:sales"

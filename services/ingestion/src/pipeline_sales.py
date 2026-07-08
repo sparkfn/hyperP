@@ -610,7 +610,19 @@ def _drain_one_pending_sale(
     raw_payload: dict[str, JsonValue],
     exclusion_context: ExclusionContext,
 ) -> bool:
-    """Try to resolve and link a single pending-customer sales record."""
+    """Try to resolve and link a single pending-customer sales record.
+
+    ``source_system_key`` is the SALES source (e.g. ``fundbox_consumer_backend:sales``)
+    — kept for back-compat with the existing call site. The identity record's
+    source lives on ``customer_link.source_system_key`` (e.g.
+    ``fundbox_consumer_backend``); cross-source customers (fundbox sales →
+    fundbox user) carry the identity source there. We MUST pass the identity
+    source to ``LINK_SALES_TO_IDENTITY_RECORD`` so the MATCH against
+    ``(:SourceSystem {source_key: $source_system_key})`` finds the FROM_SOURCE
+    edge on the identity record. Previously we passed the sales key for every
+    record, which made fundbox sales never link even when their identity
+    records were already ingested.
+    """
     customer_link = raw_payload.get("customer_link") or {}
     identity_source_record_id = (
         customer_link.get("identity_source_record_id") if isinstance(customer_link, dict) else None
@@ -618,11 +630,19 @@ def _drain_one_pending_sale(
     if identity_source_record_id is None:
         return False
 
+    # Fall back to the sales source_system_key for the (legacy) in-source case
+    # where the sales and identity tables share a SourceSystem (phppos).
+    identity_source_system_key = (
+        customer_link.get("source_system_key")
+        if isinstance(customer_link, dict)
+        else None
+    ) or source_system_key
+
     tx.run(
         queries.LINK_SALES_TO_IDENTITY_RECORD,
         sales_source_record_pk=sales_pk,
         identity_source_record_id=identity_source_record_id,
-        source_system_key=source_system_key,
+        source_system_key=identity_source_system_key,
     )
     resolved = tx.run(queries.RESOLVE_SALES_CUSTOMER, sales_source_record_pk=sales_pk).single()
     if resolved is None:
@@ -830,9 +850,22 @@ def propose_vehicle_matches_for_pending_sales(
         out: list[tuple[str, str, dict[str, JsonValue]]] = []
         for row in rows:
             pk = str(row["source_record_pk"])
-            ssk = str(row["source_system_key"])
+            # FIND_PENDING_CUSTOMER_SALES traverses FROM_SOURCE so this is the
+            # real sales source key (e.g. ``fundbox_consumer_backend:sales``).
+            # Guard against an unexpected NULL rather than coercing to "None".
+            ssk = row["source_system_key"]
             raw = row["raw_payload"]
-            out.append((pk, ssk, raw if isinstance(raw, dict) else {}))
+            # Neo4j persists nested maps as JSON strings; decode defensively.
+            if isinstance(raw, str):
+                try:
+                    raw_dict: dict[str, JsonValue] = json.loads(raw)
+                except (TypeError, ValueError):
+                    continue
+            elif isinstance(raw, dict):
+                raw_dict = raw
+            else:
+                continue
+            out.append((pk, ssk if isinstance(ssk, str) else None, raw_dict))
         return out
 
     with client.session() as session:

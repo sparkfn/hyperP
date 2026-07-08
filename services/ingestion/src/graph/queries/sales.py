@@ -167,11 +167,16 @@ DELETE bought
 #: Find sales SourceRecords that are still waiting for their customer
 #: identity record to be resolved. Scanned at end-of-run to drain the
 #: pending-customer park queue.
+#:
+#: ``source_system_key`` lives on the ``FROM_SOURCE`` edge to ``SourceSystem``,
+#: not on the SourceRecord itself; traverse to get the right value back to the
+#: Python drain code.
 FIND_PENDING_CUSTOMER_SALES = """
 MATCH (sr:SourceRecord {record_type: 'sales', link_status: 'pending_customer'})
+      -[:FROM_SOURCE]->(ss:SourceSystem)
 RETURN sr.source_record_pk AS source_record_pk,
-       sr.source_system_key AS source_system_key,
-       sr.raw_payload AS raw_payload
+       ss.source_key       AS source_system_key,
+       sr.raw_payload      AS raw_payload
 LIMIT $limit
 """
 
