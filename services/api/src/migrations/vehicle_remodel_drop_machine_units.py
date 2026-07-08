@@ -89,12 +89,17 @@ async def run() -> tuple[int, list[str]]:
 
 
 def main() -> None:
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+    logging.basicConfig(
+        level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s"
+    )
     try:
         nodes, constraints = asyncio.run(run())
     finally:
         asyncio.run(close_driver())
-    print(f"vehicle_remodel migration: deleted {nodes} MachineUnit nodes; dropped {len(constraints)} constraints")
+    print(
+        f"vehicle_remodel migration: deleted {nodes} MachineUnit nodes; "
+        f"dropped {len(constraints)} constraints"
+    )
 
 
 if __name__ == "__main__":
