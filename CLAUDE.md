@@ -269,6 +269,8 @@ The task enforces a Redis-backed cluster-wide concurrency cap (`MAX_CONCURRENT_I
 
 `eko_phppos`, `bitrix_chat`, and `whatsapp_chat` need an SSH gateway in `batch` mode — without one, use `mode='dump'` with `dump_path`.
 
+`sgbankruptcy` and `sgrentalflats` are **dump-only by design** — they have no live/batch connector (they exist only in the dump connectors factory), so dispatching them with `mode='batch'` raises `KeyError`/`ValueError` and the Celery task Rejects immediately. Always dispatch them with `mode='dump'` and a `dump_path`.
+
 ### Date picker fields
 Date range filters use `DatePickerField` (wraps `@mui/x-date-pickers@7` `DatePicker` + `dayjs`, `en-gb` locale). Display format `DD MMM YYYY` matches `formatDob`/`formatDate` from `display.ts`; values are stored internally as ISO `YYYY-MM-DD`. Use it for any date input matching table-row date format — don't fall back to `<TextField type="date">`.
 
