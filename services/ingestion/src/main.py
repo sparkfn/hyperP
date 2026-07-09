@@ -261,9 +261,16 @@ def _ingest_all_records(
             skipped += 1
         elif result.errors:
             errors += 1
+        elif result.dropped:
+            skipped += 1
         else:
             success += 1
-        if result.person_id is None:
+        if result.dropped:
+            logger.info(
+                "  %s -> dropped (no match — match-only source)",
+                result.source_record_id,
+            )
+        elif result.person_id is None:
             logger.info(
                 "  %s -> address-only%s",
                 result.source_record_id,

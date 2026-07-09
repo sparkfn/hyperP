@@ -1,12 +1,11 @@
 """Regression: system-family matching, with the per-record-type divergences.
 
 `identity`, `bankruptcy`, and `relationship` make up the system family (they
-replaced the former single `system` record type). They still share the same
-deterministic NRIC merge when no incoming name is present. The deliberate
-divergences (Spec 2) are pinned here: `bankruptcy` gates the NRIC merge on a
-partial name (tested in `test_bankruptcy_name_gate.py`), and `relationship`
-adds a Layer-2 phone + partial-name auto-merge promotion. `identity` keeps the
-plain additive behaviour.
+replaced the former single `system` record type). They share the same
+deterministic NRIC merge regardless of name. The one deliberate divergence
+(Spec 2) is pinned here: `relationship` adds a Layer-2 phone + partial-name
+auto-merge promotion. `identity` and `bankruptcy` keep the plain additive
+behaviour and are identical in both the deterministic and heuristic layers.
 """
 
 from __future__ import annotations
@@ -96,6 +95,25 @@ def test_deterministic_nric_merge_identical_across_system_family() -> None:
     assert non_null[0].matched_person_id == "person-1"
 
 
+def test_bankruptcy_merges_on_nric_regardless_of_name_conflict() -> None:
+    tx = _NricTx()
+    res = evaluate_deterministic(
+        tx,  # type: ignore[arg-type]
+        "person-1",
+        _nric(),
+        [
+            NormalizedAttribute(
+                attribute_name="full_name",
+                attribute_value="Kok Pin",
+                quality_flag=QualityFlag.VALID,
+            )
+        ],
+        RecordType.BANKRUPTCY,
+    )
+    assert res is not None
+    assert res.decision == MatchDecision.MERGE
+
+
 def test_non_system_family_does_not_deterministically_merge_on_nric() -> None:
     tx = _NricTx()
     for rt in (RecordType.CONVERSATION, RecordType.SALES):
@@ -182,8 +200,8 @@ def _evaluate(record_type: RecordType) -> MatchResult:
 
 
 def test_heuristic_identity_and_bankruptcy_identical_relationship_promotes() -> None:
-    # identity and bankruptcy still score identically in Layer 2 (bankruptcy only
-    # diverges in the deterministic NRIC name-gate, not here).
+    # identity and bankruptcy score identically in Layer 2 (they are identical
+    # across both the deterministic and heuristic layers).
     identity = _evaluate(RecordType.IDENTITY)
     bankruptcy = _evaluate(RecordType.BANKRUPTCY)
     _assert_all_equal([identity, bankruptcy])

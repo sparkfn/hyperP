@@ -30,7 +30,7 @@ class _SourceSystemSeed(TypedDict):
     source_key: str
     display_name: str
     system_type: str
-    entity_key: str
+    entity_key: str | None
     field_trust: dict[str, str]
 
 
@@ -51,12 +51,6 @@ _ENTITIES: tuple[_EntitySeed, ...] = (
         "entity_key": "eko",
         "display_name": "Eko",
         "entity_type": "retailer",
-        "country_code": "SG",
-    },
-    {
-        "entity_key": "sggov",
-        "display_name": "SG Gov",
-        "entity_type": "government",
         "country_code": "SG",
     },
     {
@@ -198,14 +192,14 @@ _SOURCE_SYSTEMS: tuple[_SourceSystemSeed, ...] = (
         "source_key": "sgbankruptcy",
         "display_name": "SG Bankruptcy Register",
         "system_type": "government_registry",
-        "entity_key": "sggov",
+        "entity_key": None,
         "field_trust": _GOVERNMENT_REGISTRY_TRUST,
     },
     {
         "source_key": "sgrentalflats",
         "display_name": "SG Rental Flats",
         "system_type": "government_registry",
-        "entity_key": "sggov",
+        "entity_key": None,
         "field_trust": _GOVERNMENT_REGISTRY_TRUST,
     },
     {
@@ -229,12 +223,16 @@ _SOURCE_SYSTEMS: tuple[_SourceSystemSeed, ...] = (
 #: has one source of truth. Consumers (e.g. the sales pipeline) use this
 #: instead of string-prefix matching.
 SOURCE_KEY_TO_ENTITY: dict[str, str] = {
-    source["source_key"]: source["entity_key"] for source in _SOURCE_SYSTEMS
+    source["source_key"]: source["entity_key"]
+    for source in _SOURCE_SYSTEMS
+    if source["entity_key"] is not None
 }
 
 
 def bootstrap_entities_and_sources(client: Neo4jClient) -> None:
-    """Upsert the three Entity nodes and all SourceSystem nodes + OPERATED_BY edges."""
+    """Upsert the Entity and SourceSystem nodes, with OPERATED_BY edges for
+    entity-bound sources only.
+    """
 
     def _work(tx: ManagedTransaction) -> None:
         for entity in _ENTITIES:
@@ -246,14 +244,23 @@ def bootstrap_entities_and_sources(client: Neo4jClient) -> None:
                 country_code=entity["country_code"],
             )
         for source in _SOURCE_SYSTEMS:
-            tx.run(
-                queries.UPSERT_SOURCE_SYSTEM_WITH_ENTITY,
-                entity_key=source["entity_key"],
-                source_key=source["source_key"],
-                display_name=source["display_name"],
-                system_type=source["system_type"],
-                field_trust=json.dumps(source["field_trust"]),
-            )
+            if source["entity_key"] is None:
+                tx.run(
+                    queries.UPSERT_SOURCE_SYSTEM,
+                    source_key=source["source_key"],
+                    display_name=source["display_name"],
+                    system_type=source["system_type"],
+                    field_trust=json.dumps(source["field_trust"]),
+                )
+            else:
+                tx.run(
+                    queries.UPSERT_SOURCE_SYSTEM_WITH_ENTITY,
+                    entity_key=source["entity_key"],
+                    source_key=source["source_key"],
+                    display_name=source["display_name"],
+                    system_type=source["system_type"],
+                    field_trust=json.dumps(source["field_trust"]),
+                )
 
     with client.session() as session:
         session.execute_write(_work)

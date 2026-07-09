@@ -14,8 +14,6 @@ import logging
 from neo4j import ManagedTransaction
 
 from src.graph import queries
-from src.matching.names import is_partial_name_match
-from src.matching.snapshot import fetch_candidate_snapshot
 from src.models import (
     SYSTEM_FAMILY,
     EngineType,
@@ -169,10 +167,8 @@ def _check_government_id(
 ) -> MatchResult | None:
     """Government ID hash: exact match → hard MERGE; conflict → hard NO_MATCH.
 
-    For ``bankruptcy`` records the exact-NRIC merge is additionally gated on a
-    partial name match when both sides carry a name (matching-spec per-record-type
-    criteria): a matching NRIC with a strongly conflicting name does not
-    auto-merge. NRIC-alone still merges when a name is absent on either side.
+    A matching valid-quality NRIC always hard-merges — name is never consulted
+    for this check, for any record type.
     """
     govt_ids = [
         i
@@ -185,16 +181,6 @@ def _check_government_id(
             person_id=candidate_person_id,
             normalized_value=govt_id.normalized_value,
         ).single():
-            if record_type == RecordType.BANKRUPTCY:
-                verdict = is_partial_name_match(
-                    attributes, fetch_candidate_snapshot(tx, candidate_person_id).names()
-                )
-                if verdict is False:
-                    logger.info(
-                        "Bankruptcy NRIC match for candidate %s blocked: name conflict",
-                        candidate_person_id,
-                    )
-                    return None  # fall through to heuristic (→ no-match / pair review)
             logger.info(
                 "Deterministic hard merge: candidate %s shares govt ID hash",
                 candidate_person_id,

@@ -288,7 +288,7 @@ All documents live in `docs/` and follow the naming convention `profile-unifier-
 - **Immutable source facts**: source records are never modified after ingestion; all changes create new records.
 - **Explainable decisions**: every merge/no-match has traceable reasons.
 - **4-layer matching**: deterministic rules → heuristic scoring → LLM adjudication (shadow-only in MVP) → human review.
-- **Confidence bands**: ≥0.90 auto-merge, 0.60–0.89 human review, <0.60 no-match (thresholds to be calibrated).
+- **Confidence bands**: ≥0.40 auto-merge, 0.20–0.39 human review, <0.20 no-match (lowered from the original 0.90/0.60 calibration).
 - **Sensitive data**: NRIC and Singpass-linked data require special handling; govt IDs stored as salted hashes.
 - **Controlled rollout**: LLM starts in shadow/assist mode only — no autonomous production merges in MVP.
 - **Merge lineage**: merge history stored as `MERGED_INTO` relationships; path compression keeps canonical lookups to ≤1 hop.

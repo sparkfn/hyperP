@@ -42,3 +42,20 @@ SET
 MERGE (ss)-[:OPERATED_BY]->(e)
 RETURN ss.source_system_id AS source_system_id
 """
+
+#: Idempotent create of a SourceSystem node with no owning Entity. Used for
+#: source systems that do not belong to any real-world organisation in this
+#: platform's ownership model (e.g. government registers).
+UPSERT_SOURCE_SYSTEM = """
+MERGE (ss:SourceSystem {source_key: $source_key})
+ON CREATE SET
+    ss.source_system_id = randomUUID(),
+    ss.created_at       = datetime()
+SET
+    ss.display_name = $display_name,
+    ss.system_type  = $system_type,
+    ss.is_active    = true,
+    ss.field_trust  = $field_trust,
+    ss.updated_at   = datetime()
+RETURN ss.source_system_id AS source_system_id
+"""

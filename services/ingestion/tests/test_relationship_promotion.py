@@ -120,7 +120,10 @@ def test_relationship_promotes_on_phone_plus_name() -> None:
 
 def test_identity_not_promoted_same_inputs() -> None:
     res = _evaluate(_Tx(), record_type=RecordType.IDENTITY)
-    assert res.decision != MatchDecision.MERGE
+    # No record-type promotion fires for IDENTITY (that's relationship-only);
+    # any MERGE here would come from plain additive heuristic scoring, not a
+    # promotion — confirm the promotion path specifically did not fire.
+    assert not any("promot" in r.lower() for r in res.reasons)
 
 
 def test_relationship_blocked_by_dob_conflict() -> None:

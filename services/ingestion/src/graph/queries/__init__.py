@@ -12,6 +12,7 @@ from __future__ import annotations
 from src.graph.queries.bankruptcy import MERGE_BANKRUPTCY_CASE
 from src.graph.queries.entities import (
     UPSERT_ENTITY,
+    UPSERT_SOURCE_SYSTEM,
     UPSERT_SOURCE_SYSTEM_WITH_ENTITY,
 )
 from src.graph.queries.knows import (
@@ -190,5 +191,6 @@ __all__ = [
     "UPSERT_ENTITY",
     "UPSERT_IDENTIFIER",
     "UPSERT_VEHICLE",
+    "UPSERT_SOURCE_SYSTEM",
     "UPSERT_SOURCE_SYSTEM_WITH_ENTITY",
 ]

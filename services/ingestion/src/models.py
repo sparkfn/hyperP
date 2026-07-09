@@ -50,9 +50,10 @@ class RecordType(StrEnum):
     The "system family" — ``identity``, ``bankruptcy``, ``relationship`` —
     are all deterministic extracts from a system of record that share the same
     generic matching behaviour (see :data:`SYSTEM_FAMILY`), and are kept as
-    distinct values so they can carry their own criteria: ``bankruptcy`` gates
-    its exact-NRIC merge on a partial name match, and ``relationship`` adds a
-    phone + partial-name auto-merge promotion. Per-type detail:
+    distinct values so they can carry their own criteria: ``bankruptcy`` and
+    ``identity`` share the same deterministic NRIC merge (name is never
+    consulted), and ``relationship`` adds a phone + partial-name auto-merge
+    promotion. Per-type detail:
 
     ``identity`` — first-party identity from a transactional system of record
     (Fundbox users/legacy/merged, Eko, SpeedZone).
@@ -265,3 +266,4 @@ class IngestResult(BaseModel):
     review_case_id: str | None = None
     errors: list[str] = Field(default_factory=list)
     skipped_duplicate: bool = False
+    dropped: bool = False

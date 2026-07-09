@@ -1,9 +1,9 @@
 """Layer 2 heuristic scoring — conditional weights across phone/email/DOB/name/address.
 
 Confidence bands:
-    ≥ 0.90 → MERGE  (auto-merge)
-    0.60–0.89 → REVIEW
-    < 0.60 → NO_MATCH (explicit, so the orchestrator can drop it)
+    ≥ 0.40 → MERGE  (auto-merge)
+    0.20–0.39 → REVIEW
+    < 0.20 → NO_MATCH (explicit, so the orchestrator can drop it)
 """
 
 from __future__ import annotations
@@ -63,8 +63,8 @@ NAME_MISMATCH_THRESHOLD = NAME_PARTIAL_THRESHOLD
 NAME_MISMATCH_PENALTY = -0.25
 ADDRESS_MATCH_WEIGHT = 0.10
 
-CONFIDENCE_AUTO_MERGE = 0.90
-CONFIDENCE_REVIEW = 0.60
+CONFIDENCE_AUTO_MERGE = 0.40
+CONFIDENCE_REVIEW = 0.20
 #: Confidence assigned when a record-type promotion fires (conversation,
 #: relationship, ...). Just above the auto-merge band so a promoted pair merges.
 PROMOTED_CONFIDENCE = 0.91
@@ -392,7 +392,7 @@ def _promote_by_record_type(
     reasons: list[str],
     features: dict[str, JsonValue],
 ) -> float:
-    """Apply the per-record-type auto-merge promotion (if any) to a sub-0.90 pair.
+    """Apply the per-record-type auto-merge promotion (if any) to a sub-auto-merge pair.
 
     Each promotable type defines its own positive criteria; all share the
     :func:`_has_hard_conflict` blocker set. Types without a rule (identity,

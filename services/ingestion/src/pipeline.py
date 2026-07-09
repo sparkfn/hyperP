@@ -60,6 +60,13 @@ from src.vehicles import (
     normalize_serial_number,
 )
 
+_SG_MATCH_ONLY_SOURCES = frozenset({"sgbankruptcy"})
+
+
+def _is_sg_match_only_source(source_key: str) -> bool:
+    return source_key in _SG_MATCH_ONLY_SOURCES
+
+
 logger = logging.getLogger(__name__)
 
 
@@ -163,7 +170,6 @@ class IngestPipeline:
         active_exclusion_context = (
             exclusion_context if exclusion_context is not None else ExclusionContext()
         )
-        upsert_nodes(tx, identifiers, addresses)
         candidates = find_candidates(tx, identifiers, addresses)
         match_result = self._match_engine.evaluate(
             tx,
@@ -173,6 +179,21 @@ class IngestPipeline:
             attributes,
             record_type=envelope.record_type,
         )
+        if _is_sg_match_only_source(envelope.source_system) and not self._has_usable_match(
+            match_result, candidates
+        ):
+            logger.info(
+                "Dropping unmatched match-only record %s (source=%s, decision=%s)",
+                envelope.source_record_id,
+                envelope.source_system,
+                match_result.decision.value,
+            )
+            return IngestResult(
+                source_record_id=envelope.source_record_id,
+                ingest_run_id=ingest_run_id,
+                dropped=True,
+            )
+        upsert_nodes(tx, identifiers, addresses)
         person_id, is_new_person = self._resolve_person(tx, match_result, candidates)
         source_record_pk = persist_source_record(
             tx,
@@ -319,6 +340,24 @@ class IngestPipeline:
                 confidence=observation.confidence,
                 quality_flag=observation.quality_flag.value,
             )
+
+    @staticmethod
+    def _has_usable_match(
+        match_result: MatchResult,
+        candidates: list[CandidateResult],
+    ) -> bool:
+        """True when the match result resolves to an existing person.
+
+        MERGE always resolves to an existing person. REVIEW resolves to an
+        existing person only when the engine or the top candidate provides one
+        — a REVIEW with no ``matched_person_id`` and no candidates has nothing
+        to attach to.
+        """
+        if match_result.decision == MatchDecision.MERGE:
+            return True
+        if match_result.decision == MatchDecision.REVIEW:
+            return match_result.matched_person_id is not None or bool(candidates)
+        return False
 
     @staticmethod
     def _resolve_person(

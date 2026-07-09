@@ -159,7 +159,7 @@ class MatchEngine:
         return MatchResult(
             decision=MatchDecision.NO_MATCH,
             confidence=0.0,
-            reasons=["No candidate scored above 0.60 — creating separate person"],
+            reasons=["No candidate scored above the review threshold — creating separate person"],
             engine_type=EngineType.HEURISTIC,
             is_new_person=True,
         )
