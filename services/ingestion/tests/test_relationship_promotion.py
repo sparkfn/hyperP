@@ -126,6 +126,17 @@ def test_identity_not_promoted_same_inputs() -> None:
     assert not any("promot" in r.lower() for r in res.reasons)
 
 
+def test_identity_auto_merges_on_unverified_phone_plus_exact_name_at_040() -> None:
+    # Under the lowered CONFIDENCE_AUTO_MERGE=0.40, an IDENTITY record with an
+    # unverified exact phone (0.20) + an exact name match (0.20) scores 0.40 and
+    # auto-merges via plain additive scoring (no promotion). This is the intended
+    # consequence of the global threshold drop (accepted precision trade-off) —
+    # pinned here so the behavior is documented rather than silent.
+    res = _evaluate(_Tx(), record_type=RecordType.IDENTITY)
+    assert res.decision == MatchDecision.MERGE
+    assert not any("promot" in r.lower() for r in res.reasons)
+
+
 def test_relationship_blocked_by_dob_conflict() -> None:
     res = _evaluate(
         _Tx(cand_dob="1980-02-02"), record_type=RecordType.RELATIONSHIP, incoming_dob="1990-01-01"

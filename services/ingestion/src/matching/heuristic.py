@@ -65,6 +65,12 @@ ADDRESS_MATCH_WEIGHT = 0.10
 
 CONFIDENCE_AUTO_MERGE = 0.40
 CONFIDENCE_REVIEW = 0.20
+#: Conversation evidence that is NOT corroborated by an independent non-conversation
+#: identifier must never auto-merge on additive score alone (matching-spec). Cap it
+#: just below the auto-merge band so it lands in REVIEW (or NO_MATCH if below the
+#: review floor). MERGE is reachable only via the promotion branch in
+#: :func:`_promote_by_record_type` (which requires ``_can_promote_conversation``).
+_CONVERSATION_NON_CORROBORATED_CAP: float = CONFIDENCE_AUTO_MERGE - 0.01
 #: Confidence assigned when a record-type promotion fires (conversation,
 #: relationship, ...). Just above the auto-merge band so a promoted pair merges.
 PROMOTED_CONFIDENCE = 0.91
@@ -392,17 +398,23 @@ def _promote_by_record_type(
     reasons: list[str],
     features: dict[str, JsonValue],
 ) -> float:
-    """Apply the per-record-type auto-merge promotion (if any) to a sub-auto-merge pair.
+    """Apply the per-record-type auto-merge promotion (if any) to a pair.
+
+    Conversation-only evidence (no independent non-conversation identifier
+    corroboration) is capped below the auto-merge band unless promoted.
 
     Each promotable type defines its own positive criteria; all share the
     :func:`_has_hard_conflict` blocker set. Types without a rule (identity,
     bankruptcy, sales today) are returned unchanged.
     """
-    if confidence >= CONFIDENCE_AUTO_MERGE:
-        return confidence
     if record_type == RecordType.CONVERSATION:
         if _can_promote_conversation(features):
             return _apply_promotion(confidence, reasons, features, "conversation")
+        # Exclusively-conversation-sourced evidence must not auto-merge on additive
+        # score alone (matching-spec) — cap below the auto-merge band so a human
+        # reviews it. MERGE is reachable only via the promotion branch above.
+        return min(confidence, _CONVERSATION_NON_CORROBORATED_CAP)
+    if confidence >= CONFIDENCE_AUTO_MERGE:
         return confidence
     if record_type == RecordType.RELATIONSHIP:
         phone = features["phone_exact_match"] is True
