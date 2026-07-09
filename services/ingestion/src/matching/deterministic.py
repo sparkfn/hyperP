@@ -102,7 +102,7 @@ def evaluate_deterministic(
     """
     if locked := _check_no_match_lock(tx, candidate_person_id, identifiers):
         return locked
-    if govt := _check_government_id(tx, candidate_person_id, identifiers, attributes, record_type):
+    if govt := _check_government_id(tx, candidate_person_id, identifiers):
         # Conflicting govt IDs (hard NO_MATCH) still apply for conversation
         # records; only the MERGE branch is suppressed below.
         if govt.decision == MatchDecision.NO_MATCH:
@@ -162,8 +162,6 @@ def _check_government_id(
     tx: ManagedTransaction,
     candidate_person_id: str,
     identifiers: list[NormalizedIdentifier],
-    attributes: list[NormalizedAttribute],
-    record_type: RecordType,
 ) -> MatchResult | None:
     """Government ID hash: exact match → hard MERGE; conflict → hard NO_MATCH.
 

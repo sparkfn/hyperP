@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import TypedDict
+from typing import NotRequired, TypedDict
 
 from neo4j import ManagedTransaction
 
@@ -32,6 +32,7 @@ class _SourceSystemSeed(TypedDict):
     system_type: str
     entity_key: str | None
     field_trust: dict[str, str]
+    match_only: NotRequired[bool]
 
 
 _ENTITIES: tuple[_EntitySeed, ...] = (
@@ -194,6 +195,7 @@ _SOURCE_SYSTEMS: tuple[_SourceSystemSeed, ...] = (
         "system_type": "government_registry",
         "entity_key": None,
         "field_trust": _GOVERNMENT_REGISTRY_TRUST,
+        "match_only": True,
     },
     {
         "source_key": "sgrentalflats",
@@ -227,6 +229,15 @@ SOURCE_KEY_TO_ENTITY: dict[str, str] = {
     for source in _SOURCE_SYSTEMS
     if source["entity_key"] is not None
 }
+
+
+#: Source systems whose ingestion is match-only — they link to existing
+#: persons only, never create one, and drop records with no usable match.
+#: Derived from ``_SOURCE_SYSTEMS`` so adding a match-only source is a
+#: seed-data flip, not a pipeline edit.
+MATCH_ONLY_SOURCE_KEYS: frozenset[str] = frozenset(
+    source["source_key"] for source in _SOURCE_SYSTEMS if source.get("match_only")
+)
 
 
 def bootstrap_entities_and_sources(client: Neo4jClient) -> None:

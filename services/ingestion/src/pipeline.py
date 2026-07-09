@@ -22,6 +22,7 @@ from neo4j import ManagedTransaction
 from src.exclusions import ExclusionContext, is_excluded_vehicle_observation
 from src.golden_profile import compute_golden_profile
 from src.graph import queries
+from src.graph.bootstrap import MATCH_ONLY_SOURCE_KEYS
 from src.graph.client import Neo4jClient
 from src.matching.engine import MatchEngine
 from src.models import (
@@ -60,11 +61,9 @@ from src.vehicles import (
     normalize_serial_number,
 )
 
-_SG_MATCH_ONLY_SOURCES = frozenset({"sgbankruptcy"})
 
-
-def _is_sg_match_only_source(source_key: str) -> bool:
-    return source_key in _SG_MATCH_ONLY_SOURCES
+def _is_match_only_source(source_key: str) -> bool:
+    return source_key in MATCH_ONLY_SOURCE_KEYS
 
 
 logger = logging.getLogger(__name__)
@@ -179,7 +178,7 @@ class IngestPipeline:
             attributes,
             record_type=envelope.record_type,
         )
-        if _is_sg_match_only_source(envelope.source_system) and not self._has_usable_match(
+        if _is_match_only_source(envelope.source_system) and not self._has_usable_match(
             match_result, candidates
         ):
             logger.info(
@@ -348,13 +347,16 @@ class IngestPipeline:
     ) -> bool:
         """True when the match result resolves to an existing person.
 
-        MERGE always resolves to an existing person. REVIEW resolves to an
-        existing person only when the engine or the top candidate provides one
-        — a REVIEW with no ``matched_person_id`` and no candidates has nothing
-        to attach to.
+        MERGE resolves to an existing person only when the engine emits a
+        ``matched_person_id`` — a MERGE with no matched person would otherwise
+        fall through to ``_resolve_person``'s create-person fallback, violating
+        the match-only-sources-never-create-persons invariant. REVIEW resolves
+        to an existing person only when the engine or the top candidate provides
+        one — a REVIEW with no ``matched_person_id`` and no candidates has
+        nothing to attach to.
         """
         if match_result.decision == MatchDecision.MERGE:
-            return True
+            return match_result.matched_person_id is not None
         if match_result.decision == MatchDecision.REVIEW:
             return match_result.matched_person_id is not None or bool(candidates)
         return False

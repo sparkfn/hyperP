@@ -21,13 +21,14 @@ from typing import cast
 
 from src.models import EngineType, JsonValue, MatchDecision, MatchResult
 
-#: Auto-merge confidence for a single clear vehicle candidate. Sits at the
-#: auto-merge threshold (``CONFIDENCE_AUTO_MERGE`` = 0.90) so the decision is
+#: Auto-merge confidence for a single clear vehicle candidate. Sits above the
+#: global auto-merge threshold (``CONFIDENCE_AUTO_MERGE``) so the decision is
 #: ``MatchDecision.MERGE`` and the sale is linked immediately.
 VEHICLE_MATCH_AUTO: float = 0.90
-#: Review-band confidence for the multiple-distinct-persons case. Sits inside
-#: ``[CONFIDENCE_REVIEW, CONFIDENCE_AUTO_MERGE)`` = [0.60, 0.90) so the decision
-#: is ``MatchDecision.REVIEW`` and a ReviewCase is created.
+#: Review-band confidence for the multiple-distinct-persons case. Sits above
+#: the global review threshold (``CONFIDENCE_REVIEW``) but below
+#: ``VEHICLE_MATCH_AUTO`` so the decision is ``MatchDecision.REVIEW`` and a
+#: ReviewCase is created.
 VEHICLE_MATCH_REVIEW: float = 0.70
 
 

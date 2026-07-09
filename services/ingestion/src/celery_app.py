@@ -28,8 +28,8 @@ celery_app.conf.update(
     task_reject_on_worker_lost=True,
     worker_prefetch_multiplier=1,
     worker_concurrency=settings.celery_worker_concurrency,
-    task_time_limit=60 * 60 * 6,  # 6h hard limit per ingestion
-    task_soft_time_limit=60 * 60 * 6 - 60,
+    task_time_limit=None,  # no hard limit — large LLM-bound dumps must not be SIGKILL'd mid-run
+    task_soft_time_limit=None,
     timezone="UTC",
     enable_utc=True,
     broker_connection_retry_on_startup=True,

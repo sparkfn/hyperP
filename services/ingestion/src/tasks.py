@@ -37,7 +37,9 @@ logger = logging.getLogger(__name__)
 _INGEST_SEMAPHORE_KEY = "profile_unifier:ingestion:active"
 _SOURCE_LOCK_PREFIX = "profile_unifier:ingestion:source"
 _INIT_LOCK_KEY = "profile_unifier:ingestion:init"
-_LOCK_LEASE_SECONDS = 60 * 60 * 6  # match Celery hard time limit
+# 24h safety backstop. Celery task_time_limit is unset, so this lease is the
+# only upper bound on a stuck task's lock (raise if dumps need >24h).
+_LOCK_LEASE_SECONDS = 60 * 60 * 24
 _SOURCE_LOCK_RELEASE_SCRIPT = """
 if redis.call('get', KEYS[1]) == ARGV[1] then
     return redis.call('del', KEYS[1])

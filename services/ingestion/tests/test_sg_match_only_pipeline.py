@@ -6,9 +6,8 @@ from typing import cast
 
 from _txmock import _RecordingTx
 from neo4j import ManagedTransaction
-from src.pipeline import _is_sg_match_only_source
 from src.models import SourceRecordEnvelope
-from src.pipeline import IngestPipeline
+from src.pipeline import IngestPipeline, _is_match_only_source
 
 
 class _Result:
@@ -92,8 +91,9 @@ def _bankruptcy_envelope() -> SourceRecordEnvelope:
 
 
 def test_sgbankruptcy_is_match_only_source() -> None:
-    assert _is_sg_match_only_source("sgbankruptcy") is True
-    assert _is_sg_match_only_source("fundbox_consumer_backend") is False
+    assert _is_match_only_source("sgbankruptcy") is True
+    assert _is_match_only_source("sgrentalflats") is False
+    assert _is_match_only_source("fundbox_consumer_backend") is False
 
 
 def test_unmatched_bankruptcy_record_is_dropped_with_no_writes() -> None:
