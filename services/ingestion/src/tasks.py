@@ -264,9 +264,11 @@ def run_ingestion_task(
     try:
         with _acquire_init_lock():
             initialize_ingestion_graph()
-        with _acquire_source_lock(source_key) as source_lock_id, _acquire_ingestion_slot(
-            settings.max_concurrent_ingestions
-        ) as slot_id, _renew_ingestion_leases(source_key, source_lock_id, slot_id):
+        with (
+            _acquire_source_lock(source_key) as source_lock_id,
+            _acquire_ingestion_slot(settings.max_concurrent_ingestions) as slot_id,
+            _renew_ingestion_leases(source_key, source_lock_id, slot_id),
+        ):
             return run_ingestion(
                 source_key,
                 mode,
