@@ -70,7 +70,7 @@ manual or an ingestion-driven auto-merge.
 
 - New constant `PERSON_PAIR_AUTO_MERGE = 0.60` in
   `services/ingestion/src/matching/pair_score.py` (scoped to pair-audits,
-  distinct from the general `CONFIDENCE_AUTO_MERGE = 0.40` used for
+  distinct from the general `CONFIDENCE_AUTO_MERGE = 0.90` used for
   source-record matching in `matching/heuristic.py`).
 - In `pipeline_person_pairs.py:_create_pair_case_if_needed`, after
   `score_person_pair()` returns:

@@ -1,9 +1,9 @@
 """Layer 2 heuristic scoring — conditional weights across phone/email/DOB/name/address.
 
 Confidence bands:
-    ≥ 0.40 → MERGE  (auto-merge)
-    0.20–0.39 → REVIEW
-    < 0.20 → NO_MATCH (explicit, so the orchestrator can drop it)
+    ≥ 0.90 → MERGE  (auto-merge)
+    0.60–0.89 → REVIEW
+    < 0.60 → NO_MATCH (explicit, so the orchestrator can drop it)
 """
 
 from __future__ import annotations
@@ -63,8 +63,8 @@ NAME_MISMATCH_THRESHOLD = NAME_PARTIAL_THRESHOLD
 NAME_MISMATCH_PENALTY = -0.25
 ADDRESS_MATCH_WEIGHT = 0.10
 
-CONFIDENCE_AUTO_MERGE = 0.40
-CONFIDENCE_REVIEW = 0.20
+CONFIDENCE_AUTO_MERGE = 0.90
+CONFIDENCE_REVIEW = 0.60
 #: Conversation evidence that is NOT corroborated by an independent non-conversation
 #: identifier must never auto-merge on additive score alone (matching-spec). Cap it
 #: just below the auto-merge band so it lands in REVIEW (or NO_MATCH if below the

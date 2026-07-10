@@ -67,7 +67,7 @@ In `services/ingestion/src/matching/pair_score.py`, add near the top of the file
 ```python
 #: A person-pair bridge scoring at or above this confidence auto-merges the
 #: two persons instead of opening a human review case. Distinct from
-#: ``matching.heuristic.CONFIDENCE_AUTO_MERGE`` (0.40), which gates
+#: ``matching.heuristic.CONFIDENCE_AUTO_MERGE`` (0.90), which gates
 #: source-record-to-person matching — person-pair merges use a higher bar
 #: since no human confirms the merge.
 PERSON_PAIR_AUTO_MERGE: float = 0.60
