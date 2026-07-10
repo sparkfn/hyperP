@@ -19,6 +19,7 @@ import time
 import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
+from typing import cast
 
 import redis
 from celery import Task
@@ -140,13 +141,16 @@ def _renew_ingestion_slot(client: redis.Redis, slot_id: str) -> None:
     # ZADD without CH reports newly-added members, not updated ones. Renew in
     # Lua so checking membership, updating its score, and refreshing the key's
     # TTL are atomic.
-    renewed = client.eval(
-        _INGEST_SEMAPHORE_RENEW_SCRIPT,
-        1,
-        _INGEST_SEMAPHORE_KEY,
-        member_key,
-        str(expiry),
-        str(_LOCK_LEASE_SECONDS + 60),
+    renewed = cast(
+        int,
+        client.eval(
+            _INGEST_SEMAPHORE_RENEW_SCRIPT,
+            1,
+            _INGEST_SEMAPHORE_KEY,
+            member_key,
+            str(expiry),
+            str(_LOCK_LEASE_SECONDS + 60),
+        ),
     )
     if renewed != 1:
         raise RuntimeError(f"Ingestion slot {slot_id} was lost before renewal")
@@ -155,12 +159,15 @@ def _renew_ingestion_slot(client: redis.Redis, slot_id: str) -> None:
 def _renew_source_lock(client: redis.Redis, source_key: str, lock_id: str) -> None:
     """Extend a source lock only when this task still owns it."""
     lock_key = f"{_SOURCE_LOCK_PREFIX}:{source_key}"
-    renewed = client.eval(
-        _SOURCE_LOCK_RENEW_SCRIPT,
-        1,
-        lock_key,
-        lock_id,
-        str(_LOCK_LEASE_SECONDS),
+    renewed = cast(
+        int,
+        client.eval(
+            _SOURCE_LOCK_RENEW_SCRIPT,
+            1,
+            lock_key,
+            lock_id,
+            str(_LOCK_LEASE_SECONDS),
+        ),
     )
     if renewed != 1:
         raise RuntimeError(f"Ingestion source lock for {source_key} was lost before renewal")
