@@ -12,6 +12,9 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import signal
+import threading
 import time
 import uuid
 from collections.abc import Iterator
@@ -37,14 +40,28 @@ logger = logging.getLogger(__name__)
 _INGEST_SEMAPHORE_KEY = "profile_unifier:ingestion:active"
 _SOURCE_LOCK_PREFIX = "profile_unifier:ingestion:source"
 _INIT_LOCK_KEY = "profile_unifier:ingestion:init"
-# 24h safety backstop. Celery task_time_limit is unset, so this lease is the
-# only upper bound on a stuck task's lock (raise if dumps need >24h).
-_LOCK_LEASE_SECONDS = 60 * 60 * 24
+# Leases are renewed while ingestion is running. Keeping the base TTL modest
+# bounds the unavailable period after a worker crashes.
+_LOCK_LEASE_SECONDS = 60 * 60
+_LEASE_RENEWAL_INTERVAL_SECONDS = 10 * 60
 _SOURCE_LOCK_RELEASE_SCRIPT = """
 if redis.call('get', KEYS[1]) == ARGV[1] then
     return redis.call('del', KEYS[1])
 end
 return 0
+"""
+_SOURCE_LOCK_RENEW_SCRIPT = """
+if redis.call('get', KEYS[1]) == ARGV[1] then
+    return redis.call('expire', KEYS[1], ARGV[2])
+end
+return 0
+"""
+_INGEST_SEMAPHORE_RENEW_SCRIPT = """
+if redis.call('zscore', KEYS[1], ARGV[1]) == false then
+    return 0
+end
+redis.call('zadd', KEYS[1], ARGV[2], ARGV[1])
+return redis.call('expire', KEYS[1], ARGV[3])
 """
 
 
@@ -116,6 +133,76 @@ def _acquire_source_lock(source_key: str) -> Iterator[str]:
             logger.exception("Failed to release ingestion source lock for %s", source_key)
 
 
+def _renew_ingestion_slot(client: redis.Redis, slot_id: str) -> None:
+    """Extend an existing semaphore reservation without recreating it."""
+    member_key = f"{_INGEST_SEMAPHORE_KEY}:{slot_id}"
+    expiry = int(time.time()) + _LOCK_LEASE_SECONDS
+    # ZADD without CH reports newly-added members, not updated ones. Renew in
+    # Lua so checking membership, updating its score, and refreshing the key's
+    # TTL are atomic.
+    renewed = client.eval(
+        _INGEST_SEMAPHORE_RENEW_SCRIPT,
+        1,
+        _INGEST_SEMAPHORE_KEY,
+        member_key,
+        str(expiry),
+        str(_LOCK_LEASE_SECONDS + 60),
+    )
+    if renewed != 1:
+        raise RuntimeError(f"Ingestion slot {slot_id} was lost before renewal")
+
+
+def _renew_source_lock(client: redis.Redis, source_key: str, lock_id: str) -> None:
+    """Extend a source lock only when this task still owns it."""
+    lock_key = f"{_SOURCE_LOCK_PREFIX}:{source_key}"
+    renewed = client.eval(
+        _SOURCE_LOCK_RENEW_SCRIPT,
+        1,
+        lock_key,
+        lock_id,
+        str(_LOCK_LEASE_SECONDS),
+    )
+    if renewed != 1:
+        raise RuntimeError(f"Ingestion source lock for {source_key} was lost before renewal")
+
+
+@contextmanager
+def _renew_ingestion_leases(source_key: str, source_lock_id: str, slot_id: str) -> Iterator[None]:
+    """Keep long-running ingestion leases alive, stopping promptly on completion."""
+    stop_event = threading.Event()
+
+    def renew() -> None:
+        while not stop_event.wait(_LEASE_RENEWAL_INTERVAL_SECONDS):
+            try:
+                client = _redis_client()
+                _renew_source_lock(client, source_key, source_lock_id)
+                _renew_ingestion_slot(client, slot_id)
+            except Exception:
+                logger.critical(
+                    "Failed to renew ingestion leases for %s; terminating worker "
+                    "to prevent concurrent ingestion",
+                    source_key,
+                    exc_info=True,
+                )
+                # A task cannot safely continue after losing its distributed
+                # leases. With late acknowledgement, Celery redelivers it when
+                # this worker process exits.
+                os.kill(os.getpid(), signal.SIGTERM)
+                return
+
+    renewal_thread = threading.Thread(
+        target=renew,
+        name=f"ingestion-lease-renewal:{source_key}",
+        daemon=True,
+    )
+    renewal_thread.start()
+    try:
+        yield
+    finally:
+        stop_event.set()
+        renewal_thread.join(timeout=1)
+
+
 @contextmanager
 def _acquire_init_lock() -> Iterator[str]:
     client = _redis_client()
@@ -154,6 +241,10 @@ class _SourceAlreadyRunningError(Exception):
 @celery_app.task(
     name="src.tasks.run_ingestion_task",
     bind=True,
+    # Preserve tasks when a worker exits. A duplicate delivered after Redis's
+    # visibility timeout is safely treated as a no-op while the source lock is
+    # held by the original task.
+    acks_late=True,
     autoretry_for=(_SlotUnavailableError,),
     retry_backoff=True,
     retry_backoff_max=300,
@@ -173,10 +264,9 @@ def run_ingestion_task(
     try:
         with _acquire_init_lock():
             initialize_ingestion_graph()
-        with (
-            _acquire_source_lock(source_key),
-            _acquire_ingestion_slot(settings.max_concurrent_ingestions),
-        ):
+        with _acquire_source_lock(source_key) as source_lock_id, _acquire_ingestion_slot(
+            settings.max_concurrent_ingestions
+        ) as slot_id, _renew_ingestion_leases(source_key, source_lock_id, slot_id):
             return run_ingestion(
                 source_key,
                 mode,
@@ -188,7 +278,16 @@ def run_ingestion_task(
             "Ingestion source %s is already running; skipping duplicate",
             exc.source_key,
         )
-        raise Reject(str(exc), requeue=False) from exc
+        return {
+            "ingest_run_id": "",
+            "status": "already_running",
+            "succeeded": 0,
+            "errors": 0,
+            "skipped": 1,
+            "source_key": source_key,
+            "mode": mode,
+            "dump_path": dump_path,
+        }
     except _SlotUnavailableError as exc:
         logger.warning("Ingestion slot unavailable (%d/%d), retrying...", exc.live, exc.cap)
         raise

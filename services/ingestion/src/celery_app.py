@@ -28,7 +28,9 @@ celery_app.conf.update(
     task_reject_on_worker_lost=True,
     worker_prefetch_multiplier=1,
     worker_concurrency=settings.celery_worker_concurrency,
-    task_time_limit=None,  # no hard limit — large LLM-bound dumps must not be SIGKILL'd mid-run
+    # Large LLM-bound dumps may run indefinitely; their task-specific late
+    # acknowledgement and renewable Redis leases are configured in src.tasks.
+    task_time_limit=None,
     task_soft_time_limit=None,
     timezone="UTC",
     enable_utc=True,
