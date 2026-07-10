@@ -51,6 +51,15 @@ already stubbed — but currently unused — in
 and the already-generic `CREATE_MERGE_EVENT_AUTO_MERGE` (takes
 `from_person_id`/`to_person_id`/`reason`, `actor_type='system'`).
 
+**Addendum (found during planning):** `services/ingestion/src/graph/queries/knows.py`
+(`REWIRE_KNOWS_OUT`, `REWIRE_KNOWS_IN`) and `services/ingestion/src/graph/queries/sales.py`
+(`REWIRE_PURCHASED`) also already exist, unused, with docstrings explicitly
+noting they "mirror the rewire pattern for IDENTIFIED_BY / LIVES_AT" —
+i.e. the same anticipated-but-never-wired-up person-merge. These must be
+included alongside the `merge.py` rewires so KNOWS contacts and sales
+orders move to the survivor instead of being orphaned on the absorbed
+person.
+
 This duplicates some logic from the API's merge repository (accepted
 trade-off — see "Known limitation" below). The unmerge path
 (`services/api/.../merge.py:unmerge`) is unaffected: it reverts by
@@ -96,8 +105,9 @@ or similar — final placement decided during planning):
 
 1. Create `MergeEvent` via `CREATE_MERGE_EVENT_AUTO_MERGE`
    (`actor_type='system'`, `actor_id='match_engine'`).
-2. Rewire `LINKED_TO`, `IDENTIFIED_BY`, `LIVES_AT`, `HAS_FACT` from
-   absorbed → survivor via the existing `REWIRE_*` queries.
+2. Rewire `LINKED_TO`, `IDENTIFIED_BY`, `LIVES_AT`, `HAS_FACT`, `KNOWS`
+   (both directions), and `PURCHASED` from absorbed → survivor via the
+   existing `REWIRE_*` queries (`merge.py`, `knows.py`, `sales.py`).
 3. Mark absorbed person `status='merged'` via `MARK_PERSON_MERGED`.
 4. Create `MERGED_INTO` via `CREATE_MERGED_INTO`.
 5. Path-compress any prior `MERGED_INTO` chain pointing at the absorbed
