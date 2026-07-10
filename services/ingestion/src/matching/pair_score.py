@@ -26,6 +26,13 @@ from src.models import (
     NormalizedIdentifier,
 )
 
+#: A person-pair bridge scoring at or above this confidence auto-merges the
+#: two persons instead of opening a human review case. Distinct from
+#: ``matching.heuristic.CONFIDENCE_AUTO_MERGE`` (0.40), which gates
+#: source-record-to-person matching — person-pair merges use a higher bar
+#: since no human confirms the merge.
+PERSON_PAIR_AUTO_MERGE: float = 0.60
+
 
 def score_person_pair(
     tx: ManagedTransaction,
