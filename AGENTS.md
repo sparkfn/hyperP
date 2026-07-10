@@ -26,23 +26,33 @@ CRM, and third-party systems. Primary code is in `services/api/` and
 
 ## Commands and validation
 
-Codex must not run project package, test, build, migration, or app-server commands
-on the host. Do **not** run `uv run`, `pytest`, `mypy`, `ruff` verification,
-`npm run`, `npx eslint`, Docker Compose, migrations, local venv creation, or
-long-lived services. This avoids host artifacts and duplicates CI.
+Codex has full access to the local project toolchain and Docker runtime. It may run
+package, test, lint, type-check, build, migration, application-server, and Docker
+Compose commands when they are relevant to the user's request. This includes
+`uv run`, `pytest`, `mypy`, `ruff`, `npm run`, `npx eslint`, local virtual
+environments, and short-lived or explicitly requested long-lived services.
 
-Allowed local checks are read-only or structural, including:
+Use the smallest command scope that provides useful evidence. Preserve existing
+host state and avoid leaving unnecessary processes, containers, generated files,
+or dependency artifacts behind. Before destructive operations such as deleting
+data, resetting databases, removing containers or volumes, or applying irreversible
+migrations, identify the exact target and obtain explicit user confirmation.
+
+Local validation may include both structural checks and project commands, for
+example:
 
 ```powershell
 git status -sb
 git diff --check
 git diff
 rg --files
+uv run pytest
+npm run lint
+docker compose ps
 ```
 
-A one-shot deterministic command that generates a mechanical correction (for
-example, formatting only a changed Python file after CI identifies format drift)
-is allowed, but CI remains the verifier.
+Local checks provide fast feedback, but Woodpecker remains the required verifier
+for pushed PR and development-branch work.
 
 Validate through Woodpecker after an authorized push to a PR branch:
 
