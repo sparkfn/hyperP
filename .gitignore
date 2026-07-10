@@ -41,6 +41,7 @@ data/celerybeat/
 
 # Claude Code local session/cache
 .claude/
+.agents/
 .superpowers/
 .worktrees/
 services/frontend2/*.md
