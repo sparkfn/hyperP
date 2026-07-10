@@ -1,70 +1,163 @@
-# AGENTS.md — agent operating policy for sparkfn/hyperP
+# AGENTS.md
 
-This file is the durable agent-policy counterpart to `CLAUDE.md`. Coding standards,
-service topology, and codebase patterns live in `CLAUDE.md`; this file owns the
-**workflow, CI, and Git discipline** every agent must follow here.
+## Purpose and precedence
 
-## Source of truth
-GitHub issues, PRs, branches, commits, and CI results are the source of truth. Do not
-create local `.md` status/plan/breadcrumb files for task history — record decisions,
-CI maps, evidence, and follow-ups in the relevant issue or PR.
+This file is the operating guide for Codex agents working in HyperP. It translates
+the repository's established guidance into Codex-specific workflow rules. Follow
+this file and the user's request; consult `CLAUDE.md` for full architectural
+context and examples. If guidance conflicts, use the stricter safety, Git, or CI
+constraint.
 
-## Branch model
-- `main` — production lineage (do not push directly).
-- `development` — integration branch. PRs merge here. DEV CI runs on push to this branch.
-- `staging` — staging deploy target (GitHub Actions `.github/workflows/deploy-staging.yml`).
-- Feature/fix work happens on worktrees/branches off the current branch/HEAD, **not** `origin/main` (or `main`). **Hard rule:** any worktree creation — manual (`git worktree add`), via the `EnterWorktree` tool, or via a skill/agent — must branch from the current branch/HEAD; never force or default the base ref to `main`/`origin/main`. If a worktree was created from `main` by mistake, recreate it from the current branch before working in it.
+HyperP unifies customer profiles and relationship intelligence across POS, Bitrix
+CRM, and third-party systems. Primary code is in `services/api/` and
+`services/ingestion/`; product and architecture documents are in `docs/`.
 
-## CI — hybrid (Woodpecker + GitHub Actions)
-- **PR + DEV validation** run in local **Woodpecker** (`corbu` host, docker backend,
-  `https://ci.corbu.dev`). Inspect **only** via `wpci home`. Never open the Woodpecker
-  UI, paste tokens, or use legacy wrapper scripts.
-- **Staging deploy** runs in GitHub Actions on push to `staging`. Leave it unchanged.
+## Codex workflow
 
-### Workflows (canonical layout)
-| Boundary | File | `when:` | Branch |
-|---|---|---|---|
-| PR | `.woodpecker/pr.yaml` | `event: pull_request` | any |
-| DEV | `.woodpecker/dev.yaml` | `event: push` + `branch: development` | `development` |
+- Use PowerShell for shell commands in this Windows workspace.
+- Start by inspecting relevant files and `git status -sb`; preserve unrelated
+  worktree changes.
+- Use `rg` / `rg --files` for searches. Use `apply_patch` for file edits.
+- Do not create local status, plan, or breadcrumb Markdown files. GitHub issues,
+  PRs, branches, commits, and CI results are the source of truth.
+- Before handoff, perform a hostile review: correctness, edge cases, security,
+  brittle tests, duplication, and contract compatibility.
+- Never expose secrets, tokens, private keys, or credentials.
 
-PR is fast feedback only (ruff, mypy --strict, pytest, frontend2 typecheck + eslint
-errors-only). DEV is materially stronger (same python checks on the merge commit +
-frontend2 production `next build` + production `uv sync --frozen --no-dev`). The repo
-is **untrusted** in Woodpecker — no `volumes:`, no Docker socket, no `docker compose up`
-in PR/DEV workflows; those belong to MAIN/staging deploy only. Never weaken, skip, or
-rename tests/checks to make CI pass.
+## Commands and validation
 
-## Agent hard rules
-1. **No project package/test/build/migration/app-server commands on the host** — no
-   `uv run pytest`, `npm run build`, `npm test`, `venv`, migrations, or long-lived
-   processes. Validate by pushing to a PR branch and reading the Woodpecker result via
-   `wpci home`.
-2. Agents may inspect/edit files, run Git, and run safe structural checks
-   (`git diff --check`, `git status -sb`).
-3. **Commit discipline**: never commit, push, or merge without explicit user confirmation.
-   This overrides any plan step that says "commit".
-4. **Do not push to `development`** without explicit user authorization — DEV CI only
-   runs after an authorized merge/push.
-5. **Completion gates** — do not report work complete without pipeline evidence:
-   - PR: `wpci home pipeline show sparkfn/hyperP <n>` — repo, branch/PR, commit SHA,
-     pipeline number, status, step names.
-   - DEV: a `development`-branch pipeline number, status, commit SHA, and step names.
-6. Missing, skipped, or failing PR/DEV checks are blockers unless the user explicitly
-   accepts partial/blocked adoption with a recorded follow-up issue.
-7. Do not recreate git-runner / GitHub runner / host-local dependency/test workflows.
-8. Never print secrets or tokens. Woodpecker secrets belong in Woodpecker, not YAML.
+Codex must not run project package, test, build, migration, or app-server commands
+on the host. Do **not** run `uv run`, `pytest`, `mypy`, `ruff` verification,
+`npm run`, `npx eslint`, Docker Compose, migrations, local venv creation, or
+long-lived services. This avoids host artifacts and duplicates CI.
 
-## Frontend lint gate
-`npm run lint` (`--max-warnings 9`) is red on a clean tree (~18 pre-existing warnings, 0
-errors); PR/DEV CI run `npx eslint src` (errors only). Verify changes add zero net warnings
-(stash and compare). Full detail in CLAUDE.md (*Frontend lint gate*); keep both in sync.
+Allowed local checks are read-only or structural, including:
 
-## Inspecting CI
-Inspect Woodpecker **only** via `wpci home` — never the UI, tokens, or legacy wrappers.
-Commands and the CI-only-empty-commit retrigger path are documented in CLAUDE.md
-(*Inspecting CI*); keep both in sync.
+```powershell
+git status -sb
+git diff --check
+git diff
+rg --files
+```
 
-## docker-compose sync
-Any commit modifying the root `docker-compose.yml` must apply the equivalent change to
-`.docker/staging/docker-compose.yml` in the same commit. Full rule in CLAUDE.md
-(*docker-compose.yml sync rule*); keep both in sync.
+A one-shot deterministic command that generates a mechanical correction (for
+example, formatting only a changed Python file after CI identifies format drift)
+is allowed, but CI remains the verifier.
+
+Validate through Woodpecker after an authorized push to a PR branch:
+
+```powershell
+wpci home doctor --json
+wpci home repo ls
+wpci home pipeline last sparkfn/hyperP --branch <branch>
+wpci home pipeline show sparkfn/hyperP <pipeline-number>
+wpci home pipeline log show sparkfn/hyperP <pipeline-number> <step-name>
+```
+
+Inspect Woodpecker **only** with `wpci home`; never open its UI, use tokens, or
+use legacy wrappers. Do not claim work complete without required pipeline evidence:
+repository/branch or PR, commit SHA, pipeline number, status, and step names.
+Missing, skipped, or failed checks block completion unless the user explicitly
+accepts a partial result with a tracked follow-up.
+
+## Git and CI discipline
+
+- Never commit, stage, push, merge, or open a PR without explicit user approval.
+- Never push directly to `main`. Do not push to `development` without explicit
+  authorization.
+- `development` is the integration branch; PRs merge there. `staging` triggers
+  the existing GitHub Actions deployment and must not be changed casually.
+- When creating a branch or worktree, base it on the current `HEAD`, never
+  `main` or `origin/main`. Recreate any mistakenly main-based worktree before use.
+- Do not weaken, skip, rename, or remove checks to make CI pass.
+- Do not recreate host-local, GitHub-runner, or git-runner validation workflows.
+- If root `docker-compose.yml` changes, make the equivalent change in
+  `.docker/staging/docker-compose.yml` in the same commit.
+
+Woodpecker is untrusted. Canonical workflows are `.woodpecker/pr.yaml` for pull
+requests and `.woodpecker/dev.yaml` for pushes to `development`. PR CI runs Python
+lint/type/test checks plus frontend2 typecheck and ESLint errors-only. DEV reruns
+those checks on the merge commit and adds the frontend production build and frozen
+production Python install. Do not add Docker sockets, `volumes:`, or
+`docker compose up` to PR/DEV workflows.
+
+## Active application and topology
+
+- `services/frontend2/` is the only active frontend and is served at `/`.
+  `services/frontend/` is retired reference code: do not add code or run commands
+  there.
+- Services are Neo4j, Redis, FastAPI (`api`), Next.js (`frontend2`), nginx (`web`),
+  and Celery worker/beat. The API is internal; nginx provides public routing.
+- The active authenticated UI API contract is the FastAPI mount `/app/v2`.
+  Add/remove mounted routes in the appropriate app builder, not root `src/app.py`.
+- Browser code must use Next.js BFF handlers under `src/app/bff/`; it must never
+  call FastAPI directly. Public pages use `/api/v1/public/...` with no bearer token.
+- Keep `NEXT_PUBLIC_BASE_PATH`, Next config, middleware, nginx locations, and API
+  mount behavior distinct and aligned when changing route topology.
+
+## Backend rules
+
+- Routes depend on repository `Protocol`s through `Depends`; routes must not call
+  `get_session()` or import `src.graph.*` directly.
+- Put Neo4j implementations in `repositories/neo4j/`, protocols in
+  `repositories/protocols/`, and singleton dependency wiring in `repositories/deps.py`.
+- Put Cypher in `graph/queries/` constants or builder functions. Parameterize
+  values; never interpolate them into query strings.
+- Return `ApiResponse[T]` through `envelope()` unless the endpoint is an existing
+  documented bare admin/machine response. Preserve cursor pagination conventions.
+- Use existing graph converters and mappers. Cypher boolean projections are Python
+  `bool`; timezone-aware Neo4j datetimes must be normalized before arithmetic.
+- Format human-facing dates and percentages in API display helpers, not in the UI.
+- Public endpoints belong on a router included without auth dependencies; the
+  action that creates public data remains authenticated.
+- Dispatch ingestion through Celery (`run_ingestion_task.delay`), never by calling
+  `run_ingestion()` directly. `limited-100` dumps are local/development only.
+- `sgbankruptcy` and `sgrentalflats` are dump-only; always give them dump mode and
+  a path relative to `DUMPS_ROOT`.
+
+## Python standards
+
+- Target strict typing and `mypy --strict`: explicit concrete variables,
+  parameters, attributes, and return types; no `Any`, loose containers, or broad
+  type escape hatches. Use `TypedDict`, `Protocol`, dataclasses, models, and unions.
+- Keep modules roughly under 400 lines and functions under 50 lines; extract
+  cohesive helpers and query modules instead of growing monoliths.
+- Use Pydantic request/response models and typed FastAPI parameters/dependencies.
+- Use `uv` for dependency changes (`uv add` / `uv remove`), never `pip`, Poetry,
+  requirements files, or Pipenv.
+- End Python files with a newline; keep non-query lines at 100 characters or less;
+  bind every closure-captured loop variable as a default argument.
+- Avoid redundant casts and validate untrusted data at the boundary rather than
+  scattering casts downstream.
+
+## Frontend standards
+
+- TypeScript is strict: no `any`, `as any`, or `as unknown as T`. Validate external
+  data with guards or schemas before narrowing.
+- Give exported functions, components, route handlers, and Server Actions explicit
+  return types. Prefer discriminated string unions to `enum`.
+- Model API payloads with the existing typed interfaces; do not use
+  `Record<string, unknown>` as an escape hatch.
+- Server-only modules import `server-only`; client components begin with
+  `"use client"` and never import server-only code or secrets.
+- Next 15 route handlers use typed async params and are thin proxies/services.
+  Prefer Server Components for read-only data and parallel fetches where appropriate.
+- Keep components roughly under 150 lines and modules under 300 lines. Use
+  per-component MUI imports, `@/` aliases, and existing theme/shared UI patterns.
+- Use `DatePickerField` for date ranges, with ISO values and `DD MMM YYYY` display.
+- Do not remove Dockerfiles' `npm install --legacy-peer-deps` requirement.
+
+The local lint budget (`npm run lint`, max 9 warnings) is currently exceeded by
+about 18 pre-existing warnings. CI intentionally uses `npx eslint src` errors-only;
+ensure a change adds no warnings and do not suppress `react-hooks/set-state-in-effect`
+for a callback-only effect.
+
+## Documentation and domain constraints
+
+- Name new design documents `profile-unifier-*.md`; use glossary terminology and
+  update the README document map/reading order when adding documents.
+- Keep API prose and `docs/profile-unifier-openapi-3.1.yaml` consistent. Use Mermaid
+  for sequence diagrams.
+- Preserve core product decisions: precision over recall, immutable source facts,
+  explainable merge decisions, controlled LLM rollout, protected sensitive IDs,
+  and repository-mediated graph access.
