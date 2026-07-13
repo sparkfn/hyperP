@@ -85,12 +85,12 @@ if _speedzone_cron is not None:
     _beat_schedule["speedzone-ingest"] = {
         "task": "src.tasks.run_ingestion_task",
         "schedule": _speedzone_cron,
-        "args": ("speedzone_phppos", "batch"),
+        "args": ("speedzone_phppos", "api"),
     }
     _beat_schedule["speedzone-sales-ingest"] = {
         "task": "src.tasks.run_ingestion_task",
         "schedule": _speedzone_cron,
-        "args": ("speedzone_phppos:sales", "batch"),
+        "args": ("speedzone_phppos:sales", "api"),
     }
 
 _eko_cron = _parse_cron(settings.eko_phppos_ingest_cron)
@@ -98,12 +98,12 @@ if _eko_cron is not None:
     _beat_schedule["eko-ingest"] = {
         "task": "src.tasks.run_ingestion_task",
         "schedule": _eko_cron,
-        "args": ("eko_phppos", "batch"),
+        "args": ("eko_phppos", "api"),
     }
     _beat_schedule["eko-sales-ingest"] = {
         "task": "src.tasks.run_ingestion_task",
         "schedule": _eko_cron,
-        "args": ("eko_phppos:sales", "batch"),
+        "args": ("eko_phppos:sales", "api"),
     }
 
 if settings.birthday_task_enabled:

@@ -5,7 +5,7 @@ from __future__ import annotations
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import model_validator
+from pydantic import SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -89,6 +89,17 @@ class Settings(BaseSettings):
     eko_phppos_db_name: str = "phppos_db"
     eko_phppos_chunk_size: int = 1000
     eko_phppos_ingest_cron: str = ""
+
+    # POS OAuth API extraction -----------------------------------------------
+    phppos_api_base_url: str = ""
+    phppos_api_client_id: str = ""
+    phppos_api_client_secret: SecretStr = SecretStr("")
+    phppos_api_refresh_token: SecretStr = SecretStr("")
+    phppos_api_page_size: int = 500
+    phppos_api_timeout_seconds: float = 30.0
+    phppos_api_max_attempts: int = 3
+    speedzone_phppos_api_tenant_id: str = ""
+    eko_phppos_api_tenant_id: str = ""
 
     # WhatsApp API (chrishubert/whatsapp-api compatible) ----------------------
     # Multi-tenant WhatsApp Web REST API. Endpoints are session-scoped via
