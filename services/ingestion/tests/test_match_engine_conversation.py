@@ -127,7 +127,8 @@ def test_conversation_record_does_not_auto_merge_on_phone_only() -> None:
     )
 
     assert result.decision != MatchDecision.MERGE
-    assert result.matched_person_id is None
+    assert result.decision == MatchDecision.REVIEW
+    assert result.matched_person_id == "person-1"
 
 
 def _corroborated_features(**overrides: object) -> dict[str, object]:

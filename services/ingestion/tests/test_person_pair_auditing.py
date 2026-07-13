@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 
+import pytest
 from src.graph import queries
 from src.models import NormalizedIdentifier, QualityFlag
 from src.pipeline_person_pairs import audit_person_pairs
@@ -43,6 +44,7 @@ class _ScriptedTx:
         idents: list[dict[str, object]] | None = None,
         facts: list[dict[str, object]] | None = None,
         addrs: list[dict[str, object]] | None = None,
+        pair_attrs: dict[str, object] | None = None,
     ) -> None:
         self.fanout = fanout
         self.person_ids = person_ids
@@ -53,7 +55,16 @@ class _ScriptedTx:
         self.idents = idents or []
         self.facts = facts or []
         self.addrs = addrs or []
+        self.pair_attrs = pair_attrs or {
+            "left_status": "active",
+            "left_completeness": 0.0,
+            "left_created_at": "2026-01-01T00:00:00Z",
+            "right_status": "active",
+            "right_completeness": 0.0,
+            "right_created_at": "2026-01-01T00:00:00Z",
+        }
         self.create_calls: list[dict[str, object]] = []
+        self.match_decision_calls: list[dict[str, object]] = []
         self._created = 0
 
     def run(self, query: str, **params: object) -> _Result:
@@ -69,18 +80,24 @@ class _ScriptedTx:
             return _Result([{"person_ids": list(self.person_ids)}])
         if "RETURN count(lock) > 0 AS is_locked" in query:
             return _Result([{"is_locked": self.is_locked}])
+        if "left_status" in query and "right_status" in query:
+            attrs = dict(self.pair_attrs)
+            attrs["left_person_id"] = params["left_person_id"]
+            attrs["right_person_id"] = params["right_person_id"]
+            return _Result([attrs])
         if (
             "queue_state IN ['open', 'assigned', 'deferred']" in query
             and "review_case_id" in query
             and "CREATE" not in query
         ):
-            return _Result(
-                [{"review_case_id": self.existing_case}] if self.existing_case else []
-            )
+            return _Result([{"review_case_id": self.existing_case}] if self.existing_case else [])
         if "CREATE (rc:ReviewCase" in query:
             self.create_calls.append(dict(params))
             self._created += 1
             return _Result([{"review_case_id": f"rc-{self._created}"}])
+        if "RETURN md.match_decision_id AS match_decision_id" in query:
+            self.match_decision_calls.append(dict(params))
+            return _Result([{"match_decision_id": "md-1"}])
         return _Result([])
 
 
@@ -94,44 +111,58 @@ def _nric() -> list[NormalizedIdentifier]:
     ]
 
 
-def test_two_active_persons_open_one_ordered_pair_case() -> None:
+def test_pair_below_020_does_not_open_review() -> None:
     tx = _ScriptedTx(fanout=2, person_ids=["person-b", "person-a"])
     created = audit_person_pairs(tx, _nric())  # type: ignore[arg-type]
-    assert created == ["rc-1"]
-    assert len(tx.create_calls) == 1
-    call = tx.create_calls[0]
-    # Canonical ordering: left < right.
-    assert call["left_person_id"] == "person-a"
-    assert call["right_person_id"] == "person-b"
-    assert "nric" in str(call["feature_snapshot"])
-    # No snapshot rows -> heuristic finds no shared evidence -> confidence 0.0.
-    assert call["confidence"] == 0.0
+    assert created == []
+    assert tx.create_calls == []
 
 
-def test_pair_case_carries_heuristic_confidence() -> None:
-    # Both persons (content-dispatched mock) share a verified phone and the same
-    # name, so the reused record-engine scorer yields a real confidence:
-    # verified phone (+0.35) + high name similarity (+0.20) = 0.55.
+def test_pair_at_040_auto_merges_instead_of_opening_review(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import src.pipeline_person_pairs as module
+
+    merges: list[tuple[str, str]] = []
+
+    def fake_merge(
+        tx: object, *, absorbed_id: str, survivor_id: str, match_decision_id: str, reason: str
+    ) -> str:
+        merges.append((absorbed_id, survivor_id))
+        return "me-1"
+
+    monkeypatch.setattr(module, "merge_person_pair", fake_merge)
     tx = _ScriptedTx(
         fanout=2,
         person_ids=["person-a", "person-b"],
         idents=[
-            {"identifier_type": "phone", "normalized_value": "+6580000000", "is_verified": True}
+            {"identifier_type": "phone", "normalized_value": "+6580000000", "is_verified": False},
+            {"identifier_type": "email", "normalized_value": "a@example.com", "is_verified": False},
         ],
-        facts=[{"attribute_name": "full_name", "attribute_value": "Alice Tan"}],
+        pair_attrs={
+            "left_status": "active",
+            "left_completeness": 0.8,
+            "left_created_at": "2026-01-01T00:00:00Z",
+            "right_status": "active",
+            "right_completeness": 0.2,
+            "right_created_at": "2026-01-01T00:00:00Z",
+        },
     )
-    created = audit_person_pairs(tx, _nric())  # type: ignore[arg-type]
-    assert created == ["rc-1"]
-    call = tx.create_calls[0]
-    confidence = call["confidence"]
-    assert isinstance(confidence, float)
-    assert confidence > 0.5
-    # Heuristic signals are merged into the persisted feature snapshot, and the
-    # bridging-identifier provenance is preserved alongside them.
-    snap = str(call["feature_snapshot"])
-    assert "phone_exact_match" in snap
-    assert "heuristic_band" in snap
-    assert "bridging_identifier_value" in snap
+    assert audit_person_pairs(tx, _nric()) == []  # type: ignore[arg-type]
+    assert tx.create_calls == []
+    assert merges == [("person-b", "person-a")]
+
+
+def test_pair_at_020_opens_review_case() -> None:
+    tx = _ScriptedTx(
+        fanout=2,
+        person_ids=["person-a", "person-b"],
+        idents=[
+            {"identifier_type": "phone", "normalized_value": "+6580000000", "is_verified": False}
+        ],
+    )
+    assert audit_person_pairs(tx, _nric()) == ["rc-1"]  # type: ignore[arg-type]
+    assert tx.create_calls[0]["confidence"] == 0.20
 
 
 def test_existing_open_case_suppresses_duplicate() -> None:
@@ -157,7 +188,13 @@ def test_fanout_over_cap_skips_identifier() -> None:
 
 
 def test_three_persons_produce_three_pairwise_cases() -> None:
-    tx = _ScriptedTx(fanout=3, person_ids=["person-c", "person-a", "person-b"])
+    tx = _ScriptedTx(
+        fanout=3,
+        person_ids=["person-c", "person-a", "person-b"],
+        idents=[
+            {"identifier_type": "phone", "normalized_value": "+6580000000", "is_verified": False}
+        ],
+    )
     created = audit_person_pairs(tx, _nric())  # type: ignore[arg-type]
     assert created == ["rc-1", "rc-2", "rc-3"]
     pairs = {(c["left_person_id"], c["right_person_id"]) for c in tx.create_calls}
