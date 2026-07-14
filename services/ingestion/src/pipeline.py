@@ -265,7 +265,7 @@ class IngestPipeline:
         # Person↔person audit: any usable identifier this record carries that now
         # links 2+ active persons opens a pairwise review case (deduped, fanout-
         # capped). Audit-only — never merges or links persons.
-        audit_person_pairs(tx, identifiers)
+        audit_person_pairs(tx, identifiers, envelope.record_type)
         if match_result.decision == MatchDecision.MERGE and not is_new_person:
             record_auto_merge_event(
                 tx,

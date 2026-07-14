@@ -1,9 +1,8 @@
 """Layer 2 heuristic scoring — conditional weights across phone/email/DOB/name/address.
 
 Confidence bands:
-    ≥ 0.90 → MERGE  (auto-merge)
-    0.60–0.89 → REVIEW
-    < 0.60 → NO_MATCH (explicit, so the orchestrator can drop it)
+    relationship: ≥ 0.20 MERGE; 0.10–0.19 REVIEW; < 0.10 NO_MATCH
+    other types:  ≥ 0.40 MERGE; 0.20–0.39 REVIEW; < 0.20 NO_MATCH
 """
 
 from __future__ import annotations
@@ -21,6 +20,13 @@ from src.matching.names import (
     incoming_names,
 )
 from src.matching.snapshot import CandidateSnapshot, RecordDict, fetch_candidate_snapshot
+from src.matching.thresholds import (
+    DEFAULT_AUTO_MERGE,
+    DEFAULT_REVIEW,
+    classify_confidence,
+    has_hard_conflict,
+    thresholds_for,
+)
 from src.models import (
     EngineType,
     JsonValue,
@@ -63,8 +69,8 @@ NAME_MISMATCH_THRESHOLD = NAME_PARTIAL_THRESHOLD
 NAME_MISMATCH_PENALTY = -0.25
 ADDRESS_MATCH_WEIGHT = 0.10
 
-CONFIDENCE_AUTO_MERGE = 0.90
-CONFIDENCE_REVIEW = 0.60
+CONFIDENCE_AUTO_MERGE = DEFAULT_AUTO_MERGE
+CONFIDENCE_REVIEW = DEFAULT_REVIEW
 #: Conversation evidence that is NOT corroborated by an independent non-conversation
 #: identifier must never auto-merge on additive score alone (matching-spec). Cap it
 #: just below the auto-merge band so it lands in REVIEW (or NO_MATCH if below the
@@ -144,7 +150,7 @@ def evaluate_heuristic(
         score,
         reasons,
     )
-    return _band(confidence, reasons, candidate_person_id, features)
+    return _band(confidence, reasons, candidate_person_id, features, record_type)
 
 
 def _is_system_sourced(cand_rec: dict[str, object]) -> bool:
@@ -378,20 +384,6 @@ def _build_feature_snapshot(
     }
 
 
-def _has_hard_conflict(features: dict[str, JsonValue]) -> bool:
-    """Conflict signals that veto any record-type promotion.
-
-    Strong name mismatch (JW < threshold), DOB conflict, or a high-fanout phone
-    each block a sub-auto-merge pair from being promoted, regardless of the
-    record type's positive criteria.
-    """
-    return (
-        features["dob_conflict"] is True
-        or features["name_mismatch"] is True
-        or features["phone_high_fanout"] is True
-    )
-
-
 def _promote_by_record_type(
     record_type: RecordType,
     confidence: float,
@@ -414,12 +406,10 @@ def _promote_by_record_type(
         # score alone (matching-spec) — cap below the auto-merge band so a human
         # reviews it. MERGE is reachable only via the promotion branch above.
         return min(confidence, _CONVERSATION_NON_CORROBORATED_CAP)
-    if confidence >= CONFIDENCE_AUTO_MERGE:
-        return confidence
     if record_type == RecordType.RELATIONSHIP:
         phone = features["phone_exact_match"] is True
         partial_name = _float_feature(features.get("name_similarity")) >= NAME_PARTIAL_THRESHOLD
-        if phone and partial_name and not _has_hard_conflict(features):
+        if phone and partial_name and not has_hard_conflict(features):
             return _apply_promotion(confidence, reasons, features, "relationship")
         return confidence
     return confidence
@@ -458,7 +448,7 @@ def _can_promote_conversation(features: dict[str, JsonValue]) -> bool:
     # source on the candidate side — a pair whose evidence is *exclusively*
     # conversation-sourced must stay in review (matching-spec) — and (c) no hard
     # conflict signal is present (shared blocker set).
-    return corroborated and system_corroborated and not _has_hard_conflict(features)
+    return corroborated and system_corroborated and not has_hard_conflict(features)
 
 
 def _float_feature(value: JsonValue | None) -> float:
@@ -472,15 +462,25 @@ def _band(
     reasons: list[str],
     candidate_person_id: str,
     features: dict[str, JsonValue],
+    record_type: RecordType,
 ) -> MatchResult:
-    if confidence >= CONFIDENCE_AUTO_MERGE:
-        decision = MatchDecision.MERGE
+    auto_merge, review = thresholds_for(record_type)
+    hard_conflict = has_hard_conflict(features)
+    features["threshold_policy"] = (
+        "relationship" if record_type == RecordType.RELATIONSHIP else "default"
+    )
+    features["auto_merge_threshold"] = auto_merge
+    features["review_threshold"] = review
+    decision = classify_confidence(
+        confidence,
+        record_type,
+        has_hard_conflict=hard_conflict,
+    )
+    if decision == MatchDecision.MERGE:
         matched: str | None = candidate_person_id
-    elif confidence >= CONFIDENCE_REVIEW:
-        decision = MatchDecision.REVIEW
+    elif decision == MatchDecision.REVIEW:
         matched = candidate_person_id
     else:
-        decision = MatchDecision.NO_MATCH
         matched = None
     return MatchResult(
         decision=decision,

@@ -166,7 +166,7 @@ Resolution:
   person-to-person rewiring
 
 The extra person ids are carried on `MatchResult.additional_linked_person_ids`.
-This applies to both deterministic (confidence 1.0) and heuristic (≥ 0.90) merge
+This applies to both deterministic (confidence 1.0) and heuristic (≥ 0.40) merge
 matches. Hard NO_MATCH rules still drop a conflicting candidate before it can
 become a merge target. Whether the shared evidence means the persons should
 ultimately be merged is left to human review / later analysis, not decided
@@ -191,20 +191,20 @@ Rules:
   pre-date the incoming record.
 - **Pairwise** cases. A set of *n* bridged persons yields the `C(n, 2)` ordered
   pairs `{(a, b) : a.person_id < b.person_id}`. The `MatchDecision` uses
-  `engine_type = 'pair_audit'`, `decision = 'review'`, with both `ABOUT_LEFT`
+  `engine_type = 'pair_audit'`, with `decision = 'merge'` at confidence >= 0.40
+  and `decision = 'review'` from 0.20–0.39, and with both `ABOUT_LEFT`
   and `ABOUT_RIGHT` pointing at `Person` nodes (lower `person_id` on the left).
   The bridging identifier is recorded in `feature_snapshot`.
-- **Confidence (advisory triage)** — the case carries a real `confidence`, not a
+- **Confidence (triage and auto-merge)** — the audit carries a real `confidence`, not a
   placeholder. It reuses the **Layer 2 heuristic scorer** unchanged: the left
   person is treated as the "incoming record" (its golden identifiers, facts, and
   address) and scored against the right person's candidate snapshot. The
   resulting score, the band it would fall in (`heuristic_band`), and the
   heuristic signals/reasons are merged into the case's `feature_snapshot` so a
   reviewer can tell a same-name/same-phone duplicate from two distinct people who
-  merely share a phone. The score is **strictly advisory**: `decision` stays
-  `review` regardless of the band — a shared-identifier bridge never auto-merges
-  persons (precision over recall; many bridges are `relationship`-sourced contact
-  rows whose subject is a *different* person). Conversation-promotion does **not**
+  merely share a phone. At confidence **>= 0.40**, the auditor records a merge
+  decision and merges the pair; confidence **0.20–0.39** opens a review case.
+  Conversation-promotion does **not**
   apply to pair audits (the scorer is called with the default `record_type`).
   *Limitation*: the heuristic layer weights only phone/email as identifier
   evidence — **govt-ID (NRIC) bridges are scored on name/DOB/address corroboration
@@ -279,7 +279,7 @@ conflict, or a high-fanout phone (> cap) — on top of the deterministic blocker
   person-pair review on the shared NRIC). NRIC-alone still merges when a name is
   absent on either side.
 - **`relationship`** (Layer 2 promotion) — a pair matching on **phone + partial
-  name** (JW ≥ 0.50) is promoted to auto-merge even below the 0.90 band, unless a
+  name** (JW ≥ 0.50) is promoted to auto-merge even below the 0.40 band, unless a
   blocker fires. This mirrors the conversation-promotion mechanism
   (`_promote_by_record_type`).
 - **`sales`** — *(planned)* phone + partial-name fallback resolution for orders
@@ -380,9 +380,9 @@ weak signals must not produce auto-merge confidence.
 
 ### Decision Thresholds
 
-- `>= 0.90`: auto-merge
-- `0.60 - 0.89`: review
-- `< 0.60`: no-match
+- `>= 0.40`: auto-merge
+- `0.20 - 0.39`: review
+- `< 0.20`: no-match
 
 ### Name Similarity Bands (Jaro–Winkler)
 

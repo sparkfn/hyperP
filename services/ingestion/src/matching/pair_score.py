@@ -9,8 +9,8 @@ This adapter reuses the *exact* scoring criteria of the record match engine
 (:func:`src.matching.heuristic.evaluate_heuristic`). One person is represented
 as the "incoming record" — its golden identifiers, facts, and address — and
 scored against the other person's candidate snapshot. The resulting confidence
-is advisory triage signal only: the auditor still routes every bridge to human
-review (precision over recall — a shared identifier never auto-merges persons).
+drives the pair auditor's disposition policy. Relationship-triggered audits use
+0.20 for auto-merge and 0.10 for review; other audits use 0.40 and 0.20.
 """
 
 from __future__ import annotations
@@ -28,10 +28,10 @@ from src.models import (
 
 #: A person-pair bridge scoring at or above this confidence auto-merges the
 #: two persons instead of opening a human review case. Distinct from
-#: ``matching.heuristic.CONFIDENCE_AUTO_MERGE`` (0.90), which gates
-#: source-record-to-person matching — person-pair merges use a higher bar
-#: since no human confirms the merge.
-PERSON_PAIR_AUTO_MERGE: float = 0.60
+#: ``matching.heuristic.CONFIDENCE_AUTO_MERGE``. These are the default pair
+#: thresholds; relationship-triggered audits select their lower shared policy.
+PERSON_PAIR_AUTO_MERGE: float = 0.40
+PERSON_PAIR_REVIEW: float = 0.20
 
 
 def score_person_pair(
@@ -43,8 +43,7 @@ def score_person_pair(
 
     ``left`` is represented as the incoming record and scored against ``right``'s
     candidate snapshot, reusing the record match engine's scoring criteria. The
-    caller keeps the review decision regardless of the returned band — the score
-    is advisory, never an auto-merge trigger. ``record_type`` is left at its
+    caller applies the pair-specific disposition. ``record_type`` is left at its
     default so conversation-promotion logic does not apply to pair audits.
     """
     left = fetch_candidate_snapshot(tx, left_person_id)
