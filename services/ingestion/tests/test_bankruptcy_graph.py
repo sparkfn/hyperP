@@ -4,8 +4,9 @@ from typing import cast
 
 from _txmock import _RecordingTx
 from neo4j import ManagedTransaction
+from src.graph import queries
 from src.models import SourceRecordEnvelope
-from src.pipeline_bankruptcy import materialize_bankruptcy_case
+from src.pipeline_bankruptcy import bankruptcy_case_blueprint, materialize_bankruptcy_case
 
 
 class _Tx(_RecordingTx):
@@ -53,10 +54,14 @@ def test_materialize_bankruptcy_case_writes_case_for_sgbankruptcy() -> None:
         envelope=_envelope(),
         person_id="person-1",
         source_record_pk="sr-1",
+        replaced_source_record_pk="sr-old",
     )
-
-    assert len(tx.calls) == 1
-    params = tx.calls[0][1]
+    assert [call[0] for call in tx.calls] == [
+        queries.RETIRE_BANKRUPTCY_PERSON_ASSOCIATION,
+        queries.MERGE_BANKRUPTCY_CASE,
+    ]
+    assert tx.calls[0][1] == {"source_record_pk": "sr-old"}
+    params = tx.calls[1][1]
     assert params["person_id"] == "person-1"
     assert params["source_record_pk"] == "sr-1"
     assert params["source_system_key"] == "sgbankruptcy"
@@ -68,6 +73,15 @@ def test_materialize_bankruptcy_case_writes_case_for_sgbankruptcy() -> None:
     assert params["source_url"] == "https://example.test/file.pdf"
 
 
+def test_bankruptcy_activation_blueprint_carries_materialization_fields() -> None:
+    blueprint = bankruptcy_case_blueprint(_envelope())
+    assert blueprint is not None
+    assert blueprint["source_system_key"] == "sgbankruptcy"
+    assert blueprint["source_case_id"] == "1"
+    assert blueprint["case_number"] == "1561/2025"
+    assert blueprint["observed_at"] == "2026-05-05T13:05:42.351832+00:00"
+
+
 def test_materialize_bankruptcy_case_skips_other_sources() -> None:
     tx = _Tx()
     envelope = _envelope().model_copy(update={"source_system": "fundbox_consumer_backend"})
@@ -77,6 +91,37 @@ def test_materialize_bankruptcy_case_skips_other_sources() -> None:
         envelope=envelope,
         person_id="person-1",
         source_record_pk="sr-1",
+        replaced_source_record_pk=None,
     )
 
     assert tx.calls == []
+
+
+def test_bankruptcy_relationship_activation_preserves_history() -> None:
+    query = queries.MERGE_BANKRUPTCY_CASE
+    assert "person_rel.is_active = true" in query
+    assert "person_rel.activated_at" in query
+    assert "person_rel.retired_at = null" in query
+    assert "source_record_pk: $source_record_pk" in query
+
+    retirement = queries.RETIRE_BANKRUPTCY_PERSON_ASSOCIATION
+    assert "source_record_pk: $source_record_pk" in retirement
+    assert "rel.is_active = false" in retirement
+    assert "rel.retired_at = datetime()" in retirement
+
+
+def test_accepted_bankruptcy_replacement_retires_old_association_without_new_case() -> None:
+    tx = _Tx()
+    envelope = _envelope().model_copy(update={"raw_payload": {"case": {}}})
+
+    materialize_bankruptcy_case(
+        cast(ManagedTransaction, tx),
+        envelope=envelope,
+        person_id="person-1",
+        source_record_pk="sr-2",
+        replaced_source_record_pk="sr-1",
+    )
+
+    assert tx.calls == [
+        (queries.RETIRE_BANKRUPTCY_PERSON_ASSOCIATION, {"source_record_pk": "sr-1"})
+    ]

@@ -5,6 +5,13 @@ import type { PersonEntitySummary, SourceRecordType } from "./api-types";
 
 export type { SourceRecordType };
 
+export type SourceRecordLifecycleStatus =
+  | "active"
+  | "pending_review"
+  | "superseded"
+  | "rejected"
+  | "link_failed";
+
 export interface PersonBankruptcyCase {
   bankruptcy_case_id: string;
   source_system_key: string;
@@ -71,6 +78,7 @@ export interface PersonSourceRecord {
   source_record_id: string;
   source_record_version: string | null;
   record_type: SourceRecordType;
+  lifecycle_status: SourceRecordLifecycleStatus;
   extraction_method: string | null;
   extraction_confidence: number | null;
   link_status: string;

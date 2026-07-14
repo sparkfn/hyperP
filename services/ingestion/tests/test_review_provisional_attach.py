@@ -119,6 +119,6 @@ def test_confirmed_attach_wires_full_evidence() -> None:
 
     joined = "\n".join(tx.queries)
     assert "CREATE (sr)-[:LINKED_TO" in joined
-    assert "MERGE (p)-[rel:IDENTIFIED_BY]" in joined
-    assert "MERGE (p)-[rel:LIVES_AT]" in joined
+    assert "MERGE (p)-[rel:IDENTIFIED_BY {" in joined
+    assert "MERGE (p)-[rel:LIVES_AT {" in joined
     assert "CREATE (p)-[:HAS_FACT" in joined

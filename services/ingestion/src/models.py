@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from enum import StrEnum
 
 from pydantic import BaseModel, Field, model_validator
@@ -79,6 +80,36 @@ class RecordType(StrEnum):
     RELATIONSHIP = "relationship"
     CONVERSATION = "conversation"
     SALES = "sales"
+
+
+class SourceRecordLifecycleStatus(StrEnum):
+    """Allowed states for an immutable source-record version."""
+
+    ACTIVE = "active"
+    PENDING_REVIEW = "pending_review"
+    SUPERSEDED = "superseded"
+    REJECTED = "rejected"
+    LINK_FAILED = "link_failed"
+
+
+@dataclass(frozen=True)
+class SourceVersionState:
+    """Current graph state for one immutable source-record version."""
+
+    source_record_pk: str
+    source_record_version: int
+    record_hash: str
+    lifecycle_status: SourceRecordLifecycleStatus
+    linked_person_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class SourceLifecycleState:
+    """Open versions and next version number for one source identity."""
+
+    active: SourceVersionState | None
+    pending: SourceVersionState | None
+    next_version: int
 
 
 #: Record types that descend from the former ``system`` provenance class. Every
@@ -237,6 +268,7 @@ class MatchResult(BaseModel):
     engine_type: EngineType = EngineType.DETERMINISTIC
     engine_version: str = "v0.1.0"
     matched_person_id: str | None = None
+    proposed_person_id: str | None = None
     # When an incoming record independently matches (MERGE band) more than one
     # distinct active person, the record and its extracted evidence are linked to
     # ALL of them — ``matched_person_id`` (the primary) plus every id here — but

@@ -52,7 +52,10 @@ RETURN p.person_id AS person_id
 LINK_PERSON_TO_IDENTIFIER = """
 MATCH (p:Person {person_id: $person_id})
 MATCH (id:Identifier {identifier_type: $identifier_type, normalized_value: $normalized_value})
-MERGE (p)-[rel:IDENTIFIED_BY]->(id)
+MERGE (p)-[rel:IDENTIFIED_BY {
+    source_system_key: $source_system_key,
+    source_record_pk: $source_record_pk
+}]->(id)
 ON CREATE SET
     rel.is_verified = $is_verified,
     rel.verification_method = $verification_method,
@@ -79,7 +82,10 @@ MATCH (addr:Address {
     street_number: $street_number,
     unit_number:   $unit_number
 })
-MERGE (p)-[rel:LIVES_AT]->(addr)
+MERGE (p)-[rel:LIVES_AT {
+    source_system_key: $source_system_key,
+    source_record_pk: $source_record_pk
+}]->(addr)
 ON CREATE SET
     rel.is_active = true,
     rel.is_verified = $is_verified,

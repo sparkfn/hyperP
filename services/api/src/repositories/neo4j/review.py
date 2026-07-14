@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
+from collections.abc import Mapping
 from datetime import UTC, datetime
+from typing import TypedDict
 
 from neo4j import AsyncManagedTransaction, AsyncSession
 
@@ -18,20 +21,30 @@ from src.graph.mappers import (
     map_review_case_summary,
 )
 from src.graph.queries import (
+    ACTIVATE_PENDING_REVIEW_RECORD,
     ASSIGN_REVIEW_CASE,
     CHECK_BOTH_PERSONS_ACTIVE,
     CHECK_NO_MATCH_LOCK,
+    CLAIM_PENDING_REVIEW_RESOLUTION,
     CREATE_NO_MATCH_LOCK_FROM_REVIEW,
     EXECUTE_MANUAL_MERGE,
+    FINALIZE_STAGED_REVIEW_SALE,
+    GET_PENDING_REVIEW_RECORD,
     GET_PERSON_POSSIBLE_MATCH_DETAIL,
     GET_PERSONS_FOR_REVIEW_MERGE,
     GET_REVIEW_CASE,
     GET_REVIEW_CASE_BY_MATCH_DECISION,
+    GET_REVIEW_SALES_RECORD,
     LINK_REVIEW_SALES_BOUGHT_VEHICLE,
     LINK_REVIEW_SALES_PURCHASED_ORDER,
     MARK_REVIEW_SALES_RECORD_LINKED,
     MARK_REVIEW_SALES_RECORD_UNRESOLVED,
+    PRECHECK_STAGED_REVIEW_SALE,
+    PROMOTE_STAGED_REVIEW_SALE,
     RECREATE_REVIEW_CASE,
+    REJECT_PENDING_REVIEW_RECORD,
+    REJECT_STAGED_REVIEW_SALE,
+    build_claimed_review_action_cypher,
     build_count_review_cases_query,
     build_list_review_cases_query,
     build_review_action_cypher,
@@ -41,6 +54,7 @@ from src.repositories.neo4j.merge import (
     _apply_golden_profile_selections_tx,
     are_valid_golden_profile_selections,
 )
+from src.repositories.neo4j.sales_staging import InvalidSalesStageError, validate_sales_stage
 from src.repositories.protocols.merge import GoldenProfileSelection
 from src.repositories.protocols.review import ActionResult, AssignResult, ReviewListFilters
 from src.types import (
@@ -55,6 +69,11 @@ from ._utils import record_to_dict, to_total
 # ReviewListFilters keys consumed only when building the query string, never
 # bound as Cypher parameters.
 _NON_CYPHER_KEYS: frozenset[str] = frozenset({"sort_by", "sort_order"})
+logger = logging.getLogger(__name__)
+
+
+class _ReviewResolutionAbortError(RuntimeError):
+    """Force the active Neo4j write transaction to roll back."""
 
 
 def _action_entry_json(action_type: str, actor_type: str, actor_id: str, notes: str | None) -> str:
@@ -198,18 +217,21 @@ class Neo4jReviewRepository:
         if not are_valid_golden_profile_selections(golden_profile_selections):
             return ActionResult(merge_not_applicable=True)
         async with get_session(write=True) as session:
-            result = await session.execute_write(
-                _action_tx,
-                review_case_id,
-                action_type,
-                new_state,
-                resolution,
-                notes,
-                follow_up_at,
-                actor_id,
-                survivor_person_id,
-                golden_profile_selections,
-            )
+            try:
+                result = await session.execute_write(
+                    _action_tx,
+                    review_case_id,
+                    action_type,
+                    new_state,
+                    resolution,
+                    notes,
+                    follow_up_at,
+                    actor_id,
+                    survivor_person_id,
+                    golden_profile_selections,
+                )
+            except _ReviewResolutionAbortError:
+                return ActionResult(merge_not_applicable=True)
 
         if result is None:
             return None
@@ -247,6 +269,31 @@ async def _assign_tx(
     return dict(record["review_case"])
 
 
+class _ReviewClaim(TypedDict):
+    claim_token: str
+    claim_version: int
+    claim_status: str
+
+
+async def _claim_review_action(
+    tx: AsyncManagedTransaction, review_case_id: str, actor_id: str
+) -> _ReviewClaim | None:
+    result = await tx.run(
+        CLAIM_PENDING_REVIEW_RESOLUTION,
+        review_case_id=review_case_id,
+        actor_id=actor_id,
+    )
+    record = await result.single()
+    if record is None or to_str(record.get("claimed_by")) != actor_id:
+        return None
+    token = to_str(record.get("claim_token"))
+    status = to_str(record.get("claim_status"))
+    version = to_int(record.get("claim_version"))
+    if not token or not status or version < 1:
+        raise _ReviewResolutionAbortError("invalid review action claim")
+    return {"claim_token": token, "claim_version": version, "claim_status": status}
+
+
 async def _sales_link_merge_tx(
     tx: AsyncManagedTransaction,
     review_case_id: str,
@@ -258,12 +305,68 @@ async def _sales_link_merge_tx(
     notes: str | None,
 ) -> ActionResult:
     """Approve a sales-record review case: link Order+Units to the candidate Person."""
-    await tx.run(LINK_REVIEW_SALES_PURCHASED_ORDER, review_case_id=review_case_id)
-    await tx.run(LINK_REVIEW_SALES_BOUGHT_VEHICLE, review_case_id=review_case_id)
-    linked_result = await tx.run(MARK_REVIEW_SALES_RECORD_LINKED, review_case_id=review_case_id)
-    if await linked_result.single() is None:
+    sales_result = await tx.run(GET_REVIEW_SALES_RECORD, review_case_id=review_case_id)
+    sales_record = await sales_result.single()
+    if sales_record is None:
         return ActionResult(merge_not_applicable=True)
-    cypher = build_review_action_cypher(resolution, follow_up_at)
+    claim = await _claim_review_action(tx, review_case_id, actor_id)
+    if claim is None:
+        return ActionResult(merge_not_applicable=True)
+    if sales_record.get("lifecycle_status") == "pending_review":
+        if not bool(sales_record.get("staged_sales_ready", False)):
+            raise _ReviewResolutionAbortError("pending sales review has no complete staging graph")
+        precheck_result = await tx.run(
+            PRECHECK_STAGED_REVIEW_SALE,
+            review_case_id=review_case_id,
+            actor_id=actor_id,
+            **claim,
+        )
+        precheck = await precheck_result.single()
+        if precheck is None:
+            raise _ReviewResolutionAbortError("staged sales promotion failed precheck")
+        try:
+            validated_stage = validate_sales_stage(precheck)
+        except InvalidSalesStageError as exc:
+            raise _ReviewResolutionAbortError("staged sales integrity validation failed") from exc
+        promoted = await tx.run(
+            PROMOTE_STAGED_REVIEW_SALE,
+            review_case_id=review_case_id,
+            actor_id=actor_id,
+            source_lock_version=validated_stage.source_lock_version,
+            stage_lock_version=validated_stage.lock_version,
+            stage_hash=validated_stage.stage_hash,
+            expected_line_count=validated_stage.line_count,
+            expected_observation_count=validated_stage.observation_count,
+            **claim,
+        )
+        promoted_record = await promoted.single()
+        if (
+            promoted_record is None
+            or promoted_record.get("promoted_line_count") != precheck.get("expected_line_count")
+            or promoted_record.get("promoted_observation_count")
+            != precheck.get("expected_observation_count")
+        ):
+            raise _ReviewResolutionAbortError("staged sales promotion failed validation")
+        finalized = await tx.run(
+            FINALIZE_STAGED_REVIEW_SALE,
+            review_case_id=review_case_id,
+            actor_id=actor_id,
+            promoted_line_count=promoted_record.get("promoted_line_count"),
+            promoted_observation_count=promoted_record.get("promoted_observation_count"),
+            source_lock_version=validated_stage.source_lock_version,
+            stage_lock_version=validated_stage.lock_version,
+            stage_hash=validated_stage.stage_hash,
+            **claim,
+        )
+        if await finalized.single() is None:
+            raise _ReviewResolutionAbortError("staged sales lifecycle transition lost")
+    else:
+        await tx.run(LINK_REVIEW_SALES_PURCHASED_ORDER, review_case_id=review_case_id)
+        await tx.run(LINK_REVIEW_SALES_BOUGHT_VEHICLE, review_case_id=review_case_id)
+        linked_result = await tx.run(MARK_REVIEW_SALES_RECORD_LINKED, review_case_id=review_case_id)
+        if await linked_result.single() is None:
+            return ActionResult(merge_not_applicable=True)
+    cypher = build_claimed_review_action_cypher(resolution, follow_up_at)
     rc_result = await tx.run(
         cypher,
         review_case_id=review_case_id,
@@ -271,15 +374,300 @@ async def _sales_link_merge_tx(
         resolution=resolution,
         follow_up_at=follow_up_at,
         action_json=_action_entry_json(action_type, "reviewer", actor_id, notes),
+        actor_id=actor_id,
+        **claim,
     )
     rc_record = await rc_result.single()
     if rc_record is None:
-        return ActionResult(merge_not_applicable=True)
+        raise _ReviewResolutionAbortError("review close lost after sales activation")
     rc = dict(rc_record["review_case"])
     return ActionResult(
         review_case_id=to_str(rc.get("review_case_id")),
         queue_state=to_str(rc.get("queue_state")),
         resolution=to_optional_str(rc.get("resolution")),
+    )
+
+
+def _projection_items(
+    payload: Mapping[str, object], key: str, required_strings: tuple[str, ...]
+) -> list[dict[str, object]]:
+    value = payload.get(key, [])
+    if not isinstance(value, list):
+        raise ValueError(f"normalized_payload.{key} must be a list")
+    items: list[dict[str, object]] = []
+    for raw in value:
+        if not isinstance(raw, dict):
+            raise ValueError(f"normalized_payload.{key} entries must be objects")
+        item = {str(k): v for k, v in raw.items()}
+        if any(not isinstance(item.get(field), str) for field in required_strings):
+            raise ValueError(f"normalized_payload.{key} entry has invalid fields")
+        items.append(item)
+    return items
+
+
+def _normalized_datetime(value: object, field: str) -> str:
+    if not isinstance(value, str):
+        raise ValueError(f"{field} must be a datetime string")
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValueError(f"{field} must be an ISO datetime") from exc
+    if parsed.tzinfo is None:
+        raise ValueError(f"{field} must be timezone-aware")
+    return parsed.isoformat()
+
+
+def _optional_normalized_datetime(value: object, field: str) -> str | None:
+    return None if value is None else _normalized_datetime(value, field)
+
+
+def _pending_projection_params(
+    value: object,
+    *,
+    source_system_key: str,
+    source_record_id: str,
+    source_record_pk: str,
+) -> tuple[
+    list[dict[str, object]],
+    list[dict[str, object]],
+    list[dict[str, object]],
+    list[dict[str, object]],
+    list[dict[str, object]],
+    list[dict[str, object]],
+]:
+    parsed: object = json.loads(value) if isinstance(value, str) else value
+    if not isinstance(parsed, dict):
+        raise ValueError("normalized_payload must be a JSON object")
+    payload = {str(k): v for k, v in parsed.items()}
+    identifiers = _projection_items(
+        payload, "identifiers", ("identifier_type", "normalized_value", "quality_flag")
+    )
+    for identifier in identifiers:
+        if not isinstance(identifier.get("is_verified"), bool):
+            raise ValueError("normalized_payload identifier is_verified must be boolean")
+    identifiers = [
+        item
+        for item in identifiers
+        if item["quality_flag"] not in {"invalid_format", "placeholder_value"}
+    ]
+    addresses = _projection_items(
+        payload,
+        "addresses",
+        ("country_code", "postal_code", "street_name", "street_number", "quality_flag"),
+    )
+    for address in addresses:
+        unit = address.get("unit_number")
+        if unit is not None and not isinstance(unit, str):
+            raise ValueError("normalized_payload address unit_number must be a string or null")
+        address["unit_number"] = unit or ""
+        normalized = address.get("normalized_full")
+        if normalized is not None and not isinstance(normalized, str):
+            raise ValueError("normalized_payload address normalized_full must be a string or null")
+    addresses = [
+        item
+        for item in addresses
+        if item["quality_flag"] not in {"invalid_format", "placeholder_value"}
+    ]
+    attributes = _projection_items(
+        payload, "attributes", ("attribute_name", "attribute_value", "quality_flag")
+    )
+    bankruptcy_cases: list[dict[str, object]] = []
+    bankruptcy = payload.get("bankruptcy_case")
+    if bankruptcy is not None:
+        if not isinstance(bankruptcy, dict):
+            raise ValueError("normalized_payload.bankruptcy_case must be an object")
+        item = {str(k): v for k, v in bankruptcy.items()}
+        required = ("source_system_key", "source_case_id", "observed_at", "raw_payload")
+        if any(not isinstance(item.get(field), str) for field in required):
+            raise ValueError("bankruptcy_case required fields must be strings")
+        if item["source_system_key"] != source_system_key:
+            raise ValueError("bankruptcy_case source provenance mismatch")
+        bankruptcy_optional = (
+            "case_number",
+            "document_type",
+            "document_date",
+            "event_type",
+            "event_date",
+            "trustee_name",
+            "trustee_firm",
+            "source_url",
+            "first_seen_at",
+            "last_seen_at",
+        )
+        if any(
+            item.get(field) is not None and not isinstance(item.get(field), str)
+            for field in bankruptcy_optional
+        ):
+            raise ValueError("bankruptcy_case optional fields must be strings or null")
+        item["observed_at"] = _normalized_datetime(
+            item["observed_at"], "bankruptcy_case.observed_at"
+        )
+        item["first_seen_at"] = _optional_normalized_datetime(
+            item.get("first_seen_at"), "bankruptcy_case.first_seen_at"
+        )
+        item["last_seen_at"] = _optional_normalized_datetime(
+            item.get("last_seen_at"), "bankruptcy_case.last_seen_at"
+        )
+        bankruptcy_cases.append(item)
+    vehicle_mentions = _projection_items(
+        payload, "vehicle_mentions", ("source_system_key", "source_record_id", "quality_flag")
+    )
+    for mention in vehicle_mentions:
+        if (
+            mention["source_system_key"] != source_system_key
+            or mention["source_record_id"] != source_record_id
+            or (
+                mention.get("source_record_pk") is not None
+                and mention.get("source_record_pk") != source_record_pk
+            )
+        ):
+            raise ValueError("vehicle mention source provenance mismatch")
+        vehicle_optional = (
+            "normalized_lta_tag",
+            "normalized_serial_number",
+            "product",
+            "raw_context",
+            "observed_at",
+        )
+        if any(
+            mention.get(field) is not None and not isinstance(mention.get(field), str)
+            for field in vehicle_optional
+        ):
+            raise ValueError("vehicle mention optional fields must be strings or null")
+        confidence = mention.get("confidence")
+        if not isinstance(confidence, (int, float)) or isinstance(confidence, bool):
+            raise ValueError("vehicle mention confidence must be numeric")
+        if mention.get("observed_at") is not None:
+            mention["observed_at"] = _normalized_datetime(
+                mention["observed_at"], "vehicle_mentions.observed_at"
+            )
+    knows_relationships = _projection_items(
+        payload,
+        "knows_relationships",
+        (
+            "declarer_source_record_id",
+            "declarer_source_system_key",
+            "relationship_category",
+            "status",
+            "source_system_key",
+        ),
+    )
+    for relationship in knows_relationships:
+        if relationship["source_system_key"] != source_system_key:
+            raise ValueError("KNOWS relationship source provenance mismatch")
+        for field in ("relationship_label", "approved_at"):
+            if relationship.get(field) is not None and not isinstance(relationship.get(field), str):
+                raise ValueError(f"KNOWS relationship {field} must be a string or null")
+    return (
+        identifiers,
+        addresses,
+        attributes,
+        bankruptcy_cases,
+        vehicle_mentions,
+        knows_relationships,
+    )
+
+
+def _required_str(record: Mapping[str, object], key: str) -> str:
+    value = record.get(key)
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"pending review record has invalid {key}")
+    return value
+
+
+def _optional_str_value(record: Mapping[str, object], key: str) -> str | None:
+    value = record.get(key)
+    if value is not None and not isinstance(value, str):
+        raise ValueError(f"pending review record has invalid {key}")
+    return value
+
+
+async def _pending_record_merge_tx(
+    tx: AsyncManagedTransaction,
+    review_case_id: str,
+    pending_record: Mapping[str, object],
+    survivor_person_id: str | None,
+    new_state: str,
+    resolution: str | None,
+    follow_up_at: str | None,
+    actor_id: str,
+    notes: str | None,
+) -> ActionResult | None:
+    try:
+        proposed_person_id = _required_str(pending_record, "proposed_person_id")
+        pending_source_record_pk = _required_str(pending_record, "pending_source_record_pk")
+        source_system_key = _required_str(pending_record, "source_system_key")
+        source_record_id = _required_str(pending_record, "source_record_id")
+        expected_active_source_record_pk = _optional_str_value(
+            pending_record, "expected_active_source_record_pk"
+        )
+        observed_at = _normalized_datetime(pending_record.get("observed_at"), "observed_at")
+        (
+            identifiers,
+            addresses,
+            attributes,
+            bankruptcy_cases,
+            vehicle_mentions,
+            knows_relationships,
+        ) = _pending_projection_params(
+            pending_record.get("normalized_payload"),
+            source_system_key=source_system_key,
+            source_record_id=source_record_id,
+            source_record_pk=pending_source_record_pk,
+        )
+    except (TypeError, ValueError):
+        logger.warning(
+            "Invalid pending review blueprint review_case_id=%s source_record_pk=%s",
+            review_case_id,
+            pending_record.get("pending_source_record_pk"),
+        )
+        return ActionResult(merge_not_applicable=True)
+    if survivor_person_id is not None and survivor_person_id != proposed_person_id:
+        return ActionResult(merge_not_applicable=True)
+    claim = await _claim_review_action(tx, review_case_id, actor_id)
+    if claim is None:
+        return ActionResult(merge_not_applicable=True)
+    activated_result = await tx.run(
+        ACTIVATE_PENDING_REVIEW_RECORD,
+        review_case_id=review_case_id,
+        pending_source_record_pk=pending_source_record_pk,
+        source_system_key=source_system_key,
+        expected_active_source_record_pk=expected_active_source_record_pk,
+        approved_person_id=proposed_person_id,
+        observed_at=observed_at,
+        identifiers=identifiers,
+        addresses=addresses,
+        attributes=attributes,
+        bankruptcy_cases=bankruptcy_cases,
+        vehicle_mentions=vehicle_mentions,
+        knows_relationships=knows_relationships,
+    )
+    activated = await activated_result.single()
+    if activated is None:
+        raise _ReviewResolutionAbortError("pending activation lost after review claim")
+    affected = activated.get("affected_person_ids", [])
+    if isinstance(affected, list):
+        for person_id in sorted({value for value in affected if isinstance(value, str)}):
+            await recompute_golden_profile_tx(tx, person_id)
+    action_result = await tx.run(
+        build_claimed_review_action_cypher(resolution, follow_up_at),
+        review_case_id=review_case_id,
+        new_state=new_state,
+        resolution=resolution,
+        follow_up_at=follow_up_at,
+        action_json=_action_entry_json("merge", "reviewer", actor_id, notes),
+        actor_id=actor_id,
+        **claim,
+    )
+    action_record = await action_result.single()
+    if action_record is None:
+        raise _ReviewResolutionAbortError("review close lost after lifecycle activation")
+    review_case = dict(action_record["review_case"])
+    return ActionResult(
+        review_case_id=to_str(review_case.get("review_case_id")),
+        queue_state=to_str(review_case.get("queue_state")),
+        resolution=to_optional_str(review_case.get("resolution")),
+        redirected_review_case_ids=[],
     )
 
 
@@ -297,18 +685,72 @@ async def _action_tx(
 ) -> ActionResult | None:
     absorbed_id: str | None = None
     survivor_id: str | None = None
+    lifecycle_mutated = False
+    claim: _ReviewClaim | None = None
+
+    if action_type == ApiReviewActionType.REJECT.value:
+        pending_result = await tx.run(GET_PENDING_REVIEW_RECORD, review_case_id=review_case_id)
+        pending_record = await pending_result.single()
+        if pending_record is not None:
+            claim = await _claim_review_action(tx, review_case_id, actor_id)
+            if claim is None:
+                return ActionResult(merge_not_applicable=True)
+            rejected_result = await tx.run(
+                REJECT_PENDING_REVIEW_RECORD,
+                review_case_id=review_case_id,
+                reason=notes or "Rejected by reviewer",
+            )
+            if await rejected_result.single() is None:
+                raise _ReviewResolutionAbortError("pending rejection lost after review claim")
+            lifecycle_mutated = True
+        else:
+            sales_result = await tx.run(GET_REVIEW_SALES_RECORD, review_case_id=review_case_id)
+            sales_record = await sales_result.single()
+            if sales_record is not None:
+                claim = await _claim_review_action(tx, review_case_id, actor_id)
+                if claim is None:
+                    return ActionResult(merge_not_applicable=True)
+                if sales_record.get("lifecycle_status") == "pending_review":
+                    rejected = await tx.run(
+                        REJECT_STAGED_REVIEW_SALE,
+                        review_case_id=review_case_id,
+                        actor_id=actor_id,
+                        **claim,
+                    )
+                    if await rejected.single() is None:
+                        raise _ReviewResolutionAbortError("staged sales rejection failed")
+                else:
+                    await tx.run(
+                        MARK_REVIEW_SALES_RECORD_UNRESOLVED,
+                        review_case_id=review_case_id,
+                    )
+                lifecycle_mutated = True
 
     if action_type == ApiReviewActionType.MERGE.value:
         persons_result = await tx.run(GET_PERSONS_FOR_REVIEW_MERGE, review_case_id=review_case_id)
         persons_record = await persons_result.single()
         if persons_record is None:
-            return await _sales_link_merge_tx(
+            pending_result = await tx.run(GET_PENDING_REVIEW_RECORD, review_case_id=review_case_id)
+            pending_record = await pending_result.single()
+            if pending_record is None:
+                return await _sales_link_merge_tx(
+                    tx,
+                    review_case_id,
+                    new_state,
+                    resolution,
+                    follow_up_at,
+                    action_type,
+                    actor_id,
+                    notes,
+                )
+            return await _pending_record_merge_tx(
                 tx,
                 review_case_id,
+                pending_record,
+                survivor_person_id,
                 new_state,
                 resolution,
                 follow_up_at,
-                action_type,
                 actor_id,
                 notes,
             )
@@ -346,17 +788,39 @@ async def _action_tx(
         if lock_record is not None and bool(lock_record["is_locked"]):
             return ActionResult(merge_blocked=True)
 
-    cypher = build_review_action_cypher(resolution, follow_up_at)
-    result = await tx.run(
-        cypher,
-        review_case_id=review_case_id,
-        new_state=new_state,
-        resolution=resolution,
-        follow_up_at=follow_up_at,
-        action_json=_action_entry_json(action_type, "reviewer", actor_id, notes),
+    cypher = (
+        build_claimed_review_action_cypher(resolution, follow_up_at)
+        if lifecycle_mutated
+        else build_review_action_cypher(resolution, follow_up_at)
     )
+    if lifecycle_mutated:
+        if claim is None:
+            raise _ReviewResolutionAbortError("missing review action claim")
+        result = await tx.run(
+            cypher,
+            review_case_id=review_case_id,
+            new_state=new_state,
+            resolution=resolution,
+            follow_up_at=follow_up_at,
+            action_json=_action_entry_json(action_type, "reviewer", actor_id, notes),
+            actor_id=actor_id,
+            claim_token=claim["claim_token"],
+            claim_version=claim["claim_version"],
+            claim_status=claim["claim_status"],
+        )
+    else:
+        result = await tx.run(
+            cypher,
+            review_case_id=review_case_id,
+            new_state=new_state,
+            resolution=resolution,
+            follow_up_at=follow_up_at,
+            action_json=_action_entry_json(action_type, "reviewer", actor_id, notes),
+        )
     record = await result.single()
     if record is None:
+        if lifecycle_mutated:
+            raise _ReviewResolutionAbortError("review close lost after lifecycle rejection")
         return None
 
     rc = dict(record["review_case"])
@@ -392,7 +856,10 @@ async def _action_tx(
         out["survivor_person_id"] = survivor_id
         out["golden_profile_selections"] = golden_profile_selections
 
-    if action_type in (ApiReviewActionType.MANUAL_NO_MATCH.value, ApiReviewActionType.REJECT.value):
+    if (
+        action_type in (ApiReviewActionType.MANUAL_NO_MATCH.value, ApiReviewActionType.REJECT.value)
+        and not lifecycle_mutated
+    ):
         await tx.run(MARK_REVIEW_SALES_RECORD_UNRESOLVED, review_case_id=review_case_id)
 
     return out

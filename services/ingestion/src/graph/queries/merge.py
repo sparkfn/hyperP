@@ -52,7 +52,10 @@ WITH absorbed, old, id, properties(old) AS props
 DELETE old
 WITH id, props
 MATCH (survivor:Person {person_id: $survivor_id})
-MERGE (survivor)-[rel:IDENTIFIED_BY]->(id)
+MERGE (survivor)-[rel:IDENTIFIED_BY {
+    source_system_key: props.source_system_key,
+    source_record_pk: props.source_record_pk
+}]->(id)
 ON CREATE SET
     rel.is_verified = props.is_verified,
     rel.verification_method = props.verification_method,
@@ -75,7 +78,10 @@ WITH absorbed, old, addr, properties(old) AS props
 DELETE old
 WITH addr, props
 MATCH (survivor:Person {person_id: $survivor_id})
-MERGE (survivor)-[rel:LIVES_AT]->(addr)
+MERGE (survivor)-[rel:LIVES_AT {
+    source_system_key: props.source_system_key,
+    source_record_pk: props.source_record_pk
+}]->(addr)
 ON CREATE SET
     rel.is_active = props.is_active,
     rel.is_verified = props.is_verified,

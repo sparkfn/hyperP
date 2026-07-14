@@ -57,12 +57,14 @@ from src.types import (
     SharedIdentifierGroup,
     SourceRecord,
     SourceRecordEntityFacet,
+    SourceRecordLifecycleStatus,
     SourceRecordTypeLiteral,
     TimelineFact,
     VehicleSummary,
 )
 
 _RECORD_TYPES: frozenset[str] = frozenset(get_args(SourceRecordTypeLiteral))
+_LIFECYCLE_STATUSES: frozenset[str] = frozenset(get_args(SourceRecordLifecycleStatus))
 
 
 def _to_record_type(value: GraphValue) -> SourceRecordTypeLiteral:
@@ -75,6 +77,15 @@ def _to_record_type(value: GraphValue) -> SourceRecordTypeLiteral:
     if raw in _RECORD_TYPES:
         return cast("SourceRecordTypeLiteral", raw)
     return "identity"
+
+
+def _to_lifecycle_status(value: GraphValue) -> SourceRecordLifecycleStatus:
+    if value is None:
+        return "active"
+    raw = to_str(value)
+    if raw not in _LIFECYCLE_STATUSES:
+        raise ValueError(f"unexpected SourceRecord lifecycle_status: {raw!r}")
+    return cast("SourceRecordLifecycleStatus", raw)
 
 
 def _as_dict(value: GraphValue) -> GraphRecord:
@@ -233,6 +244,7 @@ def map_source_record(record: GraphRecord) -> SourceRecord:
         entity_key=to_optional_str(record.get("entity_key")),
         entity_display_name=to_optional_str(record.get("entity_display_name")),
         record_type=_to_record_type(sr.get("record_type")),
+        lifecycle_status=_to_lifecycle_status(sr.get("lifecycle_status")),
         extraction_confidence=(
             to_float(sr.get("extraction_confidence"))
             if sr.get("extraction_confidence") is not None

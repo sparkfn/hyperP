@@ -14,6 +14,9 @@ from pydantic.types import JsonValue
 SourceRecordTypeLiteral = Literal[
     "identity", "bankruptcy", "rental_flat", "relationship", "conversation", "sales"
 ]
+SourceRecordLifecycleStatus = Literal[
+    "active", "pending_review", "superseded", "rejected", "link_failed"
+]
 
 # --- Enums ---
 
@@ -226,6 +229,7 @@ class SourceRecord(BaseModel):
     entity_key: str | None = None
     entity_display_name: str | None = None
     record_type: SourceRecordTypeLiteral = "identity"
+    lifecycle_status: SourceRecordLifecycleStatus = "active"
     extraction_confidence: float | None = None
     extraction_method: str | None = None
     link_status: str

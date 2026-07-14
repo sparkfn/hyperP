@@ -2,6 +2,114 @@
 
 from __future__ import annotations
 
+LOCK_AND_GET_SOURCE_STATE = """
+MERGE (lock:SourceRecordIdentityLock {
+    source_system: $source_system,
+    source_record_id: $source_record_id
+})
+SET lock.locked_at = datetime()
+WITH lock
+MATCH (ss:SourceSystem {source_key: $source_system})
+OPTIONAL MATCH (history:SourceRecord {source_record_id: $source_record_id})-[:FROM_SOURCE]->(ss)
+WITH lock, ss,
+     max(toInteger(history.source_record_version)) AS max_source_record_version
+OPTIONAL MATCH (sr:SourceRecord {source_record_id: $source_record_id})-[:FROM_SOURCE]->(ss)
+// Rollout compatibility: remove the NULL/is_latest branch only after the
+// lifecycle backfill is guaranteed complete in every deployed graph.
+WHERE sr.lifecycle_status IN ['active', 'pending_review']
+   OR (sr.lifecycle_status IS NULL AND coalesce(sr.is_latest, true) = true)
+OPTIONAL MATCH (sr)-[:LINKED_TO]->(person:Person)
+RETURN sr.source_record_pk AS source_record_pk,
+       toInteger(sr.source_record_version) AS source_record_version,
+       sr.record_hash AS record_hash,
+       CASE
+           WHEN sr.lifecycle_status IS NULL THEN 'active'
+           ELSE sr.lifecycle_status
+       END AS lifecycle_status,
+       collect(DISTINCT person.person_id) AS linked_person_ids,
+       max_source_record_version
+ORDER BY toInteger(sr.source_record_version) DESC
+"""
+
+ACTIVATE_SOURCE_RECORD_VERSION = """
+MATCH (old:SourceRecord {source_record_pk: $old_source_record_pk})
+      -[:FROM_SOURCE]->(source:SourceSystem)
+MATCH (new:SourceRecord {
+    source_record_pk: $new_source_record_pk,
+    lifecycle_status: 'pending_review'
+})-[:FROM_SOURCE]->(source)
+WHERE old.source_record_id = new.source_record_id
+  AND new.expected_active_source_record_pk = old.source_record_pk
+  AND (
+      old.lifecycle_status = 'active'
+      OR (old.lifecycle_status IS NULL AND coalesce(old.is_latest, true) = true)
+  )
+SET old.lifecycle_status = 'superseded',
+    old.is_latest = false,
+    old.superseded_at = datetime(),
+    old.updated_at = datetime(),
+    new.lifecycle_status = 'active',
+    new.is_latest = true,
+    new.activated_at = datetime(),
+    new.updated_at = datetime()
+MERGE (old)-[:PREVIOUS_VERSION_OF]->(new)
+RETURN new.source_record_pk AS source_record_pk
+"""
+
+ACTIVATE_FIRST_SOURCE_RECORD_VERSION = """
+MATCH (pending:SourceRecord {
+    source_record_pk: $source_record_pk,
+    lifecycle_status: 'pending_review'
+})-[:FROM_SOURCE]->(ss:SourceSystem {source_key: $source_system})
+WHERE pending.source_record_id = $source_record_id
+  AND pending.expected_active_source_record_pk IS NULL
+  AND NOT EXISTS {
+      MATCH (active:SourceRecord {source_record_id: $source_record_id})-[:FROM_SOURCE]->(ss)
+      WHERE active.lifecycle_status = 'active'
+         OR (active.lifecycle_status IS NULL AND coalesce(active.is_latest, true) = true)
+  }
+SET pending.lifecycle_status = 'active',
+    pending.is_latest = true,
+    pending.activated_at = datetime(),
+    pending.updated_at = datetime()
+RETURN pending.source_record_pk AS source_record_pk
+"""
+
+REJECT_PENDING_SOURCE_RECORD = """
+MATCH (pending:SourceRecord {
+    source_record_pk: $source_record_pk,
+    lifecycle_status: 'pending_review'
+})
+SET pending.lifecycle_status = 'rejected',
+    pending.rejection_reason = $reason,
+    pending.rejected_at = datetime(),
+    pending.updated_at = datetime()
+WITH pending
+OPTIONAL MATCH (rc:ReviewCase)-[:FOR_DECISION]->(md:MatchDecision)
+               -[:ABOUT_LEFT|ABOUT_RIGHT]->(pending)
+FOREACH (stale_case IN CASE
+    WHEN rc.queue_state IN ['open', 'assigned', 'deferred'] THEN [rc]
+    ELSE []
+END |
+    SET stale_case.queue_state = 'cancelled',
+        stale_case.resolution = 'cancelled_superseded',
+        stale_case.resolution_reason = $reason,
+        stale_case.resolved_at = datetime(),
+        stale_case.updated_at = datetime()
+)
+RETURN pending.source_record_pk AS source_record_pk
+"""
+
+MARK_SOURCE_RECORD_LINK_FAILED = """
+MATCH (sr:SourceRecord {source_record_pk: $source_record_pk})
+WHERE sr.lifecycle_status IN ['pending_review', 'active']
+SET sr.lifecycle_status = 'link_failed',
+    sr.link_failure_reason = $reason,
+    sr.link_failed_at = datetime(),
+    sr.updated_at = datetime()
+RETURN sr.source_record_pk AS source_record_pk
+"""
+
 CHECK_SOURCE_RECORD_EXISTS = """
 MATCH (sr:SourceRecord {
     source_record_id: $source_record_id
@@ -52,6 +160,9 @@ CREATE (sr:SourceRecord {
     source_record_pk:      randomUUID(),
     source_record_id:      $source_record_id,
     source_record_version: $source_record_version,
+    source_version_key:   $source_version_key,
+    expected_active_source_record_pk: $expected_active_source_record_pk,
+    lifecycle_status:     $lifecycle_status,
     record_type:           $record_type,
     extraction_confidence: $extraction_confidence,
     extraction_method:     $extraction_method,
@@ -62,10 +173,47 @@ CREATE (sr:SourceRecord {
     record_hash:           $record_hash,
     raw_payload:           $raw_payload,
     normalized_payload:    $normalized_payload,
-    is_latest:             true,
+    // Compatibility only: lifecycle_status is authoritative. Staged identity
+    // records pass false so legacy readers cannot mistake them for active.
+    is_latest:             $is_latest,
     retention_expires_at:  null
 })-[:FROM_SOURCE]->(ss)
 RETURN sr.source_record_pk AS source_record_pk
+"""
+
+RETIRE_IDENTITY_PROJECTIONS = """
+MATCH (source:SourceRecord {source_record_pk: $source_record_pk})
+CALL {
+    WITH source
+    OPTIONAL MATCH (person:Person)-[rel:IDENTIFIED_BY]->(:Identifier)
+    WHERE rel.source_record_pk = source.source_record_pk
+    SET rel.is_active = false, rel.updated_at = datetime()
+    RETURN collect(DISTINCT person.person_id) AS identified_owners
+}
+CALL {
+    WITH source
+    OPTIONAL MATCH (person:Person)-[rel:LIVES_AT]->(:Address)
+    WHERE rel.source_record_pk = source.source_record_pk
+    SET rel.is_active = false, rel.updated_at = datetime()
+    RETURN collect(DISTINCT person.person_id) AS address_owners
+}
+CALL {
+    WITH source
+    OPTIONAL MATCH (person:Person)-[rel:HAS_FACT]->(source)
+    WHERE rel.source_record_pk = source.source_record_pk
+    SET rel.is_active = false, rel.updated_at = datetime()
+    RETURN collect(DISTINCT person.person_id) AS fact_owners
+}
+WITH identified_owners + address_owners + fact_owners AS all_owners
+UNWIND all_owners AS person_id
+RETURN DISTINCT person_id
+"""
+
+RETIRE_ADDRESS_PROJECTION = """
+MATCH (source:SourceRecord {source_record_pk: $source_record_pk})
+OPTIONAL MATCH (source)-[rel:DESCRIBES_ADDRESS]->(:Address)
+SET rel.is_active = false, rel.updated_at = datetime()
+RETURN count(rel) AS retired_count
 """
 
 LINK_SOURCE_RECORD_TO_PERSON = """

@@ -25,10 +25,16 @@ from src.llm.service import close_llm_service
 from src.oauth2_app import build_oauth2_app
 from src.proclaude.service import close_proclaude_service
 from src.redis_client import close_redis
+from src.repositories.neo4j.bootstrap import ensure_source_record_identity_lock_constraint
 from src.routes import health, oauth
 from src.routes.public_pages import public_router
 
 logger = logging.getLogger("profile_unifier_api")
+
+
+async def _ensure_source_record_identity_lock() -> None:
+    """Install review activation's identity serialization prerequisite."""
+    await ensure_source_record_identity_lock_constraint()
 
 
 async def _ensure_user_constraint() -> None:
@@ -85,6 +91,7 @@ async def _ensure_person_indexes() -> None:
 async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
     """Manage the Neo4j driver lifecycle alongside the FastAPI process."""
     validate_oauth_runtime_config()
+    await _ensure_source_record_identity_lock()
     await _ensure_user_constraint()
     await _ensure_oauth_client_constraints()
     await _wipe_oauth_clients_on_startup()

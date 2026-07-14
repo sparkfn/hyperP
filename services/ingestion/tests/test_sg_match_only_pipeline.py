@@ -31,6 +31,19 @@ class _Tx(_RecordingTx):
 
     def run(self, query: str, **kwargs: object) -> _Result:
         self._record(query, kwargs)
+        if "max_source_record_version" in query:
+            return _Result(
+                {
+                    "source_record_pk": None,
+                    "source_record_version": None,
+                    "record_hash": None,
+                    "lifecycle_status": None,
+                    "linked_person_ids": [],
+                    "max_source_record_version": None,
+                }
+            )
+        if "ACTIVATE" not in query and "pending.lifecycle_status = 'active'" in query:
+            return _Result({"source_record_pk": "sr-1"})
         return _Result()
 
 
@@ -39,6 +52,19 @@ class _MatchedTx(_RecordingTx):
 
     def run(self, query: str, **kwargs: object) -> _Result:
         self._record(query, kwargs)
+        if "max_source_record_version" in query:
+            return _Result(
+                {
+                    "source_record_pk": None,
+                    "source_record_version": None,
+                    "record_hash": None,
+                    "lifecycle_status": None,
+                    "linked_person_ids": [],
+                    "max_source_record_version": None,
+                }
+            )
+        if "pending.lifecycle_status = 'active'" in query:
+            return _Result({"source_record_pk": "sr-1"})
         if "person_id AS person_id" in query and "rel.quality_flag = 'valid'" in query:
             return _Result({"person_id": "person-1"})
         if "candidate:Person" in query:
@@ -56,7 +82,7 @@ class _Session:
     def __init__(self, tx: _RecordingTx) -> None:
         self.tx = tx
 
-    def __enter__(self) -> "_Session":
+    def __enter__(self) -> _Session:
         return self
 
     def __exit__(self, exc_type: object, exc: object, tb: object) -> None:

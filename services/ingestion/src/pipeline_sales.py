@@ -7,10 +7,10 @@ bypass normalization and matching.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 from collections.abc import Mapping
-from datetime import UTC, datetime
 from typing import TypedDict, cast
 
 from neo4j import ManagedTransaction
@@ -20,7 +20,6 @@ from src.graph import queries
 from src.graph.bootstrap import SOURCE_KEY_TO_ENTITY
 from src.graph.client import Neo4jClient
 from src.matching.vehicle_heuristic import (
-    VEHICLE_MATCH_AUTO,
     VehicleCandidate,
     build_vehicle_match_result,
     build_vehicle_no_match_result,
@@ -30,12 +29,20 @@ from src.matching.vehicle_heuristic import (
 from src.models import (
     IngestResult,
     JsonValue,
-    QualityFlag,
     SourceRecordEnvelope,
 )
 from src.normalizers.clean import str_or_none
 from src.pipeline_writes import create_review_case_if_needed, persist_match_decision
 from src.raw_payload import decode_raw_payload
+from src.record_lifecycle import (
+    DuplicateVersion,
+    PlannedVersion,
+    activate_staged_version,
+    load_locked_source_state,
+    plan_incoming_version,
+    reject_replaced_pending,
+)
+from src.source_version_keys import encode_source_version_key
 from src.vehicle_categories import base_source_key, category_is_vehicle
 from src.vehicle_extraction import observations_from_sales_lines
 from src.vehicles import (
@@ -44,6 +51,16 @@ from src.vehicles import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _staging_hash(value: object) -> str:
+    return hashlib.sha256(
+        json.dumps(value, sort_keys=True, separators=(",", ":"), default=str).encode()
+    ).hexdigest()
+
+
+class SalesPayloadError(ValueError):
+    """A permanent sales payload contract violation."""
 
 
 class _CustomerLink(TypedDict):
@@ -95,24 +112,6 @@ def _entity_key_for(source_system_key: str) -> str:
         raise ValueError(f"Unknown source_system_key: {source_system_key!r}") from exc
 
 
-def _latest_source_record(
-    client: Neo4jClient,
-    envelope: SourceRecordEnvelope,
-) -> tuple[str | None, str | None, int]:
-    def _read(tx: ManagedTransaction) -> tuple[str | None, str | None, int]:
-        rec = tx.run(
-            queries.GET_LATEST_SOURCE_RECORD,
-            source_system=envelope.source_system,
-            source_record_id=envelope.source_record_id,
-        ).single()
-        if rec is None:
-            return None, None, 1
-        version = int(rec["source_record_version"])
-        return str(rec["source_record_pk"]), str(rec["record_hash"]), version + 1
-
-    return client.execute_read(_read)
-
-
 def ingest_sales_record(
     client: Neo4jClient,
     envelope: SourceRecordEnvelope,
@@ -121,24 +120,26 @@ def ingest_sales_record(
     exclusion_context: ExclusionContext | None = None,
 ) -> IngestResult:
     """Full sales-record ingestion in a single write transaction."""
-    latest_pk, latest_hash, next_version = _latest_source_record(client, envelope)
-    if latest_pk is not None and latest_hash == envelope.record_hash:
-        return IngestResult(
-            source_record_id=envelope.source_record_id,
-            source_record_pk=latest_pk,
-            skipped_duplicate=True,
-        )
-    envelope.source_record_version = str(next_version)
     active_exclusion_context = (
         exclusion_context if exclusion_context is not None else ExclusionContext()
     )
 
     def _work(tx: ManagedTransaction) -> IngestResult:
+        state = load_locked_source_state(tx, envelope.source_system, envelope.source_record_id)
+        plan = plan_incoming_version(state, envelope.record_hash)
+        if isinstance(plan, DuplicateVersion):
+            return IngestResult(
+                source_record_id=envelope.source_record_id,
+                source_record_pk=plan.source_record_pk,
+                skipped_duplicate=True,
+                ingest_run_id=ingest_run_id,
+            )
+        envelope.source_record_version = str(plan.version)
         return _execute(
             tx,
             envelope,
             ingest_run_id=ingest_run_id,
-            previous_source_record_pk=latest_pk,
+            lifecycle_plan=plan,
             exclusion_context=active_exclusion_context,
         )
 
@@ -152,8 +153,10 @@ def _parse_sales_envelope(
     """Extract and cast the three payload sections from a raw sales envelope."""
     order_raw = raw.get("order")
     if not isinstance(order_raw, dict):
-        raise ValueError("sales envelope missing 'order' payload")
+        raise SalesPayloadError("order missing or not an object")
     order: _OrderPayload = cast(_OrderPayload, order_raw)
+    if str_or_none(order_raw.get("source_order_id")) is None:
+        raise SalesPayloadError("order.source_order_id missing or invalid")
 
     # Fundbox stores release_date inside metadata; lift it to top-level.
     metadata_raw = order_raw.get("metadata")
@@ -163,8 +166,21 @@ def _parse_sales_envelope(
             order["release_date"] = fundbox_release
 
     line_items_raw = raw.get("line_items")
+    if line_items_raw is not None and not isinstance(line_items_raw, list):
+        raise SalesPayloadError("line_items must be a list")
+    if isinstance(line_items_raw, list):
+        for raw_line in line_items_raw:
+            if not isinstance(raw_line, dict):
+                raise SalesPayloadError("line item must be an object")
+            if str_or_none(raw_line.get("source_line_item_id")) is None:
+                raise SalesPayloadError("line item source_line_item_id missing or invalid")
+            product = raw_line.get("product")
+            if not isinstance(product, dict):
+                raise SalesPayloadError("line item product missing or invalid")
+            if str_or_none(product.get("source_product_id")) is None:
+                raise SalesPayloadError("product source_product_id missing or invalid")
     line_items = (
-        [cast(_LineItemPayload, li) for li in line_items_raw]
+        [cast(_LineItemPayload, li) for li in line_items_raw if isinstance(li, dict)]
         if isinstance(line_items_raw, list)
         else []
     )
@@ -192,17 +208,7 @@ def _resolve_and_link_customer(
         source_record_pk=source_record_pk,
         customer_link=customer_link,
     )
-    person_id = _resolve_customer_person(tx, sales_source_record_pk=source_record_pk)
-    if person_id is not None:
-        tx.run(
-            queries.LINK_PERSON_PURCHASED_ORDER,
-            person_id=person_id,
-            source_system_key=source_system_key,
-            source_order_id=source_order_id,
-            source_record_pk=source_record_pk,
-        )
-        tx.run(queries.MARK_SALES_RECORD_LINKED, source_record_pk=source_record_pk)
-    return person_id
+    return _resolve_customer_person(tx, sales_source_record_pk=source_record_pk)
 
 
 def _execute(
@@ -210,18 +216,17 @@ def _execute(
     envelope: SourceRecordEnvelope,
     *,
     ingest_run_id: str | None,
-    previous_source_record_pk: str | None,
+    lifecycle_plan: PlannedVersion,
     exclusion_context: ExclusionContext,
 ) -> IngestResult:
-    order, line_items, customer_link = _parse_sales_envelope(envelope.raw_payload)
     source_system_key = envelope.source_system
-    source_order_id = str(order.get("source_order_id", ""))
-    entity_key = _entity_key_for(source_system_key)
-
+    if lifecycle_plan.pending_to_reject is not None:
+        reject_replaced_pending(tx, lifecycle_plan.pending_to_reject)
     source_record_pk = _create_sales_source_record(
         tx,
         envelope=envelope,
         link_status="pending_customer",
+        expected_active_source_record_pk=lifecycle_plan.active_source_record_pk,
     )
     if ingest_run_id is not None:
         tx.run(
@@ -229,37 +234,30 @@ def _execute(
             source_record_pk=source_record_pk,
             ingest_run_id=ingest_run_id,
         )
-    if previous_source_record_pk is not None:
-        tx.run(
-            queries.SUPERSEDE_SOURCE_RECORD,
-            old_source_record_pk=previous_source_record_pk,
-            new_source_record_pk=source_record_pk,
+    try:
+        order, line_items, customer_link = _parse_sales_envelope(envelope.raw_payload)
+    except SalesPayloadError as exc:
+        _skip_sale_permanent(tx, pk=source_record_pk, reason=str(exc))
+        return IngestResult(
+            source_record_id=envelope.source_record_id,
+            source_record_pk=source_record_pk,
+            ingest_run_id=ingest_run_id,
         )
-        tx.run(
-            queries.CLEAR_SUPERSEDED_SALES_LINKS,
-            old_source_record_pk=previous_source_record_pk,
-            source_system_key=source_system_key,
-            source_order_id=source_order_id,
-        )
-
-    non_vehicle_lines = _build_non_vehicle_lines(
-        source_system_key, cast(list[JsonValue], line_items)
-    )
-    _merge_order(
-        tx,
-        source_system_key=source_system_key,
-        order=order,
-        non_vehicle_lines=non_vehicle_lines,
-    )
-    for line in line_items:
-        _merge_line_item(
+    if customer_link is None or (
+        str_or_none(customer_link.get("identity_source_record_id")) is None
+        or str_or_none(customer_link.get("source_system_key")) is None
+    ):
+        _skip_sale_permanent(
             tx,
-            source_system_key=source_system_key,
-            source_order_id=source_order_id,
-            entity_key=entity_key,
-            line=line,
+            pk=source_record_pk,
+            reason="customer_link missing or required fields invalid",
         )
-
+        return IngestResult(
+            source_record_id=envelope.source_record_id,
+            source_record_pk=source_record_pk,
+            ingest_run_id=ingest_run_id,
+        )
+    source_order_id = str(order["source_order_id"])
     person_id = _resolve_and_link_customer(
         tx,
         source_record_pk=source_record_pk,
@@ -267,16 +265,24 @@ def _execute(
         source_system_key=source_system_key,
         source_order_id=source_order_id,
     )
-    _write_vehicle_observations(
+    if person_id is None:
+        return IngestResult(
+            source_record_id=envelope.source_record_id,
+            source_record_pk=source_record_pk,
+            is_new_person=False,
+            candidate_count=0,
+            ingest_run_id=ingest_run_id,
+        )
+    _finalize_accepted_sale(
         tx,
-        source_system_key=source_system_key,
-        source_record_pk=source_record_pk,
-        source_record_id=envelope.source_record_id,
-        source_order_id=source_order_id,
-        observed_at=envelope.observed_at,
-        line_items=cast(list[JsonValue], line_items),
+        sales_pk=source_record_pk,
         person_id=person_id,
+        source_system_key=source_system_key,
+        source_record_id=envelope.source_record_id,
+        raw_payload=envelope.raw_payload,
+        observed_at=envelope.observed_at,
         exclusion_context=exclusion_context,
+        expected_active_source_record_pk=lifecycle_plan.active_source_record_pk,
     )
 
     logger.info(
@@ -304,12 +310,23 @@ def _create_sales_source_record(
     *,
     envelope: SourceRecordEnvelope,
     link_status: str,
+    expected_active_source_record_pk: str | None,
 ) -> str:
+    source_record_version = envelope.source_record_version
+    assert source_record_version is not None, "lifecycle planning must allocate a version"
     rec = tx.run(
         queries.CREATE_SOURCE_RECORD,
         source_system=envelope.source_system,
         source_record_id=envelope.source_record_id,
-        source_record_version=envelope.source_record_version,
+        source_record_version=source_record_version,
+        source_version_key=encode_source_version_key(
+            envelope.source_system,
+            envelope.source_record_id,
+            source_record_version,
+        ),
+        lifecycle_status="pending_review",
+        is_latest=False,
+        expected_active_source_record_pk=expected_active_source_record_pk,
         record_type=envelope.record_type.value,
         extraction_confidence=None,
         extraction_method=None,
@@ -404,6 +421,121 @@ def _write_vehicle_observations(
                 confidence=observation.confidence,
                 quality_flag=observation.quality_flag.value,
             )
+
+
+def _stage_sales_review_projections(
+    tx: ManagedTransaction,
+    *,
+    source_record_pk: str,
+    source_system_key: str,
+    source_record_id: str,
+    raw_payload: dict[str, JsonValue],
+    exclusion_context: ExclusionContext,
+) -> bool:
+    """Materialize an isolated, inactive blueprint for API review promotion."""
+    order, typed_lines, _ = _parse_sales_envelope(raw_payload)
+    source_order_id = str(order.get("source_order_id") or "")
+    if not source_order_id:
+        return False
+    entity_key = _entity_key_for(source_system_key)
+    lines: list[dict[str, JsonValue]] = []
+    for line_index, line in enumerate(typed_lines):
+        product = line.get("product")
+        product_values: _ProductPayload = product or {}
+        staged_line: dict[str, JsonValue] = {
+            "line_index": line_index,
+            "source_line_item_id": str(line.get("source_line_item_id") or ""),
+            "source_product_id": str(product_values.get("source_product_id") or ""),
+            "line_no": line.get("line_no"),
+            "quantity": line.get("quantity"),
+            "unit_price": line.get("unit_price"),
+            "line_total": line.get("line_total"),
+            "currency": "SGD",
+            "discount_amount": line.get("discount_amount"),
+            "tax_amount": line.get("tax_amount"),
+            "metadata": json.dumps(line.get("metadata", {}), default=str),
+            "product_sku": product_values.get("sku"),
+            "product_name": product_values.get("name"),
+            "product_display_name": product_values.get("display_name")
+            or product_values.get("name"),
+            "product_category": product_values.get("category"),
+            "product_subcategory": product_values.get("subcategory"),
+            "product_manufacturer": product_values.get("manufacturer"),
+            "product_attributes": json.dumps(product_values.get("attributes", {}), default=str),
+            "product_is_active": product_values.get("is_active", True),
+        }
+        staged_line["line_hash"] = _staging_hash(staged_line)
+        lines.append(staged_line)
+    staged_observations: list[dict[str, JsonValue]] = []
+    observations = observations_from_sales_lines(
+        source_system_key=source_system_key,
+        source_record_id=source_record_id,
+        observed_at=None,
+        lines=cast(list[JsonValue], typed_lines),
+    )
+    for observation_index, observation in enumerate(observations):
+        if is_excluded_vehicle_observation(observation, exclusion_context):
+            continue
+        staged_observation: dict[str, JsonValue] = {
+            "observation_index": observation_index,
+            "source_system_key": observation.source_system_key,
+            "source_record_id": observation.source_record_id,
+            "product_sku": observation.product_sku,
+            "product": observation.product,
+            "manufacturer": observation.manufacturer,
+            "model": observation.model,
+            "unit_label": observation.unit_label,
+            "lta_tag": observation.lta_tag,
+            "normalized_lta_tag": normalize_lta_tag(observation.lta_tag),
+            "serial_number": observation.serial_number,
+            "normalized_serial_number": normalize_serial_number(observation.serial_number),
+            "source_kind": observation.source_kind,
+            "observed_at": observation.observed_at,
+            "confidence": observation.confidence,
+            "quality_flag": observation.quality_flag.value,
+            "raw_context": observation.raw_context,
+        }
+        staged_observation["observation_hash"] = _staging_hash(staged_observation)
+        staged_observations.append(staged_observation)
+    loyalty = order.get("loyalty") or {}
+    staged_order: dict[str, JsonValue] = {
+        "source_order_id": source_order_id,
+        "entity_key": entity_key,
+        "order_no": order.get("order_no"),
+        "ordered_at": order.get("ordered_at"),
+        "release_date": order.get("release_date"),
+        "status": order.get("status"),
+        "total_amount": order.get("total_amount"),
+        "currency": order.get("currency", "SGD"),
+        "item_count": order.get("item_count"),
+        "metadata": json.dumps(order.get("metadata", {}), default=str),
+        "non_vehicle_lines": json.dumps(
+            _build_non_vehicle_lines(source_system_key, cast(list[JsonValue], typed_lines)),
+            default=str,
+        ),
+        "points_used": loyalty.get("points_used"),
+        "points_gained": loyalty.get("points_gained"),
+        "did_redeem_discount": loyalty.get("did_redeem_discount"),
+        "is_purchase_points": loyalty.get("is_purchase_points"),
+    }
+    order_hash = _staging_hash(staged_order)
+    stage_hash = _staging_hash(
+        {"order": staged_order, "lines": lines, "observations": staged_observations}
+    )
+    result = tx.run(
+        queries.STAGE_SALES_REVIEW,
+        source_record_pk=source_record_pk,
+        source_system_key=source_system_key,
+        source_order_id=source_order_id,
+        entity_key=entity_key,
+        source_record_id=source_record_id,
+        order=staged_order,
+        order_hash=order_hash,
+        lines=lines,
+        observations=staged_observations,
+        stage_hash=stage_hash,
+    ).single()
+    return result is not None
 
 
 def _str_list(value: object) -> list[str]:
@@ -621,6 +753,7 @@ def _skip_sale_permanent(tx: ManagedTransaction, *, pk: str, reason: str) -> Non
     """
     logger.warning("Skipping pending sale %s: %s", pk, reason)
     tx.run(queries.MARK_SALES_RECORD_LINK_FAILED, source_record_pk=pk, reason=reason)
+    tx.run(queries.MARK_SOURCE_RECORD_LINK_FAILED, source_record_pk=pk, reason=reason)
 
 
 def _resolve_customer_person_id(
@@ -655,6 +788,8 @@ def _drain_one_pending_sale(
     source_system_key: str,
     raw_payload: dict[str, JsonValue],
     exclusion_context: ExclusionContext,
+    expected_active_source_record_pk: str | None = None,
+    source_record_id: str | None = None,
 ) -> bool:
     """Resolve and link one pending-customer sales record to its customer Person.
 
@@ -663,6 +798,11 @@ def _drain_one_pending_sale(
     transient case — identity Person not yet resolved — stays
     ``pending_customer`` and retries silently; that is why the drain re-runs.
     """
+    try:
+        _parse_sales_envelope(raw_payload)
+    except SalesPayloadError as exc:
+        _skip_sale_permanent(tx, pk=sales_pk, reason=str(exc))
+        return False
     customer_link = raw_payload.get("customer_link")
     if not isinstance(customer_link, dict):
         _skip_sale_permanent(tx, pk=sales_pk, reason="customer_link missing or not a dict")
@@ -692,38 +832,77 @@ def _drain_one_pending_sale(
     if person_id is None:
         _skip_sale_permanent(tx, pk=sales_pk, reason="resolved person has no person_id")
         return False
-    return _link_resolved_sale(
+    return _finalize_accepted_sale(
         tx,
         sales_pk=sales_pk,
         person_id=person_id,
         source_system_key=source_system_key,
+        source_record_id=source_record_id,
         raw_payload=raw_payload,
+        observed_at=(str(raw_payload["observed_at"]) if raw_payload.get("observed_at") else None),
         exclusion_context=exclusion_context,
+        expected_active_source_record_pk=expected_active_source_record_pk,
     )
 
 
-def _link_resolved_sale(
+def _finalize_accepted_sale(
     tx: ManagedTransaction,
     *,
     sales_pk: str,
     person_id: str,
     source_system_key: str,
+    source_record_id: str | None,
     raw_payload: dict[str, JsonValue],
+    observed_at: str | None,
     exclusion_context: ExclusionContext,
+    expected_active_source_record_pk: str | None = None,
 ) -> bool:
     """Write the PURCHASED + vehicle-observation edges for a resolved sale.
 
     Returns False (leaving the sale pending) if the raw payload carries no
     order id to key the PURCHASED edge on; True once the sale is marked linked.
     """
-    order_raw = raw_payload.get("order")
-    order_payload: dict[str, JsonValue] = order_raw if isinstance(order_raw, dict) else {}
+    try:
+        order, typed_lines, _customer_link = _parse_sales_envelope(raw_payload)
+    except SalesPayloadError as exc:
+        _skip_sale_permanent(tx, pk=sales_pk, reason=str(exc))
+        return False
     # ``or ""`` coalesces a present-but-None source_order_id (``.get(k, "")`` would
     # return None for a present-None key, and ``str(None)``="None" is truthy —
     # matching the safe pattern used by the propose path).
-    source_order_id = str(order_payload.get("source_order_id") or "")
+    source_order_id = str(order.get("source_order_id") or "")
     if not source_order_id:
         return False
+
+    line_items = cast(list[JsonValue], typed_lines)
+    if expected_active_source_record_pk is not None:
+        tx.run(
+            queries.CLEAR_SUPERSEDED_SALES_LINKS,
+            old_source_record_pk=expected_active_source_record_pk,
+            source_system_key=source_system_key,
+            source_order_id=source_order_id,
+        )
+    _merge_order(
+        tx,
+        source_system_key=source_system_key,
+        order=order,
+        non_vehicle_lines=_build_non_vehicle_lines(source_system_key, line_items),
+    )
+    tx.run(
+        queries.REPLACE_ORDER_LINES,
+        source_system_key=source_system_key,
+        source_order_id=source_order_id,
+        source_line_item_ids=[str(line.get("source_line_item_id", "")) for line in typed_lines],
+    )
+    entity_key = _entity_key_for(source_system_key)
+    for line in typed_lines:
+        _merge_line_item(
+            tx,
+            source_system_key=source_system_key,
+            source_order_id=source_order_id,
+            entity_key=entity_key,
+            line=line,
+        )
 
     tx.run(
         queries.LINK_PERSON_PURCHASED_ORDER,
@@ -732,15 +911,11 @@ def _link_resolved_sale(
         source_order_id=source_order_id,
         source_record_pk=sales_pk,
     )
-    line_items_raw = raw_payload.get("line_items")
-    line_items = line_items_raw if isinstance(line_items_raw, list) else []
-    source_record_id = str(raw_payload.get("source_record_id") or source_order_id)
-    observed_at = str(raw_payload.get("observed_at")) if raw_payload.get("observed_at") else None
     _write_vehicle_observations(
         tx,
         source_system_key=source_system_key,
         source_record_pk=sales_pk,
-        source_record_id=source_record_id,
+        source_record_id=source_record_id or sales_pk,
         source_order_id=source_order_id,
         observed_at=observed_at,
         line_items=line_items,
@@ -748,6 +923,14 @@ def _link_resolved_sale(
         exclusion_context=exclusion_context,
     )
     tx.run(queries.MARK_SALES_RECORD_LINKED, source_record_pk=sales_pk)
+    if source_record_id is not None:
+        activate_staged_version(
+            tx,
+            source_system=source_system_key,
+            source_record_id=source_record_id,
+            old_source_record_pk=expected_active_source_record_pk,
+            new_source_record_pk=sales_pk,
+        )
     return True
 
 
@@ -762,12 +945,19 @@ def drain_pending_customer_sales(
     active_exclusion_context = (
         exclusion_context if exclusion_context is not None else ExclusionContext()
     )
+    cursor = ""
     while True:
 
-        def _work(tx: ManagedTransaction) -> int:
-            rows = list(tx.run(queries.FIND_PENDING_CUSTOMER_SALES, limit=batch_size))
+        def _work(tx: ManagedTransaction, _cursor: str = cursor) -> tuple[int, str | None]:
+            rows = list(
+                tx.run(
+                    queries.FIND_PENDING_CUSTOMER_SALES,
+                    cursor=_cursor,
+                    limit=batch_size,
+                )
+            )
             if not rows:
-                return 0
+                return 0, None
             newly_linked = 0
             for row in rows:
                 pk, ssk = _row_pk_and_ssk(row)
@@ -778,21 +968,32 @@ def drain_pending_customer_sales(
                 if raw_payload is None:
                     _skip_sale_permanent(tx, pk=pk, reason="raw_payload undecodable")
                     continue
+                source_record_id = str_or_none(row.get("source_record_id"))
+                expected_active_pk = str_or_none(row.get("expected_active_source_record_pk"))
+                if source_record_id is None:
+                    _skip_sale_permanent(tx, pk=pk, reason="source_record_id missing")
+                    continue
+                state = load_locked_source_state(tx, ssk, source_record_id)
+                if state.pending is None or state.pending.source_record_pk != pk:
+                    continue
                 if _drain_one_pending_sale(
                     tx,
                     pk,
                     ssk,
                     raw_payload,
                     active_exclusion_context,
+                    expected_active_source_record_pk=expected_active_pk,
+                    source_record_id=source_record_id,
                 ):
                     newly_linked += 1
-            return newly_linked
+            return newly_linked, str(rows[-1]["source_record_pk"])
 
         with client.session() as session:
-            newly_linked = session.execute_write(_work)
-        if newly_linked == 0:
-            break
+            newly_linked, next_cursor = session.execute_write(_work)
         linked_count += newly_linked
+        if next_cursor is None:
+            break
+        cursor = next_cursor
 
     if linked_count:
         logger.info("Drained %d pending sales records into linked state", linked_count)
@@ -808,6 +1009,10 @@ def _propose_one_pending_sale(
     customer_nric: str | None,
     customer_emails: list[str],
     customer_phones: list[str],
+    source_record_id: str | None = None,
+    expected_active_source_record_pk: str | None = None,
+    raw_payload: dict[str, JsonValue] | None = None,
+    exclusion_context: ExclusionContext | None = None,
 ) -> bool:
     """Try to resolve one pending-customer sales record via the Vehicle heuristic.
 
@@ -820,12 +1025,39 @@ def _propose_one_pending_sale(
         PURCHASED + BOUGHT_VEHICLE edges written, sale marked ``linked``,
         return True.
     """
+    if source_record_id is None or raw_payload is None:
+        logger.warning(
+            "Skipping pending sale %s: lifecycle identity or raw payload missing",
+            source_record_pk,
+        )
+        return False
+    try:
+        _parse_sales_envelope(raw_payload)
+    except SalesPayloadError as exc:
+        _skip_sale_permanent(tx, pk=source_record_pk, reason=str(exc))
+        return False
+    observations = observations_from_sales_lines(
+        source_system_key=source_system_key,
+        source_record_id=source_record_id,
+        observed_at=None,
+        lines=(cast(list[JsonValue], raw_payload.get("line_items", []))),
+    )
     result = tx.run(
         queries.FIND_VEHICLE_CANDIDATES_FOR_SALES,
         sales_source_record_pk=source_record_pk,
         customer_emails=customer_emails,
         customer_phones=customer_phones,
         customer_nric=customer_nric,
+        normalized_serial_numbers=[
+            value
+            for observation in observations
+            if (value := normalize_serial_number(observation.serial_number)) is not None
+        ],
+        normalized_lta_tags=[
+            value
+            for observation in observations
+            if (value := normalize_lta_tag(observation.lta_tag)) is not None
+        ],
     )
     candidates: list[VehicleCandidate] = [
         VehicleCandidate(
@@ -873,6 +1105,18 @@ def _propose_one_pending_sale(
     # ``additional_linked_person_ids`` so their evidence is linked without merge.
     person_ids = {c.person_id for c in candidates}
     if len(person_ids) >= 2:
+        if not _stage_sales_review_projections(
+            tx,
+            source_record_pk=source_record_pk,
+            source_system_key=source_system_key,
+            source_record_id=source_record_id,
+            raw_payload=raw_payload,
+            exclusion_context=(
+                exclusion_context if exclusion_context is not None else ExclusionContext()
+            ),
+        ):
+            _skip_sale_permanent(tx, pk=source_record_pk, reason="sales review staging failed")
+            return False
         review_result = build_vehicle_review_result(candidates)
         decision_id = persist_match_decision(tx, review_result, source_record_pk)
         create_review_case_if_needed(tx, review_result, decision_id)
@@ -882,27 +1126,19 @@ def _propose_one_pending_sale(
     # Single clear candidate → auto-link at VEHICLE_MATCH_AUTO (0.90).
     match_result = build_vehicle_match_result(best)
     persist_match_decision(tx, match_result, source_record_pk)
-    tx.run(
-        queries.LINK_PERSON_PURCHASED_ORDER,
+    _finalize_accepted_sale(
+        tx,
+        sales_pk=source_record_pk,
         person_id=best.person_id,
         source_system_key=source_system_key,
-        source_order_id=source_order_id,
-        source_record_pk=source_record_pk,
+        source_record_id=source_record_id,
+        raw_payload=raw_payload,
+        observed_at=None,
+        exclusion_context=(
+            exclusion_context if exclusion_context is not None else ExclusionContext()
+        ),
+        expected_active_source_record_pk=expected_active_source_record_pk,
     )
-    tx.run(
-        queries.LINK_PERSON_BOUGHT_VEHICLE,
-        person_id=best.person_id,
-        vehicle_id=best.vehicle_id,
-        source_system_key=source_system_key,
-        source_order_id=source_order_id,
-        source_record_pk=source_record_pk,
-        is_active=True,
-        raw_context=None,
-        observed_at=datetime.now(UTC).isoformat(),
-        confidence=VEHICLE_MATCH_AUTO,
-        quality_flag=QualityFlag.VALID.value,
-    )
-    tx.run(queries.MARK_SALES_RECORD_LINKED, source_record_pk=source_record_pk)
     return True
 
 
@@ -918,9 +1154,21 @@ def propose_vehicle_matches_for_pending_sales(
     received a decision (auto-link, review, or no-match).
     """
 
-    def _get_pending(tx: ManagedTransaction) -> list[tuple[str, str, dict[str, JsonValue]]]:
-        rows = list(tx.run(queries.FIND_PENDING_CUSTOMER_SALES, limit=batch_size))
-        out: list[tuple[str, str, dict[str, JsonValue]]] = []
+    def _get_pending(
+        tx: ManagedTransaction,
+        cursor: str,
+    ) -> tuple[
+        list[tuple[str, str, str | None, str | None, dict[str, JsonValue]]],
+        str | None,
+    ]:
+        rows = list(
+            tx.run(
+                queries.FIND_PENDING_CUSTOMER_SALES,
+                cursor=cursor,
+                limit=batch_size,
+            )
+        )
+        out: list[tuple[str, str, str | None, str | None, dict[str, JsonValue]]] = []
         for row in rows:
             # Drain runs first and marks permanent skips link_failed, so those
             # rows are excluded from FIND_PENDING here. Defensive skip (no
@@ -932,14 +1180,41 @@ def propose_vehicle_matches_for_pending_sales(
             raw_payload = decode_raw_payload(row["raw_payload"])
             if raw_payload is None:
                 continue
-            out.append((pk, ssk, raw_payload))
-        return out
+            source_record_id = str_or_none(row.get("source_record_id"))
+            out.append(
+                (
+                    pk,
+                    ssk,
+                    source_record_id,
+                    str_or_none(row.get("expected_active_source_record_pk")),
+                    raw_payload,
+                )
+            )
+        return out, (str(rows[-1]["source_record_pk"]) if rows else None)
 
-    with client.session() as session:
-        pending = session.execute_write(_get_pending)
+    pending: list[tuple[str, str, str | None, str | None, dict[str, JsonValue]]] = []
+    cursor = ""
+    while True:
+        current_cursor = cursor
+
+        def _read_page(
+            tx: ManagedTransaction,
+            _cursor: str = current_cursor,
+        ) -> tuple[
+            list[tuple[str, str, str | None, str | None, dict[str, JsonValue]]],
+            str | None,
+        ]:
+            return _get_pending(tx, _cursor)
+
+        with client.session() as session:
+            page, next_cursor = session.execute_write(_read_page)
+        pending.extend(page)
+        if next_cursor is None:
+            break
+        cursor = next_cursor
 
     proposed = 0
-    for pk, source_system_key, raw_payload in pending:
+    for pk, source_system_key, source_record_id, expected_active_pk, raw_payload in pending:
         order = raw_payload.get("order")
         if not isinstance(order, dict):
             logger.warning("Skipping pending sale %s: raw_payload.order missing", pk)
@@ -960,7 +1235,16 @@ def propose_vehicle_matches_for_pending_sales(
             _nric: str | None = customer_nric,
             _emails: list[str] = customer_emails,
             _phones: list[str] = customer_phones,
+            _source_record_id: str | None = source_record_id,
+            _expected_active_pk: str | None = expected_active_pk,
+            _raw_payload: dict[str, JsonValue] = raw_payload,
         ) -> bool:
+            if _source_record_id is None:
+                logger.warning("Skipping pending sale %s: source_record_id missing", _pk)
+                return False
+            state = load_locked_source_state(tx, _ssk, _source_record_id)
+            if state.pending is None or state.pending.source_record_pk != _pk:
+                return False
             return _propose_one_pending_sale(
                 tx,
                 source_record_pk=_pk,
@@ -969,6 +1253,9 @@ def propose_vehicle_matches_for_pending_sales(
                 customer_nric=_nric,
                 customer_emails=_emails,
                 customer_phones=_phones,
+                source_record_id=_source_record_id,
+                expected_active_source_record_pk=_expected_active_pk,
+                raw_payload=_raw_payload,
             )
 
         with client.session() as session:

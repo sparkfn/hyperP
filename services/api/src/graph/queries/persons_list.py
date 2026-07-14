@@ -37,13 +37,22 @@ WHERE p.status <> 'merged'
        OR ($has_address = true  AND p.preferred_address_id IS NOT NULL)
        OR ($has_address = false AND p.preferred_address_id IS NULL))
   AND ($has_bankruptcy_case IS NULL
-       OR ($has_bankruptcy_case = true AND EXISTS { (p)-[:HAS_BANKRUPTCY_CASE]->(:BankruptcyCase) })
-       OR ($has_bankruptcy_case = false AND NOT EXISTS { (p)-[:HAS_BANKRUPTCY_CASE]->(:BankruptcyCase) }))
+       OR ($has_bankruptcy_case = true AND EXISTS {
+         MATCH (p)-[bankruptcy_rel:HAS_BANKRUPTCY_CASE]->(:BankruptcyCase)
+         WHERE coalesce(bankruptcy_rel.is_active, true) = true
+       })
+       OR ($has_bankruptcy_case = false AND NOT EXISTS {
+         MATCH (p)-[bankruptcy_rel:HAS_BANKRUPTCY_CASE]->(:BankruptcyCase)
+         WHERE coalesce(bankruptcy_rel.is_active, true) = true
+       }))
   AND ($has_any_match IS NULL
        OR ($has_any_match = true AND (
          EXISTS {
-           MATCH (p)-[:IDENTIFIED_BY]->(:Identifier)<-[:IDENTIFIED_BY]-(am:Person)
-           WHERE am.person_id <> p.person_id AND am.status <> 'merged'
+           MATCH (p)-[p_any_id:IDENTIFIED_BY]->(:Identifier)
+             <-[am_id:IDENTIFIED_BY]-(am:Person)
+           WHERE coalesce(p_any_id.is_active, true) = true
+             AND coalesce(am_id.is_active, true) = true
+             AND am.person_id <> p.person_id AND am.status <> 'merged'
          }
          OR EXISTS {
            MATCH (md:MatchDecision)-[:ABOUT_LEFT|ABOUT_RIGHT]->(p)
@@ -57,8 +66,11 @@ WHERE p.status <> 'merged'
        ))
        OR ($has_any_match = false AND NOT (
          EXISTS {
-           MATCH (p)-[:IDENTIFIED_BY]->(:Identifier)<-[:IDENTIFIED_BY]-(am:Person)
-           WHERE am.person_id <> p.person_id AND am.status <> 'merged'
+           MATCH (p)-[p_no_any_id:IDENTIFIED_BY]->(:Identifier)
+             <-[am_no_id:IDENTIFIED_BY]-(am:Person)
+           WHERE coalesce(p_no_any_id.is_active, true) = true
+             AND coalesce(am_no_id.is_active, true) = true
+             AND am.person_id <> p.person_id AND am.status <> 'merged'
          }
          OR EXISTS {
            MATCH (md:MatchDecision)-[:ABOUT_LEFT|ABOUT_RIGHT]->(p)
@@ -72,12 +84,18 @@ WHERE p.status <> 'merged'
        )))
   AND ($has_possible_match IS NULL
        OR ($has_possible_match = true AND EXISTS {
-         MATCH (p)-[:IDENTIFIED_BY]->(:Identifier)<-[:IDENTIFIED_BY]-(pm:Person)
-         WHERE pm.person_id <> p.person_id AND pm.status <> 'merged'
+         MATCH (p)-[p_possible_id:IDENTIFIED_BY]->(:Identifier)
+           <-[pm_id:IDENTIFIED_BY]-(pm:Person)
+         WHERE coalesce(p_possible_id.is_active, true) = true
+           AND coalesce(pm_id.is_active, true) = true
+           AND pm.person_id <> p.person_id AND pm.status <> 'merged'
        })
        OR ($has_possible_match = false AND NOT EXISTS {
-         MATCH (p)-[:IDENTIFIED_BY]->(:Identifier)<-[:IDENTIFIED_BY]-(pm:Person)
-         WHERE pm.person_id <> p.person_id AND pm.status <> 'merged'
+         MATCH (p)-[p_no_possible_id:IDENTIFIED_BY]->(:Identifier)
+           <-[pm_no_id:IDENTIFIED_BY]-(pm:Person)
+         WHERE coalesce(p_no_possible_id.is_active, true) = true
+           AND coalesce(pm_no_id.is_active, true) = true
+           AND pm.person_id <> p.person_id AND pm.status <> 'merged'
        }))
   AND ($has_system_match IS NULL
        OR ($has_system_match = true AND EXISTS {
@@ -109,36 +127,51 @@ WHERE p.status <> 'merged'
 def _entity_filter_clause(entity_mode: str, source_mode: str) -> str:
     if entity_mode == "and":
         entity_part = """($entity_keys IS NULL OR ALL(ek IN $entity_keys WHERE EXISTS {
-  MATCH (sr_e:SourceRecord)-[:LINKED_TO]->(p)
+  MATCH (sr_e:SourceRecord)-[link:LINKED_TO]->(p)
   MATCH (sr_e)-[:FROM_SOURCE]->(:SourceSystem)-[:OPERATED_BY]->(e:Entity)
-  WHERE e.entity_key = ek
+  WHERE coalesce(link.is_active, true) = true
+    AND (sr_e.lifecycle_status = 'active'
+      OR (sr_e.lifecycle_status IS NULL AND sr_e.is_latest = true))
+    AND e.entity_key = ek
 }))"""
     else:
         entity_part = """($entity_keys IS NULL OR EXISTS {
-  MATCH (sr_e:SourceRecord)-[:LINKED_TO]->(p)
+  MATCH (sr_e:SourceRecord)-[link:LINKED_TO]->(p)
   MATCH (sr_e)-[:FROM_SOURCE]->(:SourceSystem)-[:OPERATED_BY]->(e:Entity)
-  WHERE e.entity_key IN $entity_keys
+  WHERE coalesce(link.is_active, true) = true
+    AND (sr_e.lifecycle_status = 'active'
+      OR (sr_e.lifecycle_status IS NULL AND sr_e.is_latest = true))
+    AND e.entity_key IN $entity_keys
 })"""
 
     if source_mode == "and":
         source_part = """($source_keys IS NULL OR ALL(sk IN $source_keys WHERE EXISTS {
-  MATCH (sr_s:SourceRecord)-[:LINKED_TO]->(p)
+  MATCH (sr_s:SourceRecord)-[link:LINKED_TO]->(p)
   MATCH (sr_s)-[:FROM_SOURCE]->(ss:SourceSystem)
-  WHERE ss.source_key = sk
+  WHERE coalesce(link.is_active, true) = true
+    AND (sr_s.lifecycle_status = 'active'
+      OR (sr_s.lifecycle_status IS NULL AND sr_s.is_latest = true))
+    AND ss.source_key = sk
 }))"""
     else:
         source_part = """($source_keys IS NULL OR EXISTS {
-  MATCH (sr_s:SourceRecord)-[:LINKED_TO]->(p)
+  MATCH (sr_s:SourceRecord)-[link:LINKED_TO]->(p)
   MATCH (sr_s)-[:FROM_SOURCE]->(ss:SourceSystem)
-  WHERE ss.source_key IN $source_keys
+  WHERE coalesce(link.is_active, true) = true
+    AND (sr_s.lifecycle_status = 'active'
+      OR (sr_s.lifecycle_status IS NULL AND sr_s.is_latest = true))
+    AND ss.source_key IN $source_keys
 })"""
 
     return f"""
 WITH p, score, addr WHERE {entity_part}
 AND {source_part}
 AND ($source_record_type IS NULL OR EXISTS {{
-    MATCH (sr_t:SourceRecord)-[:LINKED_TO]->(p)
-    WHERE sr_t.record_type = $source_record_type
+    MATCH (sr_t:SourceRecord)-[link:LINKED_TO]->(p)
+    WHERE coalesce(link.is_active, true) = true
+      AND (sr_t.lifecycle_status = 'active'
+        OR (sr_t.lifecycle_status IS NULL AND sr_t.is_latest = true))
+      AND sr_t.record_type = $source_record_type
   }})
 WITH DISTINCT p, score
 OPTIONAL MATCH (p)-[:LIVES_AT]->(addr:Address {{address_id: p.preferred_address_id}})
@@ -147,11 +180,17 @@ OPTIONAL MATCH (p)-[:LIVES_AT]->(addr:Address {{address_id: p.preferred_address_
 
 _ENRICH_AND_RETURN = """
 CALL (p) {
-  OPTIONAL MATCH (sr:SourceRecord)-[:LINKED_TO]->(p)
+  OPTIONAL MATCH (sr:SourceRecord)-[link:LINKED_TO]->(p)
+  WHERE coalesce(link.is_active, true) = true
+    AND (sr.lifecycle_status = 'active'
+      OR (sr.lifecycle_status IS NULL AND sr.is_latest = true))
   RETURN count(sr) AS source_record_count
 }
 CALL (p) {
-  OPTIONAL MATCH (sr_ent:SourceRecord)-[:LINKED_TO]->(p)
+  OPTIONAL MATCH (sr_ent:SourceRecord)-[link:LINKED_TO]->(p)
+  WHERE coalesce(link.is_active, true) = true
+    AND (sr_ent.lifecycle_status = 'active'
+      OR (sr_ent.lifecycle_status IS NULL AND sr_ent.is_latest = true))
   OPTIONAL MATCH (sr_ent)-[:FROM_SOURCE]->(:SourceSystem)-[:OPERATED_BY]->(e:Entity)
   WITH e, count(DISTINCT sr_ent) AS e_sr_count
   WHERE e IS NOT NULL
@@ -166,17 +205,22 @@ CALL (p) {
   RETURN entities
 }
 CALL (p) {
-  OPTIONAL MATCH (p)-[:LIVES_AT]->(:Address)<-[:LIVES_AT]-(ca:Person)
-    WHERE ca.person_id <> p.person_id AND ca.status <> 'merged'
-  OPTIONAL MATCH (p)-[:KNOWS]-(ck:Person)
-    WHERE ck.person_id <> p.person_id AND ck.status <> 'merged'
+  OPTIONAL MATCH (p)-[p_addr:LIVES_AT]->(:Address)
+    <-[ca_addr:LIVES_AT]-(ca:Person)
+    WHERE coalesce(p_addr.is_active, true) = true
+      AND coalesce(ca_addr.is_active, true) = true
+      AND ca.person_id <> p.person_id AND ca.status <> 'merged'
+  OPTIONAL MATCH (p)-[p_knows:KNOWS]-(ck:Person)
+    WHERE coalesce(p_knows.is_active, true) = true
+      AND ck.person_id <> p.person_id AND ck.status <> 'merged'
   WITH collect(DISTINCT ca) + collect(DISTINCT ck) AS all_conn
   UNWIND all_conn AS c
   RETURN count(DISTINCT c) AS connection_count
 }
 CALL (p) {
   OPTIONAL MATCH (p)-[pi:IDENTIFIED_BY]->(phone_id:Identifier)
-  WHERE phone_id.identifier_type = 'phone'
+  WHERE coalesce(pi.is_active, true) = true
+    AND phone_id.identifier_type = 'phone'
     AND phone_id.normalized_value = p.preferred_phone
   WITH pi.quality_flag AS qf
   ORDER BY CASE qf WHEN 'valid' THEN 0 ELSE 1 END
@@ -193,12 +237,16 @@ CALL (p) {
   END AS phone_confidence
 }
 CALL (p) {
-  OPTIONAL MATCH (p)-[:IDENTIFIED_BY]->(idc:Identifier)
+  OPTIONAL MATCH (p)-[id_count:IDENTIFIED_BY]->(idc:Identifier)
+  WHERE coalesce(id_count.is_active, true) = true
   RETURN count(idc) AS identifier_count
 }
 CALL (p) {
-  OPTIONAL MATCH (p)-[:IDENTIFIED_BY]->(shared_id:Identifier)<-[:IDENTIFIED_BY]-(other:Person)
-    WHERE other.person_id <> p.person_id AND other.status <> 'merged'
+  OPTIONAL MATCH (p)-[p_shared_id:IDENTIFIED_BY]->(shared_id:Identifier)
+    <-[other_shared_id:IDENTIFIED_BY]-(other:Person)
+    WHERE coalesce(p_shared_id.is_active, true) = true
+      AND coalesce(other_shared_id.is_active, true) = true
+      AND other.person_id <> p.person_id AND other.status <> 'merged'
   RETURN count(DISTINCT other) AS possible_match_count
 }
 CALL (p) {
@@ -215,7 +263,9 @@ CALL (p) {
   RETURN count{ (p)-[:PURCHASED]->(:Order) } AS order_count
 }
 CALL (p) {
-  RETURN count{ (p)-[:HAS_BANKRUPTCY_CASE]->(:BankruptcyCase) } AS bankruptcy_case_count
+  OPTIONAL MATCH (p)-[bankruptcy_rel:HAS_BANKRUPTCY_CASE]->(:BankruptcyCase)
+  WHERE coalesce(bankruptcy_rel.is_active, true) = true
+  RETURN count(bankruptcy_rel) AS bankruptcy_case_count
 }
 RETURN p {
   .person_id, .status, .is_high_value, .is_high_risk,
@@ -345,13 +395,15 @@ def _head(*, has_q: bool, skip_address: bool = False) -> str:
             )
         return (
             "CALL db.index.fulltext.queryNodes('person_name_search', $q) YIELD node AS p, score\n"
-            "OPTIONAL MATCH (p)-[:LIVES_AT]->(addr:Address)\n"
+            "OPTIONAL MATCH (p)-[addr_link:LIVES_AT]->(addr:Address)\n"
+            "WHERE coalesce(addr_link.is_active, true) = true\n"
             "WITH p, addr, score\n"
         )
     if skip_address:
         return "MATCH (p:Person)\nWITH p, null AS addr, null AS score\n"
     return (
         "MATCH (p:Person)\n"
-        "OPTIONAL MATCH (p)-[:LIVES_AT]->(addr:Address)\n"
+        "OPTIONAL MATCH (p)-[addr_link:LIVES_AT]->(addr:Address)\n"
+        "WHERE coalesce(addr_link.is_active, true) = true\n"
         "WITH p, addr, null AS score\n"
     )

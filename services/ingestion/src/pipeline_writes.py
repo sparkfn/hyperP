@@ -21,11 +21,13 @@ from src.models import (
     NormalizedAttribute,
     NormalizedIdentifier,
     SourceRecordEnvelope,
+    SourceRecordLifecycleStatus,
 )
 from src.models import (
     NormalizedAddress as NormalizedAddressModel,
 )
 from src.pipeline_normalization import fanout_cap_for, is_usable
+from src.source_version_keys import encode_source_version_key
 
 logger = logging.getLogger(__name__)
 
@@ -151,6 +153,20 @@ def create_person(tx: ManagedTransaction) -> str:
     return person_id
 
 
+def retire_identity_projections(tx: ManagedTransaction, source_record_pk: str) -> tuple[str, ...]:
+    """Deactivate identity evidence belonging strictly to one source version."""
+    rows = tx.run(
+        queries.RETIRE_IDENTITY_PROJECTIONS,
+        source_record_pk=source_record_pk,
+    )
+    return tuple(sorted({str(row["person_id"]) for row in rows}))
+
+
+def retire_address_projection(tx: ManagedTransaction, source_record_pk: str) -> None:
+    """Deactivate one source version's address assertion while preserving history."""
+    tx.run(queries.RETIRE_ADDRESS_PROJECTION, source_record_pk=source_record_pk)
+
+
 # --- Step 7: persist source record + match decision + review case ---------
 
 
@@ -164,6 +180,9 @@ def persist_source_record(
     match_result: MatchResult,
     is_new_person: bool,
     ingest_run_id: str | None,
+    lifecycle_status: SourceRecordLifecycleStatus,
+    expected_active_source_record_pk: str | None,
+    activation_blueprint: dict[str, JsonValue] | None = None,
 ) -> str:
     """Step 7 + 7b: persist SourceRecord and link to IngestRun."""
     normalized: dict[str, JsonValue] = {
@@ -172,6 +191,8 @@ def persist_source_record(
         "addresses": [address.model_dump() for address in addresses],
         "attributes": [a.model_dump() for a in attributes],
     }
+    if activation_blueprint is not None:
+        normalized.update(activation_blueprint)
     summary = envelope.raw_payload.get("summary")
     if (
         envelope.record_type.value == "conversation"
@@ -190,11 +211,21 @@ def persist_source_record(
         if envelope.conversation_ref is not None
         else None
     )
+    source_record_version = envelope.source_record_version
+    assert source_record_version is not None, "lifecycle planning must allocate a version"
     sr_result = tx.run(
         queries.CREATE_SOURCE_RECORD,
         source_system=envelope.source_system,
         source_record_id=envelope.source_record_id,
-        source_record_version=envelope.source_record_version,
+        source_record_version=source_record_version,
+        source_version_key=encode_source_version_key(
+            envelope.source_system,
+            envelope.source_record_id,
+            source_record_version,
+        ),
+        expected_active_source_record_pk=expected_active_source_record_pk,
+        lifecycle_status=lifecycle_status.value,
+        is_latest=lifecycle_status is SourceRecordLifecycleStatus.ACTIVE,
         record_type=envelope.record_type.value,
         extraction_confidence=envelope.extraction_confidence,
         extraction_method=envelope.extraction_method,
@@ -239,11 +270,12 @@ def persist_match_decision(
         match_decision_id=match_decision_id,
         source_record_pk=source_record_pk,
     )
-    if match_result.matched_person_id is not None:
+    right_person_id = match_result.proposed_person_id or match_result.matched_person_id
+    if right_person_id is not None:
         tx.run(
             queries.LINK_MATCH_DECISION_RIGHT_PERSON,
             match_decision_id=match_decision_id,
-            person_id=match_result.matched_person_id,
+            person_id=right_person_id,
         )
     return match_decision_id
 

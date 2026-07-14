@@ -25,15 +25,30 @@ SET
     bc.last_seen_at = CASE WHEN $last_seen_at IS NULL THEN null ELSE datetime($last_seen_at) END,
     bc.raw_payload = $raw_payload,
     bc.updated_at = datetime()
-MERGE (p)-[person_rel:HAS_BANKRUPTCY_CASE]->(bc)
+MERGE (p)-[person_rel:HAS_BANKRUPTCY_CASE {
+    source_system_key: $source_system_key,
+    source_record_pk: $source_record_pk
+}]->(bc)
 ON CREATE SET
     person_rel.first_seen_at = datetime(),
     person_rel.source_record_pk = $source_record_pk,
-    person_rel.observed_at = datetime($observed_at)
+    person_rel.observed_at = datetime($observed_at),
+    person_rel.activated_at = datetime()
 ON MATCH SET
     person_rel.source_record_pk = $source_record_pk,
     person_rel.observed_at = datetime($observed_at),
     person_rel.last_seen_at = datetime()
+SET person_rel.is_active = true,
+    person_rel.activated_at = coalesce(person_rel.activated_at, datetime()),
+    person_rel.retired_at = null
 MERGE (sr)-[record_rel:DESCRIBES_CASE]->(bc)
 ON CREATE SET record_rel.linked_at = datetime()
+"""
+
+RETIRE_BANKRUPTCY_PERSON_ASSOCIATION = """
+MATCH ()-[rel:HAS_BANKRUPTCY_CASE {source_record_pk: $source_record_pk}]->(:BankruptcyCase)
+WHERE coalesce(rel.is_active, true)
+SET rel.is_active = false,
+    rel.retired_at = datetime(),
+    rel.updated_at = datetime()
 """

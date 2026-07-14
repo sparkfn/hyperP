@@ -4,19 +4,30 @@ from __future__ import annotations
 
 FIND_PERSON_BY_IDENTIFIER = """
 MATCH (id:Identifier {identifier_type: $identifier_type, normalized_value: $value})
-  <-[:IDENTIFIED_BY]-(p:Person)
-WHERE p.status <> 'merged'
+  <-[lookup_identifier:IDENTIFIED_BY]-(p:Person)
+WHERE coalesce(lookup_identifier.is_active, true) = true
+  AND p.status <> 'merged'
 OPTIONAL MATCH (addr:Address {address_id: p.preferred_address_id})
-OPTIONAL MATCH (sr:SourceRecord)-[:LINKED_TO]->(p)
+OPTIONAL MATCH (sr:SourceRecord)-[link:LINKED_TO]->(p)
+WHERE coalesce(link.is_active, true) = true
+  AND (sr.lifecycle_status = 'active'
+    OR (sr.lifecycle_status IS NULL AND sr.is_latest = true))
 WITH p, addr, count(sr) AS source_record_count
 CALL {
   WITH p
-  OPTIONAL MATCH (p)-[:IDENTIFIED_BY]->(:Identifier)<-[:IDENTIFIED_BY]-(ci:Person)
-    WHERE ci.person_id <> p.person_id AND ci.status <> 'merged'
-  OPTIONAL MATCH (p)-[:LIVES_AT]->(:Address)<-[:LIVES_AT]-(ca:Person)
-    WHERE ca.person_id <> p.person_id AND ca.status <> 'merged'
-  OPTIONAL MATCH (p)-[:KNOWS]-(ck:Person)
-    WHERE ck.person_id <> p.person_id AND ck.status <> 'merged'
+  OPTIONAL MATCH (p)-[p_identifier:IDENTIFIED_BY]->(:Identifier)
+    <-[ci_identifier:IDENTIFIED_BY]-(ci:Person)
+    WHERE coalesce(p_identifier.is_active, true) = true
+      AND coalesce(ci_identifier.is_active, true) = true
+      AND ci.person_id <> p.person_id AND ci.status <> 'merged'
+  OPTIONAL MATCH (p)-[p_address:LIVES_AT]->(:Address)
+    <-[ca_address:LIVES_AT]-(ca:Person)
+    WHERE coalesce(p_address.is_active, true) = true
+      AND coalesce(ca_address.is_active, true) = true
+      AND ca.person_id <> p.person_id AND ca.status <> 'merged'
+  OPTIONAL MATCH (p)-[p_knows:KNOWS]-(ck:Person)
+    WHERE coalesce(p_knows.is_active, true) = true
+      AND ck.person_id <> p.person_id AND ck.status <> 'merged'
   WITH collect(DISTINCT ci) + collect(DISTINCT ca) + collect(DISTINCT ck) AS all_conn
   UNWIND all_conn AS c
   RETURN count(DISTINCT c) AS connection_count
@@ -42,16 +53,26 @@ MATCH (p:Person {person_id: $person_id})
 OPTIONAL MATCH (p)-[:MERGED_INTO]->(canonical:Person)
 WITH coalesce(canonical, p) AS person
 OPTIONAL MATCH (addr:Address {address_id: person.preferred_address_id})
-OPTIONAL MATCH (sr:SourceRecord)-[:LINKED_TO]->(person)
+OPTIONAL MATCH (sr:SourceRecord)-[link:LINKED_TO]->(person)
+WHERE coalesce(link.is_active, true) = true
+  AND (sr.lifecycle_status = 'active'
+    OR (sr.lifecycle_status IS NULL AND sr.is_latest = true))
 WITH person, addr, count(sr) AS source_record_count
 CALL {
   WITH person
-  OPTIONAL MATCH (person)-[:IDENTIFIED_BY]->(:Identifier)<-[:IDENTIFIED_BY]-(ci:Person)
-    WHERE ci.person_id <> person.person_id AND ci.status <> 'merged'
-  OPTIONAL MATCH (person)-[:LIVES_AT]->(:Address)<-[:LIVES_AT]-(ca:Person)
-    WHERE ca.person_id <> person.person_id AND ca.status <> 'merged'
-  OPTIONAL MATCH (person)-[:KNOWS]-(ck:Person)
-    WHERE ck.person_id <> person.person_id AND ck.status <> 'merged'
+  OPTIONAL MATCH (person)-[person_identifier:IDENTIFIED_BY]->(:Identifier)
+    <-[ci_identifier:IDENTIFIED_BY]-(ci:Person)
+    WHERE coalesce(person_identifier.is_active, true) = true
+      AND coalesce(ci_identifier.is_active, true) = true
+      AND ci.person_id <> person.person_id AND ci.status <> 'merged'
+  OPTIONAL MATCH (person)-[person_address:LIVES_AT]->(:Address)
+    <-[ca_address:LIVES_AT]-(ca:Person)
+    WHERE coalesce(person_address.is_active, true) = true
+      AND coalesce(ca_address.is_active, true) = true
+      AND ca.person_id <> person.person_id AND ca.status <> 'merged'
+  OPTIONAL MATCH (person)-[person_knows:KNOWS]-(ck:Person)
+    WHERE coalesce(person_knows.is_active, true) = true
+      AND ck.person_id <> person.person_id AND ck.status <> 'merged'
   WITH collect(DISTINCT ci) + collect(DISTINCT ca) + collect(DISTINCT ck) AS all_conn
   UNWIND all_conn AS c
   RETURN count(DISTINCT c) AS connection_count
@@ -64,7 +85,8 @@ CALL {
 CALL {
   WITH person
   MATCH (sr:SourceRecord {record_type: 'identity'})-[:LINKED_TO]->(person)
-  WHERE coalesce(sr.is_latest, true) = true
+  WHERE (sr.lifecycle_status = 'active'
+    OR (sr.lifecycle_status IS NULL AND sr.is_latest = true))
   MATCH (sr)-[:FROM_SOURCE]->(ss:SourceSystem)
   RETURN collect({
     source_system: ss.source_key,
@@ -114,10 +136,12 @@ MATCH (sr)-[:FROM_SOURCE]->(ss:SourceSystem)
 OPTIONAL MATCH (ss)-[:OPERATED_BY]->(entity:Entity)
 WHERE ($entity_key IS NULL OR entity.entity_key = $entity_key)
   AND ($record_type IS NULL OR sr.record_type = $record_type)
+  AND (sr.lifecycle_status = 'active'
+    OR (sr.lifecycle_status IS NULL AND sr.is_latest = true))
 RETURN sr {
   .source_record_pk, .source_record_id, .source_record_version,
   .record_type, .extraction_confidence, .extraction_method,
-  .link_status, .observed_at, .ingested_at,
+  .link_status, .lifecycle_status, .observed_at, .ingested_at,
   .conversation_ref, .raw_payload, .normalized_payload
 } AS source_record,
 ss.source_key AS source_system,
@@ -132,6 +156,8 @@ GET_PERSON_SOURCE_RECORD_ENTITY_FACETS = """
 MATCH (sr:SourceRecord)-[:LINKED_TO]->(:Person {person_id: $person_id})
 MATCH (sr)-[:FROM_SOURCE]->(ss:SourceSystem)
 OPTIONAL MATCH (ss)-[:OPERATED_BY]->(entity:Entity)
+WHERE (sr.lifecycle_status = 'active'
+  OR (sr.lifecycle_status IS NULL AND sr.is_latest = true))
 RETURN ss.source_key AS source_system,
        entity.entity_key AS entity_key,
        entity.display_name AS entity_display_name,
@@ -140,7 +166,8 @@ ORDER BY source_system, entity_display_name
 """
 
 GET_PERSON_BANKRUPTCY_CASES = """
-MATCH (:Person {person_id: $person_id})-[:HAS_BANKRUPTCY_CASE]->(bc:BankruptcyCase)
+MATCH (:Person {person_id: $person_id})-[bankruptcy_rel:HAS_BANKRUPTCY_CASE]->(bc:BankruptcyCase)
+WHERE coalesce(bankruptcy_rel.is_active, true) = true
 RETURN bc {
   .bankruptcy_case_id, .source_system_key, .source_case_id,
   .case_number, .document_type, .document_date,
@@ -152,7 +179,8 @@ SKIP $skip LIMIT $limit
 """
 
 COUNT_PERSON_BANKRUPTCY_CASES = """
-MATCH (:Person {person_id: $person_id})-[:HAS_BANKRUPTCY_CASE]->(bc:BankruptcyCase)
+MATCH (:Person {person_id: $person_id})-[bankruptcy_rel:HAS_BANKRUPTCY_CASE]->(bc:BankruptcyCase)
+WHERE coalesce(bankruptcy_rel.is_active, true) = true
 RETURN count(bc) AS total
 """
 
@@ -202,9 +230,11 @@ bc {
 """
 
 GET_PERSON_CONNECTIONS_IDENTIFIER = """
-MATCH (p:Person {person_id: $person_id})-[:IDENTIFIED_BY]->(id:Identifier)
-  <-[:IDENTIFIED_BY]-(other:Person)
-WHERE other.person_id <> p.person_id
+MATCH (p:Person {person_id: $person_id})-[p_identifier:IDENTIFIED_BY]->(id:Identifier)
+  <-[other_identifier:IDENTIFIED_BY]-(other:Person)
+WHERE coalesce(p_identifier.is_active, true) = true
+  AND coalesce(other_identifier.is_active, true) = true
+  AND other.person_id <> p.person_id
   AND other.status <> 'merged'
   AND ($identifier_type IS NULL OR id.identifier_type = $identifier_type)
 WITH other, collect(DISTINCT {identifier_type: id.identifier_type, normalized_value: id.normalized_value}) AS shared_identifiers
@@ -221,8 +251,11 @@ SKIP $skip LIMIT $limit
 """
 
 GET_PERSON_CONNECTIONS_ADDRESS = """
-MATCH (p:Person {person_id: $person_id})-[:LIVES_AT]->(addr:Address)<-[la:LIVES_AT]-(other:Person)
-WHERE other.person_id <> p.person_id
+MATCH (p:Person {person_id: $person_id})-[p_address:LIVES_AT]->(addr:Address)
+  <-[la:LIVES_AT]-(other:Person)
+WHERE coalesce(p_address.is_active, true) = true
+  AND coalesce(la.is_active, true) = true
+  AND other.person_id <> p.person_id
   AND other.status <> 'merged'
 WITH other,
      collect(DISTINCT {address_id: addr.address_id, normalized_full: addr.normalized_full, source_system_key: la.source_system_key}) AS shared_addresses,
@@ -248,7 +281,8 @@ SKIP $skip LIMIT $limit
 
 GET_PERSON_CONNECTIONS_KNOWS = """
 MATCH (p:Person {person_id: $person_id})-[k:KNOWS]-(other:Person)
-WHERE other.person_id <> p.person_id
+WHERE coalesce(k.is_active, true) = true
+  AND other.person_id <> p.person_id
   AND other.status <> 'merged'
 WITH other,
   collect(DISTINCT {
@@ -278,10 +312,14 @@ SKIP $skip LIMIT $limit
 
 GET_PERSON_CONNECTIONS_ALL = """
 MATCH (p:Person {person_id: $person_id})
-OPTIONAL MATCH (p)-[:LIVES_AT]->(addr:Address)<-[la:LIVES_AT]-(oa:Person)
-  WHERE oa.person_id <> p.person_id AND oa.status <> 'merged'
+OPTIONAL MATCH (p)-[p_address:LIVES_AT]->(addr:Address)
+  <-[la:LIVES_AT]-(oa:Person)
+  WHERE coalesce(p_address.is_active, true) = true
+    AND coalesce(la.is_active, true) = true
+    AND oa.person_id <> p.person_id AND oa.status <> 'merged'
 OPTIONAL MATCH (p)-[k:KNOWS]-(ok:Person)
-  WHERE ok.person_id <> p.person_id AND ok.status <> 'merged'
+  WHERE coalesce(k.is_active, true) = true
+    AND ok.person_id <> p.person_id AND ok.status <> 'merged'
 WITH p,
   collect(DISTINCT CASE WHEN oa IS NOT NULL THEN {person_id: oa.person_id, status: oa.status, preferred_full_name: oa.preferred_full_name, address_id: addr.address_id, normalized_full: addr.normalized_full, source_system_key: la.source_system_key} END) AS addr_links,
   collect(DISTINCT CASE WHEN ok IS NOT NULL THEN {person_id: ok.person_id, status: ok.status, preferred_full_name: ok.preferred_full_name, relationship_label: k.relationship_label, relationship_category: k.relationship_category, source_system_key: k.source_system_key} END) AS knows_links
@@ -318,16 +356,26 @@ CALL db.index.fulltext.queryNodes('person_name_search', $query) YIELD node AS p,
 WHERE p.status <> 'merged'
   AND ($status IS NULL OR p.status = $status)
 OPTIONAL MATCH (addr:Address {address_id: p.preferred_address_id})
-OPTIONAL MATCH (sr:SourceRecord)-[:LINKED_TO]->(p)
+OPTIONAL MATCH (sr:SourceRecord)-[link:LINKED_TO]->(p)
+WHERE coalesce(link.is_active, true) = true
+  AND (sr.lifecycle_status = 'active'
+    OR (sr.lifecycle_status IS NULL AND sr.is_latest = true))
 WITH p, addr, score, count(sr) AS source_record_count
 CALL {
   WITH p
-  OPTIONAL MATCH (p)-[:IDENTIFIED_BY]->(:Identifier)<-[:IDENTIFIED_BY]-(ci:Person)
-    WHERE ci.person_id <> p.person_id AND ci.status <> 'merged'
-  OPTIONAL MATCH (p)-[:LIVES_AT]->(:Address)<-[:LIVES_AT]-(ca:Person)
-    WHERE ca.person_id <> p.person_id AND ca.status <> 'merged'
-  OPTIONAL MATCH (p)-[:KNOWS]-(ck:Person)
-    WHERE ck.person_id <> p.person_id AND ck.status <> 'merged'
+  OPTIONAL MATCH (p)-[p_identifier:IDENTIFIED_BY]->(:Identifier)
+    <-[ci_identifier:IDENTIFIED_BY]-(ci:Person)
+    WHERE coalesce(p_identifier.is_active, true) = true
+      AND coalesce(ci_identifier.is_active, true) = true
+      AND ci.person_id <> p.person_id AND ci.status <> 'merged'
+  OPTIONAL MATCH (p)-[p_address:LIVES_AT]->(:Address)
+    <-[ca_address:LIVES_AT]-(ca:Person)
+    WHERE coalesce(p_address.is_active, true) = true
+      AND coalesce(ca_address.is_active, true) = true
+      AND ca.person_id <> p.person_id AND ca.status <> 'merged'
+  OPTIONAL MATCH (p)-[p_knows:KNOWS]-(ck:Person)
+    WHERE coalesce(p_knows.is_active, true) = true
+      AND ck.person_id <> p.person_id AND ck.status <> 'merged'
   WITH collect(DISTINCT ci) + collect(DISTINCT ca) + collect(DISTINCT ck) AS all_conn
   UNWIND all_conn AS c
   RETURN count(DISTINCT c) AS connection_count
@@ -371,6 +419,8 @@ SKIP $skip LIMIT $limit
 
 GET_PERSON_ENTITIES = """
 MATCH (sr:SourceRecord)-[:LINKED_TO]->(p:Person {person_id: $person_id})
+WHERE sr.lifecycle_status = 'active'
+   OR (sr.lifecycle_status IS NULL AND sr.is_latest = true)
 MATCH (sr)-[:FROM_SOURCE]->(:SourceSystem)-[:OPERATED_BY]->(e:Entity)
 WITH e, count(DISTINCT sr) AS source_record_count
 RETURN e {
@@ -397,7 +447,7 @@ CALL {
     source_record: sr {
       .source_record_pk, .source_record_id, .source_record_version,
       .record_type, .extraction_confidence, .extraction_method,
-      .link_status, .observed_at, .ingested_at, .conversation_ref,
+      .link_status, .lifecycle_status, .observed_at, .ingested_at, .conversation_ref,
       .raw_payload, .normalized_payload
     },
     source_system: ss.source_key,
@@ -432,9 +482,11 @@ SKIP $skip LIMIT $limit
 """
 
 GET_PERSON_SHARED_IDENTIFIERS = """
-MATCH (p:Person {person_id: $person_id})-[:IDENTIFIED_BY]->(id:Identifier)
-  <-[:IDENTIFIED_BY]-(other:Person)
-WHERE other.person_id <> p.person_id
+MATCH (p:Person {person_id: $person_id})-[p_identifier:IDENTIFIED_BY]->(id:Identifier)
+  <-[other_identifier:IDENTIFIED_BY]-(other:Person)
+WHERE coalesce(p_identifier.is_active, true) = true
+  AND coalesce(other_identifier.is_active, true) = true
+  AND other.person_id <> p.person_id
   AND other.status <> 'merged'
 WITH other, id
 ORDER BY id.identifier_type, id.normalized_value
@@ -459,6 +511,8 @@ MATCH (sr)-[:FROM_SOURCE]->(ss:SourceSystem)
 OPTIONAL MATCH (ss)-[:OPERATED_BY]->(entity:Entity)
 WHERE ($entity_key IS NULL OR entity.entity_key = $entity_key)
   AND ($record_type IS NULL OR sr.record_type = $record_type)
+  AND (sr.lifecycle_status = 'active'
+    OR (sr.lifecycle_status IS NULL AND sr.is_latest = true))
 RETURN count(sr) AS total
 """
 
@@ -468,9 +522,11 @@ RETURN count(id) AS total
 """
 
 COUNT_PERSON_SHARED_IDENTIFIERS = """
-MATCH (p:Person {person_id: $person_id})-[:IDENTIFIED_BY]->(:Identifier)
-  <-[:IDENTIFIED_BY]-(other:Person)
-WHERE other.person_id <> p.person_id
+MATCH (p:Person {person_id: $person_id})-[p_identifier:IDENTIFIED_BY]->(:Identifier)
+  <-[other_identifier:IDENTIFIED_BY]-(other:Person)
+WHERE coalesce(p_identifier.is_active, true) = true
+  AND coalesce(other_identifier.is_active, true) = true
+  AND other.person_id <> p.person_id
   AND other.status <> 'merged'
 RETURN count(DISTINCT other) AS total
 """
@@ -483,25 +539,30 @@ RETURN count(DISTINCT me) AS total
 """
 
 COUNT_PERSON_CONNECTIONS_IDENTIFIER = """
-MATCH (p:Person {person_id: $person_id})-[:IDENTIFIED_BY]->(id:Identifier)
-  <-[:IDENTIFIED_BY]-(other:Person)
-WHERE other.person_id <> p.person_id
+MATCH (p:Person {person_id: $person_id})-[p_identifier:IDENTIFIED_BY]->(id:Identifier)
+  <-[other_identifier:IDENTIFIED_BY]-(other:Person)
+WHERE coalesce(p_identifier.is_active, true) = true
+  AND coalesce(other_identifier.is_active, true) = true
+  AND other.person_id <> p.person_id
   AND other.status <> 'merged'
   AND ($identifier_type IS NULL OR id.identifier_type = $identifier_type)
 RETURN count(DISTINCT other) AS total
 """
 
 COUNT_PERSON_CONNECTIONS_ADDRESS = """
-MATCH (p:Person {person_id: $person_id})-[:LIVES_AT]->(:Address)
-  <-[:LIVES_AT]-(other:Person)
-WHERE other.person_id <> p.person_id
+MATCH (p:Person {person_id: $person_id})-[p_address:LIVES_AT]->(:Address)
+  <-[other_address:LIVES_AT]-(other:Person)
+WHERE coalesce(p_address.is_active, true) = true
+  AND coalesce(other_address.is_active, true) = true
+  AND other.person_id <> p.person_id
   AND other.status <> 'merged'
 RETURN count(DISTINCT other) AS total
 """
 
 COUNT_PERSON_CONNECTIONS_KNOWS = """
-MATCH (p:Person {person_id: $person_id})-[:KNOWS]-(other:Person)
-WHERE other.person_id <> p.person_id
+MATCH (p:Person {person_id: $person_id})-[knows:KNOWS]-(other:Person)
+WHERE coalesce(knows.is_active, true) = true
+  AND other.person_id <> p.person_id
   AND other.status <> 'merged'
 RETURN count(DISTINCT other) AS total
 """
@@ -510,10 +571,14 @@ COUNT_PERSON_CONNECTIONS_ALL = """
 MATCH (p:Person {person_id: $person_id})
 CALL {
   WITH p
-  OPTIONAL MATCH (p)-[:LIVES_AT]->(:Address)<-[:LIVES_AT]-(ca:Person)
-    WHERE ca.person_id <> p.person_id AND ca.status <> 'merged'
-  OPTIONAL MATCH (p)-[:KNOWS]-(ck:Person)
-    WHERE ck.person_id <> p.person_id AND ck.status <> 'merged'
+  OPTIONAL MATCH (p)-[p_address:LIVES_AT]->(:Address)
+    <-[ca_address:LIVES_AT]-(ca:Person)
+    WHERE coalesce(p_address.is_active, true) = true
+      AND coalesce(ca_address.is_active, true) = true
+      AND ca.person_id <> p.person_id AND ca.status <> 'merged'
+  OPTIONAL MATCH (p)-[p_knows:KNOWS]-(ck:Person)
+    WHERE coalesce(p_knows.is_active, true) = true
+      AND ck.person_id <> p.person_id AND ck.status <> 'merged'
   WITH collect(DISTINCT ca) + collect(DISTINCT ck) AS all_conn
   UNWIND all_conn AS c
   RETURN count(DISTINCT c) AS total
@@ -522,20 +587,25 @@ RETURN total
 """
 
 GET_PERSON_POSSIBLE_MATCH_DETAIL = """
-MATCH (p:Person {person_id: $person_id})-[:IDENTIFIED_BY]->(id:Identifier)
-  <-[:IDENTIFIED_BY]-(candidate:Person {person_id: $candidate_person_id})
-WHERE candidate.status <> 'merged'
+MATCH (p:Person {person_id: $person_id})-[p_identifier:IDENTIFIED_BY]->(id:Identifier)
+  <-[candidate_identifier:IDENTIFIED_BY]-(candidate:Person {person_id: $candidate_person_id})
+WHERE coalesce(p_identifier.is_active, true) = true
+  AND coalesce(candidate_identifier.is_active, true) = true
+  AND candidate.status <> 'merged'
 WITH DISTINCT p, candidate, id
 CALL {
   WITH p, id
   MATCH (p)-[rel:IDENTIFIED_BY]->(id)
   MATCH (sr:SourceRecord {source_record_pk: rel.source_record_pk})
+  WHERE coalesce(rel.is_active, true) = true
+    AND (sr.lifecycle_status = 'active'
+     OR (sr.lifecycle_status IS NULL AND sr.is_latest = true))
   OPTIONAL MATCH (sr)-[:FROM_SOURCE]->(ss:SourceSystem)
   RETURN collect(DISTINCT sr {
     .source_record_pk, .source_record_id, .source_record_version,
     .entity_key, source_system: ss.source_key, entity_display_name: ss.display_name,
     .record_type, .extraction_confidence, .extraction_method,
-    .link_status, .linked_person_id, .observed_at, .ingested_at,
+    .link_status, .lifecycle_status, .linked_person_id, .observed_at, .ingested_at,
     .conversation_ref, .raw_payload, .normalized_payload
   }) AS current_person_source_records
 }
@@ -543,12 +613,15 @@ CALL {
   WITH candidate, id
   MATCH (candidate)-[rel:IDENTIFIED_BY]->(id)
   MATCH (sr:SourceRecord {source_record_pk: rel.source_record_pk})
+  WHERE coalesce(rel.is_active, true) = true
+    AND (sr.lifecycle_status = 'active'
+     OR (sr.lifecycle_status IS NULL AND sr.is_latest = true))
   OPTIONAL MATCH (sr)-[:FROM_SOURCE]->(ss:SourceSystem)
   RETURN collect(DISTINCT sr {
     .source_record_pk, .source_record_id, .source_record_version,
     .entity_key, source_system: ss.source_key, entity_display_name: ss.display_name,
     .record_type, .extraction_confidence, .extraction_method,
-    .link_status, .linked_person_id, .observed_at, .ingested_at,
+    .link_status, .lifecycle_status, .linked_person_id, .observed_at, .ingested_at,
     .conversation_ref, .raw_payload, .normalized_payload
   }) AS candidate_source_records
 }
