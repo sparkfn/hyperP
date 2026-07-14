@@ -11,6 +11,7 @@ is sales. Built on Neo4j for native graph traversal.
 - [Glossary](./docs/profile-unifier-glossary.md)
 - [Architecture](./docs/profile-unifier-architecture.md)
 - [Matching Spec](./docs/profile-unifier-matching-spec.md)
+- [Relationship Match Thresholds](./docs/profile-unifier-relationship-match-thresholds.md)
 - [Policy Decisions](./docs/profile-unifier-policy-decisions.md)
 - [Graph Schema](./docs/profile-unifier-graph-schema.md)
 - [API Spec](./docs/profile-unifier-api-spec.md)

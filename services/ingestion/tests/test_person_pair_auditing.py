@@ -6,7 +6,14 @@ from collections.abc import Iterator
 
 import pytest
 from src.graph import queries
-from src.models import NormalizedIdentifier, QualityFlag
+from src.models import (
+    EngineType,
+    MatchDecision,
+    MatchResult,
+    NormalizedIdentifier,
+    QualityFlag,
+    RecordType,
+)
 from src.pipeline_person_pairs import audit_person_pairs
 
 
@@ -162,6 +169,75 @@ def test_pair_at_020_opens_review_case() -> None:
         ],
     )
     assert audit_person_pairs(tx, _nric()) == ["rc-1"]  # type: ignore[arg-type]
+    assert tx.create_calls[0]["confidence"] == 0.20
+
+
+def _score(confidence: float, *, hard_conflict: bool = False) -> MatchResult:
+    return MatchResult(
+        decision=MatchDecision.REVIEW,
+        confidence=confidence,
+        reasons=["scripted score"],
+        engine_type=EngineType.HEURISTIC,
+        feature_snapshot={"dob_conflict": hard_conflict},
+    )
+
+
+def test_relationship_pair_at_020_auto_merges(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import src.pipeline_person_pairs as module
+
+    merges: list[tuple[str, str]] = []
+    monkeypatch.setattr(module, "score_person_pair", lambda *_args: _score(0.20))
+    monkeypatch.setattr(
+        module,
+        "merge_person_pair",
+        lambda _tx, *, absorbed_id, survivor_id, **_kwargs: (
+            merges.append((absorbed_id, survivor_id)) or "me-relationship"
+        ),
+    )
+    tx = _ScriptedTx(fanout=2, person_ids=["person-a", "person-b"])
+
+    assert audit_person_pairs(tx, _nric(), RecordType.RELATIONSHIP) == []  # type: ignore[arg-type]
+    assert merges == [("person-b", "person-a")]
+    assert tx.create_calls == []
+
+
+@pytest.mark.parametrize(
+    ("confidence", "expected_cases"),
+    [(0.099, []), (0.10, ["rc-1"]), (0.199, ["rc-1"])],
+)
+def test_relationship_pair_review_boundaries(
+    monkeypatch: pytest.MonkeyPatch,
+    confidence: float,
+    expected_cases: list[str],
+) -> None:
+    import src.pipeline_person_pairs as module
+
+    monkeypatch.setattr(module, "score_person_pair", lambda *_args: _score(confidence))
+    tx = _ScriptedTx(fanout=2, person_ids=["person-a", "person-b"])
+
+    assert audit_person_pairs(  # type: ignore[arg-type]
+        tx, _nric(), RecordType.RELATIONSHIP
+    ) == expected_cases
+
+
+def test_relationship_pair_hard_conflict_vetoes_auto_merge(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import src.pipeline_person_pairs as module
+
+    monkeypatch.setattr(
+        module,
+        "score_person_pair",
+        lambda *_args: _score(0.20, hard_conflict=True),
+    )
+    tx = _ScriptedTx(fanout=2, person_ids=["person-a", "person-b"])
+
+    assert audit_person_pairs(  # type: ignore[arg-type]
+        tx, _nric(), RecordType.RELATIONSHIP
+    ) == ["rc-1"]
+    assert tx.match_decision_calls == []
     assert tx.create_calls[0]["confidence"] == 0.20
 
 

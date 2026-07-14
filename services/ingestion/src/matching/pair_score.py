@@ -9,8 +9,8 @@ This adapter reuses the *exact* scoring criteria of the record match engine
 (:func:`src.matching.heuristic.evaluate_heuristic`). One person is represented
 as the "incoming record" — its golden identifiers, facts, and address — and
 scored against the other person's candidate snapshot. The resulting confidence
-drives the pair auditor's 0.40 auto-merge threshold; lower-scoring bridges stay
-available for human review.
+drives the pair auditor's disposition policy. Relationship-triggered audits use
+0.20 for auto-merge and 0.10 for review; other audits use 0.40 and 0.20.
 """
 
 from __future__ import annotations
@@ -28,8 +28,8 @@ from src.models import (
 
 #: A person-pair bridge scoring at or above this confidence auto-merges the
 #: two persons instead of opening a human review case. Distinct from
-#: ``matching.heuristic.CONFIDENCE_AUTO_MERGE``. Record and pair auditing use
-#: the same operational threshold so their dispositions remain consistent.
+#: ``matching.heuristic.CONFIDENCE_AUTO_MERGE``. These are the default pair
+#: thresholds; relationship-triggered audits select their lower shared policy.
 PERSON_PAIR_AUTO_MERGE: float = 0.40
 PERSON_PAIR_REVIEW: float = 0.20
 

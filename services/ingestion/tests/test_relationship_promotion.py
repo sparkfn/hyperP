@@ -83,12 +83,23 @@ class _Tx:
         return _Result([])
 
 
-def _evaluate(tx: _Tx, *, record_type: RecordType, incoming_dob: str | None = None) -> MatchResult:
-    attrs = [
-        NormalizedAttribute(
-            attribute_name="full_name", attribute_value="Ada Lovelace", quality_flag=QualityFlag.VALID
+def _evaluate(
+    tx: _Tx,
+    *,
+    record_type: RecordType,
+    incoming_dob: str | None = None,
+    incoming_phone: str = "+6512345678",
+    include_name: bool = True,
+) -> MatchResult:
+    attrs: list[NormalizedAttribute] = []
+    if include_name:
+        attrs.append(
+            NormalizedAttribute(
+                attribute_name="full_name",
+                attribute_value="Ada Lovelace",
+                quality_flag=QualityFlag.VALID,
+            )
         )
-    ]
     if incoming_dob is not None:
         attrs.append(
             NormalizedAttribute(
@@ -101,7 +112,7 @@ def _evaluate(tx: _Tx, *, record_type: RecordType, incoming_dob: str | None = No
         [
             NormalizedIdentifier(
                 identifier_type="phone",
-                normalized_value="+6512345678",
+                normalized_value=incoming_phone,
                 is_verified=False,
                 quality_flag=QualityFlag.VALID,
             )
@@ -110,6 +121,29 @@ def _evaluate(tx: _Tx, *, record_type: RecordType, incoming_dob: str | None = No
         attrs,
         record_type=record_type,
     )
+
+
+def test_relationship_exact_phone_at_020_auto_merges() -> None:
+    result = _evaluate(_Tx(), record_type=RecordType.RELATIONSHIP, include_name=False)
+    assert result.confidence == 0.20
+    assert result.decision == MatchDecision.MERGE
+
+
+def test_relationship_approximate_phone_at_010_goes_to_review() -> None:
+    result = _evaluate(
+        _Tx(),
+        record_type=RecordType.RELATIONSHIP,
+        incoming_phone="+6512345679",
+        include_name=False,
+    )
+    assert result.confidence == 0.10
+    assert result.decision == MatchDecision.REVIEW
+
+
+def test_identity_exact_phone_at_020_stays_in_review() -> None:
+    result = _evaluate(_Tx(), record_type=RecordType.IDENTITY, include_name=False)
+    assert result.confidence == 0.20
+    assert result.decision == MatchDecision.REVIEW
 
 
 def test_relationship_promotes_on_phone_plus_name() -> None:

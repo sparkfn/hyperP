@@ -1,8 +1,9 @@
 """Person↔person review-case detection.
 
 After a record is linked, any usable identifier it carries may connect two or
-more *active* persons. This module auto-merges pairs scoring at least 0.40 and
-opens a person↔person ReviewCase for lower-confidence bridges.
+more *active* persons. This module applies thresholds selected from the
+triggering record type: relationship records use 0.20/0.10 merge/review bands,
+while other records retain 0.40/0.20.
 
 Detection reuses the existing fanout cap (high-fanout identifiers are
 non-discriminating) and the canonical pair ordering (left.person_id < right).
@@ -20,8 +21,9 @@ from typing import Literal
 from neo4j import ManagedTransaction
 
 from src.graph import queries
-from src.matching.pair_score import PERSON_PAIR_AUTO_MERGE, PERSON_PAIR_REVIEW, score_person_pair
-from src.models import JsonValue, NormalizedIdentifier
+from src.matching.pair_score import score_person_pair
+from src.matching.thresholds import classify_confidence, has_hard_conflict, thresholds_for
+from src.models import JsonValue, MatchDecision, NormalizedIdentifier, RecordType
 from src.pipeline_normalization import is_usable
 from src.pipeline_person_merge import (
     PairPersonAttrs,
@@ -48,6 +50,7 @@ class _PairOutcome:
 def audit_person_pairs(
     tx: ManagedTransaction,
     identifiers: list[NormalizedIdentifier],
+    record_type: RecordType = RecordType.IDENTITY,
 ) -> list[str]:
     """Open person↔person review cases for shared-identifier bridges.
 
@@ -76,7 +79,7 @@ def audit_person_pairs(
                 if pair in seen_pairs:
                     continue
                 seen_pairs.add(pair)
-                outcome = _process_pair(tx, pair[0], pair[1], ident)
+                outcome = _process_pair(tx, pair[0], pair[1], ident, record_type)
                 if outcome is None:
                     continue
                 if outcome.kind == "review_case":
@@ -96,6 +99,7 @@ def _process_pair(
     left_person_id: str,
     right_person_id: str,
     ident: NormalizedIdentifier,
+    record_type: RecordType,
 ) -> _PairOutcome | None:
     lock = tx.run(
         queries.CHECK_NO_MATCH_LOCK,
@@ -121,12 +125,18 @@ def _process_pair(
         return None
 
     score = score_person_pair(tx, left_person_id, right_person_id)
+    auto_merge, review = thresholds_for(record_type)
     snapshot: dict[str, JsonValue] = {
         "bridging_identifier_type": ident.identifier_type,
         "bridging_identifier_value": ident.normalized_value,
         # Band the heuristic score *would* fall in, surfaced for triage only.
         "heuristic_band": score.decision.value,
         **score.feature_snapshot,
+        "threshold_policy": (
+            "relationship" if record_type == RecordType.RELATIONSHIP else "default"
+        ),
+        "auto_merge_threshold": auto_merge,
+        "review_threshold": review,
     }
     feature_snapshot = json.dumps(snapshot)
     reasons = [
@@ -134,7 +144,12 @@ def _process_pair(
         f"({left_person_id}, {right_person_id})",
         *score.reasons,
     ]
-    if score.confidence >= PERSON_PAIR_AUTO_MERGE:
+    decision = classify_confidence(
+        score.confidence,
+        record_type,
+        has_hard_conflict=has_hard_conflict(score.feature_snapshot),
+    )
+    if decision == MatchDecision.MERGE:
         return _auto_merge_pair(
             tx,
             left_person_id=left_person_id,
@@ -145,7 +160,7 @@ def _process_pair(
             reasons=reasons,
             feature_snapshot=feature_snapshot,
         )
-    if score.confidence < PERSON_PAIR_REVIEW:
+    if decision == MatchDecision.NO_MATCH:
         return None
     return _open_review_case(
         tx,
