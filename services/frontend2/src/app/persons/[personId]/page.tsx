@@ -32,6 +32,7 @@ import { toBasePath } from "@/lib/route-paths";
 import type { PublicLink } from "@/lib/api-types";
 import { APP_TZ, avatarColor, completenessColor, formatDob } from "@/lib/display";
 import { useSetLoading } from "@/lib/LoadingContext";
+import { personDisplayName } from "@/lib/ui-display";
 import ActionToast from "@/components/ActionToast";
 import MergeOverlay from "@/components/MergeOverlay";
 import PersonFocusedGraph from "@/components/PersonFocusedGraph";
@@ -341,7 +342,7 @@ function PersonSidebar({ person, detailData, personId, onOverride, onGraphOpen }
   ];
 
   const detailRows: Array<{ label: string; value: string; mono?: boolean; copyable?: boolean }> = [
-    { label: "Person ID",    value: person.person_id, mono: true, copyable: true },
+    { label: "Profile reference", value: person.person_id, mono: true, copyable: true },
     { label: "Created",      value: fmtDateTime(person.created_at) },
     { label: "Last updated", value: fmtDateTime(person.updated_at) },
     { label: "GP version",   value: fmtGpVersion(person.golden_profile_version) },
@@ -2692,7 +2693,7 @@ function DecisionHistoryTab({ personId, onTotalLoaded }: { personId: string; onT
                   <button type="button" className={styles.matchRowButton} onClick={() => setExpandedMatch(isExpanded ? null : rowKey)} aria-expanded={isExpanded}>
                     <span className={styles.matchDecisionCell}>{match.decision}</span>
                     <span className={styles.matchEngineCell}>{titleCase(match.engine_type)}</span>
-                    <span className={styles.matchPersonCell}>{match.left_person_id ?? "—"} ↔ {match.right_person_id ?? "—"}</span>
+                    <span className={styles.matchPersonCell}>Current profile ↔ Related profile</span>
                     <span className={styles.matchConfidenceCell}>{Math.round(match.confidence * 100)}%</span>
                     <span className={styles.matchCreatedCell}>{fmtDate(match.created_at)}</span>
                     <span className={`${styles.matchChevron} ${isExpanded ? styles.matchChevronOpen : ""}`}>⌄</span>
@@ -3169,13 +3170,13 @@ function SourceRecordRow({ record }: { record: PersonSourceRecord }): ReactEleme
   const meta: Array<[string, string]> = [
     ["Source system", titleCase(record.source_system)],
     ["Entity", entity],
-    ["Record ID", record.source_record_id],
+    ["Source record reference", record.source_record_id],
     ["Version", record.source_record_version ?? "—"],
     ["Type", titleCase(record.record_type)],
     ["Link status", titleCase(record.link_status)],
     ["Observed", record.observed_at_display || "—"],
     ["Ingested", record.ingested_at_display || "—"],
-    ["Record PK", record.source_record_pk],
+    ["Internal record key", record.source_record_pk],
   ];
   if (record.record_type === "conversation") {
     if (record.extraction_method) meta.push(["Extraction", titleCase(record.extraction_method)]);
@@ -3196,7 +3197,7 @@ function SourceRecordRow({ record }: { record: PersonSourceRecord }): ReactEleme
           <div className={styles.srcMetaLine}>
             <span>{entity}</span>
             <span className={styles.connMetaSep}>·</span>
-            <span>{record.source_record_id}</span>
+            <span>Source ref: {record.source_record_id}</span>
             {record.source_record_version && (
               <><span className={styles.connMetaSep}>·</span><span>v{record.source_record_version}</span></>
             )}
@@ -3640,7 +3641,7 @@ function IdentifiersTab({ identifiers }: { identifiers: PersonIdentifier[] }): R
                       </div>
                     ) : hasSrcIds && (
                       <div className={styles.idDetailSection}>
-                        <div className={styles.idDetailSectionTitle}>Source record IDs</div>
+                        <div className={styles.idDetailSectionTitle}>Source record references</div>
                         <div className={styles.idSrcIdList}>
                           {(id.source_record_ids ?? []).map((srcId) => (
                             <span key={srcId} className={`${styles.idSrcId} ${styles.mono}`}>{srcId}</span>
@@ -3666,7 +3667,7 @@ function ConnRow({ conn }: { conn: PersonConnection }): ReactElement {
         {personInitials(conn.preferred_full_name)}
       </div>
       <div className={styles.connBody}>
-        <div className={styles.sharedName}>{conn.preferred_full_name ?? conn.person_id}</div>
+        <div className={styles.sharedName}>{personDisplayName(conn.preferred_full_name)}</div>
         <div className={styles.connMetaRow}>
           <ConnMetaLine hops={conn.hops} sharedIdentifiers={conn.shared_identifiers} sharedAddresses={conn.shared_addresses} />
           {conn.connection_sources?.map((src, j) => (

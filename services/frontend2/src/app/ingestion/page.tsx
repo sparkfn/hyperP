@@ -30,7 +30,7 @@ function SourceCard({ s }: { s: SourceSystemInfo }): ReactElement {
       {(s.system_type ?? s.entity_key) && (
         <div className={styles.cardMeta}>
           {s.system_type && <span className={styles.metaTag}>{s.system_type}</span>}
-          {s.entity_key  && <span className={styles.metaTag}>{s.entity_key}</span>}
+          {s.entity_key && !s.display_name && <span className={styles.metaTag}>System key: {s.entity_key}</span>}
           {s.updated_at  && <span className={styles.metaUpdated}>Updated {relativeTime(s.updated_at)}</span>}
         </div>
       )}

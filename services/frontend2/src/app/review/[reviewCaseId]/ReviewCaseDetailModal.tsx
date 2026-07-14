@@ -65,9 +65,9 @@ export function reviewSubjectTitle(detail: ReviewCaseDetail): string {
 export function reviewSubjectSubtitle(detail: ReviewCaseDetail): string {
   const leftPersonId = detail.comparison_left?.person_id ?? null;
   const rightPersonId = detail.comparison_right?.person_id ?? null;
-  if (leftPersonId !== null && rightPersonId !== null) return `Pair audit · ${shortCaseId(detail.review_case_id)} · ${titleCase(detail.match_decision.engine_type)} engine`;
-  if (leftPersonId !== null || rightPersonId !== null) return `Person review · ${shortCaseId(detail.review_case_id)} · ${titleCase(detail.match_decision.engine_type)} engine`;
-  return `${shortCaseId(detail.review_case_id)} · ${titleCase(detail.match_decision.engine_type)} engine`;
+  if (leftPersonId !== null && rightPersonId !== null) return `Pair audit · Case ref: ${shortCaseId(detail.review_case_id)} · ${titleCase(detail.match_decision.engine_type)} engine`;
+  if (leftPersonId !== null || rightPersonId !== null) return `Person review · Case ref: ${shortCaseId(detail.review_case_id)} · ${titleCase(detail.match_decision.engine_type)} engine`;
+  return `Case ref: ${shortCaseId(detail.review_case_id)} · ${titleCase(detail.match_decision.engine_type)} engine`;
 }
 
 function KeyValue({ label, value }: { label: string; value: string }): ReactElement {

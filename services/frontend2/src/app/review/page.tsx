@@ -69,9 +69,9 @@ function reviewSubjectTitle(c: ReviewCaseSummary): string {
 }
 
 function reviewSubjectSubtitle(c: ReviewCaseSummary): string {
-  if (c.left_person_id && c.right_person_id) return `Pair audit · ${shortCaseId(c.review_case_id)} · ${titleCase(c.match_decision.engine_type)} engine`;
-  if (c.left_person_id || c.right_person_id) return `Person review · ${shortCaseId(c.review_case_id)} · ${titleCase(c.match_decision.engine_type)} engine`;
-  return `${shortCaseId(c.review_case_id)} · ${titleCase(c.match_decision.engine_type)} engine`;
+  if (c.left_person_id && c.right_person_id) return `Pair audit · Case ref: ${shortCaseId(c.review_case_id)} · ${titleCase(c.match_decision.engine_type)} engine`;
+  if (c.left_person_id || c.right_person_id) return `Person review · Case ref: ${shortCaseId(c.review_case_id)} · ${titleCase(c.match_decision.engine_type)} engine`;
+  return `Case ref: ${shortCaseId(c.review_case_id)} · ${titleCase(c.match_decision.engine_type)} engine`;
 }
 
 function subjectInitials(value: string): string {

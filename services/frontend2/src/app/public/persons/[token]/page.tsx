@@ -3,6 +3,7 @@ import type { ReactElement } from "react";
 import { notFound } from "next/navigation";
 import { apiFetch } from "@/lib/api-server";
 import type { Person, PersonConnection, SalesOrder } from "@/lib/api-types";
+import { personDisplayName } from "@/lib/ui-display";
 import { UpstreamError } from "@/lib/api-server";
 import { formatDate, formatDob, getInitials } from "@/lib/display";
 import styles from "./public-person.module.css";
@@ -109,7 +110,7 @@ export default async function PublicPersonPage({ params }: PageProps): Promise<R
                 const label = rel?.relationship_label ?? rel?.relationship_category ?? null;
                 return (
                   <div key={conn.person_id} className={styles.connectionItem}>
-                    <div className={styles.connectionName}>{conn.preferred_full_name ?? conn.person_id}</div>
+                    <div className={styles.connectionName}>{personDisplayName(conn.preferred_full_name)}</div>
                     {label && <div className={styles.connectionRel}>{label}</div>}
                   </div>
                 );

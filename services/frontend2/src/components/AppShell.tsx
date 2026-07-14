@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, type ReactElement, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactElement, type ReactNode } from "react";
 import { usePathname } from "next/navigation";
 import { signOut } from "next-auth/react";
 
@@ -66,10 +66,41 @@ export default function AppShell({ children, initials, email, displayName }: App
   const [collapsed, setCollapsed] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
+  const navToggleRef = useRef<HTMLButtonElement>(null);
+  const mobileSidebarRef = useRef<HTMLDivElement>(null);
   const pathname = usePathname();
 
   // Close mobile drawer on navigation
   useEffect(() => { setMobileOpen(false); }, [pathname]);
+
+  useEffect(() => {
+    if (!mobileOpen) return;
+    mobileSidebarRef.current?.querySelector<HTMLElement>("a, button")?.focus();
+    function closeOnEscape(event: KeyboardEvent): void {
+      if (event.key === "Escape") {
+        setMobileOpen(false);
+        navToggleRef.current?.focus();
+        return;
+      }
+      if (event.key === "Tab") {
+        const focusable = Array.from(
+          mobileSidebarRef.current?.querySelectorAll<HTMLElement>("a, button:not([disabled])") ?? [],
+        );
+        const first = focusable[0];
+        const last = focusable[focusable.length - 1];
+        if (!first || !last) return;
+        if (event.shiftKey && document.activeElement === first) {
+          event.preventDefault();
+          last.focus();
+        } else if (!event.shiftKey && document.activeElement === last) {
+          event.preventDefault();
+          first.focus();
+        }
+      }
+    }
+    document.addEventListener("keydown", closeOnEscape);
+    return () => document.removeEventListener("keydown", closeOnEscape);
+  }, [mobileOpen]);
 
   function handleHamburger(): void {
     if (window.matchMedia("(max-width: 768px)").matches) {
@@ -81,6 +112,7 @@ export default function AppShell({ children, initials, email, displayName }: App
 
   return (
     <div className={`${styles.shell} ${collapsed ? styles.shellCollapsed : ""}`}>
+      <a className={styles.skipLink} href="#main-content">Skip to content</a>
       {/* Desktop sidebar — hidden on mobile via wrapper */}
       <div className={styles.desktopSidebar}>
         <Sidebar />
@@ -90,7 +122,16 @@ export default function AppShell({ children, initials, email, displayName }: App
       {mobileOpen && (
         <div className={styles.mobileOverlay} onClick={() => setMobileOpen(false)} aria-hidden="true" />
       )}
-      <div className={`${styles.mobileSidebar} ${mobileOpen ? styles.mobileSidebarOpen : ""}`}>
+      <div
+        id="mobile-navigation"
+        ref={mobileSidebarRef}
+        className={`${styles.mobileSidebar} ${mobileOpen ? styles.mobileSidebarOpen : ""}`}
+        role="dialog"
+        aria-modal="true"
+        aria-label="Navigation"
+        aria-hidden={!mobileOpen}
+        inert={!mobileOpen}
+      >
         <Sidebar />
       </div>
 
@@ -98,10 +139,13 @@ export default function AppShell({ children, initials, email, displayName }: App
         <header className={styles.navbar}>
           <button
             type="button"
+            ref={navToggleRef}
             className={styles.navbarToggle}
             onClick={handleHamburger}
             title="Toggle navigation"
             aria-label="Toggle navigation"
+            aria-expanded={mobileOpen || undefined}
+            aria-controls="mobile-navigation"
           >
             <MenuIcon />
           </button>
@@ -133,7 +177,7 @@ export default function AppShell({ children, initials, email, displayName }: App
           </div>
         </header>
 
-        <main className={styles.content}>
+        <main id="main-content" className={styles.content} tabIndex={-1}>
           <div className={styles.contentInner}>
             {children}
           </div>

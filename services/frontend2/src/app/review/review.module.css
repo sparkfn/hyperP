@@ -1480,10 +1480,6 @@
   color: var(--bad, #dc2626);
 }
 
-.reviewCaseModalError {
-  color: var(--bad, #dc2626);
-}
-
 /* The content inside the modal reuses the page styles (detailHero, etc.).
    Reset its outer page wrapper so the content fills the modal directly. */
 .reviewCaseModal > section:first-child,

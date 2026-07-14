@@ -4,6 +4,21 @@
   overflow: hidden;
 }
 
+.skipLink {
+  position: fixed;
+  top: 8px;
+  left: 8px;
+  z-index: 1000;
+  padding: 8px 12px;
+  border-radius: 6px;
+  background: var(--accent);
+  color: #fff;
+  text-decoration: none;
+  transform: translateY(-150%);
+}
+
+.skipLink:focus { transform: translateY(0); }
+
 /* ── Sidebar ── */
 .sidebar {
   width: var(--sidebar-width);
