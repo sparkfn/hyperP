@@ -94,7 +94,8 @@ def test_lock_and_get_source_state_locks_and_reads_open_versions() -> None:
 
 def test_legacy_latest_record_is_effective_active_without_reclassifying_explicit_status() -> None:
     query = queries.LOCK_AND_GET_SOURCE_STATE
-    assert "sr.lifecycle_status IS NULL AND coalesce(sr.is_latest, true) = true" in query
+    assert "sr.lifecycle_status IS NULL AND sr.is_latest = true" in query
+    assert "coalesce(sr.is_latest, true)" not in query
     assert "WHEN sr.lifecycle_status IS NULL THEN 'active'" in query
     assert "ELSE sr.lifecycle_status" in query
     assert "coalesce(sr.lifecycle_status" not in query
@@ -133,7 +134,8 @@ def test_activate_source_record_version_is_compare_and_transition() -> None:
     query = queries.ACTIVATE_SOURCE_RECORD_VERSION
 
     assert "old.lifecycle_status = 'active'" in query
-    assert "old.lifecycle_status IS NULL AND coalesce(old.is_latest, true) = true" in query
+    assert "old.lifecycle_status IS NULL AND old.is_latest = true" in query
+    assert "coalesce(old.is_latest, true)" not in query
     assert re.search(
         r"MATCH \(new:SourceRecord \{[^}]*lifecycle_status: 'pending_review'[^}]*\}\)",
         query,
@@ -142,6 +144,57 @@ def test_activate_source_record_version_is_compare_and_transition() -> None:
     assert "new.lifecycle_status = 'active'" in query
     assert "MERGE (old)-[:PREVIOUS_VERSION_OF]->(new)" in query
     assert "RETURN new.source_record_pk AS source_record_pk" in query
+
+
+def test_all_ingestion_legacy_active_predicates_require_explicit_latest_marker() -> None:
+    lifecycle_queries = (
+        queries.LOCK_AND_GET_SOURCE_STATE,
+        queries.ACTIVATE_SOURCE_RECORD_VERSION,
+        queries.ACTIVATE_FIRST_SOURCE_RECORD_VERSION,
+        queries.CHECK_SOURCE_RECORD_EXISTS,
+        queries.GET_LATEST_SOURCE_RECORD,
+    )
+
+    for query in lifecycle_queries:
+        assert "coalesce(sr.is_latest, true)" not in query
+        assert "coalesce(old.is_latest, true)" not in query
+        assert "coalesce(active.is_latest, true)" not in query
+
+    assert "sr.lifecycle_status IS NULL AND sr.is_latest = true" in (
+        queries.LOCK_AND_GET_SOURCE_STATE
+    )
+    assert "old.lifecycle_status IS NULL AND old.is_latest = true" in (
+        queries.ACTIVATE_SOURCE_RECORD_VERSION
+    )
+    assert "active.lifecycle_status IS NULL AND active.is_latest = true" in (
+        queries.ACTIVATE_FIRST_SOURCE_RECORD_VERSION
+    )
+
+
+@pytest.mark.parametrize(
+    ("lifecycle_status", "is_latest", "effective_active"),
+    [
+        ("active", None, True),
+        (None, True, True),
+        (None, False, False),
+        (None, None, False),
+    ],
+)
+def test_effective_active_compatibility_contract(
+    lifecycle_status: str | None,
+    is_latest: bool | None,
+    effective_active: bool,
+) -> None:
+    assert (lifecycle_status == "active" or (lifecycle_status is None and is_latest is True)) is (
+        effective_active
+    )
+
+
+def test_unmarked_legacy_history_does_not_block_first_version_activation() -> None:
+    query = queries.ACTIVATE_FIRST_SOURCE_RECORD_VERSION
+
+    assert "active.lifecycle_status IS NULL AND active.is_latest = true" in query
+    assert "coalesce(active.is_latest, true)" not in query
 
 
 def test_all_lifecycle_transitions_return_source_record_pk() -> None:

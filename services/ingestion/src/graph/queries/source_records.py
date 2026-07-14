@@ -17,7 +17,7 @@ OPTIONAL MATCH (sr:SourceRecord {source_record_id: $source_record_id})-[:FROM_SO
 // Rollout compatibility: remove the NULL/is_latest branch only after the
 // lifecycle backfill is guaranteed complete in every deployed graph.
 WHERE sr.lifecycle_status IN ['active', 'pending_review']
-   OR (sr.lifecycle_status IS NULL AND coalesce(sr.is_latest, true) = true)
+   OR (sr.lifecycle_status IS NULL AND sr.is_latest = true)
 OPTIONAL MATCH (sr)-[:LINKED_TO]->(person:Person)
 RETURN sr.source_record_pk AS source_record_pk,
        toInteger(sr.source_record_version) AS source_record_version,
@@ -42,7 +42,7 @@ WHERE old.source_record_id = new.source_record_id
   AND new.expected_active_source_record_pk = old.source_record_pk
   AND (
       old.lifecycle_status = 'active'
-      OR (old.lifecycle_status IS NULL AND coalesce(old.is_latest, true) = true)
+      OR (old.lifecycle_status IS NULL AND old.is_latest = true)
   )
 SET old.lifecycle_status = 'superseded',
     old.is_latest = false,
@@ -66,7 +66,7 @@ WHERE pending.source_record_id = $source_record_id
   AND NOT EXISTS {
       MATCH (active:SourceRecord {source_record_id: $source_record_id})-[:FROM_SOURCE]->(ss)
       WHERE active.lifecycle_status = 'active'
-         OR (active.lifecycle_status IS NULL AND coalesce(active.is_latest, true) = true)
+         OR (active.lifecycle_status IS NULL AND active.is_latest = true)
   }
 SET pending.lifecycle_status = 'active',
     pending.is_latest = true,
@@ -115,7 +115,7 @@ MATCH (sr:SourceRecord {
     source_record_id: $source_record_id
 })
 WHERE sr.record_hash = $record_hash
-  AND coalesce(sr.is_latest, true) = true
+  AND sr.is_latest = true
 MATCH (sr)-[:FROM_SOURCE]->(ss:SourceSystem {source_key: $source_system})
 RETURN sr.source_record_pk AS source_record_pk
 LIMIT 1
@@ -123,7 +123,7 @@ LIMIT 1
 
 GET_LATEST_SOURCE_RECORD = """
 MATCH (sr:SourceRecord {source_record_id: $source_record_id})-[:FROM_SOURCE]->(:SourceSystem {source_key: $source_system})
-WHERE coalesce(sr.is_latest, true) = true
+WHERE sr.is_latest = true
 RETURN sr.source_record_pk AS source_record_pk,
        sr.record_hash AS record_hash,
        coalesce(sr.source_record_version, '1') AS source_record_version
