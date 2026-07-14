@@ -20,8 +20,7 @@ def thresholds_for(record_type: RecordType) -> tuple[float, float]:
 def has_hard_conflict(features: Mapping[str, JsonValue]) -> bool:
     """Return whether structured signals veto an automatic merge."""
     return any(
-        features.get(key) is True
-        for key in ("dob_conflict", "name_mismatch", "phone_high_fanout")
+        features.get(key) is True for key in ("dob_conflict", "name_mismatch", "phone_high_fanout")
     )
 
 
