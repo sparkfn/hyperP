@@ -10,6 +10,7 @@ import type { SourceSystemInfo } from "@/lib/api-types-ops";
 import { avatarColor, completenessColor, getInitials } from "@/lib/display";
 import { useSetLoading } from "@/lib/LoadingContext";
 import { usePopoverClose } from "@/lib/usePopoverClose";
+import { personDisplayName } from "@/lib/ui-display";
 import PersonGraphDialog from "@/components/PersonGraphDialog";
 import styles from "./persons.module.css";
 
@@ -232,11 +233,8 @@ function RelationPopover({
           <div key={connection.person_id} className={styles.relationItem}>
             <div className={styles.relationItemTop}>
               <Link href={`/persons/${connection.person_id}`} className={styles.relationLink} onClick={onClose}>
-                {connection.preferred_full_name ?? connection.person_id}
+                {personDisplayName(connection.preferred_full_name)}
               </Link>
-            </div>
-            <div className={styles.relationMetaRow}>
-              <span className={styles.relationMetaId} title={connection.person_id}>{connection.person_id}</span>
             </div>
             <div className={styles.relationSummary}>{formatRelationType(connection)}</div>
           </div>
@@ -369,11 +367,8 @@ function PersonRow({
           <div className={styles.personCell}>
             <AvatarRing initials={initials} color={avatarColor(p.preferred_full_name ?? "?")} score={p.profile_completeness_score} />
             <div className={styles.personInfo}>
-              <div className={styles.personName} title={p.preferred_full_name ?? p.person_id}>{p.preferred_full_name ?? p.person_id}</div>
+              <div className={styles.personName}>{personDisplayName(p.preferred_full_name)}</div>
               <div className={styles.personMeta}>
-                <span className={styles.personId} title={p.person_id}>
-                  {p.person_id.length > 10 ? `${p.person_id.slice(0, 8)}…` : p.person_id}
-                </span>
                 {labels.map((l) => (
                   <span key={l.text} className={`${styles.flag} ${l.cls}`}>{l.text}</span>
                 ))}
@@ -549,7 +544,7 @@ function PersonCardMobile({
 
       <div className={styles.mobileCardBody}>
         <div className={styles.mobileCardTop}>
-          <span className={styles.mobileCardName}>{p.preferred_full_name ?? p.person_id}</span>
+          <span className={styles.mobileCardName}>{personDisplayName(p.preferred_full_name)}</span>
           <div className={styles.mobileCardFlags}>
             {labels.map((l) => (
               <span key={l.text} className={`${styles.flag} ${l.cls}`}>{l.text}</span>
@@ -557,7 +552,6 @@ function PersonCardMobile({
           </div>
         </div>
         <div className={styles.mobileCardSub}>
-          <span className={styles.mobileCardId}>{p.person_id.length > 10 ? `${p.person_id.slice(0, 8)}…` : p.person_id}</span>
           {p.preferred_phone && <span className={styles.mobileCardInfo}>{p.preferred_phone}</span>}
           {!p.preferred_phone && p.preferred_email && <span className={styles.mobileCardInfo}>{p.preferred_email}</span>}
         </div>

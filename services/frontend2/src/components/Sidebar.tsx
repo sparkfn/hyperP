@@ -96,6 +96,7 @@ export default function Sidebar(): ReactElement {
                 key={item.href}
                 href={item.href}
                 className={`${styles.navItem} ${isActive(item.href, item.exact) ? styles.navItemActive : ""}`}
+                aria-current={isActive(item.href, item.exact) ? "page" : undefined}
               >
                 {item.icon}
                 <span className={styles.navLabel}>{item.label}</span>

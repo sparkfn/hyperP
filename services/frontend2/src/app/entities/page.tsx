@@ -65,7 +65,7 @@ export default function EntitiesPage(): ReactElement {
                 <div className={styles.avatar} style={{ background: color }}>{init}</div>
                 <div className={styles.cardMeta}>
                   <div className={styles.entityName}>{e.display_name ?? e.entity_key}</div>
-                  <div className={styles.entityKey}>{e.entity_key}</div>
+                  {!e.display_name && <div className={styles.entityKey}>System key: {e.entity_key}</div>}
                 </div>
               </div>
 

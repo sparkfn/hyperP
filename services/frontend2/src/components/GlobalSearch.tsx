@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import { bffFetchEnvelope } from "@/lib/api-client";
 import type { Person } from "@/lib/api-types";
 import { avatarColor, completenessColor, statusHex } from "@/lib/display";
+import { personDisplayName } from "@/lib/ui-display";
 
 interface SearchResult {
   personId: string;
@@ -67,7 +68,7 @@ export default function GlobalSearch(): ReactElement {
         .then((res) => {
           if (!cancelled) setResults((res.data ?? []).map((p) => ({
             personId: p.person_id,
-            name: p.preferred_full_name ?? p.person_id,
+            name: personDisplayName(p.preferred_full_name),
             email: p.preferred_email,
             phone: p.preferred_phone,
             status: p.status,
@@ -135,6 +136,12 @@ export default function GlobalSearch(): ReactElement {
           onBlur={() => setTimeout(() => setOpen(false), 150)}
           onKeyDown={handleKeyDown}
           placeholder="Search persons by name, phone, email..."
+          role="combobox"
+          aria-label="Search persons"
+          aria-autocomplete="list"
+          aria-controls="global-search-results"
+          aria-expanded={showDropdown}
+          aria-activedescendant={highlighted >= 0 ? `global-search-result-${highlighted}` : undefined}
           style={{
             width: "100%",
             padding: "8px 12px 8px 36px",
@@ -159,7 +166,7 @@ export default function GlobalSearch(): ReactElement {
 
       {/* Dropdown */}
       {showDropdown && (
-        <div style={{
+        <div id="global-search-results" role="listbox" aria-label="Person search results" style={{
           position: "absolute",
           top: "calc(100% + 6px)",
           left: 0,
@@ -183,7 +190,12 @@ export default function GlobalSearch(): ReactElement {
           ) : (
             <div style={{ padding: "4px 0" }}>
               {results.map((r, i) => (
-                <div
+                <button
+                  type="button"
+                  id={`global-search-result-${i}`}
+                  role="option"
+                  aria-selected={highlighted === i}
+                  tabIndex={-1}
                   key={r.personId}
                   onMouseDown={() => navigate(r.personId)}
                   onMouseEnter={() => setHighlighted(i)}
@@ -193,6 +205,11 @@ export default function GlobalSearch(): ReactElement {
                     gap: 12,
                     padding: "8px 12px",
                     cursor: "pointer",
+                    width: "100%",
+                    border: 0,
+                    color: "inherit",
+                    font: "inherit",
+                    textAlign: "left",
                     background: highlighted === i ? "var(--bg-surface-2, rgba(0,0,0,0.04))" : "transparent",
                   }}
                 >
@@ -202,14 +219,14 @@ export default function GlobalSearch(): ReactElement {
                       {r.name}
                     </div>
                     <div style={{ fontSize: 12, color: "var(--text-muted)", lineHeight: 1.3, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                      {r.email ?? r.phone ?? r.personId}
+                      {r.email ?? r.phone ?? "No contact details"}
                     </div>
                   </div>
                   <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 2, flexShrink: 0 }}>
                     <span style={{ fontSize: 11, color: statusHex(r.status), fontWeight: 600, textTransform: "capitalize" }}>{r.status}</span>
                     <span style={{ fontSize: 11, color: completenessColor(r.completeness), fontWeight: 600 }}>{Math.round(r.completeness * 100)}%</span>
                   </div>
-                </div>
+                </button>
               ))}
             </div>
           )}
