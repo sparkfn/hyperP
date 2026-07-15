@@ -16,6 +16,9 @@ from src.pipeline import IngestPipeline
 
 
 class _Connector(SourceConnector):
+    def __init__(self) -> None:
+        self.closed = False
+
     def fetch_records(self) -> Iterator[dict[str, JsonValue]]:
         yield {
             "source_record_id": "fundbox_consumer_backend-contact-1",
@@ -36,6 +39,9 @@ class _Connector(SourceConnector):
 
     def get_source_key(self) -> str:
         return "fundbox_consumer_backend:contacts"
+
+    def close(self) -> None:
+        self.closed = True
 
 
 class _EmailConnector(SourceConnector):
@@ -125,11 +131,12 @@ def test_ingest_all_records_uses_caller_supplied_exclusion_context(
     monkeypatch.setattr("src.main.get_ingestion_config", _fail_get_ingestion_config)
     supplied_context = ExclusionContext(phones=frozenset({"+6588888888"}))
     pipeline = _Pipeline()
+    connector = _Connector()
 
     success, errors, skipped = _ingest_all_records(
         client=cast(Neo4jClient, object()),
         pipeline=cast(IngestPipeline, pipeline),
-        connector=_Connector(),
+        connector=connector,
         ingest_run_id="run-1",
         exclusion_context=supplied_context,
     )
@@ -137,6 +144,7 @@ def test_ingest_all_records_uses_caller_supplied_exclusion_context(
     assert (success, errors, skipped) == (1, 0, 1)
     assert pipeline.ingested == ["fundbox_consumer_backend-contact-2"]
     assert pipeline.exclusion_contexts == [supplied_context]
+    assert connector.closed is True
 
 
 def test_ingest_all_records_skips_system_records_with_excluded_identifiers(

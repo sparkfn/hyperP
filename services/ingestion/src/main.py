@@ -5,9 +5,12 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
-from typing import TypedDict
+from collections.abc import Callable
+from typing import Protocol, TypedDict, runtime_checkable
 
+import httpx
 from neo4j import ManagedTransaction
+from redis import Redis
 
 from src.config import get_settings
 from src.connectors.base import SourceConnector
@@ -22,6 +25,19 @@ from src.connectors.fundbox import (
     FundboxMergedUsersConnector,
     FundboxSalesConnector,
 )
+from src.connectors.phppos_api import (
+    EkoApiConnector,
+    EkoSalesApiConnector,
+    SpeedZoneApiConnector,
+    SpeedZoneSalesApiConnector,
+)
+from src.connectors.phppos_api.client import (
+    ApiCredentials,
+    PhpposApiClient,
+    RedisTokenStore,
+    token_rotation_lock_seconds,
+)
+from src.connectors.phppos_api.connectors import ApiClient
 from src.connectors.speedzone import SpeedZoneConnector, SpeedZoneSalesConnector
 from src.connectors.whatsapp import WhatsAppChatConnector
 from src.exclusions import (
@@ -51,6 +67,11 @@ from src.pipeline_sales import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+@runtime_checkable
+class _ClosableConnector(Protocol):
+    def close(self) -> None: ...
 
 
 # Registry of available connectors keyed by source_key. New sources only need
@@ -118,12 +139,58 @@ def setup_logging(level: str) -> None:
     logging.getLogger("neo4j.notifications").setLevel(logging.ERROR)
 
 
-def get_connector(source_key: str, dump_path: str | None = None) -> SourceConnector:
+def create_phppos_api_client(source_key: str) -> PhpposApiClient:
+    settings = get_settings()
+    tenant_id = (
+        settings.eko_phppos_api_tenant_id
+        if source_key.startswith("eko_phppos")
+        else settings.speedzone_phppos_api_tenant_id
+    )
+    credentials = ApiCredentials(
+        settings.phppos_api_base_url,
+        settings.phppos_api_client_id,
+        settings.phppos_api_client_secret.get_secret_value(),
+        settings.phppos_api_refresh_token.get_secret_value(),
+        tenant_id,
+        settings.phppos_api_page_size,
+    )
+    redis = Redis.from_url(settings.celery_broker_url, decode_responses=True)
+    lock_timeout_seconds = token_rotation_lock_seconds(
+        settings.phppos_api_timeout_seconds,
+        settings.phppos_api_max_attempts,
+    )
+    return PhpposApiClient(
+        credentials,
+        token_store=RedisTokenStore(
+            redis,
+            settings.phppos_api_client_id,
+            lock_timeout_seconds,
+        ),
+        http=httpx.Client(timeout=settings.phppos_api_timeout_seconds),
+        max_attempts=settings.phppos_api_max_attempts,
+    )
+
+
+def get_connector(
+    source_key: str, dump_path: str | None = None, *, mode: str = "batch"
+) -> SourceConnector:
     """Return the appropriate connector for the given source key."""
     if dump_path is not None:
         settings = get_settings()
         resolved_dump_path = resolve_dump_path(dump_path, settings.dumps_root)
         return get_dump_connector(source_key, resolved_dump_path)
+    if mode == "api":
+        api_types: dict[str, Callable[[ApiClient], SourceConnector]] = {
+            "eko_phppos": EkoApiConnector,
+            "eko_phppos:sales": EkoSalesApiConnector,
+            "speedzone_phppos": SpeedZoneApiConnector,
+            "speedzone_phppos:sales": SpeedZoneSalesApiConnector,
+        }
+        try:
+            connector_type = api_types[source_key]
+        except KeyError as exc:
+            raise ValueError(f"API mode is not supported for source {source_key!r}") from exc
+        return connector_type(create_phppos_api_client(source_key))
     try:
         return _CONNECTOR_REGISTRY[source_key]()
     except KeyError as exc:
@@ -237,6 +304,27 @@ def _ingest_all_records(
     ingest_run_id: str,
     exclusion_context: ExclusionContext | None = None,
 ) -> tuple[int, int, int]:
+    """Process all connector records and always release connector resources."""
+    try:
+        return _ingest_all_records_open(
+            client,
+            pipeline,
+            connector,
+            ingest_run_id,
+            exclusion_context,
+        )
+    finally:
+        if isinstance(connector, _ClosableConnector):
+            connector.close()
+
+
+def _ingest_all_records_open(
+    client: Neo4jClient,
+    pipeline: IngestPipeline,
+    connector: SourceConnector,
+    ingest_run_id: str,
+    exclusion_context: ExclusionContext | None = None,
+) -> tuple[int, int, int]:
     """Process every record from the connector. Returns (success, errors, skipped)."""
     success = errors = skipped = 0
     active_exclusion_context = (
@@ -320,12 +408,13 @@ def run_ingestion(
         initialize_ingestion_graph()
 
     client = Neo4jClient(settings)
+    connector: SourceConnector | None = None
     try:
         if not initialize_graph:
             client.verify_connectivity()
 
         pipeline = IngestPipeline(client)
-        connector = get_connector(source_key, dump_path if mode == "dump" else None)
+        connector = get_connector(source_key, dump_path if mode == "dump" else None, mode=mode)
         ingest_run_id = _create_ingest_run(client, source_key, mode)
         logger.info("IngestRun %s created, connector=%s", ingest_run_id, type(connector).__name__)
 
@@ -385,6 +474,8 @@ def run_ingestion(
             "dump_path": dump_path,
         }
     finally:
+        if isinstance(connector, _ClosableConnector):
+            connector.close()
         client.close()
 
 
@@ -394,7 +485,7 @@ def main(argv: list[str] | None = None) -> None:
         description="Ingestion service for the profile unification platform",
     )
     parser.add_argument("--source-key", required=True)
-    parser.add_argument("--mode", choices=["batch", "backfill", "dump"], default="batch")
+    parser.add_argument("--mode", choices=["batch", "backfill", "dump", "api"], default="batch")
     parser.add_argument("--dump-path", default=None)
     args = parser.parse_args(argv)
 
