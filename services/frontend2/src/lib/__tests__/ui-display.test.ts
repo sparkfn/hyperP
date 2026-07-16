@@ -23,16 +23,42 @@ describe("shortReference", () => {
 });
 
 describe("sourceRecordReference", () => {
-  it("removes a known redundant source prefix", () => {
-    expect(sourceRecordReference("BITRIX-CONTACT-8821")).toBe("CONTACT-8821");
-    expect(sourceRecordReference("SPZ-CUST-00123")).toBe("CUST-00123");
+  it.each([
+    ["fundbox_consumer_backend-user-123", "fundbox_consumer_backend", "user-123"],
+    ["fundbox_consumer_backend-contact-456", "fundbox_consumer_backend:contacts", "contact-456"],
+    ["fundbox_consumer_backend-legacy-7", "fundbox_consumer_backend:legacy", "legacy-7"],
+    ["fundbox_consumer_backend-merged-8", "fundbox_consumer_backend:merged", "merged-8"],
+    ["fundbox_consumer_backend-order-9", "fundbox_consumer_backend:sales", "order-9"],
+    ["speedzone_phppos-customer-789", "speedzone_phppos", "customer-789"],
+    ["speedzone_phppos-sale-10", "speedzone_phppos:sales", "sale-10"],
+    ["eko_phppos-person-101", "eko_phppos", "person-101"],
+    ["eko_phppos-customer-102", "eko_phppos", "customer-102"],
+    ["whatsapp-chat-42-person-0", "whatsapp_chat", "chat-42-person-0"],
+    ["bitrix-chat-55-person-1", "bitrix_chat", "chat-55-person-1"],
+    ["onediver-profile-12", "onediver", "profile-12"],
+    ["onediver-emergency-12-1", "onediver", "emergency-12-1"],
+    ["onediver-salesorder-44", "onediver:sales", "salesorder-44"],
+  ])("removes the known prefix from %s", (value, sourceSystem, expected) => {
+    expect(sourceRecordReference(value, sourceSystem)).toBe(expected);
   });
 
-  it("preserves references with formats that cannot be safely shortened", () => {
-    expect(sourceRecordReference("WA-2026-05-001")).toBe("WA-2026-05-001");
-    expect(sourceRecordReference("WA-2027-05-001")).toBe("WA-2027-05-001");
-    expect(sourceRecordReference("OTHER-CONTACT-8821")).toBe("OTHER-CONTACT-8821");
-    expect(sourceRecordReference("SPZ-00123")).toBe("SPZ-00123");
-    expect(sourceRecordReference("00123")).toBe("00123");
+  it.each([
+    ["fundbox_consumer_backend-user-123", "speedzone_phppos"],
+    ["unknown-prefix-record-123", "unknown_source"],
+    ["bankruptcy_case:1", "sgbankruptcy"],
+    ["rental_flat:33", "sgrentalflats"],
+    ["SPZ-CUST-00123", "speedzone_phppos"],
+    ["fundbox_consumer_backend", "fundbox_consumer_backend"],
+  ])("leaves ambiguous or non-matching value %s unchanged", (value, sourceSystem) => {
+    expect(sourceRecordReference(value, sourceSystem)).toBe(value);
+  });
+
+  it.each([null, undefined, ""])("handles empty value %s", (value) => {
+    expect(sourceRecordReference(value, "fundbox_consumer_backend")).toBe(value ?? "");
+  });
+
+  it("requires a matching source system before removing a prefix", () => {
+    expect(sourceRecordReference("bitrix-chat-55-person-1", "bitrix_chat")).toBe("chat-55-person-1");
+    expect(sourceRecordReference("bitrix-chat-55-person-1", "unknown_source")).toBe("bitrix-chat-55-person-1");
   });
 });

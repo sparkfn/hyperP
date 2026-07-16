@@ -136,7 +136,7 @@ function sourceRecordFactChoices(
           sourceKind: "source_record_fact",
           sourceRecordPk: record.source_record_pk,
           identifierType: null,
-          sourceLabel: `${record.source_system} ${sourceRecordReference(record.source_record_id)}`,
+          sourceLabel: `${record.source_system} ${sourceRecordReference(record.source_record_id, record.source_system)}`,
           observedAt: record.observed_at,
         }),
       ];
@@ -162,7 +162,7 @@ function sourceRecordAddressChoices(
         sourceKind: "address",
         sourceRecordPk: record.source_record_pk,
         identifierType: null,
-        sourceLabel: `${record.source_system} ${sourceRecordReference(record.source_record_id)}`,
+        sourceLabel: `${record.source_system} ${sourceRecordReference(record.source_record_id, record.source_system)}`,
         observedAt: record.observed_at,
       }),
     ];

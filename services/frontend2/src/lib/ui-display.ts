@@ -7,12 +7,29 @@ export function shortReference(value: string, label: string): string {
   return `${label}: ${displayValue}`;
 }
 
-const SHORTENABLE_SOURCE_PREFIXES: ReadonlySet<string> = new Set(["BITRIX", "SPZ"]);
+const SOURCE_RECORD_PREFIXES: Readonly<Record<string, string>> = {
+  fundbox_consumer_backend: "fundbox_consumer_backend-",
+  "fundbox_consumer_backend:contacts": "fundbox_consumer_backend-",
+  "fundbox_consumer_backend:legacy": "fundbox_consumer_backend-",
+  "fundbox_consumer_backend:merged": "fundbox_consumer_backend-",
+  "fundbox_consumer_backend:sales": "fundbox_consumer_backend-",
+  speedzone_phppos: "speedzone_phppos-",
+  "speedzone_phppos:sales": "speedzone_phppos-",
+  eko_phppos: "eko_phppos-",
+  "eko_phppos:sales": "eko_phppos-",
+  whatsapp_chat: "whatsapp-",
+  bitrix_chat: "bitrix-",
+  onediver: "onediver-",
+  "onediver:sales": "onediver-",
+};
 
-export function sourceRecordReference(value: string): string {
-  const segments = value.split("-");
-  const prefix = segments[0];
-  return segments.length === 3 && prefix !== undefined && SHORTENABLE_SOURCE_PREFIXES.has(prefix)
-    ? segments.slice(1).join("-")
-    : value;
+export function sourceRecordReference(
+  value: string | null | undefined,
+  sourceSystemKey?: string,
+): string {
+  if (value === null || value === undefined || value === "" || sourceSystemKey === undefined) {
+    return value ?? "";
+  }
+  const prefix = SOURCE_RECORD_PREFIXES[sourceSystemKey];
+  return prefix !== undefined && value.startsWith(prefix) ? value.slice(prefix.length) : value;
 }

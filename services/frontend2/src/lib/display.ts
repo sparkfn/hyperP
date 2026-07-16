@@ -121,7 +121,7 @@ export function sourcesToItems(data: SourceRecord[] | undefined): CountCardItem[
   if (data === undefined) return undefined;
   return data.map((r) => ({
     primary: r.source_system,
-    secondary: `${sourceRecordReference(r.source_record_id)} · ${r.record_type} · ${formatDate(r.ingested_at)}`,
+    secondary: `${sourceRecordReference(r.source_record_id, r.source_system)} · ${r.record_type} · ${formatDate(r.ingested_at)}`,
     color: r.record_type === "conversation" ? "warning" : "default",
   }));
 }
