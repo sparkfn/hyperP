@@ -930,7 +930,7 @@ function buildTimeline(detailData: DetailData): TLEvent[] {
       timestamp: r.ingested_at,
       kind: "source",
       title: "record_ingested",
-      meta: `${r.source_system} · ${sourceRecordReference(r.source_record_id)}`,
+      meta: `${r.source_system} · ${sourceRecordReference(r.source_record_id, r.source_system)}`,
     });
     if (r.observed_at !== r.ingested_at) {
       events.push({
@@ -938,7 +938,7 @@ function buildTimeline(detailData: DetailData): TLEvent[] {
         timestamp: r.observed_at,
         kind: "source",
         title: "record_observed",
-        meta: `${r.source_system} · ${sourceRecordReference(r.source_record_id)}`,
+        meta: `${r.source_system} · ${sourceRecordReference(r.source_record_id, r.source_system)}`,
       });
     }
   });
@@ -1412,7 +1412,7 @@ function TabSkelShell({ title, children }: { title: string; children: ReactEleme
 function sourceRecordMeta(record: PersonSourceRecord): string {
   return [
     record.entity_display_name ?? record.source_system,
-    sourceRecordReference(record.source_record_id),
+    sourceRecordReference(record.source_record_id, record.source_system),
   ].filter(Boolean).join(" · ");
 }
 
@@ -3173,7 +3173,7 @@ function SourceRecordRow({ record }: { record: PersonSourceRecord }): ReactEleme
   const meta: Array<[string, string]> = [
     ["Source system", titleCase(record.source_system)],
     ["Entity", entity],
-    ["Source record reference", sourceRecordReference(record.source_record_id)],
+    ["Source record reference", sourceRecordReference(record.source_record_id, record.source_system)],
     ["Version", record.source_record_version ?? "—"],
     ["Type", titleCase(record.record_type)],
     ["Link status", titleCase(record.link_status)],
@@ -3199,7 +3199,7 @@ function SourceRecordRow({ record }: { record: PersonSourceRecord }): ReactEleme
           <div className={styles.srcMetaLine}>
             <span>{entity}</span>
             <span className={styles.connMetaSep}>·</span>
-            <span>Source ref: {sourceRecordReference(record.source_record_id)}</span>
+            <span>Source ref: {sourceRecordReference(record.source_record_id, record.source_system)}</span>
             {record.source_record_version && (
               <><span className={styles.connMetaSep}>·</span><span>v{record.source_record_version}</span></>
             )}
@@ -3569,7 +3569,7 @@ function IdentifiersTab({ identifiers }: { identifiers: PersonIdentifier[] }): R
                               <div key={sr.source_record_pk} className={styles.idSrcRecordCard}>
                                 <div className={styles.idSrcRecordHeader}>
                                   <span className={`${styles.idSrcRecordId} ${styles.mono}`}>
-                                    {sourceRecordReference(sr.source_record_id)}
+                                    {sourceRecordReference(sr.source_record_id, sr.source_system)}
                                   </span>
                                   <span className={`${styles.idSrcChip} ${styles.idSrcChipSystem}`}>{sr.source_system}</span>
                                   {sr.entity_display_name !== null && (
@@ -3649,7 +3649,7 @@ function IdentifiersTab({ identifiers }: { identifiers: PersonIdentifier[] }): R
                         <div className={styles.idSrcIdList}>
                           {(id.source_record_ids ?? []).map((srcId) => (
                             <span key={srcId} className={`${styles.idSrcId} ${styles.mono}`}>
-                              {sourceRecordReference(srcId)}
+                              {sourceRecordReference(srcId, id.source_system_key ?? undefined)}
                             </span>
                           ))}
                         </div>

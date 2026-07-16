@@ -95,7 +95,7 @@ function ComparisonCard({ title, entity }: { title: string; entity: PersonCompar
   const personHref = entity.person_id !== null ? toBasePath(`/persons/${encodeURIComponent(entity.person_id)}`) : null;
   const sourceReference = entity.source_record_id === null
     ? null
-    : sourceRecordReference(entity.source_record_id);
+    : sourceRecordReference(entity.source_record_id, entity.source_system_key ?? undefined);
   const displayName = entity.preferred_full_name ?? sourceReference ?? "Unknown";
   const entityLabel = titleCase(entity.entity_kind);
   const idLabel = entity.person_id ?? sourceReference ?? "—";
