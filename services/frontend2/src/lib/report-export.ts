@@ -7,14 +7,19 @@ import type { ReportResult } from "./api-types";
 
 type CellValue = string | number | boolean | null;
 
+function neutralizeSpreadsheetFormula(value: CellValue): string {
+  const raw = String(value);
+  return typeof value === "string" && /^[=+\-@]/.test(raw) ? `'${raw}` : raw;
+}
+
 // ---------------------------------------------------------------------------
 // CSV
 // ---------------------------------------------------------------------------
 
 function escapeCsv(value: CellValue): string {
   if (value === null) return "";
-  const str = String(value);
-  if (str.includes(",") || str.includes('"') || str.includes("\n")) {
+  const str = neutralizeSpreadsheetFormula(value);
+  if (str.includes(",") || str.includes('"') || /[\r\n]/.test(str)) {
     return `"${str.replace(/"/g, '""')}"`;
   }
   return str;
@@ -34,7 +39,7 @@ export function toCsv(result: ReportResult): string {
 
 function escapeTsv(value: CellValue): string {
   if (value === null) return "";
-  return String(value).replace(/\t/g, " ").replace(/\n/g, " ");
+  return neutralizeSpreadsheetFormula(value).replace(/[\t\r\n]+/g, " ");
 }
 
 export function toTsv(result: ReportResult): string {
@@ -52,7 +57,12 @@ export function toTsv(result: ReportResult): string {
 function sqlLiteral(value: CellValue): string {
   if (value === null) return "NULL";
   if (typeof value === "boolean") return value ? "TRUE" : "FALSE";
-  if (typeof value === "number") return String(value);
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) {
+      throw new Error("Cannot export a non-finite number to SQL.");
+    }
+    return String(value);
+  }
   const escaped = String(value).replace(/'/g, "''");
   return `'${escaped}'`;
 }

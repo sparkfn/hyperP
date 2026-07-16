@@ -2,6 +2,7 @@
 
 import { useState, type ReactElement, type FormEvent } from "react";
 
+import AccessibleDialog from "@/components/AccessibleDialog";
 import { BffError, bffFetch } from "@/lib/api-client";
 import type { EntitySummary } from "@/lib/api-types";
 import type { UserResponse, UserBulkCreateRow, UserBulkCreateResponse, UserBulkCreateResult } from "@/lib/api-types-ops";
@@ -60,11 +61,11 @@ function EditUserModal({ u, entities, onClose }: { u: UserResponse; entities: En
   }
 
   return (
-    <div className={styles.modalOverlay} onClick={onClose}>
+    <AccessibleDialog open title="Edit User" onClose={onClose} maxWidth="xs" visuallyHideTitle>
       <form className={styles.modal} style={{ maxWidth: 380 }} onSubmit={(e) => void handleSave(e)} onClick={(e) => e.stopPropagation()}>
         <div className={styles.formHeader}>
           <span className={styles.formTitle}>Edit User</span>
-          <button type="button" className={styles.formClose} onClick={onClose}>×</button>
+          <button type="button" className={styles.formClose} onClick={onClose} aria-label="Close">×</button>
         </div>
         <div className={styles.formField}>
           <label className={styles.formLabel}>Email</label>
@@ -93,7 +94,7 @@ function EditUserModal({ u, entities, onClose }: { u: UserResponse; entities: En
           </button>
         </div>
       </form>
-    </div>
+    </AccessibleDialog>
   );
 }
 
@@ -183,11 +184,16 @@ function BulkAddModal({ onClose }: { onClose: () => void }): ReactElement {
   }
 
   return (
-    <div className={styles.modalOverlay} onClick={onClose}>
+    <AccessibleDialog
+      open
+      title={results ? "Results" : "Bulk Add Users"}
+      onClose={onClose}
+      visuallyHideTitle
+    >
       <div className={styles.modal} style={{ maxWidth: 600 }} onClick={(e) => e.stopPropagation()}>
         <div className={styles.formHeader}>
           <span className={styles.formTitle}>{results ? "Results" : "Bulk Add Users"}</span>
-          <button type="button" className={styles.formClose} onClick={onClose}>×</button>
+          <button type="button" className={styles.formClose} onClick={onClose} aria-label="Close">×</button>
         </div>
 
         {/* Results view */}
@@ -275,7 +281,7 @@ function BulkAddModal({ onClose }: { onClose: () => void }): ReactElement {
           </form>
         )}
       </div>
-    </div>
+    </AccessibleDialog>
   );
 }
 

@@ -1,6 +1,16 @@
 "use client";
 
-import { createContext, useCallback, useContext, useMemo, useRef, useState, type ReactElement, type ReactNode } from "react";
+import { useIsFetching, useIsMutating } from "@tanstack/react-query";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useMemo,
+  useRef,
+  useState,
+  type ReactElement,
+  type ReactNode,
+} from "react";
 
 interface LoadingContextValue {
   setLoading: (key: string, active: boolean) => void;
@@ -13,16 +23,16 @@ export function useSetLoading(): (key: string, active: boolean) => void {
 }
 
 export function LoadingProvider({ children }: { children: ReactNode }): ReactElement {
-  const [active, setActive] = useState(false);
-  const keys = useRef<Set<string>>(new Set());
-
-  const setLoading = useCallback((key: string, loading: boolean) => {
-    if (loading) keys.current.add(key);
-    else keys.current.delete(key);
-    setActive(keys.current.size > 0);
+  const queryActive = useIsFetching() + useIsMutating() > 0;
+  const [manualActive, setManualActive] = useState(false);
+  const manualKeys = useRef<Set<string>>(new Set());
+  const setLoading = useCallback((key: string, active: boolean): void => {
+    if (active) manualKeys.current.add(key);
+    else manualKeys.current.delete(key);
+    setManualActive(manualKeys.current.size > 0);
   }, []);
-
   const value = useMemo(() => ({ setLoading }), [setLoading]);
+  const active = queryActive || manualActive;
 
   return (
     <LoadingContext.Provider value={value}>

@@ -1,8 +1,15 @@
 "use client";
 
-import { useState, type ReactElement, type FormEvent } from "react";
+import { zodResolver } from "@hookform/resolvers/zod";
+import { useForm } from "react-hook-form";
+import { useState, type ReactElement } from "react";
 
+import AccessibleDialog from "@/components/AccessibleDialog";
 import { BffError, bffFetch, bffFetchEnvelope } from "@/lib/api-client";
+import {
+  oauthClientFormSchema,
+  type OAuthClientFormValues,
+} from "@/lib/admin-form-schemas";
 import type { OAuthClient, OAuthClientCreated, CreateOAuthClientRequest } from "@/lib/api-types-ops";
 import { OAUTH_CLIENT_SCOPES } from "@/lib/api-types-ops";
 import { relativeTime } from "@/lib/display";
@@ -79,29 +86,38 @@ function OAuthClientCard({ c, onRefresh }: { c: OAuthClient; onRefresh: () => vo
 // ── Create Modal ──────────────────────────────────────────────────────────────
 
 function CreateModal({ onClose }: { onClose: () => void }): ReactElement {
-  const [name, setName] = useState("");
-  const [scopes, setScopes] = useState<string[]>([]);
-  const [ttlMinutes, setTtlMinutes] = useState("15");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [created, setCreated] = useState<OAuthClientCreated | null>(null);
   const [copied, setCopied] = useState(false);
+  const {
+    formState: { errors },
+    handleSubmit,
+    register,
+    setValue,
+    watch,
+  } = useForm<OAuthClientFormValues>({
+    defaultValues: { name: "", scopes: [], ttlMinutes: "15" },
+    resolver: zodResolver(oauthClientFormSchema),
+  });
+  const scopes = watch("scopes");
 
   function toggleScope(scope: string): void {
-    setScopes((s) => s.includes(scope) ? s.filter((x) => x !== scope) : [...s, scope]);
+    const next = scopes.includes(scope)
+      ? scopes.filter((value) => value !== scope)
+      : [...scopes, scope];
+    setValue("scopes", next, { shouldValidate: true });
   }
 
-  async function handleSubmit(e: FormEvent): Promise<void> {
-    e.preventDefault();
-    if (!name.trim() || scopes.length === 0) return;
+  async function submit(values: OAuthClientFormValues): Promise<void> {
     setSubmitting(true);
     setError(null);
     try {
       const body: CreateOAuthClientRequest = {
-        name: name.trim(),
+        name: values.name,
         entity_key: null,
-        scopes,
-        access_token_ttl_seconds: ttlMinutesToSeconds(ttlMinutes),
+        scopes: values.scopes,
+        access_token_ttl_seconds: ttlMinutesToSeconds(values.ttlMinutes),
       };
       const res = await bffFetch<OAuthClientCreated>("/bff/admin/oauth-clients", {
         method: "POST",
@@ -124,7 +140,12 @@ function CreateModal({ onClose }: { onClose: () => void }): ReactElement {
   }
 
   return (
-    <div className={styles.modalOverlay} onClick={onClose}>
+    <AccessibleDialog
+      open
+      title={created ? "Client Created" : "New OAuth Client"}
+      onClose={onClose}
+      visuallyHideTitle
+    >
       <div className={styles.modal} onClick={(e) => e.stopPropagation()}>
 
         {/* Header */}
@@ -132,7 +153,7 @@ function CreateModal({ onClose }: { onClose: () => void }): ReactElement {
           <span className={styles.formTitle}>
             {created ? "Client Created" : "New OAuth Client"}
           </span>
-          <button type="button" className={styles.formClose} onClick={onClose}>×</button>
+          <button type="button" className={styles.formClose} onClick={onClose} aria-label="Close">×</button>
         </div>
 
         {/* Secret view */}
@@ -161,14 +182,16 @@ function CreateModal({ onClose }: { onClose: () => void }): ReactElement {
           </>
         ) : (
           /* Form */
-          <form onSubmit={(e) => void handleSubmit(e)} style={{ display: "contents" }}>
+          <form onSubmit={(event) => void handleSubmit(submit)(event)} style={{ display: "contents" }} noValidate>
             <div className={styles.formField}>
               <label className={styles.formLabel}>Name <span className={styles.required}>*</span></label>
-              <input className={styles.formInput} type="text" value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Data Pipeline" required autoFocus />
+              <input className={styles.formInput} type="text" {...register("name")} placeholder="e.g. Data Pipeline" aria-invalid={errors.name !== undefined} autoFocus />
+              {errors.name !== undefined && <p className={styles.formError}>{errors.name.message}</p>}
             </div>
             <div className={styles.formField}>
               <label className={styles.formLabel}>Access token lifetime <span className={styles.optional}>(minutes)</span></label>
-              <input className={styles.formInput} type="number" min="5" max="1440" value={ttlMinutes} onChange={(e) => setTtlMinutes(e.target.value)} placeholder="15" />
+              <input className={styles.formInput} type="number" min="5" max="1440" {...register("ttlMinutes")} placeholder="15" aria-invalid={errors.ttlMinutes !== undefined} />
+              {errors.ttlMinutes !== undefined && <p className={styles.formError}>{errors.ttlMinutes.message}</p>}
             </div>
             <div className={styles.formField}>
               <label className={styles.formLabel}>Scopes <span className={styles.required}>*</span></label>
@@ -176,23 +199,25 @@ function CreateModal({ onClose }: { onClose: () => void }): ReactElement {
                 {OAUTH_CLIENT_SCOPES.map((sc) => (
                   <button key={sc} type="button"
                     className={`${styles.scopeChip} ${scopes.includes(sc) ? styles.scopeChipActive : ""}`}
+                    aria-pressed={scopes.includes(sc)}
                     onClick={() => toggleScope(sc)}>
                     {sc}
                   </button>
                 ))}
               </div>
+              {errors.scopes !== undefined && <p className={styles.formError}>{errors.scopes.message}</p>}
             </div>
             {error && <p className={styles.formError}>{error}</p>}
             <div className={styles.formActions}>
               <button type="button" className={styles.formCancel} onClick={onClose}>Cancel</button>
-              <button type="submit" className={styles.formSubmit} disabled={submitting || !name.trim() || scopes.length === 0}>
+              <button type="submit" className={styles.formSubmit} disabled={submitting}>
                 {submitting ? "Creating…" : "Create Client"}
               </button>
             </div>
           </form>
         )}
       </div>
-    </div>
+    </AccessibleDialog>
   );
 }
 

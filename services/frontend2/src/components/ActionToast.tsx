@@ -1,8 +1,8 @@
 "use client";
 
-import { useEffect, type ReactElement } from "react";
-
-import styles from "./ActionToast.module.css";
+import Alert from "@mui/material/Alert";
+import Snackbar, { type SnackbarCloseReason } from "@mui/material/Snackbar";
+import React, { type ReactElement, type SyntheticEvent } from "react";
 
 export interface ToastState {
   type: "success" | "error";
@@ -14,27 +14,27 @@ interface ActionToastProps extends ToastState {
 }
 
 export default function ActionToast({ type, message, onDismiss }: ActionToastProps): ReactElement {
-  useEffect(() => {
-    const timer = setTimeout(onDismiss, 4000);
-    return () => clearTimeout(timer);
-  }, [onDismiss]);
+  function handleClose(_event: Event | SyntheticEvent, reason?: SnackbarCloseReason): void {
+    if (reason === "clickaway") return;
+    onDismiss();
+  }
 
   return (
-    <div className={`${styles.toast} ${type === "success" ? styles.success : styles.error}`} role="status">
-      <span className={styles.icon} aria-hidden="true">
-        {type === "success" ? (
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M20 6L9 17l-5-5" />
-          </svg>
-        ) : (
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-            <circle cx="12" cy="12" r="10" />
-            <path d="M12 8v4M12 16h.01" />
-          </svg>
-        )}
-      </span>
-      <span className={styles.message}>{message}</span>
-      <button type="button" className={styles.dismiss} onClick={onDismiss} aria-label="Dismiss">✕</button>
-    </div>
+    <Snackbar
+      open
+      autoHideDuration={6000}
+      anchorOrigin={{ horizontal: "right", vertical: "bottom" }}
+      onClose={handleClose}
+    >
+      <Alert
+        closeText="Dismiss"
+        onClose={handleClose}
+        severity={type}
+        variant="filled"
+        sx={{ width: "100%" }}
+      >
+        {message}
+      </Alert>
+    </Snackbar>
   );
 }
