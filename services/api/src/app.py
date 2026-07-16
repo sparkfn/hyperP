@@ -9,12 +9,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from src.auth.oauth_clients import (
-    claim_oauth_wipe_migration,
-    ensure_oauth_client_constraints,
-    wipe_oauth_clients,
-)
-from src.auth.oauth_token_registry import clear_all_tokens
+from src.auth.oauth_clients import ensure_oauth_client_constraints
 from src.auth.oauth_tokens import validate_oauth_runtime_config
 from src.config import config
 from src.error_handlers import register_error_handlers
@@ -51,23 +46,6 @@ async def _ensure_oauth_client_constraints() -> None:
     await ensure_oauth_client_constraints()
 
 
-async def _wipe_oauth_clients_on_startup() -> None:
-    """One-time remodel migration: drop legacy multi-secret OAuth data once.
-
-    Existing clients predate the single-active-secret + per-client-TTL model and
-    have no clean upgrade path, so they are wiped on first boot after the remodel;
-    admins re-provision. A marker node makes this idempotent so later
-    legitimately-created clients are not wiped on subsequent deploys.
-    """
-    try:
-        if await claim_oauth_wipe_migration():
-            await wipe_oauth_clients()
-            await clear_all_tokens()
-            logger.info("Wiped legacy OAuth clients and token registry (remodel migration)")
-    except Exception:  # noqa: BLE001 — best-effort; never block startup
-        logger.exception("Failed to wipe legacy OAuth clients")
-
-
 _PERSON_INDEXES = [
     "CREATE INDEX idx_person_completeness IF NOT EXISTS "
     "FOR (p:Person) ON (p.profile_completeness_score)",
@@ -94,7 +72,6 @@ async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
     await _ensure_source_record_identity_lock()
     await _ensure_user_constraint()
     await _ensure_oauth_client_constraints()
-    await _wipe_oauth_clients_on_startup()
     await _ensure_person_indexes()
     yield
     await close_driver()
