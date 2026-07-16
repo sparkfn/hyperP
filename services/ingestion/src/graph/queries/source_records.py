@@ -23,6 +23,7 @@ RETURN sr.source_record_pk AS source_record_pk,
        toInteger(sr.source_record_version) AS source_record_version,
        sr.record_hash AS record_hash,
        CASE
+           WHEN sr IS NULL THEN null
            WHEN sr.lifecycle_status IS NULL THEN 'active'
            ELSE sr.lifecycle_status
        END AS lifecycle_status,

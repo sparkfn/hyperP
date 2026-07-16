@@ -92,6 +92,15 @@ def test_lock_and_get_source_state_locks_and_reads_open_versions() -> None:
     assert "ORDER BY toInteger(sr.source_record_version) DESC" in query
 
 
+def test_lock_query_preserves_missing_optional_source_record_placeholder() -> None:
+    query = queries.LOCK_AND_GET_SOURCE_STATE
+
+    missing_guard = "WHEN sr IS NULL THEN null"
+    legacy_guard = "WHEN sr.lifecycle_status IS NULL THEN 'active'"
+    assert missing_guard in query
+    assert query.index(missing_guard) < query.index(legacy_guard)
+
+
 def test_legacy_latest_record_is_effective_active_without_reclassifying_explicit_status() -> None:
     query = queries.LOCK_AND_GET_SOURCE_STATE
     assert "sr.lifecycle_status IS NULL AND sr.is_latest = true" in query
