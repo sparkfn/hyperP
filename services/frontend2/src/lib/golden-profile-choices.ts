@@ -1,5 +1,6 @@
 import { bffFetch } from "@/lib/api-client";
 import { formatDob } from "@/lib/display";
+import { sourceRecordReference } from "@/lib/ui-display";
 import type { Person } from "@/lib/api-types";
 import type {
   GoldenProfileSelectionRequestBody,
@@ -135,7 +136,7 @@ function sourceRecordFactChoices(
           sourceKind: "source_record_fact",
           sourceRecordPk: record.source_record_pk,
           identifierType: null,
-          sourceLabel: `${record.source_system} ${record.source_record_id}`,
+          sourceLabel: `${record.source_system} ${sourceRecordReference(record.source_record_id)}`,
           observedAt: record.observed_at,
         }),
       ];
@@ -161,7 +162,7 @@ function sourceRecordAddressChoices(
         sourceKind: "address",
         sourceRecordPk: record.source_record_pk,
         identifierType: null,
-        sourceLabel: `${record.source_system} ${record.source_record_id}`,
+        sourceLabel: `${record.source_system} ${sourceRecordReference(record.source_record_id)}`,
         observedAt: record.observed_at,
       }),
     ];

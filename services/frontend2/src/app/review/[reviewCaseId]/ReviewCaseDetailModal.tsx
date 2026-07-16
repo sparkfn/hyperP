@@ -12,6 +12,7 @@ import type { PersonComparisonEntity, ReviewCaseActionEntry, ReviewCaseDetail } 
 import type { PersonSourceRecord, SharedIdentifierGroup } from "@/lib/api-types-person";
 import { completenessColor, formatDate, formatDob, relativeTime } from "@/lib/display";
 import { toBasePath } from "@/lib/route-paths";
+import { sourceRecordReference } from "@/lib/ui-display";
 import styles from "../review.module.css";
 
 function queueStateColor(state: string): string {
@@ -92,9 +93,12 @@ function ComparisonCard({ title, entity }: { title: string; entity: PersonCompar
   }
 
   const personHref = entity.person_id !== null ? toBasePath(`/persons/${encodeURIComponent(entity.person_id)}`) : null;
-  const displayName = entity.preferred_full_name ?? entity.source_record_id ?? "Unknown";
+  const sourceReference = entity.source_record_id === null
+    ? null
+    : sourceRecordReference(entity.source_record_id);
+  const displayName = entity.preferred_full_name ?? sourceReference ?? "Unknown";
   const entityLabel = titleCase(entity.entity_kind);
-  const idLabel = entity.person_id ?? entity.source_record_id ?? entity.source_record_pk ?? "—";
+  const idLabel = entity.person_id ?? sourceReference ?? "—";
 
   return (
     <section className={`${styles.detailCard} ${styles.comparisonCard}`}>
@@ -120,7 +124,7 @@ function ComparisonCard({ title, entity }: { title: string; entity: PersonCompar
         {entity.entity_kind === "source_record" && entity.observed_at !== null ? (
           <KeyValue label="Observed" value={formatDate(entity.observed_at) || "—"} />
         ) : null}
-        <KeyValue label="Source record" value={entity.source_record_id ?? entity.source_record_pk ?? "—"} />
+        <KeyValue label="Source record" value={sourceReference ?? "—"} />
       </div>
       {personHref !== null ? <Link className={styles.profileLinkButton} href={personHref}>Open person profile</Link> : null}
     </section>

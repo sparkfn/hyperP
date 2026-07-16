@@ -69,7 +69,6 @@ const NODE_FIELD_OVERRIDES: Record<string, FieldSpec[]> = {
   ],
   SourceRecord: [
     { key: "source_system", label: "Source system" },
-    { key: "source_record_pk", label: "Record key", format: "mono" },
     { key: "record_type", label: "Record type" },
     { key: "ingested_at", label: "Ingested", format: "datetime" },
   ],
