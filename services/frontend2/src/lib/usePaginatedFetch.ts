@@ -1,8 +1,9 @@
 "use client";
 
-import { useCallback, useEffect, useId, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
+import { useCallback, useState } from "react";
+
 import { BffError, bffFetchEnvelope } from "@/lib/api-client";
-import { useSetLoading } from "@/lib/LoadingContext";
 
 export const PAGE_SIZE = 10;
 
@@ -19,53 +20,40 @@ export interface PaginatedResult<T> {
   goPrev: () => void;
 }
 
+interface PageData<T> {
+  rows: T[];
+  nextCursor: string | null;
+  total: number | null;
+}
+
 export function usePaginatedFetch<T>(basePath: string, limit: number = PAGE_SIZE): PaginatedResult<T> {
   const [cursor, setCursor] = useState<string | null>(null);
   const [prevStack, setPrevStack] = useState<(string | null)[]>([]);
-  const [nextCursor, setNextCursor] = useState<string | null>(null);
-  const [rows, setRows] = useState<T[] | null>(null);
-  const [total, setTotal] = useState<number | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState<boolean>(true);
-  const id = useId();
-  const setGlobalLoading = useSetLoading();
-
-  useEffect(() => {
-    let cancelled = false;
-    setLoading(true);
-    setGlobalLoading(id, true);
-    setRows(null);
-    setError(null);
-    const sep = basePath.includes("?") ? "&" : "?";
-    const url = `${basePath}${sep}limit=${limit}${cursor !== null ? `&cursor=${encodeURIComponent(cursor)}` : ""}`;
-    const controller = new AbortController();
-    const run = async (): Promise<void> => {
+  const query = useQuery({
+    queryKey: ["bff-page", basePath, limit, cursor],
+    queryFn: async ({ signal }): Promise<PageData<T>> => {
+      const sep = basePath.includes("?") ? "&" : "?";
+      const cursorQuery = cursor !== null ? `&cursor=${encodeURIComponent(cursor)}` : "";
+      const url = `${basePath}${sep}limit=${limit}${cursorQuery}`;
       try {
-        const envelope = await bffFetchEnvelope<T[]>(url, { signal: controller.signal });
-        if (!cancelled) {
-          setRows(envelope.data);
-          setNextCursor(envelope.meta.next_cursor);
-          setTotal(envelope.meta.total_count ?? null);
-        }
+        const envelope = await bffFetchEnvelope<T[]>(url, { signal });
+        return {
+          rows: envelope.data,
+          nextCursor: envelope.meta.next_cursor,
+          total: envelope.meta.total_count ?? null,
+        };
       } catch (err: unknown) {
-        if (cancelled) return;
         if (err instanceof BffError && err.status === 404) {
-          setRows([]);
-          setTotal(0);
-        } else {
-          setError(err instanceof BffError ? err.message : "Failed to load.");
+          return { rows: [], nextCursor: null, total: 0 };
         }
-      } finally {
-        if (!cancelled) { setLoading(false); setGlobalLoading(id, false); }
+        throw err;
       }
-    };
-    void run();
-    return () => {
-      cancelled = true;
-      controller.abort();
-      setGlobalLoading(id, false);
-    };
-  }, [basePath, cursor, id, setGlobalLoading]);
+    },
+  });
+
+  const rows = query.data?.rows ?? null;
+  const nextCursor = query.data?.nextCursor ?? null;
+  const total = query.data?.total ?? null;
 
   const goNext = useCallback((): void => {
     if (nextCursor === null) return;
@@ -82,8 +70,10 @@ export function usePaginatedFetch<T>(basePath: string, limit: number = PAGE_SIZE
   const pageStart = prevStack.length * limit + 1;
   return {
     rows,
-    error,
-    loading,
+    error: query.error instanceof BffError
+      ? query.error.message
+      : query.error !== null ? "Failed to load." : null,
+    loading: query.isPending,
     from: rows !== null && rows.length > 0 ? pageStart : 0,
     to: rows !== null ? pageStart + rows.length - 1 : 0,
     total,

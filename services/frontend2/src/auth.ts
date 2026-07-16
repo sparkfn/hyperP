@@ -17,7 +17,13 @@ import {
   toRelativePath,
 } from "@/lib/route-paths";
 import { buildApiUrl } from "@/lib/api-url";
+import {
+  parseGoogleRefreshResponse,
+  parseMeResponse,
+  type MeResponse,
+} from "@/lib/auth-contracts";
 import type { Role } from "@/lib/permissions";
+import { createSingleFlight } from "@/lib/single-flight";
 
 declare module "next-auth" {
   interface Session {
@@ -42,22 +48,6 @@ declare module "next-auth/jwt" {
     googleRefreshToken?: string;
     googleIdTokenExpiresAt?: number;
   }
-}
-
-interface MeResponseBody {
-  data: {
-    email: string;
-    google_sub: string;
-    role: Role;
-    entity_key: string | null;
-    display_name: string | null;
-  };
-}
-
-interface GoogleRefreshResponse {
-  id_token: string;
-  access_token: string;
-  expires_in: number;
 }
 
 type GoogleRefreshOutcome =
@@ -88,7 +78,8 @@ async function refreshGoogleIdToken(
       // 5xx is a Google-side hiccup — keep the session and retry next request.
       return res.status < 500 ? "rejected" : "transient";
     }
-    const data = (await res.json()) as GoogleRefreshResponse;
+    const data = parseGoogleRefreshResponse(await res.json());
+    if (data === null) return "rejected";
     return {
       idToken: data.id_token,
       expiresAt: Math.floor(Date.now() / 1000) + data.expires_in,
@@ -97,6 +88,8 @@ async function refreshGoogleIdToken(
     return "transient";
   }
 }
+
+const refreshGoogleIdTokenOnce = createSingleFlight(refreshGoogleIdToken);
 
 // Rolling idle window for the NextAuth session cookie, in seconds. The cookie
 // expiry is re-issued on each request, so this is an inactivity timeout, not an
@@ -107,7 +100,7 @@ function sessionMaxAgeSeconds(): number {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : 60 * 60;
 }
 
-async function fetchMe(idToken: string): Promise<MeResponseBody["data"] | null> {
+async function fetchMe(idToken: string): Promise<MeResponse["data"] | null> {
   try {
     const res: Response = await fetch(buildApiUrl("/auth/me"), {
       method: "GET",
@@ -118,8 +111,8 @@ async function fetchMe(idToken: string): Promise<MeResponseBody["data"] | null> 
       cache: "no-store",
     });
     if (!res.ok) return null;
-    const json = (await res.json()) as MeResponseBody;
-    return json.data;
+    const json = parseMeResponse(await res.json());
+    return json?.data ?? null;
   } catch {
     return null;
   }
@@ -186,7 +179,7 @@ export const authConfig: NextAuthConfig = {
         typeof refreshToken === "string" &&
         Date.now() / 1000 > expiresAt - 60
       ) {
-        const refreshed = await refreshGoogleIdToken(refreshToken);
+        const refreshed = await refreshGoogleIdTokenOnce(refreshToken);
         if (typeof refreshed === "object") {
           token.googleIdToken = refreshed.idToken;
           token.googleIdTokenExpiresAt = refreshed.expiresAt;

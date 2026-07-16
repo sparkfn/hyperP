@@ -5,6 +5,7 @@ import { headers } from "next/headers";
 
 import { auth } from "@/auth";
 import AppShell from "@/components/AppShell";
+import QueryProviderClient from "@/components/QueryProviderClient";
 import SessionProviderClient from "@/components/SessionProviderClient";
 import { getInitials } from "@/lib/display";
 import { LoadingProvider } from "@/lib/LoadingContext";
@@ -44,7 +45,11 @@ export default async function RootLayout({ children }: { children: ReactNode }):
     return (
       <html lang="en" suppressHydrationWarning>
         <head><script dangerouslySetInnerHTML={{ __html: themeScript }}/></head>
-        <body><SessionProviderClient session={session}>{children}</SessionProviderClient></body>
+        <body>
+          <QueryProviderClient>
+            <SessionProviderClient session={session}>{children}</SessionProviderClient>
+          </QueryProviderClient>
+        </body>
       </html>
     );
   }
@@ -53,13 +58,15 @@ export default async function RootLayout({ children }: { children: ReactNode }):
     <html lang="en" suppressHydrationWarning>
       <head><script dangerouslySetInnerHTML={{ __html: themeScript }}/></head>
       <body>
-        <LoadingProvider>
-          <SessionProviderClient session={session}>
-            <AppShell initials={initials} email={email} displayName={displayName}>
-              {children}
-            </AppShell>
-          </SessionProviderClient>
-        </LoadingProvider>
+        <QueryProviderClient>
+          <LoadingProvider>
+            <SessionProviderClient session={session}>
+              <AppShell initials={initials} email={email} displayName={displayName}>
+                {children}
+              </AppShell>
+            </SessionProviderClient>
+          </LoadingProvider>
+        </QueryProviderClient>
       </body>
     </html>
   );
