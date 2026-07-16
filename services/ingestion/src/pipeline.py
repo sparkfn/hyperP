@@ -24,21 +24,24 @@ from src.golden_profile import compute_golden_profile
 from src.graph import queries
 from src.graph.bootstrap import MATCH_ONLY_SOURCE_KEYS
 from src.graph.client import Neo4jClient
-from src.matching.engine import MatchEngine
+from src.matching.engine import MatchEngine, ambiguous_prior_owners_result
 from src.models import (
     CandidateResult,
     IngestResult,
+    JsonValue,
     MatchDecision,
     MatchResult,
     NormalizedAttribute,
     NormalizedIdentifier,
     RecordType,
     SourceRecordEnvelope,
+    SourceRecordLifecycleStatus,
 )
 from src.models import (
     NormalizedAddress as NormalizedAddressModel,
 )
-from src.pipeline_bankruptcy import materialize_bankruptcy_case
+from src.pipeline_bankruptcy import bankruptcy_case_blueprint, materialize_bankruptcy_case
+from src.pipeline_knows import activate_knows_projection, knows_projection_blueprints
 from src.pipeline_normalization import (
     normalize_envelope_addresses,
     normalize_envelope_attributes,
@@ -53,7 +56,16 @@ from src.pipeline_writes import (
     persist_match_decision,
     persist_source_record,
     record_auto_merge_event,
+    retire_identity_projections,
     upsert_nodes,
+)
+from src.record_lifecycle import (
+    DuplicateVersion,
+    PlannedVersion,
+    activate_staged_version,
+    load_locked_source_state,
+    plan_incoming_version,
+    reject_replaced_pending,
 )
 from src.vehicle_extraction import observations_from_chat_inquiries
 from src.vehicles import (
@@ -88,39 +100,32 @@ class IngestPipeline:
     ) -> IngestResult:
         """Ingest a single source record.  Returns an ``IngestResult``."""
 
-        # Step 1: Idempotency check (read-only, outside write tx)
-        previous_pk, latest_hash, next_version = self._latest_source_record(envelope)
-        if previous_pk is not None and latest_hash == envelope.record_hash:
-            logger.info(
-                "Duplicate source record %s (hash=%s) — skipping",
-                envelope.source_record_id,
-                envelope.record_hash,
-            )
-            return IngestResult(
-                source_record_id=envelope.source_record_id,
-                source_record_pk=previous_pk,
-                skipped_duplicate=True,
-            )
-        envelope.source_record_version = str(next_version)
-
-        # Step 2: Normalize identifiers, addresses, attributes
-        identifiers = normalize_envelope_identifiers(envelope)
-        addresses = normalize_envelope_addresses(envelope)
-        attributes = normalize_envelope_attributes(envelope)
+        # Lock, idempotency classification, version assignment, and all writes
+        # share one transaction so concurrent updates cannot allocate one version.
         active_exclusion_context = (
             exclusion_context if exclusion_context is not None else ExclusionContext()
         )
 
         # Steps 3-13 run inside a single write transaction
         def _work(tx: ManagedTransaction) -> IngestResult:
+            state = load_locked_source_state(tx, envelope.source_system, envelope.source_record_id)
+            plan = plan_incoming_version(state, envelope.record_hash)
+            if isinstance(plan, DuplicateVersion):
+                return IngestResult(
+                    source_record_id=envelope.source_record_id,
+                    source_record_pk=plan.source_record_pk,
+                    skipped_duplicate=True,
+                    ingest_run_id=ingest_run_id,
+                )
+            envelope.source_record_version = str(plan.version)
             return self._execute_ingest(
                 tx,
                 envelope,
-                identifiers,
-                addresses,
-                attributes,
+                normalize_envelope_identifiers(envelope),
+                normalize_envelope_addresses(envelope),
+                normalize_envelope_attributes(envelope),
                 ingest_run_id=ingest_run_id,
-                previous_source_record_pk=previous_pk,
+                lifecycle_plan=plan,
                 exclusion_context=active_exclusion_context,
             )
 
@@ -162,22 +167,37 @@ class IngestPipeline:
         addresses: list[NormalizedAddressModel],
         attributes: list[NormalizedAttribute],
         ingest_run_id: str | None = None,
-        previous_source_record_pk: str | None = None,
+        lifecycle_plan: PlannedVersion | None = None,
         exclusion_context: ExclusionContext | None = None,
     ) -> IngestResult:
         """Orchestrate steps 3–13 of the ingest flow inside one write tx."""
         active_exclusion_context = (
             exclusion_context if exclusion_context is not None else ExclusionContext()
         )
+        if lifecycle_plan is None:
+            lifecycle_plan = PlannedVersion(
+                version=int(envelope.source_record_version or "1"),
+                active_source_record_pk=None,
+                prior_person_ids=(),
+                pending_to_reject=None,
+            )
+        if lifecycle_plan.pending_to_reject is not None:
+            reject_replaced_pending(tx, lifecycle_plan.pending_to_reject)
         candidates = find_candidates(tx, identifiers, addresses)
-        match_result = self._match_engine.evaluate(
-            tx,
-            candidates,
-            identifiers,
-            addresses[0] if addresses else None,
-            attributes,
-            record_type=envelope.record_type,
-        )
+        if len(lifecycle_plan.prior_person_ids) > 1:
+            match_result = ambiguous_prior_owners_result(lifecycle_plan.prior_person_ids)
+        else:
+            match_result = self._match_engine.evaluate(
+                tx,
+                candidates,
+                identifiers,
+                addresses[0] if addresses else None,
+                attributes,
+                record_type=envelope.record_type,
+                continuity_person_id=(
+                    lifecycle_plan.prior_person_ids[0] if lifecycle_plan.prior_person_ids else None
+                ),
+            )
         if _is_match_only_source(envelope.source_system) and not self._has_usable_match(
             match_result, candidates
         ):
@@ -203,18 +223,9 @@ class IngestPipeline:
             match_result=match_result,
             is_new_person=is_new_person,
             ingest_run_id=ingest_run_id,
-        )
-        if previous_source_record_pk is not None:
-            tx.run(
-                queries.SUPERSEDE_SOURCE_RECORD,
-                old_source_record_pk=previous_source_record_pk,
-                new_source_record_pk=source_record_pk,
-            )
-        self._write_chat_vehicle_observations(
-            tx,
-            envelope=envelope,
-            source_record_pk=source_record_pk,
-            exclusion_context=active_exclusion_context,
+            lifecycle_status=SourceRecordLifecycleStatus.PENDING_REVIEW,
+            expected_active_source_record_pk=lifecycle_plan.active_source_record_pk,
+            activation_blueprint=self._activation_blueprint(envelope, active_exclusion_context),
         )
         match_decision_id = persist_match_decision(tx, match_result, source_record_pk)
         review_case_id = create_review_case_if_needed(tx, match_result, match_decision_id)
@@ -225,7 +236,7 @@ class IngestPipeline:
         # an unconfirmed record silently commingles into the candidate and cannot
         # be cleanly split off on reject. (Reviewer-workflow Side-Effect Matrix:
         # a record only becomes "linked" on a merge action.)
-        provisional_review = match_result.decision == MatchDecision.REVIEW and not is_new_person
+        provisional_review = match_result.decision == MatchDecision.REVIEW
         link_record_to_graph(
             tx,
             envelope=envelope,
@@ -236,19 +247,43 @@ class IngestPipeline:
             source_record_pk=source_record_pk,
             attach_evidence=not provisional_review,
         )
-        if not provisional_review:
+        accepted = match_result.decision is not MatchDecision.REVIEW
+        affected_person_ids = set(lifecycle_plan.prior_person_ids)
+        if accepted:
+            activate_knows_projection(tx, envelope, person_id, source_record_pk)
+            if lifecycle_plan.active_source_record_pk is not None:
+                tx.run(
+                    queries.RETIRE_KNOWS_PROJECTION,
+                    source_record_pk=lifecycle_plan.active_source_record_pk,
+                )
+                if envelope.record_type == RecordType.CONVERSATION:
+                    tx.run(
+                        queries.RETIRE_CONVERSATION_VEHICLE_MENTIONS,
+                        source_record_pk=lifecycle_plan.active_source_record_pk,
+                    )
+            self._write_chat_vehicle_observations(
+                tx,
+                envelope=envelope,
+                source_record_pk=source_record_pk,
+                exclusion_context=active_exclusion_context,
+            )
+            if lifecycle_plan.active_source_record_pk is not None:
+                affected_person_ids.update(
+                    retire_identity_projections(tx, lifecycle_plan.active_source_record_pk)
+                )
             materialize_bankruptcy_case(
                 tx,
                 envelope=envelope,
                 person_id=person_id,
                 source_record_pk=source_record_pk,
+                replaced_source_record_pk=lifecycle_plan.active_source_record_pk,
             )
-            compute_golden_profile(tx, person_id)
+            affected_person_ids.add(person_id)
         # Multi-match: the record reached the merge band against more than one
         # distinct person. Link the record + its extracted evidence to every
         # other matched person too — WITHOUT merging the persons, which may
         # legitimately share an identifier — and recompute each golden profile.
-        for other_person_id in match_result.additional_linked_person_ids:
+        for other_person_id in match_result.additional_linked_person_ids if accepted else []:
             if other_person_id == person_id:
                 continue
             link_record_to_graph(
@@ -261,11 +296,21 @@ class IngestPipeline:
                 source_record_pk=source_record_pk,
                 attach_evidence=True,
             )
-            compute_golden_profile(tx, other_person_id)
+            affected_person_ids.add(other_person_id)
         # Person↔person audit: any usable identifier this record carries that now
         # links 2+ active persons opens a pairwise review case (deduped, fanout-
         # capped). Audit-only — never merges or links persons.
-        audit_person_pairs(tx, identifiers, envelope.record_type)
+        if accepted:
+            activate_staged_version(
+                tx,
+                source_system=envelope.source_system,
+                source_record_id=envelope.source_record_id,
+                old_source_record_pk=lifecycle_plan.active_source_record_pk,
+                new_source_record_pk=source_record_pk,
+            )
+            for affected_person_id in sorted(affected_person_ids):
+                compute_golden_profile(tx, affected_person_id)
+            audit_person_pairs(tx, identifiers, envelope.record_type)
         if match_result.decision == MatchDecision.MERGE and not is_new_person:
             record_auto_merge_event(
                 tx,
@@ -339,6 +384,45 @@ class IngestPipeline:
                 confidence=observation.confidence,
                 quality_flag=observation.quality_flag.value,
             )
+
+    @staticmethod
+    def _activation_blueprint(
+        envelope: SourceRecordEnvelope, exclusion_context: ExclusionContext
+    ) -> dict[str, JsonValue]:
+        blueprint: dict[str, JsonValue] = {}
+        blueprint["knows_relationships"] = knows_projection_blueprints(envelope)
+        bankruptcy = bankruptcy_case_blueprint(envelope)
+        if bankruptcy is not None:
+            blueprint["bankruptcy_case"] = bankruptcy
+        if envelope.record_type != RecordType.CONVERSATION:
+            return blueprint
+        inquiries = envelope.raw_payload.get("inquiries")
+        if not isinstance(inquiries, list):
+            return blueprint
+        mentions: list[JsonValue] = []
+        for observation in observations_from_chat_inquiries(
+            source_system_key=envelope.source_system,
+            source_record_id=envelope.source_record_id,
+            observed_at=envelope.observed_at,
+            inquiries=inquiries,
+        ):
+            if is_excluded_vehicle_observation(observation, exclusion_context):
+                continue
+            mentions.append(
+                {
+                    "normalized_lta_tag": normalize_lta_tag(observation.lta_tag),
+                    "normalized_serial_number": normalize_serial_number(observation.serial_number),
+                    "product": observation.product,
+                    "raw_context": observation.raw_context,
+                    "observed_at": observation.observed_at,
+                    "confidence": observation.confidence,
+                    "quality_flag": observation.quality_flag.value,
+                    "source_system_key": observation.source_system_key,
+                    "source_record_id": observation.source_record_id,
+                }
+            )
+        blueprint["vehicle_mentions"] = mentions
+        return blueprint
 
     @staticmethod
     def _has_usable_match(

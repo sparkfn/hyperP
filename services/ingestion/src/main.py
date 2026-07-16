@@ -51,7 +51,7 @@ from src.graph import queries
 from src.graph.bootstrap import bootstrap_entities_and_sources
 from src.graph.client import Neo4jClient
 from src.graph.migrations import apply_data_migrations
-from src.graph.schema_init import apply_schema
+from src.graph.schema_init import apply_deferred_source_record_constraints, apply_schema
 from src.ingestion_config import get_ingestion_config
 from src.models import IngestResult, RecordType, SourceRecordEnvelope
 from src.pipeline import IngestPipeline
@@ -385,6 +385,7 @@ def initialize_ingestion_graph() -> None:
         apply_schema(client)
         bootstrap_entities_and_sources(client)
         apply_data_migrations(client)
+        apply_deferred_source_record_constraints(client)
     finally:
         client.close()
 

@@ -7,8 +7,11 @@ MATCH (e:Entity)
 CALL {
   WITH e
   OPTIONAL MATCH (e)<-[:OPERATED_BY]-(:SourceSystem)<-[:FROM_SOURCE]-(sr:SourceRecord)
-    -[:LINKED_TO]->(p:Person)
-  WHERE p.status <> 'merged'
+    -[link:LINKED_TO]->(p:Person)
+  WHERE coalesce(link.is_active, true) = true
+    AND (sr.lifecycle_status = 'active'
+      OR (sr.lifecycle_status IS NULL AND sr.is_latest = true))
+    AND p.status <> 'merged'
   RETURN count(DISTINCT p) AS person_count,
          count(DISTINCT sr) AS source_record_count,
          max(sr.ingested_at) AS last_ingested_at
@@ -24,7 +27,10 @@ LIST_FILTER_SOURCE_SYSTEMS = """
 MATCH (ss:SourceSystem)
 CALL {
   WITH ss
-  OPTIONAL MATCH (ss)<-[:FROM_SOURCE]-(sr:SourceRecord)
+  OPTIONAL MATCH (ss)<-[:FROM_SOURCE]-(sr:SourceRecord)-[link:LINKED_TO]->(:Person)
+  WHERE coalesce(link.is_active, true) = true
+    AND (sr.lifecycle_status = 'active'
+      OR (sr.lifecycle_status IS NULL AND sr.is_latest = true))
   RETURN count(sr) AS source_record_count,
          max(sr.ingested_at) AS last_ingested_at
 }
@@ -52,23 +58,34 @@ _DEFAULT_ORDER = "ASC"
 _ENTITY_PERSONS_BODY = """
 MATCH (e:Entity {entity_key: $entity_key})
     <-[:OPERATED_BY]-(ss:SourceSystem)<-[:FROM_SOURCE]-(sr:SourceRecord)
-    <-[:HAS_FACT]-(p:Person)
+    <-[entity_fact:HAS_FACT]-(p:Person)
 WHERE p.status <> 'merged'
+  AND coalesce(entity_fact.is_active, true) = true
+  AND (sr.lifecycle_status = 'active'
+    OR (sr.lifecycle_status IS NULL AND sr.is_latest = true))
 WITH DISTINCT p
 OPTIONAL MATCH (addr:Address {address_id: p.preferred_address_id})
 CALL {
   WITH p
-  MATCH (p)-[:HAS_FACT]->(sr2:SourceRecord)
+  MATCH (p)-[fact:HAS_FACT]->(sr2:SourceRecord)
+  WHERE coalesce(fact.is_active, true) = true
   RETURN count(sr2) AS source_record_count
 }
 CALL {
   WITH p
-  OPTIONAL MATCH (p)-[:IDENTIFIED_BY]->(:Identifier)<-[:IDENTIFIED_BY]-(ci:Person)
-    WHERE ci.person_id <> p.person_id AND ci.status <> 'merged'
-  OPTIONAL MATCH (p)-[:LIVES_AT]->(:Address)<-[:LIVES_AT]-(ca:Person)
-    WHERE ca.person_id <> p.person_id AND ca.status <> 'merged'
-  OPTIONAL MATCH (p)-[:KNOWS]-(ck:Person)
-    WHERE ck.person_id <> p.person_id AND ck.status <> 'merged'
+  OPTIONAL MATCH (p)-[p_id:IDENTIFIED_BY]->(:Identifier)
+    <-[c_id:IDENTIFIED_BY]-(ci:Person)
+    WHERE coalesce(p_id.is_active, true) = true
+      AND coalesce(c_id.is_active, true) = true
+      AND ci.person_id <> p.person_id AND ci.status <> 'merged'
+  OPTIONAL MATCH (p)-[p_addr:LIVES_AT]->(:Address)
+    <-[c_addr:LIVES_AT]-(ca:Person)
+    WHERE coalesce(p_addr.is_active, true) = true
+      AND coalesce(c_addr.is_active, true) = true
+      AND ca.person_id <> p.person_id AND ca.status <> 'merged'
+  OPTIONAL MATCH (p)-[p_knows:KNOWS]-(ck:Person)
+    WHERE coalesce(p_knows.is_active, true) = true
+      AND ck.person_id <> p.person_id AND ck.status <> 'merged'
   WITH collect(DISTINCT ci) + collect(DISTINCT ca) + collect(DISTINCT ck) AS all_conn
   UNWIND all_conn AS c
   RETURN count(DISTINCT c) AS connection_count
@@ -76,7 +93,8 @@ CALL {
 CALL {
   WITH p
   OPTIONAL MATCH (p)-[pi:IDENTIFIED_BY]->(phone_id:Identifier)
-  WHERE phone_id.identifier_type = 'phone'
+  WHERE coalesce(pi.is_active, true) = true
+    AND phone_id.identifier_type = 'phone'
     AND phone_id.normalized_value = p.preferred_phone
   WITH pi.quality_flag AS qf
   ORDER BY CASE qf

@@ -304,12 +304,22 @@ resolve `address_id` themselves.
   "source_system": "bitrix",
   "source_record_id": "12345",
   "source_record_version": "2026-03-30T10:00:00Z",
+  "record_type": "identity",
+  "lifecycle_status": "active",
   "link_status": "linked",
   "linked_person_id": "7af4b5f5-34c1-4f22-9e2d-95ea8ff3b8c7",
   "observed_at": "2026-03-30T10:00:00Z",
   "ingested_at": "2026-03-31T00:00:00Z"
 }
 ```
+
+`lifecycle_status` is required and is one of `active`, `pending_review`,
+`superseded`, `rejected`, or `link_failed`. It identifies accepted-version
+authority; `link_status` only reports domain-link progress and must not be used
+to select the accepted version. Person-facing source-record reads return active
+records. During migration they also treat a legacy record with null lifecycle
+and explicit `is_latest = true` as effective-active; this compatibility behavior
+is temporary and the response mapper emits `lifecycle_status: "active"`.
 
 ## Match Decision
 
@@ -594,7 +604,11 @@ Supported expansions:
 
 ## GET /v1/persons/{person_id}/source-records
 
-Return source records linked to the person.
+Return effective-active source records linked to the person. An effective-active
+record has `lifecycle_status = active`, or temporarily during migration has null
+lifecycle with explicit `is_latest = true`. The response always includes the
+required, non-null `lifecycle_status`; `link_status` remains independent
+domain-link progress.
 
 ### Authorization
 
@@ -1199,8 +1213,11 @@ When a review case is resolved or cancelled, the linked source record's
 - review cancelled: re-run matching to find a new home, or flag for manual
   triage
 
-Source records must not remain in `pending_review` after their review case is
-no longer active.
+A source record's `link_status` must not remain `pending_review` after its
+domain-link review case is no longer active. This is separate from
+`lifecycle_status`: an immutable replacement may remain lifecycle
+`pending_review` until it is accepted, rejected, or replaced by a newer
+distinct pending version.
 
 ## Suggested HTTP Status Codes
 

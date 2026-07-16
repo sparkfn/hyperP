@@ -326,14 +326,16 @@ paths:
   /v1/persons/{person_id}/source-records:
     get:
       tags: [Persons]
-      summary: Get source records linked to a person
+      summary: Get effective-active source records linked to a person
       operationId: getPersonSourceRecords
       parameters:
         - $ref: '#/components/parameters/PersonId'
         - $ref: '#/components/parameters/RequestId'
       responses:
         '200':
-          description: Source records for the person
+          description: >-
+            Active source records for the person, including temporary legacy
+            effective-active records during lifecycle migration.
           content:
             application/json:
               schema:
@@ -1709,7 +1711,6 @@ components:
       properties:
         source_record_pk:
           type: string
-          format: uuid
         source_system:
           type: string
         source_record_id:
@@ -1718,37 +1719,139 @@ components:
           type:
             - string
             - 'null'
+        entity_key:
+          type: [string, 'null']
+        entity_display_name:
+          type: [string, 'null']
         record_type:
           type: string
-          enum: [system, conversation]
+          enum: [identity, bankruptcy, rental_flat, relationship, conversation, sales]
+        lifecycle_status:
+          type: string
+          description: >-
+            Accepted-version lifecycle authority. link_status independently
+            describes domain-link progress. Legacy effective-active records are
+            normalized to active in API responses during migration.
+          enum: [active, pending_review, superseded, rejected, link_failed]
         extraction_confidence:
           type:
             - number
             - 'null'
           minimum: 0
           maximum: 1
+        extraction_method:
+          type: [string, 'null']
         link_status:
           type: string
         linked_person_id:
           type:
             - string
             - 'null'
-          format: uuid
         observed_at:
-          type:
-            - string
-            - 'null'
-          format: date-time
+          type: string
         ingested_at:
           type: string
-          format: date-time
+        conversation_ref:
+          type: [object, 'null']
+          additionalProperties: true
+        raw_payload:
+          type: [object, 'null']
+          additionalProperties: true
+        normalized_payload:
+          type: [object, 'null']
+          additionalProperties: true
       required:
         - source_record_pk
         - source_system
         - source_record_id
         - record_type
+        - lifecycle_status
         - link_status
+        - observed_at
         - ingested_at
+      additionalProperties: false
+    ChatMessage:
+      type: object
+      properties:
+        timestamp:
+          type: string
+        timestamp_display:
+          type: string
+        speaker:
+          type: string
+        phone:
+          type: [string, 'null']
+        role:
+          type: [string, 'null']
+        text:
+          type: string
+      required: [timestamp, timestamp_display, speaker, text]
+      additionalProperties: false
+    SourceRecordView:
+      type: object
+      properties:
+        source_record_pk:
+          type: string
+        source_system:
+          type: string
+        source_record_id:
+          type: string
+        source_record_version:
+          type: [string, 'null']
+        entity_key:
+          type: [string, 'null']
+        entity_display_name:
+          type: [string, 'null']
+        record_type:
+          type: string
+          enum: [identity, bankruptcy, rental_flat, relationship, conversation, sales]
+        lifecycle_status:
+          type: string
+          enum: [active, pending_review, superseded, rejected, link_failed]
+        extraction_confidence:
+          type: [number, 'null']
+          minimum: 0
+          maximum: 1
+        extraction_method:
+          type: [string, 'null']
+        link_status:
+          type: string
+        linked_person_id:
+          type: [string, 'null']
+        observed_at:
+          type: string
+        ingested_at:
+          type: string
+        conversation_ref:
+          type: [object, 'null']
+          additionalProperties: true
+        raw_payload:
+          type: [object, 'null']
+          additionalProperties: true
+        normalized_payload:
+          type: [object, 'null']
+          additionalProperties: true
+        observed_at_display:
+          type: string
+        ingested_at_display:
+          type: string
+        extraction_confidence_display:
+          type: [string, 'null']
+        chat_transcript:
+          type: [array, 'null']
+          items:
+            $ref: '#/components/schemas/ChatMessage'
+      required:
+        - source_record_pk
+        - source_system
+        - source_record_id
+        - record_type
+        - lifecycle_status
+        - link_status
+        - observed_at
+        - ingested_at
+        - observed_at_display
+        - ingested_at_display
       additionalProperties: false
     MatchDecision:
       type: object
@@ -1854,12 +1957,10 @@ components:
           type:
             - string
             - 'null'
-          format: uuid
         source_record_pk:
           type:
             - string
             - 'null'
-          format: uuid
         source_record_id:
           type:
             - string
@@ -1869,10 +1970,7 @@ components:
             - string
             - 'null'
         observed_at:
-          type:
-            - string
-            - 'null'
-          format: date-time
+          type: [string, 'null']
         record_type:
           type:
             - string
@@ -1881,7 +1979,6 @@ components:
           type:
             - string
             - 'null'
-          format: uuid
         status:
           type:
             - string
@@ -1902,7 +1999,82 @@ components:
           type:
             - string
             - 'null'
-          format: date
+        preferred_address:
+          oneOf:
+            - $ref: '#/components/schemas/AddressSummary'
+            - type: 'null'
+        sales_summary:
+          oneOf:
+            - $ref: '#/components/schemas/SalesOrderSummary'
+            - type: 'null'
+      additionalProperties: false
+    SalesVehicleSummary:
+      type: object
+      properties:
+        vehicle_id:
+          type: string
+        product:
+          type: [string, 'null']
+        product_sku:
+          type: [string, 'null']
+        normalized_lta_tag:
+          type: [string, 'null']
+        normalized_serial_number:
+          type: [string, 'null']
+        conflict_flag:
+          type: boolean
+          default: false
+      required: [vehicle_id]
+      additionalProperties: false
+    NonVehicleLine:
+      type: object
+      properties:
+        product_sku:
+          type: [string, 'null']
+        product:
+          type: [string, 'null']
+        merchant:
+          type: [string, 'null']
+        manufacturer:
+          type: [string, 'null']
+        serial_number:
+          type: [string, 'null']
+        quantity:
+          type: [number, 'null']
+        unit_price:
+          type: [number, 'null']
+        total_amount:
+          type: [number, 'null']
+        currency:
+          type: [string, 'null']
+        category:
+          type: [string, 'null']
+        raw:
+          type: object
+          additionalProperties: true
+      additionalProperties: false
+    SalesOrderSummary:
+      type: object
+      properties:
+        order_id:
+          type: string
+        order_no:
+          type: [string, 'null']
+        total_amount:
+          type: [number, 'null']
+        currency:
+          type: [string, 'null']
+        ordered_at:
+          type: [string, 'null']
+        vehicles:
+          type: array
+          items:
+            $ref: '#/components/schemas/SalesVehicleSummary'
+        non_vehicle_lines:
+          type: array
+          items:
+            $ref: '#/components/schemas/NonVehicleLine'
+      required: [order_id]
       additionalProperties: false
     SharedIdentifierGroup:
       type: object
@@ -1989,13 +2161,14 @@ components:
             - 'null'
         record_type:
           type: string
-          enum: [system, conversation]
-          default: system
+          enum: [identity, bankruptcy, rental_flat, relationship, conversation, sales]
+          default: identity
           description: |
-            `system` records are deterministic extracts from another system of
-            record. `conversation` records are heuristic extracts from chat or
-            voice transcripts and are never eligible for deterministic
-            auto-merge.
+            Selects the source fact domain and its specialized projection:
+            `identity`, `bankruptcy`, `rental_flat`, `relationship`,
+            `conversation`, or `sales`. Conversation records are heuristic
+            extracts from chat or voice transcripts and are never eligible for
+            deterministic auto-merge.
         extraction_confidence:
           type:
             - number
@@ -2013,10 +2186,7 @@ components:
             - 'null'
           additionalProperties: true
         observed_at:
-          type:
-            - string
-            - 'null'
-          format: date-time
+          type: string
         record_hash:
           type: string
         identifiers:
@@ -2031,11 +2201,8 @@ components:
           additionalProperties: true
       required:
         - source_record_id
-        - record_type
+        - observed_at
         - record_hash
-        - identifiers
-        - attributes
-        - raw_payload
       additionalProperties: false
     IngestRecordsRequest:
       type: object
@@ -2349,7 +2516,7 @@ components:
         data:
           type: array
           items:
-            $ref: '#/components/schemas/SourceRecord'
+            $ref: '#/components/schemas/SourceRecordView'
         meta:
           $ref: '#/components/schemas/Meta'
       required: [data, meta]

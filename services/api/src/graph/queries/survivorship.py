@@ -27,7 +27,8 @@ RETURN p.survivorship_overrides AS overrides
 
 GET_BEST_ADDRESS = """
 MATCH (p:Person {person_id: $person_id})-[la:LIVES_AT]->(addr:Address)
-WHERE la.is_active = true AND la.quality_flag IN ['valid', 'partial_parse']
+WHERE coalesce(la.is_active, true) = true
+  AND la.quality_flag IN ['valid', 'partial_parse']
 MATCH (sr:SourceRecord {source_record_pk: la.source_record_pk})-[:FROM_SOURCE]->(ss:SourceSystem)
 RETURN addr.address_id AS address_id,
        la.last_seen_at AS last_seen_at,
@@ -38,7 +39,7 @@ LIMIT 1
 
 GET_BEST_IDENTIFIER = """
 MATCH (p:Person {person_id: $person_id})-[rel:IDENTIFIED_BY]->(id:Identifier {identifier_type: $identifier_type})
-WHERE rel.is_active = true
+WHERE coalesce(rel.is_active, true) = true
 RETURN id.normalized_value AS normalized_value,
        rel.is_verified AS is_verified,
        rel.last_confirmed_at AS last_confirmed_at
@@ -141,7 +142,8 @@ CALL {
 CALL {
   WITH p
   MATCH (p)-[rel:IDENTIFIED_BY]->(id:Identifier)
-  WHERE id.identifier_type IN ['phone', 'email', 'nric'] AND rel.is_active = true
+  WHERE id.identifier_type IN ['phone', 'email', 'nric']
+    AND coalesce(rel.is_active, true) = true
   MATCH (sr:SourceRecord {source_record_pk: rel.source_record_pk})-[:FROM_SOURCE]->(ss:SourceSystem)
   OPTIONAL MATCH (ss)-[:OPERATED_BY]->(e:Entity)
   RETURN collect({
@@ -159,7 +161,8 @@ CALL {
 CALL {
   WITH p
   MATCH (p)-[la:LIVES_AT]->(a:Address)
-  WHERE la.is_active = true AND la.quality_flag IN ['valid', 'partial_parse']
+  WHERE coalesce(la.is_active, true) = true
+    AND la.quality_flag IN ['valid', 'partial_parse']
   MATCH (sr:SourceRecord {source_record_pk: la.source_record_pk})-[:FROM_SOURCE]->(ss:SourceSystem)
   OPTIONAL MATCH (ss)-[:OPERATED_BY]->(e:Entity)
   RETURN collect({

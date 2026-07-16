@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
 from typing import cast
 
 from _txmock import _RecordingTx
@@ -9,6 +10,7 @@ from src.main import _is_address_only_source
 from src.models import IngestResult, NormalizedAddress, QualityFlag, SourceRecordEnvelope
 from src.pipeline_addresses import ingest_address_record
 from src.pipeline_writes import link_record_to_graph, link_source_record_to_address
+from src.source_version_keys import encode_source_version_key
 
 
 def test_address_upsert_matches_by_full_normalized_key() -> None:
@@ -32,6 +34,9 @@ class _Result:
     def single(self) -> dict[str, object] | None:
         return self._row
 
+    def __iter__(self) -> Iterator[dict[str, object]]:
+        return iter([] if self._row is None else [self._row])
+
 
 class _Tx(_RecordingTx):
     def __init__(self) -> None:
@@ -39,6 +44,19 @@ class _Tx(_RecordingTx):
 
     def run(self, query: str, **kwargs: object) -> _Result:
         self._record(query, kwargs)
+        if "max_source_record_version" in query:
+            return _Result(
+                {
+                    "source_record_pk": None,
+                    "source_record_version": None,
+                    "record_hash": None,
+                    "lifecycle_status": None,
+                    "linked_person_ids": [],
+                    "max_source_record_version": None,
+                }
+            )
+        if "pending.lifecycle_status = 'active'" in query:
+            return _Result({"source_record_pk": "sr-1"})
         if "RETURN sr.source_record_pk AS source_record_pk" in query:
             return _Result({"source_record_pk": "sr-1"})
         return _Result()
@@ -162,7 +180,7 @@ def test_link_record_to_graph_links_every_address() -> None:
         source_record_pk="sr-1",
     )
 
-    live_at_calls = [call for call in tx.calls if "MERGE (p)-[rel:LIVES_AT]->(addr)" in call[0]]
+    live_at_calls = [call for call in tx.calls if "MERGE (p)-[rel:LIVES_AT {" in call[0]]
     describe_calls = [
         call for call in tx.calls if "MERGE (sr)-[rel:DESCRIBES_ADDRESS]->(addr)" in call[0]
     ]
@@ -190,3 +208,132 @@ def test_ingest_address_record_returns_address_result() -> None:
 def test_rental_flats_is_address_only_source() -> None:
     assert _is_address_only_source("sgrentalflats") is True
     assert _is_address_only_source("sgbankruptcy") is False
+
+
+class _LifecycleAddressTx(_RecordingTx):
+    def __init__(self) -> None:
+        super().__init__()
+        self.active: dict[str, object] | None = None
+        self.pending: dict[str, object] | None = None
+        self.max_version = 0
+
+    def seed_legacy_active(self, record_hash: str = "sha256:abc") -> None:
+        """Model LOCK query's effective-active projection for a legacy record."""
+        self.max_version = 1
+        self.active = {
+            "source_record_pk": "legacy-sr",
+            "source_record_version": 1,
+            "record_hash": record_hash,
+            "lifecycle_status": "active",
+            "linked_person_ids": [],
+            "max_source_record_version": 1,
+        }
+
+    def run(self, query: str, **kwargs: object) -> _Result:
+        self._record(query, kwargs)
+        if query == queries.LOCK_AND_GET_SOURCE_STATE:
+            rows = [row for row in (self.active, self.pending) if row is not None]
+            if not rows:
+                rows = [
+                    {
+                        "source_record_pk": None,
+                        "source_record_version": None,
+                        "record_hash": None,
+                        "lifecycle_status": None,
+                        "linked_person_ids": [],
+                        "max_source_record_version": None,
+                    }
+                ]
+            return _IterableResult(rows)
+        if query == queries.CREATE_SOURCE_RECORD:
+            self.max_version = int(str(kwargs["source_record_version"]))
+            pk = f"sr-{self.max_version}"
+            self.pending = {
+                "source_record_pk": pk,
+                "source_record_version": self.max_version,
+                "record_hash": kwargs["record_hash"],
+                "lifecycle_status": "pending_review",
+                "linked_person_ids": [],
+                "max_source_record_version": self.max_version,
+            }
+            return _Result({"source_record_pk": pk})
+        if query in {
+            queries.ACTIVATE_FIRST_SOURCE_RECORD_VERSION,
+            queries.ACTIVATE_SOURCE_RECORD_VERSION,
+        }:
+            assert self.pending is not None
+            self.pending["lifecycle_status"] = "active"
+            self.active = self.pending
+            self.pending = None
+            return _Result({"source_record_pk": self.active["source_record_pk"]})
+        return _Result()
+
+
+class _IterableResult(_Result):
+    def __init__(self, rows: list[dict[str, object]]) -> None:
+        super().__init__(rows[0] if rows else None)
+        self.rows = rows
+
+    def __iter__(self) -> Iterator[dict[str, object]]:
+        return iter(self.rows)
+
+
+class _LifecycleSession(_Session):
+    def __init__(self, tx: _LifecycleAddressTx) -> None:
+        self.tx = tx
+
+
+class _LifecycleClient:
+    def __init__(self) -> None:
+        self.tx = _LifecycleAddressTx()
+
+    def session(self) -> _LifecycleSession:
+        return _LifecycleSession(self.tx)
+
+
+def test_address_versions_lock_duplicate_replace_and_preserve_unique_version_keys() -> None:
+    client = _LifecycleClient()
+    first = _envelope()
+    first_result = ingest_address_record(cast(object, client), first)
+    duplicate_result = ingest_address_record(cast(object, client), _envelope())
+    changed = _envelope().model_copy(update={"record_hash": "sha256:changed"})
+    changed_result = ingest_address_record(cast(object, client), changed)
+
+    assert first_result.source_record_pk == "sr-1"
+    assert duplicate_result.skipped_duplicate is True
+    assert duplicate_result.source_record_pk == "sr-1"
+    assert changed_result.source_record_pk == "sr-2"
+    creates = [call for call in client.tx.calls if call[0] == queries.CREATE_SOURCE_RECORD]
+    assert [call[1]["source_record_version"] for call in creates] == ["1", "2"]
+    assert [call[1]["source_version_key"] for call in creates] == [
+        encode_source_version_key("sgrentalflats", "rental_flat:33", "1"),
+        encode_source_version_key("sgrentalflats", "rental_flat:33", "2"),
+    ]
+    retires = [call for call in client.tx.calls if call[0] == queries.RETIRE_ADDRESS_PROJECTION]
+    assert retires == [(queries.RETIRE_ADDRESS_PROJECTION, {"source_record_pk": "sr-1"})]
+    assert any(call[0] == queries.ACTIVATE_FIRST_SOURCE_RECORD_VERSION for call in client.tx.calls)
+    assert any(call[0] == queries.ACTIVATE_SOURCE_RECORD_VERSION for call in client.tx.calls)
+
+
+def test_legacy_address_duplicate_then_changed_uses_replacement_lifecycle() -> None:
+    client = _LifecycleClient()
+    client.tx.seed_legacy_active()
+
+    duplicate = ingest_address_record(cast(object, client), _envelope())
+    changed = _envelope().model_copy(update={"record_hash": "sha256:changed"})
+    replacement = ingest_address_record(cast(object, client), changed)
+
+    assert duplicate.skipped_duplicate is True
+    assert duplicate.source_record_pk == "legacy-sr"
+    assert replacement.source_record_pk == "sr-2"
+    assert any(
+        call == (queries.RETIRE_ADDRESS_PROJECTION, {"source_record_pk": "legacy-sr"})
+        for call in client.tx.calls
+    )
+    activation = next(
+        call for call in client.tx.calls if call[0] == queries.ACTIVATE_SOURCE_RECORD_VERSION
+    )
+    assert activation[1]["old_source_record_pk"] == "legacy-sr"
+    assert not any(
+        call[0] == queries.ACTIVATE_FIRST_SOURCE_RECORD_VERSION for call in client.tx.calls
+    )

@@ -19,7 +19,7 @@ import time
 import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
-from typing import cast
+from typing import TypedDict, cast
 
 import redis
 from celery import Task
@@ -32,6 +32,10 @@ from src.celery_app import celery_app
 from src.config import get_settings
 from src.graph import queries
 from src.graph.client import Neo4jClient
+from src.graph.migrations import (
+    reconcile_projection_relationship_lifecycle,
+    reconcile_source_record_lifecycle,
+)
 from src.main import IngestionSummary, initialize_ingestion_graph, run_ingestion, setup_logging
 from src.matching.pair_score import score_person_pair
 from src.pipeline_person_pairs import _ENGINE_VERSION, _POLICY_VERSION
@@ -245,6 +249,30 @@ class _SourceAlreadyRunningError(Exception):
         self.source_key = source_key
 
 
+class LifecycleReconciliationSummary(TypedDict):
+    status: str
+    source_records: int
+    projections: int
+
+
+def run_lifecycle_reconciliation() -> LifecycleReconciliationSummary:
+    """Repair lifecycle deltas while serializing concurrent repair attempts."""
+    with _acquire_source_lock("lifecycle-reconciliation"), _acquire_init_lock():
+        settings = get_settings()
+        client = Neo4jClient(settings)
+        try:
+            client.verify_connectivity()
+            source_records = reconcile_source_record_lifecycle(client)
+            projections = reconcile_projection_relationship_lifecycle(client)
+        finally:
+            client.close()
+    return {
+        "status": "complete",
+        "source_records": source_records,
+        "projections": projections,
+    }
+
+
 @celery_app.task(
     name="src.tasks.run_ingestion_task",
     bind=True,
@@ -276,12 +304,19 @@ def run_ingestion_task(
             _acquire_ingestion_slot(settings.max_concurrent_ingestions) as slot_id,
             _renew_ingestion_leases(source_key, source_lock_id, slot_id),
         ):
-            return run_ingestion(
+            summary = run_ingestion(
                 source_key,
                 mode,
                 dump_path,
                 initialize_graph=False,
             )
+            try:
+                run_lifecycle_reconciliation()
+            except _SourceAlreadyRunningError:
+                logger.info("Lifecycle reconciliation is already running; skipping follow-up")
+            except Exception:
+                logger.exception("Post-ingestion lifecycle reconciliation failed")
+            return summary
     except _SourceAlreadyRunningError as exc:
         logger.warning(
             "Ingestion source %s is already running; skipping duplicate",
@@ -303,6 +338,25 @@ def run_ingestion_task(
     except Exception as exc:
         logger.exception("Ingestion task failed for %s", source_key)
         # Don't retry on real errors — surface them to the caller.
+        raise Reject(str(exc), requeue=False) from exc
+
+
+@celery_app.task(name="src.tasks.reconcile_lifecycle_task", max_retries=0)
+def reconcile_lifecycle_task() -> LifecycleReconciliationSummary:
+    """Periodically repair lifecycle state for late-arriving legacy records."""
+    settings = get_settings()
+    setup_logging(settings.log_level)
+    try:
+        return run_lifecycle_reconciliation()
+    except _SourceAlreadyRunningError:
+        logger.info("Lifecycle reconciliation is already running; skipping duplicate")
+        return {
+            "status": "already_running",
+            "source_records": 0,
+            "projections": 0,
+        }
+    except Exception as exc:
+        logger.exception("Lifecycle reconciliation failed")
         raise Reject(str(exc), requeue=False) from exc
 
 

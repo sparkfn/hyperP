@@ -17,6 +17,105 @@ All writes are idempotent on ``(source_system_key, source_*_id)``.
 
 from __future__ import annotations
 
+STAGE_SALES_REVIEW = """
+MATCH (sr:SourceRecord {source_record_pk: $source_record_pk,
+                        lifecycle_status: 'pending_review', record_type: 'sales'})
+MATCH (sr)-[:FROM_SOURCE]->(source:SourceSystem {source_key: $source_system_key})
+WHERE sr.source_record_id = $source_record_id
+SET sr.sales_stage_lock_version = coalesce(sr.sales_stage_lock_version, 0) + 1
+MERGE (stage:StagedSalesOrder {stage_order_key: sr.source_record_pk})
+SET stage.lock_version = coalesce(stage.lock_version, 0) + 1,
+    stage.source_record_pk = sr.source_record_pk,
+    stage.source_system_key = source.source_key,
+    stage.entity_key = $entity_key,
+    stage.source_order_id = $source_order_id,
+    stage.order_no = $order.order_no,
+    stage.ordered_at = $order.ordered_at,
+    stage.release_date = $order.release_date,
+    stage.status = $order.status,
+    stage.total_amount = $order.total_amount,
+    stage.currency = $order.currency,
+    stage.item_count = $order.item_count,
+    stage.metadata = $order.metadata,
+    stage.non_vehicle_lines = $order.non_vehicle_lines,
+    stage.points_used = $order.points_used,
+    stage.points_gained = $order.points_gained,
+    stage.did_redeem_discount = $order.did_redeem_discount,
+    stage.is_purchase_points = $order.is_purchase_points,
+    stage.stage_hash = $stage_hash,
+    stage.order_hash = $order_hash,
+    stage.expected_line_count = size($lines),
+    stage.expected_observation_count = size($observations),
+    stage.updated_at = datetime()
+WITH sr, stage
+OPTIONAL MATCH (stage)-[:STAGED_CONTAINS]->(old:StagedSalesLine)
+DETACH DELETE old
+WITH DISTINCT sr, stage
+OPTIONAL MATCH (stage)-[:STAGED_OBSERVATION]->(old:StagedSalesVehicleObservation)
+DETACH DELETE old
+WITH DISTINCT sr, stage
+UNWIND $lines AS line
+CREATE (staged_line:StagedSalesLine {stage_line_key: sr.source_record_pk + ':' +
+  toString(line.line_index)})
+SET staged_line.line_index = line.line_index,
+    staged_line.line_hash = line.line_hash,
+    staged_line.source_line_item_id = line.source_line_item_id,
+    staged_line.source_product_id = line.source_product_id,
+    staged_line.line_no = line.line_no,
+    staged_line.quantity = line.quantity,
+    staged_line.unit_price = line.unit_price,
+    staged_line.line_total = line.line_total,
+    staged_line.currency = line.currency,
+    staged_line.discount_amount = line.discount_amount,
+    staged_line.tax_amount = line.tax_amount,
+    staged_line.metadata = line.metadata,
+    staged_line.product_sku = line.product_sku,
+    staged_line.product_name = line.product_name,
+    staged_line.product_display_name = line.product_display_name,
+    staged_line.product_category = line.product_category,
+    staged_line.product_subcategory = line.product_subcategory,
+    staged_line.product_manufacturer = line.product_manufacturer,
+    staged_line.product_attributes = line.product_attributes,
+    staged_line.product_is_active = line.product_is_active
+MERGE (stage)-[:STAGED_CONTAINS]->(staged_line)
+WITH DISTINCT sr, stage
+UNWIND $observations AS observation
+CREATE (staged_observation:StagedSalesVehicleObservation {
+  stage_observation_key: sr.source_record_pk + ':' + toString(observation.observation_index)
+})
+SET staged_observation.observation_index = observation.observation_index,
+    staged_observation.observation_hash = observation.observation_hash,
+    staged_observation.source_system_key = source.source_key,
+    staged_observation.source_record_id = sr.source_record_id,
+    staged_observation.product_sku = observation.product_sku,
+    staged_observation.product = observation.product,
+    staged_observation.manufacturer = observation.manufacturer,
+    staged_observation.model = observation.model,
+    staged_observation.unit_label = observation.unit_label,
+    staged_observation.lta_tag = observation.lta_tag,
+    staged_observation.normalized_lta_tag = observation.normalized_lta_tag,
+    staged_observation.serial_number = observation.serial_number,
+    staged_observation.normalized_serial_number = observation.normalized_serial_number,
+    staged_observation.source_kind = observation.source_kind,
+    staged_observation.observed_at = observation.observed_at,
+    staged_observation.confidence = observation.confidence,
+    staged_observation.quality_flag = observation.quality_flag,
+    staged_observation.raw_context = observation.raw_context
+MERGE (stage)-[:STAGED_OBSERVATION]->(staged_observation)
+WITH sr, stage
+OPTIONAL MATCH (stage)-[:STAGED_CONTAINS]->(line:StagedSalesLine)
+WITH sr, stage, count(DISTINCT line) AS line_count
+OPTIONAL MATCH (stage)-[:STAGED_OBSERVATION]->(observation:StagedSalesVehicleObservation)
+WITH sr, stage, line_count, count(DISTINCT observation) AS observation_count
+WHERE line_count = stage.expected_line_count
+  AND observation_count = stage.expected_observation_count
+SET sr.staged_sales_ready = true,
+    sr.staged_sales_hash = $stage_hash,
+    sr.staged_sales_line_count = stage.expected_line_count,
+    sr.staged_sales_observation_count = stage.expected_observation_count
+RETURN stage.source_record_pk AS source_record_pk
+"""
+
 #: Idempotent create of a Product. Matches on (source_system_key, source_product_id).
 MERGE_PRODUCT = """
 MERGE (p:Product {
@@ -98,9 +197,15 @@ SET
     li.tax_amount      = $tax_amount,
     li.metadata        = $metadata
 WITH li
+OPTIONAL MATCH (:Order)-[prior:CONTAINS]->(li)
+DELETE prior
+WITH DISTINCT li
 MATCH (o:Order {source_system_key: $source_system_key, source_order_id: $source_order_id})
 MERGE (o)-[:CONTAINS]->(li)
 WITH li
+OPTIONAL MATCH (li)-[prior_product:OF_PRODUCT]->(:Product)
+DELETE prior_product
+WITH DISTINCT li
 MATCH (p:Product {source_system_key: $source_system_key, source_product_id: $source_product_id})
 MERGE (li)-[:OF_PRODUCT]->(p)
 RETURN li.line_item_id AS line_item_id
@@ -112,7 +217,18 @@ RETURN li.line_item_id AS line_item_id
 RESOLVE_SALES_CUSTOMER = """
 MATCH (sales_sr:SourceRecord {source_record_pk: $sales_source_record_pk})
       -[:FOR_CUSTOMER_RECORD]->(identity_sr:SourceRecord)
-      -[:LINKED_TO]->(p:Person {status: 'active'})
+WHERE identity_sr.lifecycle_status = 'active'
+   OR (
+       identity_sr.lifecycle_status IS NULL
+       AND identity_sr.is_latest = true
+   )
+WITH collect(DISTINCT identity_sr) AS identity_records
+WHERE size(identity_records) = 1
+UNWIND identity_records AS identity_sr
+MATCH (identity_sr)-[:LINKED_TO]->(p:Person {status: 'active'})
+WITH collect(DISTINCT p) AS persons
+WHERE size(persons) = 1
+UNWIND persons AS p
 RETURN p.person_id AS person_id
 """
 
@@ -127,8 +243,41 @@ LINK_SALES_TO_IDENTITY_RECORD = """
 MATCH (sales_sr:SourceRecord {source_record_pk: $sales_source_record_pk})
 MATCH (identity_sr:SourceRecord {source_record_id: $identity_source_record_id})
       -[:FROM_SOURCE]->(:SourceSystem {source_key: $source_system_key})
+WHERE identity_sr.lifecycle_status = 'active'
+   OR (
+       identity_sr.lifecycle_status IS NULL
+       AND identity_sr.is_latest = true
+   )
+WITH sales_sr, collect(DISTINCT identity_sr) AS identity_records
+WHERE size(identity_records) = 1
+UNWIND identity_records AS identity_sr
+OPTIONAL MATCH (sales_sr)-[stale:FOR_CUSTOMER_RECORD]->(stale_identity:SourceRecord)
+WHERE stale_identity <> identity_sr
+DELETE stale
+WITH DISTINCT sales_sr, identity_sr
 MERGE (sales_sr)-[:FOR_CUSTOMER_RECORD]->(identity_sr)
 RETURN identity_sr.source_record_pk AS identity_source_record_pk
+"""
+
+REPLACE_ORDER_LINES = """
+MATCH (o:Order {source_system_key: $source_system_key, source_order_id: $source_order_id})
+CALL {
+    WITH o
+    OPTIONAL MATCH (o)-[contains:CONTAINS]->(stale:LineItem)
+    WHERE NOT stale.source_line_item_id IN $source_line_item_ids
+    OPTIONAL MATCH (stale)-[stale_product:OF_PRODUCT]->(:Product)
+    DELETE contains, stale_product
+    RETURN count(contains) AS removed_contains
+}
+WITH DISTINCT o, removed_contains
+CALL {
+    WITH o
+    OPTIONAL MATCH (o)-[:CONTAINS]->(current:LineItem)-[old_product:OF_PRODUCT]->(:Product)
+    WHERE current.source_line_item_id IN $source_line_item_ids
+    DELETE old_product
+    RETURN count(old_product) AS removed_product_links
+}
+RETURN removed_contains, removed_product_links
 """
 
 #: Attach a resolved Person to the Order via PURCHASED. Deduplicated on
@@ -150,18 +299,28 @@ SET rel.source_record_pk  = $source_record_pk,
 """
 
 CLEAR_SUPERSEDED_SALES_LINKS = """
-MATCH (o:Order {source_system_key: $source_system_key, source_order_id: $source_order_id})
-OPTIONAL MATCH (:Person)-[purchase:PURCHASED {source_system_key: $source_system_key}]->(o)
-WHERE purchase.source_record_pk = $old_source_record_pk
-DELETE purchase
-WITH o
-OPTIONAL MATCH (o)-[unit_rel:INVOLVES_VEHICLE]->(:Vehicle)
-WHERE unit_rel.source_record_pk = $old_source_record_pk
-DELETE unit_rel
-WITH o
-OPTIONAL MATCH (:Person)-[bought:BOUGHT_VEHICLE {source_system_key: $source_system_key, source_order_id: $source_order_id}]->(:Vehicle)
-WHERE bought.source_record_pk = $old_source_record_pk
-DELETE bought
+CALL {
+    OPTIONAL MATCH (:Person)-[purchase:PURCHASED {source_system_key: $source_system_key}]
+                   ->(:Order)
+    WHERE purchase.source_record_pk = $old_source_record_pk
+    DELETE purchase
+    RETURN count(purchase) AS retired_purchases
+}
+CALL {
+    OPTIONAL MATCH (:Order {source_system_key: $source_system_key})
+                   -[unit_rel:INVOLVES_VEHICLE]->(:Vehicle)
+    WHERE unit_rel.source_record_pk = $old_source_record_pk
+    DELETE unit_rel
+    RETURN count(unit_rel) AS retired_order_vehicles
+}
+CALL {
+    OPTIONAL MATCH (:Person)-[bought:BOUGHT_VEHICLE {source_system_key: $source_system_key}]
+                   ->(:Vehicle)
+    WHERE bought.source_record_pk = $old_source_record_pk
+    DELETE bought
+    RETURN count(bought) AS retired_bought_vehicles
+}
+RETURN retired_purchases, retired_order_vehicles, retired_bought_vehicles
 """
 
 #: Find sales SourceRecords that are still waiting for their customer
@@ -174,9 +333,14 @@ DELETE bought
 FIND_PENDING_CUSTOMER_SALES = """
 MATCH (sr:SourceRecord {record_type: 'sales', link_status: 'pending_customer'})
       -[:FROM_SOURCE]->(ss:SourceSystem)
+WHERE sr.lifecycle_status = 'pending_review'
+  AND sr.source_record_pk > $cursor
 RETURN sr.source_record_pk AS source_record_pk,
+       sr.source_record_id AS source_record_id,
+       sr.expected_active_source_record_pk AS expected_active_source_record_pk,
        ss.source_key       AS source_system_key,
        sr.raw_payload      AS raw_payload
+ORDER BY sr.source_record_pk
 LIMIT $limit
 """
 
@@ -251,7 +415,11 @@ RETURN count(o) AS rewired_count
 #: returns no candidates — vehicle identity alone is not enough.
 FIND_VEHICLE_CANDIDATES_FOR_SALES = """
 MATCH (sr:SourceRecord {source_record_pk: $sales_source_record_pk, link_status: 'pending_customer'})
-MATCH (o:Order)-[inv:INVOLVES_VEHICLE {source_record_pk: $sales_source_record_pk}]->(v:Vehicle)
+// Candidate identity is derived from staged raw payload, never a visible
+// INVOLVES_VEHICLE {source_record_pk: $sales_source_record_pk} projection.
+MATCH (v:Vehicle)
+WHERE v.normalized_serial_number IN $normalized_serial_numbers
+   OR v.normalized_lta_tag IN $normalized_lta_tags
 MATCH (v)<-[rel:BOUGHT_VEHICLE|OWNS_VEHICLE]-(p:Person {status: 'active'})
 WHERE NOT EXISTS {
     MATCH (md:MatchDecision)-[:ABOUT_LEFT {entity_type: 'source_record'}]->(sr)

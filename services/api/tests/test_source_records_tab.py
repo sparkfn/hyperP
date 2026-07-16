@@ -66,6 +66,7 @@ class FakeSourceRepo:
             source_system="eko_phppos",
             source_record_id="8841",
             record_type="conversation",
+            lifecycle_status="active",
             extraction_confidence=0.82,
             link_status="linked",
             observed_at="2026-04-02T03:14:00Z",
@@ -186,6 +187,21 @@ async def test_source_records_returns_display_fields(
     assert item["observed_at_display"] == "02 Apr 2026, 03:14 AM"
     assert item["ingested_at_display"] == "02 Apr 2026, 03:14 AM"
     assert item["extraction_confidence_display"] == "82%"
+    assert item["lifecycle_status"] == "active"
+
+
+def test_source_record_lifecycle_type_rejects_unknown_state() -> None:
+    with pytest.raises(ValueError, match="lifecycle_status"):
+        SourceRecord(
+            source_record_pk="pk1",
+            source_system="eko_phppos",
+            source_record_id="8841",
+            record_type="identity",
+            lifecycle_status="latest",  # type: ignore[arg-type]
+            link_status="linked",
+            observed_at="2026-04-02T03:14:00Z",
+            ingested_at="2026-04-02T03:14:00Z",
+        )
 
 
 @pytest.mark.anyio

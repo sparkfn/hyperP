@@ -6,7 +6,14 @@ import json
 from typing import cast
 
 from neo4j import ManagedTransaction
-from src.models import EngineType, MatchDecision, MatchResult, RecordType, SourceRecordEnvelope
+from src.models import (
+    EngineType,
+    MatchDecision,
+    MatchResult,
+    RecordType,
+    SourceRecordEnvelope,
+    SourceRecordLifecycleStatus,
+)
 from src.pipeline_writes import persist_source_record
 
 
@@ -29,6 +36,7 @@ def test_persist_source_record_includes_chat_summary_in_normalized_payload() -> 
     envelope = SourceRecordEnvelope(
         source_system="whatsapp_chat",
         source_record_id="whatsapp-chat-1",
+        source_record_version="1",
         record_type=RecordType.CONVERSATION,
         observed_at="2026-05-06T00:00:00",
         record_hash="hash-1",
@@ -67,9 +75,12 @@ def test_persist_source_record_includes_chat_summary_in_normalized_payload() -> 
         match_result=match_result,
         is_new_person=False,
         ingest_run_id=None,
+        lifecycle_status=SourceRecordLifecycleStatus.PENDING_REVIEW,
+        expected_active_source_record_pk=None,
     )
 
     assert tx.params is not None
+    assert tx.params["is_latest"] is False
     payload_raw = tx.params["normalized_payload"]
     assert isinstance(payload_raw, str)
     payload = json.loads(payload_raw)

@@ -112,10 +112,9 @@ RETURN v.vehicle_id AS vehicle_id, coalesce(v.conflict_flag, false) AS conflict
 # exactly one Vehicle matched.
 #
 # Identity rule (spec §3 "merges" — LTA-only Vehicles cross sources):
-#   The serial+product branch is a *fallback* that only fires when the caller
-#   also carries an LTA tag. LTA-tagged Vehicles are the only ones that may
-#   cross sources via chat; serial+product alone matches in-source identity
-#   exactly and is not used as a cross-source merge key.
+#   The serial+product branch is a fallback used only when the caller has no
+#   LTA tag. Product-name agreement and the caller's exactly-one-result gate
+#   prevent a serial collision from creating an ambiguous projection.
 RESOLVE_EXISTING_VEHICLE_FOR_CHAT = """
 MATCH (v:Vehicle)
 WHERE (
@@ -123,10 +122,9 @@ WHERE (
     AND v.normalized_lta_tag = $normalized_lta_tag
   )
   OR (
-    $normalized_lta_tag IS NOT NULL
+    $normalized_lta_tag IS NULL
     AND $normalized_serial_number IS NOT NULL
     AND $product IS NOT NULL
-    AND v.normalized_lta_tag = $normalized_lta_tag
     AND v.normalized_serial_number = $normalized_serial_number
     AND v.product IS NOT NULL
     AND toLower(trim(v.product)) = toLower(trim($product))
@@ -141,12 +139,24 @@ MATCH (sr:SourceRecord {source_record_pk: $source_record_pk})
 MATCH (v:Vehicle {vehicle_id: $vehicle_id})
 MERGE (sr)-[rel:MENTIONS_VEHICLE]->(v)
 SET rel.source_system_key = $source_system_key,
+    rel.source_record_pk = $source_record_pk,
     rel.source_record_id = $source_record_id,
     rel.raw_context = $raw_context,
     rel.observed_at = $observed_at,
     rel.confidence = $confidence,
     rel.quality_flag = $quality_flag,
     rel.last_seen_at = datetime(),
+    rel.updated_at = datetime(),
+    rel.is_active = true,
+    rel.activated_at = coalesce(rel.activated_at, datetime()),
+    rel.retired_at = null
+"""
+
+RETIRE_CONVERSATION_VEHICLE_MENTIONS = """
+MATCH (:SourceRecord {source_record_pk: $source_record_pk})-[rel:MENTIONS_VEHICLE]->(:Vehicle)
+WHERE coalesce(rel.is_active, true)
+SET rel.is_active = false,
+    rel.retired_at = datetime(),
     rel.updated_at = datetime()
 """
 

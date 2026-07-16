@@ -11,8 +11,18 @@ from __future__ import annotations
 #: (source_system_key, source_record_pk) so re-ingestion of the same source
 #: row never produces duplicate edges.
 LINK_PERSON_KNOWS = """
+MATCH (current:SourceRecord {source_record_pk: $source_record_pk})
+OPTIONAL MATCH (old:SourceRecord)-[:PREVIOUS_VERSION_OF]->(current)
+OPTIONAL MATCH ()-[old_rel:KNOWS]->()
+WHERE old_rel.source_record_pk = old.source_record_pk
+WITH collect(old_rel) AS old_relationships
 MATCH (declarer:Person {person_id: $declarer_person_id})
 MATCH (contact:Person  {person_id: $contact_person_id})
+FOREACH (old_rel IN old_relationships |
+  SET old_rel.is_active = false,
+      old_rel.retired_at = datetime(),
+      old_rel.updated_at = datetime()
+)
 MERGE (declarer)-[rel:KNOWS {
     source_system_key: $source_system_key,
     source_record_pk:  $source_record_pk
@@ -28,14 +38,19 @@ ON CREATE SET
     rel.last_seen_at          = datetime(),
     rel.last_confirmed_at     = datetime(),
     rel.created_at            = datetime(),
-    rel.updated_at            = datetime()
+    rel.updated_at            = datetime(),
+    rel.is_active             = true,
+    rel.activated_at          = datetime()
 ON MATCH SET
     rel.relationship_label = $relationship_label,
     rel.status             = $status,
     rel.approved_at        = $approved_at,
     rel.last_seen_at       = datetime(),
     rel.last_confirmed_at  = datetime(),
-    rel.updated_at         = datetime()
+    rel.updated_at         = datetime(),
+    rel.is_active          = true,
+    rel.activated_at       = coalesce(rel.activated_at, datetime()),
+    rel.retired_at         = null
 RETURN rel.knows_id AS knows_id
 """
 
@@ -73,9 +88,11 @@ RETURN count(other) AS rewired_count
 #: so the range scan is indexed.
 SCAN_CONTACT_SOURCE_RECORDS = """
 MATCH (sr:SourceRecord)
-      -[:FROM_SOURCE]->(:SourceSystem {source_key: 'fundbox_consumer_backend:contacts'})
+      -[:FROM_SOURCE]->(ss:SourceSystem {source_key: 'fundbox_consumer_backend:contacts'})
 WHERE sr.source_record_pk > $cursor
+  AND sr.lifecycle_status = 'active'
 RETURN sr.source_record_pk AS source_record_pk,
+       ss.source_key       AS source_system_key,
        sr.raw_payload       AS raw_payload
 ORDER BY sr.source_record_pk
 LIMIT $batch_size
@@ -86,7 +103,10 @@ LIMIT $batch_size
 #: KNOWS materializer to resolve the declarer side of a contact link.
 RESOLVE_PERSON_FROM_SOURCE_RECORD_ID = """
 MATCH (sr:SourceRecord {source_record_id: $source_record_id})
-      -[:LINKED_TO]->(p:Person {status: 'active'})
+MATCH (sr)-[:FROM_SOURCE]->(:SourceSystem {source_key: $source_system_key})
+MATCH (sr)-[:LINKED_TO]->(p:Person {status: 'active'})
+WHERE sr.lifecycle_status = 'active'
+   OR (sr.lifecycle_status IS NULL AND sr.is_latest = true)
 RETURN p.person_id AS person_id
 LIMIT 1
 """
@@ -95,6 +115,7 @@ LIMIT 1
 RESOLVE_PERSON_FROM_SOURCE_RECORD_PK = """
 MATCH (sr:SourceRecord {source_record_pk: $source_record_pk})
       -[:LINKED_TO]->(p:Person {status: 'active'})
+WHERE sr.lifecycle_status = 'active'
 RETURN p.person_id AS person_id
 LIMIT 1
 """
@@ -103,6 +124,7 @@ SCAN_CHAT_RELATIONSHIP_SOURCE_RECORDS = """
 MATCH (sr:SourceRecord)-[:FROM_SOURCE]->(ss:SourceSystem)
 WHERE sr.source_record_pk > $cursor
   AND sr.record_type = 'conversation'
+  AND sr.lifecycle_status = 'active'
   AND sr.raw_payload CONTAINS 'primary_source_record_id'
   AND sr.raw_payload CONTAINS 'relationship'
 RETURN sr.source_record_pk AS source_record_pk,
@@ -110,6 +132,14 @@ RETURN sr.source_record_pk AS source_record_pk,
        sr.raw_payload      AS raw_payload
 ORDER BY sr.source_record_pk
 LIMIT $batch_size
+"""
+
+RETIRE_KNOWS_PROJECTION = """
+MATCH ()-[rel:KNOWS {source_record_pk: $source_record_pk}]->()
+WHERE coalesce(rel.is_active, true)
+SET rel.is_active = false,
+    rel.retired_at = datetime(),
+    rel.updated_at = datetime()
 """
 
 

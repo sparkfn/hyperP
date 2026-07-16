@@ -147,6 +147,72 @@ Provides read and workflow APIs to downstream systems and internal tools.
 9. Recompute golden profile.
 10. Expose the result through APIs and reviewer tools.
 
+### Source Record Version Lifecycle
+
+A source identity is exactly `(source_system, source_record_id)`. Each distinct
+delivery creates an immutable `SourceRecord` version, while a known hash returns
+its existing version. At most one accepted version for a source identity is
+`active`. The five lifecycle states are:
+
+- `active`: accepted and contributing to current projections
+- `pending_review`: unresolved replacement with no active projections
+- `superseded`: formerly active version retained for audit
+- `rejected`: replacement that must not contribute projections
+- `link_failed`: malformed or permanently unresolved specialized record
+
+The lifecycle coordinator locks the exact source identity, allocates versions,
+and supplies the previously linked Person as continuity evidence to matching.
+Automatic reassignment to another Person requires destination confidence of at
+least `0.90` and a lead of at least `0.10`. Ambiguous continuity involving
+multiple prior owners always produces `REVIEW`.
+
+A pending replacement preserves the accepted version and all of its evidence.
+Only one unresolved pending version is retained per source identity; a newer
+distinct pending version rejects the older pending version. On acceptance,
+projection retirement and activation plus recomputation of every Person gaining
+or losing evidence execute in one Neo4j transaction. Projection relationships
+are provenance-keyed by `source_record_pk`, so retirement affects only evidence
+from the superseded version.
+
+```mermaid
+sequenceDiagram
+    participant I as Ingestion path
+    participant C as Lifecycle coordinator
+    participant M as Matcher
+    participant P as Projector
+    participant N as Neo4j
+    I->>C: submit immutable source version
+    C->>N: begin staging transaction; lock source identity
+    C->>N: load active and pending versions
+    C->>N: create immutable staged version; commit
+    C->>M: match with prior Person continuity
+    alt REVIEW
+        M-->>C: review required
+        C->>N: begin review transaction
+        C->>N: mark staged version pending_review; create review case
+        Note over C,N: Accepted version and projections remain active
+        C->>N: commit transaction
+    else accepted update
+        M-->>C: accepted Person(s)
+        C->>N: begin activation transaction; relock and re-read
+        C->>P: retire prior source_record_pk projections
+        C->>P: activate replacement projections
+        C->>N: supersede prior; activate replacement
+        C->>N: recompute all affected Persons
+        Note over C,N: Retirement, activation, lifecycle changes,<br/>and recomputation are one transaction
+        C->>N: commit transaction
+    end
+```
+
+During migration, a legacy record with null `lifecycle_status` and explicit
+`is_latest = true` is temporarily treated as effective-active. This compatibility
+rule is not lifecycle authority and is removed after backfill. The lifecycle
+repair is gated by a `DataMigration` completion marker; only after it completes
+is the deferred unique constraint installed on the internal
+`source_version_key` encoding. `link_status` describes domain-link progress
+(for example, sales customer resolution) and never determines which version is
+accepted.
+
 ## Source Data Contract
 
 Every ingested source record should be translated into a common envelope:
@@ -155,7 +221,7 @@ Every ingested source record should be translated into a common envelope:
 {
   "source_system": "bitrix",
   "source_record_id": "12345",
-  "record_type": "system",
+  "record_type": "identity",
   "ingest_type": "batch",
   "observed_at": "2026-03-31T00:00:00Z",
   "record_hash": "sha256:...",
@@ -175,6 +241,11 @@ Every ingested source record should be translated into a common envelope:
 }
 ```
 
+`record_type` is one of `identity`, `bankruptcy`, `rental_flat`,
+`relationship`, `conversation`, or `sales`. These values distinguish the
+source fact's domain and select its specialized projection behavior;
+`conversation` additionally identifies heuristic transcript extraction.
+
 ## Graph Data Model
 
 The data model is graph-native. Entities are Neo4j nodes; associations are
@@ -189,7 +260,7 @@ section describes the model at a conceptual level.
 | **Person** | Canonical identity entity. Golden profile fields stored inline. | `person_id`, `status`, `preferred_full_name`, `preferred_phone`, `preferred_email`, `preferred_address_id`, `preferred_dob`, `profile_completeness_score`, `golden_profile_computed_at` |
 | **Identifier** | Shared identity signal (phone, email, govt ID hash, etc.). Multiple persons may connect to the same Identifier — this is the graph backbone for contact tracing. | `identifier_id`, `identifier_type`, `normalized_value`, `hashed_value` |
 | **Address** | Shared normalized address. Multiple persons may connect to the same Address — enables "who else lives here?" traversal. | `address_id`, `unit_number`, `street_number`, `street_name`, `city`, `postal_code`, `country_code`, `normalized_full` |
-| **SourceRecord** | Immutable raw input record from an upstream system. `record_type` is `system` (deterministic extract from a system of record) or `conversation` (heuristic extract from chat / voice transcripts). | `source_record_pk`, `source_record_id`, `source_record_version`, `record_type`, `link_status`, `record_hash`, `raw_payload`, `observed_at`, `ingested_at`, `extraction_confidence`, `extraction_method`, `conversation_ref` |
+| **SourceRecord** | Immutable version of raw input from an upstream system. Exactly one accepted version per source identity may be active. | `source_record_pk`, `source_record_id`, `source_record_version`, `record_type`, `lifecycle_status`, `link_status`, `record_hash`, `raw_payload`, `observed_at`, `ingested_at`, `extraction_confidence`, `extraction_method`, `conversation_ref` |
 | **SourceSystem** | Registered upstream system with field-level trust config. | `source_key`, `display_name`, `system_type`, `field_trust` (map) |
 | **MatchDecision** | Immutable decision from any engine path. | `match_decision_id`, `engine_type`, `engine_version`, `decision`, `confidence`, `reasons`, `blocking_conflicts`, `feature_snapshot`, `policy_version` |
 | **ReviewCase** | Human review queue item. Review actions stored as ordered list property. | `review_case_id`, `priority`, `queue_state`, `assigned_to`, `resolution`, `actions` (list of maps) |
@@ -262,12 +333,10 @@ detect and clear stale `preferred_address_id` references.
 
 ### Source Record Lifecycle
 
-1. Raw record arrives.
-2. Record hash is checked for idempotency.
-3. Record is normalized.
-4. Candidate matches are generated.
-5. A decision is produced.
-6. The source record is linked to a person or held pending review.
+The authoritative immutable-version states, continuity rules, migration
+compatibility, and transaction boundaries are defined in
+[Source Record Version Lifecycle](#source-record-version-lifecycle). This
+section adds no separate link-centric lifecycle.
 
 ### Person Lifecycle
 

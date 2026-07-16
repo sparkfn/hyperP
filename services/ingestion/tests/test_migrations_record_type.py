@@ -6,7 +6,14 @@ from typing import cast
 
 from src.graph import queries
 from src.graph.client import Neo4jClient
-from src.graph.migrations import apply_data_migrations, backfill_record_type_subtypes
+from src.graph.migrations import (
+    MIGRATE_PROJECTION_RELATIONSHIP_LIFECYCLE,
+    MIGRATE_SOURCE_RECORD_LIFECYCLE,
+    RECONCILE_PROJECTION_RELATIONSHIP_LIFECYCLE,
+    RECONCILE_SOURCE_RECORD_LIFECYCLE,
+    apply_data_migrations,
+    backfill_record_type_subtypes,
+)
 
 
 def test_backfill_query_is_exported_and_maps_sources_to_subtypes() -> None:
@@ -64,4 +71,11 @@ def test_backfill_runner_is_safe_when_nothing_to_update() -> None:
 def test_apply_data_migrations_runs_backfill() -> None:
     client = _Client(updated=3)
     apply_data_migrations(cast(Neo4jClient, client))
-    assert client.tx.queries == [queries.BACKFILL_RECORD_TYPE_SUBTYPES]
+    assert client.tx.queries[0] == queries.BACKFILL_RECORD_TYPE_SUBTYPES
+    assert client.tx.queries == [
+        queries.BACKFILL_RECORD_TYPE_SUBTYPES,
+        MIGRATE_SOURCE_RECORD_LIFECYCLE,
+        MIGRATE_PROJECTION_RELATIONSHIP_LIFECYCLE,
+        RECONCILE_SOURCE_RECORD_LIFECYCLE,
+        RECONCILE_PROJECTION_RELATIONSHIP_LIFECYCLE,
+    ]

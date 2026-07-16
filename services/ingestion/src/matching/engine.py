@@ -30,6 +30,22 @@ from src.models import (
 
 logger = logging.getLogger(__name__)
 
+REASSIGNMENT_AUTO_THRESHOLD: float = 0.90
+REASSIGNMENT_MIN_MARGIN: float = 0.10
+
+
+def ambiguous_prior_owners_result(prior_person_ids: tuple[str, ...]) -> MatchResult:
+    """Require review when one immutable version previously supported many people."""
+    if len(prior_person_ids) < 2:
+        raise ValueError("ambiguous prior-owner policy requires at least two owners")
+    return MatchResult(
+        decision=MatchDecision.REVIEW,
+        confidence=0.0,
+        reasons=["ambiguous_prior_owners"],
+        engine_type=EngineType.DETERMINISTIC,
+        matched_person_id=min(prior_person_ids),
+    )
+
 
 class MatchEngine:
     """Evaluate candidates through a deterministic → heuristic → LLM chain.
@@ -46,6 +62,8 @@ class MatchEngine:
         address: NormalizedAddress | None,
         attributes: list[NormalizedAttribute],
         record_type: RecordType = RecordType.IDENTITY,
+        *,
+        continuity_person_id: str | None = None,
     ) -> MatchResult:
         """Run the full match chain and return the final result.
 
@@ -56,11 +74,17 @@ class MatchEngine:
         conflicting government IDs) still apply because they are blockers,
         not merges.
         """
-        if not candidates:
+        if not candidates and continuity_person_id is None:
             return self._no_candidates_result()
 
         unique_candidates = {c.person_id: c for c in candidates}
+        if continuity_person_id is not None:
+            unique_candidates.setdefault(
+                continuity_person_id,
+                CandidateResult(person_id=continuity_person_id, source="continuity"),
+            )
         collected: list[MatchResult] = []
+        continuity_result: MatchResult | None = None
 
         # Evaluate every candidate (no short-circuit on the first deterministic
         # MERGE): an incoming record that independently MERGE-matches more than
@@ -79,7 +103,78 @@ class MatchEngine:
                 continue
             collected.append(per_candidate)
 
-        return self._pick_best(collected)
+            if person_id == continuity_person_id:
+                continuity_result = per_candidate
+
+        result = self._pick_best(collected)
+        if continuity_person_id is None:
+            return result
+        if result.additional_linked_person_ids:
+            destinations = [
+                candidate
+                for candidate in collected
+                if candidate.matched_person_id not in {None, continuity_person_id}
+                and candidate.decision is MatchDecision.MERGE
+            ]
+            if len(destinations) == 1 and continuity_result is not None:
+                return self._apply_reassignment_policy(
+                    destinations[0], continuity_person_id, continuity_result
+                )
+            proposed = destinations[0].matched_person_id if len(destinations) == 1 else None
+            return self._continuity_review(result, continuity_person_id, proposed, 0.0)
+        if result.matched_person_id is None or result.is_new_person:
+            return self._continuity_review(result, continuity_person_id, None, 0.0)
+        if result.matched_person_id == continuity_person_id:
+            return result
+        return self._apply_reassignment_policy(result, continuity_person_id, continuity_result)
+
+    @staticmethod
+    def _apply_reassignment_policy(
+        destination: MatchResult,
+        continuity_person_id: str,
+        continuity: MatchResult | None,
+    ) -> MatchResult:
+        continuity_confidence = continuity.confidence if continuity is not None else 0.0
+        margin = destination.confidence - continuity_confidence
+        if (
+            continuity is not None
+            and destination.decision is MatchDecision.MERGE
+            and destination.confidence >= REASSIGNMENT_AUTO_THRESHOLD
+            and margin + 1e-12 >= REASSIGNMENT_MIN_MARGIN
+        ):
+            return destination
+        return MatchEngine._continuity_review(
+            destination,
+            continuity_person_id,
+            destination.matched_person_id,
+            continuity_confidence,
+        )
+
+    @staticmethod
+    def _continuity_review(
+        destination: MatchResult,
+        continuity_person_id: str,
+        proposed_person_id: str | None,
+        continuity_confidence: float,
+    ) -> MatchResult:
+        return MatchResult(
+            decision=MatchDecision.REVIEW,
+            confidence=destination.confidence,
+            reasons=[
+                *destination.reasons,
+                "Changed record requires review before reassigning its prior person",
+            ],
+            engine_type=destination.engine_type,
+            matched_person_id=continuity_person_id,
+            proposed_person_id=proposed_person_id,
+            feature_snapshot={
+                **destination.feature_snapshot,
+                "continuity_person_id": continuity_person_id,
+                "continuity_confidence": continuity_confidence,
+                "proposed_person_id": proposed_person_id,
+                "proposed_confidence": destination.confidence,
+            },
+        )
 
     def _evaluate_one(
         self,

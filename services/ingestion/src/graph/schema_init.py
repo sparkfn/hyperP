@@ -16,6 +16,23 @@ from src.graph.client import Neo4jClient
 
 logger = logging.getLogger(__name__)
 
+BASE_LIFECYCLE_CONSTRAINTS: tuple[str, ...] = (
+    """CREATE CONSTRAINT source_record_identity_lock_unique IF NOT EXISTS
+FOR (lock:SourceRecordIdentityLock)
+REQUIRE (lock.source_system, lock.source_record_id) IS UNIQUE""",
+    """CREATE CONSTRAINT data_migration_key_unique IF NOT EXISTS
+FOR (migration:DataMigration)
+REQUIRE migration.migration_key IS UNIQUE""",
+)
+
+DEFERRED_SOURCE_RECORD_CONSTRAINTS: tuple[str, ...] = (
+    """CREATE CONSTRAINT source_record_version_key_unique IF NOT EXISTS
+FOR (sr:SourceRecord)
+REQUIRE sr.source_version_key IS UNIQUE""",
+)
+
+LIFECYCLE_CONSTRAINTS = BASE_LIFECYCLE_CONSTRAINTS + DEFERRED_SOURCE_RECORD_CONSTRAINTS
+
 
 # init.cypher is copied into the image at /app/infra/neo4j/init.cypher by the
 # Dockerfile. In local development we fall back to the repo path so the same
@@ -73,7 +90,10 @@ def apply_schema(client: Neo4jClient) -> int:
     isolated from data changes.
     """
     path = _find_init_cypher()
-    statements = _split_statements(path.read_text(encoding="utf-8"))
+    statements = [
+        *_split_statements(path.read_text(encoding="utf-8")),
+        *BASE_LIFECYCLE_CONSTRAINTS,
+    ]
     logger.info("Applying %d schema statements from %s", len(statements), path)
 
     with client.session() as session:
@@ -81,3 +101,11 @@ def apply_schema(client: Neo4jClient) -> int:
             session.run(stmt).consume()
     logger.info("Schema applied (%d statements, idempotent)", len(statements))
     return len(statements)
+
+
+def apply_deferred_source_record_constraints(client: Neo4jClient) -> int:
+    """Install constraints that require lifecycle data repair to run first."""
+    with client.session() as session:
+        for statement in DEFERRED_SOURCE_RECORD_CONSTRAINTS:
+            session.run(statement).consume()
+    return len(DEFERRED_SOURCE_RECORD_CONSTRAINTS)

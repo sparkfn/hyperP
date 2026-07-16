@@ -8,7 +8,6 @@ from unittest.mock import patch
 import pytest
 from _txmock import _RecordingTx
 from neo4j import ManagedTransaction
-
 from src.exclusions import ExclusionContext
 from src.graph import queries as _queries
 from src.matching.vehicle_heuristic import VEHICLE_MATCH_AUTO, VEHICLE_MATCH_REVIEW
@@ -84,10 +83,25 @@ class _Tx(_RecordingTx):
         # FIND_VEHICLE_CANDIDATES_FOR_SALES: unique fragment.
         if "INVOLVES_VEHICLE {source_record_pk: $sales_source_record_pk}" in query:
             return _Result(rows=self._candidates)
+        if query == _queries.UPSERT_VEHICLE:
+            return _Result(row={"vehicle_id": "vehicle-1", "conflict": False})
+        if query == _queries.STAGE_SALES_REVIEW:
+            return _Result(row={"source_record_pk": kwargs["source_record_pk"]})
+        if query in {
+            _queries.ACTIVATE_FIRST_SOURCE_RECORD_VERSION,
+            _queries.ACTIVATE_SOURCE_RECORD_VERSION,
+        }:
+            return _Result(row={"source_record_pk": kwargs.get("new_source_record_pk", "sr-1")})
         # FIND_PENDING_CUSTOMER_SALES: has $limit parameter and the
         # ``pending_customer`` link_status filter.
         if "LIMIT $limit" in query and "pending_customer" in query:
-            return _Result(rows=self._pending_rows)
+            cursor = str(kwargs.get("cursor", ""))
+            limit = int(kwargs.get("limit", len(self._pending_rows)))
+            rows = sorted(
+                (row for row in self._pending_rows if str(row["source_record_pk"]) > cursor),
+                key=lambda row: str(row["source_record_pk"]),
+            )
+            return _Result(rows=rows[:limit])
         return _Result()
 
 
@@ -130,7 +144,7 @@ def _propose(
     tx: _Tx,
     *,
     source_record_pk: str = "sr-1",
-    source_system_key: str = "sys",
+    source_system_key: str = "eko_phppos:sales",
     source_order_id: str = "o-1",
     customer_nric: str | None = None,
     customer_emails: list[str] | None = None,
@@ -144,6 +158,15 @@ def _propose(
         customer_nric=customer_nric,
         customer_emails=customer_emails or [],
         customer_phones=customer_phones or [],
+        source_record_id="sale-1",
+        raw_payload={
+            "order": {"source_order_id": source_order_id},
+            "line_items": [_vehicle_line()],
+            "customer_link": {
+                "identity_source_record_id": "identity-1",
+                "source_system_key": "eko_phppos",
+            },
+        },
     )
 
 
@@ -223,11 +246,11 @@ def test_propose_single_candidate_auto_links() -> None:
     assert len(purchased) == 1
     assert purchased[0]["person_id"] == "person-1"
     assert purchased[0]["source_order_id"] == "o-1"
-    assert purchased[0]["source_system_key"] == "sys"
+    assert purchased[0]["source_system_key"] == "eko_phppos:sales"
     assert len(bought) == 1
     assert bought[0]["vehicle_id"] == "vehicle-1"
     assert bought[0]["is_active"] is True
-    assert bought[0]["confidence"] == VEHICLE_MATCH_AUTO
+    assert bought[0]["confidence"] == 1.0
     assert len(linked) == 1
     assert linked[0]["source_record_pk"] == "sr-1"
     # Sale is NOT moved to pending_review.
@@ -264,8 +287,12 @@ def test_propose_blocked_best_drops_and_autolinks_next_unblocked() -> None:
     the blocked Person, (2) NOT record NO_MATCH, and (3) auto-link the
     unblocked Person at the normal ``VEHICLE_MATCH_AUTO`` confidence.
     """
-    blocked = _candidate(person_id="person-blocked", nric_blocked=True, last_confirmed_at="2026-06-10")
-    unblocked = _candidate(person_id="person-unblocked", nric_blocked=False, last_confirmed_at="2026-06-01")
+    blocked = _candidate(
+        person_id="person-blocked", nric_blocked=True, last_confirmed_at="2026-06-10"
+    )
+    unblocked = _candidate(
+        person_id="person-unblocked", nric_blocked=False, last_confirmed_at="2026-06-01"
+    )
     tx = _Tx(candidates=[blocked, unblocked])
     with (
         patch("src.pipeline_sales.persist_match_decision", return_value="md-x") as mock_persist,
@@ -284,9 +311,7 @@ def test_propose_blocked_best_drops_and_autolinks_next_unblocked() -> None:
         c for c in mock_persist.call_args_list if c[0][1].decision.value == "no_match"
     ]
     assert no_match_calls == []
-    link_purchased_calls = [
-        kwargs for q, kwargs in tx.calls if q == _LINK_PURCHASED_QUERY
-    ]
+    link_purchased_calls = [kwargs for q, kwargs in tx.calls if q == _LINK_PURCHASED_QUERY]
     assert link_purchased_calls
     assert link_purchased_calls[0]["person_id"] == "person-unblocked"
 
@@ -318,7 +343,9 @@ def test_propose_multiple_distinct_persons_creates_review_case() -> None:
     tx = _Tx(candidates=candidates)
     with (
         patch("src.pipeline_sales.persist_match_decision", return_value="md-r") as mock_persist,
-        patch("src.pipeline_sales.create_review_case_if_needed", return_value="rc-r") as mock_create,
+        patch(
+            "src.pipeline_sales.create_review_case_if_needed", return_value="rc-r"
+        ) as mock_create,
     ):
         result = _propose(tx)
     assert result is True
@@ -343,18 +370,17 @@ def test_propose_multiple_distinct_persons_creates_review_case() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_propose_orchestration_returns_count_of_decisions() -> None:
-    """Case 10: one pending sale, one candidate -> count == 1."""
+def test_propose_orchestration_missing_source_id_does_not_mutate() -> None:
+    """A pending row without its lock identity is skipped without mutation."""
     tx = _Tx(candidates=[_candidate()])
-    # Two sessions are consumed: one for _get_pending, one for _propose. Both
-    # wrap the same _Tx so the candidate query sees the candidate rows.
-    client = _Client(tx, tx)
+    # Two cursor-page reads (data then empty) plus one proposal transaction.
+    client = _Client(tx, tx, tx)
     with (
         patch("src.pipeline_sales.persist_match_decision", return_value="md-1"),
         patch("src.pipeline_sales.create_review_case_if_needed"),
     ):
         count = propose_vehicle_matches_for_pending_sales(client)
-    assert count == 1
+    assert count == 0
 
 
 def test_propose_orchestration_no_pending_returns_zero() -> None:
@@ -378,7 +404,7 @@ def test_propose_orchestration_skips_sale_missing_order() -> None:
             }
         ],
     )
-    client = _Client(tx)
+    client = _Client(tx, tx)
     with (
         patch("src.pipeline_sales.persist_match_decision"),
         patch("src.pipeline_sales.create_review_case_if_needed"),
@@ -501,7 +527,7 @@ def test_non_vehicle_lines_excludes_vehicle_lines_with_identifier() -> None:
 
 
 def test_non_vehicle_lines_includes_vehicle_category_line_without_serial_or_lta() -> None:
-    """A vehicle-category line lacking serial+lta produces no Vehicle → goes to non_vehicle_lines."""
+    """A vehicle-category line lacking serial+lta remains a non-vehicle line."""
     line = _vehicle_line(serial_number=None, lta_tag=None)
     result = _build_non_vehicle_lines("eko_phppos", cast(list[JsonValue], [line]))
     assert len(result) == 1
@@ -565,7 +591,7 @@ def test_merge_order_receives_empty_non_vehicle_lines_as_empty_json_string() -> 
 
 
 def test_write_vehicle_observations_creates_vehicle_and_links_for_vehicle_line() -> None:
-    """Vehicle line → UPSERT_VEHICLE + INVOLVES_VEHICLE + BOUGHT_VEHICLE (when person resolved); helmet skipped."""
+    """Write a vehicle and its order/person links while skipping a helmet."""
     lines: list[object] = [_vehicle_line(), _non_vehicle_line()]
     tx = _VehicleTx(vehicle_id="v-bike")
     _write_vehicle_observations(
