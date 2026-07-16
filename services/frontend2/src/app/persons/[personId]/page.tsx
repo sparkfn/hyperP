@@ -32,7 +32,7 @@ import { toBasePath } from "@/lib/route-paths";
 import type { PublicLink } from "@/lib/api-types";
 import { APP_TZ, avatarColor, completenessColor, formatDob } from "@/lib/display";
 import { useSetLoading } from "@/lib/LoadingContext";
-import { personDisplayName } from "@/lib/ui-display";
+import { personDisplayName, sourceRecordReference } from "@/lib/ui-display";
 import ActionToast from "@/components/ActionToast";
 import MergeOverlay from "@/components/MergeOverlay";
 import PersonFocusedGraph from "@/components/PersonFocusedGraph";
@@ -930,7 +930,7 @@ function buildTimeline(detailData: DetailData): TLEvent[] {
       timestamp: r.ingested_at,
       kind: "source",
       title: "record_ingested",
-      meta: `${r.source_system} · ${r.source_record_id}`,
+      meta: `${r.source_system} · ${sourceRecordReference(r.source_record_id)}`,
     });
     if (r.observed_at !== r.ingested_at) {
       events.push({
@@ -938,7 +938,7 @@ function buildTimeline(detailData: DetailData): TLEvent[] {
         timestamp: r.observed_at,
         kind: "source",
         title: "record_observed",
-        meta: `${r.source_system} · ${r.source_record_id}`,
+        meta: `${r.source_system} · ${sourceRecordReference(r.source_record_id)}`,
       });
     }
   });
@@ -1410,7 +1410,10 @@ function TabSkelShell({ title, children }: { title: string; children: ReactEleme
 }
 
 function sourceRecordMeta(record: PersonSourceRecord): string {
-  return [record.entity_display_name ?? record.source_system, record.source_record_id].filter(Boolean).join(" · ");
+  return [
+    record.entity_display_name ?? record.source_system,
+    sourceRecordReference(record.source_record_id),
+  ].filter(Boolean).join(" · ");
 }
 
 function sourceRecordEvidence(record: PersonSourceRecord, group: SharedIdentifierGroup): string {
@@ -3170,13 +3173,12 @@ function SourceRecordRow({ record }: { record: PersonSourceRecord }): ReactEleme
   const meta: Array<[string, string]> = [
     ["Source system", titleCase(record.source_system)],
     ["Entity", entity],
-    ["Source record reference", record.source_record_id],
+    ["Source record reference", sourceRecordReference(record.source_record_id)],
     ["Version", record.source_record_version ?? "—"],
     ["Type", titleCase(record.record_type)],
     ["Link status", titleCase(record.link_status)],
     ["Observed", record.observed_at_display || "—"],
     ["Ingested", record.ingested_at_display || "—"],
-    ["Internal record key", record.source_record_pk],
   ];
   if (record.record_type === "conversation") {
     if (record.extraction_method) meta.push(["Extraction", titleCase(record.extraction_method)]);
@@ -3197,7 +3199,7 @@ function SourceRecordRow({ record }: { record: PersonSourceRecord }): ReactEleme
           <div className={styles.srcMetaLine}>
             <span>{entity}</span>
             <span className={styles.connMetaSep}>·</span>
-            <span>Source ref: {record.source_record_id}</span>
+            <span>Source ref: {sourceRecordReference(record.source_record_id)}</span>
             {record.source_record_version && (
               <><span className={styles.connMetaSep}>·</span><span>v{record.source_record_version}</span></>
             )}
@@ -3566,7 +3568,9 @@ function IdentifiersTab({ identifiers }: { identifiers: PersonIdentifier[] }): R
                             return (
                               <div key={sr.source_record_pk} className={styles.idSrcRecordCard}>
                                 <div className={styles.idSrcRecordHeader}>
-                                  <span className={`${styles.idSrcRecordId} ${styles.mono}`}>{sr.source_record_id}</span>
+                                  <span className={`${styles.idSrcRecordId} ${styles.mono}`}>
+                                    {sourceRecordReference(sr.source_record_id)}
+                                  </span>
                                   <span className={`${styles.idSrcChip} ${styles.idSrcChipSystem}`}>{sr.source_system}</span>
                                   {sr.entity_display_name !== null && (
                                     <span className={styles.idSrcChip}>{sr.entity_display_name}</span>
@@ -3644,7 +3648,9 @@ function IdentifiersTab({ identifiers }: { identifiers: PersonIdentifier[] }): R
                         <div className={styles.idDetailSectionTitle}>Source record references</div>
                         <div className={styles.idSrcIdList}>
                           {(id.source_record_ids ?? []).map((srcId) => (
-                            <span key={srcId} className={`${styles.idSrcId} ${styles.mono}`}>{srcId}</span>
+                            <span key={srcId} className={`${styles.idSrcId} ${styles.mono}`}>
+                              {sourceRecordReference(srcId)}
+                            </span>
                           ))}
                         </div>
                       </div>

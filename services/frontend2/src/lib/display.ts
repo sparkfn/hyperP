@@ -1,6 +1,7 @@
 import type { PersonConnection, PersonStatus, SalesOrder, SourceRecord } from "./api-types";
 import type { PersonIdentifier } from "./api-types-person";
 import type { CountCardItem } from "@/components/CountCardsCell";
+import { sourceRecordReference } from "./ui-display";
 
 export const APP_TZ = process.env.NEXT_PUBLIC_TZ ?? "UTC";
 
@@ -120,7 +121,7 @@ export function sourcesToItems(data: SourceRecord[] | undefined): CountCardItem[
   if (data === undefined) return undefined;
   return data.map((r) => ({
     primary: r.source_system,
-    secondary: `${r.source_record_id} · ${r.record_type} · ${formatDate(r.ingested_at)}`,
+    secondary: `${sourceRecordReference(r.source_record_id)} · ${r.record_type} · ${formatDate(r.ingested_at)}`,
     color: r.record_type === "conversation" ? "warning" : "default",
   }));
 }
