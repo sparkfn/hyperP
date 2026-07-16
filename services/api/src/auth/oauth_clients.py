@@ -25,7 +25,6 @@ from src.config import config
 from src.graph.client import get_session
 from src.graph.converters import GraphValue, to_datetime, to_int, to_optional_str, to_str
 from src.graph.queries.oauth_clients import (
-    CLAIM_OAUTH_WIPE_MIGRATION,
     CREATE_OAUTH_CLIENT_ID_CONSTRAINT,
     CREATE_OAUTH_CLIENT_WITH_SECRET,
     CREATE_OAUTH_SECRET_ID_CONSTRAINT,
@@ -38,7 +37,6 @@ from src.graph.queries.oauth_clients import (
     UPDATE_OAUTH_CLIENT,
     UPDATE_OAUTH_CLIENT_LAST_USED,
     UPDATE_OAUTH_SECRET_LAST_USED,
-    WIPE_OAUTH_CLIENTS,
 )
 
 
@@ -260,20 +258,6 @@ async def update_oauth_client(client_id: str, req: UpdateOAuthClientRequest) -> 
             access_token_ttl_seconds=req.access_token_ttl_seconds,
         )
         return await result.single() is not None
-
-
-async def wipe_oauth_clients() -> None:
-    """Delete all OAuth client + secret nodes (startup wipe migration)."""
-    async with get_session(write=True) as session:
-        await session.run(WIPE_OAUTH_CLIENTS)
-
-
-async def claim_oauth_wipe_migration() -> bool:
-    """Atomically claim the one-time OAuth wipe migration. True only on first run."""
-    async with get_session(write=True) as session:
-        result = await session.run(CLAIM_OAUTH_WIPE_MIGRATION)
-        record = await result.single()
-        return bool(record["newly"]) if record is not None else False
 
 
 async def disable_oauth_client(client_id: str) -> bool:

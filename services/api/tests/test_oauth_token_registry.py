@@ -4,7 +4,6 @@ import time
 
 import pytest
 from fakeredis.aioredis import FakeRedis
-
 from src.auth import oauth_token_registry as reg
 
 
@@ -72,15 +71,6 @@ async def test_clear_client_tokens_purges_only_that_client(fake_redis: FakeRedis
     assert not await fake_redis.exists("oauth_token:a2")
     # A different client's tokens are untouched.
     assert [t.jti for t in await reg.list_client_tokens("hpc_b")] == ["b1"]
-
-
-@pytest.mark.asyncio
-async def test_clear_all_wipes_registry(fake_redis: FakeRedis) -> None:
-    now = int(time.time())
-    await reg.register_token(jti="t1", client_id="hpc_a", secret_id="sec_1",
-                             scope="persons:read", issued_at=now, expires_at=now + 600)
-    await reg.clear_all_tokens()
-    assert await reg.list_client_tokens("hpc_a") == []
 
 
 @pytest.mark.asyncio

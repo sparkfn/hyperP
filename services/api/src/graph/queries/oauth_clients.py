@@ -104,12 +104,6 @@ SET c.name = coalesce($name, c.name),
 RETURN c.client_id AS client_id
 """
 
-WIPE_OAUTH_CLIENTS = """
-MATCH (c:OAuthClient)
-OPTIONAL MATCH (c)-[:HAS_SECRET]->(s:OAuthClientSecret)
-DETACH DELETE s, c
-"""
-
 DISABLE_OAUTH_CLIENT = """
 MATCH (c:OAuthClient {client_id: $client_id})
 WHERE c.disabled_at IS NULL
@@ -131,11 +125,4 @@ SET c.last_used_at = datetime()
 UPDATE_OAUTH_SECRET_LAST_USED = """
 MATCH (:OAuthClient {client_id: $client_id})-[:HAS_SECRET]->(s:OAuthClientSecret {secret_id: $secret_id})
 SET s.last_used_at = datetime()
-"""
-
-CLAIM_OAUTH_WIPE_MIGRATION = """
-MERGE (m:Migration {id: 'oauth_remodel_wipe_v1'})
-ON CREATE SET m.applied_at = datetime(), m.newly = true
-ON MATCH SET m.newly = false
-RETURN m.newly AS newly
 """

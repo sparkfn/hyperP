@@ -1,32 +1,40 @@
-"""Tests for the one-shot OAuth wipe-and-recreate startup migration."""
+"""Regression tests for non-destructive OAuth application startup."""
 
 from __future__ import annotations
 
 from unittest.mock import AsyncMock, patch
 
 import pytest
-from src.app import _wipe_oauth_clients_on_startup
+from fastapi import FastAPI
+from src import app
 
 
 @pytest.mark.asyncio
-async def test_startup_wipes_when_migration_newly_claimed() -> None:
-    with (
-        patch("src.app.claim_oauth_wipe_migration", new=AsyncMock(return_value=True)),
-        patch("src.app.wipe_oauth_clients", new=AsyncMock()) as wipe_nodes,
-        patch("src.app.clear_all_tokens", new=AsyncMock()) as wipe_redis,
-    ):
-        await _wipe_oauth_clients_on_startup()
-    wipe_nodes.assert_awaited_once()
-    wipe_redis.assert_awaited_once()
+async def test_startup_does_not_delete_oauth_clients_or_clear_tokens() -> None:
+    delete_clients = AsyncMock()
+    clear_tokens = AsyncMock()
 
-
-@pytest.mark.asyncio
-async def test_startup_skips_wipe_when_already_applied() -> None:
     with (
-        patch("src.app.claim_oauth_wipe_migration", new=AsyncMock(return_value=False)),
-        patch("src.app.wipe_oauth_clients", new=AsyncMock()) as wipe_nodes,
-        patch("src.app.clear_all_tokens", new=AsyncMock()) as wipe_redis,
+        patch.object(app, "validate_oauth_runtime_config"),
+        patch.object(app, "_ensure_source_record_identity_lock", new=AsyncMock()),
+        patch.object(app, "_ensure_user_constraint", new=AsyncMock()),
+        patch.object(app, "_ensure_oauth_client_constraints", new=AsyncMock()),
+        patch.object(app, "_ensure_person_indexes", new=AsyncMock()),
+        patch.object(app, "wipe_oauth_clients", new=delete_clients, create=True),
+        patch.object(app, "clear_all_tokens", new=clear_tokens, create=True),
+        patch.object(
+            app,
+            "claim_oauth_wipe_migration",
+            new=AsyncMock(return_value=True),
+            create=True,
+        ),
+        patch.object(app, "close_driver", new=AsyncMock()),
+        patch.object(app, "close_redis", new=AsyncMock()),
+        patch.object(app, "close_llm_service", new=AsyncMock()),
+        patch.object(app, "close_proclaude_service", new=AsyncMock()),
     ):
-        await _wipe_oauth_clients_on_startup()
-    wipe_nodes.assert_not_awaited()
-    wipe_redis.assert_not_awaited()
+        async with app._lifespan(FastAPI()):
+            pass
+
+    delete_clients.assert_not_awaited()
+    clear_tokens.assert_not_awaited()

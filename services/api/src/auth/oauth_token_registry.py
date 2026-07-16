@@ -127,15 +127,6 @@ async def clear_client_tokens(client_id: str) -> int:
     return len(jtis)
 
 
-async def clear_all_tokens() -> None:
-    """Delete every OAuth token registry key (used by the wipe migration)."""
-    client = await get_redis()
-    async for key in client.scan_iter(match=f"{_TOKEN_PREFIX}*"):
-        await client.delete(key)
-    async for key in client.scan_iter(match=f"{_CLIENT_SET_PREFIX}*"):
-        await client.delete(key)
-
-
 def _to_record(jti: str, data: dict[str, str]) -> TokenRecord:
     return TokenRecord(
         jti=jti,

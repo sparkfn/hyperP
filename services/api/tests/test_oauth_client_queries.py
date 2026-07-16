@@ -5,7 +5,6 @@ from src.graph.queries.oauth_clients import (
     GET_OAUTH_CLIENT_FOR_VALIDATION,
     ROTATE_OAUTH_CLIENT_SECRET,
     UPDATE_OAUTH_CLIENT,
-    WIPE_OAUTH_CLIENTS,
 )
 
 
@@ -26,7 +25,3 @@ def test_rotate_revokes_previous_and_creates_new() -> None:
 
 def test_update_sets_ttl() -> None:
     assert "access_token_ttl_seconds" in UPDATE_OAUTH_CLIENT
-
-
-def test_wipe_detaches_clients_and_secrets() -> None:
-    assert "DETACH DELETE" in WIPE_OAUTH_CLIENTS
