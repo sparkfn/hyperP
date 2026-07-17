@@ -102,6 +102,7 @@ module = [
     "src.connectors.speedzone.sales",
     "src.connectors.phppos_api.client",
     "src.connectors.phppos_api.models",
+    "src.connectors.sggov.bankruptcy_api_models",
     "src.graph.client",
     "src.golden_profile",
     "src.config",
