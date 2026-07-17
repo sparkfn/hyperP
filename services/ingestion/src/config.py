@@ -109,6 +109,12 @@ class Settings(BaseSettings):
     sgbankruptcy_api_max_attempts: int = Field(default=3, ge=1)
     sgbankruptcy_ingest_cron: str = ""
 
+    # SG rental flats API extraction -----------------------------------------
+    sgrentalflats_api_base_url: str = "https://sgrentalflats-api.ada.asia"
+    sgrentalflats_api_key: SecretStr = SecretStr("")
+    sgrentalflats_api_page_size: int = 500
+    sgrentalflats_api_timeout_seconds: float = 30.0
+
     # WhatsApp API (chrishubert/whatsapp-api compatible) ----------------------
     # Multi-tenant WhatsApp Web REST API. Endpoints are session-scoped via
     # `sessionId` and authenticated with a static API key header.

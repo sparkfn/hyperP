@@ -84,6 +84,7 @@ module = [
     "src.auth.oauth_client_models",
     "src.types_reports",
     "src.models",
+    "src.connectors.sggov.rental_flats_api_models",
     "src.connectors.fundbox.base",
     "src.connectors.fundbox.builders",
     "src.connectors.fundbox.users",

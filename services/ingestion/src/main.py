@@ -39,6 +39,10 @@ from src.connectors.phppos_api.client import (
 )
 from src.connectors.phppos_api.connectors import ApiClient
 from src.connectors.sggov.bankruptcy_api import SGGovernmentBankruptcyApiConnector
+from src.connectors.sggov.rental_flats_api import (
+    SGGovernmentRentalFlatsApiClient,
+    SGGovernmentRentalFlatsApiConnector,
+)
 from src.connectors.speedzone import SpeedZoneConnector, SpeedZoneSalesConnector
 from src.connectors.whatsapp import WhatsAppChatConnector
 from src.exclusions import (
@@ -89,10 +93,9 @@ _CONNECTOR_REGISTRY: dict[str, type[SourceConnector]] = {
     "eko_phppos:sales": EkoSalesConnector,
     "whatsapp_chat": WhatsAppChatConnector,
     "bitrix_chat": BitrixChatConnector,
-    # SG government registers (sgbankruptcy, sgrentalflats) are dump-only — they
-    # have no live source, so they are reached via get_dump_connector with an
-    # explicit dump_path passed in the task call (mode="dump"), not registered
-    # here for batch mode.
+    # SG government registers are not registered for database batch mode.
+    # Dump mode uses get_dump_connector; sgrentalflats additionally supports
+    # its dedicated HTTP extraction connector through mode="api".
 }
 
 _ADDRESS_ONLY_SOURCES = frozenset({"sgrentalflats"})
@@ -184,6 +187,24 @@ def create_sgbankruptcy_api_connector() -> SGGovernmentBankruptcyApiConnector:
     )
 
 
+def create_sgrentalflats_api_client() -> SGGovernmentRentalFlatsApiClient:
+    settings = get_settings()
+    base_url = settings.sgrentalflats_api_base_url
+    api_key = settings.sgrentalflats_api_key.get_secret_value()
+    page_size = settings.sgrentalflats_api_page_size
+    SGGovernmentRentalFlatsApiClient.validate_config(
+        base_url=base_url,
+        api_key=api_key,
+        page_size=page_size,
+    )
+    return SGGovernmentRentalFlatsApiClient(
+        base_url=base_url,
+        api_key=api_key,
+        page_size=page_size,
+        http=httpx.Client(timeout=settings.sgrentalflats_api_timeout_seconds),
+    )
+
+
 def get_connector(
     source_key: str, dump_path: str | None = None, *, mode: str = "batch"
 ) -> SourceConnector:
@@ -195,6 +216,8 @@ def get_connector(
     if mode == "api":
         if source_key == "sgbankruptcy":
             return create_sgbankruptcy_api_connector()
+        if source_key == "sgrentalflats":
+            return SGGovernmentRentalFlatsApiConnector(create_sgrentalflats_api_client())
         api_types: dict[str, Callable[[ApiClient], SourceConnector]] = {
             "eko_phppos": EkoApiConnector,
             "eko_phppos:sales": EkoSalesApiConnector,

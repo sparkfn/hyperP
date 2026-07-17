@@ -31,6 +31,43 @@ def _iso_datetime(value: JsonValue) -> str | None:
     return normalized
 
 
+def build_rental_flat_envelope(
+    *,
+    flat_id: str,
+    town_id: str,
+    block_no: str,
+    street_name: str,
+    postal_code: str,
+    flat_type: str,
+    town_name: str,
+    town_map_id: str,
+    town_map_zone: str,
+    is_active: bool,
+    observed_at: JsonValue,
+    raw_payload: dict[str, JsonValue],
+) -> dict[str, JsonValue]:
+    normalized_observed_at = _iso_datetime(observed_at) or datetime.utcnow().isoformat()
+    return build_envelope(
+        source_record_id=f"rental_flat:{flat_id}",
+        observed_at=normalized_observed_at,
+        identifiers=[],
+        record_type="rental_flat",
+        attributes={
+            "country_code": "SG",
+            "postal_code": postal_code,
+            "block_no": block_no,
+            "street_name": street_name,
+            "flat_type": flat_type,
+            "town_id": town_id,
+            "town_name": town_name,
+            "town_map_id": town_map_id,
+            "town_map_zone": town_map_zone,
+            "is_active": is_active,
+        },
+        raw_payload=raw_payload,
+    )
+
+
 class SGGovernmentRentalFlatsConnector(SourceConnector):
     """Read rental-flat address inventory from an SG government SQL dump."""
 
@@ -48,24 +85,18 @@ class SGGovernmentRentalFlatsConnector(SourceConnector):
             flat_id = _str_value(flat, "id")
             town_id = _str_value(flat, "town_id")
             town = towns.get(town_id, {})
-            observed_at = _iso_datetime(flat.get("last_seen_at")) or datetime.utcnow().isoformat()
             raw_payload: dict[str, JsonValue] = {"flat": flat, "town": town}
-            yield build_envelope(
-                source_record_id=f"rental_flat:{flat_id}",
-                observed_at=observed_at,
-                identifiers=[],
-                record_type="rental_flat",
-                attributes={
-                    "country_code": "SG",
-                    "postal_code": _str_value(flat, "postal_code"),
-                    "block_no": _str_value(flat, "block_no"),
-                    "street_name": _str_value(flat, "street_name"),
-                    "flat_type": _str_value(flat, "flat_type"),
-                    "town_id": town_id,
-                    "town_name": _str_value(town, "name"),
-                    "town_map_id": _str_value(town, "map_id"),
-                    "town_map_zone": _str_value(town, "map_zone"),
-                    "is_active": _bool_value(flat, "is_active"),
-                },
+            yield build_rental_flat_envelope(
+                flat_id=flat_id,
+                town_id=town_id,
+                block_no=_str_value(flat, "block_no"),
+                street_name=_str_value(flat, "street_name"),
+                postal_code=_str_value(flat, "postal_code"),
+                flat_type=_str_value(flat, "flat_type"),
+                town_name=_str_value(town, "name"),
+                town_map_id=_str_value(town, "map_id"),
+                town_map_zone=_str_value(town, "map_zone"),
+                is_active=_bool_value(flat, "is_active"),
+                observed_at=flat.get("last_seen_at"),
                 raw_payload=raw_payload,
             )
