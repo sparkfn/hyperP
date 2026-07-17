@@ -44,6 +44,9 @@ from src.connectors.sggov.rental_flats_api import (
     SGGovernmentRentalFlatsApiConnector,
 )
 from src.connectors.speedzone import SpeedZoneConnector, SpeedZoneSalesConnector
+from src.connectors.whatsadmin_api.client import WhatsAdminApiClient
+from src.connectors.whatsadmin_api.connector import WhatsAdminChatApiConnector
+from src.connectors.whatsadmin_api.watermark import RedisWatermarkStore
 from src.connectors.whatsapp import WhatsAppChatConnector
 from src.exclusions import (
     ExclusionContext,
@@ -77,6 +80,11 @@ logger = logging.getLogger(__name__)
 @runtime_checkable
 class _ClosableConnector(Protocol):
     def close(self) -> None: ...
+
+
+@runtime_checkable
+class _WatermarkCommitter(Protocol):
+    def commit_watermark(self) -> None: ...
 
 
 # Registry of available connectors keyed by source_key. New sources only need
@@ -205,6 +213,18 @@ def create_sgrentalflats_api_client() -> SGGovernmentRentalFlatsApiClient:
     )
 
 
+def create_whatsadmin_api_connector() -> WhatsAdminChatApiConnector:
+    settings = get_settings()
+    client = WhatsAdminApiClient(
+        base_url=settings.whatsadmin_api_base_url,
+        api_key=settings.whatsadmin_api_key.get_secret_value(),
+        page_size=settings.whatsadmin_api_page_size,
+        timeout_seconds=settings.whatsadmin_api_timeout_seconds,
+    )
+    redis = Redis.from_url(settings.celery_broker_url, decode_responses=True)
+    return WhatsAdminChatApiConnector(client, RedisWatermarkStore(redis))
+
+
 def get_connector(
     source_key: str, dump_path: str | None = None, *, mode: str = "batch"
 ) -> SourceConnector:
@@ -218,6 +238,8 @@ def get_connector(
             return create_sgbankruptcy_api_connector()
         if source_key == "sgrentalflats":
             return SGGovernmentRentalFlatsApiConnector(create_sgrentalflats_api_client())
+        if source_key == "whatsapp_chat":
+            return create_whatsadmin_api_connector()
         api_types: dict[str, Callable[[ApiClient], SourceConnector]] = {
             "eko_phppos": EkoApiConnector,
             "eko_phppos:sales": EkoSalesApiConnector,
@@ -342,18 +364,14 @@ def _ingest_all_records(
     ingest_run_id: str,
     exclusion_context: ExclusionContext | None = None,
 ) -> tuple[int, int, int]:
-    """Process all connector records and always release connector resources."""
-    try:
-        return _ingest_all_records_open(
-            client,
-            pipeline,
-            connector,
-            ingest_run_id,
-            exclusion_context,
-        )
-    finally:
-        if isinstance(connector, _ClosableConnector):
-            connector.close()
+    """Process all connector records; the run owner releases connector resources."""
+    return _ingest_all_records_open(
+        client,
+        pipeline,
+        connector,
+        ingest_run_id,
+        exclusion_context,
+    )
 
 
 def _ingest_all_records_open(
@@ -484,6 +502,8 @@ def run_ingestion(
             knows_linked = materialize_knows_from_contacts(client)
             if knows_linked:
                 logger.info("Materialized %d KNOWS edges from contacts", knows_linked)
+            if errors == 0 and isinstance(connector, _WatermarkCommitter):
+                connector.commit_watermark()
         except Exception:
             _mark_run_failed(client, ingest_run_id, 0, 0)
             raise

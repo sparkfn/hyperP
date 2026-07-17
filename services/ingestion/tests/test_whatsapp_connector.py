@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Protocol
 
+import pytest
 from pytest import MonkeyPatch
 from src.connectors.whatsapp import connector as whatsapp_module
 from src.connectors.whatsapp.connector import WhatsAppChatConnector
@@ -34,6 +35,78 @@ class _Connection:
     def execute(self, stmt: object) -> list[_ContactRow]:
         _ = stmt
         return self.rows
+
+
+def test_process_whatsapp_bundles_can_fail_on_extraction_error(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    bundle = whatsapp_module._ChatBundle(
+        chat_id="chat-1",
+        chat_name="Customer",
+        session_id="session-1",
+        whatsapp_user_id="6599990000@c.us",
+        tenant="fundbox",
+        msg_text="Customer: hello",
+        observed_at="2026-05-07T10:01:00",
+        participants=[],
+        message_endpoints=[],
+        session_phone=None,
+    )
+    monkeypatch.setattr(whatsapp_module, "run_extraction_batch", lambda texts: [None])
+
+    with pytest.raises(RuntimeError, match="chat-1"):
+        list(
+            whatsapp_module.process_whatsapp_bundles(
+                [bundle],
+                fail_on_extraction_error=True,
+            )
+        )
+
+
+def test_process_whatsapp_bundles_keeps_same_chat_id_sessions_separate(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    bundles = [
+        whatsapp_module._ChatBundle(
+            chat_id="shared-chat",
+            chat_name="Customer",
+            session_id=session_id,
+            whatsapp_user_id=whatsapp_user_id,
+            tenant="fundbox",
+            msg_text=text,
+            observed_at="2026-05-07T10:01:00",
+            participants=[],
+            message_endpoints=[],
+            session_phone=None,
+            source_id_scope=session_id,
+        )
+        for session_id, whatsapp_user_id, text in (
+            ("session-1", "6591111111@c.us", "Alice conversation"),
+            ("session-2", "6592222222@c.us", "Bob conversation"),
+        )
+    ]
+    monkeypatch.setattr(
+        whatsapp_module,
+        "run_extraction_batch",
+        lambda texts: [
+            {
+                "persons": [{"name": "Alice", "phone": "+6581111111"}],
+                "transactions": [],
+                "summary": "Alice",
+                "confidence": 0.9,
+            },
+            {
+                "persons": [{"name": "Bob", "phone": "+6582222222"}],
+                "transactions": [],
+                "summary": "Bob",
+                "confidence": 0.9,
+            },
+        ],
+    )
+
+    records = list(whatsapp_module.process_whatsapp_bundles(bundles))
+
+    assert [record["attributes"]["full_name"] for record in records] == ["Alice", "Bob"]
 
 
 def test_whatsapp_format_messages_prefers_names_and_speaker_phones() -> None:
@@ -217,6 +290,7 @@ def test_whatsapp_chat_envelopes_split_possible_people(monkeypatch: MonkeyPatch)
         participants=[],
         message_endpoints=[],
         session_phone=None,
+        source_id_scope="session-1",
     )
     extraction = {
         "persons": [],
@@ -257,8 +331,8 @@ def test_whatsapp_chat_envelopes_split_possible_people(monkeypatch: MonkeyPatch)
     records = whatsapp_module._build_envelopes(bundle=bundle, extraction=extraction)
 
     assert [record["source_record_id"] for record in records] == [
-        "whatsapp-chat-6599990000@c.us-person-1",
-        "whatsapp-chat-6599990000@c.us-person-2",
+        "whatsapp-chat-session-1-6599990000@c.us-person-1",
+        "whatsapp-chat-session-1-6599990000@c.us-person-2",
     ]
     assert records[0]["attributes"]["full_name"] == "Alice"
     assert {item["value"] for item in records[0]["identifiers"]} == {"+6581234567"}

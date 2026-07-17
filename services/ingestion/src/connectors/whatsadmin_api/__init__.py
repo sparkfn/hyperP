@@ -1,0 +1,2 @@
+"""WhatsAdmin API ingestion connector."""
+

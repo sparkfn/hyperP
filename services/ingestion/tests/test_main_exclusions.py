@@ -144,7 +144,7 @@ def test_ingest_all_records_uses_caller_supplied_exclusion_context(
     assert (success, errors, skipped) == (1, 0, 1)
     assert pipeline.ingested == ["fundbox_consumer_backend-contact-2"]
     assert pipeline.exclusion_contexts == [supplied_context]
-    assert connector.closed is True
+    assert connector.closed is False
 
 
 def test_ingest_all_records_skips_system_records_with_excluded_identifiers(

@@ -71,6 +71,7 @@ class _ChatBundle:
     participants: list[_Participant]
     message_endpoints: list[JsonValue]
     session_phone: str | None
+    source_id_scope: str | None = None
 
 
 #: Map org name → entity_key (from graph bootstrap).
@@ -150,47 +151,7 @@ class WhatsAppChatConnector(SourceConnector):
                 )
 
         logger.info("Collected %d WhatsApp chats — starting LLM batch phase", len(all_bundles))
-
-        try:
-            settings = get_settings()
-            company_mobile_numbers = list(settings.company_mobile_numbers)
-            company_email_addresses = list(settings.company_email_addresses)
-            internal_person_names = list(settings.internal_person_names)
-            file_exclusions = get_ingestion_config().exclusions
-        except Exception:
-            company_mobile_numbers = []
-            company_email_addresses = []
-            internal_person_names = []
-            file_exclusions = ExclusionFile()
-
-        # Phase 2: run LLM in batches (one combined call per char-bounded batch).
-        texts = [b.msg_text for b in all_bundles]
-        max_chars = chat_batch_max_chars()
-        max_count = chat_batch_size()
-        extraction_cache: dict[str, ExtractionResult] = {}
-        for start, end in iter_char_batches(texts, max_chars, max_count):
-            batch = all_bundles[start:end]
-            batch_results = run_extraction_batch(texts[start:end])
-            logger.info("LLM batch %d-%d/%d done", start, end, len(all_bundles))
-            for bundle, result in zip(batch, batch_results, strict=True):
-                if result is not None:
-                    extraction_cache[bundle.chat_id] = result
-
-        # Phase 3: yield envelopes in the same order as the DB cursor.
-        for bundle in all_bundles:
-            extraction = extraction_cache.get(bundle.chat_id)
-            if extraction is None:
-                logger.warning("LLM extraction failed for chat %s", bundle.chat_id)
-                continue
-
-            yield from _build_envelopes(
-                bundle=bundle,
-                extraction=extraction,
-                company_mobile_numbers=company_mobile_numbers,
-                company_email_addresses=company_email_addresses,
-                internal_person_names=internal_person_names,
-                file_exclusions=file_exclusions,
-            )
+        yield from process_whatsapp_bundles(all_bundles)
 
     def _fetch_messages(
         self,
@@ -265,6 +226,51 @@ class WhatsAppChatConnector(SourceConnector):
                     _Participant(jid=jid, phone=_phone_from_jid(jid), name=None, role="member")
                 )
         return result
+
+
+def process_whatsapp_bundles(
+    bundles: list[_ChatBundle],
+    *,
+    fail_on_extraction_error: bool = False,
+) -> Iterator[dict[str, JsonValue]]:
+    """Run shared LLM extraction and envelope building for chat bundles."""
+    try:
+        settings = get_settings()
+        company_mobile_numbers = list(settings.company_mobile_numbers)
+        company_email_addresses = list(settings.company_email_addresses)
+        internal_person_names = list(settings.internal_person_names)
+        file_exclusions = get_ingestion_config().exclusions
+    except Exception:
+        company_mobile_numbers = []
+        company_email_addresses = []
+        internal_person_names = []
+        file_exclusions = ExclusionFile()
+
+    texts = [bundle.msg_text for bundle in bundles]
+    extraction_cache: dict[tuple[str, str], ExtractionResult] = {}
+    for start, end in iter_char_batches(texts, chat_batch_max_chars(), chat_batch_size()):
+        batch = bundles[start:end]
+        batch_results = run_extraction_batch(texts[start:end])
+        logger.info("LLM batch %d-%d/%d done", start, end, len(bundles))
+        for bundle, result in zip(batch, batch_results, strict=True):
+            if result is not None:
+                extraction_cache[(bundle.session_id, bundle.chat_id)] = result
+
+    for bundle in bundles:
+        extraction = extraction_cache.get((bundle.session_id, bundle.chat_id))
+        if extraction is None:
+            if fail_on_extraction_error:
+                raise RuntimeError(f"LLM extraction failed for chat {bundle.chat_id}")
+            logger.warning("LLM extraction failed for chat %s", bundle.chat_id)
+            continue
+        yield from _build_envelopes(
+            bundle=bundle,
+            extraction=extraction,
+            company_mobile_numbers=company_mobile_numbers,
+            company_email_addresses=company_email_addresses,
+            internal_person_names=internal_person_names,
+            file_exclusions=file_exclusions,
+        )
 
 
 def _build_envelope(
@@ -351,7 +357,12 @@ def _build_envelopes(
     envelopes: list[dict[str, JsonValue]] = []
     primary_source_record_id: str | None = None
     for index, person in enumerate(people, start=1):
-        source_record_id = f"whatsapp-chat-{bundle.chat_id}-person-{index}"
+        scoped_chat_id = (
+            f"{bundle.source_id_scope}-{bundle.chat_id}"
+            if bundle.source_id_scope is not None
+            else bundle.chat_id
+        )
+        source_record_id = f"whatsapp-chat-{scoped_chat_id}-person-{index}"
         if primary_source_record_id is None:
             primary_source_record_id = source_record_id
         attributes: dict[str, JsonValue] = {}

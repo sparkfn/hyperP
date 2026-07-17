@@ -81,13 +81,18 @@ def test_speedzone_api_connector_preserves_bitrix_identifier() -> None:
     assert any(item["type"] == "external:bitrix" for item in identifiers)  # type: ignore[union-attr]
 
 
-def test_api_mode_supports_only_eko_and_speedzone_sources(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_api_mode_supports_pos_and_whatsapp_sources(monkeypatch: pytest.MonkeyPatch) -> None:
     sentinel = StubClient()
+    whatsapp_connector = EkoApiConnector(sentinel)
     monkeypatch.setattr("src.main.create_phppos_api_client", lambda _source: sentinel)
+    monkeypatch.setattr(
+        "src.main.create_whatsadmin_api_connector",
+        lambda: whatsapp_connector,
+        raising=False,
+    )
     assert isinstance(get_connector("eko_phppos", mode="api"), EkoApiConnector)
     assert isinstance(get_connector("speedzone_phppos", mode="api"), SpeedZoneApiConnector)
-    with pytest.raises(ValueError, match="API mode"):
-        get_connector("whatsapp_chat", mode="api")
+    assert get_connector("whatsapp_chat", mode="api") is whatsapp_connector
 
 
 def test_sales_api_connector_builds_existing_sales_envelope() -> None:

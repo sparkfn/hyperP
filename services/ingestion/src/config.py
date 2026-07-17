@@ -149,6 +149,12 @@ class Settings(BaseSettings):
     whatsapp_chat_db_name: str = "whatsapp_api"
     whatsapp_chat_chunk_size: int = 500
 
+    # WhatsAdmin HyperP extraction API ---------------------------------------
+    whatsadmin_api_base_url: str = ""
+    whatsadmin_api_key: SecretStr = SecretStr("")
+    whatsadmin_api_page_size: int = 50
+    whatsadmin_api_timeout_seconds: float = 30.0
+
     # Hard ingestion exclusions -------------------------------------------------
     company_mobile_numbers: list[str] = []
     company_email_addresses: list[str] = []
