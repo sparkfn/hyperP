@@ -79,4 +79,3 @@ class ChatPage(ContractModel):
     success: bool
     data: list[ChatBundle]
     meta: ResponseMeta
-

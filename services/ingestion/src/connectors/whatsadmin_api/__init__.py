@@ -1,2 +1,1 @@
 """WhatsAdmin API ingestion connector."""
-
