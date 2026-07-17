@@ -25,6 +25,19 @@ from src.connectors.fundbox import (
     FundboxMergedUsersConnector,
     FundboxSalesConnector,
 )
+from src.connectors.fundbox_api import (
+    FundboxApiClient,
+    FundboxApiCredentials,
+    FundboxContactsApiConnector,
+    FundboxSalesApiConnector,
+    FundboxUsersApiConnector,
+)
+from src.connectors.fundbox_api.checkpoints import (
+    load_source_ids,
+    load_watermark,
+    save_reconciliation_state,
+)
+from src.connectors.fundbox_api.connectors import FundboxApiConnector
 from src.connectors.phppos_api import (
     EkoApiConnector,
     EkoSalesApiConnector,
@@ -73,6 +86,7 @@ from src.pipeline_sales import (
     ingest_sales_record,
     propose_vehicle_matches_for_pending_sales,
 )
+from src.retirement import retire_source_evidence
 
 logger = logging.getLogger(__name__)
 
@@ -225,6 +239,20 @@ def create_whatsadmin_api_connector() -> WhatsAdminChatApiConnector:
     return WhatsAdminChatApiConnector(client, RedisWatermarkStore(redis))
 
 
+def create_fundbox_api_client() -> FundboxApiClient:
+    settings = get_settings()
+    return FundboxApiClient(
+        FundboxApiCredentials(
+            base_url=settings.fundbox_api_base_url,
+            username=settings.fundbox_api_username,
+            password=settings.fundbox_api_password.get_secret_value(),
+            page_size=settings.fundbox_api_page_size,
+        ),
+        http=httpx.Client(timeout=settings.fundbox_api_timeout_seconds),
+        max_attempts=settings.fundbox_api_max_attempts,
+    )
+
+
 def get_connector(
     source_key: str, dump_path: str | None = None, *, mode: str = "batch"
 ) -> SourceConnector:
@@ -240,6 +268,26 @@ def get_connector(
             return SGGovernmentRentalFlatsApiConnector(create_sgrentalflats_api_client())
         if source_key == "whatsapp_chat":
             return create_whatsadmin_api_connector()
+        fundbox_types: dict[str, type[FundboxApiConnector]] = {
+            "fundbox_consumer_backend": FundboxUsersApiConnector,
+            "fundbox_consumer_backend:contacts": FundboxContactsApiConnector,
+            "fundbox_consumer_backend:sales": FundboxSalesApiConnector,
+        }
+        fundbox_type = fundbox_types.get(source_key)
+        if fundbox_type is not None:
+            settings = get_settings()
+            with Redis.from_url(settings.celery_broker_url) as checkpoint_store:
+                updated_since = load_watermark(
+                    checkpoint_store,
+                    source_key,
+                    settings.fundbox_api_overlap_seconds,
+                )
+                previous_source_ids = load_source_ids(checkpoint_store, source_key)
+            return fundbox_type(
+                create_fundbox_api_client(),
+                updated_since=updated_since,
+                previous_source_ids=previous_source_ids,
+            )
         api_types: dict[str, Callable[[ApiClient], SourceConnector]] = {
             "eko_phppos": EkoApiConnector,
             "eko_phppos:sales": EkoSalesApiConnector,
@@ -387,6 +435,17 @@ def _ingest_all_records_open(
         exclusion_context if exclusion_context is not None else _load_exclusion_context()
     )
     for raw_record in connector.fetch_records():
+        retirement_id = raw_record.get("_retire_source_record_id")
+        retired_at = raw_record.get("_retired_at")
+        if isinstance(retirement_id, str) and isinstance(retired_at, str):
+            retire_source_evidence(
+                client,
+                connector.get_source_key(),
+                retirement_id,
+                retired_at,
+            )
+            success += 1
+            continue
         envelope = SourceRecordEnvelope.model_validate(
             {"source_system": connector.get_source_key(), **raw_record},
         )
@@ -471,11 +530,16 @@ def run_ingestion(
             client.verify_connectivity()
 
         pipeline = IngestPipeline(client)
-        connector = get_connector(source_key, dump_path if mode == "dump" else None, mode=mode)
+        # Create the IngestRun before building the connector so a
+        # connector-construction failure (e.g. a source dispatched before its
+        # env is provisioned) is recorded as a failed run instead of vanishing
+        # from the runs UI.
         ingest_run_id = _create_ingest_run(client, source_key, mode)
-        logger.info("IngestRun %s created, connector=%s", ingest_run_id, type(connector).__name__)
+        logger.info("IngestRun %s created", ingest_run_id)
 
         try:
+            connector = get_connector(source_key, dump_path if mode == "dump" else None, mode=mode)
+            logger.info("Connector=%s", type(connector).__name__)
             exclusion_context = _load_exclusion_context()
             success, errors, skipped = _ingest_all_records(
                 client,
@@ -516,6 +580,19 @@ def run_ingestion(
             success + errors + skipped,
             errors,
         )
+        if (
+            final_status == "completed"
+            and isinstance(connector, FundboxApiConnector)
+            and connector.reconciliation_completed
+            and connector.current_source_ids is not None
+        ):
+            with Redis.from_url(settings.celery_broker_url) as checkpoint_store:
+                save_reconciliation_state(
+                    checkpoint_store,
+                    source_key,
+                    connector.current_source_ids,
+                    connector.latest_effective_updated_at,
+                )
         logger.info(
             "Ingestion complete: %d succeeded, %d errors, %d skipped",
             success,

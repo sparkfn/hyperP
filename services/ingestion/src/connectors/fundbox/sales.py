@@ -22,7 +22,6 @@ been ingested yet the sales record is parked with
 from __future__ import annotations
 
 from collections.abc import Iterator
-from decimal import Decimal
 from typing import TypedDict, cast
 
 from sqlalchemy import select
@@ -31,6 +30,7 @@ from sqlalchemy.engine import Connection, RowMapping
 from src.connectors.fundbox.base import FundboxConnectorBase
 from src.connectors.fundbox.builders import (
     build_envelope,
+    coerce_float,
     serialize_row,
     to_iso,
 )
@@ -58,13 +58,7 @@ class _CustomerContact(TypedDict):
 
 
 def _decimal_to_float(value: object) -> float | None:
-    if value is None:
-        return None
-    if isinstance(value, Decimal):
-        return float(value)
-    if isinstance(value, int | float):
-        return float(value)
-    return None
+    return coerce_float(value)
 
 
 def _variant_to_product(

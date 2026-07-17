@@ -33,6 +33,35 @@ jobs:
 
           COMPOSE="docker compose -f .docker/staging/docker-compose.yml"
 
+          # The staging Compose file is intentionally host-managed and untracked
+          # (see commit 547572b). Refuse deployment until its ingestion
+          # environment mirrors the tracked root Compose contract.
+          for key in \
+            FUNDBOX_API_BASE_URL \
+            FUNDBOX_API_USERNAME \
+            FUNDBOX_API_PASSWORD \
+            FUNDBOX_API_PAGE_SIZE \
+            FUNDBOX_API_TIMEOUT_SECONDS \
+            FUNDBOX_API_MAX_ATTEMPTS \
+            FUNDBOX_API_OVERLAP_SECONDS
+          do
+            if ! grep -Eq "^[[:space:]]+${key}:" .docker/staging/docker-compose.yml; then
+              echo "Staging Compose is missing required ingestion variable: ${key}"
+              exit 1
+            fi
+          done
+
+          $COMPOSE config --format json | python3 -c '
+          import json, sys
+          config = json.load(sys.stdin)
+          required = ("FUNDBOX_API_BASE_URL", "FUNDBOX_API_USERNAME", "FUNDBOX_API_PASSWORD")
+          for service_name in ("worker", "beat"):
+              environment = config["services"][service_name].get("environment", {})
+              for key in required:
+                  if not str(environment.get(key, "")).strip():
+                      raise SystemExit(f"{service_name}.{key} must resolve to a non-empty value")
+          '
+
           # --- Decide which service images actually need rebuilding ---------
           # Cached builds (no --no-cache) make dependency layers (uv sync /
           # npm install) reuse the host layer cache; source changes still bust
@@ -75,6 +104,32 @@ jobs:
             $COMPOSE up -d --no-deps --force-recreate $SERVICES
           fi
           $COMPOSE restart web
+
+          for service in "worker" "beat"; do
+            container_id=$($COMPOSE ps -q "$service")
+            if [ -z "$container_id" ]; then
+              echo "Staging service container is missing: ${service}"
+              exit 1
+            fi
+            stable_checks=0
+            for attempt in 1 2 3 4 5 6 7 8 9 10 11 12; do
+              if [ "$(docker inspect -f '{{.State.Running}}' "$container_id")" = "true" ]; then
+                stable_checks=$((stable_checks + 1))
+                if [ "$stable_checks" -ge 6 ]; then
+                  echo "Staging service remained running: ${service}"
+                  break
+                fi
+              else
+                stable_checks=0
+              fi
+              sleep 5
+            done
+            if [ "$stable_checks" -lt 6 ]; then
+              echo "Staging service did not remain running: ${service}"
+              docker inspect -f '{{json .State}}' "$container_id" || true
+              exit 1
+            fi
+          done
 
           echo 'Running health check...'
           HEALTH_OK=false

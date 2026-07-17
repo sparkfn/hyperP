@@ -59,17 +59,17 @@ if _fundbox_cron is not None:
     _beat_schedule["fundbox-ingest"] = {
         "task": "src.tasks.run_ingestion_task",
         "schedule": _fundbox_cron,
-        "args": ("fundbox_consumer_backend", "batch"),
+        "args": ("fundbox_consumer_backend", "api"),
     }
     _beat_schedule["fundbox-contacts-ingest"] = {
         "task": "src.tasks.run_ingestion_task",
         "schedule": _fundbox_cron,
-        "args": ("fundbox_consumer_backend:contacts", "batch"),
+        "args": ("fundbox_consumer_backend:contacts", "api"),
     }
     _beat_schedule["fundbox-sales-ingest"] = {
         "task": "src.tasks.run_ingestion_task",
         "schedule": _fundbox_cron,
-        "args": ("fundbox_consumer_backend:sales", "batch"),
+        "args": ("fundbox_consumer_backend:sales", "api"),
     }
 
 _speedzone_cron = parse_cron(settings.speedzone_phppos_ingest_cron)
