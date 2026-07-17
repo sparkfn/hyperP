@@ -19,7 +19,8 @@ def parse_cron(expression: str) -> crontab | None:
 
 
 def add_sgbankruptcy_schedule(
-    schedule: dict[str, dict[str, object]], cron_expression: str
+    schedule: dict[str, dict[str, object]],
+    cron_expression: str,
 ) -> None:
     """Add scheduled SG bankruptcy API ingestion when the cron is valid."""
     parsed_cron = parse_cron(cron_expression)
