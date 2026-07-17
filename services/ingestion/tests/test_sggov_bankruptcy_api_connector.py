@@ -229,6 +229,6 @@ def test_api_connector_maps_eventless_case_like_dump_mode() -> None:
     record = next(connector.fetch_records())
 
     assert record["source_record_id"] == "bankruptcy_case:1"
-    assert record["attributes"]["bankruptcy_event_type"] is None
+    assert "bankruptcy_event_type" not in record["attributes"]
     assert record["raw_payload"]["event"] == {}
     assert record["raw_payload"]["source_document"] == {}
