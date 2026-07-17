@@ -5,7 +5,7 @@ from __future__ import annotations
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import SecretStr, model_validator
+from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -100,6 +100,14 @@ class Settings(BaseSettings):
     phppos_api_max_attempts: int = 3
     speedzone_phppos_api_tenant_id: str = ""
     eko_phppos_api_tenant_id: str = ""
+
+    # SG bankruptcy scraper export API --------------------------------------
+    sgbankruptcy_api_base_url: str = ""
+    sgbankruptcy_api_key: SecretStr = SecretStr("")
+    sgbankruptcy_api_page_size: int = Field(default=500, ge=1, le=1000)
+    sgbankruptcy_api_timeout_seconds: float = Field(default=30.0, gt=0)
+    sgbankruptcy_api_max_attempts: int = Field(default=3, ge=1)
+    sgbankruptcy_ingest_cron: str = ""
 
     # WhatsApp API (chrishubert/whatsapp-api compatible) ----------------------
     # Multi-tenant WhatsApp Web REST API. Endpoints are session-scoped via

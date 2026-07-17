@@ -23,6 +23,7 @@ is sales. Built on Neo4j for native graph traversal.
 - [Graph Model Diagram](./docs/profile-unifier-graph-model-diagram.md)
 - [Scaffold Architecture](./docs/profile-unifier-scaffold.md)
 - [Eko and SpeedZone API Ingestion Design](./docs/superpowers/specs/profile-unifier-eko-speedzone-api-ingestion-design.md)
+- [SG Bankruptcy API Ingestion](./docs/profile-unifier-sg-bankruptcy-api-ingestion.md)
 
 ## Recommended Reading Order
 

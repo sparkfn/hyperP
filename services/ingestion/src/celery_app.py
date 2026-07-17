@@ -13,6 +13,7 @@ from celery import Celery
 from celery.schedules import crontab
 
 from src.config import get_settings
+from src.schedule_builders import add_sgbankruptcy_schedule, parse_cron
 
 settings = get_settings()
 
@@ -45,20 +46,6 @@ celery_app.conf.update(
 )
 
 
-def _parse_cron(expr: str) -> crontab | None:
-    parts = expr.strip().split()
-    if len(parts) != 5:
-        return None
-    minute, hour, day_of_month, month_of_year, day_of_week = parts
-    return crontab(
-        minute=minute,
-        hour=hour,
-        day_of_month=day_of_month,
-        month_of_year=month_of_year,
-        day_of_week=day_of_week,
-    )
-
-
 # Beat schedule — entries are only registered when their feature flag is on.
 _beat_schedule: dict[str, dict[str, object]] = {}
 
@@ -67,7 +54,7 @@ _beat_schedule["lifecycle-reconciliation"] = {
     "schedule": 300.0,
 }
 
-_fundbox_cron = _parse_cron(settings.fundbox_consumer_backend_ingest_cron)
+_fundbox_cron = parse_cron(settings.fundbox_consumer_backend_ingest_cron)
 if _fundbox_cron is not None:
     _beat_schedule["fundbox-ingest"] = {
         "task": "src.tasks.run_ingestion_task",
@@ -85,7 +72,7 @@ if _fundbox_cron is not None:
         "args": ("fundbox_consumer_backend:sales", "batch"),
     }
 
-_speedzone_cron = _parse_cron(settings.speedzone_phppos_ingest_cron)
+_speedzone_cron = parse_cron(settings.speedzone_phppos_ingest_cron)
 if _speedzone_cron is not None:
     _beat_schedule["speedzone-ingest"] = {
         "task": "src.tasks.run_ingestion_task",
@@ -98,7 +85,7 @@ if _speedzone_cron is not None:
         "args": ("speedzone_phppos:sales", "api"),
     }
 
-_eko_cron = _parse_cron(settings.eko_phppos_ingest_cron)
+_eko_cron = parse_cron(settings.eko_phppos_ingest_cron)
 if _eko_cron is not None:
     _beat_schedule["eko-ingest"] = {
         "task": "src.tasks.run_ingestion_task",
@@ -110,6 +97,8 @@ if _eko_cron is not None:
         "schedule": _eko_cron,
         "args": ("eko_phppos:sales", "api"),
     }
+
+add_sgbankruptcy_schedule(_beat_schedule, settings.sgbankruptcy_ingest_cron)
 
 if settings.birthday_task_enabled:
     _beat_schedule["birthday-greetings"] = {

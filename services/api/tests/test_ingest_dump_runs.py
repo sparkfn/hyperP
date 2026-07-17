@@ -15,6 +15,13 @@ def test_ingest_run_create_defaults_to_batch_mode() -> None:
     assert body.dump_path is None
 
 
+def test_ingest_run_create_accepts_api_without_dump_path() -> None:
+    body = IngestRunCreateRequest(run_type="sgbankruptcy", mode="api")
+
+    assert body.mode == "api"
+    assert body.dump_path is None
+
+
 def test_dump_run_requires_dump_path() -> None:
     with pytest.raises(ValidationError, match="dump_path is required"):
         IngestRunCreateRequest(run_type="manual", mode="dump")

@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
 
 import pytest
 from src.connectors.dumps.connectors import get_dump_connector
-from src.connectors.sggov.bankruptcy import SGGovernmentBankruptcyConnector
+from src.connectors.sggov.bankruptcy import SGGovernmentBankruptcyConnector, _events_by_case
+from src.connectors.sggov.bankruptcy_api import BankruptcyExportItem, build_api_envelope
 from src.main import get_connector
 
 
@@ -126,3 +128,50 @@ def test_bankruptcy_connector_not_registered_for_batch() -> None:
     # is not available in batch mode.
     with pytest.raises(ValueError, match="Unknown source key"):
         get_connector("sgbankruptcy")
+
+
+def test_bankruptcy_connector_dispatches_via_api(monkeypatch: pytest.MonkeyPatch) -> None:
+    marker = object()
+    monkeypatch.setattr("src.main.create_sgbankruptcy_api_connector", lambda: marker)
+
+    assert get_connector("sgbankruptcy", mode="api") is marker
+
+
+def test_bankruptcy_api_and_dump_connectors_build_identical_envelopes(tmp_path: Path) -> None:
+    dump = tmp_path / "sgbankruptcy.sql"
+    _write_dump(dump)
+    dump_record = next(SGGovernmentBankruptcyConnector(dump).fetch_records())
+    api_record = build_api_envelope(
+        BankruptcyExportItem(
+            case_id=1,
+            case_number="1561/2025",
+            identification_number="S9350236A",
+            person_name="SHARIFAH ALFIEYAH BINTE ABDULLAH",
+            latest_document_type="bankruptcy_order",
+            latest_document_date="2026-02-26",
+            event_id=7,
+            event_type="bankruptcy_order",
+            event_date="2026-02-26",
+            trustee_name="GOH WEE TECK",
+            trustee_firm="RSM CORPORATE ADVISORY PTE. LTD.",
+            source_document_id=3,
+            source_url="https://example.test/file.pdf",
+            document_type="bankruptcy_order",
+            document_date="2026-02-26",
+            first_seen_at=datetime.fromisoformat("2026-05-05T13:05:42.102130+00:00"),
+            last_seen_at=datetime.fromisoformat("2026-05-05T13:05:42.351832+00:00"),
+        )
+    )
+
+    assert api_record == dump_record
+
+
+def test_dump_connector_selects_latest_event_per_case() -> None:
+    events = _events_by_case(
+        [
+            {"id": "9", "bankruptcy_case_id": "1", "updated_at": "2026-07-01T12:00:00"},
+            {"id": "10", "bankruptcy_case_id": "1", "updated_at": "2026-07-02T12:00:00"},
+        ]
+    )
+
+    assert events["1"]["id"] == "10"

@@ -164,7 +164,7 @@ class IngestRecordsRequest(BaseModel):
     records: list[IngestRecord]
 
 
-IngestRunMode = Literal["batch", "dump"]
+IngestRunMode = Literal["batch", "dump", "api"]
 
 
 class IngestRunCreateRequest(BaseModel):
@@ -175,7 +175,7 @@ class IngestRunCreateRequest(BaseModel):
 
     @model_validator(mode="after")
     def _check_dump_path(self) -> IngestRunCreateRequest:
-        if self.mode == "batch":
+        if self.mode != "dump":
             if self.dump_path is not None:
                 raise ValueError("dump_path is only valid when mode='dump'")
             return self

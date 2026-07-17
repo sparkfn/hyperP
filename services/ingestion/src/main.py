@@ -39,6 +39,7 @@ from src.connectors.phppos_api.client import (
 )
 from src.connectors.phppos_api.connectors import ApiClient
 from src.connectors.speedzone import SpeedZoneConnector, SpeedZoneSalesConnector
+from src.connectors.sggov.bankruptcy_api import SGGovernmentBankruptcyApiConnector
 from src.connectors.whatsapp import WhatsAppChatConnector
 from src.exclusions import (
     ExclusionContext,
@@ -171,6 +172,18 @@ def create_phppos_api_client(source_key: str) -> PhpposApiClient:
     )
 
 
+def create_sgbankruptcy_api_connector() -> SGGovernmentBankruptcyApiConnector:
+    """Build the authenticated SG bankruptcy API connector from settings."""
+    settings = get_settings()
+    return SGGovernmentBankruptcyApiConnector(
+        settings.sgbankruptcy_api_base_url,
+        settings.sgbankruptcy_api_key.get_secret_value(),
+        page_size=settings.sgbankruptcy_api_page_size,
+        http=httpx.Client(timeout=settings.sgbankruptcy_api_timeout_seconds),
+        max_attempts=settings.sgbankruptcy_api_max_attempts,
+    )
+
+
 def get_connector(
     source_key: str, dump_path: str | None = None, *, mode: str = "batch"
 ) -> SourceConnector:
@@ -180,6 +193,8 @@ def get_connector(
         resolved_dump_path = resolve_dump_path(dump_path, settings.dumps_root)
         return get_dump_connector(source_key, resolved_dump_path)
     if mode == "api":
+        if source_key == "sgbankruptcy":
+            return create_sgbankruptcy_api_connector()
         api_types: dict[str, Callable[[ApiClient], SourceConnector]] = {
             "eko_phppos": EkoApiConnector,
             "eko_phppos:sales": EkoSalesApiConnector,

@@ -7,7 +7,7 @@ from datetime import datetime
 from pathlib import Path
 
 from src.connectors.base import SourceConnector
-from src.connectors.fundbox.builders import IdentifierBag, build_envelope
+from src.connectors.sggov.bankruptcy_common import build_bankruptcy_envelope
 from src.connectors.sggov.dump import CopyRow, parse_copy_tables
 from src.models import JsonValue
 
@@ -44,9 +44,17 @@ def _events_by_case(rows: list[CopyRow]) -> dict[str, CopyRow]:
     indexed: dict[str, CopyRow] = {}
     for row in rows:
         case_id = _str_value(row, "bankruptcy_case_id")
-        if case_id is not None and case_id not in indexed:
+        if case_id is not None and (
+            case_id not in indexed or _event_order_key(row) > _event_order_key(indexed[case_id])
+        ):
             indexed[case_id] = row
     return indexed
+
+
+def _event_order_key(row: CopyRow) -> tuple[str, int]:
+    updated_at = _iso_datetime(row.get("updated_at")) or ""
+    row_id = _str_value(row, "id") or "0"
+    return updated_at, int(row_id) if row_id.isdigit() else 0
 
 
 class SGGovernmentBankruptcyConnector(SourceConnector):
@@ -89,31 +97,22 @@ class SGGovernmentBankruptcyConnector(SourceConnector):
         event_type = _str_value(event, "event_type") or _str_value(case, "latest_document_type")
         event_date = _str_value(event, "event_date") or _str_value(case, "latest_document_date")
 
-        identifiers = IdentifierBag()
-        identifiers.add("nric", identification_number, verified=True)
-
-        raw_payload: dict[str, JsonValue] = {
-            "case": case,
-            "event": event or {},
-            "source_document": document or {},
-        }
-        observed_at = _iso_datetime(case.get("last_seen_at")) or _iso_datetime(
-            case.get("first_seen_at")
-        )
-        return build_envelope(
-            source_record_id=f"bankruptcy_case:{case_id}",
-            observed_at=observed_at,
-            identifiers=identifiers.items,
-            record_type="bankruptcy",
-            attributes={
-                "full_name": person_name,
-                "bankruptcy_case_number": _str_value(case, "case_number"),
-                "bankruptcy_document_type": _str_value(case, "latest_document_type"),
-                "bankruptcy_document_date": _str_value(case, "latest_document_date"),
-                "bankruptcy_event_type": event_type,
-                "bankruptcy_event_date": event_date,
-                "bankruptcy_trustee_name": _str_value(event, "trustee_name"),
-                "bankruptcy_trustee_firm": _str_value(event, "trustee_firm"),
-            },
-            raw_payload=raw_payload,
+        return build_bankruptcy_envelope(
+            case_id=case_id,
+            case_number=_str_value(case, "case_number"),
+            identification_number=identification_number,
+            person_name=person_name,
+            latest_document_type=_str_value(case, "latest_document_type"),
+            latest_document_date=_str_value(case, "latest_document_date"),
+            first_seen_at=_iso_datetime(case.get("first_seen_at")),
+            last_seen_at=_iso_datetime(case.get("last_seen_at")),
+            event_id=_str_value(event, "id"),
+            event_type=event_type,
+            event_date=event_date,
+            trustee_name=_str_value(event, "trustee_name"),
+            trustee_firm=_str_value(event, "trustee_firm"),
+            source_document_id=_str_value(document, "id"),
+            source_url=_str_value(document, "source_url"),
+            document_type=_str_value(document, "document_type"),
+            document_date=_str_value(document, "document_date"),
         )
