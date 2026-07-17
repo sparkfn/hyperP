@@ -35,10 +35,7 @@ def _legacy_dump_text(value: str) -> str:
         .replace("\r", r"\r")
     )
     return (
-        encoded.replace(r"\n", "\n")
-        .replace(r"\t", "\t")
-        .replace(r"\r", "\r")
-        .replace(r"\\", "\\")
+        encoded.replace(r"\n", "\n").replace(r"\t", "\t").replace(r"\r", "\r").replace(r"\\", "\\")
     )
 
 
@@ -83,8 +80,7 @@ class SGGovernmentRentalFlatsApiClient:
                 )
             if page.limit != self._page_size:
                 raise ValueError(
-                    f"SG rental flats API returned limit {page.limit}, "
-                    f"expected {self._page_size}"
+                    f"SG rental flats API returned limit {page.limit}, expected {self._page_size}"
                 )
             if len(page.items) > page.limit:
                 raise ValueError("SG rental flats API returned more items than the page limit")
