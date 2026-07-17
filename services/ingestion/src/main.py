@@ -38,8 +38,8 @@ from src.connectors.phppos_api.client import (
     token_rotation_lock_seconds,
 )
 from src.connectors.phppos_api.connectors import ApiClient
-from src.connectors.speedzone import SpeedZoneConnector, SpeedZoneSalesConnector
 from src.connectors.sggov.bankruptcy_api import SGGovernmentBankruptcyApiConnector
+from src.connectors.speedzone import SpeedZoneConnector, SpeedZoneSalesConnector
 from src.connectors.whatsapp import WhatsAppChatConnector
 from src.exclusions import (
     ExclusionContext,
