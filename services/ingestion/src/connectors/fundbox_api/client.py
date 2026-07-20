@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 from math import isfinite
+from urllib.parse import urlparse
 
 import httpx
 
@@ -15,6 +16,7 @@ from src.connectors.fundbox_api.models import (
     IngestionPage,
     validate_source_records,
 )
+from src.errors import SourceNotConfiguredError
 from src.models import JsonValue
 
 _RESOURCES: frozenset[str] = frozenset({"users", "contacts", "sales"})
@@ -29,10 +31,25 @@ class FundboxApiCredentials:
     page_size: int
 
     def __post_init__(self) -> None:
+        # Empty config is a normal pre-provisioning state, not a startup error:
+        # reject it here (at dispatch time) with an actionable message so the
+        # Celery task can log a clean warning and reject the run rather than
+        # crash-looping. ``SourceNotConfiguredError`` is caught specifically by
+        # the ingestion task and logged at WARNING (no traceback).
+        if (
+            not self.base_url.strip()
+            or not self.username.strip()
+            or not self.password.strip()
+        ):
+            raise SourceNotConfiguredError(
+                "Fundbox API ingestion is not configured: set FUNDBOX_API_BASE_URL, "
+                "FUNDBOX_API_USERNAME and FUNDBOX_API_PASSWORD before dispatching "
+                "fundbox API ingestion."
+            )
         if not self.base_url.startswith("https://"):
             raise ValueError("Fundbox API base URL must use HTTPS")
-        if not self.username.strip() or not self.password:
-            raise ValueError("Fundbox API credentials are required")
+        if not urlparse(self.base_url).netloc:
+            raise ValueError("Fundbox API base URL is missing a host")
 
 
 class FundboxApiClient:

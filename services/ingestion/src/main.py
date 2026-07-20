@@ -241,10 +241,13 @@ def create_whatsadmin_api_connector() -> WhatsAdminChatApiConnector:
 
 def create_fundbox_api_client() -> FundboxApiClient:
     settings = get_settings()
+    # Strip surrounding whitespace so a padded env value (e.g. " https://x ") is
+    # tolerated end-to-end rather than tripping a misleading "must use HTTPS"
+    # check or failing at request time.
     return FundboxApiClient(
         FundboxApiCredentials(
-            base_url=settings.fundbox_api_base_url,
-            username=settings.fundbox_api_username,
+            base_url=settings.fundbox_api_base_url.strip(),
+            username=settings.fundbox_api_username.strip(),
             password=settings.fundbox_api_password.get_secret_value(),
             page_size=settings.fundbox_api_page_size,
         ),

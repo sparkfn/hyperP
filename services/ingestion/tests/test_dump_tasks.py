@@ -4,6 +4,9 @@ from __future__ import annotations
 
 from pytest import MonkeyPatch
 
+from _test_helpers import NullContext as _NullContext
+from _test_helpers import TaskSettings as _Settings
+
 
 def test_run_ingestion_task_passes_dump_path(monkeypatch: MonkeyPatch) -> None:
     monkeypatch.setenv("NEO4J_PASSWORD", "test")
@@ -119,16 +122,3 @@ def test_run_ingestion_task_passes_sgbankruptcy_api_mode(
 
     assert calls == [("sgbankruptcy", "api", None, False)]
     assert result["mode"] == "api"
-
-
-class _Settings:
-    log_level = "INFO"
-    max_concurrent_ingestions = 1
-
-
-class _NullContext:
-    def __enter__(self) -> str:
-        return "ok"
-
-    def __exit__(self, exc_type: object, exc: object, tb: object) -> bool:
-        return False

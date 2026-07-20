@@ -119,9 +119,49 @@ def test_customer_api_connector_treats_omitted_optional_fields_as_null() -> None
     assert client.closed is True
 
 
-def test_run_ingestion_closes_api_connector_when_run_creation_fails(
+def test_run_ingestion_marks_run_failed_when_connector_construction_fails(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # The IngestRun is created before the connector is built, so a
+    # connector-construction failure (e.g. a source dispatched before its env
+    # is provisioned) is recorded as a failed run instead of vanishing from
+    # the runs UI.
+    class GraphClient:
+        def verify_connectivity(self) -> None:
+            return None
+
+        def close(self) -> None:
+            return None
+
+    monkeypatch.setattr("src.main.get_settings", lambda: object())
+    monkeypatch.setattr("src.main.Neo4jClient", lambda _settings: GraphClient())
+    monkeypatch.setattr("src.main.IngestPipeline", lambda _client: object())
+    monkeypatch.setattr("src.main._create_ingest_run", lambda *_args: "run-1")
+
+    failed_runs: list[str] = []
+
+    def _capture_failed_run(_client: object, run_id: str, *_rest: object) -> None:
+        failed_runs.append(run_id)
+
+    monkeypatch.setattr("src.main._mark_run_failed", _capture_failed_run)
+
+    def boom(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("connector failed")
+
+    monkeypatch.setattr("src.main.get_connector", boom)
+
+    with pytest.raises(RuntimeError, match="connector failed"):
+        run_ingestion("eko_phppos", mode="api", initialize_graph=False)
+
+    assert failed_runs == ["run-1"]
+
+
+def test_run_ingestion_closes_api_connector_when_ingestion_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Connector resources are still released when ingestion fails *after* the
+    # connector is built (the run-creation-fails path can no longer happen,
+    # since the run is created before the connector).
     api_client = StubClient()
     connector = EkoApiConnector(api_client)
 
@@ -135,14 +175,17 @@ def test_run_ingestion_closes_api_connector_when_run_creation_fails(
     monkeypatch.setattr("src.main.get_settings", lambda: object())
     monkeypatch.setattr("src.main.Neo4jClient", lambda _settings: GraphClient())
     monkeypatch.setattr("src.main.IngestPipeline", lambda _client: object())
+    monkeypatch.setattr("src.main._create_ingest_run", lambda *_args: "run-1")
+    monkeypatch.setattr("src.main._mark_run_failed", lambda *_args: None)
     monkeypatch.setattr("src.main.get_connector", lambda *_args, **_kwargs: connector)
+    monkeypatch.setattr("src.main._load_exclusion_context", lambda: object())
 
-    def fail_create_run(*_args: object) -> str:
-        raise RuntimeError("run creation failed")
+    def boom(*_args: object, **_kwargs: object) -> tuple[int, int, int]:
+        raise RuntimeError("ingestion failed")
 
-    monkeypatch.setattr("src.main._create_ingest_run", fail_create_run)
+    monkeypatch.setattr("src.main._ingest_all_records", boom)
 
-    with pytest.raises(RuntimeError, match="run creation failed"):
+    with pytest.raises(RuntimeError, match="ingestion failed"):
         run_ingestion("eko_phppos", mode="api", initialize_graph=False)
 
     assert api_client.closed is True

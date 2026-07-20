@@ -30,6 +30,7 @@ from pydantic.types import JsonValue
 from src.birthday import BirthdayRunSummary, run_birthday_greetings
 from src.celery_app import celery_app
 from src.config import get_settings
+from src.errors import SourceNotConfiguredError
 from src.graph import queries
 from src.graph.client import Neo4jClient
 from src.graph.migrations import (
@@ -335,6 +336,12 @@ def run_ingestion_task(
     except _SlotUnavailableError as exc:
         logger.warning("Ingestion slot unavailable (%d/%d), retrying...", exc.live, exc.cap)
         raise
+    except SourceNotConfiguredError as exc:
+        # Pre-provisioning state: the source is scheduled but its env isn't set
+        # yet. Log a clean warning (no traceback) and reject without retry so
+        # beat firing on the cron doesn't flood the logs.
+        logger.warning("Ingestion source %s not configured: %s", source_key, exc)
+        raise Reject(str(exc), requeue=False) from exc
     except Exception as exc:
         logger.exception("Ingestion task failed for %s", source_key)
         # Don't retry on real errors — surface them to the caller.

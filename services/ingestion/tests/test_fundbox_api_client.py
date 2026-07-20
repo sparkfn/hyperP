@@ -1,10 +1,19 @@
 from __future__ import annotations
 
+import logging
+from collections.abc import Iterator
+from contextlib import contextmanager
+
 import httpx
 import pytest
+from celery.exceptions import Reject
 from pydantic import ValidationError
+from _test_helpers import NullContext, TaskSettings
+from src.config import Settings
 from src.connectors.fundbox_api.client import FundboxApiClient, FundboxApiCredentials
 from src.connectors.fundbox_api.models import SalesOrderItem, validate_source_records
+from src.errors import SourceNotConfiguredError
+from src.main import create_fundbox_api_client, run_ingestion
 
 
 def test_iter_source_uses_basic_auth_watermark_and_cursor() -> None:
@@ -119,6 +128,33 @@ def test_client_caps_exponential_retry_delay() -> None:
 def test_client_credentials_reject_plaintext_http() -> None:
     with pytest.raises(ValueError, match="HTTPS"):
         FundboxApiCredentials("http://fundbox.test/api/v1", "u", "p", 50)
+
+
+def test_client_credentials_reject_empty_config() -> None:
+    # Empty env (pre-provisioning) is rejected at dispatch time with an
+    # actionable message, not a raw stack trace, and does not crash the worker.
+    # ``SourceNotConfiguredError`` is caught by the ingestion task and logged at
+    # WARNING (see test_run_ingestion_task_warns_when_source_not_configured).
+    with pytest.raises(SourceNotConfiguredError, match="not configured"):
+        FundboxApiCredentials("", "", "", 50)
+
+
+def test_client_credentials_reject_empty_username() -> None:
+    with pytest.raises(SourceNotConfiguredError, match="not configured"):
+        FundboxApiCredentials("https://fundbox.test/api/v1", "", "p", 50)
+
+
+def test_client_credentials_reject_whitespace_only_password() -> None:
+    # A whitespace-only password is a misconfiguration, not a usable secret: it
+    # must trip the same "not configured" guard as an empty one so the operator
+    # gets the actionable message instead of an opaque 401 at request time.
+    with pytest.raises(SourceNotConfiguredError, match="not configured"):
+        FundboxApiCredentials("https://fundbox.test/api/v1", "hyperp", "   ", 50)
+
+
+def test_client_credentials_reject_hostless_base_url() -> None:
+    with pytest.raises(ValueError, match="missing a host"):
+        FundboxApiCredentials("https://", "u", "p", 50)
 
 
 def test_client_rejects_inconsistent_pagination_metadata() -> None:
@@ -289,3 +325,165 @@ def test_source_validation_rejects_malformed_source_timestamp() -> None:
                 }
             ],
         )
+
+
+def test_create_fundbox_api_client_raises_when_not_configured(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The factory is the real dispatch path (called by get_connector for fundbox
+    # API ingestion). It must surface the same actionable error as the
+    # credentials guard, not a raw httpx/secret failure.
+    settings = Settings(neo4j_password="test", _env_file=None)
+    monkeypatch.setattr("src.main.get_settings", lambda: settings)
+
+    with pytest.raises(SourceNotConfiguredError, match="not configured"):
+        create_fundbox_api_client()
+
+
+def test_create_fundbox_api_client_strips_base_url_whitespace(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A padded env value must be tolerated end-to-end, not trip the "must use
+    # HTTPS" guard on the unstripped value. The strip happens in the factory's
+    # FundboxApiCredentials(...) call, so record the base_url the factory passes
+    # at that public boundary rather than reaching into the client's internals.
+    settings = Settings(
+        neo4j_password="test",
+        fundbox_api_base_url="  https://fundbox.test/api/v1  ",
+        fundbox_api_username="hyperp",
+        fundbox_api_password="secret",
+        _env_file=None,
+    )
+    monkeypatch.setattr("src.main.get_settings", lambda: settings)
+
+    recorded: dict[str, str] = {}
+    real_credentials = FundboxApiCredentials
+
+    def _capture_credentials(
+        base_url: str, username: str, password: str, page_size: int
+    ) -> FundboxApiCredentials:
+        recorded["base_url"] = base_url
+        return real_credentials(
+            base_url=base_url,
+            username=username,
+            password=password,
+            page_size=page_size,
+        )
+
+    monkeypatch.setattr("src.main.FundboxApiCredentials", _capture_credentials)
+
+    create_fundbox_api_client()
+
+    assert recorded["base_url"] == "https://fundbox.test/api/v1"
+
+
+def test_run_ingestion_task_warns_when_source_not_configured(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # When a source is scheduled but its env isn't set, the task must log a
+    # clean WARNING (no traceback) and reject without retry — so beat firing
+    # on the cron doesn't flood the logs or crash-loop the worker.
+    from src import tasks
+
+    monkeypatch.setattr(tasks, "setup_logging", lambda level: None)
+    monkeypatch.setattr(tasks, "get_settings", lambda: TaskSettings())
+    monkeypatch.setattr(tasks, "initialize_ingestion_graph", lambda: None)
+    monkeypatch.setattr(tasks, "_acquire_init_lock", lambda: NullContext())
+    monkeypatch.setattr(tasks, "_acquire_source_lock", lambda source_key: NullContext())
+    monkeypatch.setattr(tasks, "_acquire_ingestion_slot", lambda max_slots: NullContext())
+
+    @contextmanager
+    def _null_lease(*_args: object) -> Iterator[None]:
+        yield
+
+    monkeypatch.setattr(tasks, "_renew_ingestion_leases", _null_lease)
+
+    def _raise_not_configured(*_args: object, **_kwargs: object) -> None:
+        raise SourceNotConfiguredError("Fundbox API ingestion is not configured")
+
+    monkeypatch.setattr(tasks, "run_ingestion", _raise_not_configured)
+
+    # Capture WARNING *and* ERROR so we can assert the not-configured warning is
+    # emitted AND no exception-level (traceback) log is — the whole point of
+    # the dedicated SourceNotConfiguredError branch over the generic handler.
+    caplog.set_level(logging.WARNING, logger="src.tasks")
+
+    with pytest.raises(Reject):
+        tasks.run_ingestion_task.run("fundbox_consumer_backend", "api")
+
+    assert any(
+        "not configured" in rec.getMessage() and rec.levelno == logging.WARNING
+        for rec in caplog.records
+    )
+    # The dedicated SourceNotConfiguredError branch must avoid the generic
+    # handler's logger.exception — assert no record carries a traceback (exc_info)
+    # regardless of level, so the test still catches a future handler that logs
+    # a traceback at a non-ERROR level.
+    traceback_logs = [
+        rec for rec in caplog.records if rec.exc_info is not None
+    ]
+    assert not traceback_logs, (
+        "not-configured rejection must not log a traceback: "
+        f"{[(r.levelname, r.getMessage()) for r in traceback_logs]}"
+    )
+
+
+def test_run_ingestion_records_failed_run_when_fundbox_api_not_configured(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # End-to-end through the real run_ingestion + factory: a fundbox API
+    # ingestion dispatched with empty fundbox settings must surface the genuine
+    # SourceNotConfiguredError (not a stand-in) AND record a failed IngestRun,
+    # so the run is visible in the runs UI rather than vanishing.
+    settings = Settings(neo4j_password="test", _env_file=None)
+
+    class _NoRedis:
+        """Broker-free stand-in for the Redis checkpoint store.
+
+        The fundbox API branch opens the store (Redis.from_url) and reads the
+        watermark/source-id checkpoints *before* constructing the client, i.e.
+        before the empty-config SourceNotConfiguredError fires. load_watermark /
+        load_source_ids call ``redis.get(key)`` and treat ``None`` as "no
+        checkpoint", so this stub returns None for every key and lets the real
+        credentials guard raise the exception under test.
+        """
+
+        @staticmethod
+        def from_url(_url: str) -> "_NoRedis":
+            return _NoRedis()
+
+        def __enter__(self) -> "_NoRedis":
+            return self
+
+        def __exit__(self, exc_type: object, exc: object, tb: object) -> bool:
+            return False
+
+        def get(self, _key: str) -> None:
+            return None
+
+    class _GraphClient:
+        def verify_connectivity(self) -> None:
+            return None
+
+        def close(self) -> None:
+            return None
+
+    monkeypatch.setattr("src.main.get_settings", lambda: settings)
+    monkeypatch.setattr("src.main.Neo4jClient", lambda _s: _GraphClient())
+    monkeypatch.setattr("src.main.IngestPipeline", lambda _client: object())
+    monkeypatch.setattr("src.main.Redis", _NoRedis)
+    monkeypatch.setattr("src.main._create_ingest_run", lambda *_a: "run-1")
+
+    failed_runs: list[str] = []
+
+    def _capture_failed_run(_client: object, run_id: str, *_rest: object) -> None:
+        failed_runs.append(run_id)
+
+    monkeypatch.setattr("src.main._mark_run_failed", _capture_failed_run)
+
+    with pytest.raises(SourceNotConfiguredError, match="not configured"):
+        run_ingestion("fundbox_consumer_backend", mode="api", initialize_graph=False)
+
+    assert failed_runs == ["run-1"]
+

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from functools import lru_cache
 from typing import Literal
-from urllib.parse import urlparse
 
 from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -64,6 +63,10 @@ class Settings(BaseSettings):
     fundbox_consumer_backend_chunk_size: int = 1000
 
     # Fundbox Consumer Backend backdoor API extraction ----------------------
+    # Connection settings default to empty strings so the service can boot
+    # before credentials are provisioned. Empty config is rejected at runtime
+    # when a Fundbox API ingestion is dispatched (see FundboxApiCredentials),
+    # not at process startup.
     fundbox_api_base_url: str = ""
     fundbox_api_username: str = ""
     fundbox_api_password: SecretStr = SecretStr("")
@@ -71,23 +74,6 @@ class Settings(BaseSettings):
     fundbox_api_timeout_seconds: float = Field(default=30.0, gt=0)
     fundbox_api_max_attempts: int = Field(default=3, ge=1, le=10)
     fundbox_api_overlap_seconds: int = Field(default=300, ge=0)
-
-    @model_validator(mode="after")
-    def _validate_scheduled_fundbox_api(self) -> Settings:
-        if not self.fundbox_consumer_backend_ingest_cron:
-            return self
-        password = self.fundbox_api_password.get_secret_value()
-        parsed_url = urlparse(self.fundbox_api_base_url)
-        if (
-            parsed_url.scheme != "https"
-            or not parsed_url.netloc
-            or not self.fundbox_api_username.strip()
-            or not password.strip()
-        ):
-            raise ValueError(
-                "Fundbox API configuration is required when Fundbox ingestion is scheduled"
-            )
-        return self
 
     # SpeedZone phppos source DB (MySQL, optionally via SSH tunnel) ----------
     # Set SPEEDZONE_PHPPOS_SSH_HOST to enable SSH tunnelling.
