@@ -1,8 +1,8 @@
 """Name-matching helpers shared by the deterministic gate and heuristic scorer.
 
-Kept separate from :mod:`src.matching.similarity` (pure stdlib string algorithms)
-because these helpers know about the domain ``NormalizedAttribute`` shape and the
-set of attribute fields that count as a person's name.
+Kept separate from :mod:`src.matching.similarity`, which owns the legacy Jaro contract
+and RapidFuzz-backed OSA primitive, because these helpers know about the domain
+``NormalizedAttribute`` shape and the fields that count as a person's name.
 """
 
 from __future__ import annotations

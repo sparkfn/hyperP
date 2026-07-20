@@ -60,6 +60,10 @@ def test_email_local_part_near_miss_with_same_domain_is_near_match() -> None:
     assert email_near_match("johnsmith@gmail.com", "jonhsmith@gmail.com") is True
 
 
+def test_email_repeated_local_parts_stay_below_legacy_threshold() -> None:
+    assert email_near_match("aaabc@gmail.com", "aabcaa@gmail.com") is False
+
+
 def test_email_both_axes_fuzzy_is_not_near_match() -> None:
     assert email_near_match("johnsmith@gmial.com", "jonhsmith@gmail.com") is False
 
