@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import cast
+from typing import Literal, cast
 
 from src.config import get_settings
 from src.exclusion_config import (
@@ -36,12 +36,44 @@ class LlmConfig:
     chat_max_tokens: int = 8192  # output budget so the combined response doesn't truncate
 
 
+BitrixOpenLinesChannelType = Literal[
+    "whatsapp_business_api",
+    "whatsapp_device",
+    "facebook_direct",
+    "facebook_comments",
+    "instagram",
+    "telegram",
+    "carousell",
+    "bitrix_chat",
+    "other",
+]
+
+
+@dataclass
+class BitrixOpenLinesConfig:
+    """Selection and checkpoint tuning for Bitrix Open Lines ingestion."""
+
+    included_channel_types: list[BitrixOpenLinesChannelType] = field(
+        default_factory=lambda: [
+            "whatsapp_business_api",
+            "facebook_direct",
+            "instagram",
+        ]
+    )
+    included_config_ids: list[str] = field(default_factory=list)
+    excluded_config_ids: list[str] = field(default_factory=list)
+    entity_by_config_id: dict[str, str] = field(default_factory=dict)
+    incremental_overlap_seconds: int = 300
+    recent_page_size: int = 50
+
+
 @dataclass
 class IngestionConfig:
     """The whole ingestion config file: exclusions + LLM tuning."""
 
     exclusions: ExclusionFile = field(default_factory=ExclusionFile)
     llm: LlmConfig = field(default_factory=LlmConfig)
+    bitrix_openlines: BitrixOpenLinesConfig = field(default_factory=BitrixOpenLinesConfig)
 
 
 def _exclusion_file(raw: JsonValue, *, path: Path) -> ExclusionFile:
@@ -103,6 +135,81 @@ def _llm_config(raw: JsonValue, *, path: Path) -> LlmConfig:
     )
 
 
+_CHANNEL_TYPES: set[str] = {
+    "whatsapp_business_api",
+    "whatsapp_device",
+    "facebook_direct",
+    "facebook_comments",
+    "instagram",
+    "telegram",
+    "carousell",
+    "bitrix_chat",
+    "other",
+}
+
+
+def _config_ids(raw: JsonValue, *, path: Path) -> list[str]:
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        raise ValueError(f"Invalid ingestion config JSON: {path}")
+    result: list[str] = []
+    for value in raw:
+        if isinstance(value, bool) or not isinstance(value, (str, int)):
+            raise ValueError(f"Invalid ingestion config JSON: {path}")
+        normalized = str(value).strip()
+        if not normalized.isdigit():
+            raise ValueError(f"Invalid ingestion config JSON: {path}")
+        result.append(normalized)
+    return result
+
+
+def _bitrix_openlines_config(raw: JsonValue, *, path: Path) -> BitrixOpenLinesConfig:
+    if raw is None:
+        return BitrixOpenLinesConfig()
+    if not isinstance(raw, dict):
+        raise ValueError(f"Invalid ingestion config JSON: {path}")
+    defaults = BitrixOpenLinesConfig()
+    raw_types = raw.get("included_channel_types")
+    if raw_types is None:
+        included_types = defaults.included_channel_types
+    elif not isinstance(raw_types, list) or any(
+        not isinstance(value, str) or value not in _CHANNEL_TYPES for value in raw_types
+    ):
+        raise ValueError(f"Invalid ingestion config JSON: {path}")
+    else:
+        included_types = cast(list[BitrixOpenLinesChannelType], list(raw_types))
+    raw_entities = raw.get("entity_by_config_id")
+    if raw_entities is None:
+        entity_map: dict[str, str] = {}
+    elif not isinstance(raw_entities, dict):
+        raise ValueError(f"Invalid ingestion config JSON: {path}")
+    else:
+        entity_map = {}
+        for config_id, entity_key in raw_entities.items():
+            if not isinstance(config_id, str) or not config_id.isdigit():
+                raise ValueError(f"Invalid ingestion config JSON: {path}")
+            if not isinstance(entity_key, str) or not entity_key.strip():
+                raise ValueError(f"Invalid ingestion config JSON: {path}")
+            entity_map[config_id] = entity_key.strip()
+    overlap = _int(
+        raw.get("incremental_overlap_seconds"),
+        defaults.incremental_overlap_seconds,
+        path=path,
+    )
+    page_size = _int(raw.get("recent_page_size"), defaults.recent_page_size, path=path)
+    if overlap < 0 or page_size < 1 or page_size > 50:
+        raise ValueError(f"Invalid ingestion config JSON: {path}")
+    return BitrixOpenLinesConfig(
+        included_channel_types=included_types,
+        included_config_ids=_config_ids(raw.get("included_config_ids"), path=path),
+        excluded_config_ids=_config_ids(raw.get("excluded_config_ids"), path=path),
+        entity_by_config_id=entity_map,
+        incremental_overlap_seconds=overlap,
+        recent_page_size=page_size,
+    )
+
+
 def load_ingestion_config(path_value: str) -> IngestionConfig:
     """Load the consolidated ingestion config.
 
@@ -121,12 +228,13 @@ def load_ingestion_config(path_value: str) -> IngestionConfig:
     if not isinstance(raw, dict):
         raise ValueError(f"Invalid ingestion config JSON: {path}")
     payload = cast(dict[str, JsonValue], raw)
-    if "exclusions" not in payload and "llm" not in payload:
+    if not {"exclusions", "llm", "bitrix_openlines"}.intersection(payload):
         # Old format: the whole object is the exclusions block.
         return IngestionConfig(exclusions=_exclusion_file(payload, path=path), llm=LlmConfig())
     return IngestionConfig(
         exclusions=_exclusion_file(payload.get("exclusions"), path=path),
         llm=_llm_config(payload.get("llm"), path=path),
+        bitrix_openlines=_bitrix_openlines_config(payload.get("bitrix_openlines"), path=path),
     )
 
 

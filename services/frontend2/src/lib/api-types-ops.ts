@@ -94,9 +94,13 @@ export interface IngestRecordsResponse {
   results: IngestRecordResult[];
 }
 
+export type IngestRunMode = "batch" | "dump" | "api" | "backfill";
+
 export interface IngestRunCreateRequest {
   run_type: string;
-  metadata: Record<string, string>;
+  mode?: IngestRunMode;
+  dump_path?: string | null;
+  metadata?: Record<string, string>;
 }
 
 export interface IngestRunUpdateRequest {

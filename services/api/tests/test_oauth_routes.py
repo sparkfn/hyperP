@@ -834,6 +834,42 @@ def test_ingest_write_route_allows_human_user_with_mocked_repo() -> None:
     assert res.json()["data"]["ingest_run_id"] == "run-1"
 
 
+def test_ingest_write_route_rejects_backfill_for_non_openlines_source() -> None:
+    app = build_frontend_app()
+    app.dependency_overrides[require_active_user] = _override_employee
+    app.dependency_overrides[get_current_user_or_oauth_client] = _override_employee
+    app.dependency_overrides[get_ingest_repo] = _override_ingest_repo
+    client = TestClient(app)
+
+    with patch("src.auth.deps.get_entity_for_source", new=AsyncMock(return_value="fundbox")):
+        res = client.post(
+            "/ingest/fundbox_pos/runs",
+            json={"run_type": "historical_backfill", "mode": "backfill"},
+        )
+
+    assert res.status_code == 400
+    assert res.json()["error"]["message"] == (
+        "Backfill mode is only supported for bitrix_openlines."
+    )
+
+
+def test_ingest_write_route_accepts_backfill_for_openlines_source() -> None:
+    app = build_frontend_app()
+    app.dependency_overrides[require_active_user] = _override_employee
+    app.dependency_overrides[get_current_user_or_oauth_client] = _override_employee
+    app.dependency_overrides[get_ingest_repo] = _override_ingest_repo
+    client = TestClient(app)
+
+    with patch("src.auth.deps.get_entity_for_source", new=AsyncMock(return_value="fundbox")):
+        res = client.post(
+            "/ingest/bitrix_openlines/runs",
+            json={"run_type": "historical_backfill", "mode": "backfill"},
+        )
+
+    assert res.status_code == 201
+    assert res.json()["data"]["ingest_run_id"] == "run-1"
+
+
 def test_ingest_run_detail_route_rejects_oauth_client_without_ingest_write_scope() -> None:
     app = build_frontend_app()
     app.dependency_overrides[require_active_user] = _override_oauth_persons_reader

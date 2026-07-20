@@ -2225,9 +2225,21 @@ components:
       properties:
         run_type:
           type: string
+        mode:
+          type: string
+          enum: [batch, dump, api, backfill]
+          description: >-
+            Defaults to batch when omitted. Backfill is supported only when
+            source_key is bitrix_openlines.
+        dump_path:
+          type:
+            - string
+            - 'null'
         metadata:
           type: object
-          additionalProperties: true
+          additionalProperties:
+            type: string
+          description: Defaults to an empty object when omitted.
       required: [run_type]
       additionalProperties: false
     UpdateIngestRunRequest:

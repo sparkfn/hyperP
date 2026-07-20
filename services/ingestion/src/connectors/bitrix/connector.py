@@ -84,7 +84,7 @@ class _AgentMember:
 @dataclass
 class _ChatBundle:
     chat_id: int
-    deal_id: int
+    deal_id: int | None
     bitrix_chat_id: str
     last_message_at: datetime | None
     created_at: datetime | None
@@ -157,7 +157,7 @@ class BitrixChatConnector(SourceConnector):
                 all_bundles.append(
                     _ChatBundle(
                         chat_id=chat.id,
-                        deal_id=chat.deal_id or 0,
+                        deal_id=chat.deal_id,
                         bitrix_chat_id=getattr(chat, "bitrix_chat_id", None) or "",
                         last_message_at=getattr(chat, "last_message_at", None),
                         created_at=getattr(chat, "created_at", None),
@@ -338,6 +338,9 @@ class BitrixChatConnector(SourceConnector):
         company_email_addresses: list[str] | None = None,
         internal_person_names: list[str] | None = None,
         file_exclusions: ExclusionFile | None = None,
+        source_record_prefix: str = "bitrix-chat",
+        platform: str = "bitrix",
+        extra_raw_payload: dict[str, JsonValue] | None = None,
     ) -> list[dict[str, JsonValue]]:
         from src.connectors.fundbox.builders import build_envelope
 
@@ -371,7 +374,7 @@ class BitrixChatConnector(SourceConnector):
         extraction = filtered
 
         chat_id = str(bundle.chat_id)
-        deal_id = str(bundle.deal_id)
+        deal_id = str(bundle.deal_id) if bundle.deal_id is not None else None
         observed_at = latest_timestamp(bundle.last_message_at, bundle.created_at)
         tx_payload = transactions_payload(extraction)
         chat_members = chat_members_payload(extraction) or _agents_payload(bundle.agents)
@@ -395,8 +398,10 @@ class BitrixChatConnector(SourceConnector):
             "weak_identifiers": weak_identifiers_payload(extraction),
             "transactions": tx_payload,
         }
+        if extra_raw_payload is not None:
+            base_raw_payload.update(extra_raw_payload)
         conversation_ref: dict[str, JsonValue] = {
-            "platform": "bitrix",
+            "platform": platform,
             "chat_id": chat_id,
             "deal_id": deal_id,
             "bitrix_chat_id": bundle.bitrix_chat_id,
@@ -407,7 +412,7 @@ class BitrixChatConnector(SourceConnector):
         envelopes: list[dict[str, JsonValue]] = []
         primary_source_record_id: str | None = None
         for index, person in enumerate(people, start=1):
-            source_record_id = f"bitrix-chat-{chat_id}-person-{index}"
+            source_record_id = f"{source_record_prefix}-{chat_id}-person-{index}"
             if primary_source_record_id is None:
                 primary_source_record_id = source_record_id
             attributes: dict[str, JsonValue] = {}

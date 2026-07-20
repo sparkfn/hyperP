@@ -190,6 +190,13 @@ _SOURCE_SYSTEMS: tuple[_SourceSystemSeed, ...] = (
         "field_trust": _CHAT_TRUST,
     },
     {
+        "source_key": "bitrix_openlines",
+        "display_name": "Bitrix Open Lines (multi-tenant)",
+        "system_type": "chat",
+        "entity_key": None,
+        "field_trust": _CHAT_TRUST,
+    },
+    {
         "source_key": "sgbankruptcy",
         "display_name": "SG Bankruptcy Register",
         "system_type": "government_registry",

@@ -15,6 +15,11 @@ from redis import Redis
 from src.config import get_settings
 from src.connectors.base import SourceConnector
 from src.connectors.bitrix import BitrixChatConnector
+from src.connectors.bitrix_openlines.client import BitrixOpenLinesClient
+from src.connectors.bitrix_openlines.connector import BitrixOpenLinesConnector
+from src.connectors.bitrix_openlines.watermark import (
+    RedisWatermarkStore as BitrixOpenLinesWatermarkStore,
+)
 from src.connectors.dumps.connectors import get_dump_connector
 from src.connectors.dumps.reader import resolve_dump_path
 from src.connectors.eko import EkoConnector, EkoSalesConnector
@@ -239,6 +244,23 @@ def create_whatsadmin_api_connector() -> WhatsAdminChatApiConnector:
     return WhatsAdminChatApiConnector(client, RedisWatermarkStore(redis))
 
 
+def create_bitrix_openlines_connector(mode: str) -> BitrixOpenLinesConnector:
+    settings = get_settings()
+    client = BitrixOpenLinesClient(
+        base_url=settings.bitrix_openlines_api_base_url.get_secret_value(),
+        timeout_seconds=settings.bitrix_openlines_api_timeout_seconds,
+        max_attempts=settings.bitrix_openlines_api_max_attempts,
+        request_delay_seconds=settings.bitrix_openlines_api_request_delay_seconds,
+    )
+    redis = Redis.from_url(settings.celery_broker_url, decode_responses=True)
+    return BitrixOpenLinesConnector(
+        client,
+        BitrixOpenLinesWatermarkStore(redis),
+        get_ingestion_config().bitrix_openlines,
+        mode=mode,
+    )
+
+
 def create_fundbox_api_client() -> FundboxApiClient:
     settings = get_settings()
     # Strip surrounding whitespace so a padded env value (e.g. " https://x ") is
@@ -264,6 +286,8 @@ def get_connector(
         settings = get_settings()
         resolved_dump_path = resolve_dump_path(dump_path, settings.dumps_root)
         return get_dump_connector(source_key, resolved_dump_path)
+    if source_key == "bitrix_openlines" and mode in {"api", "backfill"}:
+        return create_bitrix_openlines_connector(mode)
     if mode == "api":
         if source_key == "sgbankruptcy":
             return create_sgbankruptcy_api_connector()
