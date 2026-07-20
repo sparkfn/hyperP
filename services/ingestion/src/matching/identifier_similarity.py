@@ -1,7 +1,7 @@
 """Approximate (near-miss) matching for phone and email identifiers.
 
-Pure functions, stdlib + ``phonenumbers`` only — parallel to ``matching.names``.
-This is a *weak*, corroborating-only second-pass heuristic signal (see
+Pure functions using ``phonenumbers`` and the shared similarity helpers, whose OSA
+primitive is RapidFuzz-backed. This is a *weak*, corroborating-only second-pass signal (see
 matching-spec "Approximate Identifier Matching"): never used for candidate
 generation or deterministic rules, and never sufficient alone to cross the
 review threshold.
