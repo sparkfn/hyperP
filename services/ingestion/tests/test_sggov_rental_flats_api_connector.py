@@ -274,19 +274,13 @@ def test_api_connector_close_releases_client_before_iteration() -> None:
     assert http.is_closed
 
 
-def test_run_ingestion_closes_api_connector_when_run_creation_fails(
+def test_run_ingestion_does_not_build_connector_when_run_creation_fails(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    http = httpx.Client(transport=httpx.MockTransport(lambda _request: httpx.Response(500)))
-    connector = SGGovernmentRentalFlatsApiConnector(
-        SGGovernmentRentalFlatsApiClient(
-            base_url="https://rentals.test",
-            api_key="secret",
-            page_size=1,
-            http=http,
-        )
-    )
-
+    # The IngestRun is created before the connector is built (see run_ingestion),
+    # so when run creation fails no connector — and therefore no HTTP client —
+    # has been allocated. Asserting get_connector is never called verifies there
+    # is nothing to leak on that path.
     class GraphClient:
         def verify_connectivity(self) -> None:
             return None
@@ -297,7 +291,11 @@ def test_run_ingestion_closes_api_connector_when_run_creation_fails(
     monkeypatch.setattr("src.main.get_settings", lambda: object())
     monkeypatch.setattr("src.main.Neo4jClient", lambda _settings: GraphClient())
     monkeypatch.setattr("src.main.IngestPipeline", lambda _client: object())
-    monkeypatch.setattr("src.main.get_connector", lambda *_args, **_kwargs: connector)
+
+    def boom(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("get_connector must not run when IngestRun creation fails")
+
+    monkeypatch.setattr("src.main.get_connector", boom)
 
     def fail_create_run(*_args: object) -> str:
         raise RuntimeError("run creation failed")
@@ -306,8 +304,6 @@ def test_run_ingestion_closes_api_connector_when_run_creation_fails(
 
     with pytest.raises(RuntimeError, match="run creation failed"):
         run_ingestion("sgrentalflats", mode="api", initialize_graph=False)
-
-    assert http.is_closed
 
 
 def test_create_api_client_validates_settings_before_allocating_http(
