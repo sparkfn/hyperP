@@ -439,11 +439,16 @@ Create an ingest run before a bulk sync.
 ```json
 {
   "run_type": "historical_backfill",
+  "mode": "backfill",
   "metadata": {
     "trigger": "manual"
   }
 }
 ```
+
+`mode` accepts `batch`, `dump`, `api`, or `backfill` and defaults to `batch`.
+`backfill` is supported only for the `bitrix_openlines` source and does not require
+`dump_path`; dump requests require a path relative to the configured dumps root.
 
 ### Response
 

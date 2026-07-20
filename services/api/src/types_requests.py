@@ -164,7 +164,7 @@ class IngestRecordsRequest(BaseModel):
     records: list[IngestRecord]
 
 
-IngestRunMode = Literal["batch", "dump", "api"]
+IngestRunMode = Literal["batch", "dump", "api", "backfill"]
 
 
 class IngestRunCreateRequest(BaseModel):

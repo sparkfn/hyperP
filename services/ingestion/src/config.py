@@ -149,6 +149,13 @@ class Settings(BaseSettings):
     bitrix_chat_db_name: str = "bitrix_chat"
     bitrix_chat_chunk_size: int = 500
 
+    # Bitrix Open Lines REST API --------------------------------------------
+    # This is an inbound-webhook base URL and therefore contains a credential.
+    bitrix_openlines_api_base_url: SecretStr = SecretStr("")
+    bitrix_openlines_api_timeout_seconds: float = Field(default=30.0, gt=0)
+    bitrix_openlines_api_max_attempts: int = Field(default=3, ge=1, le=10)
+    bitrix_openlines_api_request_delay_seconds: float = Field(default=0.5, ge=0)
+
     # WhatsApp chat database (PostgreSQL) ------------------------------------
     # Set WHATSAPP_CHAT_SSH_HOST to enable SSH tunnelling.
     whatsapp_chat_ssh_host: str = ""

@@ -23,6 +23,8 @@ from src.types_requests import (
 
 router = APIRouter(tags=["Ingestion"])
 
+_BACKFILL_SOURCE_KEYS = frozenset({"bitrix_openlines"})
+
 
 @router.post(
     "/v1/ingest/{source_key}/records",
@@ -64,6 +66,13 @@ async def create_ingest_run(
     repo: IngestRepository = Depends(get_ingest_repo),
 ) -> ApiResponse[IngestRunResponse]:
     """Create a new ingest run for a bulk sync."""
+    if body.mode == "backfill" and source_key not in _BACKFILL_SOURCE_KEYS:
+        raise http_error(
+            400,
+            "invalid_request",
+            "Backfill mode is only supported for bitrix_openlines.",
+            request,
+        )
     result = await repo.create_run(
         source_key,
         body.run_type,

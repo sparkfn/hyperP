@@ -974,8 +974,15 @@ export interface components {
         };
         CreateIngestRunRequest: {
             run_type: string;
+            /**
+             * @description Defaults to batch when omitted. Backfill is supported only when source_key is bitrix_openlines.
+             * @enum {string}
+             */
+            mode?: "batch" | "dump" | "api" | "backfill";
+            dump_path?: string | null;
+            /** @description Defaults to an empty object when omitted. */
             metadata?: {
-                [key: string]: unknown;
+                [key: string]: string;
             };
         };
         UpdateIngestRunRequest: {

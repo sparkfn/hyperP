@@ -8,10 +8,51 @@ from pathlib import Path
 import pytest
 from src.exclusion_config import ExclusionFile
 from src.ingestion_config import (
+    BitrixOpenLinesConfig,
     IngestionConfig,
     LlmConfig,
     load_ingestion_config,
 )
+
+
+def test_bitrix_openlines_defaults_select_safe_channel_types() -> None:
+    config = load_ingestion_config("")
+
+    assert config.bitrix_openlines == BitrixOpenLinesConfig(
+        included_channel_types=[
+            "whatsapp_business_api",
+            "facebook_direct",
+            "instagram",
+        ]
+    )
+
+
+def test_bitrix_openlines_config_parses_channel_and_entity_overrides(tmp_path: Path) -> None:
+    path = tmp_path / "ingestion-config.json"
+    path.write_text(
+        json.dumps(
+            {
+                "bitrix_openlines": {
+                    "included_channel_types": ["facebook_direct"],
+                    "included_config_ids": [46],
+                    "excluded_config_ids": [54],
+                    "entity_by_config_id": {"46": "speedzone"},
+                    "incremental_overlap_seconds": 120,
+                    "recent_page_size": 25,
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert load_ingestion_config(str(path)).bitrix_openlines == BitrixOpenLinesConfig(
+        included_channel_types=["facebook_direct"],
+        included_config_ids=["46"],
+        excluded_config_ids=["54"],
+        entity_by_config_id={"46": "speedzone"},
+        incremental_overlap_seconds=120,
+        recent_page_size=25,
+    )
 
 
 def test_nested_format_parses_exclusions_and_llm(tmp_path: Path) -> None:

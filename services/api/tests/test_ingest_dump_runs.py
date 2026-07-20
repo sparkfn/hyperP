@@ -22,6 +22,13 @@ def test_ingest_run_create_accepts_api_without_dump_path() -> None:
     assert body.dump_path is None
 
 
+def test_ingest_run_create_accepts_backfill_without_dump_path() -> None:
+    body = IngestRunCreateRequest(run_type="bitrix_openlines", mode="backfill")
+
+    assert body.mode == "backfill"
+    assert body.dump_path is None
+
+
 def test_dump_run_requires_dump_path() -> None:
     with pytest.raises(ValidationError, match="dump_path is required"):
         IngestRunCreateRequest(run_type="manual", mode="dump")

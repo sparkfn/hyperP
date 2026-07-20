@@ -106,6 +106,7 @@ module = [
     "src.connectors.phppos_api.models",
     "src.connectors.sggov.bankruptcy_api_models",
     "src.connectors.whatsadmin_api.models",
+    "src.connectors.bitrix_openlines.models",
     "src.graph.client",
     "src.golden_profile",
     "src.config",
