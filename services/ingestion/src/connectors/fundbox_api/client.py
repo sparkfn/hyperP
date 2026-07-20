@@ -43,9 +43,9 @@ class FundboxApiCredentials:
                 "fundbox API ingestion."
             )
         if not self.base_url.startswith("https://"):
-            raise ValueError("Fundbox API base URL must use HTTPS")
+            raise SourceNotConfiguredError("Fundbox API base URL must use HTTPS")
         if not urlparse(self.base_url).netloc:
-            raise ValueError("Fundbox API base URL is missing a host")
+            raise SourceNotConfiguredError("Fundbox API base URL is missing a host")
 
 
 class FundboxApiClient:

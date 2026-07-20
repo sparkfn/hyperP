@@ -126,7 +126,7 @@ def test_client_caps_exponential_retry_delay() -> None:
 
 
 def test_client_credentials_reject_plaintext_http() -> None:
-    with pytest.raises(ValueError, match="HTTPS"):
+    with pytest.raises(SourceNotConfiguredError, match="HTTPS"):
         FundboxApiCredentials("http://fundbox.test/api/v1", "u", "p", 50)
 
 
@@ -153,7 +153,7 @@ def test_client_credentials_reject_whitespace_only_password() -> None:
 
 
 def test_client_credentials_reject_hostless_base_url() -> None:
-    with pytest.raises(ValueError, match="missing a host"):
+    with pytest.raises(SourceNotConfiguredError, match="missing a host"):
         FundboxApiCredentials("https://", "u", "p", 50)
 
 

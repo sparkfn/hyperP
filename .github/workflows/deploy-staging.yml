@@ -34,8 +34,8 @@ jobs:
           COMPOSE="docker compose -f .docker/staging/docker-compose.yml"
 
           # The staging Compose file is intentionally host-managed and untracked
-          # (see commit 547572b). Refuse deployment until its ingestion
-          # environment mirrors the tracked root Compose contract.
+          # (see commit 547572b). Validate the runtime contract's key names, but
+          # allow values to remain empty until the source is provisioned.
           for key in \
             FUNDBOX_API_BASE_URL \
             FUNDBOX_API_USERNAME \
@@ -46,21 +46,10 @@ jobs:
             FUNDBOX_API_OVERLAP_SECONDS
           do
             if ! grep -Eq "^[[:space:]]+${key}:" .docker/staging/docker-compose.yml; then
-              echo "Staging Compose is missing required ingestion variable: ${key}"
+              echo "Staging Compose is missing runtime ingestion variable: ${key}"
               exit 1
             fi
           done
-
-          $COMPOSE config --format json | python3 -c '
-          import json, sys
-          config = json.load(sys.stdin)
-          required = ("FUNDBOX_API_BASE_URL", "FUNDBOX_API_USERNAME", "FUNDBOX_API_PASSWORD")
-          for service_name in ("worker", "beat"):
-              environment = config["services"][service_name].get("environment", {})
-              for key in required:
-                  if not str(environment.get(key, "")).strip():
-                      raise SystemExit(f"{service_name}.{key} must resolve to a non-empty value")
-          '
 
           # --- Decide which service images actually need rebuilding ---------
           # Cached builds (no --no-cache) make dependency layers (uv sync /
