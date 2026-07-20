@@ -36,11 +36,7 @@ class FundboxApiCredentials:
         # Celery task can log a clean warning and reject the run rather than
         # crash-looping. ``SourceNotConfiguredError`` is caught specifically by
         # the ingestion task and logged at WARNING (no traceback).
-        if (
-            not self.base_url.strip()
-            or not self.username.strip()
-            or not self.password.strip()
-        ):
+        if not self.base_url.strip() or not self.username.strip() or not self.password.strip():
             raise SourceNotConfiguredError(
                 "Fundbox API ingestion is not configured: set FUNDBOX_API_BASE_URL, "
                 "FUNDBOX_API_USERNAME and FUNDBOX_API_PASSWORD before dispatching "

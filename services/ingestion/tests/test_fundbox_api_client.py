@@ -6,9 +6,9 @@ from contextlib import contextmanager
 
 import httpx
 import pytest
+from _test_helpers import NullContext, TaskSettings
 from celery.exceptions import Reject
 from pydantic import ValidationError
-from _test_helpers import NullContext, TaskSettings
 from src.config import Settings
 from src.connectors.fundbox_api.client import FundboxApiClient, FundboxApiCredentials
 from src.connectors.fundbox_api.models import SalesOrderItem, validate_source_records
@@ -420,9 +420,7 @@ def test_run_ingestion_task_warns_when_source_not_configured(
     # handler's logger.exception — assert no record carries a traceback (exc_info)
     # regardless of level, so the test still catches a future handler that logs
     # a traceback at a non-ERROR level.
-    traceback_logs = [
-        rec for rec in caplog.records if rec.exc_info is not None
-    ]
+    traceback_logs = [rec for rec in caplog.records if rec.exc_info is not None]
     assert not traceback_logs, (
         "not-configured rejection must not log a traceback: "
         f"{[(r.levelname, r.getMessage()) for r in traceback_logs]}"
@@ -450,10 +448,10 @@ def test_run_ingestion_records_failed_run_when_fundbox_api_not_configured(
         """
 
         @staticmethod
-        def from_url(_url: str) -> "_NoRedis":
+        def from_url(_url: str) -> _NoRedis:
             return _NoRedis()
 
-        def __enter__(self) -> "_NoRedis":
+        def __enter__(self) -> _NoRedis:
             return self
 
         def __exit__(self, exc_type: object, exc: object, tb: object) -> bool:
@@ -486,4 +484,3 @@ def test_run_ingestion_records_failed_run_when_fundbox_api_not_configured(
         run_ingestion("fundbox_consumer_backend", mode="api", initialize_graph=False)
 
     assert failed_runs == ["run-1"]
-

@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-from pytest import MonkeyPatch
-
 from _test_helpers import NullContext as _NullContext
 from _test_helpers import TaskSettings as _Settings
+from pytest import MonkeyPatch
 
 
 def test_run_ingestion_task_passes_dump_path(monkeypatch: MonkeyPatch) -> None:

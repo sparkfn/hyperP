@@ -29,4 +29,3 @@ class NullContext:
 
     def __exit__(self, exc_type: object, exc: object, tb: object) -> bool:
         return False
-
