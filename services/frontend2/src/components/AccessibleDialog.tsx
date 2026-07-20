@@ -3,10 +3,11 @@
 import Dialog from "@mui/material/Dialog";
 import DialogContent from "@mui/material/DialogContent";
 import DialogTitle from "@mui/material/DialogTitle";
-import React, { useId, type ReactElement, type ReactNode } from "react";
+import React, { useId, useRef, type MouseEvent, type ReactElement, type ReactNode } from "react";
 
 interface AccessibleDialogProps {
   children: ReactNode;
+  frameless?: boolean;
   onClose: () => void;
   open: boolean;
   title: string;
@@ -16,6 +17,7 @@ interface AccessibleDialogProps {
 
 export default function AccessibleDialog({
   children,
+  frameless = false,
   onClose,
   open,
   title,
@@ -23,6 +25,20 @@ export default function AccessibleDialog({
   visuallyHideTitle = false,
 }: AccessibleDialogProps): ReactElement {
   const titleId = useId();
+  const gutterMouseDown = useRef(false);
+
+  function handleContentMouseDown(event: MouseEvent<HTMLDivElement>): void {
+    gutterMouseDown.current = event.target === event.currentTarget;
+  }
+
+  function handleContentClick(event: MouseEvent<HTMLDivElement>): void {
+    const shouldClose = gutterMouseDown.current && event.target === event.currentTarget;
+    gutterMouseDown.current = false;
+
+    if (shouldClose) {
+      onClose();
+    }
+  }
 
   return (
     <Dialog
@@ -31,6 +47,14 @@ export default function AccessibleDialog({
       maxWidth={maxWidth}
       onClose={onClose}
       open={open}
+      slotProps={frameless ? {
+        paper: {
+          style: {
+            background: "transparent",
+            boxShadow: "none",
+          },
+        },
+      } : undefined}
     >
       <DialogTitle
         id={titleId}
@@ -46,7 +70,13 @@ export default function AccessibleDialog({
       >
         {title}
       </DialogTitle>
-      <DialogContent>{children}</DialogContent>
+      <DialogContent
+        onClick={frameless ? handleContentClick : undefined}
+        onMouseDown={frameless ? handleContentMouseDown : undefined}
+        style={frameless ? { display: "flex", justifyContent: "center", padding: 0 } : undefined}
+      >
+        {children}
+      </DialogContent>
     </Dialog>
   );
 }

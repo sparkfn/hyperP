@@ -141,6 +141,7 @@ function CreateModal({ onClose }: { onClose: () => void }): ReactElement {
 
   return (
     <AccessibleDialog
+      frameless
       open
       title={created ? "Client Created" : "New OAuth Client"}
       onClose={onClose}
