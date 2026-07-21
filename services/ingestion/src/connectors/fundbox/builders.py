@@ -283,6 +283,7 @@ class IdentifierBag:
 def build_envelope(
     *,
     source_record_id: str,
+    entity_key: str | None = None,
     observed_at: str | None,
     identifiers: list[dict[str, JsonValue]],
     attributes: dict[str, JsonValue],
@@ -314,6 +315,8 @@ def build_envelope(
         "attributes": {k: v for k, v in attributes.items() if v is not None},
         "raw_payload": raw_payload,
     }
+    if entity_key is not None:
+        record["entity_key"] = entity_key
     if addresses:
         address_payloads: list[JsonValue] = []
         address_payloads.extend(addresses)

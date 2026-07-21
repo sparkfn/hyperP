@@ -73,6 +73,26 @@ def test_entity_summaries_only_count_effective_active_linked_records() -> None:
         assert "coalesce(link.is_active, true) = true" in compact
 
 
+def test_entity_queries_support_record_scoped_ownership_with_source_fallback() -> None:
+    queries = (
+        LIST_ENTITIES,
+        get_entity_persons_query("preferred_full_name", "asc"),
+        build_list_persons_query("preferred_full_name", "asc", has_q=False),
+        person_queries.GET_PERSON_SOURCE_RECORDS,
+        person_queries.COUNT_PERSON_SOURCE_RECORDS,
+        person_queries.GET_PERSON_SOURCE_RECORD_ENTITY_FACETS,
+        person_queries.GET_PERSON_ENTITIES,
+        person_queries.GET_PERSON_IDENTIFIERS,
+    )
+
+    for query in queries:
+        assert "OWNED_BY" in query
+        assert "OPERATED_BY" in query
+
+    for query in queries[:3]:
+        assert "NOT EXISTS" in query
+
+
 def test_address_filters_only_join_active_address_assertions() -> None:
     for has_q in (False, True):
         query = build_count_persons_query(has_q=has_q, has_addr_filter=True)
@@ -117,6 +137,15 @@ def test_possible_match_detail_excludes_superseded_source_record_evidence() -> N
     )
 
     assert query.count(effective_active) == 2
+
+
+def test_possible_match_detail_uses_record_owner_with_source_fallback() -> None:
+    query = person_queries.GET_PERSON_POSSIBLE_MATCH_DETAIL
+
+    assert query.count("OPTIONAL MATCH (sr)-[:OWNED_BY]->(record_entity:Entity)") == 2
+    assert query.count("OPTIONAL MATCH (ss)-[:OPERATED_BY]->(source_entity:Entity)") == 2
+    assert query.count("coalesce(record_entity, source_entity) AS entity") == 2
+    assert query.count("entity_display_name: entity.display_name") == 2
 
 
 def test_person_list_match_filters_and_counts_ignore_retired_identifier_assertions() -> None:
@@ -165,6 +194,18 @@ def test_person_summary_connections_ignore_retired_address_and_knows_assertions(
     ):
         assert "{is_active: true}" not in query
         assert "coalesce(" in query
+
+
+def test_connection_sources_use_record_ownership_with_source_fallback() -> None:
+    for query in (
+        person_queries.GET_PERSON_CONNECTIONS_ADDRESS,
+        person_queries.GET_PERSON_CONNECTIONS_KNOWS,
+        person_queries.GET_PERSON_CONNECTIONS_ALL,
+    ):
+        assert "source_record_pk" in query
+        assert "OWNED_BY" in query
+        assert "OPERATED_BY" in query
+        assert "coalesce(record_entity, source_entity)" in query
 
 
 def test_person_listing_connection_count_excludes_identifier_only_connections() -> None:
@@ -308,7 +349,8 @@ def test_entity_and_mode_requires_every_key() -> None:
         "preferred_full_name", "asc", has_q=False, entity_mode="and", source_mode="or"
     )
     assert "ALL(ek IN $entity_keys WHERE EXISTS" in query
-    assert "AND e.entity_key = ek" in query
+    assert "OWNED_BY" in query
+    assert "e.entity_key = ek" in query
     assert "e.entity_key IN $entity_keys" not in query
 
 

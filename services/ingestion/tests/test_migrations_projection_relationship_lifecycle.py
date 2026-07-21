@@ -162,9 +162,9 @@ def test_projection_migration_runs_after_source_record_lifecycle() -> None:
 
     apply_data_migrations(cast(Neo4jClient, client))
 
-    assert len(client.tx.queries) == 5
-    assert "source_record_lifecycle_v1" in client.tx.queries[1]
-    assert "projection_relationship_lifecycle_v1" in client.tx.queries[2]
+    assert len(client.tx.queries) == 14
+    assert "source_record_lifecycle_v1" in client.tx.queries[10]
+    assert "projection_relationship_lifecycle_v1" in client.tx.queries[11]
 
 
 def test_completed_marker_is_followed_by_late_relationship_reconciliation() -> None:

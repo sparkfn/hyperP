@@ -37,6 +37,7 @@ from src.repositories.protocols.event import EventRepository
 from src.repositories.protocols.ingest import (
     IngestRecordsResponse,
     IngestRepository,
+    IngestRunCreationResult,
     IngestRunDetailResponse,
     IngestRunResponse,
 )
@@ -421,9 +422,18 @@ class _IngestRouteRepo:
         mode: str,
         dump_path: str | None,
         metadata: dict[str, str],
-    ) -> IngestRunResponse | None:
-        _ = source_key, run_type, mode, dump_path, metadata
-        return IngestRunResponse(ingest_run_id="run-1", status="running", mode="batch")
+        idempotency_key: str,
+    ) -> IngestRunCreationResult | None:
+        _ = source_key, run_type, metadata, idempotency_key
+        return IngestRunCreationResult(
+            run=IngestRunResponse(
+                ingest_run_id="run-1",
+                status="running",
+                mode=mode,
+                dump_path=dump_path,
+            ),
+            created=True,
+        )
 
     async def update_run(
         self,
@@ -813,8 +823,18 @@ def test_entities_route_rejects_oauth_client_without_persons_read_scope_before_r
     app.dependency_overrides[get_ingest_repo] = _override_ingest_repo
     client = TestClient(app)
 
-    with patch("src.auth.deps.get_entity_for_source", new=AsyncMock(return_value="fundbox")):
-        res = client.post("/ingest/fundbox_pos/runs", json={"run_type": "batch"})
+    with (
+        patch(
+            "src.auth.deps.get_entity_for_source",
+            new=AsyncMock(return_value=frozenset({"fundbox"})),
+        ),
+        patch("src.routes.ingest.enqueue_ingestion_run"),
+    ):
+        res = client.post(
+            "/ingest/fundbox_pos/runs",
+            headers={"Idempotency-Key": "request-1"},
+            json={"run_type": "batch"},
+        )
 
     assert res.status_code == 403
     assert res.json()["error"]["message"] == "OAuth client lacks required scope: ingest:write"
@@ -827,47 +847,367 @@ def test_ingest_write_route_allows_human_user_with_mocked_repo() -> None:
     app.dependency_overrides[get_ingest_repo] = _override_ingest_repo
     client = TestClient(app)
 
-    with patch("src.auth.deps.get_entity_for_source", new=AsyncMock(return_value="fundbox")):
-        res = client.post("/ingest/fundbox_pos/runs", json={"run_type": "batch"})
+    with (
+        patch(
+            "src.auth.deps.get_entity_for_source",
+            new=AsyncMock(return_value=frozenset({"fundbox"})),
+        ),
+        patch("src.routes.ingest.enqueue_ingestion_run") as enqueue,
+    ):
+        res = client.post(
+            "/ingest/fundbox_pos/runs",
+            headers={"Idempotency-Key": "request-1"},
+            json={"run_type": "batch"},
+        )
 
     assert res.status_code == 201
     assert res.json()["data"]["ingest_run_id"] == "run-1"
+    enqueue.assert_called_once_with(
+        "fundbox_pos",
+        "batch",
+        dump_path=None,
+        ingest_run_id="run-1",
+    )
 
 
-def test_ingest_write_route_rejects_backfill_for_non_openlines_source() -> None:
+def test_ingest_write_route_rejects_backfill_for_non_bitrix_chat_source() -> None:
     app = build_frontend_app()
     app.dependency_overrides[require_active_user] = _override_employee
     app.dependency_overrides[get_current_user_or_oauth_client] = _override_employee
     app.dependency_overrides[get_ingest_repo] = _override_ingest_repo
     client = TestClient(app)
 
-    with patch("src.auth.deps.get_entity_for_source", new=AsyncMock(return_value="fundbox")):
+    with (
+        patch(
+            "src.auth.deps.get_entity_for_source",
+            new=AsyncMock(return_value=frozenset({"fundbox"})),
+        ),
+        patch("src.routes.ingest.enqueue_ingestion_run") as enqueue,
+    ):
         res = client.post(
             "/ingest/fundbox_pos/runs",
+            headers={"Idempotency-Key": "request-1"},
             json={"run_type": "historical_backfill", "mode": "backfill"},
         )
 
     assert res.status_code == 400
-    assert res.json()["error"]["message"] == (
-        "Backfill mode is only supported for bitrix_openlines."
+    assert res.json()["error"]["message"] == ("Backfill mode is only supported for bitrix_chat.")
+    enqueue.assert_not_called()
+
+
+def test_ingest_write_route_accepts_backfill_for_bitrix_chat_source() -> None:
+    app = build_frontend_app()
+    app.dependency_overrides[require_active_user] = _override_admin
+    app.dependency_overrides[get_current_user_or_oauth_client] = _override_admin
+    app.dependency_overrides[get_ingest_repo] = _override_ingest_repo
+    client = TestClient(app)
+
+    with (
+        patch(
+            "src.auth.deps.get_entity_for_source",
+            new=AsyncMock(return_value=frozenset({"fundbox"})),
+        ),
+        patch("src.routes.ingest.enqueue_ingestion_run") as enqueue,
+    ):
+        res = client.post(
+            "/ingest/bitrix_chat/runs",
+            headers={"Idempotency-Key": "request-1"},
+            json={"run_type": "historical_backfill", "mode": "backfill"},
+        )
+
+    assert res.status_code == 201
+    assert res.json()["data"]["ingest_run_id"] == "run-1"
+    enqueue.assert_called_once_with(
+        "bitrix_chat",
+        "backfill",
+        dump_path=None,
+        ingest_run_id="run-1",
     )
 
 
-def test_ingest_write_route_accepts_backfill_for_openlines_source() -> None:
+def test_ingest_run_create_requires_idempotency_key() -> None:
+    app = build_frontend_app()
+    app.dependency_overrides[require_active_user] = _override_admin
+    app.dependency_overrides[get_current_user_or_oauth_client] = _override_admin
+    app.dependency_overrides[get_ingest_repo] = _override_ingest_repo
+    client = TestClient(app)
+
+    with patch("src.routes.ingest.enqueue_ingestion_run") as enqueue:
+        res = client.post("/ingest/bitrix_chat/runs", json={"run_type": "batch"})
+
+    assert res.status_code == 400
+    enqueue.assert_not_called()
+
+
+def test_ingest_run_retry_redispatches_the_same_idempotent_run() -> None:
+    class _IdempotentRepo(_IngestRouteRepo):
+        def __init__(self) -> None:
+            self.keys: list[str] = []
+
+        async def create_run(
+            self,
+            source_key: str,
+            run_type: str,
+            mode: str,
+            dump_path: str | None,
+            metadata: dict[str, str],
+            idempotency_key: str,
+        ) -> IngestRunCreationResult:
+            _ = source_key, run_type, mode, dump_path, metadata
+            created = not self.keys
+            self.keys.append(idempotency_key)
+            return IngestRunCreationResult(
+                run=IngestRunResponse(ingest_run_id="run-stable", status="started", mode="api"),
+                created=created,
+            )
+
+    repo = _IdempotentRepo()
+
+    async def override_repo() -> IngestRepository:
+        return repo
+
+    app = build_frontend_app()
+    app.dependency_overrides[require_active_user] = _override_admin
+    app.dependency_overrides[get_current_user_or_oauth_client] = _override_admin
+    app.dependency_overrides[get_ingest_repo] = override_repo
+    client = TestClient(app, raise_server_exceptions=False)
+    headers = {"Idempotency-Key": "request-1"}
+
+    with patch("src.routes.ingest.enqueue_ingestion_run") as enqueue:
+        first = client.post(
+            "/ingest/bitrix_chat/runs",
+            headers=headers,
+            json={"run_type": "manual", "mode": "api"},
+        )
+        second = client.post(
+            "/ingest/bitrix_chat/runs",
+            headers=headers,
+            json={"run_type": "different-retry-body", "mode": "batch"},
+        )
+
+    assert first.status_code == 201
+    assert second.status_code == 201
+    assert first.json()["data"]["ingest_run_id"] == "run-stable"
+    assert second.json()["data"]["ingest_run_id"] == "run-stable"
+    assert repo.keys == ["request-1", "request-1"]
+    assert enqueue.call_count == 2
+    assert enqueue.call_args_list[0] == enqueue.call_args_list[1]
+
+
+def test_ingest_write_route_requires_admin_for_declared_shared_source() -> None:
     app = build_frontend_app()
     app.dependency_overrides[require_active_user] = _override_employee
     app.dependency_overrides[get_current_user_or_oauth_client] = _override_employee
     app.dependency_overrides[get_ingest_repo] = _override_ingest_repo
     client = TestClient(app)
 
-    with patch("src.auth.deps.get_entity_for_source", new=AsyncMock(return_value="fundbox")):
+    with (
+        patch(
+            "src.auth.deps.get_entity_for_source",
+            new=AsyncMock(return_value=frozenset({"fundbox"})),
+        ) as get_entities,
+        patch("src.routes.ingest.enqueue_ingestion_run") as enqueue,
+    ):
         res = client.post(
-            "/ingest/bitrix_openlines/runs",
-            json={"run_type": "historical_backfill", "mode": "backfill"},
+            "/ingest/bitrix_chat/runs",
+            headers={"Idempotency-Key": "request-1"},
+            json={"run_type": "batch"},
         )
 
-    assert res.status_code == 201
-    assert res.json()["data"]["ingest_run_id"] == "run-1"
+    assert res.status_code == 403
+    assert res.json()["error"]["message"] == (
+        "Only administrators can mutate a shared multi-entity source."
+    )
+    get_entities.assert_not_awaited()
+    enqueue.assert_not_called()
+
+
+def test_ingest_write_route_requires_admin_for_multi_entity_source() -> None:
+    app = build_frontend_app()
+    app.dependency_overrides[require_active_user] = _override_employee
+    app.dependency_overrides[get_current_user_or_oauth_client] = _override_employee
+    app.dependency_overrides[get_ingest_repo] = _override_ingest_repo
+    client = TestClient(app)
+
+    with (
+        patch(
+            "src.auth.deps.get_entity_for_source",
+            new=AsyncMock(return_value=frozenset({"fundbox", "speedzone"})),
+        ),
+        patch("src.routes.ingest.enqueue_ingestion_run") as enqueue,
+    ):
+        res = client.post(
+            "/ingest/bitrix_chat/runs",
+            headers={"Idempotency-Key": "request-1"},
+            json={"run_type": "batch"},
+        )
+
+    assert res.status_code == 403
+    assert res.json()["error"]["message"] == (
+        "Only administrators can mutate a shared multi-entity source."
+    )
+    enqueue.assert_not_called()
+
+
+def test_ingest_write_route_does_not_mutate_run_when_dispatch_fails() -> None:
+    class _TrackingIngestRepo(_IngestRouteRepo):
+        def __init__(self) -> None:
+            self.updated_body: IngestRunUpdateRequest | None = None
+
+        async def update_run(
+            self,
+            source_key: str,
+            ingest_run_id: str,
+            body: IngestRunUpdateRequest,
+        ) -> IngestRunResponse | None:
+            self.updated_body = body
+            return await super().update_run(
+                source_key,
+                ingest_run_id,
+                body,
+            )
+
+    repo = _TrackingIngestRepo()
+
+    async def override_repo() -> IngestRepository:
+        return repo
+
+    app = build_frontend_app()
+    app.dependency_overrides[require_active_user] = _override_employee
+    app.dependency_overrides[get_current_user_or_oauth_client] = _override_employee
+    app.dependency_overrides[get_ingest_repo] = override_repo
+    client = TestClient(app, raise_server_exceptions=False)
+
+    with (
+        patch(
+            "src.auth.deps.get_entity_for_source",
+            new=AsyncMock(return_value=frozenset({"fundbox"})),
+        ),
+        patch(
+            "src.routes.ingest.enqueue_ingestion_run",
+            side_effect=RuntimeError("broker down"),
+        ),
+    ):
+        res = client.post(
+            "/ingest/fundbox_pos/runs",
+            headers={"Idempotency-Key": "request-1"},
+            json={"run_type": "batch"},
+        )
+
+    assert res.status_code == 503
+    assert res.json()["error"]["message"] == "Ingestion could not be queued."
+    assert repo.updated_body is None
+
+
+def test_ingest_run_retry_recovers_from_enqueue_failure_with_same_run() -> None:
+    class _FailedDispatchRepo(_IngestRouteRepo):
+        def __init__(self) -> None:
+            self.run = IngestRunResponse(
+                ingest_run_id="run-failed-dispatch",
+                status="started",
+                mode="batch",
+            )
+            self.created = True
+
+        async def create_run(
+            self,
+            source_key: str,
+            run_type: str,
+            mode: str,
+            dump_path: str | None,
+            metadata: dict[str, str],
+            idempotency_key: str,
+        ) -> IngestRunCreationResult:
+            _ = source_key, run_type, mode, dump_path, metadata, idempotency_key
+            result = IngestRunCreationResult(
+                run=self.run,
+                created=self.created,
+            )
+            self.created = False
+            return result
+
+    repo = _FailedDispatchRepo()
+
+    async def override_repo() -> IngestRepository:
+        return repo
+
+    app = build_frontend_app()
+    app.dependency_overrides[require_active_user] = _override_employee
+    app.dependency_overrides[get_current_user_or_oauth_client] = _override_employee
+    app.dependency_overrides[get_ingest_repo] = override_repo
+    client = TestClient(app, raise_server_exceptions=False)
+    headers = {"Idempotency-Key": "request-failed-dispatch"}
+
+    with (
+        patch(
+            "src.auth.deps.get_entity_for_source",
+            new=AsyncMock(return_value=frozenset({"fundbox"})),
+        ),
+        patch(
+            "src.routes.ingest.enqueue_ingestion_run",
+            side_effect=[RuntimeError("broker down"), None],
+        ) as enqueue,
+    ):
+        first = client.post(
+            "/ingest/fundbox_pos/runs",
+            headers=headers,
+            json={"run_type": "batch"},
+        )
+        retry = client.post(
+            "/ingest/fundbox_pos/runs",
+            headers=headers,
+            json={"run_type": "batch"},
+        )
+
+    assert first.status_code == 503
+    assert retry.status_code == 201
+    assert retry.json()["data"]["ingest_run_id"] == "run-failed-dispatch"
+    assert enqueue.call_count == 2
+
+
+def test_ingest_run_terminal_replay_does_not_republish_or_rewrite_history() -> None:
+    class _CompletedRunRepo(_IngestRouteRepo):
+        async def create_run(
+            self,
+            source_key: str,
+            run_type: str,
+            mode: str,
+            dump_path: str | None,
+            metadata: dict[str, str],
+            idempotency_key: str,
+        ) -> IngestRunCreationResult:
+            _ = source_key, run_type, mode, dump_path, metadata, idempotency_key
+            return IngestRunCreationResult(
+                run=IngestRunResponse(
+                    ingest_run_id="run-completed",
+                    status="completed",
+                    mode="api",
+                ),
+                created=False,
+            )
+
+    async def override_repo() -> IngestRepository:
+        return _CompletedRunRepo()
+
+    app = build_frontend_app()
+    app.dependency_overrides[require_active_user] = _override_admin
+    app.dependency_overrides[get_current_user_or_oauth_client] = _override_admin
+    app.dependency_overrides[get_ingest_repo] = override_repo
+    client = TestClient(app, raise_server_exceptions=False)
+
+    with patch(
+        "src.routes.ingest.enqueue_ingestion_run",
+        side_effect=RuntimeError("broker down"),
+    ) as enqueue:
+        replay = client.post(
+            "/ingest/bitrix_chat/runs",
+            headers={"Idempotency-Key": "completed-key"},
+            json={"run_type": "manual", "mode": "api"},
+        )
+
+    assert replay.status_code == 201
+    assert replay.json()["data"]["status"] == "completed"
+    enqueue.assert_not_called()
 
 
 def test_ingest_run_detail_route_rejects_oauth_client_without_ingest_write_scope() -> None:

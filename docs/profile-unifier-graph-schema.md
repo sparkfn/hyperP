@@ -187,7 +187,10 @@ for the full rollout.
 
 ### SourceSystem
 
-Each SourceSystem is owned by exactly one Entity via `OPERATED_BY`.
+Entity-specific SourceSystems are owned by exactly one Entity via `OPERATED_BY`.
+Shared multi-entity sources, such as `bitrix_chat`, have no source-level owner;
+each of their SourceRecords is owned by exactly one Entity via `OWNED_BY`.
+Entity-less public registries may have neither relationship.
 
 ```cypher
 CREATE (ss:SourceSystem {
@@ -439,10 +442,11 @@ this as a closed enum.
 | `LIVES_AT` | Person | Address | `is_active`, `is_verified`, `source_system_key`, `source_record_pk`, `first_seen_at`, `last_seen_at`, `last_confirmed_at`, `quality_flag` | Links a person to a normalized address. Same aging and verification model as `IDENTIFIED_BY`. |
 | `LINKED_TO` | SourceRecord | Person | `linked_at` | Associates an ingested record with its resolved person. |
 | `FROM_SOURCE` | SourceRecord / IngestRun | SourceSystem | — | Provenance. |
+| `OWNED_BY` | SourceRecord | Entity | — | Record-scoped ownership for a shared multi-entity SourceSystem. |
 | `PART_OF_RUN` | SourceRecord | IngestRun | — | Groups records by ingestion batch. |
 | `HAS_FACT` | Person | — (inline) | see below | Attribute facts (for non-address, non-identifier attributes: name, DOB, etc.). |
 | `KNOWS` | Person (declarer) | Person (contact) | `relationship_label`, `relationship_category`, `source_system_key`, `source_record_pk`, `declared_by_person_id`, `status`, `approved_at`, `first_seen_at`, `last_seen_at`, `last_confirmed_at` | Declared social tie (e.g. emergency contact, next-of-kin, referrer). Never used as identity-resolution evidence. |
-| `OPERATED_BY` | SourceSystem | Entity | — | SourceSystem belongs to an owning Entity (Fundbox, SpeedZone, Eko, …). |
+| `OPERATED_BY` | SourceSystem | Entity | — | Entity-specific SourceSystem belongs to its owning Entity (Fundbox, SpeedZone, Eko, …). |
 | `PURCHASED` | Person | Order | `source_system_key`, `source_record_pk`, `first_seen_at`, `last_seen_at`, `last_confirmed_at` | The resolved customer placed this order. Rewired on merge. |
 | `CONTAINS` | Order | LineItem | — | Order → its line items. |
 | `OF_PRODUCT` | LineItem | Product | — | Which Product a line purchased. |

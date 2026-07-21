@@ -66,10 +66,13 @@ SEED_REPORTS: list[dict[str, str]] = [
         "category": "entities",
         "cypher_query": (
             "MATCH (e:Entity {entity_key: $entity_key})\n"
-            "<-[:OPERATED_BY]-(ss:SourceSystem)<-[:FROM_SOURCE]-(sr:SourceRecord)\n"
-            "<-[entity_fact:HAS_FACT]-(p:Person)\n"
+            "MATCH (sr:SourceRecord)<-[entity_fact:HAS_FACT]-(p:Person)\n"
             "WHERE p.status = 'active'\n"
             "  AND coalesce(entity_fact.is_active, true) = true\n"
+            "  AND (EXISTS { MATCH (sr)-[:OWNED_BY]->(e) }\n"
+            "    OR (NOT EXISTS { MATCH (sr)-[:OWNED_BY]->(:Entity) }\n"
+            "      AND EXISTS { MATCH (sr)-[:FROM_SOURCE]->(:SourceSystem)"
+            "-[:OPERATED_BY]->(e) }))\n"
             "WITH DISTINCT p\n"
             "OPTIONAL MATCH (p)-[source_fact:HAS_FACT]->(src:SourceRecord)\n"
             "WHERE coalesce(source_fact.is_active, true) = true\n"

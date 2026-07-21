@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from uuid import uuid4
+
 from neo4j import AsyncManagedTransaction
 
 from src.graph.client import get_session
@@ -18,6 +20,7 @@ from src.graph.queries import (
 from src.repositories.protocols.ingest import (
     IngestRecordResult,
     IngestRecordsResponse,
+    IngestRunCreationResult,
     IngestRunDetailResponse,
     IngestRunResponse,
 )
@@ -44,10 +47,17 @@ class Neo4jIngestRepository:
         mode: str,
         dump_path: str | None,
         metadata: dict[str, str],
-    ) -> IngestRunResponse | None:
+        idempotency_key: str,
+    ) -> IngestRunCreationResult | None:
         async with get_session(write=True) as session:
             return await session.execute_write(
-                _create_run_tx, source_key, run_type, mode, dump_path, metadata
+                _create_run_tx,
+                source_key,
+                run_type,
+                mode,
+                dump_path,
+                metadata,
+                idempotency_key,
             )
 
     async def update_run(
@@ -129,11 +139,12 @@ async def _persist_records(
     rejected = 0
     for record in records:
         try:
-            await tx.run(
+            result = await tx.run(
                 CREATE_SOURCE_RECORD,
                 source_key=source_key,
                 ingest_run_id=run_id,
                 source_record_id=record.source_record_id,
+                entity_key=record.entity_key,
                 source_record_version=record.source_record_version,
                 record_type=record.record_type,
                 extraction_confidence=record.extraction_confidence,
@@ -144,6 +155,8 @@ async def _persist_records(
                 raw_payload=record.raw_payload,
                 attributes=record.attributes,
             )
+            if await result.single() is None:
+                raise ValueError("Source record owner entity does not exist")
             results.append(
                 IngestRecordResult(source_record_id=record.source_record_id, status="accepted")
             )
@@ -163,7 +176,8 @@ async def _create_run_tx(
     mode: str,
     dump_path: str | None,
     metadata: dict[str, str],
-) -> IngestRunResponse | None:
+    idempotency_key: str,
+) -> IngestRunCreationResult | None:
     result = await tx.run(
         CREATE_INGEST_RUN,
         source_key=source_key,
@@ -171,16 +185,21 @@ async def _create_run_tx(
         mode=mode,
         dump_path=dump_path,
         metadata=metadata,
+        idempotency_key=idempotency_key,
+        creation_token=str(uuid4()),
     )
     record = await result.single()
     if record is None:
         return None
-    return IngestRunResponse(
-        ingest_run_id=to_str(record["ingest_run_id"]),
-        status=to_str(record["status"]),
-        mode=to_str(record["mode"]),
-        dump_path=to_str(record["dump_path"]) or None,
-        started_at=to_str(record["started_at"]),
+    return IngestRunCreationResult(
+        run=IngestRunResponse(
+            ingest_run_id=to_str(record["ingest_run_id"]),
+            status=to_str(record["status"]),
+            mode=to_str(record["mode"]),
+            dump_path=to_str(record["dump_path"]) or None,
+            started_at=to_str(record["started_at"]),
+        ),
+        created=record["created"] is True,
     )
 
 

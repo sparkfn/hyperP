@@ -3,10 +3,9 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
-from datetime import datetime
 from typing import Protocol
 
-from src.connectors.bitrix_openlines.models import ChatReference
+from src.connectors.bitrix_openlines.models import ChatReference, merge_chat_references
 
 
 class DiscoveryClient(Protocol):
@@ -25,15 +24,5 @@ def discover_chats(client: DiscoveryClient, *, recent_page_size: int) -> list[Ch
         if prior is None:
             merged[item.chat_id] = item
             continue
-        changed_at = _latest_changed_at(prior.changed_at, item.changed_at)
-        discoveries = sorted(set(prior.discovery.split(",") + item.discovery.split(",")))
-        merged[item.chat_id] = ChatReference(item.chat_id, changed_at, ",".join(discoveries))
+        merged[item.chat_id] = merge_chat_references(prior, item)
     return [merged[chat_id] for chat_id in sorted(merged)]
-
-
-def _latest_changed_at(first: datetime | None, second: datetime | None) -> datetime | None:
-    if first is None:
-        return second
-    if second is None:
-        return first
-    return max(first, second)

@@ -72,6 +72,7 @@ paths:
     post:
       tags: [Ingestion]
       summary: Create an ingest run
+      description: Creates the run metadata and enqueues the ingestion worker task.
       operationId: createIngestRun
       parameters:
         - $ref: '#/components/parameters/SourceKey'
@@ -84,8 +85,8 @@ paths:
             schema:
               $ref: '#/components/schemas/CreateIngestRunRequest'
       responses:
-        '200':
-          description: Ingest run created
+        '201':
+          description: Ingest run created and queued
           content:
             application/json:
               schema:
@@ -96,6 +97,10 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
   /v1/ingest/{source_key}/runs/{ingest_run_id}:
     patch:
       tags: [Ingestion]
@@ -1521,6 +1526,12 @@ components:
         application/json:
           schema:
             $ref: '#/components/schemas/ErrorResponseEnvelope'
+    ServiceUnavailable:
+      description: Ingestion could not be queued
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponseEnvelope'
     PersonNotFound:
       description: Person was not found
       content:
@@ -2155,6 +2166,11 @@ components:
       properties:
         source_record_id:
           type: string
+        entity_key:
+          type:
+            - string
+            - 'null'
+          description: Required for records submitted to the shared bitrix_chat source.
         source_record_version:
           type:
             - string
@@ -2230,7 +2246,7 @@ components:
           enum: [batch, dump, api, backfill]
           description: >-
             Defaults to batch when omitted. Backfill is supported only when
-            source_key is bitrix_openlines.
+            source_key is bitrix_chat.
         dump_path:
           type:
             - string

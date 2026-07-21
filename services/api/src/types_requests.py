@@ -121,6 +121,7 @@ class IngestIdentifier(BaseModel):
 
 class IngestRecord(BaseModel):
     source_record_id: str
+    entity_key: str | None = None
     source_record_version: str | None = None
     record_type: SourceRecordTypeLiteral = "identity"
     extraction_confidence: float | None = None

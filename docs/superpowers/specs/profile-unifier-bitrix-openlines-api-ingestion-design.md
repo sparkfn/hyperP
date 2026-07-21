@@ -5,11 +5,10 @@ Date: 20 July 2026
 ## Goal
 
 Add API-backed ingestion of customer conversations from selected Bitrix Open
-Lines. This source is separate from the existing `bitrix_chat` connector, which
-reads CRM-deal warmer data from the Bitrix Chat Manager MariaDB.
-
-The new source key is `bitrix_openlines`. It calls existing Bitrix REST methods
-directly and does not require changes to the third-party Bitrix Chat Manager
+Lines to the existing `bitrix_chat` source. `batch` continues to read CRM-deal
+warmer data from the Bitrix Chat Manager MariaDB, while `dump` continues to read
+its existing SQL dumps. The `api` and `backfill` modes call Bitrix REST methods
+directly and do not require changes to the third-party Bitrix Chat Manager
 application.
 
 ## Scope
@@ -57,7 +56,8 @@ session. Historical discovery therefore has a documented coverage limitation.
 
 ## Architecture
 
-Add a `bitrix_openlines` API connector under the ingestion service. Keep the
+Reuse the `bitrix_openlines` connector infrastructure under the ingestion service
+for the `bitrix_chat` API and backfill modes. Keep the
 Bitrix HTTP client, response validation, discovery, classification, checkpoint,
 and envelope-building responsibilities in focused modules.
 
@@ -169,10 +169,23 @@ Secrets must not be stored in the ingestion JSON.
 
 ## Source records and provenance
 
-Use source system key `bitrix_openlines`. A conversation produces one source
-record per extracted possible person, following the existing chat-ingestion
-model. Stable IDs use the numeric Bitrix chat ID and person index, for example
-`bitrix-openlines-chat-153291-person-1`.
+Use source system key `bitrix_chat`. A conversation produces one source record
+per extracted possible person, following the existing chat-ingestion model.
+Stable IDs and conversation provenance remain compatible with the existing
+Open Lines connector, for example `bitrix-openlines-chat-153291-person-1` with
+platform `bitrix_openlines`. The distinct prefix prevents a portal `CHAT_ID`
+from colliding with the independent MariaDB/dump `chats.id` namespace.
+
+The shared `bitrix_chat` SourceSystem has no source-level `OPERATED_BY` owner.
+Each conversation instead carries its configured entity in its record-scoped
+`tenant` provenance and has a `SourceRecord-[:OWNED_BY]->Entity` relationship,
+so one shared source is never attached to multiple entities. Only administrators
+may dispatch ingestion for this multi-entity source.
+
+Deployments that previously seeded `bitrix_openlines` rehome its records and
+runs to `bitrix_chat`, establish `OWNED_BY` for every record, and only then
+deactivate the legacy source and remove stale source-level ownership. The
+migration is atomic and stops if any record cannot be mapped to a known entity.
 
 The raw payload retains:
 
@@ -209,10 +222,11 @@ bodies, or sensitive customer identifiers.
 
 ## Dispatch and deployment
 
-Register `bitrix_openlines` for `api` and `backfill` modes in the existing
-connector factory and Celery ingestion task path. Do not invoke ingestion
-directly from an API route. The existing authenticated ingestion-run endpoint
-continues to dispatch through `run_ingestion_task.delay`.
+Register `bitrix_chat` for `api` and `backfill` modes in the existing connector
+factory and Celery ingestion task path. Preserve the database connector for
+`batch` and the SQL connector for `dump`. Do not invoke ingestion directly from
+an API route; the authenticated route creates a run and enqueues the existing
+ingestion task with that run ID.
 
 Add environment settings for the Bitrix REST connection and retry behavior to
 the ingestion service and deployment examples. Scheduling is disabled by

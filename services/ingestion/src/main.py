@@ -257,6 +257,7 @@ def create_whatsadmin_api_connector(entity_key: str | None = None) -> WhatsAdmin
 
 def create_bitrix_openlines_connector(mode: str) -> BitrixOpenLinesConnector:
     settings = get_settings()
+    ingestion_config = get_ingestion_config()
     client = BitrixOpenLinesClient(
         base_url=settings.bitrix_openlines_api_base_url.get_secret_value(),
         timeout_seconds=settings.bitrix_openlines_api_timeout_seconds,
@@ -267,8 +268,12 @@ def create_bitrix_openlines_connector(mode: str) -> BitrixOpenLinesConnector:
     return BitrixOpenLinesConnector(
         client,
         BitrixOpenLinesWatermarkStore(redis),
-        get_ingestion_config().bitrix_openlines,
+        ingestion_config.bitrix_openlines,
         mode=mode,
+        company_mobile_numbers=settings.company_mobile_numbers,
+        company_email_addresses=settings.company_email_addresses,
+        internal_person_names=settings.internal_person_names,
+        file_exclusions=ingestion_config.exclusions,
     )
 
 
@@ -303,8 +308,10 @@ def get_connector(
         settings = get_settings()
         resolved_dump_path = resolve_dump_path(dump_path, settings.dumps_root)
         return get_dump_connector(source_key, resolved_dump_path)
-    if source_key == "bitrix_openlines" and mode in {"api", "backfill"}:
+    if source_key == "bitrix_chat" and mode in {"api", "backfill"}:
         return create_bitrix_openlines_connector(mode)
+    if mode == "backfill":
+        raise ValueError(f"Backfill mode is not supported for source {source_key!r}")
     if mode == "api":
         if source_key == "sgbankruptcy":
             return create_sgbankruptcy_api_connector()
@@ -385,7 +392,7 @@ def _create_ingest_run(client: Neo4jClient, source_key: str, mode: str) -> str:
         return session.execute_write(_tx)
 
 
-def _finalize_ingest_run(
+def finalize_ingest_run(
     client: Neo4jClient,
     ingest_run_id: str,
     status: str,
@@ -559,6 +566,7 @@ def run_ingestion(
     *,
     entity_key: str | None = None,
     initialize_graph: bool = True,
+    existing_ingest_run_id: str | None = None,
 ) -> IngestionSummary:
     """Execute one ingestion run end-to-end."""
     settings = get_settings()
@@ -589,8 +597,12 @@ def run_ingestion(
         # connector-construction failure (e.g. a source dispatched before its
         # env is provisioned) is recorded as a failed run instead of vanishing
         # from the runs UI.
-        ingest_run_id = _create_ingest_run(client, source_key, mode)
-        logger.info("IngestRun %s created", ingest_run_id)
+        ingest_run_id = existing_ingest_run_id or _create_ingest_run(client, source_key, mode)
+        logger.info(
+            "IngestRun %s %s",
+            ingest_run_id,
+            "reused" if existing_ingest_run_id is not None else "created",
+        )
 
         try:
             connector = get_connector(
@@ -633,7 +645,7 @@ def run_ingestion(
             raise
 
         final_status = "completed" if errors == 0 else "completed_with_errors"
-        _finalize_ingest_run(
+        finalize_ingest_run(
             client,
             ingest_run_id,
             final_status,

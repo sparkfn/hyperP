@@ -30,7 +30,10 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Create an ingest run */
+        /**
+         * Create an ingest run
+         * @description Creates the run metadata and enqueues the ingestion worker task.
+         */
         post: operations["createIngestRun"];
         delete?: never;
         options?: never;
@@ -939,6 +942,8 @@ export interface components {
         };
         SourceRecordInput: {
             source_record_id: string;
+            /** @description Required for records submitted to the shared bitrix_chat source. */
+            entity_key?: string | null;
             source_record_version?: string | null;
             /**
              * @description Selects the source fact domain and its specialized projection:
@@ -975,7 +980,7 @@ export interface components {
         CreateIngestRunRequest: {
             run_type: string;
             /**
-             * @description Defaults to batch when omitted. Backfill is supported only when source_key is bitrix_openlines.
+             * @description Defaults to batch when omitted. Backfill is supported only when source_key is bitrix_chat.
              * @enum {string}
              */
             mode?: "batch" | "dump" | "api" | "backfill";
@@ -1414,6 +1419,15 @@ export interface components {
                 "application/json": components["schemas"]["ErrorResponseEnvelope"];
             };
         };
+        /** @description Ingestion could not be queued */
+        ServiceUnavailable: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["ErrorResponseEnvelope"];
+            };
+        };
         /** @description Person was not found */
         PersonNotFound: {
             headers: {
@@ -1511,8 +1525,8 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Ingest run created */
-            200: {
+            /** @description Ingest run created and queued */
+            201: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -1523,6 +1537,8 @@ export interface operations {
             400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            503: components["responses"]["ServiceUnavailable"];
         };
     };
     updateIngestRun: {

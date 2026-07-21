@@ -6,12 +6,20 @@ LIST_ENTITIES = """
 MATCH (e:Entity)
 CALL {
   WITH e
-  OPTIONAL MATCH (e)<-[:OPERATED_BY]-(:SourceSystem)<-[:FROM_SOURCE]-(sr:SourceRecord)
-    -[link:LINKED_TO]->(p:Person)
+  OPTIONAL MATCH (sr:SourceRecord)-[link:LINKED_TO]->(p:Person)
   WHERE coalesce(link.is_active, true) = true
     AND (sr.lifecycle_status = 'active'
       OR (sr.lifecycle_status IS NULL AND sr.is_latest = true))
     AND p.status <> 'merged'
+    AND (
+      EXISTS { MATCH (sr)-[:OWNED_BY]->(e) }
+      OR (
+        NOT EXISTS { MATCH (sr)-[:OWNED_BY]->(:Entity) }
+        AND EXISTS {
+          MATCH (sr)-[:FROM_SOURCE]->(:SourceSystem)-[:OPERATED_BY]->(e)
+        }
+      )
+    )
   RETURN count(DISTINCT p) AS person_count,
          count(DISTINCT sr) AS source_record_count,
          max(sr.ingested_at) AS last_ingested_at
@@ -57,12 +65,20 @@ _DEFAULT_ORDER = "ASC"
 
 _ENTITY_PERSONS_BODY = """
 MATCH (e:Entity {entity_key: $entity_key})
-    <-[:OPERATED_BY]-(ss:SourceSystem)<-[:FROM_SOURCE]-(sr:SourceRecord)
-    <-[entity_fact:HAS_FACT]-(p:Person)
+MATCH (sr:SourceRecord)<-[entity_fact:HAS_FACT]-(p:Person)
 WHERE p.status <> 'merged'
   AND coalesce(entity_fact.is_active, true) = true
   AND (sr.lifecycle_status = 'active'
     OR (sr.lifecycle_status IS NULL AND sr.is_latest = true))
+  AND (
+    EXISTS { MATCH (sr)-[:OWNED_BY]->(e) }
+    OR (
+      NOT EXISTS { MATCH (sr)-[:OWNED_BY]->(:Entity) }
+      AND EXISTS {
+        MATCH (sr)-[:FROM_SOURCE]->(:SourceSystem)-[:OPERATED_BY]->(e)
+      }
+    )
+  )
 WITH DISTINCT p
 OPTIONAL MATCH (addr:Address {address_id: p.preferred_address_id})
 CALL {

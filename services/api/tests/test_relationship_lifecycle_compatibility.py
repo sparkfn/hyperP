@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from src.graph.queries import entities, persons, persons_list, reports, survivorship
+from src.graph.queries import entities, graph, persons, persons_list, reports, survivorship
 
 
 def test_active_domain_relationship_reads_are_rollout_compatible() -> None:
@@ -43,6 +43,22 @@ def test_rollout_compatibility_excludes_only_explicitly_retired_relationships() 
     assert (False if False is not None else True) is False
 
 
+def test_graph_traversal_does_not_fan_out_through_record_ownership() -> None:
+    query = graph.get_graph_query(4)
+
+    assert "type(r) <> 'OWNED_BY'" in query
+
+
+def test_survivorship_metadata_uses_record_ownership_with_source_fallback() -> None:
+    for query in (
+        survivorship.GET_OVERRIDE_SOURCE_METADATA,
+        survivorship.GET_FIELD_OPTIONS,
+    ):
+        assert "OWNED_BY" in query
+        assert "OPERATED_BY" in query
+        assert "coalesce(record_entity, source_entity)" in query
+
+
 def test_seed_reports_exclude_explicitly_retired_domain_relationships() -> None:
     report_queries = {
         report["report_key"]: report["cypher_query"] for report in reports.SEED_REPORTS
@@ -54,6 +70,9 @@ def test_seed_reports_exclude_explicitly_retired_domain_relationships() -> None:
     assert "collect(DISTINCT p.person_id) AS person_ids" in shared_phones
 
     entity_summary = report_queries["entity_person_summary"]
+    assert "OWNED_BY" in entity_summary
+    assert "OPERATED_BY" in entity_summary
+    assert "NOT EXISTS" in entity_summary
     assert "<-[:HAS_FACT]-(p:Person)" not in entity_summary
     assert "<-[entity_fact:HAS_FACT]-(p:Person)" in entity_summary
     assert "coalesce(entity_fact.is_active, true) = true" in entity_summary

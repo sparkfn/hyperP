@@ -2,15 +2,25 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from typing import cast
 
 from src.graph import queries
 from src.graph.client import Neo4jClient
 from src.graph.migrations import (
+    COMPLETE_BITRIX_CHAT_SOURCE_MIGRATION,
+    DEDUPLICATE_LEGACY_BITRIX_PROJECTIONS,
+    FINALIZE_BITRIX_SOURCE_MIGRATION,
+    LIST_BITRIX_RECORDS_FOR_OWNERSHIP,
     MIGRATE_PROJECTION_RELATIONSHIP_LIFECYCLE,
     MIGRATE_SOURCE_RECORD_LIFECYCLE,
     RECONCILE_PROJECTION_RELATIONSHIP_LIFECYCLE,
     RECONCILE_SOURCE_RECORD_LIFECYCLE,
+    REHOME_LEGACY_BITRIX_RECORDS,
+    REHOME_LEGACY_BITRIX_RUNS,
+    REWRITE_DIRECT_BITRIX_PROJECTION_KEYS,
+    REWRITE_LEGACY_BITRIX_PROJECTION_KEYS,
+    START_BITRIX_CHAT_SOURCE_MIGRATION,
     apply_data_migrations,
     backfill_record_type_subtypes,
 )
@@ -34,6 +44,9 @@ class _Result:
 
     def single(self) -> dict[str, object] | None:
         return self._record
+
+    def __iter__(self) -> Iterator[dict[str, object]]:
+        return iter(())
 
 
 class _Tx:
@@ -74,6 +87,15 @@ def test_apply_data_migrations_runs_backfill() -> None:
     assert client.tx.queries[0] == queries.BACKFILL_RECORD_TYPE_SUBTYPES
     assert client.tx.queries == [
         queries.BACKFILL_RECORD_TYPE_SUBTYPES,
+        START_BITRIX_CHAT_SOURCE_MIGRATION,
+        REHOME_LEGACY_BITRIX_RECORDS,
+        REHOME_LEGACY_BITRIX_RUNS,
+        DEDUPLICATE_LEGACY_BITRIX_PROJECTIONS,
+        REWRITE_LEGACY_BITRIX_PROJECTION_KEYS,
+        REWRITE_DIRECT_BITRIX_PROJECTION_KEYS,
+        LIST_BITRIX_RECORDS_FOR_OWNERSHIP,
+        FINALIZE_BITRIX_SOURCE_MIGRATION,
+        COMPLETE_BITRIX_CHAT_SOURCE_MIGRATION,
         MIGRATE_SOURCE_RECORD_LIFECYCLE,
         MIGRATE_PROJECTION_RELATIONSHIP_LIFECYCLE,
         RECONCILE_SOURCE_RECORD_LIFECYCLE,

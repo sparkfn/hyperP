@@ -17,6 +17,7 @@ from src.config import config
 logger = logging.getLogger(__name__)
 
 _RECALCULATE_PAIR_AUDIT_TASK = "src.tasks.recalculate_pair_audit_match_task"
+_RUN_INGESTION_TASK = "src.tasks.run_ingestion_task"
 
 
 @lru_cache(maxsize=1)
@@ -48,3 +49,17 @@ def enqueue_match_recalculation(review_case_ids: list[str]) -> None:
             "Failed to enqueue match recalculation tasks for %d review case(s)",
             len(review_case_ids),
         )
+
+
+def enqueue_ingestion_run(
+    source_key: str,
+    mode: str,
+    *,
+    dump_path: str | None,
+    ingest_run_id: str,
+) -> None:
+    """Queue ingestion while preserving the run created by the API."""
+    get_celery_app().send_task(
+        _RUN_INGESTION_TASK,
+        args=(source_key, mode, dump_path, ingest_run_id),
+    )

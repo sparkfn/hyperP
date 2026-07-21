@@ -86,10 +86,23 @@ FOREACH (_ IN CASE WHEN e IS NOT NULL THEN [1] ELSE [] END |
 RETURN u {.email, .google_sub, .role, .entity_key, .display_name} AS user
 """
 
-# Resolve a source_key to its operating entity for authorization.
+# Resolve a source_key to all source- and record-scoped entities for authorization.
 GET_ENTITY_FOR_SOURCE = """
-MATCH (ss:SourceSystem {source_key: $source_key})-[:OPERATED_BY]->(e:Entity)
-RETURN e.entity_key AS entity_key
+MATCH (ss:SourceSystem {source_key: $source_key})
+OPTIONAL MATCH (ss)-[:OPERATED_BY]->(source_entity:Entity)
+WITH ss, collect(DISTINCT source_entity.entity_key) AS source_entity_keys
+CALL (ss, source_entity_keys) {
+  WITH ss, source_entity_keys
+  WHERE size(source_entity_keys) = 0
+  OPTIONAL MATCH (record:SourceRecord)-[:FROM_SOURCE]->(ss)
+  OPTIONAL MATCH (record)-[:OWNED_BY]->(record_entity:Entity)
+  RETURN collect(DISTINCT record_entity.entity_key) AS record_entity_keys
+  UNION
+  WITH source_entity_keys
+  WHERE size(source_entity_keys) > 0
+  RETURN [] AS record_entity_keys
+}
+RETURN source_entity_keys + record_entity_keys AS entity_keys
 """
 
 # Resolve a review case to the set of entities its comparison persons touch.
@@ -103,7 +116,10 @@ OPTIONAL MATCH (node)<-[:LINKED_TO]-(sr:SourceRecord)
 OPTIONAL MATCH (node)-[:LINKED_TO]->(p:Person)<-[:LINKED_TO]-(sr2:SourceRecord)
 WITH collect(DISTINCT sr) + collect(DISTINCT sr2) AS srs
 UNWIND srs AS sr
-OPTIONAL MATCH (sr)-[:FROM_SOURCE]->(ss:SourceSystem)-[:OPERATED_BY]->(e:Entity)
+OPTIONAL MATCH (sr)-[:FROM_SOURCE]->(ss:SourceSystem)
+OPTIONAL MATCH (sr)-[:OWNED_BY]->(record_entity:Entity)
+OPTIONAL MATCH (ss)-[:OPERATED_BY]->(source_entity:Entity)
+WITH coalesce(record_entity, source_entity) AS e
 RETURN collect(DISTINCT e.entity_key) AS entity_keys
 """
 

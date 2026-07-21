@@ -27,6 +27,8 @@ export interface RequestOptions {
   revalidate?: number | false;
   // Bearer token forwarded as `Authorization: Bearer <token>` when provided.
   authToken?: string | null;
+  // Stable retry key for write endpoints that require idempotent dispatch.
+  idempotencyKey?: string;
 }
 
 function buildUrl(path: string, query: RequestOptions["query"]): string {
@@ -52,6 +54,9 @@ export async function apiFetch<T>(path: string, options: RequestOptions = {}): P
   }
   if (token) {
     headers.authorization = `Bearer ${token}`;
+  }
+  if (options.idempotencyKey) {
+    headers["Idempotency-Key"] = options.idempotencyKey;
   }
   const init: RequestInit & { next?: { revalidate: number | false } } = {
     method: options.method ?? "GET",

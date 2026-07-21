@@ -184,14 +184,7 @@ _SOURCE_SYSTEMS: tuple[_SourceSystemSeed, ...] = (
     },
     {
         "source_key": "bitrix_chat",
-        "display_name": "Bitrix24 Chat (CRM-routed)",
-        "system_type": "chat",
-        "entity_key": "fundbox",
-        "field_trust": _CHAT_TRUST,
-    },
-    {
-        "source_key": "bitrix_openlines",
-        "display_name": "Bitrix Open Lines (multi-tenant)",
+        "display_name": "Bitrix24 Chat (multi-tenant)",
         "system_type": "chat",
         "entity_key": None,
         "field_trust": _CHAT_TRUST,

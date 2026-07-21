@@ -42,6 +42,10 @@ def test_create_source_record_stores_authoritative_lifecycle_identity() -> None:
     assert "source_version_key:   $source_version_key" in query
     assert "expected_active_source_record_pk: $expected_active_source_record_pk" in query
     assert "is_latest:             $is_latest" in query
+    assert "Entity {entity_key: $entity_key}" in query
+    assert "WITH ss, entity, $entity_key AS requested_entity_key" in query
+    assert "WHERE requested_entity_key IS NULL OR entity IS NOT NULL" in query
+    assert "MERGE (sr)-[:OWNED_BY]->(entity)" in query
 
 
 def test_retirement_is_strictly_source_scoped_and_keeps_history() -> None:
