@@ -7,7 +7,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PATH="/app/.venv/bin:$PATH"
 
 # Install uv from the official distroless image (no curl/network deps).
-COPY --from=ghcr.io/astral-sh/uv:0.10 /uv /usr/local/bin/uv
+COPY --from=astral/uv:0.10 /uv /usr/local/bin/uv
 
 WORKDIR /app
 
