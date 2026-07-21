@@ -8,10 +8,15 @@ from src.celery_client import enqueue_ingestion_run, enqueue_match_recalculation
 
 class _MockCelery:
     def __init__(self) -> None:
-        self.sent: list[tuple[str, tuple[object, ...]]] = []
+        self.sent: list[tuple[str, tuple[object, ...], dict[str, object]]] = []
 
-    def send_task(self, name: str, args: tuple[object, ...]) -> None:
-        self.sent.append((name, args))
+    def send_task(
+        self,
+        name: str,
+        args: tuple[object, ...],
+        kwargs: dict[str, object] | None = None,
+    ) -> None:
+        self.sent.append((name, args, kwargs or {}))
 
 
 def test_enqueue_match_recalculation_sends_one_task_per_case(
@@ -23,8 +28,8 @@ def test_enqueue_match_recalculation_sends_one_task_per_case(
     enqueue_match_recalculation(["case-1", "case-2"])
 
     assert len(mock.sent) == 2
-    assert mock.sent[0] == ("src.tasks.recalculate_pair_audit_match_task", ("case-1",))
-    assert mock.sent[1] == ("src.tasks.recalculate_pair_audit_match_task", ("case-2",))
+    assert mock.sent[0] == ("src.tasks.recalculate_pair_audit_match_task", ("case-1",), {})
+    assert mock.sent[1] == ("src.tasks.recalculate_pair_audit_match_task", ("case-2",), {})
 
 
 def test_enqueue_match_recalculation_noop_for_empty_list(
@@ -63,5 +68,9 @@ def test_enqueue_ingestion_run_dispatches_existing_run_to_worker(
     )
 
     assert mock.sent == [
-        ("src.tasks.run_ingestion_task", ("bitrix_chat", "backfill", None, "run-1"))
+        (
+            "src.tasks.run_ingestion_task",
+            ("bitrix_chat", "backfill", None),
+            {"ingest_run_id": "run-1"},
+        )
     ]

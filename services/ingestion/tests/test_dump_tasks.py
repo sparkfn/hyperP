@@ -168,7 +168,9 @@ def test_run_ingestion_task_reuses_api_created_ingest_run(
 
     monkeypatch.setattr(tasks, "run_ingestion", fake_run_ingestion)
 
-    result = tasks.run_ingestion_task.run("bitrix_chat", "backfill", None, "run-1")
+    result = tasks.run_ingestion_task.run(
+        "bitrix_chat", "backfill", None, ingest_run_id="run-1"
+    )
 
     assert calls == [("bitrix_chat", "backfill", None, False, "run-1")]
     assert status_checks == ["run-1"]
@@ -207,7 +209,7 @@ def test_run_ingestion_task_retries_distinct_dispatched_run_when_source_is_busy(
     monkeypatch.setattr(tasks.run_ingestion_task, "retry", retry)
 
     with pytest.raises(Retry):
-        tasks.run_ingestion_task.run("bitrix_chat", "api", None, "run-1")
+        tasks.run_ingestion_task.run("bitrix_chat", "api", None, ingest_run_id="run-1")
 
     assert finalized == []
     assert len(retry_calls) == 1
@@ -242,7 +244,7 @@ def test_terminal_dispatched_run_redelivery_is_idempotent_noop(
         lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("ingestion called")),
     )
 
-    result = tasks.run_ingestion_task.run("bitrix_chat", "api", None, "run-1")
+    result = tasks.run_ingestion_task.run("bitrix_chat", "api", None, ingest_run_id="run-1")
 
     assert result == {
         "ingest_run_id": "run-1",
@@ -253,6 +255,7 @@ def test_terminal_dispatched_run_redelivery_is_idempotent_noop(
         "source_key": "bitrix_chat",
         "mode": "api",
         "dump_path": None,
+        "entity_key": None,
     }
 
 
@@ -278,6 +281,6 @@ def test_run_ingestion_task_finalizes_api_created_run_when_setup_fails(
     )
 
     with pytest.raises(Reject, match="migration failed"):
-        tasks.run_ingestion_task.run("bitrix_chat", "api", None, "run-1")
+        tasks.run_ingestion_task.run("bitrix_chat", "api", None, ingest_run_id="run-1")
 
     assert finalized == [("run-1", "failed")]
