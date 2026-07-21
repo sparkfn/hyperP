@@ -13,6 +13,7 @@ _LABEL_FILTER = " AND ".join(f"NOT n:{label}" for label in _EXCLUDED_LABELS)
 # PART_OF_RUN: SourceRecord -> IngestRun -> SourceRecord cross-run fan-out.
 # SOLD_THROUGH: Order -> SourceSystem fan-out (all orders share the same SS).
 # OPERATED_BY: Entity -> SourceSystem.
+# OWNED_BY: SourceRecord -> Entity fan-out through a shared owner.
 # SOLD_BY: Product -> Entity.
 _EXCLUDED_REL_TYPES = (
     "FROM_SOURCE",
@@ -20,6 +21,7 @@ _EXCLUDED_REL_TYPES = (
     "PART_OF_RUN",
     "SOLD_THROUGH",
     "OPERATED_BY",
+    "OWNED_BY",
     "SOLD_BY",
 )
 

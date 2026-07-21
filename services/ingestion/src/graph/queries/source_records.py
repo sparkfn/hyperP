@@ -157,11 +157,15 @@ SET fact.is_active = false,
 
 CREATE_SOURCE_RECORD = """
 MATCH (ss:SourceSystem {source_key: $source_system})
+OPTIONAL MATCH (entity:Entity {entity_key: $entity_key})
+WITH ss, entity, $entity_key AS requested_entity_key
+WHERE requested_entity_key IS NULL OR entity IS NOT NULL
 CREATE (sr:SourceRecord {
     source_record_pk:      randomUUID(),
     source_record_id:      $source_record_id,
     source_record_version: $source_record_version,
     source_version_key:   $source_version_key,
+    entity_key:           $entity_key,
     expected_active_source_record_pk: $expected_active_source_record_pk,
     lifecycle_status:     $lifecycle_status,
     record_type:           $record_type,
@@ -179,6 +183,9 @@ CREATE (sr:SourceRecord {
     is_latest:             $is_latest,
     retention_expires_at:  null
 })-[:FROM_SOURCE]->(ss)
+FOREACH (_ IN CASE WHEN entity IS NULL THEN [] ELSE [1] END |
+    MERGE (sr)-[:OWNED_BY]->(entity)
+)
 RETURN sr.source_record_pk AS source_record_pk
 """
 
@@ -244,6 +251,11 @@ SET ir.status = $status,
     ir.finished_at = datetime(),
     ir.record_count = $record_count,
     ir.rejected_count = $rejected_count
+"""
+
+GET_INGEST_RUN_STATUS = """
+MATCH (ir:IngestRun {ingest_run_id: $ingest_run_id})
+RETURN ir.status AS status
 """
 
 LINK_SOURCE_RECORD_TO_RUN = """

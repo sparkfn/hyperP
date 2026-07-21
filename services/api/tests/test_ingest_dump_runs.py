@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
+from src.graph.queries.ingestion import CREATE_INGEST_RUN
 from src.routes.dumps import list_dump_files
 from src.types_requests import IngestRunCreateRequest
 
@@ -23,10 +24,17 @@ def test_ingest_run_create_accepts_api_without_dump_path() -> None:
 
 
 def test_ingest_run_create_accepts_backfill_without_dump_path() -> None:
-    body = IngestRunCreateRequest(run_type="bitrix_openlines", mode="backfill")
+    body = IngestRunCreateRequest(run_type="bitrix_chat", mode="backfill")
 
     assert body.mode == "backfill"
     assert body.dump_path is None
+
+
+def test_create_ingest_run_merges_by_source_and_idempotency_key() -> None:
+    assert "MERGE (ir:IngestRun" in CREATE_INGEST_RUN
+    assert "source_key: $source_key" in CREATE_INGEST_RUN
+    assert "idempotency_key: $idempotency_key" in CREATE_INGEST_RUN
+    assert "created AS created" in CREATE_INGEST_RUN
 
 
 def test_dump_run_requires_dump_path() -> None:
@@ -47,8 +55,6 @@ def test_dump_run_rejects_windows_absolute_dump_path() -> None:
 def test_dump_run_rejects_parent_traversal() -> None:
     with pytest.raises(ValidationError, match="must not contain parent traversal"):
         IngestRunCreateRequest(run_type="manual", mode="dump", dump_path="../file.sql")
-
-
 
     body = IngestRunCreateRequest(
         run_type="manual",

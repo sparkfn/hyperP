@@ -35,6 +35,7 @@ log = logging.getLogger(__name__)
 _USER_CACHE: TTLCache[str, tuple[str, AuthUser]] = TTLCache(maxsize=1024, ttl=30.0)
 _BEARER_AUTH = HTTPBearer(auto_error=False)
 _BEARER_CREDENTIALS = Security(_BEARER_AUTH)
+_SHARED_MULTI_ENTITY_SOURCE_KEYS: frozenset[str] = frozenset({"bitrix_chat"})
 
 _DEV_BYPASS_USER: AuthUser = AuthUser(
     email="dev-bypass@local",
@@ -280,9 +281,31 @@ async def require_mutator_for_source(
             "Your account is pending entity assignment by an administrator.",
             request,
         )
-    target_entity = await get_entity_for_source(source_key)
-    if target_entity is None:
+    if source_key in _SHARED_MULTI_ENTITY_SOURCE_KEYS:
+        raise http_error(
+            403,
+            "forbidden_entity_scope",
+            "Only administrators can mutate a shared multi-entity source.",
+            request,
+        )
+    target_entities = await get_entity_for_source(source_key)
+    if target_entities is None:
         raise http_error(404, "not_found", f"Source system '{source_key}' not found.", request)
+    if len(target_entities) > 1:
+        raise http_error(
+            403,
+            "forbidden_entity_scope",
+            "Only administrators can mutate a source spanning multiple entities.",
+            request,
+        )
+    if not target_entities:
+        raise http_error(
+            403,
+            "forbidden_entity_scope",
+            "Only administrators can mutate a source without an entity scope.",
+            request,
+        )
+    target_entity = next(iter(target_entities))
     if user.entity_key != target_entity:
         raise http_error(
             403,

@@ -8,7 +8,11 @@ import pytest
 from fastapi import Request
 from neo4j.exceptions import ClientError
 from src.auth.models import AuthUser, Role
-from src.graph.queries.users import UPSERT_USER_ON_LOGIN
+from src.graph.queries.users import (
+    GET_ENTITIES_FOR_REVIEW_CASE,
+    GET_ENTITY_FOR_SOURCE,
+    UPSERT_USER_ON_LOGIN,
+)
 from src.routes import users
 
 
@@ -91,6 +95,30 @@ def test_login_upsert_query_preserves_existing_role_and_entity() -> None:
     assert "u.role = coalesce(u.role" in on_match_clause
     assert "u.entity_key = u.entity_key" in on_match_clause
     assert "u.role = CASE WHEN $bootstrap_admin" not in on_match_clause
+
+
+def test_source_authorization_resolves_record_and_source_scoped_entities() -> None:
+    assert "MATCH (ss:SourceSystem {source_key: $source_key})" in GET_ENTITY_FOR_SOURCE
+    assert "OWNED_BY" in GET_ENTITY_FOR_SOURCE
+    assert "OPERATED_BY" in GET_ENTITY_FOR_SOURCE
+    assert "entity_keys" in GET_ENTITY_FOR_SOURCE
+
+
+def test_source_authorization_only_scans_records_without_a_source_owner() -> None:
+    source_owner_guard = "WHERE size(source_entity_keys) = 0"
+    record_scan = "MATCH (record:SourceRecord)-[:FROM_SOURCE]->(ss)"
+
+    assert "CALL (ss, source_entity_keys)" in GET_ENTITY_FOR_SOURCE
+    assert source_owner_guard in GET_ENTITY_FOR_SOURCE
+    assert GET_ENTITY_FOR_SOURCE.index(source_owner_guard) < GET_ENTITY_FOR_SOURCE.index(
+        record_scan
+    )
+
+
+def test_review_case_authorization_resolves_record_and_source_scoped_entities() -> None:
+    assert "OWNED_BY" in GET_ENTITIES_FOR_REVIEW_CASE
+    assert "OPERATED_BY" in GET_ENTITIES_FOR_REVIEW_CASE
+    assert "coalesce(record_entity, source_entity)" in GET_ENTITIES_FOR_REVIEW_CASE
 
 
 @pytest.mark.asyncio
@@ -561,9 +589,7 @@ async def test_bulk_create_users_returns_row_error_for_invalid_email_shape(
     monkeypatch.setattr(users, "bulk_pre_register_users", fail_bulk_pre_register_users)
 
     response = await users.bulk_create_users(
-        users.UserBulkCreateRequest(
-            users=[users.UserBulkCreateRow(email=email, role="admin")]
-        ),
+        users.UserBulkCreateRequest(users=[users.UserBulkCreateRow(email=email, role="admin")]),
         _request(),
         _admin(),
     )

@@ -133,7 +133,9 @@ vehicles
 GET_PERSON_SOURCE_RECORDS = """
 MATCH (sr:SourceRecord)-[:LINKED_TO]->(p:Person {person_id: $person_id})
 MATCH (sr)-[:FROM_SOURCE]->(ss:SourceSystem)
-OPTIONAL MATCH (ss)-[:OPERATED_BY]->(entity:Entity)
+OPTIONAL MATCH (sr)-[:OWNED_BY]->(record_entity:Entity)
+OPTIONAL MATCH (ss)-[:OPERATED_BY]->(source_entity:Entity)
+WITH sr, p, ss, coalesce(record_entity, source_entity) AS entity
 WHERE ($entity_key IS NULL OR entity.entity_key = $entity_key)
   AND ($record_type IS NULL OR sr.record_type = $record_type)
   AND (sr.lifecycle_status = 'active'
@@ -155,7 +157,9 @@ SKIP $skip LIMIT $limit
 GET_PERSON_SOURCE_RECORD_ENTITY_FACETS = """
 MATCH (sr:SourceRecord)-[:LINKED_TO]->(:Person {person_id: $person_id})
 MATCH (sr)-[:FROM_SOURCE]->(ss:SourceSystem)
-OPTIONAL MATCH (ss)-[:OPERATED_BY]->(entity:Entity)
+OPTIONAL MATCH (sr)-[:OWNED_BY]->(record_entity:Entity)
+OPTIONAL MATCH (ss)-[:OPERATED_BY]->(source_entity:Entity)
+WITH sr, ss, coalesce(record_entity, source_entity) AS entity
 WHERE (sr.lifecycle_status = 'active'
   OR (sr.lifecycle_status IS NULL AND sr.is_latest = true))
 RETURN ss.source_key AS source_system,
@@ -259,13 +263,24 @@ WHERE coalesce(p_address.is_active, true) = true
   AND other.status <> 'merged'
 WITH other,
      collect(DISTINCT {address_id: addr.address_id, normalized_full: addr.normalized_full, source_system_key: la.source_system_key}) AS shared_addresses,
-     [k IN collect(DISTINCT la.source_system_key) WHERE k IS NOT NULL] AS source_keys
+     [ref IN collect(DISTINCT {
+       source_system_key: la.source_system_key,
+       source_record_pk: la.source_record_pk
+     }) WHERE ref.source_system_key IS NOT NULL] AS source_refs
 CALL {
-  WITH source_keys
-  UNWIND source_keys AS ssk
-  OPTIONAL MATCH (ss:SourceSystem {source_key: ssk})-[:OPERATED_BY]->(e:Entity)
-  WITH ssk, e.display_name AS entity_display_name
-  RETURN collect({source_system_key: ssk, entity_display_name: entity_display_name}) AS connection_sources
+  WITH source_refs
+  UNWIND source_refs AS ref
+  OPTIONAL MATCH (ss:SourceSystem {source_key: ref.source_system_key})
+  OPTIONAL MATCH (sr:SourceRecord {source_record_pk: ref.source_record_pk})
+    -[:FROM_SOURCE]->(ss)
+  OPTIONAL MATCH (sr)-[:OWNED_BY]->(record_entity:Entity)
+  OPTIONAL MATCH (ss)-[:OPERATED_BY]->(source_entity:Entity)
+  WITH ref.source_system_key AS source_system_key,
+       coalesce(record_entity, source_entity) AS entity
+  RETURN collect(DISTINCT {
+    source_system_key: source_system_key,
+    entity_display_name: entity.display_name
+  }) AS connection_sources
 }
 RETURN other.person_id AS person_id,
        other.status AS status,
@@ -290,13 +305,24 @@ WITH other,
     relationship_category: k.relationship_category,
     source_system_key: k.source_system_key
   }) AS knows_rels,
-  [sk IN collect(DISTINCT k.source_system_key) WHERE sk IS NOT NULL] AS source_keys
+  [ref IN collect(DISTINCT {
+    source_system_key: k.source_system_key,
+    source_record_pk: k.source_record_pk
+  }) WHERE ref.source_system_key IS NOT NULL] AS source_refs
 CALL {
-  WITH source_keys
-  UNWIND source_keys AS ssk
-  OPTIONAL MATCH (ss:SourceSystem {source_key: ssk})-[:OPERATED_BY]->(e:Entity)
-  WITH ssk, e.display_name AS entity_display_name
-  RETURN collect({source_system_key: ssk, entity_display_name: entity_display_name}) AS connection_sources
+  WITH source_refs
+  UNWIND source_refs AS ref
+  OPTIONAL MATCH (ss:SourceSystem {source_key: ref.source_system_key})
+  OPTIONAL MATCH (sr:SourceRecord {source_record_pk: ref.source_record_pk})
+    -[:FROM_SOURCE]->(ss)
+  OPTIONAL MATCH (sr)-[:OWNED_BY]->(record_entity:Entity)
+  OPTIONAL MATCH (ss)-[:OPERATED_BY]->(source_entity:Entity)
+  WITH ref.source_system_key AS source_system_key,
+       coalesce(record_entity, source_entity) AS entity
+  RETURN collect(DISTINCT {
+    source_system_key: source_system_key,
+    entity_display_name: entity.display_name
+  }) AS connection_sources
 }
 RETURN other.person_id AS person_id,
        other.status AS status,
@@ -321,8 +347,8 @@ OPTIONAL MATCH (p)-[k:KNOWS]-(ok:Person)
   WHERE coalesce(k.is_active, true) = true
     AND ok.person_id <> p.person_id AND ok.status <> 'merged'
 WITH p,
-  collect(DISTINCT CASE WHEN oa IS NOT NULL THEN {person_id: oa.person_id, status: oa.status, preferred_full_name: oa.preferred_full_name, address_id: addr.address_id, normalized_full: addr.normalized_full, source_system_key: la.source_system_key} END) AS addr_links,
-  collect(DISTINCT CASE WHEN ok IS NOT NULL THEN {person_id: ok.person_id, status: ok.status, preferred_full_name: ok.preferred_full_name, relationship_label: k.relationship_label, relationship_category: k.relationship_category, source_system_key: k.source_system_key} END) AS knows_links
+  collect(DISTINCT CASE WHEN oa IS NOT NULL THEN {person_id: oa.person_id, status: oa.status, preferred_full_name: oa.preferred_full_name, address_id: addr.address_id, normalized_full: addr.normalized_full, source_system_key: la.source_system_key, source_record_pk: la.source_record_pk} END) AS addr_links,
+  collect(DISTINCT CASE WHEN ok IS NOT NULL THEN {person_id: ok.person_id, status: ok.status, preferred_full_name: ok.preferred_full_name, relationship_label: k.relationship_label, relationship_category: k.relationship_category, source_system_key: k.source_system_key, source_record_pk: k.source_record_pk} END) AS knows_links
 UNWIND (addr_links + knows_links) AS link
 WITH link WHERE link IS NOT NULL
 WITH link.person_id AS person_id,
@@ -330,17 +356,28 @@ WITH link.person_id AS person_id,
      link.preferred_full_name AS preferred_full_name,
      collect(DISTINCT CASE WHEN link.address_id IS NOT NULL THEN {address_id: link.address_id, normalized_full: link.normalized_full, source_system_key: link.source_system_key} END) AS shared_addresses_raw,
      collect(DISTINCT CASE WHEN link.relationship_category IS NOT NULL THEN {relationship_label: link.relationship_label, relationship_category: link.relationship_category, source_system_key: link.source_system_key} END) AS knows_raw,
-     [sk IN collect(DISTINCT link.source_system_key) WHERE sk IS NOT NULL] AS source_keys
+     [ref IN collect(DISTINCT {
+       source_system_key: link.source_system_key,
+       source_record_pk: link.source_record_pk
+     }) WHERE ref.source_system_key IS NOT NULL] AS source_refs
 WITH person_id, status, preferred_full_name,
      [x IN shared_addresses_raw WHERE x IS NOT NULL] AS shared_addresses,
      [x IN knows_raw WHERE x IS NOT NULL] AS knows_relationships,
-     source_keys
+     source_refs
 CALL {
-  WITH source_keys
-  UNWIND source_keys AS ssk
-  OPTIONAL MATCH (ss:SourceSystem {source_key: ssk})-[:OPERATED_BY]->(e:Entity)
-  WITH ssk, e.display_name AS entity_display_name
-  RETURN collect({source_system_key: ssk, entity_display_name: entity_display_name}) AS connection_sources
+  WITH source_refs
+  UNWIND source_refs AS ref
+  OPTIONAL MATCH (ss:SourceSystem {source_key: ref.source_system_key})
+  OPTIONAL MATCH (sr:SourceRecord {source_record_pk: ref.source_record_pk})
+    -[:FROM_SOURCE]->(ss)
+  OPTIONAL MATCH (sr)-[:OWNED_BY]->(record_entity:Entity)
+  OPTIONAL MATCH (ss)-[:OPERATED_BY]->(source_entity:Entity)
+  WITH ref.source_system_key AS source_system_key,
+       coalesce(record_entity, source_entity) AS entity
+  RETURN collect(DISTINCT {
+    source_system_key: source_system_key,
+    entity_display_name: entity.display_name
+  }) AS connection_sources
 }
 RETURN person_id, status, preferred_full_name, 1 AS hops,
        [] AS shared_identifiers,
@@ -421,7 +458,11 @@ GET_PERSON_ENTITIES = """
 MATCH (sr:SourceRecord)-[:LINKED_TO]->(p:Person {person_id: $person_id})
 WHERE sr.lifecycle_status = 'active'
    OR (sr.lifecycle_status IS NULL AND sr.is_latest = true)
-MATCH (sr)-[:FROM_SOURCE]->(:SourceSystem)-[:OPERATED_BY]->(e:Entity)
+MATCH (sr)-[:FROM_SOURCE]->(ss:SourceSystem)
+OPTIONAL MATCH (sr)-[:OWNED_BY]->(record_entity:Entity)
+OPTIONAL MATCH (ss)-[:OPERATED_BY]->(source_entity:Entity)
+WITH coalesce(record_entity, source_entity) AS e, sr
+WHERE e IS NOT NULL
 WITH e, count(DISTINCT sr) AS source_record_count
 RETURN e {
   .entity_key, .display_name, .entity_type, .country_code, .is_active
@@ -442,7 +483,9 @@ CALL {
   WITH source_record_pks
   OPTIONAL MATCH (sr:SourceRecord)-[:FROM_SOURCE]->(ss:SourceSystem)
   WHERE sr.source_record_pk IN source_record_pks
-  OPTIONAL MATCH (ss)-[:OPERATED_BY]->(e:Entity)
+  OPTIONAL MATCH (sr)-[:OWNED_BY]->(record_entity:Entity)
+  OPTIONAL MATCH (ss)-[:OPERATED_BY]->(source_entity:Entity)
+  WITH sr, ss, coalesce(record_entity, source_entity) AS e
   RETURN [record IN collect(DISTINCT CASE WHEN sr IS NULL THEN null ELSE {
     source_record: sr {
       .source_record_pk, .source_record_id, .source_record_version,
@@ -459,8 +502,11 @@ CALL {
 }
 CALL {
   WITH source_record_pks
-  OPTIONAL MATCH (sr:SourceRecord)-[:FROM_SOURCE]->(:SourceSystem)-[:OPERATED_BY]->(e:Entity)
+  OPTIONAL MATCH (sr:SourceRecord)-[:FROM_SOURCE]->(ss:SourceSystem)
   WHERE sr.source_record_pk IN source_record_pks
+  OPTIONAL MATCH (sr)-[:OWNED_BY]->(record_entity:Entity)
+  OPTIONAL MATCH (ss)-[:OPERATED_BY]->(source_entity:Entity)
+  WITH sr, coalesce(record_entity, source_entity) AS e
   WITH e, count(DISTINCT sr) AS source_record_count
   RETURN [entity IN collect(CASE WHEN e IS NULL THEN null ELSE e {
     .entity_key, .display_name, .entity_type, .country_code, .is_active,
@@ -508,7 +554,9 @@ SKIP $skip LIMIT $limit
 COUNT_PERSON_SOURCE_RECORDS = """
 MATCH (sr:SourceRecord)-[:LINKED_TO]->(p:Person {person_id: $person_id})
 MATCH (sr)-[:FROM_SOURCE]->(ss:SourceSystem)
-OPTIONAL MATCH (ss)-[:OPERATED_BY]->(entity:Entity)
+OPTIONAL MATCH (sr)-[:OWNED_BY]->(record_entity:Entity)
+OPTIONAL MATCH (ss)-[:OPERATED_BY]->(source_entity:Entity)
+WITH sr, coalesce(record_entity, source_entity) AS entity
 WHERE ($entity_key IS NULL OR entity.entity_key = $entity_key)
   AND ($record_type IS NULL OR sr.record_type = $record_type)
   AND (sr.lifecycle_status = 'active'
@@ -601,9 +649,14 @@ CALL {
     AND (sr.lifecycle_status = 'active'
      OR (sr.lifecycle_status IS NULL AND sr.is_latest = true))
   OPTIONAL MATCH (sr)-[:FROM_SOURCE]->(ss:SourceSystem)
+  OPTIONAL MATCH (sr)-[:OWNED_BY]->(record_entity:Entity)
+  OPTIONAL MATCH (ss)-[:OPERATED_BY]->(source_entity:Entity)
+  WITH sr, ss, coalesce(record_entity, source_entity) AS entity
   RETURN collect(DISTINCT sr {
     .source_record_pk, .source_record_id, .source_record_version,
-    .entity_key, source_system: ss.source_key, entity_display_name: ss.display_name,
+    entity_key: entity.entity_key,
+    source_system: ss.source_key,
+    entity_display_name: entity.display_name,
     .record_type, .extraction_confidence, .extraction_method,
     .link_status, .lifecycle_status, .linked_person_id, .observed_at, .ingested_at,
     .conversation_ref, .raw_payload, .normalized_payload
@@ -617,9 +670,14 @@ CALL {
     AND (sr.lifecycle_status = 'active'
      OR (sr.lifecycle_status IS NULL AND sr.is_latest = true))
   OPTIONAL MATCH (sr)-[:FROM_SOURCE]->(ss:SourceSystem)
+  OPTIONAL MATCH (sr)-[:OWNED_BY]->(record_entity:Entity)
+  OPTIONAL MATCH (ss)-[:OPERATED_BY]->(source_entity:Entity)
+  WITH sr, ss, coalesce(record_entity, source_entity) AS entity
   RETURN collect(DISTINCT sr {
     .source_record_pk, .source_record_id, .source_record_version,
-    .entity_key, source_system: ss.source_key, entity_display_name: ss.display_name,
+    entity_key: entity.entity_key,
+    source_system: ss.source_key,
+    entity_display_name: entity.display_name,
     .record_type, .extraction_confidence, .extraction_method,
     .link_status, .lifecycle_status, .linked_person_id, .observed_at, .ingested_at,
     .conversation_ref, .raw_payload, .normalized_payload

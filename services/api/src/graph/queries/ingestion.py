@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+CREATE_INGEST_RUN_IDEMPOTENCY_CONSTRAINT = """CREATE CONSTRAINT ingest_run_source_idempotency_unique IF NOT EXISTS
+FOR (ir:IngestRun)
+REQUIRE (ir.source_key, ir.idempotency_key) IS UNIQUE"""
+
 CHECK_SOURCE_SYSTEM = """
 MATCH (ss:SourceSystem {source_key: $source_key, is_active: true})
 RETURN ss.source_system_id AS id
@@ -25,9 +29,13 @@ RETURN ir.ingest_run_id AS ingest_run_id
 CREATE_SOURCE_RECORD = """
 MATCH (ss:SourceSystem {source_key: $source_key})
 MATCH (ir:IngestRun {ingest_run_id: $ingest_run_id})
+OPTIONAL MATCH (entity:Entity {entity_key: $entity_key})
+WITH ss, ir, entity
+WHERE $entity_key IS NULL OR entity IS NOT NULL
 CREATE (sr:SourceRecord {
   source_record_pk: randomUUID(),
   source_record_id: $source_record_id,
+  entity_key: $entity_key,
   source_record_version: $source_record_version,
   record_type: $record_type,
   extraction_confidence: $extraction_confidence,
@@ -44,6 +52,10 @@ CREATE (sr:SourceRecord {
 })
 CREATE (sr)-[:FROM_SOURCE]->(ss)
 CREATE (sr)-[:PART_OF_RUN]->(ir)
+FOREACH (_ IN CASE WHEN entity IS NULL THEN [] ELSE [1] END |
+  CREATE (sr)-[:OWNED_BY]->(entity)
+)
+RETURN sr.source_record_pk AS source_record_pk
 """
 
 UPDATE_INGEST_RUN_COUNTERS = """
@@ -54,24 +66,31 @@ SET ir.record_count = ir.record_count + $accepted,
 
 CREATE_INGEST_RUN = """
 MATCH (ss:SourceSystem {source_key: $source_key, is_active: true})
-CREATE (ir:IngestRun {
-  ingest_run_id: randomUUID(),
-  run_type: $run_type,
-  mode: $mode,
-  dump_path: $dump_path,
-  status: 'started',
-  started_at: datetime(),
-  finished_at: null,
-  record_count: 0,
-  rejected_count: 0,
-  metadata: $metadata
+MERGE (ir:IngestRun {
+  source_key: $source_key,
+  idempotency_key: $idempotency_key
 })
-CREATE (ir)-[:FROM_SOURCE]->(ss)
+ON CREATE SET
+  ir.ingest_run_id = randomUUID(),
+  ir.run_type = $run_type,
+  ir.mode = $mode,
+  ir.dump_path = $dump_path,
+  ir.status = 'started',
+  ir.started_at = datetime(),
+  ir.finished_at = null,
+  ir.record_count = 0,
+  ir.rejected_count = 0,
+  ir.metadata = $metadata,
+  ir.creation_token = $creation_token
+WITH ss, ir, ir.creation_token = $creation_token AS created
+MERGE (ir)-[:FROM_SOURCE]->(ss)
+REMOVE ir.creation_token
 RETURN ir.ingest_run_id AS ingest_run_id,
        ir.status AS status,
        ir.mode AS mode,
        ir.dump_path AS dump_path,
-       toString(ir.started_at) AS started_at
+       toString(ir.started_at) AS started_at,
+       created AS created
 """
 
 UPDATE_INGEST_RUN = """

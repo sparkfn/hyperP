@@ -478,11 +478,11 @@ def test_late_record_reconciliation_runs_after_marker_migrations() -> None:
     client = _Client(updated=2)
     apply_data_migrations(cast(Neo4jClient, client))
 
-    assert len(client.tx.queries) == 5
-    assert "source_record_lifecycle_v1" in client.tx.queries[1]
-    assert "projection_relationship_lifecycle_v1" in client.tx.queries[2]
-    assert "WHERE migration.completed_at IS NULL" not in client.tx.queries[3]
-    assert "WHERE migration.completed_at IS NULL" not in client.tx.queries[4]
+    assert len(client.tx.queries) == 14
+    assert "source_record_lifecycle_v1" in client.tx.queries[10]
+    assert "projection_relationship_lifecycle_v1" in client.tx.queries[11]
+    assert "WHERE migration.completed_at IS NULL" not in client.tx.queries[12]
+    assert "WHERE migration.completed_at IS NULL" not in client.tx.queries[13]
 
 
 def test_lifecycle_migration_runner_and_registration() -> None:
@@ -493,4 +493,4 @@ def test_lifecycle_migration_runner_and_registration() -> None:
 
     client = _Client(updated=2)
     apply_data_migrations(cast(Neo4jClient, client))
-    assert len(client.tx.queries) == 5
+    assert len(client.tx.queries) == 14

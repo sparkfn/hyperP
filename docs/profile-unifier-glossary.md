@@ -58,8 +58,10 @@ unique within the source namespace.
 ### Source System
 
 An upstream system that produces or owns customer-related records, such as POS,
-Bitrix CRM, onboarding app, or third-party operational app. Each SourceSystem
-belongs to exactly one **Entity** via `OPERATED_BY`.
+Bitrix CRM, onboarding app, or third-party operational app. Entity-specific
+SourceSystems belong to one **Entity** via `OPERATED_BY`. A shared multi-entity
+source instead assigns each SourceRecord to exactly one Entity via `OWNED_BY`;
+entity-less public registries have neither relationship.
 
 ### Entity
 

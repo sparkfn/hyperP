@@ -159,6 +159,7 @@ class SourceRecordEnvelope(BaseModel):
 
     source_system: str
     source_record_id: str
+    entity_key: str | None = None
     source_record_version: str | None = None
     record_type: RecordType = RecordType.IDENTITY
     ingest_type: str = "batch"

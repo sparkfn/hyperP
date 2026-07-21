@@ -33,6 +33,12 @@ class IngestRunResponse:
 
 
 @dataclass
+class IngestRunCreationResult:
+    run: IngestRunResponse
+    created: bool
+
+
+@dataclass
 class IngestRunDetailResponse:
     ingest_run_id: str
     run_type: str
@@ -64,7 +70,8 @@ class IngestRepository(Protocol):
         mode: str,
         dump_path: str | None,
         metadata: dict[str, str],
-    ) -> IngestRunResponse | None:
+        idempotency_key: str,
+    ) -> IngestRunCreationResult | None:
         """Returns None if the source system is not found or inactive."""
         ...
 

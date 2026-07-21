@@ -7,15 +7,24 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from fastapi import FastAPI
 from src import app
+from src.graph.queries.ingestion import CREATE_INGEST_RUN_IDEMPOTENCY_CONSTRAINT
 from src.graph.queries.source_records import CREATE_SOURCE_RECORD_IDENTITY_LOCK_CONSTRAINT
 
 EXPECTED_CONSTRAINT = """CREATE CONSTRAINT source_record_identity_lock_unique IF NOT EXISTS
 FOR (lock:SourceRecordIdentityLock)
 REQUIRE (lock.source_system, lock.source_record_id) IS UNIQUE"""
 
+EXPECTED_INGEST_CONSTRAINT = """CREATE CONSTRAINT ingest_run_source_idempotency_unique IF NOT EXISTS
+FOR (ir:IngestRun)
+REQUIRE (ir.source_key, ir.idempotency_key) IS UNIQUE"""
+
 
 def test_api_uses_the_ingestion_identity_lock_tuple_constraint() -> None:
     assert CREATE_SOURCE_RECORD_IDENTITY_LOCK_CONSTRAINT == EXPECTED_CONSTRAINT
+
+
+def test_api_uses_the_ingest_run_idempotency_tuple_constraint() -> None:
+    assert CREATE_INGEST_RUN_IDEMPOTENCY_CONSTRAINT == EXPECTED_INGEST_CONSTRAINT
 
 
 @pytest.mark.asyncio
@@ -30,6 +39,7 @@ async def test_identity_lock_constraint_precedes_review_capable_startup() -> Non
 
     with (
         patch.object(app, "validate_oauth_runtime_config"),
+        patch.object(app, "_ensure_ingest_run_idempotency", new=recorder("ingest_idempotency")),
         patch.object(app, "_ensure_source_record_identity_lock", new=recorder("lock")),
         patch.object(app, "_ensure_user_constraint", new=recorder("user")),
         patch.object(app, "_ensure_oauth_client_constraints", new=recorder("oauth")),
@@ -42,4 +52,4 @@ async def test_identity_lock_constraint_precedes_review_capable_startup() -> Non
         async with app._lifespan(FastAPI()):
             calls.append("traffic")
 
-    assert calls == ["lock", "user", "oauth", "indexes", "traffic"]
+    assert calls == ["ingest_idempotency", "lock", "user", "oauth", "indexes", "traffic"]

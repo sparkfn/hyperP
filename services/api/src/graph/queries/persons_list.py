@@ -128,20 +128,39 @@ def _entity_filter_clause(entity_mode: str, source_mode: str) -> str:
     if entity_mode == "and":
         entity_part = """($entity_keys IS NULL OR ALL(ek IN $entity_keys WHERE EXISTS {
   MATCH (sr_e:SourceRecord)-[link:LINKED_TO]->(p)
-  MATCH (sr_e)-[:FROM_SOURCE]->(:SourceSystem)-[:OPERATED_BY]->(e:Entity)
   WHERE coalesce(link.is_active, true) = true
     AND (sr_e.lifecycle_status = 'active'
       OR (sr_e.lifecycle_status IS NULL AND sr_e.is_latest = true))
-    AND e.entity_key = ek
+    AND (
+      EXISTS { MATCH (sr_e)-[:OWNED_BY]->(e:Entity) WHERE e.entity_key = ek }
+      OR (
+        NOT EXISTS { MATCH (sr_e)-[:OWNED_BY]->(:Entity) }
+        AND EXISTS {
+          MATCH (sr_e)-[:FROM_SOURCE]->(:SourceSystem)-[:OPERATED_BY]->(e:Entity)
+          WHERE e.entity_key = ek
+        }
+      )
+    )
 }))"""
     else:
         entity_part = """($entity_keys IS NULL OR EXISTS {
   MATCH (sr_e:SourceRecord)-[link:LINKED_TO]->(p)
-  MATCH (sr_e)-[:FROM_SOURCE]->(:SourceSystem)-[:OPERATED_BY]->(e:Entity)
   WHERE coalesce(link.is_active, true) = true
     AND (sr_e.lifecycle_status = 'active'
       OR (sr_e.lifecycle_status IS NULL AND sr_e.is_latest = true))
-    AND e.entity_key IN $entity_keys
+    AND (
+      EXISTS {
+        MATCH (sr_e)-[:OWNED_BY]->(e:Entity)
+        WHERE e.entity_key IN $entity_keys
+      }
+      OR (
+        NOT EXISTS { MATCH (sr_e)-[:OWNED_BY]->(:Entity) }
+        AND EXISTS {
+          MATCH (sr_e)-[:FROM_SOURCE]->(:SourceSystem)-[:OPERATED_BY]->(e:Entity)
+          WHERE e.entity_key IN $entity_keys
+        }
+      )
+    )
 })"""
 
     if source_mode == "and":
@@ -191,7 +210,10 @@ CALL (p) {
   WHERE coalesce(link.is_active, true) = true
     AND (sr_ent.lifecycle_status = 'active'
       OR (sr_ent.lifecycle_status IS NULL AND sr_ent.is_latest = true))
-  OPTIONAL MATCH (sr_ent)-[:FROM_SOURCE]->(:SourceSystem)-[:OPERATED_BY]->(e:Entity)
+  OPTIONAL MATCH (sr_ent)-[:FROM_SOURCE]->(ss_ent:SourceSystem)
+  OPTIONAL MATCH (sr_ent)-[:OWNED_BY]->(record_entity:Entity)
+  OPTIONAL MATCH (ss_ent)-[:OPERATED_BY]->(source_entity:Entity)
+  WITH coalesce(record_entity, source_entity) AS e, sr_ent
   WITH e, count(DISTINCT sr_ent) AS e_sr_count
   WHERE e IS NOT NULL
   WITH collect({

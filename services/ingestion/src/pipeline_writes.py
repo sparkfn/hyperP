@@ -217,6 +217,7 @@ def persist_source_record(
         queries.CREATE_SOURCE_RECORD,
         source_system=envelope.source_system,
         source_record_id=envelope.source_record_id,
+        entity_key=envelope.entity_key,
         source_record_version=source_record_version,
         source_version_key=encode_source_version_key(
             envelope.source_system,

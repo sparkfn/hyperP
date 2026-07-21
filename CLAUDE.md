@@ -260,14 +260,14 @@ The task enforces a Redis-backed cluster-wide concurrency cap (`MAX_CONCURRENT_I
 | `eko_phppos:sales` | dump | `limited-100/eko_sales_100.sql` |
 | `speedzone_phppos` | dump | `limited-100/speedzone_customers_100.sql` |
 | `speedzone_phppos:sales` | dump | `limited-100/speedzone_sales_100.sql` |
-| `bitrix_chat` | dump | `limited-100/bitrix_chat_100.sql` |
+| `bitrix_chat` | dump | `limited-100/bitrix_chat_100.sql` (also supports `api` and `backfill`) |
 | `whatsapp_chat` | dump | `limited-100/whatsapp_chat_100.sql` |
 | `sgbankruptcy` | dump | `limited-100/sgbankruptcy_100.sql` |
 | `sgrentalflats` | dump | `limited-100/sgrentalflats_100.sql` |
 | `onediver` | dump | `limited-100/onediver_100.sql` |
 | `onediver:sales` | dump | `limited-100/onediver_sales_100.sql` |
 
-`eko_phppos`, `bitrix_chat`, and `whatsapp_chat` need an SSH gateway in `batch` mode — without one, use `mode='dump'` with `dump_path`.
+`eko_phppos`, `bitrix_chat`, and `whatsapp_chat` need an SSH gateway in `batch` mode — without one, use `mode='dump'` with `dump_path`. `bitrix_chat` additionally supports incremental `api` and manual `backfill` modes through the Bitrix Open Lines REST client.
 
 `sgbankruptcy` and `sgrentalflats` are **dump-only by design** — they have no live/batch connector (they exist only in the dump connectors factory), so dispatching them with `mode='batch'` raises `KeyError`/`ValueError` and the Celery task Rejects immediately. Always dispatch them with `mode='dump'` and a `dump_path`.
 

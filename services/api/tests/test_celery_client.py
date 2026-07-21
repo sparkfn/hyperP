@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import pytest
-from src.celery_client import enqueue_match_recalculation
+from src.celery_client import enqueue_ingestion_run, enqueue_match_recalculation
 
 
 class _MockCelery:
@@ -47,3 +47,21 @@ def test_enqueue_match_recalculation_swallows_send_errors(
     monkeypatch.setattr("src.celery_client.get_celery_app", _exploding_app)
 
     enqueue_match_recalculation(["case-1"])
+
+
+def test_enqueue_ingestion_run_dispatches_existing_run_to_worker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mock = _MockCelery()
+    monkeypatch.setattr("src.celery_client.get_celery_app", lambda: mock)
+
+    enqueue_ingestion_run(
+        "bitrix_chat",
+        "backfill",
+        dump_path=None,
+        ingest_run_id="run-1",
+    )
+
+    assert mock.sent == [
+        ("src.tasks.run_ingestion_task", ("bitrix_chat", "backfill", None, "run-1"))
+    ]

@@ -38,7 +38,13 @@ from src.graph.migrations import (
     reconcile_projection_relationship_lifecycle,
     reconcile_source_record_lifecycle,
 )
-from src.main import IngestionSummary, initialize_ingestion_graph, run_ingestion, setup_logging
+from src.main import (
+    IngestionSummary,
+    finalize_ingest_run,
+    initialize_ingestion_graph,
+    run_ingestion,
+    setup_logging,
+)
 from src.matching.pair_score import score_person_pair
 from src.pipeline_person_pairs import _ENGINE_VERSION, _POLICY_VERSION
 
@@ -70,6 +76,48 @@ end
 redis.call('zadd', KEYS[1], ARGV[2], ARGV[1])
 return redis.call('expire', KEYS[1], ARGV[3])
 """
+_TERMINAL_INGEST_RUN_STATUSES = frozenset(
+    {"already_running", "completed", "completed_with_errors", "failed"}
+)
+
+
+def _finalize_dispatched_run(ingest_run_id: str, status: str) -> None:
+    """Finalize a run created by the API before task-level locking."""
+    client = Neo4jClient(get_settings())
+    try:
+        finalize_ingest_run(client, ingest_run_id, status, 0, 0)
+    finally:
+        client.close()
+
+
+def _finalize_rejected_dispatched_run(ingest_run_id: str | None) -> None:
+    """Best-effort finalization for a task rejected before normal run cleanup."""
+    if ingest_run_id is None:
+        return
+    try:
+        _finalize_dispatched_run(ingest_run_id, "failed")
+    except Exception:
+        logger.exception("Failed to finalize rejected IngestRun %s", ingest_run_id)
+
+
+def _get_existing_ingest_run_status(ingest_run_id: str) -> str | None:
+    """Read the current status for a run dispatched by the API."""
+    client = Neo4jClient(get_settings())
+
+    def _read(tx: ManagedTransaction) -> str | None:
+        record = tx.run(
+            queries.GET_INGEST_RUN_STATUS,
+            ingest_run_id=ingest_run_id,
+        ).single()
+        if record is None:
+            return None
+        status = record["status"]
+        return status if isinstance(status, str) else None
+
+    try:
+        return client.execute_read(_read)
+    finally:
+        client.close()
 
 type _SourceLockLease = tuple[str, str]
 
@@ -296,6 +344,27 @@ class LifecycleReconciliationSummary(TypedDict):
     projections: int
 
 
+def _terminal_run_summary(
+    ingest_run_id: str,
+    status: str,
+    source_key: str,
+    mode: str,
+    dump_path: str | None,
+    entity_key: str | None,
+) -> IngestionSummary:
+    return {
+        "ingest_run_id": ingest_run_id,
+        "status": status,
+        "succeeded": 0,
+        "errors": 0,
+        "skipped": 1,
+        "source_key": source_key,
+        "mode": mode,
+        "dump_path": dump_path,
+        "entity_key": entity_key,
+    }
+
+
 def run_lifecycle_reconciliation() -> LifecycleReconciliationSummary:
     """Repair lifecycle deltas while serializing concurrent repair attempts."""
     with _acquire_source_lock("lifecycle-reconciliation"), _acquire_init_lock():
@@ -333,49 +402,77 @@ def run_ingestion_task(
     mode: str = "batch",
     dump_path: str | None = None,
     entity_key: str | None = None,
+    ingest_run_id: str | None = None,
 ) -> IngestionSummary:
     """Run a single ingestion under the cluster-wide concurrency cap."""
-    settings = get_settings()
-    setup_logging(settings.log_level)
     source_lock_keys = _source_lock_keys(source_key, mode, entity_key)
-
     try:
+        settings = get_settings()
+        setup_logging(settings.log_level)
         with _acquire_init_lock():
             initialize_ingestion_graph()
-        with (
-            _acquire_source_locks(source_lock_keys) as source_lock_leases,
-            _acquire_ingestion_slot(settings.max_concurrent_ingestions) as slot_id,
-            _renew_ingestion_leases(source_lock_leases, slot_id),
-        ):
-            if entity_key is None:
-                summary = run_ingestion(
-                    source_key,
-                    mode,
-                    dump_path,
-                    initialize_graph=False,
-                )
-            else:
-                summary = run_ingestion(
-                    source_key,
-                    mode,
-                    dump_path,
-                    entity_key=entity_key,
-                    initialize_graph=False,
-                )
-            try:
-                run_lifecycle_reconciliation()
-            except _SourceAlreadyRunningError:
-                logger.info("Lifecycle reconciliation is already running; skipping follow-up")
-            except Exception:
-                logger.exception("Post-ingestion lifecycle reconciliation failed")
-            return summary
+        with _acquire_source_locks(source_lock_keys) as source_lock_leases:
+            if ingest_run_id is not None:
+                status = _get_existing_ingest_run_status(ingest_run_id)
+                if status in _TERMINAL_INGEST_RUN_STATUSES:
+                    logger.info(
+                        "IngestRun %s is already terminal (%s); skipping",
+                        ingest_run_id,
+                        status,
+                    )
+                    assert status is not None
+                    return _terminal_run_summary(
+                        ingest_run_id,
+                        status,
+                        source_key,
+                        mode,
+                        dump_path,
+                        entity_key,
+                    )
+            with (
+                _acquire_ingestion_slot(settings.max_concurrent_ingestions) as slot_id,
+                _renew_ingestion_leases(source_lock_leases, slot_id),
+            ):
+                if ingest_run_id is None:
+                    summary = run_ingestion(
+                        source_key,
+                        mode,
+                        dump_path,
+                        entity_key=entity_key,
+                        initialize_graph=False,
+                    )
+                else:
+                    summary = run_ingestion(
+                        source_key,
+                        mode,
+                        dump_path,
+                        entity_key=entity_key,
+                        initialize_graph=False,
+                        existing_ingest_run_id=ingest_run_id,
+                    )
+                try:
+                    run_lifecycle_reconciliation()
+                except _SourceAlreadyRunningError:
+                    logger.info("Lifecycle reconciliation is already running; skipping follow-up")
+                except Exception:
+                    logger.exception("Post-ingestion lifecycle reconciliation failed")
+                return summary
     except _SourceAlreadyRunningError as exc:
+        if ingest_run_id is not None:
+            retry_number = min(self.request.retries, 8)
+            countdown = min(2**retry_number, 300)
+            logger.warning(
+                "Ingestion source %s is already running; retrying dispatched run %s",
+                exc.source_key,
+                ingest_run_id,
+            )
+            raise self.retry(exc=exc, countdown=countdown) from exc
         logger.warning(
             "Ingestion source %s is already running; skipping duplicate",
             exc.source_key,
         )
         return {
-            "ingest_run_id": "",
+            "ingest_run_id": ingest_run_id or "",
             "status": "already_running",
             "succeeded": 0,
             "errors": 0,
@@ -393,10 +490,12 @@ def run_ingestion_task(
         # yet. Log a clean warning (no traceback) and reject without retry so
         # beat firing on the cron doesn't flood the logs.
         logger.warning("Ingestion source %s not configured: %s", source_key, exc)
+        _finalize_rejected_dispatched_run(ingest_run_id)
         raise Reject(str(exc), requeue=False) from exc
     except Exception as exc:
         logger.exception("Ingestion task failed for %s", source_key)
         # Don't retry on real errors — surface them to the caller.
+        _finalize_rejected_dispatched_run(ingest_run_id)
         raise Reject(str(exc), requeue=False) from exc
 
 

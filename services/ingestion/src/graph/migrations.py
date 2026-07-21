@@ -9,13 +9,135 @@ migration here must be safe to run repeatedly.
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
+from typing import cast
 
 from neo4j import ManagedTransaction
 
 from src.graph import queries
 from src.graph.client import Neo4jClient
+from src.raw_payload import decode_raw_payload
 
 logger = logging.getLogger(__name__)
+
+
+START_BITRIX_CHAT_SOURCE_MIGRATION = """
+MERGE (migration:DataMigration {migration_key: 'bitrix_chat_source_v1'})
+ON CREATE SET migration.created_at = datetime()
+RETURN migration.completed_at AS completed_at
+"""
+
+
+COMPLETE_BITRIX_CHAT_SOURCE_MIGRATION = """
+MATCH (migration:DataMigration {migration_key: 'bitrix_chat_source_v1'})
+WHERE migration.completed_at IS NULL
+SET migration.completed_at = datetime()
+RETURN migration.completed_at AS completed_at
+"""
+
+
+REHOME_LEGACY_BITRIX_RECORDS = """
+MATCH (canonical:SourceSystem {source_key: 'bitrix_chat'})
+MATCH (legacy:SourceSystem {source_key: 'bitrix_openlines'})
+MATCH (record:SourceRecord)-[legacy_link:FROM_SOURCE]->(legacy)
+MERGE (record)-[:FROM_SOURCE]->(canonical)
+SET record.source_version_key = NULL
+DELETE legacy_link
+RETURN count(record) AS updated
+"""
+
+
+REHOME_LEGACY_BITRIX_RUNS = """
+MATCH (canonical:SourceSystem {source_key: 'bitrix_chat'})
+MATCH (legacy:SourceSystem {source_key: 'bitrix_openlines'})
+MATCH (run:IngestRun)-[legacy_link:FROM_SOURCE]->(legacy)
+MERGE (run)-[:FROM_SOURCE]->(canonical)
+DELETE legacy_link
+RETURN count(run) AS updated
+"""
+
+
+DEDUPLICATE_LEGACY_BITRIX_PROJECTIONS = """
+MATCH (record:SourceRecord)-[:FROM_SOURCE]->(:SourceSystem {source_key: 'bitrix_chat'})
+MATCH (start)-[legacy_projection:IDENTIFIED_BY|LIVES_AT|KNOWS]->(end)
+WHERE legacy_projection.source_record_pk = record.source_record_pk
+  AND legacy_projection.source_system_key = 'bitrix_openlines'
+MATCH (start)-[canonical_projection]->(end)
+WHERE canonical_projection <> legacy_projection
+  AND type(canonical_projection) = type(legacy_projection)
+  AND canonical_projection.source_record_pk = record.source_record_pk
+  AND canonical_projection.source_system_key = 'bitrix_chat'
+WITH collect(DISTINCT legacy_projection) AS duplicates
+FOREACH (duplicate IN duplicates | DELETE duplicate)
+RETURN size(duplicates) AS removed
+"""
+
+
+REWRITE_LEGACY_BITRIX_PROJECTION_KEYS = """
+MATCH (record:SourceRecord)-[:FROM_SOURCE]->(:SourceSystem {source_key: 'bitrix_chat'})
+MATCH ()-[projection:IDENTIFIED_BY|LIVES_AT|KNOWS]->()
+WHERE projection.source_record_pk = record.source_record_pk
+  AND projection.source_system_key = 'bitrix_openlines'
+SET projection.source_system_key = 'bitrix_chat',
+    projection.updated_at = datetime()
+RETURN count(projection) AS updated
+"""
+
+
+REWRITE_DIRECT_BITRIX_PROJECTION_KEYS = """
+MATCH (record:SourceRecord)-[:FROM_SOURCE]->(:SourceSystem {source_key: 'bitrix_chat'})
+MATCH (record)-[projection:DESCRIBES_ADDRESS|MENTIONS_VEHICLE]->()
+WHERE projection.source_system_key = 'bitrix_openlines'
+SET projection.source_system_key = 'bitrix_chat',
+    projection.updated_at = datetime()
+RETURN count(projection) AS updated
+"""
+
+
+LIST_BITRIX_RECORDS_FOR_OWNERSHIP = """
+MATCH (record:SourceRecord)-[:FROM_SOURCE]->(:SourceSystem {source_key: 'bitrix_chat'})
+OPTIONAL MATCH (record)-[:OWNED_BY]->(owner:Entity)
+WITH record, collect(owner.entity_key) AS owner_entity_keys
+WHERE record.entity_key IS NULL
+   OR trim(record.entity_key) = ''
+   OR size(owner_entity_keys) <> 1
+   OR head(owner_entity_keys) <> record.entity_key
+RETURN record.source_record_pk AS source_record_pk,
+       record.entity_key AS entity_key,
+       record.raw_payload AS raw_payload,
+       owner_entity_keys
+"""
+
+
+LINK_BITRIX_RECORD_TO_ENTITY = """
+MATCH (record:SourceRecord {source_record_pk: $source_record_pk})
+MATCH (entity:Entity {entity_key: $entity_key})
+OPTIONAL MATCH (record)-[stale_owner:OWNED_BY]->(:Entity)
+WITH record, entity, collect(stale_owner) AS stale_owners
+FOREACH (stale_owner IN stale_owners | DELETE stale_owner)
+MERGE (record)-[:OWNED_BY]->(entity)
+SET record.entity_key = entity.entity_key,
+    record.updated_at = datetime()
+RETURN entity.entity_key AS entity_key
+"""
+
+
+FINALIZE_BITRIX_SOURCE_MIGRATION = """
+MATCH (canonical:SourceSystem {source_key: 'bitrix_chat'})
+OPTIONAL MATCH (legacy:SourceSystem {source_key: 'bitrix_openlines'})
+FOREACH (_ IN CASE WHEN legacy IS NOT NULL AND (
+    legacy.is_active <> false OR legacy.is_active IS NULL OR legacy.retired_at IS NULL
+  ) THEN [1] ELSE [] END |
+  SET legacy.is_active = false,
+      legacy.retired_at = coalesce(legacy.retired_at, datetime()),
+      legacy.updated_at = datetime()
+)
+WITH canonical, legacy
+OPTIONAL MATCH (canonical)-[ownership:OPERATED_BY]->(:Entity)
+OPTIONAL MATCH (legacy)-[legacy_ownership:OPERATED_BY]->(:Entity)
+DELETE ownership, legacy_ownership
+RETURN count(ownership) + count(legacy_ownership) AS removed
+"""
 
 
 MIGRATE_SOURCE_RECORD_LIFECYCLE = """
@@ -369,9 +491,71 @@ def reconcile_projection_relationship_lifecycle(client: Neo4jClient) -> int:
     return client.execute_write(_work)
 
 
+def _bitrix_record_entity_key(record: Mapping[str, object]) -> str:
+    stored_entity = record.get("entity_key")
+    if isinstance(stored_entity, str) and stored_entity.strip():
+        return stored_entity.strip()
+    payload = decode_raw_payload(record.get("raw_payload"))
+    tenant = payload.get("tenant") if payload is not None else None
+    if isinstance(tenant, str) and tenant.strip():
+        return tenant.strip()
+    owner_entity_keys = record.get("owner_entity_keys")
+    if isinstance(owner_entity_keys, list) and len(owner_entity_keys) == 1:
+        owner_entity_key = owner_entity_keys[0]
+        if isinstance(owner_entity_key, str) and owner_entity_key.strip():
+            return owner_entity_key.strip()
+    source_record_pk = record.get("source_record_pk")
+    raise RuntimeError(f"Bitrix source record {source_record_pk!r} has no record-scoped entity")
+
+
+def migrate_bitrix_chat_source(client: Neo4jClient) -> int:
+    """Rehome the retired Open Lines source and establish record ownership atomically."""
+
+    def _work(tx: ManagedTransaction) -> int:
+        raw_marker = tx.run(START_BITRIX_CHAT_SOURCE_MIGRATION).single()
+        if raw_marker is None:
+            raise RuntimeError("Bitrix source migration marker could not be created")
+        marker = cast("Mapping[str, object]", raw_marker)
+        if marker.get("completed_at") is not None:
+            return 0
+        tx.run(REHOME_LEGACY_BITRIX_RECORDS).single()
+        tx.run(REHOME_LEGACY_BITRIX_RUNS).single()
+        tx.run(DEDUPLICATE_LEGACY_BITRIX_PROJECTIONS).single()
+        tx.run(REWRITE_LEGACY_BITRIX_PROJECTION_KEYS).single()
+        tx.run(REWRITE_DIRECT_BITRIX_PROJECTION_KEYS).single()
+        linked = 0
+        for raw_record in tx.run(LIST_BITRIX_RECORDS_FOR_OWNERSHIP):
+            record = cast("Mapping[str, object]", raw_record)
+            source_record_pk = record.get("source_record_pk")
+            if not isinstance(source_record_pk, str) or not source_record_pk:
+                raise RuntimeError("Bitrix source record is missing source_record_pk")
+            entity_key = _bitrix_record_entity_key(record)
+            result = tx.run(
+                LINK_BITRIX_RECORD_TO_ENTITY,
+                source_record_pk=source_record_pk,
+                entity_key=entity_key,
+            ).single()
+            if result is None:
+                raise RuntimeError(
+                    f"Bitrix source record {source_record_pk!r} maps to unknown entity "
+                    f"{entity_key!r}"
+                )
+            linked += 1
+        tx.run(FINALIZE_BITRIX_SOURCE_MIGRATION).single()
+        if tx.run(COMPLETE_BITRIX_CHAT_SOURCE_MIGRATION).single() is None:
+            raise RuntimeError("Bitrix source migration could not be marked complete")
+        return linked
+
+    linked = client.execute_write(_work)
+    if linked:
+        logger.info("Established record-scoped ownership on %d Bitrix records", linked)
+    return linked
+
+
 def apply_data_migrations(client: Neo4jClient) -> None:
     """Run every idempotent data migration in order."""
     backfill_record_type_subtypes(client)
+    migrate_bitrix_chat_source(client)
     migrate_source_record_lifecycle(client)
     migrate_projection_relationship_lifecycle(client)
     reconcile_source_record_lifecycle(client)

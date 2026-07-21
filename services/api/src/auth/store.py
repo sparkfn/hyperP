@@ -236,14 +236,17 @@ async def update_user(email: str, new_role: Role | None, entity_key: str | None)
     return _auth_user_from_record(record["user"])
 
 
-async def get_entity_for_source(source_key: str) -> str | None:
-    """Return the entity_key that OPERATES the given source system."""
+async def get_entity_for_source(source_key: str) -> frozenset[str] | None:
+    """Return every record- or source-scoped entity, or None if the source is absent."""
     async with get_session() as session:
         result = await session.run(GET_ENTITY_FOR_SOURCE, source_key=source_key)
         record = await result.single()
     if record is None:
         return None
-    return to_optional_str(record["entity_key"])
+    raw_entity_keys = record["entity_keys"]
+    if not isinstance(raw_entity_keys, list):
+        raise ValueError("unexpected source entity scope shape")
+    return frozenset(to_str(key) for key in raw_entity_keys if key is not None)
 
 
 async def get_entities_for_review_case(review_case_id: str) -> list[str]:

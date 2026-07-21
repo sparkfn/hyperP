@@ -26,7 +26,7 @@ is sales. Built on Neo4j for native graph traversal.
 - [SG Bankruptcy API Ingestion](./docs/profile-unifier-sg-bankruptcy-api-ingestion.md)
 - [WhatsAdmin API Ingestion Design](./docs/superpowers/specs/profile-unifier-whatsadmin-api-ingestion-design.md)
 - [Fundbox API Ingestion Design](./docs/superpowers/specs/profile-unifier-fundbox-api-ingestion-design.md)
-- [Bitrix Open Lines API Ingestion Design](./docs/superpowers/specs/profile-unifier-bitrix-openlines-api-ingestion-design.md)
+- [Bitrix Chat Open Lines API Ingestion Design](./docs/superpowers/specs/profile-unifier-bitrix-openlines-api-ingestion-design.md)
 
 ## Recommended Reading Order
 

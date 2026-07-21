@@ -50,6 +50,9 @@ CREATE CONSTRAINT merge_event_id_unique IF NOT EXISTS
 CREATE CONSTRAINT ingest_run_id_unique IF NOT EXISTS
   FOR (ir:IngestRun) REQUIRE ir.ingest_run_id IS UNIQUE;
 
+CREATE CONSTRAINT ingest_run_source_idempotency_unique IF NOT EXISTS
+  FOR (ir:IngestRun) REQUIRE (ir.source_key, ir.idempotency_key) IS UNIQUE;
+
 // Identifier lookups (hot path)
 CREATE INDEX idx_identifier_type_norm IF NOT EXISTS
   FOR (id:Identifier) ON (id.identifier_type, id.normalized_value);

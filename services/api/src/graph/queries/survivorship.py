@@ -111,7 +111,9 @@ LIMIT 1
 
 GET_OVERRIDE_SOURCE_METADATA = """
 MATCH (sr:SourceRecord {source_record_pk: $source_record_pk})-[:FROM_SOURCE]->(ss:SourceSystem)
-OPTIONAL MATCH (ss)-[:OPERATED_BY]->(e:Entity)
+OPTIONAL MATCH (sr)-[:OWNED_BY]->(record_entity:Entity)
+OPTIONAL MATCH (ss)-[:OPERATED_BY]->(source_entity:Entity)
+WITH sr, ss, coalesce(record_entity, source_entity) AS e
 RETURN ss.source_key AS source_system,
        e.display_name AS entity_display_name,
        toString(sr.observed_at) AS observed_at
@@ -126,7 +128,9 @@ CALL {
     AND coalesce(f.quality_flag, 'valid') <> 'invalid_format'
     AND coalesce(f.quality_flag, 'valid') <> 'placeholder_value'
   MATCH (sr)-[:FROM_SOURCE]->(ss:SourceSystem)
-  OPTIONAL MATCH (ss)-[:OPERATED_BY]->(e:Entity)
+  OPTIONAL MATCH (sr)-[:OWNED_BY]->(record_entity:Entity)
+  OPTIONAL MATCH (ss)-[:OPERATED_BY]->(source_entity:Entity)
+  WITH f, sr, ss, coalesce(record_entity, source_entity) AS e
   RETURN collect({
     field_name: 'preferred_' + f.attribute_name,
     source_kind: 'source_record_fact',
@@ -145,7 +149,9 @@ CALL {
   WHERE id.identifier_type IN ['phone', 'email', 'nric']
     AND coalesce(rel.is_active, true) = true
   MATCH (sr:SourceRecord {source_record_pk: rel.source_record_pk})-[:FROM_SOURCE]->(ss:SourceSystem)
-  OPTIONAL MATCH (ss)-[:OPERATED_BY]->(e:Entity)
+  OPTIONAL MATCH (sr)-[:OWNED_BY]->(record_entity:Entity)
+  OPTIONAL MATCH (ss)-[:OPERATED_BY]->(source_entity:Entity)
+  WITH id, rel, sr, ss, coalesce(record_entity, source_entity) AS e
   RETURN collect({
     field_name: 'preferred_' + id.identifier_type,
     source_kind: 'identifier',
@@ -164,7 +170,9 @@ CALL {
   WHERE coalesce(la.is_active, true) = true
     AND la.quality_flag IN ['valid', 'partial_parse']
   MATCH (sr:SourceRecord {source_record_pk: la.source_record_pk})-[:FROM_SOURCE]->(ss:SourceSystem)
-  OPTIONAL MATCH (ss)-[:OPERATED_BY]->(e:Entity)
+  OPTIONAL MATCH (sr)-[:OWNED_BY]->(record_entity:Entity)
+  OPTIONAL MATCH (ss)-[:OPERATED_BY]->(source_entity:Entity)
+  WITH la, a, sr, ss, coalesce(record_entity, source_entity) AS e
   RETURN collect({
     field_name: 'preferred_address',
     source_kind: 'address',

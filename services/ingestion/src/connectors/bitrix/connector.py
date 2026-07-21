@@ -450,6 +450,7 @@ class BitrixChatConnector(SourceConnector):
             envelopes.append(
                 build_envelope(
                     source_record_id=source_record_id,
+                    entity_key=bundle.entity,
                     observed_at=observed_at,
                     identifiers=identifiers_from_possible_person(person),
                     attributes=attributes,

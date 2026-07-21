@@ -447,8 +447,10 @@ Create an ingest run before a bulk sync.
 ```
 
 `mode` accepts `batch`, `dump`, `api`, or `backfill` and defaults to `batch`.
-`backfill` is supported only for the `bitrix_openlines` source and does not require
+`backfill` is supported only for the `bitrix_chat` source and does not require
 `dump_path`; dump requests require a path relative to the configured dumps root.
+The API creates the run metadata, then queues the shared Celery ingestion task
+with that run ID so the worker updates the same run rather than creating another.
 
 ### Response
 
