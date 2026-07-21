@@ -6,6 +6,7 @@ from collections.abc import Iterator
 
 import httpx
 
+from src.connectors.whatsadmin_api.credentials import WhatsAdminCredential, WhatsAdminEntity
 from src.connectors.whatsadmin_api.models import ChatPage, SessionPage, SessionRow
 
 
@@ -13,17 +14,21 @@ class WhatsAdminApiClient:
     def __init__(
         self,
         *,
-        base_url: str,
-        api_key: str,
+        credential: WhatsAdminCredential,
         page_size: int,
         timeout_seconds: float = 30.0,
         http: httpx.Client | None = None,
     ) -> None:
-        self._base_url = base_url.rstrip("/")
-        self._api_key = api_key
+        self._credential = credential
+        self._base_url = credential.base_url.rstrip("/")
         self._page_size = page_size
         self._http = http or httpx.Client(timeout=timeout_seconds)
         self._closed = False
+
+    @property
+    def entity_key(self) -> WhatsAdminEntity:
+        """Return the HyperP entity bound to this authenticated client."""
+        return self._credential.entity_key
 
     def iter_sessions(self) -> Iterator[SessionRow]:
         cursor: str | None = None
@@ -67,7 +72,7 @@ class WhatsAdminApiClient:
     def _post(self, resource: str, payload: dict[str, str | int]) -> object:
         response = self._http.post(
             f"{self._base_url}/api/integrations/hyperp/{resource}",
-            headers={"x-api-key": self._api_key},
+            headers={"X-API-Key": self._credential.api_key.get_secret_value()},
             json=payload,
         )
         response.raise_for_status()

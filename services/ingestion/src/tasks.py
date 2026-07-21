@@ -18,7 +18,7 @@ import threading
 import time
 import uuid
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from typing import TypedDict, cast
 
 import redis
@@ -30,6 +30,7 @@ from pydantic.types import JsonValue
 from src.birthday import BirthdayRunSummary, run_birthday_greetings
 from src.celery_app import celery_app
 from src.config import get_settings
+from src.connectors.whatsadmin_api.credentials import WHATSADMIN_ENTITIES
 from src.errors import SourceNotConfiguredError
 from src.graph import queries
 from src.graph.client import Neo4jClient
@@ -69,6 +70,8 @@ end
 redis.call('zadd', KEYS[1], ARGV[2], ARGV[1])
 return redis.call('expire', KEYS[1], ARGV[3])
 """
+
+type _SourceLockLease = tuple[str, str]
 
 
 def _redis_client() -> redis.Redis:
@@ -139,6 +142,31 @@ def _acquire_source_lock(source_key: str) -> Iterator[str]:
             logger.exception("Failed to release ingestion source lock for %s", source_key)
 
 
+def _source_lock_keys(
+    source_key: str,
+    mode: str,
+    entity_key: str | None,
+) -> tuple[str, ...]:
+    """Return the independent source locks required for an ingestion run."""
+    if source_key != "whatsapp_chat":
+        return (source_key,)
+    entities = (entity_key,) if mode == "api" and entity_key is not None else WHATSADMIN_ENTITIES
+    return tuple(f"{source_key}:{entity}" for entity in entities)
+
+
+@contextmanager
+def _acquire_source_locks(
+    source_keys: tuple[str, ...],
+) -> Iterator[tuple[_SourceLockLease, ...]]:
+    """Acquire all source locks, releasing earlier locks if a later one is busy."""
+    with ExitStack() as stack:
+        leases: list[_SourceLockLease] = []
+        for source_key in source_keys:
+            lock_id = stack.enter_context(_acquire_source_lock(source_key))
+            leases.append((source_key, lock_id))
+        yield tuple(leases)
+
+
 def _renew_ingestion_slot(client: redis.Redis, slot_id: str) -> None:
     """Extend an existing semaphore reservation without recreating it."""
     member_key = f"{_INGEST_SEMAPHORE_KEY}:{slot_id}"
@@ -178,22 +206,34 @@ def _renew_source_lock(client: redis.Redis, source_key: str, lock_id: str) -> No
         raise RuntimeError(f"Ingestion source lock for {source_key} was lost before renewal")
 
 
+def _renew_source_locks(
+    client: redis.Redis,
+    source_lock_leases: tuple[_SourceLockLease, ...],
+) -> None:
+    for source_key, lock_id in source_lock_leases:
+        _renew_source_lock(client, source_key, lock_id)
+
+
 @contextmanager
-def _renew_ingestion_leases(source_key: str, source_lock_id: str, slot_id: str) -> Iterator[None]:
+def _renew_ingestion_leases(
+    source_lock_leases: tuple[_SourceLockLease, ...],
+    slot_id: str,
+) -> Iterator[None]:
     """Keep long-running ingestion leases alive, stopping promptly on completion."""
     stop_event = threading.Event()
+    source_label = ",".join(source_key for source_key, _lock_id in source_lock_leases)
 
     def renew() -> None:
         while not stop_event.wait(_LEASE_RENEWAL_INTERVAL_SECONDS):
             try:
                 client = _redis_client()
-                _renew_source_lock(client, source_key, source_lock_id)
+                _renew_source_locks(client, source_lock_leases)
                 _renew_ingestion_slot(client, slot_id)
             except Exception:
                 logger.critical(
                     "Failed to renew ingestion leases for %s; terminating worker "
                     "to prevent concurrent ingestion",
-                    source_key,
+                    source_label,
                     exc_info=True,
                 )
                 # A task cannot safely continue after losing its distributed
@@ -204,7 +244,7 @@ def _renew_ingestion_leases(source_key: str, source_lock_id: str, slot_id: str) 
 
     renewal_thread = threading.Thread(
         target=renew,
-        name=f"ingestion-lease-renewal:{source_key}",
+        name=f"ingestion-lease-renewal:{source_label}",
         daemon=True,
     )
     renewal_thread.start()
@@ -292,25 +332,36 @@ def run_ingestion_task(
     source_key: str,
     mode: str = "batch",
     dump_path: str | None = None,
+    entity_key: str | None = None,
 ) -> IngestionSummary:
     """Run a single ingestion under the cluster-wide concurrency cap."""
     settings = get_settings()
     setup_logging(settings.log_level)
+    source_lock_keys = _source_lock_keys(source_key, mode, entity_key)
 
     try:
         with _acquire_init_lock():
             initialize_ingestion_graph()
         with (
-            _acquire_source_lock(source_key) as source_lock_id,
+            _acquire_source_locks(source_lock_keys) as source_lock_leases,
             _acquire_ingestion_slot(settings.max_concurrent_ingestions) as slot_id,
-            _renew_ingestion_leases(source_key, source_lock_id, slot_id),
+            _renew_ingestion_leases(source_lock_leases, slot_id),
         ):
-            summary = run_ingestion(
-                source_key,
-                mode,
-                dump_path,
-                initialize_graph=False,
-            )
+            if entity_key is None:
+                summary = run_ingestion(
+                    source_key,
+                    mode,
+                    dump_path,
+                    initialize_graph=False,
+                )
+            else:
+                summary = run_ingestion(
+                    source_key,
+                    mode,
+                    dump_path,
+                    entity_key=entity_key,
+                    initialize_graph=False,
+                )
             try:
                 run_lifecycle_reconciliation()
             except _SourceAlreadyRunningError:
@@ -332,6 +383,7 @@ def run_ingestion_task(
             "source_key": source_key,
             "mode": mode,
             "dump_path": dump_path,
+            "entity_key": entity_key,
         }
     except _SlotUnavailableError as exc:
         logger.warning("Ingestion slot unavailable (%d/%d), retrying...", exc.live, exc.cap)
