@@ -9,17 +9,38 @@ migration here must be safe to run repeatedly.
 from __future__ import annotations
 
 import logging
+import time
+import uuid
 from collections.abc import Mapping
-from typing import cast
+from dataclasses import dataclass
+from typing import Literal, cast
 
-from neo4j import ManagedTransaction
+from neo4j import ManagedTransaction, Record
 
 from src.graph import queries
 from src.graph.client import Neo4jClient
+from src.graph.queries.lifecycle_migrations import (
+    ACQUIRE_SOURCE_RECORD_LIFECYCLE_MIGRATION,
+    ADVANCE_SOURCE_RECORD_LIFECYCLE_MIGRATION,
+    CLAIM_SOURCE_RECORD_LIFECYCLE_IDENTITY,
+    CLEAN_LEGACY_SOURCE_RECORD_LIFECYCLE_BATCH,
+    CLEAN_SOURCE_RECORD_LIFECYCLE_BATCH,
+    COMPLETE_SOURCE_RECORD_LIFECYCLE_IDENTITY,
+    COMPLETE_SOURCE_RECORD_LIFECYCLE_MIGRATION,
+    INITIALIZE_SOURCE_RECORD_LIFECYCLE_MIGRATION,
+    MIGRATE_SOURCE_RECORD_LIFECYCLE_BATCH,
+    PREPARE_LEGACY_SOURCE_RECORD_LIFECYCLE_BATCH,
+    PREPARE_SOURCE_RECORD_LIFECYCLE_BATCH,
+    RELEASE_SOURCE_RECORD_LIFECYCLE_MIGRATION,
+)
 from src.raw_payload import decode_raw_payload
 
 logger = logging.getLogger(__name__)
 
+SOURCE_RECORD_LIFECYCLE_MIGRATION_KEY = "source_record_lifecycle_v1"
+SOURCE_RECORD_LIFECYCLE_BATCH_SIZE = 500
+SOURCE_RECORD_LIFECYCLE_LEASE_SECONDS = 5 * 60
+SOURCE_RECORD_LIFECYCLE_LOCK_POLL_SECONDS = 1.0
 
 START_BITRIX_CHAT_SOURCE_MIGRATION = """
 MERGE (migration:DataMigration {migration_key: 'bitrix_chat_source_v1'})
@@ -140,140 +161,13 @@ RETURN count(ownership) + count(legacy_ownership) AS removed
 """
 
 
-MIGRATE_SOURCE_RECORD_LIFECYCLE = """
-MERGE (migration:DataMigration {migration_key: 'source_record_lifecycle_v1'})
-ON CREATE SET migration.created_at = datetime(), migration.lock_version = 0
-SET migration.lock_version = coalesce(migration.lock_version, 0) + 1
-WITH migration
-WHERE migration.completed_at IS NULL
-CALL {
-  MATCH (version:SourceRecord)
-  SET version.source_version_key = NULL,
-      version.legacy_repair_id = CASE
-        WHEN version.source_record_pk IS NULL OR version.source_record_pk = ''
-        THEN coalesce(version.legacy_repair_id, randomUUID())
-        ELSE version.legacy_repair_id END
-  RETURN count(version) AS cleared
-}
-WITH migration, cleared
-CALL {
-  MATCH (version:SourceRecord)
-  OPTIONAL MATCH (version)-[:FROM_SOURCE]->(ss:SourceSystem)
-  WITH version,
-       [key IN collect(DISTINCT ss.source_key) WHERE key IS NOT NULL] AS source_keys
-  WITH version,
-       CASE WHEN version.source_record_pk IS NULL OR version.source_record_pk = ''
-            THEN version.legacy_repair_id
-            ELSE version.source_record_pk END AS stable_pk,
-       source_keys
-  WITH version,
-       stable_pk,
-       CASE WHEN size(source_keys) = 1 THEN head(source_keys)
-            ELSE 'legacy-orphan:' + stable_pk END AS source_system,
-       coalesce(version.source_record_id, 'legacy-pk:' + stable_pk)
-         AS source_record_id,
-       coalesce(
-         toString(version.source_record_version),
-         'legacy-pk:' + stable_pk
-       ) AS source_record_version
-  ORDER BY stable_pk
-  WITH source_system,
-       source_record_id,
-       source_record_version,
-       collect(version) AS duplicate_versions
-  UNWIND range(0, size(duplicate_versions) - 1) AS duplicate_index
-  WITH source_system,
-       source_record_id,
-       source_record_version,
-       duplicate_versions[duplicate_index] AS version,
-       duplicate_index,
-       CASE
-         WHEN duplicate_versions[duplicate_index].source_record_pk IS NULL
-           OR duplicate_versions[duplicate_index].source_record_pk = ''
-         THEN duplicate_versions[duplicate_index].legacy_repair_id
-         ELSE duplicate_versions[duplicate_index].source_record_pk
-       END AS stable_pk
-  WITH source_system,
-       source_record_id,
-       source_record_version,
-       version,
-       CASE WHEN duplicate_index = 0 THEN '' ELSE stable_pk END
-         AS duplicate_discriminator
-  SET version.source_version_key =
-        'sv1:' +
-        toString(size(source_system)) + ':' + source_system +
-        toString(size(source_record_id)) + ':' + source_record_id +
-        toString(size(source_record_version)) + ':' + source_record_version +
-        toString(size(duplicate_discriminator)) + ':' + duplicate_discriminator
-  RETURN count(version) AS keyed
-}
-WITH migration, cleared, keyed
-CALL {
-MATCH (version:SourceRecord)
-OPTIONAL MATCH (version)-[:FROM_SOURCE]->(ss:SourceSystem)
-WITH version,
-     [key IN collect(DISTINCT ss.source_key) WHERE key IS NOT NULL] AS source_keys
-WITH version,
-     CASE WHEN version.source_record_pk IS NULL OR version.source_record_pk = ''
-          THEN version.legacy_repair_id
-          ELSE version.source_record_pk END AS stable_pk,
-     source_keys
-WITH version,
-     stable_pk,
-     CASE WHEN size(source_keys) = 1 THEN head(source_keys)
-          ELSE 'legacy-orphan:' + stable_pk END AS source_system,
-     coalesce(version.source_record_id, 'legacy-pk:' + stable_pk)
-       AS source_record_id
-ORDER BY source_system,
-         source_record_id,
-         coalesce(toInteger(version.source_record_version), -1),
-         version.ingested_at,
-         stable_pk
-WITH source_system, source_record_id, collect(version) AS versions
-WITH source_system,
-     source_record_id,
-     versions,
-     [version IN versions
-      WHERE NOT coalesce(
-        version.lifecycle_status IN ['pending_review', 'rejected', 'link_failed'], false
-      )
-      AND NOT coalesce(
-        version.lifecycle_status IS NULL AND version.link_status = 'pending_review', false
-      )] AS accepted_versions
-WITH source_system,
-     source_record_id,
-     versions,
-     [version IN accepted_versions
-      WHERE version.is_latest = true OR version.lifecycle_status = 'active']
-       AS anchor_versions,
-     accepted_versions
-WITH source_system,
-     source_record_id,
-     versions,
-     CASE WHEN size(anchor_versions) > 0 THEN last(anchor_versions)
-          WHEN size(accepted_versions) > 0 THEN last(accepted_versions)
-          ELSE NULL END
-       AS active_version
-UNWIND versions AS version
-WITH source_system,
-     source_record_id,
-     version,
-     active_version
-SET version.lifecycle_status = CASE
-      WHEN version.lifecycle_status IN ['pending_review', 'rejected', 'link_failed']
-        THEN version.lifecycle_status
-      WHEN version.lifecycle_status IS NULL AND version.link_status = 'pending_review'
-        THEN 'pending_review'
-      WHEN version = active_version THEN 'active'
-      ELSE 'superseded'
-    END,
-    version.is_latest = (version = active_version)
-RETURN count(version) AS updated
-}
-SET migration.completed_at = datetime(),
-    migration.updated_records = updated
-RETURN updated
-"""
+_MigrationPhase = Literal["prepare", "migrate", "cleanup"]
+
+
+@dataclass(frozen=True)
+class _MigrationState:
+    phase: _MigrationPhase
+    total_records: int
 
 
 MIGRATE_PROJECTION_RELATIONSHIP_LIFECYCLE = """
@@ -445,17 +339,222 @@ def backfill_record_type_subtypes(client: Neo4jClient) -> int:
     return updated
 
 
+def _run_migration_query(
+    client: Neo4jClient,
+    query: str,
+    **params: object,
+) -> Record | None:
+    def _work(tx: ManagedTransaction) -> Record | None:
+        # Neo4j types this boundary as dict[str, Any]; callers remain concrete.
+        return tx.run(query, **params).single()  # type: ignore[arg-type]
+
+    return client.execute_write(_work)
+
+
+def _required_bool(record: Record | None, key: str) -> bool:
+    if record is None:
+        raise RuntimeError(f"Lifecycle migration lost its lease while reading {key}")
+    value: object = record[key]
+    if not isinstance(value, bool):
+        raise RuntimeError(f"Lifecycle migration returned invalid {key}")
+    return value
+
+
+def _required_int(record: Record | None, key: str) -> int:
+    if record is None:
+        raise RuntimeError(f"Lifecycle migration lost its lease while reading {key}")
+    value: object = record[key]
+    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+        raise RuntimeError(f"Lifecycle migration returned invalid {key}")
+    return value
+
+
+def _required_phase(record: Record | None) -> _MigrationPhase:
+    if record is None:
+        raise RuntimeError("Lifecycle migration lost its lease while reading phase")
+    value: object = record["phase"]
+    if value not in {"prepare", "migrate", "cleanup"}:
+        raise RuntimeError("Lifecycle migration returned invalid phase")
+    return cast(_MigrationPhase, value)
+
+
+def _lease_params(owner_id: str) -> dict[str, object]:
+    return {
+        "migration_key": SOURCE_RECORD_LIFECYCLE_MIGRATION_KEY,
+        "owner_id": owner_id,
+        "lease_seconds": SOURCE_RECORD_LIFECYCLE_LEASE_SECONDS,
+    }
+
+
+def _wait_for_migration_lease(client: Neo4jClient, owner_id: str) -> bool:
+    while True:
+        record = _run_migration_query(
+            client,
+            ACQUIRE_SOURCE_RECORD_LIFECYCLE_MIGRATION,
+            **_lease_params(owner_id),
+        )
+        if _required_bool(record, "completed"):
+            return False
+        if _required_bool(record, "acquired"):
+            return True
+        logger.info("Waiting for SourceRecord lifecycle migration lease")
+        time.sleep(SOURCE_RECORD_LIFECYCLE_LOCK_POLL_SECONDS)
+
+
+def _initialize_source_record_migration(client: Neo4jClient, owner_id: str) -> _MigrationState:
+    record = _run_migration_query(
+        client,
+        INITIALIZE_SOURCE_RECORD_LIFECYCLE_MIGRATION,
+        **_lease_params(owner_id),
+    )
+    return _MigrationState(
+        phase=_required_phase(record),
+        total_records=_required_int(record, "total_records"),
+    )
+
+
+def _drain_migration_batches(
+    client: Neo4jClient,
+    owner_id: str,
+    query: str,
+    result_key: str,
+    *,
+    batch_size: int | None = None,
+) -> int:
+    total = 0
+    effective_batch_size = batch_size or SOURCE_RECORD_LIFECYCLE_BATCH_SIZE
+    while True:
+        record = _run_migration_query(
+            client,
+            query,
+            **_lease_params(owner_id),
+            batch_size=effective_batch_size,
+        )
+        processed = _required_int(record, result_key)
+        if processed == 0:
+            return total
+        total += processed
+
+
+def _advance_migration_phase(
+    client: Neo4jClient,
+    owner_id: str,
+    expected_phase: _MigrationPhase,
+    next_phase: _MigrationPhase,
+) -> _MigrationPhase:
+    record = _run_migration_query(
+        client,
+        ADVANCE_SOURCE_RECORD_LIFECYCLE_MIGRATION,
+        **_lease_params(owner_id),
+        expected_phase=expected_phase,
+        next_phase=next_phase,
+    )
+    return _required_phase(record)
+
+
+def _claim_source_record_identity(client: Neo4jClient, owner_id: str) -> bool:
+    record = _run_migration_query(
+        client,
+        CLAIM_SOURCE_RECORD_LIFECYCLE_IDENTITY,
+        **_lease_params(owner_id),
+    )
+    return _required_bool(record, "claimed")
+
+
+def _complete_source_record_identity(client: Neo4jClient, owner_id: str) -> None:
+    record = _run_migration_query(
+        client,
+        COMPLETE_SOURCE_RECORD_LIFECYCLE_IDENTITY,
+        **_lease_params(owner_id),
+    )
+    if not _required_bool(record, "completed_identity"):
+        raise RuntimeError("Lifecycle migration failed to complete its current identity")
+
+
+def _migrate_source_record_identities(client: Neo4jClient, owner_id: str) -> int:
+    total = 0
+    while _claim_source_record_identity(client, owner_id):
+        total += _drain_migration_batches(
+            client,
+            owner_id,
+            MIGRATE_SOURCE_RECORD_LIFECYCLE_BATCH,
+            "updated",
+        )
+        _complete_source_record_identity(client, owner_id)
+    return total
+
+
+def _complete_source_record_migration(client: Neo4jClient, owner_id: str) -> int:
+    record = _run_migration_query(
+        client,
+        COMPLETE_SOURCE_RECORD_LIFECYCLE_MIGRATION,
+        **_lease_params(owner_id),
+    )
+    return _required_int(record, "updated_records")
+
+
+def _release_source_record_migration(client: Neo4jClient, owner_id: str) -> None:
+    _run_migration_query(
+        client,
+        RELEASE_SOURCE_RECORD_LIFECYCLE_MIGRATION,
+        migration_key=SOURCE_RECORD_LIFECYCLE_MIGRATION_KEY,
+        owner_id=owner_id,
+    )
+
+
 def migrate_source_record_lifecycle(client: Neo4jClient) -> int:
-    """Backfill immutable lifecycle state for every legacy source identity."""
+    """Backfill lifecycle state in leased, restart-safe identity batches."""
+    owner_id = uuid.uuid4().hex
+    if not _wait_for_migration_lease(client, owner_id):
+        return 0
 
-    def _work(tx: ManagedTransaction) -> int:
-        record = tx.run(MIGRATE_SOURCE_RECORD_LIFECYCLE).single()
-        return int(record["updated"]) if record is not None else 0
-
-    updated = client.execute_write(_work)
-    if updated:
-        logger.info("Migrated lifecycle state on %d source records", updated)
-    return updated
+    updated_this_run = 0
+    try:
+        state = _initialize_source_record_migration(client, owner_id)
+        logger.info(
+            "SourceRecord lifecycle migration volume=%d phase=%s row_batch_size=%d",
+            state.total_records,
+            state.phase,
+            SOURCE_RECORD_LIFECYCLE_BATCH_SIZE,
+        )
+        phase = state.phase
+        if phase == "prepare":
+            _drain_migration_batches(
+                client,
+                owner_id,
+                PREPARE_LEGACY_SOURCE_RECORD_LIFECYCLE_BATCH,
+                "processed",
+            )
+            _drain_migration_batches(
+                client, owner_id, PREPARE_SOURCE_RECORD_LIFECYCLE_BATCH, "processed"
+            )
+            phase = _advance_migration_phase(client, owner_id, "prepare", "migrate")
+        if phase == "migrate":
+            updated_this_run = _migrate_source_record_identities(client, owner_id)
+            phase = _advance_migration_phase(client, owner_id, "migrate", "cleanup")
+        if phase == "cleanup":
+            _drain_migration_batches(
+                client, owner_id, CLEAN_SOURCE_RECORD_LIFECYCLE_BATCH, "processed"
+            )
+            _drain_migration_batches(
+                client,
+                owner_id,
+                CLEAN_LEGACY_SOURCE_RECORD_LIFECYCLE_BATCH,
+                "processed",
+            )
+        updated_total = _complete_source_record_migration(client, owner_id)
+        logger.info(
+            "Migrated lifecycle state on %d source records (%d in this run)",
+            updated_total,
+            updated_this_run,
+        )
+        return updated_this_run
+    except Exception:
+        try:
+            _release_source_record_migration(client, owner_id)
+        except Exception:
+            logger.exception("Failed to release SourceRecord lifecycle migration lease")
+        raise
 
 
 def migrate_projection_relationship_lifecycle(client: Neo4jClient) -> int:

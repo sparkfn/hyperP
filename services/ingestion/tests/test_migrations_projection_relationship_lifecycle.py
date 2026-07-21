@@ -5,11 +5,9 @@ from __future__ import annotations
 from typing import cast
 
 import pytest
+from src.graph import migrations
 from src.graph.client import Neo4jClient
-from src.graph.migrations import (
-    apply_data_migrations,
-    migrate_projection_relationship_lifecycle,
-)
+from src.graph.migrations import migrate_projection_relationship_lifecycle
 from test_migrations_record_type import _Client
 
 
@@ -157,14 +155,32 @@ def test_failed_projection_migration_can_be_retried() -> None:
     assert client.attempts == 2
 
 
-def test_projection_migration_runs_after_source_record_lifecycle() -> None:
-    client = _Client(updated=2)
+def test_projection_migration_runs_after_source_record_lifecycle(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+    monkeypatch.setattr(migrations, "backfill_record_type_subtypes", lambda _client: 0)
+    monkeypatch.setattr(migrations, "migrate_bitrix_chat_source", lambda _client: 0)
+    monkeypatch.setattr(
+        migrations,
+        "migrate_source_record_lifecycle",
+        lambda _client: calls.append("source"),
+    )
+    monkeypatch.setattr(
+        migrations,
+        "migrate_projection_relationship_lifecycle",
+        lambda _client: calls.append("projection"),
+    )
+    monkeypatch.setattr(migrations, "reconcile_source_record_lifecycle", lambda _client: 0)
+    monkeypatch.setattr(
+        migrations,
+        "reconcile_projection_relationship_lifecycle",
+        lambda _client: 0,
+    )
 
-    apply_data_migrations(cast(Neo4jClient, client))
+    migrations.apply_data_migrations(cast(Neo4jClient, object()))
 
-    assert len(client.tx.queries) == 14
-    assert "source_record_lifecycle_v1" in client.tx.queries[10]
-    assert "projection_relationship_lifecycle_v1" in client.tx.queries[11]
+    assert calls == ["source", "projection"]
 
 
 def test_completed_marker_is_followed_by_late_relationship_reconciliation() -> None:
