@@ -119,6 +119,7 @@ def _get_existing_ingest_run_status(ingest_run_id: str) -> str | None:
     finally:
         client.close()
 
+
 type _SourceLockLease = tuple[str, str]
 
 
@@ -405,6 +406,13 @@ def run_ingestion_task(
     ingest_run_id: str | None = None,
 ) -> IngestionSummary:
     """Run a single ingestion under the cluster-wide concurrency cap."""
+    # PR #62 introduced ``entity_key`` as the fourth positional task argument.
+    # PR #63's API producer used that position for its Bitrix ingest-run ID.
+    # Keep existing WhatsAdmin task messages valid while interpreting the
+    # source-specific, otherwise-invalid Bitrix entity as the legacy run ID.
+    if source_key == "bitrix_chat" and ingest_run_id is None and entity_key is not None:
+        ingest_run_id = entity_key
+        entity_key = None
     source_lock_keys = _source_lock_keys(source_key, mode, entity_key)
     try:
         settings = get_settings()
@@ -434,22 +442,39 @@ def run_ingestion_task(
                 _renew_ingestion_leases(source_lock_leases, slot_id),
             ):
                 if ingest_run_id is None:
-                    summary = run_ingestion(
-                        source_key,
-                        mode,
-                        dump_path,
-                        entity_key=entity_key,
-                        initialize_graph=False,
-                    )
+                    if entity_key is None:
+                        summary = run_ingestion(
+                            source_key,
+                            mode,
+                            dump_path,
+                            initialize_graph=False,
+                        )
+                    else:
+                        summary = run_ingestion(
+                            source_key,
+                            mode,
+                            dump_path,
+                            entity_key=entity_key,
+                            initialize_graph=False,
+                        )
                 else:
-                    summary = run_ingestion(
-                        source_key,
-                        mode,
-                        dump_path,
-                        entity_key=entity_key,
-                        initialize_graph=False,
-                        existing_ingest_run_id=ingest_run_id,
-                    )
+                    if entity_key is None:
+                        summary = run_ingestion(
+                            source_key,
+                            mode,
+                            dump_path,
+                            initialize_graph=False,
+                            existing_ingest_run_id=ingest_run_id,
+                        )
+                    else:
+                        summary = run_ingestion(
+                            source_key,
+                            mode,
+                            dump_path,
+                            entity_key=entity_key,
+                            initialize_graph=False,
+                            existing_ingest_run_id=ingest_run_id,
+                        )
                 try:
                     run_lifecycle_reconciliation()
                 except _SourceAlreadyRunningError:

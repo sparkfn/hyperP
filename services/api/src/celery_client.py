@@ -61,5 +61,6 @@ def enqueue_ingestion_run(
     """Queue ingestion while preserving the run created by the API."""
     get_celery_app().send_task(
         _RUN_INGESTION_TASK,
-        args=(source_key, mode, dump_path, ingest_run_id),
+        args=(source_key, mode, dump_path),
+        kwargs={"ingest_run_id": ingest_run_id},
     )

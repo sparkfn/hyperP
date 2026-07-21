@@ -174,7 +174,9 @@ def test_celery_task_forwards_entity_key(monkeypatch: MonkeyPatch) -> None:
 
     monkeypatch.setattr(tasks, "run_ingestion", run)
 
-    result = tasks.run_ingestion_task.run("whatsapp_chat", "api", None, "speedzone")
+    result = tasks.run_ingestion_task.run(
+        "whatsapp_chat", "api", None, entity_key="speedzone"
+    )
 
     assert calls == [("whatsapp_chat", "api", None, "speedzone", False)]
     assert result["entity_key"] == "speedzone"
