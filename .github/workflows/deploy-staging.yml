@@ -24,13 +24,6 @@ jobs:
           REPO_DIR="${{ secrets.STAGING_REPO_DIR }}"
           cd "$REPO_DIR"
 
-          git -c safe.directory="$REPO_DIR" fetch \
-            "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" staging
-          git -c safe.directory="$REPO_DIR" checkout staging
-          BEFORE=$(git -c safe.directory="$REPO_DIR" rev-parse HEAD)
-          git -c safe.directory="$REPO_DIR" merge --ff-only FETCH_HEAD
-          AFTER=$(git -c safe.directory="$REPO_DIR" rev-parse HEAD)
-
           COMPOSE="docker compose -f .docker/staging/docker-compose.yml"
 
           # The staging Compose file is intentionally host-managed and untracked
@@ -43,13 +36,38 @@ jobs:
             FUNDBOX_API_PAGE_SIZE \
             FUNDBOX_API_TIMEOUT_SECONDS \
             FUNDBOX_API_MAX_ATTEMPTS \
-            FUNDBOX_API_OVERLAP_SECONDS
+            FUNDBOX_API_OVERLAP_SECONDS \
+            WHATSADMIN_API_BASE_URL \
+            WHATSADMIN_EKO_API_KEY \
+            WHATSADMIN_SPEEDZONE_API_KEY \
+            WHATSADMIN_EKO_ENABLED \
+            WHATSADMIN_SPEEDZONE_ENABLED \
+            WHATSADMIN_LEGACY_ENTITY \
+            WHATSADMIN_API_PAGE_SIZE \
+            WHATSADMIN_API_TIMEOUT_SECONDS
           do
             if ! grep -Eq "^[[:space:]]+${key}:" .docker/staging/docker-compose.yml; then
               echo "Staging Compose is missing runtime ingestion variable: ${key}"
+              if [[ "$key" == WHATSADMIN_* ]]; then
+                echo "Update .docker/staging/docker-compose.yml before rebuilding"
+              fi
               exit 1
             fi
           done
+
+          retired_key="WHATSADMIN_API_KEY"
+          if grep -Eq "^[[:space:]]+${retired_key}:" .docker/staging/docker-compose.yml; then
+            echo "Staging Compose still forwards retired variable: ${retired_key}"
+            echo "Update .docker/staging/docker-compose.yml before rebuilding"
+            exit 1
+          fi
+
+          git -c safe.directory="$REPO_DIR" fetch \
+            "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" staging
+          git -c safe.directory="$REPO_DIR" checkout staging
+          BEFORE=$(git -c safe.directory="$REPO_DIR" rev-parse HEAD)
+          git -c safe.directory="$REPO_DIR" merge --ff-only FETCH_HEAD
+          AFTER=$(git -c safe.directory="$REPO_DIR" rev-parse HEAD)
 
           # --- Decide which service images actually need rebuilding ---------
           # Cached builds (no --no-cache) make dependency layers (uv sync /

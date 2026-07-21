@@ -59,6 +59,7 @@ from src.connectors.sggov.rental_flats_api import (
 from src.connectors.speedzone import SpeedZoneConnector, SpeedZoneSalesConnector
 from src.connectors.whatsadmin_api.client import WhatsAdminApiClient
 from src.connectors.whatsadmin_api.connector import WhatsAdminChatApiConnector
+from src.connectors.whatsadmin_api.credentials import WhatsAdminCredentialResolver
 from src.connectors.whatsadmin_api.watermark import RedisWatermarkStore
 from src.connectors.whatsapp import WhatsAppChatConnector
 from src.exclusions import (
@@ -230,16 +231,28 @@ def create_sgrentalflats_api_client() -> SGGovernmentRentalFlatsApiClient:
     )
 
 
-def create_whatsadmin_api_connector() -> WhatsAdminChatApiConnector:
+def create_whatsadmin_api_connector(entity_key: str | None = None) -> WhatsAdminChatApiConnector:
     settings = get_settings()
-    client = WhatsAdminApiClient(
+    resolver = WhatsAdminCredentialResolver(
         base_url=settings.whatsadmin_api_base_url,
-        api_key=settings.whatsadmin_api_key.get_secret_value(),
-        page_size=settings.whatsadmin_api_page_size,
-        timeout_seconds=settings.whatsadmin_api_timeout_seconds,
+        eko_api_key=settings.whatsadmin_eko_api_key,
+        speedzone_api_key=settings.whatsadmin_speedzone_api_key,
+    )
+    clients = tuple(
+        WhatsAdminApiClient(
+            credential=credential,
+            page_size=settings.whatsadmin_api_page_size,
+            timeout_seconds=settings.whatsadmin_api_timeout_seconds,
+        )
+        for credential in resolver.resolve_job(entity_key)
     )
     redis = Redis.from_url(settings.celery_broker_url, decode_responses=True)
-    return WhatsAdminChatApiConnector(client, RedisWatermarkStore(redis))
+    legacy_entity = settings.whatsadmin_legacy_entity
+    return WhatsAdminChatApiConnector(
+        clients,
+        RedisWatermarkStore(redis, legacy_entity=legacy_entity),
+        legacy_entity=legacy_entity,
+    )
 
 
 def create_bitrix_openlines_connector(mode: str) -> BitrixOpenLinesConnector:
@@ -277,9 +290,15 @@ def create_fundbox_api_client() -> FundboxApiClient:
 
 
 def get_connector(
-    source_key: str, dump_path: str | None = None, *, mode: str = "batch"
+    source_key: str,
+    dump_path: str | None = None,
+    *,
+    mode: str = "batch",
+    entity_key: str | None = None,
 ) -> SourceConnector:
     """Return the appropriate connector for the given source key."""
+    if entity_key is not None and (source_key != "whatsapp_chat" or mode != "api"):
+        raise ValueError("entity_key is only valid for whatsapp_chat API ingestion")
     if dump_path is not None:
         settings = get_settings()
         resolved_dump_path = resolve_dump_path(dump_path, settings.dumps_root)
@@ -292,7 +311,9 @@ def get_connector(
         if source_key == "sgrentalflats":
             return SGGovernmentRentalFlatsApiConnector(create_sgrentalflats_api_client())
         if source_key == "whatsapp_chat":
-            return create_whatsadmin_api_connector()
+            if entity_key is None:
+                return create_whatsadmin_api_connector()
+            return create_whatsadmin_api_connector(entity_key)
         fundbox_types: dict[str, type[FundboxApiConnector]] = {
             "fundbox_consumer_backend": FundboxUsersApiConnector,
             "fundbox_consumer_backend:contacts": FundboxContactsApiConnector,
@@ -342,6 +363,7 @@ class IngestionSummary(TypedDict):
     source_key: str
     mode: str
     dump_path: str | None
+    entity_key: str | None
 
 
 def _create_ingest_run(client: Neo4jClient, source_key: str, mode: str) -> str:
@@ -535,6 +557,7 @@ def run_ingestion(
     mode: str = "batch",
     dump_path: str | None = None,
     *,
+    entity_key: str | None = None,
     initialize_graph: bool = True,
 ) -> IngestionSummary:
     """Execute one ingestion run end-to-end."""
@@ -543,7 +566,14 @@ def run_ingestion(
         raise ValueError("dump_path is required when mode='dump'")
     if mode != "dump" and dump_path is not None:
         raise ValueError("dump_path is only valid when mode='dump'")
-    logger.info("Starting ingestion: source=%s mode=%s", source_key, mode)
+    if entity_key is not None and (source_key != "whatsapp_chat" or mode != "api"):
+        raise ValueError("entity_key is only valid for whatsapp_chat API ingestion")
+    logger.info(
+        "Starting ingestion: source=%s mode=%s entity=%s",
+        source_key,
+        mode,
+        entity_key or "all",
+    )
 
     if initialize_graph:
         initialize_ingestion_graph()
@@ -563,7 +593,12 @@ def run_ingestion(
         logger.info("IngestRun %s created", ingest_run_id)
 
         try:
-            connector = get_connector(source_key, dump_path if mode == "dump" else None, mode=mode)
+            connector = get_connector(
+                source_key,
+                dump_path if mode == "dump" else None,
+                mode=mode,
+                entity_key=entity_key,
+            )
             logger.info("Connector=%s", type(connector).__name__)
             exclusion_context = _load_exclusion_context()
             success, errors, skipped = _ingest_all_records(
@@ -633,6 +668,7 @@ def run_ingestion(
             "source_key": source_key,
             "mode": mode,
             "dump_path": dump_path,
+            "entity_key": entity_key,
         }
     finally:
         if isinstance(connector, _ClosableConnector):
@@ -648,11 +684,12 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--source-key", required=True)
     parser.add_argument("--mode", choices=["batch", "backfill", "dump", "api"], default="batch")
     parser.add_argument("--dump-path", default=None)
+    parser.add_argument("--entity-key", choices=["eko", "speedzone"], default=None)
     args = parser.parse_args(argv)
 
     setup_logging(get_settings().log_level)
     try:
-        run_ingestion(args.source_key, args.mode, args.dump_path)
+        run_ingestion(args.source_key, args.mode, args.dump_path, entity_key=args.entity_key)
     except Exception:
         logger.exception("Fatal error during ingestion")
         sys.exit(1)

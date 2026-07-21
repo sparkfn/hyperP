@@ -8,6 +8,12 @@ from typing import Literal
 from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from src.connectors.whatsadmin_api.credentials import (
+    WhatsAdminEntity,
+    is_valid_whatsadmin_handle_key,
+    whatsadmin_entity_keys_are_distinct,
+)
+
 
 class Settings(BaseSettings):
     """Environment-driven configuration for the ingestion service."""
@@ -170,9 +176,39 @@ class Settings(BaseSettings):
 
     # WhatsAdmin HyperP extraction API ---------------------------------------
     whatsadmin_api_base_url: str = ""
-    whatsadmin_api_key: SecretStr = SecretStr("")
+    whatsadmin_eko_api_key: SecretStr = SecretStr("")
+    whatsadmin_speedzone_api_key: SecretStr = SecretStr("")
+    whatsadmin_eko_enabled: bool = False
+    whatsadmin_speedzone_enabled: bool = False
+    whatsadmin_legacy_entity: WhatsAdminEntity | None = None
     whatsadmin_api_page_size: int = 50
     whatsadmin_api_timeout_seconds: float = 30.0
+
+    @model_validator(mode="after")
+    def _validate_enabled_whatsadmin_entities(self) -> Settings:
+        enabled_keys: tuple[tuple[str, bool, SecretStr], ...] = (
+            ("eko", self.whatsadmin_eko_enabled, self.whatsadmin_eko_api_key),
+            (
+                "speedzone",
+                self.whatsadmin_speedzone_enabled,
+                self.whatsadmin_speedzone_api_key,
+            ),
+        )
+        if not any(enabled for _, enabled, _ in enabled_keys):
+            return self
+        if not self.whatsadmin_api_base_url.strip():
+            raise ValueError("WhatsAdmin base URL is required when an entity is enabled")
+        for entity_key, enabled, api_key in enabled_keys:
+            if enabled and not is_valid_whatsadmin_handle_key(api_key):
+                raise ValueError(
+                    f"WhatsAdmin {entity_key} handle API key is required when the entity is enabled"
+                )
+        if not whatsadmin_entity_keys_are_distinct(
+            self.whatsadmin_eko_api_key,
+            self.whatsadmin_speedzone_api_key,
+        ):
+            raise ValueError("WhatsAdmin Eko and Speedzone API keys must be distinct")
+        return self
 
     # Hard ingestion exclusions -------------------------------------------------
     company_mobile_numbers: list[str] = []
