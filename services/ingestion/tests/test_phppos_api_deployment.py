@@ -9,7 +9,6 @@ API_ENV_NAMES = {
     "PHPPOS_API_BASE_URL",
     "PHPPOS_API_CLIENT_ID",
     "PHPPOS_API_CLIENT_SECRET",
-    "PHPPOS_API_REFRESH_TOKEN",
     "SPEEDZONE_PHPPOS_API_TENANT_ID",
     "EKO_PHPPOS_API_TENANT_ID",
 }
@@ -29,6 +28,11 @@ def test_api_ingestion_environment_is_forwarded_and_documented(
     root_example = (root / ".env.example").read_text(encoding="utf-8")
     ingestion_example = (root / "services/ingestion/.env.example").read_text(encoding="utf-8")
 
+    assert "PHPPOS_API_REFRESH_TOKEN" not in compose
+    assert "PHPPOS_API_REFRESH_TOKEN" not in root_example
+    assert "PHPPOS_API_REFRESH_TOKEN" not in ingestion_example
+    assert "phppos_api_refresh_token" not in Settings.model_fields
+
     for name in API_ENV_NAMES:
         assert f"{name}: ${{{name}:-}}" in compose
         assert f"{name}=" in root_example
@@ -41,6 +45,7 @@ def test_api_ingestion_environment_is_forwarded_and_documented(
         monkeypatch.setenv(name, default)
 
     settings = Settings(neo4j_password="test", _env_file=None)
+    assert not hasattr(settings, "phppos_api_refresh_token")
     assert settings.phppos_api_page_size == 500
     assert settings.phppos_api_timeout_seconds == 30.0
     assert settings.phppos_api_max_attempts == 3

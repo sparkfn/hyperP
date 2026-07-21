@@ -1,15 +1,18 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
+from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
+from src.connectors.phppos_api.client import ApiCredentials
 from src.connectors.phppos_api.connectors import (
     EkoApiConnector,
     EkoSalesApiConnector,
     SpeedZoneApiConnector,
 )
 from src.connectors.phppos_api.models import CustomerRow, SaleRow
-from src.main import get_connector, run_ingestion
+from src.main import create_phppos_api_client, get_connector, run_ingestion
 
 
 class StubClient:
@@ -65,6 +68,63 @@ class StubSalesClient(StubClient):
                 ],
             }
         )
+
+
+@pytest.mark.parametrize(
+    ("source_key", "tenant_id", "scopes"),
+    [
+        ("eko_phppos", "eko-tenant", ("pos.customers.read",)),
+        ("speedzone_phppos", "speedzone-tenant", ("pos.customers.read",)),
+        (
+            "eko_phppos:sales",
+            "eko-tenant",
+            ("pos.sales.read", "pos.items.read", "pos.customers.read"),
+        ),
+        (
+            "speedzone_phppos:sales",
+            "speedzone-tenant",
+            ("pos.sales.read", "pos.items.read", "pos.customers.read"),
+        ),
+    ],
+)
+def test_create_phppos_api_client_uses_exact_source_scopes_without_token_store(
+    monkeypatch: pytest.MonkeyPatch,
+    source_key: str,
+    tenant_id: str,
+    scopes: tuple[str, ...],
+) -> None:
+    settings = SimpleNamespace(
+        phppos_api_base_url="https://pos.example",
+        phppos_api_client_id="client",
+        phppos_api_client_secret=SimpleNamespace(get_secret_value=lambda: "secret"),
+        phppos_api_page_size=250,
+        phppos_api_timeout_seconds=12.5,
+        phppos_api_max_attempts=4,
+        eko_phppos_api_tenant_id="eko-tenant",
+        speedzone_phppos_api_tenant_id="speedzone-tenant",
+    )
+    sentinel_client = object()
+    sentinel_http = object()
+    client_factory = Mock(return_value=sentinel_client)
+    http_factory = Mock(return_value=sentinel_http)
+    monkeypatch.setattr("src.main.get_settings", lambda: settings)
+    monkeypatch.setattr("src.main.PhpposApiClient", client_factory)
+    monkeypatch.setattr("src.main.httpx.Client", http_factory)
+
+    assert create_phppos_api_client(source_key) is sentinel_client
+    http_factory.assert_called_once_with(timeout=12.5)
+    client_factory.assert_called_once_with(
+        ApiCredentials(
+            base_url="https://pos.example",
+            client_id="client",
+            client_secret="secret",
+            tenant_id=tenant_id,
+            page_size=250,
+            scopes=scopes,
+        ),
+        http=sentinel_http,
+        max_attempts=4,
+    )
 
 
 def test_eko_api_connector_reuses_canonical_customer_mapping() -> None:
