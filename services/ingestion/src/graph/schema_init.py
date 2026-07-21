@@ -23,6 +23,16 @@ REQUIRE (lock.source_system, lock.source_record_id) IS UNIQUE""",
     """CREATE CONSTRAINT data_migration_key_unique IF NOT EXISTS
 FOR (migration:DataMigration)
 REQUIRE migration.migration_key IS UNIQUE""",
+    """CREATE INDEX source_record_lifecycle_migration_identity IF NOT EXISTS
+FOR (sr:SourceRecord)
+ON (sr.migration_identity_key)""",
+    """CREATE INDEX source_record_lifecycle_migration_version IF NOT EXISTS
+FOR (sr:SourceRecord)
+ON (sr.migration_identity_key, sr.migration_source_record_version,
+    sr.migration_stable_pk)""",
+    """CREATE INDEX source_record_lifecycle_existing_version_key IF NOT EXISTS
+FOR (sr:SourceRecord)
+ON (sr.source_version_key)""",
 )
 
 DEFERRED_SOURCE_RECORD_CONSTRAINTS: tuple[str, ...] = (

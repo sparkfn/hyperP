@@ -4,11 +4,7 @@ from __future__ import annotations
 
 from typing import cast
 
-import pytest
-from src.graph.client import Neo4jClient
-from src.graph.migrations import apply_data_migrations, migrate_source_record_lifecycle
 from src.source_version_keys import encode_source_version_key
-from test_migrations_record_type import _Client
 
 
 def _migrate(rows: list[dict[str, object]]) -> list[dict[str, object]]:
@@ -88,18 +84,29 @@ def _migrate(rows: list[dict[str, object]]) -> list[dict[str, object]]:
 def test_lifecycle_migration_groups_and_orders_exact_source_identities() -> None:
     from src.graph import migrations
 
-    query = migrations.MIGRATE_SOURCE_RECORD_LIFECYCLE
-    assert "collect(DISTINCT ss.source_key)" in query
-    assert "coalesce(version.source_record_id" in query
-    assert "toInteger(version.source_record_version)" in query
-    assert "version.ingested_at" in query
-    assert "collect(version) AS versions" in query
+    prepare_query = migrations.PREPARE_SOURCE_RECORD_LIFECYCLE_BATCH
+    claim_query = migrations.CLAIM_SOURCE_RECORD_LIFECYCLE_IDENTITY
+    query = migrations.MIGRATE_SOURCE_RECORD_LIFECYCLE_BATCH
+    assert "LIMIT $batch_size" in query
+    assert "WITH candidate.migration_identity_key AS identity_key" in claim_query
+    assert "migration.identity_cursor" in claim_query
+    assert "ORDER BY identity_key" in claim_query
+    assert "collect(DISTINCT ss.source_key)" in prepare_query
+    assert "toInteger(accepted.source_record_version)" in query
+    assert "accepted.ingested_at" in query
+    assert "collect(version) AS versions" not in query
+    assert "MERGE (identity_lock:SourceRecordIdentityLock" in query
+    assert "MATCH (live:SourceRecord {source_record_id: source_record_id})" in query
+    assert "UNION ALL" in query
+    assert "MATCH (live)-[:FROM_SOURCE]" in query
+    assert "migration.current_version_cursor" in query
+    assert "LIMIT $batch_size" in query
 
 
 def test_lifecycle_migration_preserves_review_and_terminal_states() -> None:
     from src.graph import migrations
 
-    query = migrations.MIGRATE_SOURCE_RECORD_LIFECYCLE
+    query = migrations.MIGRATE_SOURCE_RECORD_LIFECYCLE_BATCH
     assert "'pending_review'" in query
     assert "'rejected'" in query
     assert "'link_failed'" in query
@@ -110,16 +117,16 @@ def test_lifecycle_migration_preserves_review_and_terminal_states() -> None:
 def test_legacy_null_status_predicate_is_explicitly_two_valued_in_cypher() -> None:
     from src.graph import migrations
 
-    query = migrations.MIGRATE_SOURCE_RECORD_LIFECYCLE
+    query = migrations.MIGRATE_SOURCE_RECORD_LIFECYCLE_BATCH
     compact_query = " ".join(query.split())
     assert "coalesce(" in query
     assert (
-        "coalesce( version.lifecycle_status IN "
+        "coalesce( accepted.lifecycle_status IN "
         "['pending_review', 'rejected', 'link_failed'], false )"
     ) in compact_query
     assert (
-        "coalesce( version.lifecycle_status IS NULL AND "
-        "version.link_status = 'pending_review', false )"
+        "coalesce( accepted.lifecycle_status IS NULL AND "
+        "accepted.link_status = 'pending_review', false )"
     ) in compact_query
     assert "NOT (\n        version.lifecycle_status IN" not in query
 
@@ -127,8 +134,9 @@ def test_legacy_null_status_predicate_is_explicitly_two_valued_in_cypher() -> No
 def test_lifecycle_migration_marks_one_accepted_version_active() -> None:
     from src.graph import migrations
 
-    query = migrations.MIGRATE_SOURCE_RECORD_LIFECYCLE
-    assert "last(accepted_versions)" in query
+    query = migrations.MIGRATE_SOURCE_RECORD_LIFECYCLE_BATCH
+    assert "RETURN head(collect(accepted)) AS active_version" in query
+    assert "LIMIT 1" in query
     assert "THEN 'active'" in query
     assert "ELSE 'superseded'" in query
 
@@ -136,16 +144,18 @@ def test_lifecycle_migration_marks_one_accepted_version_active() -> None:
 def test_lifecycle_migration_backfills_stable_unique_version_keys() -> None:
     from src.graph import migrations
 
-    query = migrations.MIGRATE_SOURCE_RECORD_LIFECYCLE
+    prepare_query = migrations.PREPARE_SOURCE_RECORD_LIFECYCLE_BATCH
+    query = migrations.MIGRATE_SOURCE_RECORD_LIFECYCLE_BATCH
+    assert "LIMIT $batch_size" in prepare_query
+    assert "migration.prepare_cursor" in prepare_query
+    assert "ORDER BY version.source_record_pk" in prepare_query
+    assert "version.source_version_key = NULL" in prepare_query
     assert "source_version_key" in query
-    assert query.index("version.source_version_key = NULL") < query.index(
-        "version.source_version_key =\n"
-    )
     assert "'sv1:'" in query
-    assert "toString(size(source_system)) + ':' + source_system" in query
-    assert "version.source_record_pk" in query
-    assert "coalesce(\n         toString(version.source_record_version)" in query
-    assert "duplicate_index" in query
+    assert "toString(size(version.migration_source_system))" in query
+    assert "version.migration_stable_pk" in query
+    assert "duplicate_discriminator" in query
+    assert "MATCH (key_owner:SourceRecord {source_version_key: canonical_key})" in query
 
 
 def test_state_model_isolates_source_identity_and_honours_legacy_anchor() -> None:
@@ -234,6 +244,69 @@ def test_state_model_preserves_terminal_states_and_is_idempotent() -> None:
     assert second == snapshot
     assert sum(row["lifecycle_status"] == "active" for row in second) == 1
     assert {row["lifecycle_status"] for row in second} >= {"rejected", "link_failed"}
+
+
+def test_state_model_retry_reloads_a_version_created_after_preparation() -> None:
+    rows: list[dict[str, object]] = [
+        {
+            "source_record_pk": "a-old",
+            "source_system": "a",
+            "source_record_id": "1",
+            "source_record_version": "1",
+            "ingested_at": "1",
+            "lifecycle_status": "active",
+            "is_latest": True,
+        },
+        {
+            "source_record_pk": "b-old",
+            "source_system": "b",
+            "source_record_id": "1",
+            "source_record_version": "1",
+            "ingested_at": "1",
+            "lifecycle_status": "active",
+            "is_latest": True,
+        },
+    ]
+    prepared_identities = [("a", "1"), ("b", "1")]
+
+    first_identity = [row for row in rows if row["source_system"] == "a"]
+    _migrate(first_identity)
+    persisted_cursor = prepared_identities[0]
+
+    rows[1]["lifecycle_status"] = "superseded"
+    rows[1]["is_latest"] = False
+    rows.append(
+        {
+            "source_record_pk": "b-new",
+            "source_system": "b",
+            "source_record_id": "1",
+            "source_record_version": "2",
+            "ingested_at": "2",
+            "lifecycle_status": "active",
+            "is_latest": True,
+        }
+    )
+
+    remaining_identities = [
+        identity for identity in prepared_identities if identity > persisted_cursor
+    ]
+    for source_system, source_record_id in remaining_identities:
+        live_versions = [
+            row
+            for row in rows
+            if row["source_system"] == source_system
+            and row["source_record_id"] == source_record_id
+        ]
+        _migrate(live_versions)
+
+    b_versions = [row for row in rows if row["source_system"] == "b"]
+    assert [
+        row["source_record_pk"]
+        for row in b_versions
+        if row["lifecycle_status"] == "active" and row["is_latest"] is True
+    ] == ["b-new"]
+    snapshot = [dict(row) for row in rows]
+    assert _migrate(rows) == snapshot
 
 
 def test_state_model_multiple_or_missing_anchors_use_deterministic_last() -> None:
@@ -390,72 +463,55 @@ def test_state_model_multi_source_rows_use_per_record_malformed_namespace() -> N
 def test_query_contract_binds_authoritative_anchor_and_orphan_fallback() -> None:
     from src.graph import migrations
 
-    query = migrations.MIGRATE_SOURCE_RECORD_LIFECYCLE
-    assert "version.is_latest = true" in query
-    assert "version.lifecycle_status = 'active'" in query
-    assert "last(anchor_versions)" in query
-    assert "legacy-orphan:" in query
-    assert "OPTIONAL MATCH (version)-[:FROM_SOURCE]" in query
+    prepare_query = migrations.PREPARE_SOURCE_RECORD_LIFECYCLE_BATCH
+    legacy_prepare_query = migrations.PREPARE_LEGACY_SOURCE_RECORD_LIFECYCLE_BATCH
+    query = migrations.MIGRATE_SOURCE_RECORD_LIFECYCLE_BATCH
+    assert "accepted.is_latest = true" in query
+    assert "accepted.lifecycle_status = 'active'" in query
+    assert "END DESC" in query
+    assert "legacy-orphan:" in prepare_query
+    assert "OPTIONAL MATCH (version)-[:FROM_SOURCE]" in prepare_query
     assert "duplicate_discriminator" in query
-    assert "legacy_repair_id" in query
-    assert "randomUUID()" in query
-    assert "elementId(" not in query
+    assert "legacy_repair_id" in legacy_prepare_query
+    assert "randomUUID()" in legacy_prepare_query
+    assert "elementId(" not in legacy_prepare_query
 
 
 def test_migration_marker_serializes_and_gates_completed_reruns() -> None:
     from src.graph import migrations
     from src.graph.schema_init import BASE_LIFECYCLE_CONSTRAINTS
 
-    query = migrations.MIGRATE_SOURCE_RECORD_LIFECYCLE
-    assert "MERGE (migration:DataMigration" in query
-    assert "migration.lock_version = coalesce(migration.lock_version, 0) + 1" in query
-    assert "WHERE migration.completed_at IS NULL" in query
-    assert query.index("SET migration.completed_at = datetime()") > query.index(
-        "version.lifecycle_status = CASE"
+    acquire_query = migrations.ACQUIRE_SOURCE_RECORD_LIFECYCLE_MIGRATION
+    batch_queries = (
+        migrations.PREPARE_SOURCE_RECORD_LIFECYCLE_BATCH,
+        migrations.MIGRATE_SOURCE_RECORD_LIFECYCLE_BATCH,
+        migrations.CLEAN_SOURCE_RECORD_LIFECYCLE_BATCH,
     )
+    assert "MERGE (migration:DataMigration" in acquire_query
+    assert "migration.lock_version = coalesce(migration.lock_version, 0) + 1" in acquire_query
+    assert "migration.owner_id" in acquire_query
+    assert "migration.lease_expires_at" in acquire_query
+    assert all("migration.owner_id = $owner_id" in query for query in batch_queries)
+    assert all("LIMIT $batch_size" in query for query in batch_queries)
     assert "data_migration_key_unique" in "\n".join(BASE_LIFECYCLE_CONSTRAINTS)
 
 
-def test_migration_runner_noops_after_marker_completion() -> None:
-    class _NoopResult:
-        def single(self) -> None:
-            return None
+def test_lifecycle_migration_has_an_index_for_bounded_identity_batches() -> None:
+    from src.graph.schema_init import BASE_LIFECYCLE_CONSTRAINTS
 
-    class _NoopTx:
-        def run(self, _query: str) -> _NoopResult:
-            return _NoopResult()
-
-    class _NoopClient:
-        def execute_write(self, work: object) -> object:
-            return cast("object", work)(_NoopTx())  # type: ignore[operator]
-
-    client = _NoopClient()
-
-    assert migrate_source_record_lifecycle(cast(Neo4jClient, client)) == 0
+    statements = "\n".join(BASE_LIFECYCLE_CONSTRAINTS)
+    assert "source_record_lifecycle_migration_identity" in statements
+    assert "sr.migration_identity_key" in statements
 
 
-def test_failed_migration_transaction_can_be_retried() -> None:
-    class _FailingTx:
-        def run(self, _query: str) -> None:
-            raise RuntimeError("simulated migration failure")
+def test_legacy_rows_are_prepared_separately_and_latest_is_two_valued() -> None:
+    from src.graph import migrations
 
-    class _RetryClient:
-        def __init__(self) -> None:
-            self.attempts = 0
-
-        def execute_write(self, work: object) -> object:
-            self.attempts += 1
-            if self.attempts == 1:
-                return cast("object", work)(_FailingTx())  # type: ignore[operator]
-            return cast("object", work)(_Client(updated=3).tx)  # type: ignore[operator]
-
-    client = _RetryClient()
-
-    with pytest.raises(RuntimeError, match="simulated migration failure"):
-        migrate_source_record_lifecycle(cast(Neo4jClient, client))
-
-    assert migrate_source_record_lifecycle(cast(Neo4jClient, client)) == 3
-    assert client.attempts == 2
+    legacy_query = migrations.PREPARE_LEGACY_SOURCE_RECORD_LIFECYCLE_BATCH
+    migration_query = migrations.MIGRATE_SOURCE_RECORD_LIFECYCLE_BATCH
+    assert "version.source_record_pk IS NULL OR version.source_record_pk = ''" in legacy_query
+    assert "LIMIT $batch_size" in legacy_query
+    assert "coalesce(version = active_version, false)" in migration_query
 
 
 def test_completed_marker_is_followed_by_repeatable_late_record_reconciliation() -> None:
@@ -470,27 +526,3 @@ def test_completed_marker_is_followed_by_repeatable_late_record_reconciliation()
     assert "complete.lifecycle_status IS NOT NULL" in query
     assert "duplicate_discriminator" in query
     assert "legacy_repair_id" in query
-
-
-def test_late_record_reconciliation_runs_after_marker_migrations() -> None:
-    from src.graph.migrations import apply_data_migrations
-
-    client = _Client(updated=2)
-    apply_data_migrations(cast(Neo4jClient, client))
-
-    assert len(client.tx.queries) == 14
-    assert "source_record_lifecycle_v1" in client.tx.queries[10]
-    assert "projection_relationship_lifecycle_v1" in client.tx.queries[11]
-    assert "WHERE migration.completed_at IS NULL" not in client.tx.queries[12]
-    assert "WHERE migration.completed_at IS NULL" not in client.tx.queries[13]
-
-
-def test_lifecycle_migration_runner_and_registration() -> None:
-    client = _Client(updated=4)
-
-    assert migrate_source_record_lifecycle(cast(Neo4jClient, client)) == 4
-    assert len(client.tx.queries) == 1
-
-    client = _Client(updated=2)
-    apply_data_migrations(cast(Neo4jClient, client))
-    assert len(client.tx.queries) == 14
