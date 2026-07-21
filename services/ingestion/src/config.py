@@ -107,7 +107,6 @@ class Settings(BaseSettings):
     phppos_api_base_url: str = ""
     phppos_api_client_id: str = ""
     phppos_api_client_secret: SecretStr = SecretStr("")
-    phppos_api_refresh_token: SecretStr = SecretStr("")
     phppos_api_page_size: int = 500
     phppos_api_timeout_seconds: float = 30.0
     phppos_api_max_attempts: int = 3

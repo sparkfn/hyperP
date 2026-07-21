@@ -44,12 +44,7 @@ from src.connectors.phppos_api import (
     SpeedZoneApiConnector,
     SpeedZoneSalesApiConnector,
 )
-from src.connectors.phppos_api.client import (
-    ApiCredentials,
-    PhpposApiClient,
-    RedisTokenStore,
-    token_rotation_lock_seconds,
-)
+from src.connectors.phppos_api.client import ApiCredentials, PhpposApiClient
 from src.connectors.phppos_api.connectors import ApiClient
 from src.connectors.sggov.bankruptcy_api import SGGovernmentBankruptcyApiConnector
 from src.connectors.sggov.rental_flats_api import (
@@ -122,6 +117,19 @@ _CONNECTOR_REGISTRY: dict[str, type[SourceConnector]] = {
 
 _ADDRESS_ONLY_SOURCES = frozenset({"sgrentalflats"})
 
+_PHPPOS_CUSTOMER_SCOPES = ("pos.customers.read",)
+_PHPPOS_SALES_SCOPES = (
+    "pos.sales.read",
+    "pos.items.read",
+    "pos.customers.read",
+)
+_PHPPOS_SCOPES_BY_SOURCE = {
+    "eko_phppos": _PHPPOS_CUSTOMER_SCOPES,
+    "eko_phppos:sales": _PHPPOS_SALES_SCOPES,
+    "speedzone_phppos": _PHPPOS_CUSTOMER_SCOPES,
+    "speedzone_phppos:sales": _PHPPOS_SALES_SCOPES,
+}
+
 
 def _is_address_only_source(source_key: str) -> bool:
     return source_key in _ADDRESS_ONLY_SOURCES
@@ -173,25 +181,15 @@ def create_phppos_api_client(source_key: str) -> PhpposApiClient:
         else settings.speedzone_phppos_api_tenant_id
     )
     credentials = ApiCredentials(
-        settings.phppos_api_base_url,
-        settings.phppos_api_client_id,
-        settings.phppos_api_client_secret.get_secret_value(),
-        settings.phppos_api_refresh_token.get_secret_value(),
-        tenant_id,
-        settings.phppos_api_page_size,
-    )
-    redis = Redis.from_url(settings.celery_broker_url, decode_responses=True)
-    lock_timeout_seconds = token_rotation_lock_seconds(
-        settings.phppos_api_timeout_seconds,
-        settings.phppos_api_max_attempts,
+        base_url=settings.phppos_api_base_url,
+        client_id=settings.phppos_api_client_id,
+        client_secret=settings.phppos_api_client_secret.get_secret_value(),
+        tenant_id=tenant_id,
+        page_size=settings.phppos_api_page_size,
+        scopes=_PHPPOS_SCOPES_BY_SOURCE[source_key],
     )
     return PhpposApiClient(
         credentials,
-        token_store=RedisTokenStore(
-            redis,
-            settings.phppos_api_client_id,
-            lock_timeout_seconds,
-        ),
         http=httpx.Client(timeout=settings.phppos_api_timeout_seconds),
         max_attempts=settings.phppos_api_max_attempts,
     )

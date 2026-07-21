@@ -80,22 +80,26 @@ not returned; page limits count sales rather than line items.
 ## Configuration and authentication
 
 HyperP configuration supplies the POS OAuth base URL, confidential OAuth client
-credentials, a provisioned refresh token, and tenant identifier for Eko and
-SpeedZone. Credentials remain in environment configuration and never appear in
-Celery arguments, cursor payloads, or logs. The shared client rotates the refresh
-token through the server's existing `refresh_token` grant and stores a shared
-credential bundle (`access_token`, absolute expiry, and replacement refresh
-token) in Redis under an OAuth-client-specific key. Workers check the bundle
-before and after acquiring the Redis lock and rotate only when the shared access
-token is expired. The client sends one idempotency key for all retries of a
-logical rotation. The POS server durably records that key and an encrypted copy
-of the replacement refresh token in the same transaction as rotation. Replaying
-the consumed token with the same key returns the same replacement token; using a
-different key retains the existing token-family compromise behavior.
-The environment refresh token is bootstrap-only when Redis has no stored token.
-Redis loss requires reprovisioning through the existing authorization-code
-consent flow. The client sends the tenant-selection header expected by the
-existing gateway.
+credentials, and tenant identifier for Eko and SpeedZone. Credentials remain in
+environment configuration and never appear in Celery arguments, cursor payloads,
+or logs. The confidential client is associated with an active service principal
+whose tenant assignments authorize the required read scopes.
+
+The shared client obtains short-lived, access-token-only credentials through the
+OAuth `client_credentials` grant using HTTP Basic client authentication. It
+requests the least-privilege scope set for the selected source: customer
+ingestion requests `pos.customers.read`; sales ingestion requests
+`pos.sales.read`, `pos.items.read`, and `pos.customers.read`. The client caches
+the token and absolute expiry in process, refreshing shortly before expiry. A
+401 response invalidates the local token and triggers one request retry with a
+new token. Token endpoint transport failures, HTTP 429 responses, and HTTP 5xx
+responses retain the bounded exponential-backoff policy.
+
+Service-principal tokens are independently renewable and contain no refresh
+token. HyperP therefore has no refresh-token setting, Redis credential bundle,
+distributed token-rotation lock, or token-rotation idempotency key. Each worker
+maintains its own local cache. The client continues to send the
+`x-pos-tenant-id` header expected by the gateway on each ingestion request.
 
 The endpoints declare the least-privilege read scopes needed for customer and
 sales data. Scope enforcement remains in the gateway and endpoint context. The
@@ -109,9 +113,11 @@ memory. The customer endpoint feeds identity connectors; the sales endpoint
 feeds sales connectors.
 
 Transient connection failures, HTTP 429 responses, and HTTP 5xx responses use
-bounded exponential backoff. Authentication, authorization, malformed payload,
-and other non-transient 4xx failures fail immediately. A failed page is not
-treated as complete and its continuation cursor is not advanced.
+bounded exponential backoff. The first API 401 invalidates the cached token and
+gets one retry with a newly issued token. A repeated 401, other authentication or
+authorization failures, malformed payloads, and other non-transient 4xx failures
+fail immediately. A failed page is not treated as complete and its continuation
+cursor is not advanced.
 
 The initial feature does not add a durable cross-run checkpoint. Each scheduled
 API ingestion can perform a complete traversal; `updated_since` is available to
@@ -145,6 +151,9 @@ The POS OAuth server tests:
 
 HyperP tests:
 
+- client-credentials token requests, least-privilege source scopes, and
+  access-token-only responses;
+- process-local token reuse, expiry refresh, and one refresh after an HTTP 401;
 - strict response validation and opaque cursor traversal;
 - transient retry and non-transient failure behavior;
 - Eko and SpeedZone mapping parity with direct-DB fixtures;
@@ -167,3 +176,4 @@ duplicate records, and schema compatibility.
 - Changes to HyperP canonical identity, sales, or graph contracts.
 - Write access to either POS database.
 - Removal of direct-database or dump connectors.
+- Shared or durable access-token caching across ingestion workers.
