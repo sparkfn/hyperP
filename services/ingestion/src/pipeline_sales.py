@@ -317,6 +317,7 @@ def _create_sales_source_record(
     rec = tx.run(
         queries.CREATE_SOURCE_RECORD,
         source_system=envelope.source_system,
+        entity_key=_entity_key_for(envelope.source_system),
         source_record_id=envelope.source_record_id,
         source_record_version=source_record_version,
         source_version_key=encode_source_version_key(

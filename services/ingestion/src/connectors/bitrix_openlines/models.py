@@ -31,6 +31,12 @@ class ChatReference:
 
 
 @dataclass(frozen=True)
+class CrmDiscoveryPage:
+    references: list[ChatReference]
+    next_start: int | None
+
+
+@dataclass(frozen=True)
 class DialogMetadata:
     chat_id: int
     config_id: str

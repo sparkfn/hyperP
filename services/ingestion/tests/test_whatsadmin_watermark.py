@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 import pytest
+from src.connectors.whatsadmin_api import watermark
 from src.connectors.whatsadmin_api.watermark import RedisWatermarkStore
 
 
@@ -16,6 +17,9 @@ class FakeRedis:
 
     def set(self, key: str, value: str) -> None:
         self.values[key] = value
+
+    def delete(self, key: str) -> None:
+        self.values.pop(key, None)
 
     def close(self) -> None:
         self.closed = True
@@ -79,3 +83,20 @@ def test_watermark_rejects_naive_datetime() -> None:
 
     with pytest.raises(ValueError, match="timezone-aware"):
         store.set("eko", "ses_1", datetime(2026, 7, 17, 5, 0))
+
+
+def test_page_checkpoint_round_trip_and_delete() -> None:
+    redis = FakeRedis()
+    store = RedisWatermarkStore(redis)
+    checkpoint = watermark.PageCheckpoint(
+        changed_since="2026-07-16T05:00:00+00:00",
+        cursor="opaque-next",
+        snapshot_at=datetime(2026, 7, 17, 5, 0, tzinfo=UTC),
+        complete=False,
+    )
+
+    store.set_checkpoint("eko", "ses_1", checkpoint)
+
+    assert store.get_checkpoint("eko", "ses_1") == checkpoint
+    store.delete_checkpoint("eko", "ses_1")
+    assert store.get_checkpoint("eko", "ses_1") is None

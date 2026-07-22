@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
+from src.connectors.dumps import reader
 from src.connectors.dumps.reader import DumpPathError, load_dump_tables, resolve_dump_path
 from src.connectors.fundbox.builders import to_iso
 
@@ -120,3 +122,77 @@ def test_resolve_dump_path_rejects_absolute_and_traversal(tmp_path: Path) -> Non
         resolve_dump_path(str(valid.resolve()), allowed)
     with pytest.raises(DumpPathError):
         resolve_dump_path("../source.sql", allowed)
+
+
+def test_iter_dump_rows_streams_without_reading_the_whole_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dump_path = tmp_path / "stream.sql"
+    dump_path.write_text(
+        "INSERT INTO `people` (`id`, `name`) VALUES\n(1,'Ada'),\n(2,'Grace');\n",
+        encoding="utf-8",
+    )
+
+    def reject_read_text(*_args: object, **_kwargs: object) -> str:
+        raise AssertionError("streaming dump reads must not call Path.read_text")
+
+    monkeypatch.setattr(Path, "read_text", reject_read_text)
+
+    rows = list(reader.iter_dump_rows(dump_path, "people", ["id", "name"]))
+
+    assert [row.as_dict() for row in rows] == [
+        {"id": 1, "name": "Ada"},
+        {"id": 2, "name": "Grace"},
+    ]
+
+
+def test_iter_dump_rows_yields_before_reading_complete_extended_insert(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dump_path = tmp_path / "stream.sql"
+    dump_path.write_text("placeholder", encoding="utf-8")
+    allow_remaining_rows = False
+
+    class GuardedDump:
+        def __init__(self) -> None:
+            self._lines = iter(
+                (
+                    "INSERT INTO `people` (`id`, `name`) VALUES\n",
+                    "(1,'Ada'),\n",
+                    "(2,'Grace'),\n",
+                    "(3,'Linus');\n",
+                )
+            )
+            self._line_number = 0
+
+        def __enter__(self) -> GuardedDump:
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def __iter__(self) -> GuardedDump:
+            return self
+
+        def __next__(self) -> str:
+            nonlocal allow_remaining_rows
+            self._line_number += 1
+            if self._line_number > 2 and not allow_remaining_rows:
+                raise AssertionError("reader consumed the complete INSERT before yielding")
+            return next(self._lines)
+
+    monkeypatch.setattr(Path, "open", lambda *_args, **_kwargs: GuardedDump())
+    rows: Iterator[reader.DumpRow] = reader.iter_dump_rows(
+        dump_path,
+        "people",
+        ["id", "name"],
+    )
+
+    assert next(rows).as_dict() == {"id": 1, "name": "Ada"}
+    allow_remaining_rows = True
+    assert [row.as_dict() for row in rows] == [
+        {"id": 2, "name": "Grace"},
+        {"id": 3, "name": "Linus"},
+    ]

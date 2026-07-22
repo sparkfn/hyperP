@@ -63,6 +63,12 @@ class _FakeService:
         _ = (messages, max_tokens)
         return self._payload
 
+    async def chat_text(
+        self, messages: Sequence[ChatMessage], *, max_tokens: int | None = None
+    ) -> str:
+        _ = (messages, max_tokens)
+        return self._payload
+
 
 def _fake_ingestion_config() -> IngestionConfig:
     return IngestionConfig(exclusions=ExclusionFile(), llm=LlmConfig())
@@ -149,7 +155,7 @@ def test_chat_extraction_batch_invalid_extraction_yields_all_none(
 def test_chat_extraction_batch_summary_failure_keeps_extraction(
     monkeypatch: MonkeyPatch,
 ) -> None:
-    # An unusable summary call must not lose the GPT-extracted data — summaries
+    # An unusable summary call must not lose the JSON-mode extracted data — summaries
     # are best-effort. A multi-conversation batch with no markers can't align, so
     # summaries drop to None while the extracted data is kept.
     extraction = json.dumps({"conversations": [_conversation_object(0), _conversation_object(1)]})
@@ -164,6 +170,18 @@ def test_chat_extraction_batch_summary_failure_keeps_extraction(
         assert result["persons"][0]["name"] == "Ada"
         assert result["confidence"] == 0.9
         assert result["summary"] is None
+
+
+def test_extraction_method_fallback_names_proclaude(monkeypatch: MonkeyPatch) -> None:
+    from src.connectors import chat_helpers
+
+    monkeypatch.setattr(
+        chat_helpers,
+        "get_chat_extraction_service",
+        lambda: (_ for _ in ()).throw(RuntimeError("configuration unavailable")),
+    )
+
+    assert chat_helpers.extraction_method_label() == "llm:proclaude"
 
 
 def test_split_batch_summaries_handles_json_breaking_prose() -> None:

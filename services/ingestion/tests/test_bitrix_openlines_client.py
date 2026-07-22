@@ -221,6 +221,82 @@ def test_client_resolves_current_portal_openline_session_activities_to_chat_ids(
     assert [item.chat_id for item in client.iter_crm_chat_refs()] == [79]
 
 
+def test_client_batches_owner_chat_lookups_for_each_crm_page() -> None:
+    methods: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        method = request.url.path.rsplit("/", 1)[-1]
+        methods.append(method)
+        if method == "crm.activity.list":
+            return httpx.Response(
+                200,
+                json={
+                    "result": [
+                        {"OWNER_TYPE_ID": "2", "OWNER_ID": "501"},
+                        {"OWNER_TYPE_ID": "3", "OWNER_ID": "502"},
+                    ]
+                },
+            )
+        assert method == "batch"
+        body = json.loads(request.content)
+        assert body["halt"] == 0
+        commands = body["cmd"]
+        assert len(commands) == 2
+        assert any("CRM_ENTITY_TYPE=deal" in command for command in commands.values())
+        assert any("CRM_ENTITY_TYPE=contact" in command for command in commands.values())
+        return httpx.Response(
+            200,
+            json={
+                "result": {
+                    "result": {
+                        "owner_0": [{"CHAT_ID": "79"}],
+                        "owner_1": [{"CHAT_ID": "80"}],
+                    },
+                    "result_next": {},
+                    "result_error": {},
+                }
+            },
+        )
+
+    client = BitrixOpenLinesClient(
+        base_url="https://bitrix.test/rest/hook",
+        timeout_seconds=5,
+        max_attempts=1,
+        http=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+
+    assert [item.chat_id for item in client.iter_crm_chat_refs()] == [79, 80]
+    assert methods == ["crm.activity.list", "batch"]
+
+
+def test_client_can_resume_crm_discovery_from_saved_start() -> None:
+    starts: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        starts.append(body["start"])
+        return httpx.Response(
+            200,
+            json={
+                "result": [{"PROVIDER_PARAMS": {"CHAT_ID": "79"}}],
+                "next": 100,
+            },
+        )
+
+    client = BitrixOpenLinesClient(
+        base_url="https://bitrix.test/rest/hook",
+        timeout_seconds=5,
+        max_attempts=1,
+        http=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+
+    page = next(client.iter_crm_discovery_pages(start=50))
+
+    assert starts == [50]
+    assert [reference.chat_id for reference in page.references] == [79]
+    assert page.next_start == 100
+
+
 def test_client_pages_crm_collections_and_preserves_latest_activity_timestamp() -> None:
     activity_starts: list[int] = []
     chat_starts: list[int] = []

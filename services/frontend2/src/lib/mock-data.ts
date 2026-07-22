@@ -335,11 +335,11 @@ export const MOCK_REVIEW_DETAIL: ReviewCaseDetail = {
 // ── Ingestion Runs ────────────────────────────────────────────────────────────
 
 export const MOCK_INGEST_RUNS: IngestRunDetailResponse[] = [
-  { ingest_run_id: "run-001", run_type: "batch", status: "completed", record_count: 1240, rejected_count: 3, started_at: "2026-05-07T06:30:00Z", finished_at: "2026-05-07T06:45:00Z", source_key: "speedzone-phppos" },
-  { ingest_run_id: "run-002", run_type: "batch", status: "completed", record_count: 3410, rejected_count: 12, started_at: "2026-05-07T03:45:00Z", finished_at: "2026-05-07T04:00:00Z", source_key: "fundbox-bitrix" },
-  { ingest_run_id: "run-003", run_type: "realtime", status: "running", record_count: 87, rejected_count: 0, started_at: "2026-05-07T07:05:00Z", finished_at: null, source_key: "whatsapp-main" },
-  { ingest_run_id: "run-004", run_type: "batch", status: "failed", record_count: 0, rejected_count: 0, started_at: "2026-05-06T22:00:00Z", finished_at: "2026-05-06T22:01:00Z", source_key: "eko-phppos" },
-  { ingest_run_id: "run-005", run_type: "batch", status: "completed", record_count: 890, rejected_count: 1, started_at: "2026-05-06T18:00:00Z", finished_at: "2026-05-06T18:12:00Z", source_key: "speedzone-phppos" },
+  { ingest_run_id: "run-001", run_type: "batch", mode: "batch", dump_path: null, status: "completed", record_count: 1240, rejected_count: 3, started_at: "2026-05-07T06:30:00Z", finished_at: "2026-05-07T06:45:00Z", source_key: "speedzone-phppos", failure_category: null, failure_exception_class: null, failure_message: null, failure_task_id: null, failure_checkpoint: null },
+  { ingest_run_id: "run-002", run_type: "batch", mode: "batch", dump_path: null, status: "completed", record_count: 3410, rejected_count: 12, started_at: "2026-05-07T03:45:00Z", finished_at: "2026-05-07T04:00:00Z", source_key: "fundbox-bitrix", failure_category: null, failure_exception_class: null, failure_message: null, failure_task_id: null, failure_checkpoint: null },
+  { ingest_run_id: "run-003", run_type: "realtime", mode: "api", dump_path: null, status: "running", record_count: 87, rejected_count: 0, started_at: "2026-05-07T07:05:00Z", finished_at: null, source_key: "whatsapp-main", failure_category: null, failure_exception_class: null, failure_message: null, failure_task_id: null, failure_checkpoint: null },
+  { ingest_run_id: "run-004", run_type: "batch", mode: "api", dump_path: null, status: "failed", record_count: 0, rejected_count: 0, started_at: "2026-05-06T22:00:00Z", finished_at: "2026-05-06T22:01:00Z", source_key: "eko-phppos", failure_category: "distinct", failure_exception_class: "RuntimeError", failure_message: "Unclassified ingestion failure", failure_task_id: "task-004", failure_checkpoint: "{}" },
+  { ingest_run_id: "run-005", run_type: "batch", mode: "batch", dump_path: null, status: "completed", record_count: 890, rejected_count: 1, started_at: "2026-05-06T18:00:00Z", finished_at: "2026-05-06T18:12:00Z", source_key: "speedzone-phppos", failure_category: null, failure_exception_class: null, failure_message: null, failure_task_id: null, failure_checkpoint: null },
 ];
 
 // ── Events ────────────────────────────────────────────────────────────────────

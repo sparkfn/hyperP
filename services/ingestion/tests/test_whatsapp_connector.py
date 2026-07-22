@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Protocol
@@ -61,6 +62,37 @@ def test_process_whatsapp_bundles_can_fail_on_extraction_error(
                 fail_on_extraction_error=True,
             )
         )
+
+
+def test_whatsapp_bundle_batches_yield_before_consuming_all_chats() -> None:
+    consumed: list[str] = []
+
+    def bundles() -> Iterator[whatsapp_module._ChatBundle]:
+        for chat_id in ("chat-1", "chat-2", "chat-3"):
+            consumed.append(chat_id)
+            yield whatsapp_module._ChatBundle(
+                chat_id=chat_id,
+                chat_name="Customer",
+                session_id="session-1",
+                whatsapp_user_id="6599990000@c.us",
+                tenant="fundbox",
+                msg_text="hello",
+                observed_at="2026-05-07T10:01:00",
+                participants=[],
+                message_endpoints=[],
+                session_phone=None,
+            )
+
+    batches = iter(
+        whatsapp_module.iter_bundle_batches(
+            bundles(),
+            max_chars=1_000,
+            max_count=2,
+        )
+    )
+
+    assert [bundle.chat_id for bundle in next(batches)] == ["chat-1", "chat-2"]
+    assert consumed == ["chat-1", "chat-2"]
 
 
 def test_process_whatsapp_bundles_keeps_same_chat_id_sessions_separate(

@@ -235,6 +235,7 @@ MATCH (ss:SourceSystem {source_key: $source_key})
 CREATE (ir:IngestRun {
     ingest_run_id: randomUUID(),
     run_type: $run_type,
+    mode: $mode,
     status: 'started',
     started_at: datetime(),
     finished_at: null,
@@ -251,6 +252,21 @@ SET ir.status = $status,
     ir.finished_at = datetime(),
     ir.record_count = $record_count,
     ir.rejected_count = $rejected_count
+"""
+
+MARK_INGEST_RUN_FAILED = """
+MATCH (ir:IngestRun {ingest_run_id: $ingest_run_id})
+SET ir.status = 'failed',
+    ir.finished_at = datetime(),
+    ir.record_count = $record_count,
+    ir.rejected_count = $rejected_count,
+    ir.failure_category = $failure_category,
+    ir.failure_exception_class = $failure_exception_class,
+    ir.failure_message = $failure_message,
+    ir.failure_source = $failure_source,
+    ir.failure_mode = $failure_mode,
+    ir.failure_task_id = $failure_task_id,
+    ir.failure_checkpoint = $failure_checkpoint
 """
 
 GET_INGEST_RUN_STATUS = """

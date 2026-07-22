@@ -18,7 +18,7 @@ from collections.abc import Iterator, Mapping, Sequence
 from pathlib import Path
 
 from src.connectors.base import SourceConnector
-from src.connectors.dumps.reader import DumpRow, load_dump_tables
+from src.connectors.dumps.reader import DumpRow, iter_dump_rows
 from src.connectors.fundbox.builders import (
     IdentifierBag,
     address_from_row,
@@ -55,6 +55,8 @@ _KIN_SLOTS = (
     ("kin1", "contact_first_name", "contact_last_name", "contact_number", "relation"),
     ("kin2", "kin2_fname", "kin2_lname", "kin2_contact", "kin2_relation"),
 )
+_PROFILE_BATCH_SIZE = 1000
+_SALES_ORDER_BATCH_SIZE = 1000
 
 
 def _str(row: DumpRow, col: str) -> str | None:
@@ -316,21 +318,50 @@ class OneDiverDumpConnector(SourceConnector):
         return "onediver"
 
     def fetch_records(self) -> Iterator[dict[str, JsonValue]]:
-        tables = load_dump_tables(self._dump_path, ONEDIVER_TABLES)
-        users_by_id = {_int(row, "id"): row for row in tables.rows("users")}
-        accounts_by_id = {_int(row, "id"): row for row in tables.rows("accounts")}
-        emerg_by_profile: dict[int, list[DumpRow]] = {}
-        for emergency in tables.rows("profile_emergencies"):
-            emerg_by_profile.setdefault(_int(emergency, "profile_id"), []).append(emergency)
-        for row in sorted(tables.rows("profiles"), key=lambda r: _int(r, "id")):
-            if _int(row, "is_deleted") != 0:
-                continue
-            if row.get("id") is None:
-                continue
+        profiles = (
+            row
+            for row in iter_dump_rows(
+                self._dump_path,
+                "profiles",
+                ONEDIVER_TABLES["profiles"],
+            )
+            if _int(row, "is_deleted") == 0 and row.get("id") is not None
+        )
+        for profile_batch in _row_batches(profiles, _PROFILE_BATCH_SIZE):
+            yield from self._build_profile_batch(profile_batch)
+
+    def _build_profile_batch(
+        self,
+        profile_batch: list[DumpRow],
+    ) -> Iterator[dict[str, JsonValue]]:
+        user_ids = {_int(row, "user_id") for row in profile_batch}
+        users_by_id = {
+            _int(row, "id"): row
+            for row in iter_dump_rows(self._dump_path, "users", ONEDIVER_TABLES["users"])
+            if _int(row, "id") in user_ids
+        }
+        account_ids = {_int(row, "account_id") for row in users_by_id.values()}
+        accounts_by_id = {
+            _int(row, "id"): row
+            for row in iter_dump_rows(
+                self._dump_path,
+                "accounts",
+                ONEDIVER_TABLES["accounts"],
+            )
+            if _int(row, "id") in account_ids
+        }
+        for row in profile_batch:
             user = users_by_id.get(_int(row, "user_id"))
             account = accounts_by_id.get(_int(user, "account_id")) if user is not None else None
             yield _build_identity_envelope(row, user, account)
-            for emergency in emerg_by_profile.get(_int(row, "id"), []):
+
+        active_profile_ids = {_int(row, "id") for row in profile_batch}
+        for emergency in iter_dump_rows(
+            self._dump_path,
+            "profile_emergencies",
+            ONEDIVER_TABLES["profile_emergencies"],
+        ):
+            if _int(emergency, "profile_id") in active_profile_ids:
                 yield from _build_relationship_envelopes(emergency)
 
 
@@ -344,47 +375,72 @@ class OneDiverSalesDumpConnector(SourceConnector):
         return "onediver:sales"
 
     def fetch_records(self) -> Iterator[dict[str, JsonValue]]:
-        tables = load_dump_tables(self._dump_path, ONEDIVER_SALES_TABLES)
+        orders = iter_dump_rows(
+            self._dump_path,
+            "sales_orders",
+            ONEDIVER_SALES_TABLES["sales_orders"],
+        )
+        for order_batch in _row_batches(orders, _SALES_ORDER_BATCH_SIZE):
+            yield from self._build_order_batch(order_batch)
+
+    def _build_order_batch(
+        self,
+        order_batch: list[DumpRow],
+    ) -> Iterator[dict[str, JsonValue]]:
+        customer_emails = {
+            email.lower()
+            for row in order_batch
+            if (email := _str(row, "billing_contact_email")) is not None
+        }
         email_to_id: dict[str, str] = {}
-        # profile_id -> NRIC (``profiles.ic_number``) for the matching anti-match.
         nric_by_profile_id: dict[str, str] = {}
-        for row in tables.rows("profiles"):
-            # Skip soft-deleted profiles: the identity connector never emits a
-            # ``onediver-profile-<id>`` source record for them, so linking a
-            # sales order to a deleted profile's email would produce a dangling
-            # ``customer_link`` the engine cannot resolve.
-            if _int(row, "is_deleted") != 0:
+        for profile in iter_dump_rows(
+            self._dump_path,
+            "profiles",
+            ONEDIVER_SALES_TABLES["profiles"],
+        ):
+            email = _str(profile, "email")
+            if (
+                _int(profile, "is_deleted") != 0
+                or profile.get("id") is None
+                or email is None
+                or email.lower() not in customer_emails
+            ):
                 continue
-            # Skip NULL-PK profiles too: ``str(None)`` would index the email to
-            # the literal ``'None'``, and the identity loop skips NULL-PK rows,
-            # so a sales order billed to this email would dangle on
-            # ``onediver-profile-None``.
-            if row.get("id") is None:
-                continue
-            profile_id = str(row.get("id"))
-            email = _str(row, "email")
-            if email is not None:
-                email_to_id.setdefault(email.lower(), profile_id)
-            nric = _str(row, "ic_number")
+            profile_id = str(profile.get("id"))
+            email_to_id.setdefault(email.lower(), profile_id)
+            nric = _str(profile, "ic_number")
             if nric is not None:
                 nric_by_profile_id[profile_id] = nric
-        # Index line items by sales_order_id and products by id.
+        order_ids = {_int(row, "id") for row in order_batch if row.get("id") is not None}
         lines_by_order: dict[int, list[DumpRow]] = {}
-        for line in tables.rows("sales_order_items"):
-            if _int(line, "is_deleted") != 0:
-                continue
+        product_ids: set[int] = set()
+        for line in iter_dump_rows(
+            self._dump_path,
+            "sales_order_items",
+            ONEDIVER_SALES_TABLES["sales_order_items"],
+        ):
             order_id = _int(line, "sales_order_id")
+            if order_id not in order_ids or _int(line, "is_deleted") != 0:
+                continue
             lines_by_order.setdefault(order_id, []).append(line)
-        products_by_id: dict[int, DumpRow] = {
-            _int(row, "id"): row for row in tables.rows("products") if row.get("id") is not None
+            product_id = _int(line, "product_id")
+            if product_id:
+                product_ids.add(product_id)
+        products_by_id = {
+            _int(row, "id"): row
+            for row in iter_dump_rows(
+                self._dump_path,
+                "products",
+                ONEDIVER_SALES_TABLES["products"],
+            )
+            if row.get("id") is not None and _int(row, "id") in product_ids
         }
-        for row in sorted(tables.rows("sales_orders"), key=lambda r: _int(r, "id")):
+        for row in sorted(order_batch, key=lambda item: _int(item, "id")):
             if row.get("id") is None:
                 continue
             email = _str(row, "billing_contact_email")
-            matched_profile_id: str | None = (
-                email_to_id.get(email.lower()) if email is not None else None
-            )
+            matched_profile_id = email_to_id.get(email.lower()) if email is not None else None
             customer_nric = (
                 nric_by_profile_id.get(matched_profile_id)
                 if matched_profile_id is not None
@@ -397,3 +453,14 @@ class OneDiverSalesDumpConnector(SourceConnector):
                 lines_by_order.get(_int(row, "id"), []),
                 products_by_id,
             )
+
+
+def _row_batches(rows: Iterator[DumpRow], batch_size: int) -> Iterator[list[DumpRow]]:
+    batch: list[DumpRow] = []
+    for row in rows:
+        batch.append(row)
+        if len(batch) == batch_size:
+            yield batch
+            batch = []
+    if batch:
+        yield batch

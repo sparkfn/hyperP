@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
 from datetime import UTC, datetime
 
+from src.connectors.bitrix_openlines import discovery
 from src.connectors.bitrix_openlines.discovery import discover_chats
 from src.connectors.bitrix_openlines.models import ChatReference, CrmOwnerReference
 
@@ -86,3 +88,29 @@ def test_hybrid_discovery_unions_typed_crm_provenance_for_duplicate_chat() -> No
         {"CHAT_ID": "10"},
         {"IM": [{"id": "chat10"}]},
     )
+
+
+class PagedDiscoveryClient:
+    def __init__(self) -> None:
+        self.events: list[str] = []
+
+    def iter_recent_chat_refs(self, page_size: int) -> list[ChatReference]:
+        self.events.append("recent")
+        return [ChatReference(10, None, "recent_dialog")]
+
+    def iter_crm_chat_ref_pages(self) -> Iterator[list[ChatReference]]:
+        self.events.append("crm-page-1")
+        yield [ChatReference(10, None, "crm_activity")]
+        self.events.append("crm-page-2")
+        yield [ChatReference(11, None, "crm_activity")]
+
+
+def test_streaming_discovery_yields_first_crm_page_before_fetching_next_page() -> None:
+    client = PagedDiscoveryClient()
+    discovered = iter(discovery.stream_chats(client, recent_page_size=25))
+
+    first = next(discovered)
+
+    assert first.chat_id == 10
+    assert first.discovery == "crm_activity,recent_dialog"
+    assert client.events == ["recent", "crm-page-1"]

@@ -747,6 +747,17 @@ def test_source_systems_route_allows_oauth_admin_client_with_mocked_repo() -> No
             "entity_key": None,
             "created_at": None,
             "updated_at": None,
+            "latest_run_id": None,
+            "latest_run_status": None,
+            "latest_run_started_at": None,
+            "latest_run_finished_at": None,
+            "latest_failure_category": None,
+            "latest_failure_exception_class": None,
+            "latest_failure_message": None,
+            "latest_failure_mode": None,
+            "latest_failure_started_at": None,
+            "latest_failure_task_id": None,
+            "latest_failure_checkpoint": None,
         }
     ]
     assert _ADMIN_REPO.get_all_source_systems_calls == 1

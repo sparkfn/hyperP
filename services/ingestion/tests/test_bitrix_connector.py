@@ -32,13 +32,15 @@ class _Result(Protocol):
 
 
 class _ChatResult:
-    def __init__(self, rows: list[_Chat]) -> None:
+    def __init__(self, rows: list[_Chat], connection: _Connection) -> None:
         self._rows = rows
         self._offset = 0
+        self._connection = connection
 
     def fetchmany(self, size: int) -> list[_Chat]:
         rows = self._rows[self._offset : self._offset + size]
         self._offset += size
+        self._connection.fetched_rows += len(rows)
         return rows
 
 
@@ -46,6 +48,7 @@ class _Connection:
     def __init__(self, rows: list[_Chat]) -> None:
         self.rows = rows
         self.chat_select_count = 0
+        self.fetched_rows = 0
 
     def execute(self, stmt: object) -> object:
         stmt_text = str(stmt)
@@ -53,7 +56,7 @@ class _Connection:
             return [_Category(id=1, name="EkoSG")]
         if "FROM chats" in stmt_text:
             self.chat_select_count += 1
-            return _ChatResult(self.rows)
+            return _ChatResult(self.rows, self)
         raise AssertionError(f"unexpected statement: {stmt_text}")
 
     def scalar(self, stmt: object) -> int:
@@ -105,6 +108,50 @@ def test_bitrix_fetch_uses_one_cursor_for_chunked_chat_scan(
         "bitrix-chat-2-person-1",
         "bitrix-chat-3-person-1",
     ]
+
+
+def test_bitrix_fetch_extracts_each_chunk_before_reading_the_next(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    conn = _Connection(
+        [
+            _Chat(id=1, deal_id=101, bitrix_chat_id="b1"),
+            _Chat(id=2, deal_id=102, bitrix_chat_id="b2"),
+            _Chat(id=3, deal_id=103, bitrix_chat_id="b3"),
+        ]
+    )
+    connector = BitrixChatConnector()
+    connector.chunk_size = 2
+    fetched_at_extraction: list[int] = []
+
+    monkeypatch.setattr(connector_module, "extraction_method_label", lambda: "llm:test")
+    monkeypatch.setattr(
+        connector,
+        "_load_deal",
+        lambda conn, deal_id: {"title": f"deal {deal_id}", "category_id": 1},
+    )
+    monkeypatch.setattr(connector, "_build_conversation", lambda conn, chat_id, deal: "hello")
+    monkeypatch.setattr(connector, "_load_agents", lambda conn, chat_id: [])
+    monkeypatch.setattr("src.connectors.bitrix.connector.chat_batch_size", lambda: 20)
+    monkeypatch.setattr("src.connectors.bitrix.connector.chat_batch_max_chars", lambda: 1_000_000)
+
+    def extract(texts: list[str]) -> list[dict[str, object]]:
+        fetched_at_extraction.append(conn.fetched_rows)
+        return [
+            {
+                "persons": [{"name": f"person {index}"}],
+                "transactions": [],
+                "summary": None,
+                "confidence": 0.9,
+            }
+            for index, _text in enumerate(texts)
+        ]
+
+    monkeypatch.setattr("src.connectors.bitrix.connector.run_extraction_batch", extract)
+
+    list(connector._fetch_chats(cast("Connection", conn)))
+
+    assert fetched_at_extraction == [2, 3]
 
 
 def test_bitrix_chat_envelope_keeps_agent_identity_raw_only(monkeypatch: MonkeyPatch) -> None:

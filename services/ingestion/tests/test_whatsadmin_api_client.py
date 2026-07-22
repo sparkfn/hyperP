@@ -140,3 +140,59 @@ def test_http_error_does_not_expose_api_key(caplog: pytest.LogCaptureFixture) ->
         list(client.iter_sessions())
 
     assert api_key not in f"{exc_info.value}\n{caplog.text}"
+
+
+def test_chat_page_retries_read_timeout_without_advancing_cursor() -> None:
+    payloads: list[dict[str, object]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        payloads.append(json.loads(request.content))
+        if len(payloads) == 1:
+            raise httpx.ReadTimeout("upstream stalled", request=request)
+        return httpx.Response(
+            200,
+            json=_response([], snapshot_at="2026-07-17T06:00:00Z"),
+        )
+
+    client = WhatsAdminApiClient(
+        credential=_credential("eko", "hk_eko_secret"),
+        page_size=50,
+        max_attempts=2,
+        retry_base_delay_seconds=0,
+        http=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+
+    assert len(list(client.iter_chat_pages("ses_1", None))) == 1
+    assert payloads == [
+        {"sessionId": "ses_1", "limit": 50},
+        {"sessionId": "ses_1", "limit": 50},
+    ]
+
+
+def test_chat_page_read_timeout_stops_at_configured_attempt_limit() -> None:
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        raise httpx.ReadTimeout("upstream stalled", request=request)
+
+    client = WhatsAdminApiClient(
+        credential=_credential("eko", "hk_eko_secret"),
+        page_size=50,
+        max_attempts=2,
+        retry_base_delay_seconds=0,
+        http=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+
+    with pytest.raises(httpx.ReadTimeout):
+        list(client.iter_chat_pages("ses_1", None))
+    assert calls == 2
+    context = client.failure_context()
+    assert context["upstream_resource"] == "chats/query"
+    assert context["upstream_session_id"] == "ses_1"
+    assert context["upstream_cursor"] == "first"
+    assert context["upstream_attempt"] == 2
+    latency = context["upstream_latency_seconds"]
+    assert isinstance(latency, float)
+    assert latency >= 0

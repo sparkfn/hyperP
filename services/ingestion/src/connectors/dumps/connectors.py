@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from pathlib import Path
-from typing import Protocol, cast
+from typing import cast
 
 from sqlalchemy.engine import RowMapping
 
@@ -25,7 +25,7 @@ from src.connectors.chat_helpers import (
     iter_char_batches,
     run_extraction_batch,
 )
-from src.connectors.dumps.reader import DumpRow, load_dump_tables
+from src.connectors.dumps.reader import DumpRow, iter_dump_rows
 from src.connectors.eko.connector import EkoConnector
 from src.connectors.fundbox.builders import (
     IdentifierBag,
@@ -75,10 +75,6 @@ from src.models import JsonValue
 TableSpec = Mapping[str, Sequence[str] | None]
 
 
-class DumpTableReader(Protocol):
-    def rows(self, table_name: str) -> list[DumpRow]: ...
-
-
 WHATSAPP_TABLES: TableSpec = {
     "orgs": None,
     "sessions": None,
@@ -126,6 +122,7 @@ FUNDBOX_TABLES: TableSpec = {
 }
 
 FUNDBOX_ORDER_STATUSES = {"acknowledged", "to release", "completed"}
+_DUMP_BATCH_SIZE = 1000
 
 PHPPOS_SALES_TABLES: TableSpec = {
     "phppos_sales": None,
@@ -180,27 +177,65 @@ class FundboxDumpConnector(SourceConnector):
         return "fundbox_consumer_backend"
 
     def fetch_records(self) -> Iterator[dict[str, JsonValue]]:
-        tables = load_dump_tables(self._dump_path, FUNDBOX_TABLES)
-        profiles = _single_by_int(tables.rows("basic_profiles"), "user_id")
-        plus_profiles = _single_by_int(tables.rows("basic_plus_profiles"), "user_id")
-        addresses = _group_by_int(tables.rows("addresses"), "user_id")
-        socials = _group_by_int(tables.rows("social_accounts"), "user_id")
-        devices = _group_by_int(tables.rows("device_ids"), "user_id")
-        last_logins = _single_by_int(tables.rows("last_logins"), "user_id")
-        for user in sorted(tables.rows("users"), key=lambda row: _row_int(row, "id")):
-            user_id = _row_int(user, "id")
-            row = _join_fundbox_user(user, profiles.get(user_id), plus_profiles.get(user_id))
-            last_login = last_logins.get(user_id)
-            last_login_value = (
-                str(last_login.last_logged_in) if last_login and last_login.last_logged_in else None
+        users = _table_rows(self._dump_path, "users", FUNDBOX_TABLES)
+        for user_batch in _dump_row_batches(users):
+            user_ids = {_row_int(row, "id") for row in user_batch}
+            profiles = _single_by_int(
+                _rows_for_int_keys(
+                    self._dump_path, "basic_profiles", FUNDBOX_TABLES, "user_id", user_ids
+                ),
+                "user_id",
             )
-            yield FundboxConnector._build_one(
-                row,
-                addresses.get(user_id, []),
-                socials.get(user_id, []),
-                devices.get(user_id, []),
-                last_login_value,
+            plus_profiles = _single_by_int(
+                _rows_for_int_keys(
+                    self._dump_path,
+                    "basic_plus_profiles",
+                    FUNDBOX_TABLES,
+                    "user_id",
+                    user_ids,
+                ),
+                "user_id",
             )
+            addresses = _group_by_int(
+                _rows_for_int_keys(
+                    self._dump_path, "addresses", FUNDBOX_TABLES, "user_id", user_ids
+                ),
+                "user_id",
+            )
+            socials = _group_by_int(
+                _rows_for_int_keys(
+                    self._dump_path, "social_accounts", FUNDBOX_TABLES, "user_id", user_ids
+                ),
+                "user_id",
+            )
+            devices = _group_by_int(
+                _rows_for_int_keys(
+                    self._dump_path, "device_ids", FUNDBOX_TABLES, "user_id", user_ids
+                ),
+                "user_id",
+            )
+            last_logins = _single_by_int(
+                _rows_for_int_keys(
+                    self._dump_path, "last_logins", FUNDBOX_TABLES, "user_id", user_ids
+                ),
+                "user_id",
+            )
+            for user in sorted(user_batch, key=lambda row: _row_int(row, "id")):
+                user_id = _row_int(user, "id")
+                row = _join_fundbox_user(user, profiles.get(user_id), plus_profiles.get(user_id))
+                last_login = last_logins.get(user_id)
+                last_login_value = (
+                    str(last_login.last_logged_in)
+                    if last_login and last_login.last_logged_in
+                    else None
+                )
+                yield FundboxConnector._build_one(
+                    row,
+                    addresses.get(user_id, []),
+                    socials.get(user_id, []),
+                    devices.get(user_id, []),
+                    last_login_value,
+                )
 
 
 class FundboxContactsDumpConnector(SourceConnector):
@@ -211,9 +246,10 @@ class FundboxContactsDumpConnector(SourceConnector):
         return "fundbox_consumer_backend:contacts"
 
     def fetch_records(self) -> Iterator[dict[str, JsonValue]]:
-        tables = load_dump_tables(self._dump_path, FUNDBOX_TABLES)
-        for row in sorted(tables.rows("contacts"), key=lambda item: _row_int(item, "id")):
-            yield _build_fundbox_contact(row)
+        rows = _table_rows(self._dump_path, "contacts", FUNDBOX_TABLES)
+        for batch in _dump_row_batches(rows):
+            for row in sorted(batch, key=lambda item: _row_int(item, "id")):
+                yield _build_fundbox_contact(row)
 
 
 class FundboxLegacyDumpConnector(SourceConnector):
@@ -224,11 +260,24 @@ class FundboxLegacyDumpConnector(SourceConnector):
         return "fundbox_consumer_backend:legacy"
 
     def fetch_records(self) -> Iterator[dict[str, JsonValue]]:
-        tables = load_dump_tables(self._dump_path, FUNDBOX_TABLES)
-        addresses = _group_by_int(tables.rows("log_legacy_profile_addresses"), "user_id")
-        profiles = sorted(tables.rows("log_legacy_profiles"), key=lambda item: _row_int(item, "id"))
-        for row in profiles:
-            yield _build_fundbox_legacy(row, addresses.get(_row_int(row, "user_id"), []))
+        profiles = _table_rows(self._dump_path, "log_legacy_profiles", FUNDBOX_TABLES)
+        for profile_batch in _dump_row_batches(profiles):
+            user_ids = {_row_int(row, "user_id") for row in profile_batch}
+            addresses = _group_by_int(
+                _rows_for_int_keys(
+                    self._dump_path,
+                    "log_legacy_profile_addresses",
+                    FUNDBOX_TABLES,
+                    "user_id",
+                    user_ids,
+                ),
+                "user_id",
+            )
+            for row in sorted(profile_batch, key=lambda item: _row_int(item, "id")):
+                yield _build_fundbox_legacy(
+                    row,
+                    addresses.get(_row_int(row, "user_id"), []),
+                )
 
 
 class FundboxMergedUsersDumpConnector(SourceConnector):
@@ -239,9 +288,10 @@ class FundboxMergedUsersDumpConnector(SourceConnector):
         return "fundbox_consumer_backend:merged"
 
     def fetch_records(self) -> Iterator[dict[str, JsonValue]]:
-        tables = load_dump_tables(self._dump_path, FUNDBOX_TABLES)
-        for row in sorted(tables.rows("merged_users"), key=lambda item: _row_int(item, "id")):
-            yield _build_fundbox_merged(row)
+        rows = _table_rows(self._dump_path, "merged_users", FUNDBOX_TABLES)
+        for batch in _dump_row_batches(rows):
+            for row in sorted(batch, key=lambda item: _row_int(item, "id")):
+                yield _build_fundbox_merged(row)
 
 
 class FundboxSalesDumpConnector(SourceConnector):
@@ -252,26 +302,50 @@ class FundboxSalesDumpConnector(SourceConnector):
         return "fundbox_consumer_backend:sales"
 
     def fetch_records(self) -> Iterator[dict[str, JsonValue]]:
-        tables = load_dump_tables(self._dump_path, FUNDBOX_TABLES)
-        merchants = {
-            _row_int(row, "id"): str(row.name or row.official_name or "")
-            for row in tables.rows("merchants")
-        }
-        line_rows = _group_by_int(tables.rows("order_items"), "order_id")
-        product_info = _fundbox_product_info(tables)
-        customer_contacts = _fundbox_customer_contacts(tables)
         builder = FundboxSalesConnector()
-        for row in sorted(tables.rows("orders"), key=lambda item: _row_int(item, "id")):
-            if str(row.status or "") not in FUNDBOX_ORDER_STATUSES:
-                continue
-            user_id = _row_int(row, "user_id")
-            yield builder._build_one(
-                cast(RowMapping, row),
-                cast(list[RowMapping], line_rows.get(_row_int(row, "id"), [])),
-                merchants,
-                product_info,
-                cast(_CustomerContact | None, customer_contacts.get(user_id)),
+        eligible_orders = (
+            row
+            for row in _table_rows(self._dump_path, "orders", FUNDBOX_TABLES)
+            if str(row.status or "") in FUNDBOX_ORDER_STATUSES
+        )
+        for order_batch in _dump_row_batches(eligible_orders):
+            order_ids = {_row_int(row, "id") for row in order_batch}
+            user_ids = {_row_int(row, "user_id") for row in order_batch}
+            merchant_ids = {_row_int(row, "merchant_id") for row in order_batch}
+            line_rows = _group_by_int(
+                _rows_for_int_keys(
+                    self._dump_path, "order_items", FUNDBOX_TABLES, "order_id", order_ids
+                ),
+                "order_id",
             )
+            merchant_product_ids = {
+                _row_int(line, "merchant_product_id")
+                for lines in line_rows.values()
+                for line in lines
+            }
+            merchants = {
+                _row_int(row, "id"): str(row.name or row.official_name or "")
+                for row in _rows_for_int_keys(
+                    self._dump_path, "merchants", FUNDBOX_TABLES, "id", merchant_ids
+                )
+            }
+            product_info = _fundbox_product_info_for_ids(
+                self._dump_path,
+                merchant_product_ids,
+            )
+            customer_contacts = _fundbox_customer_contacts_for_ids(
+                self._dump_path,
+                user_ids,
+            )
+            for row in sorted(order_batch, key=lambda item: _row_int(item, "id")):
+                user_id = _row_int(row, "user_id")
+                yield builder._build_one(
+                    cast(RowMapping, row),
+                    cast(list[RowMapping], line_rows.get(_row_int(row, "id"), [])),
+                    merchants,
+                    product_info,
+                    customer_contacts.get(user_id),
+                )
 
 
 class EkoSalesDumpConnector(SourceConnector):
@@ -306,35 +380,80 @@ class WhatsAppDumpConnector(SourceConnector):
         return "whatsapp_chat"
 
     def fetch_records(self) -> Iterator[dict[str, JsonValue]]:
-        tables = load_dump_tables(self._dump_path, WHATSAPP_TABLES)
-        org_name_by_id = {str(row.id): str(row.name or "") for row in tables.rows("orgs")}
-        sessions = [
+        org_name_by_id = {
+            str(row.id): str(row.name or "")
+            for row in _table_rows(self._dump_path, "orgs", WHATSAPP_TABLES)
+        }
+        sessions = (
             row
-            for row in tables.rows("sessions")
+            for row in _table_rows(self._dump_path, "sessions", WHATSAPP_TABLES)
             if str(row.status or "") == "ready"
             and str(row.org_id or "") in org_name_by_id
             and row.whatsapp_user_id
-        ]
-        chats_by_user = _index_rows(tables.rows("chats"), "whatsapp_user_id")
-        messages_by_chat = _index_rows(tables.rows("messages"), "chat_id")
-        contacts_by_jid = _index_contacts(tables.rows("contacts"))
-        bundles: list[WhatsAppChatBundle] = []
+        )
+        for session_batch in _dump_row_batches(sessions):
+            sessions_by_user: dict[str, list[DumpRow]] = {}
+            for session in session_batch:
+                whatsapp_uid = str(session.whatsapp_user_id or "")
+                sessions_by_user.setdefault(whatsapp_uid, []).append(session)
+            chats = (
+                row
+                for row in _table_rows(self._dump_path, "chats", WHATSAPP_TABLES)
+                if str(row.whatsapp_user_id or "") in sessions_by_user
+            )
+            for chat_batch in _dump_row_batches(chats):
+                yield from self._process_chat_batch(
+                    chat_batch,
+                    sessions_by_user,
+                    org_name_by_id,
+                )
 
-        for session in sessions:
-            org_name = org_name_by_id.get(str(session.org_id), "")
-            tenant = ORG_TO_ENTITY.get(org_name)
-            if tenant is None:
+    def _process_chat_batch(
+        self,
+        chat_batch: list[DumpRow],
+        sessions_by_user: Mapping[str, list[DumpRow]],
+        org_name_by_id: Mapping[str, str],
+    ) -> Iterator[dict[str, JsonValue]]:
+        chat_ids = {str(row.id or "") for row in chat_batch}
+        message_rows = [
+            row
+            for row in _table_rows(self._dump_path, "messages", WHATSAPP_TABLES)
+            if str(row.chat_id or "") in chat_ids
+        ]
+        messages_by_chat = _index_rows(message_rows, "chat_id")
+        jids_by_user: dict[str, set[str]] = {}
+        for chat in chat_batch:
+            whatsapp_uid = str(chat.whatsapp_user_id or "")
+            chat_id = str(chat.id or "")
+            messages = [row.as_object_dict() for row in messages_by_chat.get(chat_id, [])]
+            jids_by_user.setdefault(whatsapp_uid, set()).update(
+                _participant_jids(chat_id, messages)
+            )
+        contact_rows = [
+            row
+            for row in _table_rows(self._dump_path, "contacts", WHATSAPP_TABLES)
+            if _contact_is_relevant(row, jids_by_user)
+        ]
+        contacts_by_jid = _index_contacts(contact_rows)
+        bundles: list[WhatsAppChatBundle] = []
+        for chat in chat_batch:
+            whatsapp_uid = str(chat.whatsapp_user_id or "")
+            chat_id = str(chat.id or "")
+            messages = [row.as_object_dict() for row in messages_by_chat.get(chat_id, [])]
+            if not messages:
                 continue
-            whatsapp_uid = str(session.whatsapp_user_id or "")
-            for chat in chats_by_user.get(whatsapp_uid, []):
-                chat_id = str(chat.id or "")
-                msgs: list[dict[str, object]] = [
-                    row.as_object_dict() for row in messages_by_chat.get(chat_id, [])
-                ]
-                if not msgs:
+            chat_name = str(chat.name or "")
+            participants = _whatsapp_participants(
+                chat_id,
+                whatsapp_uid,
+                messages,
+                contacts_by_jid,
+            )
+            for session in sessions_by_user.get(whatsapp_uid, []):
+                org_name = org_name_by_id.get(str(session.org_id or ""), "")
+                tenant = ORG_TO_ENTITY.get(org_name)
+                if tenant is None:
                     continue
-                chat_name = str(chat.name or "")
-                participants = _whatsapp_participants(chat_id, whatsapp_uid, msgs, contacts_by_jid)
                 bundles.append(
                     WhatsAppChatBundle(
                         chat_id=chat_id,
@@ -342,24 +461,14 @@ class WhatsAppDumpConnector(SourceConnector):
                         session_id=str(session.id),
                         whatsapp_user_id=whatsapp_uid,
                         tenant=tenant,
-                        msg_text=_format_messages(msgs, participants, chat_name),
-                        observed_at=_latest_message_timestamp(msgs),
+                        msg_text=_format_messages(messages, participants, chat_name),
+                        observed_at=_latest_message_timestamp(messages),
                         participants=participants,
-                        message_endpoints=_message_endpoints(msgs),
+                        message_endpoints=_message_endpoints(messages),
                         session_phone=_phone_from_jid(whatsapp_uid),
                     )
                 )
-
-        for bundle, extraction in _run_batches(
-            [bundle.msg_text for bundle in bundles],
-            chat_batch_max_chars(),
-            chat_batch_size(),
-            run_extraction_batch,
-        ):
-            if extraction is not None:
-                envelope = build_whatsapp_envelope(bundle=bundles[bundle], extraction=extraction)
-                if envelope is not None:
-                    yield envelope
+        yield from _extract_whatsapp_dump_bundles(bundles)
 
 
 class BitrixDumpConnector(SourceConnector):
@@ -373,17 +482,65 @@ class BitrixDumpConnector(SourceConnector):
         return BITRIX_SOURCE_KEY
 
     def fetch_records(self) -> Iterator[dict[str, JsonValue]]:
-        tables = load_dump_tables(self._dump_path, BITRIX_TABLES)
-        categories = {_row_int(row, "id"): str(row.name or "") for row in tables.rows("categories")}
-        deals = {_row_int(row, "id"): _bitrix_deal(row) for row in tables.rows("deals")}
-        personalize_by_chat = _index_rows(tables.rows("personalize_message_logs"), "chat_id")
-        sent_by_chat = _index_rows(tables.rows("sent_message_logs"), "chat_id")
-        templates = {_row_int(row, "id"): row for row in tables.rows("templates")}
-        agents = {_row_int(row, "id"): row for row in tables.rows("agents")}
-        agent_chat_by_chat = _index_rows(tables.rows("agent_chat"), "chat_id")
-        bundles: list[BitrixChatBundle] = []
+        categories = {
+            _row_int(row, "id"): str(row.name or "")
+            for row in _table_rows(self._dump_path, "categories", BITRIX_TABLES)
+        }
+        chats = _table_rows(self._dump_path, "chats", BITRIX_TABLES)
+        for chat_batch in _dump_row_batches(chats):
+            yield from self._process_chat_batch(chat_batch, categories)
 
-        for chat in sorted(tables.rows("chats"), key=lambda row: _row_int(row, "id")):
+    def _process_chat_batch(
+        self,
+        chat_batch: list[DumpRow],
+        categories: Mapping[int, str],
+    ) -> Iterator[dict[str, JsonValue]]:
+        chat_ids = {_row_int(row, "id") for row in chat_batch}
+        deal_ids = {_row_int(row, "deal_id") for row in chat_batch}
+        deals = {
+            _row_int(row, "id"): _bitrix_deal(row)
+            for row in _rows_for_int_keys(self._dump_path, "deals", BITRIX_TABLES, "id", deal_ids)
+        }
+        personalize_by_chat = _index_rows(
+            _rows_for_int_keys(
+                self._dump_path,
+                "personalize_message_logs",
+                BITRIX_TABLES,
+                "chat_id",
+                chat_ids,
+            ),
+            "chat_id",
+        )
+        sent_rows = _rows_for_int_keys(
+            self._dump_path,
+            "sent_message_logs",
+            BITRIX_TABLES,
+            "chat_id",
+            chat_ids,
+        )
+        sent_by_chat = _index_rows(sent_rows, "chat_id")
+        template_ids = {_row_int(row, "template_id") for row in sent_rows}
+        templates = {
+            _row_int(row, "id"): row
+            for row in _rows_for_int_keys(
+                self._dump_path, "templates", BITRIX_TABLES, "id", template_ids
+            )
+        }
+        agent_chat_rows = _rows_for_int_keys(
+            self._dump_path,
+            "agent_chat",
+            BITRIX_TABLES,
+            "chat_id",
+            chat_ids,
+        )
+        agent_chat_by_chat = _index_rows(agent_chat_rows, "chat_id")
+        agent_ids = {_row_int(row, "agent_id") for row in agent_chat_rows}
+        agents = {
+            _row_int(row, "id"): row
+            for row in _rows_for_int_keys(self._dump_path, "agents", BITRIX_TABLES, "id", agent_ids)
+        }
+        bundles: list[BitrixChatBundle] = []
+        for chat in sorted(chat_batch, key=lambda row: _row_int(row, "id")):
             deal_id = _row_int(chat, "deal_id")
             deal = deals.get(deal_id)
             if deal is None:
@@ -412,7 +569,6 @@ class BitrixDumpConnector(SourceConnector):
                     agents=_bitrix_agents(agent_chat_by_chat.get(chat_id, []), agents),
                 )
             )
-
         for bundle_index, extraction in _run_batches(
             [bundle.conv_text for bundle in bundles],
             chat_batch_max_chars(),
@@ -438,16 +594,27 @@ class EkoDumpConnector(SourceConnector):
         return "eko_phppos"
 
     def fetch_records(self) -> Iterator[dict[str, JsonValue]]:
-        tables = load_dump_tables(self._dump_path, PHPPOS_TABLES)
-        people = {_row_int(row, "person_id"): row for row in tables.rows("phppos_people")}
-        customers = sorted(tables.rows("phppos_customers"), key=lambda row: _row_int(row, "id"))
-        for customer in customers:
-            if _int_value(customer.deleted) != 0:
-                continue
-            person = people.get(_row_int(customer, "person_id"))
-            if person is None:
-                continue
-            yield EkoConnector._build_one(_join_eko_row(person, customer))
+        customers = (
+            row
+            for row in _table_rows(self._dump_path, "phppos_customers", PHPPOS_TABLES)
+            if _int_value(row.deleted) == 0
+        )
+        for customer_batch in _dump_row_batches(customers):
+            person_ids = {_row_int(row, "person_id") for row in customer_batch}
+            people = {
+                _row_int(row, "person_id"): row
+                for row in _rows_for_int_keys(
+                    self._dump_path,
+                    "phppos_people",
+                    PHPPOS_TABLES,
+                    "person_id",
+                    person_ids,
+                )
+            }
+            for customer in sorted(customer_batch, key=lambda row: _row_int(row, "id")):
+                person = people.get(_row_int(customer, "person_id"))
+                if person is not None:
+                    yield EkoConnector._build_one(_join_eko_row(person, customer))
 
 
 class SpeedZoneDumpConnector(SourceConnector):
@@ -460,18 +627,33 @@ class SpeedZoneDumpConnector(SourceConnector):
         return "speedzone_phppos"
 
     def fetch_records(self) -> Iterator[dict[str, JsonValue]]:
-        tables = load_dump_tables(self._dump_path, SPEEDZONE_PHPPOS_TABLES)
-        people = {_row_int(row, "person_id"): row for row in tables.rows("phppos_people")}
-        customers = sorted(tables.rows("phppos_customers"), key=lambda row: _row_int(row, "id"))
-        for customer in customers:
-            if _int_value(customer.deleted) != 0:
-                continue
-            person = people.get(_row_int(customer, "person_id"))
-            if person is None:
-                continue
-            yield SpeedZoneConnector._build_envelope_with_customer(
-                _join_speedzone_row(person, customer)
+        customers = (
+            row
+            for row in _table_rows(
+                self._dump_path,
+                "phppos_customers",
+                SPEEDZONE_PHPPOS_TABLES,
             )
+            if _int_value(row.deleted) == 0
+        )
+        for customer_batch in _dump_row_batches(customers):
+            person_ids = {_row_int(row, "person_id") for row in customer_batch}
+            people = {
+                _row_int(row, "person_id"): row
+                for row in _rows_for_int_keys(
+                    self._dump_path,
+                    "phppos_people",
+                    SPEEDZONE_PHPPOS_TABLES,
+                    "person_id",
+                    person_ids,
+                )
+            }
+            for customer in sorted(customer_batch, key=lambda row: _row_int(row, "id")):
+                person = people.get(_row_int(customer, "person_id"))
+                if person is not None:
+                    yield SpeedZoneConnector._build_envelope_with_customer(
+                        _join_speedzone_row(person, customer)
+                    )
 
 
 def _run_batches(
@@ -483,6 +665,69 @@ def _run_batches(
     for start, end in iter_char_batches(texts, max_chars, max_count):
         for offset, result in enumerate(extractor(texts[start:end])):
             yield start + offset, result
+
+
+def _table_rows(
+    dump_path: Path,
+    table_name: str,
+    table_spec: TableSpec,
+) -> Iterator[DumpRow]:
+    return iter_dump_rows(dump_path, table_name, table_spec[table_name])
+
+
+def _dump_row_batches(rows: Iterable[DumpRow]) -> Iterator[list[DumpRow]]:
+    batch: list[DumpRow] = []
+    for row in rows:
+        batch.append(row)
+        if len(batch) == _DUMP_BATCH_SIZE:
+            yield batch
+            batch = []
+    if batch:
+        yield batch
+
+
+def _rows_for_int_keys(
+    dump_path: Path,
+    table_name: str,
+    table_spec: TableSpec,
+    key: str,
+    values: set[int],
+) -> list[DumpRow]:
+    if not values:
+        return []
+    return [
+        row
+        for row in _table_rows(dump_path, table_name, table_spec)
+        if _row_int(row, key) in values
+    ]
+
+
+def _contact_is_relevant(row: DumpRow, jids_by_user: Mapping[str, set[str]]) -> bool:
+    whatsapp_user_id = str(row._mapping.get("whatsapp_user_id") or "")
+    candidate_jids = {str(row._mapping.get(key) or "") for key in ("jid", "lid_id", "cus_id")}
+    candidate_jids.discard("")
+    if whatsapp_user_id:
+        return bool(candidate_jids & jids_by_user.get(whatsapp_user_id, set()))
+    return any(candidate_jids & jids for jids in jids_by_user.values())
+
+
+def _extract_whatsapp_dump_bundles(
+    bundles: list[WhatsAppChatBundle],
+) -> Iterator[dict[str, JsonValue]]:
+    for bundle_index, extraction in _run_batches(
+        [bundle.msg_text for bundle in bundles],
+        chat_batch_max_chars(),
+        chat_batch_size(),
+        run_extraction_batch,
+    ):
+        if extraction is None:
+            continue
+        envelope = build_whatsapp_envelope(
+            bundle=bundles[bundle_index],
+            extraction=extraction,
+        )
+        if envelope is not None:
+            yield envelope
 
 
 def _row_int(row: DumpRow, key: str) -> int:
@@ -640,11 +885,41 @@ def _join_fundbox_user(
     )
 
 
-def _fundbox_product_info(tables: DumpTableReader) -> dict[int, dict[str, JsonValue]]:
-    products = _single_by_int(tables.rows("products"), "id")
-    variants = _single_by_int(tables.rows("product_variants"), "id")
+def _fundbox_product_info_for_ids(
+    dump_path: Path,
+    merchant_product_ids: set[int],
+) -> dict[int, dict[str, JsonValue]]:
+    merchant_products = _rows_for_int_keys(
+        dump_path,
+        "merchant_products",
+        FUNDBOX_TABLES,
+        "id",
+        merchant_product_ids,
+    )
+    variant_ids = {_row_int(row, "product_variant_id") for row in merchant_products}
+    variants = _single_by_int(
+        _rows_for_int_keys(
+            dump_path,
+            "product_variants",
+            FUNDBOX_TABLES,
+            "id",
+            variant_ids,
+        ),
+        "id",
+    )
+    product_ids = {_row_int(row, "product_id") for row in variants.values()}
+    products = _single_by_int(
+        _rows_for_int_keys(
+            dump_path,
+            "products",
+            FUNDBOX_TABLES,
+            "id",
+            product_ids,
+        ),
+        "id",
+    )
     result: dict[int, dict[str, JsonValue]] = {}
-    for merchant_product in tables.rows("merchant_products"):
+    for merchant_product in merchant_products:
         variant = variants.get(_row_int(merchant_product, "product_variant_id"))
         if variant is None:
             continue
@@ -656,7 +931,10 @@ def _fundbox_product_info(tables: DumpTableReader) -> dict[int, dict[str, JsonVa
     return result
 
 
-def _fundbox_customer_contacts(tables: DumpTableReader) -> dict[int, dict[str, object]]:
+def _fundbox_customer_contacts_for_ids(
+    dump_path: Path,
+    user_ids: set[int],
+) -> dict[int, _CustomerContact]:
     """Build ``user_id -> {customer_emails, customer_phones, customer_nric}``
     from the dump's ``users`` + ``basic_profiles`` rows.
 
@@ -666,15 +944,25 @@ def _fundbox_customer_contacts(tables: DumpTableReader) -> dict[int, dict[str, o
     ``customer_nric`` comes from the first ``basic_profiles`` row per user
     (lowest ``id``, matching the live connector's deterministic pick).
     """
-    user_rows = _single_by_int(tables.rows("users"), "id")
+    user_rows = _single_by_int(
+        _rows_for_int_keys(dump_path, "users", FUNDBOX_TABLES, "id", user_ids),
+        "id",
+    )
     # ``basic_profiles`` is 1-to-many on ``user_id``; keep the first by id.
     profile_by_user: dict[int, DumpRow] = {}
-    for row in sorted(tables.rows("basic_profiles"), key=lambda r: _row_int(r, "id")):
+    profile_rows = _rows_for_int_keys(
+        dump_path,
+        "basic_profiles",
+        FUNDBOX_TABLES,
+        "user_id",
+        user_ids,
+    )
+    for row in sorted(profile_rows, key=lambda item: _row_int(item, "id")):
         uid = _row_int(row, "user_id")
         if uid not in profile_by_user:
             profile_by_user[uid] = row
 
-    contacts: dict[int, dict[str, object]] = {}
+    contacts: dict[int, _CustomerContact] = {}
     for uid, u in user_rows.items():
         p = profile_by_user.get(uid)
         emails: list[str] = []
@@ -775,40 +1063,78 @@ def _build_fundbox_merged(row: DumpRow) -> dict[str, JsonValue]:
 def _fetch_phppos_dump_sales(
     dump_path: Path, source_system_key: str
 ) -> Iterator[dict[str, JsonValue]]:
-    tables = load_dump_tables(dump_path, PHPPOS_SALES_TABLES)
-    items_by_id = {_row_int(row, "item_id"): row for row in tables.rows("phppos_items")}
-    lines_by_sale = _group_by_int(tables.rows("phppos_sales_items"), "sale_id")
-    # category_id -> name (phppos_categories) for vehicle classification.
-    categories: dict[int, str] = {
-        _row_int(row, "id"): str(row.get("name") or "") for row in tables.rows("phppos_categories")
-    }
-    # phppos_customers keyed by person_id (phppos_sales.customer_id is a person_id).
-    customers_by_person_id: dict[int, DumpRow] = {
-        _row_int(row, "person_id"): row for row in tables.rows("phppos_customers")
-    }
-    # phppos_people keyed by person_id — the live connector joins people to
-    # customers for sale-level email/phone. The dump mirrors that join so the
-    # Vehicle heuristic can read it from raw_payload without re-querying.
-    people_by_id: dict[int, DumpRow] = {
-        _row_int(row, "person_id"): row for row in tables.rows("phppos_people")
-    }
-    # SpeedZone customer bike plate lives in custom_field_8/10_value; Eko shares
-    # the schema but the columns are not bike plates, so only SpeedZone extracts.
     extract_bike_plate = source_system_key == "speedzone_phppos"
-    for sale in sorted(tables.rows("phppos_sales"), key=lambda row: _row_int(row, "sale_id")):
-        sale_id = _row_int(sale, "sale_id")
-        customer_row = customers_by_person_id.get(_row_int(sale, "customer_id"))
-        people_row = people_by_id.get(_row_int(sale, "customer_id"))
-        yield _build_phppos_sales_envelope(
-            sale,
-            lines_by_sale.get(sale_id, []),
-            items_by_id,
-            source_system_key,
-            categories,
-            customer_row,
-            extract_bike_plate,
-            people_row,
+    sales = _table_rows(dump_path, "phppos_sales", PHPPOS_SALES_TABLES)
+    for sale_batch in _dump_row_batches(sales):
+        sale_ids = {_row_int(row, "sale_id") for row in sale_batch}
+        customer_ids = {_row_int(row, "customer_id") for row in sale_batch}
+        lines_by_sale = _group_by_int(
+            _rows_for_int_keys(
+                dump_path,
+                "phppos_sales_items",
+                PHPPOS_SALES_TABLES,
+                "sale_id",
+                sale_ids,
+            ),
+            "sale_id",
         )
+        item_ids = {
+            _row_int(line, "item_id") for line_rows in lines_by_sale.values() for line in line_rows
+        }
+        items_by_id = {
+            _row_int(row, "item_id"): row
+            for row in _rows_for_int_keys(
+                dump_path,
+                "phppos_items",
+                PHPPOS_SALES_TABLES,
+                "item_id",
+                item_ids,
+            )
+        }
+        category_ids = {_row_int(row, "category") for row in items_by_id.values()}
+        categories = {
+            _row_int(row, "id"): str(row.get("name") or "")
+            for row in _rows_for_int_keys(
+                dump_path,
+                "phppos_categories",
+                PHPPOS_SALES_TABLES,
+                "id",
+                category_ids,
+            )
+        }
+        customers_by_person_id = {
+            _row_int(row, "person_id"): row
+            for row in _rows_for_int_keys(
+                dump_path,
+                "phppos_customers",
+                PHPPOS_SALES_TABLES,
+                "person_id",
+                customer_ids,
+            )
+        }
+        people_by_id = {
+            _row_int(row, "person_id"): row
+            for row in _rows_for_int_keys(
+                dump_path,
+                "phppos_people",
+                PHPPOS_SALES_TABLES,
+                "person_id",
+                customer_ids,
+            )
+        }
+        for sale in sorted(sale_batch, key=lambda row: _row_int(row, "sale_id")):
+            sale_id = _row_int(sale, "sale_id")
+            customer_id = _row_int(sale, "customer_id")
+            yield _build_phppos_sales_envelope(
+                sale,
+                lines_by_sale.get(sale_id, []),
+                items_by_id,
+                source_system_key,
+                categories,
+                customers_by_person_id.get(customer_id),
+                extract_bike_plate,
+                people_by_id.get(customer_id),
+            )
 
 
 def _build_phppos_sales_envelope(

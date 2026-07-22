@@ -50,6 +50,8 @@ class StubSettings:
     )
     whatsadmin_api_page_size: int = 50
     whatsadmin_api_timeout_seconds: float = 30.0
+    whatsadmin_api_max_attempts: int = 3
+    whatsadmin_api_retry_base_delay_seconds: float = 1.0
     whatsadmin_legacy_entity: WhatsAdminEntity | None = "speedzone"
     celery_broker_url: str = "redis://test/0"
 
@@ -82,6 +84,10 @@ class StubRedis:
         _ = name, value
         return None
 
+    def delete(self, *names: str) -> object:
+        _ = names
+        return None
+
     def close(self) -> None:
         pass
 
@@ -94,9 +100,13 @@ def test_default_connector_factory_builds_both_entity_clients(monkeypatch: Monke
         credential: WhatsAdminCredential,
         page_size: int,
         timeout_seconds: float,
+        max_attempts: int,
+        retry_base_delay_seconds: float,
     ) -> StubClient:
         assert page_size == 50
         assert timeout_seconds == 30.0
+        assert max_attempts == 3
+        assert retry_base_delay_seconds == 1.0
         captured.append(credential.entity_key)
         return StubClient(credential)
 
@@ -122,8 +132,10 @@ def test_single_entity_connector_factory_builds_only_requested_client(
         credential: WhatsAdminCredential,
         page_size: int,
         timeout_seconds: float,
+        max_attempts: int,
+        retry_base_delay_seconds: float,
     ) -> StubClient:
-        _ = page_size, timeout_seconds
+        _ = page_size, timeout_seconds, max_attempts, retry_base_delay_seconds
         captured.append(credential.entity_key)
         return StubClient(credential)
 

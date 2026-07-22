@@ -89,6 +89,11 @@ class Neo4jIngestRepository:
             started_at=to_str(record["started_at"]) or None,
             finished_at=to_str(record["finished_at"]) or None,
             source_key=to_str(record["source_key"]) or None,
+            failure_category=to_str(run.get("failure_category")) or None,
+            failure_exception_class=to_str(run.get("failure_exception_class")) or None,
+            failure_message=to_str(run.get("failure_message")) or None,
+            failure_task_id=to_str(run.get("failure_task_id")) or None,
+            failure_checkpoint=to_str(run.get("failure_checkpoint")) or None,
         )
 
 

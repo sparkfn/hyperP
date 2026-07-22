@@ -924,10 +924,33 @@ export interface components {
             };
         };
         SourceSystem: {
+            source_system_id: string | null;
             source_key: string;
-            display_name: string;
-            system_type: string;
+            display_name: string | null;
+            system_type: string | null;
             is_active: boolean;
+            field_trust: {
+                [key: string]: string;
+            };
+            entity_key: string | null;
+            /** Format: date-time */
+            created_at: string | null;
+            /** Format: date-time */
+            updated_at: string | null;
+            latest_run_id: string | null;
+            latest_run_status: string | null;
+            /** Format: date-time */
+            latest_run_started_at: string | null;
+            /** Format: date-time */
+            latest_run_finished_at: string | null;
+            latest_failure_category: string | null;
+            latest_failure_exception_class: string | null;
+            latest_failure_message: string | null;
+            latest_failure_mode: string | null;
+            /** Format: date-time */
+            latest_failure_started_at: string | null;
+            latest_failure_task_id: string | null;
+            latest_failure_checkpoint: string | null;
         };
         FieldTrustEntry: {
             field_name: string;
@@ -1065,11 +1088,22 @@ export interface components {
         IngestRunData: {
             /** Format: uuid */
             ingest_run_id: string;
+            run_type?: string;
+            mode?: string;
+            dump_path?: string | null;
             status: string;
+            record_count?: number;
+            rejected_count?: number;
             /** Format: date-time */
             started_at?: string | null;
             /** Format: date-time */
             finished_at?: string | null;
+            failure_category?: string | null;
+            failure_exception_class?: string | null;
+            failure_message?: string | null;
+            failure_task_id?: string | null;
+            failure_checkpoint?: string | null;
+            source_key?: string | null;
         };
         IngestRunResponseEnvelope: {
             data: components["schemas"]["IngestRunData"];

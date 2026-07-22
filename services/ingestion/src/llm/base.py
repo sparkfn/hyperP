@@ -57,7 +57,42 @@ class LLMService(ABC):
         temperature: float = 0.0,
         max_tokens: int | None = None,
     ) -> str:
-        """Return the assistant text for ``messages`` (JSON-by-prompting).
+        """Return a JSON-mode assistant response for ``messages``."""
+        return await self._chat(
+            messages,
+            model=model,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            json_mode=True,
+        )
+
+    async def chat_text(
+        self,
+        messages: list[ChatMessage],
+        *,
+        model: str | None = None,
+        temperature: float = 0.0,
+        max_tokens: int | None = None,
+    ) -> str:
+        """Return a plain-text assistant response for ``messages``."""
+        return await self._chat(
+            messages,
+            model=model,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            json_mode=False,
+        )
+
+    async def _chat(
+        self,
+        messages: list[ChatMessage],
+        *,
+        model: str | None,
+        temperature: float,
+        max_tokens: int | None,
+        json_mode: bool,
+    ) -> str:
+        """Execute one chat request with shared retry and response handling.
 
         A fresh ``httpx.AsyncClient`` is opened per call: ingestion drives these
         via ``asyncio.run`` (one event loop per batch), so a reused client would
@@ -66,6 +101,8 @@ class LLMService(ABC):
         payload = self._build_payload(
             messages, model or self._default_model_value, temperature, max_tokens
         )
+        if not json_mode:
+            payload.pop("response_format", None)
         headers = {**self._headers, **self._extra_headers(payload)}
         max_retries = max(self._config.max_retries, 0)
         async with httpx.AsyncClient(

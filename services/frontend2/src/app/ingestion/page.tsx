@@ -34,6 +34,30 @@ function SourceCard({ s }: { s: SourceSystemInfo }): ReactElement {
           {s.updated_at  && <span className={styles.metaUpdated}>Updated {relativeTime(s.updated_at)}</span>}
         </div>
       )}
+
+      {s.latest_run_status && (
+        <div className={styles.runStatus}>
+          <div className={styles.runStatusHeader}>
+            <span>Latest run: {s.latest_run_status}</span>
+            {s.latest_run_started_at && <span>{relativeTime(s.latest_run_started_at)}</span>}
+          </div>
+        </div>
+      )}
+      {s.latest_failure_message && (
+        <div className={styles.failureStatus}>
+          <div className={styles.runStatusHeader}>
+            <span>Latest failure{s.latest_failure_mode ? ` · ${s.latest_failure_mode}` : ""}</span>
+            {s.latest_failure_started_at && <span>{relativeTime(s.latest_failure_started_at)}</span>}
+          </div>
+          <div className={styles.failureTitle}>
+            {s.latest_failure_category ?? "distinct"} · {s.latest_failure_exception_class}
+          </div>
+          <div className={styles.failureMessage}>{s.latest_failure_message}</div>
+          {s.latest_failure_task_id && (
+            <div className={styles.failureTask}>Task {s.latest_failure_task_id}</div>
+          )}
+        </div>
+      )}
     </div>
   );
 }

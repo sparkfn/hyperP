@@ -120,6 +120,45 @@
   margin-left: auto;
 }
 
+.runStatus,
+.failureStatus {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 10px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  background: var(--bg-hover);
+}
+
+.failureStatus {
+  border-color: #ef444438;
+  background: #ef44440d;
+}
+
+.runStatusHeader {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--text-muted);
+}
+
+.failureTitle {
+  margin-top: 5px;
+  font-weight: 600;
+  color: var(--bad, #ef4444);
+}
+
+.failureMessage {
+  margin-top: 2px;
+  overflow-wrap: anywhere;
+}
+
+.failureTask {
+  margin-top: 4px;
+  color: var(--text-muted);
+  font-family: monospace;
+}
+
 /* ── Run result / error ──────────────────────────────────── */
 .runResult {
   display: flex;

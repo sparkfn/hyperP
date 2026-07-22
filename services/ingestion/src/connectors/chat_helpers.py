@@ -121,7 +121,7 @@ class ExtractionResult(TypedDict):
 
 
 async def _extract_structured(texts: list[str], max_tokens: int) -> str:
-    """GPT call: structured identity/transaction extraction (reliable JSON mode)."""
+    """ProClaude JSON-mode call for structured identity/transaction extraction."""
     svc = get_chat_extraction_service()
     return await svc.chat_json(
         [
@@ -133,9 +133,9 @@ async def _extract_structured(texts: list[str], max_tokens: int) -> str:
 
 
 async def _summarize_batch(texts: list[str], max_tokens: int) -> str:
-    """Proclaude call: narrative per-conversation summaries (prose quality)."""
+    """ProClaude call for narrative per-conversation summaries."""
     svc = get_chat_summary_service()
-    return await svc.chat_json(
+    return await svc.chat_text(
         [
             ChatMessage(role="system", content=SUMMARY_SYSTEM),
             ChatMessage(role="user", content=build_batch_summary_prompt(texts)),
@@ -144,7 +144,7 @@ async def _summarize_batch(texts: list[str], max_tokens: int) -> str:
     )
 
 
-#: Matches the "=== Summary N ===" markers proclaude emits between summaries.
+#: Matches the "=== Summary N ===" markers ProClaude emits between summaries.
 _SUMMARY_MARKER = re.compile(r"^[ \t]*===[ \t]*Summary[ \t]+(\d+)[ \t]*===[ \t]*$", re.MULTILINE)
 
 
@@ -183,14 +183,14 @@ def iter_char_batches(
 
 
 def run_extraction_batch(texts: list[str]) -> list[ExtractionResult | None]:
-    """Extract every conversation: GPT for structured data, proclaude for summary.
+    """Extract every conversation through ProClaude.
 
     Returns one ``ExtractionResult | None`` per input, aligned to input order.
-    Structured extraction (identity/transactions) uses GPT's JSON mode for
-    reliability; a raised exception or unusable response drops the whole batch
+    Structured extraction uses ProClaude's JSON mode; a raised exception or
+    unusable response drops the whole batch
     (all ``None``), and an omitted conversation yields ``None`` at that index.
-    Summaries are a best-effort proclaude pass layered on top — a failed summary
-    call leaves ``summary`` ``None`` but keeps the GPT-extracted data.
+    Summaries are a best-effort second pass — a failed summary call leaves
+    ``summary`` ``None`` but keeps the structured data.
     """
     if not texts:
         return []
@@ -208,7 +208,7 @@ def run_extraction_batch(texts: list[str]) -> list[ExtractionResult | None]:
 def _attach_summaries(
     texts: list[str], results: list[ExtractionResult | None], max_tokens: int
 ) -> None:
-    """Best-effort: fill each result's ``summary`` from a proclaude summary call."""
+    """Best-effort: fill each result's ``summary`` from a ProClaude summary call."""
     if not any(result is not None for result in results):
         return
     try:
@@ -273,9 +273,8 @@ def _split_batch_extraction(raw: str, count: int) -> list[ExtractionResult | Non
 def _split_batch_summaries(raw: str, count: int) -> list[str | None]:
     """Parse plain-text ``=== Summary N ===`` blocks into per-index summaries.
 
-    A delimited text protocol (not JSON): proclaude has no JSON mode, and a
-    multi-line markdown summary embedded in a JSON string reliably breaks
-    escaping. Splitting on the marker keeps the prose intact.
+    A delimited text protocol avoids unnecessary JSON escaping for prose.
+    Splitting on the marker keeps multi-line markdown summaries intact.
     """
     summaries: list[str | None] = [None] * count
     if not raw:
@@ -364,8 +363,8 @@ def _parse_extraction_object(obj: JsonValue) -> ExtractionResult | None:
         inquiries=inquiries,
         strong_identifiers=strong_identifiers,
         weak_identifiers=weak_identifiers,
-        # Summary comes from the separate proclaude pass (_attach_summaries),
-        # not the GPT extraction response.
+        # Summary comes from the separate ProClaude pass (_attach_summaries),
+        # not the structured extraction response.
         summary=None,
         customer_sentiment=sentiment_raw if isinstance(sentiment_raw, str) else None,
         confidence=(float(confidence_raw) if isinstance(confidence_raw, int | float) else 0.0),
@@ -408,7 +407,7 @@ def extraction_method_label() -> str:
     try:
         model = get_chat_extraction_service().default_model
     except Exception:
-        model = "gpt"
+        model = "proclaude"
     return f"llm:{model}"
 
 

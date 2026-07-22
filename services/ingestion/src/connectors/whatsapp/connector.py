@@ -13,9 +13,10 @@ identity and transaction data, and one source record is written per chat.
 from __future__ import annotations
 
 import logging
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import dataclass
 from datetime import datetime
+from typing import Protocol, cast
 
 from sqlalchemy import or_, select
 from sqlalchemy.engine import Connection
@@ -83,6 +84,38 @@ ORG_TO_ENTITY: dict[str, str] = {
 }
 
 
+class _SessionRow(Protocol):
+    id: object
+    org_id: object
+    whatsapp_user_id: object
+    expected_phone_number: object
+
+
+def iter_bundle_batches(
+    bundles: Iterable[_ChatBundle],
+    *,
+    max_chars: int,
+    max_count: int,
+) -> Iterator[list[_ChatBundle]]:
+    """Yield bounded bundle batches without materialising the full chat source."""
+    batch: list[_ChatBundle] = []
+    batch_chars = 0
+    for bundle in bundles:
+        bundle_chars = len(bundle.msg_text)
+        if batch and batch_chars + bundle_chars > max_chars:
+            yield batch
+            batch = []
+            batch_chars = 0
+        batch.append(bundle)
+        batch_chars += bundle_chars
+        if len(batch) >= max_count:
+            yield batch
+            batch = []
+            batch_chars = 0
+    if batch:
+        yield batch
+
+
 class WhatsAppChatConnector(SourceConnector):
     """Yields conversation source records from the WhatsApp PostgreSQL DB."""
 
@@ -114,15 +147,28 @@ class WhatsAppChatConnector(SourceConnector):
             len(org_rows),
         )
 
-        # Phase 1: collect all chat bundles (no LLM calls yet).
-        all_bundles: list[_ChatBundle] = []
+        bundles = self._iter_chat_bundles(conn, session_rows, org_name_by_id)
+        for batch in iter_bundle_batches(
+            bundles,
+            max_chars=chat_batch_max_chars(),
+            max_count=chat_batch_size(),
+        ):
+            yield from process_whatsapp_bundles(batch)
+
+    def _iter_chat_bundles(
+        self,
+        conn: Connection,
+        session_rows: Sequence[object],
+        org_name_by_id: dict[str, str],
+    ) -> Iterator[_ChatBundle]:
         for session in session_rows:
-            org_name = org_name_by_id.get(str(session.org_id), "")
+            session_row = cast(_SessionRow, session)
+            org_name = org_name_by_id.get(str(session_row.org_id), "")
             if org_name not in ORG_TO_ENTITY:
                 continue
 
             tenant = ORG_TO_ENTITY[org_name]
-            whatsapp_uid = session.whatsapp_user_id or ""
+            whatsapp_uid = str(session_row.whatsapp_user_id or "")
 
             chat_stmt = select(chats).where(chats.c.whatsapp_user_id == whatsapp_uid)
             for chat in conn.execute(chat_stmt):
@@ -132,26 +178,21 @@ class WhatsAppChatConnector(SourceConnector):
                 chat_name = str(chat.name or "")
                 participants = self._fetch_participants(conn, chat.id, whatsapp_uid, msgs)
 
-                all_bundles.append(
-                    _ChatBundle(
-                        chat_id=str(chat.id),
-                        chat_name=chat_name,
-                        session_id=str(session.id),
-                        whatsapp_user_id=whatsapp_uid,
-                        tenant=tenant,
-                        msg_text=_format_messages(msgs, participants, chat_name),
-                        observed_at=_latest_message_timestamp(msgs),
-                        participants=participants,
-                        message_endpoints=_message_endpoints(msgs),
-                        session_phone=_first_str(
-                            getattr(session, "expected_phone_number", None),
-                            _phone_from_jid(whatsapp_uid),
-                        ),
-                    )
+                yield _ChatBundle(
+                    chat_id=str(chat.id),
+                    chat_name=chat_name,
+                    session_id=str(session_row.id),
+                    whatsapp_user_id=whatsapp_uid,
+                    tenant=tenant,
+                    msg_text=_format_messages(msgs, participants, chat_name),
+                    observed_at=_latest_message_timestamp(msgs),
+                    participants=participants,
+                    message_endpoints=_message_endpoints(msgs),
+                    session_phone=_first_str(
+                        session_row.expected_phone_number,
+                        _phone_from_jid(whatsapp_uid),
+                    ),
                 )
-
-        logger.info("Collected %d WhatsApp chats — starting LLM batch phase", len(all_bundles))
-        yield from process_whatsapp_bundles(all_bundles)
 
     def _fetch_messages(
         self,

@@ -3,12 +3,14 @@ from __future__ import annotations
 from collections.abc import Iterator
 from datetime import UTC, datetime
 
+import httpx
 import pytest
 from pytest import MonkeyPatch
 from src.connectors.chat_helpers import ExtractionResult
 from src.connectors.whatsadmin_api.connector import WhatsAdminChatApiConnector
 from src.connectors.whatsadmin_api.credentials import WhatsAdminEntity
 from src.connectors.whatsadmin_api.models import ChatPage, SessionRow
+from src.connectors.whatsadmin_api.watermark import PageCheckpoint
 from src.connectors.whatsapp import connector as whatsapp_connector
 from src.connectors.whatsapp.connector import _ChatBundle
 from src.models import JsonValue
@@ -95,6 +97,157 @@ class StubWatermark:
 
     def close(self) -> None:
         pass
+
+
+class TimeoutClient(StubClient):
+    def iter_chat_pages(self, session_id: str, changed_since: str | None) -> Iterator[ChatPage]:
+        _ = session_id, changed_since
+        request = httpx.Request("POST", "https://whatsadmin.test/chats/query")
+        raise httpx.ReadTimeout("upstream stalled", request=request)
+        yield
+
+    def failure_context(self) -> dict[str, JsonValue]:
+        return {
+            "upstream_resource": "chats/query",
+            "upstream_session_id": "ses_1",
+            "upstream_cursor": "page-4",
+            "upstream_attempt": 3,
+            "upstream_latency_seconds": 30.0,
+        }
+
+
+def test_connector_reports_session_checkpoint_when_page_fetch_times_out() -> None:
+    connector = WhatsAdminChatApiConnector((TimeoutClient(),), StubWatermark())
+
+    with pytest.raises(httpx.ReadTimeout):
+        list(connector.fetch_records())
+
+    assert connector.failure_checkpoint() == {
+        "entity_key": "eko",
+        "session_id": "ses_1",
+        "changed_since": "2026-07-16T00:00:00+00:00",
+        "cursor": "first",
+        "upstream_resource": "chats/query",
+        "upstream_session_id": "ses_1",
+        "upstream_cursor": "page-4",
+        "upstream_attempt": 3,
+        "upstream_latency_seconds": 30.0,
+    }
+
+
+def test_connector_resumes_from_persisted_page_cursor(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    checkpoint = PageCheckpoint(
+        changed_since="2026-07-16T00:00:00+00:00",
+        cursor="opaque-next",
+        snapshot_at=datetime(2026, 7, 17, 5, 31, tzinfo=UTC),
+        complete=False,
+    )
+
+    class CheckpointWatermark(StubWatermark):
+        def __init__(self) -> None:
+            super().__init__()
+            self.saved: list[PageCheckpoint] = []
+            self.deleted = False
+
+        def get_checkpoint(
+            self,
+            entity_key: WhatsAdminEntity,
+            session_id: str,
+        ) -> PageCheckpoint | None:
+            assert (entity_key, session_id) == ("eko", "ses_1")
+            return checkpoint
+
+        def set_checkpoint(
+            self,
+            entity_key: WhatsAdminEntity,
+            session_id: str,
+            value: PageCheckpoint,
+        ) -> None:
+            assert (entity_key, session_id) == ("eko", "ses_1")
+            self.saved.append(value)
+
+        def delete_checkpoint(
+            self,
+            entity_key: WhatsAdminEntity,
+            session_id: str,
+        ) -> None:
+            assert (entity_key, session_id) == ("eko", "ses_1")
+            self.deleted = True
+
+    class ResumeClient(StubClient):
+        def __init__(self) -> None:
+            self.cursors: list[str | None] = []
+
+        def iter_chat_pages(
+            self,
+            session_id: str,
+            changed_since: str | None,
+            cursor: str | None = None,
+        ) -> Iterator[ChatPage]:
+            self.cursors.append(cursor)
+            yield from super().iter_chat_pages(session_id, changed_since)
+
+    monkeypatch.setattr(
+        "src.connectors.whatsadmin_api.connector.process_whatsapp_bundles",
+        lambda _bundles, *, fail_on_extraction_error: iter(()),
+    )
+    client = ResumeClient()
+    watermark = CheckpointWatermark()
+    connector = WhatsAdminChatApiConnector((client,), watermark)
+
+    assert list(connector.fetch_records()) == []
+    assert client.cursors == ["opaque-next"]
+    assert watermark.saved[-1].complete is True
+    connector.commit_watermark()
+    assert watermark.deleted is True
+
+
+def test_rejected_record_does_not_advance_page_checkpoint(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    class CheckpointWatermark(StubWatermark):
+        def __init__(self) -> None:
+            super().__init__()
+            self.saved: list[PageCheckpoint] = []
+
+        def get_checkpoint(
+            self,
+            entity_key: WhatsAdminEntity,
+            session_id: str,
+        ) -> PageCheckpoint | None:
+            return None
+
+        def set_checkpoint(
+            self,
+            entity_key: WhatsAdminEntity,
+            session_id: str,
+            value: PageCheckpoint,
+        ) -> None:
+            self.saved.append(value)
+
+        def delete_checkpoint(
+            self,
+            entity_key: WhatsAdminEntity,
+            session_id: str,
+        ) -> None:
+            return None
+
+    monkeypatch.setattr(
+        "src.connectors.whatsadmin_api.connector.process_whatsapp_bundles",
+        lambda _bundles, *, fail_on_extraction_error: iter(
+            ({"source_record_id": "record-1"},)
+        ),
+    )
+    watermark = CheckpointWatermark()
+    connector = WhatsAdminChatApiConnector((StubClient(),), watermark)
+    records = connector.fetch_records()
+
+    assert next(records) == {"source_record_id": "record-1"}
+    connector.record_processed(succeeded=False)
+    assert list(records) == []
+    assert watermark.saved == []
 
 
 def test_api_connector_converts_bundles_for_existing_extraction_pipeline(

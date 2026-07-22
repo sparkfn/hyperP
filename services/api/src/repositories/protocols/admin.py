@@ -19,6 +19,17 @@ class SourceSystemInfo:
     entity_key: str | None = None
     created_at: str | None = None
     updated_at: str | None = None
+    latest_run_id: str | None = None
+    latest_run_status: str | None = None
+    latest_run_started_at: str | None = None
+    latest_run_finished_at: str | None = None
+    latest_failure_category: str | None = None
+    latest_failure_exception_class: str | None = None
+    latest_failure_message: str | None = None
+    latest_failure_mode: str | None = None
+    latest_failure_started_at: str | None = None
+    latest_failure_task_id: str | None = None
+    latest_failure_checkpoint: str | None = None
 
 
 @dataclass

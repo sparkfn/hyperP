@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import json
+from dataclasses import dataclass
 from datetime import datetime
-from typing import Protocol
+from typing import Protocol, runtime_checkable
 
 from src.connectors.whatsadmin_api.credentials import WhatsAdminEntity
 
@@ -19,10 +21,35 @@ class WatermarkStore(Protocol):
     def close(self) -> None: ...
 
 
+@runtime_checkable
+class PageCheckpointStore(Protocol):
+    def get_checkpoint(
+        self,
+        entity_key: WhatsAdminEntity,
+        session_id: str,
+    ) -> PageCheckpoint | None: ...
+    def set_checkpoint(
+        self,
+        entity_key: WhatsAdminEntity,
+        session_id: str,
+        checkpoint: PageCheckpoint,
+    ) -> None: ...
+    def delete_checkpoint(self, entity_key: WhatsAdminEntity, session_id: str) -> None: ...
+
+
 class RedisClient(Protocol):
     def get(self, name: str) -> object: ...
     def set(self, name: str, value: str) -> object: ...
+    def delete(self, *names: str) -> object: ...
     def close(self) -> None: ...
+
+
+@dataclass(frozen=True)
+class PageCheckpoint:
+    changed_since: str | None
+    cursor: str | None
+    snapshot_at: datetime
+    complete: bool
 
 
 class RedisWatermarkStore:
@@ -68,6 +95,58 @@ class RedisWatermarkStore:
             raise ValueError("WhatsAdmin watermark must be timezone-aware")
         self._redis.set(self._key(entity_key, session_id), value.isoformat())
 
+    def get_checkpoint(
+        self,
+        entity_key: WhatsAdminEntity,
+        session_id: str,
+    ) -> PageCheckpoint | None:
+        value = self._redis.get(self._checkpoint_key(entity_key, session_id))
+        if value is None:
+            return None
+        if isinstance(value, bytes):
+            value = value.decode()
+        if not isinstance(value, str):
+            raise RuntimeError("Redis returned an invalid WhatsAdmin page checkpoint")
+        parsed: object = json.loads(value)
+        if not isinstance(parsed, dict):
+            raise RuntimeError("Redis returned an invalid WhatsAdmin page checkpoint")
+        changed_since = parsed.get("changed_since")
+        cursor = parsed.get("cursor")
+        snapshot_text = parsed.get("snapshot_at")
+        complete = parsed.get("complete")
+        if changed_since is not None and not isinstance(changed_since, str):
+            raise RuntimeError("WhatsAdmin checkpoint changed_since must be text")
+        if cursor is not None and not isinstance(cursor, str):
+            raise RuntimeError("WhatsAdmin checkpoint cursor must be text")
+        if not isinstance(snapshot_text, str) or not isinstance(complete, bool):
+            raise RuntimeError("WhatsAdmin checkpoint omitted required fields")
+        snapshot_at = datetime.fromisoformat(snapshot_text)
+        if snapshot_at.tzinfo is None:
+            raise RuntimeError("WhatsAdmin checkpoint snapshot must be timezone-aware")
+        return PageCheckpoint(changed_since, cursor, snapshot_at, complete)
+
+    def set_checkpoint(
+        self,
+        entity_key: WhatsAdminEntity,
+        session_id: str,
+        checkpoint: PageCheckpoint,
+    ) -> None:
+        if checkpoint.snapshot_at.tzinfo is None:
+            raise ValueError("WhatsAdmin checkpoint snapshot must be timezone-aware")
+        payload = json.dumps(
+            {
+                "changed_since": checkpoint.changed_since,
+                "cursor": checkpoint.cursor,
+                "snapshot_at": checkpoint.snapshot_at.isoformat(),
+                "complete": checkpoint.complete,
+            },
+            separators=(",", ":"),
+        )
+        self._redis.set(self._checkpoint_key(entity_key, session_id), payload)
+
+    def delete_checkpoint(self, entity_key: WhatsAdminEntity, session_id: str) -> None:
+        self._redis.delete(self._checkpoint_key(entity_key, session_id))
+
     def close(self) -> None:
         self._redis.close()
 
@@ -78,3 +157,7 @@ class RedisWatermarkStore:
     @staticmethod
     def _legacy_key(session_id: str) -> str:
         return f"profile_unifier:whatsadmin-api:whatsapp_chat:{session_id}:watermark"
+
+    @staticmethod
+    def _checkpoint_key(entity_key: WhatsAdminEntity, session_id: str) -> str:
+        return f"profile_unifier:whatsadmin-api:whatsapp_chat:{entity_key}:{session_id}:page"
