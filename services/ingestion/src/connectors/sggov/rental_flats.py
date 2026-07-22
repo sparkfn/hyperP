@@ -8,8 +8,10 @@ from pathlib import Path
 
 from src.connectors.base import SourceConnector
 from src.connectors.fundbox.builders import build_envelope
-from src.connectors.sggov.dump import CopyRow, parse_copy_tables
+from src.connectors.sggov.dump import CopyRow, iter_copy_rows
 from src.models import JsonValue
+
+_COPY_BATCH_SIZE = 1000
 
 
 def _str_value(row: CopyRow, key: str) -> str:
@@ -78,25 +80,48 @@ class SGGovernmentRentalFlatsConnector(SourceConnector):
         return "sgrentalflats"
 
     def fetch_records(self) -> Iterator[dict[str, JsonValue]]:
-        tables = parse_copy_tables(self._dump_path, {"flats", "towns"})
-        towns = {_str_value(town, "id"): town for town in tables.get("towns", [])}
+        flats = iter_copy_rows(self._dump_path, "flats")
+        for flat_batch in _copy_row_batches(flats):
+            town_ids = {_str_value(flat, "town_id") for flat in flat_batch}
+            towns = {
+                town_id: town
+                for town in iter_copy_rows(self._dump_path, "towns")
+                if (town_id := _str_value(town, "id")) in town_ids
+            }
+            for flat in flat_batch:
+                yield self._build_flat(flat, towns)
 
-        for flat in tables.get("flats", []):
-            flat_id = _str_value(flat, "id")
-            town_id = _str_value(flat, "town_id")
-            town = towns.get(town_id, {})
-            raw_payload: dict[str, JsonValue] = {"flat": flat, "town": town}
-            yield build_rental_flat_envelope(
-                flat_id=flat_id,
-                town_id=town_id,
-                block_no=_str_value(flat, "block_no"),
-                street_name=_str_value(flat, "street_name"),
-                postal_code=_str_value(flat, "postal_code"),
-                flat_type=_str_value(flat, "flat_type"),
-                town_name=_str_value(town, "name"),
-                town_map_id=_str_value(town, "map_id"),
-                town_map_zone=_str_value(town, "map_zone"),
-                is_active=_bool_value(flat, "is_active"),
-                observed_at=flat.get("last_seen_at"),
-                raw_payload=raw_payload,
-            )
+    def _build_flat(
+        self,
+        flat: CopyRow,
+        towns: dict[str, CopyRow],
+    ) -> dict[str, JsonValue]:
+        flat_id = _str_value(flat, "id")
+        town_id = _str_value(flat, "town_id")
+        town = towns.get(town_id, {})
+        raw_payload: dict[str, JsonValue] = {"flat": flat, "town": town}
+        return build_rental_flat_envelope(
+            flat_id=flat_id,
+            town_id=town_id,
+            block_no=_str_value(flat, "block_no"),
+            street_name=_str_value(flat, "street_name"),
+            postal_code=_str_value(flat, "postal_code"),
+            flat_type=_str_value(flat, "flat_type"),
+            town_name=_str_value(town, "name"),
+            town_map_id=_str_value(town, "map_id"),
+            town_map_zone=_str_value(town, "map_zone"),
+            is_active=_bool_value(flat, "is_active"),
+            observed_at=flat.get("last_seen_at"),
+            raw_payload=raw_payload,
+        )
+
+
+def _copy_row_batches(rows: Iterator[CopyRow]) -> Iterator[list[CopyRow]]:
+    batch: list[CopyRow] = []
+    for row in rows:
+        batch.append(row)
+        if len(batch) == _COPY_BATCH_SIZE:
+            yield batch
+            batch = []
+    if batch:
+        yield batch

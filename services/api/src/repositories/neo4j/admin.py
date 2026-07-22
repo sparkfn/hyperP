@@ -20,6 +20,10 @@ class Neo4jAdminRepository:
                 ss = record["source_system"]
                 if not isinstance(ss, dict):
                     continue
+                latest_run = record["latest_run"]
+                latest = latest_run if isinstance(latest_run, dict) else {}
+                latest_failure = record["latest_failure"]
+                failure = latest_failure if isinstance(latest_failure, dict) else {}
                 field_trust = to_str_dict(ss.get("field_trust"))
                 systems.append(
                     SourceSystemInfo(
@@ -32,6 +36,21 @@ class Neo4jAdminRepository:
                         entity_key=to_optional_str(record["entity_key"]),
                         created_at=to_optional_str(ss.get("created_at")),
                         updated_at=to_optional_str(ss.get("updated_at")),
+                        latest_run_id=to_optional_str(latest.get("ingest_run_id")),
+                        latest_run_status=to_optional_str(latest.get("status")),
+                        latest_run_started_at=to_optional_str(latest.get("started_at")),
+                        latest_run_finished_at=to_optional_str(latest.get("finished_at")),
+                        latest_failure_category=to_optional_str(failure.get("failure_category")),
+                        latest_failure_exception_class=to_optional_str(
+                            failure.get("failure_exception_class")
+                        ),
+                        latest_failure_message=to_optional_str(failure.get("failure_message")),
+                        latest_failure_mode=to_optional_str(failure.get("failure_mode")),
+                        latest_failure_started_at=to_optional_str(failure.get("started_at")),
+                        latest_failure_task_id=to_optional_str(failure.get("failure_task_id")),
+                        latest_failure_checkpoint=to_optional_str(
+                            failure.get("failure_checkpoint")
+                        ),
                     )
                 )
         return systems

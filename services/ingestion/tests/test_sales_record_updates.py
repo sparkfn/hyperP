@@ -317,6 +317,33 @@ def _envelope(record_hash: str) -> SourceRecordEnvelope:
 
 
 @pytest.mark.parametrize(
+    ("source_system", "entity_key"),
+    [
+        ("fundbox_consumer_backend:sales", "fundbox"),
+        ("eko_phppos:sales", "eko"),
+        ("speedzone_phppos:sales", "speedzone"),
+        ("onediver:sales", "onediver"),
+    ],
+)
+def test_sales_source_record_creation_supplies_owner_entity_key(
+    source_system: str,
+    entity_key: str,
+) -> None:
+    tx = _GraphTx()
+
+    ingest_sales_record(
+        cast(object, _Client(tx)),
+        _envelope("new-sale").model_copy(update={"source_system": source_system}),
+        ingest_run_id=None,
+    )
+
+    create_params = next(
+        params for query, params in tx.calls if query == queries.CREATE_SOURCE_RECORD
+    )
+    assert create_params["entity_key"] == entity_key
+
+
+@pytest.mark.parametrize(
     ("record_hash", "expected_pk"),
     [("hash-old", "old"), ("hash-new", "new")],
 )

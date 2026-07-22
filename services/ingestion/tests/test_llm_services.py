@@ -9,7 +9,6 @@ import pytest
 from src.llm import (
     AnthropicService,
     ChatMessage,
-    GPTService,
     LLMService,
     OpenAIService,
     ProclaudeService,
@@ -27,28 +26,28 @@ def _patch_client(monkeypatch: pytest.MonkeyPatch, handler: httpx.MockTransport)
 
 
 def test_class_hierarchy() -> None:
-    assert issubclass(GPTService, OpenAIService)
-    assert issubclass(ProclaudeService, AnthropicService)
+    assert issubclass(ProclaudeService, OpenAIService)
     assert issubclass(OpenAIService, LLMService)
     assert issubclass(AnthropicService, LLMService)
 
 
-def test_proclaude_and_gpt_service_routing(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_all_ingestion_workloads_route_to_proclaude(monkeypatch: pytest.MonkeyPatch) -> None:
     # Isolate from the real config file: the accessors load LlmConfig from the
     # configured path, which may not exist on the host.
     import src.llm as llm_pkg
     from src.ingestion_config import IngestionConfig
 
     monkeypatch.setattr(llm_pkg, "_proclaude_service", None)
-    monkeypatch.setattr(llm_pkg, "_gpt_service", None)
     monkeypatch.setattr(llm_pkg, "get_ingestion_config", lambda: IngestionConfig())
 
-    # Proclaude (prose) backs the generic + chat-summary accessors.
-    assert isinstance(llm_pkg.get_llm_service(), ProclaudeService)
-    assert isinstance(llm_pkg.get_chat_summary_service(), ProclaudeService)
-    # GPT (JSON mode) backs address normalization + structured chat extraction.
-    assert isinstance(llm_pkg.get_address_llm_service(), GPTService)
-    assert isinstance(llm_pkg.get_chat_extraction_service(), GPTService)
+    services = (
+        llm_pkg.get_llm_service(),
+        llm_pkg.get_chat_summary_service(),
+        llm_pkg.get_address_llm_service(),
+        llm_pkg.get_chat_extraction_service(),
+    )
+    assert all(isinstance(service, ProclaudeService) for service in services)
+    assert len({id(service) for service in services}) == 1
 
 
 def test_service_accessors_share_one_singleton_per_backend(
@@ -58,11 +57,11 @@ def test_service_accessors_share_one_singleton_per_backend(
     from src.ingestion_config import IngestionConfig
 
     monkeypatch.setattr(llm_pkg, "_proclaude_service", None)
-    monkeypatch.setattr(llm_pkg, "_gpt_service", None)
     monkeypatch.setattr(llm_pkg, "get_ingestion_config", lambda: IngestionConfig())
 
     assert llm_pkg.get_chat_extraction_service() is llm_pkg.get_address_llm_service()
     assert llm_pkg.get_chat_summary_service() is llm_pkg.get_llm_service()
+    assert llm_pkg.get_address_llm_service() is llm_pkg.get_llm_service()
 
 
 def test_fresh_client_per_call_across_event_loops(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -76,13 +75,17 @@ def test_fresh_client_per_call_across_event_loops(monkeypatch: pytest.MonkeyPatc
         return httpx.Response(
             200,
             json={
-                "id": "msg",
-                "type": "message",
-                "role": "assistant",
-                "content": [{"type": "text", "text": "{}"}],
+                "id": "completion",
+                "object": "chat.completion",
+                "created": 1,
                 "model": "claude-x",
-                "stop_reason": "end_turn",
-                "usage": {"input_tokens": 1, "output_tokens": 1},
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {"role": "assistant", "content": "{}"},
+                        "finish_reason": "stop",
+                    }
+                ],
             },
         )
 
@@ -106,7 +109,9 @@ def test_fresh_client_per_call_across_event_loops(monkeypatch: pytest.MonkeyPatc
 
 
 @pytest.mark.asyncio
-async def test_gpt_service_builds_openai_payload(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_proclaude_service_builds_json_mode_openai_payload(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     captured: dict[str, object] = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -114,6 +119,7 @@ async def test_gpt_service_builds_openai_payload(monkeypatch: pytest.MonkeyPatch
 
         captured["url"] = str(request.url)
         captured["body"] = _json.loads(request.content)
+        captured["alias"] = request.headers.get("X-Model-Alias")
         return httpx.Response(
             200,
             json={
@@ -131,12 +137,15 @@ async def test_gpt_service_builds_openai_payload(monkeypatch: pytest.MonkeyPatch
         )
 
     _patch_client(monkeypatch, httpx.MockTransport(handler))
-    svc = GPTService(base_url="https://gpt.test/api/v1", api_key="k", default_model="m")
+    svc = ProclaudeService(
+        base_url="https://proclaude.test", api_key="k", default_model="m"
+    )
     out = await svc.chat_json(
         [ChatMessage(role="system", content="sys"), ChatMessage(role="user", content="hi")]
     )
     assert out == '{"ok":1}'
-    assert str(captured["url"]).endswith("/v1/chat/completions")
+    assert str(captured["url"]).endswith("/openai/v1/chat/completions")
+    assert captured["alias"] == "m"
     body = captured["body"]
     assert isinstance(body, dict)
     assert body["model"] == "m"
@@ -148,9 +157,66 @@ async def test_gpt_service_builds_openai_payload(monkeypatch: pytest.MonkeyPatch
 
 
 @pytest.mark.asyncio
+async def test_proclaude_service_can_request_plain_text_for_summaries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        import json as _json
+
+        captured["body"] = _json.loads(request.content)
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "content": "=== Summary 0 ===\nCustomer asked for a quote.",
+                        }
+                    }
+                ]
+            },
+        )
+
+    _patch_client(monkeypatch, httpx.MockTransport(handler))
+    svc = ProclaudeService(
+        base_url="https://proclaude.test", api_key="k", default_model="m"
+    )
+
+    out = await svc.chat_text([ChatMessage(role="user", content="summarize")])
+
+    assert out == "=== Summary 0 ===\nCustomer asked for a quote."
+    body = captured["body"]
+    assert isinstance(body, dict)
+    assert "response_format" not in body
+
+
+@pytest.mark.asyncio
+async def test_proclaude_readiness_rejects_missing_configured_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"object": "list", "data": [{"id": "claude-haiku-4"}]},
+        )
+
+    _patch_client(monkeypatch, httpx.MockTransport(handler))
+    svc = ProclaudeService(
+        base_url="https://proclaude.test",
+        api_key="svc_k",
+        default_model="claude-sonnet-4",
+    )
+
+    with pytest.raises(RuntimeError, match="claude-sonnet-4.*not available"):
+        await svc.validate_readiness()
+
+
+@pytest.mark.asyncio
 async def test_chat_json_strips_markdown_code_fences(monkeypatch: pytest.MonkeyPatch) -> None:
-    # Anthropic/proclaude has no JSON mode, so models often wrap JSON in ```json
-    # fences. chat_json must return parseable JSON regardless.
+    # Keep the generic Anthropic adapter robust for any direct non-JSON callers.
     import json
 
     fenced = '```json\n{\n  "addresses": []\n}\n```'
@@ -170,53 +236,8 @@ async def test_chat_json_strips_markdown_code_fences(monkeypatch: pytest.MonkeyP
         )
 
     _patch_client(monkeypatch, httpx.MockTransport(handler))
-    svc = ProclaudeService(base_url="https://proclaude.test", api_key="k", default_model="claude-x")
+    svc = AnthropicService(
+        base_url="https://anthropic.test", api_key="k", default_model="claude-x"
+    )
     out = await svc.chat_json([ChatMessage(role="user", content="normalize")])
     assert json.loads(out) == {"addresses": []}  # no fence, parses cleanly
-
-
-@pytest.mark.asyncio
-async def test_proclaude_service_splits_system_and_messages(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    captured: dict[str, object] = {}
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        import json as _json
-
-        captured["url"] = str(request.url)
-        captured["body"] = _json.loads(request.content)
-        captured["alias"] = request.headers.get("X-Model-Alias")
-        return httpx.Response(
-            200,
-            json={
-                "id": "msg_1",
-                "type": "message",
-                "role": "assistant",
-                "content": [
-                    {"type": "text", "text": '{"a":'},
-                    {"type": "text", "text": "1}"},
-                ],
-                "model": "claude-x",
-                "stop_reason": "end_turn",
-                "usage": {"input_tokens": 1, "output_tokens": 2},
-            },
-        )
-
-    _patch_client(monkeypatch, httpx.MockTransport(handler))
-    svc = ProclaudeService(
-        base_url="https://proclaude.test", api_key="svc_k", default_model="claude-x"
-    )
-    out = await svc.chat_json(
-        [
-            ChatMessage(role="system", content="be json"),
-            ChatMessage(role="user", content="extract"),
-        ]
-    )
-    assert out == '{"a":1}'
-    assert str(captured["url"]).endswith("/v1/messages")
-    assert captured["alias"] == "claude-x"
-    body = captured["body"]
-    assert isinstance(body, dict)
-    assert body["system"] == "be json"
-    assert body["messages"] == [{"role": "user", "content": "extract"}]

@@ -119,12 +119,19 @@ export interface IngestRunResponse {
 export interface IngestRunDetailResponse {
   ingest_run_id: string;
   run_type: string;
+  mode: string;
+  dump_path: string | null;
   status: string;
   record_count: number;
   rejected_count: number;
   started_at: string | null;
   finished_at: string | null;
   source_key: string | null;
+  failure_category: string | null;
+  failure_exception_class: string | null;
+  failure_message: string | null;
+  failure_task_id: string | null;
+  failure_checkpoint: string | null;
 }
 
 export interface SourceSystemInfo {
@@ -137,6 +144,17 @@ export interface SourceSystemInfo {
   entity_key: string | null;
   created_at: string | null;
   updated_at: string | null;
+  latest_run_id?: string | null;
+  latest_run_status?: string | null;
+  latest_run_started_at?: string | null;
+  latest_run_finished_at?: string | null;
+  latest_failure_category?: string | null;
+  latest_failure_exception_class?: string | null;
+  latest_failure_message?: string | null;
+  latest_failure_mode?: string | null;
+  latest_failure_started_at?: string | null;
+  latest_failure_task_id?: string | null;
+  latest_failure_checkpoint?: string | null;
 }
 
 export interface FieldTrustResponse {

@@ -110,7 +110,9 @@ MATCH (ir:IngestRun {ingest_run_id: $ingest_run_id})
 OPTIONAL MATCH (ir)-[:FROM_SOURCE]->(ss:SourceSystem)
 RETURN ir {
   .ingest_run_id, .run_type, .mode, .dump_path, .status,
-  .record_count, .rejected_count, .metadata
+  .record_count, .rejected_count, .metadata,
+  .failure_category, .failure_exception_class, .failure_message,
+  .failure_task_id, .failure_checkpoint
 } AS run,
 toString(ir.started_at) AS started_at,
 toString(ir.finished_at) AS finished_at,

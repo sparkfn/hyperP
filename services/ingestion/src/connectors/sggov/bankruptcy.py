@@ -8,8 +8,10 @@ from pathlib import Path
 
 from src.connectors.base import SourceConnector
 from src.connectors.sggov.bankruptcy_common import build_bankruptcy_envelope
-from src.connectors.sggov.dump import CopyRow, parse_copy_tables
+from src.connectors.sggov.dump import CopyRow, iter_copy_rows
 from src.models import JsonValue
+
+_COPY_BATCH_SIZE = 1000
 
 
 def _iso_datetime(value: JsonValue) -> str | None:
@@ -29,15 +31,6 @@ def _str_value(row: CopyRow | None, key: str) -> str | None:
         return None
     value = row.get(key)
     return value if isinstance(value, str) and value.strip() else None
-
-
-def _index_by_id(rows: list[CopyRow]) -> dict[str, CopyRow]:
-    indexed: dict[str, CopyRow] = {}
-    for row in rows:
-        row_id = _str_value(row, "id")
-        if row_id is not None:
-            indexed[row_id] = row
-    return indexed
 
 
 def _events_by_case(rows: list[CopyRow]) -> dict[str, CopyRow]:
@@ -67,21 +60,39 @@ class SGGovernmentBankruptcyConnector(SourceConnector):
         return "sgbankruptcy"
 
     def fetch_records(self) -> Iterator[dict[str, JsonValue]]:
-        tables = parse_copy_tables(
-            self._dump_path,
-            {"bankruptcy_cases", "case_events", "source_documents"},
-        )
-        cases = tables.get("bankruptcy_cases", [])
-        events = _events_by_case(tables.get("case_events", []))
-        documents = _index_by_id(tables.get("source_documents", []))
+        cases = iter_copy_rows(self._dump_path, "bankruptcy_cases")
+        for case_batch in _copy_row_batches(cases):
+            yield from self._build_case_batch(case_batch)
 
+    def _build_case_batch(
+        self,
+        cases: list[CopyRow],
+    ) -> Iterator[dict[str, JsonValue]]:
+        case_ids = {case_id for case in cases if (case_id := _str_value(case, "id")) is not None}
+        events: dict[str, CopyRow] = {}
+        for event in iter_copy_rows(self._dump_path, "case_events"):
+            case_id = _str_value(event, "bankruptcy_case_id")
+            if case_id not in case_ids:
+                continue
+            if case_id not in events or _event_order_key(event) > _event_order_key(events[case_id]):
+                events[case_id] = event
+        document_ids = {
+            document_id
+            for event in events.values()
+            if (document_id := _str_value(event, "source_document_id")) is not None
+        }
+        documents = {
+            document_id: document
+            for document in iter_copy_rows(self._dump_path, "source_documents")
+            if (document_id := _str_value(document, "id")) in document_ids
+        }
         for case in cases:
             case_id = _str_value(case, "id")
             if case_id is None:
                 continue
-            event = events.get(case_id)
-            document = documents.get(_str_value(event, "source_document_id") or "")
-            yield self._build_envelope(case, event, document)
+            latest_event = events.get(case_id)
+            document = documents.get(_str_value(latest_event, "source_document_id") or "")
+            yield self._build_envelope(case, latest_event, document)
 
     def _build_envelope(
         self,
@@ -116,3 +127,14 @@ class SGGovernmentBankruptcyConnector(SourceConnector):
             document_type=_str_value(document, "document_type"),
             document_date=_str_value(document, "document_date"),
         )
+
+
+def _copy_row_batches(rows: Iterator[CopyRow]) -> Iterator[list[CopyRow]]:
+    batch: list[CopyRow] = []
+    for row in rows:
+        batch.append(row)
+        if len(batch) == _COPY_BATCH_SIZE:
+            yield batch
+            batch = []
+    if batch:
+        yield batch

@@ -2126,15 +2126,74 @@ components:
     SourceSystem:
       type: object
       properties:
+        source_system_id:
+          type: [string, 'null']
         source_key:
           type: string
         display_name:
-          type: string
+          type: [string, 'null']
         system_type:
-          type: string
+          type: [string, 'null']
         is_active:
           type: boolean
-      required: [source_key, display_name, system_type, is_active]
+        field_trust:
+          type: object
+          additionalProperties:
+            type: string
+        entity_key:
+          type: [string, 'null']
+        created_at:
+          type: [string, 'null']
+          format: date-time
+        updated_at:
+          type: [string, 'null']
+          format: date-time
+        latest_run_id:
+          type: [string, 'null']
+        latest_run_status:
+          type: [string, 'null']
+        latest_run_started_at:
+          type: [string, 'null']
+          format: date-time
+        latest_run_finished_at:
+          type: [string, 'null']
+          format: date-time
+        latest_failure_category:
+          type: [string, 'null']
+        latest_failure_exception_class:
+          type: [string, 'null']
+        latest_failure_message:
+          type: [string, 'null']
+        latest_failure_mode:
+          type: [string, 'null']
+        latest_failure_started_at:
+          type: [string, 'null']
+          format: date-time
+        latest_failure_task_id:
+          type: [string, 'null']
+        latest_failure_checkpoint:
+          type: [string, 'null']
+      required:
+        - source_system_id
+        - source_key
+        - display_name
+        - system_type
+        - is_active
+        - field_trust
+        - entity_key
+        - created_at
+        - updated_at
+        - latest_run_id
+        - latest_run_status
+        - latest_run_started_at
+        - latest_run_finished_at
+        - latest_failure_category
+        - latest_failure_exception_class
+        - latest_failure_message
+        - latest_failure_mode
+        - latest_failure_started_at
+        - latest_failure_task_id
+        - latest_failure_checkpoint
       additionalProperties: false
     FieldTrustEntry:
       type: object
@@ -2412,8 +2471,18 @@ components:
         ingest_run_id:
           type: string
           format: uuid
+        run_type:
+          type: string
+        mode:
+          type: string
+        dump_path:
+          type: [string, 'null']
         status:
           type: string
+        record_count:
+          type: integer
+        rejected_count:
+          type: integer
         started_at:
           type:
             - string
@@ -2424,6 +2493,18 @@ components:
             - string
             - 'null'
           format: date-time
+        failure_category:
+          type: [string, 'null']
+        failure_exception_class:
+          type: [string, 'null']
+        failure_message:
+          type: [string, 'null']
+        failure_task_id:
+          type: [string, 'null']
+        failure_checkpoint:
+          type: [string, 'null']
+        source_key:
+          type: [string, 'null']
       required: [ingest_run_id, status]
       additionalProperties: false
     IngestRunResponseEnvelope:

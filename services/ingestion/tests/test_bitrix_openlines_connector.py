@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -7,11 +8,13 @@ from pytest import MonkeyPatch
 from src.connectors.bitrix_openlines.connector import BitrixOpenLinesConnector
 from src.connectors.bitrix_openlines.models import (
     ChatReference,
+    CrmDiscoveryPage,
     CrmOwnerReference,
     DialogMetadata,
     OpenLineConfig,
     OpenLineMessage,
 )
+from src.connectors.bitrix_openlines.watermark import BackfillCheckpoint
 from src.exclusion_config import ExclusionFile
 from src.ingestion_config import BitrixOpenLinesConfig
 
@@ -31,6 +34,9 @@ class StubClient:
                 provider_references=({"CHAT_ID": "77"},),
             )
         ]
+
+    def iter_crm_chat_ref_pages(self) -> Iterator[list[ChatReference]]:
+        yield self.iter_crm_chat_refs()
 
     def iter_recent_chat_refs(self, page_size: int) -> list[ChatReference]:
         return [ChatReference(77, datetime(2026, 7, 20, 8, tzinfo=UTC), "recent_dialog")]
@@ -88,6 +94,54 @@ class StubWatermark:
 
     def close(self) -> None:
         return None
+
+
+def test_backfill_resumes_from_and_advances_persisted_crm_page() -> None:
+    class ResumableClient(StubClient):
+        def __init__(self) -> None:
+            self.starts: list[int] = []
+
+        def iter_recent_chat_refs(self, page_size: int) -> list[ChatReference]:
+            return []
+
+        def iter_crm_chat_ref_pages(self) -> Iterator[list[ChatReference]]:
+            return
+            yield
+
+        def iter_crm_discovery_pages(self, *, start: int = 0) -> Iterator[CrmDiscoveryPage]:
+            self.starts.append(start)
+            yield CrmDiscoveryPage([], None)
+
+    class BackfillWatermark(StubWatermark):
+        def __init__(self) -> None:
+            super().__init__()
+            self.checkpoint: BackfillCheckpoint | None = BackfillCheckpoint(crm_start=50)
+            self.cleared = False
+
+        def get_backfill_checkpoint(self) -> BackfillCheckpoint | None:
+            return self.checkpoint
+
+        def set_backfill_checkpoint(self, checkpoint: BackfillCheckpoint) -> None:
+            self.checkpoint = checkpoint
+
+        def clear_backfill_checkpoint(self) -> None:
+            self.cleared = True
+            self.checkpoint = None
+
+    client = ResumableClient()
+    watermark = BackfillWatermark()
+    connector = BitrixOpenLinesConnector(
+        client,
+        watermark,
+        BitrixOpenLinesConfig(entity_by_config_id={"46": "speedzone"}),
+        mode="backfill",
+    )
+
+    assert list(connector.fetch_records()) == []
+    assert client.starts == [50]
+    assert watermark.checkpoint == BackfillCheckpoint(crm_start=None)
+    connector.commit_watermark()
+    assert watermark.cleared is True
 
 
 def test_connector_emits_mapped_selected_conversation_with_open_lines_provenance(

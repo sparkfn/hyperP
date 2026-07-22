@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
+import logging
 import time
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from typing import cast
+from urllib.parse import urlencode
 
 import httpx
 
 from src.connectors.bitrix_openlines.models import (
     ChatReference,
+    CrmDiscoveryPage,
     DialogMetadata,
     OpenLineConfig,
     OpenLineMessage,
@@ -32,6 +35,8 @@ from src.connectors.bitrix_openlines.response_helpers import (
 )
 from src.models import JsonValue
 
+logger = logging.getLogger(__name__)
+
 
 class BitrixOpenLinesClient:
     def __init__(
@@ -49,6 +54,7 @@ class BitrixOpenLinesClient:
         self._max_attempts = max_attempts
         self._request_delay_seconds = request_delay_seconds
         self._last_request_at = 0.0
+        self._request_count = 0
         self._http = http or httpx.Client(timeout=timeout_seconds)
 
     def list_active_configs(self) -> list[OpenLineConfig]:
@@ -91,8 +97,17 @@ class BitrixOpenLinesClient:
 
     def iter_crm_chat_refs(self) -> list[ChatReference]:
         refs: list[ChatReference] = []
+        for page in self.iter_crm_chat_ref_pages():
+            refs.extend(page)
+        return deduplicate_references(refs)
+
+    def iter_crm_chat_ref_pages(self) -> Iterator[list[ChatReference]]:
+        for page in self.iter_crm_discovery_pages():
+            yield page.references
+
+    def iter_crm_discovery_pages(self, *, start: int = 0) -> Iterator[CrmDiscoveryPage]:
         chat_ids_by_owner: dict[tuple[str, int], list[int]] = {}
-        start = 0
+        started_at = time.monotonic()
         while True:
             payload = self._request(
                 "crm.activity.list",
@@ -112,10 +127,33 @@ class BitrixOpenLinesClient:
             result = payload.get("result")
             if not isinstance(result, list):
                 raise RuntimeError("Bitrix CRM activities returned an invalid result")
-            refs.extend(self._crm_references(result, chat_ids_by_owner))
+            page_refs = deduplicate_references(self._crm_references(result, chat_ids_by_owner))
             next_page = next_start(payload, start)
+            elapsed = max(time.monotonic() - started_at, 0.001)
+            processed = start + len(result)
+            total = payload.get("total")
+            eta_seconds = (
+                max(float(total) - processed, 0.0) / (processed / elapsed)
+                if isinstance(total, (int, float)) and processed > 0
+                else None
+            )
+            logger.info(
+                "Bitrix CRM discovery page start=%d activities=%d chats=%d "
+                "processed=%d total=%s requests=%d rate=%.2f_per_second "
+                "request_rate=%.2f_per_second eta_seconds=%s",
+                start,
+                len(result),
+                len(page_refs),
+                processed,
+                total if isinstance(total, (int, float)) else "unknown",
+                self._request_count,
+                processed / elapsed,
+                self._request_count / elapsed,
+                f"{eta_seconds:.1f}" if eta_seconds is not None else "unknown",
+            )
+            yield CrmDiscoveryPage(page_refs, next_page)
             if next_page is None:
-                return deduplicate_references(refs)
+                return
             start = next_page
 
     def _crm_references(
@@ -123,6 +161,22 @@ class BitrixOpenLinesClient:
         result: list[JsonValue],
         chat_ids_by_owner: dict[tuple[str, int], list[int]],
     ) -> list[ChatReference]:
+        missing_owners = sorted(
+            {
+                (owner.owner_type, owner.owner_id)
+                for item in result
+                if isinstance(item, dict)
+                if provider_chat_id(item.get("PROVIDER_PARAMS")) is None
+                if (owner := owner_reference(item)) is not None
+                if (owner.owner_type, owner.owner_id) not in chat_ids_by_owner
+            }
+        )
+        if len(missing_owners) == 1:
+            owner_key = missing_owners[0]
+            chat_ids_by_owner[owner_key] = self._crm_chat_ids(*owner_key)
+        elif missing_owners:
+            chat_ids_by_owner.update(self._crm_chat_ids_batch(missing_owners))
+
         refs: list[ChatReference] = []
         for item in result:
             if not isinstance(item, dict):
@@ -148,8 +202,6 @@ class BitrixOpenLinesClient:
             if owner is None:
                 continue
             owner_key = (owner.owner_type, owner.owner_id)
-            if owner_key not in chat_ids_by_owner:
-                chat_ids_by_owner[owner_key] = self._crm_chat_ids(*owner_key)
             for resolved_chat_id in chat_ids_by_owner[owner_key]:
                 refs.append(
                     ChatReference(
@@ -162,6 +214,61 @@ class BitrixOpenLinesClient:
                     )
                 )
         return refs
+
+    def _crm_chat_ids_batch(
+        self,
+        owners: list[tuple[str, int]],
+    ) -> dict[tuple[str, int], list[int]]:
+        resolved: dict[tuple[str, int], list[int]] = {owner: [] for owner in owners}
+        pending = {owner: 0 for owner in owners}
+        while pending:
+            batch_owners = list(pending)[:50]
+            command_owners = {f"owner_{index}": owner for index, owner in enumerate(batch_owners)}
+            commands: dict[str, JsonValue] = {
+                command_key: self._crm_chat_lookup_command(owner, pending[owner])
+                for command_key, owner in command_owners.items()
+            }
+            raw_batch = self._call("batch", {"halt": 0, "cmd": commands})
+            if not isinstance(raw_batch, dict):
+                raise RuntimeError("Bitrix CRM chat batch returned an invalid result")
+            raw_results = raw_batch.get("result")
+            raw_next = raw_batch.get("result_next")
+            raw_errors = raw_batch.get("result_error")
+            if not isinstance(raw_results, dict):
+                raise RuntimeError("Bitrix CRM chat batch omitted command results")
+            if isinstance(raw_errors, dict) and raw_errors:
+                raise RuntimeError("Bitrix CRM chat batch contained a command error")
+            next_starts = raw_next if isinstance(raw_next, dict) else {}
+            for command_key, owner in command_owners.items():
+                raw_items = raw_results.get(command_key)
+                if not isinstance(raw_items, list):
+                    raise RuntimeError("Bitrix CRM chat batch returned an invalid collection")
+                for item in raw_items:
+                    if isinstance(item, dict):
+                        chat_id = numeric_chat_id(item.get("CHAT_ID"))
+                        if chat_id is not None:
+                            resolved[owner].append(chat_id)
+                next_start = numeric_chat_id(next_starts.get(command_key))
+                if next_start is None:
+                    pending.pop(owner)
+                elif next_start <= pending[owner]:
+                    raise RuntimeError("Bitrix CRM chat batch pagination did not advance")
+                else:
+                    pending[owner] = next_start
+        return resolved
+
+    @staticmethod
+    def _crm_chat_lookup_command(owner: tuple[str, int], start: int) -> str:
+        owner_type, owner_id = owner
+        query = urlencode(
+            {
+                "CRM_ENTITY_TYPE": owner_type,
+                "CRM_ENTITY": owner_id,
+                "ACTIVE_ONLY": "N",
+                "start": start,
+            }
+        )
+        return f"imopenlines.crm.chat.get?{query}"
 
     def _crm_chat_ids(self, owner_type: str, owner_id: int) -> list[int]:
         chat_ids: list[int] = []
@@ -262,6 +369,7 @@ class BitrixOpenLinesClient:
                 if elapsed < self._request_delay_seconds:
                     time.sleep(self._request_delay_seconds - elapsed)
                 response = self._http.post(f"{self._base_url}/{method}", json=dict(params))
+                self._request_count += 1
                 self._last_request_at = time.monotonic()
                 response.raise_for_status()
                 payload = cast(object, response.json())

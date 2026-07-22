@@ -15,8 +15,11 @@ resolution on its next tick without surgery on the identity path.
 from __future__ import annotations
 
 import logging
+import time
+from collections.abc import Callable
 
 from neo4j import ManagedTransaction
+from neo4j.exceptions import TransientError
 
 from src.graph import queries
 from src.graph.client import Neo4jClient
@@ -24,6 +27,35 @@ from src.models import JsonValue, SourceRecordEnvelope
 from src.raw_payload import decode_raw_payload
 
 logger = logging.getLogger(__name__)
+
+_DEADLOCK_CODE = "Neo.TransientError.Transaction.DeadlockDetected"
+_BatchResult = tuple[int, str | None]
+
+
+def _execute_batch_with_deadlock_retry(
+    client: Neo4jClient,
+    work: Callable[[ManagedTransaction], _BatchResult],
+    *,
+    max_deadlock_retries: int,
+    retry_base_delay_seconds: float,
+) -> _BatchResult:
+    attempts = max(max_deadlock_retries, 0) + 1
+    for attempt in range(attempts):
+        try:
+            with client.session() as session:
+                return session.execute_write(work)
+        except TransientError as exc:
+            if exc.code != _DEADLOCK_CODE or attempt == attempts - 1:
+                raise
+            delay = max(retry_base_delay_seconds, 0.0) * (2**attempt)
+            logger.warning(
+                "KNOWS batch deadlocked; retrying attempt=%d/%d delay_seconds=%.3f",
+                attempt + 2,
+                attempts,
+                delay,
+            )
+            time.sleep(delay)
+    raise AssertionError("unreachable KNOWS retry state")
 
 
 def _declarer_source_system_key(relationship_source_system_key: str) -> str:
@@ -208,7 +240,9 @@ def _link_one_chat_relationship(
 def materialize_knows_from_chat_relationships(
     client: Neo4jClient,
     *,
-    batch_size: int = 500,
+    batch_size: int = 100,
+    max_deadlock_retries: int = 3,
+    retry_base_delay_seconds: float = 0.25,
 ) -> int:
     total_linked = 0
     cursor = ""
@@ -238,8 +272,12 @@ def materialize_knows_from_chat_relationships(
                     newly_linked += 1
             return newly_linked, last_pk
 
-        with client.session() as session:
-            newly_linked, last_pk = session.execute_write(_work)
+        newly_linked, last_pk = _execute_batch_with_deadlock_retry(
+            client,
+            _work,
+            max_deadlock_retries=max_deadlock_retries,
+            retry_base_delay_seconds=retry_base_delay_seconds,
+        )
         if last_pk is None:
             break
         total_linked += newly_linked
@@ -252,7 +290,13 @@ def materialize_knows_from_chat_relationships(
     return total_linked
 
 
-def materialize_knows_from_contacts(client: Neo4jClient, *, batch_size: int = 500) -> int:
+def materialize_knows_from_contacts(
+    client: Neo4jClient,
+    *,
+    batch_size: int = 100,
+    max_deadlock_retries: int = 3,
+    retry_base_delay_seconds: float = 0.25,
+) -> int:
     """Walk every contact SourceRecord and link declarer → contact via KNOWS.
 
     Paginates through contact records using a source_record_pk cursor so
@@ -287,8 +331,12 @@ def materialize_knows_from_contacts(client: Neo4jClient, *, batch_size: int = 50
                     newly_linked += 1
             return newly_linked, last_pk
 
-        with client.session() as session:
-            newly_linked, last_pk = session.execute_write(_work)
+        newly_linked, last_pk = _execute_batch_with_deadlock_retry(
+            client,
+            _work,
+            max_deadlock_retries=max_deadlock_retries,
+            retry_base_delay_seconds=retry_base_delay_seconds,
+        )
         if last_pk is None:
             break
         total_linked += newly_linked

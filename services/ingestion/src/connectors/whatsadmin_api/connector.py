@@ -4,12 +4,16 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from datetime import datetime
-from typing import Protocol
+from typing import Protocol, runtime_checkable
 
 from src.connectors.base import SourceConnector
 from src.connectors.whatsadmin_api.credentials import WhatsAdminEntity
 from src.connectors.whatsadmin_api.models import ChatPage, SessionRow
-from src.connectors.whatsadmin_api.watermark import WatermarkStore
+from src.connectors.whatsadmin_api.watermark import (
+    PageCheckpoint,
+    PageCheckpointStore,
+    WatermarkStore,
+)
 from src.connectors.whatsapp.connector import (
     ORG_TO_ENTITY,
     _ChatBundle,
@@ -26,8 +30,18 @@ class WhatsAdminClient(Protocol):
     @property
     def entity_key(self) -> WhatsAdminEntity: ...
     def iter_sessions(self) -> Iterator[SessionRow]: ...
-    def iter_chat_pages(self, session_id: str, changed_since: str | None) -> Iterator[ChatPage]: ...
+    def iter_chat_pages(
+        self,
+        session_id: str,
+        changed_since: str | None,
+        cursor: str | None = None,
+    ) -> Iterator[ChatPage]: ...
     def close(self) -> None: ...
+
+
+@runtime_checkable
+class FailureContextReporter(Protocol):
+    def failure_context(self) -> dict[str, JsonValue]: ...
 
 
 class WhatsAdminChatApiConnector(SourceConnector):
@@ -42,6 +56,10 @@ class WhatsAdminChatApiConnector(SourceConnector):
         self._watermark = watermark
         self._legacy_entity = legacy_entity
         self._pending_watermarks: dict[tuple[WhatsAdminEntity, str], datetime] = {}
+        self._active_checkpoint: dict[str, JsonValue] = {}
+        self._checkpoint_store = watermark if isinstance(watermark, PageCheckpointStore) else None
+        self._touched_checkpoints: set[tuple[WhatsAdminEntity, str]] = set()
+        self._record_errors = False
 
     def get_source_key(self) -> str:
         return "whatsapp_chat"
@@ -59,16 +77,58 @@ class WhatsAdminChatApiConnector(SourceConnector):
                 )
             watermark = self._watermark.get(entity_key, session.id)
             changed_since = watermark.isoformat() if watermark is not None else None
-            yield from self._fetch_session(client, session, changed_since)
+            self._active_checkpoint = {
+                "entity_key": entity_key,
+                "session_id": session.id,
+                "changed_since": changed_since,
+                "cursor": "first",
+            }
+            checkpoint = self._load_checkpoint(entity_key, session.id, changed_since)
+            if checkpoint is not None and checkpoint.complete:
+                self._pending_watermarks[(entity_key, session.id)] = checkpoint.snapshot_at
+                self._active_checkpoint.update(
+                    {
+                        "snapshot_at": checkpoint.snapshot_at.isoformat(),
+                        "cursor": "complete",
+                    }
+                )
+                continue
+            yield from self._fetch_session(client, session, changed_since, checkpoint)
+
+    def _load_checkpoint(
+        self,
+        entity_key: WhatsAdminEntity,
+        session_id: str,
+        changed_since: str | None,
+    ) -> PageCheckpoint | None:
+        if self._checkpoint_store is None:
+            return None
+        checkpoint = self._checkpoint_store.get_checkpoint(entity_key, session_id)
+        if checkpoint is None:
+            return None
+        if checkpoint.changed_since != changed_since:
+            self._checkpoint_store.delete_checkpoint(entity_key, session_id)
+            return None
+        self._touched_checkpoints.add((entity_key, session_id))
+        return checkpoint
 
     def _fetch_session(
         self,
         client: WhatsAdminClient,
         session: SessionRow,
         changed_since: str | None,
+        checkpoint: PageCheckpoint | None,
     ) -> Iterator[dict[str, JsonValue]]:
         state_key = (client.entity_key, session.id)
-        for page in client.iter_chat_pages(session.id, changed_since):
+        if checkpoint is not None:
+            self._pending_watermarks[state_key] = checkpoint.snapshot_at
+        cursor = checkpoint.cursor if checkpoint is not None else None
+        pages = (
+            client.iter_chat_pages(session.id, changed_since, cursor)
+            if cursor is not None
+            else client.iter_chat_pages(session.id, changed_since)
+        )
+        for page in pages:
             if page.meta.snapshot_at is None:
                 raise RuntimeError("WhatsAdmin chat page omitted snapshotAt")
             self._validate_chat_identities(session, page)
@@ -81,6 +141,34 @@ class WhatsAdminChatApiConnector(SourceConnector):
                 bundles,
                 fail_on_extraction_error=True,
             )
+            next_cursor = page.meta.pagination.next_cursor
+            if page.meta.pagination.has_more and next_cursor is None:
+                raise RuntimeError("WhatsAdmin chat page omitted nextCursor")
+            saved = PageCheckpoint(
+                changed_since=changed_since,
+                cursor=next_cursor,
+                snapshot_at=page.meta.snapshot_at,
+                complete=not page.meta.pagination.has_more,
+            )
+            if not self._record_errors:
+                self._save_checkpoint(state_key, saved)
+            self._active_checkpoint.update(
+                {
+                    "request_id": page.meta.request_id,
+                    "snapshot_at": page.meta.snapshot_at.isoformat(),
+                    "cursor": next_cursor or "complete",
+                }
+            )
+
+    def _save_checkpoint(
+        self,
+        state_key: tuple[WhatsAdminEntity, str],
+        checkpoint: PageCheckpoint,
+    ) -> None:
+        if self._checkpoint_store is None:
+            return
+        self._checkpoint_store.set_checkpoint(*state_key, checkpoint)
+        self._touched_checkpoints.add(state_key)
 
     @staticmethod
     def _validate_chat_identities(session: SessionRow, page: ChatPage) -> None:
@@ -94,6 +182,24 @@ class WhatsAdminChatApiConnector(SourceConnector):
         for (entity_key, session_id), value in self._pending_watermarks.items():
             self._watermark.set(entity_key, session_id, value)
         self._pending_watermarks.clear()
+        self._delete_touched_checkpoints()
+
+    def record_processed(self, *, succeeded: bool) -> None:
+        if not succeeded:
+            self._record_errors = True
+
+    def _delete_touched_checkpoints(self) -> None:
+        if self._checkpoint_store is not None:
+            for state_key in self._touched_checkpoints:
+                self._checkpoint_store.delete_checkpoint(*state_key)
+        self._touched_checkpoints.clear()
+
+    def failure_checkpoint(self) -> dict[str, JsonValue]:
+        checkpoint = dict(self._active_checkpoint)
+        for client in self._clients:
+            if isinstance(client, FailureContextReporter):
+                checkpoint.update(client.failure_context())
+        return checkpoint
 
     def close(self) -> None:
         for client in self._clients:

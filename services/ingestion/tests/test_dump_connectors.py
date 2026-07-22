@@ -6,8 +6,8 @@ from pathlib import Path
 
 from pytest import MonkeyPatch, mark, skip
 from src.connectors.dumps.connectors import (
-    FundboxSalesDumpConnector,
     PHPPOS_SALES_TABLES,
+    FundboxSalesDumpConnector,
     _build_fundbox_contact,
     _build_fundbox_legacy,
     _fetch_phppos_dump_sales,
@@ -29,6 +29,42 @@ def _sample_extraction(texts: list[str]) -> list[dict[str, object]]:
         }
         for text in texts
     ]
+
+
+@mark.parametrize(
+    "source_key",
+    [
+        "whatsapp_chat",
+        "bitrix_chat",
+        "eko_phppos",
+        "speedzone_phppos",
+        "fundbox_consumer_backend",
+        "fundbox_consumer_backend:contacts",
+        "fundbox_consumer_backend:legacy",
+        "fundbox_consumer_backend:merged",
+        "fundbox_consumer_backend:sales",
+        "eko_phppos:sales",
+        "speedzone_phppos:sales",
+        "sgbankruptcy",
+        "sgrentalflats",
+    ],
+)
+def test_dump_connectors_do_not_materialize_complete_dump_tables(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+    source_key: str,
+) -> None:
+    dump_path = tmp_path / "empty.sql"
+    dump_path.write_text("", encoding="utf-8")
+    monkeypatch.setattr(
+        Path,
+        "read_text",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("complete dump materialization is forbidden")
+        ),
+    )
+
+    assert list(get_dump_connector(source_key, dump_path).fetch_records()) == []
 
 
 def test_whatsapp_dump_connector_yields_conversation_envelope(
@@ -745,9 +781,7 @@ def _write_phppos_sales_dump_with_customer(dump_path: Path, source_system_key: s
                     "`description`) VALUES (22,'SKU-22','Scooter Model',7,"
                     "'Electric','Large',500.0,899.0,'');"
                 ),
-                (
-                    "INSERT INTO `phppos_categories` (`id`,`name`) VALUES (7,'Scooters');"
-                ),
+                ("INSERT INTO `phppos_categories` (`id`,`name`) VALUES (7,'Scooters');"),
                 (
                     "INSERT INTO `phppos_customers` (`id`,`person_id`,`deleted`,"
                     "`custom_field_1_value`,`custom_field_8_value`,"

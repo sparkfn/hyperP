@@ -50,6 +50,11 @@ class IngestRunDetailResponse:
     started_at: str | None
     finished_at: str | None
     source_key: str | None
+    failure_category: str | None = None
+    failure_exception_class: str | None = None
+    failure_message: str | None = None
+    failure_task_id: str | None = None
+    failure_checkpoint: str | None = None
 
 
 class IngestRepository(Protocol):

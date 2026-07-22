@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -91,6 +91,44 @@ def load_dump_tables(dump_path: str | Path, table_columns: TableColumns) -> Dump
     return DumpTables(loaded)
 
 
+def iter_dump_rows(
+    dump_path: str | Path,
+    table_name: str,
+    columns: Sequence[str] | None,
+) -> Iterator[DumpRow]:
+    """Stream one selected table without materialising the complete dump."""
+    normalized = _normalize_table_name(table_name)
+    wanted: TableColumns = {normalized: columns}
+    inferred_columns: dict[str, list[str]] = {}
+    with Path(dump_path).open(encoding="utf-8", errors="replace") as dump_file:
+        lines = iter(dump_file)
+        for line in lines:
+            stripped = line.strip()
+            if stripped.startswith("CREATE TABLE "):
+                statement = _read_statement(line, lines)
+                _parse_mysql_create_table(statement, wanted, inferred_columns)
+            elif stripped.startswith("INSERT INTO "):
+                yield from _iter_mysql_insert_stream(
+                    line,
+                    lines,
+                    wanted,
+                    inferred_columns,
+                    normalized,
+                )
+            elif stripped.startswith("COPY ") and " FROM stdin;" in stripped:
+                yield from _iter_postgres_copy_rows(line, lines, normalized)
+
+
+def _read_statement(first_line: str, lines: Iterator[str]) -> str:
+    statement_lines = [first_line.rstrip("\n")]
+    while not statement_lines[-1].rstrip().endswith(";"):
+        try:
+            statement_lines.append(next(lines).rstrip("\n"))
+        except StopIteration:
+            break
+    return "\n".join(statement_lines)
+
+
 def _normalize_table_name(raw: str) -> str:
     name = raw.strip().strip('`"')
     if "." in name:
@@ -131,11 +169,32 @@ def _parse_mysql_insert(
     inferred_columns: Mapping[str, Sequence[str]],
     loaded: dict[str, list[DumpRow]],
 ) -> None:
+    normalized = _mysql_insert_table_name(statement)
+    if normalized not in loaded:
+        return
+    loaded[normalized].extend(
+        _iter_mysql_insert_rows(statement, wanted, inferred_columns, normalized)
+    )
+
+
+def _mysql_insert_table_name(statement: str) -> str:
+    prefix = "INSERT INTO "
+    rest = statement[len(prefix) :].lstrip()
+    table_name, _ = _read_mysql_identifier(rest)
+    return _normalize_table_name(table_name)
+
+
+def _iter_mysql_insert_rows(
+    statement: str,
+    wanted: Mapping[str, Sequence[str] | None],
+    inferred_columns: Mapping[str, Sequence[str]],
+    expected_table: str,
+) -> Iterator[DumpRow]:
     prefix = "INSERT INTO "
     rest = statement[len(prefix) :].lstrip()
     table_name, after_table = _read_mysql_identifier(rest)
     normalized = _normalize_table_name(table_name)
-    if normalized not in wanted:
+    if normalized != expected_table or normalized not in wanted:
         return
     columns, after_columns = _read_optional_column_list(after_table.lstrip())
     configured_columns = wanted[normalized]
@@ -147,9 +206,70 @@ def _parse_mysql_insert(
     if values_index < 0:
         return
     values_text = after_columns[values_index + len("VALUES") :].strip().rstrip(";")
-    for tuple_values in _parse_mysql_tuples(values_text):
+    for tuple_values in _iter_mysql_tuples(values_text):
         row = _row_from_columns(final_columns, tuple_values)
-        loaded[normalized].append(DumpRow(row))
+        yield DumpRow(row)
+
+
+def _iter_mysql_insert_stream(
+    first_line: str,
+    lines: Iterator[str],
+    wanted: Mapping[str, Sequence[str] | None],
+    inferred_columns: Mapping[str, Sequence[str]],
+    expected_table: str,
+) -> Iterator[DumpRow]:
+    normalized = _mysql_insert_table_name(first_line)
+    if normalized != expected_table or normalized not in wanted:
+        _consume_statement(first_line, lines)
+        return
+
+    header = first_line
+    while "VALUES" not in header.upper():
+        if header.rstrip().endswith(";"):
+            return
+        try:
+            header += next(lines)
+        except StopIteration:
+            return
+
+    rest = header[len("INSERT INTO ") :].lstrip()
+    _table_name, after_table = _read_mysql_identifier(rest)
+    columns, after_columns = _read_optional_column_list(after_table.lstrip())
+    configured_columns = wanted[normalized]
+    fallback_columns = inferred_columns.get(normalized, [])
+    final_columns = columns if columns else list(configured_columns or fallback_columns)
+    if not final_columns:
+        raise ValueError(f"columns required for MySQL dump table {normalized}")
+    values_index = after_columns.upper().find("VALUES")
+    if values_index < 0:
+        return
+    first_values = after_columns[values_index + len("VALUES") :]
+    for tuple_values in _iter_mysql_tuple_chunks(
+        _statement_value_chunks(first_values, header, lines)
+    ):
+        yield DumpRow(_row_from_columns(final_columns, tuple_values))
+
+
+def _consume_statement(first_line: str, lines: Iterator[str]) -> None:
+    if first_line.rstrip().endswith(";"):
+        return
+    for line in lines:
+        if line.rstrip().endswith(";"):
+            return
+
+
+def _statement_value_chunks(
+    first_values: str,
+    header: str,
+    lines: Iterator[str],
+) -> Iterator[str]:
+    yield first_values
+    if header.rstrip().endswith(";"):
+        return
+    for line in lines:
+        yield line
+        if line.rstrip().endswith(";"):
+            return
 
 
 def _read_mysql_identifier(text: str) -> tuple[str, str]:
@@ -171,7 +291,14 @@ def _read_optional_column_list(text: str) -> tuple[list[str], str]:
 
 
 def _parse_mysql_tuples(values_text: str) -> list[list[JsonValue]]:
-    rows: list[list[JsonValue]] = []
+    return list(_iter_mysql_tuples(values_text))
+
+
+def _iter_mysql_tuples(values_text: str) -> Iterator[list[JsonValue]]:
+    yield from _iter_mysql_tuple_chunks((values_text,))
+
+
+def _iter_mysql_tuple_chunks(chunks: Iterator[str] | tuple[str, ...]) -> Iterator[list[JsonValue]]:
     current_row: list[JsonValue] = []
     current_chars: list[str] = []
     in_string = False
@@ -179,44 +306,44 @@ def _parse_mysql_tuples(values_text: str) -> list[list[JsonValue]]:
     in_tuple = False
     token_was_quoted = False
 
-    for char in values_text:
-        if in_string:
-            if escaping:
-                current_chars.append(_decode_mysql_escape(char))
-                escaping = False
-            elif char == "\\":
-                escaping = True
-            elif char == "'":
-                in_string = False
-            else:
-                current_chars.append(char)
-            continue
+    for chunk in chunks:
+        for char in chunk:
+            if in_string:
+                if escaping:
+                    current_chars.append(_decode_mysql_escape(char))
+                    escaping = False
+                elif char == "\\":
+                    escaping = True
+                elif char == "'":
+                    in_string = False
+                else:
+                    current_chars.append(char)
+                continue
 
-        if char == "'" and in_tuple:
-            in_string = True
-            token_was_quoted = True
-            continue
-        if char == "(":
-            in_tuple = True
-            current_row = []
-            current_chars = []
-            token_was_quoted = False
-            continue
-        if char == "," and in_tuple:
-            current_row.append(_coerce_mysql_token("".join(current_chars), token_was_quoted))
-            current_chars = []
-            token_was_quoted = False
-            continue
-        if char == ")" and in_tuple:
-            current_row.append(_coerce_mysql_token("".join(current_chars), token_was_quoted))
-            rows.append(current_row)
-            in_tuple = False
-            current_chars = []
-            token_was_quoted = False
-            continue
-        if in_tuple:
-            current_chars.append(char)
-    return rows
+            if char == "'" and in_tuple:
+                in_string = True
+                token_was_quoted = True
+                continue
+            if char == "(":
+                in_tuple = True
+                current_row = []
+                current_chars = []
+                token_was_quoted = False
+                continue
+            if char == "," and in_tuple:
+                current_row.append(_coerce_mysql_token("".join(current_chars), token_was_quoted))
+                current_chars = []
+                token_was_quoted = False
+                continue
+            if char == ")" and in_tuple:
+                current_row.append(_coerce_mysql_token("".join(current_chars), token_was_quoted))
+                yield current_row
+                in_tuple = False
+                current_chars = []
+                token_was_quoted = False
+                continue
+            if in_tuple:
+                current_chars.append(char)
 
 
 def _decode_mysql_escape(char: str) -> str:
@@ -272,6 +399,29 @@ def _parse_postgres_copy(
             loaded[table_name].append(DumpRow(_row_from_columns(columns, values)))
         index += 1
     return index
+
+
+def _iter_postgres_copy_rows(
+    header_line: str,
+    lines: Iterator[str],
+    expected_table: str,
+) -> Iterator[DumpRow]:
+    header = header_line.strip()
+    table_start = len("COPY ")
+    columns_start = header.index("(")
+    columns_end = header.index(") FROM stdin;")
+    table_name = _normalize_table_name(header[table_start:columns_start].strip())
+    columns = [
+        _normalize_table_name(part) for part in header[columns_start + 1 : columns_end].split(",")
+    ]
+    for raw_line in lines:
+        line = raw_line.rstrip("\r\n")
+        if line == r"\.":
+            return
+        if table_name != expected_table:
+            continue
+        values = [_coerce_postgres_value(value) for value in _split_postgres_copy_line(line)]
+        yield DumpRow(_row_from_columns(columns, values))
 
 
 def _split_postgres_copy_line(line: str) -> list[str]:

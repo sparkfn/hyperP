@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import argparse
+import json
 import logging
+import re
 import sys
 from collections.abc import Callable
 from typing import Protocol, TypedDict, runtime_checkable
@@ -75,7 +77,8 @@ from src.graph.client import Neo4jClient
 from src.graph.migrations import apply_data_migrations
 from src.graph.schema_init import apply_deferred_source_record_constraints, apply_schema
 from src.ingestion_config import get_ingestion_config
-from src.models import IngestResult, RecordType, SourceRecordEnvelope
+from src.llm import validate_ingestion_llm_readiness
+from src.models import IngestResult, JsonValue, RecordType, SourceRecordEnvelope
 from src.pipeline import IngestPipeline
 from src.pipeline_addresses import ingest_address_record
 from src.pipeline_knows import (
@@ -91,6 +94,17 @@ from src.retirement import retire_source_evidence
 
 logger = logging.getLogger(__name__)
 
+_URL_IN_FAILURE = re.compile(r"https?://[^\s]+", re.IGNORECASE)
+_SECRET_IN_FAILURE = re.compile(
+    r"\b(api[_-]?key|token|password|secret)\b([\"']?)(\s*[:=]\s*)"
+    r"([\"']?)([^\s,;}\]]+)",
+    re.IGNORECASE,
+)
+_BEARER_IN_FAILURE = re.compile(
+    r"\b(Authorization\s*:\s*)?Bearer\s+[^\s,;}\]]+",
+    re.IGNORECASE,
+)
+
 
 @runtime_checkable
 class _ClosableConnector(Protocol):
@@ -100,6 +114,63 @@ class _ClosableConnector(Protocol):
 @runtime_checkable
 class _WatermarkCommitter(Protocol):
     def commit_watermark(self) -> None: ...
+
+
+@runtime_checkable
+class _FailureCheckpointReporter(Protocol):
+    def failure_checkpoint(self) -> dict[str, JsonValue]: ...
+
+
+@runtime_checkable
+class _RecordOutcomeReporter(Protocol):
+    def record_processed(self, *, succeeded: bool) -> None: ...
+
+
+class FailureSummary(TypedDict):
+    category: str
+    exception_class: str
+    message: str
+    source: str
+    mode: str
+    task_id: str | None
+    checkpoint: dict[str, JsonValue]
+
+
+def _build_failure_summary(
+    exc: Exception,
+    *,
+    source_key: str,
+    mode: str,
+    task_id: str | None,
+    checkpoint: dict[str, JsonValue],
+) -> FailureSummary:
+    message = _safe_failure_message(exc)
+    exception_class = type(exc).__name__
+    if "entity_key" in message and "parameter" in message.lower():
+        category = "sales_entity_key"
+    elif "DeadlockDetected" in message or "deadlock" in message.lower():
+        category = "neo4j_deadlock"
+    elif isinstance(exc, httpx.TimeoutException):
+        category = "upstream_timeout"
+    else:
+        category = "distinct"
+    return {
+        "category": category,
+        "exception_class": exception_class,
+        "message": message,
+        "source": source_key,
+        "mode": mode,
+        "task_id": task_id,
+        "checkpoint": checkpoint,
+    }
+
+
+def _safe_failure_message(exc: Exception) -> str:
+    """Return bounded diagnostic text without URLs or credential-like values."""
+    without_urls = _URL_IN_FAILURE.sub("[redacted-url]", str(exc))
+    without_secrets = _SECRET_IN_FAILURE.sub(r"\1\3[redacted]", without_urls)
+    redacted = _BEARER_IN_FAILURE.sub(r"\1Bearer [redacted]", without_secrets)
+    return redacted[:1000]
 
 
 # Registry of available connectors keyed by source_key. New sources only need
@@ -146,8 +217,9 @@ def _mark_run_failed(
     ingest_run_id: str,
     record_count: int,
     rejected_count: int,
+    summary: FailureSummary,
 ) -> None:
-    """Best-effort finaliser that records a run as ``completed_with_errors``.
+    """Best-effort finaliser that records a structured terminal failure.
 
     Swallows any secondary failure so the original exception propagates to
     the Celery task handler.
@@ -156,16 +228,22 @@ def _mark_run_failed(
 
         def _work(tx: ManagedTransaction) -> None:
             tx.run(
-                queries.UPDATE_INGEST_RUN,
+                queries.MARK_INGEST_RUN_FAILED,
                 ingest_run_id=ingest_run_id,
-                status="completed_with_errors",
                 record_count=record_count,
                 rejected_count=rejected_count,
+                failure_category=summary["category"],
+                failure_exception_class=summary["exception_class"],
+                failure_message=summary["message"],
+                failure_source=summary["source"],
+                failure_mode=summary["mode"],
+                failure_task_id=summary["task_id"],
+                failure_checkpoint=json.dumps(summary["checkpoint"], default=str),
             )
 
         with client.session() as session:
             session.execute_write(_work)
-        logger.warning("Marked IngestRun %s -> completed_with_errors", ingest_run_id)
+        logger.warning("Marked IngestRun %s -> failed (%s)", ingest_run_id, summary["category"])
     except Exception:
         logger.exception("Failed to mark IngestRun %s as failed", ingest_run_id)
 
@@ -177,6 +255,37 @@ def setup_logging(level: str) -> None:
         datefmt="%Y-%m-%dT%H:%M:%S",
     )
     logging.getLogger("neo4j.notifications").setLevel(logging.ERROR)
+
+
+def _materialize_optional_knows(client: Neo4jClient) -> list[str]:
+    """Run optional KNOWS projections independently and report deferred phases."""
+    failures: list[str] = []
+    phases = (
+        ("chat_relationships", materialize_knows_from_chat_relationships),
+        ("contacts", materialize_knows_from_contacts),
+    )
+    for phase, materialize in phases:
+        try:
+            linked = materialize(client)
+            if linked:
+                logger.info("Materialized %d KNOWS edges from %s", linked, phase)
+        except Exception:
+            failures.append(phase)
+            logger.exception(
+                "Optional KNOWS materialization phase %s failed; a later ingestion can retry it",
+                phase,
+            )
+    return failures
+
+
+def _finalize_connector_progress(connector: object, *, error_count: int) -> None:
+    if error_count == 0 and isinstance(connector, _WatermarkCommitter):
+        connector.commit_watermark()
+
+
+def _report_record_outcome(connector: object, *, succeeded: bool) -> None:
+    if isinstance(connector, _RecordOutcomeReporter):
+        connector.record_processed(succeeded=succeeded)
 
 
 def create_phppos_api_client(source_key: str) -> PhpposApiClient:
@@ -243,6 +352,8 @@ def create_whatsadmin_api_connector(entity_key: str | None = None) -> WhatsAdmin
             credential=credential,
             page_size=settings.whatsadmin_api_page_size,
             timeout_seconds=settings.whatsadmin_api_timeout_seconds,
+            max_attempts=settings.whatsadmin_api_max_attempts,
+            retry_base_delay_seconds=settings.whatsadmin_api_retry_base_delay_seconds,
         )
         for credential in resolver.resolve_job(entity_key)
     )
@@ -381,6 +492,7 @@ def _create_ingest_run(client: Neo4jClient, source_key: str, mode: str) -> str:
             queries.CREATE_INGEST_RUN,
             source_key=source_key,
             run_type=mode,
+            mode=mode,
         )
         record = result.single()
         assert record is not None, "CREATE_INGEST_RUN must return a row"
@@ -499,6 +611,7 @@ def _ingest_all_records_open(
                 retired_at,
             )
             success += 1
+            _report_record_outcome(connector, succeeded=True)
             continue
         envelope = SourceRecordEnvelope.model_validate(
             {"source_system": connector.get_source_key(), **raw_record},
@@ -506,6 +619,7 @@ def _ingest_all_records_open(
         if _record_is_excluded(envelope, active_exclusion_context):
             skipped += 1
             logger.info("  %s -> excluded", envelope.source_record_id)
+            _report_record_outcome(connector, succeeded=True)
             continue
         result = _process_record(
             client,
@@ -522,6 +636,7 @@ def _ingest_all_records_open(
             skipped += 1
         else:
             success += 1
+        _report_record_outcome(connector, succeeded=not bool(result.errors))
         if result.dropped:
             logger.info(
                 "  %s -> dropped (no match — match-only source)",
@@ -567,6 +682,7 @@ def run_ingestion(
     entity_key: str | None = None,
     initialize_graph: bool = True,
     existing_ingest_run_id: str | None = None,
+    task_id: str | None = None,
 ) -> IngestionSummary:
     """Execute one ingestion run end-to-end."""
     settings = get_settings()
@@ -604,6 +720,7 @@ def run_ingestion(
             "reused" if existing_ingest_run_id is not None else "created",
         )
 
+        success = errors = skipped = 0
         try:
             connector = get_connector(
                 source_key,
@@ -612,6 +729,8 @@ def run_ingestion(
                 entity_key=entity_key,
             )
             logger.info("Connector=%s", type(connector).__name__)
+            if source_key in {"bitrix_chat", "whatsapp_chat"}:
+                validate_ingestion_llm_readiness()
             exclusion_context = _load_exclusion_context()
             success, errors, skipped = _ingest_all_records(
                 client,
@@ -629,19 +748,29 @@ def run_ingestion(
             proposed = propose_vehicle_matches_for_pending_sales(client)
             if proposed:
                 logger.info("Proposed %d vehicle matches for pending sales", proposed)
-            chat_knows_linked = materialize_knows_from_chat_relationships(client)
-            if chat_knows_linked:
-                logger.info(
-                    "Materialized %d KNOWS edges from chat relationships",
-                    chat_knows_linked,
-                )
-            knows_linked = materialize_knows_from_contacts(client)
-            if knows_linked:
-                logger.info("Materialized %d KNOWS edges from contacts", knows_linked)
-            if errors == 0 and isinstance(connector, _WatermarkCommitter):
-                connector.commit_watermark()
-        except Exception:
-            _mark_run_failed(client, ingest_run_id, 0, 0)
+            _materialize_optional_knows(client)
+            _finalize_connector_progress(connector, error_count=errors)
+        except Exception as exc:
+            checkpoint: dict[str, JsonValue] = {
+                "dump_path": dump_path,
+                "entity_key": entity_key,
+            }
+            if isinstance(connector, _FailureCheckpointReporter):
+                checkpoint.update(connector.failure_checkpoint())
+            summary = _build_failure_summary(
+                exc,
+                source_key=source_key,
+                mode=mode,
+                task_id=task_id,
+                checkpoint=checkpoint,
+            )
+            _mark_run_failed(
+                client,
+                ingest_run_id,
+                success + errors + skipped,
+                errors,
+                summary,
+            )
             raise
 
         final_status = "completed" if errors == 0 else "completed_with_errors"

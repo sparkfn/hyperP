@@ -279,8 +279,27 @@ def test_run_ingestion_task_finalizes_api_created_run_when_setup_fails(
         "_finalize_dispatched_run",
         lambda ingest_run_id, status: finalized.append((ingest_run_id, status)),
     )
+    monkeypatch.setattr(tasks, "_get_existing_ingest_run_status", lambda run_id: None)
 
     with pytest.raises(Reject, match="migration failed"):
         tasks.run_ingestion_task.run("bitrix_chat", "api", None, ingest_run_id="run-1")
 
     assert finalized == [("run-1", "failed")]
+
+
+def test_rejected_task_does_not_overwrite_structured_terminal_failure(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    from src import tasks
+
+    finalized: list[tuple[str, str]] = []
+    monkeypatch.setattr(tasks, "_get_existing_ingest_run_status", lambda run_id: "failed")
+    monkeypatch.setattr(
+        tasks,
+        "_finalize_dispatched_run",
+        lambda ingest_run_id, status: finalized.append((ingest_run_id, status)),
+    )
+
+    tasks._finalize_rejected_dispatched_run("run-1")
+
+    assert finalized == []

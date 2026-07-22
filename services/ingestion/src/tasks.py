@@ -95,6 +95,9 @@ def _finalize_rejected_dispatched_run(ingest_run_id: str | None) -> None:
     if ingest_run_id is None:
         return
     try:
+        status = _get_existing_ingest_run_status(ingest_run_id)
+        if status in _TERMINAL_INGEST_RUN_STATUSES:
+            return
         _finalize_dispatched_run(ingest_run_id, "failed")
     except Exception:
         logger.exception("Failed to finalize rejected IngestRun %s", ingest_run_id)
@@ -441,7 +444,18 @@ def run_ingestion_task(
                 _acquire_ingestion_slot(settings.max_concurrent_ingestions) as slot_id,
                 _renew_ingestion_leases(source_lock_leases, slot_id),
             ):
-                if ingest_run_id is None:
+                celery_task_id = self.request.id
+                if celery_task_id is not None:
+                    summary = run_ingestion(
+                        source_key,
+                        mode,
+                        dump_path,
+                        entity_key=entity_key,
+                        initialize_graph=False,
+                        existing_ingest_run_id=ingest_run_id,
+                        task_id=str(celery_task_id),
+                    )
+                elif ingest_run_id is None:
                     if entity_key is None:
                         summary = run_ingestion(
                             source_key,

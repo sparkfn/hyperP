@@ -6,7 +6,7 @@ import logging
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Protocol
+from typing import Protocol, runtime_checkable
 
 from src.connectors.base import SourceConnector
 from src.connectors.bitrix.connector import (
@@ -14,14 +14,20 @@ from src.connectors.bitrix.connector import (
     _AgentMember,
     _ChatBundle,
 )
-from src.connectors.bitrix_openlines.discovery import discover_chats
+from src.connectors.bitrix_openlines.discovery import stream_chats
 from src.connectors.bitrix_openlines.models import (
     ChatReference,
+    CrmDiscoveryPage,
     DialogMetadata,
     OpenLineConfig,
     OpenLineMessage,
+    merge_chat_references,
 )
 from src.connectors.bitrix_openlines.selection import classify_channel, mapped_entity
+from src.connectors.bitrix_openlines.watermark import (
+    BackfillCheckpoint,
+    BackfillCheckpointStore,
+)
 from src.connectors.chat_helpers import (
     chat_batch_max_chars,
     chat_batch_size,
@@ -37,11 +43,17 @@ logger = logging.getLogger(__name__)
 class OpenLinesClient(Protocol):
     def list_active_configs(self) -> list[OpenLineConfig]: ...
     def iter_crm_chat_refs(self) -> Iterable[ChatReference]: ...
+    def iter_crm_chat_ref_pages(self) -> Iterable[list[ChatReference]]: ...
     def iter_recent_chat_refs(self, page_size: int) -> Iterable[ChatReference]: ...
     def get_dialog(self, chat_id: int) -> DialogMetadata: ...
     def get_messages(self, chat_id: int) -> list[OpenLineMessage]: ...
     def get_history(self, chat_id: int) -> list[OpenLineMessage]: ...
     def close(self) -> None: ...
+
+
+@runtime_checkable
+class ResumableOpenLinesClient(Protocol):
+    def iter_crm_discovery_pages(self, *, start: int = 0) -> Iterable[CrmDiscoveryPage]: ...
 
 
 class WatermarkStore(Protocol):
@@ -80,6 +92,9 @@ class BitrixOpenLinesConnector(SourceConnector):
         self._company_email_addresses = list(company_email_addresses or [])
         self._internal_person_names = list(internal_person_names or [])
         self._file_exclusions = file_exclusions or ExclusionFile()
+        self._backfill_store = watermark if isinstance(watermark, BackfillCheckpointStore) else None
+        self._active_backfill_start: int | None = None
+        self._record_errors = False
 
     def get_source_key(self) -> str:
         return "bitrix_chat"
@@ -96,14 +111,71 @@ class BitrixOpenLinesConnector(SourceConnector):
         )
         if committed_watermark is not None:
             self._track_watermark_candidate(committed_watermark)
+        if (
+            self._mode == "backfill"
+            and self._backfill_store is not None
+            and isinstance(self._client, ResumableOpenLinesClient)
+        ):
+            yield from self._fetch_resumable_backfill(line_names, since)
+            return
+        yield from self._fetch_references(
+            stream_chats(
+                self._client,
+                recent_page_size=self._config.recent_page_size,
+            ),
+            line_names,
+            since,
+        )
+
+    def _fetch_resumable_backfill(
+        self,
+        line_names: dict[str, str],
+        since: datetime | None,
+    ) -> Iterator[dict[str, JsonValue]]:
+        assert self._backfill_store is not None
+        assert isinstance(self._client, ResumableOpenLinesClient)
+        checkpoint = self._backfill_store.get_backfill_checkpoint()
+        crm_start = checkpoint.crm_start if checkpoint is not None else 0
+        self._active_backfill_start = crm_start
+        recent = {
+            item.chat_id: item
+            for item in self._client.iter_recent_chat_refs(self._config.recent_page_size)
+        }
+        seen: set[int] = set()
+        if crm_start is not None:
+            for page in self._client.iter_crm_discovery_pages(start=crm_start):
+                references: list[ChatReference] = []
+                for item in page.references:
+                    if item.chat_id in seen:
+                        continue
+                    seen.add(item.chat_id)
+                    recent_item = recent.pop(item.chat_id, None)
+                    references.append(
+                        item if recent_item is None else merge_chat_references(item, recent_item)
+                    )
+                yield from self._fetch_references(references, line_names, since)
+                self._active_backfill_start = page.next_start
+                if not self._record_errors:
+                    self._backfill_store.set_backfill_checkpoint(
+                        BackfillCheckpoint(crm_start=page.next_start)
+                    )
+        yield from self._fetch_references(
+            (recent[chat_id] for chat_id in sorted(recent)),
+            line_names,
+            since,
+        )
+
+    def _fetch_references(
+        self,
+        references: Iterable[ChatReference],
+        line_names: dict[str, str],
+        since: datetime | None,
+    ) -> Iterator[dict[str, JsonValue]]:
         max_chars = chat_batch_max_chars()
         max_count = chat_batch_size()
         prepared_batch: list[_PreparedChat] = []
         batch_chars = 0
-        for reference in discover_chats(
-            self._client,
-            recent_page_size=self._config.recent_page_size,
-        ):
+        for reference in references:
             if len(prepared_batch) >= max_count:
                 yield from self._extract_batch(prepared_batch)
                 prepared_batch = []
@@ -229,6 +301,17 @@ class BitrixOpenLinesConnector(SourceConnector):
         if self._mode == "api" and self._pending_watermark is not None:
             self._watermark.set(self._pending_watermark)
             self._pending_watermark = None
+        if self._mode == "backfill" and self._backfill_store is not None:
+            self._backfill_store.clear_backfill_checkpoint()
+
+    def record_processed(self, *, succeeded: bool) -> None:
+        if not succeeded:
+            self._record_errors = True
+
+    def failure_checkpoint(self) -> dict[str, JsonValue]:
+        if self._mode != "backfill":
+            return {}
+        return {"crm_start": self._active_backfill_start}
 
     def close(self) -> None:
         self._client.close()

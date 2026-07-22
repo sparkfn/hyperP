@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from pathlib import Path
 
+import pytest
 from src.connectors.dumps.connectors import get_dump_connector
+from src.connectors.dumps.reader import DumpRow
+from src.connectors.onediver import connector as onediver_connector
 
 _SCHEMA = """
 CREATE TABLE `profiles` (
@@ -106,6 +110,108 @@ _USERS_INSERT = (
     "VALUES (2, 1, 'ada.lovelace');"
 )
 _ACCOUNTS_INSERT = "INSERT INTO `accounts` (`id`, `name`) VALUES (1, 'Scubahub');"
+
+
+def test_onediver_identity_streams_primary_tables(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dump_path = _write_dump(tmp_path, _PROFILE_INSERT, _USERS_INSERT, _ACCOUNTS_INSERT)
+
+    def reject_materialization(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("OneDiver must not materialize the complete dump")
+
+    monkeypatch.setattr(Path, "read_text", reject_materialization)
+
+    records = list(get_dump_connector("onediver", dump_path).fetch_records())
+
+    assert [record["source_record_id"] for record in records] == ["onediver-profile-5"]
+
+
+def test_onediver_sales_streams_orders_without_materializing_complete_dump(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sales = """\
+INSERT INTO `sales_orders` (`id`, `order_id`, `order_date`, `billing_contact_email`, `total`) VALUES
+(1, 'SO-1', '2026-05-02 03:00:00', 'ada@example.test', '250.00');
+"""
+    dump_path = _write_dump(tmp_path, _PROFILE_INSERT, sales)
+
+    def reject_materialization(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("OneDiver must not materialize the complete dump")
+
+    monkeypatch.setattr(Path, "read_text", reject_materialization)
+
+    records = list(get_dump_connector("onediver:sales", dump_path).fetch_records())
+
+    assert [record["source_record_id"] for record in records] == ["onediver-salesorder-1"]
+
+
+def test_onediver_identity_starts_with_bounded_profile_batches(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    table_reads: list[str] = []
+    rows = {
+        "profiles": [DumpRow({"id": 5, "user_id": 10, "is_deleted": 0})],
+        "users": [DumpRow({"id": 10, "account_id": 1})],
+        "accounts": [DumpRow({"id": 1, "name": "Scubahub"})],
+        "profile_emergencies": [],
+    }
+
+    def iter_rows(_path: Path, table: str, _columns: object) -> Iterator[DumpRow]:
+        table_reads.append(table)
+        yield from rows[table]
+
+    monkeypatch.setattr(onediver_connector, "iter_dump_rows", iter_rows)
+    connector = onediver_connector.OneDiverDumpConnector(tmp_path / "dump.sql")
+
+    next(connector.fetch_records())
+
+    assert table_reads[0] == "profiles"
+
+
+def test_onediver_sales_starts_with_bounded_order_batches(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    table_reads: list[str] = []
+    rows = {
+        "sales_orders": [
+            DumpRow(
+                {
+                    "id": 1,
+                    "order_id": "SO-1",
+                    "billing_contact_email": "ada@example.test",
+                    "total": 25,
+                }
+            )
+        ],
+        "profiles": [
+            DumpRow(
+                {
+                    "id": 5,
+                    "email": "ada@example.test",
+                    "ic_number": "S1234567A",
+                    "is_deleted": 0,
+                }
+            )
+        ],
+        "sales_order_items": [],
+        "products": [],
+    }
+
+    def iter_rows(_path: Path, table: str, _columns: object) -> Iterator[DumpRow]:
+        table_reads.append(table)
+        yield from rows[table]
+
+    monkeypatch.setattr(onediver_connector, "iter_dump_rows", iter_rows)
+    connector = onediver_connector.OneDiverSalesDumpConnector(tmp_path / "dump.sql")
+
+    next(connector.fetch_records())
+
+    assert table_reads[0] == "sales_orders"
 
 
 def test_onediver_identity_envelope(tmp_path: Path) -> None:

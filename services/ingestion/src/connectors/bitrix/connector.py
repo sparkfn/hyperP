@@ -19,6 +19,7 @@ import logging
 from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import datetime
+from typing import Protocol, cast
 
 from sqlalchemy import func, select
 from sqlalchemy.engine import Connection
@@ -72,6 +73,14 @@ CATEGORY_TO_ENTITY: dict[str, str] = {
     "EKO MY": "eko",
     "Speedzone": "speedzone",
 }
+
+
+class _ChatRow(Protocol):
+    id: int | str
+    deal_id: int | None
+    bitrix_chat_id: str | None
+    last_message_at: datetime | None
+    created_at: datetime | None
 
 
 @dataclass
@@ -129,49 +138,61 @@ class BitrixChatConnector(SourceConnector):
         )
         logger.info("Bitrix: %s chats with deals — fetching deals...", total)
 
-        all_bundles: list[_ChatBundle] = []
         stmt = select(chats).where(chats.c.deal_id.isnot(None)).order_by(chats.c.id)
         chat_result = conn.execute(stmt)
-        rows = list(chat_result.fetchmany(self.chunk_size))
+        processed = 0
+        while rows := list(chat_result.fetchmany(self.chunk_size)):
+            bundles = [
+                bundle
+                for chat in rows
+                if (bundle := self._bundle_for_chat(conn, chat, cat_rows)) is not None
+            ]
+            yield from self._extract_bundles(bundles)
+            processed += len(rows)
+            logger.info("Processed %d/%s Bitrix chats", processed, total)
 
-        while rows:
-            for chat in rows:
-                deal = self._load_deal(conn, chat.deal_id)
-                cat_id: int | None = None
-                if deal:
-                    raw_cat_id = deal.get("category_id")
-                    if isinstance(raw_cat_id, int):
-                        cat_id = raw_cat_id
-                    elif isinstance(raw_cat_id, str):
-                        cat_id = int(raw_cat_id) if raw_cat_id else None
-                category = cat_rows.get(cat_id) if cat_id else None
-                if category is None:
-                    continue
-                cat_name = getattr(category, "name", "") or ""
-                entity = CATEGORY_TO_ENTITY.get(cat_name)
-                if entity is None:
-                    continue
-                conv_text = self._build_conversation(conn, chat.id, deal)
-                agent_members = self._load_agents(conn, chat.id)
+    def _bundle_for_chat(
+        self,
+        conn: Connection,
+        chat: object,
+        categories_by_id: dict[int, object],
+    ) -> _ChatBundle | None:
+        chat_row = cast(_ChatRow, chat)
+        deal_id = chat_row.deal_id
+        deal = self._load_deal(conn, deal_id)
+        raw_category_id = deal.get("category_id") if deal is not None else None
+        category_id = (
+            raw_category_id
+            if isinstance(raw_category_id, int)
+            else (
+                int(raw_category_id)
+                if isinstance(raw_category_id, str) and raw_category_id
+                else None
+            )
+        )
+        category = categories_by_id.get(category_id) if category_id is not None else None
+        category_name = getattr(category, "name", "") or ""
+        entity = CATEGORY_TO_ENTITY.get(category_name)
+        if entity is None:
+            return None
+        chat_id = int(chat_row.id)
+        return _ChatBundle(
+            chat_id=chat_id,
+            deal_id=deal_id,
+            bitrix_chat_id=chat_row.bitrix_chat_id or "",
+            last_message_at=chat_row.last_message_at,
+            created_at=chat_row.created_at,
+            category_name=category_name,
+            entity=entity,
+            conv_text=self._build_conversation(conn, chat_id, deal),
+            deal=deal,
+            agents=self._load_agents(conn, chat_id),
+        )
 
-                all_bundles.append(
-                    _ChatBundle(
-                        chat_id=chat.id,
-                        deal_id=chat.deal_id,
-                        bitrix_chat_id=getattr(chat, "bitrix_chat_id", None) or "",
-                        last_message_at=getattr(chat, "last_message_at", None),
-                        created_at=getattr(chat, "created_at", None),
-                        category_name=cat_name,
-                        entity=entity,
-                        conv_text=conv_text,
-                        deal=deal,
-                        agents=agent_members,
-                    )
-                )
-            rows = list(chat_result.fetchmany(self.chunk_size))
-
-        logger.info("Collected %d Bitrix chats — starting LLM batch phase", len(all_bundles))
-
+    def _extract_bundles(
+        self,
+        bundles: list[_ChatBundle],
+    ) -> Iterator[dict[str, JsonValue]]:
         try:
             settings = get_settings()
             company_mobile_numbers = list(settings.company_mobile_numbers)
@@ -183,34 +204,26 @@ class BitrixChatConnector(SourceConnector):
             company_email_addresses = []
             internal_person_names = []
             file_exclusions = ExclusionFile()
-
-        # Phase 2: run LLM in batches (one combined call per char-bounded batch).
-        texts = [b.conv_text for b in all_bundles]
-        max_chars = chat_batch_max_chars()
-        max_count = chat_batch_size()
-        extraction_cache: dict[int, ExtractionResult] = {}
-        for start, end in iter_char_batches(texts, max_chars, max_count):
-            batch = all_bundles[start:end]
-            batch_results = run_extraction_batch(texts[start:end])
-            logger.info("LLM batch %d-%d/%d done", start, end, len(all_bundles))
-            for bundle, result in zip(batch, batch_results, strict=True):
-                if result is not None:
-                    extraction_cache[bundle.chat_id] = result
-
-        # Phase 3: yield envelopes.
-        for bundle in all_bundles:
-            extraction = extraction_cache.get(bundle.chat_id)
-            if extraction is None:
-                logger.warning("LLM extraction failed for chat %s", bundle.chat_id)
-                continue
-            yield from self._build_envelopes(
-                bundle=bundle,
-                extraction=extraction,
-                company_mobile_numbers=company_mobile_numbers,
-                company_email_addresses=company_email_addresses,
-                internal_person_names=internal_person_names,
-                file_exclusions=file_exclusions,
-            )
+        texts = [bundle.conv_text for bundle in bundles]
+        for start, end in iter_char_batches(
+            texts,
+            chat_batch_max_chars(),
+            chat_batch_size(),
+        ):
+            batch = bundles[start:end]
+            results = run_extraction_batch(texts[start:end])
+            for bundle, extraction in zip(batch, results, strict=True):
+                if extraction is None:
+                    logger.warning("LLM extraction failed for chat %s", bundle.chat_id)
+                    continue
+                yield from self._build_envelopes(
+                    bundle=bundle,
+                    extraction=extraction,
+                    company_mobile_numbers=company_mobile_numbers,
+                    company_email_addresses=company_email_addresses,
+                    internal_person_names=internal_person_names,
+                    file_exclusions=file_exclusions,
+                )
 
     def _load_deal(self, conn: Connection, deal_id: int | None) -> dict[str, object] | None:
         if deal_id is None:
