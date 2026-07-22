@@ -48,9 +48,9 @@ class StubSettings:
     whatsadmin_speedzone_api_key: SecretStr = field(
         default_factory=lambda: SecretStr("hk_speedzone_test")
     )
-    whatsadmin_api_page_size: int = 50
-    whatsadmin_api_timeout_seconds: float = 30.0
-    whatsadmin_api_max_attempts: int = 3
+    whatsadmin_api_page_size: int = 25
+    whatsadmin_api_timeout_seconds: float = 120.0
+    whatsadmin_api_max_attempts: int = 5
     whatsadmin_api_retry_base_delay_seconds: float = 1.0
     whatsadmin_legacy_entity: WhatsAdminEntity | None = "speedzone"
     celery_broker_url: str = "redis://test/0"
@@ -103,9 +103,9 @@ def test_default_connector_factory_builds_both_entity_clients(monkeypatch: Monke
         max_attempts: int,
         retry_base_delay_seconds: float,
     ) -> StubClient:
-        assert page_size == 50
-        assert timeout_seconds == 30.0
-        assert max_attempts == 3
+        assert page_size == 25
+        assert timeout_seconds == 120.0
+        assert max_attempts == 5
         assert retry_base_delay_seconds == 1.0
         captured.append(credential.entity_key)
         return StubClient(credential)
@@ -186,9 +186,7 @@ def test_celery_task_forwards_entity_key(monkeypatch: MonkeyPatch) -> None:
 
     monkeypatch.setattr(tasks, "run_ingestion", run)
 
-    result = tasks.run_ingestion_task.run(
-        "whatsapp_chat", "api", None, entity_key="speedzone"
-    )
+    result = tasks.run_ingestion_task.run("whatsapp_chat", "api", None, entity_key="speedzone")
 
     assert calls == [("whatsapp_chat", "api", None, "speedzone", False)]
     assert result["entity_key"] == "speedzone"

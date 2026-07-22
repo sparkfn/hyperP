@@ -44,7 +44,9 @@ jobs:
             WHATSADMIN_SPEEDZONE_ENABLED \
             WHATSADMIN_LEGACY_ENTITY \
             WHATSADMIN_API_PAGE_SIZE \
-            WHATSADMIN_API_TIMEOUT_SECONDS
+            WHATSADMIN_API_TIMEOUT_SECONDS \
+            WHATSADMIN_API_MAX_ATTEMPTS \
+            WHATSADMIN_API_RETRY_BASE_DELAY_SECONDS
           do
             if ! grep -Eq "^[[:space:]]+${key}:" .docker/staging/docker-compose.yml; then
               echo "Staging Compose is missing runtime ingestion variable: ${key}"
@@ -61,6 +63,36 @@ jobs:
             echo "Update .docker/staging/docker-compose.yml before rebuilding"
             exit 1
           fi
+
+          # Keep staging on the incident-tested WhatsAdmin request profile.
+          # These non-secret values override stale defaults in the host-managed
+          # Compose file while retaining the same environment-variable contract.
+          export WHATSADMIN_API_PAGE_SIZE=25
+          export WHATSADMIN_API_TIMEOUT_SECONDS=120
+          export WHATSADMIN_API_MAX_ATTEMPTS=5
+          export WHATSADMIN_API_RETRY_BASE_DELAY_SECONDS=1
+
+          for ingestion_service in worker beat
+          do
+            resolved_service=$($COMPOSE config "$ingestion_service")
+            for expected_setting in \
+              WHATSADMIN_API_PAGE_SIZE=25 \
+              WHATSADMIN_API_TIMEOUT_SECONDS=120 \
+              WHATSADMIN_API_MAX_ATTEMPTS=5 \
+              WHATSADMIN_API_RETRY_BASE_DELAY_SECONDS=1
+            do
+              setting_name=${expected_setting%%=*}
+              setting_value=${expected_setting#*=}
+              if ! grep -Eq \
+                "^[[:space:]]+${setting_name}: ['\"]?${setting_value}(\\.0)?['\"]?$" \
+                <<< "$resolved_service"
+              then
+                echo "Resolved ${ingestion_service} config did not apply ${expected_setting}"
+                echo "Update .docker/staging/docker-compose.yml before rebuilding"
+                exit 1
+              fi
+            done
+          done
 
           git -c safe.directory="$REPO_DIR" fetch \
             "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" staging

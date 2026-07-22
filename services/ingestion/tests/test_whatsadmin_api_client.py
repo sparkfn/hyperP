@@ -193,6 +193,9 @@ def test_chat_page_read_timeout_stops_at_configured_attempt_limit() -> None:
     assert context["upstream_session_id"] == "ses_1"
     assert context["upstream_cursor"] == "first"
     assert context["upstream_attempt"] == 2
+    assert context["upstream_attempt_limit"] == 2
+    assert context["upstream_timeout_seconds"] == 120.0
+    assert context["upstream_page_size"] == 50
     latency = context["upstream_latency_seconds"]
     assert isinstance(latency, float)
     assert latency >= 0

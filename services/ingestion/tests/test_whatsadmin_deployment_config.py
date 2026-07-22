@@ -17,7 +17,16 @@ WHATSADMIN_STAGING_CONTRACT = (
     *WHATSADMIN_ENTITY_ENV,
     "WHATSADMIN_API_PAGE_SIZE",
     "WHATSADMIN_API_TIMEOUT_SECONDS",
+    "WHATSADMIN_API_MAX_ATTEMPTS",
+    "WHATSADMIN_API_RETRY_BASE_DELAY_SECONDS",
 )
+
+WHATSADMIN_RESILIENCE_DEFAULTS = {
+    "WHATSADMIN_API_PAGE_SIZE": "25",
+    "WHATSADMIN_API_TIMEOUT_SECONDS": "120",
+    "WHATSADMIN_API_MAX_ATTEMPTS": "5",
+    "WHATSADMIN_API_RETRY_BASE_DELAY_SECONDS": "1",
+}
 
 
 def test_whatsadmin_entity_environment_is_forwarded_and_documented() -> None:
@@ -53,6 +62,30 @@ def test_whatsadmin_operations_doc_explains_global_key_migration() -> None:
     assert "fail closed" in design
     assert "hk_replace_with_eko_handle_key" in design
     assert "hk_replace_with_speedzone_handle_key" in design
+
+
+def test_whatsadmin_timeout_resilience_defaults_are_aligned() -> None:
+    root = Path(__file__).parents[3]
+    settings = Settings(neo4j_password="test", _env_file=None)
+    compose = (root / "docker-compose.yml").read_text(encoding="utf-8")
+    workflow = (root / ".github/workflows/deploy-staging.yml").read_text(encoding="utf-8")
+    examples = [
+        (root / ".env.example").read_text(encoding="utf-8"),
+        (root / "services/ingestion/.env.example").read_text(encoding="utf-8"),
+    ]
+
+    assert settings.whatsadmin_api_page_size == 25
+    assert settings.whatsadmin_api_timeout_seconds == 120.0
+    assert settings.whatsadmin_api_max_attempts == 5
+    assert settings.whatsadmin_api_retry_base_delay_seconds == 1.0
+    for name, value in WHATSADMIN_RESILIENCE_DEFAULTS.items():
+        compose_value = f"{value}.0" if name.endswith("SECONDS") else value
+        assert f"{name}: ${{{name}:-{compose_value}}}" in compose
+        assert f"export {name}={value}" in workflow
+        for example in examples:
+            assert f"{name}={value}" in example
+    assert "for ingestion_service in worker beat" in workflow
+    assert 'resolved_service=$($COMPOSE config "$ingestion_service")' in workflow
 
 
 def test_staging_preflight_requires_tenant_contract_before_build() -> None:

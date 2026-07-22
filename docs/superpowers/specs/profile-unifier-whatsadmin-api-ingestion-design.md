@@ -157,17 +157,27 @@ WHATSADMIN_SPEEDZONE_API_KEY: ${WHATSADMIN_SPEEDZONE_API_KEY:-}
 WHATSADMIN_EKO_ENABLED: ${WHATSADMIN_EKO_ENABLED:-false}
 WHATSADMIN_SPEEDZONE_ENABLED: ${WHATSADMIN_SPEEDZONE_ENABLED:-false}
 WHATSADMIN_LEGACY_ENTITY: ${WHATSADMIN_LEGACY_ENTITY:-}
-WHATSADMIN_API_PAGE_SIZE: ${WHATSADMIN_API_PAGE_SIZE:-50}
-WHATSADMIN_API_TIMEOUT_SECONDS: ${WHATSADMIN_API_TIMEOUT_SECONDS:-30.0}
+WHATSADMIN_API_PAGE_SIZE: ${WHATSADMIN_API_PAGE_SIZE:-25}
+WHATSADMIN_API_TIMEOUT_SECONDS: ${WHATSADMIN_API_TIMEOUT_SECONDS:-120.0}
+WHATSADMIN_API_MAX_ATTEMPTS: ${WHATSADMIN_API_MAX_ATTEMPTS:-5}
+WHATSADMIN_API_RETRY_BASE_DELAY_SECONDS: ${WHATSADMIN_API_RETRY_BASE_DELAY_SECONDS:-1.0}
 ```
 
 The staging workflow validates these names and rejects the retired global
 mapping before any image build. Actual `hk_...` values remain exclusively in
 the host's secret-management environment and must not be added to Compose.
 
-Run a single-entity extraction by passing `--entity-key eko` or
-`--entity-key speedzone`. Omit `--entity-key` to resolve both credentials before
-making the first request and extract both entities in one job.
+Run production extraction as independent jobs by passing `--entity-key eko` or
+`--entity-key speedzone`. This keeps an upstream failure for one organization
+from blocking or delaying the other. Omit `--entity-key` only for an intentional
+combined maintenance run; HyperP resolves both credentials before making the
+first request.
+
+Chat extraction defaults to 25 records per page, a 120-second client timeout,
+and five attempts with exponential backoff. Terminal failure checkpoints include
+the effective page size, timeout, attempt limit, session, and cursor. Successful
+pages store their next cursor, so a single-entity retry resumes from the latest
+page checkpoint.
 
 ## Validation
 

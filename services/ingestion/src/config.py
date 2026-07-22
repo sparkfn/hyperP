@@ -181,9 +181,9 @@ class Settings(BaseSettings):
     whatsadmin_eko_enabled: bool = False
     whatsadmin_speedzone_enabled: bool = False
     whatsadmin_legacy_entity: WhatsAdminEntity | None = None
-    whatsadmin_api_page_size: int = 50
-    whatsadmin_api_timeout_seconds: float = 30.0
-    whatsadmin_api_max_attempts: int = Field(default=3, ge=1, le=10)
+    whatsadmin_api_page_size: int = Field(default=25, ge=1)
+    whatsadmin_api_timeout_seconds: float = Field(default=120.0, gt=0)
+    whatsadmin_api_max_attempts: int = Field(default=5, ge=1, le=10)
     whatsadmin_api_retry_base_delay_seconds: float = Field(default=1.0, ge=0)
 
     @model_validator(mode="after")
