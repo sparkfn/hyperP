@@ -358,13 +358,14 @@ HyperP uses a **hybrid CI** setup: local **Woodpecker** for PR + DEV validation,
 ### Branch boundaries (Woodpecker)
 | Boundary | File | Event | Branch | Purpose |
 |---|---|---|---|---|
-| PR | `.woodpecker/pr.yaml` | `pull_request` | any | Fast feedback: ruff, mypy --strict, pytest, frontend2 typecheck + eslint errors-only. Green = candidate for merge to `development`. |
+| PR | `.woodpecker/pr.yaml` | `pull_request` | any | Fast feedback: ruff, mypy --strict, pytest, frontend2 typecheck + eslint errors-only. Green = candidate for merge to the PR branch's base branch. |
 | DEV/integration | `.woodpecker/dev.yaml` | `push` | `development` | Materially stronger: re-runs python checks on the merge commit + frontend2 production `next build` + production `uv sync --frozen --no-dev` install. |
 | Staging deploy | `.github/workflows/deploy-staging.yml` | GitHub Actions | `staging` | Not Woodpecker; unchanged. |
 
 Woodpecker workflows must declare explicit `when:` targeting. PR is `event: pull_request` only (no `push`, no `main`, no deploy, no secrets). DEV is `event: push` + `branch: development` only (no `main`/production). The repo is **untrusted** in Woodpecker (`volumes/network/security: false`), so step containers cannot mount host volumes or the Docker socket — do not add `volumes:` or `docker compose up` steps to PR/DEV workflows; those belong to MAIN/staging deploy only. Branch filters are safe isolation here only because no privileged syntax exists; if a privileged MAIN workflow is ever added to `.woodpecker/`, it must be isolated by config-path or moved out of the autodiscovered path.
 
 ### Agent rules (PR + DEV)
+- New PRs default to the branch their PR branch was based on; do not assume `development` is the target branch.
 - **Do not run project package/test/build/migration/app-server commands on the host** — no `uv run pytest`, `npm run build`, `npm test`, `venv`, migrations, or long-lived processes. Validate by pushing to a PR branch and reading the Woodpecker result via `wpci home`.
 - Agents may inspect/edit files, run Git commands, and run safe structural checks (`git diff --check`, `git status -sb`).
 - **Do not report PR work complete without PR pipeline evidence**: repo, branch/PR, commit SHA, pipeline number, status, and step names (from `wpci home pipeline show sparkfn/hyperP <n>`).
