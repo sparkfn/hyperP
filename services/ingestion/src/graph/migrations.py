@@ -300,12 +300,12 @@ RECONCILE_PROJECTION_RELATIONSHIP_LIFECYCLE = """
 MATCH (migration:DataMigration {migration_key: 'projection_relationship_lifecycle_v1'})
 SET migration.lock_version = coalesce(migration.lock_version, 0) + 1
 WITH migration
-MATCH ()-[relationship:IDENTIFIED_BY|LIVES_AT|KNOWS|HAS_FACT]->()
+MATCH (person:Person)-[relationship:IDENTIFIED_BY|LIVES_AT|KNOWS|HAS_FACT]->(target)
 OPTIONAL MATCH (source:SourceRecord)
 WHERE source.source_record_pk = relationship.source_record_pk
   AND (source.lifecycle_status = 'active'
     OR (source.lifecycle_status IS NULL AND source.is_latest = true))
-WITH relationship,
+WITH person, target, relationship,
      CASE WHEN relationship.source_record_pk IS NULL
           THEN coalesce(relationship.is_active, true)
           ELSE count(source) > 0 END AS expected_is_active
@@ -317,7 +317,22 @@ FOREACH (_ IN CASE WHEN expected_is_active THEN [1] ELSE [] END |
       relationship.retired_at = null)
 FOREACH (_ IN CASE WHEN expected_is_active THEN [] ELSE [1] END |
   SET relationship.retired_at = coalesce(relationship.retired_at, datetime()))
-RETURN count(relationship) AS updated
+WITH count(relationship) AS updated,
+     collect(DISTINCT person.person_id)
+       + collect(DISTINCT CASE
+           WHEN type(relationship) = 'KNOWS' AND target:Person THEN target.person_id
+           ELSE null
+         END) AS affected_person_ids
+CALL (affected_person_ids) {
+  UNWIND affected_person_ids AS person_id
+  WITH DISTINCT person_id
+  MATCH (affected:Person {person_id: person_id, status: 'active'})
+  SET affected.analysis_input_revision =
+        coalesce(affected.analysis_input_revision, 0) + 1,
+      affected.analysis_dirty_at = datetime()
+  RETURN count(affected) AS dirtied
+}
+RETURN updated
 """
 
 

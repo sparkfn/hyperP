@@ -24,6 +24,7 @@ from neo4j.exceptions import TransientError
 from src.graph import queries
 from src.graph.client import Neo4jClient
 from src.models import JsonValue, SourceRecordEnvelope
+from src.profile_analysis_dirty import mark_profile_analysis_dirty
 from src.raw_payload import decode_raw_payload
 
 logger = logging.getLogger(__name__)
@@ -196,6 +197,11 @@ def _link_one_contact(
         status=cp_dict.get("status") or "declared",
         approved_at=cp_dict.get("approved_at"),
     )
+    mark_profile_analysis_dirty(
+        tx,
+        source_record_pks=(contact_source_record_pk,),
+        person_ids=(declarer_person_id, contact_person_id),
+    )
     return True
 
 
@@ -233,6 +239,11 @@ def _link_one_chat_relationship(
         relationship_category=_category_for(relationship_label),
         status="pending",
         approved_at=None,
+    )
+    mark_profile_analysis_dirty(
+        tx,
+        source_record_pks=(contact_source_record_pk,),
+        person_ids=(declarer_person_id, contact_person_id),
     )
     return True
 

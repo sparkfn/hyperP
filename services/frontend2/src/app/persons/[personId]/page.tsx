@@ -37,6 +37,7 @@ import ActionToast from "@/components/ActionToast";
 import MergeOverlay from "@/components/MergeOverlay";
 import PersonFocusedGraph from "@/components/PersonFocusedGraph";
 import PersonGraphDialog from "@/components/PersonGraphDialog";
+import ProfileAnalysisPanel from "@/components/ProfileAnalysisPanel";
 import ReviewActionsPanel from "@/components/ReviewActionsPanel";
 import { ReviewCaseDetailModal } from "@/app/review/[reviewCaseId]/ReviewCaseDetailModal";
 import type { ReviewCaseDetail, ReviewCaseSummary } from "@/lib/api-types-ops";
@@ -3781,7 +3782,15 @@ function ConnectionsTab({ personId, onTotalLoaded }: { personId: string; onTotal
 
 
 function PersonDetailSkeleton(): ReactElement {
-  const sectionLabels = ["Matches", "Source records", "Sales", "Connections", "Identifiers", "Decision History"];
+  const sectionLabels = [
+    "Profile analysis",
+    "Matches",
+    "Source records",
+    "Sales",
+    "Connections",
+    "Identifiers",
+    "Decision History",
+  ];
   return (
     <div className={styles.page}>
       {/* breadcrumb */}
@@ -3873,6 +3882,28 @@ function PersonDetailSkeleton(): ReactElement {
           {/* Bento sections grid */}
           <div className={styles.tabPanelScroll}>
             <div className={styles.collapsibleSectionsContainer}>
+              {/* Profile analysis — full width */}
+              <section className={styles.collapsibleSection}>
+                <div className={styles.collapsibleHeader}>
+                  <span className={styles.skel} style={{ width: 110, height: 14 }} />
+                </div>
+                <div
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
+                    gap: 14,
+                  }}
+                >
+                  {[0, 1].map((index) => (
+                    <div key={index} style={{ display: "grid", gap: 10, padding: 16 }}>
+                      <span className={styles.skel} style={{ width: 100, height: 14 }} />
+                      <span className={styles.skel} style={{ width: "100%", height: 80 }} />
+                      <span className={styles.skel} style={{ width: 180, height: 10 }} />
+                    </div>
+                  ))}
+                </div>
+              </section>
+
               {/* Matches — full width */}
               <section className={styles.collapsibleSection}>
                 <div className={styles.collapsibleHeader}>
@@ -4359,6 +4390,7 @@ export default function PersonDetailPage({ params }: { params: Promise<{ personI
   }, []);
 
   const sections: SectionConfig[] = useMemo(() => [
+    { id: "section-profile-analysis", label: "Profile analysis" },
     { id: "section-matches",        label: "Matches",        count: tabTotals.matches },
     { id: "section-source-records", label: "Source records", count: tabTotals["source-records"] ?? (detailData.sourceRecordFacets.reduce((sum, f) => sum + f.count, 0) || undefined) },
     { id: "section-sales",          label: "Sales",          count: tabTotals.sales          ?? detailData.sales.length },
@@ -4386,6 +4418,9 @@ export default function PersonDetailPage({ params }: { params: Promise<{ personI
             {sections.map((section) => {
               let content: ReactElement;
               switch (section.id) {
+                case "section-profile-analysis":
+                  content = <ProfileAnalysisPanel personId={person.person_id} />;
+                  break;
                 case "section-matches":
                   content = <MatchesTab personId={personId} currentPerson={person} currentIdentifiers={detailData.identifiers} activeMatchesTab={activeMatchesTab} onTotalLoaded={onMatchesTotal} onMergeWith={openMergeWithCandidate} />;
                   break;
@@ -4730,4 +4765,3 @@ export default function PersonDetailPage({ params }: { params: Promise<{ personI
     </div>
   );
 }
-

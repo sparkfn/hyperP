@@ -52,6 +52,7 @@ from src.graph.queries import (
 from src.repositories.neo4j._merge_side_effects import apply_merge_review_side_effects
 from src.repositories.neo4j.merge import (
     _apply_golden_profile_selections_tx,
+    _ordered_pair,
     are_valid_golden_profile_selections,
 )
 from src.repositories.neo4j.sales_staging import InvalidSalesStageError, validate_sales_stage
@@ -235,19 +236,6 @@ class Neo4jReviewRepository:
 
         if result is None:
             return None
-
-        # Recompute golden profile for the surviving person after a merge
-        survivor_id = to_optional_str(result.get("survivor_person_id"))
-        selections = result.get("golden_profile_selections", [])
-        if action_type == ApiReviewActionType.MERGE.value and survivor_id:
-            async with get_session(write=True) as session:
-                await session.execute_write(recompute_golden_profile_tx, survivor_id)
-                if selections:
-                    await session.execute_write(
-                        _apply_golden_profile_selections_tx,
-                        survivor_id,
-                        selections,
-                    )
 
         enqueue_match_recalculation(result.get("redirected_review_case_ids", []))
 
@@ -648,7 +636,7 @@ async def _pending_record_merge_tx(
     affected = activated.get("affected_person_ids", [])
     if isinstance(affected, list):
         for person_id in sorted({value for value in affected if isinstance(value, str)}):
-            await recompute_golden_profile_tx(tx, person_id)
+            await recompute_golden_profile_tx(tx, person_id, False)
     action_result = await tx.run(
         build_claimed_review_action_cypher(resolution, follow_up_at),
         review_case_id=review_case_id,
@@ -839,20 +827,31 @@ async def _action_tx(
             actor_id=actor_id,
         )
     elif action_type == ApiReviewActionType.MERGE.value and absorbed_id and survivor_id:
+        left, right = _ordered_pair(absorbed_id, survivor_id)
         merge_result = await tx.run(
             EXECUTE_MANUAL_MERGE,
             from_id=absorbed_id,
             to_id=survivor_id,
+            left=left,
+            right=right,
             reason=notes or "Review merge",
             actor_id=actor_id,
         )
         merge_record = await merge_result.single()
-        merge_event_id = to_str(merge_record["merge_event_id"]) if merge_record else ""
-        if merge_event_id:
-            redirected_ids = await apply_merge_review_side_effects(
-                tx, merge_event_id, absorbed_id, survivor_id
+        if merge_record is None:
+            raise _ReviewResolutionAbortError("person merge lost after review close")
+        merge_event_id = to_str(merge_record["merge_event_id"])
+        redirected_ids = await apply_merge_review_side_effects(
+            tx, merge_event_id, absorbed_id, survivor_id
+        )
+        out["redirected_review_case_ids"] = redirected_ids
+        await recompute_golden_profile_tx(tx, survivor_id, False)
+        if golden_profile_selections:
+            await _apply_golden_profile_selections_tx(
+                tx,
+                survivor_id,
+                golden_profile_selections,
             )
-            out["redirected_review_case_ids"] = redirected_ids
         out["survivor_person_id"] = survivor_id
         out["golden_profile_selections"] = golden_profile_selections
 

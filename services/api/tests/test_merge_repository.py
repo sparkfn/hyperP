@@ -157,6 +157,8 @@ async def test_manual_merge_success_returns_merge_event_id() -> None:
     assert tx.calls[2].params == {
         "from_id": "person-a",
         "to_id": "person-b",
+        "left": "person-a",
+        "right": "person-b",
         "reason": "same customer",
         "actor_id": "admin@example.com",
     }
@@ -166,6 +168,78 @@ async def test_manual_merge_success_returns_merge_event_id() -> None:
         "survivor_id": "person-b",
         "merge_event_id": "merge-1",
     }
+
+
+@pytest.mark.asyncio
+async def test_manual_merge_recomputes_and_applies_selections_in_mutation_transaction(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tx = cast(AsyncManagedTransaction, object())
+    events: list[str] = []
+    selections: list[GoldenProfileSelection] = [
+        {
+            "field_name": "preferred_email",
+            "source_kind": "identifier",
+            "selected_value": "customer@example.com",
+            "source_record_pk": "sr-1",
+            "identifier_type": "email",
+        }
+    ]
+
+    async def merge(inner_tx: AsyncManagedTransaction, *_args: object) -> MergeOutcome:
+        assert inner_tx is tx
+        events.append("merge")
+        return MergeOutcome(merge_event_id="merge-1")
+
+    async def recompute(
+        inner_tx: AsyncManagedTransaction,
+        person_id: str,
+        invalidate_analysis: bool,
+    ) -> None:
+        assert inner_tx is tx
+        assert person_id == "person-b"
+        assert invalidate_analysis is False
+        events.append("recompute")
+
+    async def apply_selections(
+        inner_tx: AsyncManagedTransaction,
+        person_id: str,
+        requested: list[GoldenProfileSelection],
+    ) -> str:
+        assert inner_tx is tx
+        assert person_id == "person-b"
+        assert requested is selections
+        events.append("selections")
+        return "ok"
+
+    monkeypatch.setattr(merge_module, "_manual_merge_tx", merge)
+    monkeypatch.setattr(merge_module, "recompute_golden_profile_tx", recompute)
+    monkeypatch.setattr(merge_module, "_apply_golden_profile_selections_tx", apply_selections)
+
+    outcome = await merge_module._manual_merge_with_profile_tx(
+        tx,
+        "person-a",
+        "person-b",
+        "same customer",
+        "admin@example.com",
+        selections,
+    )
+
+    assert outcome.merge_event_id == "merge-1"
+    assert events == ["merge", "recompute", "selections"]
+
+
+def test_manual_merge_locks_then_rechecks_both_active_in_mutation_query() -> None:
+    first_write = EXECUTE_MANUAL_MERGE.index("SET lock_first.merge_lock_version")
+    second_write = EXECUTE_MANUAL_MERGE.index("SET lock_second.merge_lock_version")
+    active_recheck = EXECUTE_MANUAL_MERGE.index(
+        "MATCH (absorbed:Person {person_id: $from_id, status: 'active'})"
+    )
+
+    assert "MATCH (lock_first:Person {person_id: $left})" in EXECUTE_MANUAL_MERGE
+    assert "MATCH (lock_second:Person {person_id: $right})" in EXECUTE_MANUAL_MERGE
+    assert first_write < second_write < active_recheck
+    assert "MATCH (survivor:Person {person_id: $to_id, status: 'active'})" in (EXECUTE_MANUAL_MERGE)
 
 
 def test_merge_event_queries_store_metadata_as_string_properties() -> None:
@@ -195,29 +269,43 @@ def test_manual_merge_copies_relationship_properties_before_deleting_relationshi
 
 
 def test_revert_merge_restores_connections_moved_by_merge_event() -> None:
-    assert "AFFECTED_RECORD" in REVERT_MERGE
+    assert "merge_event_id: $merge_event_id" in REVERT_MERGE
+    assert "MOVED_RELATIONSHIP" in REVERT_MERGE
     assert "DELETE survivor_link" in REVERT_MERGE
-    assert "CREATE (sr)-[:LINKED_TO {linked_at: datetime()}]->(absorbed)" in REVERT_MERGE
+    assert "CREATE (sr)-[restored_link:LINKED_TO]->(absorbed)" in REVERT_MERGE
     assert "DELETE survivor_id" in REVERT_MERGE
-    assert "CREATE (absorbed)-[:IDENTIFIED_BY" in REVERT_MERGE
+    assert "MERGE (absorbed)-[restored_id:IDENTIFIED_BY" in REVERT_MERGE
     assert "DELETE survivor_addr" in REVERT_MERGE
-    assert "CREATE (absorbed)-[:LIVES_AT" in REVERT_MERGE
+    assert "MERGE (absorbed)-[restored_addr:LIVES_AT" in REVERT_MERGE
     assert "DELETE survivor_fact" in REVERT_MERGE
-    assert "CREATE (absorbed)-[:HAS_FACT" in REVERT_MERGE
+    assert "CREATE (absorbed)-[restored_fact:HAS_FACT" in REVERT_MERGE
     assert "DELETE survivor_k_out" in REVERT_MERGE
-    assert "CREATE (absorbed)-[:KNOWS" in REVERT_MERGE
+    assert "CREATE (absorbed)-[restored_k_out:KNOWS" in REVERT_MERGE
     assert "DELETE survivor_k_in" in REVERT_MERGE
-    assert "CREATE (k_other_in)-[:KNOWS" in REVERT_MERGE
+    assert "CREATE (k_other_in)-[restored_k_in:KNOWS" in REVERT_MERGE
+
+
+def test_revert_merge_resolves_only_path_compressed_zero_or_one_hop_lineage() -> None:
+    assert "[:MERGED_INTO*0..1]" in REVERT_MERGE
+    assert "[:MERGED_INTO*0..]" not in REVERT_MERGE
+
+
+def test_revert_merge_invalidates_endpoints_once_when_they_are_direct_neighbors() -> None:
+    assert "unmerge_neighbor <> absorbed" in REVERT_MERGE
+    assert "unmerge_neighbor <> current_survivor" in REVERT_MERGE
 
 
 def test_revert_merge_deduplicates_rows_between_relationship_rewrites() -> None:
     assert (
         REVERT_MERGE.count(
-            "WITH DISTINCT absorbed, mi, current_survivor, current_survivor_id, affected_pks"
+            "WITH DISTINCT absorbed, mi, merge_event, current_survivor, current_survivor_id"
         )
-        == 5
+        == 9
     )
-    assert "WITH DISTINCT absorbed, mi, current_survivor_id\nDELETE mi" in REVERT_MERGE
+    assert (
+        "WITH DISTINCT absorbed, mi, current_survivor, current_survivor_id\nDELETE mi"
+        in REVERT_MERGE
+    )
 
 
 @pytest.mark.asyncio
@@ -256,6 +344,7 @@ async def test_unmerge_reactivates_absorbed_flags_records_and_audits() -> None:
     assert tx.calls[1].params == {
         "absorbed_id": "person-a",
         "survivor_id": "person-b",
+        "merge_event_id": "merge-1",
     }
     assert tx.calls[3].params == {"merge_event_id": "merge-1"}
 
@@ -318,6 +407,44 @@ async def test_unmerge_returns_actual_current_survivor_for_recompute() -> None:
 
 
 @pytest.mark.asyncio
+async def test_unmerge_recomputes_both_profiles_in_mutation_transaction(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tx = cast(AsyncManagedTransaction, object())
+    recomputed: list[str] = []
+
+    async def unmerge(inner_tx: AsyncManagedTransaction, *_args: object) -> _UnmergeResult:
+        assert inner_tx is tx
+        return _UnmergeResult(
+            absorbed_id="person-a",
+            current_survivor_id="person-c",
+            reverted_review_case_ids=[],
+        )
+
+    async def recompute(
+        inner_tx: AsyncManagedTransaction,
+        person_id: str,
+        invalidate_analysis: bool,
+    ) -> None:
+        assert inner_tx is tx
+        assert invalidate_analysis is False
+        recomputed.append(person_id)
+
+    monkeypatch.setattr(merge_module, "_unmerge_tx", unmerge)
+    monkeypatch.setattr(merge_module, "recompute_golden_profile_tx", recompute)
+
+    result = await merge_module._unmerge_with_profiles_tx(
+        tx,
+        "merge-1",
+        "false merge",
+        "admin@example.com",
+    )
+
+    assert result is not None
+    assert recomputed == ["person-a", "person-c"]
+
+
+@pytest.mark.asyncio
 async def test_create_lock_creates_when_no_existing_lock() -> None:
     tx = _Tx([None, {"lock_id": "lock-2"}])
 
@@ -349,7 +476,7 @@ async def test_delete_lock_returns_true_when_query_returns_row() -> None:
 async def test_repository_manual_merge_recomputes_survivor_profile(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    session = _Session([MergeOutcome(merge_event_id="merge-1"), None])
+    session = _Session([MergeOutcome(merge_event_id="merge-1")])
     factory = _SessionFactory([session])
 
     monkeypatch.setattr(merge_module, "get_session", factory)
@@ -365,10 +492,9 @@ async def test_repository_manual_merge_recomputes_survivor_profile(
     assert outcome.merge_event_id == "merge-1"
     assert session.write_calls == [
         (
-            merge_module._manual_merge_tx,
-            ("person-a", "person-b", "same customer", "admin@example.com"),
+            merge_module._manual_merge_with_profile_tx,
+            ("person-a", "person-b", "same customer", "admin@example.com", []),
         ),
-        (merge_module.recompute_golden_profile_tx, ("person-b",)),
     ]
 
 
@@ -385,7 +511,7 @@ async def test_repository_manual_merge_applies_selected_golden_profile_values(
             "identifier_type": "email",
         }
     ]
-    session = _Session([MergeOutcome(merge_event_id="merge-1"), "ok", None])
+    session = _Session([MergeOutcome(merge_event_id="merge-1")])
     factory = _SessionFactory([session])
 
     monkeypatch.setattr(merge_module, "get_session", factory)
@@ -401,11 +527,15 @@ async def test_repository_manual_merge_applies_selected_golden_profile_values(
     assert outcome.merge_event_id == "merge-1"
     assert session.write_calls == [
         (
-            merge_module._manual_merge_tx,
-            ("person-a", "person-b", "same customer", "admin@example.com"),
+            merge_module._manual_merge_with_profile_tx,
+            (
+                "person-a",
+                "person-b",
+                "same customer",
+                "admin@example.com",
+                selections,
+            ),
         ),
-        (merge_module.recompute_golden_profile_tx, ("person-b",)),
-        (merge_module._apply_golden_profile_selections_tx, ("person-b", selections)),
     ]
 
 
@@ -487,8 +617,8 @@ async def test_repository_manual_merge_skips_recompute_when_blocked(
     assert outcome.blocked is True
     assert session.write_calls == [
         (
-            merge_module._manual_merge_tx,
-            ("person-a", "person-b", "same customer", "admin@example.com"),
+            merge_module._manual_merge_with_profile_tx,
+            ("person-a", "person-b", "same customer", "admin@example.com", []),
         )
     ]
 
@@ -503,9 +633,7 @@ async def test_repository_unmerge_recomputes_absorbed_and_survivor_profiles(
                 absorbed_id="person-a",
                 current_survivor_id="person-b",
                 reverted_review_case_ids=[],
-            ),
-            None,
-            None,
+            )
         ]
     )
     factory = _SessionFactory([session])
@@ -520,7 +648,8 @@ async def test_repository_unmerge_recomputes_absorbed_and_survivor_profiles(
 
     assert result == ("person-a", "person-b")
     assert session.write_calls == [
-        (merge_module._unmerge_tx, ("merge-1", "false merge", "admin@example.com")),
-        (merge_module.recompute_golden_profile_tx, ("person-a",)),
-        (merge_module.recompute_golden_profile_tx, ("person-b",)),
+        (
+            merge_module._unmerge_with_profiles_tx,
+            ("merge-1", "false merge", "admin@example.com"),
+        ),
     ]

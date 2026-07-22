@@ -71,15 +71,20 @@ RETURN declarer.person_id AS declarer_person_id,
 REWIRE_KNOWS_OUT = """
 MATCH (absorbed:Person {person_id: $absorbed_id})-[old:KNOWS]->(other:Person)
 WHERE other.person_id <> $survivor_id
-WITH old, other, properties(old) AS props
-DELETE old
-WITH other, props
 MATCH (survivor:Person {person_id: $survivor_id})
-MERGE (survivor)-[rel:KNOWS {
-    source_system_key: props.source_system_key,
-    source_record_pk:  props.source_record_pk
-}]->(other)
-ON CREATE SET rel += props, rel.declared_by_person_id = $survivor_id
+MATCH (me:MergeEvent {merge_event_id: $merge_event_id})
+WITH absorbed, old, other, survivor, me, properties(old) AS props
+CREATE (me)-[moved:MOVED_RELATIONSHIP]->(other)
+SET moved = props,
+    moved.relationship_type = 'KNOWS_OUT',
+    moved.direction = 'outgoing',
+    moved.origin_person_id = coalesce(props.merge_origin_person_id, $absorbed_id),
+    moved.created_on_survivor = true
+DELETE old
+CREATE (survivor)-[rel:KNOWS]->(other)
+SET rel = props,
+    rel.declared_by_person_id = $survivor_id,
+    rel.merge_origin_person_id = moved.origin_person_id
 RETURN count(other) AS rewired_count
 """
 
@@ -91,6 +96,11 @@ MATCH (sr:SourceRecord)
       -[:FROM_SOURCE]->(ss:SourceSystem {source_key: 'fundbox:contacts'})
 WHERE sr.source_record_pk > $cursor
   AND sr.lifecycle_status = 'active'
+  AND NOT EXISTS {
+    MATCH ()-[existing:KNOWS]->()
+    WHERE existing.source_record_pk = sr.source_record_pk
+      AND coalesce(existing.is_active, true)
+  }
 RETURN sr.source_record_pk AS source_record_pk,
        ss.source_key       AS source_system_key,
        sr.raw_payload       AS raw_payload
@@ -127,6 +137,11 @@ WHERE sr.source_record_pk > $cursor
   AND sr.lifecycle_status = 'active'
   AND sr.raw_payload CONTAINS 'primary_source_record_id'
   AND sr.raw_payload CONTAINS 'relationship'
+  AND NOT EXISTS {
+    MATCH ()-[existing:KNOWS]->()
+    WHERE existing.source_record_pk = sr.source_record_pk
+      AND coalesce(existing.is_active, true)
+  }
 RETURN sr.source_record_pk AS source_record_pk,
        ss.source_key       AS source_system_key,
        sr.raw_payload      AS raw_payload
@@ -146,14 +161,18 @@ SET rel.is_active = false,
 REWIRE_KNOWS_IN = """
 MATCH (other:Person)-[old:KNOWS]->(absorbed:Person {person_id: $absorbed_id})
 WHERE other.person_id <> $survivor_id
-WITH old, other, properties(old) AS props
-DELETE old
-WITH other, props
 MATCH (survivor:Person {person_id: $survivor_id})
-MERGE (other)-[rel:KNOWS {
-    source_system_key: props.source_system_key,
-    source_record_pk:  props.source_record_pk
-}]->(survivor)
-ON CREATE SET rel += props
+MATCH (me:MergeEvent {merge_event_id: $merge_event_id})
+WITH absorbed, old, other, survivor, me, properties(old) AS props
+CREATE (me)-[moved:MOVED_RELATIONSHIP]->(other)
+SET moved = props,
+    moved.relationship_type = 'KNOWS_IN',
+    moved.direction = 'incoming',
+    moved.origin_person_id = coalesce(props.merge_origin_person_id, $absorbed_id),
+    moved.created_on_survivor = true
+DELETE old
+CREATE (other)-[rel:KNOWS]->(survivor)
+SET rel = props,
+    rel.merge_origin_person_id = moved.origin_person_id
 RETURN count(other) AS rewired_count
 """

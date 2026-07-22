@@ -127,6 +127,68 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/persons/{person_id}/profile-analyses": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get current Person profile analyses and refresh states
+         * @description Authenticated human frontend surface only. The canonical path is served
+         *     at runtime as `/api/app/v2/persons/{person_id}/profile-analyses`; it is
+         *     not mounted on the root/public app or the `/oauth2/v1` machine subset.
+         *
+         *     The independent sales and contact-tracing slots retain any prior
+         *     successful current content while a newer revision is pending, running,
+         *     or failed. Slot state is `ready` for a result at the Person's current
+         *     input revision, `running` for an active refresh claim, `retrying` for a
+         *     scheduled bounded retry, `failed` for a current-revision terminal
+         *     failure when no refresh is active, `pending` otherwise, and `disabled`
+         *     when generation is paused by rollout configuration. Overall state uses
+         *     this precedence: disabled, running, retrying, ready/partial, failed,
+         *     then pending.
+         */
+        get: operations["getPersonProfileAnalyses"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/persons/{person_id}/profile-analyses/history": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get immutable Person profile-analysis history
+         * @description Authenticated human frontend surface only, served at runtime as
+         *     `/api/app/v2/persons/{person_id}/profile-analyses/history` and excluded
+         *     from the root/public app and `/oauth2/v1` machine subset.
+         *
+         *     Returns terminal `succeeded`, `failed`, and `obsolete` attempts in
+         *     deterministic newest-first order by `completed_at DESC`, then
+         *     `analysis_id DESC`. Safe immutable fields and safe failure metadata are
+         *     returned; provider response bodies, prompts, input snapshots, raw
+         *     payloads, credentials, and direct identifiers are never returned.
+         *     `meta.total_count` counts all entries matching the optional type filter
+         *     before pagination.
+         */
+        get: operations["getPersonProfileAnalysisHistory"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/persons/{person_id}/connections": {
         parameters: {
             query?: never;
@@ -687,6 +749,7 @@ export interface components {
         Meta: {
             request_id: string;
             next_cursor?: string | null;
+            total_count?: number | null;
         };
         ErrorObject: {
             code: string;
@@ -1128,6 +1191,126 @@ export interface components {
         PersonDetailResponseEnvelope: {
             data: components["schemas"]["PersonDetail"];
             meta: components["schemas"]["Meta"];
+        };
+        /** @enum {string} */
+        ProfileAnalysisType: "sales" | "contact_tracing";
+        /** @enum {string} */
+        ProfileAnalysisStatus: "succeeded" | "failed" | "obsolete";
+        /**
+         * @description `disabled` means generation is paused by rollout configuration;
+         *     `ready` means current content matches the Person input revision;
+         *     `running` means a refresh claim is active; `retrying` means a retryable
+         *     failure has a scheduled retry; `failed` means a terminal
+         *     failure exists for the current revision and no refresh is active; and
+         *     `pending` means the slot is not fresh, active, or failed.
+         * @enum {string}
+         */
+        ProfileAnalysisSlotRefreshState: "disabled" | "pending" | "running" | "retrying" | "ready" | "failed";
+        /**
+         * @description `disabled` means generation is paused. Otherwise this is derived from
+         *     both slots. `running` takes precedence when either slot is running,
+         *     followed by `retrying` when a retry is scheduled; `ready` means both
+         *     are ready; `partial` means exactly one is
+         *     ready and neither is running; `failed` means neither is ready or
+         *     running and at least one failed; otherwise the state is `pending`.
+         * @enum {string}
+         */
+        ProfileAnalysisRefreshState: "disabled" | "pending" | "running" | "retrying" | "ready" | "partial" | "failed";
+        /** @description Sanitized lower-case failure code. Unsafe or unavailable stored values are returned as null; provider response bodies are never returned. */
+        SafeProfileAnalysisFailureCode: string | null;
+        /** @description Currently published successful analysis with immutable provenance. */
+        ProfileAnalysisCurrent: {
+            analysis_id: string;
+            person_id: string;
+            analysis_type: components["schemas"]["ProfileAnalysisType"];
+            /** @constant */
+            status: "succeeded";
+            content: string;
+            input_revision: number;
+            input_fingerprint: string;
+            prompt_version: string;
+            provider: string;
+            model: string;
+            /**
+             * Format: date-time
+             * @description Timezone-aware ISO 8601 timestamp.
+             */
+            started_at: string;
+            /**
+             * Format: date-time
+             * @description Timezone-aware ISO 8601 timestamp.
+             */
+            completed_at: string;
+            /** @description Human-facing completion time formatted by the API. */
+            completed_at_display: string;
+            attempt_number: number;
+        };
+        /**
+         * @description Independent current output and refresh state for one analysis type.
+         *     Previously published current content is retained while a newer revision
+         *     is pending, running, or failed.
+         */
+        ProfileAnalysisSlot: {
+            current: components["schemas"]["ProfileAnalysisCurrent"] | null;
+            /** @description Current content exists but has an older input revision. */
+            stale: boolean;
+            refresh_state: components["schemas"]["ProfileAnalysisSlotRefreshState"];
+            failure_code: components["schemas"]["SafeProfileAnalysisFailureCode"];
+        };
+        PersonProfileAnalyses: {
+            input_revision: number;
+            refresh_state: components["schemas"]["ProfileAnalysisRefreshState"];
+            sales: components["schemas"]["ProfileAnalysisSlot"];
+            contact_tracing: components["schemas"]["ProfileAnalysisSlot"];
+        };
+        /**
+         * @description Immutable safe terminal attempt. Successful entries have content and
+         *     failed entries have null content; obsolete content is nullable.
+         */
+        ProfileAnalysisHistoryItem: {
+            analysis_id: string;
+            person_id: string;
+            analysis_type: components["schemas"]["ProfileAnalysisType"];
+            status: components["schemas"]["ProfileAnalysisStatus"];
+            content: string | null;
+            input_revision: number;
+            input_fingerprint: string;
+            prompt_version: string;
+            provider: string;
+            model: string;
+            /**
+             * Format: date-time
+             * @description Timezone-aware ISO 8601 timestamp.
+             */
+            started_at: string;
+            /**
+             * Format: date-time
+             * @description Timezone-aware ISO 8601 timestamp.
+             */
+            completed_at: string;
+            /** @description Human-facing completion time formatted by the API. */
+            completed_at_display: string;
+            attempt_number: number;
+            failure_code: components["schemas"]["SafeProfileAnalysisFailureCode"];
+            retryable: boolean | null;
+            /** Format: date-time */
+            next_retry_at: string | null;
+        };
+        /** @description API-provided primary and secondary text for a display popover. */
+        PopoverDisplayItem: {
+            primary: string;
+            /** @description Secondary display text; serialized as an empty string when omitted. */
+            secondary: string;
+        };
+        PersonProfileAnalysesResponseEnvelope: {
+            data: components["schemas"]["PersonProfileAnalyses"];
+            meta: components["schemas"]["Meta"];
+            display_items: components["schemas"]["PopoverDisplayItem"][] | null;
+        };
+        ProfileAnalysisHistoryResponseEnvelope: {
+            data: components["schemas"]["ProfileAnalysisHistoryItem"][];
+            meta: components["schemas"]["Meta"];
+            display_items: components["schemas"]["PopoverDisplayItem"][] | null;
         };
         SharedIdentifier: {
             identifier_type: components["schemas"]["IdentifierType"];
@@ -1785,6 +1968,146 @@ export interface operations {
                     "application/json": components["schemas"]["SourceRecordListResponseEnvelope"];
                 };
             };
+            404: components["responses"]["PersonNotFound"];
+        };
+    };
+    getPersonProfileAnalyses: {
+        parameters: {
+            query?: never;
+            header?: {
+                "X-Request-Id"?: components["parameters"]["RequestId"];
+            };
+            path: {
+                person_id: components["parameters"]["PersonId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Current analyses and independent refresh states */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    /**
+                     * @example {
+                     *       "data": {
+                     *         "input_revision": 8,
+                     *         "refresh_state": "running",
+                     *         "sales": {
+                     *           "current": {
+                     *             "analysis_id": "2df33d31-62bb-41e7-9966-4110a7e342eb",
+                     *             "person_id": "7af4b5f5-34c1-4f22-9e2d-95ea8ff3b8c7",
+                     *             "analysis_type": "sales",
+                     *             "status": "succeeded",
+                     *             "content": "Observed repeat purchases.\n\nLimitations: evidence is incomplete.",
+                     *             "input_revision": 7,
+                     *             "input_fingerprint": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                     *             "prompt_version": "sales-profile-v1",
+                     *             "provider": "proclaude",
+                     *             "model": "analysis-model",
+                     *             "started_at": "2026-07-21T01:00:00+00:00",
+                     *             "completed_at": "2026-07-21T01:02:00+00:00",
+                     *             "completed_at_display": "21 Jul 2026, 01:02 AM",
+                     *             "attempt_number": 2
+                     *           },
+                     *           "stale": true,
+                     *           "refresh_state": "running",
+                     *           "failure_code": null
+                     *         },
+                     *         "contact_tracing": {
+                     *           "current": null,
+                     *           "stale": false,
+                     *           "refresh_state": "pending",
+                     *           "failure_code": null
+                     *         }
+                     *       },
+                     *       "meta": {
+                     *         "request_id": "req_abc123",
+                     *         "next_cursor": null,
+                     *         "total_count": null
+                     *       },
+                     *       "display_items": null
+                     *     }
+                     */
+                    "application/json": components["schemas"]["PersonProfileAnalysesResponseEnvelope"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["PersonNotFound"];
+        };
+    };
+    getPersonProfileAnalysisHistory: {
+        parameters: {
+            query?: {
+                /** @description Restrict history to one independent analysis type. */
+                analysis_type?: components["schemas"]["ProfileAnalysisType"];
+                /**
+                 * @description Opaque offset cursor from `meta.next_cursor`; omit for the first page.
+                 * @example MjA=
+                 */
+                cursor?: string;
+                /**
+                 * @description Page size; defaults to 20, non-positive values use the default, and values above 200 are clamped to 200.
+                 * @example 20
+                 */
+                limit?: number;
+            };
+            header?: {
+                "X-Request-Id"?: components["parameters"]["RequestId"];
+            };
+            path: {
+                person_id: components["parameters"]["PersonId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Cursor-paginated terminal analysis history */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    /**
+                     * @example {
+                     *       "data": [
+                     *         {
+                     *           "analysis_id": "0bf90451-c932-4fc4-833a-c705052bca20",
+                     *           "person_id": "7af4b5f5-34c1-4f22-9e2d-95ea8ff3b8c7",
+                     *           "analysis_type": "sales",
+                     *           "status": "failed",
+                     *           "content": null,
+                     *           "input_revision": 8,
+                     *           "input_fingerprint": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                     *           "prompt_version": "sales-profile-v1",
+                     *           "provider": "proclaude",
+                     *           "model": "analysis-model",
+                     *           "started_at": "2026-07-21T02:00:00+00:00",
+                     *           "completed_at": "2026-07-21T02:00:05+00:00",
+                     *           "completed_at_display": "21 Jul 2026, 02:00 AM",
+                     *           "attempt_number": 3,
+                     *           "failure_code": "rate_limited",
+                     *           "retryable": true,
+                     *           "next_retry_at": "2026-07-21T02:10:05+00:00"
+                     *         }
+                     *       ],
+                     *       "meta": {
+                     *         "request_id": "req_abc123",
+                     *         "next_cursor": "MjA=",
+                     *         "total_count": 37
+                     *       },
+                     *       "display_items": null
+                     *     }
+                     */
+                    "application/json": components["schemas"]["ProfileAnalysisHistoryResponseEnvelope"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
             404: components["responses"]["PersonNotFound"];
         };
     };

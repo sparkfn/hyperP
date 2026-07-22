@@ -267,3 +267,68 @@ export interface SourceRecordEntityFacet {
   entity_display_name: string | null;
   count: number;
 }
+
+// --- Person profile analyses ---
+
+export type ProfileAnalysisType = "sales" | "contact_tracing";
+export type ProfileAnalysisStatus = "succeeded" | "failed" | "obsolete";
+export type ProfileAnalysisSlotRefreshState =
+  | "disabled"
+  | "pending"
+  | "running"
+  | "retrying"
+  | "ready"
+  | "failed";
+export type ProfileAnalysisRefreshState =
+  | "disabled"
+  | "pending"
+  | "running"
+  | "retrying"
+  | "ready"
+  | "partial"
+  | "failed";
+
+export interface ProfileAnalysisProvenance {
+  input_revision: number;
+  input_fingerprint: string;
+  prompt_version: string;
+  provider: string;
+  model: string;
+  started_at: string;
+  completed_at: string;
+  completed_at_display: string;
+  attempt_number: number;
+}
+
+export interface ProfileAnalysisCurrent extends ProfileAnalysisProvenance {
+  analysis_id: string;
+  person_id: string;
+  analysis_type: ProfileAnalysisType;
+  status: "succeeded";
+  content: string;
+}
+
+export interface ProfileAnalysisSlot {
+  current: ProfileAnalysisCurrent | null;
+  stale: boolean;
+  refresh_state: ProfileAnalysisSlotRefreshState;
+  failure_code: string | null;
+}
+
+export interface PersonProfileAnalyses {
+  input_revision: number;
+  refresh_state: ProfileAnalysisRefreshState;
+  sales: ProfileAnalysisSlot;
+  contact_tracing: ProfileAnalysisSlot;
+}
+
+export interface ProfileAnalysisHistoryItem extends ProfileAnalysisProvenance {
+  analysis_id: string;
+  person_id: string;
+  analysis_type: ProfileAnalysisType;
+  status: ProfileAnalysisStatus;
+  content: string | null;
+  failure_code: string | null;
+  retryable: boolean | null;
+  next_retry_at: string | null;
+}

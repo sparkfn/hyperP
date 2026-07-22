@@ -24,6 +24,7 @@ from src.graph.queries import (
     GET_OVERRIDE_SOURCE_METADATA,
     GET_PERSON_OVERRIDES_FULL,
     UPDATE_GOLDEN_FIELD,
+    UPDATE_GOLDEN_FIELDS,
     UPDATE_OVERRIDES,
     UPSERT_CUSTOM_ADDRESS,
 )
@@ -364,12 +365,15 @@ async def _batch_override_tx(
         overrides[field_name] = _override_entry(field_name, source_record_pk, reason, actor_id, now)
     await tx.run(UPDATE_OVERRIDES, person_id=person_id, overrides=json.dumps(overrides))
 
-    for _, _, derived in validated:
+    updates = [
+        {"field_name": derived.field_to_set, "value": derived.value} for _, _, derived in validated
+    ]
+    if updates:
         await tx.run(
-            UPDATE_GOLDEN_FIELD,
+            UPDATE_GOLDEN_FIELDS,
             person_id=person_id,
-            field_name=derived.field_to_set,
-            value=derived.value,
+            updates=updates,
+            invalidate_analysis=True,
         )
 
     await tx.run(CREATE_OVERRIDE_AUDIT, person_id=person_id, actor_id=actor_id, reason=reason)

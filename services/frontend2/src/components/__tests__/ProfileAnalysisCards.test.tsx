@@ -1,0 +1,159 @@
+// @vitest-environment jsdom
+
+import { cleanup, render, screen, within } from "@testing-library/react";
+import React from "react";
+import { afterEach, describe, expect, it } from "vitest";
+
+import type {
+  PersonProfileAnalyses,
+  ProfileAnalysisCurrent,
+  ProfileAnalysisSlot,
+} from "@/lib/api-types-person";
+import ProfileAnalysisCards from "../ProfileAnalysisCards";
+
+afterEach(cleanup);
+
+const salesCurrent: ProfileAnalysisCurrent = {
+  analysis_id: "analysis-sales-1",
+  person_id: "person-1",
+  analysis_type: "sales",
+  status: "succeeded",
+  content: "Repeat purchases are supported by [order-1].\n\nLimitations: History is sparse.",
+  input_revision: 7,
+  input_fingerprint: "fingerprint",
+  prompt_version: "sales-profile-v1",
+  provider: "proclaude",
+  model: "analysis-model",
+  started_at: "2026-07-21T01:00:00+00:00",
+  completed_at: "2026-07-21T01:02:00+00:00",
+  completed_at_display: "21 Jul 2026, 09:02 AM",
+  attempt_number: 1,
+};
+
+function slot(overrides: Partial<ProfileAnalysisSlot> = {}): ProfileAnalysisSlot {
+  return {
+    current: null,
+    stale: false,
+    refresh_state: "pending",
+    failure_code: null,
+    ...overrides,
+  };
+}
+
+function analyses(overrides: Partial<PersonProfileAnalyses> = {}): PersonProfileAnalyses {
+  return {
+    input_revision: 7,
+    refresh_state: "ready",
+    sales: slot({ current: salesCurrent, refresh_state: "ready" }),
+    contact_tracing: slot({ refresh_state: "ready" }),
+    ...overrides,
+  };
+}
+
+function card(name: string): HTMLElement {
+  return screen.getByRole("heading", { name }).closest("article") as HTMLElement;
+}
+
+describe("ProfileAnalysisCards", () => {
+  it("renders two independent ready cards with API display metadata", () => {
+    const contact = {
+      ...salesCurrent,
+      analysis_id: "analysis-contact-1",
+      analysis_type: "contact_tracing" as const,
+    };
+    render(<ProfileAnalysisCards analyses={analyses({
+      contact_tracing: slot({ current: contact, refresh_state: "ready" }),
+    })} />);
+
+    expect(screen.getByRole("heading", { name: "Sales" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Contact tracing" })).toBeTruthy();
+    expect(screen.getAllByText("Up to date")).toHaveLength(2);
+    expect(within(card("Sales")).getByText("Generated 21 Jul 2026, 09:02 AM")).toBeTruthy();
+    expect(within(card("Sales")).getByText("Model analysis-model")).toBeTruthy();
+    expect(within(card("Sales")).getByText(/Limitations: History is sparse/)).toBeTruthy();
+    const status = screen.getByText("Profile analysis status:").closest("p");
+    expect(status?.getAttribute("aria-live")).toBe("polite");
+    expect(within(card("Sales")).getByText(/Limitations/).closest("[aria-live]")).toBeNull();
+  });
+
+  it("shows partial availability and an independent failed slot", () => {
+    render(<ProfileAnalysisCards analyses={analyses({
+      refresh_state: "partial",
+      contact_tracing: slot({ refresh_state: "failed", failure_code: "provider_unavailable" }),
+    })} />);
+
+    expect(screen.getByText("Partially available")).toBeTruthy();
+    expect(within(card("Contact tracing")).getByText("Generation failed")).toBeTruthy();
+    expect(
+      within(card("Contact tracing")).getByText("Failure code: provider_unavailable"),
+    ).toBeTruthy();
+  });
+
+  it("retains prior content while a refresh is pending", () => {
+    render(<ProfileAnalysisCards analyses={analyses({
+      refresh_state: "pending",
+      sales: slot({ current: salesCurrent, stale: true, refresh_state: "pending" }),
+    })} />);
+
+    expect(within(card("Sales")).getByText("Refresh queued")).toBeTruthy();
+    expect(within(card("Sales")).getByText(/Repeat purchases/)).toBeTruthy();
+  });
+
+  it("shows an explicit running state when current output is missing", () => {
+    render(<ProfileAnalysisCards analyses={analyses({
+      refresh_state: "running",
+      sales: slot({ refresh_state: "running" }),
+    })} />);
+
+    expect(within(card("Sales")).getByText("Generating")).toBeTruthy();
+    expect(within(card("Sales")).getByText("Analysis is being generated.")).toBeTruthy();
+  });
+
+  it("distinguishes a scheduled retry from terminal failure", () => {
+    render(<ProfileAnalysisCards analyses={analyses({
+      refresh_state: "retrying",
+      sales: slot({ refresh_state: "retrying" }),
+    })} />);
+
+    expect(within(card("Sales")).getByText("Retry scheduled")).toBeTruthy();
+    expect(within(card("Sales")).getByText("Analysis will retry automatically.")).toBeTruthy();
+  });
+
+  it("retains prior content after a failed refresh", () => {
+    render(<ProfileAnalysisCards analyses={analyses({
+      refresh_state: "failed",
+      sales: slot({
+        current: salesCurrent,
+        stale: true,
+        refresh_state: "failed",
+        failure_code: "rate_limited",
+      }),
+    })} />);
+
+    expect(within(card("Sales")).getByText("Refresh failed")).toBeTruthy();
+    expect(within(card("Sales")).getByText("Stale")).toBeTruthy();
+    expect(within(card("Sales")).getByText(/Repeat purchases/)).toBeTruthy();
+  });
+
+  it("renders explicit empty and queued states for missing output", () => {
+    render(<ProfileAnalysisCards analyses={analyses({
+      sales: slot({ refresh_state: "ready" }),
+      contact_tracing: slot({ refresh_state: "pending" }),
+    })} />);
+
+    expect(within(card("Sales")).getByText("No analysis is available yet.")).toBeTruthy();
+    expect(within(card("Contact tracing")).getByText("Analysis is queued.")).toBeTruthy();
+  });
+
+  it("renders long HTML-looking output literally", () => {
+    const literal = `<img src=x onerror=alert(1)> ${"supported detail ".repeat(120)}`;
+    render(<ProfileAnalysisCards analyses={analyses({
+      sales: slot({ current: { ...salesCurrent, content: literal }, refresh_state: "ready" }),
+    })} />);
+
+    const salesCard = card("Sales");
+    expect(salesCard.textContent).toContain("<img src=x onerror=alert(1)>");
+    expect(salesCard.querySelector("img")).toBeNull();
+    expect(salesCard.textContent).toContain("supported detail supported detail");
+  });
+});

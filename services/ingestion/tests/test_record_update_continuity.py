@@ -160,6 +160,7 @@ def test_multi_owner_changed_update_stays_pending_without_active_side_effects() 
         bankruptcy = stack.enter_context(patch("src.pipeline.materialize_bankruptcy_case"))
         golden = stack.enter_context(patch("src.pipeline.compute_golden_profile"))
         audit = stack.enter_context(patch("src.pipeline.audit_person_pairs"))
+        dirty = stack.enter_context(patch("src.pipeline.mark_profile_analysis_dirty"))
         vehicles = stack.enter_context(patch.object(pipeline, "_write_chat_vehicle_observations"))
         reject = stack.enter_context(patch("src.pipeline.reject_replaced_pending"))
 
@@ -178,6 +179,7 @@ def test_multi_owner_changed_update_stays_pending_without_active_side_effects() 
     bankruptcy.assert_not_called()
     golden.assert_not_called()
     audit.assert_not_called()
+    dirty.assert_not_called()
     vehicles.assert_not_called()
     reject.assert_called_once_with(tx, "older-pending")
 
@@ -238,6 +240,7 @@ def test_accepted_update_retires_activates_and_recomputes_complete_affected_set(
         stack.enter_context(patch("src.pipeline.materialize_bankruptcy_case"))
         golden = stack.enter_context(patch("src.pipeline.compute_golden_profile"))
         stack.enter_context(patch("src.pipeline.audit_person_pairs"))
+        dirty = stack.enter_context(patch("src.pipeline.mark_profile_analysis_dirty"))
         stack.enter_context(patch("src.pipeline.record_auto_merge_event"))
         stack.enter_context(patch.object(pipeline, "_write_chat_vehicle_observations"))
 
@@ -251,6 +254,11 @@ def test_accepted_update_retires_activates_and_recomputes_complete_affected_set(
     assert activate.call_args.kwargs["old_source_record_pk"] == old_pk
     assert all(call.kwargs["attach_evidence"] for call in link.call_args_list)
     assert {call.args[1] for call in golden.call_args_list} == expected_recomputed
+    dirty.assert_called_once_with(
+        tx,
+        source_record_pks=("new-sr", old_pk or ""),
+        person_ids=expected_recomputed,
+    )
 
 
 class _LifecycleRows:

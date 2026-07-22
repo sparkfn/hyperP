@@ -21,6 +21,10 @@ from src.graph.mappers import (
     map_timeline_group,
 )
 from src.graph.mappers_entities import map_listed_person, map_person_entity
+from src.graph.mappers_profile_analysis import (
+    map_person_profile_analyses,
+    map_profile_analysis_history_item,
+)
 from src.graph.queries import (
     COUNT_PERSON_AUDIT,
     COUNT_PERSON_BANKRUPTCY_CASES,
@@ -45,6 +49,8 @@ from src.graph.queries import (
     GET_PERSON_IDENTIFIERS,
     GET_PERSON_MATCHES,
     GET_PERSON_POSSIBLE_MATCH_DETAIL,
+    GET_PERSON_PROFILE_ANALYSES,
+    GET_PERSON_PROFILE_ANALYSIS_HISTORY,
     GET_PERSON_SHARED_IDENTIFIERS,
     GET_PERSON_SOURCE_RECORD_ENTITY_FACETS,
     GET_PERSON_SOURCE_RECORDS,
@@ -73,6 +79,11 @@ from src.types import (
     PossibleMatchDetail,
     SourceRecord,
     SourceRecordEntityFacet,
+)
+from src.types_profile_analysis import (
+    PersonProfileAnalyses,
+    ProfileAnalysisHistoryItem,
+    ProfileAnalysisType,
 )
 
 from ._utils import record_to_dict, to_total
@@ -171,6 +182,44 @@ class Neo4jPersonRepository:
         if record is None:
             return None
         return map_person(record_to_dict(record.keys(), list(record.values())))
+
+    async def get_profile_analyses(self, person_id: str) -> PersonProfileAnalyses | None:
+        async with get_session() as session:
+            result = await session.run(GET_PERSON_PROFILE_ANALYSES, person_id=person_id)
+            record = await result.single()
+        if record is None:
+            return None
+        mapped = record_to_dict(record.keys(), list(record.values()))
+        return map_person_profile_analyses(mapped)
+
+    async def get_profile_analysis_history(
+        self,
+        person_id: str,
+        analysis_type: ProfileAnalysisType | None,
+        skip: int,
+        limit: int,
+    ) -> tuple[list[ProfileAnalysisHistoryItem], int] | None:
+        async with get_session() as session:
+            result = await session.run(
+                GET_PERSON_PROFILE_ANALYSIS_HISTORY,
+                person_id=person_id,
+                analysis_type=analysis_type,
+                skip=skip,
+                limit=limit,
+            )
+            record = await result.single()
+        if record is None:
+            return None
+        mapped = record_to_dict(record.keys(), list(record.values()))
+        raw_analyses = mapped.get("analyses")
+        if not isinstance(raw_analyses, list):
+            raise TypeError("profile analysis history query returned invalid analyses")
+        items: list[ProfileAnalysisHistoryItem] = []
+        for raw_analysis in raw_analyses:
+            if not isinstance(raw_analysis, dict):
+                raise TypeError("profile analysis history query returned invalid analysis")
+            items.append(map_profile_analysis_history_item({"analysis": raw_analysis}))
+        return items, to_total(record)
 
     async def get_source_records(
         self,

@@ -408,8 +408,11 @@ SET rel.source_record_pk  = sr.source_record_pk,
 MARK_REVIEW_SALES_RECORD_LINKED = """
 MATCH (rc:ReviewCase {review_case_id: $review_case_id})-[:FOR_DECISION]->(md:MatchDecision)
 MATCH (md)-[:ABOUT_LEFT]->(sr:SourceRecord {record_type: 'sales'})
+MATCH (md)-[:ABOUT_RIGHT]->(person:Person {status: 'active'})
 SET sr.link_status = 'linked',
-    sr.updated_at  = datetime()
+    sr.updated_at  = datetime(),
+    person.analysis_input_revision = coalesce(person.analysis_input_revision, 0) + 1,
+    person.analysis_dirty_at = datetime()
 RETURN sr.source_record_pk AS source_record_pk
 """
 
@@ -552,8 +555,13 @@ WHERE (sr.expected_active_source_record_pk IS NULL AND size(old_versions) = 0)
 WITH sr, source, person, stage, staged_lines, observations, old_versions
 CALL (old_versions) {
   UNWIND old_versions AS old
-  OPTIONAL MATCH ()-[rel:PURCHASED|BOUGHT_VEHICLE|INVOLVES_VEHICLE]->()
+  OPTIONAL MATCH (old_owner)-[rel:PURCHASED|BOUGHT_VEHICLE|INVOLVES_VEHICLE]->()
   WHERE rel.source_record_pk = old.source_record_pk
+  FOREACH (_ IN CASE WHEN old_owner:Person THEN [1] ELSE [] END |
+    SET old_owner.analysis_input_revision =
+          coalesce(old_owner.analysis_input_revision, 0) + 1,
+        old_owner.analysis_dirty_at = datetime()
+  )
   DELETE rel
   RETURN count(rel) AS retired_count
 }
@@ -675,7 +683,9 @@ CALL (source, sr, person, stage, order, observations) {
 MERGE (person)-[purchase:PURCHASED {source_system_key: source.source_key,
   source_order_id: stage.source_order_id}]->(order)
 SET purchase.source_record_pk = sr.source_record_pk, purchase.is_active = true,
-    purchase.updated_at = datetime()
+    purchase.updated_at = datetime(),
+    person.analysis_input_revision = coalesce(person.analysis_input_revision, 0) + 1,
+    person.analysis_dirty_at = datetime()
 RETURN sr.source_record_pk AS source_record_pk,
        promoted_line_count, promoted_observation_count
 """
@@ -1004,10 +1014,26 @@ CALL (pending, approved) {
 WITH pending, approved, old_versions, prior_person_ids, retired_owners,
      activated_knows_count
 WHERE activated_knows_count = size($knows_relationships)
+WITH pending, approved, old_versions,
+     retired_owners + prior_person_ids + [approved.person_id] AS direct_person_ids
+OPTIONAL MATCH (changed_person:Person)-[changed_knows:KNOWS]-(:Person)
+WHERE changed_knows.source_record_pk IN
+      [old IN old_versions | old.source_record_pk] + [pending.source_record_pk]
+WITH pending, approved, old_versions, direct_person_ids,
+     collect(DISTINCT changed_person.person_id) AS changed_relationship_person_ids
+CALL (direct_person_ids, changed_relationship_person_ids) {
+  UNWIND direct_person_ids + changed_relationship_person_ids AS dirty_person_id
+  WITH DISTINCT dirty_person_id
+  MATCH (changed_person:Person {person_id: dirty_person_id, status: 'active'})
+  SET changed_person.analysis_input_revision =
+        coalesce(changed_person.analysis_input_revision, 0) + 1,
+      changed_person.analysis_dirty_at = datetime()
+  RETURN count(changed_person) AS dirtied_count
+}
 RETURN pending.source_record_pk AS pending_source_record_pk,
        [old IN old_versions | old.source_record_pk] AS old_source_record_pks,
        approved.person_id AS approved_person_id,
-       retired_owners + prior_person_ids + [approved.person_id] AS affected_person_ids
+       direct_person_ids + changed_relationship_person_ids AS affected_person_ids
 """
 
 REJECT_PENDING_REVIEW_RECORD = """

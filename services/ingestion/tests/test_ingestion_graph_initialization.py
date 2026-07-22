@@ -10,6 +10,8 @@ from src.config import Settings
 from src.graph.schema_init import (
     BASE_LIFECYCLE_CONSTRAINTS,
     DEFERRED_SOURCE_RECORD_CONSTRAINTS,
+    _find_init_cypher,
+    _split_statements,
 )
 
 
@@ -26,6 +28,21 @@ def test_version_key_constraint_is_deferred_from_base_schema() -> None:
     deferred = "\n".join(DEFERRED_SOURCE_RECORD_CONSTRAINTS)
     assert "source_record_version_key_unique" not in base
     assert "source_record_version_key_unique" in deferred
+
+
+def test_profile_analysis_schema_statements_are_idempotent() -> None:
+    statements = _split_statements(_find_init_cypher().read_text(encoding="utf-8"))
+    profile_analysis_statements = [
+        statement for statement in statements if "ProfileAnalysis" in statement
+    ]
+
+    assert profile_analysis_statements == [
+        """CREATE CONSTRAINT profile_analysis_id_unique IF NOT EXISTS
+  FOR (pa:ProfileAnalysis) REQUIRE pa.analysis_id IS UNIQUE""",
+        """CREATE INDEX idx_profile_analysis_history IF NOT EXISTS
+  FOR (pa:ProfileAnalysis)
+  ON (pa.person_id, pa.analysis_type, pa.completed_at)""",
+    ]
 
 
 def test_lifecycle_repair_precedes_source_version_uniqueness(

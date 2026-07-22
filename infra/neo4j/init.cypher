@@ -53,6 +53,9 @@ CREATE CONSTRAINT ingest_run_id_unique IF NOT EXISTS
 CREATE CONSTRAINT ingest_run_source_idempotency_unique IF NOT EXISTS
   FOR (ir:IngestRun) REQUIRE (ir.source_key, ir.idempotency_key) IS UNIQUE;
 
+CREATE CONSTRAINT profile_analysis_id_unique IF NOT EXISTS
+  FOR (pa:ProfileAnalysis) REQUIRE pa.analysis_id IS UNIQUE;
+
 // Identifier lookups (hot path)
 CREATE INDEX idx_identifier_type_norm IF NOT EXISTS
   FOR (id:Identifier) ON (id.identifier_type, id.normalized_value);
@@ -97,6 +100,11 @@ CREATE INDEX idx_match_decision_created IF NOT EXISTS
 // Person status
 CREATE INDEX idx_person_status IF NOT EXISTS
   FOR (p:Person) ON (p.status);
+
+// Profile analysis history
+CREATE INDEX idx_profile_analysis_history IF NOT EXISTS
+  FOR (pa:ProfileAnalysis)
+  ON (pa.person_id, pa.analysis_type, pa.completed_at);
 
 // Sales lookups
 CREATE INDEX idx_order_ordered_at IF NOT EXISTS

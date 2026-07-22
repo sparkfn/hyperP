@@ -27,6 +27,7 @@ is sales. Built on Neo4j for native graph traversal.
 - [WhatsAdmin API Ingestion Design](./docs/superpowers/specs/profile-unifier-whatsadmin-api-ingestion-design.md)
 - [Fundbox API Ingestion Design](./docs/superpowers/specs/profile-unifier-fundbox-api-ingestion-design.md)
 - [Bitrix Chat Open Lines API Ingestion Design](./docs/superpowers/specs/profile-unifier-bitrix-openlines-api-ingestion-design.md)
+- [Person Profile Analysis Design](./docs/superpowers/specs/profile-unifier-person-profile-analysis-design.md)
 
 ## Recommended Reading Order
 
@@ -43,6 +44,7 @@ is sales. Built on Neo4j for native graph traversal.
 11. Sequence Diagrams
 12. Roadmap
 13. Scaffold Architecture
+14. Person Profile Analysis Design
 
 ## Current Scope
 
@@ -54,6 +56,7 @@ The document set covers:
 - manual review and unmerge workflows
 - golden profile generation
 - contact tracing and complex relationship queries
+- authenticated, LLM-generated sales and contact-tracing profile analysis
 - phased rollout planning
 
 ## Principles
