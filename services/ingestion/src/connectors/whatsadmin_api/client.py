@@ -21,14 +21,15 @@ class WhatsAdminApiClient:
         *,
         credential: WhatsAdminCredential,
         page_size: int,
-        timeout_seconds: float = 30.0,
-        max_attempts: int = 3,
+        timeout_seconds: float = 120.0,
+        max_attempts: int = 5,
         retry_base_delay_seconds: float = 1.0,
         http: httpx.Client | None = None,
     ) -> None:
         self._credential = credential
         self._base_url = credential.base_url.rstrip("/")
         self._page_size = page_size
+        self._timeout_seconds = timeout_seconds
         self._max_attempts = max(max_attempts, 1)
         self._retry_base_delay_seconds = max(retry_base_delay_seconds, 0.0)
         self._http = http or httpx.Client(timeout=timeout_seconds)
@@ -136,6 +137,9 @@ class WhatsAdminApiClient:
             "upstream_session_id": str(payload.get("sessionId", "")),
             "upstream_cursor": str(payload.get("cursor", "first")),
             "upstream_attempt": attempt,
+            "upstream_attempt_limit": self._max_attempts,
+            "upstream_timeout_seconds": self._timeout_seconds,
+            "upstream_page_size": self._page_size,
             "upstream_latency_seconds": latency,
         }
         logger.warning(
