@@ -11,11 +11,14 @@ import { avatarColor, completenessColor, getInitials } from "@/lib/display";
 import { useSetLoading } from "@/lib/LoadingContext";
 import { usePopoverClose } from "@/lib/usePopoverClose";
 import { personDisplayName } from "@/lib/ui-display";
+import { normalizePaginatedPage, type PaginatedPage } from "@/lib/paginated-page";
 import PersonGraphDialog from "@/components/PersonGraphDialog";
 import styles from "./persons.module.css";
 
+type PersonsPageCacheEntry = PaginatedPage<ListedPerson>;
+
 // Module-level SWR cache — persists across navigations within the same session.
-const personsCache = new Map<string, ListedPerson[]>();
+const personsCache = new Map<string, PersonsPageCacheEntry>();
 interface StatsCache { entities: EntitySummary[]; sourceSystems: SourceSystemInfo[]; allCount: number | null; hrCount: number | null; hvCount: number | null; ncCount: number | null }
 let statsCache: StatsCache | null = null;
 
@@ -1213,17 +1216,31 @@ function PersonsInner(): ReactElement {
     if (currentCursor) params.set("cursor", currentCursor);
     const cacheKey = `/bff/persons?${params.toString()}`;
     const cached = personsCache.get(cacheKey);
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    if (cached) { setApiRows(cached); setFetchLoading(false); } else { setFetchLoading(true); setGlobalLoading(listLoadId, true); }
+    if (cached) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setApiRows(cached.rows);
+      setTotal(cached.total);
+      setNextCursor(cached.nextCursor);
+      setFetchLoading(false);
+    } else {
+      // Do not leave rows or pagination from the previous filter visible while
+      // the result for this cache key is loading.
+      setApiRows([]);
+      setTotal(null);
+      setNextCursor(null);
+      setFetchLoading(true);
+      setGlobalLoading(listLoadId, true);
+    }
     setFetchError(null);
     const run = async (): Promise<void> => {
       try {
         const envelope = await bffFetchEnvelope<ListedPerson[]>(cacheKey, { signal });
         if (!signal.aborted) {
-          personsCache.set(cacheKey, envelope.data ?? []);
-          setApiRows(envelope.data ?? []);
-          setTotal(envelope.meta.total_count ?? null);
-          setNextCursor(envelope.meta.next_cursor ?? null);
+          const page = normalizePaginatedPage(envelope);
+          personsCache.set(cacheKey, page);
+          setApiRows(page.rows);
+          setTotal(page.total);
+          setNextCursor(page.nextCursor);
         }
       } catch (err: unknown) {
         if (!signal.aborted) {
