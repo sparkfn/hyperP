@@ -1,4 +1,4 @@
-"""Cypher constants for MergeEvent creation, relationship rewires, and path compression."""
+"""Cypher constants for MergeEvent creation and relationship rewires."""
 
 from __future__ import annotations
 
@@ -39,84 +39,98 @@ RETURN me.merge_event_id AS merge_event_id
 
 REWIRE_LINKED_TO = """
 MATCH (sr:SourceRecord)-[old:LINKED_TO]->(absorbed:Person {person_id: $absorbed_id})
-DELETE old
-WITH sr
 MATCH (survivor:Person {person_id: $survivor_id})
-CREATE (sr)-[:LINKED_TO {linked_at: datetime()}]->(survivor)
+MATCH (me:MergeEvent {merge_event_id: $merge_event_id})
+WITH sr, absorbed, survivor, me, old, properties(old) AS props
+CREATE (me)-[moved:MOVED_RELATIONSHIP]->(sr)
+SET moved = props,
+    moved.relationship_type = 'LINKED_TO',
+    moved.direction = 'incoming',
+    moved.origin_person_id = coalesce(props.merge_origin_person_id, $absorbed_id),
+    moved.created_on_survivor = true
+DELETE old
+CREATE (sr)-[rel:LINKED_TO]->(survivor)
+SET rel = props,
+    rel.linked_at = datetime(),
+    rel.merge_origin_person_id = moved.origin_person_id
 RETURN count(sr) AS rewired_count
 """
 
 REWIRE_IDENTIFIED_BY = """
 MATCH (absorbed:Person {person_id: $absorbed_id})-[old:IDENTIFIED_BY]->(id:Identifier)
-WITH absorbed, old, id, properties(old) AS props
-DELETE old
-WITH id, props
 MATCH (survivor:Person {person_id: $survivor_id})
+MATCH (me:MergeEvent {merge_event_id: $merge_event_id})
+OPTIONAL MATCH (survivor)-[existing:IDENTIFIED_BY {
+    source_system_key: old.source_system_key,
+    source_record_pk: old.source_record_pk
+}]->(id)
+WITH absorbed, old, id, survivor, me, existing, properties(old) AS props
+CREATE (me)-[moved:MOVED_RELATIONSHIP]->(id)
+SET moved = props,
+    moved.relationship_type = 'IDENTIFIED_BY',
+    moved.direction = 'outgoing',
+    moved.origin_person_id = coalesce(props.merge_origin_person_id, $absorbed_id),
+    moved.created_on_survivor = existing IS NULL
 MERGE (survivor)-[rel:IDENTIFIED_BY {
     source_system_key: props.source_system_key,
     source_record_pk: props.source_record_pk
 }]->(id)
-ON CREATE SET
-    rel.is_verified = props.is_verified,
-    rel.verification_method = props.verification_method,
-    rel.is_active = props.is_active,
-    rel.quality_flag = props.quality_flag,
-    rel.first_seen_at = props.first_seen_at,
-    rel.last_seen_at = props.last_seen_at,
-    rel.last_confirmed_at = props.last_confirmed_at,
-    rel.source_system_key = props.source_system_key,
-    rel.source_record_pk = props.source_record_pk
+ON CREATE SET rel = props,
+              rel.merge_origin_person_id = moved.origin_person_id
 ON MATCH SET
     rel.last_seen_at = datetime(),
     rel.last_confirmed_at = datetime()
+DELETE old
 RETURN count(id) AS rewired_count
 """
 
 REWIRE_LIVES_AT = """
 MATCH (absorbed:Person {person_id: $absorbed_id})-[old:LIVES_AT]->(addr:Address)
-WITH absorbed, old, addr, properties(old) AS props
-DELETE old
-WITH addr, props
 MATCH (survivor:Person {person_id: $survivor_id})
+MATCH (me:MergeEvent {merge_event_id: $merge_event_id})
+OPTIONAL MATCH (survivor)-[existing:LIVES_AT {
+    source_system_key: old.source_system_key,
+    source_record_pk: old.source_record_pk
+}]->(addr)
+WITH absorbed, old, addr, survivor, me, existing, properties(old) AS props
+CREATE (me)-[moved:MOVED_RELATIONSHIP]->(addr)
+SET moved = props,
+    moved.relationship_type = 'LIVES_AT',
+    moved.direction = 'outgoing',
+    moved.origin_person_id = coalesce(props.merge_origin_person_id, $absorbed_id),
+    moved.created_on_survivor = existing IS NULL
 MERGE (survivor)-[rel:LIVES_AT {
     source_system_key: props.source_system_key,
     source_record_pk: props.source_record_pk
 }]->(addr)
-ON CREATE SET
-    rel.is_active = props.is_active,
-    rel.is_verified = props.is_verified,
-    rel.quality_flag = props.quality_flag,
-    rel.source_system_key = props.source_system_key,
-    rel.source_record_pk = props.source_record_pk,
-    rel.first_seen_at = props.first_seen_at,
-    rel.last_seen_at = props.last_seen_at,
-    rel.last_confirmed_at = props.last_confirmed_at
+ON CREATE SET rel = props,
+              rel.merge_origin_person_id = moved.origin_person_id
 ON MATCH SET
     rel.last_seen_at = datetime(),
     rel.last_confirmed_at = datetime()
+DELETE old
 RETURN count(addr) AS rewired_count
 """
 
 REWIRE_HAS_FACT = """
 MATCH (absorbed:Person {person_id: $absorbed_id})-[old:HAS_FACT]->(sr:SourceRecord)
-WITH absorbed, old, sr, properties(old) AS props
-DELETE old
-WITH sr, props
 MATCH (survivor:Person {person_id: $survivor_id})
-CREATE (survivor)-[:HAS_FACT {
-    attribute_name: props.attribute_name,
-    attribute_value: props.attribute_value,
-    source_trust_tier: props.source_trust_tier,
-    confidence: props.confidence,
-    quality_flag: props.quality_flag,
-    is_current_hint: props.is_current_hint,
-    observed_at: props.observed_at,
-    created_at: props.created_at
-}]->(sr)
+MATCH (me:MergeEvent {merge_event_id: $merge_event_id})
+WITH absorbed, old, sr, survivor, me, properties(old) AS props
+CREATE (me)-[moved:MOVED_RELATIONSHIP]->(sr)
+SET moved = props,
+    moved.relationship_type = 'HAS_FACT',
+    moved.direction = 'outgoing',
+    moved.origin_person_id = coalesce(props.merge_origin_person_id, $absorbed_id),
+    moved.created_on_survivor = true
+DELETE old
+CREATE (survivor)-[rel:HAS_FACT]->(sr)
+SET rel = props,
+    rel.merge_origin_person_id = moved.origin_person_id
 RETURN count(sr) AS rewired_count
 """
 
-# --- Mark absorbed + lineage compression ----------------------------------
+# --- Mark absorbed + preserve event lineage -------------------------------
 
 MARK_PERSON_MERGED = """
 MATCH (absorbed:Person {person_id: $absorbed_id})
@@ -136,23 +150,37 @@ CREATE (absorbed)-[:MERGED_INTO {
 
 PATH_COMPRESS_MERGED_INTO = """
 MATCH (prev:Person)-[old:MERGED_INTO]->(absorbed:Person {person_id: $absorbed_id})
-WITH prev, old, properties(old) AS props
-DELETE old
-WITH prev, props
 MATCH (survivor:Person {person_id: $survivor_id})
-CREATE (prev)-[:MERGED_INTO {
-    merge_event_id: props.merge_event_id,
-    actor: props.actor,
-    timestamp: props.timestamp
-}]->(survivor)
+MATCH (me:MergeEvent {merge_event_id: $merge_event_id})
+WITH prev, old, absorbed, survivor, me, properties(old) AS props
+CREATE (me)-[moved_lineage:MOVED_MERGE_LINEAGE]->(prev)
+SET moved_lineage = props,
+    moved_lineage.prior_survivor_person_id = absorbed.person_id,
+    moved_lineage.compressed_survivor_person_id = survivor.person_id
+DELETE old
+CREATE (prev)-[compressed:MERGED_INTO]->(survivor)
+SET compressed = props
 RETURN count(prev) AS compressed_count
 """
 
 # --- Audit links ----------------------------------------------------------
 
 GET_AFFECTED_SOURCE_RECORDS = """
-MATCH (sr:SourceRecord)-[:LINKED_TO]->(p:Person {person_id: $person_id})
-RETURN sr.source_record_pk AS source_record_pk
+MATCH (person:Person {person_id: $person_id})
+CALL (person) {
+  MATCH (sr:SourceRecord)-[:LINKED_TO]->(person)
+  RETURN sr.source_record_pk AS source_record_pk
+  UNION
+  MATCH (person)-[projection]->()
+  WHERE projection.source_record_pk IS NOT NULL
+  RETURN projection.source_record_pk AS source_record_pk
+  UNION
+  MATCH ()-[projection]->(person)
+  WHERE projection.source_record_pk IS NOT NULL
+  RETURN projection.source_record_pk AS source_record_pk
+}
+RETURN DISTINCT source_record_pk
+ORDER BY source_record_pk
 """
 
 LINK_MERGE_EVENT_TRIGGERED_BY = """

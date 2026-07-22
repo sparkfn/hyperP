@@ -16,6 +16,9 @@ info:
     canonical contract served through mounted sub-apps — the frontend mount is
     `/api/app/v2` (with `/v1` stripped, e.g. `/v1/persons` is served at
     `/api/app/v2/persons`) and, for the machine subset, `/api/oauth2/v1`.
+    Person profile-analysis paths are an authenticated human frontend surface
+    only: they run under `/api/app/v2/persons/...` and are excluded from the
+    root/public app and the `/oauth2/v1` machine subset.
 servers:
   - url: https://api.example.internal
     description: Example internal deployment
@@ -345,6 +348,160 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/SourceRecordListResponseEnvelope'
+        '404':
+          $ref: '#/components/responses/PersonNotFound'
+  /v1/persons/{person_id}/profile-analyses:
+    get:
+      tags: [Persons]
+      summary: Get current Person profile analyses and refresh states
+      operationId: getPersonProfileAnalyses
+      description: |
+        Authenticated human frontend surface only. The canonical path is served
+        at runtime as `/api/app/v2/persons/{person_id}/profile-analyses`; it is
+        not mounted on the root/public app or the `/oauth2/v1` machine subset.
+
+        The independent sales and contact-tracing slots retain any prior
+        successful current content while a newer revision is pending, running,
+        or failed. Slot state is `ready` for a result at the Person's current
+        input revision, `running` for an active refresh claim, `retrying` for a
+        scheduled bounded retry, `failed` for a current-revision terminal
+        failure when no refresh is active, `pending` otherwise, and `disabled`
+        when generation is paused by rollout configuration. Overall state uses
+        this precedence: disabled, running, retrying, ready/partial, failed,
+        then pending.
+      security:
+        - humanBearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/PersonId'
+        - $ref: '#/components/parameters/RequestId'
+      responses:
+        '200':
+          description: Current analyses and independent refresh states
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PersonProfileAnalysesResponseEnvelope'
+              example:
+                data:
+                  input_revision: 8
+                  refresh_state: running
+                  sales:
+                    current:
+                      analysis_id: "2df33d31-62bb-41e7-9966-4110a7e342eb"
+                      person_id: "7af4b5f5-34c1-4f22-9e2d-95ea8ff3b8c7"
+                      analysis_type: sales
+                      status: succeeded
+                      content: "Observed repeat purchases.\n\nLimitations: evidence is incomplete."
+                      input_revision: 7
+                      input_fingerprint: "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+                      prompt_version: sales-profile-v1
+                      provider: proclaude
+                      model: analysis-model
+                      started_at: "2026-07-21T01:00:00+00:00"
+                      completed_at: "2026-07-21T01:02:00+00:00"
+                      completed_at_display: "21 Jul 2026, 01:02 AM"
+                      attempt_number: 2
+                    stale: true
+                    refresh_state: running
+                    failure_code: null
+                  contact_tracing:
+                    current: null
+                    stale: false
+                    refresh_state: pending
+                    failure_code: null
+                meta:
+                  request_id: "req_abc123"
+                  next_cursor: null
+                  total_count: null
+                display_items: null
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/PersonNotFound'
+  /v1/persons/{person_id}/profile-analyses/history:
+    get:
+      tags: [Persons]
+      summary: Get immutable Person profile-analysis history
+      operationId: getPersonProfileAnalysisHistory
+      description: |
+        Authenticated human frontend surface only, served at runtime as
+        `/api/app/v2/persons/{person_id}/profile-analyses/history` and excluded
+        from the root/public app and `/oauth2/v1` machine subset.
+
+        Returns terminal `succeeded`, `failed`, and `obsolete` attempts in
+        deterministic newest-first order by `completed_at DESC`, then
+        `analysis_id DESC`. Safe immutable fields and safe failure metadata are
+        returned; provider response bodies, prompts, input snapshots, raw
+        payloads, credentials, and direct identifiers are never returned.
+        `meta.total_count` counts all entries matching the optional type filter
+        before pagination.
+      security:
+        - humanBearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/PersonId'
+        - $ref: '#/components/parameters/RequestId'
+        - name: analysis_type
+          in: query
+          required: false
+          description: Restrict history to one independent analysis type.
+          schema:
+            $ref: '#/components/schemas/ProfileAnalysisType'
+        - name: cursor
+          in: query
+          required: false
+          description: Opaque offset cursor from `meta.next_cursor`; omit for the first page.
+          schema:
+            type: string
+          example: "MjA="
+        - name: limit
+          in: query
+          required: false
+          description: >-
+            Page size; defaults to 20, non-positive values use the default, and
+            values above 200 are clamped to 200.
+          schema:
+            type: integer
+            default: 20
+          example: 20
+      responses:
+        '200':
+          description: Cursor-paginated terminal analysis history
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProfileAnalysisHistoryResponseEnvelope'
+              example:
+                data:
+                  - analysis_id: "0bf90451-c932-4fc4-833a-c705052bca20"
+                    person_id: "7af4b5f5-34c1-4f22-9e2d-95ea8ff3b8c7"
+                    analysis_type: sales
+                    status: failed
+                    content: null
+                    input_revision: 8
+                    input_fingerprint: "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+                    prompt_version: sales-profile-v1
+                    provider: proclaude
+                    model: analysis-model
+                    started_at: "2026-07-21T02:00:00+00:00"
+                    completed_at: "2026-07-21T02:00:05+00:00"
+                    completed_at_display: "21 Jul 2026, 02:00 AM"
+                    attempt_number: 3
+                    failure_code: rate_limited
+                    retryable: true
+                    next_retry_at: "2026-07-21T02:10:05+00:00"
+                meta:
+                  request_id: "req_abc123"
+                  next_cursor: "MjA="
+                  total_count: 37
+                display_items: null
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/PersonNotFound'
   /v1/persons/{person_id}/connections:
@@ -1420,6 +1577,13 @@ components:
         tokens obtained through the browser/NextAuth flow. Machine callers send
         HyperP-issued OAuth2 client-credentials access tokens from
         `POST /v1/oauth/token`.
+    humanBearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: Google ID token
+      description: |
+        Google OAuth 2.0 ID token for an authenticated browser/human user.
+        HyperP OAuth2 client-credentials access tokens are rejected with 403.
   parameters:
     RequestId:
       name: X-Request-Id
@@ -1561,6 +1725,10 @@ components:
         next_cursor:
           type:
             - string
+            - 'null'
+        total_count:
+          type:
+            - integer
             - 'null'
       required: [request_id]
       additionalProperties: false
@@ -2560,6 +2728,247 @@ components:
         meta:
           $ref: '#/components/schemas/Meta'
       required: [data, meta]
+      additionalProperties: false
+    ProfileAnalysisType:
+      type: string
+      enum: [sales, contact_tracing]
+    ProfileAnalysisStatus:
+      type: string
+      enum: [succeeded, failed, obsolete]
+    ProfileAnalysisSlotRefreshState:
+      type: string
+      enum: [disabled, pending, running, retrying, ready, failed]
+      description: |
+        `disabled` means generation is paused by rollout configuration;
+        `ready` means current content matches the Person input revision;
+        `running` means a refresh claim is active; `retrying` means a retryable
+        failure has a scheduled retry; `failed` means a terminal
+        failure exists for the current revision and no refresh is active; and
+        `pending` means the slot is not fresh, active, or failed.
+    ProfileAnalysisRefreshState:
+      type: string
+      enum: [disabled, pending, running, retrying, ready, partial, failed]
+      description: |
+        `disabled` means generation is paused. Otherwise this is derived from
+        both slots. `running` takes precedence when either slot is running,
+        followed by `retrying` when a retry is scheduled; `ready` means both
+        are ready; `partial` means exactly one is
+        ready and neither is running; `failed` means neither is ready or
+        running and at least one failed; otherwise the state is `pending`.
+    SafeProfileAnalysisFailureCode:
+      description: >-
+        Sanitized lower-case failure code. Unsafe or unavailable stored values
+        are returned as null; provider response bodies are never returned.
+      type:
+        - string
+        - 'null'
+      pattern: '^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$'
+      maxLength: 64
+    ProfileAnalysisCurrent:
+      type: object
+      description: Currently published successful analysis with immutable provenance.
+      properties:
+        analysis_id:
+          type: string
+        person_id:
+          type: string
+        analysis_type:
+          $ref: '#/components/schemas/ProfileAnalysisType'
+        status:
+          type: string
+          const: succeeded
+        content:
+          type: string
+        input_revision:
+          type: integer
+          minimum: 0
+        input_fingerprint:
+          type: string
+        prompt_version:
+          type: string
+        provider:
+          type: string
+        model:
+          type: string
+        started_at:
+          type: string
+          format: date-time
+          description: Timezone-aware ISO 8601 timestamp.
+        completed_at:
+          type: string
+          format: date-time
+          description: Timezone-aware ISO 8601 timestamp.
+        completed_at_display:
+          type: string
+          description: Human-facing completion time formatted by the API.
+        attempt_number:
+          type: integer
+          minimum: 1
+      required:
+        - analysis_id
+        - person_id
+        - analysis_type
+        - status
+        - content
+        - input_revision
+        - input_fingerprint
+        - prompt_version
+        - provider
+        - model
+        - started_at
+        - completed_at
+        - completed_at_display
+        - attempt_number
+      additionalProperties: false
+    ProfileAnalysisSlot:
+      type: object
+      description: |
+        Independent current output and refresh state for one analysis type.
+        Previously published current content is retained while a newer revision
+        is pending, running, or failed.
+      properties:
+        current:
+          oneOf:
+            - $ref: '#/components/schemas/ProfileAnalysisCurrent'
+            - type: 'null'
+        stale:
+          type: boolean
+          description: Current content exists but has an older input revision.
+        refresh_state:
+          $ref: '#/components/schemas/ProfileAnalysisSlotRefreshState'
+        failure_code:
+          $ref: '#/components/schemas/SafeProfileAnalysisFailureCode'
+      required: [current, stale, refresh_state, failure_code]
+      additionalProperties: false
+    PersonProfileAnalyses:
+      type: object
+      properties:
+        input_revision:
+          type: integer
+          minimum: 0
+        refresh_state:
+          $ref: '#/components/schemas/ProfileAnalysisRefreshState'
+        sales:
+          $ref: '#/components/schemas/ProfileAnalysisSlot'
+        contact_tracing:
+          $ref: '#/components/schemas/ProfileAnalysisSlot'
+      required: [input_revision, refresh_state, sales, contact_tracing]
+      additionalProperties: false
+    ProfileAnalysisHistoryItem:
+      type: object
+      description: |
+        Immutable safe terminal attempt. Successful entries have content and
+        failed entries have null content; obsolete content is nullable.
+      properties:
+        analysis_id:
+          type: string
+        person_id:
+          type: string
+        analysis_type:
+          $ref: '#/components/schemas/ProfileAnalysisType'
+        status:
+          $ref: '#/components/schemas/ProfileAnalysisStatus'
+        content:
+          type:
+            - string
+            - 'null'
+        input_revision:
+          type: integer
+          minimum: 0
+        input_fingerprint:
+          type: string
+        prompt_version:
+          type: string
+        provider:
+          type: string
+        model:
+          type: string
+        started_at:
+          type: string
+          format: date-time
+          description: Timezone-aware ISO 8601 timestamp.
+        completed_at:
+          type: string
+          format: date-time
+          description: Timezone-aware ISO 8601 timestamp.
+        completed_at_display:
+          type: string
+          description: Human-facing completion time formatted by the API.
+        attempt_number:
+          type: integer
+          minimum: 1
+        failure_code:
+          $ref: '#/components/schemas/SafeProfileAnalysisFailureCode'
+        retryable:
+          type:
+            - boolean
+            - 'null'
+        next_retry_at:
+          type:
+            - string
+            - 'null'
+          format: date-time
+      required:
+        - analysis_id
+        - person_id
+        - analysis_type
+        - status
+        - content
+        - input_revision
+        - input_fingerprint
+        - prompt_version
+        - provider
+        - model
+        - started_at
+        - completed_at
+        - completed_at_display
+        - attempt_number
+        - failure_code
+        - retryable
+        - next_retry_at
+      additionalProperties: false
+    PopoverDisplayItem:
+      type: object
+      description: API-provided primary and secondary text for a display popover.
+      properties:
+        primary:
+          type: string
+        secondary:
+          type: string
+          description: Secondary display text; serialized as an empty string when omitted.
+      required: [primary, secondary]
+      additionalProperties: false
+    PersonProfileAnalysesResponseEnvelope:
+      type: object
+      properties:
+        data:
+          $ref: '#/components/schemas/PersonProfileAnalyses'
+        meta:
+          $ref: '#/components/schemas/Meta'
+        display_items:
+          oneOf:
+            - type: array
+              items:
+                $ref: '#/components/schemas/PopoverDisplayItem'
+            - type: 'null'
+      required: [data, meta, display_items]
+      additionalProperties: false
+    ProfileAnalysisHistoryResponseEnvelope:
+      type: object
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProfileAnalysisHistoryItem'
+        meta:
+          $ref: '#/components/schemas/Meta'
+        display_items:
+          oneOf:
+            - type: array
+              items:
+                $ref: '#/components/schemas/PopoverDisplayItem'
+            - type: 'null'
+      required: [data, meta, display_items]
       additionalProperties: false
     SharedIdentifier:
       type: object

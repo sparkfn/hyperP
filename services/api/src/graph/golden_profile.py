@@ -298,7 +298,11 @@ async def _resolve_best_address(
     return to_optional_str(record["address_id"])
 
 
-async def recompute_golden_profile_tx(tx: AsyncManagedTransaction, person_id: str) -> float | None:
+async def recompute_golden_profile_tx(
+    tx: AsyncManagedTransaction,
+    person_id: str,
+    invalidate_analysis: bool = True,
+) -> float | None:
     """Recompute golden profile for person_id within a write transaction.
 
     Returns completeness score, or None if the person is not found / not active.
@@ -331,6 +335,7 @@ async def recompute_golden_profile_tx(tx: AsyncManagedTransaction, person_id: st
         nric=nric,
         completeness=completeness,
         version=version,
+        invalidate_analysis=invalidate_analysis,
     )
     await tx.run(CREATE_RECOMPUTE_AUDIT, person_id=person_id)
     return completeness

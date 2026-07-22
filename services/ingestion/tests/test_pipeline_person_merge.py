@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+
 import pytest
 from _txmock import _RecordingTx
 from src.graph import queries
@@ -50,12 +52,24 @@ class _MergeResult:
     def single(self) -> dict[str, object] | None:
         return self.records[0] if self.records else None
 
+    def __iter__(self) -> Iterator[dict[str, object]]:
+        return iter(self.records)
+
 
 class _MergeTx(_RecordingTx):
     def run(self, query: str, **params: object) -> _MergeResult:
         self._record(query, params)
+        if query is queries.GET_AFFECTED_SOURCE_RECORDS:
+            return _MergeResult(
+                [
+                    {"source_record_pk": "sr-linked"},
+                    {"source_record_pk": "sr-incoming-knows"},
+                ]
+            )
         if "RETURN me.merge_event_id AS merge_event_id" in query:
             return _MergeResult([{"merge_event_id": "me-1"}])
+        if "collect(DISTINCT neighbor.person_id)" in query:
+            return _MergeResult([{"person_ids": ["p-neighbor", "p-live"]}])
         return _MergeResult([])
 
 
@@ -84,6 +98,83 @@ def test_merge_person_pair_runs_rewires_and_recomputes_profile(
     assert "HAS_FACT" in text
     assert "KNOWS" in text
     assert "PURCHASED" in text
+    assert "BOUGHT_VEHICLE" in text
+    assert "OWNS_VEHICLE" in text
+    assert "MOVED_RELATIONSHIP" in text
+    assert "merge_origin_person_id" in text
     assert "SET absorbed.status = 'merged'" in text
     assert "cancelled_superseded" in text
+    assert "collect(DISTINCT neighbor.person_id)" in text
+    assert "analysis_input_revision" in text
+    dirty_parameters = [
+        parameters for query, parameters in tx.calls if query is queries.MARK_PROFILE_ANALYSIS_DIRTY
+    ]
+    assert dirty_parameters == [{"source_record_pks": [], "person_ids": ["p-live", "p-neighbor"]}]
+    affected_record_parameters = [
+        parameters
+        for query, parameters in tx.calls
+        if query is queries.LINK_MERGE_EVENT_AFFECTED_RECORD
+    ]
+    assert affected_record_parameters == [
+        {"merge_event_id": "me-1", "source_record_pk": "sr-linked"},
+        {"merge_event_id": "me-1", "source_record_pk": "sr-incoming-knows"},
+    ]
+    context_rewire_parameters = [
+        parameters
+        for query, parameters in tx.calls
+        if query
+        in {
+            queries.REWIRE_PURCHASED,
+            queries.REWIRE_BOUGHT_VEHICLE,
+            queries.REWIRE_OWNS_VEHICLE,
+        }
+    ]
+    assert context_rewire_parameters == [
+        {"absorbed_id": "p-old", "survivor_id": "p-live", "merge_event_id": "me-1"},
+        {"absorbed_id": "p-old", "survivor_id": "p-live", "merge_event_id": "me-1"},
+        {"absorbed_id": "p-old", "survivor_id": "p-live", "merge_event_id": "me-1"},
+    ]
+    lineage_calls = [
+        parameters for query, parameters in tx.calls if query is queries.PATH_COMPRESS_MERGED_INTO
+    ]
+    assert lineage_calls == [
+        {"absorbed_id": "p-old", "survivor_id": "p-live", "merge_event_id": "me-1"}
+    ]
     assert recomputed == ["p-live"]
+
+
+def test_auto_merge_rewires_record_event_provenance_for_every_relationship() -> None:
+    for query, relationship_type in (
+        (queries.REWIRE_LINKED_TO, "LINKED_TO"),
+        (queries.REWIRE_IDENTIFIED_BY, "IDENTIFIED_BY"),
+        (queries.REWIRE_LIVES_AT, "LIVES_AT"),
+        (queries.REWIRE_HAS_FACT, "HAS_FACT"),
+        (queries.REWIRE_KNOWS_OUT, "KNOWS_OUT"),
+        (queries.REWIRE_KNOWS_IN, "KNOWS_IN"),
+        (queries.REWIRE_PURCHASED, "PURCHASED"),
+        (queries.REWIRE_BOUGHT_VEHICLE, "BOUGHT_VEHICLE"),
+        (queries.REWIRE_OWNS_VEHICLE, "OWNS_VEHICLE"),
+    ):
+        assert "moved:MOVED_RELATIONSHIP" in query
+        assert f"moved.relationship_type = '{relationship_type}'" in query
+        assert "moved.origin_person_id = coalesce(" in query
+        assert "merge_origin_person_id" in query
+
+
+def test_auto_merge_collision_rewires_keep_event_specific_snapshots() -> None:
+    for query in (
+        queries.REWIRE_IDENTIFIED_BY,
+        queries.REWIRE_LIVES_AT,
+        queries.REWIRE_PURCHASED,
+        queries.REWIRE_BOUGHT_VEHICLE,
+        queries.REWIRE_OWNS_VEHICLE,
+    ):
+        assert "moved.created_on_survivor = existing IS NULL" in query
+
+
+def test_path_compression_records_event_specific_lineage_provenance() -> None:
+    query = queries.PATH_COMPRESS_MERGED_INTO
+
+    assert "moved_lineage:MOVED_MERGE_LINEAGE" in query
+    assert "moved_lineage.prior_survivor_person_id = absorbed.person_id" in query
+    assert "SET compressed = props" in query

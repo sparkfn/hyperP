@@ -1,0 +1,148 @@
+.panel,
+.cardsArea {
+  display: grid;
+  gap: 14px;
+}
+
+.overallState {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.overallState span {
+  color: var(--text-primary);
+  font-weight: 650;
+}
+
+.cardGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.card {
+  min-width: 0;
+  padding: 16px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 10px;
+  background: var(--bg-card);
+}
+
+.cardHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.cardTitle {
+  margin: 0;
+  color: var(--text-primary);
+  font-size: 14px;
+  line-height: 1.4;
+}
+
+.badges {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.badge {
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: var(--bg-hover);
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+.state_disabled {
+  background: var(--bg-hover);
+  color: var(--text-muted);
+}
+
+.staleBadge,
+.state_pending,
+.state_running,
+.state_retrying {
+  background: var(--warn-bg);
+  color: var(--warn-text);
+}
+
+.state_failed {
+  background: var(--bad-soft);
+  color: var(--bad);
+}
+
+.state_ready {
+  background: var(--good-soft);
+  color: var(--good);
+}
+
+.failureCode {
+  margin: 12px 0 0;
+  color: var(--bad);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.content {
+  max-height: 32rem;
+  margin-top: 16px;
+  overflow: auto;
+  color: var(--text-primary);
+  font-size: 13px;
+  line-height: 1.65;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.metadata {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+  margin-top: 16px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border-subtle);
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.emptyState,
+.loadingState,
+.errorState {
+  margin: 0;
+  padding: 22px 16px;
+  border: 1px dashed var(--border-subtle);
+  border-radius: 10px;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+.emptyState {
+  margin-top: 14px;
+  padding: 18px 12px;
+}
+
+.errorState {
+  color: var(--bad);
+}
+
+.refreshWarning {
+  padding: 10px 12px;
+  border: 1px solid var(--warn-border);
+  border-radius: 8px;
+  background: var(--warn-bg);
+  color: var(--warn-text);
+  font-size: 12px;
+}
+
+@media (max-width: 860px) {
+  .cardGrid {
+    grid-template-columns: 1fr;
+  }
+}

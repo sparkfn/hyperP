@@ -59,6 +59,7 @@ from src.pipeline_writes import (
     retire_identity_projections,
     upsert_nodes,
 )
+from src.profile_analysis_dirty import mark_profile_analysis_dirty
 from src.record_lifecycle import (
     DuplicateVersion,
     PlannedVersion,
@@ -311,6 +312,14 @@ class IngestPipeline:
             for affected_person_id in sorted(affected_person_ids):
                 compute_golden_profile(tx, affected_person_id)
             audit_person_pairs(tx, identifiers, envelope.record_type)
+            mark_profile_analysis_dirty(
+                tx,
+                source_record_pks=(
+                    source_record_pk,
+                    lifecycle_plan.active_source_record_pk or "",
+                ),
+                person_ids=affected_person_ids,
+            )
         if match_result.decision == MatchDecision.MERGE and not is_new_person:
             record_auto_merge_event(
                 tx,

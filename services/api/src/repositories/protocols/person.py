@@ -21,6 +21,11 @@ from src.types import (
     SourceRecord,
     SourceRecordEntityFacet,
 )
+from src.types_profile_analysis import (
+    PersonProfileAnalyses,
+    ProfileAnalysisHistoryItem,
+    ProfileAnalysisType,
+)
 
 
 class PersonListFilters(TypedDict, total=False):
@@ -73,6 +78,16 @@ class PersonRepository(Protocol):
         ...
 
     async def get_by_id(self, person_id: str) -> Person | None: ...
+
+    async def get_profile_analyses(self, person_id: str) -> PersonProfileAnalyses | None: ...
+
+    async def get_profile_analysis_history(
+        self,
+        person_id: str,
+        analysis_type: ProfileAnalysisType | None,
+        skip: int,
+        limit: int,
+    ) -> tuple[list[ProfileAnalysisHistoryItem], int] | None: ...
 
     async def get_source_records(
         self,

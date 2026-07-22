@@ -195,6 +195,12 @@ def test_completed_marker_is_followed_by_late_relationship_reconciliation() -> N
     assert "relationship.is_active = expected_is_active" in query
     assert "coalesce(relationship.activated_at" in query
     assert "coalesce(relationship.retired_at" in query
+    assert "CALL (affected_person_ids) {" in query
+
+    relationship_scope = query.split("OPTIONAL MATCH (source:SourceRecord)", 1)[1].split(
+        "WHERE relationship.is_active IS NULL", 1
+    )[0]
+    assert "WITH person, target, relationship," in relationship_scope
 
     records = [{"source_record_pk": "active", "lifecycle_status": "active"}]
     complete = {"source_record_pk": "active", "is_active": True, "activated_at": "original"}

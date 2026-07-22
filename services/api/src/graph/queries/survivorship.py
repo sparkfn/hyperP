@@ -59,6 +59,11 @@ SET p.preferred_full_name = $full_name,
     p.profile_completeness_score = $completeness,
     p.golden_profile_computed_at = datetime(),
     p.golden_profile_version = $version,
+    p.analysis_input_revision = CASE WHEN $invalidate_analysis
+      THEN coalesce(p.analysis_input_revision, 0) + 1
+      ELSE coalesce(p.analysis_input_revision, 0) END,
+    p.analysis_dirty_at = CASE WHEN $invalidate_analysis
+      THEN datetime() ELSE p.analysis_dirty_at END,
     p.updated_at = datetime()
 """
 
@@ -205,7 +210,23 @@ SET p.survivorship_overrides = $overrides, p.updated_at = datetime()
 
 UPDATE_GOLDEN_FIELD = """
 MATCH (p:Person {person_id: $person_id})
-SET p[$field_name] = $value, p.updated_at = datetime()
+SET p[$field_name] = $value,
+    p.analysis_input_revision = coalesce(p.analysis_input_revision, 0) + 1,
+    p.analysis_dirty_at = datetime(),
+    p.updated_at = datetime()
+"""
+
+UPDATE_GOLDEN_FIELDS = """
+MATCH (p:Person {person_id: $person_id})
+UNWIND $updates AS update
+SET p[update.field_name] = update.value
+WITH DISTINCT p
+SET p.analysis_input_revision = CASE WHEN $invalidate_analysis
+      THEN coalesce(p.analysis_input_revision, 0) + 1
+      ELSE coalesce(p.analysis_input_revision, 0) END,
+    p.analysis_dirty_at = CASE WHEN $invalidate_analysis
+      THEN datetime() ELSE p.analysis_dirty_at END,
+    p.updated_at = datetime()
 """
 
 UPSERT_CUSTOM_ADDRESS = """

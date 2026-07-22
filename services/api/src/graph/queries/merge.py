@@ -16,8 +16,14 @@ RETURN absorbed, survivor
 """
 
 EXECUTE_MANUAL_MERGE = """
-MATCH (absorbed:Person {person_id: $from_id})
-MATCH (survivor:Person {person_id: $to_id})
+MATCH (lock_first:Person {person_id: $left})
+MATCH (lock_second:Person {person_id: $right})
+WHERE lock_first <> lock_second
+SET lock_first.merge_lock_version = coalesce(lock_first.merge_lock_version, 0) + 1
+SET lock_second.merge_lock_version = coalesce(lock_second.merge_lock_version, 0) + 1
+WITH lock_first, lock_second
+MATCH (absorbed:Person {person_id: $from_id, status: 'active'})
+MATCH (survivor:Person {person_id: $to_id, status: 'active'})
 
 CREATE (me:MergeEvent {
   merge_event_id: randomUUID(),
@@ -33,10 +39,22 @@ CREATE (me)-[:SURVIVOR]->(survivor)
 
 WITH absorbed, survivor, me
 OPTIONAL MATCH (sr:SourceRecord)-[old_link:LINKED_TO]->(absorbed)
+WITH absorbed, survivor, me, sr, old_link, properties(old_link) AS old_link_props
 FOREACH (_ IN CASE WHEN old_link IS NOT NULL THEN [1] ELSE [] END |
-  DELETE old_link
-  CREATE (sr)-[:LINKED_TO {linked_at: datetime()}]->(survivor)
+  CREATE (me)-[moved:MOVED_RELATIONSHIP]->(sr)
+  SET moved = old_link_props,
+      moved.relationship_type = 'LINKED_TO',
+      moved.direction = 'incoming',
+      moved.origin_person_id = coalesce(
+        old_link_props.merge_origin_person_id, absorbed.person_id
+      ),
+      moved.created_on_survivor = true
+  CREATE (sr)-[new_link:LINKED_TO]->(survivor)
+  SET new_link = old_link_props,
+      new_link.linked_at = datetime(),
+      new_link.merge_origin_person_id = moved.origin_person_id
   CREATE (me)-[:AFFECTED_RECORD]->(sr)
+  DELETE old_link
 )
 
 WITH DISTINCT absorbed, survivor, me
@@ -44,8 +62,17 @@ OPTIONAL MATCH (absorbed)-[old_id:IDENTIFIED_BY]->(id:Identifier)
 OPTIONAL MATCH (id_sr:SourceRecord {source_record_pk: old_id.source_record_pk})
 WITH absorbed, survivor, me, id, id_sr, old_id, properties(old_id) AS old_id_props
 FOREACH (_ IN CASE WHEN old_id IS NOT NULL THEN [1] ELSE [] END |
+  CREATE (me)-[moved:MOVED_RELATIONSHIP]->(id)
+  SET moved = old_id_props,
+      moved.relationship_type = 'IDENTIFIED_BY',
+      moved.direction = 'outgoing',
+      moved.origin_person_id = coalesce(
+        old_id_props.merge_origin_person_id, absorbed.person_id
+      ),
+      moved.created_on_survivor = true
   CREATE (survivor)-[new_id:IDENTIFIED_BY]->(id)
-  SET new_id = old_id_props
+  SET new_id = old_id_props,
+      new_id.merge_origin_person_id = moved.origin_person_id
   DELETE old_id
 )
 FOREACH (_ IN CASE WHEN id_sr IS NOT NULL THEN [1] ELSE [] END |
@@ -57,8 +84,17 @@ OPTIONAL MATCH (absorbed)-[old_addr:LIVES_AT]->(addr:Address)
 OPTIONAL MATCH (addr_sr:SourceRecord {source_record_pk: old_addr.source_record_pk})
 WITH absorbed, survivor, me, addr, addr_sr, old_addr, properties(old_addr) AS old_addr_props
 FOREACH (_ IN CASE WHEN old_addr IS NOT NULL THEN [1] ELSE [] END |
+  CREATE (me)-[moved:MOVED_RELATIONSHIP]->(addr)
+  SET moved = old_addr_props,
+      moved.relationship_type = 'LIVES_AT',
+      moved.direction = 'outgoing',
+      moved.origin_person_id = coalesce(
+        old_addr_props.merge_origin_person_id, absorbed.person_id
+      ),
+      moved.created_on_survivor = true
   CREATE (survivor)-[new_addr:LIVES_AT]->(addr)
-  SET new_addr = old_addr_props
+  SET new_addr = old_addr_props,
+      new_addr.merge_origin_person_id = moved.origin_person_id
   DELETE old_addr
 )
 FOREACH (_ IN CASE WHEN addr_sr IS NOT NULL THEN [1] ELSE [] END |
@@ -68,36 +104,163 @@ FOREACH (_ IN CASE WHEN addr_sr IS NOT NULL THEN [1] ELSE [] END |
 WITH DISTINCT absorbed, survivor, me
 OPTIONAL MATCH (absorbed)-[old_k_out:KNOWS]->(k_other:Person)
 WHERE k_other.person_id <> survivor.person_id
-WITH absorbed, survivor, me, k_other, old_k_out, properties(old_k_out) AS old_k_out_props
+OPTIONAL MATCH (knows_source:SourceRecord {source_record_pk: old_k_out.source_record_pk})
+WITH absorbed, survivor, me, k_other, knows_source, old_k_out,
+     properties(old_k_out) AS old_k_out_props
 FOREACH (_ IN CASE WHEN old_k_out IS NOT NULL THEN [1] ELSE [] END |
+  CREATE (me)-[moved:MOVED_RELATIONSHIP]->(k_other)
+  SET moved = old_k_out_props,
+      moved.relationship_type = 'KNOWS_OUT',
+      moved.direction = 'outgoing',
+      moved.origin_person_id = coalesce(
+        old_k_out_props.merge_origin_person_id, absorbed.person_id
+      ),
+      moved.created_on_survivor = true
   CREATE (survivor)-[new_k_out:KNOWS]->(k_other)
   SET new_k_out = old_k_out_props
   SET new_k_out.declared_by_person_id = survivor.person_id,
-      new_k_out.updated_at = datetime()
+      new_k_out.updated_at = datetime(),
+      new_k_out.merge_origin_person_id = moved.origin_person_id
   DELETE old_k_out
+)
+FOREACH (_ IN CASE WHEN knows_source IS NOT NULL THEN [1] ELSE [] END |
+  MERGE (me)-[:AFFECTED_RECORD]->(knows_source)
 )
 
 WITH DISTINCT absorbed, survivor, me
 OPTIONAL MATCH (k_other2:Person)-[old_k_in:KNOWS]->(absorbed)
 WHERE k_other2.person_id <> survivor.person_id
-WITH absorbed, survivor, me, k_other2, old_k_in, properties(old_k_in) AS old_k_in_props
+OPTIONAL MATCH (knows_source:SourceRecord {source_record_pk: old_k_in.source_record_pk})
+WITH absorbed, survivor, me, k_other2, knows_source, old_k_in,
+     properties(old_k_in) AS old_k_in_props
 FOREACH (_ IN CASE WHEN old_k_in IS NOT NULL THEN [1] ELSE [] END |
+  CREATE (me)-[moved:MOVED_RELATIONSHIP]->(k_other2)
+  SET moved = old_k_in_props,
+      moved.relationship_type = 'KNOWS_IN',
+      moved.direction = 'incoming',
+      moved.origin_person_id = coalesce(
+        old_k_in_props.merge_origin_person_id, absorbed.person_id
+      ),
+      moved.created_on_survivor = true
   CREATE (k_other2)-[new_k_in:KNOWS]->(survivor)
   SET new_k_in = old_k_in_props
-  SET new_k_in.updated_at = datetime()
+  SET new_k_in.updated_at = datetime(),
+      new_k_in.merge_origin_person_id = moved.origin_person_id
   DELETE old_k_in
+)
+FOREACH (_ IN CASE WHEN knows_source IS NOT NULL THEN [1] ELSE [] END |
+  MERGE (me)-[:AFFECTED_RECORD]->(knows_source)
 )
 
 WITH DISTINCT absorbed, survivor, me
 OPTIONAL MATCH (absorbed)-[old_fact:HAS_FACT]->(sr_fact:SourceRecord)
 WITH absorbed, survivor, me, sr_fact, old_fact, properties(old_fact) AS old_fact_props
 FOREACH (_ IN CASE WHEN old_fact IS NOT NULL THEN [1] ELSE [] END |
+  CREATE (me)-[moved:MOVED_RELATIONSHIP]->(sr_fact)
+  SET moved = old_fact_props,
+      moved.relationship_type = 'HAS_FACT',
+      moved.direction = 'outgoing',
+      moved.origin_person_id = coalesce(
+        old_fact_props.merge_origin_person_id, absorbed.person_id
+      ),
+      moved.created_on_survivor = true
   CREATE (survivor)-[new_fact:HAS_FACT]->(sr_fact)
-  SET new_fact = old_fact_props
+  SET new_fact = old_fact_props,
+      new_fact.merge_origin_person_id = moved.origin_person_id
   DELETE old_fact
 )
 FOREACH (_ IN CASE WHEN sr_fact IS NOT NULL THEN [1] ELSE [] END |
   MERGE (me)-[:AFFECTED_RECORD]->(sr_fact)
+)
+
+WITH DISTINCT absorbed, survivor, me
+OPTIONAL MATCH (absorbed)-[old_context:PURCHASED]->(context_order:Order)
+OPTIONAL MATCH (context_source:SourceRecord {source_record_pk: old_context.source_record_pk})
+OPTIONAL MATCH (survivor)-[existing_context:PURCHASED {
+  source_system_key: old_context.source_system_key,
+  source_order_id: old_context.source_order_id
+}]->(context_order)
+WITH absorbed, survivor, me, context_order, context_source, existing_context, old_context,
+     properties(old_context) AS context_props
+FOREACH (_ IN CASE WHEN old_context IS NOT NULL THEN [1] ELSE [] END |
+  CREATE (me)-[moved:MOVED_RELATIONSHIP]->(context_order)
+  SET moved = context_props,
+      moved.relationship_type = 'PURCHASED',
+      moved.direction = 'outgoing',
+      moved.origin_person_id = coalesce(
+        context_props.merge_origin_person_id, absorbed.person_id
+      ),
+      moved.created_on_survivor = existing_context IS NULL
+  MERGE (survivor)-[new_context:PURCHASED {
+    source_system_key: old_context.source_system_key,
+    source_order_id: old_context.source_order_id
+  }]->(context_order)
+  ON CREATE SET new_context += context_props,
+                new_context.merge_origin_person_id = moved.origin_person_id
+  DELETE old_context
+)
+FOREACH (_ IN CASE WHEN context_source IS NOT NULL THEN [1] ELSE [] END |
+  MERGE (me)-[:AFFECTED_RECORD]->(context_source)
+)
+
+WITH DISTINCT absorbed, survivor, me
+OPTIONAL MATCH (absorbed)-[old_context:BOUGHT_VEHICLE]->(context_vehicle:Vehicle)
+OPTIONAL MATCH (context_source:SourceRecord {source_record_pk: old_context.source_record_pk})
+OPTIONAL MATCH (survivor)-[existing_context:BOUGHT_VEHICLE {
+  source_system_key: old_context.source_system_key,
+  source_order_id: old_context.source_order_id
+}]->(context_vehicle)
+WITH absorbed, survivor, me, context_vehicle, context_source, existing_context, old_context,
+     properties(old_context) AS context_props
+FOREACH (_ IN CASE WHEN old_context IS NOT NULL THEN [1] ELSE [] END |
+  CREATE (me)-[moved:MOVED_RELATIONSHIP]->(context_vehicle)
+  SET moved = context_props,
+      moved.relationship_type = 'BOUGHT_VEHICLE',
+      moved.direction = 'outgoing',
+      moved.origin_person_id = coalesce(
+        context_props.merge_origin_person_id, absorbed.person_id
+      ),
+      moved.created_on_survivor = existing_context IS NULL
+  MERGE (survivor)-[new_context:BOUGHT_VEHICLE {
+    source_system_key: old_context.source_system_key,
+    source_order_id: old_context.source_order_id
+  }]->(context_vehicle)
+  ON CREATE SET new_context += context_props,
+                new_context.merge_origin_person_id = moved.origin_person_id
+  DELETE old_context
+)
+FOREACH (_ IN CASE WHEN context_source IS NOT NULL THEN [1] ELSE [] END |
+  MERGE (me)-[:AFFECTED_RECORD]->(context_source)
+)
+
+WITH DISTINCT absorbed, survivor, me
+OPTIONAL MATCH (absorbed)-[old_context:OWNS_VEHICLE]->(context_vehicle:Vehicle)
+OPTIONAL MATCH (context_source:SourceRecord {source_record_pk: old_context.source_record_pk})
+OPTIONAL MATCH (survivor)-[existing_context:OWNS_VEHICLE {
+  source_system_key: old_context.source_system_key,
+  source_record_pk: old_context.source_record_pk
+}]->(context_vehicle)
+WITH absorbed, survivor, me, context_vehicle, context_source, existing_context, old_context,
+     properties(old_context) AS context_props
+FOREACH (_ IN CASE WHEN old_context IS NOT NULL THEN [1] ELSE [] END |
+  CREATE (me)-[moved:MOVED_RELATIONSHIP]->(context_vehicle)
+  SET moved = context_props,
+      moved.relationship_type = 'OWNS_VEHICLE',
+      moved.direction = 'outgoing',
+      moved.origin_person_id = coalesce(
+        context_props.merge_origin_person_id, absorbed.person_id
+      ),
+      moved.created_on_survivor = existing_context IS NULL
+  MERGE (survivor)-[new_context:OWNS_VEHICLE {
+    source_system_key: old_context.source_system_key,
+    source_record_pk: old_context.source_record_pk
+  }]->(context_vehicle)
+  ON CREATE SET new_context += context_props,
+                new_context.merge_origin_person_id = moved.origin_person_id
+  DELETE old_context
+)
+FOREACH (_ IN CASE WHEN context_source IS NOT NULL THEN [1] ELSE [] END |
+  MERGE (me)-[:AFFECTED_RECORD]->(context_source)
 )
 
 WITH DISTINCT absorbed, survivor, me
@@ -110,17 +273,28 @@ CREATE (absorbed)-[:MERGED_INTO {
 
 WITH absorbed, survivor, me
 OPTIONAL MATCH (prev:Person)-[old_merge:MERGED_INTO]->(absorbed)
+WITH absorbed, survivor, me, prev, old_merge, properties(old_merge) AS old_merge_props
 FOREACH (_ IN CASE WHEN old_merge IS NOT NULL THEN [1] ELSE [] END |
-  CREATE (prev)-[:MERGED_INTO {
-    merge_event_id: old_merge.merge_event_id,
-    actor: old_merge.actor,
-    timestamp: old_merge.timestamp
-  }]->(survivor)
+  CREATE (me)-[moved_lineage:MOVED_MERGE_LINEAGE]->(prev)
+  SET moved_lineage = old_merge_props,
+      moved_lineage.prior_survivor_person_id = absorbed.person_id,
+      moved_lineage.compressed_survivor_person_id = survivor.person_id
   DELETE old_merge
+  CREATE (prev)-[compressed_merge:MERGED_INTO]->(survivor)
+  SET compressed_merge = old_merge_props
 )
 
 WITH survivor, me
-SET survivor.updated_at = datetime()
+OPTIONAL MATCH (survivor)-[:KNOWS]-(merge_neighbor:Person {status: 'active'})
+WITH survivor, me, collect(DISTINCT merge_neighbor) AS merge_neighbors
+FOREACH (merge_neighbor IN merge_neighbors |
+  SET merge_neighbor.analysis_input_revision =
+        coalesce(merge_neighbor.analysis_input_revision, 0) + 1,
+      merge_neighbor.analysis_dirty_at = datetime()
+)
+SET survivor.analysis_input_revision = coalesce(survivor.analysis_input_revision, 0) + 1,
+    survivor.analysis_dirty_at = datetime(),
+    survivor.updated_at = datetime()
 RETURN me.merge_event_id AS merge_event_id
 """
 
@@ -133,122 +307,310 @@ RETURN absorbed.person_id AS absorbed_id, survivor.person_id AS survivor_id
 """
 
 REVERT_MERGE = """
-MATCH (absorbed:Person {person_id: $absorbed_id})-[mi:MERGED_INTO]->(merge_survivor:Person)
-MATCH (merge_survivor)-[:MERGED_INTO*0..]->(current_survivor:Person)
+MATCH (absorbed:Person {person_id: $absorbed_id})
+      -[mi:MERGED_INTO {merge_event_id: $merge_event_id}]->(merge_survivor:Person)
+MATCH (merge_survivor)-[:MERGED_INTO*0..1]->(current_survivor:Person)
 WHERE NOT (current_survivor)-[:MERGED_INTO]->(:Person)
-WITH absorbed, mi, current_survivor, current_survivor.person_id AS current_survivor_id
-OPTIONAL MATCH (merge_event:MergeEvent {merge_event_id: mi.merge_event_id})-[:AFFECTED_RECORD]->(affected_sr:SourceRecord)
-WITH absorbed, mi, current_survivor, current_survivor_id, collect(affected_sr.source_record_pk) AS affected_pks
+MATCH (merge_event:MergeEvent {merge_event_id: mi.merge_event_id})
+WITH absorbed, mi, merge_event, current_survivor,
+     current_survivor.person_id AS current_survivor_id
 
-OPTIONAL MATCH (sr:SourceRecord)-[survivor_link:LINKED_TO]->(current_survivor)
-WHERE sr.source_record_pk IN affected_pks
-FOREACH (_ IN CASE WHEN survivor_link IS NOT NULL THEN [1] ELSE [] END |
-  DELETE survivor_link
-  CREATE (sr)-[:LINKED_TO {linked_at: datetime()}]->(absorbed)
+OPTIONAL MATCH (merge_event)-[moved_lineage:MOVED_MERGE_LINEAGE]->(lineage_person:Person)
+OPTIONAL MATCH (lineage_person)-[compressed_lineage:MERGED_INTO]->(current_survivor)
+WHERE compressed_lineage.merge_event_id = moved_lineage.merge_event_id
+WITH absorbed, mi, merge_event, current_survivor, current_survivor_id,
+     moved_lineage, lineage_person, compressed_lineage,
+     properties(moved_lineage) AS lineage_props
+FOREACH (_ IN CASE WHEN moved_lineage IS NOT NULL
+                         AND moved_lineage.prior_survivor_person_id = absorbed.person_id
+                         AND lineage_person.status = 'merged'
+                         AND compressed_lineage IS NOT NULL THEN [1] ELSE [] END |
+  DELETE compressed_lineage
+  CREATE (lineage_person)-[restored_lineage:MERGED_INTO]->(absorbed)
+  SET restored_lineage = lineage_props,
+      restored_lineage.prior_survivor_person_id = null,
+      restored_lineage.compressed_survivor_person_id = null
 )
 
-WITH DISTINCT absorbed, mi, current_survivor, current_survivor_id, affected_pks
-OPTIONAL MATCH (current_survivor)-[survivor_id:IDENTIFIED_BY]->(id:Identifier)
-WHERE survivor_id.source_record_pk IN affected_pks
-FOREACH (_ IN CASE WHEN survivor_id IS NOT NULL THEN [1] ELSE [] END |
-  CREATE (absorbed)-[:IDENTIFIED_BY {
-    is_verified: survivor_id.is_verified,
-    verification_method: survivor_id.verification_method,
-    is_active: survivor_id.is_active,
-    quality_flag: survivor_id.quality_flag,
-    first_seen_at: survivor_id.first_seen_at,
-    last_seen_at: survivor_id.last_seen_at,
-    last_confirmed_at: survivor_id.last_confirmed_at,
-    source_system_key: survivor_id.source_system_key,
-    source_record_pk: survivor_id.source_record_pk
+WITH DISTINCT absorbed, mi, merge_event, current_survivor, current_survivor_id
+
+OPTIONAL MATCH (merge_event)-[move:MOVED_RELATIONSHIP]->(sr:SourceRecord)
+WHERE move.relationship_type = 'LINKED_TO'
+OPTIONAL MATCH (origin:Person {person_id: move.origin_person_id})
+WITH absorbed, mi, merge_event, current_survivor, current_survivor_id,
+     sr, move, origin, properties(move) AS move_props
+OPTIONAL MATCH (sr)-[survivor_link:LINKED_TO]->(current_survivor)
+WHERE survivor_link.merge_origin_person_id = move.origin_person_id
+FOREACH (_ IN CASE WHEN move IS NOT NULL
+                         AND (origin = absorbed OR origin.status = 'merged') THEN [1] ELSE [] END |
+  CREATE (sr)-[restored_link:LINKED_TO]->(absorbed)
+  SET restored_link = move_props,
+      restored_link.relationship_type = null,
+      restored_link.direction = null,
+      restored_link.origin_person_id = null,
+      restored_link.created_on_survivor = null,
+      restored_link.merge_origin_person_id = move.origin_person_id
+)
+FOREACH (_ IN CASE WHEN move.created_on_survivor = true
+                         AND (origin = absorbed OR origin.status = 'merged')
+                         AND survivor_link IS NOT NULL THEN [1] ELSE [] END |
+  DELETE survivor_link
+)
+
+WITH DISTINCT absorbed, mi, merge_event, current_survivor, current_survivor_id
+OPTIONAL MATCH (merge_event)-[move:MOVED_RELATIONSHIP]->(id:Identifier)
+WHERE move.relationship_type = 'IDENTIFIED_BY'
+OPTIONAL MATCH (origin:Person {person_id: move.origin_person_id})
+WITH absorbed, mi, merge_event, current_survivor, current_survivor_id,
+     id, move, origin, properties(move) AS move_props
+OPTIONAL MATCH (current_survivor)-[survivor_id:IDENTIFIED_BY {
+  source_system_key: move.source_system_key,
+  source_record_pk: move.source_record_pk
+}]->(id)
+WHERE survivor_id.merge_origin_person_id = move.origin_person_id
+FOREACH (_ IN CASE WHEN move IS NOT NULL
+                         AND (origin = absorbed OR origin.status = 'merged') THEN [1] ELSE [] END |
+  MERGE (absorbed)-[restored_id:IDENTIFIED_BY {
+    source_system_key: move.source_system_key,
+    source_record_pk: move.source_record_pk
   }]->(id)
+  SET restored_id = move_props,
+      restored_id.relationship_type = null,
+      restored_id.direction = null,
+      restored_id.origin_person_id = null,
+      restored_id.created_on_survivor = null,
+      restored_id.merge_origin_person_id = move.origin_person_id
+)
+FOREACH (_ IN CASE WHEN move.created_on_survivor = true
+                         AND (origin = absorbed OR origin.status = 'merged')
+                         AND survivor_id IS NOT NULL THEN [1] ELSE [] END |
   DELETE survivor_id
 )
 
-WITH DISTINCT absorbed, mi, current_survivor, current_survivor_id, affected_pks
-OPTIONAL MATCH (current_survivor)-[survivor_addr:LIVES_AT]->(addr:Address)
-WHERE survivor_addr.source_record_pk IN affected_pks
-FOREACH (_ IN CASE WHEN survivor_addr IS NOT NULL THEN [1] ELSE [] END |
-  CREATE (absorbed)-[:LIVES_AT {
-    is_active: survivor_addr.is_active,
-    is_verified: survivor_addr.is_verified,
-    source_system_key: survivor_addr.source_system_key,
-    source_record_pk: survivor_addr.source_record_pk,
-    first_seen_at: survivor_addr.first_seen_at,
-    last_seen_at: survivor_addr.last_seen_at,
-    last_confirmed_at: survivor_addr.last_confirmed_at,
-    quality_flag: survivor_addr.quality_flag
+WITH DISTINCT absorbed, mi, merge_event, current_survivor, current_survivor_id
+OPTIONAL MATCH (merge_event)-[move:MOVED_RELATIONSHIP]->(addr:Address)
+WHERE move.relationship_type = 'LIVES_AT'
+OPTIONAL MATCH (origin:Person {person_id: move.origin_person_id})
+WITH absorbed, mi, merge_event, current_survivor, current_survivor_id,
+     addr, move, origin, properties(move) AS move_props
+OPTIONAL MATCH (current_survivor)-[survivor_addr:LIVES_AT {
+  source_system_key: move.source_system_key,
+  source_record_pk: move.source_record_pk
+}]->(addr)
+WHERE survivor_addr.merge_origin_person_id = move.origin_person_id
+FOREACH (_ IN CASE WHEN move IS NOT NULL
+                         AND (origin = absorbed OR origin.status = 'merged') THEN [1] ELSE [] END |
+  MERGE (absorbed)-[restored_addr:LIVES_AT {
+    source_system_key: move.source_system_key,
+    source_record_pk: move.source_record_pk
   }]->(addr)
+  SET restored_addr = move_props,
+      restored_addr.relationship_type = null,
+      restored_addr.direction = null,
+      restored_addr.origin_person_id = null,
+      restored_addr.created_on_survivor = null,
+      restored_addr.merge_origin_person_id = move.origin_person_id
+)
+FOREACH (_ IN CASE WHEN move.created_on_survivor = true
+                         AND (origin = absorbed OR origin.status = 'merged')
+                         AND survivor_addr IS NOT NULL THEN [1] ELSE [] END |
   DELETE survivor_addr
 )
 
-WITH DISTINCT absorbed, mi, current_survivor, current_survivor_id, affected_pks
-OPTIONAL MATCH (current_survivor)-[survivor_fact:HAS_FACT]->(sr_fact:SourceRecord)
-WHERE sr_fact.source_record_pk IN affected_pks
-FOREACH (_ IN CASE WHEN survivor_fact IS NOT NULL THEN [1] ELSE [] END |
-  CREATE (absorbed)-[:HAS_FACT {
-    attribute_name: survivor_fact.attribute_name,
-    attribute_value: survivor_fact.attribute_value,
-    source_trust_tier: survivor_fact.source_trust_tier,
-    confidence: survivor_fact.confidence,
-    quality_flag: survivor_fact.quality_flag,
-    is_current_hint: survivor_fact.is_current_hint,
-    observed_at: survivor_fact.observed_at,
-    created_at: survivor_fact.created_at
-  }]->(sr_fact)
+WITH DISTINCT absorbed, mi, merge_event, current_survivor, current_survivor_id
+OPTIONAL MATCH (merge_event)-[move:MOVED_RELATIONSHIP]->(sr_fact:SourceRecord)
+WHERE move.relationship_type = 'HAS_FACT'
+OPTIONAL MATCH (origin:Person {person_id: move.origin_person_id})
+WITH absorbed, mi, merge_event, current_survivor, current_survivor_id,
+     sr_fact, move, origin, properties(move) AS move_props
+OPTIONAL MATCH (current_survivor)-[survivor_fact:HAS_FACT]->(sr_fact)
+WHERE survivor_fact.merge_origin_person_id = move.origin_person_id
+  AND survivor_fact.attribute_name = move.attribute_name
+FOREACH (_ IN CASE WHEN move IS NOT NULL
+                         AND (origin = absorbed OR origin.status = 'merged') THEN [1] ELSE [] END |
+  CREATE (absorbed)-[restored_fact:HAS_FACT]->(sr_fact)
+  SET restored_fact = move_props,
+      restored_fact.relationship_type = null,
+      restored_fact.direction = null,
+      restored_fact.origin_person_id = null,
+      restored_fact.created_on_survivor = null,
+      restored_fact.merge_origin_person_id = move.origin_person_id
+)
+FOREACH (_ IN CASE WHEN move.created_on_survivor = true
+                         AND (origin = absorbed OR origin.status = 'merged')
+                         AND survivor_fact IS NOT NULL THEN [1] ELSE [] END |
   DELETE survivor_fact
 )
 
-WITH DISTINCT absorbed, mi, current_survivor, current_survivor_id, affected_pks
-OPTIONAL MATCH (current_survivor)-[survivor_k_out:KNOWS]->(k_other_out:Person)
-WHERE survivor_k_out.source_record_pk IN affected_pks
-  AND k_other_out.person_id <> absorbed.person_id
-FOREACH (_ IN CASE WHEN survivor_k_out IS NOT NULL THEN [1] ELSE [] END |
-  CREATE (absorbed)-[:KNOWS {
-    knows_id: survivor_k_out.knows_id,
-    relationship_label: survivor_k_out.relationship_label,
-    relationship_category: survivor_k_out.relationship_category,
-    source_system_key: survivor_k_out.source_system_key,
-    source_record_pk: survivor_k_out.source_record_pk,
-    declared_by_person_id: absorbed.person_id,
-    status: survivor_k_out.status,
-    approved_at: survivor_k_out.approved_at,
-    first_seen_at: survivor_k_out.first_seen_at,
-    last_seen_at: survivor_k_out.last_seen_at,
-    last_confirmed_at: survivor_k_out.last_confirmed_at,
-    created_at: survivor_k_out.created_at,
-    updated_at: datetime()
-  }]->(k_other_out)
+WITH DISTINCT absorbed, mi, merge_event, current_survivor, current_survivor_id
+OPTIONAL MATCH (merge_event)-[move:MOVED_RELATIONSHIP]->(k_other_out:Person)
+WHERE move.relationship_type = 'KNOWS_OUT'
+OPTIONAL MATCH (origin:Person {person_id: move.origin_person_id})
+WITH absorbed, mi, merge_event, current_survivor, current_survivor_id,
+     k_other_out, move, origin, properties(move) AS move_props
+OPTIONAL MATCH (current_survivor)-[survivor_k_out:KNOWS]->(k_other_out)
+WHERE survivor_k_out.merge_origin_person_id = move.origin_person_id
+  AND survivor_k_out.source_record_pk = move.source_record_pk
+FOREACH (_ IN CASE WHEN move IS NOT NULL
+                         AND (origin = absorbed OR origin.status = 'merged')
+                         AND k_other_out.person_id <> absorbed.person_id THEN [1] ELSE [] END |
+  CREATE (absorbed)-[restored_k_out:KNOWS]->(k_other_out)
+  SET restored_k_out = move_props,
+      restored_k_out.relationship_type = null,
+      restored_k_out.direction = null,
+      restored_k_out.origin_person_id = null,
+      restored_k_out.created_on_survivor = null,
+      restored_k_out.declared_by_person_id = absorbed.person_id,
+      restored_k_out.merge_origin_person_id = move.origin_person_id,
+      restored_k_out.updated_at = datetime()
+)
+FOREACH (_ IN CASE WHEN move.created_on_survivor = true
+                         AND (origin = absorbed OR origin.status = 'merged')
+                         AND survivor_k_out IS NOT NULL THEN [1] ELSE [] END |
   DELETE survivor_k_out
 )
 
-WITH DISTINCT absorbed, mi, current_survivor, current_survivor_id, affected_pks
-OPTIONAL MATCH (k_other_in:Person)-[survivor_k_in:KNOWS]->(current_survivor)
-WHERE survivor_k_in.source_record_pk IN affected_pks
-  AND k_other_in.person_id <> absorbed.person_id
-FOREACH (_ IN CASE WHEN survivor_k_in IS NOT NULL THEN [1] ELSE [] END |
-  CREATE (k_other_in)-[:KNOWS {
-    knows_id: survivor_k_in.knows_id,
-    relationship_label: survivor_k_in.relationship_label,
-    relationship_category: survivor_k_in.relationship_category,
-    source_system_key: survivor_k_in.source_system_key,
-    source_record_pk: survivor_k_in.source_record_pk,
-    declared_by_person_id: survivor_k_in.declared_by_person_id,
-    status: survivor_k_in.status,
-    approved_at: survivor_k_in.approved_at,
-    first_seen_at: survivor_k_in.first_seen_at,
-    last_seen_at: survivor_k_in.last_seen_at,
-    last_confirmed_at: survivor_k_in.last_confirmed_at,
-    created_at: survivor_k_in.created_at,
-    updated_at: datetime()
-  }]->(absorbed)
+WITH DISTINCT absorbed, mi, merge_event, current_survivor, current_survivor_id
+OPTIONAL MATCH (merge_event)-[move:MOVED_RELATIONSHIP]->(k_other_in:Person)
+WHERE move.relationship_type = 'KNOWS_IN'
+OPTIONAL MATCH (origin:Person {person_id: move.origin_person_id})
+WITH absorbed, mi, merge_event, current_survivor, current_survivor_id,
+     k_other_in, move, origin, properties(move) AS move_props
+OPTIONAL MATCH (k_other_in)-[survivor_k_in:KNOWS]->(current_survivor)
+WHERE survivor_k_in.merge_origin_person_id = move.origin_person_id
+  AND survivor_k_in.source_record_pk = move.source_record_pk
+FOREACH (_ IN CASE WHEN move IS NOT NULL
+                         AND (origin = absorbed OR origin.status = 'merged')
+                         AND k_other_in.person_id <> absorbed.person_id THEN [1] ELSE [] END |
+  CREATE (k_other_in)-[restored_k_in:KNOWS]->(absorbed)
+  SET restored_k_in = move_props,
+      restored_k_in.relationship_type = null,
+      restored_k_in.direction = null,
+      restored_k_in.origin_person_id = null,
+      restored_k_in.created_on_survivor = null,
+      restored_k_in.merge_origin_person_id = move.origin_person_id,
+      restored_k_in.updated_at = datetime()
+)
+FOREACH (_ IN CASE WHEN move.created_on_survivor = true
+                         AND (origin = absorbed OR origin.status = 'merged')
+                         AND survivor_k_in IS NOT NULL THEN [1] ELSE [] END |
   DELETE survivor_k_in
 )
 
-WITH DISTINCT absorbed, mi, current_survivor_id
+WITH DISTINCT absorbed, mi, merge_event, current_survivor, current_survivor_id
+OPTIONAL MATCH (merge_event)-[move:MOVED_RELATIONSHIP]->(order:Order)
+WHERE move.relationship_type = 'PURCHASED'
+OPTIONAL MATCH (origin:Person {person_id: move.origin_person_id})
+WITH absorbed, mi, merge_event, current_survivor, current_survivor_id,
+     order, move, origin, properties(move) AS move_props
+OPTIONAL MATCH (current_survivor)-[survivor_context:PURCHASED {
+  source_system_key: move.source_system_key,
+  source_order_id: move.source_order_id
+}]->(order)
+WHERE survivor_context.merge_origin_person_id = move.origin_person_id
+FOREACH (_ IN CASE WHEN move IS NOT NULL
+                         AND (origin = absorbed OR origin.status = 'merged') THEN [1] ELSE [] END |
+  MERGE (absorbed)-[restored_context:PURCHASED {
+    source_system_key: move.source_system_key,
+    source_order_id: move.source_order_id
+  }]->(order)
+  SET restored_context = move_props,
+      restored_context.relationship_type = null,
+      restored_context.direction = null,
+      restored_context.origin_person_id = null,
+      restored_context.created_on_survivor = null,
+      restored_context.merge_origin_person_id = move.origin_person_id
+)
+FOREACH (_ IN CASE WHEN move.created_on_survivor = true
+                         AND (origin = absorbed OR origin.status = 'merged')
+                         AND survivor_context.source_record_pk = move.source_record_pk
+                         AND survivor_context IS NOT NULL THEN [1] ELSE [] END |
+  DELETE survivor_context
+)
+
+WITH DISTINCT absorbed, mi, merge_event, current_survivor, current_survivor_id
+OPTIONAL MATCH (merge_event)-[move:MOVED_RELATIONSHIP]->(vehicle:Vehicle)
+WHERE move.relationship_type = 'BOUGHT_VEHICLE'
+OPTIONAL MATCH (origin:Person {person_id: move.origin_person_id})
+WITH absorbed, mi, merge_event, current_survivor, current_survivor_id,
+     vehicle, move, origin, properties(move) AS move_props
+OPTIONAL MATCH (current_survivor)-[survivor_context:BOUGHT_VEHICLE {
+  source_system_key: move.source_system_key,
+  source_order_id: move.source_order_id
+}]->(vehicle)
+WHERE survivor_context.merge_origin_person_id = move.origin_person_id
+FOREACH (_ IN CASE WHEN move IS NOT NULL
+                         AND (origin = absorbed OR origin.status = 'merged') THEN [1] ELSE [] END |
+  MERGE (absorbed)-[restored_context:BOUGHT_VEHICLE {
+    source_system_key: move.source_system_key,
+    source_order_id: move.source_order_id
+  }]->(vehicle)
+  SET restored_context = move_props,
+      restored_context.relationship_type = null,
+      restored_context.direction = null,
+      restored_context.origin_person_id = null,
+      restored_context.created_on_survivor = null,
+      restored_context.merge_origin_person_id = move.origin_person_id
+)
+FOREACH (_ IN CASE WHEN move.created_on_survivor = true
+                         AND (origin = absorbed OR origin.status = 'merged')
+                         AND survivor_context.source_record_pk = move.source_record_pk
+                         AND survivor_context IS NOT NULL THEN [1] ELSE [] END |
+  DELETE survivor_context
+)
+
+WITH DISTINCT absorbed, mi, merge_event, current_survivor, current_survivor_id
+OPTIONAL MATCH (merge_event)-[move:MOVED_RELATIONSHIP]->(vehicle:Vehicle)
+WHERE move.relationship_type = 'OWNS_VEHICLE'
+OPTIONAL MATCH (origin:Person {person_id: move.origin_person_id})
+WITH absorbed, mi, merge_event, current_survivor, current_survivor_id,
+     vehicle, move, origin, properties(move) AS move_props
+OPTIONAL MATCH (current_survivor)-[survivor_context:OWNS_VEHICLE {
+  source_system_key: move.source_system_key,
+  source_record_pk: move.source_record_pk
+}]->(vehicle)
+WHERE survivor_context.merge_origin_person_id = move.origin_person_id
+FOREACH (_ IN CASE WHEN move IS NOT NULL
+                         AND (origin = absorbed OR origin.status = 'merged') THEN [1] ELSE [] END |
+  MERGE (absorbed)-[restored_context:OWNS_VEHICLE {
+    source_system_key: move.source_system_key,
+    source_record_pk: move.source_record_pk
+  }]->(vehicle)
+  SET restored_context = move_props,
+      restored_context.relationship_type = null,
+      restored_context.direction = null,
+      restored_context.origin_person_id = null,
+      restored_context.created_on_survivor = null,
+      restored_context.merge_origin_person_id = move.origin_person_id
+)
+FOREACH (_ IN CASE WHEN move.created_on_survivor = true
+                         AND (origin = absorbed OR origin.status = 'merged')
+                         AND survivor_context.source_record_pk = move.source_record_pk
+                         AND survivor_context IS NOT NULL THEN [1] ELSE [] END |
+  DELETE survivor_context
+)
+
+WITH DISTINCT absorbed, mi, current_survivor, current_survivor_id
 DELETE mi
 SET absorbed.status = 'active', absorbed.updated_at = datetime()
-RETURN count(mi) AS removed_count, current_survivor_id
+WITH absorbed, current_survivor, current_survivor_id, 1 AS removed_count
+OPTIONAL MATCH (affected:Person)-[:KNOWS]-(unmerge_neighbor:Person {status: 'active'})
+WHERE affected IN [absorbed, current_survivor]
+  AND unmerge_neighbor <> absorbed
+  AND unmerge_neighbor <> current_survivor
+WITH absorbed, current_survivor, current_survivor_id, removed_count,
+     collect(DISTINCT unmerge_neighbor) AS unmerge_neighbors
+FOREACH (unmerge_neighbor IN unmerge_neighbors |
+  SET unmerge_neighbor.analysis_input_revision =
+        coalesce(unmerge_neighbor.analysis_input_revision, 0) + 1,
+      unmerge_neighbor.analysis_dirty_at = datetime()
+)
+SET absorbed.analysis_input_revision = coalesce(absorbed.analysis_input_revision, 0) + 1,
+    absorbed.analysis_dirty_at = datetime(),
+    current_survivor.analysis_input_revision =
+      coalesce(current_survivor.analysis_input_revision, 0) + 1,
+    current_survivor.analysis_dirty_at = datetime()
+RETURN removed_count, current_survivor_id
 """
 
 CREATE_UNMERGE_AUDIT = """

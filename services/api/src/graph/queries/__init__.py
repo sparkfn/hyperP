@@ -97,6 +97,10 @@ from src.graph.queries.persons_list import (
     build_count_persons_query,
     build_list_persons_query,
 )
+from src.graph.queries.profile_analysis import (
+    GET_PERSON_PROFILE_ANALYSES,
+    GET_PERSON_PROFILE_ANALYSIS_HISTORY,
+)
 from src.graph.queries.reports import (
     CREATE_REPORT,
     DELETE_REPORT,
@@ -150,6 +154,7 @@ from src.graph.queries.survivorship import (
     GET_PERSON_OVERRIDES,
     GET_PERSON_OVERRIDES_FULL,
     UPDATE_GOLDEN_FIELD,
+    UPDATE_GOLDEN_FIELDS,
     UPDATE_GOLDEN_PROFILE,
     UPDATE_OVERRIDES,
     UPSERT_CUSTOM_ADDRESS,
@@ -224,6 +229,8 @@ __all__ = [
     "GET_PERSON_FACTS",
     "GET_PERSON_IDENTIFIERS",
     "GET_PERSON_MATCHES",
+    "GET_PERSON_PROFILE_ANALYSES",
+    "GET_PERSON_PROFILE_ANALYSIS_HISTORY",
     "GET_PERSON_POSSIBLE_MATCH_DETAIL",
     "GET_PERSON_SHARED_IDENTIFIERS",
     "GET_PERSONS_FOR_REVIEW_MERGE",
@@ -264,6 +271,7 @@ __all__ = [
     "SEED_REPORTS",
     "UPDATE_FIELD_TRUST",
     "UPDATE_GOLDEN_FIELD",
+    "UPDATE_GOLDEN_FIELDS",
     "UPDATE_GOLDEN_PROFILE",
     "UPDATE_INGEST_RUN",
     "UPDATE_INGEST_RUN_COUNTERS",

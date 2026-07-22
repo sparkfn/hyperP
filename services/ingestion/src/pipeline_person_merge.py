@@ -8,6 +8,7 @@ from neo4j import ManagedTransaction
 
 from src.golden_profile import compute_golden_profile
 from src.graph import queries
+from src.profile_analysis_dirty import mark_profile_analysis_dirty
 
 
 @dataclass(frozen=True)
@@ -81,6 +82,17 @@ def merge_person_pair(
     reason: str,
 ) -> str:
     """Rewire an absorbed person into its survivor and return the merge-event id."""
+    affected_person_ids = _profile_analysis_merge_person_ids(
+        tx,
+        absorbed_id=absorbed_id,
+        survivor_id=survivor_id,
+    )
+    affected_source_record_pks = tuple(
+        source_record_pk
+        for record in tx.run(queries.GET_AFFECTED_SOURCE_RECORDS, person_id=absorbed_id)
+        if isinstance((source_record_pk := record.get("source_record_pk")), str)
+        and source_record_pk
+    )
     record = tx.run(
         queries.CREATE_MERGE_EVENT_AUTO_MERGE,
         from_person_id=absorbed_id,
@@ -95,6 +107,12 @@ def merge_person_pair(
         merge_event_id=merge_event_id,
         match_decision_id=match_decision_id,
     )
+    for source_record_pk in affected_source_record_pks:
+        tx.run(
+            queries.LINK_MERGE_EVENT_AFFECTED_RECORD,
+            merge_event_id=merge_event_id,
+            source_record_pk=source_record_pk,
+        )
     for query in (
         queries.REWIRE_LINKED_TO,
         queries.REWIRE_IDENTIFIED_BY,
@@ -102,9 +120,24 @@ def merge_person_pair(
         queries.REWIRE_HAS_FACT,
         queries.REWIRE_KNOWS_OUT,
         queries.REWIRE_KNOWS_IN,
-        queries.REWIRE_PURCHASED,
     ):
-        tx.run(query, absorbed_id=absorbed_id, survivor_id=survivor_id)
+        tx.run(
+            query,
+            absorbed_id=absorbed_id,
+            survivor_id=survivor_id,
+            merge_event_id=merge_event_id,
+        )
+    for query in (
+        queries.REWIRE_PURCHASED,
+        queries.REWIRE_BOUGHT_VEHICLE,
+        queries.REWIRE_OWNS_VEHICLE,
+    ):
+        tx.run(
+            query,
+            absorbed_id=absorbed_id,
+            survivor_id=survivor_id,
+            merge_event_id=merge_event_id,
+        )
     tx.run(queries.MARK_PERSON_MERGED, absorbed_id=absorbed_id)
     tx.run(
         queries.CREATE_MERGED_INTO,
@@ -112,7 +145,12 @@ def merge_person_pair(
         survivor_id=survivor_id,
         merge_event_id=merge_event_id,
     )
-    tx.run(queries.PATH_COMPRESS_MERGED_INTO, absorbed_id=absorbed_id, survivor_id=survivor_id)
+    tx.run(
+        queries.PATH_COMPRESS_MERGED_INTO,
+        absorbed_id=absorbed_id,
+        survivor_id=survivor_id,
+        merge_event_id=merge_event_id,
+    )
     for query in (
         queries.CLOSE_PERSON_PAIR_CASES_FOR_ABSORBED,
         queries.REDIRECT_PERSON_PAIR_CASES_ABSORBED_LEFT,
@@ -126,4 +164,25 @@ def merge_person_pair(
             merge_event_id=merge_event_id,
         )
     compute_golden_profile(tx, survivor_id)
+    mark_profile_analysis_dirty(tx, person_ids=affected_person_ids)
     return merge_event_id
+
+
+def _profile_analysis_merge_person_ids(
+    tx: ManagedTransaction,
+    *,
+    absorbed_id: str,
+    survivor_id: str,
+) -> tuple[str, ...]:
+    record = tx.run(
+        queries.FIND_PROFILE_ANALYSIS_MERGE_AFFECTED_PERSON_IDS,
+        absorbed_id=absorbed_id,
+        survivor_id=survivor_id,
+    ).single()
+    if record is None:
+        return (survivor_id,)
+    values = record.get("person_ids")
+    if not isinstance(values, list):
+        return (survivor_id,)
+    person_ids = tuple(value for value in values if isinstance(value, str) and value)
+    return person_ids or (survivor_id,)

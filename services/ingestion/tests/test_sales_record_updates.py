@@ -688,6 +688,7 @@ def test_malformed_deferred_customer_link_fails_without_projection_mutation(
     assert queries.MARK_SALES_RECORD_LINK_FAILED in called
     assert queries.CLEAR_SUPERSEDED_SALES_LINKS not in called
     assert queries.MERGE_ORDER not in called
+    assert queries.MARK_PROFILE_ANALYSIS_DIRTY not in called
 
 
 def test_shared_finalizer_retires_then_reconciles_then_activates_last() -> None:
@@ -714,7 +715,10 @@ def test_shared_finalizer_retires_then_reconciles_then_activates_last() -> None:
     called = [query for query, _kwargs in tx.calls]
     assert called.index(queries.CLEAR_SUPERSEDED_SALES_LINKS) < called.index(queries.MERGE_ORDER)
     assert called.index(queries.MERGE_ORDER) < called.index(queries.REPLACE_ORDER_LINES)
-    assert called[-1] == queries.ACTIVATE_SOURCE_RECORD_VERSION
+    assert called.index(queries.ACTIVATE_SOURCE_RECORD_VERSION) < called.index(
+        queries.MARK_PROFILE_ANALYSIS_DIRTY
+    )
+    assert called[-1] == queries.MARK_PROFILE_ANALYSIS_DIRTY
 
 
 @pytest.mark.parametrize(
@@ -749,6 +753,7 @@ def test_malformed_order_or_lines_terminalize_without_retiring_old(
     assert queries.MARK_SOURCE_RECORD_LINK_FAILED in called
     assert queries.CLEAR_SUPERSEDED_SALES_LINKS not in called
     assert queries.ACTIVATE_SOURCE_RECORD_VERSION not in called
+    assert queries.MARK_PROFILE_ANALYSIS_DIRTY not in called
 
 
 def test_vehicle_proposal_without_lifecycle_context_performs_no_writes() -> None:

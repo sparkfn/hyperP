@@ -39,6 +39,14 @@ served through mounted sub-applications, not the root app:
   (`token`, `jwks`, `persons`, `persons/{person_id}`), accepting OAuth2 client
   credentials only.
 
+The Person profile-analysis paths are an authenticated human frontend surface
+only. Their canonical paths are
+`/v1/persons/{person_id}/profile-analyses` and
+`/v1/persons/{person_id}/profile-analyses/history`; at runtime they are served
+only as `/api/app/v2/persons/{person_id}/profile-analyses` and
+`/api/app/v2/persons/{person_id}/profile-analyses/history`. They are not mounted
+on the root/public app and are not part of the `/oauth2/v1` machine subset.
+
 The `/v1/...` paths in the remainder of this document describe the canonical
 contract regardless of which mount serves it.
 
@@ -623,6 +631,173 @@ domain-link progress.
 - `support_agent`
 - `reviewer`
 - `admin`
+
+## GET /v1/persons/{person_id}/profile-analyses
+
+Return the current independently published sales and contact-tracing analyses
+and the refresh state for each slot. This is an authenticated human frontend
+endpoint served at runtime only as
+`GET /api/app/v2/persons/{person_id}/profile-analyses`; it is not exposed by the
+root/public app or the `/oauth2/v1` machine subset.
+
+### Authorization
+
+- active authenticated human user
+
+### Response
+
+```json
+{
+  "data": {
+    "input_revision": 8,
+    "refresh_state": "running",
+    "sales": {
+      "current": {
+        "analysis_id": "2df33d31-62bb-41e7-9966-4110a7e342eb",
+        "person_id": "7af4b5f5-34c1-4f22-9e2d-95ea8ff3b8c7",
+        "analysis_type": "sales",
+        "status": "succeeded",
+        "content": "Observed repeat purchases in supported order evidence.\n\nLimitations: ...",
+        "input_revision": 7,
+        "input_fingerprint": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        "prompt_version": "sales-profile-v1",
+        "provider": "proclaude",
+        "model": "analysis-model",
+        "started_at": "2026-07-21T01:00:00+00:00",
+        "completed_at": "2026-07-21T01:02:00+00:00",
+        "completed_at_display": "21 Jul 2026, 01:02 AM",
+        "attempt_number": 2
+      },
+      "stale": true,
+      "refresh_state": "running",
+      "failure_code": null
+    },
+    "contact_tracing": {
+      "current": null,
+      "stale": false,
+      "refresh_state": "pending",
+      "failure_code": null
+    }
+  },
+  "meta": {
+    "request_id": "...",
+    "next_cursor": null,
+    "total_count": null
+  },
+  "display_items": null
+}
+```
+
+Each `current` value is either `null` or the currently published successful
+analysis. Its provenance is immutable: `input_revision`, `input_fingerprint`,
+`prompt_version`, `provider`, `model`, the timezone-aware ISO 8601 strings
+`started_at` and `completed_at`, API-formatted `completed_at_display`, and
+one-based `attempt_number`. `stale` is true exactly when a current analysis is
+retained but its `input_revision` differs from the Person's top-level
+`input_revision`.
+
+Per-slot `refresh_state` semantics are:
+
+- `disabled`: generation is paused by rollout configuration. Existing current
+  content is retained, and clients must not poll for generation progress.
+- `ready`: the current successful analysis matches the Person input revision.
+- `running`: the slot is not fresh and has an active generation claim.
+- `retrying`: generation failed transiently and a bounded retry is scheduled.
+- `failed`: the slot is not fresh, is not actively running, and has a terminal
+  failure for the current input revision. `failure_code` contains only a safe
+  lower-case code (or `null` if the stored value is unsafe).
+- `pending`: the slot is not fresh, is not actively running, and has no terminal
+  failure for the current input revision.
+
+A stale prior success remains in `current` while a replacement is pending,
+running, or failed; refresh state never erases previously published content.
+`failure_code` is non-null only when the slot state is `failed`.
+
+Overall `refresh_state` is derived from the two slots with this precedence:
+
+- `disabled` when profile-analysis generation is disabled;
+- `running` when either slot is running;
+- `retrying` when neither slot is running and either has a scheduled retry;
+- `ready` when both slots are ready;
+- `partial` when exactly one slot is ready and neither is running;
+- `failed` when neither slot is ready or running and at least one has failed; or
+- `pending` when neither slot is ready, running, or failed.
+
+The endpoint returns `401` for missing or invalid human authentication, `403`
+when the frontend user is not active, and `404` with `person_not_found` when the
+Person cannot be resolved.
+
+## GET /v1/persons/{person_id}/profile-analyses/history
+
+Return immutable terminal attempts for both analysis types, served at runtime
+only as `GET /api/app/v2/persons/{person_id}/profile-analyses/history`. This is
+the same authenticated-human-only surface as the current endpoint; it is not a
+public or machine API.
+
+### Authorization
+
+- active authenticated human user
+
+### Query Parameters
+
+- `analysis_type`: optional `sales` or `contact_tracing` filter
+- `cursor`: optional opaque offset cursor returned by the previous page
+- `limit`: optional page size; defaults to 20, non-positive values use the
+  default, and larger values are clamped to 200
+
+History contains `succeeded`, `failed`, and `obsolete` attempts and is ordered
+deterministically newest first by `completed_at`, then `analysis_id`, both
+descending. `meta.total_count` is the number of terminal entries matching the
+Person and optional type filter before pagination. `meta.next_cursor` is the
+next opaque cursor or `null` when the page is final.
+
+### Response
+
+```json
+{
+  "data": [
+    {
+      "analysis_id": "0bf90451-c932-4fc4-833a-c705052bca20",
+      "person_id": "7af4b5f5-34c1-4f22-9e2d-95ea8ff3b8c7",
+      "analysis_type": "sales",
+      "status": "failed",
+      "content": null,
+      "input_revision": 8,
+      "input_fingerprint": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      "prompt_version": "sales-profile-v1",
+      "provider": "proclaude",
+      "model": "analysis-model",
+      "started_at": "2026-07-21T02:00:00+00:00",
+      "completed_at": "2026-07-21T02:00:05+00:00",
+      "completed_at_display": "21 Jul 2026, 02:00 AM",
+      "attempt_number": 3,
+      "failure_code": "rate_limited",
+      "retryable": true,
+      "next_retry_at": "2026-07-21T02:10:05+00:00"
+    }
+  ],
+  "meta": {
+    "request_id": "...",
+    "next_cursor": "MjA=",
+    "total_count": 37
+  },
+  "display_items": null
+}
+```
+
+Every item exposes only safe immutable history fields: identity and type,
+terminal status, nullable plain-text content, revision and fingerprint, prompt
+and model provenance, timezone-aware start/completion timestamps,
+API-formatted `completed_at_display`, attempt number, and nullable safe failure
+metadata (`failure_code`, `retryable`, `next_retry_at`). A successful item always
+has content and a failed item never does; obsolete content remains nullable.
+Provider response bodies, prompts, input snapshots, credentials, raw payloads,
+and direct identifiers are never returned. Unsafe failure codes are returned as
+`null`.
+
+Invalid `analysis_type` query values return `400` with `invalid_request`; missing
+or invalid human authentication returns `401`; an inactive frontend user returns
+`403`; an unresolved Person returns `404` with `person_not_found`.
 
 ## GET /v1/persons/{person_id}/audit
 

@@ -25,6 +25,7 @@ __all__ = [
     "get_chat_summary_service",
     "get_llm_service",
     "validate_ingestion_llm_readiness",
+    "get_profile_analysis_service",
 ]
 
 _proclaude_service: ProclaudeService | None = None
@@ -69,3 +70,8 @@ def get_chat_summary_service() -> ProclaudeService:
 def validate_ingestion_llm_readiness() -> None:
     """Validate the ProClaude ingestion LLM backend before long chat discovery."""
     asyncio.run(_get_proclaude_service().validate_readiness())
+
+
+def get_profile_analysis_service() -> LLMService:
+    """Return the shared prose-oriented service for Person profile analysis."""
+    return _get_proclaude_service()

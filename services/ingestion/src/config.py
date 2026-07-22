@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+from datetime import timedelta
 from functools import lru_cache
 from typing import Literal
 
@@ -13,6 +15,17 @@ from src.connectors.whatsadmin_api.credentials import (
     is_valid_whatsadmin_handle_key,
     whatsadmin_entity_keys_are_distinct,
 )
+
+
+@dataclass(frozen=True, slots=True)
+class ProfileAnalysisConfig:
+    """Typed runtime controls for bounded asynchronous profile analysis."""
+
+    enabled: bool
+    batch_size: int
+    claim_lease: timedelta
+    retry_limit: int
+    periodic_sweep_interval: timedelta
 
 
 class Settings(BaseSettings):
@@ -54,6 +67,13 @@ class Settings(BaseSettings):
     max_concurrent_ingestions: int = 1
     # Beat schedule for periodic Fundbox ingestion. Empty string disables.
     fundbox_ingest_cron: str = ""  # e.g. "0 */6 * * *"
+
+    # Person profile analysis ------------------------------------------------
+    profile_analysis_enabled: bool = False
+    profile_analysis_batch_size: int = Field(default=25, ge=1, le=500)
+    profile_analysis_claim_lease_seconds: int = Field(default=900, ge=30, le=86_400)
+    profile_analysis_retry_limit: int = Field(default=3, ge=1, le=20)
+    profile_analysis_sweep_interval_seconds: int = Field(default=300, ge=30, le=86_400)
 
     # Fundbox source DB (MySQL, optionally via SSH tunnel) --------------------
     # Set FUNDBOX_SSH_HOST to enable SSH tunnelling.
@@ -234,6 +254,17 @@ class Settings(BaseSettings):
     # Message template. ``{name}`` is replaced with the person's preferred
     # full name (or "there" if unknown).
     birthday_message_template: str = "Happy birthday, {name}! 🎉"
+
+    @property
+    def profile_analysis(self) -> ProfileAnalysisConfig:
+        """Return validated profile-analysis settings in domain units."""
+        return ProfileAnalysisConfig(
+            enabled=self.profile_analysis_enabled,
+            batch_size=self.profile_analysis_batch_size,
+            claim_lease=timedelta(seconds=self.profile_analysis_claim_lease_seconds),
+            retry_limit=self.profile_analysis_retry_limit,
+            periodic_sweep_interval=timedelta(seconds=self.profile_analysis_sweep_interval_seconds),
+        )
 
 
 @lru_cache(maxsize=1)

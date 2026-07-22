@@ -25,6 +25,9 @@ class _Result:
     def single(self) -> _Row | None:
         return self._row
 
+    def __iter__(self) -> object:
+        return iter([self._row] if self._row is not None else [])
+
 
 class _Tx:
     def __init__(self, declarer_source_system_key: str = "bitrix_chat") -> None:
@@ -44,6 +47,8 @@ class _Tx:
         if query == queries.LINK_PERSON_KNOWS:
             self.link_params = params
             return _Result(_Row(knows_id="knows-1"))
+        if query == queries.MARK_PROFILE_ANALYSIS_DIRTY:
+            return _Result(None)
         raise AssertionError(f"unexpected query: {query}")
 
 
@@ -73,6 +78,9 @@ def test_chat_relationship_materializer_creates_pending_knows() -> None:
 def test_relationship_scans_only_consider_active_source_versions() -> None:
     assert "sr.lifecycle_status = 'active'" in queries.SCAN_CONTACT_SOURCE_RECORDS
     assert "sr.lifecycle_status = 'active'" in queries.SCAN_CHAT_RELATIONSHIP_SOURCE_RECORDS
+    assert "NOT EXISTS" in queries.SCAN_CONTACT_SOURCE_RECORDS
+    assert "existing:KNOWS" in queries.SCAN_CONTACT_SOURCE_RECORDS
+    assert "NOT EXISTS" in queries.SCAN_CHAT_RELATIONSHIP_SOURCE_RECORDS
 
 
 def test_knows_resolution_and_projection_are_active_version_scoped() -> None:

@@ -313,6 +313,7 @@ def test_address_versions_lock_duplicate_replace_and_preserve_unique_version_key
     assert retires == [(queries.RETIRE_ADDRESS_PROJECTION, {"source_record_pk": "sr-1"})]
     assert any(call[0] == queries.ACTIVATE_FIRST_SOURCE_RECORD_VERSION for call in client.tx.calls)
     assert any(call[0] == queries.ACTIVATE_SOURCE_RECORD_VERSION for call in client.tx.calls)
+    assert not any(call[0] == queries.MARK_PROFILE_ANALYSIS_DIRTY for call in client.tx.calls)
 
 
 def test_legacy_address_duplicate_then_changed_uses_replacement_lifecycle() -> None:

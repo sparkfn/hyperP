@@ -173,20 +173,65 @@ async def test_review_merge_uses_requested_survivor_person() -> None:
     assert merge_call.params == {
         "from_id": "person-a",
         "to_id": "person-b",
+        "left": "person-a",
+        "right": "person-b",
         "reason": "same person",
         "actor_id": "reviewer@example.com",
     }
     # Merge side-effects run after the merge, scoped to the merge event.
-    assert [c.query for c in tx.calls[-3:]] == [
+    redirect_calls = [
+        call
+        for call in tx.calls
+        if call.query
+        in (
+            REDIRECT_PERSON_PAIR_CASES_ABSORBED_LEFT,
+            REDIRECT_PERSON_PAIR_CASES_ABSORBED_RIGHT,
+            REDIRECT_RECORD_PERSON_CASES_FOR_ABSORBED,
+        )
+    ]
+    assert [call.query for call in redirect_calls] == [
         REDIRECT_PERSON_PAIR_CASES_ABSORBED_LEFT,
         REDIRECT_PERSON_PAIR_CASES_ABSORBED_RIGHT,
         REDIRECT_RECORD_PERSON_CASES_FOR_ABSORBED,
     ]
-    assert tx.calls[-1].params == {
+    assert redirect_calls[-1].params == {
         "absorbed_id": "person-a",
         "survivor_id": "person-b",
         "merge_event_id": "merge-1",
     }
+
+
+@pytest.mark.asyncio
+async def test_review_merge_aborts_if_locked_mutation_loses_active_state_race() -> None:
+    tx = _Tx(
+        [
+            {"left_person_id": "person-a", "right_person_id": "person-b"},
+            {"absorbed": "person-a", "survivor": "person-b"},
+            {"is_locked": False},
+            {
+                "review_case": {
+                    "review_case_id": "case-1",
+                    "queue_state": "resolved",
+                    "resolution": "merge",
+                }
+            },
+            None,
+        ]
+    )
+
+    with pytest.raises(review_module._ReviewResolutionAbortError):
+        await _action_tx(
+            cast(AsyncManagedTransaction, tx),
+            "case-1",
+            ApiReviewActionType.MERGE.value,
+            "resolved",
+            "merge",
+            "same person",
+            None,
+            "reviewer@example.com",
+            "person-b",
+            [],
+        )
 
 
 @pytest.mark.asyncio
@@ -1067,7 +1112,8 @@ async def test_pending_replacement_activates_payload_recomputes_once_then_closes
     }
     tx = _LifecycleTx(expected_old="active-v1", active_old="active-v1", payload=payload)
 
-    async def recompute(_tx: object, person_id: str) -> None:
+    async def recompute(_tx: object, person_id: str, invalidate_analysis: bool) -> None:
+        assert invalidate_analysis is False
         tx.events.append(f"recompute:{person_id}")
 
     monkeypatch.setattr(review_module, "recompute_golden_profile_tx", recompute)
@@ -1098,7 +1144,8 @@ async def test_pending_reassignment_recomputes_distinct_people_in_sorted_order(
         affected=["person-z", "person-a", "person-z"],
     )
 
-    async def recompute(_tx: object, person_id: str) -> None:
+    async def recompute(_tx: object, person_id: str, invalidate_analysis: bool) -> None:
+        assert invalidate_analysis is False
         tx.events.append(f"recompute:{person_id}")
 
     monkeypatch.setattr(review_module, "recompute_golden_profile_tx", recompute)
@@ -1118,7 +1165,8 @@ async def test_first_or_legacy_activation_uses_exact_expected_old(
 ) -> None:
     tx = _LifecycleTx(expected_old=expected, active_old=active)
 
-    async def recompute(_tx: object, person_id: str) -> None:
+    async def recompute(_tx: object, person_id: str, invalidate_analysis: bool) -> None:
+        assert invalidate_analysis is False
         tx.events.append(f"recompute:{person_id}")
 
     monkeypatch.setattr(review_module, "recompute_golden_profile_tx", recompute)
@@ -1136,7 +1184,8 @@ async def test_stale_expected_old_does_not_recompute_or_close(
 ) -> None:
     tx = _LifecycleTx(expected_old=expected, active_old=active)
 
-    async def recompute(_tx: object, person_id: str) -> None:
+    async def recompute(_tx: object, person_id: str, invalidate_analysis: bool) -> None:
+        _ = invalidate_analysis
         raise AssertionError("must not recompute")
 
     monkeypatch.setattr(review_module, "recompute_golden_profile_tx", recompute)
@@ -1219,7 +1268,8 @@ async def test_specialized_blueprints_are_validated_and_forwarded(
         source_record_id="chat-1",
     )
 
-    async def recompute(_tx: object, person_id: str) -> None:
+    async def recompute(_tx: object, person_id: str, invalidate_analysis: bool) -> None:
+        assert invalidate_analysis is False
         tx.events.append(f"recompute:{person_id}")
 
     monkeypatch.setattr(review_module, "recompute_golden_profile_tx", recompute)
@@ -1264,7 +1314,8 @@ async def test_pending_fundbox_contact_approval_preserves_exact_source_provenanc
         source_record_id="contact-7",
     )
 
-    async def recompute(_tx: object, person_id: str) -> None:
+    async def recompute(_tx: object, person_id: str, invalidate_analysis: bool) -> None:
+        assert invalidate_analysis is False
         tx.events.append(f"recompute:{person_id}")
 
     monkeypatch.setattr(review_module, "recompute_golden_profile_tx", recompute)
@@ -1341,7 +1392,8 @@ async def test_matching_bankruptcy_provenance_is_forwarded(monkeypatch: pytest.M
         source_system_key="sgbankruptcy",
     )
 
-    async def recompute(_tx: object, person_id: str) -> None:
+    async def recompute(_tx: object, person_id: str, invalidate_analysis: bool) -> None:
+        assert invalidate_analysis is False
         tx.events.append(f"recompute:{person_id}")
 
     monkeypatch.setattr(review_module, "recompute_golden_profile_tx", recompute)
@@ -1353,7 +1405,8 @@ async def test_matching_bankruptcy_provenance_is_forwarded(monkeypatch: pytest.M
 async def test_recompute_failure_prevents_review_close(monkeypatch: pytest.MonkeyPatch) -> None:
     tx = _LifecycleTx(expected_old="active-v1", active_old="active-v1")
 
-    async def recompute(_tx: object, person_id: str) -> None:
+    async def recompute(_tx: object, person_id: str, invalidate_analysis: bool) -> None:
+        assert invalidate_analysis is False
         tx.events.append(f"recompute:{person_id}")
         raise RuntimeError("golden failure")
 
@@ -1378,7 +1431,8 @@ async def test_close_loss_after_lifecycle_mutation_aborts_transaction(
 ) -> None:
     tx = _LifecycleTx(expected_old="active-v1", active_old="active-v1", close_succeeds=False)
 
-    async def recompute(_tx: object, person_id: str) -> None:
+    async def recompute(_tx: object, person_id: str, invalidate_analysis: bool) -> None:
+        assert invalidate_analysis is False
         tx.events.append(f"recompute:{person_id}")
 
     monkeypatch.setattr(review_module, "recompute_golden_profile_tx", recompute)

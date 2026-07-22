@@ -19,6 +19,7 @@ import time
 import uuid
 from collections.abc import Iterator
 from contextlib import ExitStack, contextmanager
+from datetime import UTC, datetime, timedelta
 from typing import TypedDict, cast
 
 import redis
@@ -38,6 +39,8 @@ from src.graph.migrations import (
     reconcile_projection_relationship_lifecycle,
     reconcile_source_record_lifecycle,
 )
+from src.ingestion_config import get_ingestion_config
+from src.llm import get_profile_analysis_service
 from src.main import (
     IngestionSummary,
     finalize_ingest_run,
@@ -47,6 +50,12 @@ from src.main import (
 )
 from src.matching.pair_score import score_person_pair
 from src.pipeline_person_pairs import _ENGINE_VERSION, _POLICY_VERSION
+from src.profile_analysis_repository import Neo4jProfileAnalysisRepository
+from src.profile_analysis_worker import run_profile_analysis_sweep
+from src.profile_analysis_worker_types import (
+    LlmProfileAnalysisTextService,
+    ProfileAnalysisSweepSummary,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -369,6 +378,51 @@ def _terminal_run_summary(
     }
 
 
+def _empty_profile_analysis_summary(*, unexpected_failures: int = 0) -> ProfileAnalysisSweepSummary:
+    return {
+        "claimed": 0,
+        "attempted": 0,
+        "succeeded": 0,
+        "failed": 0,
+        "obsolete": 0,
+        "unexpected_failures": unexpected_failures,
+        "released": 0,
+        "has_more": False,
+    }
+
+
+def _dispatch_profile_analysis_sweep() -> None:
+    """Best-effort wake-up; durable graph dirty state remains authoritative."""
+    try:
+        if not get_settings().profile_analysis.enabled:
+            return
+        run_profile_analysis_sweep_task.delay()
+    except Exception:
+        logger.error("Profile-analysis sweep dispatch failed; safe_code=dispatch_failed")
+
+
+def _run_profile_analysis_sweep_once() -> ProfileAnalysisSweepSummary:
+    settings = get_settings()
+    profile_config = settings.profile_analysis
+    llm_config = get_ingestion_config().llm
+    client = Neo4jClient(settings)
+    try:
+        repository = Neo4jProfileAnalysisRepository(client)
+        text_service = LlmProfileAnalysisTextService(get_profile_analysis_service())
+        return run_profile_analysis_sweep(
+            repository=repository,
+            text_service=text_service,
+            batch_size=profile_config.batch_size,
+            claim_lease=profile_config.claim_lease,
+            max_attempts=profile_config.retry_limit,
+            retry_base=timedelta(seconds=llm_config.retry_base_delay_seconds),
+            retry_cap=timedelta(seconds=llm_config.retry_max_delay_seconds),
+            clock=lambda: datetime.now(UTC),
+        )
+    finally:
+        client.close()
+
+
 def run_lifecycle_reconciliation() -> LifecycleReconciliationSummary:
     """Repair lifecycle deltas while serializing concurrent repair attempts."""
     with _acquire_source_lock("lifecycle-reconciliation"), _acquire_init_lock():
@@ -495,6 +549,7 @@ def run_ingestion_task(
                     logger.info("Lifecycle reconciliation is already running; skipping follow-up")
                 except Exception:
                     logger.exception("Post-ingestion lifecycle reconciliation failed")
+                _dispatch_profile_analysis_sweep()
                 return summary
     except _SourceAlreadyRunningError as exc:
         if ingest_run_id is not None:
@@ -555,6 +610,23 @@ def reconcile_lifecycle_task() -> LifecycleReconciliationSummary:
     except Exception as exc:
         logger.exception("Lifecycle reconciliation failed")
         raise Reject(str(exc), requeue=False) from exc
+
+
+@celery_app.task(name="src.tasks.run_profile_analysis_sweep_task", max_retries=0)
+def run_profile_analysis_sweep_task() -> ProfileAnalysisSweepSummary:
+    """Run one bounded analysis batch and wake one successor when needed."""
+    settings = get_settings()
+    setup_logging(settings.log_level)
+    if not settings.profile_analysis.enabled:
+        return _empty_profile_analysis_summary()
+    try:
+        summary = _run_profile_analysis_sweep_once()
+    except Exception:
+        logger.error("Profile-analysis sweep failed; safe_code=sweep_failed")
+        return _empty_profile_analysis_summary(unexpected_failures=1)
+    if summary["has_more"] and summary["unexpected_failures"] == 0:
+        _dispatch_profile_analysis_sweep()
+    return summary
 
 
 @celery_app.task(

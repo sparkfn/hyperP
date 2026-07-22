@@ -370,16 +370,77 @@ SET sr.link_status       = 'link_failed',
 #: Mirrors the rewire pattern for IDENTIFIED_BY / LIVES_AT / KNOWS.
 REWIRE_PURCHASED = """
 MATCH (absorbed:Person {person_id: $absorbed_id})-[old:PURCHASED]->(o:Order)
-WITH old, o, properties(old) AS props
-DELETE old
-WITH o, props
 MATCH (survivor:Person {person_id: $survivor_id})
+MATCH (me:MergeEvent {merge_event_id: $merge_event_id})
+OPTIONAL MATCH (survivor)-[existing:PURCHASED {
+    source_system_key: old.source_system_key,
+    source_order_id: old.source_order_id
+}]->(o)
+WITH old, o, survivor, me, existing, properties(old) AS props
+CREATE (me)-[moved:MOVED_RELATIONSHIP]->(o)
+SET moved = props,
+    moved.relationship_type = 'PURCHASED',
+    moved.direction = 'outgoing',
+    moved.origin_person_id = coalesce(props.merge_origin_person_id, $absorbed_id),
+    moved.created_on_survivor = existing IS NULL
 MERGE (survivor)-[rel:PURCHASED {
     source_system_key: props.source_system_key,
-    source_record_pk:  props.source_record_pk
+    source_order_id: props.source_order_id
 }]->(o)
-ON CREATE SET rel += props
+ON CREATE SET rel += props,
+              rel.merge_origin_person_id = moved.origin_person_id
+DELETE old
 RETURN count(o) AS rewired_count
+"""
+
+REWIRE_BOUGHT_VEHICLE = """
+MATCH (absorbed:Person {person_id: $absorbed_id})-[old:BOUGHT_VEHICLE]->(vehicle:Vehicle)
+MATCH (survivor:Person {person_id: $survivor_id})
+MATCH (me:MergeEvent {merge_event_id: $merge_event_id})
+OPTIONAL MATCH (survivor)-[existing:BOUGHT_VEHICLE {
+    source_system_key: old.source_system_key,
+    source_order_id: old.source_order_id
+}]->(vehicle)
+WITH old, vehicle, survivor, me, existing, properties(old) AS props
+CREATE (me)-[moved:MOVED_RELATIONSHIP]->(vehicle)
+SET moved = props,
+    moved.relationship_type = 'BOUGHT_VEHICLE',
+    moved.direction = 'outgoing',
+    moved.origin_person_id = coalesce(props.merge_origin_person_id, $absorbed_id),
+    moved.created_on_survivor = existing IS NULL
+MERGE (survivor)-[rel:BOUGHT_VEHICLE {
+    source_system_key: props.source_system_key,
+    source_order_id: props.source_order_id
+}]->(vehicle)
+ON CREATE SET rel += props,
+              rel.merge_origin_person_id = moved.origin_person_id
+DELETE old
+RETURN count(vehicle) AS rewired_count
+"""
+
+REWIRE_OWNS_VEHICLE = """
+MATCH (absorbed:Person {person_id: $absorbed_id})-[old:OWNS_VEHICLE]->(vehicle:Vehicle)
+MATCH (survivor:Person {person_id: $survivor_id})
+MATCH (me:MergeEvent {merge_event_id: $merge_event_id})
+OPTIONAL MATCH (survivor)-[existing:OWNS_VEHICLE {
+    source_system_key: old.source_system_key,
+    source_record_pk: old.source_record_pk
+}]->(vehicle)
+WITH old, vehicle, survivor, me, existing, properties(old) AS props
+CREATE (me)-[moved:MOVED_RELATIONSHIP]->(vehicle)
+SET moved = props,
+    moved.relationship_type = 'OWNS_VEHICLE',
+    moved.direction = 'outgoing',
+    moved.origin_person_id = coalesce(props.merge_origin_person_id, $absorbed_id),
+    moved.created_on_survivor = existing IS NULL
+MERGE (survivor)-[rel:OWNS_VEHICLE {
+    source_system_key: props.source_system_key,
+    source_record_pk: props.source_record_pk
+}]->(vehicle)
+ON CREATE SET rel += props,
+              rel.merge_origin_person_id = moved.origin_person_id
+DELETE old
+RETURN count(vehicle) AS rewired_count
 """
 
 #: Find active Person candidates who share a Vehicle with a pending-customer
