@@ -1,6 +1,6 @@
 # PR validation for sparkfn/hyperP — fast feedback only.
 # Triggers: pull_request events only. No push, no main/production, no deploy, no secrets.
-# A green PR pipeline = candidate for merge to `development`; it is NOT a DEV, staging,
+# A green PR pipeline = candidate for merge to the PR branch's base branch; it is NOT a DEV, staging,
 # main, or production approval.
 # Inspect via:  wpci home pipeline last sparkfn/hyperP --branch <pr-branch>
 #

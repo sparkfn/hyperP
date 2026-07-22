@@ -75,8 +75,10 @@ accepts a partial result with a tracked follow-up.
 - Never commit, stage, push, merge, or open a PR without explicit user approval.
 - Never push directly to `main`. Do not push to `development` without explicit
   authorization.
-- `development` is the integration branch; PRs merge there. `staging` triggers
-  the existing GitHub Actions deployment and must not be changed casually.
+- `development` is the integration branch. New PRs default to the branch their
+  PR branch was based on; do not assume `development` is the target branch.
+  `staging` triggers the existing GitHub Actions deployment and must not be
+  changed casually.
 - When creating a branch or worktree, base it on the current `HEAD`, never
   `main` or `origin/main`. Recreate any mistakenly main-based worktree before use.
 - Do not weaken, skip, rename, or remove checks to make CI pass.
