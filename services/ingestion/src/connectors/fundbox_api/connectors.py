@@ -249,9 +249,7 @@ class FundboxContactsApiConnector(FundboxApiConnector):
             },
             raw_payload={
                 "contact": serialize_row(contact),
-                "linked_to_source_record_id": (
-                    f"fundbox-user-{contact.get('user_id')}"
-                ),
+                "linked_to_source_record_id": (f"fundbox-user-{contact.get('user_id')}"),
                 "link_type": contact.get("relationship"),
             },
         )

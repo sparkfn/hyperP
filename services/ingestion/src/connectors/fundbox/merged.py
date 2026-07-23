@@ -52,9 +52,7 @@ class FundboxMergedUsersConnector(FundboxConnectorBase):
                         "merged_user": serialize_row(row),
                         "merge_hint": {
                             "merged_into_source_record_id": (
-                                f"fundbox-user-{row.new_user_id}"
-                                if row.new_user_id
-                                else None
+                                f"fundbox-user-{row.new_user_id}" if row.new_user_id else None
                             ),
                             "surviving_identifiers": {
                                 "nric": row.new_nric,
