@@ -1,10 +1,12 @@
 // @vitest-environment jsdom
 
-import { fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import React from "react";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import AccessibleDialog from "../AccessibleDialog";
+
+afterEach(cleanup);
 
 describe("AccessibleDialog", () => {
   it("exposes a labelled modal dialog", () => {
