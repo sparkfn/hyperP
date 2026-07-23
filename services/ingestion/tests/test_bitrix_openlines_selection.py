@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 import pytest
-from src.connectors.bitrix_openlines.selection import classify_channel, mapped_entity
+from src.connectors.bitrix_openlines.selection import (
+    classify_channel,
+    mapped_entity,
+    no_config_selectable,
+)
 from src.ingestion_config import BitrixOpenLinesChannelType, BitrixOpenLinesConfig
 
 
@@ -33,3 +37,50 @@ def test_exclusion_wins_and_every_selected_config_requires_an_entity_mapping() -
     assert mapped_entity("200", "other", config) == "eko"
     assert mapped_entity("201", "facebook_direct", config) is None
     assert mapped_entity("202", "facebook_direct", config) is None
+
+
+
+def test_no_config_selectable_when_no_entity_mappings_exist() -> None:
+    config = BitrixOpenLinesConfig(included_config_ids=["46"])
+
+    assert no_config_selectable(config) is True
+
+
+def test_no_config_selectable_when_channel_type_selection_is_active() -> None:
+    config = BitrixOpenLinesConfig(
+        included_channel_types=["facebook_direct"],
+        entity_by_config_id={"46": "speedzone"},
+    )
+
+    assert no_config_selectable(config) is False
+
+
+def test_no_config_selectable_when_no_included_config_has_an_entity_mapping() -> None:
+    config = BitrixOpenLinesConfig(
+        included_channel_types=[],
+        included_config_ids=["99"],
+        entity_by_config_id={"46": "speedzone"},
+    )
+
+    assert no_config_selectable(config) is True
+
+
+def test_no_config_selectable_false_when_included_config_is_mapped() -> None:
+    config = BitrixOpenLinesConfig(
+        included_channel_types=[],
+        included_config_ids=["46"],
+        entity_by_config_id={"46": "speedzone"},
+    )
+
+    assert no_config_selectable(config) is False
+
+
+def test_no_config_selectable_when_only_excluded_config_is_mapped() -> None:
+    config = BitrixOpenLinesConfig(
+        included_channel_types=[],
+        included_config_ids=["46"],
+        excluded_config_ids=["46"],
+        entity_by_config_id={"46": "speedzone"},
+    )
+
+    assert no_config_selectable(config) is True

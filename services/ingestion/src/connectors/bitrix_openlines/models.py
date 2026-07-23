@@ -28,6 +28,8 @@ class ChatReference:
     activity_ids: tuple[str, ...] = ()
     crm_owner_references: tuple[CrmOwnerReference, ...] = ()
     provider_references: tuple[dict[str, JsonValue], ...] = ()
+    config_id: str | None = None
+    connector_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -68,6 +70,8 @@ def merge_chat_references(first: ChatReference, second: ChatReference) -> ChatRe
         provider_references=_unique_provider_references(
             (*first.provider_references, *second.provider_references)
         ),
+        config_id=_first_present(first.config_id, second.config_id),
+        connector_id=_first_present(first.connector_id, second.connector_id),
     )
 
 
@@ -77,6 +81,10 @@ def _latest_changed_at(first: datetime | None, second: datetime | None) -> datet
     if second is None:
         return first
     return max(first, second)
+
+
+def _first_present(first: str | None, second: str | None) -> str | None:
+    return first if first is not None else second
 
 
 def _unique_provider_references(

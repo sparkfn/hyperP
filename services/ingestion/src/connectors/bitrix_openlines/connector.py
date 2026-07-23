@@ -14,6 +14,7 @@ from src.connectors.bitrix.connector import (
     _AgentMember,
     _ChatBundle,
 )
+from src.connectors.bitrix_openlines.dialog_cache import DialogConfigCache
 from src.connectors.bitrix_openlines.discovery import stream_chats
 from src.connectors.bitrix_openlines.models import (
     ChatReference,
@@ -23,7 +24,11 @@ from src.connectors.bitrix_openlines.models import (
     OpenLineMessage,
     merge_chat_references,
 )
-from src.connectors.bitrix_openlines.selection import classify_channel, mapped_entity
+from src.connectors.bitrix_openlines.selection import (
+    classify_channel,
+    mapped_entity,
+    no_config_selectable,
+)
 from src.connectors.bitrix_openlines.watermark import (
     BackfillCheckpoint,
     BackfillCheckpointStore,
@@ -69,6 +74,14 @@ class _PreparedChat:
     extra_raw_payload: dict[str, JsonValue]
 
 
+@dataclass
+class DiscoveryCounters:
+    chats_scanned: int = 0
+    dialogs_requested: int = 0
+    chats_skipped_by_config: int = 0
+    records_emitted: int = 0
+
+
 class BitrixOpenLinesConnector(SourceConnector):
     def __init__(
         self,
@@ -81,6 +94,7 @@ class BitrixOpenLinesConnector(SourceConnector):
         company_email_addresses: list[str] | None = None,
         internal_person_names: list[str] | None = None,
         file_exclusions: ExclusionFile | None = None,
+        dialog_cache: DialogConfigCache | None = None,
     ) -> None:
         self._client = client
         self._watermark = watermark
@@ -95,11 +109,22 @@ class BitrixOpenLinesConnector(SourceConnector):
         self._backfill_store = watermark if isinstance(watermark, BackfillCheckpointStore) else None
         self._active_backfill_start: int | None = None
         self._record_errors = False
+        self._dialog_cache = dialog_cache
+        self._counters = DiscoveryCounters()
+        self._no_config_selectable = no_config_selectable(config)
 
     def get_source_key(self) -> str:
         return "bitrix_chat"
 
     def fetch_records(self) -> Iterator[dict[str, JsonValue]]:
+        self._counters = DiscoveryCounters()
+        self._no_config_selectable = no_config_selectable(self._config)
+        try:
+            yield from self._fetch_records_inner()
+        finally:
+            self._log_counters()
+
+    def _fetch_records_inner(self) -> Iterator[dict[str, JsonValue]]:
         line_names = {item.id: item.line_name for item in self._client.list_active_configs()}
         committed_watermark = (
             self._watermark.get(overlap_seconds=0) if self._mode == "api" else None
@@ -125,6 +150,17 @@ class BitrixOpenLinesConnector(SourceConnector):
             ),
             line_names,
             since,
+        )
+
+    def _log_counters(self) -> None:
+        logger.info(
+            "Bitrix Open Lines discovery summary mode=%s chats_scanned=%d "
+            "dialogs_requested=%d chats_skipped_by_config=%d records_emitted=%d",
+            self._mode,
+            self._counters.chats_scanned,
+            self._counters.dialogs_requested,
+            self._counters.chats_skipped_by_config,
+            self._counters.records_emitted,
         )
 
     def _fetch_resumable_backfill(
@@ -199,22 +235,30 @@ class BitrixOpenLinesConnector(SourceConnector):
         line_names: dict[str, str],
         since: datetime | None,
     ) -> _PreparedChat | None:
-        dialog = self._dialog_for(reference)
+        self._counters.chats_scanned += 1
+        if self._no_config_selectable:
+            self._counters.chats_skipped_by_config += 1
+            return None
+        dialog, needs_caching = self._resolve_dialog(reference)
         if dialog.config_id not in line_names:
+            self._counters.chats_skipped_by_config += 1
             logger.warning(
                 "Skipping Bitrix Open Lines chat %s: config %s is inactive or unavailable",
                 reference.chat_id,
                 dialog.config_id,
             )
+            self._cache_unselected(reference.chat_id, dialog, needs_caching)
             return None
         channel_type = classify_channel(dialog.connector_id)
         entity = mapped_entity(dialog.config_id, channel_type, self._config)
         if entity is None:
+            self._counters.chats_skipped_by_config += 1
             logger.warning(
                 "Skipping Bitrix Open Lines chat %s: config %s is not selected or mapped",
                 reference.chat_id,
                 dialog.config_id,
             )
+            self._cache_unselected(reference.chat_id, dialog, needs_caching)
             return None
         messages = self._messages_for(reference)
         if not messages:
@@ -263,7 +307,7 @@ class BitrixOpenLinesConnector(SourceConnector):
                 raise RuntimeError(
                     f"Bitrix Open Lines extraction failed for chat {prepared.reference.chat_id}"
                 )
-            yield from self._builder._build_envelopes(
+            for record in self._builder._build_envelopes(
                 bundle=prepared.bundle,
                 extraction=extraction,
                 company_mobile_numbers=self._company_mobile_numbers,
@@ -273,7 +317,9 @@ class BitrixOpenLinesConnector(SourceConnector):
                 source_record_prefix="bitrix-openlines-chat",
                 platform="bitrix_openlines",
                 extra_raw_payload=prepared.extra_raw_payload,
-            )
+            ):
+                self._counters.records_emitted += 1
+                yield record
             prepared_last_message_at = prepared.bundle.last_message_at
             assert prepared_last_message_at is not None
             self._track_watermark(prepared.reference, prepared_last_message_at)
@@ -289,6 +335,37 @@ class BitrixOpenLinesConnector(SourceConnector):
         except Exception:  # noqa: BLE001 -- fail safely without exposing upstream payload text
             self._pending_watermark = None
             raise _retrieval_error(reference, resource) from None
+
+    def _resolve_dialog(
+        self,
+        reference: ChatReference,
+    ) -> tuple[DialogMetadata, bool]:
+        """Resolve dialog metadata without a dialog lookup when possible.
+
+        Returns the resolved metadata and whether the result is newly learned
+        (from the recent-dialog origin or a fresh ``im.dialog.get`` call) and
+        therefore worth persisting for later unselected-config skips.
+        """
+        if reference.config_id is not None and reference.connector_id is not None:
+            return (
+                DialogMetadata(reference.chat_id, reference.config_id, reference.connector_id),
+                True,
+            )
+        if self._dialog_cache is not None:
+            cached = self._dialog_cache.get(reference.chat_id)
+            if cached is not None:
+                return cached, False
+        self._counters.dialogs_requested += 1
+        return self._dialog_for(reference), True
+
+    def _cache_unselected(
+        self,
+        chat_id: int,
+        dialog: DialogMetadata,
+        needs_caching: bool,
+    ) -> None:
+        if self._dialog_cache is not None and needs_caching:
+            self._dialog_cache.set(chat_id, dialog)
 
     def _dialog_for(self, reference: ChatReference) -> DialogMetadata:
         try:
@@ -316,6 +393,8 @@ class BitrixOpenLinesConnector(SourceConnector):
     def close(self) -> None:
         self._client.close()
         self._watermark.close()
+        if self._dialog_cache is not None:
+            self._dialog_cache.close()
 
     def _track_watermark(self, reference: ChatReference, last_message_at: datetime) -> None:
         candidate = (

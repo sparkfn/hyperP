@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import Mapping
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 from math import isfinite
@@ -31,6 +32,22 @@ RETRYABLE_ERRORS = frozenset(
     }
 )
 _MAX_UPSTREAM_RETRY_SECONDS = 300.0
+
+
+@dataclass(frozen=True)
+class OpenLineOrigin:
+    config_id: str | None
+    connector_id: str | None
+
+
+def openline_origin_id(raw: object) -> OpenLineOrigin:
+    """Parse a ``connector_id|config_id`` Open Lines origin, if present."""
+    if not isinstance(raw, str) or "|" not in raw:
+        return OpenLineOrigin(None, None)
+    parts = raw.split("|")
+    if len(parts) < 2 or not parts[0] or not parts[1]:
+        return OpenLineOrigin(None, None)
+    return OpenLineOrigin(parts[1], parts[0])
 
 
 def numeric_chat_id(raw: object) -> int | None:
@@ -191,13 +208,22 @@ def recent_references(result: list[JsonValue]) -> list[ChatReference]:
         has_openline_origin = isinstance(origin_id, str) and "|" in origin_id
         if entity_type != "LINES" and not has_openline_origin:
             continue
+        openline_origin = openline_origin_id(origin_id)
         chat_id = numeric_chat_id(item.get("chat_id"))
         message = item.get("message")
         raw_date = item.get("date_update")
         if raw_date is None and isinstance(message, dict):
             raw_date = message.get("date")
         if chat_id is not None:
-            refs.append(ChatReference(chat_id, optional_datetime(raw_date), "recent_dialog"))
+            refs.append(
+                ChatReference(
+                    chat_id,
+                    optional_datetime(raw_date),
+                    "recent_dialog",
+                    config_id=openline_origin.config_id,
+                    connector_id=openline_origin.connector_id,
+                )
+            )
     return refs
 
 

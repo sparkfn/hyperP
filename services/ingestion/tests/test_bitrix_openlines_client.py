@@ -653,3 +653,37 @@ def test_client_retries_transport_errors_and_sanitizes_exhaustion(
     assert sleeps == [1]
     assert "private" not in str(exc_info.value)
     assert "http" not in str(exc_info.value)
+
+
+def test_client_captures_openline_origin_from_recent_dialogs() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path.endswith("/im.recent.list")
+        return httpx.Response(
+            200,
+            json={
+                "result": {
+                    "items": [
+                        {
+                            "type": "chat",
+                            "chat_id": 78,
+                            "date_update": "2026-07-20T08:00:00+00:00",
+                            "chat": {
+                                "entity_type": "LINES",
+                                "entity_link": {"id": "facebook|46|external"},
+                            },
+                        }
+                    ],
+                    "hasMore": False,
+                }
+            },
+        )
+
+    client = BitrixOpenLinesClient(
+        base_url="https://bitrix.test/rest/hook",
+        timeout_seconds=5,
+        max_attempts=1,
+        http=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+
+    references = client.iter_recent_chat_refs(50)
+    assert [(ref.config_id, ref.connector_id) for ref in references] == [("46", "facebook")]

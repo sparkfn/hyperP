@@ -19,6 +19,7 @@ from src.connectors.base import SourceConnector
 from src.connectors.bitrix import BitrixChatConnector
 from src.connectors.bitrix_openlines.client import BitrixOpenLinesClient
 from src.connectors.bitrix_openlines.connector import BitrixOpenLinesConnector
+from src.connectors.bitrix_openlines.dialog_cache import RedisDialogConfigCache
 from src.connectors.bitrix_openlines.watermark import (
     RedisWatermarkStore as BitrixOpenLinesWatermarkStore,
 )
@@ -376,6 +377,7 @@ def create_bitrix_openlines_connector(mode: str) -> BitrixOpenLinesConnector:
         request_delay_seconds=settings.bitrix_openlines_api_request_delay_seconds,
     )
     redis = Redis.from_url(settings.celery_broker_url, decode_responses=True)
+    dialog_redis = Redis.from_url(settings.celery_broker_url, decode_responses=True)
     return BitrixOpenLinesConnector(
         client,
         BitrixOpenLinesWatermarkStore(redis),
@@ -385,6 +387,7 @@ def create_bitrix_openlines_connector(mode: str) -> BitrixOpenLinesConnector:
         company_email_addresses=settings.company_email_addresses,
         internal_person_names=settings.internal_person_names,
         file_exclusions=ingestion_config.exclusions,
+        dialog_cache=RedisDialogConfigCache(dialog_redis),
     )
 
 

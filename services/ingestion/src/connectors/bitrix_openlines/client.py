@@ -55,6 +55,7 @@ class BitrixOpenLinesClient:
         self._request_delay_seconds = request_delay_seconds
         self._last_request_at = 0.0
         self._request_count = 0
+        self._activities_scanned = 0
         self._http = http or httpx.Client(timeout=timeout_seconds)
 
     def list_active_configs(self) -> list[OpenLineConfig]:
@@ -151,8 +152,14 @@ class BitrixOpenLinesClient:
                 self._request_count / elapsed,
                 f"{eta_seconds:.1f}" if eta_seconds is not None else "unknown",
             )
+            self._activities_scanned += len(result)
             yield CrmDiscoveryPage(page_refs, next_page)
             if next_page is None:
+                logger.info(
+                    "Bitrix CRM discovery complete activities_scanned=%d requests=%d",
+                    self._activities_scanned,
+                    self._request_count,
+                )
                 return
             start = next_page
 

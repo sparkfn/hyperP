@@ -41,3 +41,21 @@ def mapped_entity(
     if not selected:
         return None
     return config.entity_by_config_id.get(config_id)
+
+
+def no_config_selectable(config: BitrixOpenLinesConfig) -> bool:
+    """Return True when no configuration could ever yield an emitted record.
+
+    When selection is purely by configuration ID (no channel types), every
+    selectable configuration must be both included and mapped to an entity.
+    Channel-type selection cannot be pre-filtered because the channel is only
+    known after resolving a chat's dialog.
+    """
+    if not config.entity_by_config_id:
+        return True
+    if config.included_channel_types:
+        return False
+    selectable = (set(config.included_config_ids) - set(config.excluded_config_ids)) & set(
+        config.entity_by_config_id
+    )
+    return not selectable
