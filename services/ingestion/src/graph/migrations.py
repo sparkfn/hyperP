@@ -19,6 +19,7 @@ from neo4j import ManagedTransaction, Record
 
 from src.graph import queries
 from src.graph.client import Neo4jClient
+from src.graph.fundbox_source_migration import migrate_fundbox_source_keys
 from src.graph.queries.lifecycle_migrations import (
     ACQUIRE_SOURCE_RECORD_LIFECYCLE_MIGRATION,
     ADVANCE_SOURCE_RECORD_LIFECYCLE_MIGRATION,
@@ -655,6 +656,7 @@ def apply_data_migrations(client: Neo4jClient) -> None:
     """Run every idempotent data migration in order."""
     backfill_record_type_subtypes(client)
     migrate_bitrix_chat_source(client)
+    migrate_fundbox_source_keys(client)
     migrate_source_record_lifecycle(client)
     migrate_projection_relationship_lifecycle(client)
     reconcile_source_record_lifecycle(client)

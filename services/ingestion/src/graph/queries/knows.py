@@ -88,7 +88,7 @@ RETURN count(other) AS rewired_count
 #: so the range scan is indexed.
 SCAN_CONTACT_SOURCE_RECORDS = """
 MATCH (sr:SourceRecord)
-      -[:FROM_SOURCE]->(ss:SourceSystem {source_key: 'fundbox_consumer_backend:contacts'})
+      -[:FROM_SOURCE]->(ss:SourceSystem {source_key: 'fundbox:contacts'})
 WHERE sr.source_record_pk > $cursor
   AND sr.lifecycle_status = 'active'
 RETURN sr.source_record_pk AS source_record_pk,
@@ -99,7 +99,7 @@ LIMIT $batch_size
 """
 
 #: Resolve the Person attached to a SourceRecord looked up by its human-readable
-#: source_record_id (e.g. "fundbox_consumer_backend-user-12345"). Used by the
+#: source_record_id (e.g. "fundbox-user-12345"). Used by the
 #: KNOWS materializer to resolve the declarer side of a contact link.
 RESOLVE_PERSON_FROM_SOURCE_RECORD_ID = """
 MATCH (sr:SourceRecord {source_record_id: $source_record_id})

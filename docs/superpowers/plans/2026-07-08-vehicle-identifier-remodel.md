@@ -359,7 +359,7 @@ FUNDBOX_VEHICLE_CATEGORIES: frozenset[str] = frozenset({
 _VEHICLE_CATEGORIES: dict[str, frozenset[str]] = {
     "eko_phppos": EKO_VEHICLE_CATEGORIES,
     "speedzone_phppos": SPEEDZONE_VEHICLE_CATEGORIES,
-    "fundbox_consumer_backend": FUNDBOX_VEHICLE_CATEGORIES,
+    "fundbox": FUNDBOX_VEHICLE_CATEGORIES,
 }
 
 

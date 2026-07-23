@@ -307,7 +307,7 @@ def test_oauth2_persons_list_passes_filters() -> None:
         params={
             "q": "Tan Wei",
             "entity_key": ["fundbox-sg"],
-            "source_key": ["fundbox_consumer_backend"],
+            "source_key": ["fundbox"],
             "source_record_type": "identity",
             "is_high_value": "true",
             "has_phone": "true",
@@ -329,7 +329,7 @@ def test_oauth2_persons_list_passes_filters() -> None:
 
     assert captured_filters["q"] == "Tan Wei"
     assert captured_filters["entity_keys"] == ["fundbox-sg"]
-    assert captured_filters["source_keys"] == ["fundbox_consumer_backend"]
+    assert captured_filters["source_keys"] == ["fundbox"]
     assert captured_filters["source_record_type"] == "identity"
     assert captured_filters["is_high_value"] is True
     assert captured_filters["has_phone"] is True

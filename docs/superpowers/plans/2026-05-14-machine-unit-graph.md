@@ -56,7 +56,7 @@ def test_placeholder_unit_values_are_rejected() -> None:
         machine_product=None,
         unit_label=None,
         source_kind="sales",
-        source_system_key="fundbox_consumer_backend",
+        source_system_key="fundbox",
         source_record_id="order-1",
         observed_at="2026-05-14T00:00:00",
         confidence=1.0,

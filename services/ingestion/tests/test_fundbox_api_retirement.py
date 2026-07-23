@@ -38,8 +38,8 @@ def test_retirement_deactivates_only_source_scoped_evidence_and_keeps_entities()
 
     retired = retire_source_evidence(
         client,
-        "fundbox_consumer_backend:sales",
-        "fundbox_consumer_backend-order-9",
+        "fundbox:sales",
+        "fundbox-order-9",
         "2026-07-17T00:00:00+00:00",
     )
 
@@ -49,7 +49,7 @@ def test_retirement_deactivates_only_source_scoped_evidence_and_keeps_entities()
     assert "rel.is_active = false" in transaction.query
     assert "DELETE" not in transaction.query
     assert transaction.params == {
-        "source_system": "fundbox_consumer_backend:sales",
-        "source_record_id": "fundbox_consumer_backend-order-9",
+        "source_system": "fundbox:sales",
+        "source_record_id": "fundbox-order-9",
         "retired_at": "2026-07-17T00:00:00+00:00",
     }

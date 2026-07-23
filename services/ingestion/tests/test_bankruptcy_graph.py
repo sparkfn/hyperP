@@ -84,7 +84,7 @@ def test_bankruptcy_activation_blueprint_carries_materialization_fields() -> Non
 
 def test_materialize_bankruptcy_case_skips_other_sources() -> None:
     tx = _Tx()
-    envelope = _envelope().model_copy(update={"source_system": "fundbox_consumer_backend"})
+    envelope = _envelope().model_copy(update={"source_system": "fundbox"})
 
     materialize_bankruptcy_case(
         cast(ManagedTransaction, tx),

@@ -6,7 +6,7 @@ from collections.abc import Iterator
 from typing import cast
 
 import pytest
-from src.graph import migrations, queries
+from src.graph import fundbox_source_migration, migrations, queries
 from src.graph.bootstrap import _ENTITIES, _SOURCE_SYSTEMS, SOURCE_KEY_TO_ENTITY
 from src.graph.client import Neo4jClient
 
@@ -33,14 +33,30 @@ def test_sg_source_systems_have_no_entity_key() -> None:
 
 def test_non_sg_source_systems_still_have_an_entity_key() -> None:
     by_key = {source["source_key"]: source for source in _SOURCE_SYSTEMS}
-    assert by_key["fundbox_consumer_backend"]["entity_key"] == "fundbox"
+    assert by_key["fundbox"]["entity_key"] == "fundbox"
     assert by_key["onediver"]["entity_key"] == "onediver"
+
+
+def test_fundbox_source_systems_use_canonical_keys_and_names() -> None:
+    fundbox_sources = {
+        source["source_key"]: source["display_name"]
+        for source in _SOURCE_SYSTEMS
+        if source["entity_key"] == "fundbox" and source["source_key"].startswith("fundbox")
+    }
+
+    assert fundbox_sources == {
+        "fundbox": "Fundbox",
+        "fundbox:contacts": "Fundbox — contacts",
+        "fundbox:legacy": "Fundbox — legacy profiles",
+        "fundbox:merged": "Fundbox — merged users",
+        "fundbox:sales": "Fundbox — orders / sales",
+    }
 
 
 def test_source_key_to_entity_omits_entity_less_sg_sources() -> None:
     assert "sgbankruptcy" not in SOURCE_KEY_TO_ENTITY
     assert "sgrentalflats" not in SOURCE_KEY_TO_ENTITY
-    assert SOURCE_KEY_TO_ENTITY["fundbox_consumer_backend"] == "fundbox"
+    assert SOURCE_KEY_TO_ENTITY["fundbox"] == "fundbox"
 
 
 def test_shared_bitrix_chat_source_uses_record_scoped_entity_ownership() -> None:
@@ -79,6 +95,108 @@ def test_bitrix_source_migration_rewrites_denormalized_projection_provenance() -
     assert "SET projection.source_system_key = 'bitrix_chat'" in rewrite
     assert "DESCRIBES_ADDRESS|MENTIONS_VEHICLE" in rewrite_direct
     assert "SET projection.source_system_key = 'bitrix_chat'" in rewrite_direct
+
+
+def test_fundbox_source_migration_preserves_graph_identity_and_provenance() -> None:
+    links = fundbox_source_migration.REHOME_SOURCE_LINKS
+    provenance = fundbox_source_migration.REWRITE_SOURCE_PROVENANCE
+    references = fundbox_source_migration.REWRITE_SOURCE_RECORD_REFERENCES
+
+    assert "SourceRecord" in links
+    assert "IngestRun" in links
+    assert "SOLD_THROUGH" in links
+    assert "legacy.source_system_id" in links
+    assert "legacy.created_at" in links
+    assert "MERGE (record)-[:FROM_SOURCE]->(canonical)" in links
+    assert "node.source_system_key = $canonical_key" in provenance
+    assert "relationship.source_system_key = $canonical_key" in provenance
+    assert "run.source_key = $canonical_key" in provenance
+    assert "lock.source_system = $canonical_key" in provenance
+    assert "version.migration_source_system = $canonical_key" in provenance
+    assert "migration.current_source_system = $canonical_key" in provenance
+    assert "vehicle.source_systems" in provenance
+    assert "node.source_record_id STARTS WITH 'fundbox_consumer_backend-'" in references
+    assert "relationship.source_record_id STARTS WITH 'fundbox_consumer_backend-'" in references
+    assert "version.migration_source_record_id" in references
+    assert "migration.current_source_record_id" in references
+    assert "record.source_version_key = NULL" in references
+    assert "record.raw_payload = replace" in references
+
+
+class _FundboxMigrationTx:
+    def __init__(self, *, migration_completed: bool = False) -> None:
+        self.migration_completed = migration_completed
+        self.calls: list[tuple[str, dict[str, object]]] = []
+
+    def run(self, query: str, **params: object) -> _MigrationResult:
+        self.calls.append((query, params))
+        if query == fundbox_source_migration.START_MIGRATION:
+            completed_at = "2026-07-23T00:00:00Z" if self.migration_completed else None
+            return _MigrationResult([{"completed_at": completed_at}])
+        if query == fundbox_source_migration.COMPLETE_MIGRATION:
+            return _MigrationResult([{"completed_at": "2026-07-23T00:00:00Z"}])
+        if query == fundbox_source_migration.CHECK_LEGACY_SOURCE_LINKS:
+            return _MigrationResult([{"remaining": 0}])
+        return _MigrationResult([{"updated": 1, "removed": 1}])
+
+
+class _FundboxMigrationClient:
+    def __init__(self, tx: _FundboxMigrationTx) -> None:
+        self.tx = tx
+
+    def execute_write(self, work: object, **_kwargs: object) -> object:
+        return cast("object", work)(self.tx)  # type: ignore[operator]
+
+
+def test_fundbox_source_migration_runs_each_mapping_once() -> None:
+    tx = _FundboxMigrationTx()
+    client = _FundboxMigrationClient(tx)
+
+    assert migrations.migrate_fundbox_source_keys(cast(Neo4jClient, client)) == 11
+
+    link_calls = [
+        params
+        for query, params in tx.calls
+        if query == fundbox_source_migration.REHOME_SOURCE_LINKS
+    ]
+    assert link_calls == [
+        {"legacy_key": legacy_key, "canonical_key": canonical_key}
+        for legacy_key, canonical_key in fundbox_source_migration.SOURCE_KEY_MAPPINGS
+    ]
+    assert tx.calls[-5][0] == fundbox_source_migration.REWRITE_SOURCE_RECORD_REFERENCES
+    assert tx.calls[-4][0] == fundbox_source_migration.REMOVE_LEGACY_OWNERSHIP
+    assert tx.calls[-3][0] == fundbox_source_migration.CHECK_LEGACY_SOURCE_LINKS
+    assert tx.calls[-2][0] == fundbox_source_migration.DELETE_LEGACY_SOURCES
+    assert tx.calls[-1][0] == fundbox_source_migration.COMPLETE_MIGRATION
+
+
+def test_fundbox_source_migration_skips_completed_marker() -> None:
+    tx = _FundboxMigrationTx(migration_completed=True)
+    client = _FundboxMigrationClient(tx)
+
+    assert migrations.migrate_fundbox_source_keys(cast(Neo4jClient, client)) == 0
+    assert tx.calls == [(fundbox_source_migration.START_MIGRATION, {})]
+
+
+def test_fundbox_source_migration_refuses_to_drop_unexpected_links() -> None:
+    tx = _FundboxMigrationTx()
+    client = _FundboxMigrationClient(tx)
+    original_run = tx.run
+
+    def run_with_remaining_link(query: str, **params: object) -> _MigrationResult:
+        if query == fundbox_source_migration.CHECK_LEGACY_SOURCE_LINKS:
+            tx.calls.append((query, params))
+            return _MigrationResult([{"remaining": 1}])
+        return original_run(query, **params)
+
+    tx.run = run_with_remaining_link  # type: ignore[method-assign]
+
+    with pytest.raises(RuntimeError, match="unexpected legacy relationships"):
+        migrations.migrate_fundbox_source_keys(cast(Neo4jClient, client))
+
+    queries_run = [query for query, _params in tx.calls]
+    assert fundbox_source_migration.DELETE_LEGACY_SOURCES not in queries_run
+    assert fundbox_source_migration.COMPLETE_MIGRATION not in queries_run
 
 
 def test_bitrix_ownership_scan_only_returns_missing_or_inconsistent_candidates() -> None:

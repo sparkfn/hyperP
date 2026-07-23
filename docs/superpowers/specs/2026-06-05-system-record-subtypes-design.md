@@ -30,7 +30,7 @@ effect is the `record_type` value shown on source records.
 
 - **Representation:** replace `SYSTEM` in the `RecordType` enum (not an additive
   sub-field). Requires a Neo4j backfill + widening the API `Literal`.
-- **`fundbox_consumer_backend:merged` → `identity`** (carries the person's own
+- **`fundbox:merged` → `identity`** (carries the person's own
   NRIC/email/phone; matches today's behaviour).
 - **`sgrentalflats` → `public_record`** (SG gov dataset; routing is unaffected —
   it is already routed as address-only by `source_system`, never reaching the
@@ -43,8 +43,8 @@ effect is the `record_type` value shown on source records.
 
 | Source (`source_system`) | New `record_type` |
 |---|---|
-| `fundbox_consumer_backend`, `:legacy`, `:merged`, `eko_phppos`, `speedzone_phppos` | `identity` |
-| `fundbox_consumer_backend:contacts` | `relationship` |
+| `fundbox`, `:legacy`, `:merged`, `eko_phppos`, `speedzone_phppos` | `identity` |
+| `fundbox:contacts` | `relationship` |
 | `sgbankruptcy`, `sgrentalflats` | `public_record` |
 | WhatsApp / Bitrix | `conversation` (unchanged) |
 | sales connectors | `sales` (unchanged) |

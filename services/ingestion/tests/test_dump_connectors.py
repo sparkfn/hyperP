@@ -38,11 +38,11 @@ def _sample_extraction(texts: list[str]) -> list[dict[str, object]]:
         "bitrix_chat",
         "eko_phppos",
         "speedzone_phppos",
-        "fundbox_consumer_backend",
-        "fundbox_consumer_backend:contacts",
-        "fundbox_consumer_backend:legacy",
-        "fundbox_consumer_backend:merged",
-        "fundbox_consumer_backend:sales",
+        "fundbox",
+        "fundbox:contacts",
+        "fundbox:legacy",
+        "fundbox:merged",
+        "fundbox:sales",
         "eko_phppos:sales",
         "speedzone_phppos:sales",
         "sgbankruptcy",
@@ -516,7 +516,7 @@ def test_fundbox_contact_dump_is_relationship_record() -> None:
         )
     )
 
-    assert record["source_record_id"] == "fundbox_consumer_backend-contact-9"
+    assert record["source_record_id"] == "fundbox-contact-9"
     assert record["record_type"] == "relationship"
     assert record["attributes"]["relationship_to_referrer"] == "mother"
 
@@ -695,7 +695,7 @@ def test_fundbox_dump_keeps_device_ids_out_of_identifiers() -> None:
     dump_path = Path(".dumps") / "limited-100" / "fundbox_2026-05-06.sql"
     if not dump_path.exists():
         skip(f"local dump fixture missing: {dump_path}")
-    connector = get_dump_connector("fundbox_consumer_backend", dump_path)
+    connector = get_dump_connector("fundbox", dump_path)
     record = next(connector.fetch_records())
 
     identifier_types = {item["type"] for item in record["identifiers"]}
@@ -709,11 +709,11 @@ def test_fundbox_dump_keeps_device_ids_out_of_identifiers() -> None:
 @mark.parametrize(
     ("source_key", "dump_file", "expected_record_type"),
     [
-        ("fundbox_consumer_backend", "fundbox_2026-05-06.sql", "identity"),
-        ("fundbox_consumer_backend:contacts", "fundbox_2026-05-06.sql", "relationship"),
-        ("fundbox_consumer_backend:legacy", "fundbox_2026-05-06.sql", "identity"),
-        ("fundbox_consumer_backend:merged", "fundbox_2026-05-06.sql", "identity"),
-        ("fundbox_consumer_backend:sales", "fundbox_2026-05-06.sql", "sales"),
+        ("fundbox", "fundbox_2026-05-06.sql", "identity"),
+        ("fundbox:contacts", "fundbox_2026-05-06.sql", "relationship"),
+        ("fundbox:legacy", "fundbox_2026-05-06.sql", "identity"),
+        ("fundbox:merged", "fundbox_2026-05-06.sql", "identity"),
+        ("fundbox:sales", "fundbox_2026-05-06.sql", "sales"),
         ("eko_phppos", "eko_phppos_2026-05-06.sql", "identity"),
         ("eko_phppos:sales", "eko_phppos_2026-05-06.sql", "sales"),
         ("speedzone_phppos", "speedzone_phppos_2026-05-06.sql", "identity"),

@@ -1239,15 +1239,15 @@ async def test_specialized_blueprints_are_validated_and_forwarded(
 async def test_pending_fundbox_contact_approval_preserves_exact_source_provenance(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    source_key = "fundbox_consumer_backend:contacts"
+    source_key = "fundbox:contacts"
     payload = {
         "identifiers": [],
         "addresses": [],
         "attributes": [],
         "knows_relationships": [
             {
-                "declarer_source_record_id": "fundbox_consumer_backend-user-1",
-                "declarer_source_system_key": "fundbox_consumer_backend",
+                "declarer_source_record_id": "fundbox-user-1",
+                "declarer_source_system_key": "fundbox",
                 "relationship_label": "emergency contact",
                 "relationship_category": "emergency_contact",
                 "status": "declared",

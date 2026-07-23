@@ -26,10 +26,10 @@ A Fundbox user is excluded when either condition is true:
 
 The rule applies to:
 
-- current user identity records from `fundbox_consumer_backend`;
-- legacy profile records from `fundbox_consumer_backend:legacy` when `log_legacy_profiles.user_id` is excluded;
-- merged-user lineage from `fundbox_consumer_backend:merged` when the old or surviving user is excluded;
-- Fundbox sales records from `fundbox_consumer_backend:sales` when `orders.user_id` is excluded.
+- current user identity records from `fundbox`;
+- legacy profile records from `fundbox:legacy` when `log_legacy_profiles.user_id` is excluded;
+- merged-user lineage from `fundbox:merged` when the old or surviving user is excluded;
+- Fundbox sales records from `fundbox:sales` when `orders.user_id` is excluded.
 
 Emergency contact records are not excluded merely because their referrer user is excluded. The contact may be a real external person. If the referrer identity is absent, relationship materialization can remain unresolved rather than creating an internal Person.
 

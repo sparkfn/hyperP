@@ -645,7 +645,7 @@ paths:
             type: array
             items:
               type: string
-          example: ["fundbox_consumer_backend"]
+          example: ["fundbox"]
         - name: source_record_type
           in: query
           description: Filter by linked source-record subtype.

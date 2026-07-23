@@ -6,12 +6,12 @@ environment variables (``FUNDBOX_DB_*``); see :mod:`src.config`.
 
 Public connectors:
 
-- :class:`FundboxConnector` (``source_key=fundbox_consumer_backend``) — current users.
-- :class:`FundboxContactsConnector` (``source_key=fundbox_consumer_backend:contacts``) —
+- :class:`FundboxConnector` (``source_key=fundbox``) — current users.
+- :class:`FundboxContactsConnector` (``source_key=fundbox:contacts``) —
   emergency-contact people referenced by users.
-- :class:`FundboxLegacyConnector` (``source_key=fundbox_consumer_backend:legacy``) —
+- :class:`FundboxLegacyConnector` (``source_key=fundbox:legacy``) —
   historical/migrated profiles from ``log_legacy_profiles``.
-- :class:`FundboxMergedUsersConnector` (``source_key=fundbox_consumer_backend:merged``) —
+- :class:`FundboxMergedUsersConnector` (``source_key=fundbox:merged``) —
   pre-existing merge lineage from the source system.
 """
 

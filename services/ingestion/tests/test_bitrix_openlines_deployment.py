@@ -40,7 +40,7 @@ def test_connector_factory_preserves_bitrix_chat_batch_connector() -> None:
 
 def test_connector_factory_rejects_backfill_for_other_sources() -> None:
     with pytest.raises(ValueError, match="Backfill mode is not supported"):
-        main.get_connector("fundbox_consumer_backend", mode="backfill")
+        main.get_connector("fundbox", mode="backfill")
 
 
 def test_deployment_examples_forward_bitrix_openlines_api_configuration() -> None:

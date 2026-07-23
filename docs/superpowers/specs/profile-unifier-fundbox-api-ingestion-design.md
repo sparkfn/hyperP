@@ -6,9 +6,9 @@ Replace direct database access for the three scheduled Fundbox ingestion sources
 with an authenticated, cursor-paginated backdoor API exposed by the Fundbox
 consumer backend. The supported API sources are:
 
-- `fundbox_consumer_backend` (users);
-- `fundbox_consumer_backend:contacts`;
-- `fundbox_consumer_backend:sales`.
+- `fundbox` (users);
+- `fundbox:contacts`;
+- `fundbox:sales`.
 
 Legacy, merged-user, and junk connectors remain database/dump-only. Manual batch
 and dump ingestion remain available for the supported sources as operational
@@ -95,7 +95,7 @@ the existing user envelope builder.
 
 Each record contains the contact and its owning Fundbox user ID. HyperP emits a
 relationship record and preserves the existing link to
-`fundbox_consumer_backend-user-{user_id}`.
+`fundbox-user-{user_id}`.
 
 ### Sales
 

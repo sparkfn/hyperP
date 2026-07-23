@@ -274,7 +274,7 @@ from src.machine_unit_extraction import observations_from_chat_inquiries, observ
 
 def test_observations_from_sales_lines_extracts_fundbox_lta_and_serial() -> None:
     observations = observations_from_sales_lines(
-        source_system_key="fundbox_consumer_backend",
+        source_system_key="fundbox",
         source_record_id="fundbox-sale-1",
         observed_at="2026-05-14T00:00:00",
         lines=[
@@ -457,7 +457,7 @@ class _Tx:
 def test_sales_ingest_writes_machine_unit_links() -> None:
     tx = _Tx()
     envelope = SourceRecordEnvelope(
-        source_system="fundbox_consumer_backend",
+        source_system="fundbox",
         source_record_id="fundbox-sale-1",
         record_type=RecordType.SALES,
         observed_at="2026-05-14T00:00:00",
@@ -473,7 +473,7 @@ def test_sales_ingest_writes_machine_unit_links() -> None:
                     "product": {"source_product_id": "product-1", "display_name": "Bike A", "is_active": True, "attributes": {}},
                 }
             ],
-            "customer_link": {"identity_source_record_id": "identity-1", "source_system_key": "fundbox_consumer_backend"},
+            "customer_link": {"identity_source_record_id": "identity-1", "source_system_key": "fundbox"},
         },
     )
 

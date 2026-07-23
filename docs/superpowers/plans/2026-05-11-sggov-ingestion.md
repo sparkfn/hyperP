@@ -554,7 +554,7 @@ def test_materialize_bankruptcy_case_writes_case_for_sgbankruptcy() -> None:
 
 def test_materialize_bankruptcy_case_skips_other_sources() -> None:
     tx = _Tx()
-    envelope = _envelope().model_copy(update={"source_system": "fundbox_consumer_backend"})
+    envelope = _envelope().model_copy(update={"source_system": "fundbox"})
 
     materialize_bankruptcy_case(
         cast(ManagedTransaction, tx),

@@ -153,11 +153,11 @@ def get_dump_connector(source_key: str, dump_path: str | Path) -> SourceConnecto
         "speedzone_phppos": SpeedZoneDumpConnector,
         "onediver": OneDiverDumpConnector,
         "onediver:sales": OneDiverSalesDumpConnector,
-        "fundbox_consumer_backend": FundboxDumpConnector,
-        "fundbox_consumer_backend:contacts": FundboxContactsDumpConnector,
-        "fundbox_consumer_backend:legacy": FundboxLegacyDumpConnector,
-        "fundbox_consumer_backend:merged": FundboxMergedUsersDumpConnector,
-        "fundbox_consumer_backend:sales": FundboxSalesDumpConnector,
+        "fundbox": FundboxDumpConnector,
+        "fundbox:contacts": FundboxContactsDumpConnector,
+        "fundbox:legacy": FundboxLegacyDumpConnector,
+        "fundbox:merged": FundboxMergedUsersDumpConnector,
+        "fundbox:sales": FundboxSalesDumpConnector,
         "eko_phppos:sales": EkoSalesDumpConnector,
         "speedzone_phppos:sales": SpeedZoneSalesDumpConnector,
         "sgbankruptcy": SGGovernmentBankruptcyConnector,
@@ -174,7 +174,7 @@ class FundboxDumpConnector(SourceConnector):
         self._dump_path = dump_path
 
     def get_source_key(self) -> str:
-        return "fundbox_consumer_backend"
+        return "fundbox"
 
     def fetch_records(self) -> Iterator[dict[str, JsonValue]]:
         users = _table_rows(self._dump_path, "users", FUNDBOX_TABLES)
@@ -243,7 +243,7 @@ class FundboxContactsDumpConnector(SourceConnector):
         self._dump_path = dump_path
 
     def get_source_key(self) -> str:
-        return "fundbox_consumer_backend:contacts"
+        return "fundbox:contacts"
 
     def fetch_records(self) -> Iterator[dict[str, JsonValue]]:
         rows = _table_rows(self._dump_path, "contacts", FUNDBOX_TABLES)
@@ -257,7 +257,7 @@ class FundboxLegacyDumpConnector(SourceConnector):
         self._dump_path = dump_path
 
     def get_source_key(self) -> str:
-        return "fundbox_consumer_backend:legacy"
+        return "fundbox:legacy"
 
     def fetch_records(self) -> Iterator[dict[str, JsonValue]]:
         profiles = _table_rows(self._dump_path, "log_legacy_profiles", FUNDBOX_TABLES)
@@ -285,7 +285,7 @@ class FundboxMergedUsersDumpConnector(SourceConnector):
         self._dump_path = dump_path
 
     def get_source_key(self) -> str:
-        return "fundbox_consumer_backend:merged"
+        return "fundbox:merged"
 
     def fetch_records(self) -> Iterator[dict[str, JsonValue]]:
         rows = _table_rows(self._dump_path, "merged_users", FUNDBOX_TABLES)
@@ -299,7 +299,7 @@ class FundboxSalesDumpConnector(SourceConnector):
         self._dump_path = dump_path
 
     def get_source_key(self) -> str:
-        return "fundbox_consumer_backend:sales"
+        return "fundbox:sales"
 
     def fetch_records(self) -> Iterator[dict[str, JsonValue]]:
         builder = FundboxSalesConnector()
@@ -990,7 +990,7 @@ def _build_fundbox_contact(row: DumpRow) -> dict[str, JsonValue]:
     ids = IdentifierBag()
     ids.add("phone", row.mobile_number)
     return build_envelope(
-        source_record_id=f"fundbox_consumer_backend-contact-{row.id}",
+        source_record_id=f"fundbox-contact-{row.id}",
         observed_at=to_iso(row.updated_at or row.created_at),
         identifiers=ids.items,
         record_type="relationship",
@@ -1000,7 +1000,7 @@ def _build_fundbox_contact(row: DumpRow) -> dict[str, JsonValue]:
         },
         raw_payload={
             "contact": serialize_row(row),
-            "linked_to_source_record_id": f"fundbox_consumer_backend-user-{row.user_id}",
+            "linked_to_source_record_id": f"fundbox-user-{row.user_id}",
             "link_type": row.relationship,
         },
     )
@@ -1015,7 +1015,7 @@ def _build_fundbox_legacy(row: DumpRow, user_addresses: list[DumpRow]) -> dict[s
     ids.add("social:facebook", row.facebook_id)
     address_rows = addresses_from_rows(user_addresses)
     return build_envelope(
-        source_record_id=f"fundbox_consumer_backend-legacy-{row.id}",
+        source_record_id=f"fundbox-legacy-{row.id}",
         observed_at=to_iso(row.updated_at or row.created_at),
         identifiers=ids.items,
         attributes={
@@ -1040,7 +1040,7 @@ def _build_fundbox_merged(row: DumpRow) -> dict[str, JsonValue]:
     ids.add("email", row.email)
     ids.add("phone", row.mobile_number)
     return build_envelope(
-        source_record_id=f"fundbox_consumer_backend-merged-{row.id}",
+        source_record_id=f"fundbox-merged-{row.id}",
         observed_at=to_iso(row.updated_at or row.created_at),
         identifiers=ids.items,
         attributes={},
@@ -1048,7 +1048,7 @@ def _build_fundbox_merged(row: DumpRow) -> dict[str, JsonValue]:
             "merged_user": serialize_row(row),
             "merge_hint": {
                 "merged_into_source_record_id": (
-                    f"fundbox_consumer_backend-user-{row.new_user_id}" if row.new_user_id else None
+                    f"fundbox-user-{row.new_user_id}" if row.new_user_id else None
                 ),
                 "surviving_identifiers": {
                     "nric": row.new_nric,

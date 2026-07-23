@@ -1,4 +1,4 @@
-"""Connector for Fundbox orders (``source_key=fundbox_consumer_backend:sales``).
+"""Connector for Fundbox orders (``source_key=fundbox:sales``).
 
 Emits one ``record_type='sales'`` SourceRecord per Fundbox order. The
 payload carries the order header, line items, and the product catalogue
@@ -12,7 +12,7 @@ statuses that count as realised sales. Other statuses (created, pending,
 cancelled, …) are skipped.
 
 Linking to a Person is indirect: ``orders.user_id`` is translated into
-``fundbox_consumer_backend-user-{user_id}``, which is the
+``fundbox-user-{user_id}``, which is the
 ``source_record_id`` of the customer's identity record. The pipeline
 handles FOR_CUSTOMER_RECORD resolution; if the identity record has not
 been ingested yet the sales record is parked with
@@ -136,7 +136,7 @@ class FundboxSalesConnector(FundboxConnectorBase):
     """Yields one sales SourceRecord per Fundbox order (filtered by status)."""
 
     def get_source_key(self) -> str:
-        return "fundbox_consumer_backend:sales"
+        return "fundbox:sales"
 
     def build_records(self, conn: Connection) -> Iterator[dict[str, JsonValue]]:
         primary_stmt = (
@@ -307,7 +307,7 @@ class FundboxSalesConnector(FundboxConnectorBase):
             if not isinstance(customer_nric, str):
                 customer_nric = None
         return build_envelope(
-            source_record_id=f"fundbox_consumer_backend-order-{row.id}",
+            source_record_id=f"fundbox-order-{row.id}",
             observed_at=to_iso(row.updated_at or row.created_at),
             identifiers=[],
             attributes={},
@@ -339,11 +339,11 @@ class FundboxSalesConnector(FundboxConnectorBase):
                 ),
                 "customer_link": {
                     "identity_source_record_id": (
-                        f"fundbox_consumer_backend-user-{row.user_id}"
+                        f"fundbox-user-{row.user_id}"
                         if row.user_id is not None
                         else None
                     ),
-                    "source_system_key": "fundbox_consumer_backend",
+                    "source_system_key": "fundbox",
                 },
                 # Sale-level customer contact for the vehicle matching
                 # heuristic (Task 6). Fundbox sales rows reference the customer

@@ -8,11 +8,11 @@ export function shortReference(value: string, label: string): string {
 }
 
 const SOURCE_RECORD_PREFIXES: Readonly<Record<string, string>> = {
-  fundbox_consumer_backend: "fundbox_consumer_backend-",
-  "fundbox_consumer_backend:contacts": "fundbox_consumer_backend-",
-  "fundbox_consumer_backend:legacy": "fundbox_consumer_backend-",
-  "fundbox_consumer_backend:merged": "fundbox_consumer_backend-",
-  "fundbox_consumer_backend:sales": "fundbox_consumer_backend-",
+  fundbox: "fundbox-",
+  "fundbox:contacts": "fundbox-",
+  "fundbox:legacy": "fundbox-",
+  "fundbox:merged": "fundbox-",
+  "fundbox:sales": "fundbox-",
   speedzone_phppos: "speedzone_phppos-",
   "speedzone_phppos:sales": "speedzone_phppos-",
   eko_phppos: "eko_phppos-",
