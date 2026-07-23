@@ -37,6 +37,9 @@ jobs:
             FUNDBOX_API_TIMEOUT_SECONDS \
             FUNDBOX_API_MAX_ATTEMPTS \
             FUNDBOX_API_OVERLAP_SECONDS \
+            GPT_API_BASE_URL \
+            GPT_API_KEY \
+            GPT_DEFAULT_MODEL \
             WHATSADMIN_API_BASE_URL \
             WHATSADMIN_EKO_API_KEY \
             WHATSADMIN_SPEEDZONE_API_KEY \
@@ -50,7 +53,7 @@ jobs:
           do
             if ! grep -Eq "^[[:space:]]+${key}:" .docker/staging/docker-compose.yml; then
               echo "Staging Compose is missing runtime ingestion variable: ${key}"
-              if [[ "$key" == WHATSADMIN_* ]]; then
+              if [[ "$key" == GPT_* || "$key" == WHATSADMIN_* ]]; then
                 echo "Update .docker/staging/docker-compose.yml before rebuilding"
               fi
               exit 1

@@ -52,3 +52,37 @@ class OpenAIService(LLMService):
 
     def _is_retryable(self, response: httpx.Response) -> bool:
         return self._is_http_status_retryable(response.status_code)
+
+    async def _validate_model_readiness(self, provider_name: str, credential_name: str) -> None:
+        """Validate credentials and configured-model visibility without exposing secrets."""
+        if not self._headers:
+            raise RuntimeError(f"{credential_name} is required for ingestion LLM calls")
+        async with httpx.AsyncClient(
+            base_url=self._base,
+            timeout=self._config.timeout_seconds,
+        ) as client:
+            response = await client.get("/models", headers=self._headers)
+        if response.status_code >= 400:
+            raise RuntimeError(
+                f"{provider_name} model readiness failed with HTTP {response.status_code}"
+            )
+        try:
+            body = response.json()
+        except ValueError as exc:
+            raise RuntimeError(
+                f"{provider_name} model readiness returned an invalid response"
+            ) from exc
+        raw_models = body.get("data") if isinstance(body, dict) else None
+        model_ids = (
+            {
+                item.get("id")
+                for item in raw_models
+                if isinstance(item, dict) and isinstance(item.get("id"), str)
+            }
+            if isinstance(raw_models, list)
+            else set()
+        )
+        if self.default_model not in model_ids:
+            raise RuntimeError(
+                f"{provider_name} model {self.default_model!r} is not available to this credential"
+            )
