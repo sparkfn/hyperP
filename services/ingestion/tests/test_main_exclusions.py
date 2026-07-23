@@ -21,7 +21,7 @@ class _Connector(SourceConnector):
 
     def fetch_records(self) -> Iterator[dict[str, JsonValue]]:
         yield {
-            "source_record_id": "fundbox_consumer_backend-contact-1",
+            "source_record_id": "fundbox-contact-1",
             "observed_at": "2026-05-15T00:00:00+00:00",
             "record_hash": "hash-1",
             "identifiers": [{"type": "phone", "value": "+6588888888"}],
@@ -29,7 +29,7 @@ class _Connector(SourceConnector):
             "raw_payload": {},
         }
         yield {
-            "source_record_id": "fundbox_consumer_backend-contact-2",
+            "source_record_id": "fundbox-contact-2",
             "observed_at": "2026-05-15T00:00:00+00:00",
             "record_hash": "hash-2",
             "identifiers": [{"type": "phone", "value": "+6599999999"}],
@@ -38,7 +38,7 @@ class _Connector(SourceConnector):
         }
 
     def get_source_key(self) -> str:
-        return "fundbox_consumer_backend:contacts"
+        return "fundbox:contacts"
 
     def close(self) -> None:
         self.closed = True
@@ -47,7 +47,7 @@ class _Connector(SourceConnector):
 class _EmailConnector(SourceConnector):
     def fetch_records(self) -> Iterator[dict[str, JsonValue]]:
         yield {
-            "source_record_id": "fundbox_consumer_backend-user-1",
+            "source_record_id": "fundbox-user-1",
             "observed_at": "2026-05-15T00:00:00+00:00",
             "record_hash": "hash-1",
             "identifiers": [{"type": "email", "value": "info@ekolife.asia"}],
@@ -55,7 +55,7 @@ class _EmailConnector(SourceConnector):
             "raw_payload": {},
         }
         yield {
-            "source_record_id": "fundbox_consumer_backend-user-2",
+            "source_record_id": "fundbox-user-2",
             "observed_at": "2026-05-15T00:00:00+00:00",
             "record_hash": "hash-2",
             "identifiers": [{"type": "email", "value": "customer@example.com"}],
@@ -64,7 +64,7 @@ class _EmailConnector(SourceConnector):
         }
 
     def get_source_key(self) -> str:
-        return "fundbox_consumer_backend"
+        return "fundbox"
 
 
 class _SalesConnector(SourceConnector):
@@ -142,7 +142,7 @@ def test_ingest_all_records_uses_caller_supplied_exclusion_context(
     )
 
     assert (success, errors, skipped) == (1, 0, 1)
-    assert pipeline.ingested == ["fundbox_consumer_backend-contact-2"]
+    assert pipeline.ingested == ["fundbox-contact-2"]
     assert pipeline.exclusion_contexts == [supplied_context]
     assert connector.closed is False
 
@@ -161,7 +161,7 @@ def test_ingest_all_records_skips_system_records_with_excluded_identifiers(
         ingest_run_id="run-1",
     )
     assert (success, errors, skipped) == (1, 0, 1)
-    assert pipeline.ingested == ["fundbox_consumer_backend-contact-2"]
+    assert pipeline.ingested == ["fundbox-contact-2"]
     assert len(pipeline.exclusion_contexts) == 1
     context = pipeline.exclusion_contexts[0]
     assert context is not None
@@ -188,7 +188,7 @@ def test_ingest_all_records_skips_system_records_with_excluded_email_domains(
     )
 
     assert (success, errors, skipped) == (1, 0, 1)
-    assert pipeline.ingested == ["fundbox_consumer_backend-user-2"]
+    assert pipeline.ingested == ["fundbox-user-2"]
     assert len(pipeline.exclusion_contexts) == 1
     context = pipeline.exclusion_contexts[0]
     assert context is not None

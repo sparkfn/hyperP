@@ -7,7 +7,7 @@ from src.vehicle_extraction import (
 
 
 def test_eko_sales_vehicle_line_extracts_product_sku_from_item_number() -> None:
-    """Case 1: eko vehicle line, serial present -> one observation with product_sku from item_number."""
+    """Case 1: Eko vehicle line with serial emits the item number as product SKU."""
     observations = observations_from_sales_lines(
         source_system_key="eko_phppos",
         source_record_id="eko-sale-1",
@@ -36,7 +36,7 @@ def test_eko_sales_vehicle_line_extracts_product_sku_from_item_number() -> None:
 
 
 def test_non_vehicle_category_line_is_skipped() -> None:
-    """Case 2: eko line, category `Bicycle Locks` (non-vehicle), serial present -> no observation."""
+    """Case 2: Eko non-vehicle categories are skipped even when a serial is present."""
     observations = observations_from_sales_lines(
         source_system_key="eko_phppos",
         source_record_id="eko-sale-2",
@@ -80,9 +80,9 @@ def test_eko_vehicle_line_without_serial_or_lta_is_invalid() -> None:
 
 
 def test_fundbox_vehicle_line_carries_sku_lta_manufacturer_model() -> None:
-    """Case 4: fundbox line, vehicle category, serial_no + lta_tag -> observation with product_sku, manufacturer/model."""
+    """Case 4: Fundbox vehicle details carry into the observation."""
     observations = observations_from_sales_lines(
-        source_system_key="fundbox_consumer_backend",
+        source_system_key="fundbox",
         source_record_id="fundbox-sale-1",
         observed_at="2026-05-14T00:00:00",
         lines=[
@@ -110,7 +110,7 @@ def test_fundbox_vehicle_line_carries_sku_lta_manufacturer_model() -> None:
 
 
 def test_speedzone_line_with_serial_and_customer_plate_as_lta_tag() -> None:
-    """Case 5: speedzone line with serial + customer plate emitted as metadata.lta_tag -> observation."""
+    """Case 5: SpeedZone customer plates are emitted as observation LTA tags."""
     observations = observations_from_sales_lines(
         source_system_key="speedzone_phppos",
         source_record_id="speedzone-sale-1",

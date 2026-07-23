@@ -410,7 +410,7 @@ def test_run_ingestion_task_warns_when_source_not_configured(
     caplog.set_level(logging.WARNING, logger="src.tasks")
 
     with pytest.raises(Reject):
-        tasks.run_ingestion_task.run("fundbox_consumer_backend", "api")
+        tasks.run_ingestion_task.run("fundbox", "api")
 
     assert any(
         "not configured" in rec.getMessage() and rec.levelno == logging.WARNING
@@ -481,6 +481,6 @@ def test_run_ingestion_records_failed_run_when_fundbox_api_not_configured(
     monkeypatch.setattr("src.main._mark_run_failed", _capture_failed_run)
 
     with pytest.raises(SourceNotConfiguredError, match="not configured"):
-        run_ingestion("fundbox_consumer_backend", mode="api", initialize_graph=False)
+        run_ingestion("fundbox", mode="api", initialize_graph=False)
 
     assert failed_runs == ["run-1"]

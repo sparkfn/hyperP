@@ -251,11 +251,11 @@ The task enforces a Redis-backed cluster-wide concurrency cap (`MAX_CONCURRENT_I
 **Source keys** (from `src/connectors/dumps/connectors.py` factories dict and live connectors):
 | source_key | mode | limited-100 dump file (local/dev only) |
 |---|---|---|
-| `fundbox_consumer_backend` | dump | `limited-100/fundbox_users_100.sql` |
-| `fundbox_consumer_backend:legacy` | dump | `limited-100/fundbox_legacy_100.sql` |
-| `fundbox_consumer_backend:merged` | dump | `limited-100/fundbox_merged_100.sql` |
-| `fundbox_consumer_backend:contacts` | dump | `limited-100/fundbox_contacts_100.sql` |
-| `fundbox_consumer_backend:sales` | dump | `limited-100/fundbox_sales_100.sql` |
+| `fundbox` | dump | `limited-100/fundbox_users_100.sql` |
+| `fundbox:legacy` | dump | `limited-100/fundbox_legacy_100.sql` |
+| `fundbox:merged` | dump | `limited-100/fundbox_merged_100.sql` |
+| `fundbox:contacts` | dump | `limited-100/fundbox_contacts_100.sql` |
+| `fundbox:sales` | dump | `limited-100/fundbox_sales_100.sql` |
 | `eko_phppos` | dump | `limited-100/eko_customers_100.sql` |
 | `eko_phppos:sales` | dump | `limited-100/eko_sales_100.sql` |
 | `speedzone_phppos` | dump | `limited-100/speedzone_customers_100.sql` |

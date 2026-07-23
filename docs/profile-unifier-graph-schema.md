@@ -195,8 +195,8 @@ Entity-less public registries may have neither relationship.
 ```cypher
 CREATE (ss:SourceSystem {
   source_system_id: randomUUID(),
-  source_key: 'fundbox_consumer_backend',
-  display_name: 'Fundbox Consumer Backend',
+  source_key: 'fundbox',
+  display_name: 'Fundbox',
   system_type: 'consumer_backend',
   is_active: true,
   // field-level trust as a native map — no separate node needed

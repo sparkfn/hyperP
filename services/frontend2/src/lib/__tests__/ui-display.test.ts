@@ -24,11 +24,11 @@ describe("shortReference", () => {
 
 describe("sourceRecordReference", () => {
   it.each([
-    ["fundbox_consumer_backend-user-123", "fundbox_consumer_backend", "user-123"],
-    ["fundbox_consumer_backend-contact-456", "fundbox_consumer_backend:contacts", "contact-456"],
-    ["fundbox_consumer_backend-legacy-7", "fundbox_consumer_backend:legacy", "legacy-7"],
-    ["fundbox_consumer_backend-merged-8", "fundbox_consumer_backend:merged", "merged-8"],
-    ["fundbox_consumer_backend-order-9", "fundbox_consumer_backend:sales", "order-9"],
+    ["fundbox-user-123", "fundbox", "user-123"],
+    ["fundbox-contact-456", "fundbox:contacts", "contact-456"],
+    ["fundbox-legacy-7", "fundbox:legacy", "legacy-7"],
+    ["fundbox-merged-8", "fundbox:merged", "merged-8"],
+    ["fundbox-order-9", "fundbox:sales", "order-9"],
     ["speedzone_phppos-customer-789", "speedzone_phppos", "customer-789"],
     ["speedzone_phppos-sale-10", "speedzone_phppos:sales", "sale-10"],
     ["eko_phppos-person-101", "eko_phppos", "person-101"],
@@ -43,18 +43,18 @@ describe("sourceRecordReference", () => {
   });
 
   it.each([
-    ["fundbox_consumer_backend-user-123", "speedzone_phppos"],
+    ["fundbox-user-123", "speedzone_phppos"],
     ["unknown-prefix-record-123", "unknown_source"],
     ["bankruptcy_case:1", "sgbankruptcy"],
     ["rental_flat:33", "sgrentalflats"],
     ["SPZ-CUST-00123", "speedzone_phppos"],
-    ["fundbox_consumer_backend", "fundbox_consumer_backend"],
+    ["fundbox", "fundbox"],
   ])("leaves ambiguous or non-matching value %s unchanged", (value, sourceSystem) => {
     expect(sourceRecordReference(value, sourceSystem)).toBe(value);
   });
 
   it.each([null, undefined, ""])("handles empty value %s", (value) => {
-    expect(sourceRecordReference(value, "fundbox_consumer_backend")).toBe(value ?? "");
+    expect(sourceRecordReference(value, "fundbox")).toBe(value ?? "");
   });
 
   it("requires a matching source system before removing a prefix", () => {

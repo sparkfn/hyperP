@@ -54,22 +54,22 @@ _beat_schedule["lifecycle-reconciliation"] = {
     "schedule": 300.0,
 }
 
-_fundbox_cron = parse_cron(settings.fundbox_consumer_backend_ingest_cron)
+_fundbox_cron = parse_cron(settings.fundbox_ingest_cron)
 if _fundbox_cron is not None:
     _beat_schedule["fundbox-ingest"] = {
         "task": "src.tasks.run_ingestion_task",
         "schedule": _fundbox_cron,
-        "args": ("fundbox_consumer_backend", "api"),
+        "args": ("fundbox", "api"),
     }
     _beat_schedule["fundbox-contacts-ingest"] = {
         "task": "src.tasks.run_ingestion_task",
         "schedule": _fundbox_cron,
-        "args": ("fundbox_consumer_backend:contacts", "api"),
+        "args": ("fundbox:contacts", "api"),
     }
     _beat_schedule["fundbox-sales-ingest"] = {
         "task": "src.tasks.run_ingestion_task",
         "schedule": _fundbox_cron,
-        "args": ("fundbox_consumer_backend:sales", "api"),
+        "args": ("fundbox:sales", "api"),
     }
 
 _speedzone_cron = parse_cron(settings.speedzone_phppos_ingest_cron)

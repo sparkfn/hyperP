@@ -64,7 +64,7 @@ the first of those features lands.
 
 | entity_key | display_name | entity_type | source_key                   | source display_name          |
 |------------|--------------|-------------|------------------------------|------------------------------|
-| fundbox    | Fundbox      | lender      | `fundbox_consumer_backend`   | Fundbox Consumer Backend     |
+| fundbox    | Fundbox      | lender      | `fundbox`                    | Fundbox                      |
 | speedzone  | SpeedZone    | retailer    | `speedzone_phppos`           | SpeedZone phppos             |
 | eko        | Eko          | retailer    | `eko_phppos`                 | Eko phppos                   |
 
@@ -73,10 +73,9 @@ verbatim in every `IDENTIFIED_BY`, `LIVES_AT`, and `KNOWS` relationship.
 Human-readable names live in `SourceSystem.display_name` and
 `Entity.display_name`.
 
-The secondary Fundbox feeds (`fundbox:contacts`, `fundbox:legacy`, etc.)
-are renamed analogously: `fundbox_consumer_backend:contacts`,
-`fundbox_consumer_backend:legacy`, `fundbox_consumer_backend:merged`,
-`fundbox_consumer_backend:junk`. They all point at the same Entity.
+The secondary Fundbox feeds use namespaced keys: `fundbox:contacts`,
+`fundbox:legacy`, `fundbox:merged`, and `fundbox:sales`. They all point at
+the same Entity.
 
 ### Schema changes
 
@@ -140,7 +139,7 @@ when, for how much, through which merchant — to drive sales intelligence
 ```cypher
 CREATE (o:Order {
   order_id: randomUUID(),                  // graph-local UUID
-  source_system_key: 'fundbox_consumer_backend',
+  source_system_key: 'fundbox',
   source_order_id: '12345',                // native PK from source (string)
   order_no: 'FBX-0001',                    // merchant-facing number if present
   ordered_at: datetime(),                  // source timestamp
@@ -162,7 +161,7 @@ Dedup key: `(source_system_key, source_order_id)`. Uniqueness constraint.
 ```cypher
 CREATE (li:LineItem {
   line_item_id: randomUUID(),
-  source_system_key: 'fundbox_consumer_backend',
+  source_system_key: 'fundbox',
   source_line_item_id: '98765',
   line_no: 1,                              // 1-indexed position in the order
   quantity: 2,
@@ -183,7 +182,7 @@ Dedup key: `(source_system_key, source_line_item_id)`.
 ```cypher
 CREATE (p:Product {
   product_id: randomUUID(),                // graph-local UUID
-  source_system_key: 'fundbox_consumer_backend',
+  source_system_key: 'fundbox',
   source_product_id: 'variant-4321',       // SKU-equivalent from source
   sku: 'IPH-15-256-BLK',                   // native SKU if present
   name: 'iPhone 15 256GB Black',
@@ -280,7 +279,7 @@ the identity record.
 
 ## 3. Per-connector extraction plan
 
-### Fundbox (`fundbox_consumer_backend`)
+### Fundbox (`fundbox`)
 
 Existing identity ingestion: `users` ⋈ `basic_profiles` ⋈ `basic_plus_profiles`
 plus sidecar tables.
@@ -333,8 +332,8 @@ Field mapping (Product):
 
 Customer link: `orders.user_id → users.id → existing fundbox SourceRecord
 (source_record_id = 'fundbox-user-{user_id}')`. The new source_key is
-`fundbox_consumer_backend`, so identity source_record_ids also update
-accordingly (`'fundbox_consumer_backend-user-{user_id}'`).
+`fundbox`, so identity source_record_ids also update
+accordingly (`'fundbox-user-{user_id}'`).
 
 Notes:
 - Fundbox *orders* are BNPL-financed; every order has an associated `loans`
@@ -424,7 +423,7 @@ core `Order` / `LineItem` graph.
 - [ ] Bootstrap step in `pipeline.py` that seeds the three Entity nodes
       and the renamed SourceSystem nodes on first run (idempotent, MERGE).
 - [ ] Connector `get_source_key()` rename in
-      `fundbox/*.py` (`fundbox` → `fundbox_consumer_backend`, plus `:contacts`, `:legacy`, `:merged`, `:junk`),
+      `fundbox/*.py` (base key `fundbox`, plus `:contacts`, `:legacy`, `:merged`, `:sales`),
       `speedzone/connector.py` (`speedzone` → `speedzone_phppos`),
       `eko/connector.py` (`eko` → `eko_phppos`).
 - [ ] New sales connectors:

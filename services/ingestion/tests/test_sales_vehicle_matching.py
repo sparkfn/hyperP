@@ -697,7 +697,7 @@ def test_write_vehicle_observations_cross_source_lta_writes_both_source_systems(
     # the recording tx so both UPSERT_VEHICLE calls are captured.
     for source_key, line in (
         ("eko_phppos", eko_line),
-        ("fundbox_consumer_backend", fundbox_line),
+        ("fundbox", fundbox_line),
     ):
         _write_vehicle_observations(
             cast(ManagedTransaction, tx),
@@ -713,7 +713,7 @@ def test_write_vehicle_observations_cross_source_lta_writes_both_source_systems(
     upserts = [kw for q, kw in tx.calls if q == _UPSERT_VEHICLE_QUERY]
     assert len(upserts) == 2
     sources = {kw["source_system_key"] for kw in upserts}
-    assert sources == {"eko_phppos", "fundbox_consumer_backend"}
+    assert sources == {"eko_phppos", "fundbox"}
     assert all(kw["lta_tag"] == "LTA-SHARED" for kw in upserts)
 
 
@@ -722,9 +722,9 @@ def test_write_vehicle_observations_cross_source_lta_writes_both_source_systems(
 # ---------------------------------------------------------------------------
 #
 # Regression guard for the cross-source customer link bug: the fundbox sales
-# connector emits ``customer_link.source_system_key = "fundbox_consumer_backend"``
+# connector emits ``customer_link.source_system_key = "fundbox"``
 # (the IDENTITY source) while the sales record itself belongs to
-# ``fundbox_consumer_backend:sales``. ``LINK_SALES_TO_IDENTITY_RECORD`` MATCHes
+# ``fundbox:sales``. ``LINK_SALES_TO_IDENTITY_RECORD`` MATCHes
 # ``(:SourceSystem {source_key: $source_system_key})`` on the IDENTITY record's
 # FROM_SOURCE edge, so the drain MUST pass the identity source — not the sales
 # source. Previously the drain passed the sales source (or NULL when
@@ -760,16 +760,16 @@ class _DrainTx(_RecordingTx):
     [
         pytest.param(
             {
-                "identity_source_record_id": "fundbox_consumer_backend-user-54",
-                "source_system_key": "fundbox_consumer_backend",
+                "identity_source_record_id": "fundbox-user-54",
+                "source_system_key": "fundbox",
             },
             True,
-            "fundbox_consumer_backend",
+            "fundbox",
             id="cross-source-uses-identity-source",
         ),
         pytest.param(
             {
-                "identity_source_record_id": "fundbox_consumer_backend-user-54",
+                "identity_source_record_id": "fundbox-user-54",
                 # No source_system_key — the sale must be skipped, not guessed.
             },
             False,
@@ -793,7 +793,7 @@ def test_drain_links_via_identity_source_key(
     LINK_SALES_TO_IDENTITY_RECORD, and SKIPS the sale when that key (or the
     identity record id) is absent rather than falling back to the sales source.
 
-    The sales source (e.g. ``fundbox_consumer_backend:sales``) is never the
+    The sales source (e.g. ``fundbox:sales``) is never the
     identity source, so a sales-source fallback would silently fail the MATCH
     against ``(:SourceSystem {source_key: $source_system_key})`` and leave the
     sale pending forever — the exact bug this path exists to fix. Every
@@ -812,7 +812,7 @@ def test_drain_links_via_identity_source_key(
         cast(ManagedTransaction, tx),
         sales_pk="sr-sales-10",
         # SALES source — must NOT be used for the identity lookup.
-        source_system_key="fundbox_consumer_backend:sales",
+        source_system_key="fundbox:sales",
         raw_payload=raw_payload,
         exclusion_context=ExclusionContext(),
     )
@@ -829,4 +829,4 @@ def test_drain_links_via_identity_source_key(
     else:
         assert len(link_calls) == 1
         assert link_calls[0][1]["source_system_key"] == expected_link_source
-        assert link_calls[0][1]["identity_source_record_id"] == "fundbox_consumer_backend-user-54"
+        assert link_calls[0][1]["identity_source_record_id"] == "fundbox-user-54"

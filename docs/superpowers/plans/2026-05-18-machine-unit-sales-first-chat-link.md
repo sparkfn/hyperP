@@ -513,7 +513,7 @@ from src.connectors.dumps.connectors import get_dump_connector
 from src.machine_unit_extraction import observations_from_sales_lines
 
 for source_key, dump_path in [
-    ('fundbox_consumer_backend:sales', 'limited-100/fundbox_sales_100.sql'),
+    ('fundbox:sales', 'limited-100/fundbox_sales_100.sql'),
     ('eko_phppos:sales', 'limited-100/eko_sales_100.sql'),
     ('speedzone_phppos:sales', 'limited-100/speedzone_sales_100.sql'),
 ]:

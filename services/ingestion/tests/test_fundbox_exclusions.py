@@ -7,7 +7,7 @@ from src.connectors.fundbox.schema import merchant_staff, metadata, model_has_ro
 
 class _Connector(FundboxConnectorBase):
     def get_source_key(self) -> str:
-        return "fundbox_consumer_backend"
+        return "fundbox"
 
     def build_records(self, conn: object) -> object:
         _ = conn

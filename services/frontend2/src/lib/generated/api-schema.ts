@@ -2067,7 +2067,7 @@ export interface operations {
                 /**
                  * @description Filter to persons with at least one source record from this source. Repeatable.
                  * @example [
-                 *       "fundbox_consumer_backend"
+                 *       "fundbox"
                  *     ]
                  */
                 source_key?: string[];

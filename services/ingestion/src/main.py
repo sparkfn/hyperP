@@ -176,11 +176,11 @@ def _safe_failure_message(exc: Exception) -> str:
 # Registry of available connectors keyed by source_key. New sources only need
 # to add an entry here; the CLI and the Celery task share the same registry.
 _CONNECTOR_REGISTRY: dict[str, type[SourceConnector]] = {
-    "fundbox_consumer_backend": FundboxConnector,
-    "fundbox_consumer_backend:contacts": FundboxContactsConnector,
-    "fundbox_consumer_backend:legacy": FundboxLegacyConnector,
-    "fundbox_consumer_backend:merged": FundboxMergedUsersConnector,
-    "fundbox_consumer_backend:sales": FundboxSalesConnector,
+    "fundbox": FundboxConnector,
+    "fundbox:contacts": FundboxContactsConnector,
+    "fundbox:legacy": FundboxLegacyConnector,
+    "fundbox:merged": FundboxMergedUsersConnector,
+    "fundbox:sales": FundboxSalesConnector,
     "speedzone_phppos": SpeedZoneConnector,
     "speedzone_phppos:sales": SpeedZoneSalesConnector,
     "eko_phppos": EkoConnector,
@@ -433,9 +433,9 @@ def get_connector(
                 return create_whatsadmin_api_connector()
             return create_whatsadmin_api_connector(entity_key)
         fundbox_types: dict[str, type[FundboxApiConnector]] = {
-            "fundbox_consumer_backend": FundboxUsersApiConnector,
-            "fundbox_consumer_backend:contacts": FundboxContactsApiConnector,
-            "fundbox_consumer_backend:sales": FundboxSalesApiConnector,
+            "fundbox": FundboxUsersApiConnector,
+            "fundbox:contacts": FundboxContactsApiConnector,
+            "fundbox:sales": FundboxSalesApiConnector,
         }
         fundbox_type = fundbox_types.get(source_key)
         if fundbox_type is not None:

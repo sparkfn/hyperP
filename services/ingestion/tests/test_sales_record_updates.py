@@ -319,7 +319,7 @@ def _envelope(record_hash: str) -> SourceRecordEnvelope:
 @pytest.mark.parametrize(
     ("source_system", "entity_key"),
     [
-        ("fundbox_consumer_backend:sales", "fundbox"),
+        ("fundbox:sales", "fundbox"),
         ("eko_phppos:sales", "eko"),
         ("speedzone_phppos:sales", "speedzone"),
         ("onediver:sales", "onediver"),
@@ -676,7 +676,7 @@ def test_malformed_deferred_customer_link_fails_without_projection_mutation(
     linked = _drain_one_pending_sale(
         cast(ManagedTransaction, tx),
         "new",
-        "fundbox_consumer_backend:sales",
+        "fundbox:sales",
         {"order": {"source_order_id": "o-1"}, "customer_link": customer_link},
         ExclusionContext(),
         expected_active_source_record_pk="old",
@@ -696,14 +696,14 @@ def test_shared_finalizer_retires_then_reconciles_then_activates_last() -> None:
         cast(ManagedTransaction, tx),
         sales_pk="new",
         person_id="person-1",
-        source_system_key="fundbox_consumer_backend:sales",
+        source_system_key="fundbox:sales",
         source_record_id="sale-1",
         raw_payload={
             "order": {"source_order_id": "o-1"},
             "line_items": [],
             "customer_link": {
                 "identity_source_record_id": "identity-1",
-                "source_system_key": "fundbox_consumer_backend",
+                "source_system_key": "fundbox",
             },
         },
         observed_at=None,

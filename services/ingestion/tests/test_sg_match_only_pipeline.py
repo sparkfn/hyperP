@@ -119,7 +119,7 @@ def _bankruptcy_envelope() -> SourceRecordEnvelope:
 def test_sgbankruptcy_is_match_only_source() -> None:
     assert _is_match_only_source("sgbankruptcy") is True
     assert _is_match_only_source("sgrentalflats") is False
-    assert _is_match_only_source("fundbox_consumer_backend") is False
+    assert _is_match_only_source("fundbox") is False
 
 
 def test_unmatched_bankruptcy_record_is_dropped_with_no_writes() -> None:

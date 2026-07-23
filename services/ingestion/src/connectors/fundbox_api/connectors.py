@@ -142,10 +142,10 @@ class FundboxUsersApiConnector(FundboxApiConnector):
     root_field = "user"
 
     def get_source_key(self) -> str:
-        return "fundbox_consumer_backend"
+        return "fundbox"
 
     def source_record_id(self, root_id: int) -> str:
-        return f"fundbox_consumer_backend-user-{root_id}"
+        return f"fundbox-user-{root_id}"
 
     def build_record(self, composite: dict[str, JsonValue]) -> dict[str, JsonValue]:
         user = _object(composite.get("user"), "user")
@@ -202,7 +202,7 @@ class FundboxUsersApiConnector(FundboxApiConnector):
         from src.connectors.fundbox.builders import _norm_race, addresses_from_rows, format_address
 
         return build_envelope(
-            source_record_id=f"fundbox_consumer_backend-user-{user_id}",
+            source_record_id=f"fundbox-user-{user_id}",
             observed_at=to_iso(user.get("updated_at") or user.get("created_at")),
             identifiers=identifiers.items,
             attributes={
@@ -229,17 +229,17 @@ class FundboxContactsApiConnector(FundboxApiConnector):
     root_field = "contact"
 
     def get_source_key(self) -> str:
-        return "fundbox_consumer_backend:contacts"
+        return "fundbox:contacts"
 
     def source_record_id(self, root_id: int) -> str:
-        return f"fundbox_consumer_backend-contact-{root_id}"
+        return f"fundbox-contact-{root_id}"
 
     def build_record(self, composite: dict[str, JsonValue]) -> dict[str, JsonValue]:
         contact = _object(composite.get("contact"), "contact")
         identifiers = IdentifierBag()
         identifiers.add("phone", contact.get("mobile_number"))
         return build_envelope(
-            source_record_id=f"fundbox_consumer_backend-contact-{contact.get('id')}",
+            source_record_id=f"fundbox-contact-{contact.get('id')}",
             observed_at=to_iso(contact.get("updated_at") or contact.get("created_at")),
             identifiers=identifiers.items,
             record_type="relationship",
@@ -250,7 +250,7 @@ class FundboxContactsApiConnector(FundboxApiConnector):
             raw_payload={
                 "contact": serialize_row(contact),
                 "linked_to_source_record_id": (
-                    f"fundbox_consumer_backend-user-{contact.get('user_id')}"
+                    f"fundbox-user-{contact.get('user_id')}"
                 ),
                 "link_type": contact.get("relationship"),
             },
@@ -262,10 +262,10 @@ class FundboxSalesApiConnector(FundboxApiConnector):
     root_field = "order"
 
     def get_source_key(self) -> str:
-        return "fundbox_consumer_backend:sales"
+        return "fundbox:sales"
 
     def source_record_id(self, root_id: int) -> str:
-        return f"fundbox_consumer_backend-order-{root_id}"
+        return f"fundbox-order-{root_id}"
 
     def build_record(self, composite: dict[str, JsonValue]) -> dict[str, JsonValue]:
         order = _object(composite.get("order"), "order")

@@ -147,9 +147,9 @@ def test_primary_chat_record_without_relationship_does_not_activate_knows() -> N
 
 
 def test_contact_projection_preserves_exact_source_system_provenance() -> None:
-    tx = _Tx("fundbox_consumer_backend")
+    tx = _Tx("fundbox")
     envelope = SourceRecordEnvelope(
-        source_system="fundbox_consumer_backend:contacts",
+        source_system="fundbox:contacts",
         source_record_id="contact-7",
         observed_at="2026-07-14T00:00:00Z",
         record_hash="contact-hash",
@@ -161,14 +161,14 @@ def test_contact_projection_preserves_exact_source_system_provenance() -> None:
 
     assert pipeline_knows.activate_knows_projection(tx, envelope, "person-bob", "contact-v2")
     assert tx.link_params is not None
-    assert tx.link_params["source_system_key"] == "fundbox_consumer_backend:contacts"
+    assert tx.link_params["source_system_key"] == "fundbox:contacts"
     blueprints = pipeline_knows.knows_projection_blueprints(envelope)
-    assert blueprints[0]["source_system_key"] == "fundbox_consumer_backend:contacts"
-    assert blueprints[0]["declarer_source_system_key"] == "fundbox_consumer_backend"
+    assert blueprints[0]["source_system_key"] == "fundbox:contacts"
+    assert blueprints[0]["declarer_source_system_key"] == "fundbox"
 
 
 def test_contact_sweep_propagates_scanned_exact_source_system() -> None:
-    tx = _Tx("fundbox_consumer_backend")
+    tx = _Tx("fundbox")
     raw_payload = {
         "linked_to_source_record_id": "bitrix-chat-1-person-1",
         "link_type": "emergency contact",
@@ -177,11 +177,11 @@ def test_contact_sweep_propagates_scanned_exact_source_system() -> None:
     linked = _link_one_contact(
         tx,
         "pk-bob",
-        "fundbox_consumer_backend:contacts",
+        "fundbox:contacts",
         raw_payload,
     )
 
     assert linked is True
     assert tx.link_params is not None
-    assert tx.link_params["source_system_key"] == "fundbox_consumer_backend:contacts"
+    assert tx.link_params["source_system_key"] == "fundbox:contacts"
     assert "ss.source_key" in queries.SCAN_CONTACT_SOURCE_RECORDS

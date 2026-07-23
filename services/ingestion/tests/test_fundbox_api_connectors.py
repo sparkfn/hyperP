@@ -59,7 +59,7 @@ def test_users_api_connector_preserves_user_envelope_contract() -> None:
         ]
     )
     record = list(FundboxUsersApiConnector(client).fetch_records())[0]
-    assert record["source_record_id"] == "fundbox_consumer_backend-user-7"
+    assert record["source_record_id"] == "fundbox-user-7"
     assert record["attributes"]["full_name"] == "Ada Rider"  # type: ignore[index]
     assert record["identifiers"][0]["type"] == "nric"  # type: ignore[index]
     assert client.closed is True
@@ -84,7 +84,7 @@ def test_contacts_api_connector_preserves_relationship_link() -> None:
     )
     record = list(FundboxContactsApiConnector(client).fetch_records())[0]
     assert record["record_type"] == "relationship"
-    assert record["raw_payload"]["linked_to_source_record_id"] == "fundbox_consumer_backend-user-7"  # type: ignore[index]
+    assert record["raw_payload"]["linked_to_source_record_id"] == "fundbox-user-7"  # type: ignore[index]
 
 
 def test_sales_api_connector_preserves_sales_customer_link() -> None:
@@ -149,7 +149,7 @@ def test_sales_api_connector_preserves_sales_customer_link() -> None:
         ]
     )
     record = list(FundboxSalesApiConnector(client).fetch_records())[0]
-    assert record["source_record_id"] == "fundbox_consumer_backend-order-11"
+    assert record["source_record_id"] == "fundbox-order-11"
     assert record["raw_payload"]["order"]["total_amount"] == 100.0  # type: ignore[index]
     assert record["raw_payload"]["line_items"][0]["unit_price"] == 100.0  # type: ignore[index]
     assert record["raw_payload"]["line_items"][0]["line_total"] == 100.0  # type: ignore[index]
@@ -158,7 +158,7 @@ def test_sales_api_connector_preserves_sales_customer_link() -> None:
     ] == {"colour": "red"}
     assert (
         record["raw_payload"]["customer_link"]["identity_source_record_id"]
-        == "fundbox_consumer_backend-user-7"
+        == "fundbox-user-7"
     )  # type: ignore[index]
     assert record["raw_payload"]["line_items"][0]["product"]["model"] == "R1"  # type: ignore[index]
 
@@ -172,19 +172,19 @@ def test_api_mode_routes_only_scheduled_fundbox_sources(
     monkeypatch.setattr("src.main.load_source_ids", lambda *_args: None)
 
     assert isinstance(
-        get_connector("fundbox_consumer_backend", mode="api"), FundboxUsersApiConnector
+        get_connector("fundbox", mode="api"), FundboxUsersApiConnector
     )
     assert isinstance(
-        get_connector("fundbox_consumer_backend:contacts", mode="api"),
+        get_connector("fundbox:contacts", mode="api"),
         FundboxContactsApiConnector,
     )
     assert isinstance(
-        get_connector("fundbox_consumer_backend:sales", mode="api"),
+        get_connector("fundbox:sales", mode="api"),
         FundboxSalesApiConnector,
     )
 
     with pytest.raises(ValueError, match="API mode"):
-        get_connector("fundbox_consumer_backend:legacy", mode="api")
+        get_connector("fundbox:legacy", mode="api")
 
 
 def test_connector_reconciles_missing_source_ids_after_full_snapshot() -> None:
@@ -205,9 +205,9 @@ def test_connector_reconciles_missing_source_ids_after_full_snapshot() -> None:
     records = list(connector.fetch_records())
 
     assert [record["source_record_id"] for record in records[:-1]] == [
-        "fundbox_consumer_backend-contact-2"
+        "fundbox-contact-2"
     ]
-    assert records[-1]["_retire_source_record_id"] == "fundbox_consumer_backend-contact-1"
+    assert records[-1]["_retire_source_record_id"] == "fundbox-contact-1"
     assert client.calls == [
         ("contacts", "2026-07-16T00:00:00Z"),
         ("contacts", None),
@@ -228,9 +228,9 @@ def test_first_snapshot_does_not_retire_unobserved_source_ids() -> None:
 @pytest.mark.parametrize(
     ("connector_type", "expected_source_record_id"),
     [
-        (FundboxUsersApiConnector, "fundbox_consumer_backend-user-8"),
-        (FundboxContactsApiConnector, "fundbox_consumer_backend-contact-8"),
-        (FundboxSalesApiConnector, "fundbox_consumer_backend-order-8"),
+        (FundboxUsersApiConnector, "fundbox-user-8"),
+        (FundboxContactsApiConnector, "fundbox-contact-8"),
+        (FundboxSalesApiConnector, "fundbox-order-8"),
     ],
 )
 def test_all_scheduled_sources_retire_roots_missing_from_full_snapshot(
@@ -268,7 +268,7 @@ def test_full_snapshot_reprocesses_records_absent_from_incremental_pass() -> Non
     records = list(connector.fetch_records())
 
     assert [record["source_record_id"] for record in records] == [
-        "fundbox_consumer_backend-contact-4"
+        "fundbox-contact-4"
     ]
     assert connector.current_source_ids == {4}
 

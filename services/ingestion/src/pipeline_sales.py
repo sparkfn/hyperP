@@ -809,7 +809,7 @@ def _drain_one_pending_sale(
         _skip_sale_permanent(tx, pk=sales_pk, reason="customer_link missing or not a dict")
         return False
     # customer_link.source_system_key is the IDENTITY source (e.g.
-    # ``fundbox_consumer_backend``), never the sales source. str_or_none rejects
+    # ``fundbox``), never the sales source. str_or_none rejects
     # None/blank/non-string; an empty/wrong source would silently fail the
     # identity MATCH and leave the sale pending forever.
     identity_source_record_id = str_or_none(customer_link.get("identity_source_record_id"))

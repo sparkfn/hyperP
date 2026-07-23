@@ -53,22 +53,22 @@ class Settings(BaseSettings):
     # of `celery_worker_concurrency` (which controls per-worker process count).
     max_concurrent_ingestions: int = 1
     # Beat schedule for periodic Fundbox ingestion. Empty string disables.
-    fundbox_consumer_backend_ingest_cron: str = ""  # e.g. "0 */6 * * *"
+    fundbox_ingest_cron: str = ""  # e.g. "0 */6 * * *"
 
-    # Fundbox Consumer Backend source DB (MySQL, optionally via SSH tunnel) ---
-    # Set FUNDBOX_CONSUMER_BACKEND_SSH_HOST to enable SSH tunnelling.
-    fundbox_consumer_backend_ssh_host: str = ""
-    fundbox_consumer_backend_ssh_port: int = 22
-    fundbox_consumer_backend_ssh_user: str = ""
-    fundbox_consumer_backend_ssh_password: str = ""
-    fundbox_consumer_backend_db_host: str = "mysql-fundbox"
-    fundbox_consumer_backend_db_port: int = 3306
-    fundbox_consumer_backend_db_user: str = "root"
-    fundbox_consumer_backend_db_password: str = ""
-    fundbox_consumer_backend_db_name: str = "dev"
-    fundbox_consumer_backend_chunk_size: int = 1000
+    # Fundbox source DB (MySQL, optionally via SSH tunnel) --------------------
+    # Set FUNDBOX_SSH_HOST to enable SSH tunnelling.
+    fundbox_ssh_host: str = ""
+    fundbox_ssh_port: int = 22
+    fundbox_ssh_user: str = ""
+    fundbox_ssh_password: str = ""
+    fundbox_db_host: str = "mysql-fundbox"
+    fundbox_db_port: int = 3306
+    fundbox_db_user: str = "root"
+    fundbox_db_password: str = ""
+    fundbox_db_name: str = "dev"
+    fundbox_chunk_size: int = 1000
 
-    # Fundbox Consumer Backend backdoor API extraction ----------------------
+    # Fundbox backdoor API extraction ----------------------------------------
     # Connection settings default to empty strings so the service can boot
     # before credentials are provisioned. Empty config is rejected at runtime
     # when a Fundbox API ingestion is dispatched (see FundboxApiCredentials),
