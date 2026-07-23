@@ -41,12 +41,17 @@ def _get_proclaude_service() -> ProclaudeService:
 
 
 def _get_gpt_service() -> GPTService:
-    """Return the dedicated GPT address-normalization service."""
+    """Return the GPT connector service.
+
+    Ingestion workloads currently route through ProClaude (see
+    ``get_address_llm_service``); this accessor is retained so the GPT
+    connector remains wired and ready for reuse.
+    """
     global _gpt_service
     if _gpt_service is None:
         _gpt_service = GPTService(llm_config=get_ingestion_config().llm)
         logger.info(
-            "Address normalization LLM backend=GPT model=%s",
+            "GPT connector backend=GPT model=%s",
             _gpt_service.default_model,
         )
     return _gpt_service
@@ -58,8 +63,8 @@ def get_llm_service() -> LLMService:
 
 
 def get_address_llm_service() -> LLMService:
-    """Return the GPT JSON-mode address-normalization service."""
-    return _get_gpt_service()
+    """Return the ProClaude JSON-mode address-normalization service."""
+    return _get_proclaude_service()
 
 
 def get_chat_extraction_service() -> LLMService:
@@ -73,6 +78,5 @@ def get_chat_summary_service() -> LLMService:
 
 
 def validate_ingestion_llm_readiness() -> None:
-    """Validate each ingestion LLM backend before long chat discovery."""
+    """Validate the ProClaude ingestion LLM backend before long chat discovery."""
     asyncio.run(_get_proclaude_service().validate_readiness())
-    asyncio.run(_get_gpt_service().validate_readiness())

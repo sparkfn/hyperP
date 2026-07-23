@@ -33,9 +33,8 @@ def test_class_hierarchy() -> None:
     assert issubclass(AnthropicService, LLMService)
 
 
-def test_address_normalization_routes_to_gpt_only(
+def test_address_normalization_routes_to_proclaude(
     monkeypatch: pytest.MonkeyPatch,
-    caplog: pytest.LogCaptureFixture,
 ) -> None:
     # Isolate from the real config file: the accessors load LlmConfig from the
     # configured path, which may not exist on the host.
@@ -43,11 +42,7 @@ def test_address_normalization_routes_to_gpt_only(
     from src.ingestion_config import IngestionConfig
 
     monkeypatch.setattr(llm_pkg, "_proclaude_service", None)
-    monkeypatch.setattr(llm_pkg, "_gpt_service", None)
     monkeypatch.setattr(llm_pkg, "get_ingestion_config", lambda: IngestionConfig())
-    monkeypatch.setenv("GPT_API_KEY", "credential-not-in-log")
-    monkeypatch.setenv("GPT_DEFAULT_MODEL", "gpt-address")
-    caplog.set_level("INFO", logger="src.llm")
 
     proclaude_services = (
         llm_pkg.get_llm_service(),
@@ -58,29 +53,26 @@ def test_address_normalization_routes_to_gpt_only(
 
     assert all(isinstance(service, ProclaudeService) for service in proclaude_services)
     assert len({id(service) for service in proclaude_services}) == 1
-    assert isinstance(address_service, GPTService)
-    assert all(address_service is not service for service in proclaude_services)
-    assert "Address normalization LLM backend=GPT model=gpt-address" in caplog.text
-    assert "credential-not-in-log" not in caplog.text
+    assert isinstance(address_service, ProclaudeService)
+    assert all(address_service is service for service in proclaude_services)
 
 
-def test_service_accessors_share_one_singleton_per_backend(
+def test_service_accessors_share_one_proclaude_singleton(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import src.llm as llm_pkg
     from src.ingestion_config import IngestionConfig
 
     monkeypatch.setattr(llm_pkg, "_proclaude_service", None)
-    monkeypatch.setattr(llm_pkg, "_gpt_service", None)
     monkeypatch.setattr(llm_pkg, "get_ingestion_config", lambda: IngestionConfig())
 
     assert llm_pkg.get_address_llm_service() is llm_pkg.get_address_llm_service()
-    assert llm_pkg.get_chat_extraction_service() is not llm_pkg.get_address_llm_service()
+    assert llm_pkg.get_chat_extraction_service() is llm_pkg.get_address_llm_service()
     assert llm_pkg.get_chat_summary_service() is llm_pkg.get_llm_service()
-    assert llm_pkg.get_address_llm_service() is not llm_pkg.get_llm_service()
+    assert llm_pkg.get_address_llm_service() is llm_pkg.get_llm_service()
 
 
-def test_ingestion_readiness_checks_both_backends(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_ingestion_readiness_checks_proclaude_backend(monkeypatch: pytest.MonkeyPatch) -> None:
     import src.llm as llm_pkg
 
     checked: list[str] = []
@@ -93,11 +85,10 @@ def test_ingestion_readiness_checks_both_backends(monkeypatch: pytest.MonkeyPatc
             checked.append(self.name)
 
     monkeypatch.setattr(llm_pkg, "_get_proclaude_service", lambda: ReadyService("proclaude"))
-    monkeypatch.setattr(llm_pkg, "_get_gpt_service", lambda: ReadyService("gpt"))
 
     llm_pkg.validate_ingestion_llm_readiness()
 
-    assert checked == ["proclaude", "gpt"]
+    assert checked == ["proclaude"]
 
 
 def test_gpt_service_uses_connector_environment(monkeypatch: pytest.MonkeyPatch) -> None:
