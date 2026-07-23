@@ -11,16 +11,9 @@ import { avatarColor, completenessColor, getInitials } from "@/lib/display";
 import { useSetLoading } from "@/lib/LoadingContext";
 import { usePopoverClose } from "@/lib/usePopoverClose";
 import { personDisplayName } from "@/lib/ui-display";
-import { normalizePaginatedPage, type PaginatedPage } from "@/lib/paginated-page";
+import { normalizePaginatedPage } from "@/lib/paginated-page";
 import PersonGraphDialog from "@/components/PersonGraphDialog";
 import styles from "./persons.module.css";
-
-type PersonsPageCacheEntry = PaginatedPage<ListedPerson>;
-
-// Module-level SWR cache — persists across navigations within the same session.
-const personsCache = new Map<string, PersonsPageCacheEntry>();
-interface StatsCache { entities: EntitySummary[]; sourceSystems: SourceSystemInfo[]; allCount: number | null; hrCount: number | null; hvCount: number | null; ncCount: number | null }
-let statsCache: StatsCache | null = null;
 
 interface ColDef { key: string; minWidth: number; resizable: boolean }
 const COLS: ColDef[] = [
@@ -862,18 +855,18 @@ function PersonsInner(): ReactElement {
   const [sortDir, setSortDir] = useState<SortDir>(() => parseSortDir(searchParams.get("sort_order")));
   const [apiRows, setApiRows] = useState<ListedPerson[]>([]);
   const [total, setTotal] = useState<number | null>(null);
-  const [fetchLoading, setFetchLoading] = useState(true); // always true initially; cache hydration happens in effect
+  const [fetchLoading, setFetchLoading] = useState(true);
   const [fetchError, setFetchError] = useState<string | null>(null);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [cursorStack, setCursorStack] = useState<(string | null)[]>([]);
   const [currentCursor, setCurrentCursor] = useState<string | null>(null);
-  const [entities, setEntities] = useState<EntitySummary[]>(statsCache?.entities ?? []);
-  const [sourceSystems, setSourceSystems] = useState<SourceSystemInfo[]>(statsCache?.sourceSystems ?? []);
-  const [allProfilesCount, setAllProfilesCount] = useState<number | null>(statsCache?.allCount ?? null);
-  const [highRiskCount, setHighRiskCount] = useState<number | null>(statsCache?.hrCount ?? null);
-  const [highValueCount, setHighValueCount] = useState<number | null>(statsCache?.hvCount ?? null);
-  const [noContactCount, setNoContactCount] = useState<number | null>(statsCache?.ncCount ?? null);
-  const [statsLoading, setStatsLoading] = useState(statsCache === null);
+  const [entities, setEntities] = useState<EntitySummary[]>([]);
+  const [sourceSystems, setSourceSystems] = useState<SourceSystemInfo[]>([]);
+  const [allProfilesCount, setAllProfilesCount] = useState<number | null>(null);
+  const [highRiskCount, setHighRiskCount] = useState<number | null>(null);
+  const [highValueCount, setHighValueCount] = useState<number | null>(null);
+  const [noContactCount, setNoContactCount] = useState<number | null>(null);
+  const [statsLoading, setStatsLoading] = useState(true);
 
   const [graphDialog, setGraphDialog] = useState<{ open: boolean; personId: string; title: string }>({
     open: false,
@@ -1009,14 +1002,22 @@ function PersonsInner(): ReactElement {
     void (async () => {
       try {
         const [ents, srcs, all, hr, hv, nc] = await Promise.all([
-          bffFetch<EntitySummary[]>("/bff/entities", { signal }),
-          bffFetch<SourceSystemInfo[]>("/bff/source-systems", { signal }),
-          bffFetchEnvelope<ListedPerson[]>("/bff/persons?limit=1", { signal }),
-          bffFetchEnvelope<ListedPerson[]>("/bff/persons?is_high_risk=true&limit=1", { signal }),
-          bffFetchEnvelope<ListedPerson[]>("/bff/persons?is_high_value=true&limit=1", { signal }),
-          bffFetchEnvelope<ListedPerson[]>("/bff/persons?has_phone=false&has_email=false&limit=1", { signal }),
+          bffFetch<EntitySummary[]>("/bff/entities", { cache: "no-store", signal }),
+          bffFetch<SourceSystemInfo[]>("/bff/source-systems", { cache: "no-store", signal }),
+          bffFetchEnvelope<ListedPerson[]>("/bff/persons?limit=1", { cache: "no-store", signal }),
+          bffFetchEnvelope<ListedPerson[]>("/bff/persons?is_high_risk=true&limit=1", {
+            cache: "no-store",
+            signal,
+          }),
+          bffFetchEnvelope<ListedPerson[]>("/bff/persons?is_high_value=true&limit=1", {
+            cache: "no-store",
+            signal,
+          }),
+          bffFetchEnvelope<ListedPerson[]>(
+            "/bff/persons?has_phone=false&has_email=false&limit=1",
+            { cache: "no-store", signal },
+          ),
         ]);
-        statsCache = { entities: ents, sourceSystems: srcs, allCount: all.meta.total_count ?? null, hrCount: hr.meta.total_count ?? null, hvCount: hv.meta.total_count ?? null, ncCount: nc.meta.total_count ?? null };
         setEntities(ents);
         setSourceSystems(srcs);
         setAllProfilesCount(all.meta.total_count ?? null);
@@ -1214,30 +1215,24 @@ function PersonsInner(): ReactElement {
     const { signal } = controller;
     const params = new URLSearchParams(apiQuery);
     if (currentCursor) params.set("cursor", currentCursor);
-    const cacheKey = `/bff/persons?${params.toString()}`;
-    const cached = personsCache.get(cacheKey);
-    if (cached) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect
-      setApiRows(cached.rows);
-      setTotal(cached.total);
-      setNextCursor(cached.nextCursor);
-      setFetchLoading(false);
-    } else {
-      // Do not leave rows or pagination from the previous filter visible while
-      // the result for this cache key is loading.
-      setApiRows([]);
-      setTotal(null);
-      setNextCursor(null);
-      setFetchLoading(true);
-      setGlobalLoading(listLoadId, true);
-    }
+    const requestPath = `/bff/persons?${params.toString()}`;
+    // Do not leave rows or pagination from the previous request visible while
+    // the fresh result is loading.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setApiRows([]);
+    setTotal(null);
+    setNextCursor(null);
+    setFetchLoading(true);
+    setGlobalLoading(listLoadId, true);
     setFetchError(null);
     const run = async (): Promise<void> => {
       try {
-        const envelope = await bffFetchEnvelope<ListedPerson[]>(cacheKey, { signal });
+        const envelope = await bffFetchEnvelope<ListedPerson[]>(requestPath, {
+          cache: "no-store",
+          signal,
+        });
         if (!signal.aborted) {
           const page = normalizePaginatedPage(envelope);
-          personsCache.set(cacheKey, page);
           setApiRows(page.rows);
           setTotal(page.total);
           setNextCursor(page.nextCursor);
@@ -1245,7 +1240,7 @@ function PersonsInner(): ReactElement {
       } catch (err: unknown) {
         if (!signal.aborted) {
           setFetchError(err instanceof BffError ? err.message : "Failed to load data.");
-          if (!cached) setApiRows([]);
+          setApiRows([]);
         }
       } finally {
         if (!signal.aborted) { setFetchLoading(false); setGlobalLoading(listLoadId, false); }
