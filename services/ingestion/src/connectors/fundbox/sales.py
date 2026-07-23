@@ -339,9 +339,7 @@ class FundboxSalesConnector(FundboxConnectorBase):
                 ),
                 "customer_link": {
                     "identity_source_record_id": (
-                        f"fundbox-user-{row.user_id}"
-                        if row.user_id is not None
-                        else None
+                        f"fundbox-user-{row.user_id}" if row.user_id is not None else None
                     ),
                     "source_system_key": "fundbox",
                 },
