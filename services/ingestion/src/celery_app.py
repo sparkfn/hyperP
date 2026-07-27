@@ -56,7 +56,7 @@ _beat_schedule: dict[str, dict[str, object]] = {}
 
 _beat_schedule["lifecycle-reconciliation"] = {
     "task": "src.tasks.reconcile_lifecycle_task",
-    "schedule": 300.0,
+    "schedule": 60.0 * 60.0,
 }
 
 _fundbox_cron = parse_cron(settings.fundbox_ingest_cron)

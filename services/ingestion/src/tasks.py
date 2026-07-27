@@ -40,6 +40,10 @@ from src.graph.migrations import (
     reconcile_source_record_lifecycle,
 )
 from src.ingestion_config import get_ingestion_config
+from src.lifecycle_reconciliation_queue import (
+    LifecycleReconciliationTask,
+    release_lifecycle_reconciliation_queue_gate,
+)
 from src.llm import get_profile_analysis_service
 from src.main import (
     IngestionSummary,
@@ -626,23 +630,33 @@ def run_ingestion_task(
         raise Reject(str(exc), requeue=False) from exc
 
 
-@celery_app.task(name="src.tasks.reconcile_lifecycle_task", max_retries=0)
-def reconcile_lifecycle_task() -> LifecycleReconciliationSummary:
+@celery_app.task(
+    name="src.tasks.reconcile_lifecycle_task",
+    bind=True,
+    base=LifecycleReconciliationTask,
+    max_retries=0,
+)
+def reconcile_lifecycle_task(self: Task) -> LifecycleReconciliationSummary:
     """Periodically repair lifecycle state for late-arriving legacy records."""
     settings = get_settings()
     setup_logging(settings.log_level)
     try:
-        return run_lifecycle_reconciliation()
-    except _SourceAlreadyRunningError:
-        logger.info("Lifecycle reconciliation is already running; skipping duplicate")
-        return {
-            "status": "already_running",
-            "source_records": 0,
-            "projections": 0,
-        }
-    except Exception as exc:
-        logger.exception("Lifecycle reconciliation failed")
-        raise Reject(str(exc), requeue=False) from exc
+        try:
+            return run_lifecycle_reconciliation()
+        except _SourceAlreadyRunningError:
+            logger.info("Lifecycle reconciliation is already running; skipping duplicate")
+            return {
+                "status": "already_running",
+                "source_records": 0,
+                "projections": 0,
+            }
+        except Exception as exc:
+            logger.exception("Lifecycle reconciliation failed")
+            raise Reject(str(exc), requeue=False) from exc
+    finally:
+        task_id = self.request.id
+        if task_id is not None:
+            release_lifecycle_reconciliation_queue_gate(str(task_id))
 
 
 @celery_app.task(

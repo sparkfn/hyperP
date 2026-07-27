@@ -4,11 +4,15 @@ from __future__ import annotations
 
 from contextlib import nullcontext
 
-from pytest import MonkeyPatch
+from celery import Task
+from celery.exceptions import Reject
+from celery.result import AsyncResult
+from pytest import MonkeyPatch, raises
 
 
-def test_periodic_reconciliation_is_registered_once_at_short_interval() -> None:
-    from src.celery_app import _beat_schedule
+def test_periodic_reconciliation_is_registered_once_hourly() -> None:
+    from src.celery_app import _beat_schedule, celery_app
+    from src.lifecycle_reconciliation_queue import LifecycleReconciliationTask
 
     entries = [
         entry
@@ -16,7 +20,154 @@ def test_periodic_reconciliation_is_registered_once_at_short_interval() -> None:
         if entry["task"] == "src.tasks.reconcile_lifecycle_task"
     ]
 
-    assert entries == [{"task": "src.tasks.reconcile_lifecycle_task", "schedule": 300.0}]
+    assert entries == [{"task": "src.tasks.reconcile_lifecycle_task", "schedule": 3600.0}]
+    celery_app.loader.import_default_modules()
+    registered_task = celery_app.tasks["src.tasks.reconcile_lifecycle_task"]
+    assert isinstance(registered_task, LifecycleReconciliationTask)
+
+
+class _FakeRedis:
+    def __init__(self) -> None:
+        self.values: dict[str, str] = {}
+
+    def set(self, key: str, value: str, *, nx: bool) -> bool:
+        if nx and key in self.values:
+            return False
+        self.values[key] = value
+        return True
+
+    def get(self, key: str) -> str | None:
+        return self.values.get(key)
+
+    def eval(self, _script: str, _key_count: int, key: str, value: str) -> int:
+        if self.values.get(key) != value:
+            return 0
+        del self.values[key]
+        return 1
+
+
+def _stub_lifecycle_publish(
+    monkeypatch: MonkeyPatch,
+    fake_redis: _FakeRedis,
+) -> list[str]:
+    from src import lifecycle_reconciliation_queue
+
+    published: list[str] = []
+
+    def _publish(
+        _task: Task,
+        args: tuple[object, ...] | None = None,
+        kwargs: dict[str, object] | None = None,
+        task_id: str | None = None,
+        producer: object | None = None,
+        link: object | None = None,
+        link_error: object | None = None,
+        shadow: str | None = None,
+        **options: object,
+    ) -> AsyncResult:
+        del args, kwargs, producer, link, link_error, shadow, options
+        assert task_id is not None
+        published.append(task_id)
+        return AsyncResult(task_id)
+
+    monkeypatch.setattr(lifecycle_reconciliation_queue, "_redis_client", lambda: fake_redis)
+    monkeypatch.setattr(Task, "apply_async", _publish)
+    return published
+
+
+def test_duplicate_scheduling_publishes_only_one_queue_message(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    from src import tasks
+
+    fake_redis = _FakeRedis()
+    published = _stub_lifecycle_publish(monkeypatch, fake_redis)
+
+    first = tasks.reconcile_lifecycle_task.apply_async()
+    duplicate = tasks.reconcile_lifecycle_task.apply_async()
+
+    assert duplicate.id == first.id
+    assert published == [first.id]
+    assert list(fake_redis.values.values()) == [first.id]
+
+
+def test_publish_failure_releases_queue_gate(monkeypatch: MonkeyPatch) -> None:
+    from src import lifecycle_reconciliation_queue, tasks
+
+    fake_redis = _FakeRedis()
+    monkeypatch.setattr(lifecycle_reconciliation_queue, "_redis_client", lambda: fake_redis)
+
+    def _fail_publish(_task: Task, **_options: object) -> AsyncResult:
+        raise RuntimeError("broker unavailable")
+
+    monkeypatch.setattr(Task, "apply_async", _fail_publish)
+
+    with raises(RuntimeError, match="broker unavailable"):
+        tasks.reconcile_lifecycle_task.apply_async()
+
+    assert fake_redis.values == {}
+
+
+def test_new_run_can_be_scheduled_after_prior_run_finishes(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    from src import tasks
+
+    fake_redis = _FakeRedis()
+    published = _stub_lifecycle_publish(monkeypatch, fake_redis)
+    monkeypatch.setattr(
+        tasks,
+        "run_lifecycle_reconciliation",
+        lambda: {"status": "complete", "source_records": 0, "projections": 0},
+    )
+    monkeypatch.setattr(
+        tasks,
+        "get_settings",
+        lambda: type("S", (), {"log_level": "INFO"})(),
+    )
+    monkeypatch.setattr(tasks, "setup_logging", lambda _level: None)
+
+    first = tasks.reconcile_lifecycle_task.apply_async()
+    tasks.reconcile_lifecycle_task.push_request(id=first.id)
+    try:
+        tasks.reconcile_lifecycle_task.run()
+    finally:
+        tasks.reconcile_lifecycle_task.pop_request()
+
+    second = tasks.reconcile_lifecycle_task.apply_async()
+
+    assert second.id != first.id
+    assert published == [first.id, second.id]
+
+
+def test_task_failure_preserves_reject_behavior_and_releases_queue_gate(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    from src import tasks
+
+    fake_redis = _FakeRedis()
+    _stub_lifecycle_publish(monkeypatch, fake_redis)
+    monkeypatch.setattr(
+        tasks,
+        "get_settings",
+        lambda: type("S", (), {"log_level": "INFO"})(),
+    )
+    monkeypatch.setattr(tasks, "setup_logging", lambda _level: None)
+
+    def _fail_reconciliation() -> object:
+        raise RuntimeError("reconciliation failed")
+
+    monkeypatch.setattr(tasks, "run_lifecycle_reconciliation", _fail_reconciliation)
+
+    queued = tasks.reconcile_lifecycle_task.apply_async()
+    tasks.reconcile_lifecycle_task.push_request(id=queued.id)
+    try:
+        with raises(Reject, match="reconciliation failed"):
+            tasks.reconcile_lifecycle_task.run()
+    finally:
+        tasks.reconcile_lifecycle_task.pop_request()
+
+    assert fake_redis.values == {}
 
 
 def test_periodic_reconciliation_repairs_source_then_projection_and_closes_client(
