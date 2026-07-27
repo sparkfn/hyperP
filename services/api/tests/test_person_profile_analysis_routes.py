@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import cast
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from src.app import build_app
@@ -15,6 +16,7 @@ from src.repositories.deps import get_person_repo
 from src.types_profile_analysis import (
     PersonProfileAnalyses,
     ProfileAnalysisHistoryItem,
+    ProfileAnalysisRequestResult,
     ProfileAnalysisSlot,
     ProfileAnalysisType,
 )
@@ -25,8 +27,17 @@ def _pending() -> PersonProfileAnalyses:
     pending_slot = ProfileAnalysisSlot(
         current=None,
         stale=False,
+        expired=False,
+        valid=False,
+        invalid_reason="missing",
         refresh_state="pending",
         failure_code=None,
+        auto_request_allowed=True,
+        next_retry_at=None,
+        next_retry_at_display=None,
+        force_attempts_remaining=3,
+        force_available_at=None,
+        force_available_at_display=None,
     )
     return PersonProfileAnalyses(
         input_revision=0,
@@ -64,6 +75,8 @@ class _ProfileAnalysisRepo:
         self.empty_history = False
         self.current = _pending()
         self.history_args: tuple[str, ProfileAnalysisType | None, int, int] | None = None
+        self.request_args: tuple[str, ProfileAnalysisType, bool] | None = None
+        self.force_limited = False
 
     async def get_profile_analyses(self, person_id: str) -> PersonProfileAnalyses | None:
         _ = person_id
@@ -82,6 +95,29 @@ class _ProfileAnalysisRepo:
         if self.empty_history:
             return [], 0
         return [_history_item(), _history_item()], 5
+
+    async def request_profile_analysis(
+        self,
+        person_id: str,
+        analysis_type: ProfileAnalysisType,
+        force: bool,
+    ) -> ProfileAnalysisRequestResult | None:
+        self.request_args = (person_id, analysis_type, force)
+        if self.missing:
+            return None
+        return ProfileAnalysisRequestResult(
+            request_id="request-1",
+            person_id=person_id,
+            analysis_type=analysis_type,
+            state="force_limited" if self.force_limited else "queued",
+            force=force,
+            force_attempts_remaining=0 if self.force_limited else (2 if force else 3),
+            force_available_at=("2026-07-27T02:00:00+00:00" if self.force_limited else None),
+            force_available_at_display=("27 Jul 2026, 02:00 AM" if self.force_limited else None),
+        )
+
+    async def mark_profile_analysis_request_dispatch_failed(self, request_id: str) -> None:
+        _ = request_id
 
 
 async def _active_user() -> AuthUser:
@@ -173,8 +209,17 @@ def test_current_route_reports_disabled_generation_without_queued_state() -> Non
     failed_slot = ProfileAnalysisSlot(
         current=None,
         stale=False,
+        expired=False,
+        valid=False,
+        invalid_reason="missing",
         refresh_state="failed",
         failure_code="provider_unavailable",
+        auto_request_allowed=False,
+        next_retry_at=None,
+        next_retry_at_display=None,
+        force_attempts_remaining=3,
+        force_available_at=None,
+        force_available_at_display=None,
     )
     repo.current = PersonProfileAnalyses(
         input_revision=3,
@@ -267,6 +312,41 @@ def test_current_route_404s_for_missing_person() -> None:
 
     assert response.status_code == 404
     assert response.json()["error"]["code"] == "person_not_found"
+
+
+def test_request_route_queues_one_independent_analysis(monkeypatch: pytest.MonkeyPatch) -> None:
+    repo = _ProfileAnalysisRepo()
+    queued: list[str] = []
+    monkeypatch.setattr(
+        "src.routes.person_profile_analysis.enqueue_profile_analysis_request",
+        lambda request_id: queued.append(request_id),
+    )
+
+    response = _authenticated_client(repo).post(
+        "/app/v2/persons/person-1/profile-analyses/requests",
+        json={"analysis_type": "sales", "force": False},
+    )
+
+    assert response.status_code == 202
+    assert repo.request_args == ("person-1", "sales", False)
+    assert queued == ["request-1"]
+
+
+def test_request_route_returns_force_limit_availability() -> None:
+    repo = _ProfileAnalysisRepo()
+    repo.force_limited = True
+
+    response = _authenticated_client(repo).post(
+        "/app/v2/persons/person-1/profile-analyses/requests",
+        json={"analysis_type": "sales", "force": True},
+    )
+
+    assert response.status_code == 429
+    assert response.json()["error"]["code"] == "profile_analysis_force_limit"
+    assert response.json()["error"]["details"] == {
+        "force_available_at": "2026-07-27T02:00:00+00:00",
+        "force_available_at_display": "27 Jul 2026, 02:00 AM",
+    }
 
 
 def test_history_route_filters_and_paginates_with_count() -> None:

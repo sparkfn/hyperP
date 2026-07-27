@@ -24,6 +24,7 @@ from src.types import (
 from src.types_profile_analysis import (
     PersonProfileAnalyses,
     ProfileAnalysisHistoryItem,
+    ProfileAnalysisRequestResult,
     ProfileAnalysisType,
 )
 
@@ -80,6 +81,15 @@ class PersonRepository(Protocol):
     async def get_by_id(self, person_id: str) -> Person | None: ...
 
     async def get_profile_analyses(self, person_id: str) -> PersonProfileAnalyses | None: ...
+
+    async def request_profile_analysis(
+        self,
+        person_id: str,
+        analysis_type: ProfileAnalysisType,
+        force: bool,
+    ) -> ProfileAnalysisRequestResult | None: ...
+
+    async def mark_profile_analysis_request_dispatch_failed(self, request_id: str) -> None: ...
 
     async def get_profile_analysis_history(
         self,

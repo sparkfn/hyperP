@@ -159,6 +159,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/persons/{person_id}/profile-analyses/requests": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Queue one on-demand Person profile analysis */
+        post: operations["requestPersonProfileAnalysis"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/persons/{person_id}/profile-analyses/history": {
         parameters: {
             query?: never;
@@ -1205,7 +1222,7 @@ export interface components {
          *     `pending` means the slot is not fresh, active, or failed.
          * @enum {string}
          */
-        ProfileAnalysisSlotRefreshState: "disabled" | "pending" | "running" | "retrying" | "ready" | "failed";
+        ProfileAnalysisSlotRefreshState: "disabled" | "idle" | "pending" | "running" | "retrying" | "ready" | "failed";
         /**
          * @description `disabled` means generation is paused. Otherwise this is derived from
          *     both slots. `running` takes precedence when either slot is running,
@@ -1243,6 +1260,10 @@ export interface components {
             completed_at: string;
             /** @description Human-facing completion time formatted by the API. */
             completed_at_display: string;
+            generated_age_display: string;
+            /** Format: date-time */
+            valid_until: string;
+            valid_until_display: string;
             attempt_number: number;
         };
         /**
@@ -1254,8 +1275,19 @@ export interface components {
             current: components["schemas"]["ProfileAnalysisCurrent"] | null;
             /** @description Current content exists but has an older input revision. */
             stale: boolean;
+            expired: boolean;
+            valid: boolean;
+            invalid_reason: "missing" | "stale" | "expired" | "stale_and_expired" | null;
             refresh_state: components["schemas"]["ProfileAnalysisSlotRefreshState"];
             failure_code: components["schemas"]["SafeProfileAnalysisFailureCode"];
+            auto_request_allowed: boolean;
+            /** Format: date-time */
+            next_retry_at: string | null;
+            next_retry_at_display: string | null;
+            force_attempts_remaining: number;
+            /** Format: date-time */
+            force_available_at: string | null;
+            force_available_at_display: string | null;
         };
         PersonProfileAnalyses: {
             input_revision: number;
@@ -1267,6 +1299,25 @@ export interface components {
          * @description Immutable safe terminal attempt. Successful entries have content and
          *     failed entries have null content; obsolete content is nullable.
          */
+        ProfileAnalysisRequestBody: {
+            analysis_type: components["schemas"]["ProfileAnalysisType"];
+            force?: boolean;
+        };
+        ProfileAnalysisRequestResult: {
+            request_id: string | null;
+            person_id: string;
+            analysis_type: components["schemas"]["ProfileAnalysisType"];
+            state: "queued" | "already_queued" | "already_valid" | "force_limited";
+            force: boolean;
+            force_attempts_remaining: number;
+            /** Format: date-time */
+            force_available_at: string | null;
+            force_available_at_display: string | null;
+        };
+        ProfileAnalysisRequestResponseEnvelope: {
+            data: components["schemas"]["ProfileAnalysisRequestResult"];
+            meta: components["schemas"]["Meta"];
+        };
         ProfileAnalysisHistoryItem: {
             analysis_id: string;
             person_id: string;
@@ -1290,6 +1341,10 @@ export interface components {
             completed_at: string;
             /** @description Human-facing completion time formatted by the API. */
             completed_at_display: string;
+            generated_age_display: string;
+            /** Format: date-time */
+            valid_until: string;
+            valid_until_display: string;
             attempt_number: number;
             failure_code: components["schemas"]["SafeProfileAnalysisFailureCode"];
             retryable: boolean | null;
@@ -2037,6 +2092,37 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["PersonNotFound"];
+        };
+    };
+    requestPersonProfileAnalysis: {
+        parameters: {
+            query?: never;
+            header?: {
+                "X-Request-Id"?: components["parameters"]["RequestId"];
+            };
+            path: {
+                person_id: components["parameters"]["PersonId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ProfileAnalysisRequestBody"];
+            };
+        };
+        responses: {
+            202: {
+                headers: { [name: string]: unknown };
+                content: {
+                    "application/json": components["schemas"]["ProfileAnalysisRequestResponseEnvelope"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["PersonNotFound"];
+            409: { headers: { [name: string]: unknown }; content?: never; };
+            429: { headers: { [name: string]: unknown }; content?: never; };
+            503: { headers: { [name: string]: unknown }; content?: never; };
         };
     };
     getPersonProfileAnalysisHistory: {

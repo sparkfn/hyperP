@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+from typing import Literal, cast
+from uuid import uuid4
 
+from src.display_format import format_display_datetime
 from src.graph.client import get_session
-from src.graph.converters import GraphRecord
+from src.graph.converters import GraphRecord, to_int, to_iso_or_none, to_str
 from src.graph.mappers import (
     map_audit_event,
     map_bankruptcy_case,
@@ -37,6 +40,7 @@ from src.graph.queries import (
     COUNT_PERSON_SHARED_IDENTIFIERS,
     COUNT_PERSON_SOURCE_RECORDS,
     COUNT_PERSON_TIMELINE,
+    CREATE_PROFILE_ANALYSIS_REQUEST,
     FIND_PERSON_BY_IDENTIFIER,
     GET_PERSON_AUDIT,
     GET_PERSON_BANKRUPTCY_CASES,
@@ -56,6 +60,7 @@ from src.graph.queries import (
     GET_PERSON_SOURCE_RECORDS,
     GET_PERSON_TIMELINE,
     GET_PERSON_TIMELINE_TARGET,
+    MARK_PROFILE_ANALYSIS_REQUEST_DISPATCH_FAILED,
     SEARCH_PERSONS,
     build_count_persons_query,
     build_list_persons_query,
@@ -83,6 +88,7 @@ from src.types import (
 from src.types_profile_analysis import (
     PersonProfileAnalyses,
     ProfileAnalysisHistoryItem,
+    ProfileAnalysisRequestResult,
     ProfileAnalysisType,
 )
 
@@ -191,6 +197,50 @@ class Neo4jPersonRepository:
             return None
         mapped = record_to_dict(record.keys(), list(record.values()))
         return map_person_profile_analyses(mapped)
+
+    async def request_profile_analysis(
+        self,
+        person_id: str,
+        analysis_type: ProfileAnalysisType,
+        force: bool,
+    ) -> ProfileAnalysisRequestResult | None:
+        request_id = str(uuid4())
+        async with get_session() as session:
+            result = await session.run(
+                CREATE_PROFILE_ANALYSIS_REQUEST,
+                person_id=person_id,
+                analysis_type=analysis_type,
+                force=force,
+                request_id=request_id,
+            )
+            record = await result.single()
+        if record is None:
+            return None
+        mapped = record_to_dict(record.keys(), list(record.values()))
+        state = to_str(mapped.get("state"))
+        if state not in {"queued", "already_queued", "already_valid", "force_limited"}:
+            raise ValueError("invalid profile analysis request state")
+        request_state = cast(
+            Literal["queued", "already_queued", "already_valid", "force_limited"],
+            state,
+        )
+        available_at = to_iso_or_none(mapped.get("force_available_at"))
+        return ProfileAnalysisRequestResult(
+            request_id=to_iso_or_none(mapped.get("request_id")),
+            person_id=to_str(mapped.get("person_id")),
+            analysis_type=analysis_type,
+            state=request_state,
+            force=force,
+            force_attempts_remaining=to_int(mapped.get("force_attempts_remaining")),
+            force_available_at=available_at,
+            force_available_at_display=(
+                format_display_datetime(available_at) if available_at is not None else None
+            ),
+        )
+
+    async def mark_profile_analysis_request_dispatch_failed(self, request_id: str) -> None:
+        async with get_session() as session:
+            await session.run(MARK_PROFILE_ANALYSIS_REQUEST_DISPATCH_FAILED, request_id=request_id)
 
     async def get_profile_analysis_history(
         self,

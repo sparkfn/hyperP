@@ -146,3 +146,60 @@
     grid-template-columns: 1fr;
   }
 }
+
+.card {
+  position: relative;
+}
+
+.invalidity {
+  margin: 12px 0 0;
+  color: var(--warn-text);
+  font-size: 12px;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin-top: 16px;
+}
+
+.forceButton {
+  border: 1px solid var(--border-subtle);
+  border-radius: 7px;
+  padding: 7px 10px;
+  background: var(--bg-hover);
+  color: var(--text-primary);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.forceButton:hover {
+  background: var(--warn-bg);
+}
+
+.forceHelp {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.cardOverlay,
+.loadingOverlay {
+  display: grid;
+  place-items: center;
+  min-height: 56px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--bg-card) 88%, transparent);
+  color: var(--text-primary);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.cardOverlay {
+  position: absolute;
+  inset: 0;
+  padding: 16px;
+  backdrop-filter: blur(1px);
+}

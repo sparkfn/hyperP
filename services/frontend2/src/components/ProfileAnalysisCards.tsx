@@ -4,16 +4,22 @@ import type {
   PersonProfileAnalyses,
   ProfileAnalysisSlot,
   ProfileAnalysisSlotRefreshState,
+  ProfileAnalysisType,
 } from "../lib/api-types-person";
 import styles from "./ProfileAnalysis.module.css";
 
 interface ProfileAnalysisCardsProps {
   analyses: PersonProfileAnalyses;
+  requestingTypes: ReadonlySet<ProfileAnalysisType>;
+  onForceRequest: (analysisType: ProfileAnalysisType) => void;
 }
 
 interface AnalysisCardProps {
   title: string;
+  analysisType: ProfileAnalysisType;
   slot: ProfileAnalysisSlot;
+  requesting: boolean;
+  onForceRequest: (analysisType: ProfileAnalysisType) => void;
 }
 
 const OVERALL_LABELS = {
@@ -28,6 +34,7 @@ const OVERALL_LABELS = {
 
 function slotStateLabel(state: ProfileAnalysisSlotRefreshState, hasCurrent: boolean): string {
   if (state === "disabled") return "Generation paused";
+  if (state === "idle") return hasCurrent ? "Update available" : "Not generated";
   if (state === "pending") return hasCurrent ? "Refresh queued" : "Queued";
   if (state === "running") return hasCurrent ? "Refreshing" : "Generating";
   if (state === "retrying") return hasCurrent ? "Refresh retry scheduled" : "Retry scheduled";
@@ -41,25 +48,44 @@ function missingOutputMessage(state: ProfileAnalysisSlotRefreshState): string {
   if (state === "running") return "Analysis is being generated.";
   if (state === "retrying") return "Analysis will retry automatically.";
   if (state === "failed") return "Analysis is unavailable because generation failed.";
-  return "No analysis is available yet.";
+  return "An analysis will be generated when this profile is opened.";
 }
 
-function AnalysisCard({ title, slot }: AnalysisCardProps): ReactElement {
+function invalidityMessage(slot: ProfileAnalysisSlot): string | null {
+  if (slot.stale && slot.expired) return "Profile data changed and this analysis has expired.";
+  if (slot.stale) return "Profile data changed after this analysis was generated.";
+  if (slot.expired) return "This analysis has expired and is being updated.";
+  return null;
+}
+
+function AnalysisCard({
+  title,
+  analysisType,
+  slot,
+  requesting,
+  onForceRequest,
+}: AnalysisCardProps): ReactElement {
   const current = slot.current;
+  const invalidity = invalidityMessage(slot);
+  const active = requesting || ["pending", "running", "retrying"].includes(slot.refresh_state);
+  const canForce = slot.valid && !active && slot.refresh_state !== "disabled";
+  const forceLimited = slot.force_attempts_remaining === 0;
   return (
-    <article className={styles.card}>
+    <article className={styles.card} aria-busy={active}>
       <div className={styles.cardHeader}>
         <h3 className={styles.cardTitle}>{title}</h3>
         <div className={styles.badges} aria-label={`${title} status`}>
           {slot.stale && <span className={`${styles.badge} ${styles.staleBadge}`}>Stale</span>}
+          {slot.expired && <span className={`${styles.badge} ${styles.staleBadge}`}>Expired</span>}
           <span className={`${styles.badge} ${styles[`state_${slot.refresh_state}`]}`}>
             {slotStateLabel(slot.refresh_state, current !== null)}
           </span>
         </div>
       </div>
 
+      {invalidity !== null && <p className={styles.invalidity}>{invalidity}</p>}
       {slot.refresh_state === "failed" && slot.failure_code !== null && (
-        <p className={styles.failureCode}>Failure code: {slot.failure_code}</p>
+        <p className={styles.failureCode}>Latest refresh failed: {slot.failure_code}</p>
       )}
 
       {current === null ? (
@@ -68,17 +94,40 @@ function AnalysisCard({ title, slot }: AnalysisCardProps): ReactElement {
         <>
           <div className={styles.content}>{current.content}</div>
           <div className={styles.metadata}>
-            <span>Generated {current.completed_at_display}</span>
+            <span>Generated {current.generated_age_display}</span>
+            <span>{current.completed_at_display}</span>
+            <span>Valid until {current.valid_until_display}</span>
             <span>Model {current.model}</span>
           </div>
         </>
       )}
+
+      {canForce && (
+        <div className={styles.actions}>
+          <button
+            className={styles.forceButton}
+            type="button"
+            disabled={forceLimited}
+            onClick={() => onForceRequest(analysisType)}
+          >
+            Force new analysis
+          </button>
+          <span className={styles.forceHelp}>
+            {forceLimited && slot.force_available_at_display !== null
+              ? `Forced refreshes available again ${slot.force_available_at_display}`
+              : `${slot.force_attempts_remaining} forced refreshes available this hour`}
+          </span>
+        </div>
+      )}
+      {active && <div className={styles.cardOverlay} role="status">Generating updated analysis…</div>}
     </article>
   );
 }
 
 export default function ProfileAnalysisCards({
   analyses,
+  requestingTypes,
+  onForceRequest,
 }: ProfileAnalysisCardsProps): ReactElement {
   return (
     <div className={styles.cardsArea}>
@@ -86,8 +135,20 @@ export default function ProfileAnalysisCards({
         Profile analysis status: <span>{OVERALL_LABELS[analyses.refresh_state]}</span>
       </p>
       <div className={styles.cardGrid}>
-        <AnalysisCard title="Sales" slot={analyses.sales} />
-        <AnalysisCard title="Contact tracing" slot={analyses.contact_tracing} />
+        <AnalysisCard
+          title="Sales"
+          analysisType="sales"
+          slot={analyses.sales}
+          requesting={requestingTypes.has("sales")}
+          onForceRequest={onForceRequest}
+        />
+        <AnalysisCard
+          title="Contact tracing"
+          analysisType="contact_tracing"
+          slot={analyses.contact_tracing}
+          requesting={requestingTypes.has("contact_tracing")}
+          onForceRequest={onForceRequest}
+        />
       </div>
     </div>
   );

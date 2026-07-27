@@ -16,8 +16,8 @@ from src.repositories.neo4j.person import Neo4jPersonRepository
 
 
 def test_profile_analysis_read_queries_use_scoped_subqueries() -> None:
-    assert "CALL {\n" not in GET_PERSON_PROFILE_ANALYSES
-    assert "CALL {\n" not in GET_PERSON_PROFILE_ANALYSIS_HISTORY
+    assert "CALL (person" in GET_PERSON_PROFILE_ANALYSES
+    assert "CALL (person" in GET_PERSON_PROFILE_ANALYSIS_HISTORY
 
 
 class _Record:

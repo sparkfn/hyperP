@@ -18,6 +18,7 @@ logger = logging.getLogger(__name__)
 
 _RECALCULATE_PAIR_AUDIT_TASK = "src.tasks.recalculate_pair_audit_match_task"
 _RUN_INGESTION_TASK = "src.tasks.run_ingestion_task"
+_RUN_PROFILE_ANALYSIS_REQUEST_TASK = "src.tasks.run_profile_analysis_request_task"
 
 
 @lru_cache(maxsize=1)
@@ -64,3 +65,8 @@ def enqueue_ingestion_run(
         args=(source_key, mode, dump_path),
         kwargs={"ingest_run_id": ingest_run_id},
     )
+
+
+def enqueue_profile_analysis_request(request_id: str) -> None:
+    """Queue one durable, person-and-type scoped profile-analysis request."""
+    get_celery_app().send_task(_RUN_PROFILE_ANALYSIS_REQUEST_TASK, args=(request_id,))

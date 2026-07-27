@@ -16,11 +16,18 @@ function withBasePath(path: string): string {
 export class BffError extends Error {
   public readonly status: number;
   public readonly code: string;
+  public readonly details: Readonly<Record<string, string>> | null;
 
-  constructor(status: number, code: string, message: string) {
+  constructor(
+    status: number,
+    code: string,
+    message: string,
+    details: Readonly<Record<string, string>> | null = null,
+  ) {
     super(message);
     this.status = status;
     this.code = code;
+    this.details = details;
   }
 }
 
@@ -47,7 +54,12 @@ export async function bffFetchEnvelope<T>(path: string, init?: RequestInit): Pro
       throw new BffError(401, "unauthorized", "Session expired.");
     }
     if (isApiError(json)) {
-      throw new BffError(response.status, json.error.code, json.error.message);
+      throw new BffError(
+        response.status,
+        json.error.code,
+        json.error.message,
+        json.error.details ?? null,
+      );
     }
     throw new BffError(response.status, "unknown_error", response.statusText);
   }

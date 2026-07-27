@@ -363,10 +363,12 @@ paths:
         The independent sales and contact-tracing slots retain any prior
         successful current content while a newer revision is pending, running,
         or failed. Slot state is `ready` for a result at the Person's current
-        input revision, `running` for an active refresh claim, `retrying` for a
-        scheduled bounded retry, `failed` for a current-revision terminal
-        failure when no refresh is active, `pending` otherwise, and `disabled`
-        when generation is paused by rollout configuration. Overall state uses
+        input revision that is within its 24-hour validity period, `idle` for
+        invalid output with no request, `pending` for a queued on-demand request,
+        `running` for an active refresh claim, `retrying` for a scheduled bounded
+        retry, `failed` for a current-revision terminal failure when no refresh is
+        active, and `disabled` when generation is paused by rollout configuration.
+        Overall state uses
         this precedence: disabled, running, retrying, ready/partial, failed,
         then pending.
       security:
@@ -400,15 +402,36 @@ paths:
                       started_at: "2026-07-21T01:00:00+00:00"
                       completed_at: "2026-07-21T01:02:00+00:00"
                       completed_at_display: "21 Jul 2026, 01:02 AM"
+                      generated_age_display: "6 days ago"
+                      valid_until: "2026-07-22T01:02:00+00:00"
+                      valid_until_display: "22 Jul 2026, 01:02 AM"
                       attempt_number: 2
                     stale: true
+                    expired: true
+                    valid: false
+                    invalid_reason: stale_and_expired
                     refresh_state: running
                     failure_code: null
+                    auto_request_allowed: false
+                    next_retry_at: null
+                    next_retry_at_display: null
+                    force_attempts_remaining: 3
+                    force_available_at: null
+                    force_available_at_display: null
                   contact_tracing:
                     current: null
                     stale: false
+                    expired: false
+                    valid: false
+                    invalid_reason: missing
                     refresh_state: pending
                     failure_code: null
+                    auto_request_allowed: false
+                    next_retry_at: null
+                    next_retry_at_display: null
+                    force_attempts_remaining: 3
+                    force_available_at: null
+                    force_available_at_display: null
                 meta:
                   request_id: "req_abc123"
                   next_cursor: null
@@ -420,6 +443,47 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/PersonNotFound'
+  /v1/persons/{person_id}/profile-analyses/requests:
+    post:
+      tags: [Persons]
+      summary: Queue one on-demand Person profile analysis
+      operationId: requestPersonProfileAnalysis
+      description: |
+        Authenticated human frontend surface only. Requests exactly one analysis
+        type for the canonical Person. Normal requests are accepted only for
+        missing, stale, or expired output. Forced requests can replace valid
+        output and are limited to three accepted requests per canonical Person
+        and analysis type in a rolling hour.
+      security:
+        - humanBearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/PersonId'
+        - $ref: '#/components/parameters/RequestId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProfileAnalysisRequestBody'
+      responses:
+        '202':
+          description: Request queued, already queued, or already valid
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProfileAnalysisRequestResponseEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/PersonNotFound'
+        '409':
+          description: Profile analysis is disabled.
+        '429':
+          description: Forced-refresh rolling-hour limit reached.
+        '503':
+          description: The request could not be dispatched.
   /v1/persons/{person_id}/profile-analyses/history:
     get:
       tags: [Persons]
@@ -2737,14 +2801,15 @@ components:
       enum: [succeeded, failed, obsolete]
     ProfileAnalysisSlotRefreshState:
       type: string
-      enum: [disabled, pending, running, retrying, ready, failed]
+      enum: [disabled, idle, pending, running, retrying, ready, failed]
       description: |
         `disabled` means generation is paused by rollout configuration;
         `ready` means current content matches the Person input revision;
         `running` means a refresh claim is active; `retrying` means a retryable
         failure has a scheduled retry; `failed` means a terminal
         failure exists for the current revision and no refresh is active; and
-        `pending` means the slot is not fresh, active, or failed.
+        `idle` means output is missing, stale, or expired with no active request;
+        `pending` means an on-demand request is queued.
     ProfileAnalysisRefreshState:
       type: string
       enum: [disabled, pending, running, retrying, ready, partial, failed]
@@ -2801,6 +2866,15 @@ components:
         completed_at_display:
           type: string
           description: Human-facing completion time formatted by the API.
+        generated_age_display:
+          type: string
+          description: Human-facing relative age formatted by the API.
+        valid_until:
+          type: string
+          format: date-time
+        valid_until_display:
+          type: string
+          description: Human-facing validity deadline formatted by the API.
         attempt_number:
           type: integer
           minimum: 1
@@ -2818,6 +2892,9 @@ components:
         - started_at
         - completed_at
         - completed_at_display
+        - generated_age_display
+        - valid_until
+        - valid_until_display
         - attempt_number
       additionalProperties: false
     ProfileAnalysisSlot:
@@ -2834,11 +2911,34 @@ components:
         stale:
           type: boolean
           description: Current content exists but has an older input revision.
+        expired:
+          type: boolean
+        valid:
+          type: boolean
+        invalid_reason:
+          type: [string, 'null']
+          enum: [missing, stale, expired, stale_and_expired, null]
         refresh_state:
           $ref: '#/components/schemas/ProfileAnalysisSlotRefreshState'
         failure_code:
           $ref: '#/components/schemas/SafeProfileAnalysisFailureCode'
-      required: [current, stale, refresh_state, failure_code]
+        auto_request_allowed:
+          type: boolean
+        next_retry_at:
+          type: [string, 'null']
+          format: date-time
+        next_retry_at_display:
+          type: [string, 'null']
+        force_attempts_remaining:
+          type: integer
+          minimum: 0
+          maximum: 3
+        force_available_at:
+          type: [string, 'null']
+          format: date-time
+        force_available_at_display:
+          type: [string, 'null']
+      required: [current, stale, expired, valid, invalid_reason, refresh_state, failure_code, auto_request_allowed, next_retry_at, next_retry_at_display, force_attempts_remaining, force_available_at, force_available_at_display]
       additionalProperties: false
     PersonProfileAnalyses:
       type: object
@@ -2853,6 +2953,50 @@ components:
         contact_tracing:
           $ref: '#/components/schemas/ProfileAnalysisSlot'
       required: [input_revision, refresh_state, sales, contact_tracing]
+      additionalProperties: false
+    ProfileAnalysisRequestBody:
+      type: object
+      properties:
+        analysis_type:
+          $ref: '#/components/schemas/ProfileAnalysisType'
+        force:
+          type: boolean
+          default: false
+      required: [analysis_type]
+      additionalProperties: false
+    ProfileAnalysisRequestResult:
+      type: object
+      properties:
+        request_id:
+          type: [string, 'null']
+        person_id:
+          type: string
+        analysis_type:
+          $ref: '#/components/schemas/ProfileAnalysisType'
+        state:
+          type: string
+          enum: [queued, already_queued, already_valid, force_limited]
+        force:
+          type: boolean
+        force_attempts_remaining:
+          type: integer
+          minimum: 0
+          maximum: 3
+        force_available_at:
+          type: [string, 'null']
+          format: date-time
+        force_available_at_display:
+          type: [string, 'null']
+      required: [request_id, person_id, analysis_type, state, force, force_attempts_remaining, force_available_at, force_available_at_display]
+      additionalProperties: false
+    ProfileAnalysisRequestResponseEnvelope:
+      type: object
+      properties:
+        data:
+          $ref: '#/components/schemas/ProfileAnalysisRequestResult'
+        meta:
+          $ref: '#/components/schemas/Meta'
+      required: [data, meta]
       additionalProperties: false
     ProfileAnalysisHistoryItem:
       type: object

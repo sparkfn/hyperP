@@ -1,6 +1,6 @@
 import type { NextResponse } from "next/server";
 
-import type { PersonProfileAnalyses } from "@/lib/api-types-person";
+import type { PersonProfileAnalyses, ProfileAnalysisRequestResult } from "@/lib/api-types-person";
 import { proxyToApi } from "@/lib/proxy";
 
 export const dynamic = "force-dynamic";
@@ -13,5 +13,14 @@ export async function GET(_request: Request, context: RouteContext): Promise<Nex
   const { personId } = await context.params;
   return proxyToApi<PersonProfileAnalyses>(
     `/persons/${encodeURIComponent(personId)}/profile-analyses`,
+  );
+}
+
+export async function POST(request: Request, context: RouteContext): Promise<NextResponse> {
+  const { personId } = await context.params;
+  const body: unknown = await request.json();
+  return proxyToApi<ProfileAnalysisRequestResult>(
+    `/persons/${encodeURIComponent(personId)}/profile-analyses/requests`,
+    { method: "POST", body },
   );
 }

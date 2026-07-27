@@ -9,7 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field
 type ProfileAnalysisType = Literal["sales", "contact_tracing"]
 type ProfileAnalysisStatus = Literal["succeeded", "failed", "obsolete"]
 type ProfileAnalysisSlotRefreshState = Literal[
-    "disabled", "pending", "running", "retrying", "ready", "failed"
+    "disabled", "idle", "pending", "running", "retrying", "ready", "failed"
 ]
 type ProfileAnalysisRefreshState = Literal[
     "disabled", "pending", "running", "retrying", "ready", "partial", "failed"
@@ -34,6 +34,9 @@ class ProfileAnalysisCurrent(BaseModel):
     started_at: str
     completed_at: str
     completed_at_display: str
+    generated_age_display: str
+    valid_until: str
+    valid_until_display: str
     attempt_number: int = Field(ge=1)
 
 
@@ -44,8 +47,17 @@ class ProfileAnalysisSlot(BaseModel):
 
     current: ProfileAnalysisCurrent | None
     stale: bool
+    expired: bool
+    valid: bool
+    invalid_reason: Literal["missing", "stale", "expired", "stale_and_expired"] | None
     refresh_state: ProfileAnalysisSlotRefreshState
     failure_code: str | None
+    auto_request_allowed: bool
+    next_retry_at: str | None
+    next_retry_at_display: str | None
+    force_attempts_remaining: int = Field(ge=0, le=3)
+    force_available_at: str | None
+    force_available_at_display: str | None
 
 
 class PersonProfileAnalyses(BaseModel):
@@ -81,3 +93,27 @@ class ProfileAnalysisHistoryItem(BaseModel):
     failure_code: str | None
     retryable: bool | None
     next_retry_at: str | None
+
+
+class ProfileAnalysisRequestBody(BaseModel):
+    """Request one independent analysis generation."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    analysis_type: ProfileAnalysisType
+    force: bool = False
+
+
+class ProfileAnalysisRequestResult(BaseModel):
+    """Safe result of creating or reusing an on-demand analysis request."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    request_id: str | None
+    person_id: str
+    analysis_type: ProfileAnalysisType
+    state: Literal["queued", "already_queued", "already_valid", "force_limited"]
+    force: bool
+    force_attempts_remaining: int = Field(ge=0, le=3)
+    force_available_at: str | None
+    force_available_at_display: str | None

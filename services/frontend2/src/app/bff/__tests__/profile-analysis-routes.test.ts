@@ -11,7 +11,7 @@ const { proxyToApi, searchParamsToQuery } = vi.hoisted(() => ({
 
 vi.mock("@/lib/proxy", () => ({ proxyToApi, searchParamsToQuery }));
 
-import { GET as getCurrent, dynamic as currentDynamic } from "../persons/[personId]/profile-analyses/route";
+import { GET as getCurrent, POST as postRequest, dynamic as currentDynamic } from "../persons/[personId]/profile-analyses/route";
 import { GET as getHistory, dynamic as historyDynamic } from "../persons/[personId]/profile-analyses/history/route";
 
 beforeEach(() => {
@@ -72,5 +72,24 @@ describe("profile analysis BFF routes", () => {
 
     expect(result.status).toBe(503);
     expect(await result.text()).toBe("upstream error");
+  });
+
+  it("forwards one typed analysis request to the authenticated API", async () => {
+    const response = new Response("queued", { status: 202 });
+    proxyToApi.mockResolvedValue(response);
+
+    const result = await postRequest(
+      new Request("https://example.test/bff/persons/person%2Fone/profile-analyses", {
+        method: "POST",
+        body: JSON.stringify({ analysis_type: "sales", force: false }),
+      }),
+      { params: Promise.resolve({ personId: "person/one" }) },
+    );
+
+    expect(proxyToApi).toHaveBeenCalledWith(
+      "/persons/person%2Fone/profile-analyses/requests",
+      { method: "POST", body: { analysis_type: "sales", force: false } },
+    );
+    expect(result).toBe(response);
   });
 });
