@@ -307,6 +307,30 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+  /v1/persons/summary:
+    get:
+      tags: [Persons]
+      summary: Get person-listing summary counts
+      operationId: getPersonListSummary
+      description: >-
+        Returns the all-profile, high-risk, high-value, and no-contact counts
+        shown above the authenticated person listing. Counts exclude merged
+        persons and are calculated in one aggregate graph read.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+      responses:
+        '200':
+          description: Person-listing summary counts
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PersonListSummaryEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
   /v1/persons/{person_id}:
     get:
       tags: [Persons]
@@ -1876,6 +1900,32 @@ components:
         - identifier_counts
         - created_at
         - updated_at
+      additionalProperties: false
+    PersonListSummary:
+      type: object
+      properties:
+        all_profiles_count:
+          type: integer
+          minimum: 0
+        high_risk_count:
+          type: integer
+          minimum: 0
+        high_value_count:
+          type: integer
+          minimum: 0
+        no_contact_count:
+          type: integer
+          minimum: 0
+      required: [all_profiles_count, high_risk_count, high_value_count, no_contact_count]
+      additionalProperties: false
+    PersonListSummaryEnvelope:
+      type: object
+      properties:
+        data:
+          $ref: '#/components/schemas/PersonListSummary'
+        meta:
+          $ref: '#/components/schemas/Meta'
+      required: [data, meta]
       additionalProperties: false
     AddressSummary:
       type: object

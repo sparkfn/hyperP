@@ -219,6 +219,13 @@ export interface EntitySummary {
   active_review_cases: number;
 }
 
+export interface PersonListSummary {
+  all_profiles_count: number;
+  high_risk_count: number;
+  high_value_count: number;
+  no_contact_count: number;
+}
+
 export interface SourceSystemSummary {
   source_key: string;
   display_name: string | null;

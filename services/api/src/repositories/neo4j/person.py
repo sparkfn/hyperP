@@ -51,6 +51,7 @@ from src.graph.queries import (
     GET_PERSON_CONNECTIONS_KNOWS,
     GET_PERSON_ENTITIES,
     GET_PERSON_IDENTIFIERS,
+    GET_PERSON_LIST_SUMMARY,
     GET_PERSON_MATCHES,
     GET_PERSON_POSSIBLE_MATCH_DETAIL,
     GET_PERSON_PROFILE_ANALYSES,
@@ -79,6 +80,7 @@ from src.types import (
     PersonEntitySummary,
     PersonGraph,
     PersonIdentifier,
+    PersonListSummary,
     PersonSharedIdentifierCandidate,
     PersonTimelineGroup,
     PossibleMatchDetail,
@@ -122,18 +124,20 @@ class Neo4jPersonRepository:
         sort_by = filters.get("sort_by")
         sort_order = filters.get("sort_order")
         has_q = filters.get("q") is not None
-        has_addr_filter = any(
-            filters.get(k) is not None
-            for k in ("addr_street", "addr_unit", "addr_city", "addr_postal", "addr_country")
-        )
+        active_filters = frozenset(key for key, value in filters.items() if value is not None)
         entity_mode = filters.get("entity_key_mode") or "or"
         source_mode = filters.get("source_key_mode") or "or"
         list_query = build_list_persons_query(
-            sort_by, sort_order, has_q=has_q, entity_mode=entity_mode, source_mode=source_mode
+            sort_by,
+            sort_order,
+            has_q=has_q,
+            active_filters=active_filters,
+            entity_mode=entity_mode,
+            source_mode=source_mode,
         )
         count_query = build_count_persons_query(
             has_q=has_q,
-            has_addr_filter=has_addr_filter,
+            active_filters=active_filters,
             entity_mode=entity_mode,
             source_mode=source_mode,
         )
@@ -160,6 +164,20 @@ class Neo4jPersonRepository:
 
         records, total = await asyncio.gather(_run_list(), _run_count())
         return [map_listed_person(rec) for rec in records[:limit]], total
+
+    async def get_list_summary(self) -> PersonListSummary:
+        async with get_session() as session:
+            result = await session.run(GET_PERSON_LIST_SUMMARY)
+            record = await result.single()
+        if record is None:
+            return PersonListSummary()
+        values = record_to_dict(record.keys(), list(record.values()))
+        return PersonListSummary(
+            all_profiles_count=to_int(values.get("all_profiles_count")),
+            high_risk_count=to_int(values.get("high_risk_count")),
+            high_value_count=to_int(values.get("high_value_count")),
+            no_contact_count=to_int(values.get("no_contact_count")),
+        )
 
     async def search_by_identifier(self, identifier_type: str, value: str) -> list[Person]:
         async with get_session() as session:

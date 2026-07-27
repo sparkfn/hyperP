@@ -94,6 +94,7 @@ from src.graph.queries.persons import (
     SEARCH_PERSONS,
 )
 from src.graph.queries.persons_list import (
+    GET_PERSON_LIST_SUMMARY,
     build_count_persons_query,
     build_list_persons_query,
 )
@@ -231,6 +232,7 @@ __all__ = [
     "GET_PERSON_ENTITIES",
     "GET_PERSON_FACTS",
     "GET_PERSON_IDENTIFIERS",
+    "GET_PERSON_LIST_SUMMARY",
     "GET_PERSON_MATCHES",
     "GET_PERSON_PROFILE_ANALYSES",
     "GET_PERSON_PROFILE_ANALYSIS_HISTORY",

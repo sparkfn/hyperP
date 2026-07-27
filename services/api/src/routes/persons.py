@@ -22,6 +22,7 @@ from src.types import (
     PersonEntitySummary,
     PersonGraph,
     PersonIdentifier,
+    PersonListSummary,
     PersonSharedIdentifierCandidate,
     PersonTimelineGroup,
     PopoverDisplayItem,
@@ -227,6 +228,15 @@ async def list_persons(
     items, total = await repo.get_page(filters, skip, page_limit)
     has_more = skip + page_limit < total
     return envelope(items, request, next_cursor(skip, page_limit, has_more), total_count=total)
+
+
+@router.get("/summary", response_model=ApiResponse[PersonListSummary])
+async def get_person_list_summary(
+    request: Request,
+    repo: PersonRepository = Depends(get_person_repo),
+) -> ApiResponse[PersonListSummary]:
+    """Return the aggregate counts displayed above the person listing."""
+    return envelope(await repo.get_list_summary(), request)
 
 
 @router.get("/search", response_model=ApiResponse[list[Person]])

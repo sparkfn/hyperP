@@ -21,7 +21,10 @@ def test_active_domain_relationship_reads_are_rollout_compatible() -> None:
             persons.COUNT_PERSON_SHARED_IDENTIFIERS,
             persons.GET_PERSON_POSSIBLE_MATCH_DETAIL,
             persons_list.build_list_persons_query("connection_count", "desc", has_q=False),
-            persons_list.build_count_persons_query(has_q=False, has_addr_filter=True),
+            persons_list.build_count_persons_query(
+                has_q=False,
+                active_filters=frozenset({"addr_city"}),
+            ),
             entities.get_entity_persons_query("connection_count", "desc"),
             survivorship.GET_BEST_ADDRESS,
             survivorship.GET_BEST_IDENTIFIER,

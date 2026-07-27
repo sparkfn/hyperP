@@ -15,6 +15,7 @@ from src.types import (
     PersonEntitySummary,
     PersonGraph,
     PersonIdentifier,
+    PersonListSummary,
     PersonSharedIdentifierCandidate,
     PersonTimelineGroup,
     PossibleMatchDetail,
@@ -68,6 +69,10 @@ class PersonRepository(Protocol):
         self, filters: PersonListFilters, skip: int, limit: int
     ) -> tuple[list[ListedPerson], int]:
         """Return a page of persons matching filters, plus the total count."""
+        ...
+
+    async def get_list_summary(self) -> PersonListSummary:
+        """Return the aggregate counts shown above the person listing."""
         ...
 
     async def search_by_identifier(self, identifier_type: str, value: str) -> list[Person]: ...
