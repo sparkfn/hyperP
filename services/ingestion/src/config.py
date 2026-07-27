@@ -218,7 +218,7 @@ class Settings(BaseSettings):
     internal_person_names: list[str] = []
     # Consolidated ingestion config (exclusions + LLM call tuning). LLM service
     # tuning (timeout/delay/retries) lives in this file's `llm` block; LLM
-    # ProClaude provider credentials are read from the environment.
+    # GPT and ProClaude provider credentials are read from the environment.
     ingestion_config_file: str = ""
 
     # Birthday greeting task -------------------------------------------------

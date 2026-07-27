@@ -6,19 +6,10 @@ partial parse for other formats.
 
 from __future__ import annotations
 
-import asyncio
-import json
-import logging
 import re
 from dataclasses import dataclass
-from typing import TypedDict
 
-from src.llm import ChatMessage, get_address_llm_service
-from src.llm_prompts import ADDRESS_NORMALIZATION_SYSTEM, build_address_normalization_prompt
 from src.models import QualityFlag, RawAddress
-from src.normalizers.clean import str_or_none
-
-logger = logging.getLogger(__name__)
 
 # Matches common Singapore address patterns:
 #   "#05-123 10 Example Street Singapore 123456"
@@ -34,19 +25,6 @@ _SG_ADDRESS_RE = re.compile(
     r"\s*$",
     re.IGNORECASE,
 )
-
-
-class _LlmAddress(TypedDict):
-    input_index: int
-    unit_number: str | None
-    street_number: str | None
-    street_name: str | None
-    building_name: str | None
-    city: str | None
-    state_province: str | None
-    postal_code: str | None
-    country_code: str | None
-    normalized_full: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -145,12 +123,16 @@ def normalize_address(
 def normalize_raw_addresses(
     addresses: list[RawAddress],
 ) -> list[tuple[NormalizedAddress, QualityFlag]]:
-    raw_inputs = [_raw_address_text(address) for address in addresses]
-    usable_inputs = [raw for raw in raw_inputs if raw]
-    if not usable_inputs:
-        return []
-    llm_results = _normalize_with_llm(usable_inputs)
-    return _merge_llm_and_fallback(usable_inputs, llm_results)
+    """Normalize and deduplicate addresses using deterministic parsing only."""
+    results: list[tuple[NormalizedAddress, QualityFlag]] = []
+    seen: set[tuple[str, str, str, str, str | None]] = set()
+    for raw_input in (_raw_address_text(address) for address in addresses):
+        if raw_input is None:
+            continue
+        normalized, flag = normalize_address(raw_input)
+        if normalized is not None:
+            _append_unique(results, seen, normalized, flag)
+    return results
 
 
 def _raw_address_text(address: RawAddress) -> str | None:
@@ -182,89 +164,6 @@ def _has_structured_location(address: RawAddress) -> bool:
             address.building_name,
         )
     )
-
-
-def _normalize_with_llm(inputs: list[str]) -> dict[int, list[NormalizedAddress]]:
-    try:
-        response_text = asyncio.run(_normalize_with_llm_async(inputs))
-    except Exception as exc:
-        logger.warning("LLM address normalization failed: %r", exc)
-        return {}
-    try:
-        payload = json.loads(response_text)
-    except json.JSONDecodeError:
-        logger.warning(
-            "LLM address normalization returned invalid JSON (len=%d)", len(response_text)
-        )
-        return {}
-    if not isinstance(payload, dict):
-        return {}
-    raw_addresses = payload.get("addresses")
-    if not isinstance(raw_addresses, list):
-        return {}
-    results: dict[int, list[NormalizedAddress]] = {}
-    for raw_item in raw_addresses:
-        parsed = _parse_llm_address(raw_item)
-        if parsed is None:
-            continue
-        input_index, address = parsed
-        results.setdefault(input_index, []).append(address)
-    return results
-
-
-async def _normalize_with_llm_async(inputs: list[str]) -> str:
-    svc = get_address_llm_service()
-    return await svc.chat_json(
-        [
-            ChatMessage(role="system", content=ADDRESS_NORMALIZATION_SYSTEM),
-            ChatMessage(role="user", content=build_address_normalization_prompt(inputs)),
-        ]
-    )
-
-
-def _parse_llm_address(raw: object) -> tuple[int, NormalizedAddress] | None:
-    if not isinstance(raw, dict):
-        return None
-    input_index = raw.get("input_index")
-    if not isinstance(input_index, int):
-        return None
-    postal_code = str_or_none(raw.get("postal_code"))
-    street_name = str_or_none(raw.get("street_name"))
-    normalized_full = str_or_none(raw.get("normalized_full"))
-    if not postal_code or not street_name or not normalized_full:
-        return None
-    country_code = str_or_none(raw.get("country_code")) or "SG"
-    city = str_or_none(raw.get("city")) or "singapore"
-    address = NormalizedAddress(
-        unit_number=str_or_none(raw.get("unit_number")),
-        street_number=str_or_none(raw.get("street_number")) or "",
-        street_name=street_name.lower(),
-        building_name=str_or_none(raw.get("building_name")),
-        city=city.lower(),
-        state_province=str_or_none(raw.get("state_province")),
-        postal_code=postal_code,
-        country_code=country_code.upper(),
-        normalized_full=normalized_full.lower(),
-    )
-    return input_index, address
-
-
-def _merge_llm_and_fallback(
-    inputs: list[str],
-    llm_results: dict[int, list[NormalizedAddress]],
-) -> list[tuple[NormalizedAddress, QualityFlag]]:
-    results: list[tuple[NormalizedAddress, QualityFlag]] = []
-    seen: set[tuple[str, str, str, str, str | None]] = set()
-    for index, raw in enumerate(inputs):
-        addresses = llm_results.get(index, [])
-        if addresses:
-            for address in addresses:
-                _append_unique(results, seen, address, QualityFlag.VALID)
-            continue
-        fallback, flag = normalize_address(raw)
-        if fallback is not None:
-            _append_unique(results, seen, fallback, flag)
-    return results
 
 
 def _append_unique(
