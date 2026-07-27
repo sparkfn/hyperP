@@ -21,7 +21,7 @@ celery_app = Celery(
     "profile_unifier_ingestion",
     broker=settings.celery_broker_url,
     backend=settings.celery_result_backend,
-    include=["src.tasks"],
+    include=["src.tasks", "src.ingestion_orchestration_tasks"],
 )
 
 celery_app.conf.update(
@@ -29,6 +29,14 @@ celery_app.conf.update(
     task_reject_on_worker_lost=True,
     worker_prefetch_multiplier=1,
     worker_concurrency=settings.celery_worker_concurrency,
+    # Redis emulates task priorities using queue suffixes. The orchestration
+    # still enforces its phase barrier with a Celery chain; priority only
+    # improves dispatch order inside a phase.
+    task_queue_max_priority=9,
+    broker_transport_options={
+        "visibility_timeout": settings.celery_broker_visibility_timeout,
+        "priority_steps": list(range(10)),
+    },
     # Large LLM-bound dumps may run indefinitely; their task-specific late
     # acknowledgement and renewable Redis leases are configured in src.tasks.
     task_time_limit=None,
@@ -36,9 +44,6 @@ celery_app.conf.update(
     timezone="UTC",
     enable_utc=True,
     broker_connection_retry_on_startup=True,
-    broker_transport_options={
-        "visibility_timeout": settings.celery_broker_visibility_timeout,
-    },
     result_backend_transport_options={
         "visibility_timeout": settings.celery_broker_visibility_timeout,
     },

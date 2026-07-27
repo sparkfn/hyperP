@@ -113,6 +113,7 @@ module = [
     "src.config",
     "src.celery_app",
     "src.tasks",
+    "src.ingestion_orchestration_tasks",
     "src.external.whatsapp_api",
     "src.birthday",
     "src.redis_client",
