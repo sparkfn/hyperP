@@ -52,7 +52,7 @@ docker compose ps
 ```
 
 Local checks provide fast feedback, but Woodpecker remains the required verifier
-for pushed PR and development-branch work.
+for pushed PR and post-merge `main` work.
 
 Validate through Woodpecker after an authorized push to a PR branch:
 
@@ -63,6 +63,16 @@ wpci home pipeline last sparkfn/hyperP --branch <branch>
 wpci home pipeline show sparkfn/hyperP <pipeline-number>
 wpci home pipeline log show sparkfn/hyperP <pipeline-number> <step-name>
 ```
+
+After an authorized PR merge into `main`, inspect the post-merge pipeline with:
+
+```powershell
+wpci home pipeline ls sparkfn/hyperP --branch main
+wpci home pipeline show sparkfn/hyperP <pipeline-number>
+```
+
+Because pull-request pipelines can also report `branch: main`, select the latest
+pipeline whose `event` is `push`; do not assume the first branch match is MAIN CI.
 
 Inspect Woodpecker **only** with `wpci home`; never open its UI, use tokens, or
 use legacy wrappers. Do not claim work complete without required pipeline evidence:
@@ -87,11 +97,11 @@ accepts a partial result with a tracked follow-up.
   `.docker/staging/docker-compose.yml` in the same commit.
 
 Woodpecker is untrusted. Canonical workflows are `.woodpecker/pr.yaml` for pull
-requests and `.woodpecker/dev.yaml` for pushes to `development`. PR CI runs Python
-lint/type/test checks plus frontend2 typecheck and ESLint errors-only. DEV reruns
-those checks on the merge commit and adds the frontend production build and frozen
+requests and `.woodpecker/main.yaml` for pushes to `main`. PR CI runs Python
+lint/type/test checks plus frontend2 typecheck and ESLint errors-only. MAIN reruns
+those checks on the merged commit and adds the frontend production build and frozen
 production Python install. Do not add Docker sockets, `volumes:`, or
-`docker compose up` to PR/DEV workflows.
+`docker compose up` to PR/MAIN workflows.
 
 ## Active application and topology
 

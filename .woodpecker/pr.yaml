@@ -1,16 +1,16 @@
 # PR validation for sparkfn/hyperP — fast feedback only.
 # Triggers: pull_request events only. No push, no main/production, no deploy, no secrets.
-# A green PR pipeline = candidate for merge to the PR branch's base branch; it is NOT a DEV, staging,
-# main, or production approval.
+# A green PR pipeline = candidate for merge to the PR branch's base branch; it is NOT a MAIN,
+# staging, or production approval.
 # Inspect via:  wpci home pipeline last sparkfn/hyperP --branch <pr-branch>
 #
 # Executor: local Woodpecker (docker backend, untrusted repo — no host volumes/socket).
 # Tests are mock/fake-based (see services/api/tests/conftest.py, services/ingestion/tests/conftest.py)
 # so the full pytest suite runs without Neo4j/Redis service containers.
 #
-# SYNC NOTE: the python-checks step below is deliberately duplicated in .woodpecker/dev.yaml
+# SYNC NOTE: the python-checks step below is deliberately duplicated in .woodpecker/main.yaml
 # (Woodpecker has no cross-file includes). When changing a command here, apply the same
-# change there so DEV does not silently diverge from PR.
+# change there so MAIN does not silently diverge from PR.
 when:
   event:
     - pull_request
