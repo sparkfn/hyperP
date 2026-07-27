@@ -1,28 +1,29 @@
-# DEV/integration validation for sparkfn/hyperP — push to `development` only.
-# Triggers: push events on the `development` branch only. No main/production, no deploy,
-# no production secrets, no host volumes, no Docker socket, no image push.
-# Materially stronger than PR: re-validates python checks on the merge commit, plus a
+# MAIN post-merge validation for sparkfn/hyperP — push to `main` only.
+# Triggers: push events on the `main` branch only. No deploy, no production secrets,
+# no host volumes, no Docker socket, no image push.
+# Materially stronger than PR: re-validates python checks on the merged main commit, plus a
 # real Next.js production build (catches what tsc-only misses) and a production
 # dependency install (mirrors the Dockerfile's `uv sync --frozen --no-dev`).
-# Inspect via:  wpci home pipeline last sparkfn/hyperP --branch development
+# Inspect via:  wpci home pipeline ls sparkfn/hyperP --branch main
+# Select the latest `event: push` result, then inspect it with `pipeline show`.
 #
 # SYNC NOTE: the python-checks step below is deliberately duplicated in .woodpecker/pr.yaml
 # (Woodpecker has no cross-file includes). When changing a command here, apply the same
-# change there so PR and DEV do not silently diverge.
+# change there so PR and MAIN do not silently diverge.
 #
 # DEFERRED (follow-up issue): Compose startup + health smoke + Docker image build are
-# stronger DEV signals but require a Docker socket mount / trusted repo, which the
-# PR/DEV boundary forbids (MAIN-only). They are tracked separately, not silently skipped.
+# stronger signals but require a Docker socket mount / trusted repo, which this
+# unprivileged PR/MAIN validation boundary forbids. They are tracked separately.
 #
 # Executor: local Woodpecker (docker backend, untrusted repo — no host volumes/socket).
 when:
   event:
     - push
   branch:
-    - development
+    - main
 
 steps:
-  # Re-run the PR python suite on the integration merge commit to catch merge breakage,
+  # Re-run the PR python suite on the merged main commit to catch merge breakage,
   # then add the production-install signal (mirrors the Dockerfile runtime install).
   - name: python-checks
     image: ghcr.io/astral-sh/uv:python3.12-bookworm
