@@ -4,7 +4,13 @@ import { useState, useEffect, useId, useRef, useCallback, useMemo, type Keyboard
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense } from "react";
-import type { ListedPerson, PersonConnection, SalesOrder, EntitySummary } from "@/lib/api-types";
+import type {
+  EntitySummary,
+  ListedPerson,
+  PersonConnection,
+  PersonListSummary,
+  SalesOrder,
+} from "@/lib/api-types";
 import { bffFetchEnvelope, BffError, bffFetch } from "@/lib/api-client";
 import type { SourceSystemInfo } from "@/lib/api-types-ops";
 import { avatarColor, completenessColor, getInitials } from "@/lib/display";
@@ -1001,29 +1007,17 @@ function PersonsInner(): ReactElement {
     const { signal } = controller;
     void (async () => {
       try {
-        const [ents, srcs, all, hr, hv, nc] = await Promise.all([
+        const [ents, srcs, summary] = await Promise.all([
           bffFetch<EntitySummary[]>("/bff/entities", { cache: "no-store", signal }),
           bffFetch<SourceSystemInfo[]>("/bff/source-systems", { cache: "no-store", signal }),
-          bffFetchEnvelope<ListedPerson[]>("/bff/persons?limit=1", { cache: "no-store", signal }),
-          bffFetchEnvelope<ListedPerson[]>("/bff/persons?is_high_risk=true&limit=1", {
-            cache: "no-store",
-            signal,
-          }),
-          bffFetchEnvelope<ListedPerson[]>("/bff/persons?is_high_value=true&limit=1", {
-            cache: "no-store",
-            signal,
-          }),
-          bffFetchEnvelope<ListedPerson[]>(
-            "/bff/persons?has_phone=false&has_email=false&limit=1",
-            { cache: "no-store", signal },
-          ),
+          bffFetch<PersonListSummary>("/bff/persons/summary", { cache: "no-store", signal }),
         ]);
         setEntities(ents);
         setSourceSystems(srcs);
-        setAllProfilesCount(all.meta.total_count ?? null);
-        setHighRiskCount(hr.meta.total_count ?? null);
-        setHighValueCount(hv.meta.total_count ?? null);
-        setNoContactCount(nc.meta.total_count ?? null);
+        setAllProfilesCount(summary.all_profiles_count);
+        setHighRiskCount(summary.high_risk_count);
+        setHighValueCount(summary.high_value_count);
+        setNoContactCount(summary.no_contact_count);
       } catch {
         // silently fail — filter options and stat cards fall back gracefully
       } finally {

@@ -10,190 +10,20 @@ preferred_email, and preferred_phone via the ``person_name_search`` fulltext ind
 
 from __future__ import annotations
 
-_COMMON_FILTER_CLAUSE = """
+from src.graph.queries.persons_list_filters import (
+    ADDRESS_FILTERS,
+    build_common_filter_clause,
+    build_entity_filter_clause,
+)
+
+GET_PERSON_LIST_SUMMARY = """
+MATCH (p:Person)
 WHERE p.status <> 'merged'
-  AND ($is_high_value IS NULL OR p.is_high_value = $is_high_value)
-  AND ($is_high_risk IS NULL OR p.is_high_risk = $is_high_risk)
-  AND ($has_phone IS NULL
-       OR ($has_phone = true  AND p.preferred_phone IS NOT NULL)
-       OR ($has_phone = false AND p.preferred_phone IS NULL))
-  AND ($has_email IS NULL
-       OR ($has_email = true  AND p.preferred_email IS NOT NULL)
-       OR ($has_email = false AND p.preferred_email IS NULL))
-  AND ($has_any_contact IS NULL
-       OR ($has_any_contact = true  AND (p.preferred_email IS NOT NULL OR p.preferred_phone IS NOT NULL))
-       OR ($has_any_contact = false AND p.preferred_email IS NULL AND p.preferred_phone IS NULL))
-  AND ($updated_after  IS NULL OR p.updated_at >= datetime($updated_after))
-  AND ($updated_before IS NULL OR p.updated_at <= datetime($updated_before))
-  AND ($has_dob IS NULL
-       OR ($has_dob = true  AND p.preferred_dob IS NOT NULL)
-       OR ($has_dob = false AND p.preferred_dob IS NULL))
-  AND ($dob_from IS NULL OR p.preferred_dob >= $dob_from)
-  AND ($dob_to   IS NULL OR p.preferred_dob <= $dob_to)
-  AND ($dob_year  IS NULL OR substring(p.preferred_dob, 0, 4) = $dob_year)
-  AND ($dob_month IS NULL OR substring(p.preferred_dob, 5, 2) = $dob_month)
-  AND ($dob_day   IS NULL OR substring(p.preferred_dob, 8, 2) = $dob_day)
-  AND ($has_address IS NULL
-       OR ($has_address = true  AND p.preferred_address_id IS NOT NULL)
-       OR ($has_address = false AND p.preferred_address_id IS NULL))
-  AND ($has_bankruptcy_case IS NULL
-       OR ($has_bankruptcy_case = true AND EXISTS {
-         MATCH (p)-[bankruptcy_rel:HAS_BANKRUPTCY_CASE]->(:BankruptcyCase)
-         WHERE coalesce(bankruptcy_rel.is_active, true) = true
-       })
-       OR ($has_bankruptcy_case = false AND NOT EXISTS {
-         MATCH (p)-[bankruptcy_rel:HAS_BANKRUPTCY_CASE]->(:BankruptcyCase)
-         WHERE coalesce(bankruptcy_rel.is_active, true) = true
-       }))
-  AND ($has_any_match IS NULL
-       OR ($has_any_match = true AND (
-         EXISTS {
-           MATCH (p)-[p_any_id:IDENTIFIED_BY]->(:Identifier)
-             <-[am_id:IDENTIFIED_BY]-(am:Person)
-           WHERE coalesce(p_any_id.is_active, true) = true
-             AND coalesce(am_id.is_active, true) = true
-             AND am.person_id <> p.person_id AND am.status <> 'merged'
-         }
-         OR EXISTS {
-           MATCH (md:MatchDecision)-[:ABOUT_LEFT|ABOUT_RIGHT]->(p)
-           WHERE EXISTS { (md)-[:ABOUT_LEFT]->(:Person) }
-             AND EXISTS { (md)-[:ABOUT_RIGHT]->(:Person) }
-             AND EXISTS {
-               (rc_am:ReviewCase)-[:FOR_DECISION]->(md)
-               WHERE NOT rc_am.queue_state IN ['resolved', 'cancelled']
-             }
-         }
-       ))
-       OR ($has_any_match = false AND NOT (
-         EXISTS {
-           MATCH (p)-[p_no_any_id:IDENTIFIED_BY]->(:Identifier)
-             <-[am_no_id:IDENTIFIED_BY]-(am:Person)
-           WHERE coalesce(p_no_any_id.is_active, true) = true
-             AND coalesce(am_no_id.is_active, true) = true
-             AND am.person_id <> p.person_id AND am.status <> 'merged'
-         }
-         OR EXISTS {
-           MATCH (md:MatchDecision)-[:ABOUT_LEFT|ABOUT_RIGHT]->(p)
-           WHERE EXISTS { (md)-[:ABOUT_LEFT]->(:Person) }
-             AND EXISTS { (md)-[:ABOUT_RIGHT]->(:Person) }
-             AND EXISTS {
-               (rc_am:ReviewCase)-[:FOR_DECISION]->(md)
-               WHERE NOT rc_am.queue_state IN ['resolved', 'cancelled']
-             }
-         }
-       )))
-  AND ($has_possible_match IS NULL
-       OR ($has_possible_match = true AND EXISTS {
-         MATCH (p)-[p_possible_id:IDENTIFIED_BY]->(:Identifier)
-           <-[pm_id:IDENTIFIED_BY]-(pm:Person)
-         WHERE coalesce(p_possible_id.is_active, true) = true
-           AND coalesce(pm_id.is_active, true) = true
-           AND pm.person_id <> p.person_id AND pm.status <> 'merged'
-       })
-       OR ($has_possible_match = false AND NOT EXISTS {
-         MATCH (p)-[p_no_possible_id:IDENTIFIED_BY]->(:Identifier)
-           <-[pm_no_id:IDENTIFIED_BY]-(pm:Person)
-         WHERE coalesce(p_no_possible_id.is_active, true) = true
-           AND coalesce(pm_no_id.is_active, true) = true
-           AND pm.person_id <> p.person_id AND pm.status <> 'merged'
-       }))
-  AND ($has_system_match IS NULL
-       OR ($has_system_match = true AND EXISTS {
-         MATCH (md:MatchDecision)-[:ABOUT_LEFT|ABOUT_RIGHT]->(p)
-         WHERE EXISTS { (md)-[:ABOUT_LEFT]->(:Person) }
-           AND EXISTS { (md)-[:ABOUT_RIGHT]->(:Person) }
-           AND EXISTS {
-             (rc_sm:ReviewCase)-[:FOR_DECISION]->(md)
-             WHERE NOT rc_sm.queue_state IN ['resolved', 'cancelled']
-           }
-       })
-       OR ($has_system_match = false AND NOT EXISTS {
-         MATCH (md:MatchDecision)-[:ABOUT_LEFT|ABOUT_RIGHT]->(p)
-         WHERE EXISTS { (md)-[:ABOUT_LEFT]->(:Person) }
-           AND EXISTS { (md)-[:ABOUT_RIGHT]->(:Person) }
-           AND EXISTS {
-             (rc_sm:ReviewCase)-[:FOR_DECISION]->(md)
-             WHERE NOT rc_sm.queue_state IN ['resolved', 'cancelled']
-           }
-       }))
-  AND ($addr_street IS NULL  OR toLower(addr.street_name)     CONTAINS toLower($addr_street))
-  AND ($addr_unit   IS NULL   OR toLower(addr.unit_number)    CONTAINS toLower($addr_unit))
-  AND ($addr_city   IS NULL   OR toLower(addr.city)           CONTAINS toLower($addr_city))
-  AND ($addr_postal IS NULL   OR toLower(addr.postal_code)    CONTAINS toLower($addr_postal))
-  AND ($addr_country IS NULL  OR toLower(addr.country_code)   CONTAINS toLower($addr_country))
-"""
-
-
-def _entity_filter_clause(entity_mode: str, source_mode: str) -> str:
-    if entity_mode == "and":
-        entity_part = """($entity_keys IS NULL OR ALL(ek IN $entity_keys WHERE EXISTS {
-  MATCH (sr_e:SourceRecord)-[link:LINKED_TO]->(p)
-  WHERE coalesce(link.is_active, true) = true
-    AND (sr_e.lifecycle_status = 'active'
-      OR (sr_e.lifecycle_status IS NULL AND sr_e.is_latest = true))
-    AND (
-      EXISTS { MATCH (sr_e)-[:OWNED_BY]->(e:Entity) WHERE e.entity_key = ek }
-      OR (
-        NOT EXISTS { MATCH (sr_e)-[:OWNED_BY]->(:Entity) }
-        AND EXISTS {
-          MATCH (sr_e)-[:FROM_SOURCE]->(:SourceSystem)-[:OPERATED_BY]->(e:Entity)
-          WHERE e.entity_key = ek
-        }
-      )
-    )
-}))"""
-    else:
-        entity_part = """($entity_keys IS NULL OR EXISTS {
-  MATCH (sr_e:SourceRecord)-[link:LINKED_TO]->(p)
-  WHERE coalesce(link.is_active, true) = true
-    AND (sr_e.lifecycle_status = 'active'
-      OR (sr_e.lifecycle_status IS NULL AND sr_e.is_latest = true))
-    AND (
-      EXISTS {
-        MATCH (sr_e)-[:OWNED_BY]->(e:Entity)
-        WHERE e.entity_key IN $entity_keys
-      }
-      OR (
-        NOT EXISTS { MATCH (sr_e)-[:OWNED_BY]->(:Entity) }
-        AND EXISTS {
-          MATCH (sr_e)-[:FROM_SOURCE]->(:SourceSystem)-[:OPERATED_BY]->(e:Entity)
-          WHERE e.entity_key IN $entity_keys
-        }
-      )
-    )
-})"""
-
-    if source_mode == "and":
-        source_part = """($source_keys IS NULL OR ALL(sk IN $source_keys WHERE EXISTS {
-  MATCH (sr_s:SourceRecord)-[link:LINKED_TO]->(p)
-  MATCH (sr_s)-[:FROM_SOURCE]->(ss:SourceSystem)
-  WHERE coalesce(link.is_active, true) = true
-    AND (sr_s.lifecycle_status = 'active'
-      OR (sr_s.lifecycle_status IS NULL AND sr_s.is_latest = true))
-    AND ss.source_key = sk
-}))"""
-    else:
-        source_part = """($source_keys IS NULL OR EXISTS {
-  MATCH (sr_s:SourceRecord)-[link:LINKED_TO]->(p)
-  MATCH (sr_s)-[:FROM_SOURCE]->(ss:SourceSystem)
-  WHERE coalesce(link.is_active, true) = true
-    AND (sr_s.lifecycle_status = 'active'
-      OR (sr_s.lifecycle_status IS NULL AND sr_s.is_latest = true))
-    AND ss.source_key IN $source_keys
-})"""
-
-    return f"""
-WITH p, score, addr WHERE {entity_part}
-AND {source_part}
-AND ($source_record_type IS NULL OR EXISTS {{
-    MATCH (sr_t:SourceRecord)-[link:LINKED_TO]->(p)
-    WHERE coalesce(link.is_active, true) = true
-      AND (sr_t.lifecycle_status = 'active'
-        OR (sr_t.lifecycle_status IS NULL AND sr_t.is_latest = true))
-      AND sr_t.record_type = $source_record_type
-  }})
-WITH DISTINCT p, score
-OPTIONAL MATCH (p)-[:LIVES_AT]->(addr:Address {{address_id: p.preferred_address_id}})
+RETURN count(p) AS all_profiles_count,
+       sum(CASE WHEN p.is_high_risk = true THEN 1 ELSE 0 END) AS high_risk_count,
+       sum(CASE WHEN p.is_high_value = true THEN 1 ELSE 0 END) AS high_value_count,
+       sum(CASE WHEN p.preferred_phone IS NULL AND p.preferred_email IS NULL THEN 1 ELSE 0 END)
+         AS no_contact_count
 """
 
 
@@ -357,34 +187,37 @@ def build_list_persons_query(
     sort_order: str | None,
     *,
     has_q: bool,
+    active_filters: frozenset[str] = frozenset(),
     entity_mode: str = "or",
     source_mode: str = "or",
 ) -> str:
     """Build the list query for ``GET /v1/persons``.
 
-    When ``has_q`` is true, prefixes a fulltext index match; otherwise scans
-    Person directly. All non-q filters are parameterised and applied uniformly.
-
-    For sort columns that are native Person properties (or fulltext score),
-    SKIP/LIMIT is applied *before* the 8 CALL enrichment blocks so that only
-    the requested page of rows is ever enriched. For computed sort columns
-    (source_record_count, connection_count, etc.) enrichment must precede
-    ordering, so the original structure is preserved.
+    For stored-property sorts and full-text relevance, pagination occurs before
+    enrichment. Computed sorts still calculate their ordering metric before
+    pagination, but all inactive filters are omitted from both query paths.
     """
     col, direction = _resolve_sort(sort_by, sort_order, has_q=has_q)
-    entity_clause = _entity_filter_clause(entity_mode, source_mode)
+    entity_clause = build_entity_filter_clause(
+        entity_mode,
+        source_mode,
+        active_filters,
+        include_preferred_address=True,
+    )
+    common_clause = build_common_filter_clause(active_filters)
     pre_col = _PRE_ENRICH_SORT_MAP.get(col)
+    head = _head(has_q=has_q, skip_address=not bool(active_filters & ADDRESS_FILTERS))
     if pre_col:
         return (
-            _head(has_q=has_q)
-            + _COMMON_FILTER_CLAUSE
+            head
+            + common_clause
             + entity_clause
             + f"WITH p, addr, score\nORDER BY {pre_col} {direction}\nSKIP $skip LIMIT $limit\n"
             + _ENRICH_AND_RETURN
         )
     return (
-        _head(has_q=has_q)
-        + _COMMON_FILTER_CLAUSE
+        head
+        + common_clause
         + entity_clause
         + _ENRICH_AND_RETURN
         + f"ORDER BY {col} {direction}\nSKIP $skip LIMIT $limit\n"
@@ -392,18 +225,22 @@ def build_list_persons_query(
 
 
 def build_count_persons_query(
-    *, has_q: bool, has_addr_filter: bool = False, entity_mode: str = "or", source_mode: str = "or"
+    *,
+    has_q: bool,
+    active_filters: frozenset[str] = frozenset(),
+    entity_mode: str = "or",
+    source_mode: str = "or",
 ) -> str:
-    """Build the total-count query matching :func:`build_list_persons_query`'s filters.
-
-    Skips the address OPTIONAL MATCH in the head when no ``addr_*`` filter
-    params are active — the IS NULL guards in ``_COMMON_FILTER_CLAUSE`` make
-    all address conditions pass harmlessly when ``addr`` is null.
-    """
+    """Build the total-count query with the same active filters as the list."""
     return (
-        _head(has_q=has_q, skip_address=not has_addr_filter)
-        + _COMMON_FILTER_CLAUSE
-        + _entity_filter_clause(entity_mode, source_mode)
+        _head(has_q=has_q, skip_address=not bool(active_filters & ADDRESS_FILTERS))
+        + build_common_filter_clause(active_filters)
+        + build_entity_filter_clause(
+            entity_mode,
+            source_mode,
+            active_filters,
+            include_preferred_address=False,
+        )
         + "RETURN count(p) AS total\n"
     )
 
