@@ -1,46 +1,5 @@
 """LLM prompts used by WhatsApp / Bitrix message extractors."""
 
-from __future__ import annotations
-
-ADDRESS_NORMALIZATION_SYSTEM = """\
-You normalize Singapore addresses for a customer profile unification platform.
-Split only clearly distinct addresses from the input and do not infer missing facts.
-Use null for unknown fields. Always output valid JSON.\
-"""
-
-ADDRESS_NORMALIZATION_TEMPLATE = """\
-Normalize these addresses into Singapore address fields.
-Return JSON with this exact shape:
-{{
-  "addresses": [
-    {{
-      "input_index": 0,
-      "unit_number": "#05-123" or null,
-      "street_number": "10" or null,
-      "street_name": "example street" or null,
-      "building_name": "example building" or null,
-      "city": "singapore",
-      "state_province": null,
-      "postal_code": "123456" or null,
-      "country_code": "SG",
-      "normalized_full": "#05-123, 10 example street, singapore 123456, sg"
-    }}
-  ]
-}}
-
-Rules:
-- Preserve unit numbers such as #05-123.
-- Singapore postal codes are 6 digits.
-- Use lowercase for street_name, city, and normalized_full.
-- country_code must be an uppercase ISO code, default SG when the country is Singapore.
-- If an input contains two clearly distinct addresses, return two address objects
-  with the same input_index.
-- Do not invent block, unit, street, building, or postal-code values.
-
-Inputs:
-{addresses}
-"""
-
 
 #: System prompt for conversation extraction.
 EXTRACTION_SYSTEM = """\
@@ -178,12 +137,6 @@ Known tenants:
 Answer in JSON: {{"is_match": true/false, "matched_tenant_key":
 "fundbox"|"eko"|"speedzone"|null, "confidence": 0.0-1.0}}
 """
-
-
-def build_address_normalization_prompt(addresses: list[str]) -> str:
-    """Build the user prompt for Singapore address normalization."""
-    address_lines = "\n".join(f"{index}. {address}" for index, address in enumerate(addresses))
-    return ADDRESS_NORMALIZATION_TEMPLATE.format(addresses=address_lines)
 
 
 def _number_conversations(texts: list[str]) -> str:

@@ -21,7 +21,6 @@ __all__ = [
     "LLMService",
     "OpenAIService",
     "ProclaudeService",
-    "get_address_llm_service",
     "get_chat_extraction_service",
     "get_chat_summary_service",
     "get_llm_service",
@@ -41,12 +40,7 @@ def _get_proclaude_service() -> ProclaudeService:
 
 
 def _get_gpt_service() -> GPTService:
-    """Return the GPT connector service.
-
-    Ingestion workloads currently route through ProClaude (see
-    ``get_address_llm_service``); this accessor is retained so the GPT
-    connector remains wired and ready for reuse.
-    """
+    """Return the shared generic OpenAI-compatible ingestion service."""
     global _gpt_service
     if _gpt_service is None:
         _gpt_service = GPTService(llm_config=get_ingestion_config().llm)
@@ -57,22 +51,17 @@ def _get_gpt_service() -> GPTService:
     return _gpt_service
 
 
-def get_llm_service() -> LLMService:
-    """Return the generic ProclaudeService."""
-    return _get_proclaude_service()
+def get_llm_service() -> GPTService:
+    """Return the GPT service for non-chat ingestion workloads."""
+    return _get_gpt_service()
 
 
-def get_address_llm_service() -> LLMService:
-    """Return the ProClaude JSON-mode address-normalization service."""
-    return _get_proclaude_service()
-
-
-def get_chat_extraction_service() -> LLMService:
+def get_chat_extraction_service() -> ProclaudeService:
     """Return the ProClaude JSON-mode structured chat extraction service."""
     return _get_proclaude_service()
 
 
-def get_chat_summary_service() -> LLMService:
+def get_chat_summary_service() -> ProclaudeService:
     """Return the ProClaude chat-summary service."""
     return _get_proclaude_service()
 

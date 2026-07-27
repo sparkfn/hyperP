@@ -9,7 +9,7 @@ from src.llm.openai import OpenAIService
 
 
 class GPTService(OpenAIService):
-    """Dedicated GPT connector used by address normalization."""
+    """Dedicated OpenAI-compatible ingestion connector."""
 
     def __init__(
         self,

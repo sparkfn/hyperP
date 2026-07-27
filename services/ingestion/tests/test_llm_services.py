@@ -33,7 +33,7 @@ def test_class_hierarchy() -> None:
     assert issubclass(AnthropicService, LLMService)
 
 
-def test_address_normalization_routes_to_proclaude(
+def test_generic_service_routes_to_gpt_and_chat_routes_to_proclaude(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # Isolate from the real config file: the accessors load LlmConfig from the
@@ -41,35 +41,35 @@ def test_address_normalization_routes_to_proclaude(
     import src.llm as llm_pkg
     from src.ingestion_config import IngestionConfig
 
+    monkeypatch.setattr(llm_pkg, "_gpt_service", None)
     monkeypatch.setattr(llm_pkg, "_proclaude_service", None)
     monkeypatch.setattr(llm_pkg, "get_ingestion_config", lambda: IngestionConfig())
 
     proclaude_services = (
-        llm_pkg.get_llm_service(),
         llm_pkg.get_chat_summary_service(),
         llm_pkg.get_chat_extraction_service(),
     )
-    address_service = llm_pkg.get_address_llm_service()
+    generic_service = llm_pkg.get_llm_service()
 
     assert all(isinstance(service, ProclaudeService) for service in proclaude_services)
     assert len({id(service) for service in proclaude_services}) == 1
-    assert isinstance(address_service, ProclaudeService)
-    assert all(address_service is service for service in proclaude_services)
+    assert isinstance(generic_service, GPTService)
+    assert all(generic_service is not service for service in proclaude_services)
 
 
-def test_service_accessors_share_one_proclaude_singleton(
+def test_service_accessors_share_provider_specific_singletons(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import src.llm as llm_pkg
     from src.ingestion_config import IngestionConfig
 
+    monkeypatch.setattr(llm_pkg, "_gpt_service", None)
     monkeypatch.setattr(llm_pkg, "_proclaude_service", None)
     monkeypatch.setattr(llm_pkg, "get_ingestion_config", lambda: IngestionConfig())
 
-    assert llm_pkg.get_address_llm_service() is llm_pkg.get_address_llm_service()
-    assert llm_pkg.get_chat_extraction_service() is llm_pkg.get_address_llm_service()
-    assert llm_pkg.get_chat_summary_service() is llm_pkg.get_llm_service()
-    assert llm_pkg.get_address_llm_service() is llm_pkg.get_llm_service()
+    assert llm_pkg.get_llm_service() is llm_pkg.get_llm_service()
+    assert llm_pkg.get_chat_extraction_service() is llm_pkg.get_chat_summary_service()
+    assert llm_pkg.get_llm_service() is not llm_pkg.get_chat_extraction_service()
 
 
 def test_ingestion_readiness_checks_proclaude_backend(monkeypatch: pytest.MonkeyPatch) -> None:
