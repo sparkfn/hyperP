@@ -1,6 +1,5 @@
 """LLM prompts used by WhatsApp / Bitrix message extractors."""
 
-
 #: System prompt for conversation extraction.
 EXTRACTION_SYSTEM = """\
 You are a data extraction specialist for a customer profile unification platform.
