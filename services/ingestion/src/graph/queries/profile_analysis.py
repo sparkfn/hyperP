@@ -486,3 +486,68 @@ RETURN analysis.analysis_id AS analysis_id,
        analysis.status AS status,
        publishable
 """
+
+CLAIM_PROFILE_ANALYSIS_REQUEST = """
+MATCH (person:Person)-[:HAS_PROFILE_ANALYSIS_REQUEST]->(request:ProfileAnalysisRequest {
+  request_id: $request_id, status: 'queued'
+})
+WHERE person.status = 'active'
+  AND (request.next_retry_at IS NULL OR request.next_retry_at <= $now)
+  AND (person.analysis_claim_until IS NULL OR person.analysis_claim_until <= $now)
+WITH person, request, coalesce(person.analysis_input_revision, 0) AS input_revision
+SET person.analysis_claim_token = $claim_token,
+    person.analysis_claim_until = $claim_until,
+    request.status = 'running',
+    request.started_at = datetime.realtime(),
+    request.input_revision = input_revision,
+    request.next_retry_at = null
+WITH person, request, input_revision
+OPTIONAL MATCH (person)-[:HAS_PROFILE_ANALYSIS]->(history:ProfileAnalysis {
+  analysis_type: request.analysis_type, input_revision: input_revision
+})
+RETURN person.person_id AS person_id,
+       input_revision,
+       request.analysis_type = 'sales' AS sales_due,
+       CASE WHEN request.analysis_type = 'sales' THEN count(DISTINCT history) + 1 ELSE 1 END
+         AS sales_attempt_number,
+       request.analysis_type = 'contact_tracing' AS contact_due,
+       CASE WHEN request.analysis_type = 'contact_tracing' THEN count(DISTINCT history) + 1 ELSE 1 END
+         AS contact_attempt_number
+"""
+
+COMPLETE_PROFILE_ANALYSIS_REQUEST = """
+MATCH (:Person)-[:HAS_PROFILE_ANALYSIS_REQUEST]->(request:ProfileAnalysisRequest {request_id: $request_id})
+WHERE request.status = 'running'
+SET request.status = $status,
+    request.completed_at = datetime.realtime()
+RETURN true AS completed
+"""
+
+PROFILE_ANALYSIS_REQUEST_WAITING = """
+MATCH (person:Person)-[:HAS_PROFILE_ANALYSIS_REQUEST]->(request:ProfileAnalysisRequest {
+  request_id: $request_id, status: 'queued'
+})
+RETURN person.status = 'active' AS waiting
+"""
+
+REQUEUE_PROFILE_ANALYSIS_REQUEST_IF_RETRYABLE = """
+MATCH (person:Person)-[:HAS_PROFILE_ANALYSIS_REQUEST]->(request:ProfileAnalysisRequest {
+  request_id: $request_id, status: 'running'
+})
+CALL (person, request) {
+  WITH person, request
+  MATCH (person)-[:HAS_PROFILE_ANALYSIS]->(failure:ProfileAnalysis {
+    analysis_type: request.analysis_type,
+    input_revision: request.input_revision,
+    status: 'failed'
+  })
+  WHERE failure.retryable = true
+    AND failure.next_retry_at > datetime.realtime()
+  RETURN max(failure.next_retry_at) AS next_retry_at
+}
+WITH request, next_retry_at
+FOREACH (_ IN CASE WHEN next_retry_at IS NULL THEN [] ELSE [1] END |
+  SET request.status = 'queued', request.next_retry_at = next_retry_at
+)
+RETURN next_retry_at
+"""

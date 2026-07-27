@@ -28,6 +28,9 @@ const provenanceShape = {
   started_at: timestampSchema,
   completed_at: timestampSchema,
   completed_at_display: nonEmptyStringSchema,
+  generated_age_display: nonEmptyStringSchema.optional().default("Unknown age"),
+  valid_until: timestampSchema.optional().default("9999-12-31T23:59:59+00:00"),
+  valid_until_display: nonEmptyStringSchema.optional().default("Unknown"),
   attempt_number: attemptSchema,
 };
 
@@ -56,8 +59,17 @@ export const profileAnalysisCurrentSchema: z.ZodType<ProfileAnalysisCurrent> = z
 export const profileAnalysisSlotSchema: z.ZodType<ProfileAnalysisSlot> = z.object({
   current: profileAnalysisCurrentSchema.nullable(),
   stale: z.boolean(),
-  refresh_state: z.enum(["disabled", "pending", "running", "retrying", "ready", "failed"]),
+  expired: z.boolean().optional().default(false),
+  valid: z.boolean().optional().default(false),
+  invalid_reason: z.enum(["missing", "stale", "expired", "stale_and_expired"]).nullable().optional().default(null),
+  refresh_state: z.enum(["disabled", "idle", "pending", "running", "retrying", "ready", "failed"]),
   failure_code: failureCodeSchema.nullable(),
+  auto_request_allowed: z.boolean().optional().default(false),
+  next_retry_at: timestampSchema.nullable().optional().default(null),
+  next_retry_at_display: nonEmptyStringSchema.nullable().optional().default(null),
+  force_attempts_remaining: z.number().int().min(0).max(3).optional().default(3),
+  force_available_at: timestampSchema.nullable().optional().default(null),
+  force_available_at_display: nonEmptyStringSchema.nullable().optional().default(null),
 }).strict();
 
 export const personProfileAnalysesSchema: z.ZodType<PersonProfileAnalyses> = z.object({
@@ -95,16 +107,15 @@ export const personProfileAnalysesSchema: z.ZodType<PersonProfileAnalyses> = z.o
         path: [slotName, "stale"],
       });
     }
-    const fresh = slot.current !== null
-      && slot.current.input_revision === analyses.input_revision;
-    if (slot.refresh_state === "ready" && !fresh) {
+    const valid = slot.current !== null && !expectedStale && !slot.expired;
+    if (slot.refresh_state === "ready" && !valid) {
       context.addIssue({
         code: "custom",
         message: "A ready slot requires a successful current-revision analysis.",
         path: [slotName, "refresh_state"],
       });
     }
-    if (fresh && !["ready", "disabled"].includes(slot.refresh_state)) {
+    if (valid && !["ready", "disabled"].includes(slot.refresh_state)) {
       context.addIssue({
         code: "custom",
         message: "A fresh analysis must be ready unless generation is disabled.",

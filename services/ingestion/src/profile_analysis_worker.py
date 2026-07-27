@@ -107,6 +107,46 @@ def run_profile_analysis_sweep(
     return _summary(has_more, len(batch.people), counts)
 
 
+def run_profile_analysis_person(
+    *,
+    repository: ProfileAnalysisRepository,
+    text_service: ProfileAnalysisTextService,
+    person: ClaimedProfileAnalysisPerson,
+    claim_token: str,
+    claim_lease: timedelta,
+    max_attempts: int,
+    retry_base: timedelta,
+    retry_cap: timedelta,
+    clock: Callable[[], datetime],
+    uuid_factory: Callable[[], UUID] = uuid4,
+) -> ProfileAnalysisSweepSummary:
+    """Process one already claimed person/type without scanning other Persons."""
+    _validate_settings(1, claim_lease, max_attempts, retry_base, retry_cap)
+    counts = ProfileAnalysisSweepCounts()
+    retry_policy = ProfileAnalysisRetryPolicy(max_attempts, retry_base, retry_cap)
+    try:
+        _process_person(
+            repository=repository,
+            text_service=text_service,
+            person=person,
+            retry_policy=retry_policy,
+            clock=clock,
+            uuid_factory=uuid_factory,
+            counts=counts,
+            claim_token=claim_token,
+            claim_lease=claim_lease,
+        )
+    except Exception:
+        counts.unexpected_failures += 1
+    finally:
+        try:
+            if repository.release_claim(person_id=person.person_id, claim_token=claim_token):
+                counts.released += 1
+        except Exception:
+            counts.unexpected_failures += 1
+    return _summary(False, 1, counts)
+
+
 def _summary(
     has_more: bool,
     claimed: int,

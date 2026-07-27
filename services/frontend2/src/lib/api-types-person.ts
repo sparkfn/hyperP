@@ -274,6 +274,7 @@ export type ProfileAnalysisType = "sales" | "contact_tracing";
 export type ProfileAnalysisStatus = "succeeded" | "failed" | "obsolete";
 export type ProfileAnalysisSlotRefreshState =
   | "disabled"
+  | "idle"
   | "pending"
   | "running"
   | "retrying"
@@ -297,6 +298,9 @@ export interface ProfileAnalysisProvenance {
   started_at: string;
   completed_at: string;
   completed_at_display: string;
+  generated_age_display: string;
+  valid_until: string;
+  valid_until_display: string;
   attempt_number: number;
 }
 
@@ -311,8 +315,17 @@ export interface ProfileAnalysisCurrent extends ProfileAnalysisProvenance {
 export interface ProfileAnalysisSlot {
   current: ProfileAnalysisCurrent | null;
   stale: boolean;
+  expired: boolean;
+  valid: boolean;
+  invalid_reason: "missing" | "stale" | "expired" | "stale_and_expired" | null;
   refresh_state: ProfileAnalysisSlotRefreshState;
   failure_code: string | null;
+  auto_request_allowed: boolean;
+  next_retry_at: string | null;
+  next_retry_at_display: string | null;
+  force_attempts_remaining: number;
+  force_available_at: string | null;
+  force_available_at_display: string | null;
 }
 
 export interface PersonProfileAnalyses {
@@ -331,4 +344,15 @@ export interface ProfileAnalysisHistoryItem extends ProfileAnalysisProvenance {
   failure_code: string | null;
   retryable: boolean | null;
   next_retry_at: string | null;
+}
+
+export interface ProfileAnalysisRequestResult {
+  request_id: string | null;
+  person_id: string;
+  analysis_type: ProfileAnalysisType;
+  state: "queued" | "already_queued" | "already_valid" | "force_limited";
+  force: boolean;
+  force_attempts_remaining: number;
+  force_available_at: string | null;
+  force_available_at_display: string | null;
 }

@@ -100,12 +100,6 @@ if _eko_cron is not None:
 
 add_sgbankruptcy_schedule(_beat_schedule, settings.sgbankruptcy_ingest_cron)
 
-if settings.profile_analysis_enabled:
-    _beat_schedule["profile-analysis-recovery"] = {
-        "task": "src.tasks.run_profile_analysis_sweep_task",
-        "schedule": float(settings.profile_analysis_sweep_interval_seconds),
-    }
-
 if settings.birthday_task_enabled:
     _beat_schedule["birthday-greetings"] = {
         "task": "src.tasks.send_birthday_messages_task",

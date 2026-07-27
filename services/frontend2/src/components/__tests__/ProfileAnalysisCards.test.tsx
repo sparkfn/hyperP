@@ -27,6 +27,9 @@ const salesCurrent: ProfileAnalysisCurrent = {
   started_at: "2026-07-21T01:00:00+00:00",
   completed_at: "2026-07-21T01:02:00+00:00",
   completed_at_display: "21 Jul 2026, 09:02 AM",
+  generated_age_display: "6 days ago",
+  valid_until: "2026-07-28T01:02:00+00:00",
+  valid_until_display: "28 Jul 2026, 09:02 AM",
   attempt_number: 1,
 };
 
@@ -34,8 +37,17 @@ function slot(overrides: Partial<ProfileAnalysisSlot> = {}): ProfileAnalysisSlot
   return {
     current: null,
     stale: false,
+    expired: false,
+    valid: false,
+    invalid_reason: "missing",
     refresh_state: "pending",
     failure_code: null,
+    auto_request_allowed: false,
+    next_retry_at: null,
+    next_retry_at_display: null,
+    force_attempts_remaining: 3,
+    force_available_at: null,
+    force_available_at_display: null,
     ...overrides,
   };
 }
@@ -61,14 +73,14 @@ describe("ProfileAnalysisCards", () => {
       analysis_id: "analysis-contact-1",
       analysis_type: "contact_tracing" as const,
     };
-    render(<ProfileAnalysisCards analyses={analyses({
+    render(<ProfileAnalysisCards requestingTypes={new Set()} onForceRequest={() => undefined} analyses={analyses({
       contact_tracing: slot({ current: contact, refresh_state: "ready" }),
     })} />);
 
     expect(screen.getByRole("heading", { name: "Sales" })).toBeTruthy();
     expect(screen.getByRole("heading", { name: "Contact tracing" })).toBeTruthy();
     expect(screen.getAllByText("Up to date")).toHaveLength(2);
-    expect(within(card("Sales")).getByText("Generated 21 Jul 2026, 09:02 AM")).toBeTruthy();
+    expect(within(card("Sales")).getByText("Generated 6 days ago")).toBeTruthy();
     expect(within(card("Sales")).getByText("Model analysis-model")).toBeTruthy();
     expect(within(card("Sales")).getByText(/Limitations: History is sparse/)).toBeTruthy();
     const status = screen.getByText("Profile analysis status:").closest("p");
@@ -77,7 +89,7 @@ describe("ProfileAnalysisCards", () => {
   });
 
   it("shows partial availability and an independent failed slot", () => {
-    render(<ProfileAnalysisCards analyses={analyses({
+    render(<ProfileAnalysisCards requestingTypes={new Set()} onForceRequest={() => undefined} analyses={analyses({
       refresh_state: "partial",
       contact_tracing: slot({ refresh_state: "failed", failure_code: "provider_unavailable" }),
     })} />);
@@ -85,12 +97,12 @@ describe("ProfileAnalysisCards", () => {
     expect(screen.getByText("Partially available")).toBeTruthy();
     expect(within(card("Contact tracing")).getByText("Generation failed")).toBeTruthy();
     expect(
-      within(card("Contact tracing")).getByText("Failure code: provider_unavailable"),
+      within(card("Contact tracing")).getByText("Latest refresh failed: provider_unavailable"),
     ).toBeTruthy();
   });
 
   it("retains prior content while a refresh is pending", () => {
-    render(<ProfileAnalysisCards analyses={analyses({
+    render(<ProfileAnalysisCards requestingTypes={new Set()} onForceRequest={() => undefined} analyses={analyses({
       refresh_state: "pending",
       sales: slot({ current: salesCurrent, stale: true, refresh_state: "pending" }),
     })} />);
@@ -100,7 +112,7 @@ describe("ProfileAnalysisCards", () => {
   });
 
   it("shows an explicit running state when current output is missing", () => {
-    render(<ProfileAnalysisCards analyses={analyses({
+    render(<ProfileAnalysisCards requestingTypes={new Set()} onForceRequest={() => undefined} analyses={analyses({
       refresh_state: "running",
       sales: slot({ refresh_state: "running" }),
     })} />);
@@ -110,7 +122,7 @@ describe("ProfileAnalysisCards", () => {
   });
 
   it("distinguishes a scheduled retry from terminal failure", () => {
-    render(<ProfileAnalysisCards analyses={analyses({
+    render(<ProfileAnalysisCards requestingTypes={new Set()} onForceRequest={() => undefined} analyses={analyses({
       refresh_state: "retrying",
       sales: slot({ refresh_state: "retrying" }),
     })} />);
@@ -120,7 +132,7 @@ describe("ProfileAnalysisCards", () => {
   });
 
   it("retains prior content after a failed refresh", () => {
-    render(<ProfileAnalysisCards analyses={analyses({
+    render(<ProfileAnalysisCards requestingTypes={new Set()} onForceRequest={() => undefined} analyses={analyses({
       refresh_state: "failed",
       sales: slot({
         current: salesCurrent,
@@ -135,19 +147,38 @@ describe("ProfileAnalysisCards", () => {
     expect(within(card("Sales")).getByText(/Repeat purchases/)).toBeTruthy();
   });
 
+  it("disables forced refresh after the rolling-hour budget is exhausted", () => {
+    render(<ProfileAnalysisCards requestingTypes={new Set()} onForceRequest={() => undefined} analyses={analyses({
+      sales: slot({
+        current: salesCurrent,
+        valid: true,
+        invalid_reason: null,
+        refresh_state: "ready",
+        force_attempts_remaining: 0,
+        force_available_at: "2026-07-27T02:00:00+00:00",
+        force_available_at_display: "27 Jul 2026, 10:00 AM",
+      }),
+    })} />);
+
+    expect(
+      within(card("Sales")).getByRole("button", { name: "Force new analysis" }).hasAttribute("disabled"),
+    ).toBe(true);
+    expect(within(card("Sales")).getByText(/Forced refreshes available again/)).toBeTruthy();
+  });
+
   it("renders explicit empty and queued states for missing output", () => {
-    render(<ProfileAnalysisCards analyses={analyses({
+    render(<ProfileAnalysisCards requestingTypes={new Set()} onForceRequest={() => undefined} analyses={analyses({
       sales: slot({ refresh_state: "ready" }),
       contact_tracing: slot({ refresh_state: "pending" }),
     })} />);
 
-    expect(within(card("Sales")).getByText("No analysis is available yet.")).toBeTruthy();
+    expect(within(card("Sales")).getByText("An analysis will be generated when this profile is opened.")).toBeTruthy();
     expect(within(card("Contact tracing")).getByText("Analysis is queued.")).toBeTruthy();
   });
 
   it("renders long HTML-looking output literally", () => {
     const literal = `<img src=x onerror=alert(1)> ${"supported detail ".repeat(120)}`;
-    render(<ProfileAnalysisCards analyses={analyses({
+    render(<ProfileAnalysisCards requestingTypes={new Set()} onForceRequest={() => undefined} analyses={analyses({
       sales: slot({ current: { ...salesCurrent, content: literal }, refresh_state: "ready" }),
     })} />);
 

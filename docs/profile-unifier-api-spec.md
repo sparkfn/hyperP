@@ -42,9 +42,9 @@ served through mounted sub-applications, not the root app:
 The Person profile-analysis paths are an authenticated human frontend surface
 only. Their canonical paths are
 `/v1/persons/{person_id}/profile-analyses` and
-`/v1/persons/{person_id}/profile-analyses/history`; at runtime they are served
-only as `/api/app/v2/persons/{person_id}/profile-analyses` and
-`/api/app/v2/persons/{person_id}/profile-analyses/history`. They are not mounted
+`/v1/persons/{person_id}/profile-analyses/history`, and
+`/v1/persons/{person_id}/profile-analyses/requests`; at runtime they are served
+only below `/api/app/v2/persons/{person_id}/profile-analyses`. They are not mounted
 on the root/public app and are not part of the `/oauth2/v1` machine subset.
 
 The `/v1/...` paths in the remainder of this document describe the canonical
@@ -666,17 +666,38 @@ root/public app or the `/oauth2/v1` machine subset.
         "started_at": "2026-07-21T01:00:00+00:00",
         "completed_at": "2026-07-21T01:02:00+00:00",
         "completed_at_display": "21 Jul 2026, 01:02 AM",
+        "generated_age_display": "6 days ago",
+        "valid_until": "2026-07-22T01:02:00+00:00",
+        "valid_until_display": "22 Jul 2026, 01:02 AM",
         "attempt_number": 2
       },
       "stale": true,
+      "expired": true,
+      "valid": false,
+      "invalid_reason": "stale_and_expired",
       "refresh_state": "running",
-      "failure_code": null
+      "failure_code": null,
+      "auto_request_allowed": false,
+      "next_retry_at": null,
+      "next_retry_at_display": null,
+      "force_attempts_remaining": 3,
+      "force_available_at": null,
+      "force_available_at_display": null
     },
     "contact_tracing": {
       "current": null,
       "stale": false,
+      "expired": false,
+      "valid": false,
+      "invalid_reason": "missing",
       "refresh_state": "pending",
-      "failure_code": null
+      "failure_code": null,
+      "auto_request_allowed": false,
+      "next_retry_at": null,
+      "next_retry_at_display": null,
+      "force_attempts_remaining": 3,
+      "force_available_at": null,
+      "force_available_at_display": null
     }
   },
   "meta": {
@@ -700,7 +721,8 @@ Per-slot `refresh_state` semantics are:
 
 - `disabled`: generation is paused by rollout configuration. Existing current
   content is retained, and clients must not poll for generation progress.
-- `ready`: the current successful analysis matches the Person input revision.
+- `ready`: the current successful analysis matches the Person input revision and is within its 24-hour validity window.
+- `idle`: the slot has missing, stale, or expired output but no request is active; the Person detail page may request it automatically.
 - `running`: the slot is not fresh and has an active generation claim.
 - `retrying`: generation failed transiently and a bounded retry is scheduled.
 - `failed`: the slot is not fresh, is not actively running, and has a terminal
@@ -709,8 +731,9 @@ Per-slot `refresh_state` semantics are:
 - `pending`: the slot is not fresh, is not actively running, and has no terminal
   failure for the current input revision.
 
-A stale prior success remains in `current` while a replacement is pending,
-running, or failed; refresh state never erases previously published content.
+A stale or expired prior success remains in `current` while a replacement is pending,
+running, or failed; refresh state never erases previously published content. Current
+output includes API-formatted generated age, exact generation time, and validity time.
 `failure_code` is non-null only when the slot state is `failed`.
 
 Overall `refresh_state` is derived from the two slots with this precedence:

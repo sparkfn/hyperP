@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from datetime import UTC, datetime, timedelta
 
 from src.display_format import format_display_datetime
 from src.graph.converters import (
@@ -125,6 +126,12 @@ def _map_current(value: GraphValue) -> ProfileAnalysisCurrent:
     if _analysis_status(raw.get("status")) != "succeeded":
         raise ValueError("profile analysis current pointer must reference a success")
     completed_at = _required_timestamp(raw, "completed_at")
+    completed = to_datetime(raw.get("completed_at"))
+    if completed is None:
+        raise ValueError("profile analysis completed_at must be timezone-aware")
+    now = datetime.now(UTC)
+    age = max(timedelta(0), now - completed.astimezone(UTC))
+    valid_until = completed.astimezone(UTC) + timedelta(hours=24)
     return ProfileAnalysisCurrent(
         analysis_id=_required_str(raw, "analysis_id"),
         person_id=_required_str(raw, "person_id"),
@@ -139,6 +146,9 @@ def _map_current(value: GraphValue) -> ProfileAnalysisCurrent:
         started_at=_required_timestamp(raw, "started_at"),
         completed_at=completed_at,
         completed_at_display=format_display_datetime(completed_at),
+        generated_age_display=_format_age(age),
+        valid_until=valid_until.isoformat(),
+        valid_until_display=format_display_datetime(valid_until.isoformat()),
         attempt_number=_required_int(raw, "attempt_number"),
     )
 
@@ -155,20 +165,40 @@ def _map_current_targets(value: GraphValue) -> ProfileAnalysisCurrent | None:
 
 def _slot_state(
     *,
-    fresh: bool,
+    valid: bool,
     claim_active: bool,
+    request_queued: bool,
     failure_exists: bool,
     retry_scheduled: bool,
 ) -> ProfileAnalysisSlotRefreshState:
-    if fresh:
+    if valid:
         return "ready"
     if claim_active:
         return "running"
     if retry_scheduled:
         return "retrying"
+    if request_queued:
+        return "pending"
     if failure_exists:
         return "failed"
-    return "pending"
+    return "idle"
+
+
+def _format_age(age: timedelta) -> str:
+    seconds = int(age.total_seconds())
+    if seconds < 60:
+        return "just now"
+    minutes = seconds // 60
+    if minutes < 60:
+        return f"{minutes} minute{'s' if minutes != 1 else ''} ago"
+    hours = minutes // 60
+    if hours < 24:
+        return f"{hours} hour{'s' if hours != 1 else ''} ago"
+    days = hours // 24
+    if days < 7:
+        return f"{days} day{'s' if days != 1 else ''} ago"
+    weeks = days // 7
+    return f"{weeks} week{'s' if weeks != 1 else ''} ago"
 
 
 def _map_slot(
@@ -178,28 +208,66 @@ def _map_slot(
     analysis_type: ProfileAnalysisType,
     input_revision: int,
     claim_active: bool,
+    request_queued: bool,
+    force_attempts_remaining: int,
+    force_available_at: str | None,
 ) -> ProfileAnalysisSlot:
     current = _map_current_targets(current_value)
     if current is not None and current.analysis_type != analysis_type:
         raise ValueError("profile analysis current pointer has the wrong analysis type")
-    fresh = current is not None and current.input_revision == input_revision
+    stale = current is not None and current.input_revision != input_revision
+    valid_until = (
+        datetime.fromisoformat(current.valid_until).astimezone(UTC) if current is not None else None
+    )
+    expired = valid_until is not None and valid_until <= datetime.now(UTC)
+    valid = current is not None and not stale and not expired
     failure = _as_record(failure_value)
     retryable = _optional_bool(failure, "retryable") if failure else None
     next_retry_at = _optional_timestamp(failure, "next_retry_at") if failure else None
     if retryable is True and next_retry_at is None:
         raise ValueError("retryable profile analysis failure requires next_retry_at")
     state = _slot_state(
-        fresh=fresh,
+        valid=valid,
         claim_active=claim_active,
+        request_queued=request_queued,
         failure_exists=bool(failure),
         retry_scheduled=retryable is True,
     )
     return ProfileAnalysisSlot(
         current=current,
-        stale=current is not None and not fresh,
+        stale=stale,
+        expired=expired,
+        valid=valid,
+        invalid_reason=(
+            "missing"
+            if current is None
+            else "stale_and_expired"
+            if stale and expired
+            else "stale"
+            if stale
+            else "expired"
+            if expired
+            else None
+        ),
         refresh_state=state,
         failure_code=(
             _safe_failure_code(failure.get("failure_code")) if state == "failed" else None
+        ),
+        auto_request_allowed=(
+            not valid
+            and not claim_active
+            and not request_queued
+            and not (retryable is True and next_retry_at is not None)
+            and not (failure and retryable is False)
+        ),
+        next_retry_at=next_retry_at,
+        next_retry_at_display=(
+            format_display_datetime(next_retry_at) if next_retry_at is not None else None
+        ),
+        force_attempts_remaining=force_attempts_remaining,
+        force_available_at=force_available_at,
+        force_available_at_display=(
+            format_display_datetime(force_available_at) if force_available_at is not None else None
         ),
     )
 
@@ -232,6 +300,9 @@ def map_person_profile_analyses(record: GraphRecord) -> PersonProfileAnalyses:
         analysis_type="sales",
         input_revision=input_revision,
         claim_active=_required_bool(record, "sales_claim_active"),
+        request_queued=_required_bool(record, "sales_request_queued"),
+        force_attempts_remaining=_required_int(record, "sales_force_attempts_remaining"),
+        force_available_at=_optional_timestamp(record, "sales_force_available_at"),
     )
     contact = _map_slot(
         record.get("contact_currents"),
@@ -239,6 +310,9 @@ def map_person_profile_analyses(record: GraphRecord) -> PersonProfileAnalyses:
         analysis_type="contact_tracing",
         input_revision=input_revision,
         claim_active=_required_bool(record, "contact_claim_active"),
+        request_queued=_required_bool(record, "contact_request_queued"),
+        force_attempts_remaining=_required_int(record, "contact_force_attempts_remaining"),
+        force_available_at=_optional_timestamp(record, "contact_force_available_at"),
     )
     return PersonProfileAnalyses(
         input_revision=input_revision,

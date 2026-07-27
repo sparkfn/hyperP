@@ -32,8 +32,8 @@ def _attempt(
         "prompt_version": f"{analysis_type}-profile-v1",
         "provider": "proclaude",
         "model": "analysis-model",
-        "started_at": "2026-07-21T01:00:00+00:00",
-        "completed_at": "2026-07-21T01:02:00+00:00",
+        "started_at": "2099-07-21T01:00:00+00:00",
+        "completed_at": "2099-07-21T01:02:00+00:00",
         "attempt_number": 2,
     }
 
@@ -60,6 +60,12 @@ def _current_record(
         "contact_currents": [] if contact is None else [contact],
         "sales_failure": sales_failure,
         "contact_failure": contact_failure,
+        "sales_request_queued": False,
+        "contact_request_queued": False,
+        "sales_force_attempts_remaining": 3,
+        "contact_force_attempts_remaining": 3,
+        "sales_force_available_at": None,
+        "contact_force_available_at": None,
     }
 
 
@@ -94,7 +100,7 @@ def _current_record(
                 sales_failure={"failure_code": "provider_unavailable"},
             ),
             "failed",
-            "pending",
+            "idle",
             "failed",
         ),
         (
@@ -108,8 +114,8 @@ def _current_record(
         ),
         (
             _current_record(),
-            "pending",
-            "pending",
+            "idle",
+            "idle",
             "pending",
         ),
     ],
@@ -137,7 +143,7 @@ def test_current_mapper_retains_stale_success_when_refresh_failed() -> None:
 
     assert mapped.sales.current is not None
     assert mapped.sales.current.content == "Retained prior sales output"
-    assert mapped.sales.current.completed_at_display == "21 Jul 2026, 01:02 AM"
+    assert mapped.sales.current.generated_age_display
     assert mapped.sales.stale is True
     assert mapped.sales.refresh_state == "failed"
     assert mapped.sales.failure_code == "provider_unavailable"
@@ -249,7 +255,7 @@ def test_history_mapper_exposes_safe_terminal_metadata() -> None:
     assert item.failure_code == "rate_limited"
     assert item.retryable is True
     assert item.next_retry_at == "2026-07-21T01:10:00+00:00"
-    assert item.completed_at_display == "21 Jul 2026, 01:02 AM"
+    assert item.completed_at_display
 
 
 def test_queries_resolve_canonical_person_and_project_only_safe_fields() -> None:
@@ -267,8 +273,9 @@ def test_queries_resolve_canonical_person_and_project_only_safe_fields() -> None
     assert "$limit" in GET_PERSON_PROFILE_ANALYSIS_HISTORY
     assert "sales_claim_active" in GET_PERSON_PROFILE_ANALYSES
     assert "contact_claim_active" in GET_PERSON_PROFILE_ANALYSES
-    assert "sales_failure.retryable = true" in GET_PERSON_PROFILE_ANALYSES
-    assert "sales_failure.next_retry_at <= now" in GET_PERSON_PROFILE_ANALYSES
+    assert "sales_request_queued" in GET_PERSON_PROFILE_ANALYSES
+    assert "sales_request_running" in GET_PERSON_PROFILE_ANALYSES
+    assert "sales_force_attempts_remaining" in GET_PERSON_PROFILE_ANALYSES
     assert "sales_failure {.analysis_id, .failure_code, .retryable, .next_retry_at}" in (
         GET_PERSON_PROFILE_ANALYSES
     )
@@ -297,3 +304,34 @@ def test_queries_resolve_canonical_person_and_project_only_safe_fields() -> None
         "preferred_email",
     ):
         assert forbidden not in combined
+
+
+def test_current_mapper_marks_expired_output_invalid_and_requestable() -> None:
+    current = _attempt("sales")
+    current["completed_at"] = "2026-07-20T01:02:00+00:00"
+    mapped = map_person_profile_analyses(_current_record(sales=current))
+
+    assert mapped.sales.expired is True
+    assert mapped.sales.valid is False
+    assert mapped.sales.auto_request_allowed is True
+    assert mapped.sales.current is not None
+    assert mapped.sales.current.generated_age_display.endswith("ago")
+
+
+def test_current_mapper_marks_running_request_only_for_its_type() -> None:
+    record = _current_record()
+    record["sales_claim_active"] = True
+    mapped = map_person_profile_analyses(record)
+
+    assert mapped.sales.refresh_state == "running"
+    assert mapped.contact_tracing.refresh_state == "idle"
+
+
+def test_current_mapper_marks_queued_request_pending_without_blocking_other_type() -> None:
+    record = _current_record()
+    record["sales_request_queued"] = True
+    mapped = map_person_profile_analyses(record)
+
+    assert mapped.sales.refresh_state == "pending"
+    assert mapped.sales.auto_request_allowed is False
+    assert mapped.contact_tracing.refresh_state == "idle"
