@@ -66,3 +66,38 @@ The document set covers:
 - make every decision explainable
 - treat NRIC and Singpass-linked data as highly sensitive
 - prefer controlled rollout over aggressive automation
+
+## Agent-triggered all-source ingestion
+
+Agents and server operators can queue one complete, two-phase ingestion without
+using the API or frontend. Identity sources run as the first Celery group; the
+worker only queues dependent sources after every identity task returns
+`completed`.
+
+Submit a validated inline JSON payload from the ingestion worker container.
+`$PAYLOAD` must contain the complete `identity` and `dependent` arrays:
+
+```bash
+docker compose exec -T worker python -m src.ingestion_orchestrator trigger \
+  --payload "$PAYLOAD"
+```
+
+When addressing the container directly instead of through Compose:
+
+```bash
+docker exec <worker-container> python -m src.ingestion_orchestrator trigger \
+  --payload "$PAYLOAD"
+```
+
+For larger payloads, pass JSON on standard input to avoid shell-escaping
+problems:
+
+```bash
+printf '%s' "$PAYLOAD" | docker compose exec -T worker \
+  python -m src.ingestion_orchestrator trigger --payload-stdin
+```
+
+Use `validate` in place of `trigger` for a no-dispatch check. A payload must
+include every registered source exactly once, put identity sources in
+`identity`, and provide each source's `mode` plus a relative `dump_path` when
+`mode` is `dump`. The command prints one compact JSON result for automation.

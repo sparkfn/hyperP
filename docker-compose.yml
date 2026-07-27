@@ -241,6 +241,7 @@ services:
       - worker
       - --loglevel=info
       - --concurrency=${CELERY_WORKER_CONCURRENCY:-4}
+      - --queues=celery,ingestion
 
   beat:
     build:
