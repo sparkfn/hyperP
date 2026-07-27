@@ -184,7 +184,7 @@ def _acquire_ingestion_slot(max_slots: int) -> Iterator[str]:
 
 @contextmanager
 def _acquire_source_lock(source_key: str) -> Iterator[str]:
-    """Reserve a source-specific lock or raise if that source is already running."""
+    """Reserve an ingestion lock scope or raise if that scope is already running."""
     client = _redis_client()
     lock_id = uuid.uuid4().hex
     lock_key = f"{_SOURCE_LOCK_PREFIX}:{source_key}"
@@ -192,15 +192,15 @@ def _acquire_source_lock(source_key: str) -> Iterator[str]:
     if not lock_acquired:
         raise _SourceAlreadyRunningError(source_key=source_key)
 
-    logger.info("Acquired ingestion source lock for %s", source_key)
+    logger.info("Acquired ingestion lock for %s", source_key)
     try:
         yield lock_id
     finally:
         try:
             client.eval(_SOURCE_LOCK_RELEASE_SCRIPT, 1, lock_key, lock_id)
-            logger.info("Released ingestion source lock for %s", source_key)
+            logger.info("Released ingestion lock for %s", source_key)
         except Exception:
-            logger.exception("Failed to release ingestion source lock for %s", source_key)
+            logger.exception("Failed to release ingestion lock for %s", source_key)
 
 
 def _source_lock_keys(
@@ -208,18 +208,19 @@ def _source_lock_keys(
     mode: str,
     entity_key: str | None,
 ) -> tuple[str, ...]:
-    """Return the independent source locks required for an ingestion run."""
+    """Return the independent source-and-mode locks required for an ingestion run."""
+    source_mode_key = f"{source_key}:{mode}"
     if source_key != "whatsapp_chat":
-        return (source_key,)
+        return (source_mode_key,)
     entities = (entity_key,) if mode == "api" and entity_key is not None else WHATSADMIN_ENTITIES
-    return tuple(f"{source_key}:{entity}" for entity in entities)
+    return tuple(f"{source_mode_key}:{entity}" for entity in entities)
 
 
 @contextmanager
 def _acquire_source_locks(
     source_keys: tuple[str, ...],
 ) -> Iterator[tuple[_SourceLockLease, ...]]:
-    """Acquire all source locks, releasing earlier locks if a later one is busy."""
+    """Acquire all ingestion locks, releasing earlier locks if a later one is busy."""
     with ExitStack() as stack:
         leases: list[_SourceLockLease] = []
         for source_key in source_keys:
@@ -251,7 +252,7 @@ def _renew_ingestion_slot(client: redis.Redis, slot_id: str) -> None:
 
 
 def _renew_source_lock(client: redis.Redis, source_key: str, lock_id: str) -> None:
-    """Extend a source lock only when this task still owns it."""
+    """Extend an ingestion lock only when this task still owns it."""
     lock_key = f"{_SOURCE_LOCK_PREFIX}:{source_key}"
     renewed = cast(
         int,
@@ -264,7 +265,7 @@ def _renew_source_lock(client: redis.Redis, source_key: str, lock_id: str) -> No
         ),
     )
     if renewed != 1:
-        raise RuntimeError(f"Ingestion source lock for {source_key} was lost before renewal")
+        raise RuntimeError(f"Ingestion lock for {source_key} was lost before renewal")
 
 
 def _renew_source_locks(
@@ -347,7 +348,7 @@ class _SlotUnavailableError(Exception):
 
 class _SourceAlreadyRunningError(Exception):
     def __init__(self, source_key: str) -> None:
-        super().__init__(f"Ingestion source already running: {source_key}")
+        super().__init__(f"Ingestion lock already held: {source_key}")
         self.source_key = source_key
 
 
@@ -478,8 +479,8 @@ def run_lifecycle_reconciliation() -> LifecycleReconciliationSummary:
     name="src.tasks.run_ingestion_task",
     bind=True,
     # Preserve tasks when a worker exits. A duplicate delivered after Redis's
-    # visibility timeout is safely treated as a no-op while the source lock is
-    # held by the original task.
+    # visibility timeout is safely treated as a no-op while the source-and-mode
+    # lock is held by the original task.
     acks_late=True,
     autoretry_for=(_SlotUnavailableError,),
     retry_backoff=True,
@@ -588,13 +589,13 @@ def run_ingestion_task(
             retry_number = min(self.request.retries, 8)
             countdown = min(2**retry_number, 300)
             logger.warning(
-                "Ingestion source %s is already running; retrying dispatched run %s",
+                "Ingestion lock %s is already held; retrying dispatched run %s",
                 exc.source_key,
                 ingest_run_id,
             )
             raise self.retry(exc=exc, countdown=countdown) from exc
         logger.warning(
-            "Ingestion source %s is already running; skipping duplicate",
+            "Ingestion lock %s is already held; skipping duplicate",
             exc.source_key,
         )
         return {
