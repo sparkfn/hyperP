@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 from collections.abc import Callable
 from datetime import datetime, timedelta
 from uuid import UUID, uuid4
@@ -52,6 +53,7 @@ _MAX_GENERATION_TOKENS = 700
 _INVALID_SNAPSHOT_FINGERPRINT = (
     "sha256:" + hashlib.sha256(b"profile-analysis-invalid-snapshot-v1").hexdigest()
 )
+logger = logging.getLogger(__name__)
 
 
 def run_profile_analysis_sweep(
@@ -269,9 +271,11 @@ def _generate_attempt(
         )
     except ProfileAnalysisPrivacyError:
         return _failed_attempt(context, "privacy_snapshot", False)
-    except ProfileAnalysisPrivacyOutputError:
+    except ProfileAnalysisPrivacyOutputError as error:
+        _log_output_validation_failure(person, due, error)
         return _failed_attempt(context, "privacy_output", False)
-    except ProfileAnalysisOutputError:
+    except ProfileAnalysisOutputError as error:
+        _log_output_validation_failure(person, due, error)
         return _failed_attempt(context, "invalid_output", False)
     except httpx.HTTPStatusError as error:
         code, retryable = _http_failure(error)
@@ -279,6 +283,20 @@ def _generate_attempt(
     except (httpx.TimeoutException, httpx.TransportError):
         return _failed_attempt(context, "provider_unavailable", True)
     return _succeeded_attempt(context, content)
+
+
+def _log_output_validation_failure(
+    person: ClaimedProfileAnalysisPerson,
+    due: DueProfileAnalysis,
+    error: ProfileAnalysisOutputError,
+) -> None:
+    logger.warning(
+        "Profile analysis output validation failed "
+        "person_id=%s analysis_type=%s reason=%s",
+        person.person_id,
+        due.analysis_type.value,
+        error.reason.value,
+    )
 
 
 def _persist_invalid_snapshot_attempts(

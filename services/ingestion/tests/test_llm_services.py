@@ -14,6 +14,7 @@ from src.llm import (
     OpenAIService,
     ProclaudeService,
 )
+from src.profile_analysis_worker_types import LlmProfileAnalysisTextService
 
 
 def _patch_client(monkeypatch: pytest.MonkeyPatch, handler: httpx.MockTransport) -> None:
@@ -259,6 +260,77 @@ async def test_proclaude_service_can_request_plain_text_for_summaries(
     body = captured["body"]
     assert isinstance(body, dict)
     assert "response_format" not in body
+
+
+def test_profile_analysis_adapter_requests_plain_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        import json as _json
+
+        captured["body"] = _json.loads(request.content)
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "content": "Observed activity.\nLimitations: Evidence is sparse.",
+                        }
+                    }
+                ]
+            },
+        )
+
+    _patch_client(monkeypatch, httpx.MockTransport(handler))
+    service = ProclaudeService(
+        base_url="https://proclaude.test",
+        api_key="k",
+        default_model="profile-model",
+    )
+
+    output = LlmProfileAnalysisTextService(service).generate(
+        [ChatMessage(role="user", content="Analyze this safe snapshot")],
+        max_tokens=700,
+    )
+
+    assert output == "Observed activity.\nLimitations: Evidence is sparse."
+    body = captured["body"]
+    assert isinstance(body, dict)
+    assert body["max_tokens"] == 700
+    assert "response_format" not in body
+
+
+@pytest.mark.asyncio
+async def test_chat_text_can_preserve_invalid_format_for_caller_validation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fenced = "```text\nObserved activity.\nLimitations: Evidence is sparse.\n```"
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"role": "assistant", "content": fenced}}]},
+        )
+
+    _patch_client(monkeypatch, httpx.MockTransport(handler))
+    service = ProclaudeService(
+        base_url="https://proclaude.test",
+        api_key="k",
+        default_model="profile-model",
+    )
+
+    normalized = await service.chat_text([ChatMessage(role="user", content="Analyze")])
+    preserved = await service.chat_text(
+        [ChatMessage(role="user", content="Analyze")],
+        preserve_output_format=True,
+    )
+
+    assert normalized == "Observed activity.\nLimitations: Evidence is sparse."
+    assert preserved == fenced
 
 
 @pytest.mark.asyncio

@@ -17,7 +17,10 @@ from src.profile_analysis_models import (
     ProfileAnalysisStatus,
     ProfileAnalysisType,
 )
-from src.profile_analysis_output import snapshot_evidence_references
+from src.profile_analysis_output import (
+    ProfileAnalysisOutputReason,
+    snapshot_evidence_references,
+)
 from src.profile_analysis_repository import (
     ClaimedProfileAnalysisBatch,
     ClaimedProfileAnalysisPerson,
@@ -194,26 +197,84 @@ def test_profile_analysis_accessor_reuses_prose_singleton() -> None:
 
 
 @pytest.mark.parametrize(
-    "output",
+    ("output", "reason"),
     (
-        "",
-        "```text\nSummary\n```\nLimitations: None.",
-        "~~~text\nSummary\n~~~\nLimitations: None.",
-        "<p>Summary</p>\nLimitations: None.",
-        "Summary without a limitations section.",
-        "Unsupported evidence source-99.\nLimitations: None.",
-        "word " * 351 + "\nLimitations: None.",
+        ("", ProfileAnalysisOutputReason.NOT_TRIMMED),
+        (
+            "```text\nSummary\n```\nLimitations: None.",
+            ProfileAnalysisOutputReason.NOT_PLAIN_TEXT,
+        ),
+        (
+            "~~~text\nSummary\n~~~\nLimitations: None.",
+            ProfileAnalysisOutputReason.NOT_PLAIN_TEXT,
+        ),
+        ("<p>Summary</p>\nLimitations: None.", ProfileAnalysisOutputReason.NOT_PLAIN_TEXT),
+        (
+            '{"summary":"Activity","limitations":"Sparse evidence"}',
+            ProfileAnalysisOutputReason.NOT_PLAIN_TEXT,
+        ),
+        (
+            "Summary without a limitations section.",
+            ProfileAnalysisOutputReason.MISSING_LIMITATIONS,
+        ),
+        (
+            "Unsupported evidence source-99.\nLimitations: None.",
+            ProfileAnalysisOutputReason.UNKNOWN_EVIDENCE,
+        ),
+        ("word " * 351 + "\nLimitations: None.", ProfileAnalysisOutputReason.TOO_LARGE),
     ),
 )
-def test_plain_text_output_validation_is_bounded_and_evidence_local(output: str) -> None:
-    with pytest.raises(ProfileAnalysisOutputError):
+def test_plain_text_output_validation_is_bounded_and_evidence_local(
+    output: str,
+    reason: ProfileAnalysisOutputReason,
+) -> None:
+    with pytest.raises(ProfileAnalysisOutputError) as exc_info:
         validate_profile_analysis_output(output, frozenset({"order-1"}), ())
+
+    assert exc_info.value.reason is reason
 
 
 def test_plain_text_output_validation_accepts_supported_local_references() -> None:
     output = "Observed workshop activity (order-1).\nLimitations: Dates are incomplete."
 
     assert validate_profile_analysis_output(output, frozenset({"order-1"}), ()) == output
+
+
+def test_json_output_has_a_safe_structured_validation_reason() -> None:
+    output = '{"summary":"DIRECT-SECRET","limitations":"Sparse evidence"}'
+
+    with pytest.raises(ProfileAnalysisOutputError) as exc_info:
+        validate_profile_analysis_output(output, frozenset(), ("DIRECT-SECRET",))
+
+    assert exc_info.value.reason is ProfileAnalysisOutputReason.NOT_PLAIN_TEXT
+    assert "DIRECT-SECRET" not in str(exc_info.value)
+
+
+def test_malformed_object_shaped_output_is_not_publishable() -> None:
+    output = '{"summary": "Activity"\nLimitations: Sparse evidence.}'
+
+    with pytest.raises(ProfileAnalysisOutputError) as exc_info:
+        validate_profile_analysis_output(output, frozenset(), ())
+
+    assert exc_info.value.reason is ProfileAnalysisOutputReason.NOT_PLAIN_TEXT
+
+
+def test_malformed_array_shaped_output_is_not_publishable() -> None:
+    output = '["Activity"\nLimitations: Sparse evidence.]'
+
+    with pytest.raises(ProfileAnalysisOutputError) as exc_info:
+        validate_profile_analysis_output(output, frozenset(), ())
+
+    assert exc_info.value.reason is ProfileAnalysisOutputReason.NOT_PLAIN_TEXT
+
+
+def test_deeply_nested_json_output_is_rejected_without_escaping_validation() -> None:
+    output = "[" * 1_100 + "]" * 1_100
+
+    with pytest.raises(ProfileAnalysisOutputError) as exc_info:
+        validate_profile_analysis_output(output, frozenset(), ())
+
+    assert exc_info.value.reason is ProfileAnalysisOutputReason.NOT_PLAIN_TEXT
 
 
 @pytest.mark.parametrize(
@@ -331,7 +392,9 @@ def test_transient_failure_has_bounded_exponential_retry_metadata() -> None:
     assert "private" not in attempt.failure_code
 
 
-def test_invalid_or_private_output_is_nonretryable_and_other_type_proceeds() -> None:
+def test_invalid_or_private_output_is_nonretryable_and_other_type_proceeds(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     repository = _Repository(
         _due(ProfileAnalysisType.SALES, ProfileAnalysisType.CONTACT_TRACING),
         known_sensitive_values=("DIRECT-SECRET",),
@@ -342,6 +405,7 @@ def test_invalid_or_private_output_is_nonretryable_and_other_type_proceeds() -> 
             "No relationship events supplied.\nLimitations: Evidence is sparse.",
         ]
     )
+    caplog.set_level("WARNING", logger="src.profile_analysis_worker")
     _run(repository, service)
 
     assert repository.attempts[0].status is ProfileAnalysisStatus.FAILED
@@ -349,6 +413,29 @@ def test_invalid_or_private_output_is_nonretryable_and_other_type_proceeds() -> 
     assert repository.attempts[0].retryable is False
     assert repository.attempts[0].next_retry_at is None
     assert repository.attempts[1].status is ProfileAnalysisStatus.SUCCEEDED
+    assert "reason=sensitive_value" in caplog.text
+    assert "DIRECT-SECRET" not in caplog.text
+
+
+def test_invalid_output_logs_only_the_safe_validation_reason(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    repository = _Repository(
+        _due(ProfileAnalysisType.SALES),
+        known_sensitive_values=("DIRECT-SECRET",),
+    )
+    caplog.set_level("WARNING", logger="src.profile_analysis_worker")
+
+    _run(
+        repository,
+        _TextService(['{"summary":"DIRECT-SECRET","limitations":"Sparse"}']),
+    )
+
+    attempt = repository.attempts[0]
+    assert attempt.failure_code == "invalid_output"
+    assert attempt.retryable is False
+    assert "reason=not_plain_text" in caplog.text
+    assert "DIRECT-SECRET" not in caplog.text
 
 
 @pytest.mark.parametrize(

@@ -6,6 +6,7 @@ import re
 from collections.abc import Sequence
 from datetime import date
 from decimal import Decimal
+from enum import StrEnum
 
 from src.profile_analysis_snapshot import (
     KnownSensitiveValue,
@@ -24,10 +25,29 @@ _NUMERIC_TOKEN = re.compile(r"(?<![\w-])[+-]?(?:\d+(?:\.\d+)?|\.\d+)(?![\w-])")
 _FORMATTED_IDENTIFIER = re.compile(r"(?<!\w)[+\d](?:[\d\s+()-]|\.(?=\d))*\d(?!\w)")
 _IDENTIFIER_CHARACTERS = re.compile(r"[\d\s+().-]+")
 _DAY_FIRST_DATE = re.compile(r"(?<!\d)(\d{1,2})[/-](\d{1,2})[/-](\d{4})(?!\d)")
+_JSON_ARRAY_START = re.compile(
+    r'^\[\s*(?:\]|\[|\{|"|-?(?:\d|\.\d)|true\b|false\b|null\b)'
+)
+
+
+class ProfileAnalysisOutputReason(StrEnum):
+    """Safe reason codes for profile-analysis output validation failures."""
+
+    NOT_TRIMMED = "not_trimmed"
+    TOO_LARGE = "too_large"
+    NOT_PLAIN_TEXT = "not_plain_text"
+    MISSING_LIMITATIONS = "missing_limitations"
+    UNKNOWN_EVIDENCE = "unknown_evidence"
+    DIRECT_IDENTIFIER = "direct_identifier"
+    SENSITIVE_VALUE = "sensitive_value"
 
 
 class ProfileAnalysisOutputError(ValueError):
     """Generated text violates the safe output contract."""
+
+    def __init__(self, message: str, *, reason: ProfileAnalysisOutputReason) -> None:
+        super().__init__(message)
+        self.reason = reason
 
 
 class ProfileAnalysisPrivacyOutputError(ProfileAnalysisOutputError):
@@ -41,26 +61,54 @@ def validate_profile_analysis_output(
 ) -> str:
     """Return valid bounded plain text without including unsafe data in errors."""
     if not output or output != output.strip():
-        raise ProfileAnalysisOutputError("profile analysis output must be trimmed plain text")
+        raise ProfileAnalysisOutputError(
+            "profile analysis output must be trimmed plain text",
+            reason=ProfileAnalysisOutputReason.NOT_TRIMMED,
+        )
     if len(output) > _MAX_OUTPUT_CHARACTERS or len(output.split()) > _MAX_OUTPUT_WORDS:
-        raise ProfileAnalysisOutputError("profile analysis output exceeds the size limit")
-    if "```" in output or "~~~" in output or _HTML_ELEMENT.search(output) is not None:
-        raise ProfileAnalysisOutputError("profile analysis output is not plain text")
+        raise ProfileAnalysisOutputError(
+            "profile analysis output exceeds the size limit",
+            reason=ProfileAnalysisOutputReason.TOO_LARGE,
+        )
+    if (
+        "```" in output
+        or "~~~" in output
+        or _HTML_ELEMENT.search(output) is not None
+        or _is_json_shaped(output)
+    ):
+        raise ProfileAnalysisOutputError(
+            "profile analysis output is not plain text",
+            reason=ProfileAnalysisOutputReason.NOT_PLAIN_TEXT,
+        )
     if re.search(r"(?m)^Limitations:", output) is None:
-        raise ProfileAnalysisOutputError("profile analysis output lacks limitations")
+        raise ProfileAnalysisOutputError(
+            "profile analysis output lacks limitations",
+            reason=ProfileAnalysisOutputReason.MISSING_LIMITATIONS,
+        )
     referenced = frozenset(_EVIDENCE_REFERENCE.findall(output.casefold()))
     if not referenced.issubset(evidence_references):
-        raise ProfileAnalysisOutputError("profile analysis output cites unknown evidence")
+        raise ProfileAnalysisOutputError(
+            "profile analysis output cites unknown evidence",
+            reason=ProfileAnalysisOutputReason.UNKNOWN_EVIDENCE,
+        )
     output_without_references = _without_evidence_references(output, referenced)
     if contains_direct_identifier_pattern(output_without_references):
         raise ProfileAnalysisPrivacyOutputError(
-            "profile analysis output contains a direct identifier pattern"
+            "profile analysis output contains a direct identifier pattern",
+            reason=ProfileAnalysisOutputReason.DIRECT_IDENTIFIER,
         )
     if _contains_sensitive_value(output, known_sensitive_values, referenced):
         raise ProfileAnalysisPrivacyOutputError(
-            "profile analysis output contains a known sensitive value"
+            "profile analysis output contains a known sensitive value",
+            reason=ProfileAnalysisOutputReason.SENSITIVE_VALUE,
         )
     return output
+
+
+def _is_json_shaped(output: str) -> bool:
+    if output[0] == "{":
+        return True
+    return _JSON_ARRAY_START.match(output) is not None
 
 
 def snapshot_evidence_references(snapshot: ProfileAnalysisSnapshot) -> frozenset[str]:

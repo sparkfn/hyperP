@@ -73,6 +73,7 @@ class LLMService(ABC):
         model: str | None = None,
         temperature: float = 0.0,
         max_tokens: int | None = None,
+        preserve_output_format: bool = False,
     ) -> str:
         """Return a plain-text assistant response for ``messages``."""
         return await self._chat(
@@ -81,6 +82,7 @@ class LLMService(ABC):
             temperature=temperature,
             max_tokens=max_tokens,
             json_mode=False,
+            preserve_output_format=preserve_output_format,
         )
 
     async def _chat(
@@ -91,6 +93,7 @@ class LLMService(ABC):
         temperature: float,
         max_tokens: int | None,
         json_mode: bool,
+        preserve_output_format: bool = False,
     ) -> str:
         """Execute one chat request with shared retry and response handling.
 
@@ -119,7 +122,8 @@ class LLMService(ABC):
                     await asyncio.sleep(self._backoff_delay(attempt))
                     continue
                 if response.status_code < 400:
-                    return _strip_code_fences(self._parse_text(response.json()))
+                    text = self._parse_text(response.json())
+                    return text if preserve_output_format else _strip_code_fences(text)
                 if not self._is_retryable(response) or attempt == max_retries:
                     _raise_http_status(response)
                 await asyncio.sleep(self._retry_after(response, attempt))
