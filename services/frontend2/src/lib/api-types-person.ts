@@ -323,6 +323,10 @@ export interface ProfileAnalysisSlot {
   auto_request_allowed: boolean;
   next_retry_at: string | null;
   next_retry_at_display: string | null;
+  retry_allowed: boolean;
+  retry_attempts_remaining: number;
+  retry_available_at: string | null;
+  retry_available_at_display: string | null;
   force_attempts_remaining: number;
   force_available_at: string | null;
   force_available_at_display: string | null;
@@ -355,4 +359,14 @@ export interface ProfileAnalysisRequestResult {
   force_attempts_remaining: number;
   force_available_at: string | null;
   force_available_at_display: string | null;
+}
+
+export interface ProfileAnalysisRetryResult {
+  request_id: string | null;
+  person_id: string;
+  analysis_type: ProfileAnalysisType;
+  state: "queued" | "already_active" | "not_failed" | "retry_limited";
+  retry_attempts_remaining: number;
+  retry_available_at: string | null;
+  retry_available_at_display: string | null;
 }

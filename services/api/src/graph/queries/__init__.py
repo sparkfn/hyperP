@@ -99,6 +99,7 @@ from src.graph.queries.persons_list import (
     build_list_persons_query,
 )
 from src.graph.queries.profile_analysis import (
+    CREATE_FAILED_PROFILE_ANALYSIS_RETRY,
     CREATE_PROFILE_ANALYSIS_REQUEST,
     GET_PERSON_PROFILE_ANALYSES,
     GET_PERSON_PROFILE_ANALYSIS_HISTORY,
@@ -200,6 +201,7 @@ __all__ = [
     "CREATE_OVERRIDE_AUDIT",
     "CREATE_RECOMPUTE_AUDIT",
     "CREATE_PROFILE_ANALYSIS_REQUEST",
+    "CREATE_FAILED_PROFILE_ANALYSIS_RETRY",
     "CREATE_REPORT",
     "CREATE_SOURCE_RECORD",
     "CREATE_UNMERGE_AUDIT",

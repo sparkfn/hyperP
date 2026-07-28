@@ -209,6 +209,8 @@ def _map_slot(
     input_revision: int,
     claim_active: bool,
     request_queued: bool,
+    retry_attempts_remaining: int,
+    retry_available_at: str | None,
     force_attempts_remaining: int,
     force_available_at: str | None,
 ) -> ProfileAnalysisSlot:
@@ -264,6 +266,14 @@ def _map_slot(
         next_retry_at_display=(
             format_display_datetime(next_retry_at) if next_retry_at is not None else None
         ),
+        retry_allowed=state == "failed" and retry_attempts_remaining > 0,
+        retry_attempts_remaining=retry_attempts_remaining,
+        retry_available_at=retry_available_at,
+        retry_available_at_display=(
+            format_display_datetime(retry_available_at)
+            if retry_available_at is not None
+            else None
+        ),
         force_attempts_remaining=force_attempts_remaining,
         force_available_at=force_available_at,
         force_available_at_display=(
@@ -294,6 +304,8 @@ def _overall_state(
 def map_person_profile_analyses(record: GraphRecord) -> PersonProfileAnalyses:
     """Map current slots and apply the documented refresh-state precedence."""
     input_revision = _required_int(record, "input_revision")
+    retry_attempts_remaining = _required_int(record, "retry_attempts_remaining")
+    retry_available_at = _optional_timestamp(record, "retry_available_at")
     sales = _map_slot(
         record.get("sales_currents"),
         record.get("sales_failure"),
@@ -301,6 +313,8 @@ def map_person_profile_analyses(record: GraphRecord) -> PersonProfileAnalyses:
         input_revision=input_revision,
         claim_active=_required_bool(record, "sales_claim_active"),
         request_queued=_required_bool(record, "sales_request_queued"),
+        retry_attempts_remaining=retry_attempts_remaining,
+        retry_available_at=retry_available_at,
         force_attempts_remaining=_required_int(record, "sales_force_attempts_remaining"),
         force_available_at=_optional_timestamp(record, "sales_force_available_at"),
     )
@@ -311,6 +325,8 @@ def map_person_profile_analyses(record: GraphRecord) -> PersonProfileAnalyses:
         input_revision=input_revision,
         claim_active=_required_bool(record, "contact_claim_active"),
         request_queued=_required_bool(record, "contact_request_queued"),
+        retry_attempts_remaining=retry_attempts_remaining,
+        retry_available_at=retry_available_at,
         force_attempts_remaining=_required_int(record, "contact_force_attempts_remaining"),
         force_available_at=_optional_timestamp(record, "contact_force_available_at"),
     )

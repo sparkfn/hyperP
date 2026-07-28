@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import React, { type ReactElement } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -30,11 +30,15 @@ const currentAnalysis = {
 } as const;
 
 function analysisResponse(
-  refreshState: "disabled" | "pending" | "running" | "retrying" | "ready",
+  refreshState: "disabled" | "failed" | "pending" | "running" | "retrying" | "ready",
+  retryAttemptsRemaining = 3,
 ): Response {
-  const active = refreshState !== "ready";
-  const salesCurrent = active ? currentAnalysis : { ...currentAnalysis, input_revision: 8 };
-  const contactCurrent = active ? null : {
+  const active = ["pending", "running", "retrying"].includes(refreshState);
+  const failed = refreshState === "failed";
+  const salesCurrent = active ? currentAnalysis : failed
+    ? null
+    : { ...currentAnalysis, input_revision: 8 };
+  const contactCurrent = active || failed ? null : {
     ...currentAnalysis,
     analysis_id: "analysis-contact-1",
     analysis_type: "contact_tracing",
@@ -51,10 +55,18 @@ function analysisResponse(
         valid: !active,
         invalid_reason: active ? "stale" : null,
         refresh_state: refreshState,
-        failure_code: null,
+        failure_code: failed ? "provider_unavailable" : null,
         auto_request_allowed: false,
         next_retry_at: null,
         next_retry_at_display: null,
+        retry_allowed: failed && retryAttemptsRemaining > 0,
+        retry_attempts_remaining: retryAttemptsRemaining,
+        retry_available_at: retryAttemptsRemaining === 0
+          ? "2026-07-28T02:00:00+00:00"
+          : null,
+        retry_available_at_display: retryAttemptsRemaining === 0
+          ? "28 Jul 2026, 10:00 AM"
+          : null,
         force_attempts_remaining: 3,
         force_available_at: null,
         force_available_at_display: null,
@@ -65,11 +77,19 @@ function analysisResponse(
         expired: false,
         valid: !active && contactCurrent !== null,
         invalid_reason: active ? "missing" : null,
-        refresh_state: active ? refreshState : "ready",
-        failure_code: null,
+        refresh_state: refreshState === "ready" ? "ready" : refreshState,
+        failure_code: failed ? "provider_unavailable" : null,
         auto_request_allowed: false,
         next_retry_at: null,
         next_retry_at_display: null,
+        retry_allowed: failed && retryAttemptsRemaining > 0,
+        retry_attempts_remaining: retryAttemptsRemaining,
+        retry_available_at: retryAttemptsRemaining === 0
+          ? "2026-07-28T02:00:00+00:00"
+          : null,
+        retry_available_at_display: retryAttemptsRemaining === 0
+          ? "28 Jul 2026, 10:00 AM"
+          : null,
         force_attempts_remaining: 3,
         force_available_at: null,
         force_available_at_display: null,
@@ -181,5 +201,66 @@ describe("ProfileAnalysisPanel", () => {
     expect(warning.textContent).toContain("Analysis refresh unavailable.");
     expect(warning.getAttribute("aria-live")).toBe("polite");
     expect(screen.getByText(/Retained sales guidance/)).toBeTruthy();
+  });
+
+  it("submits an explicit failed-analysis retry and refreshes its state", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(analysisResponse("failed"))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        data: {
+          request_id: "retry-request-1",
+          person_id: "person/one",
+          analysis_type: "sales",
+          state: "queued",
+          retry_attempts_remaining: 2,
+          retry_available_at: null,
+          retry_available_at_display: null,
+        },
+        meta: { request_id: "request-2", next_cursor: null },
+      }), { status: 202 }))
+      .mockResolvedValue(analysisResponse("pending"));
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(renderPanel());
+    const retryButtons = await screen.findAllByRole("button", { name: "Retry analysis" });
+    fireEvent.click(retryButtons[0] as HTMLElement);
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3));
+    const retryCall = fetchMock.mock.calls[1];
+    expect(retryCall?.[0]).toContain("/bff/persons/person%2Fone/profile-analyses/retries");
+    expect(retryCall?.[1]).toMatchObject({
+      method: "POST",
+      body: JSON.stringify({ analysis_type: "sales" }),
+    });
+    expect(await screen.findByText("Refresh queued")).toBeTruthy();
+  });
+
+  it("refreshes the shared retry budget after a rate-limit response", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(analysisResponse("failed"))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        error: {
+          code: "profile_analysis_retry_limit",
+          message: "The profile analysis retry limit has been reached. Try again later.",
+          details: {
+            retry_available_at: "2026-07-28T02:00:00+00:00",
+            retry_available_at_display: "28 Jul 2026, 10:00 AM",
+          },
+        },
+        meta: { request_id: "request-2", next_cursor: null },
+      }), { status: 429 }))
+      .mockResolvedValue(analysisResponse("failed", 0));
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(renderPanel());
+    const retryButtons = await screen.findAllByRole("button", { name: "Retry analysis" });
+    fireEvent.click(retryButtons[0] as HTMLElement);
+
+    expect((await screen.findByRole("alert")).textContent).toContain(
+      "The retry limit has been reached until 28 Jul 2026, 10:00 AM.",
+    );
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3));
+    const refreshedButtons = await screen.findAllByRole("button", { name: "Retry analysis" });
+    expect(refreshedButtons.every((button) => button.hasAttribute("disabled"))).toBe(true);
   });
 });

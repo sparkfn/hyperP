@@ -27,6 +27,7 @@ from src.types_profile_analysis import (
     ProfileAnalysisHistoryItem,
     ProfileAnalysisRequestRequeueResult,
     ProfileAnalysisRequestResult,
+    ProfileAnalysisRetryResult,
     ProfileAnalysisType,
 )
 
@@ -86,7 +87,9 @@ class PersonRepository(Protocol):
 
     async def get_by_id(self, person_id: str) -> Person | None: ...
 
-    async def get_profile_analyses(self, person_id: str) -> PersonProfileAnalyses | None: ...
+    async def get_profile_analyses(
+        self, person_id: str, retry_actor_id: str
+    ) -> PersonProfileAnalyses | None: ...
 
     async def request_profile_analysis(
         self,
@@ -96,6 +99,13 @@ class PersonRepository(Protocol):
     ) -> ProfileAnalysisRequestResult | None: ...
 
     async def mark_profile_analysis_request_dispatch_failed(self, request_id: str) -> None: ...
+
+    async def retry_failed_profile_analysis(
+        self,
+        person_id: str,
+        analysis_type: ProfileAnalysisType,
+        retry_actor_id: str,
+    ) -> ProfileAnalysisRetryResult | None: ...
 
     async def requeue_failed_profile_analysis_request(
         self,

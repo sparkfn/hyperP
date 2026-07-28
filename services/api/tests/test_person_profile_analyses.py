@@ -8,6 +8,7 @@ from src.graph.mappers_profile_analysis import (
     map_profile_analysis_history_item,
 )
 from src.graph.queries.profile_analysis import (
+    CREATE_FAILED_PROFILE_ANALYSIS_RETRY,
     GET_PERSON_PROFILE_ANALYSES,
     GET_PERSON_PROFILE_ANALYSIS_HISTORY,
     REQUEUE_FAILED_PROFILE_ANALYSIS_REQUEST,
@@ -63,6 +64,8 @@ def _current_record(
         "contact_failure": contact_failure,
         "sales_request_queued": False,
         "contact_request_queued": False,
+        "retry_attempts_remaining": 3,
+        "retry_available_at": None,
         "sales_force_attempts_remaining": 3,
         "contact_force_attempts_remaining": 3,
         "sales_force_available_at": None,
@@ -150,6 +153,22 @@ def test_current_mapper_retains_stale_success_when_refresh_failed() -> None:
     assert mapped.sales.failure_code == "provider_unavailable"
 
 
+def test_current_mapper_exposes_shared_user_retry_budget_for_terminal_failure() -> None:
+    mapped = map_person_profile_analyses(
+        {
+            **_current_record(sales_failure={"failure_code": "provider_unavailable"}),
+            "retry_attempts_remaining": 0,
+            "retry_available_at": "2099-07-21T02:00:00+00:00",
+        }
+    )
+
+    assert mapped.sales.retry_allowed is False
+    assert mapped.sales.retry_attempts_remaining == 0
+    assert mapped.sales.retry_available_at == "2099-07-21T02:00:00+00:00"
+    assert mapped.contact_tracing.retry_attempts_remaining == 0
+    assert mapped.contact_tracing.retry_available_at == "2099-07-21T02:00:00+00:00"
+
+
 def test_live_claim_does_not_hide_permanent_failure_for_other_due_type() -> None:
     mapped = map_person_profile_analyses(
         _current_record(
@@ -183,6 +202,33 @@ def test_terminal_request_requeue_query_is_revision_bound_and_privacy_safe() -> 
     assert "'privacy_snapshot'" not in query
     assert "request.status = 'queued'" in query
     assert "request.input_revision =" not in query
+
+
+def test_user_retry_query_is_atomic_person_scoped_and_user_rate_limited() -> None:
+    query = CREATE_FAILED_PROFILE_ANALYSIS_RETRY
+
+    assert "SET person.profile_analysis_request_updated_at = now" in query
+    assert "input_revision: input_revision" in query
+    assert "analysis_type: $analysis_type" in query
+    assert "retry_actor_id: $retry_actor_id" in query
+    assert "retry.requested_at > now - duration({hours: 1})" in query
+    assert "retry.status <> 'dispatch_failed'" not in query
+    assert "retry_count >= $max_retries" in query
+    assert "failure IS NULL OR coalesce(failure.retryable, false)" in query
+    assert "failure.completed_at > current.completed_at" in query
+    assert "failure.analysis_id > current.analysis_id" in query
+    assert "user_retry: true" in query
+    assert "retry_of_analysis_id: failure.analysis_id" in query
+    assert "CREATE (person)-[:HAS_PROFILE_ANALYSIS_REQUEST]->(request)" in query
+
+
+def test_current_query_ignores_failures_older_than_the_published_success() -> None:
+    query = GET_PERSON_PROFILE_ANALYSES
+
+    assert "CALL (person, input_revision, sales_currents)" in query
+    assert "CALL (person, input_revision, contact_currents)" in query
+    assert query.count("failed.completed_at > current.completed_at") == 2
+    assert query.count("failed.analysis_id > current.analysis_id") == 2
 
 
 def test_live_claim_does_not_hide_delayed_retry_failure() -> None:

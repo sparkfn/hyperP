@@ -11,6 +11,7 @@ import src.repositories.neo4j.person as person_module
 from neo4j import AsyncManagedTransaction
 from src.graph.converters import GraphRecord, GraphValue
 from src.graph.queries.profile_analysis import (
+    CREATE_FAILED_PROFILE_ANALYSIS_RETRY,
     CREATE_PROFILE_ANALYSIS_REQUEST,
     GET_PERSON_PROFILE_ANALYSES,
     GET_PERSON_PROFILE_ANALYSIS_HISTORY,
@@ -98,6 +99,41 @@ class _WriteSession:
             person_id,
             analysis_type,
             force,
+            request_id,
+        )
+
+
+type _ProfileAnalysisRetryWriteFn = Callable[
+    [AsyncManagedTransaction, str, ProfileAnalysisType, str, int, str],
+    Awaitable[GraphRecord | None],
+]
+
+
+class _RetryWriteSession:
+    def __init__(self, transaction: _Session) -> None:
+        self.transaction = transaction
+        self.calls: list[
+            tuple[_ProfileAnalysisRetryWriteFn, str, ProfileAnalysisType, str, int, str]
+        ] = []
+
+    async def execute_write(
+        self,
+        function: _ProfileAnalysisRetryWriteFn,
+        person_id: str,
+        analysis_type: ProfileAnalysisType,
+        retry_actor_id: str,
+        max_retries: int,
+        request_id: str,
+    ) -> GraphRecord | None:
+        self.calls.append(
+            (function, person_id, analysis_type, retry_actor_id, max_retries, request_id)
+        )
+        return await function(
+            cast(AsyncManagedTransaction, self.transaction),
+            person_id,
+            analysis_type,
+            retry_actor_id,
+            max_retries,
             request_id,
         )
 
@@ -198,9 +234,80 @@ async def test_current_profile_analysis_retrieval_remains_read_only(
     session = _Session(None)
     write_modes = _install_session(monkeypatch, session)
 
-    assert await Neo4jPersonRepository().get_profile_analyses("person-1") is None
+    assert await Neo4jPersonRepository().get_profile_analyses(
+        "person-1", "person@example.com"
+    ) is None
     assert write_modes == [False]
-    assert session.calls == [(GET_PERSON_PROFILE_ANALYSES, {"person_id": "person-1"})]
+    assert session.calls == [
+        (
+            GET_PERSON_PROFILE_ANALYSES,
+            {
+                "person_id": "person-1",
+                "retry_actor_id": "person@example.com",
+                "max_user_retries": 3,
+            },
+        )
+    ]
+
+
+@pytest.mark.anyio
+async def test_retry_failed_profile_analysis_uses_atomic_write_and_maps_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    transaction = _Session(
+        _Record(
+            {
+                "person_id": "canonical-person",
+                "request_id": "retry-request-1",
+                "state": "queued",
+                "retry_attempts_remaining": 2,
+                "retry_available_at": None,
+            }
+        )
+    )
+    session = _RetryWriteSession(transaction)
+    write_modes: list[bool] = []
+
+    @asynccontextmanager
+    async def fake_get_session(write: bool = False) -> AsyncIterator[_RetryWriteSession]:
+        write_modes.append(write)
+        yield session
+
+    monkeypatch.setattr(person_module, "get_session", fake_get_session)
+    monkeypatch.setattr(person_module, "uuid4", lambda: "retry-request-1")
+
+    result = await Neo4jPersonRepository().retry_failed_profile_analysis(
+        "merged-person",
+        "sales",
+        "person@example.com",
+    )
+
+    assert write_modes == [True]
+    assert len(session.calls) == 1
+    assert session.calls[0][1:] == (
+        "merged-person",
+        "sales",
+        "person@example.com",
+        3,
+        "retry-request-1",
+    )
+    assert transaction.calls == [
+        (
+            CREATE_FAILED_PROFILE_ANALYSIS_RETRY,
+            {
+                "person_id": "merged-person",
+                "analysis_type": "sales",
+                "retry_actor_id": "person@example.com",
+                "max_retries": 3,
+                "request_id": "retry-request-1",
+            },
+        )
+    ]
+    assert result is not None
+    assert result.person_id == "canonical-person"
+    assert result.request_id == "retry-request-1"
+    assert result.state == "queued"
+    assert result.retry_attempts_remaining == 2
 
 
 @pytest.mark.anyio

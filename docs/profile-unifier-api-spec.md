@@ -750,6 +750,30 @@ The endpoint returns `401` for missing or invalid human authentication, `403`
 when the frontend user is not active, and `404` with `person_not_found` when the
 Person cannot be resolved.
 
+## POST /v1/persons/{person_id}/profile-analyses/retries
+
+Retry a terminal failed Sales or Contact Tracing analysis from the Person detail
+page. This authenticated-human-only endpoint is served through `/api/app/v2`;
+it is not public and is not available to OAuth2 machine clients.
+
+The request body contains the failed `analysis_type`. The server resolves the
+canonical Person, verifies that a terminal failure exists at its current input
+revision, and creates a fresh queued request. If an analysis request for the
+same type is already queued or live-running, it returns that state without
+creating or dispatching a duplicate request.
+
+Retries are limited atomically to **three submitted attempts in a rolling hour
+per authenticated user and canonical Person**, shared across both analysis
+types. A dispatch failure is marked as `dispatch_failed`; although it does not
+reach the analysis provider, the submitted retry still counts toward the hourly
+request budget. The current profile-analysis response exposes
+`retry_allowed`, `retry_attempts_remaining`, and `retry_available_at` on each
+slot so the UI can disable the retry control before submitting.
+
+It returns `202` when a retry is queued (or the same type is already active),
+`409` when the selected slot is no longer terminally failed, `429` when the
+user's rolling retry budget is exhausted, and `503` when Celery dispatch fails.
+
 ## POST /v1/persons/{person_id}/profile-analyses/requests/{request_id}/requeue
 
 Requeue one terminal failed profile-analysis request after an operator has

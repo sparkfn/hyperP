@@ -22,6 +22,13 @@ const currentAnalysis = {
   attempt_number: 2,
 } as const;
 
+const retryBudget = {
+  retry_allowed: false,
+  retry_attempts_remaining: 3,
+  retry_available_at: null,
+  retry_available_at_display: null,
+} as const;
+
 describe("profile analysis response contracts", () => {
   it("accepts complete independent current slots", () => {
     const result = parsePersonProfileAnalyses({
@@ -32,17 +39,58 @@ describe("profile analysis response contracts", () => {
         stale: true,
         refresh_state: "running",
         failure_code: null,
+        ...retryBudget,
       },
       contact_tracing: {
         current: null,
         stale: false,
         refresh_state: "failed",
         failure_code: "provider_unavailable",
+        ...retryBudget,
+        retry_allowed: true,
       },
     }, "person-1");
 
     expect(result.sales.current?.model).toBe("analysis-model");
     expect(result.contact_tracing.failure_code).toBe("provider_unavailable");
+  });
+
+  it("rejects missing or inconsistent shared retry-budget metadata", () => {
+    const validSlot = {
+      current: null,
+      stale: false,
+      refresh_state: "pending",
+      failure_code: null,
+      ...retryBudget,
+    };
+    const missingRetryField = {
+      input_revision: 8,
+      refresh_state: "pending",
+      sales: validSlot,
+      contact_tracing: {
+        current: null,
+        stale: false,
+        refresh_state: "pending",
+        failure_code: null,
+        retry_attempts_remaining: 3,
+        retry_available_at: null,
+        retry_available_at_display: null,
+      },
+    };
+    const mismatchedBudget = {
+      input_revision: 8,
+      refresh_state: "pending",
+      sales: validSlot,
+      contact_tracing: {
+        ...validSlot,
+        retry_attempts_remaining: 0,
+        retry_available_at: "2026-07-28T02:00:00+00:00",
+        retry_available_at_display: "28 Jul 2026, 10:00 AM",
+      },
+    };
+
+    expect(() => parsePersonProfileAnalyses(missingRetryField, "person-1")).toThrow();
+    expect(() => parsePersonProfileAnalyses(mismatchedBudget, "person-1")).toThrow();
   });
 
   it("accepts complete history provenance and failure metadata", () => {
@@ -79,12 +127,19 @@ describe("profile analysis response contracts", () => {
     const base = {
       input_revision: 7,
       refresh_state: "partial",
-      sales: { current: currentAnalysis, stale: false, refresh_state: "ready", failure_code: null },
+      sales: {
+        current: currentAnalysis,
+        stale: false,
+        refresh_state: "ready",
+        failure_code: null,
+        ...retryBudget,
+      },
       contact_tracing: {
         current: null,
         stale: false,
         refresh_state: "pending",
         failure_code: null,
+        ...retryBudget,
       },
     };
 
@@ -102,6 +157,7 @@ describe("profile analysis response contracts", () => {
         stale: false,
         refresh_state: "ready",
         failure_code: null,
+        ...retryBudget,
       },
     }],
     ["contact output in the sales slot", {
@@ -110,6 +166,7 @@ describe("profile analysis response contracts", () => {
         stale: false,
         refresh_state: "ready",
         failure_code: null,
+        ...retryBudget,
       },
     }],
     ["current output for another Person", {
@@ -118,6 +175,7 @@ describe("profile analysis response contracts", () => {
         stale: false,
         refresh_state: "ready",
         failure_code: null,
+        ...retryBudget,
       },
     }],
     ["stale output marked ready", {
@@ -126,18 +184,26 @@ describe("profile analysis response contracts", () => {
         stale: true,
         refresh_state: "ready",
         failure_code: null,
+        ...retryBudget,
       },
     }],
   ])("rejects semantic contradiction: %s", (_label, change) => {
     const candidate = {
       input_revision: 7,
       refresh_state: "partial",
-      sales: { current: currentAnalysis, stale: false, refresh_state: "ready", failure_code: null },
+      sales: {
+        current: currentAnalysis,
+        stale: false,
+        refresh_state: "ready",
+        failure_code: null,
+        ...retryBudget,
+      },
       contact_tracing: {
         current: null,
         stale: false,
         refresh_state: "pending",
         failure_code: null,
+        ...retryBudget,
       },
       ...change,
     };
@@ -172,12 +238,14 @@ describe("profile analysis response contracts", () => {
         stale: true,
         refresh_state: "pending",
         failure_code: null,
+        ...retryBudget,
       },
       contact_tracing: {
         current: null,
         stale: false,
         refresh_state: "pending",
         failure_code: null,
+        ...retryBudget,
       },
     };
 
@@ -187,15 +255,33 @@ describe("profile analysis response contracts", () => {
   it.each([
     ["stale flag disagrees with revision", {
       refresh_state: "partial",
-      sales: { current: currentAnalysis, stale: false, refresh_state: "pending", failure_code: null },
+      sales: {
+        current: currentAnalysis,
+        stale: false,
+        refresh_state: "pending",
+        failure_code: null,
+        ...retryBudget,
+      },
     }],
     ["missing current is stale", {
       refresh_state: "pending",
-      sales: { current: null, stale: true, refresh_state: "pending", failure_code: null },
+      sales: {
+        current: null,
+        stale: true,
+        refresh_state: "pending",
+        failure_code: null,
+        ...retryBudget,
+      },
     }],
     ["ready slot has no fresh current", {
       refresh_state: "partial",
-      sales: { current: null, stale: false, refresh_state: "ready", failure_code: null },
+      sales: {
+        current: null,
+        stale: false,
+        refresh_state: "ready",
+        failure_code: null,
+        ...retryBudget,
+      },
     }],
     ["failure code appears outside failed state", {
       refresh_state: "pending",
@@ -204,6 +290,7 @@ describe("profile analysis response contracts", () => {
         stale: true,
         refresh_state: "pending",
         failure_code: "provider_unavailable",
+        ...retryBudget,
       },
     }],
     ["unsafe failure code crosses the trust boundary", {
@@ -213,15 +300,29 @@ describe("profile analysis response contracts", () => {
         stale: true,
         refresh_state: "failed",
         failure_code: "Provider error: private body",
+        ...retryBudget,
+        retry_allowed: true,
       },
     }],
     ["disabled state applies to only one slot", {
       refresh_state: "disabled",
-      sales: { current: currentAnalysis, stale: true, refresh_state: "disabled", failure_code: null },
+      sales: {
+        current: currentAnalysis,
+        stale: true,
+        refresh_state: "disabled",
+        failure_code: null,
+        ...retryBudget,
+      },
     }],
     ["overall state disagrees with slot precedence", {
       refresh_state: "ready",
-      sales: { current: currentAnalysis, stale: true, refresh_state: "running", failure_code: null },
+      sales: {
+        current: currentAnalysis,
+        stale: true,
+        refresh_state: "running",
+        failure_code: null,
+        ...retryBudget,
+      },
     }],
   ])("rejects state contradiction: %s", (_label, change) => {
     const candidate = {
@@ -231,6 +332,7 @@ describe("profile analysis response contracts", () => {
         stale: false,
         refresh_state: "pending",
         failure_code: null,
+        ...retryBudget,
       },
       ...change,
     };

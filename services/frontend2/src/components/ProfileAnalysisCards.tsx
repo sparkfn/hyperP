@@ -12,6 +12,7 @@ interface ProfileAnalysisCardsProps {
   analyses: PersonProfileAnalyses;
   requestingTypes: ReadonlySet<ProfileAnalysisType>;
   onForceRequest: (analysisType: ProfileAnalysisType) => void;
+  onRetryRequest: (analysisType: ProfileAnalysisType) => void;
 }
 
 interface AnalysisCardProps {
@@ -20,6 +21,7 @@ interface AnalysisCardProps {
   slot: ProfileAnalysisSlot;
   requesting: boolean;
   onForceRequest: (analysisType: ProfileAnalysisType) => void;
+  onRetryRequest: (analysisType: ProfileAnalysisType) => void;
 }
 
 const OVERALL_LABELS = {
@@ -64,12 +66,14 @@ function AnalysisCard({
   slot,
   requesting,
   onForceRequest,
+  onRetryRequest,
 }: AnalysisCardProps): ReactElement {
   const current = slot.current;
   const invalidity = invalidityMessage(slot);
   const active = requesting || ["pending", "running", "retrying"].includes(slot.refresh_state);
   const canForce = slot.valid && !active && slot.refresh_state !== "disabled";
   const forceLimited = slot.force_attempts_remaining === 0;
+  const retryLimited = slot.retry_attempts_remaining === 0;
   return (
     <article className={styles.card} aria-busy={active}>
       <div className={styles.cardHeader}>
@@ -119,6 +123,25 @@ function AnalysisCard({
           </span>
         </div>
       )}
+      {slot.refresh_state === "failed" && (
+        <div className={styles.actions}>
+          <button
+            className={styles.forceButton}
+            type="button"
+            disabled={requesting || !slot.retry_allowed}
+            onClick={() => onRetryRequest(analysisType)}
+          >
+            Retry analysis
+          </button>
+          <span className={styles.forceHelp}>
+            {retryLimited && slot.retry_available_at_display !== null
+              ? `Retries available again ${slot.retry_available_at_display}`
+              : `${slot.retry_attempts_remaining} ${
+                slot.retry_attempts_remaining === 1 ? "retry" : "retries"
+              } available this hour for this person`}
+          </span>
+        </div>
+      )}
       {active && <div className={styles.cardOverlay} role="status">Generating updated analysis…</div>}
     </article>
   );
@@ -128,6 +151,7 @@ export default function ProfileAnalysisCards({
   analyses,
   requestingTypes,
   onForceRequest,
+  onRetryRequest,
 }: ProfileAnalysisCardsProps): ReactElement {
   return (
     <div className={styles.cardsArea}>
@@ -141,6 +165,7 @@ export default function ProfileAnalysisCards({
           slot={analyses.sales}
           requesting={requestingTypes.has("sales")}
           onForceRequest={onForceRequest}
+          onRetryRequest={onRetryRequest}
         />
         <AnalysisCard
           title="Contact tracing"
@@ -148,6 +173,7 @@ export default function ProfileAnalysisCards({
           slot={analyses.contact_tracing}
           requesting={requestingTypes.has("contact_tracing")}
           onForceRequest={onForceRequest}
+          onRetryRequest={onRetryRequest}
         />
       </div>
     </div>

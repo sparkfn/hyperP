@@ -15,6 +15,8 @@ type ProfileAnalysisRefreshState = Literal[
     "disabled", "pending", "running", "retrying", "ready", "partial", "failed"
 ]
 
+PROFILE_ANALYSIS_USER_RETRY_LIMIT = 3
+
 
 class ProfileAnalysisCurrent(BaseModel):
     """One currently published successful analysis."""
@@ -55,6 +57,10 @@ class ProfileAnalysisSlot(BaseModel):
     auto_request_allowed: bool
     next_retry_at: str | None
     next_retry_at_display: str | None
+    retry_allowed: bool
+    retry_attempts_remaining: int = Field(ge=0, le=PROFILE_ANALYSIS_USER_RETRY_LIMIT)
+    retry_available_at: str | None
+    retry_available_at_display: str | None
     force_attempts_remaining: int = Field(ge=0, le=3)
     force_available_at: str | None
     force_available_at_display: str | None
@@ -104,6 +110,14 @@ class ProfileAnalysisRequestBody(BaseModel):
     force: bool = False
 
 
+class ProfileAnalysisRetryBody(BaseModel):
+    """Retry one terminal failed independent analysis."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    analysis_type: ProfileAnalysisType
+
+
 class ProfileAnalysisRequestResult(BaseModel):
     """Safe result of creating or reusing an on-demand analysis request."""
 
@@ -136,3 +150,17 @@ class ProfileAnalysisRequestRequeueResult(BaseModel):
         "attempt_limited",
         "requeue_limited",
     ]
+
+
+class ProfileAnalysisRetryResult(BaseModel):
+    """Safe result of a human user retrying a failed analysis."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    request_id: str | None
+    person_id: str
+    analysis_type: ProfileAnalysisType
+    state: Literal["queued", "already_active", "not_failed", "retry_limited"]
+    retry_attempts_remaining: int = Field(ge=0, le=PROFILE_ANALYSIS_USER_RETRY_LIMIT)
+    retry_available_at: str | None
+    retry_available_at_display: str | None

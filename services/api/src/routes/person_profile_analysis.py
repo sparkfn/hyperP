@@ -5,6 +5,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, Query, Request
 
 from src.auth.deps import require_human_admin, require_human_user, require_scope
+from src.auth.models import AuthUser
 from src.celery_client import enqueue_profile_analysis_request
 from src.config import AppConfig, get_config
 from src.http_utils import envelope, http_error, next_cursor, page_window
@@ -17,6 +18,8 @@ from src.types_profile_analysis import (
     ProfileAnalysisRequestBody,
     ProfileAnalysisRequestRequeueResult,
     ProfileAnalysisRequestResult,
+    ProfileAnalysisRetryBody,
+    ProfileAnalysisRetryResult,
     ProfileAnalysisType,
 )
 
@@ -29,6 +32,28 @@ router = APIRouter(
     ],
 )
 
+def _profile_analysis_retry_actor_id(user: AuthUser) -> str:
+    """Return the normalized human identity used by existing audit records."""
+    return user.email.strip().lower()
+
+
+async def _dispatch_profile_analysis_request(
+    request_id: str,
+    request: Request,
+    repo: PersonRepository,
+) -> None:
+    """Dispatch a durable request or mark it failed without exposing internals."""
+    try:
+        enqueue_profile_analysis_request(request_id)
+    except Exception:
+        await repo.mark_profile_analysis_request_dispatch_failed(request_id)
+        raise http_error(
+            503,
+            "profile_analysis_dispatch_failed",
+            "Profile analysis could not be queued. Try again later.",
+            request,
+        ) from None
+
 
 @router.get(
     "/{person_id}/profile-analyses",
@@ -39,9 +64,13 @@ async def get_person_profile_analyses(
     request: Request,
     repo: PersonRepository = Depends(get_person_repo),
     app_config: AppConfig = Depends(get_config),
+    user: AuthUser = Depends(require_human_user),
 ) -> ApiResponse[PersonProfileAnalyses]:
     """Return current independent Person analyses and their refresh states."""
-    analyses = await repo.get_profile_analyses(person_id)
+    analyses = await repo.get_profile_analyses(
+        person_id,
+        _profile_analysis_retry_actor_id(user),
+    )
     if analyses is None:
         raise http_error(404, "person_not_found", "Person not found.", request)
     if not app_config.profile_analysis_enabled:
@@ -53,6 +82,7 @@ async def get_person_profile_analyses(
                         "refresh_state": "disabled",
                         "failure_code": None,
                         "auto_request_allowed": False,
+                        "retry_allowed": False,
                     }
                 ),
                 "contact_tracing": analyses.contact_tracing.model_copy(
@@ -60,6 +90,7 @@ async def get_person_profile_analyses(
                         "refresh_state": "disabled",
                         "failure_code": None,
                         "auto_request_allowed": False,
+                        "retry_allowed": False,
                     }
                 ),
             }
@@ -102,16 +133,58 @@ async def request_person_profile_analysis(
             details=details,
         )
     if result.state == "queued" and result.request_id is not None:
-        try:
-            enqueue_profile_analysis_request(result.request_id)
-        except Exception:
-            await repo.mark_profile_analysis_request_dispatch_failed(result.request_id)
-            raise http_error(
-                503,
-                "profile_analysis_dispatch_failed",
-                "Profile analysis could not be queued. Try again later.",
-                request,
-            ) from None
+        await _dispatch_profile_analysis_request(result.request_id, request, repo)
+    return envelope(result, request)
+
+
+@router.post(
+    "/{person_id}/profile-analyses/retries",
+    response_model=ApiResponse[ProfileAnalysisRetryResult],
+    status_code=202,
+)
+async def retry_failed_person_profile_analysis(
+    person_id: str,
+    body: ProfileAnalysisRetryBody,
+    request: Request,
+    repo: PersonRepository = Depends(get_person_repo),
+    app_config: AppConfig = Depends(get_config),
+    user: AuthUser = Depends(require_human_user),
+) -> ApiResponse[ProfileAnalysisRetryResult]:
+    """Retry one terminal failure within the user's rolling Person budget."""
+    if not app_config.profile_analysis_enabled:
+        raise http_error(409, "profile_analysis_disabled", "Profile analysis is disabled.", request)
+    result = await repo.retry_failed_profile_analysis(
+        person_id,
+        body.analysis_type,
+        _profile_analysis_retry_actor_id(user),
+    )
+    if result is None:
+        raise http_error(404, "person_not_found", "Person not found.", request)
+    if result.state == "retry_limited":
+        details = (
+            {
+                "retry_available_at": result.retry_available_at or "",
+                "retry_available_at_display": result.retry_available_at_display or "",
+            }
+            if result.retry_available_at is not None
+            else None
+        )
+        raise http_error(
+            429,
+            "profile_analysis_retry_limit",
+            "The profile analysis retry limit has been reached. Try again later.",
+            request,
+            details=details,
+        )
+    if result.state == "not_failed":
+        raise http_error(
+            409,
+            "profile_analysis_retry_not_failed",
+            "The selected profile analysis is no longer failed.",
+            request,
+        )
+    if result.state == "queued" and result.request_id is not None:
+        await _dispatch_profile_analysis_request(result.request_id, request, repo)
     return envelope(result, request)
 
 
@@ -145,16 +218,7 @@ async def requeue_failed_person_profile_analysis(
             "Profile analysis request cannot be requeued.",
             request,
         )
-    try:
-        enqueue_profile_analysis_request(result.request_id)
-    except Exception:
-        await repo.mark_profile_analysis_request_dispatch_failed(result.request_id)
-        raise http_error(
-            503,
-            "profile_analysis_dispatch_failed",
-            "Profile analysis could not be queued. Try again later.",
-            request,
-        ) from None
+    await _dispatch_profile_analysis_request(result.request_id, request, repo)
     return envelope(result, request)
 
 

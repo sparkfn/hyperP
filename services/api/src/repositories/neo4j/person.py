@@ -42,6 +42,7 @@ from src.graph.queries import (
     COUNT_PERSON_SHARED_IDENTIFIERS,
     COUNT_PERSON_SOURCE_RECORDS,
     COUNT_PERSON_TIMELINE,
+    CREATE_FAILED_PROFILE_ANALYSIS_RETRY,
     CREATE_PROFILE_ANALYSIS_REQUEST,
     FIND_PERSON_BY_IDENTIFIER,
     GET_PERSON_AUDIT,
@@ -91,10 +92,12 @@ from src.types import (
     SourceRecordEntityFacet,
 )
 from src.types_profile_analysis import (
+    PROFILE_ANALYSIS_USER_RETRY_LIMIT,
     PersonProfileAnalyses,
     ProfileAnalysisHistoryItem,
     ProfileAnalysisRequestRequeueResult,
     ProfileAnalysisRequestResult,
+    ProfileAnalysisRetryResult,
     ProfileAnalysisType,
 )
 
@@ -133,6 +136,28 @@ async def _request_profile_analysis_tx(
         person_id=person_id,
         analysis_type=analysis_type,
         force=force,
+        request_id=request_id,
+    )
+    record = await result.single()
+    if record is None:
+        return None
+    return record_to_dict(record.keys(), list(record.values()))
+
+
+async def _retry_failed_profile_analysis_tx(
+    tx: AsyncManagedTransaction,
+    person_id: str,
+    analysis_type: ProfileAnalysisType,
+    retry_actor_id: str,
+    max_retries: int,
+    request_id: str,
+) -> GraphRecord | None:
+    result = await tx.run(
+        CREATE_FAILED_PROFILE_ANALYSIS_RETRY,
+        person_id=person_id,
+        analysis_type=analysis_type,
+        retry_actor_id=retry_actor_id,
+        max_retries=max_retries,
         request_id=request_id,
     )
     record = await result.single()
@@ -231,9 +256,16 @@ class Neo4jPersonRepository:
             return None
         return map_person(record_to_dict(record.keys(), list(record.values())))
 
-    async def get_profile_analyses(self, person_id: str) -> PersonProfileAnalyses | None:
+    async def get_profile_analyses(
+        self, person_id: str, retry_actor_id: str
+    ) -> PersonProfileAnalyses | None:
         async with get_session() as session:
-            result = await session.run(GET_PERSON_PROFILE_ANALYSES, person_id=person_id)
+            result = await session.run(
+                GET_PERSON_PROFILE_ANALYSES,
+                person_id=person_id,
+                retry_actor_id=retry_actor_id,
+                max_user_retries=PROFILE_ANALYSIS_USER_RETRY_LIMIT,
+            )
             record = await result.single()
         if record is None:
             return None
@@ -281,6 +313,44 @@ class Neo4jPersonRepository:
     async def mark_profile_analysis_request_dispatch_failed(self, request_id: str) -> None:
         async with get_session(write=True) as session:
             await session.run(MARK_PROFILE_ANALYSIS_REQUEST_DISPATCH_FAILED, request_id=request_id)
+
+    async def retry_failed_profile_analysis(
+        self,
+        person_id: str,
+        analysis_type: ProfileAnalysisType,
+        retry_actor_id: str,
+    ) -> ProfileAnalysisRetryResult | None:
+        request_id = str(uuid4())
+        async with get_session(write=True) as session:
+            mapped = await session.execute_write(
+                _retry_failed_profile_analysis_tx,
+                person_id,
+                analysis_type,
+                retry_actor_id,
+                PROFILE_ANALYSIS_USER_RETRY_LIMIT,
+                request_id,
+            )
+        if mapped is None:
+            return None
+        state = to_str(mapped.get("state"))
+        valid_states = {"queued", "already_active", "not_failed", "retry_limited"}
+        if state not in valid_states:
+            raise ValueError("invalid profile analysis retry state")
+        available_at = to_iso_or_none(mapped.get("retry_available_at"))
+        return ProfileAnalysisRetryResult(
+            request_id=to_iso_or_none(mapped.get("request_id")),
+            person_id=to_str(mapped.get("person_id")),
+            analysis_type=analysis_type,
+            state=cast(
+                Literal["queued", "already_active", "not_failed", "retry_limited"],
+                state,
+            ),
+            retry_attempts_remaining=to_int(mapped.get("retry_attempts_remaining")),
+            retry_available_at=available_at,
+            retry_available_at_display=(
+                format_display_datetime(available_at) if available_at is not None else None
+            ),
+        )
 
     async def requeue_failed_profile_analysis_request(
         self,

@@ -45,19 +45,31 @@ CALL (person) {
     + _SAFE_CURRENT_PROJECTION
     + """) AS contact_currents
 }
-CALL (person, input_revision) {
-  WITH person, input_revision
+CALL (person, input_revision, sales_currents) {
+  WITH person, input_revision, head(sales_currents) AS current
   OPTIONAL MATCH (person)-[:HAS_PROFILE_ANALYSIS]->(failed:ProfileAnalysis {
     analysis_type: 'sales', status: 'failed', input_revision: input_revision
   })
+  WHERE current IS NULL
+    OR failed.completed_at > current.completed_at
+    OR (
+      failed.completed_at = current.completed_at
+      AND failed.analysis_id > current.analysis_id
+    )
   WITH failed ORDER BY failed.completed_at DESC, failed.analysis_id DESC
   RETURN head(collect(failed)) AS sales_failure
 }
-CALL (person, input_revision) {
-  WITH person, input_revision
+CALL (person, input_revision, contact_currents) {
+  WITH person, input_revision, head(contact_currents) AS current
   OPTIONAL MATCH (person)-[:HAS_PROFILE_ANALYSIS]->(failed:ProfileAnalysis {
     analysis_type: 'contact_tracing', status: 'failed', input_revision: input_revision
   })
+  WHERE current IS NULL
+    OR failed.completed_at > current.completed_at
+    OR (
+      failed.completed_at = current.completed_at
+      AND failed.analysis_id > current.analysis_id
+    )
   WITH failed ORDER BY failed.completed_at DESC, failed.analysis_id DESC
   RETURN head(collect(failed)) AS contact_failure
 }
@@ -113,10 +125,21 @@ CALL (person, now) {
   WITH request ORDER BY request.requested_at ASC
   RETURN count(request) AS contact_force_count, head(collect(request.requested_at)) AS contact_oldest_force
 }
+CALL (person, now) {
+  WITH person, now
+  OPTIONAL MATCH (person)-[:HAS_PROFILE_ANALYSIS_REQUEST]->(retry:ProfileAnalysisRequest {
+    user_retry: true, retry_actor_id: $retry_actor_id
+  })
+  WHERE retry.requested_at > now - duration({hours: 1})
+  WITH retry ORDER BY retry.requested_at ASC
+  RETURN count(retry) AS user_retry_count,
+         head(collect(retry.requested_at)) AS user_oldest_retry
+}
 WITH input_revision, now, live_claim, sales_currents, contact_currents,
      sales_failure, contact_failure, sales_request_queued, contact_request_queued,
      sales_request_running, contact_request_running,
-     sales_force_count, sales_oldest_force, contact_force_count, contact_oldest_force
+     sales_force_count, sales_oldest_force, contact_force_count, contact_oldest_force,
+     user_retry_count, user_oldest_retry
 RETURN input_revision,
        sales_request_running AS sales_claim_active,
        contact_request_running AS contact_claim_active,
@@ -128,6 +151,12 @@ RETURN input_revision,
          AS sales_failure,
        contact_failure {.analysis_id, .failure_code, .retryable, .next_retry_at}
          AS contact_failure,
+       CASE WHEN user_retry_count >= $max_user_retries
+         THEN 0 ELSE $max_user_retries - user_retry_count END
+         AS retry_attempts_remaining,
+       CASE WHEN user_retry_count >= $max_user_retries
+         THEN user_oldest_retry + duration({hours: 1}) ELSE null END
+         AS retry_available_at,
        CASE WHEN sales_force_count >= 3 THEN 0 ELSE 3 - sales_force_count END
          AS sales_force_attempts_remaining,
        CASE WHEN sales_force_count >= 3 THEN sales_oldest_force + duration({hours: 1}) ELSE null END
@@ -241,6 +270,87 @@ WHERE request.status = 'queued'
 SET request.status = 'dispatch_failed', request.completed_at = datetime.realtime()
 RETURN true AS updated
 """
+
+CREATE_FAILED_PROFILE_ANALYSIS_RETRY = (
+    _RESOLVE_PROFILE_ANALYSIS_PERSON
+    + """
+WITH person, datetime.realtime() AS now
+// Lock the canonical Person so concurrent retries share one rolling budget.
+SET person.profile_analysis_request_updated_at = now
+WITH person, now, coalesce(person.analysis_input_revision, 0) AS input_revision
+CALL (person, input_revision) {
+  WITH person, input_revision
+  OPTIONAL MATCH (person)-[:CURRENT_PROFILE_ANALYSIS {analysis_type: $analysis_type}]
+                 ->(current:ProfileAnalysis)
+  WITH person, input_revision, head(collect(current)) AS current
+  OPTIONAL MATCH (person)-[:HAS_PROFILE_ANALYSIS]->(failure:ProfileAnalysis {
+    analysis_type: $analysis_type,
+    input_revision: input_revision,
+    status: 'failed'
+  })
+  WHERE current IS NULL
+    OR failure.completed_at > current.completed_at
+    OR (
+      failure.completed_at = current.completed_at
+      AND failure.analysis_id > current.analysis_id
+    )
+  WITH failure ORDER BY failure.completed_at DESC, failure.analysis_id DESC
+  RETURN head(collect(failure)) AS failure
+}
+CALL (person, now) {
+  WITH person, now
+  OPTIONAL MATCH (person)-[:HAS_PROFILE_ANALYSIS_REQUEST]->(active:ProfileAnalysisRequest {
+    analysis_type: $analysis_type
+  })
+  WHERE active.status = 'queued'
+     OR (active.status = 'running' AND person.analysis_claim_until > now)
+  RETURN count(active) > 0 AS active_request
+}
+CALL (person, now) {
+  WITH person, now
+  OPTIONAL MATCH (person)-[:HAS_PROFILE_ANALYSIS_REQUEST]->(retry:ProfileAnalysisRequest {
+    user_retry: true, retry_actor_id: $retry_actor_id
+  })
+  WHERE retry.requested_at > now - duration({hours: 1})
+  WITH retry ORDER BY retry.requested_at ASC
+  RETURN count(retry) AS retry_count,
+         head(collect(retry.requested_at)) AS oldest_retry
+}
+WITH person, now, input_revision, failure, active_request, retry_count, oldest_retry,
+     CASE
+       WHEN failure IS NULL OR coalesce(failure.retryable, false) THEN 'not_failed'
+       WHEN active_request THEN 'already_active'
+       WHEN retry_count >= $max_retries THEN 'retry_limited'
+       ELSE 'queued'
+     END AS state
+FOREACH (_ IN CASE WHEN state = 'queued' THEN [1] ELSE [] END |
+  CREATE (request:ProfileAnalysisRequest {
+    request_id: $request_id,
+    person_id: person.person_id,
+    analysis_type: $analysis_type,
+    force: false,
+    status: 'queued',
+    requested_at: now,
+    input_revision: input_revision,
+    user_retry: true,
+    retry_actor_id: $retry_actor_id,
+    retry_of_analysis_id: failure.analysis_id
+  })
+  CREATE (person)-[:HAS_PROFILE_ANALYSIS_REQUEST]->(request)
+)
+WITH person, state, retry_count, oldest_retry,
+     CASE WHEN state = 'queued' THEN 1 ELSE 0 END AS created_count
+RETURN person.person_id AS person_id,
+       CASE WHEN state = 'queued' THEN $request_id ELSE null END AS request_id,
+       state,
+       CASE WHEN retry_count + created_count >= $max_retries
+         THEN 0 ELSE $max_retries - retry_count - created_count END
+         AS retry_attempts_remaining,
+       CASE WHEN retry_count + created_count >= $max_retries
+         THEN oldest_retry + duration({hours: 1}) ELSE null END
+         AS retry_available_at
+"""
+)
 
 REQUEUE_FAILED_PROFILE_ANALYSIS_REQUEST = (
     _RESOLVE_PROFILE_ANALYSIS_PERSON

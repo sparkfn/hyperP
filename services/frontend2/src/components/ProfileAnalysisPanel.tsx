@@ -7,6 +7,7 @@ import { BffError, bffFetch } from "../lib/api-client";
 import type {
   PersonProfileAnalyses,
   ProfileAnalysisRequestResult,
+  ProfileAnalysisRetryResult,
   ProfileAnalysisType,
 } from "../lib/api-types-person";
 import { parsePersonProfileAnalyses } from "../lib/profile-analysis-contracts";
@@ -132,6 +133,43 @@ export default function ProfileAnalysisPanel({
     if (accepted) void requestAnalysis(analysisType, true);
   }, [requestAnalysis]);
 
+  const handleRetryRequest = useCallback(async (
+    analysisType: ProfileAnalysisType,
+  ): Promise<void> => {
+    if (requestingTypes.has(analysisType)) return;
+    setRequestError(null);
+    setRequestingTypes((current) => new Set([...current, analysisType]));
+    try {
+      await bffFetch<ProfileAnalysisRetryResult>(
+        `/bff/persons/${encodeURIComponent(personId)}/profile-analyses/retries`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ analysis_type: analysisType }),
+        },
+      );
+      await queryClient.invalidateQueries({ queryKey: ["person-profile-analyses", personId] });
+    } catch (error) {
+      const retryAvailableAt = error instanceof BffError
+        ? error.details?.retry_available_at_display
+        : undefined;
+      setRequestError(
+        retryAvailableAt === undefined
+          ? (error instanceof BffError
+            ? error.message
+            : "Profile analysis could not be retried.")
+          : `The retry limit has been reached until ${retryAvailableAt}.`,
+      );
+      await queryClient.invalidateQueries({ queryKey: ["person-profile-analyses", personId] });
+    } finally {
+      setRequestingTypes((current) => {
+        const next = new Set(current);
+        next.delete(analysisType);
+        return next;
+      });
+    }
+  }, [personId, queryClient, requestingTypes]);
+
   if (query.data === undefined && query.isPending) {
     return (
       <div className={styles.loadingState} role="status" aria-busy="true">
@@ -170,6 +208,7 @@ export default function ProfileAnalysisPanel({
         analyses={query.data}
         requestingTypes={requestingTypes}
         onForceRequest={handleForceRequest}
+        onRetryRequest={(analysisType) => void handleRetryRequest(analysisType)}
       />
     </div>
   );

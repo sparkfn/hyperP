@@ -18,6 +18,7 @@ from src.types_profile_analysis import (
     ProfileAnalysisHistoryItem,
     ProfileAnalysisRequestRequeueResult,
     ProfileAnalysisRequestResult,
+    ProfileAnalysisRetryResult,
     ProfileAnalysisSlot,
     ProfileAnalysisType,
 )
@@ -32,6 +33,7 @@ type RequeueState = Literal[
     "attempt_limited",
     "requeue_limited",
 ]
+type RetryState = Literal["queued", "already_active", "not_failed", "retry_limited"]
 
 
 def _pending() -> PersonProfileAnalyses:
@@ -46,6 +48,10 @@ def _pending() -> PersonProfileAnalyses:
         auto_request_allowed=True,
         next_retry_at=None,
         next_retry_at_display=None,
+        retry_allowed=False,
+        retry_attempts_remaining=3,
+        retry_available_at=None,
+        retry_available_at_display=None,
         force_attempts_remaining=3,
         force_available_at=None,
         force_available_at_display=None,
@@ -88,11 +94,17 @@ class _ProfileAnalysisRepo:
         self.history_args: tuple[str, ProfileAnalysisType | None, int, int] | None = None
         self.request_args: tuple[str, ProfileAnalysisType, bool] | None = None
         self.requeue_args: tuple[str, str, int] | None = None
+        self.retry_args: tuple[str, ProfileAnalysisType, str] | None = None
+        self.dispatch_failed_request_ids: list[str] = []
         self.force_limited = False
         self.requeue_state: RequeueState = "requeued"
+        self.retry_state: RetryState = "queued"
+        self.retry_available_at: str | None = None
 
-    async def get_profile_analyses(self, person_id: str) -> PersonProfileAnalyses | None:
-        _ = person_id
+    async def get_profile_analyses(
+        self, person_id: str, retry_actor_id: str
+    ) -> PersonProfileAnalyses | None:
+        _ = (person_id, retry_actor_id)
         return None if self.missing else self.current
 
     async def get_profile_analysis_history(
@@ -130,7 +142,28 @@ class _ProfileAnalysisRepo:
         )
 
     async def mark_profile_analysis_request_dispatch_failed(self, request_id: str) -> None:
-        _ = request_id
+        self.dispatch_failed_request_ids.append(request_id)
+
+    async def retry_failed_profile_analysis(
+        self,
+        person_id: str,
+        analysis_type: ProfileAnalysisType,
+        retry_actor_id: str,
+    ) -> ProfileAnalysisRetryResult | None:
+        self.retry_args = (person_id, analysis_type, retry_actor_id)
+        if self.missing:
+            return None
+        return ProfileAnalysisRetryResult(
+            request_id="retry-request-1" if self.retry_state == "queued" else None,
+            person_id=person_id,
+            analysis_type=analysis_type,
+            state=self.retry_state,
+            retry_attempts_remaining=0 if self.retry_state == "retry_limited" else 2,
+            retry_available_at=self.retry_available_at,
+            retry_available_at_display=(
+                "27 Jul 2026, 10:00 AM" if self.retry_available_at is not None else None
+            ),
+        )
 
     async def requeue_failed_profile_analysis_request(
         self,
@@ -255,6 +288,10 @@ def test_current_route_reports_disabled_generation_without_queued_state() -> Non
         auto_request_allowed=False,
         next_retry_at=None,
         next_retry_at_display=None,
+        retry_allowed=False,
+        retry_attempts_remaining=3,
+        retry_available_at=None,
+        retry_available_at_display=None,
         force_attempts_remaining=3,
         force_available_at=None,
         force_available_at_display=None,
@@ -387,6 +424,81 @@ def test_request_route_returns_force_limit_availability() -> None:
     }
 
 
+def test_retry_route_queues_terminal_failure_for_current_human(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = _ProfileAnalysisRepo()
+    queued: list[str] = []
+    monkeypatch.setattr(
+        "src.routes.person_profile_analysis.enqueue_profile_analysis_request",
+        lambda request_id: queued.append(request_id),
+    )
+
+    response = _authenticated_client(repo).post(
+        "/app/v2/persons/person-1/profile-analyses/retries",
+        json={"analysis_type": "sales"},
+    )
+
+    assert response.status_code == 202
+    assert repo.retry_args == ("person-1", "sales", "person@example.com")
+    assert queued == ["retry-request-1"]
+    assert response.json()["data"]["retry_attempts_remaining"] == 2
+
+
+def test_retry_route_returns_rate_limit_availability() -> None:
+    repo = _ProfileAnalysisRepo()
+    repo.retry_state = "retry_limited"
+    repo.retry_available_at = "2026-07-27T02:00:00+00:00"
+
+    response = _authenticated_client(repo).post(
+        "/app/v2/persons/person-1/profile-analyses/retries",
+        json={"analysis_type": "contact_tracing"},
+    )
+
+    assert response.status_code == 429
+    assert response.json()["error"]["code"] == "profile_analysis_retry_limit"
+    assert response.json()["error"]["details"] == {
+        "retry_available_at": "2026-07-27T02:00:00+00:00",
+        "retry_available_at_display": "27 Jul 2026, 10:00 AM",
+    }
+
+
+def test_retry_route_rejects_when_failure_is_no_longer_current() -> None:
+    repo = _ProfileAnalysisRepo()
+    repo.retry_state = "not_failed"
+
+    response = _authenticated_client(repo).post(
+        "/app/v2/persons/person-1/profile-analyses/retries",
+        json={"analysis_type": "sales"},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "profile_analysis_retry_not_failed"
+
+
+def test_retry_route_marks_dispatch_failure_for_budget_accounting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = _ProfileAnalysisRepo()
+
+    def fail_dispatch(_request_id: str) -> None:
+        raise RuntimeError("broker unavailable")
+
+    monkeypatch.setattr(
+        "src.routes.person_profile_analysis.enqueue_profile_analysis_request",
+        fail_dispatch,
+    )
+
+    response = _authenticated_client(repo).post(
+        "/app/v2/persons/person-1/profile-analyses/retries",
+        json={"analysis_type": "sales"},
+    )
+
+    assert response.status_code == 503
+    assert response.json()["error"]["code"] == "profile_analysis_dispatch_failed"
+    assert repo.dispatch_failed_request_ids == ["retry-request-1"]
+
+
 def test_requeue_route_requires_human_admin() -> None:
     response = _authenticated_client(_ProfileAnalysisRepo()).post(
         "/app/v2/persons/person-1/profile-analyses/requests/request-1/requeue"
@@ -482,6 +594,8 @@ def test_profile_analysis_routes_are_excluded_from_oauth_schema() -> None:
     assert "/persons/{person_id}/profile-analyses" in frontend_paths
     assert "/persons/{person_id}/profile-analyses/history" in frontend_paths
     assert "/persons/{person_id}/profile-analyses/requests/{request_id}/requeue" in frontend_paths
+    assert "/persons/{person_id}/profile-analyses/retries" in frontend_paths
     assert "/persons/{person_id}/profile-analyses" not in oauth_paths
     assert "/persons/{person_id}/profile-analyses/history" not in oauth_paths
     assert "/persons/{person_id}/profile-analyses/requests/{request_id}/requeue" not in oauth_paths
+    assert "/persons/{person_id}/profile-analyses/retries" not in oauth_paths

@@ -176,6 +176,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/persons/{person_id}/profile-analyses/retries": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Retry one terminal failed Person profile analysis */
+        post: operations["retryFailedPersonProfileAnalysis"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/persons/{person_id}/profile-analyses/requests/{request_id}/requeue": {
         parameters: {
             query?: never;
@@ -1301,6 +1318,11 @@ export interface components {
             /** Format: date-time */
             next_retry_at: string | null;
             next_retry_at_display: string | null;
+            retry_allowed: boolean;
+            retry_attempts_remaining: number;
+            /** Format: date-time */
+            retry_available_at: string | null;
+            retry_available_at_display: string | null;
             force_attempts_remaining: number;
             /** Format: date-time */
             force_available_at: string | null;
@@ -1330,6 +1352,23 @@ export interface components {
             /** Format: date-time */
             force_available_at: string | null;
             force_available_at_display: string | null;
+        };
+        ProfileAnalysisRetryBody: {
+            analysis_type: components["schemas"]["ProfileAnalysisType"];
+        };
+        ProfileAnalysisRetryResult: {
+            request_id: string | null;
+            person_id: string;
+            analysis_type: components["schemas"]["ProfileAnalysisType"];
+            state: "queued" | "already_active" | "not_failed" | "retry_limited";
+            retry_attempts_remaining: number;
+            /** Format: date-time */
+            retry_available_at: string | null;
+            retry_available_at_display: string | null;
+        };
+        ProfileAnalysisRetryResponseEnvelope: {
+            data: components["schemas"]["ProfileAnalysisRetryResult"];
+            meta: components["schemas"]["Meta"];
         };
         ProfileAnalysisRequestResponseEnvelope: {
             data: components["schemas"]["ProfileAnalysisRequestResult"];
@@ -2176,6 +2215,37 @@ export interface operations {
             403: components["responses"]["Forbidden"];
             404: { headers: { [name: string]: unknown }; content?: never; };
             409: { headers: { [name: string]: unknown }; content?: never; };
+            503: { headers: { [name: string]: unknown }; content?: never; };
+        };
+    };
+    retryFailedPersonProfileAnalysis: {
+        parameters: {
+            query?: never;
+            header?: {
+                "X-Request-Id"?: components["parameters"]["RequestId"];
+            };
+            path: {
+                person_id: components["parameters"]["PersonId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ProfileAnalysisRetryBody"];
+            };
+        };
+        responses: {
+            202: {
+                headers: { [name: string]: unknown };
+                content: {
+                    "application/json": components["schemas"]["ProfileAnalysisRetryResponseEnvelope"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["PersonNotFound"];
+            409: { headers: { [name: string]: unknown }; content?: never; };
+            429: { headers: { [name: string]: unknown }; content?: never; };
             503: { headers: { [name: string]: unknown }; content?: never; };
         };
     };
