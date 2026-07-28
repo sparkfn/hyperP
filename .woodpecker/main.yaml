@@ -37,6 +37,7 @@ steps:
       - uv run --package profile-unifier-ingestion mypy --strict services/ingestion/src
       # pytest per-package (each venv has its runtime + dev deps); the root venv
       # only has lint/type tools, so `uv run pytest` can't import runtime code.
+      - uv run --package profile-unifier-api pytest services/api/tests/test_persons_list_queries.py::test_person_list_preferred_address_hydration_does_not_expand_provenance_edges
       - uv run --package profile-unifier-api pytest services/api/tests
       - uv run --package profile-unifier-ingestion pytest services/ingestion/tests
       # Production runtime install (no dev group) — verifies the lockfile resolves for
