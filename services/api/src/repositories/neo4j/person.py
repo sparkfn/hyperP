@@ -6,6 +6,8 @@ import asyncio
 from typing import Literal, cast
 from uuid import uuid4
 
+from neo4j import AsyncManagedTransaction
+
 from src.display_format import format_display_datetime
 from src.graph.client import get_session
 from src.graph.converters import GraphRecord, to_int, to_iso_or_none, to_str
@@ -117,6 +119,26 @@ def _connection_count_query(connection_type: ConnectionType) -> str:
     return COUNT_PERSON_CONNECTIONS_ALL
 
 
+async def _request_profile_analysis_tx(
+    tx: AsyncManagedTransaction,
+    person_id: str,
+    analysis_type: ProfileAnalysisType,
+    force: bool,
+    request_id: str,
+) -> GraphRecord | None:
+    result = await tx.run(
+        CREATE_PROFILE_ANALYSIS_REQUEST,
+        person_id=person_id,
+        analysis_type=analysis_type,
+        force=force,
+        request_id=request_id,
+    )
+    record = await result.single()
+    if record is None:
+        return None
+    return record_to_dict(record.keys(), list(record.values()))
+
+
 class Neo4jPersonRepository:
     async def get_page(
         self, filters: PersonListFilters, skip: int, limit: int
@@ -223,18 +245,16 @@ class Neo4jPersonRepository:
         force: bool,
     ) -> ProfileAnalysisRequestResult | None:
         request_id = str(uuid4())
-        async with get_session() as session:
-            result = await session.run(
-                CREATE_PROFILE_ANALYSIS_REQUEST,
-                person_id=person_id,
-                analysis_type=analysis_type,
-                force=force,
-                request_id=request_id,
+        async with get_session(write=True) as session:
+            mapped = await session.execute_write(
+                _request_profile_analysis_tx,
+                person_id,
+                analysis_type,
+                force,
+                request_id,
             )
-            record = await result.single()
-        if record is None:
+        if mapped is None:
             return None
-        mapped = record_to_dict(record.keys(), list(record.values()))
         state = to_str(mapped.get("state"))
         if state not in {"queued", "already_queued", "already_valid", "force_limited"}:
             raise ValueError("invalid profile analysis request state")
@@ -257,7 +277,7 @@ class Neo4jPersonRepository:
         )
 
     async def mark_profile_analysis_request_dispatch_failed(self, request_id: str) -> None:
-        async with get_session() as session:
+        async with get_session(write=True) as session:
             await session.run(MARK_PROFILE_ANALYSIS_REQUEST_DISPATCH_FAILED, request_id=request_id)
 
     async def get_profile_analysis_history(
