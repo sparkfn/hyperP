@@ -52,10 +52,11 @@ class LlmProfileAnalysisTextService:
 
     def generate(self, messages: list[ChatMessage], *, max_tokens: int) -> str:
         return asyncio.run(
-            self._service.chat_json(
+            self._service.chat_text(
                 messages,
                 temperature=0.0,
                 max_tokens=max_tokens,
+                preserve_output_format=True,
             )
         )
 

@@ -181,7 +181,9 @@ bytes before invoking the LLM.
 
 The ingestion service adds a purpose-specific profile-analysis service accessor
 using the existing prose-oriented Proclaude backend and shared retry settings.
-The model remains configurable through the established LLM hierarchy.
+Profile analysis uses the backend's plain-text chat mode rather than JSON mode,
+matching the prompt and validator contract. The model remains configurable
+through the established LLM hierarchy.
 
 The two prompt versions are independent constants, initially
 `sales-profile-v1` and `contact-tracing-profile-v1`. Both prompts:
@@ -224,7 +226,8 @@ later Person detail request may create new work when output remains invalid.
 
 No prompt, snapshot, generated content, provider response body, credential, or
 direct identifier is written to logs. Logs may contain Person IDs, analysis IDs,
-analysis type, revision, duration, and safe status/error codes.
+analysis type, revision, duration, safe status/error codes, and safe output
+validation reason codes.
 
 ## Authenticated API
 
