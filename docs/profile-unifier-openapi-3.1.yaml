@@ -439,6 +439,10 @@ paths:
                     auto_request_allowed: false
                     next_retry_at: null
                     next_retry_at_display: null
+                    retry_allowed: false
+                    retry_attempts_remaining: 3
+                    retry_available_at: null
+                    retry_available_at_display: null
                     force_attempts_remaining: 3
                     force_available_at: null
                     force_available_at_display: null
@@ -453,6 +457,10 @@ paths:
                     auto_request_allowed: false
                     next_retry_at: null
                     next_retry_at_display: null
+                    retry_allowed: false
+                    retry_attempts_remaining: 3
+                    retry_available_at: null
+                    retry_available_at_display: null
                     force_attempts_remaining: 3
                     force_available_at: null
                     force_available_at_display: null
@@ -508,6 +516,46 @@ paths:
           description: Forced-refresh rolling-hour limit reached.
         '503':
           description: The request could not be dispatched.
+  /v1/persons/{person_id}/profile-analyses/retries:
+    post:
+      tags: [Persons]
+      summary: Retry one terminal failed Person profile analysis
+      operationId: retryFailedPersonProfileAnalysis
+      description: |
+        Authenticated human frontend surface only. Queues a fresh request for a
+        terminal failure at the canonical Person's current input revision. Each
+        authenticated user may queue at most three such retries across both
+        analysis types for the same canonical Person in a rolling hour.
+      security:
+        - humanBearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/PersonId'
+        - $ref: '#/components/parameters/RequestId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProfileAnalysisRetryBody'
+      responses:
+        '202':
+          description: Retry queued or an equivalent request is already active.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProfileAnalysisRetryResponseEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/PersonNotFound'
+        '409':
+          description: The selected analysis is no longer terminally failed or generation is disabled.
+        '429':
+          description: Per-user, per-Person rolling-hour retry limit reached.
+        '503':
+          description: The retry could not be dispatched.
   /v1/persons/{person_id}/profile-analyses/requests/{request_id}/requeue:
     post:
       tags: [Persons]
@@ -3012,6 +3060,17 @@ components:
           format: date-time
         next_retry_at_display:
           type: [string, 'null']
+        retry_allowed:
+          type: boolean
+        retry_attempts_remaining:
+          type: integer
+          minimum: 0
+          maximum: 3
+        retry_available_at:
+          type: [string, 'null']
+          format: date-time
+        retry_available_at_display:
+          type: [string, 'null']
         force_attempts_remaining:
           type: integer
           minimum: 0
@@ -3021,7 +3080,7 @@ components:
           format: date-time
         force_available_at_display:
           type: [string, 'null']
-      required: [current, stale, expired, valid, invalid_reason, refresh_state, failure_code, auto_request_allowed, next_retry_at, next_retry_at_display, force_attempts_remaining, force_available_at, force_available_at_display]
+      required: [current, stale, expired, valid, invalid_reason, refresh_state, failure_code, auto_request_allowed, next_retry_at, next_retry_at_display, retry_allowed, retry_attempts_remaining, retry_available_at, retry_available_at_display, force_attempts_remaining, force_available_at, force_available_at_display]
       additionalProperties: false
     PersonProfileAnalyses:
       type: object
@@ -3071,6 +3130,45 @@ components:
         force_available_at_display:
           type: [string, 'null']
       required: [request_id, person_id, analysis_type, state, force, force_attempts_remaining, force_available_at, force_available_at_display]
+      additionalProperties: false
+    ProfileAnalysisRetryBody:
+      type: object
+      properties:
+        analysis_type:
+          $ref: '#/components/schemas/ProfileAnalysisType'
+      required: [analysis_type]
+      additionalProperties: false
+    ProfileAnalysisRetryResult:
+      type: object
+      properties:
+        request_id:
+          type: [string, 'null']
+        person_id:
+          type: string
+        analysis_type:
+          $ref: '#/components/schemas/ProfileAnalysisType'
+        state:
+          type: string
+          enum: [queued, already_active, not_failed, retry_limited]
+        retry_attempts_remaining:
+          type: integer
+          minimum: 0
+          maximum: 3
+        retry_available_at:
+          type: [string, 'null']
+          format: date-time
+        retry_available_at_display:
+          type: [string, 'null']
+      required: [request_id, person_id, analysis_type, state, retry_attempts_remaining, retry_available_at, retry_available_at_display]
+      additionalProperties: false
+    ProfileAnalysisRetryResponseEnvelope:
+      type: object
+      properties:
+        data:
+          $ref: '#/components/schemas/ProfileAnalysisRetryResult'
+        meta:
+          $ref: '#/components/schemas/Meta'
+      required: [data, meta]
       additionalProperties: false
     ProfileAnalysisRequestResponseEnvelope:
       type: object

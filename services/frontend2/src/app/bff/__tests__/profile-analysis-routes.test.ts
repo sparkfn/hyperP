@@ -13,6 +13,7 @@ vi.mock("@/lib/proxy", () => ({ proxyToApi, searchParamsToQuery }));
 
 import { GET as getCurrent, POST as postRequest, dynamic as currentDynamic } from "../persons/[personId]/profile-analyses/route";
 import { GET as getHistory, dynamic as historyDynamic } from "../persons/[personId]/profile-analyses/history/route";
+import { POST as postRetry, dynamic as retryDynamic } from "../persons/[personId]/profile-analyses/retries/route";
 
 beforeEach(() => {
   proxyToApi.mockReset();
@@ -89,6 +90,26 @@ describe("profile analysis BFF routes", () => {
     expect(proxyToApi).toHaveBeenCalledWith(
       "/persons/person%2Fone/profile-analyses/requests",
       { method: "POST", body: { analysis_type: "sales", force: false } },
+    );
+    expect(result).toBe(response);
+  });
+
+  it("forwards a failed-analysis retry through the authenticated BFF", async () => {
+    const response = new Response("queued", { status: 202 });
+    proxyToApi.mockResolvedValue(response);
+
+    const result = await postRetry(
+      new Request("https://example.test/bff/persons/person%2Fone/profile-analyses/retries", {
+        method: "POST",
+        body: JSON.stringify({ analysis_type: "contact_tracing" }),
+      }),
+      { params: Promise.resolve({ personId: "person/one" }) },
+    );
+
+    expect(retryDynamic).toBe("force-dynamic");
+    expect(proxyToApi).toHaveBeenCalledWith(
+      "/persons/person%2Fone/profile-analyses/retries",
+      { method: "POST", body: { analysis_type: "contact_tracing" } },
     );
     expect(result).toBe(response);
   });

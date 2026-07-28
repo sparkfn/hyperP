@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
 
-import { cleanup, render, screen, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import React from "react";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type {
   PersonProfileAnalyses,
@@ -45,6 +45,10 @@ function slot(overrides: Partial<ProfileAnalysisSlot> = {}): ProfileAnalysisSlot
     auto_request_allowed: false,
     next_retry_at: null,
     next_retry_at_display: null,
+    retry_allowed: false,
+    retry_attempts_remaining: 3,
+    retry_available_at: null,
+    retry_available_at_display: null,
     force_attempts_remaining: 3,
     force_available_at: null,
     force_available_at_display: null,
@@ -73,7 +77,7 @@ describe("ProfileAnalysisCards", () => {
       analysis_id: "analysis-contact-1",
       analysis_type: "contact_tracing" as const,
     };
-    render(<ProfileAnalysisCards requestingTypes={new Set()} onForceRequest={() => undefined} analyses={analyses({
+    render(<ProfileAnalysisCards requestingTypes={new Set()} onForceRequest={() => undefined} onRetryRequest={() => undefined} analyses={analyses({
       contact_tracing: slot({ current: contact, refresh_state: "ready" }),
     })} />);
 
@@ -89,7 +93,7 @@ describe("ProfileAnalysisCards", () => {
   });
 
   it("shows partial availability and an independent failed slot", () => {
-    render(<ProfileAnalysisCards requestingTypes={new Set()} onForceRequest={() => undefined} analyses={analyses({
+    render(<ProfileAnalysisCards requestingTypes={new Set()} onForceRequest={() => undefined} onRetryRequest={() => undefined} analyses={analyses({
       refresh_state: "partial",
       contact_tracing: slot({ refresh_state: "failed", failure_code: "provider_unavailable" }),
     })} />);
@@ -102,7 +106,7 @@ describe("ProfileAnalysisCards", () => {
   });
 
   it("retains prior content while a refresh is pending", () => {
-    render(<ProfileAnalysisCards requestingTypes={new Set()} onForceRequest={() => undefined} analyses={analyses({
+    render(<ProfileAnalysisCards requestingTypes={new Set()} onForceRequest={() => undefined} onRetryRequest={() => undefined} analyses={analyses({
       refresh_state: "pending",
       sales: slot({ current: salesCurrent, stale: true, refresh_state: "pending" }),
     })} />);
@@ -112,7 +116,7 @@ describe("ProfileAnalysisCards", () => {
   });
 
   it("shows an explicit running state when current output is missing", () => {
-    render(<ProfileAnalysisCards requestingTypes={new Set()} onForceRequest={() => undefined} analyses={analyses({
+    render(<ProfileAnalysisCards requestingTypes={new Set()} onForceRequest={() => undefined} onRetryRequest={() => undefined} analyses={analyses({
       refresh_state: "running",
       sales: slot({ refresh_state: "running" }),
     })} />);
@@ -122,7 +126,7 @@ describe("ProfileAnalysisCards", () => {
   });
 
   it("distinguishes a scheduled retry from terminal failure", () => {
-    render(<ProfileAnalysisCards requestingTypes={new Set()} onForceRequest={() => undefined} analyses={analyses({
+    render(<ProfileAnalysisCards requestingTypes={new Set()} onForceRequest={() => undefined} onRetryRequest={() => undefined} analyses={analyses({
       refresh_state: "retrying",
       sales: slot({ refresh_state: "retrying" }),
     })} />);
@@ -132,7 +136,7 @@ describe("ProfileAnalysisCards", () => {
   });
 
   it("retains prior content after a failed refresh", () => {
-    render(<ProfileAnalysisCards requestingTypes={new Set()} onForceRequest={() => undefined} analyses={analyses({
+    render(<ProfileAnalysisCards requestingTypes={new Set()} onForceRequest={() => undefined} onRetryRequest={() => undefined} analyses={analyses({
       refresh_state: "failed",
       sales: slot({
         current: salesCurrent,
@@ -147,8 +151,43 @@ describe("ProfileAnalysisCards", () => {
     expect(within(card("Sales")).getByText(/Repeat purchases/)).toBeTruthy();
   });
 
+  it("offers a bounded retry action for a terminal failure", () => {
+    const onRetryRequest = vi.fn();
+    render(<ProfileAnalysisCards requestingTypes={new Set()} onForceRequest={() => undefined} onRetryRequest={onRetryRequest} analyses={analyses({
+      refresh_state: "failed",
+      sales: slot({
+        refresh_state: "failed",
+        failure_code: "provider_unavailable",
+        retry_allowed: true,
+        retry_attempts_remaining: 2,
+      }),
+    })} />);
+
+    fireEvent.click(within(card("Sales")).getByRole("button", { name: "Retry analysis" }));
+
+    expect(onRetryRequest).toHaveBeenCalledWith("sales");
+    expect(within(card("Sales")).getByText("2 retries available this hour for this person")).toBeTruthy();
+  });
+
+  it("disables terminal retry after the per-user Person budget is exhausted", () => {
+    render(<ProfileAnalysisCards requestingTypes={new Set()} onForceRequest={() => undefined} onRetryRequest={() => undefined} analyses={analyses({
+      refresh_state: "failed",
+      sales: slot({
+        refresh_state: "failed",
+        failure_code: "provider_unavailable",
+        retry_attempts_remaining: 0,
+        retry_available_at: "2026-07-28T02:00:00+00:00",
+        retry_available_at_display: "28 Jul 2026, 10:00 AM",
+      }),
+    })} />);
+
+    const retryButton = within(card("Sales")).getByRole("button", { name: "Retry analysis" });
+    expect(retryButton.hasAttribute("disabled")).toBe(true);
+    expect(within(card("Sales")).getByText("Retries available again 28 Jul 2026, 10:00 AM")).toBeTruthy();
+  });
+
   it("disables forced refresh after the rolling-hour budget is exhausted", () => {
-    render(<ProfileAnalysisCards requestingTypes={new Set()} onForceRequest={() => undefined} analyses={analyses({
+    render(<ProfileAnalysisCards requestingTypes={new Set()} onForceRequest={() => undefined} onRetryRequest={() => undefined} analyses={analyses({
       sales: slot({
         current: salesCurrent,
         valid: true,
@@ -167,7 +206,7 @@ describe("ProfileAnalysisCards", () => {
   });
 
   it("renders explicit empty and queued states for missing output", () => {
-    render(<ProfileAnalysisCards requestingTypes={new Set()} onForceRequest={() => undefined} analyses={analyses({
+    render(<ProfileAnalysisCards requestingTypes={new Set()} onForceRequest={() => undefined} onRetryRequest={() => undefined} analyses={analyses({
       sales: slot({ refresh_state: "ready" }),
       contact_tracing: slot({ refresh_state: "pending" }),
     })} />);
@@ -178,7 +217,7 @@ describe("ProfileAnalysisCards", () => {
 
   it("renders long HTML-looking output literally", () => {
     const literal = `<img src=x onerror=alert(1)> ${"supported detail ".repeat(120)}`;
-    render(<ProfileAnalysisCards requestingTypes={new Set()} onForceRequest={() => undefined} analyses={analyses({
+    render(<ProfileAnalysisCards requestingTypes={new Set()} onForceRequest={() => undefined} onRetryRequest={() => undefined} analyses={analyses({
       sales: slot({ current: { ...salesCurrent, content: literal }, refresh_state: "ready" }),
     })} />);
 

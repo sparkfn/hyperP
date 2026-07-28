@@ -67,6 +67,10 @@ export const profileAnalysisSlotSchema: z.ZodType<ProfileAnalysisSlot> = z.objec
   auto_request_allowed: z.boolean().optional().default(false),
   next_retry_at: timestampSchema.nullable().optional().default(null),
   next_retry_at_display: nonEmptyStringSchema.nullable().optional().default(null),
+  retry_allowed: z.boolean(),
+  retry_attempts_remaining: z.number().int().min(0).max(3),
+  retry_available_at: timestampSchema.nullable(),
+  retry_available_at_display: nonEmptyStringSchema.nullable(),
   force_attempts_remaining: z.number().int().min(0).max(3).optional().default(3),
   force_available_at: timestampSchema.nullable().optional().default(null),
   force_available_at_display: nonEmptyStringSchema.nullable().optional().default(null),
@@ -127,6 +131,43 @@ export const personProfileAnalysesSchema: z.ZodType<PersonProfileAnalyses> = z.o
         code: "custom",
         message: "Failure codes are valid only for failed slots.",
         path: [slotName, "failure_code"],
+      });
+    }
+    if (slot.retry_allowed !== (slot.refresh_state === "failed"
+      && slot.retry_attempts_remaining > 0)) {
+      context.addIssue({
+        code: "custom",
+        message: "Retry eligibility must agree with failed state and the user retry budget.",
+        path: [slotName, "retry_allowed"],
+      });
+    }
+    if ((slot.retry_attempts_remaining === 0) !== (slot.retry_available_at !== null)) {
+      context.addIssue({
+        code: "custom",
+        message: "Retry availability must be present exactly when the retry budget is exhausted.",
+        path: [slotName, "retry_available_at"],
+      });
+    }
+    if ((slot.retry_available_at === null) !== (slot.retry_available_at_display === null)) {
+      context.addIssue({
+        code: "custom",
+        message: "Retry availability display must agree with its timestamp.",
+        path: [slotName, "retry_available_at_display"],
+      });
+    }
+  }
+
+  const retryBudgetFields = [
+    "retry_attempts_remaining",
+    "retry_available_at",
+    "retry_available_at_display",
+  ] as const;
+  for (const field of retryBudgetFields) {
+    if (analyses.sales[field] !== analyses.contact_tracing[field]) {
+      context.addIssue({
+        code: "custom",
+        message: "Both slots must expose the same per-Person user retry budget.",
+        path: ["contact_tracing", field],
       });
     }
   }
