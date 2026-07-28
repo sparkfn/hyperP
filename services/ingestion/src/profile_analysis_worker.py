@@ -10,6 +10,7 @@ from uuid import UUID, uuid4
 import httpx
 
 from src.llm import ChatMessage
+from src.profile_analysis_mapping import ProfileAnalysisTemporalMappingError
 from src.profile_analysis_models import (
     ProfileAnalysisAttempt,
     ProfileAnalysisStatus,
@@ -187,7 +188,12 @@ def _process_person(
         return
     try:
         bundle = repository.fetch_snapshot(person.person_id)
-    except ProfileAnalysisMappingError:
+    except ProfileAnalysisMappingError as error:
+        failure_code = (
+            "invalid_snapshot_temporal"
+            if isinstance(error, ProfileAnalysisTemporalMappingError)
+            else "invalid_snapshot"
+        )
         _persist_invalid_snapshot_attempts(
             repository=repository,
             text_service=text_service,
@@ -198,6 +204,7 @@ def _process_person(
             counts=counts,
             claim_token=claim_token,
             claim_lease=claim_lease,
+            failure_code=failure_code,
         )
         return
     fingerprint = snapshot_fingerprint(bundle.snapshot)
@@ -285,6 +292,7 @@ def _persist_invalid_snapshot_attempts(
     counts: ProfileAnalysisSweepCounts,
     claim_token: str,
     claim_lease: timedelta,
+    failure_code: str,
 ) -> None:
     for due in person.due:
         if not _renew_claim(
@@ -309,7 +317,7 @@ def _persist_invalid_snapshot_attempts(
         try:
             counts.record(
                 repository.persist_attempt(
-                    _failed_attempt(context, "invalid_snapshot", False),
+                    _failed_attempt(context, failure_code, False),
                     claim_token=claim_token,
                 )
             )

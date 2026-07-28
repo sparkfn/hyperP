@@ -7,6 +7,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 from src.graph import queries
+from src.profile_analysis_mapping import ProfileAnalysisTemporalMappingError
 from src.profile_analysis_repository import (
     ProfileAnalysisMappingError,
     SensitiveGraphRow,
@@ -240,6 +241,24 @@ def test_snapshot_query_uses_real_fact_provenance_and_unknown_age() -> None:
     assert "coalesce(source.source_trust_tier, 'tier_4')" not in query
 
 
+def test_snapshot_query_branches_string_native_and_invalid_temporal_values() -> None:
+    query = queries.FETCH_PROFILE_ANALYSIS_SNAPSHOT_ROWS
+
+    for field in (
+        "order.ordered_at",
+        "source.observed_at",
+        "relationship.last_confirmed_at",
+    ):
+        assert f"WHEN {field} IS NULL THEN null" in query
+        assert f"valueType({field}) STARTS WITH 'STRING'" in query
+        assert f"THEN toString({field})" in query
+        assert f"valueType({field}) STARTS WITH 'DATE'" in query
+        assert f"valueType({field}) STARTS WITH 'LOCAL DATETIME'" in query
+        assert f"valueType({field}) STARTS WITH 'ZONED DATETIME'" in query
+        assert f"THEN toString(date({field}))" in query
+    assert query.count("ELSE 'invalid'") == 3
+
+
 def test_snapshot_query_excludes_retired_sales_and_includes_active_vehicle_mentions() -> None:
     query = queries.FETCH_PROFILE_ANALYSIS_SNAPSHOT_ROWS
 
@@ -339,6 +358,90 @@ def test_snapshot_rows_map_deterministically_into_reviewed_scalar_types() -> Non
     assert source.snapshot.relationships[0].contact_alias == "Contact A"
     assert "person-1" not in serialized
     assert "person-z" not in serialized
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "expected"),
+    (
+        ("order_date", "2022-10-02T18:00:07Z", "2022-10-02"),
+        ("observed_date", "2022-10-02T18:00:07+08:00", "2022-10-02"),
+        ("event_date", "2022-10-02T18:00:07+0000", "2022-10-02"),
+        ("order_date", "2022-10-02T18:00:07", "2022-10-02"),
+        (
+            "order_date",
+            "2022-10-02T18:00:07+08:00[Asia/Manila]",
+            "2022-10-02",
+        ),
+    ),
+)
+def test_snapshot_mapping_normalizes_iso_datetimes_to_safe_dates(
+    field: str,
+    value: str,
+    expected: str,
+) -> None:
+    row: dict[str, str | float | None] = {
+        "row_kind": "order",
+        "internal_id": "order-1",
+        "order_date": None,
+        "total": None,
+        "currency": None,
+        "merchant": None,
+        "product": None,
+        "category": None,
+    }
+    if field == "observed_date":
+        row = {
+            "row_kind": "source",
+            "internal_id": "source-1",
+            "record_type": "sales",
+            "source_category": "sales",
+            "observed_date": value,
+            "quality_flag": "valid",
+            "trust_tier": "tier_1",
+            "confidence": 0.9,
+        }
+    elif field == "event_date":
+        row = {
+            "row_kind": "relationship",
+            "internal_id": "relationship-1",
+            "parent_internal_id": "person-2",
+            "relationship_category": "colleague",
+            "direction": "outgoing",
+            "event_date": value,
+        }
+    else:
+        row[field] = value
+
+    bundle = map_profile_analysis_snapshot_rows("person-1", [row])
+
+    if field == "order_date":
+        assert bundle.snapshot.orders[0].order_date is not None
+        assert bundle.snapshot.orders[0].order_date.value == expected
+    elif field == "observed_date":
+        assert bundle.snapshot.sources[0].observed_date is not None
+        assert bundle.snapshot.sources[0].observed_date.value == expected
+    else:
+        assert bundle.snapshot.relationships[0].event_date is not None
+        assert bundle.snapshot.relationships[0].event_date.value == expected
+
+
+def test_snapshot_mapping_rejects_invalid_temporal_text_with_a_safe_typed_error() -> None:
+    row = {
+        "row_kind": "order",
+        "internal_id": "internal-order",
+        "order_date": "not-a-date-private-value",
+        "total": None,
+        "currency": None,
+        "merchant": None,
+        "product": None,
+        "category": None,
+    }
+
+    with pytest.raises(ProfileAnalysisTemporalMappingError) as raised:
+        map_profile_analysis_snapshot_rows("person-1", [row])
+
+    assert str(raised.value) == "invalid safe profile analysis snapshot data"
+    assert "not-a-date-private-value" not in str(raised.value)
 
 
 def test_missing_source_provenance_stays_null_and_surfaces_a_data_gap() -> None:
