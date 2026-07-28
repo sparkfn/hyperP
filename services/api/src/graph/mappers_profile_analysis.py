@@ -270,9 +270,7 @@ def _map_slot(
         retry_attempts_remaining=retry_attempts_remaining,
         retry_available_at=retry_available_at,
         retry_available_at_display=(
-            format_display_datetime(retry_available_at)
-            if retry_available_at is not None
-            else None
+            format_display_datetime(retry_available_at) if retry_available_at is not None else None
         ),
         force_attempts_remaining=force_attempts_remaining,
         force_available_at=force_available_at,
