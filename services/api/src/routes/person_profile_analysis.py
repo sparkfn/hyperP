@@ -32,6 +32,7 @@ router = APIRouter(
     ],
 )
 
+
 def _profile_analysis_retry_actor_id(user: AuthUser) -> str:
     """Return the normalized human identity used by existing audit records."""
     return user.email.strip().lower()
