@@ -212,7 +212,8 @@ def build_list_persons_query(
             head
             + common_clause
             + entity_clause
-            + f"WITH p, addr, score\nORDER BY {pre_col} {direction}\nSKIP $skip LIMIT $limit\n"
+            + f"WITH p, addr, score\nORDER BY {pre_col} {direction}, p.person_id ASC\n"
+            + "SKIP $skip LIMIT $limit\n"
             + _ENRICH_AND_RETURN
         )
     return (
@@ -220,7 +221,7 @@ def build_list_persons_query(
         + common_clause
         + entity_clause
         + _ENRICH_AND_RETURN
-        + f"ORDER BY {col} {direction}\nSKIP $skip LIMIT $limit\n"
+        + f"ORDER BY {col} {direction}, person.person_id ASC\nSKIP $skip LIMIT $limit\n"
     )
 
 
