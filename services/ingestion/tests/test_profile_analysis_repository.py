@@ -634,7 +634,4 @@ def test_request_claim_query_aggregates_history_before_using_analysis_type() -> 
     assert "request.analysis_type = 'sales' AS sales_due" not in query
     assert "request.analysis_type = 'contact_tracing' AS contact_due" not in query
     assert "CASE WHEN analysis_type = 'sales' THEN history_count + 1 ELSE 1 END" in query
-    assert (
-        "CASE WHEN analysis_type = 'contact_tracing' THEN history_count + 1 ELSE 1 END"
-        in query
-    )
+    assert "CASE WHEN analysis_type = 'contact_tracing' THEN history_count + 1 ELSE 1 END" in query

@@ -310,9 +310,7 @@ def _optional_date(row: GraphRow, key: str) -> SnapshotDate | None:
     if value.endswith("]"):
         datetime_value, separator, timezone_name = value[:-1].rpartition("[")
         if not separator or not datetime_value or not timezone_name:
-            raise ProfileAnalysisTemporalMappingError(
-                "invalid safe profile analysis snapshot data"
-            )
+            raise ProfileAnalysisTemporalMappingError("invalid safe profile analysis snapshot data")
     try:
         parsed = datetime.fromisoformat(datetime_value)
     except ValueError:

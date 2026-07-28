@@ -55,9 +55,7 @@ def test_request_claim_query_compiles_and_claims_each_analysis_type(
     analysis_type: str,
 ) -> None:
     now = datetime(2026, 7, 28, 4, tzinfo=UTC)
-    other_analysis_type = (
-        "contact_tracing" if analysis_type == "sales" else "sales"
-    )
+    other_analysis_type = "contact_tracing" if analysis_type == "sales" else "sales"
     with neo4j_client.session() as session:
         session.run(
             """
