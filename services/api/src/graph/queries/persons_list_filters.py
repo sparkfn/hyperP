@@ -189,6 +189,6 @@ def build_entity_filter_clause(
     if include_preferred_address:
         return (
             result
-            + "OPTIONAL MATCH (p)-[:LIVES_AT]->(addr:Address {address_id: p.preferred_address_id})\n"
+            + "OPTIONAL MATCH (addr:Address {address_id: p.preferred_address_id})\n"
         )
     return result

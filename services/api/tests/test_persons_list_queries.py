@@ -330,6 +330,33 @@ def test_count_query_includes_address_join_when_addr_filter_active() -> None:
     assert "WITH DISTINCT p, score" in query
 
 
+def test_person_list_preferred_address_hydration_does_not_expand_provenance_edges() -> None:
+    address_filter_query = build_list_persons_query(
+        "preferred_full_name",
+        "asc",
+        has_q=False,
+        active_filters=frozenset({"addr_city"}),
+    )
+    queries = (
+        build_list_persons_query("profile_completeness_score", "desc", has_q=False),
+        build_list_persons_query("connection_count", "desc", has_q=False),
+        build_list_persons_query("relevance", "desc", has_q=True),
+        address_filter_query,
+    )
+
+    direct_lookup = "OPTIONAL MATCH (addr:Address {address_id: p.preferred_address_id})"
+
+    for query in queries:
+        preferred_address_lines = [
+            line.strip()
+            for line in query.splitlines()
+            if "address_id: p.preferred_address_id" in line
+        ]
+        assert preferred_address_lines == [direct_lookup]
+
+    assert "OPTIONAL MATCH (p)-[addr_link:LIVES_AT]->(addr:Address)" in address_filter_query
+
+
 def test_default_queries_omit_inactive_expensive_filter_traversals() -> None:
     list_query = build_list_persons_query("profile_completeness_score", "desc", has_q=False)
     count_query = build_count_persons_query(has_q=False)
