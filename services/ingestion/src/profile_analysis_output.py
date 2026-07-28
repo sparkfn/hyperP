@@ -25,9 +25,7 @@ _NUMERIC_TOKEN = re.compile(r"(?<![\w-])[+-]?(?:\d+(?:\.\d+)?|\.\d+)(?![\w-])")
 _FORMATTED_IDENTIFIER = re.compile(r"(?<!\w)[+\d](?:[\d\s+()-]|\.(?=\d))*\d(?!\w)")
 _IDENTIFIER_CHARACTERS = re.compile(r"[\d\s+().-]+")
 _DAY_FIRST_DATE = re.compile(r"(?<!\d)(\d{1,2})[/-](\d{1,2})[/-](\d{4})(?!\d)")
-_JSON_ARRAY_START = re.compile(
-    r'^\[\s*(?:\]|\[|\{|"|-?(?:\d|\.\d)|true\b|false\b|null\b)'
-)
+_JSON_ARRAY_START = re.compile(r'^\[\s*(?:\]|\[|\{|"|-?(?:\d|\.\d)|true\b|false\b|null\b)')
 
 
 class ProfileAnalysisOutputReason(StrEnum):

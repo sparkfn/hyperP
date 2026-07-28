@@ -291,8 +291,7 @@ def _log_output_validation_failure(
     error: ProfileAnalysisOutputError,
 ) -> None:
     logger.warning(
-        "Profile analysis output validation failed "
-        "person_id=%s analysis_type=%s reason=%s",
+        "Profile analysis output validation failed person_id=%s analysis_type=%s reason=%s",
         person.person_id,
         due.analysis_type.value,
         error.reason.value,
