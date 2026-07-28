@@ -117,3 +117,22 @@ class ProfileAnalysisRequestResult(BaseModel):
     force_attempts_remaining: int = Field(ge=0, le=3)
     force_available_at: str | None
     force_available_at_display: str | None
+
+
+class ProfileAnalysisRequestRequeueResult(BaseModel):
+    """Safe result of an administrator requeueing a failed analysis request."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    request_id: str
+    person_id: str
+    analysis_type: ProfileAnalysisType
+    state: Literal[
+        "requeued",
+        "not_terminal",
+        "already_active",
+        "nonrecoverable",
+        "revision_conflict",
+        "attempt_limited",
+        "requeue_limited",
+    ]

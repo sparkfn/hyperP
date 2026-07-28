@@ -508,6 +508,39 @@ paths:
           description: Forced-refresh rolling-hour limit reached.
         '503':
           description: The request could not be dispatched.
+  /v1/persons/{person_id}/profile-analyses/requests/{request_id}/requeue:
+    post:
+      tags: [Persons]
+      summary: Requeue one recoverable failed Person profile-analysis request
+      operationId: requeueFailedPersonProfileAnalysis
+      description: |
+        Authenticated human administrator surface only. Requeues one terminal
+        failed request only when it has the current input revision, has no
+        active request for the same analysis type, remains within the configured
+        attempt bound, and its safe failure code is explicitly recoverable.
+        Privacy-boundary failures are never requeued by this endpoint.
+      security:
+        - humanBearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/PersonId'
+        - $ref: '#/components/parameters/RequestId'
+      responses:
+        '202':
+          description: Failed request requeued for delivery
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProfileAnalysisRequestRequeueResponseEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: Person or profile-analysis request not found.
+        '409':
+          description: Requeue is not permitted for the terminal request state.
+        '503':
+          description: The requeued request could not be dispatched.
   /v1/persons/{person_id}/profile-analyses/history:
     get:
       tags: [Persons]
@@ -3044,6 +3077,29 @@ components:
       properties:
         data:
           $ref: '#/components/schemas/ProfileAnalysisRequestResult'
+        meta:
+          $ref: '#/components/schemas/Meta'
+      required: [data, meta]
+      additionalProperties: false
+    ProfileAnalysisRequestRequeueResult:
+      type: object
+      properties:
+        request_id:
+          type: string
+        person_id:
+          type: string
+        analysis_type:
+          $ref: '#/components/schemas/ProfileAnalysisType'
+        state:
+          type: string
+          enum: [requeued, not_terminal, already_active, nonrecoverable, revision_conflict, attempt_limited, requeue_limited]
+      required: [request_id, person_id, analysis_type, state]
+      additionalProperties: false
+    ProfileAnalysisRequestRequeueResponseEnvelope:
+      type: object
+      properties:
+        data:
+          $ref: '#/components/schemas/ProfileAnalysisRequestRequeueResult'
         meta:
           $ref: '#/components/schemas/Meta'
       required: [data, meta]

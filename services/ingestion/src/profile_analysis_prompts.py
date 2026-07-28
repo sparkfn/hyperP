@@ -13,8 +13,8 @@ from src.profile_analysis_snapshot import (
     validate_profile_analysis_boundary,
 )
 
-SALES_PROFILE_PROMPT_VERSION = "sales-profile-v1"
-CONTACT_TRACING_PROFILE_PROMPT_VERSION = "contact-tracing-profile-v1"
+SALES_PROFILE_PROMPT_VERSION = "sales-profile-v2"
+CONTACT_TRACING_PROFILE_PROMPT_VERSION = "contact-tracing-profile-v2"
 _MAX_SNAPSHOT_BYTES = 40_000
 
 _COMMON_CONTRACT = """\
@@ -26,8 +26,10 @@ entire response within 350 words. Support every substantive statement with one o
 evidence_ref values from the snapshot. Never fabricate facts, restore redacted details, identify
 an aliased contact, or make unsupported identity claims. Express uncertainty when evidence is
 missing, conflicting, incomplete, or stale. Do not make medical, legal, safety, or causal
-conclusions beyond explicit structured evidence. End with a clearly labeled "Limitations:"
-section; write "Limitations: None identified from the supplied snapshot." only when justified.
+conclusions beyond explicit structured evidence. Never include or imitate phone numbers, email
+addresses, postal codes, street addresses, NRICs, vehicle registrations, or other direct
+identifier-shaped text. End with a line beginning exactly "Limitations:"; write
+"Limitations: None identified from the supplied snapshot." only when justified.
 """
 
 _SALES_SYSTEM_PROMPT = f"""\

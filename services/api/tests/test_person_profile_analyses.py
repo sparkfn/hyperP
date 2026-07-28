@@ -10,6 +10,7 @@ from src.graph.mappers_profile_analysis import (
 from src.graph.queries.profile_analysis import (
     GET_PERSON_PROFILE_ANALYSES,
     GET_PERSON_PROFILE_ANALYSIS_HISTORY,
+    REQUEUE_FAILED_PROFILE_ANALYSIS_REQUEST,
 )
 from src.types_profile_analysis import ProfileAnalysisType
 
@@ -167,6 +168,21 @@ def test_live_claim_does_not_hide_permanent_failure_for_other_due_type() -> None
     assert mapped.sales.failure_code == "invalid_output"
     assert mapped.contact_tracing.refresh_state == "running"
     assert mapped.refresh_state == "running"
+
+
+def test_terminal_request_requeue_query_is_revision_bound_and_privacy_safe() -> None:
+    query = REQUEUE_FAILED_PROFILE_ANALYSIS_REQUEST
+
+    assert "request.status <> 'failed'" in query
+    assert "request.input_revision IS NULL OR request.input_revision <> input_revision" in query
+    assert "coalesce(failure.failure_code, '') NOT IN" in query
+    assert "coalesce(failure.attempt_number, $max_attempts) >= $max_attempts" in query
+    assert "coalesce(request.operator_requeue_count, 0) >= 1" in query
+    assert "'invalid_output'" in query
+    assert "'privacy_output'" not in query
+    assert "'privacy_snapshot'" not in query
+    assert "request.status = 'queued'" in query
+    assert "request.input_revision =" not in query
 
 
 def test_live_claim_does_not_hide_delayed_retry_failure() -> None:

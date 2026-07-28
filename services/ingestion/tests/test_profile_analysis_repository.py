@@ -360,6 +360,65 @@ def test_snapshot_rows_map_deterministically_into_reviewed_scalar_types() -> Non
     assert "person-z" not in serialized
 
 
+def test_snapshot_mapping_trims_outer_whitespace_from_copied_labels() -> None:
+    bundle = map_profile_analysis_snapshot_rows(
+        "person-1",
+        [
+            {
+                "row_kind": "source",
+                "internal_id": "source-1",
+                "record_type": "sales",
+                "source_category": " Sales ",
+                "observed_date": None,
+                "quality_flag": "valid",
+                "trust_tier": "tier_1",
+                "confidence": 0.9,
+            },
+            {
+                "row_kind": "order",
+                "internal_id": "order-1",
+                "order_date": None,
+                "total": None,
+                "currency": None,
+                "merchant": " Workshop ",
+                "product": " Adjustable Food Rack for Bicycle ",
+                "category": " Accessories ",
+            },
+            {
+                "row_kind": "vehicle",
+                "internal_id": "vehicle-1",
+                "product": " Bicycle ",
+                "manufacturer": " Acme ",
+                "model": " Model X ",
+                "relationship_category": "owned",
+            },
+            {
+                "row_kind": "relationship",
+                "internal_id": "relationship-1",
+                "parent_internal_id": "person-2",
+                "relationship_category": " colleague ",
+                "direction": "outgoing",
+                "event_date": None,
+            },
+        ],
+    )
+
+    assert bundle.snapshot.sources[0].source_category.value == "Sales"
+    assert bundle.snapshot.orders[0].merchant is not None
+    assert bundle.snapshot.orders[0].merchant.value == "Workshop"
+    assert bundle.snapshot.orders[0].items[0].product is not None
+    assert bundle.snapshot.orders[0].items[0].product.value == "Adjustable Food Rack for Bicycle"
+    assert bundle.snapshot.orders[0].items[0].category is not None
+    assert bundle.snapshot.orders[0].items[0].category.value == "Accessories"
+    assert bundle.snapshot.vehicles[0].product is not None
+    assert bundle.snapshot.vehicles[0].product.value == "Bicycle"
+    assert bundle.snapshot.vehicles[0].manufacturer is not None
+    assert bundle.snapshot.vehicles[0].manufacturer.value == "Acme"
+    assert bundle.snapshot.vehicles[0].model is not None
+    assert bundle.snapshot.vehicles[0].model.value == "Model X"
+    assert bundle.snapshot.relationships[0].category.value == "colleague"
+
+
 @pytest.mark.parametrize(
     ("field", "value", "expected"),
     (
@@ -471,7 +530,13 @@ def test_missing_source_provenance_stays_null_and_surfaces_a_data_gap() -> None:
 
 @pytest.mark.parametrize(
     ("field", "value"),
-    (("merchant", "<script>"), ("currency", "sgd"), ("order_date", "07/01/2026")),
+    (
+        ("merchant", "<script>"),
+        ("merchant", "Workshop\t"),
+        ("merchant", "Workshop\u2028"),
+        ("currency", "sgd"),
+        ("order_date", "07/01/2026"),
+    ),
 )
 def test_malformed_dynamic_snapshot_values_raise_safe_mapping_errors(
     field: str,

@@ -750,6 +750,43 @@ The endpoint returns `401` for missing or invalid human authentication, `403`
 when the frontend user is not active, and `404` with `person_not_found` when the
 Person cannot be resolved.
 
+## POST /v1/persons/{person_id}/profile-analyses/requests/{request_id}/requeue
+
+Requeue one terminal failed profile-analysis request after an operator has
+corrected a recoverable source-data, prompt, or provider-contract issue. This
+is an authenticated human-administrator endpoint served only through the
+`/api/app/v2` mount; it is not public and is not available to OAuth2 machine
+clients.
+
+The operation is deliberately bounded and does not create a new request ID. It
+requires the request to belong to the resolved active Person, remain at that
+Person's current input revision, have no queued or live-running request of the
+same analysis type, stay below the configured attempt limit, and not have used
+its one operator requeue. It permits only `invalid_snapshot`,
+`invalid_snapshot_temporal`, `invalid_output`, and `provider_rejected` failure
+codes. `privacy_snapshot`, `privacy_output`, transient scheduled retries, and
+unknown failure codes are never requeued automatically.
+
+### Response
+
+```json
+{
+  "data": {
+    "request_id": "d5be6caa-7d38-4b8b-8b4c-f2e2a11709fd",
+    "person_id": "7af4b5f5-34c1-4f22-9e2d-95ea8ff3b8c7",
+    "analysis_type": "sales",
+    "state": "requeued"
+  },
+  "meta": {
+    "request_id": "..."
+  }
+}
+```
+
+It returns `404` when the Person or request cannot be resolved, `409` when the
+request is not eligible for requeue, and `503` if the durable request could not
+be delivered to Celery after it was requeued.
+
 ## GET /v1/persons/{person_id}/profile-analyses/history
 
 Return immutable terminal attempts for both analysis types, served at runtime

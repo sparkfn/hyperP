@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import unicodedata
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime
@@ -31,6 +32,10 @@ from src.profile_analysis_snapshot_values import CurrencyCode, SafeSnapshotLabel
 
 type GraphScalar = str | int | float | bool | datetime | date | None
 type GraphRow = Record | Mapping[str, GraphScalar]
+
+_LINE_BREAKS = frozenset(
+    {"\n", "\r", "\v", "\f", "\x1c", "\x1d", "\x1e", "\x85", "\u2028", "\u2029"}
+)
 
 
 class ProfileAnalysisMappingError(ValueError):
@@ -124,7 +129,7 @@ def _map_source(row: GraphRow) -> SnapshotSourceRecordInput:
     return SnapshotSourceRecordInput(
         source_record_id=required_str(row, "internal_id"),
         record_type=RecordType(required_str(row, "record_type")),
-        source_category=SafeSnapshotLabel(required_str(row, "source_category")),
+        source_category=_safe_snapshot_label(required_str(row, "source_category")),
         observed_date=_optional_date(row, "observed_date"),
         quality_flag=_optional_quality_flag(row, "quality_flag"),
         trust_tier=_optional_trust_tier(row, "trust_tier"),
@@ -181,7 +186,7 @@ def _map_relationship(row: GraphRow) -> RelationshipSnapshotInput:
     return RelationshipSnapshotInput(
         relationship_id=required_str(row, "internal_id"),
         related_person_id=required_str(row, "parent_internal_id"),
-        category=SafeSnapshotLabel(required_str(row, "relationship_category")),
+        category=_safe_snapshot_label(required_str(row, "relationship_category")),
         direction=RelationshipDirection(required_str(row, "direction")),
         event_date=_optional_date(row, "event_date"),
     )
@@ -280,7 +285,16 @@ def _optional_float(row: GraphRow, key: str) -> float | None:
 
 def _optional_label(row: GraphRow, key: str) -> SafeSnapshotLabel | None:
     value = _optional_str(row, key)
-    return SafeSnapshotLabel(value) if value is not None else None
+    return _safe_snapshot_label(value) if value is not None else None
+
+
+def _safe_snapshot_label(value: str) -> SafeSnapshotLabel:
+    """Normalize harmless outer whitespace without accepting control characters."""
+    if any(character in _LINE_BREAKS for character in value) or any(
+        unicodedata.category(character) in {"Cc", "Cf"} for character in value
+    ):
+        raise ValueError("unsafe snapshot label control character")
+    return SafeSnapshotLabel(value.strip())
 
 
 def _optional_currency(row: GraphRow, key: str) -> CurrencyCode | None:
