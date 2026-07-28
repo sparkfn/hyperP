@@ -187,8 +187,5 @@ def build_entity_filter_clause(
     else:
         result = "WITH p, score\n"
     if include_preferred_address:
-        return (
-            result
-            + "OPTIONAL MATCH (addr:Address {address_id: p.preferred_address_id})\n"
-        )
+        return result + "OPTIONAL MATCH (addr:Address {address_id: p.preferred_address_id})\n"
     return result
