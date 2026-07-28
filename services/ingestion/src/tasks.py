@@ -682,7 +682,7 @@ def run_profile_analysis_request_task(
     except Retry:
         raise
     except Exception:
-        logger.error("Profile-analysis request failed; safe_code=request_failed")
+        logger.exception("Profile-analysis request failed; safe_code=request_failed")
         return _empty_profile_analysis_summary(unexpected_failures=1)
 
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -117,3 +118,32 @@ def test_queued_request_waiting_on_another_claim_is_retried(monkeypatch: MonkeyP
 
     with pytest.raises(tasks.Retry):
         tasks.run_profile_analysis_request_task.run("request-waiting")
+
+
+def test_request_task_logs_traceback_and_returns_safe_failure_summary(
+    monkeypatch: MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    from src import tasks
+
+    settings = Settings(neo4j_password="test", profile_analysis_enabled=True)
+    monkeypatch.setattr(tasks, "get_settings", lambda: settings)
+    monkeypatch.setattr(tasks, "setup_logging", lambda _level: None)
+
+    def fail_request(_request_id: str) -> tuple[ProfileAnalysisSweepSummary, datetime | None]:
+        raise RuntimeError("restricted Neo4j detail")
+
+    monkeypatch.setattr(tasks, "_run_profile_analysis_request_once", fail_request)
+
+    with caplog.at_level(logging.ERROR, logger=tasks.__name__):
+        result = tasks.run_profile_analysis_request_task.run("request-1")
+
+    failure_records = [
+        record
+        for record in caplog.records
+        if record.getMessage() == "Profile-analysis request failed; safe_code=request_failed"
+    ]
+    assert result == tasks._empty_profile_analysis_summary(unexpected_failures=1)
+    assert len(failure_records) == 1
+    assert failure_records[0].exc_info is not None
+    assert "restricted Neo4j detail" not in repr(result)

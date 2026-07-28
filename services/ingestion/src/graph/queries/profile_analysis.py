@@ -501,17 +501,18 @@ SET person.analysis_claim_token = $claim_token,
     request.started_at = datetime.realtime(),
     request.input_revision = input_revision,
     request.next_retry_at = null
-WITH person, request, input_revision
+WITH person, input_revision, request.analysis_type AS analysis_type
 OPTIONAL MATCH (person)-[:HAS_PROFILE_ANALYSIS]->(history:ProfileAnalysis {
-  analysis_type: request.analysis_type, input_revision: input_revision
+  analysis_type: analysis_type, input_revision: input_revision
 })
+WITH person, input_revision, analysis_type, count(DISTINCT history) AS history_count
 RETURN person.person_id AS person_id,
        input_revision,
-       request.analysis_type = 'sales' AS sales_due,
-       CASE WHEN request.analysis_type = 'sales' THEN count(DISTINCT history) + 1 ELSE 1 END
+       analysis_type = 'sales' AS sales_due,
+       CASE WHEN analysis_type = 'sales' THEN history_count + 1 ELSE 1 END
          AS sales_attempt_number,
-       request.analysis_type = 'contact_tracing' AS contact_due,
-       CASE WHEN request.analysis_type = 'contact_tracing' THEN count(DISTINCT history) + 1 ELSE 1 END
+       analysis_type = 'contact_tracing' AS contact_due,
+       CASE WHEN analysis_type = 'contact_tracing' THEN history_count + 1 ELSE 1 END
          AS contact_attempt_number
 """
 

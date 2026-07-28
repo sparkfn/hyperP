@@ -518,3 +518,20 @@ def test_claim_parameters_are_temporal_values_not_interpolated_text() -> None:
 
     assert "$now" in query and "$claim_until" in query
     assert now.isoformat() not in query
+
+
+def test_request_claim_query_aggregates_history_before_using_analysis_type() -> None:
+    query = queries.CLAIM_PROFILE_ANALYSIS_REQUEST
+
+    aggregation = (
+        "WITH person, input_revision, analysis_type, count(DISTINCT history) AS history_count"
+    )
+    assert aggregation in query
+    assert query.index(aggregation) < query.index("RETURN person.person_id AS person_id")
+    assert "request.analysis_type = 'sales' AS sales_due" not in query
+    assert "request.analysis_type = 'contact_tracing' AS contact_due" not in query
+    assert "CASE WHEN analysis_type = 'sales' THEN history_count + 1 ELSE 1 END" in query
+    assert (
+        "CASE WHEN analysis_type = 'contact_tracing' THEN history_count + 1 ELSE 1 END"
+        in query
+    )
