@@ -272,7 +272,7 @@ def test_person_listing_includes_and_sorts_by_possible_match_count() -> None:
 def test_stored_sort_paginates_before_enrichment() -> None:
     query = build_list_persons_query("profile_completeness_score", "desc", has_q=False)
 
-    order_by_pos = query.index("ORDER BY p.profile_completeness_score DESC")
+    order_by_pos = query.index("ORDER BY p.profile_completeness_score DESC, p.person_id ASC")
     first_call_pos = query.index("CALL (p)")
     assert order_by_pos < first_call_pos
 
@@ -280,7 +280,7 @@ def test_stored_sort_paginates_before_enrichment() -> None:
 def test_computed_sort_paginates_after_enrichment() -> None:
     query = build_list_persons_query("source_record_count", "asc", has_q=False)
 
-    order_by_pos = query.index("ORDER BY source_record_count ASC")
+    order_by_pos = query.index("ORDER BY source_record_count ASC, person.person_id ASC")
     first_call_pos = query.index("CALL (p)")
     assert order_by_pos > first_call_pos
 
@@ -288,9 +288,19 @@ def test_computed_sort_paginates_after_enrichment() -> None:
 def test_stored_sort_fulltext_paginates_before_enrichment() -> None:
     query = build_list_persons_query("relevance", "desc", has_q=True)
 
-    order_by_pos = query.index("ORDER BY score DESC")
+    order_by_pos = query.index("ORDER BY score DESC, p.person_id ASC")
     first_call_pos = query.index("CALL (p)")
     assert order_by_pos < first_call_pos
+
+
+def test_person_list_sorts_use_person_id_as_stable_pagination_tiebreaker() -> None:
+    stored_query = build_list_persons_query("preferred_full_name", "asc", has_q=False)
+    computed_query = build_list_persons_query("connection_count", "desc", has_q=False)
+    fulltext_query = build_list_persons_query("relevance", "desc", has_q=True)
+
+    assert "ORDER BY p.preferred_full_name ASC, p.person_id ASC" in stored_query
+    assert "ORDER BY connection_count DESC, person.person_id ASC" in computed_query
+    assert "ORDER BY score DESC, p.person_id ASC" in fulltext_query
 
 
 def test_enrich_and_return_uses_neo4j5_call_syntax() -> None:
