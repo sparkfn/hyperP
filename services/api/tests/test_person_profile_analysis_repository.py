@@ -1,18 +1,23 @@
-"""Neo4j repository contracts for atomic Person profile-analysis history reads."""
+"""Neo4j repository contracts for Person profile-analysis reads and request writes."""
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
+from typing import cast
 
 import pytest
 import src.repositories.neo4j.person as person_module
+from neo4j import AsyncManagedTransaction
 from src.graph.converters import GraphRecord, GraphValue
 from src.graph.queries.profile_analysis import (
+    CREATE_PROFILE_ANALYSIS_REQUEST,
     GET_PERSON_PROFILE_ANALYSES,
     GET_PERSON_PROFILE_ANALYSIS_HISTORY,
+    MARK_PROFILE_ANALYSIS_REQUEST_DISPATCH_FAILED,
 )
 from src.repositories.neo4j.person import Neo4jPersonRepository
+from src.types_profile_analysis import ProfileAnalysisType
 
 
 def test_profile_analysis_read_queries_use_scoped_subqueries() -> None:
@@ -67,6 +72,35 @@ class _Session:
         return _Result(single_record=_Record({"total": 0}))
 
 
+type _ProfileAnalysisWriteFn = Callable[
+    [AsyncManagedTransaction, str, ProfileAnalysisType, bool, str],
+    Awaitable[GraphRecord | None],
+]
+
+
+class _WriteSession:
+    def __init__(self, transaction: _Session) -> None:
+        self.transaction = transaction
+        self.calls: list[tuple[_ProfileAnalysisWriteFn, str, ProfileAnalysisType, bool, str]] = []
+
+    async def execute_write(
+        self,
+        function: _ProfileAnalysisWriteFn,
+        person_id: str,
+        analysis_type: ProfileAnalysisType,
+        force: bool,
+        request_id: str,
+    ) -> GraphRecord | None:
+        self.calls.append((function, person_id, analysis_type, force, request_id))
+        return await function(
+            cast(AsyncManagedTransaction, self.transaction),
+            person_id,
+            analysis_type,
+            force,
+            request_id,
+        )
+
+
 def _history_analysis() -> GraphRecord:
     return {
         "analysis_id": "analysis-sales",
@@ -88,12 +122,102 @@ def _history_analysis() -> GraphRecord:
     }
 
 
-def _install_session(monkeypatch: pytest.MonkeyPatch, session: _Session) -> None:
+def _install_session(monkeypatch: pytest.MonkeyPatch, session: _Session) -> list[bool]:
+    write_modes: list[bool] = []
+
     @asynccontextmanager
-    async def fake_get_session() -> AsyncIterator[_Session]:
+    async def fake_get_session(write: bool = False) -> AsyncIterator[_Session]:
+        write_modes.append(write)
         yield session
 
     monkeypatch.setattr(person_module, "get_session", fake_get_session)
+    return write_modes
+
+
+@pytest.mark.anyio
+async def test_request_profile_analysis_uses_write_transaction_and_maps_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    transaction = _Session(
+        _Record(
+            {
+                "person_id": "canonical-person",
+                "state": "queued",
+                "request_id": "request-1",
+                "force_attempts_remaining": 3,
+                "force_available_at": None,
+            }
+        )
+    )
+    session = _WriteSession(transaction)
+    write_modes: list[bool] = []
+
+    @asynccontextmanager
+    async def fake_get_session(write: bool = False) -> AsyncIterator[_WriteSession]:
+        write_modes.append(write)
+        yield session
+
+    monkeypatch.setattr(person_module, "get_session", fake_get_session)
+    monkeypatch.setattr(person_module, "uuid4", lambda: "request-1")
+
+    result = await Neo4jPersonRepository().request_profile_analysis(
+        "merged-person",
+        "sales",
+        False,
+    )
+
+    assert write_modes == [True]
+    assert len(session.calls) == 1
+    assert session.calls[0][1:] == ("merged-person", "sales", False, "request-1")
+    assert transaction.calls == [
+        (
+            CREATE_PROFILE_ANALYSIS_REQUEST,
+            {
+                "person_id": "merged-person",
+                "analysis_type": "sales",
+                "force": False,
+                "request_id": "request-1",
+            },
+        )
+    ]
+    assert result is not None
+    assert result.request_id == "request-1"
+    assert result.person_id == "canonical-person"
+    assert result.analysis_type == "sales"
+    assert result.state == "queued"
+    assert result.force is False
+    assert result.force_attempts_remaining == 3
+    assert result.force_available_at is None
+
+
+@pytest.mark.anyio
+async def test_current_profile_analysis_retrieval_remains_read_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = _Session(None)
+    write_modes = _install_session(monkeypatch, session)
+
+    assert await Neo4jPersonRepository().get_profile_analyses("person-1") is None
+    assert write_modes == [False]
+    assert session.calls == [(GET_PERSON_PROFILE_ANALYSES, {"person_id": "person-1"})]
+
+
+@pytest.mark.anyio
+async def test_dispatch_failure_marker_uses_write_session(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = _Session(None)
+    write_modes = _install_session(monkeypatch, session)
+
+    await Neo4jPersonRepository().mark_profile_analysis_request_dispatch_failed("request-1")
+
+    assert write_modes == [True]
+    assert session.calls == [
+        (
+            MARK_PROFILE_ANALYSIS_REQUEST_DISPATCH_FAILED,
+            {"request_id": "request-1"},
+        )
+    ]
 
 
 @pytest.mark.anyio
@@ -109,7 +233,7 @@ async def test_history_uses_one_combined_read_with_filter_and_cursor(
             }
         )
     )
-    _install_session(monkeypatch, session)
+    write_modes = _install_session(monkeypatch, session)
 
     page = await Neo4jPersonRepository().get_profile_analysis_history(
         "merged-person",
@@ -123,6 +247,7 @@ async def test_history_uses_one_combined_read_with_filter_and_cursor(
     assert total == 3
     assert [item.analysis_id for item in items] == ["analysis-sales"]
     assert len(session.calls) == 1
+    assert write_modes == [False]
     assert session.calls[0][1] == {
         "person_id": "merged-person",
         "analysis_type": "sales",
