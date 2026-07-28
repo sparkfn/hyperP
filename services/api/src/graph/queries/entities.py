@@ -4,22 +4,26 @@ from __future__ import annotations
 
 LIST_ENTITIES = """
 MATCH (e:Entity)
-CALL {
-  WITH e
-  OPTIONAL MATCH (sr:SourceRecord)-[link:LINKED_TO]->(p:Person)
-  WHERE coalesce(link.is_active, true) = true
-    AND (sr.lifecycle_status = 'active'
-      OR (sr.lifecycle_status IS NULL AND sr.is_latest = true))
-    AND p.status <> 'merged'
-    AND (
-      EXISTS { MATCH (sr)-[:OWNED_BY]->(e) }
-      OR (
-        NOT EXISTS { MATCH (sr)-[:OWNED_BY]->(:Entity) }
-        AND EXISTS {
-          MATCH (sr)-[:FROM_SOURCE]->(:SourceSystem)-[:OPERATED_BY]->(e)
-        }
-      )
-    )
+CALL (e) {
+  CALL (e) {
+    MATCH (e)<-[:OWNED_BY]-(sr:SourceRecord)-[link:LINKED_TO]->(p:Person)
+    WHERE coalesce(link.is_active, true) = true
+      AND (sr.lifecycle_status = 'active'
+        OR (sr.lifecycle_status IS NULL AND sr.is_latest = true))
+      AND p.status <> 'merged'
+    RETURN sr, p
+
+    UNION ALL
+
+    WITH e
+    MATCH (e)<-[:OPERATED_BY]-(:SourceSystem)<-[:FROM_SOURCE]-(sr:SourceRecord)-[link:LINKED_TO]->(p:Person)
+    WHERE coalesce(link.is_active, true) = true
+      AND (sr.lifecycle_status = 'active'
+        OR (sr.lifecycle_status IS NULL AND sr.is_latest = true))
+      AND p.status <> 'merged'
+      AND NOT EXISTS { MATCH (sr)-[:OWNED_BY]->(:Entity) }
+    RETURN sr, p
+  }
   RETURN count(DISTINCT p) AS person_count,
          count(DISTINCT sr) AS source_record_count,
          max(sr.ingested_at) AS last_ingested_at

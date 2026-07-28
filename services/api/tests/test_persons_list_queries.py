@@ -86,6 +86,18 @@ def test_entity_summaries_only_count_effective_active_linked_records() -> None:
         assert "coalesce(link.is_active, true) = true" in compact
 
 
+def test_entity_summary_traverses_ownership_before_aggregating() -> None:
+    compact = " ".join(LIST_ENTITIES.split())
+
+    assert LIST_ENTITIES.count("CALL (e) {") == 2
+    assert "CALL {\n  WITH e" not in LIST_ENTITIES
+    assert "MATCH (e)<-[:OWNED_BY]-(sr:SourceRecord)-[link:LINKED_TO]->(p:Person)" in compact
+    assert "MATCH (e)<-[:OPERATED_BY]-(:SourceSystem)<-[:FROM_SOURCE]-(sr:SourceRecord)" in compact
+    assert "AND NOT EXISTS { MATCH (sr)-[:OWNED_BY]->(:Entity) }" in compact
+    assert "RETURN count(DISTINCT p) AS person_count" in compact
+    assert "count(DISTINCT sr) AS source_record_count" in compact
+
+
 def test_entity_queries_support_record_scoped_ownership_with_source_fallback() -> None:
     queries = (
         LIST_ENTITIES,
