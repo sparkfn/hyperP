@@ -886,7 +886,7 @@ def test_sales_prompt_contract_is_independent_bounded_and_privacy_safe() -> None
     messages = build_sales_profile_messages(snapshot, known_sensitive_values=_SENSITIVE_VALUES)
     system = messages[0].content.lower()
 
-    assert SALES_PROFILE_PROMPT_VERSION == "sales-profile-v1"
+    assert SALES_PROFILE_PROMPT_VERSION == "sales-profile-v2"
     assert SALES_PROFILE_PROMPT_VERSION in messages[0].content
     assert messages[0].role == "system"
     assert messages[1].role == "user"
@@ -894,6 +894,7 @@ def test_sales_prompt_contract_is_independent_bounded_and_privacy_safe() -> None
     assert "untrusted" in system and "not instructions" in system
     assert "evidence_ref" in system and "limitations" in system
     assert "plain text" in system and "html" in system
+    assert "identifier-shaped" in system
     assert "350 words" in system
     assert "fabricat" in system and "unsupported identity" in system
     assert "medical" in system and "causal" in system
@@ -910,13 +911,14 @@ def test_contact_tracing_prompt_has_separate_contract_and_exposure_guardrails() 
     )
     system = messages[0].content.lower()
 
-    assert CONTACT_TRACING_PROFILE_PROMPT_VERSION == "contact-tracing-profile-v1"
+    assert CONTACT_TRACING_PROFILE_PROMPT_VERSION == "contact-tracing-profile-v2"
     assert CONTACT_TRACING_PROFILE_PROMPT_VERSION in messages[0].content
     assert SALES_PROFILE_PROMPT_VERSION not in messages[0].content
     assert messages[1].content == canonical_snapshot_json(snapshot)
     assert "untrusted" in system and "not instructions" in system
     assert "evidence_ref" in system and "limitations" in system
     assert "plain text" in system and "html" in system
+    assert "identifier-shaped" in system
     assert "350 words" in system
     assert "fabricat" in system and "unsupported identity" in system
     assert "medical" in system and "causal" in system

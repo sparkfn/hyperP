@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import cast
+from typing import Literal, cast
 
 import pytest
 from fastapi import FastAPI
@@ -16,11 +16,22 @@ from src.repositories.deps import get_person_repo
 from src.types_profile_analysis import (
     PersonProfileAnalyses,
     ProfileAnalysisHistoryItem,
+    ProfileAnalysisRequestRequeueResult,
     ProfileAnalysisRequestResult,
     ProfileAnalysisSlot,
     ProfileAnalysisType,
 )
 from starlette.routing import Mount
+
+type RequeueState = Literal[
+    "requeued",
+    "not_terminal",
+    "already_active",
+    "nonrecoverable",
+    "revision_conflict",
+    "attempt_limited",
+    "requeue_limited",
+]
 
 
 def _pending() -> PersonProfileAnalyses:
@@ -76,7 +87,9 @@ class _ProfileAnalysisRepo:
         self.current = _pending()
         self.history_args: tuple[str, ProfileAnalysisType | None, int, int] | None = None
         self.request_args: tuple[str, ProfileAnalysisType, bool] | None = None
+        self.requeue_args: tuple[str, str, int] | None = None
         self.force_limited = False
+        self.requeue_state: RequeueState = "requeued"
 
     async def get_profile_analyses(self, person_id: str) -> PersonProfileAnalyses | None:
         _ = person_id
@@ -119,6 +132,22 @@ class _ProfileAnalysisRepo:
     async def mark_profile_analysis_request_dispatch_failed(self, request_id: str) -> None:
         _ = request_id
 
+    async def requeue_failed_profile_analysis_request(
+        self,
+        person_id: str,
+        request_id: str,
+        max_attempts: int,
+    ) -> ProfileAnalysisRequestRequeueResult | None:
+        self.requeue_args = (person_id, request_id, max_attempts)
+        if self.missing:
+            return None
+        return ProfileAnalysisRequestRequeueResult(
+            request_id=request_id,
+            person_id=person_id,
+            analysis_type="sales",
+            state=self.requeue_state,
+        )
+
 
 async def _active_user() -> AuthUser:
     return AuthUser(
@@ -135,6 +164,15 @@ def _inactive_user() -> AuthUser:
         google_sub="pending-sub",
         role="first_time",
         entity_key=None,
+    )
+
+
+def _admin_user() -> AuthUser:
+    return AuthUser(
+        email="admin@example.com",
+        google_sub="admin-sub",
+        role="admin",
+        entity_key="fundbox",
     )
 
 
@@ -349,6 +387,46 @@ def test_request_route_returns_force_limit_availability() -> None:
     }
 
 
+def test_requeue_route_requires_human_admin() -> None:
+    response = _authenticated_client(_ProfileAnalysisRepo()).post(
+        "/app/v2/persons/person-1/profile-analyses/requests/request-1/requeue"
+    )
+
+    assert response.status_code == 403
+
+
+def test_requeue_route_dispatches_one_safe_terminal_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = _ProfileAnalysisRepo()
+    queued: list[str] = []
+    monkeypatch.setattr(
+        "src.routes.person_profile_analysis.enqueue_profile_analysis_request",
+        lambda request_id: queued.append(request_id),
+    )
+
+    response = _principal_client(repo, _admin_user()).post(
+        "/app/v2/persons/person-1/profile-analyses/requests/request-1/requeue"
+    )
+
+    assert response.status_code == 202
+    assert repo.requeue_args == ("person-1", "request-1", 3)
+    assert queued == ["request-1"]
+    assert response.json()["data"]["state"] == "requeued"
+
+
+def test_requeue_route_rejects_nonrecoverable_terminal_request() -> None:
+    repo = _ProfileAnalysisRepo()
+    repo.requeue_state = "nonrecoverable"
+
+    response = _principal_client(repo, _admin_user()).post(
+        "/app/v2/persons/person-1/profile-analyses/requests/request-1/requeue"
+    )
+
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "profile_analysis_requeue_nonrecoverable"
+
+
 def test_history_route_filters_and_paginates_with_count() -> None:
     repo = _ProfileAnalysisRepo()
     client = _authenticated_client(repo)
@@ -403,5 +481,7 @@ def test_profile_analysis_routes_are_excluded_from_oauth_schema() -> None:
 
     assert "/persons/{person_id}/profile-analyses" in frontend_paths
     assert "/persons/{person_id}/profile-analyses/history" in frontend_paths
+    assert "/persons/{person_id}/profile-analyses/requests/{request_id}/requeue" in frontend_paths
     assert "/persons/{person_id}/profile-analyses" not in oauth_paths
     assert "/persons/{person_id}/profile-analyses/history" not in oauth_paths
+    assert "/persons/{person_id}/profile-analyses/requests/{request_id}/requeue" not in oauth_paths

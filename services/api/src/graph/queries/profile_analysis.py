@@ -241,3 +241,68 @@ WHERE request.status = 'queued'
 SET request.status = 'dispatch_failed', request.completed_at = datetime.realtime()
 RETURN true AS updated
 """
+
+REQUEUE_FAILED_PROFILE_ANALYSIS_REQUEST = (
+    _RESOLVE_PROFILE_ANALYSIS_PERSON
+    + """
+WITH person, datetime.realtime() AS now, coalesce(person.analysis_input_revision, 0) AS input_revision
+OPTIONAL MATCH (person)-[:HAS_PROFILE_ANALYSIS_REQUEST]->(request:ProfileAnalysisRequest {
+  request_id: $request_id
+})
+WITH person, now, input_revision, head(collect(request)) AS request
+CALL (person, request, now) {
+  WITH person, request, now
+  OPTIONAL MATCH (person)-[:HAS_PROFILE_ANALYSIS_REQUEST]->(active:ProfileAnalysisRequest)
+  WHERE request IS NOT NULL
+    AND active.analysis_type = request.analysis_type
+    AND (
+      active.status = 'queued'
+      OR (active.status = 'running' AND person.analysis_claim_until > now)
+    )
+    AND active.request_id <> request.request_id
+  RETURN count(active) > 0 AS active_request
+}
+CALL (person, request) {
+  WITH person, request
+  OPTIONAL MATCH (person)-[:HAS_PROFILE_ANALYSIS]->(failure:ProfileAnalysis {
+    analysis_type: request.analysis_type,
+    input_revision: request.input_revision,
+    status: 'failed'
+  })
+  WITH failure ORDER BY failure.completed_at DESC, failure.analysis_id DESC
+  RETURN head(collect(failure)) AS failure
+}
+WITH person, now, input_revision, request, active_request, failure,
+     CASE
+       WHEN request IS NULL THEN 'request_not_found'
+       WHEN request.status <> 'failed' THEN 'not_terminal'
+       WHEN request.input_revision IS NULL OR request.input_revision <> input_revision
+         THEN 'revision_conflict'
+       WHEN active_request THEN 'already_active'
+       WHEN failure IS NULL
+         OR coalesce(failure.failure_code, '') NOT IN [
+           'invalid_snapshot',
+           'invalid_snapshot_temporal',
+           'invalid_output',
+           'provider_rejected'
+         ]
+         OR coalesce(failure.retryable, false) THEN 'nonrecoverable'
+       WHEN coalesce(failure.attempt_number, $max_attempts) >= $max_attempts
+         THEN 'attempt_limited'
+       WHEN coalesce(request.operator_requeue_count, 0) >= 1 THEN 'requeue_limited'
+       ELSE 'requeued'
+     END AS state
+FOREACH (_ IN CASE WHEN state = 'requeued' THEN [1] ELSE [] END |
+  SET request.status = 'queued',
+      request.completed_at = null,
+      request.started_at = null,
+      request.next_retry_at = null,
+      request.requeued_at = now,
+      request.operator_requeue_count = coalesce(request.operator_requeue_count, 0) + 1
+)
+RETURN person.person_id AS person_id,
+       request.request_id AS request_id,
+       request.analysis_type AS analysis_type,
+       state
+"""
+)

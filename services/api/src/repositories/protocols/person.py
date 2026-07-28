@@ -25,6 +25,7 @@ from src.types import (
 from src.types_profile_analysis import (
     PersonProfileAnalyses,
     ProfileAnalysisHistoryItem,
+    ProfileAnalysisRequestRequeueResult,
     ProfileAnalysisRequestResult,
     ProfileAnalysisType,
 )
@@ -95,6 +96,13 @@ class PersonRepository(Protocol):
     ) -> ProfileAnalysisRequestResult | None: ...
 
     async def mark_profile_analysis_request_dispatch_failed(self, request_id: str) -> None: ...
+
+    async def requeue_failed_profile_analysis_request(
+        self,
+        person_id: str,
+        request_id: str,
+        max_attempts: int,
+    ) -> ProfileAnalysisRequestRequeueResult | None: ...
 
     async def get_profile_analysis_history(
         self,

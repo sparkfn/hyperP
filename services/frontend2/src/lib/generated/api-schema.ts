@@ -176,6 +176,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/persons/{person_id}/profile-analyses/requests/{request_id}/requeue": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Requeue one recoverable failed Person profile-analysis request */
+        post: operations["requeueFailedPersonProfileAnalysis"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/persons/{person_id}/profile-analyses/history": {
         parameters: {
             query?: never;
@@ -1318,6 +1335,16 @@ export interface components {
             data: components["schemas"]["ProfileAnalysisRequestResult"];
             meta: components["schemas"]["Meta"];
         };
+        ProfileAnalysisRequestRequeueResult: {
+            request_id: string;
+            person_id: string;
+            analysis_type: components["schemas"]["ProfileAnalysisType"];
+            state: "requeued" | "not_terminal" | "already_active" | "nonrecoverable" | "revision_conflict" | "attempt_limited" | "requeue_limited";
+        };
+        ProfileAnalysisRequestRequeueResponseEnvelope: {
+            data: components["schemas"]["ProfileAnalysisRequestRequeueResult"];
+            meta: components["schemas"]["Meta"];
+        };
         ProfileAnalysisHistoryItem: {
             analysis_id: string;
             person_id: string;
@@ -2122,6 +2149,33 @@ export interface operations {
             404: components["responses"]["PersonNotFound"];
             409: { headers: { [name: string]: unknown }; content?: never; };
             429: { headers: { [name: string]: unknown }; content?: never; };
+            503: { headers: { [name: string]: unknown }; content?: never; };
+        };
+    };
+    requeueFailedPersonProfileAnalysis: {
+        parameters: {
+            query?: never;
+            header?: {
+                "X-Request-Id"?: components["parameters"]["RequestId"];
+            };
+            path: {
+                person_id: components["parameters"]["PersonId"];
+                request_id: components["parameters"]["RequestId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            202: {
+                headers: { [name: string]: unknown };
+                content: {
+                    "application/json": components["schemas"]["ProfileAnalysisRequestRequeueResponseEnvelope"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: { headers: { [name: string]: unknown }; content?: never; };
+            409: { headers: { [name: string]: unknown }; content?: never; };
             503: { headers: { [name: string]: unknown }; content?: never; };
         };
     };

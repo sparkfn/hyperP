@@ -15,6 +15,7 @@ from src.graph.queries.profile_analysis import (
     GET_PERSON_PROFILE_ANALYSES,
     GET_PERSON_PROFILE_ANALYSIS_HISTORY,
     MARK_PROFILE_ANALYSIS_REQUEST_DISPATCH_FAILED,
+    REQUEUE_FAILED_PROFILE_ANALYSIS_REQUEST,
 )
 from src.repositories.neo4j.person import Neo4jPersonRepository
 from src.types_profile_analysis import ProfileAnalysisType
@@ -218,6 +219,62 @@ async def test_dispatch_failure_marker_uses_write_session(
             {"request_id": "request-1"},
         )
     ]
+
+
+@pytest.mark.anyio
+async def test_requeue_failed_request_uses_write_session_and_maps_safe_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = _Session(
+        _Record(
+            {
+                "person_id": "canonical-person",
+                "request_id": "request-1",
+                "analysis_type": "sales",
+                "state": "requeued",
+            }
+        )
+    )
+    write_modes = _install_session(monkeypatch, session)
+
+    result = await Neo4jPersonRepository().requeue_failed_profile_analysis_request(
+        "merged-person",
+        "request-1",
+        3,
+    )
+
+    assert result is not None
+    assert result.person_id == "canonical-person"
+    assert result.request_id == "request-1"
+    assert result.analysis_type == "sales"
+    assert result.state == "requeued"
+    assert write_modes == [True]
+    assert session.calls == [
+        (
+            REQUEUE_FAILED_PROFILE_ANALYSIS_REQUEST,
+            {
+                "person_id": "merged-person",
+                "request_id": "request-1",
+                "max_attempts": 3,
+            },
+        )
+    ]
+
+
+@pytest.mark.anyio
+async def test_requeue_failed_request_distinguishes_missing_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = _Session(_Record({"state": "request_not_found"}))
+    _install_session(monkeypatch, session)
+
+    result = await Neo4jPersonRepository().requeue_failed_profile_analysis_request(
+        "person-1",
+        "missing-request",
+        3,
+    )
+
+    assert result is None
 
 
 @pytest.mark.anyio

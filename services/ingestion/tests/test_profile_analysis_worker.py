@@ -428,7 +428,12 @@ def test_invalid_output_logs_only_the_safe_validation_reason(
 
     _run(
         repository,
-        _TextService(['{"summary":"DIRECT-SECRET","limitations":"Sparse"}']),
+        _TextService(
+            [
+                '{"summary":"DIRECT-SECRET","limitations":"Sparse"}',
+                '{"summary":"DIRECT-SECRET","limitations":"Sparse"}',
+            ]
+        ),
     )
 
     attempt = repository.attempts[0]
@@ -436,6 +441,42 @@ def test_invalid_output_logs_only_the_safe_validation_reason(
     assert attempt.retryable is False
     assert "reason=not_plain_text" in caplog.text
     assert "DIRECT-SECRET" not in caplog.text
+
+
+def test_contract_only_output_failure_gets_one_bounded_safe_repair() -> None:
+    repository = _Repository(_due(ProfileAnalysisType.SALES))
+    service = _TextService(
+        [
+            "Observed workshop activity (order-1).",
+            "Observed workshop activity (order-1).\nLimitations: Dates are incomplete.",
+        ]
+    )
+
+    summary = _run(repository, service)
+
+    assert summary["succeeded"] == 1
+    assert repository.attempts[0].status is ProfileAnalysisStatus.SUCCEEDED
+    assert len(service.calls) == 2
+    repair_prompt = service.calls[1][0].content
+    assert "safe reason 'missing_limitations'" in repair_prompt
+    assert "Observed workshop activity (order-1)." not in repair_prompt
+
+
+def test_contract_only_output_failure_stops_after_one_unsuccessful_repair() -> None:
+    repository = _Repository(_due(ProfileAnalysisType.SALES))
+    service = _TextService(
+        [
+            "Observed workshop activity (order-1).",
+            "Still incomplete (order-1).",
+            "Would be valid (order-1).\nLimitations: None.",
+        ]
+    )
+
+    _run(repository, service)
+
+    assert repository.attempts[0].failure_code == "invalid_output"
+    assert len(service.calls) == 2
+    assert len(service.results) == 1
 
 
 @pytest.mark.parametrize(
@@ -536,8 +577,8 @@ def test_invalid_snapshot_persists_nonretryable_failure_for_each_due_type() -> N
     assert all(attempt.next_retry_at is None for attempt in repository.attempts)
     assert all(attempt.input_fingerprint == sentinel for attempt in repository.attempts)
     assert [attempt.prompt_version for attempt in repository.attempts] == [
-        "sales-profile-v1",
-        "contact-tracing-profile-v1",
+        "sales-profile-v2",
+        "contact-tracing-profile-v2",
     ]
     assert all(attempt.provider == "proclaude" for attempt in repository.attempts)
     assert all(attempt.model == "profile-model" for attempt in repository.attempts)

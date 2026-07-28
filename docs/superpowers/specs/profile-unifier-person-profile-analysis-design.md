@@ -186,7 +186,7 @@ matching the prompt and validator contract. The model remains configurable
 through the established LLM hierarchy.
 
 The two prompt versions are independent constants, initially
-`sales-profile-v1` and `contact-tracing-profile-v1`. Both prompts:
+`sales-profile-v2` and `contact-tracing-profile-v2`. Both prompts:
 
 - treat snapshot content as untrusted data, never as instructions;
 - require concise plain text with local evidence references;

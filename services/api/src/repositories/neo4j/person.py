@@ -64,6 +64,7 @@ from src.graph.queries import (
     GET_PERSON_TIMELINE,
     GET_PERSON_TIMELINE_TARGET,
     MARK_PROFILE_ANALYSIS_REQUEST_DISPATCH_FAILED,
+    REQUEUE_FAILED_PROFILE_ANALYSIS_REQUEST,
     SEARCH_PERSONS,
     build_count_persons_query,
     build_list_persons_query,
@@ -92,6 +93,7 @@ from src.types import (
 from src.types_profile_analysis import (
     PersonProfileAnalyses,
     ProfileAnalysisHistoryItem,
+    ProfileAnalysisRequestRequeueResult,
     ProfileAnalysisRequestResult,
     ProfileAnalysisType,
 )
@@ -279,6 +281,55 @@ class Neo4jPersonRepository:
     async def mark_profile_analysis_request_dispatch_failed(self, request_id: str) -> None:
         async with get_session(write=True) as session:
             await session.run(MARK_PROFILE_ANALYSIS_REQUEST_DISPATCH_FAILED, request_id=request_id)
+
+    async def requeue_failed_profile_analysis_request(
+        self,
+        person_id: str,
+        request_id: str,
+        max_attempts: int,
+    ) -> ProfileAnalysisRequestRequeueResult | None:
+        async with get_session(write=True) as session:
+            result = await session.run(
+                REQUEUE_FAILED_PROFILE_ANALYSIS_REQUEST,
+                person_id=person_id,
+                request_id=request_id,
+                max_attempts=max_attempts,
+            )
+            record = await result.single()
+        if record is None:
+            return None
+        mapped = record_to_dict(record.keys(), list(record.values()))
+        state = to_str(mapped.get("state"))
+        if state == "request_not_found":
+            return None
+        valid_states = {
+            "requeued",
+            "not_terminal",
+            "already_active",
+            "nonrecoverable",
+            "revision_conflict",
+            "attempt_limited",
+            "requeue_limited",
+        }
+        if state not in valid_states:
+            raise ValueError("invalid profile analysis requeue state")
+        return ProfileAnalysisRequestRequeueResult(
+            request_id=to_str(mapped.get("request_id")),
+            person_id=to_str(mapped.get("person_id")),
+            analysis_type=cast(ProfileAnalysisType, to_str(mapped.get("analysis_type"))),
+            state=cast(
+                Literal[
+                    "requeued",
+                    "not_terminal",
+                    "already_active",
+                    "nonrecoverable",
+                    "revision_conflict",
+                    "attempt_limited",
+                    "requeue_limited",
+                ],
+                state,
+            ),
+        )
 
     async def get_profile_analysis_history(
         self,

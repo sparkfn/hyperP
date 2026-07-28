@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Query, Request
 
-from src.auth.deps import require_human_user, require_scope
+from src.auth.deps import require_human_admin, require_human_user, require_scope
 from src.celery_client import enqueue_profile_analysis_request
 from src.config import AppConfig, get_config
 from src.http_utils import envelope, http_error, next_cursor, page_window
@@ -15,6 +15,7 @@ from src.types_profile_analysis import (
     PersonProfileAnalyses,
     ProfileAnalysisHistoryItem,
     ProfileAnalysisRequestBody,
+    ProfileAnalysisRequestRequeueResult,
     ProfileAnalysisRequestResult,
     ProfileAnalysisType,
 )
@@ -111,6 +112,49 @@ async def request_person_profile_analysis(
                 "Profile analysis could not be queued. Try again later.",
                 request,
             ) from None
+    return envelope(result, request)
+
+
+@router.post(
+    "/{person_id}/profile-analyses/requests/{request_id}/requeue",
+    response_model=ApiResponse[ProfileAnalysisRequestRequeueResult],
+    status_code=202,
+)
+async def requeue_failed_person_profile_analysis(
+    person_id: str,
+    request_id: str,
+    request: Request,
+    repo: PersonRepository = Depends(get_person_repo),
+    app_config: AppConfig = Depends(get_config),
+    _admin: object = Depends(require_human_admin),
+) -> ApiResponse[ProfileAnalysisRequestRequeueResult]:
+    """Allow a human administrator to requeue one safe terminal analysis failure."""
+    if not app_config.profile_analysis_enabled:
+        raise http_error(409, "profile_analysis_disabled", "Profile analysis is disabled.", request)
+    result = await repo.requeue_failed_profile_analysis_request(
+        person_id,
+        request_id,
+        app_config.profile_analysis_retry_limit,
+    )
+    if result is None:
+        raise http_error(404, "profile_analysis_request_not_found", "Request not found.", request)
+    if result.state != "requeued":
+        raise http_error(
+            409,
+            f"profile_analysis_requeue_{result.state}",
+            "Profile analysis request cannot be requeued.",
+            request,
+        )
+    try:
+        enqueue_profile_analysis_request(result.request_id)
+    except Exception:
+        await repo.mark_profile_analysis_request_dispatch_failed(result.request_id)
+        raise http_error(
+            503,
+            "profile_analysis_dispatch_failed",
+            "Profile analysis could not be queued. Try again later.",
+            request,
+        ) from None
     return envelope(result, request)
 
 

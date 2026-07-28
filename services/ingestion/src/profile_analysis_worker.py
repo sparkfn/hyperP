@@ -19,6 +19,7 @@ from src.profile_analysis_models import (
 )
 from src.profile_analysis_output import (
     ProfileAnalysisOutputError,
+    ProfileAnalysisOutputReason,
     ProfileAnalysisPrivacyOutputError,
     snapshot_evidence_references,
     validate_profile_analysis_output,
@@ -37,6 +38,7 @@ from src.profile_analysis_repository import (
     ProfileAnalysisSnapshotBundle,
 )
 from src.profile_analysis_snapshot import (
+    KnownSensitiveValue,
     ProfileAnalysisPrivacyError,
     snapshot_fingerprint,
 )
@@ -54,6 +56,16 @@ _INVALID_SNAPSHOT_FINGERPRINT = (
     "sha256:" + hashlib.sha256(b"profile-analysis-invalid-snapshot-v1").hexdigest()
 )
 logger = logging.getLogger(__name__)
+
+_REPAIRABLE_OUTPUT_REASONS: frozenset[ProfileAnalysisOutputReason] = frozenset(
+    {
+        ProfileAnalysisOutputReason.NOT_TRIMMED,
+        ProfileAnalysisOutputReason.TOO_LARGE,
+        ProfileAnalysisOutputReason.NOT_PLAIN_TEXT,
+        ProfileAnalysisOutputReason.MISSING_LIMITATIONS,
+        ProfileAnalysisOutputReason.UNKNOWN_EVIDENCE,
+    }
+)
 
 
 def run_profile_analysis_sweep(
@@ -276,13 +288,67 @@ def _generate_attempt(
         return _failed_attempt(context, "privacy_output", False)
     except ProfileAnalysisOutputError as error:
         _log_output_validation_failure(person, due, error)
-        return _failed_attempt(context, "invalid_output", False)
+        return _repair_or_fail_output(
+            context=context,
+            text_service=text_service,
+            person=person,
+            due=due,
+            messages=messages,
+            evidence=evidence,
+            known_sensitive_values=bundle.known_sensitive_values,
+            error=error,
+        )
     except httpx.HTTPStatusError as error:
         code, retryable = _http_failure(error)
         return _failed_attempt(context, code, retryable)
     except (httpx.TimeoutException, httpx.TransportError):
         return _failed_attempt(context, "provider_unavailable", True)
     return _succeeded_attempt(context, content)
+
+
+def _repair_or_fail_output(
+    *,
+    context: ProfileAnalysisAttemptContext,
+    text_service: ProfileAnalysisTextService,
+    person: ClaimedProfileAnalysisPerson,
+    due: DueProfileAnalysis,
+    messages: list[ChatMessage],
+    evidence: frozenset[str],
+    known_sensitive_values: tuple[KnownSensitiveValue, ...],
+    error: ProfileAnalysisOutputError,
+) -> ProfileAnalysisAttempt:
+    if error.reason not in _REPAIRABLE_OUTPUT_REASONS:
+        return _failed_attempt(context, "invalid_output", False)
+    try:
+        output = _call_provider(text_service, _repair_messages(messages, error.reason))
+        content = validate_profile_analysis_output(output, evidence, known_sensitive_values)
+    except ProfileAnalysisPrivacyOutputError as repair_error:
+        _log_output_validation_failure(person, due, repair_error)
+        return _failed_attempt(context, "privacy_output", False)
+    except ProfileAnalysisOutputError as repair_error:
+        _log_output_validation_failure(person, due, repair_error)
+        return _failed_attempt(context, "invalid_output", False)
+    except httpx.HTTPStatusError as repair_error:
+        code, retryable = _http_failure(repair_error)
+        return _failed_attempt(context, code, retryable)
+    except (httpx.TimeoutException, httpx.TransportError):
+        return _failed_attempt(context, "provider_unavailable", True)
+    return _succeeded_attempt(context, content)
+
+
+def _repair_messages(
+    messages: list[ChatMessage],
+    reason: ProfileAnalysisOutputReason,
+) -> list[ChatMessage]:
+    """Add a safe corrective instruction without returning unsafe model output."""
+    if not messages or messages[0].role != "system":
+        raise ValueError("profile analysis messages must start with a system prompt")
+    correction = (
+        "\n\nThe previous response failed the output contract for safe reason "
+        f"'{reason.value}'. Regenerate the complete response. Do not mention this correction. "
+        "Follow every formatting, evidence, privacy, and Limitations requirement exactly."
+    )
+    return [ChatMessage(role="system", content=messages[0].content + correction), *messages[1:]]
 
 
 def _log_output_validation_failure(

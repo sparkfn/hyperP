@@ -21,6 +21,12 @@ class AppConfig(BaseSettings):
     celery_broker_url: str = Field(default="redis://localhost:6379/0", alias="CELERY_BROKER_URL")
     forwarded_allow_ips: str = Field(default="*", alias="FORWARDED_ALLOW_IPS")
     profile_analysis_enabled: bool = Field(default=False, alias="PROFILE_ANALYSIS_ENABLED")
+    profile_analysis_retry_limit: int = Field(
+        default=3,
+        ge=1,
+        le=20,
+        alias="PROFILE_ANALYSIS_RETRY_LIMIT",
+    )
 
     auth_enabled: bool = Field(default=True, alias="AUTH_ENABLED")
     # Same OAuth client the frontend uses via Auth.js (AUTH_GOOGLE_ID).
