@@ -11,6 +11,7 @@ from uuid import UUID
 import httpx
 import pytest
 from src.llm import ChatMessage, get_profile_analysis_service
+from src.profile_analysis_mapping import ProfileAnalysisTemporalMappingError
 from src.profile_analysis_models import (
     ProfileAnalysisAttempt,
     ProfileAnalysisStatus,
@@ -463,6 +464,24 @@ def test_invalid_snapshot_persists_nonretryable_failure_for_each_due_type() -> N
     assert summary["failed"] == 2
     assert summary["unexpected_failures"] == 0
     assert repository.releases == [("person-1", "claim-token")]
+
+
+def test_invalid_snapshot_temporal_data_has_a_distinct_safe_failure_code() -> None:
+    repository = _Repository(
+        _due(ProfileAnalysisType.SALES, ProfileAnalysisType.CONTACT_TRACING),
+        fetch_error=ProfileAnalysisTemporalMappingError("private malformed timestamp"),
+    )
+
+    summary = _run(repository, _TextService([]))
+
+    assert [attempt.failure_code for attempt in repository.attempts] == [
+        "invalid_snapshot_temporal",
+        "invalid_snapshot_temporal",
+    ]
+    assert all(attempt.retryable is False for attempt in repository.attempts)
+    assert "private malformed timestamp" not in repr(repository.attempts)
+    assert summary["failed"] == 2
+    assert summary["unexpected_failures"] == 0
 
 
 class _PartialInvalidSnapshotRepository(_Repository):

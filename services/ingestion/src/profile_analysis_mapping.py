@@ -37,6 +37,10 @@ class ProfileAnalysisMappingError(ValueError):
     """A graph value could not enter the reviewed snapshot boundary safely."""
 
 
+class ProfileAnalysisTemporalMappingError(ProfileAnalysisMappingError):
+    """A snapshot temporal value could not be normalized safely."""
+
+
 @dataclass(slots=True)
 class _OrderAccumulator:
     order_id: str
@@ -101,6 +105,8 @@ def build_profile_analysis_snapshot(
             ),
         )
         return build_redacted_profile_snapshot(source)
+    except ProfileAnalysisTemporalMappingError:
+        raise
     except (TypeError, ValueError):
         raise ProfileAnalysisMappingError("invalid safe profile analysis snapshot data") from None
 
@@ -294,4 +300,23 @@ def _optional_trust_tier(row: GraphRow, key: str) -> SourceTrustTier | None:
 
 def _optional_date(row: GraphRow, key: str) -> SnapshotDate | None:
     value = _optional_str(row, key)
-    return SnapshotDate(value) if value is not None else None
+    if value is None:
+        return None
+    try:
+        return SnapshotDate(value)
+    except ValueError:
+        pass
+    datetime_value = value
+    if value.endswith("]"):
+        datetime_value, separator, timezone_name = value[:-1].rpartition("[")
+        if not separator or not datetime_value or not timezone_name:
+            raise ProfileAnalysisTemporalMappingError(
+                "invalid safe profile analysis snapshot data"
+            )
+    try:
+        parsed = datetime.fromisoformat(datetime_value)
+    except ValueError:
+        raise ProfileAnalysisTemporalMappingError(
+            "invalid safe profile analysis snapshot data"
+        ) from None
+    return SnapshotDate(parsed.date().isoformat())

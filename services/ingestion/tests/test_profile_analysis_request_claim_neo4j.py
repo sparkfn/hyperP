@@ -1,4 +1,4 @@
-"""Neo4j 5.26 coverage for on-demand profile-analysis request claiming.
+"""Neo4j 5.26 coverage for profile-analysis queries and repository mapping.
 
 Set ``HYPERP_NEO4J_PROFILE_ANALYSIS_TEST_URI`` to a disposable localhost
 Neo4j database to enable these tests. The fixture intentionally refuses remote
@@ -15,6 +15,7 @@ from urllib.parse import urlparse
 import pytest
 from src.config import Settings
 from src.graph.client import Neo4jClient
+from src.profile_analysis_mapping import ProfileAnalysisTemporalMappingError
 from src.profile_analysis_repository import Neo4jProfileAnalysisRepository
 
 
@@ -119,3 +120,65 @@ def test_request_claim_query_compiles_and_claims_each_analysis_type(
     assert state["input_revision"] == 7
     assert state["claim_token"] == "claim-token"
     assert terminal_state["request_status"] == "succeeded"
+
+
+@pytest.mark.parametrize("storage_type", ("string", "native_utc", "native_named_zone"))
+def test_snapshot_fetch_normalizes_string_and_native_order_timestamps(
+    neo4j_client: Neo4jClient,
+    storage_type: str,
+) -> None:
+    ordered_at = "2022-10-02T18:00:07Z"
+    with neo4j_client.session() as session:
+        session.run(
+            """
+            CREATE (person:Person {person_id: 'person-1', status: 'active'})
+            CREATE (order:Order {
+              order_id: 'order-1', ordered_at: $ordered_at, total_amount: 12.5, currency: 'SGD'
+            })
+            CREATE (person)-[:PURCHASED]->(order)
+            """,
+            ordered_at=ordered_at,
+        ).consume()
+        if storage_type == "native_utc":
+            session.run(
+                """
+                MATCH (order:Order {order_id: 'order-1'})
+                SET order.ordered_at = datetime($ordered_at)
+                """,
+                ordered_at=ordered_at,
+            ).consume()
+        elif storage_type == "native_named_zone":
+            session.run(
+                """
+                MATCH (order:Order {order_id: 'order-1'})
+                SET order.ordered_at = datetime({
+                  year: 2022, month: 10, day: 2, hour: 18, timezone: 'Asia/Manila'
+                })
+                """
+            ).consume()
+
+    snapshot = Neo4jProfileAnalysisRepository(neo4j_client).fetch_snapshot("person-1").snapshot
+
+    assert len(snapshot.orders) == 1
+    assert snapshot.orders[0].order_date is not None
+    assert snapshot.orders[0].order_date.value == "2022-10-02"
+
+
+def test_snapshot_fetch_maps_unsupported_order_timestamp_type_to_a_safe_error(
+    neo4j_client: Neo4jClient,
+) -> None:
+    with neo4j_client.session() as session:
+        session.run(
+            """
+            CREATE (person:Person {person_id: 'person-1', status: 'active'})
+            CREATE (order:Order {order_id: 'order-1', ordered_at: 42})
+            CREATE (person)-[:PURCHASED]->(order)
+            """
+        ).consume()
+
+    repository = Neo4jProfileAnalysisRepository(neo4j_client)
+
+    with pytest.raises(ProfileAnalysisTemporalMappingError) as raised:
+        repository.fetch_snapshot("person-1")
+
+    assert str(raised.value) == "invalid safe profile analysis snapshot data"

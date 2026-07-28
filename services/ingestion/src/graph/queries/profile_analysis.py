@@ -238,7 +238,16 @@ CALL (person) {
          null AS age_band, null AS completeness_band, null AS completeness_score,
          source.record_type AS record_type,
          source.record_type AS source_category,
-         toString(date(source.observed_at)) AS observed_date,
+         CASE
+           WHEN source.observed_at IS NULL THEN null
+           WHEN valueType(source.observed_at) STARTS WITH 'STRING'
+             THEN toString(source.observed_at)
+           WHEN valueType(source.observed_at) STARTS WITH 'DATE'
+             OR valueType(source.observed_at) STARTS WITH 'LOCAL DATETIME'
+             OR valueType(source.observed_at) STARTS WITH 'ZONED DATETIME'
+             THEN toString(date(source.observed_at))
+           ELSE 'invalid'
+         END AS observed_date,
          CASE
            WHEN any(value IN quality_flags WHERE value = 'source_untrusted')
              THEN 'source_untrusted'
@@ -292,7 +301,16 @@ CALL (person) {
          null AS age_band, null AS completeness_band, null AS completeness_score,
          null AS record_type, null AS source_category, null AS observed_date,
          null AS quality_flag, null AS trust_tier, null AS confidence,
-         toString(date(order.ordered_at)) AS order_date,
+         CASE
+           WHEN order.ordered_at IS NULL THEN null
+           WHEN valueType(order.ordered_at) STARTS WITH 'STRING'
+             THEN toString(order.ordered_at)
+           WHEN valueType(order.ordered_at) STARTS WITH 'DATE'
+             OR valueType(order.ordered_at) STARTS WITH 'LOCAL DATETIME'
+             OR valueType(order.ordered_at) STARTS WITH 'ZONED DATETIME'
+             THEN toString(date(order.ordered_at))
+           ELSE 'invalid'
+         END AS order_date,
          order.total_amount AS total,
          order.currency AS currency,
          null AS merchant,
@@ -358,7 +376,16 @@ CALL (person) {
            AS relationship_category,
          CASE WHEN startNode(relationship) = person THEN 'outgoing' ELSE 'incoming' END
            AS direction,
-         toString(date(relationship.last_confirmed_at)) AS event_date,
+         CASE
+           WHEN relationship.last_confirmed_at IS NULL THEN null
+           WHEN valueType(relationship.last_confirmed_at) STARTS WITH 'STRING'
+             THEN toString(relationship.last_confirmed_at)
+           WHEN valueType(relationship.last_confirmed_at) STARTS WITH 'DATE'
+             OR valueType(relationship.last_confirmed_at) STARTS WITH 'LOCAL DATETIME'
+             OR valueType(relationship.last_confirmed_at) STARTS WITH 'ZONED DATETIME'
+             THEN toString(date(relationship.last_confirmed_at))
+           ELSE 'invalid'
+         END AS event_date,
          null AS omitted_sources, null AS omitted_orders,
          null AS omitted_order_items, null AS omitted_vehicles,
          null AS omitted_relationships
