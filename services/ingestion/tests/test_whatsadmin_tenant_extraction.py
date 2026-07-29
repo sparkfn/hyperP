@@ -89,7 +89,7 @@ def test_multiple_sessions_reuse_entity_key_with_isolated_pagination(
 
     monkeypatch.setattr(
         "src.connectors.whatsadmin_api.connector.process_whatsapp_bundles",
-        lambda _bundles, *, fail_on_extraction_error: iter(()),
+        lambda _bundles, **_kwargs: iter(()),
     )
     client = WhatsAdminApiClient(
         credential=WhatsAdminCredential(

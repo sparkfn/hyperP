@@ -87,3 +87,20 @@ def test_safe_resume_checkpoint_is_preserved_when_records_are_rejected() -> None
 
 def test_worker_created_ingest_run_retains_mode() -> None:
     assert "mode: $mode" in queries.CREATE_INGEST_RUN
+
+
+def test_isolated_durable_failures_can_commit_connector_progress() -> None:
+    class Connector:
+        committed = False
+
+        def commit_watermark(self) -> None:
+            self.committed = True
+
+        def commit_progress_with_errors(self) -> bool:
+            return True
+
+    connector = Connector()
+
+    main._finalize_connector_progress(connector, error_count=1)
+
+    assert connector.committed is True

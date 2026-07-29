@@ -127,6 +127,16 @@ class _RecordOutcomeReporter(Protocol):
     def record_processed(self, *, succeeded: bool) -> None: ...
 
 
+@runtime_checkable
+class _ConnectorErrorReporter(Protocol):
+    def connector_error_count(self) -> int: ...
+
+
+@runtime_checkable
+class _PartialFailureProgressCommitter(Protocol):
+    def commit_progress_with_errors(self) -> bool: ...
+
+
 class FailureSummary(TypedDict):
     category: str
     exception_class: str
@@ -282,6 +292,9 @@ def _materialize_optional_knows(client: Neo4jClient) -> list[str]:
 def _finalize_connector_progress(connector: object, *, error_count: int) -> None:
     if error_count == 0 and isinstance(connector, _WatermarkCommitter):
         connector.commit_watermark()
+    elif isinstance(connector, _PartialFailureProgressCommitter):
+        if connector.commit_progress_with_errors() and isinstance(connector, _WatermarkCommitter):
+            connector.commit_watermark()
 
 
 def _report_record_outcome(connector: object, *, succeeded: bool) -> None:
@@ -742,6 +755,8 @@ def run_ingestion(
                 ingest_run_id,
                 exclusion_context,
             )
+            if isinstance(connector, _ConnectorErrorReporter):
+                errors += connector.connector_error_count()
             drained = drain_pending_customer_sales(
                 client,
                 exclusion_context=exclusion_context,

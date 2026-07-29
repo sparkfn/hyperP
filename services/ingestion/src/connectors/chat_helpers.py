@@ -7,8 +7,9 @@ import json
 import logging
 import re
 from collections.abc import Iterator, Sequence
+from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import TypedDict
+from typing import Literal, TypedDict
 
 from src.connectors.fundbox.builders import IdentifierBag, to_iso
 from src.ingestion_config import get_ingestion_config
@@ -120,6 +121,29 @@ class ExtractionResult(TypedDict):
     confidence: float
 
 
+@dataclass(frozen=True)
+class ExtractionFailure:
+    """Bounded, safe diagnostic for one conversation extraction failure."""
+
+    code: ExtractionFailureCode
+    attempts: int
+
+
+ExtractionFailureCode = Literal[
+    "malformed_response",
+    "missing_conversation",
+    "provider_error",
+]
+
+
+@dataclass(frozen=True)
+class ExtractionBatchOutcome:
+    """Aligned structured-extraction results and failures for a batch."""
+
+    results: list[ExtractionResult | None]
+    failures: list[ExtractionFailure | None]
+
+
 async def _extract_structured(texts: list[str], max_tokens: int) -> str:
     """ProClaude JSON-mode call for structured identity/transaction extraction."""
     svc = get_chat_extraction_service()
@@ -186,23 +210,77 @@ def run_extraction_batch(texts: list[str]) -> list[ExtractionResult | None]:
     """Extract every conversation through ProClaude.
 
     Returns one ``ExtractionResult | None`` per input, aligned to input order.
-    Structured extraction uses ProClaude's JSON mode; a raised exception or
-    unusable response drops the whole batch
-    (all ``None``), and an omitted conversation yields ``None`` at that index.
+    Structured extraction uses ProClaude's JSON mode. Invalid or omitted
+    responses receive bounded single-conversation retries before a ``None`` is
+    returned at that index.
     Summaries are a best-effort second pass — a failed summary call leaves
     ``summary`` ``None`` but keeps the structured data.
     """
+    return run_extraction_batch_detailed(texts).results
+
+
+def run_extraction_batch_detailed(texts: list[str]) -> ExtractionBatchOutcome:
+    """Extract chats while isolating malformed responses to individual chats.
+
+    Transport and retryable HTTP failures are retried by ``LLMService``. This
+    layer additionally retries a syntactically invalid or incomplete successful
+    response, once per unresolved conversation, so a bad multi-chat response
+    cannot discard otherwise processable chats or abort the caller's run.
+    """
     if not texts:
-        return []
+        return ExtractionBatchOutcome([], [])
     max_tokens = get_ingestion_config().llm.chat_max_tokens
+    retry_attempts = max(get_ingestion_config().llm.chat_extraction_retry_attempts, 0)
+    results: list[ExtractionResult | None] = [None] * len(texts)
+    failures: list[ExtractionFailure | None] = [None] * len(texts)
+    initial_failure_code: ExtractionFailureCode = "missing_conversation"
     try:
         raw = asyncio.run(_extract_structured(texts, max_tokens))
     except Exception as exc:  # noqa: BLE001 - one bad batch must not abort the run
         logger.warning("LLM extraction call failed (%d conversations): %r", len(texts), exc)
-        return [None] * len(texts)
-    results = _split_batch_extraction(raw, len(texts))
+        raw = ""
+        initial_failure_code = "provider_error"
+    else:
+        if _indexed_conversations(raw, len(texts)) is None:
+            initial_failure_code = "malformed_response"
+    initial = _split_batch_extraction(raw, len(texts))
+    for index, result in enumerate(initial):
+        results[index] = result
+
+    for index, result in enumerate(results):
+        if result is not None:
+            continue
+        retry_result, failure = _retry_single_extraction(
+            texts[index], max_tokens, retry_attempts, initial_failure_code
+        )
+        results[index] = retry_result
+        failures[index] = failure
     _attach_summaries(texts, results, max_tokens)
-    return results
+    return ExtractionBatchOutcome(results, failures)
+
+
+def _retry_single_extraction(
+    text: str,
+    max_tokens: int,
+    retry_attempts: int,
+    initial_failure_code: ExtractionFailureCode,
+) -> tuple[ExtractionResult | None, ExtractionFailure | None]:
+    """Retry a previously unresolved chat as a one-conversation request."""
+    last_code: ExtractionFailureCode = initial_failure_code
+    for attempt in range(1, retry_attempts + 1):
+        try:
+            raw = asyncio.run(_extract_structured([text], max_tokens))
+        except Exception as exc:  # noqa: BLE001 - keep one failed chat isolated
+            logger.warning("LLM extraction retry %d/%d failed: %r", attempt, retry_attempts, exc)
+            last_code = "provider_error"
+            continue
+        parsed = _split_batch_extraction(raw, 1)[0]
+        if parsed is not None:
+            return parsed, None
+        last_code = "malformed_response"
+    total_attempts = retry_attempts + 1
+    logger.warning("LLM extraction exhausted %d attempts; code=%s", total_attempts, last_code)
+    return None, ExtractionFailure(last_code, total_attempts)
 
 
 def _attach_summaries(

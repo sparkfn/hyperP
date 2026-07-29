@@ -6,10 +6,11 @@ from datetime import UTC, datetime
 import httpx
 import pytest
 from pytest import MonkeyPatch
-from src.connectors.chat_helpers import ExtractionResult
+from src.connectors.chat_helpers import ExtractionFailure, ExtractionResult
 from src.connectors.whatsadmin_api.connector import WhatsAdminChatApiConnector
 from src.connectors.whatsadmin_api.credentials import WhatsAdminEntity
 from src.connectors.whatsadmin_api.models import ChatPage, SessionRow
+from src.connectors.whatsadmin_api.retry_queue import serialize_retry_bundle
 from src.connectors.whatsadmin_api.watermark import PageCheckpoint
 from src.connectors.whatsapp import connector as whatsapp_connector
 from src.connectors.whatsapp.connector import _ChatBundle
@@ -191,7 +192,7 @@ def test_connector_resumes_from_persisted_page_cursor(
 
     monkeypatch.setattr(
         "src.connectors.whatsadmin_api.connector.process_whatsapp_bundles",
-        lambda _bundles, *, fail_on_extraction_error: iter(()),
+        lambda _bundles, **_kwargs: iter(()),
     )
     client = ResumeClient()
     watermark = CheckpointWatermark()
@@ -236,7 +237,7 @@ def test_rejected_record_does_not_advance_page_checkpoint(
 
     monkeypatch.setattr(
         "src.connectors.whatsadmin_api.connector.process_whatsapp_bundles",
-        lambda _bundles, *, fail_on_extraction_error: iter(
+        lambda _bundles, **_kwargs: iter(
             ({"source_record_id": "record-1"},)
         ),
     )
@@ -258,9 +259,9 @@ def test_api_connector_converts_bundles_for_existing_extraction_pipeline(
     def fake_process(
         bundles: list[_ChatBundle],
         *,
-        fail_on_extraction_error: bool = False,
+        on_extraction_failure: object | None = None,
     ) -> Iterator[dict[str, JsonValue]]:
-        assert fail_on_extraction_error is True
+        assert on_extraction_failure is not None
         captured.extend(bundles)
         yield {"source_record_id": "record-1"}
 
@@ -283,6 +284,38 @@ def test_api_connector_converts_bundles_for_existing_extraction_pipeline(
     assert watermark.committed[("eko", "ses_1")] == datetime(2026, 7, 17, 5, 31, tzinfo=UTC)
 
 
+def test_api_connector_records_bad_extraction_and_continues(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    def fake_process(
+        bundles: list[_ChatBundle],
+        *,
+        on_extraction_failure: object | None = None,
+    ) -> Iterator[dict[str, JsonValue]]:
+        assert callable(on_extraction_failure)
+        on_extraction_failure(bundles[0], ExtractionFailure("malformed_response", 3))
+        yield {"source_record_id": "record-after-failure"}
+
+    monkeypatch.setattr(
+        "src.connectors.whatsadmin_api.connector.process_whatsapp_bundles",
+        fake_process,
+    )
+    connector = WhatsAdminChatApiConnector((StubClient(),), StubWatermark())
+
+    assert list(connector.fetch_records()) == [{"source_record_id": "record-after-failure"}]
+    assert connector.connector_error_count() == 1
+    assert connector.failure_checkpoint()["extraction_failures"] == [
+        {
+            "entity_key": "eko",
+            "session_id": "ses_1",
+            "chat_id": "6581111111@c.us",
+            "observed_at": "2026-07-17T05:20:00+00:00",
+            "failure_code": "malformed_response",
+            "attempts": 3,
+        }
+    ]
+
+
 def test_api_connector_processes_each_page_without_buffering_all_pages(
     monkeypatch: MonkeyPatch,
 ) -> None:
@@ -301,9 +334,9 @@ def test_api_connector_processes_each_page_without_buffering_all_pages(
     def fake_process(
         bundles: list[_ChatBundle],
         *,
-        fail_on_extraction_error: bool = False,
+        on_extraction_failure: object | None = None,
     ) -> Iterator[dict[str, JsonValue]]:
-        assert fail_on_extraction_error is True
+        assert on_extraction_failure is not None
         calls.append(len(bundles))
         yield {"source_record_id": f"record-{len(calls)}"}
 
@@ -344,7 +377,7 @@ def test_connector_rejects_chat_identity_mismatch_without_advancing_watermark(
 
     monkeypatch.setattr(
         "src.connectors.whatsadmin_api.connector.process_whatsapp_bundles",
-        lambda _bundles, *, fail_on_extraction_error: iter(()),
+        lambda _bundles, **_kwargs: iter(()),
     )
     watermark = StubWatermark()
     connector = WhatsAdminChatApiConnector((MismatchedChatClient(),), watermark)
@@ -499,7 +532,7 @@ def test_default_connector_keeps_same_session_id_isolated_by_entity(
 
     monkeypatch.setattr(
         "src.connectors.whatsadmin_api.connector.process_whatsapp_bundles",
-        lambda _bundles, *, fail_on_extraction_error: iter(()),
+        lambda _bundles, **_kwargs: iter(()),
     )
     watermark = TenantWatermark()
     connector = WhatsAdminChatApiConnector(
@@ -533,3 +566,77 @@ def test_connector_rejects_session_from_another_entity() -> None:
 
     with pytest.raises(RuntimeError, match="organization.*entity"):
         list(connector.fetch_records())
+
+
+def test_queued_extraction_clears_only_after_downstream_success(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    class RetryWatermark(StubWatermark):
+        def __init__(self) -> None:
+            super().__init__()
+            self.retries: list[dict[str, JsonValue]] = []
+
+        def get_extraction_retries(
+            self, entity_key: WhatsAdminEntity, session_id: str
+        ) -> list[dict[str, JsonValue]]:
+            _ = (entity_key, session_id)
+            return list(self.retries)
+
+        def set_extraction_retries(
+            self,
+            entity_key: WhatsAdminEntity,
+            session_id: str,
+            retries: list[dict[str, JsonValue]],
+        ) -> None:
+            _ = (entity_key, session_id)
+            self.retries = list(retries)
+
+    bundle = _ChatBundle(
+        chat_id="chat-1",
+        chat_name="Customer",
+        session_id="ses_1",
+        whatsapp_user_id="6590000000@c.us",
+        tenant="eko",
+        msg_text="Customer: hello",
+        observed_at="2026-07-17T05:20:00+00:00",
+        participants=[],
+        message_endpoints=[],
+        session_phone=None,
+        source_id_scope="eko-ses_1",
+    )
+    details: dict[str, JsonValue] = {
+        "entity_key": "eko",
+        "session_id": "ses_1",
+        "chat_id": "chat-1",
+        "observed_at": bundle.observed_at,
+        "failure_code": "malformed_response",
+        "attempts": 3,
+    }
+
+    def fake_process(
+        bundles: list[_ChatBundle],
+        **_kwargs: object,
+    ) -> Iterator[dict[str, JsonValue]]:
+        assert [item.chat_id for item in bundles] == ["chat-1"]
+        yield {"source_record_id": "record-1"}
+
+    monkeypatch.setattr(
+        "src.connectors.whatsadmin_api.connector.process_whatsapp_bundles",
+        fake_process,
+    )
+    watermark = RetryWatermark()
+    connector = WhatsAdminChatApiConnector((StubClient(),), watermark)
+    watermark.retries = [serialize_retry_bundle(bundle, details)]
+
+    records = connector._retry_pending_extractions("eko", "ses_1")
+    assert next(records) == {"source_record_id": "record-1"}
+    connector.record_processed(succeeded=True)
+    assert list(records) == []
+    assert watermark.retries == []
+
+    watermark.retries = [serialize_retry_bundle(bundle, details)]
+    records = connector._retry_pending_extractions("eko", "ses_1")
+    assert next(records) == {"source_record_id": "record-1"}
+    connector.record_processed(succeeded=False)
+    assert list(records) == []
+    assert [item["chat_id"] for item in watermark.retries] == ["chat-1"]

@@ -8,6 +8,7 @@ from datetime import datetime
 from typing import Protocol, runtime_checkable
 
 from src.connectors.whatsadmin_api.credentials import WhatsAdminEntity
+from src.models import JsonValue
 
 
 class WatermarkStore(Protocol):
@@ -35,6 +36,16 @@ class PageCheckpointStore(Protocol):
         checkpoint: PageCheckpoint,
     ) -> None: ...
     def delete_checkpoint(self, entity_key: WhatsAdminEntity, session_id: str) -> None: ...
+
+
+@runtime_checkable
+class ExtractionRetryStore(Protocol):
+    def get_extraction_retries(
+        self, entity_key: WhatsAdminEntity, session_id: str
+    ) -> list[dict[str, JsonValue]]: ...
+    def set_extraction_retries(
+        self, entity_key: WhatsAdminEntity, session_id: str, retries: list[dict[str, JsonValue]]
+    ) -> None: ...
 
 
 class RedisClient(Protocol):
@@ -107,7 +118,10 @@ class RedisWatermarkStore:
             value = value.decode()
         if not isinstance(value, str):
             raise RuntimeError("Redis returned an invalid WhatsAdmin page checkpoint")
-        parsed: object = json.loads(value)
+        try:
+            parsed: object = json.loads(value)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError("Redis returned an invalid WhatsAdmin page checkpoint") from exc
         if not isinstance(parsed, dict):
             raise RuntimeError("Redis returned an invalid WhatsAdmin page checkpoint")
         changed_since = parsed.get("changed_since")
@@ -147,6 +161,36 @@ class RedisWatermarkStore:
     def delete_checkpoint(self, entity_key: WhatsAdminEntity, session_id: str) -> None:
         self._redis.delete(self._checkpoint_key(entity_key, session_id))
 
+    def get_extraction_retries(
+        self, entity_key: WhatsAdminEntity, session_id: str
+    ) -> list[dict[str, JsonValue]]:
+        value = self._redis.get(self._retry_key(entity_key, session_id))
+        if value is None:
+            return []
+        if isinstance(value, bytes):
+            value = value.decode()
+        if not isinstance(value, str):
+            raise RuntimeError("Redis returned invalid WhatsAdmin extraction retries")
+        try:
+            parsed: object = json.loads(value)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError("Redis returned invalid WhatsAdmin extraction retries") from exc
+        if not isinstance(parsed, list) or not all(isinstance(item, dict) for item in parsed):
+            raise RuntimeError("Redis returned invalid WhatsAdmin extraction retries")
+        return parsed
+
+    def set_extraction_retries(
+        self,
+        entity_key: WhatsAdminEntity,
+        session_id: str,
+        retries: list[dict[str, JsonValue]],
+    ) -> None:
+        key = self._retry_key(entity_key, session_id)
+        if not retries:
+            self._redis.delete(key)
+            return
+        self._redis.set(key, json.dumps(retries, separators=(",", ":")))
+
     def close(self) -> None:
         self._redis.close()
 
@@ -161,3 +205,7 @@ class RedisWatermarkStore:
     @staticmethod
     def _checkpoint_key(entity_key: WhatsAdminEntity, session_id: str) -> str:
         return f"profile_unifier:whatsadmin-api:whatsapp_chat:{entity_key}:{session_id}:page"
+
+    @staticmethod
+    def _retry_key(entity_key: WhatsAdminEntity, session_id: str) -> str:
+        return f"profile_unifier:whatsadmin-api:whatsapp_chat:{entity_key}:{session_id}:retries"
