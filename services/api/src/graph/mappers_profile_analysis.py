@@ -262,10 +262,7 @@ def _map_slot(
             _safe_failure_code(failure.get("failure_code")) if state == "failed" else None
         ),
         auto_request_allowed=(
-            not valid
-            and not claim_active
-            and not request_queued
-            and not failure
+            not valid and not claim_active and not request_queued and not failure
         ),
         next_retry_at=next_retry_at,
         next_retry_at_display=(
