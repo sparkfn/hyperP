@@ -28,7 +28,7 @@ def test_connector_selection_forwards_optional_entity_key(monkeypatch: MonkeyPat
     monkeypatch.setattr(
         main,
         "create_whatsadmin_api_connector",
-        lambda entity_key=None: calls.append(entity_key) or connector,
+        lambda entity_key=None, *, incremental=True: calls.append(entity_key) or connector,
     )
 
     assert main.get_connector("whatsapp_chat", mode="api", entity_key="eko") is connector

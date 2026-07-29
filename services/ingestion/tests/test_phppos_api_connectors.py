@@ -147,7 +147,7 @@ def test_api_mode_supports_pos_and_whatsapp_sources(monkeypatch: pytest.MonkeyPa
     monkeypatch.setattr("src.main.create_phppos_api_client", lambda _source: sentinel)
     monkeypatch.setattr(
         "src.main.create_whatsadmin_api_connector",
-        lambda: whatsapp_connector,
+        lambda *, incremental=True: whatsapp_connector,
         raising=False,
     )
     assert isinstance(get_connector("eko_phppos", mode="api"), EkoApiConnector)
