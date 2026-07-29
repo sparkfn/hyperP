@@ -264,9 +264,7 @@ class WhatsAdminChatApiConnector(SourceConnector):
             failure.attempts,
         )
 
-    def _save_extraction_retry(
-        self, bundle: _ChatBundle, details: dict[str, JsonValue]
-    ) -> None:
+    def _save_extraction_retry(self, bundle: _ChatBundle, details: dict[str, JsonValue]) -> None:
         if self._retry_store is None:
             return
         entity_key = bundle_entity_key(bundle)
