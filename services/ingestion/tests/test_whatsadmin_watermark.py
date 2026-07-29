@@ -100,3 +100,40 @@ def test_page_checkpoint_round_trip_and_delete() -> None:
     assert store.get_checkpoint("eko", "ses_1") == checkpoint
     store.delete_checkpoint("eko", "ses_1")
     assert store.get_checkpoint("eko", "ses_1") is None
+
+
+def test_extraction_retries_round_trip_and_clear() -> None:
+    redis = FakeRedis()
+    store = RedisWatermarkStore(redis)
+    retries = [
+        {
+            "chat_id": "chat-1",
+            "session_id": "ses_1",
+            "entity_key": "eko",
+            "msg_text": "private transcript",
+            "participants": [],
+            "message_endpoints": [],
+            "chat_name": "Customer",
+            "whatsapp_user_id": "6590000000@c.us",
+            "observed_at": "2026-07-17T05:20:00+00:00",
+            "failure_code": "malformed_response",
+            "attempts": 3,
+            "session_phone": None,
+            "source_id_scope": "eko-ses_1",
+        }
+    ]
+
+    store.set_extraction_retries("eko", "ses_1", retries)
+
+    assert store.get_extraction_retries("eko", "ses_1") == retries
+    store.set_extraction_retries("eko", "ses_1", [])
+    assert store.get_extraction_retries("eko", "ses_1") == []
+
+
+def test_extraction_retries_reject_malformed_redis_json() -> None:
+    redis = FakeRedis()
+    redis.values["profile_unifier:whatsadmin-api:whatsapp_chat:eko:ses_1:retries"] = "{"
+    store = RedisWatermarkStore(redis)
+
+    with pytest.raises(RuntimeError, match="invalid WhatsAdmin extraction retries"):
+        store.get_extraction_retries("eko", "ses_1")

@@ -121,8 +121,9 @@ def test_chat_extraction_batch_splits_by_conversation_index(
     results = chat_helpers.run_extraction_batch(["hello", "world", "again"])
 
     assert len(results) == 3
-    # Index 1 was omitted by the model → None at that position.
-    assert results[1] is None
+    # Index 1 was omitted by the batch response and recovered by its bounded
+    # single-conversation retry.
+    assert results[1] is not None
     for index in (0, 2):
         result = results[index]
         assert result is not None
@@ -150,6 +151,81 @@ def test_chat_extraction_batch_invalid_extraction_yields_all_none(
     results = chat_helpers.run_extraction_batch(["hello", "world"])
 
     assert results == [None, None]
+
+
+def test_chat_extraction_retries_only_the_unresolved_conversation(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    from src.connectors import chat_helpers
+
+    calls: list[list[str]] = []
+
+    async def extract(texts: list[str], max_tokens: int) -> str:
+        _ = max_tokens
+        calls.append(texts)
+        if len(texts) == 2:
+            return json.dumps({"conversations": [_conversation_object(0)]})
+        return json.dumps({"conversations": [_conversation_object(0)]})
+
+    monkeypatch.setattr(chat_helpers, "_extract_structured", extract)
+    monkeypatch.setattr(chat_helpers, "_attach_summaries", lambda *_args: None)
+    monkeypatch.setattr(chat_helpers, "get_ingestion_config", _fake_ingestion_config)
+
+    outcome = chat_helpers.run_extraction_batch_detailed(["first", "second"])
+
+    assert calls == [["first", "second"], ["second"]]
+    assert all(result is not None for result in outcome.results)
+    assert outcome.failures == [None, None]
+
+
+def test_chat_extraction_reports_bounded_malformed_response_failure(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    from src.connectors import chat_helpers
+
+    calls = 0
+
+    async def extract(texts: list[str], max_tokens: int) -> str:
+        nonlocal calls
+        _ = (texts, max_tokens)
+        calls += 1
+        return "not json"
+
+    config = IngestionConfig(
+        exclusions=ExclusionFile(),
+        llm=LlmConfig(chat_extraction_retry_attempts=2),
+    )
+    monkeypatch.setattr(chat_helpers, "_extract_structured", extract)
+    monkeypatch.setattr(chat_helpers, "_attach_summaries", lambda *_args: None)
+    monkeypatch.setattr(chat_helpers, "get_ingestion_config", lambda: config)
+
+    outcome = chat_helpers.run_extraction_batch_detailed(["chat"])
+
+    assert calls == 3  # one combined attempt plus two bounded individual retries
+    assert outcome.results == [None]
+    assert outcome.failures == [chat_helpers.ExtractionFailure("malformed_response", 3)]
+
+
+def test_chat_extraction_reports_initial_failure_when_retries_disabled(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    from src.connectors import chat_helpers
+
+    async def extract(texts: list[str], max_tokens: int) -> str:
+        _ = (texts, max_tokens)
+        return "not json"
+
+    config = IngestionConfig(
+        exclusions=ExclusionFile(),
+        llm=LlmConfig(chat_extraction_retry_attempts=0),
+    )
+    monkeypatch.setattr(chat_helpers, "_extract_structured", extract)
+    monkeypatch.setattr(chat_helpers, "_attach_summaries", lambda *_args: None)
+    monkeypatch.setattr(chat_helpers, "get_ingestion_config", lambda: config)
+
+    outcome = chat_helpers.run_extraction_batch_detailed(["chat"])
+
+    assert outcome.failures == [chat_helpers.ExtractionFailure("malformed_response", 1)]
 
 
 def test_chat_extraction_batch_summary_failure_keeps_extraction(

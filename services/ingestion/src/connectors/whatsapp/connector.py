@@ -13,7 +13,7 @@ identity and transaction data, and one source record is written per chat.
 from __future__ import annotations
 
 import logging
-from collections.abc import Iterable, Iterator, Sequence
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Protocol, cast
@@ -24,6 +24,7 @@ from sqlalchemy.engine import Connection
 from src.config import get_settings
 from src.connectors.base import SourceConnector
 from src.connectors.chat_helpers import (
+    ExtractionFailure,
     ExtractionResult,
     chat_batch_max_chars,
     chat_batch_size,
@@ -36,7 +37,7 @@ from src.connectors.chat_helpers import (
     person_address_payloads,
     possible_person_payload,
     possible_persons_from_extraction,
-    run_extraction_batch,
+    run_extraction_batch_detailed,
     strong_identifiers_payload,
     transactions_payload,
     weak_identifiers_for_possible_person,
@@ -273,6 +274,7 @@ def process_whatsapp_bundles(
     bundles: list[_ChatBundle],
     *,
     fail_on_extraction_error: bool = False,
+    on_extraction_failure: Callable[[_ChatBundle, ExtractionFailure], None] | None = None,
 ) -> Iterator[dict[str, JsonValue]]:
     """Run shared LLM extraction and envelope building for chat bundles."""
     try:
@@ -291,11 +293,14 @@ def process_whatsapp_bundles(
     extraction_cache: dict[tuple[str, str], ExtractionResult] = {}
     for start, end in iter_char_batches(texts, chat_batch_max_chars(), chat_batch_size()):
         batch = bundles[start:end]
-        batch_results = run_extraction_batch(texts[start:end])
+        outcome = run_extraction_batch_detailed(texts[start:end])
+        batch_results = outcome.results
         logger.info("LLM batch %d-%d/%d done", start, end, len(bundles))
-        for bundle, result in zip(batch, batch_results, strict=True):
+        for bundle, result, failure in zip(batch, batch_results, outcome.failures, strict=True):
             if result is not None:
                 extraction_cache[(bundle.session_id, bundle.chat_id)] = result
+            elif failure is not None and on_extraction_failure is not None:
+                on_extraction_failure(bundle, failure)
 
     for bundle in bundles:
         extraction = extraction_cache.get((bundle.session_id, bundle.chat_id))

@@ -2,14 +2,23 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Iterator
 from datetime import datetime
 from typing import Protocol, runtime_checkable
 
 from src.connectors.base import SourceConnector
+from src.connectors.chat_helpers import ExtractionFailure
 from src.connectors.whatsadmin_api.credentials import WhatsAdminEntity
 from src.connectors.whatsadmin_api.models import ChatPage, SessionRow
+from src.connectors.whatsadmin_api.retry_queue import (
+    bundle_entity_key,
+    deserialize_retry_bundle,
+    retry_matches_bundle,
+    serialize_retry_bundle,
+)
 from src.connectors.whatsadmin_api.watermark import (
+    ExtractionRetryStore,
     PageCheckpoint,
     PageCheckpointStore,
     WatermarkStore,
@@ -24,6 +33,8 @@ from src.connectors.whatsapp.connector import (
     process_whatsapp_bundles,
 )
 from src.models import JsonValue
+
+logger = logging.getLogger(__name__)
 
 
 class WhatsAdminClient(Protocol):
@@ -58,8 +69,12 @@ class WhatsAdminChatApiConnector(SourceConnector):
         self._pending_watermarks: dict[tuple[WhatsAdminEntity, str], datetime] = {}
         self._active_checkpoint: dict[str, JsonValue] = {}
         self._checkpoint_store = watermark if isinstance(watermark, PageCheckpointStore) else None
+        self._retry_store = watermark if isinstance(watermark, ExtractionRetryStore) else None
         self._touched_checkpoints: set[tuple[WhatsAdminEntity, str]] = set()
         self._record_errors = False
+        self._downstream_errors = False
+        self._active_retry_downstream_error = False
+        self._extraction_failures: list[dict[str, JsonValue]] = []
 
     def get_source_key(self) -> str:
         return "whatsapp_chat"
@@ -84,6 +99,7 @@ class WhatsAdminChatApiConnector(SourceConnector):
                 "cursor": "first",
             }
             checkpoint = self._load_checkpoint(entity_key, session.id, changed_since)
+            yield from self._retry_pending_extractions(entity_key, session.id)
             if checkpoint is not None and checkpoint.complete:
                 self._pending_watermarks[(entity_key, session.id)] = checkpoint.snapshot_at
                 self._active_checkpoint.update(
@@ -94,6 +110,28 @@ class WhatsAdminChatApiConnector(SourceConnector):
                 )
                 continue
             yield from self._fetch_session(client, session, changed_since, checkpoint)
+
+    def _retry_pending_extractions(
+        self,
+        entity_key: WhatsAdminEntity,
+        session_id: str,
+    ) -> Iterator[dict[str, JsonValue]]:
+        if self._retry_store is None:
+            return
+        retries = self._retry_store.get_extraction_retries(entity_key, session_id)
+        if not retries:
+            return
+        for retry in retries:
+            bundle = deserialize_retry_bundle(retry)
+            failures_before = len(self._extraction_failures)
+            self._active_retry_downstream_error = False
+            yield from process_whatsapp_bundles(
+                [bundle],
+                on_extraction_failure=self._record_extraction_failure,
+            )
+            extraction_failed = len(self._extraction_failures) != failures_before
+            if not extraction_failed and not self._active_retry_downstream_error:
+                self._clear_extraction_retry(bundle)
 
     def _load_checkpoint(
         self,
@@ -139,7 +177,7 @@ class WhatsAdminChatApiConnector(SourceConnector):
             bundles = self._bundles(session, client.entity_key, page)
             yield from process_whatsapp_bundles(
                 bundles,
-                fail_on_extraction_error=True,
+                on_extraction_failure=self._record_extraction_failure,
             )
             next_cursor = page.meta.pagination.next_cursor
             if page.meta.pagination.has_more and next_cursor is None:
@@ -187,6 +225,64 @@ class WhatsAdminChatApiConnector(SourceConnector):
     def record_processed(self, *, succeeded: bool) -> None:
         if not succeeded:
             self._record_errors = True
+            self._downstream_errors = True
+            self._active_retry_downstream_error = True
+
+    def commit_progress_with_errors(self) -> bool:
+        """Allow watermark progress only when every isolated failure is durable."""
+        return self._retry_store is not None and not self._downstream_errors
+
+    def connector_error_count(self) -> int:
+        """Return chats isolated after bounded extraction retries."""
+        return len(self._extraction_failures)
+
+    def _record_extraction_failure(
+        self,
+        bundle: _ChatBundle,
+        failure: ExtractionFailure,
+    ) -> None:
+        """Record safe diagnostics and durably queue the source bundle for retry."""
+        self._record_errors = True
+        details: dict[str, JsonValue] = {
+            "entity_key": bundle.tenant,
+            "session_id": bundle.session_id,
+            "chat_id": bundle.chat_id,
+            "observed_at": bundle.observed_at,
+            "failure_code": failure.code,
+            "attempts": failure.attempts,
+        }
+        self._extraction_failures.append(details)
+        self._save_extraction_retry(bundle, details)
+        self._active_checkpoint["extraction_failures"] = list(self._extraction_failures)
+        logger.warning(
+            "Recorded WhatsAdmin chat extraction failure entity=%s session=%s chat=%s "
+            "code=%s attempts=%d",
+            bundle.tenant,
+            bundle.session_id,
+            bundle.chat_id,
+            failure.code,
+            failure.attempts,
+        )
+
+    def _save_extraction_retry(
+        self, bundle: _ChatBundle, details: dict[str, JsonValue]
+    ) -> None:
+        if self._retry_store is None:
+            return
+        entity_key = bundle_entity_key(bundle)
+        retries = self._retry_store.get_extraction_retries(entity_key, bundle.session_id)
+        serialized = serialize_retry_bundle(bundle, details)
+        retries = [item for item in retries if not retry_matches_bundle(item, bundle)]
+        retries.append(serialized)
+        self._retry_store.set_extraction_retries(entity_key, bundle.session_id, retries)
+
+    def _clear_extraction_retry(self, bundle: _ChatBundle) -> None:
+        if self._retry_store is None:
+            return
+        entity_key = bundle_entity_key(bundle)
+        retries = self._retry_store.get_extraction_retries(entity_key, bundle.session_id)
+        remaining = [item for item in retries if not retry_matches_bundle(item, bundle)]
+        self._retry_store.set_extraction_retries(entity_key, bundle.session_id, remaining)
 
     def _delete_touched_checkpoints(self) -> None:
         if self._checkpoint_store is not None:

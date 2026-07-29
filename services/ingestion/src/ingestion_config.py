@@ -34,6 +34,7 @@ class LlmConfig:
     chat_batch_max_chars: int = 6000  # combined transcript chars per call (primary limiter)
     chat_batch_size: int = 6  # max conversations per call (safety cap)
     chat_max_tokens: int = 8192  # output budget so the combined response doesn't truncate
+    chat_extraction_retry_attempts: int = 3  # retries after the initial batch response
 
 
 BitrixOpenLinesChannelType = Literal[
@@ -132,6 +133,11 @@ def _llm_config(raw: JsonValue, *, path: Path) -> LlmConfig:
         ),
         chat_batch_size=_int(payload.get("chat_batch_size"), defaults.chat_batch_size, path=path),
         chat_max_tokens=_int(payload.get("chat_max_tokens"), defaults.chat_max_tokens, path=path),
+        chat_extraction_retry_attempts=_int(
+            payload.get("chat_extraction_retry_attempts"),
+            defaults.chat_extraction_retry_attempts,
+            path=path,
+        ),
     )
 
 

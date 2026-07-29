@@ -9,6 +9,7 @@ from typing import Protocol
 
 import pytest
 from pytest import MonkeyPatch
+from src.connectors.chat_helpers import ExtractionBatchOutcome, ExtractionFailure
 from src.connectors.whatsapp import connector as whatsapp_module
 from src.connectors.whatsapp.connector import WhatsAppChatConnector
 
@@ -53,7 +54,14 @@ def test_process_whatsapp_bundles_can_fail_on_extraction_error(
         message_endpoints=[],
         session_phone=None,
     )
-    monkeypatch.setattr(whatsapp_module, "run_extraction_batch", lambda texts: [None])
+    monkeypatch.setattr(
+        whatsapp_module,
+        "run_extraction_batch_detailed",
+        lambda texts: ExtractionBatchOutcome(
+            results=[None],
+            failures=[ExtractionFailure("malformed_response", 3)],
+        ),
+    )
 
     with pytest.raises(RuntimeError, match="chat-1"):
         list(
@@ -119,21 +127,24 @@ def test_process_whatsapp_bundles_keeps_same_chat_id_sessions_separate(
     ]
     monkeypatch.setattr(
         whatsapp_module,
-        "run_extraction_batch",
-        lambda texts: [
-            {
-                "persons": [{"name": "Alice", "phone": "+6581111111"}],
-                "transactions": [],
-                "summary": "Alice",
-                "confidence": 0.9,
-            },
-            {
-                "persons": [{"name": "Bob", "phone": "+6582222222"}],
-                "transactions": [],
-                "summary": "Bob",
-                "confidence": 0.9,
-            },
-        ],
+        "run_extraction_batch_detailed",
+        lambda texts: ExtractionBatchOutcome(
+            results=[
+                {
+                    "persons": [{"name": "Alice", "phone": "+6581111111"}],
+                    "transactions": [],
+                    "summary": "Alice",
+                    "confidence": 0.9,
+                },
+                {
+                    "persons": [{"name": "Bob", "phone": "+6582222222"}],
+                    "transactions": [],
+                    "summary": "Bob",
+                    "confidence": 0.9,
+                },
+            ],
+            failures=[None, None],
+        ),
     )
 
     records = list(whatsapp_module.process_whatsapp_bundles(bundles))

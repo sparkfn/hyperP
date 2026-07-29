@@ -76,6 +76,7 @@ def test_nested_format_parses_exclusions_and_llm(tmp_path: Path) -> None:
                     "retry_max_delay_seconds": 10.0,
                     "chat_batch_max_chars": 1234,
                     "chat_batch_size": 3,
+                    "chat_extraction_retry_attempts": 2,
                 },
             }
         ),
@@ -92,6 +93,7 @@ def test_nested_format_parses_exclusions_and_llm(tmp_path: Path) -> None:
         retry_max_delay_seconds=10.0,
         chat_batch_max_chars=1234,
         chat_batch_size=3,
+        chat_extraction_retry_attempts=2,
     )
 
 

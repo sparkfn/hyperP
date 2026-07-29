@@ -15,7 +15,8 @@
     "retry_max_delay_seconds": 30.0,
     "chat_batch_max_chars": 6000,
     "chat_batch_size": 6,
-    "chat_max_tokens": 8192
+    "chat_max_tokens": 8192,
+    "chat_extraction_retry_attempts": 3
   },
   "bitrix_openlines": {
     "included_channel_types": [
