@@ -64,9 +64,9 @@ settings. Secrets are never logged or returned in task results.
 
 Transport failures, HTTP 429, and 5xx responses use bounded exponential retry.
 Authentication, other client errors, and response-schema failures are not
-retried. `SGBANKRUPTCY_INGEST_CRON` enables the Celery beat entry that dispatches
-`run_ingestion_task` with `("sgbankruptcy", "api")`; an empty value disables the
-schedule.
+retried. The fixed weekly Celery schedule dispatches the standalone
+`sgbankruptcy` API group every Friday at 01:00 UTC with incremental extraction
+enabled.
 
 Dump and API connectors use one canonical bankruptcy envelope builder so the
 same case produces the same raw payload and record hash in either mode. Adopting

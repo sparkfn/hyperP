@@ -62,10 +62,12 @@ class WhatsAdminChatApiConnector(SourceConnector):
         watermark: WatermarkStore,
         *,
         legacy_entity: WhatsAdminEntity | None = None,
+        incremental: bool = True,
     ) -> None:
         self._clients = clients
         self._watermark = watermark
         self._legacy_entity = legacy_entity
+        self._incremental = incremental
         self._pending_watermarks: dict[tuple[WhatsAdminEntity, str], datetime] = {}
         self._active_checkpoint: dict[str, JsonValue] = {}
         self._checkpoint_store = watermark if isinstance(watermark, PageCheckpointStore) else None
@@ -90,7 +92,7 @@ class WhatsAdminChatApiConnector(SourceConnector):
                 raise RuntimeError(
                     "WhatsAdmin session organization does not match credential entity"
                 )
-            watermark = self._watermark.get(entity_key, session.id)
+            watermark = self._watermark.get(entity_key, session.id) if self._incremental else None
             changed_since = watermark.isoformat() if watermark is not None else None
             self._active_checkpoint = {
                 "entity_key": entity_key,
@@ -98,7 +100,11 @@ class WhatsAdminChatApiConnector(SourceConnector):
                 "changed_since": changed_since,
                 "cursor": "first",
             }
-            checkpoint = self._load_checkpoint(entity_key, session.id, changed_since)
+            checkpoint = (
+                self._load_checkpoint(entity_key, session.id, changed_since)
+                if self._incremental
+                else None
+            )
             yield from self._retry_pending_extractions(entity_key, session.id)
             if checkpoint is not None and checkpoint.complete:
                 self._pending_watermarks[(entity_key, session.id)] = checkpoint.snapshot_at
@@ -188,7 +194,7 @@ class WhatsAdminChatApiConnector(SourceConnector):
                 snapshot_at=page.meta.snapshot_at,
                 complete=not page.meta.pagination.has_more,
             )
-            if not self._record_errors:
+            if self._incremental and not self._record_errors:
                 self._save_checkpoint(state_key, saved)
             self._active_checkpoint.update(
                 {
@@ -217,6 +223,9 @@ class WhatsAdminChatApiConnector(SourceConnector):
                 raise RuntimeError("WhatsAdmin chat WhatsApp user does not match requested session")
 
     def commit_watermark(self) -> None:
+        if not self._incremental:
+            self._pending_watermarks.clear()
+            return
         for (entity_key, session_id), value in self._pending_watermarks.items():
             self._watermark.set(entity_key, session_id, value)
         self._pending_watermarks.clear()

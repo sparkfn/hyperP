@@ -20,7 +20,13 @@ def test_periodic_reconciliation_is_registered_once_hourly() -> None:
         if entry["task"] == "src.tasks.reconcile_lifecycle_task"
     ]
 
-    assert entries == [{"task": "src.tasks.reconcile_lifecycle_task", "schedule": 3600.0}]
+    assert entries == [
+        {
+            "task": "src.tasks.reconcile_lifecycle_task",
+            "schedule": 3600.0,
+            "options": {"queue": "lifecycle"},
+        }
+    ]
     celery_app.loader.import_default_modules()
     registered_task = celery_app.tasks["src.tasks.reconcile_lifecycle_task"]
     assert isinstance(registered_task, LifecycleReconciliationTask)
@@ -224,7 +230,7 @@ def test_concurrent_periodic_reconciliation_is_an_idempotent_skip(
     }
 
 
-def test_successful_ingestion_runs_low_cost_reconciliation_afterward(
+def test_successful_ingestion_queues_lifecycle_reconciliation(
     monkeypatch: MonkeyPatch,
 ) -> None:
     from src import tasks
@@ -233,7 +239,7 @@ def test_successful_ingestion_runs_low_cost_reconciliation_afterward(
     monkeypatch.setattr(
         tasks,
         "get_settings",
-        lambda: type("S", (), {"log_level": "INFO", "max_concurrent_ingestions": 1})(),
+        lambda: type("S", (), {"log_level": "INFO"})(),
     )
     monkeypatch.setattr(tasks, "setup_logging", lambda _level: None)
     monkeypatch.setattr(tasks, "initialize_ingestion_graph", lambda: calls.append("initialize"))
@@ -244,21 +250,14 @@ def test_successful_ingestion_runs_low_cost_reconciliation_afterward(
     monkeypatch.setattr(
         tasks,
         "run_ingestion",
-        lambda *_args, **_kwargs: calls.append("ingest") or {"status": "complete"},
+        lambda *_args, **_kwargs: calls.append("ingest") or {"status": "completed"},
     )
     monkeypatch.setattr(
-        tasks,
-        "run_lifecycle_reconciliation",
-        lambda: (
-            calls.append("reconcile")
-            or {
-                "status": "complete",
-                "source_records": 0,
-                "projections": 0,
-            }
-        ),
+        tasks.reconcile_lifecycle_task,
+        "apply_async",
+        lambda **options: calls.append(f"reconcile:{options['queue']}"),
     )
 
     tasks.run_ingestion_task.run("speedzone_phppos")
 
-    assert calls == ["initialize", "ingest", "reconcile"]
+    assert calls == ["initialize", "ingest", "reconcile:lifecycle"]

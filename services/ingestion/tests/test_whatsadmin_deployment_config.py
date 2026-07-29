@@ -84,7 +84,9 @@ def test_whatsadmin_timeout_resilience_defaults_are_aligned() -> None:
         assert f"export {name}={value}" in workflow
         for example in examples:
             assert f"{name}={value}" in example
-    assert "for ingestion_service in worker beat" in workflow
+    assert "for ingestion_service in ingestion-worker lifecycle-worker beat" in workflow
+    assert 'grep -Fxq "$ingestion_service" <<< "$configured_services"' in workflow
+    assert "Staging Compose is missing required service" in workflow
     assert 'resolved_service=$($COMPOSE config "$ingestion_service")' in workflow
 
 

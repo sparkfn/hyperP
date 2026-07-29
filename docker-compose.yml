@@ -7,10 +7,7 @@ x-ingestion-env: &ingestion-env
   BATCH_SIZE: ${BATCH_SIZE:-1000}
   CELERY_BROKER_URL: redis://redis:6379/0
   CELERY_RESULT_BACKEND: redis://redis:6379/1
-  CELERY_WORKER_CONCURRENCY: ${CELERY_WORKER_CONCURRENCY:-4}
   CELERY_BROKER_VISIBILITY_TIMEOUT: ${CELERY_BROKER_VISIBILITY_TIMEOUT:-28800}
-  MAX_CONCURRENT_INGESTIONS: ${MAX_CONCURRENT_INGESTIONS:-4}
-  FUNDBOX_INGEST_CRON: ${FUNDBOX_INGEST_CRON:-}
   FUNDBOX_SSH_HOST: ${FUNDBOX_SSH_HOST:-}
   FUNDBOX_SSH_PORT: ${FUNDBOX_SSH_PORT:-}
   FUNDBOX_SSH_USER: ${FUNDBOX_SSH_USER:-}
@@ -28,7 +25,6 @@ x-ingestion-env: &ingestion-env
   FUNDBOX_API_TIMEOUT_SECONDS: ${FUNDBOX_API_TIMEOUT_SECONDS:-30.0}
   FUNDBOX_API_MAX_ATTEMPTS: ${FUNDBOX_API_MAX_ATTEMPTS:-3}
   FUNDBOX_API_OVERLAP_SECONDS: ${FUNDBOX_API_OVERLAP_SECONDS:-300}
-  SPEEDZONE_PHPPOS_INGEST_CRON: ${SPEEDZONE_PHPPOS_INGEST_CRON:-}
   SPEEDZONE_PHPPOS_SSH_HOST: ${SPEEDZONE_PHPPOS_SSH_HOST:-}
   SPEEDZONE_PHPPOS_SSH_PORT: ${SPEEDZONE_PHPPOS_SSH_PORT:-}
   SPEEDZONE_PHPPOS_SSH_USER: ${SPEEDZONE_PHPPOS_SSH_USER:-}
@@ -49,7 +45,6 @@ x-ingestion-env: &ingestion-env
   EKO_PHPPOS_DB_PASSWORD: ${EKO_PHPPOS_DB_PASSWORD:-}
   EKO_PHPPOS_DB_NAME: ${EKO_PHPPOS_DB_NAME:-}
   EKO_PHPPOS_CHUNK_SIZE: ${EKO_PHPPOS_CHUNK_SIZE:-}
-  EKO_PHPPOS_INGEST_CRON: ${EKO_PHPPOS_INGEST_CRON:-}
   PHPPOS_API_BASE_URL: ${PHPPOS_API_BASE_URL:-}
   PHPPOS_API_CLIENT_ID: ${PHPPOS_API_CLIENT_ID:-}
   PHPPOS_API_CLIENT_SECRET: ${PHPPOS_API_CLIENT_SECRET:-}
@@ -63,7 +58,6 @@ x-ingestion-env: &ingestion-env
   SGBANKRUPTCY_API_PAGE_SIZE: ${SGBANKRUPTCY_API_PAGE_SIZE:-500}
   SGBANKRUPTCY_API_TIMEOUT_SECONDS: ${SGBANKRUPTCY_API_TIMEOUT_SECONDS:-30.0}
   SGBANKRUPTCY_API_MAX_ATTEMPTS: ${SGBANKRUPTCY_API_MAX_ATTEMPTS:-3}
-  SGBANKRUPTCY_INGEST_CRON: ${SGBANKRUPTCY_INGEST_CRON:-}
   SGRENTALFLATS_API_BASE_URL: ${SGRENTALFLATS_API_BASE_URL:-https://sgrentalflats-api.ada.asia}
   SGRENTALFLATS_API_KEY: ${SGRENTALFLATS_API_KEY:-}
   SGRENTALFLATS_API_PAGE_SIZE: ${SGRENTALFLATS_API_PAGE_SIZE:-500}
@@ -216,7 +210,7 @@ services:
       - api
       - frontend2
 
-  worker:
+  ingestion-worker:
     build:
       context: .
       dockerfile: services/ingestion/Dockerfile
@@ -237,8 +231,29 @@ services:
       - src.celery_app
       - worker
       - --loglevel=info
-      - --concurrency=${CELERY_WORKER_CONCURRENCY:-4}
-      - --queues=celery,ingestion
+      - --queues=ingestion
+
+  lifecycle-worker:
+    build:
+      context: .
+      dockerfile: services/ingestion/Dockerfile
+    environment: *ingestion-env
+    volumes:
+      - ./config:/app/config:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      neo4j:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command:
+      - celery
+      - -A
+      - src.celery_app
+      - worker
+      - --loglevel=info
+      - --queues=lifecycle,miscellaneous
 
   beat:
     build:

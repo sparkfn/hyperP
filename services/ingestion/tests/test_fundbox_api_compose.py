@@ -35,7 +35,7 @@ def test_staging_deploy_checks_fundbox_env_keys_without_values() -> None:
     assert "$COMPOSE config --format json" not in workflow
     assert "$COMPOSE build $SERVICES" in workflow
     assert "docker inspect" in workflow
-    assert '"worker" "beat"' in workflow
+    assert '"ingestion-worker" "lifecycle-worker" "beat"' in workflow
     assert "stable_checks" in workflow
     assert 'if [ "$stable_checks" -lt 6 ]' in workflow
     assert "Staging service did not remain running" in workflow

@@ -46,14 +46,7 @@ class Settings(BaseSettings):
     # Celery / queue ----------------------------------------------------------
     celery_broker_url: str = "redis://redis:6379/0"
     celery_result_backend: str = "redis://redis:6379/1"
-    celery_worker_concurrency: int = 1
     celery_broker_visibility_timeout: int = 60 * 60 * 8
-    # How many ingestion tasks may run concurrently across the entire cluster.
-    # Enforced via a Redis-backed semaphore inside the task itself, independent
-    # of `celery_worker_concurrency` (which controls per-worker process count).
-    max_concurrent_ingestions: int = 1
-    # Beat schedule for periodic Fundbox ingestion. Empty string disables.
-    fundbox_ingest_cron: str = ""  # e.g. "0 */6 * * *"
 
     # Fundbox source DB (MySQL, optionally via SSH tunnel) --------------------
     # Set FUNDBOX_SSH_HOST to enable SSH tunnelling.
@@ -93,7 +86,6 @@ class Settings(BaseSettings):
     speedzone_phppos_db_password: str = ""
     speedzone_phppos_db_name: str = "phppos_db"
     speedzone_phppos_chunk_size: int = 1000
-    speedzone_phppos_ingest_cron: str = ""
 
     # Eko phppos source DB (MySQL, optionally via SSH tunnel) ----------------
     # Set EKO_PHPPOS_SSH_HOST to enable SSH tunnelling.
@@ -107,7 +99,6 @@ class Settings(BaseSettings):
     eko_phppos_db_password: str = ""
     eko_phppos_db_name: str = "phppos_db"
     eko_phppos_chunk_size: int = 1000
-    eko_phppos_ingest_cron: str = ""
 
     # POS OAuth API extraction -----------------------------------------------
     phppos_api_base_url: str = ""
@@ -125,7 +116,6 @@ class Settings(BaseSettings):
     sgbankruptcy_api_page_size: int = Field(default=500, ge=1, le=1000)
     sgbankruptcy_api_timeout_seconds: float = Field(default=30.0, gt=0)
     sgbankruptcy_api_max_attempts: int = Field(default=3, ge=1)
-    sgbankruptcy_ingest_cron: str = ""
 
     # SG rental flats API extraction -----------------------------------------
     sgrentalflats_api_base_url: str = "https://sgrentalflats-api.ada.asia"

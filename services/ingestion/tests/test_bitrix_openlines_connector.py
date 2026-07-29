@@ -96,6 +96,40 @@ class StubWatermark:
         return None
 
 
+def test_full_api_extraction_does_not_load_or_commit_incremental_watermark(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    class FullWatermark(StubWatermark):
+        def get(self, *, overlap_seconds: int) -> datetime | None:
+            raise AssertionError("full extraction must not load a watermark")
+
+        def set(self, value: datetime) -> None:
+            raise AssertionError("full extraction must not commit a watermark")
+
+    monkeypatch.setattr(
+        "src.connectors.bitrix_openlines.connector.run_extraction_batch",
+        lambda texts: [
+            {
+                "persons": [],
+                "transactions": [],
+                "summary": "Full extraction.",
+                "confidence": 0.95,
+            }
+            for _ in texts
+        ],
+    )
+    connector = BitrixOpenLinesConnector(
+        StubClient(),
+        FullWatermark(),
+        BitrixOpenLinesConfig(entity_by_config_id={"46": "speedzone"}),
+        mode="api",
+        incremental=False,
+    )
+
+    list(connector.fetch_records())
+    connector.commit_watermark()
+
+
 def test_backfill_resumes_from_and_advances_persisted_crm_page() -> None:
     class ResumableClient(StubClient):
         def __init__(self) -> None:

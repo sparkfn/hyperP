@@ -1,11 +1,8 @@
 """Celery tasks for the ingestion service.
 
 A single task — :func:`run_ingestion_task` — wraps :func:`src.main.run_ingestion`
-and enforces a *cluster-wide* cap on the number of ingestion runs in flight via
-a Redis-backed semaphore. The cap is configured by ``MAX_CONCURRENT_INGESTIONS``
-and is independent of ``CELERY_WORKER_CONCURRENCY`` (which sets per-worker
-process count). Default is 1 — i.e. only one ingestion runs at a time across
-the entire cluster, regardless of how many workers are deployed.
+and enforces a fixed cluster-wide cap on the number of ingestion runs in flight
+via a Redis-backed semaphore.
 """
 
 from __future__ import annotations
@@ -19,7 +16,7 @@ import time
 import uuid
 from collections.abc import Iterator
 from contextlib import ExitStack, contextmanager
-from typing import TypedDict, cast
+from typing import Final, TypedDict, cast
 
 import redis
 from celery import Task
@@ -28,7 +25,7 @@ from neo4j import ManagedTransaction
 from pydantic.types import JsonValue
 
 from src.birthday import BirthdayRunSummary, run_birthday_greetings
-from src.celery_app import celery_app
+from src.celery_app import LIFECYCLE_QUEUE, celery_app
 from src.config import get_settings
 from src.connectors.whatsadmin_api.credentials import WHATSADMIN_ENTITIES
 from src.errors import SourceNotConfiguredError
@@ -55,12 +52,14 @@ from src.pipeline_person_pairs import _ENGINE_VERSION, _POLICY_VERSION
 logger = logging.getLogger(__name__)
 
 _INGEST_SEMAPHORE_KEY = "profile_unifier:ingestion:active"
+MAX_CONCURRENT_INGESTIONS: Final[int] = 2
 _SOURCE_LOCK_PREFIX = "profile_unifier:ingestion:source"
 _INIT_LOCK_KEY = "profile_unifier:ingestion:init"
 # Leases are renewed while ingestion is running. Keeping the base TTL modest
 # bounds the unavailable period after a worker crashes.
 _LOCK_LEASE_SECONDS = 60 * 60
 _LEASE_RENEWAL_INTERVAL_SECONDS = 10 * 60
+_SCHEDULED_STEP_MARKER_SECONDS = 60 * 60 * 24 * 8
 _SOURCE_LOCK_RELEASE_SCRIPT = """
 if redis.call('get', KEYS[1]) == ARGV[1] then
     return redis.call('del', KEYS[1])
@@ -133,6 +132,18 @@ type _SourceLockLease = tuple[str, str]
 def _redis_client() -> redis.Redis:
     settings = get_settings()
     return redis.Redis.from_url(settings.celery_broker_url)
+
+
+def _scheduled_step_completed(idempotency_key: str) -> bool:
+    """Return whether this logical chain step completed cleanly."""
+    with _redis_client() as client:
+        return client.get(idempotency_key) is not None
+
+
+def _mark_scheduled_step_completed(idempotency_key: str) -> None:
+    """Retain a completion marker through the next weekly occurrence."""
+    with _redis_client() as client:
+        client.set(idempotency_key, "completed", ex=_SCHEDULED_STEP_MARKER_SECONDS)
 
 
 def _try_acquire_slot(client: redis.Redis, member_key: str, max_slots: int) -> None:
@@ -412,6 +423,10 @@ def run_ingestion_task(
     dump_path: str | None = None,
     entity_key: str | None = None,
     ingest_run_id: str | None = None,
+    incremental: bool = True,
+    wait_for_source: bool = False,
+    require_clean_completion: bool = False,
+    idempotency_key: str | None = None,
 ) -> IngestionSummary:
     """Run a single ingestion under the cluster-wide concurrency cap."""
     # PR #62 introduced ``entity_key`` as the fourth positional task argument.
@@ -423,6 +438,18 @@ def run_ingestion_task(
         entity_key = None
     source_lock_keys = _source_lock_keys(source_key, mode, entity_key)
     try:
+        if idempotency_key is not None and _scheduled_step_completed(idempotency_key):
+            return {
+                "ingest_run_id": "",
+                "status": "completed",
+                "succeeded": 0,
+                "errors": 0,
+                "skipped": 1,
+                "source_key": source_key,
+                "mode": mode,
+                "dump_path": dump_path,
+                "entity_key": entity_key,
+            }
         settings = get_settings()
         setup_logging(settings.log_level)
         with _acquire_init_lock():
@@ -446,7 +473,7 @@ def run_ingestion_task(
                         entity_key,
                     )
             with (
-                _acquire_ingestion_slot(settings.max_concurrent_ingestions) as slot_id,
+                _acquire_ingestion_slot(MAX_CONCURRENT_INGESTIONS) as slot_id,
                 _renew_ingestion_leases(source_lock_leases, slot_id),
             ):
                 celery_task_id = self.request.id
@@ -459,6 +486,7 @@ def run_ingestion_task(
                         initialize_graph=False,
                         existing_ingest_run_id=ingest_run_id,
                         task_id=str(celery_task_id),
+                        incremental=incremental,
                     )
                 elif ingest_run_id is None:
                     if entity_key is None:
@@ -467,6 +495,7 @@ def run_ingestion_task(
                             mode,
                             dump_path,
                             initialize_graph=False,
+                            incremental=incremental,
                         )
                     else:
                         summary = run_ingestion(
@@ -475,6 +504,7 @@ def run_ingestion_task(
                             dump_path,
                             entity_key=entity_key,
                             initialize_graph=False,
+                            incremental=incremental,
                         )
                 else:
                     if entity_key is None:
@@ -484,6 +514,7 @@ def run_ingestion_task(
                             dump_path,
                             initialize_graph=False,
                             existing_ingest_run_id=ingest_run_id,
+                            incremental=incremental,
                         )
                     else:
                         summary = run_ingestion(
@@ -493,16 +524,22 @@ def run_ingestion_task(
                             entity_key=entity_key,
                             initialize_graph=False,
                             existing_ingest_run_id=ingest_run_id,
+                            incremental=incremental,
                         )
+                if require_clean_completion and summary["status"] != "completed":
+                    raise Reject(
+                        f"Scheduled ingestion {source_key} returned {summary['status']}",
+                        requeue=False,
+                    )
                 try:
-                    run_lifecycle_reconciliation()
-                except _SourceAlreadyRunningError:
-                    logger.info("Lifecycle reconciliation is already running; skipping follow-up")
+                    reconcile_lifecycle_task.apply_async(queue=LIFECYCLE_QUEUE)
                 except Exception:
-                    logger.exception("Post-ingestion lifecycle reconciliation failed")
+                    logger.exception("Could not queue post-ingestion lifecycle reconciliation")
+                if idempotency_key is not None and summary["status"] == "completed":
+                    _mark_scheduled_step_completed(idempotency_key)
                 return summary
     except _SourceAlreadyRunningError as exc:
-        if ingest_run_id is not None:
+        if ingest_run_id is not None or wait_for_source:
             retry_number = min(self.request.retries, 8)
             countdown = min(2**retry_number, 300)
             logger.warning(
@@ -536,6 +573,8 @@ def run_ingestion_task(
         logger.warning("Ingestion source %s not configured: %s", source_key, exc)
         _finalize_rejected_dispatched_run(ingest_run_id)
         raise Reject(str(exc), requeue=False) from exc
+    except Reject:
+        raise
     except Exception as exc:
         logger.exception("Ingestion task failed for %s", source_key)
         # Don't retry on real errors — surface them to the caller.
