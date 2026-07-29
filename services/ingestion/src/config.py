@@ -235,6 +235,7 @@ class Settings(BaseSettings):
     # full name (or "there" if unknown).
     birthday_message_template: str = "Happy birthday, {name}! 🎉"
 
+
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
     """Return a cached singleton of the application settings."""

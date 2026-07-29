@@ -572,7 +572,6 @@ def reconcile_lifecycle_task(self: Task) -> LifecycleReconciliationSummary:
             release_lifecycle_reconciliation_queue_gate(str(task_id))
 
 
-
 @celery_app.task(
     name="src.tasks.send_birthday_messages_task",
     bind=True,
