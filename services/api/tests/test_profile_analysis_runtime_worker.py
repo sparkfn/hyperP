@@ -1,4 +1,4 @@
-"""Independent generation, validation, retry, and sweep contracts."""
+"""Independent generation, validation, retry, and direct execution contracts."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from uuid import UUID
 
 import httpx
 import pytest
-from src.llm import ChatMessage, get_profile_analysis_service
+from src.llm.service import ChatMessage
 from src.profile_analysis_mapping import ProfileAnalysisTemporalMappingError
 from src.profile_analysis_models import (
     ProfileAnalysisAttempt,
@@ -22,7 +22,6 @@ from src.profile_analysis_output import (
     snapshot_evidence_references,
 )
 from src.profile_analysis_repository import (
-    ClaimedProfileAnalysisBatch,
     ClaimedProfileAnalysisPerson,
     DueProfileAnalysis,
     ProfileAnalysisMappingError,
@@ -40,10 +39,10 @@ from src.profile_analysis_snapshot_values import SafeSnapshotLabel
 from src.profile_analysis_worker import (
     ProfileAnalysisOutputError,
     ProfileAnalysisPrivacyOutputError,
-    ProfileAnalysisSweepSummary,
-    run_profile_analysis_sweep,
+    run_profile_analysis_person,
     validate_profile_analysis_output,
 )
+from src.profile_analysis_worker_types import ProfileAnalysisExecutionSummary
 
 _NOW = datetime(2026, 7, 21, 2, tzinfo=UTC)
 _UUID_VALUES: Iterator[int] = count(1)
@@ -74,38 +73,17 @@ class _Repository:
         publication_statuses: list[ProfileAnalysisStatus] | None = None,
         fetch_error: Exception | None = None,
         known_sensitive_values: tuple[str, ...] = (),
-        work_remaining: bool = False,
         renewal_results: list[bool] | None = None,
     ) -> None:
         self.due = due
         self.publication_statuses = publication_statuses or []
         self.fetch_error = fetch_error
         self.known_sensitive_values = known_sensitive_values
-        self.work_remaining = work_remaining
         self.renewal_results = renewal_results or []
         self.attempts: list[ProfileAnalysisAttempt] = []
         self.persist_claim_tokens: list[str] = []
-        self.claim_times: list[tuple[datetime, datetime]] = []
         self.renewals: list[tuple[str, int, str, datetime]] = []
         self.releases: list[tuple[str, str]] = []
-
-    def claim_candidates(
-        self,
-        *,
-        batch_size: int,
-        claim_token: str,
-        now: datetime,
-        claim_until: datetime,
-    ) -> ClaimedProfileAnalysisBatch:
-        assert batch_size == 5
-        assert claim_until > now
-        self.claim_times.append((now, claim_until))
-        return ClaimedProfileAnalysisBatch(
-            people=(
-                ClaimedProfileAnalysisPerson(person_id="person-1", input_revision=7, due=self.due),
-            ),
-            has_more=False,
-        )
 
     def fetch_snapshot(self, person_id: str) -> ProfileAnalysisSnapshotBundle:
         assert person_id == "person-1"
@@ -157,11 +135,6 @@ class _Repository:
         self.renewals.append((person_id, input_revision, claim_token, claim_until))
         return self.renewal_results.pop(0) if self.renewal_results else True
 
-    def has_eligible_work(self, *, now: datetime) -> bool:
-        assert now == _NOW
-        return self.work_remaining
-
-
 def _clock() -> datetime:
     return _NOW
 
@@ -177,23 +150,20 @@ def _due(*types: ProfileAnalysisType, attempt_number: int = 1) -> tuple[DueProfi
 def _run(
     repository: _Repository,
     service: _TextService,
-) -> ProfileAnalysisSweepSummary:
-    return run_profile_analysis_sweep(
+) -> ProfileAnalysisExecutionSummary:
+    return run_profile_analysis_person(
         repository=repository,
         text_service=service,
-        batch_size=5,
+        person=ClaimedProfileAnalysisPerson(
+            person_id="person-1",
+            input_revision=7,
+            due=repository.due,
+        ),
+        claim_token="claim-token",
         claim_lease=timedelta(minutes=5),
-        max_attempts=3,
-        retry_base=timedelta(minutes=2),
-        retry_cap=timedelta(hours=1),
         clock=_clock,
         uuid_factory=_uuid_factory,
-        claim_token="claim-token",
     )
-
-
-def test_profile_analysis_accessor_reuses_prose_singleton() -> None:
-    assert get_profile_analysis_service() is get_profile_analysis_service()
 
 
 @pytest.mark.parametrize(
@@ -377,7 +347,7 @@ def test_sales_and_contact_calls_are_independent_and_partial_success_is_persiste
     assert repository.releases == [("person-1", "claim-token")]
 
 
-def test_transient_failure_has_bounded_exponential_retry_metadata() -> None:
+def test_transient_failure_is_terminal_until_an_explicit_human_retry() -> None:
     request = httpx.Request("POST", "https://provider.test")
     response = httpx.Response(429, request=request, text="private provider response")
     error = httpx.HTTPStatusError("private provider response", request=request, response=response)
@@ -386,8 +356,8 @@ def test_transient_failure_has_bounded_exponential_retry_metadata() -> None:
     _run(repository, _TextService([error]))
 
     attempt = repository.attempts[0]
-    assert attempt.retryable is True
-    assert attempt.next_retry_at == _NOW + timedelta(minutes=4)
+    assert attempt.retryable is False
+    assert attempt.next_retry_at is None
     assert attempt.failure_code == "provider_rate_limited"
     assert "private" not in attempt.failure_code
 
@@ -539,19 +509,6 @@ def test_claim_is_released_after_unexpected_snapshot_exception() -> None:
     assert repository.releases == [("person-1", "claim-token")]
 
 
-def test_sweep_rechecks_work_after_releasing_a_failed_claim() -> None:
-    repository = _Repository(
-        _due(ProfileAnalysisType.SALES),
-        fetch_error=RuntimeError("unexpected private data"),
-        work_remaining=True,
-    )
-
-    summary = _run(repository, _TextService([]))
-
-    assert repository.releases == [("person-1", "claim-token")]
-    assert summary["has_more"] is True
-
-
 def test_invalid_snapshot_persists_nonretryable_failure_for_each_due_type() -> None:
     due = (
         DueProfileAnalysis(ProfileAnalysisType.SALES, 2),
@@ -641,7 +598,7 @@ def test_invalid_snapshot_attempts_each_type_after_one_persistence_failure() -> 
     assert repository.releases == [("person-1", "claim-token")]
 
 
-def test_sweep_summary_is_typed_and_reports_remaining_work() -> None:
+def test_person_summary_is_typed() -> None:
     repository = _Repository(_due(ProfileAnalysisType.SALES))
     service = _TextService(
         ["Observed workshop activity (order-1).\nLimitations: Dates are incomplete."]
@@ -662,7 +619,7 @@ def test_sweep_summary_is_typed_and_reports_remaining_work() -> None:
     assert repository.persist_claim_tokens == ["claim-token"]
 
 
-def test_sweep_renews_batch_lease_before_snapshot_and_after_provider_call() -> None:
+def test_person_run_renews_lease_before_snapshot_and_after_provider_call() -> None:
     times = iter(
         (
             _NOW,
@@ -678,17 +635,18 @@ def test_sweep_renews_batch_lease_before_snapshot_and_after_provider_call() -> N
         ["Observed workshop activity (order-1).\nLimitations: Dates are incomplete."]
     )
 
-    run_profile_analysis_sweep(
+    run_profile_analysis_person(
         repository=repository,
         text_service=service,
-        batch_size=5,
+        person=ClaimedProfileAnalysisPerson(
+            person_id="person-1",
+            input_revision=7,
+            due=repository.due,
+        ),
+        claim_token="claim-token",
         claim_lease=timedelta(minutes=5),
-        max_attempts=3,
-        retry_base=timedelta(minutes=2),
-        retry_cap=timedelta(hours=1),
         clock=lambda: next(times),
         uuid_factory=_uuid_factory,
-        claim_token="claim-token",
     )
 
     assert [renewal[3] for renewal in repository.renewals] == [
@@ -716,23 +674,20 @@ def test_lost_lease_stops_before_calling_the_second_analysis_type() -> None:
     assert summary["obsolete"] == 1
 
 
-def test_naive_clock_is_rejected_before_claiming() -> None:
+def test_naive_clock_is_counted_as_an_unexpected_failure() -> None:
     repository = _Repository(_due(ProfileAnalysisType.SALES))
 
-    with pytest.raises(ValueError, match="timezone-aware"):
-        run_profile_analysis_sweep(
-            repository=repository,
-            text_service=_TextService([]),
-            batch_size=5,
-            claim_lease=timedelta(minutes=5),
-            max_attempts=3,
-            retry_base=timedelta(minutes=2),
-            retry_cap=timedelta(hours=1),
-            clock=lambda: datetime(2026, 7, 21, 2),
-            claim_token="claim-token",
-        )
+    summary = run_profile_analysis_person(
+        repository=repository,
+        text_service=_TextService([]),
+        person=ClaimedProfileAnalysisPerson("person-1", 7, repository.due),
+        claim_token="claim-token",
+        claim_lease=timedelta(minutes=5),
+        clock=lambda: datetime(2026, 7, 21, 2),
+    )
 
-    assert repository.claim_times == []
+    assert summary["unexpected_failures"] == 1
+    assert repository.releases == [("person-1", "claim-token")]
 
 
 def test_offset_aware_clock_is_normalized_to_utc_everywhere() -> None:
@@ -740,23 +695,15 @@ def test_offset_aware_clock_is_normalized_to_utc_everywhere() -> None:
     repository = _Repository(_due(ProfileAnalysisType.SALES))
     service = _TextService(["Observed workshop activity (order-1).\nLimitations: Sparse."])
 
-    run_profile_analysis_sweep(
+    run_profile_analysis_person(
         repository=repository,
         text_service=service,
-        batch_size=5,
-        claim_lease=timedelta(minutes=5),
-        max_attempts=3,
-        retry_base=timedelta(minutes=2),
-        retry_cap=timedelta(hours=1),
-        clock=lambda: offset_time,
+        person=ClaimedProfileAnalysisPerson("person-1", 7, repository.due),
         claim_token="claim-token",
+        claim_lease=timedelta(minutes=5),
+        clock=lambda: offset_time,
     )
 
-    assert repository.claim_times == [
-        (
-            datetime(2026, 7, 21, 2, tzinfo=UTC),
-            datetime(2026, 7, 21, 2, 5, tzinfo=UTC),
-        )
-    ]
+    assert repository.renewals[0][3] == datetime(2026, 7, 21, 2, 5, tzinfo=UTC)
     assert repository.attempts[0].started_at == datetime(2026, 7, 21, 2, tzinfo=UTC)
     assert repository.attempts[0].completed_at == datetime(2026, 7, 21, 2, tzinfo=UTC)

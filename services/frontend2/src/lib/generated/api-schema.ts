@@ -143,10 +143,13 @@ export interface paths {
          *     The independent sales and contact-tracing slots retain any prior
          *     successful current content while a newer revision is pending, running,
          *     or failed. Slot state is `ready` for a result at the Person's current
-         *     input revision, `running` for an active refresh claim, `retrying` for a
-         *     scheduled bounded retry, `failed` for a current-revision terminal
-         *     failure when no refresh is active, `pending` otherwise, and `disabled`
-         *     when generation is paused by rollout configuration. Overall state uses
+         *     input revision that is within its 24-hour validity period, `idle` for
+         *     invalid output with no request, `pending` for a queued on-demand request,
+         *     `running` for an active refresh claim, `retrying` for a legacy failure
+         *     whose stored retry timestamp is still in the future, `failed` for a
+         *     current-revision terminal failure when no refresh is active (including
+         *     an elapsed legacy retry timestamp), and `disabled` when generation is
+         *     paused by rollout configuration. Overall state uses
          *     this precedence: disabled, running, retrying, ready/partial, failed,
          *     then pending.
          */
@@ -168,7 +171,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Queue one on-demand Person profile analysis */
+        /** Generate one on-demand Person profile analysis */
         post: operations["requestPersonProfileAnalysis"];
         delete?: never;
         options?: never;
@@ -202,7 +205,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Requeue one recoverable failed Person profile-analysis request */
+        /** Regenerate one recoverable failed Person profile-analysis request */
         post: operations["requeueFailedPersonProfileAnalysis"];
         delete?: never;
         options?: never;
@@ -1250,17 +1253,20 @@ export interface components {
         /**
          * @description `disabled` means generation is paused by rollout configuration;
          *     `ready` means current content matches the Person input revision;
-         *     `running` means a refresh claim is active; `retrying` means a retryable
-         *     failure has a scheduled retry; `failed` means a terminal
-         *     failure exists for the current revision and no refresh is active; and
-         *     `pending` means the slot is not fresh, active, or failed.
+         *     `running` means a refresh claim is active; `retrying` is a compatibility
+         *     state for a historical failure whose stored retry timestamp is still in
+         *     the future (direct executions do not schedule new retries); `failed`
+         *     means a terminal failure exists for the current revision and no refresh
+         *     is active, including after a legacy retry timestamp elapses; and
+         *     `idle` means output is missing, stale, or expired with no active request;
+         *     `pending` means an on-demand request is queued.
          * @enum {string}
          */
         ProfileAnalysisSlotRefreshState: "disabled" | "idle" | "pending" | "running" | "retrying" | "ready" | "failed";
         /**
          * @description `disabled` means generation is paused. Otherwise this is derived from
          *     both slots. `running` takes precedence when either slot is running,
-         *     followed by `retrying` when a retry is scheduled; `ready` means both
+         *     followed by `retrying` for a future legacy retry timestamp; `ready` means both
          *     are ready; `partial` means exactly one is
          *     ready and neither is running; `failed` means neither is ready or
          *     running and at least one failed; otherwise the state is `pending`.
@@ -1346,7 +1352,7 @@ export interface components {
             request_id: string | null;
             person_id: string;
             analysis_type: components["schemas"]["ProfileAnalysisType"];
-            state: "queued" | "already_queued" | "already_valid" | "force_limited";
+            state: "queued" | "completed" | "already_queued" | "already_valid" | "force_limited";
             force: boolean;
             force_attempts_remaining: number;
             /** Format: date-time */
@@ -1360,7 +1366,7 @@ export interface components {
             request_id: string | null;
             person_id: string;
             analysis_type: components["schemas"]["ProfileAnalysisType"];
-            state: "queued" | "already_active" | "not_failed" | "retry_limited";
+            state: "queued" | "completed" | "already_active" | "not_failed" | "retry_limited";
             retry_attempts_remaining: number;
             /** Format: date-time */
             retry_available_at: string | null;
@@ -1378,7 +1384,7 @@ export interface components {
             request_id: string;
             person_id: string;
             analysis_type: components["schemas"]["ProfileAnalysisType"];
-            state: "requeued" | "not_terminal" | "already_active" | "nonrecoverable" | "revision_conflict" | "attempt_limited" | "requeue_limited";
+            state: "requeued" | "completed" | "not_terminal" | "already_active" | "nonrecoverable" | "revision_conflict" | "attempt_limited" | "requeue_limited";
         };
         ProfileAnalysisRequestRequeueResponseEnvelope: {
             data: components["schemas"]["ProfileAnalysisRequestRequeueResult"];
@@ -2177,7 +2183,7 @@ export interface operations {
             };
         };
         responses: {
-            202: {
+            200: {
                 headers: { [name: string]: unknown };
                 content: {
                     "application/json": components["schemas"]["ProfileAnalysisRequestResponseEnvelope"];
@@ -2205,7 +2211,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            202: {
+            200: {
                 headers: { [name: string]: unknown };
                 content: {
                     "application/json": components["schemas"]["ProfileAnalysisRequestRequeueResponseEnvelope"];
@@ -2235,7 +2241,7 @@ export interface operations {
             };
         };
         responses: {
-            202: {
+            200: {
                 headers: { [name: string]: unknown };
                 content: {
                     "application/json": components["schemas"]["ProfileAnalysisRetryResponseEnvelope"];

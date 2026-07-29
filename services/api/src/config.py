@@ -27,6 +27,12 @@ class AppConfig(BaseSettings):
         le=20,
         alias="PROFILE_ANALYSIS_RETRY_LIMIT",
     )
+    profile_analysis_claim_lease_seconds: int = Field(
+        default=900,
+        ge=180,
+        le=86_400,
+        alias="PROFILE_ANALYSIS_CLAIM_LEASE_SECONDS",
+    )
 
     auth_enabled: bool = Field(default=True, alias="AUTH_ENABLED")
     # Same OAuth client the frontend uses via Auth.js (AUTH_GOOGLE_ID).

@@ -64,7 +64,6 @@ from src.graph.queries import (
     GET_PERSON_SOURCE_RECORDS,
     GET_PERSON_TIMELINE,
     GET_PERSON_TIMELINE_TARGET,
-    MARK_PROFILE_ANALYSIS_REQUEST_DISPATCH_FAILED,
     REQUEUE_FAILED_PROFILE_ANALYSIS_REQUEST,
     SEARCH_PERSONS,
     build_count_persons_query,
@@ -310,10 +309,6 @@ class Neo4jPersonRepository:
             ),
         )
 
-    async def mark_profile_analysis_request_dispatch_failed(self, request_id: str) -> None:
-        async with get_session(write=True) as session:
-            await session.run(MARK_PROFILE_ANALYSIS_REQUEST_DISPATCH_FAILED, request_id=request_id)
-
     async def retry_failed_profile_analysis(
         self,
         person_id: str,
@@ -333,7 +328,7 @@ class Neo4jPersonRepository:
         if mapped is None:
             return None
         state = to_str(mapped.get("state"))
-        valid_states = {"queued", "already_active", "not_failed", "retry_limited"}
+        valid_states = {"queued", "completed", "already_active", "not_failed", "retry_limited"}
         if state not in valid_states:
             raise ValueError("invalid profile analysis retry state")
         available_at = to_iso_or_none(mapped.get("retry_available_at"))
@@ -342,7 +337,7 @@ class Neo4jPersonRepository:
             person_id=to_str(mapped.get("person_id")),
             analysis_type=analysis_type,
             state=cast(
-                Literal["queued", "already_active", "not_failed", "retry_limited"],
+                Literal["queued", "completed", "already_active", "not_failed", "retry_limited"],
                 state,
             ),
             retry_attempts_remaining=to_int(mapped.get("retry_attempts_remaining")),

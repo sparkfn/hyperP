@@ -9,7 +9,7 @@ Generate two independent, LLM-authored analyses on demand for active Persons:
 - a sales analysis that summarizes supported customer and purchase signals; and
 - a contact-tracing analysis that summarizes supported relationship and event signals.
 
-Generation is asynchronous and must never determine whether ingestion succeeds.
+Generation runs directly on demand in the API and must never determine whether ingestion succeeds.
 Only authenticated users can read the analyses. Prompts contain a minimized,
 redacted view of Person information rather than raw source data or direct
 identifiers.
@@ -22,7 +22,7 @@ This initial implementation includes:
 - current-analysis pointers maintained independently for the two analysis types;
 - ingestion-driven invalidation for accepted changes to Source Records,
   Identifiers, relationships, orders, and vehicles, without automatic generation;
-- a person-and-analysis-type targeted asynchronous worker with durable request state;
+- person-and-analysis-type targeted direct API execution with durable request state;
 - automatic on-demand requests when the Person detail page finds missing, stale, or expired output;
 - authenticated current and history APIs through `/app/v2`;
 - Next.js BFF handlers and separate Person-detail cards; and
@@ -44,25 +44,26 @@ forced-refresh control for a still-valid analysis.
 | Existing Persons | Person detail requests missing, stale, or expired output on demand |
 | Freshness | Durable Person revision plus stale-result publication guard |
 | Visibility | Authenticated Person API and UI only |
-| Trigger delivery | Dirty marker in Neo4j plus per-Person/per-type Celery request |
+| Trigger delivery | Dirty marker in Neo4j plus direct per-Person/per-type API execution |
 
 ## Architecture
 
 An accepted graph mutation and its analysis invalidation share one Neo4j
 transaction. The mutation increments `Person.analysis_input_revision` and sets
 `Person.analysis_dirty_at` for every affected active Person. This durable state
-is authoritative; Celery delivery is only a wake-up mechanism.
+is authoritative; direct API execution reads that state only when a human
+requests analysis.
 
 Ingestion only records a changed input revision and dirty timestamp; it never
 queues profile analysis or calls an LLM. When the Person detail page loads, it
-reads both slots and queues a separate request for each missing, stale, or
+reads both slots and runs a separate direct request for each missing, stale, or
 expired analysis. A successful analysis remains valid for 24 hours. A still
 valid result may be force-refreshed, limited to three accepted forced requests
 per canonical Person and analysis type in a rolling hour. Durable request and
 claim state prevents duplicate requests and keeps upstream failures from
 causing reload-driven request storms.
 
-For each claimed Person, the worker:
+For each claimed Person, the API runtime:
 
 1. reads a consistent, purpose-built profile snapshot and captures the current
    analysis input revision;
@@ -72,7 +73,7 @@ For each claimed Person, the worker:
 5. publishes a successful result as current only if the Person is still active
    and its input revision still equals the captured revision.
 
-The worker never holds a Neo4j transaction open during an LLM call. If ingestion
+The API runtime never holds a Neo4j transaction open during an LLM call. If ingestion
 changes the Person while generation is running, the result is retained as an
 obsolete historical attempt and the Person remains eligible for regeneration.
 
@@ -113,7 +114,11 @@ Each immutable `ProfileAnalysis` node contains:
 - `prompt_version`, `provider`, and `model`;
 - `started_at` and `completed_at`;
 - `failure_code`, `retryable`, and `next_retry_at` when generation fails; and
-- `attempt_number` for bounded retry behavior.
+- `attempt_number` for immutable attempt history.
+
+The retry fields remain in the stored and API history contracts for compatibility
+with earlier attempts. Direct executions persist one analysis attempt and do
+not schedule `next_retry_at`; a later attempt requires an explicit human retry.
 
 The Person owns history through:
 
@@ -134,14 +139,14 @@ pointer in one transaction. It never deletes historical nodes. Schema setup adds
 a uniqueness constraint for `analysis_id` and a composite history index covering
 `person_id`, `analysis_type`, and completion time.
 
-Person worker-state properties are operational metadata:
+Person execution-state properties are operational metadata:
 
 - `analysis_input_revision` and `analysis_dirty_at`;
 - `analysis_claim_token` and `analysis_claim_until`; and
 - `analysis_last_attempt_at`.
 
 Claims are leases, not locks held across network requests. Expired claims are
-recoverable by another worker.
+recoverable by another direct API invocation.
 
 ## Redacted Input Snapshot
 
@@ -179,8 +184,8 @@ bytes before invoking the LLM.
 
 ## LLM Contracts
 
-The ingestion service adds a purpose-specific profile-analysis service accessor
-using the existing prose-oriented Proclaude backend and shared retry settings.
+The API service owns a purpose-specific profile-analysis adapter using the
+existing prose-oriented Proclaude backend.
 Profile analysis uses the backend's plain-text chat mode rather than JSON mode,
 matching the prompt and validator contract. The model remains configurable
 through the established LLM hierarchy.
@@ -205,24 +210,25 @@ or event chronology, reachable relationship categories, data gaps, and suggested
 human follow-up priorities. It must not claim physical exposure, infection, or
 causality without explicit structured evidence.
 
-## Worker Behavior
+## Direct Execution Behavior
 
-Each Celery task claims exactly one durable `ProfileAnalysisRequest` for one
-canonical Person and one analysis type. A queued request may retry task delivery
-when the Person-level lease is held by the other analysis type. Terminal,
-missing, and inactive requests are not retried.
+Each direct API invocation claims exactly one durable `ProfileAnalysisRequest`
+for one canonical Person and one analysis type. The Person lease serializes
+concurrent direct requests. Terminal, missing, and inactive requests are not
+regenerated automatically.
 
 Sales and contact-tracing calls are isolated. A failure in one type does not
-discard or delay a successful result for the other type. Retryable transport,
-rate-limit, and transient provider failures use bounded exponential retry
-metadata. Invalid output, privacy-boundary failures, and other permanent errors
-are recorded with safe failure codes and no provider response body.
+discard or delay a successful result for the other type. Transport, rate-limit,
+and transient provider failures are recorded as terminal attempts with safe
+failure codes. Invalid output, privacy-boundary failures, and other permanent
+errors are likewise recorded without a provider response body.
 
-The worker clears its Person lease after the requested type is attempted. A
-retryable failed attempt requeues the same durable request at its bounded retry
-time; otherwise the request is completed as succeeded, failed, or obsolete.
-There is no periodic profile-analysis sweep or ingestion-triggered recovery; a
-later Person detail request may create new work when output remains invalid.
+The API runtime clears its Person lease after the requested type is attempted
+and completes the request as succeeded, failed, or obsolete. Provider failures
+may be retried only by an explicit authenticated-human request; they are not
+sent to Celery or scheduled in the background. There is no periodic
+profile-analysis sweep or ingestion-triggered recovery; a later Person detail
+request may create new work when output remains invalid.
 
 No prompt, snapshot, generated content, provider response body, credential, or
 direct identifier is written to logs. Logs may contain Person IDs, analysis IDs,
@@ -260,10 +266,12 @@ its current success has the Person's input revision and is within 24 hours,
 `idle` when invalid output has no active request,
 `running` when the slot is not fresh and an active claim covers it, `failed`
 when the slot is not fresh or running and a terminal failure exists for the
-current revision, `retrying` when that failure is retryable and scheduled, and
+current revision, `retrying` when a historical failure retains a future stored
+retry timestamp from the earlier delivery model, and
 `pending` when an on-demand request is queued. The overall state is `running`
 if either slot is running,
-then `retrying` if either has a scheduled retry, `ready` if both are ready, `partial` if exactly one is
+then `retrying` if either has a future legacy retry timestamp, `ready` if both are ready,
+`partial` if exactly one is
 ready, `failed` if neither is ready or running and at least one failed, and
 otherwise `pending`. Disabled state takes precedence for the overall response
 and prevents UI polling. A stale prior success and its content remain current while
@@ -315,8 +323,8 @@ history browser is outside this initial UI scope.
 ## Failure and Concurrency Guarantees
 
 - Ingestion success never depends on provider availability or analysis output.
-- Dirty state is committed with the accepted Person mutation, so failed Celery
-  dispatch cannot lose invalidation.
+- Dirty state is committed with the accepted Person mutation, so provider
+  availability cannot lose invalidation.
 - Duplicate or concurrent requests cannot publish more than one current pointer
   per type.
 - A result for revision `N` cannot become current after the Person advances to
@@ -350,9 +358,9 @@ Test-driven implementation covers:
   counts, a 40,000-byte ceiling, and sparse profiles;
 - every requested trigger and every non-trigger state;
 - on-demand request creation, force-budget enforcement, and request idempotency;
-- claim acquisition, expiry, and duplicate-worker behavior;
-- separate sales/contact calls, partial success, retry timing, and permanent
-  failure recording;
+- claim acquisition, expiry, and duplicate-execution behavior;
+- separate sales/contact calls, partial success, safe terminal provider-failure
+  metadata, and permanent failure recording;
 - publication guards for revision and Person-status races;
 - immutable history and one current pointer per analysis type;
 - authenticated current/request/history APIs, pagination, filtering, missing
@@ -368,8 +376,7 @@ Woodpecker PR workflow after an explicitly authorized commit, push, and PR.
 ## Acceptance Criteria
 
 1. An active Person with available supported information can receive separate
-   sales and contact-tracing analyses on demand through bounded asynchronous
-   processing.
+   sales and contact-tracing analyses through direct on-demand API processing.
 2. Accepted updates to Source Records, Identifiers, relationships, orders, and
    vehicles durably invalidate every affected active Person.
 3. Ingestion succeeds when the LLM is unavailable, and prior successful analyses

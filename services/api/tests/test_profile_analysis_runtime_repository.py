@@ -1,12 +1,11 @@
-"""Safe graph selection and mapping contracts for the analysis worker."""
+"""Safe graph selection and mapping contracts for direct profile analysis."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
 
 import pytest
-from src.graph import queries
+from src import profile_analysis_runtime_queries as queries
 from src.profile_analysis_mapping import ProfileAnalysisTemporalMappingError
 from src.profile_analysis_repository import (
     ProfileAnalysisMappingError,
@@ -16,31 +15,6 @@ from src.profile_analysis_repository import (
     map_profile_analysis_snapshot_rows,
 )
 from src.profile_analysis_snapshot import canonical_snapshot_json
-
-
-@dataclass(slots=True)
-class _ClaimState:
-    claim_token: str | None = None
-    claim_until: datetime | None = None
-
-    def preselect(self, query: str, now: datetime) -> bool:
-        assert query is queries.CLAIM_PROFILE_ANALYSIS_CANDIDATES
-        return self.claim_until is None or self.claim_until <= now
-
-    def post_lock_claim(
-        self,
-        query: str,
-        *,
-        now: datetime,
-        claim_token: str,
-        claim_until: datetime,
-    ) -> bool:
-        assert query is queries.CLAIM_PROFILE_ANALYSIS_CANDIDATES
-        if self.claim_until is not None and self.claim_until > now:
-            return False
-        self.claim_token = claim_token
-        self.claim_until = claim_until
-        return True
 
 
 @dataclass(slots=True)
@@ -66,34 +40,6 @@ class _PublicationState:
         return status
 
 
-def test_claim_query_is_active_bounded_and_uses_an_expiring_lease() -> None:
-    query = queries.CLAIM_PROFILE_ANALYSIS_CANDIDATES
-
-    assert "person.status = 'active'" in query
-    assert "person.analysis_claim_until <= $now" in query
-    assert "LIMIT $batch_size" in query
-    assert "person.analysis_claim_token = $claim_token" in query
-    assert "person.analysis_claim_until = $claim_until" in query
-    claim_lock = "SET person.analysis_claim_until = coalesce("
-    post_lock_revalidation = "WHERE person.analysis_claim_until <= $now"
-    final_claim = "person.analysis_claim_token = $claim_token"
-    assert claim_lock in query
-    claim_lock_index = query.index(claim_lock)
-    post_lock_revalidation_index = query.index(
-        post_lock_revalidation,
-        claim_lock_index + len(claim_lock),
-    )
-    final_claim_index = query.index(
-        final_claim,
-        post_lock_revalidation_index + len(post_lock_revalidation),
-    )
-    assert claim_lock_index < post_lock_revalidation_index < final_claim_index
-    assert "current_sales IS NULL" in query
-    assert "current_contact IS NULL" in query
-    assert "current_sales.input_revision < input_revision" in query
-    assert "current_contact.input_revision < input_revision" in query
-
-
 def test_claim_renewal_keeps_the_owner_revision_and_active_status_guarded() -> None:
     query = queries.RENEW_PROFILE_ANALYSIS_CLAIM
 
@@ -103,80 +49,46 @@ def test_claim_renewal_keeps_the_owner_revision_and_active_status_guarded() -> N
     assert "person.analysis_claim_until = $claim_until" in query
 
 
+def test_request_claim_locks_then_revalidates_and_ignores_legacy_retry_time() -> None:
+    query = queries.CLAIM_PROFILE_ANALYSIS_REQUEST
+
+    lock = "SET person.analysis_claim_until = coalesce("
+    revalidate = "WHERE request.status IN ['queued', 'running']"
+    final_claim = "person.analysis_claim_token = $claim_token"
+    assert query.index(lock) < query.index(revalidate) < query.index(final_claim)
+    assert "person.analysis_claim_until <= $now" in query
+    assert "request.next_retry_at IS NULL" not in query
+    assert "request.next_retry_at = null" in query
+
+
+def test_request_claim_retires_duplicate_active_requests_for_the_same_type() -> None:
+    query = queries.CLAIM_PROFILE_ANALYSIS_REQUEST
+
+    assert "duplicate.analysis_type = request.analysis_type" in query
+    assert "duplicate.request_id <> request.request_id" in query
+    assert "duplicate.status IN ['queued', 'running']" in query
+    assert "SET stale.status = 'obsolete'" in query
+
+
+def test_request_finalization_does_not_overwrite_queued_or_terminal_requests() -> None:
+    query = queries.COMPLETE_PROFILE_ANALYSIS_REQUEST
+
+    assert "request.status = 'running'" in query
+    assert "request.status IN ['queued', 'running']" not in query
+    assert "person.analysis_claim_token = $claim_token" in query
+    assert "request.status = $status" in query
+
+
+def test_only_inactive_queued_requests_are_obsoleted_without_a_claim() -> None:
+    query = queries.OBSOLETE_INACTIVE_PROFILE_ANALYSIS_REQUEST
+
+    assert "status: 'queued'" in query
+    assert "person.status <> 'active'" in query
+    assert "request.status = 'obsolete'" in query
+
+
 def test_new_profile_analysis_queries_use_scoped_subqueries() -> None:
-    queries_under_test = (
-        queries.CLAIM_PROFILE_ANALYSIS_CANDIDATES,
-        queries.PROFILE_ANALYSIS_WORK_REMAINS,
-        queries.FETCH_PROFILE_ANALYSIS_SNAPSHOT_ROWS,
-        queries.MARK_PROFILE_ANALYSIS_DIRTY,
-        queries.RETIRE_SOURCE_EVIDENCE,
-    )
-
-    assert all("CALL {\n" not in query for query in queries_under_test)
-
-
-def test_claim_query_keeps_type_retry_state_independent() -> None:
-    query = queries.CLAIM_PROFILE_ANALYSIS_CANDIDATES
-
-    assert "sales_failure.retryable = true" in query
-    assert "sales_failure.next_retry_at <= $now" in query
-    assert "contact_failure.retryable = true" in query
-    assert "contact_failure.next_retry_at <= $now" in query
-    assert query.count("failed.completed_at DESC, failed.analysis_id DESC") == 2
-    assert "sales_due OR contact_due" in query
-    assert "CASE WHEN sales_due THEN 'sales'" in query
-    assert "CASE WHEN contact_due THEN 'contact_tracing'" in query
-
-
-def test_claim_query_prioritizes_explicit_invalidations_before_backfill() -> None:
-    query = queries.CLAIM_PROFILE_ANALYSIS_CANDIDATES
-
-    priority = "CASE WHEN person.analysis_dirty_at IS NULL THEN 1 ELSE 0 END"
-    assert priority in query
-    timestamp_order = "coalesce(person.analysis_dirty_at, person.created_at)"
-    assert query.index(priority) < query.index(timestamp_order)
-
-
-def test_expired_claim_is_recovered_by_actual_claim_query_state_model() -> None:
-    now = datetime(2026, 7, 21, 2, tzinfo=UTC)
-    state = _ClaimState(
-        claim_token="dead-worker",
-        claim_until=now - timedelta(seconds=1),
-    )
-
-    selected = state.preselect(queries.CLAIM_PROFILE_ANALYSIS_CANDIDATES, now)
-    claimed = state.post_lock_claim(
-        queries.CLAIM_PROFILE_ANALYSIS_CANDIDATES,
-        now=now,
-        claim_token="recovery-worker",
-        claim_until=now + timedelta(minutes=5),
-    )
-
-    assert selected is True
-    assert claimed is True
-    assert state.claim_token == "recovery-worker"
-
-
-def test_post_lock_revalidation_excludes_duplicate_worker() -> None:
-    now = datetime(2026, 7, 21, 2, tzinfo=UTC)
-    state = _ClaimState()
-    query = queries.CLAIM_PROFILE_ANALYSIS_CANDIDATES
-
-    assert state.preselect(query, now) is True
-    assert state.preselect(query, now) is True
-    assert state.post_lock_claim(
-        query,
-        now=now,
-        claim_token="worker-a",
-        claim_until=now + timedelta(minutes=5),
-    )
-    assert not state.post_lock_claim(
-        query,
-        now=now,
-        claim_token="worker-b",
-        claim_until=now + timedelta(minutes=5),
-    )
-    assert state.claim_token == "worker-a"
+    assert "CALL {\n" not in queries.FETCH_PROFILE_ANALYSIS_SNAPSHOT_ROWS
 
 
 def test_claim_mapping_is_typed_and_preserves_due_type_attempt_numbers() -> None:
@@ -678,14 +590,6 @@ def test_release_query_requires_the_owning_claim_token() -> None:
     assert "person.analysis_claim_token = $claim_token" in query
     assert "person.analysis_claim_token = null" in query
     assert "person.analysis_claim_until = null" in query
-
-
-def test_claim_parameters_are_temporal_values_not_interpolated_text() -> None:
-    query = queries.CLAIM_PROFILE_ANALYSIS_CANDIDATES
-    now = datetime(2026, 7, 21, 2, tzinfo=UTC)
-
-    assert "$now" in query and "$claim_until" in query
-    assert now.isoformat() not in query
 
 
 def test_request_claim_query_aggregates_history_before_using_analysis_type() -> None:

@@ -2,102 +2,6 @@
 
 from __future__ import annotations
 
-_ELIGIBLE_PROFILE_ANALYSIS = """
-MATCH (person:Person)
-WHERE person.status = 'active'
-  AND (person.analysis_claim_until IS NULL OR person.analysis_claim_until <= $now)
-WITH person, coalesce(person.analysis_input_revision, 0) AS input_revision
-OPTIONAL MATCH (person)-[:CURRENT_PROFILE_ANALYSIS {analysis_type: 'sales'}]
-               ->(sales_current:ProfileAnalysis)
-WITH person, input_revision, head(collect(sales_current)) AS current_sales
-OPTIONAL MATCH (person)-[:CURRENT_PROFILE_ANALYSIS {analysis_type: 'contact_tracing'}]
-               ->(contact_current:ProfileAnalysis)
-WITH person, input_revision, current_sales,
-     head(collect(contact_current)) AS current_contact
-CALL (person, input_revision) {
-    WITH person, input_revision
-    OPTIONAL MATCH (person)-[:HAS_PROFILE_ANALYSIS]->(failed:ProfileAnalysis {
-        analysis_type: 'sales', status: 'failed', input_revision: input_revision
-    })
-    WITH failed ORDER BY failed.completed_at DESC, failed.analysis_id DESC
-    RETURN head(collect(failed)) AS sales_failure
-}
-CALL (person, input_revision) {
-    WITH person, input_revision
-    OPTIONAL MATCH (person)-[:HAS_PROFILE_ANALYSIS]->(failed:ProfileAnalysis {
-        analysis_type: 'contact_tracing', status: 'failed', input_revision: input_revision
-    })
-    WITH failed ORDER BY failed.completed_at DESC, failed.analysis_id DESC
-    RETURN head(collect(failed)) AS contact_failure
-}
-WITH person, input_revision, current_sales, current_contact,
-     current_sales IS NULL
-       OR current_sales.input_revision < input_revision AS sales_needs_refresh,
-     current_contact IS NULL
-       OR current_contact.input_revision < input_revision AS contact_needs_refresh,
-     sales_failure, contact_failure
-WITH person, input_revision,
-     sales_needs_refresh AND (
-         sales_failure IS NULL OR (
-             sales_failure.retryable = true
-             AND sales_failure.next_retry_at <= $now
-         )
-     ) AS sales_due,
-     contact_needs_refresh AND (
-         contact_failure IS NULL OR (
-             contact_failure.retryable = true
-             AND contact_failure.next_retry_at <= $now
-         )
-     ) AS contact_due
-WHERE sales_due OR contact_due
-"""
-
-
-CLAIM_PROFILE_ANALYSIS_CANDIDATES = (
-    _ELIGIBLE_PROFILE_ANALYSIS
-    + """
-WITH person, input_revision, sales_due, contact_due
-ORDER BY CASE WHEN person.analysis_dirty_at IS NULL THEN 1 ELSE 0 END,
-         coalesce(person.analysis_dirty_at, person.created_at), person.person_id
-LIMIT $batch_size
-SET person.analysis_claim_until = coalesce(
-    person.analysis_claim_until,
-    datetime({epochMillis: 0})
-)
-WITH person, input_revision, sales_due, contact_due
-WHERE person.analysis_claim_until <= $now
-SET person.analysis_claim_token = $claim_token,
-    person.analysis_claim_until = $claim_until
-WITH person, input_revision, sales_due, contact_due
-OPTIONAL MATCH (person)-[:HAS_PROFILE_ANALYSIS]->(sales_history:ProfileAnalysis {
-    analysis_type: 'sales', input_revision: input_revision
-})
-WITH person, input_revision, sales_due, contact_due,
-     count(DISTINCT sales_history) + 1 AS sales_attempt_number
-OPTIONAL MATCH (person)-[:HAS_PROFILE_ANALYSIS]->(contact_history:ProfileAnalysis {
-    analysis_type: 'contact_tracing', input_revision: input_revision
-})
-RETURN person.person_id AS person_id,
-       input_revision,
-       sales_due,
-       sales_attempt_number,
-       contact_due,
-       count(DISTINCT contact_history) + 1 AS contact_attempt_number,
-       CASE WHEN sales_due THEN 'sales' ELSE null END AS sales_type,
-       CASE WHEN contact_due THEN 'contact_tracing' ELSE null END AS contact_type
-ORDER BY person_id
-"""
-)
-
-
-PROFILE_ANALYSIS_WORK_REMAINS = (
-    _ELIGIBLE_PROFILE_ANALYSIS
-    + """
-RETURN count(person) > 0 AS has_more
-"""
-)
-
-
 RELEASE_PROFILE_ANALYSIS_CLAIM = """
 MATCH (person:Person {person_id: $person_id})
 WHERE person.analysis_claim_token = $claim_token
@@ -516,11 +420,17 @@ RETURN analysis.analysis_id AS analysis_id,
 
 CLAIM_PROFILE_ANALYSIS_REQUEST = """
 MATCH (person:Person)-[:HAS_PROFILE_ANALYSIS_REQUEST]->(request:ProfileAnalysisRequest {
-  request_id: $request_id, status: 'queued'
+  request_id: $request_id
 })
 WHERE person.status = 'active'
-  AND (request.next_retry_at IS NULL OR request.next_retry_at <= $now)
-  AND (person.analysis_claim_until IS NULL OR person.analysis_claim_until <= $now)
+// Acquire the Person write lock before revalidating request and lease state.
+SET person.analysis_claim_until = coalesce(
+  person.analysis_claim_until,
+  datetime({epochMillis: 0})
+)
+WITH person, request
+WHERE request.status IN ['queued', 'running']
+  AND person.analysis_claim_until <= $now
 WITH person, request, coalesce(person.analysis_input_revision, 0) AS input_revision
 SET person.analysis_claim_token = $claim_token,
     person.analysis_claim_until = $claim_until,
@@ -528,6 +438,19 @@ SET person.analysis_claim_token = $claim_token,
     request.started_at = datetime.realtime(),
     request.input_revision = input_revision,
     request.next_retry_at = null
+WITH person, request, input_revision
+// Older delivery behavior could leave an expired running request beside a
+// replacement queued request. Once one request owns the Person lease, retire
+// every other active request for the same type so it cannot generate again.
+OPTIONAL MATCH (person)-[:HAS_PROFILE_ANALYSIS_REQUEST]->(duplicate:ProfileAnalysisRequest)
+WHERE duplicate.analysis_type = request.analysis_type
+  AND duplicate.request_id <> request.request_id
+  AND duplicate.status IN ['queued', 'running']
+WITH person, request, input_revision, collect(duplicate) AS duplicates
+FOREACH (stale IN duplicates |
+  SET stale.status = 'obsolete',
+      stale.completed_at = datetime.realtime()
+)
 WITH person, input_revision, request.analysis_type AS analysis_type
 OPTIONAL MATCH (person)-[:HAS_PROFILE_ANALYSIS]->(history:ProfileAnalysis {
   analysis_type: analysis_type, input_revision: input_revision
@@ -544,9 +467,20 @@ RETURN person.person_id AS person_id,
 """
 
 COMPLETE_PROFILE_ANALYSIS_REQUEST = """
-MATCH (:Person)-[:HAS_PROFILE_ANALYSIS_REQUEST]->(request:ProfileAnalysisRequest {request_id: $request_id})
+MATCH (person:Person)-[:HAS_PROFILE_ANALYSIS_REQUEST]->
+      (request:ProfileAnalysisRequest {request_id: $request_id})
 WHERE request.status = 'running'
+  AND person.analysis_claim_token = $claim_token
 SET request.status = $status,
+    request.completed_at = datetime.realtime()
+RETURN true AS completed
+"""
+
+OBSOLETE_INACTIVE_PROFILE_ANALYSIS_REQUEST = """
+MATCH (person:Person)-[:HAS_PROFILE_ANALYSIS_REQUEST]->
+      (request:ProfileAnalysisRequest {request_id: $request_id, status: 'queued'})
+WHERE person.status <> 'active'
+SET request.status = 'obsolete',
     request.completed_at = datetime.realtime()
 RETURN true AS completed
 """
@@ -556,26 +490,4 @@ MATCH (person:Person)-[:HAS_PROFILE_ANALYSIS_REQUEST]->(request:ProfileAnalysisR
   request_id: $request_id, status: 'queued'
 })
 RETURN person.status = 'active' AS waiting
-"""
-
-REQUEUE_PROFILE_ANALYSIS_REQUEST_IF_RETRYABLE = """
-MATCH (person:Person)-[:HAS_PROFILE_ANALYSIS_REQUEST]->(request:ProfileAnalysisRequest {
-  request_id: $request_id, status: 'running'
-})
-CALL (person, request) {
-  WITH person, request
-  MATCH (person)-[:HAS_PROFILE_ANALYSIS]->(failure:ProfileAnalysis {
-    analysis_type: request.analysis_type,
-    input_revision: request.input_revision,
-    status: 'failed'
-  })
-  WHERE failure.retryable = true
-    AND failure.next_retry_at > datetime.realtime()
-  RETURN max(failure.next_retry_at) AS next_retry_at
-}
-WITH request, next_retry_at
-FOREACH (_ IN CASE WHEN next_retry_at IS NULL THEN [] ELSE [1] END |
-  SET request.status = 'queued', request.next_retry_at = next_retry_at
-)
-RETURN next_retry_at
 """

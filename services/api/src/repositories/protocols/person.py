@@ -98,8 +98,6 @@ class PersonRepository(Protocol):
         force: bool,
     ) -> ProfileAnalysisRequestResult | None: ...
 
-    async def mark_profile_analysis_request_dispatch_failed(self, request_id: str) -> None: ...
-
     async def retry_failed_profile_analysis(
         self,
         person_id: str,

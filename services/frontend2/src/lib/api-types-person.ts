@@ -354,7 +354,7 @@ export interface ProfileAnalysisRequestResult {
   request_id: string | null;
   person_id: string;
   analysis_type: ProfileAnalysisType;
-  state: "queued" | "already_queued" | "already_valid" | "force_limited";
+  state: "queued" | "completed" | "already_queued" | "already_valid" | "force_limited";
   force: boolean;
   force_attempts_remaining: number;
   force_available_at: string | null;
@@ -365,7 +365,7 @@ export interface ProfileAnalysisRetryResult {
   request_id: string | null;
   person_id: string;
   analysis_type: ProfileAnalysisType;
-  state: "queued" | "already_active" | "not_failed" | "retry_limited";
+  state: "queued" | "completed" | "already_active" | "not_failed" | "retry_limited";
   retry_attempts_remaining: number;
   retry_available_at: string | null;
   retry_available_at_display: string | null;

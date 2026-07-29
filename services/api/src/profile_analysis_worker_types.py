@@ -1,15 +1,19 @@
-"""Typed service, retry, and summary contracts for profile-analysis sweeps."""
+"""Typed service, retry, and summary contracts for direct profile analysis."""
 
 from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from typing import Protocol, TypedDict
 from uuid import UUID
 
-from src.llm import ChatMessage, LLMService
+import httpx
+
+from src.config import config
+from src.llm.service import ChatMessage
+from src.proclaude.service import MessageParam, ProclaudeAPIError, ProclaudeService
 from src.profile_analysis_models import ProfileAnalysisStatus
 from src.profile_analysis_repository import (
     ClaimedProfileAnalysisPerson,
@@ -18,7 +22,7 @@ from src.profile_analysis_repository import (
 )
 
 
-class ProfileAnalysisSweepSummary(TypedDict):
+class ProfileAnalysisExecutionSummary(TypedDict):
     claimed: int
     attempted: int
     succeeded: int
@@ -39,46 +43,50 @@ class ProfileAnalysisTextService(Protocol):
 
 
 class LlmProfileAnalysisTextService:
-    """Synchronous adapter around the existing asynchronous LLM hierarchy."""
+    """Synchronous adapter around the API's Proclaude client."""
 
     provider = "proclaude"
 
-    def __init__(self, service: LLMService) -> None:
+    def __init__(self, service: ProclaudeService) -> None:
         self._service = service
 
     @property
     def default_model(self) -> str:
-        return self._service.default_model
+        return config.proclaude_default_model or "claude-sonnet-4"
 
     def generate(self, messages: list[ChatMessage], *, max_tokens: int) -> str:
-        return asyncio.run(
-            self._service.chat_text(
-                messages,
-                temperature=0.0,
-                max_tokens=max_tokens,
-                preserve_output_format=True,
-            )
-        )
+        async def generate_and_close() -> str:
+            if not messages or messages[0].role != "system":
+                raise ValueError("profile analysis messages must start with a system prompt")
+            converted = [
+                MessageParam(role=message.role, content=message.content)
+                for message in messages[1:]
+                if message.role != "system"
+            ]
+            try:
+                return await self._service.create_message_text(
+                    converted,
+                    system=messages[0].content,
+                    temperature=0.0,
+                    max_tokens=max_tokens,
+                )
+            except ProclaudeAPIError as error:
+                status = error.status_code or 500
+                request = httpx.Request("POST", "https://profile-analysis-provider.invalid")
+                response = httpx.Response(status, request=request)
+                raise httpx.HTTPStatusError(
+                    "profile analysis provider rejected the request",
+                    request=request,
+                    response=response,
+                ) from error
+            finally:
+                await self._service.close()
 
-
-@dataclass(frozen=True, slots=True)
-class ProfileAnalysisRetryPolicy:
-    max_attempts: int
-    base: timedelta
-    cap: timedelta
-
-    def next_retry_at(self, due: DueProfileAnalysis, now: datetime) -> datetime | None:
-        if due.attempt_number >= self.max_attempts:
-            return None
-        multiplier = 1 << (due.attempt_number - 1)
-        delay = self.base * multiplier
-        if delay > self.cap:
-            delay = self.cap
-        return now + delay
+        return asyncio.run(generate_and_close())
 
 
 @dataclass(slots=True)
-class ProfileAnalysisSweepCounts:
+class ProfileAnalysisExecutionCounts:
     attempted: int = 0
     succeeded: int = 0
     failed: int = 0
@@ -103,7 +111,6 @@ class ProfileAnalysisAttemptContext:
     prompt_version: str
     text_service: ProfileAnalysisTextService
     started_at: datetime
-    retry_policy: ProfileAnalysisRetryPolicy
     clock: Callable[[], datetime]
     uuid_factory: Callable[[], UUID]
 

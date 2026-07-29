@@ -9,6 +9,7 @@ from src.graph.mappers_profile_analysis import (
 )
 from src.graph.queries.profile_analysis import (
     CREATE_FAILED_PROFILE_ANALYSIS_RETRY,
+    CREATE_PROFILE_ANALYSIS_REQUEST,
     GET_PERSON_PROFILE_ANALYSES,
     GET_PERSON_PROFILE_ANALYSIS_HISTORY,
     REQUEUE_FAILED_PROFILE_ANALYSIS_REQUEST,
@@ -189,6 +190,25 @@ def test_live_claim_does_not_hide_permanent_failure_for_other_due_type() -> None
     assert mapped.refresh_state == "running"
 
 
+def test_request_query_recovers_expired_running_requests_without_duplication() -> None:
+    query = CREATE_PROFILE_ANALYSIS_REQUEST
+
+    assert "active.status IN ['queued', 'running']" in query
+    assert "active_request.status = 'running'" in query
+    assert "person.analysis_claim_until <= now" in query
+    assert "THEN active_request.request_id" in query
+    assert "ORDER BY CASE active.status WHEN 'queued' THEN 0 ELSE 1 END" in query
+    assert "WITH person, now, input_revision, current, active_request" in query
+
+
+def test_request_query_reports_the_exact_rolling_force_budget_reset() -> None:
+    query = CREATE_PROFILE_ANALYSIS_REQUEST
+
+    assert "ORDER BY forced.requested_at ASC" in query
+    assert query.count("oldest_force + duration({hours: 1})") == 2
+    assert "now + duration({hours: 1})" not in query
+
+
 def test_terminal_request_requeue_query_is_revision_bound_and_privacy_safe() -> None:
     query = REQUEUE_FAILED_PROFILE_ANALYSIS_REQUEST
 
@@ -202,6 +222,7 @@ def test_terminal_request_requeue_query_is_revision_bound_and_privacy_safe() -> 
     assert "'privacy_snapshot'" not in query
     assert "request.status = 'queued'" in query
     assert "request.input_revision =" not in query
+    assert "active.status IN ['queued', 'running']" in query
 
 
 def test_user_retry_query_is_atomic_person_scoped_and_user_rate_limited() -> None:
@@ -212,9 +233,14 @@ def test_user_retry_query_is_atomic_person_scoped_and_user_rate_limited() -> Non
     assert "analysis_type: $analysis_type" in query
     assert "retry_actor_id: $retry_actor_id" in query
     assert "retry.requested_at > now - duration({hours: 1})" in query
-    assert "retry.status <> 'dispatch_failed'" not in query
     assert "retry_count >= $max_retries" in query
-    assert "failure IS NULL OR coalesce(failure.retryable, false)" in query
+    assert "coalesce(oldest_retry, now) + duration({hours: 1})" in query
+    assert "active.status IN ['queued', 'running']" in query
+    assert "active_request.status = 'running'" in query
+    assert "person.analysis_claim_until <= now" in query
+    assert "ORDER BY CASE active.status WHEN 'queued' THEN 0 ELSE 1 END" in query
+    assert "WITH person, now, state, active_request" in query
+    assert "WHEN failure IS NULL THEN 'not_failed'" in query
     assert "failure.completed_at > current.completed_at" in query
     assert "failure.analysis_id > current.analysis_id" in query
     assert "user_retry: true" in query
@@ -240,7 +266,7 @@ def test_live_claim_does_not_hide_delayed_retry_failure() -> None:
             sales_failure={
                 "failure_code": "rate_limited",
                 "retryable": True,
-                "next_retry_at": "2026-07-21T02:00:00+00:00",
+                "next_retry_at": "2099-07-21T02:00:00+00:00",
             },
         )
     )
@@ -248,6 +274,22 @@ def test_live_claim_does_not_hide_delayed_retry_failure() -> None:
     assert mapped.sales.refresh_state == "retrying"
     assert mapped.sales.failure_code is None
     assert mapped.contact_tracing.refresh_state == "running"
+
+
+def test_expired_legacy_retry_becomes_an_explicit_human_retry() -> None:
+    mapped = map_person_profile_analyses(
+        _current_record(
+            sales_failure={
+                "failure_code": "provider_unavailable",
+                "retryable": True,
+                "next_retry_at": "2026-07-21T02:00:00+00:00",
+            }
+        )
+    )
+
+    assert mapped.sales.refresh_state == "failed"
+    assert mapped.sales.auto_request_allowed is False
+    assert mapped.sales.retry_allowed is True
 
 
 def test_current_mapper_drops_unsafe_failure_code() -> None:

@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Literal, TypedDict
 
-from src.models import JsonValue, QualityFlag, RecordType
+from src.profile_analysis_domain_types import JsonValue, QualityFlag, RecordType
 from src.profile_analysis_snapshot_values import CurrencyCode, SafeSnapshotLabel, SnapshotDate
 
 SNAPSHOT_SCHEMA_VERSION: Literal["profile-analysis-snapshot-v1"] = "profile-analysis-snapshot-v1"

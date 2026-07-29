@@ -1,4 +1,4 @@
-"""Synchronous bounded sweep for independent Person profile analyses."""
+"""Synchronous execution for one claimed Person profile analysis request."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from uuid import UUID, uuid4
 
 import httpx
 
-from src.llm import ChatMessage
+from src.llm.service import ChatMessage
 from src.profile_analysis_mapping import ProfileAnalysisTemporalMappingError
 from src.profile_analysis_models import (
     ProfileAnalysisAttempt,
@@ -44,9 +44,8 @@ from src.profile_analysis_snapshot import (
 )
 from src.profile_analysis_worker_types import (
     ProfileAnalysisAttemptContext,
-    ProfileAnalysisRetryPolicy,
-    ProfileAnalysisSweepCounts,
-    ProfileAnalysisSweepSummary,
+    ProfileAnalysisExecutionCounts,
+    ProfileAnalysisExecutionSummary,
     ProfileAnalysisTextService,
     profile_analysis_clock_utc,
 )
@@ -68,60 +67,6 @@ _REPAIRABLE_OUTPUT_REASONS: frozenset[ProfileAnalysisOutputReason] = frozenset(
 )
 
 
-def run_profile_analysis_sweep(
-    *,
-    repository: ProfileAnalysisRepository,
-    text_service: ProfileAnalysisTextService,
-    batch_size: int,
-    claim_lease: timedelta,
-    max_attempts: int,
-    retry_base: timedelta,
-    retry_cap: timedelta,
-    clock: Callable[[], datetime],
-    uuid_factory: Callable[[], UUID] = uuid4,
-    claim_token: str | None = None,
-) -> ProfileAnalysisSweepSummary:
-    """Claim and process one bounded batch without holding graph transactions."""
-    _validate_settings(batch_size, claim_lease, max_attempts, retry_base, retry_cap)
-    token = claim_token or str(uuid_factory())
-    claimed_at = profile_analysis_clock_utc(clock)
-    batch = repository.claim_candidates(
-        batch_size=batch_size,
-        claim_token=token,
-        now=claimed_at,
-        claim_until=claimed_at + claim_lease,
-    )
-    counts = ProfileAnalysisSweepCounts()
-    retry_policy = ProfileAnalysisRetryPolicy(max_attempts, retry_base, retry_cap)
-    for person in batch.people:
-        try:
-            _process_person(
-                repository=repository,
-                text_service=text_service,
-                person=person,
-                retry_policy=retry_policy,
-                clock=clock,
-                uuid_factory=uuid_factory,
-                counts=counts,
-                claim_token=token,
-                claim_lease=claim_lease,
-            )
-        except Exception:
-            counts.unexpected_failures += 1
-        finally:
-            try:
-                if repository.release_claim(person_id=person.person_id, claim_token=token):
-                    counts.released += 1
-            except Exception:
-                counts.unexpected_failures += 1
-    has_more = batch.has_more
-    try:
-        has_more = repository.has_eligible_work(now=profile_analysis_clock_utc(clock))
-    except Exception:
-        counts.unexpected_failures += 1
-    return _summary(has_more, len(batch.people), counts)
-
-
 def run_profile_analysis_person(
     *,
     repository: ProfileAnalysisRepository,
@@ -129,22 +74,18 @@ def run_profile_analysis_person(
     person: ClaimedProfileAnalysisPerson,
     claim_token: str,
     claim_lease: timedelta,
-    max_attempts: int,
-    retry_base: timedelta,
-    retry_cap: timedelta,
     clock: Callable[[], datetime],
     uuid_factory: Callable[[], UUID] = uuid4,
-) -> ProfileAnalysisSweepSummary:
+    release_claim: bool = True,
+) -> ProfileAnalysisExecutionSummary:
     """Process one already claimed person/type without scanning other Persons."""
-    _validate_settings(1, claim_lease, max_attempts, retry_base, retry_cap)
-    counts = ProfileAnalysisSweepCounts()
-    retry_policy = ProfileAnalysisRetryPolicy(max_attempts, retry_base, retry_cap)
+    _validate_settings(claim_lease)
+    counts = ProfileAnalysisExecutionCounts()
     try:
         _process_person(
             repository=repository,
             text_service=text_service,
             person=person,
-            retry_policy=retry_policy,
             clock=clock,
             uuid_factory=uuid_factory,
             counts=counts,
@@ -154,20 +95,21 @@ def run_profile_analysis_person(
     except Exception:
         counts.unexpected_failures += 1
     finally:
-        try:
-            if repository.release_claim(person_id=person.person_id, claim_token=claim_token):
-                counts.released += 1
-        except Exception:
-            counts.unexpected_failures += 1
+        if release_claim:
+            try:
+                if repository.release_claim(person_id=person.person_id, claim_token=claim_token):
+                    counts.released += 1
+            except Exception:
+                counts.unexpected_failures += 1
     return _summary(False, 1, counts)
 
 
 def _summary(
     has_more: bool,
     claimed: int,
-    counts: ProfileAnalysisSweepCounts,
-) -> ProfileAnalysisSweepSummary:
-    return ProfileAnalysisSweepSummary(
+    counts: ProfileAnalysisExecutionCounts,
+) -> ProfileAnalysisExecutionSummary:
+    return ProfileAnalysisExecutionSummary(
         claimed=claimed,
         attempted=counts.attempted,
         succeeded=counts.succeeded,
@@ -184,10 +126,9 @@ def _process_person(
     repository: ProfileAnalysisRepository,
     text_service: ProfileAnalysisTextService,
     person: ClaimedProfileAnalysisPerson,
-    retry_policy: ProfileAnalysisRetryPolicy,
     clock: Callable[[], datetime],
     uuid_factory: Callable[[], UUID],
-    counts: ProfileAnalysisSweepCounts,
+    counts: ProfileAnalysisExecutionCounts,
     claim_token: str,
     claim_lease: timedelta,
 ) -> None:
@@ -212,7 +153,6 @@ def _process_person(
             repository=repository,
             text_service=text_service,
             person=person,
-            retry_policy=retry_policy,
             clock=clock,
             uuid_factory=uuid_factory,
             counts=counts,
@@ -233,7 +173,6 @@ def _process_person(
                 bundle=bundle,
                 fingerprint=fingerprint,
                 evidence=evidence,
-                retry_policy=retry_policy,
                 clock=clock,
                 uuid_factory=uuid_factory,
             )
@@ -260,7 +199,6 @@ def _generate_attempt(
     bundle: ProfileAnalysisSnapshotBundle,
     fingerprint: str,
     evidence: frozenset[str],
-    retry_policy: ProfileAnalysisRetryPolicy,
     clock: Callable[[], datetime],
     uuid_factory: Callable[[], UUID],
 ) -> ProfileAnalysisAttempt:
@@ -269,7 +207,6 @@ def _generate_attempt(
         person=person,
         due=due,
         fingerprint=fingerprint,
-        retry_policy=retry_policy,
         clock=clock,
         uuid_factory=uuid_factory,
     )
@@ -282,10 +219,10 @@ def _generate_attempt(
             bundle.known_sensitive_values,
         )
     except ProfileAnalysisPrivacyError:
-        return _failed_attempt(context, "privacy_snapshot", False)
+        return _failed_attempt(context, "privacy_snapshot")
     except ProfileAnalysisPrivacyOutputError as error:
         _log_output_validation_failure(person, due, error)
-        return _failed_attempt(context, "privacy_output", False)
+        return _failed_attempt(context, "privacy_output")
     except ProfileAnalysisOutputError as error:
         _log_output_validation_failure(person, due, error)
         return _repair_or_fail_output(
@@ -299,10 +236,9 @@ def _generate_attempt(
             error=error,
         )
     except httpx.HTTPStatusError as error:
-        code, retryable = _http_failure(error)
-        return _failed_attempt(context, code, retryable)
+        return _failed_attempt(context, _http_failure(error))
     except (httpx.TimeoutException, httpx.TransportError):
-        return _failed_attempt(context, "provider_unavailable", True)
+        return _failed_attempt(context, "provider_unavailable")
     return _succeeded_attempt(context, content)
 
 
@@ -318,21 +254,20 @@ def _repair_or_fail_output(
     error: ProfileAnalysisOutputError,
 ) -> ProfileAnalysisAttempt:
     if error.reason not in _REPAIRABLE_OUTPUT_REASONS:
-        return _failed_attempt(context, "invalid_output", False)
+        return _failed_attempt(context, "invalid_output")
     try:
         output = _call_provider(text_service, _repair_messages(messages, error.reason))
         content = validate_profile_analysis_output(output, evidence, known_sensitive_values)
     except ProfileAnalysisPrivacyOutputError as repair_error:
         _log_output_validation_failure(person, due, repair_error)
-        return _failed_attempt(context, "privacy_output", False)
+        return _failed_attempt(context, "privacy_output")
     except ProfileAnalysisOutputError as repair_error:
         _log_output_validation_failure(person, due, repair_error)
-        return _failed_attempt(context, "invalid_output", False)
+        return _failed_attempt(context, "invalid_output")
     except httpx.HTTPStatusError as repair_error:
-        code, retryable = _http_failure(repair_error)
-        return _failed_attempt(context, code, retryable)
+        return _failed_attempt(context, _http_failure(repair_error))
     except (httpx.TimeoutException, httpx.TransportError):
-        return _failed_attempt(context, "provider_unavailable", True)
+        return _failed_attempt(context, "provider_unavailable")
     return _succeeded_attempt(context, content)
 
 
@@ -369,10 +304,9 @@ def _persist_invalid_snapshot_attempts(
     repository: ProfileAnalysisRepository,
     text_service: ProfileAnalysisTextService,
     person: ClaimedProfileAnalysisPerson,
-    retry_policy: ProfileAnalysisRetryPolicy,
     clock: Callable[[], datetime],
     uuid_factory: Callable[[], UUID],
-    counts: ProfileAnalysisSweepCounts,
+    counts: ProfileAnalysisExecutionCounts,
     claim_token: str,
     claim_lease: timedelta,
     failure_code: str,
@@ -393,14 +327,13 @@ def _persist_invalid_snapshot_attempts(
             person=person,
             due=due,
             fingerprint=_INVALID_SNAPSHOT_FINGERPRINT,
-            retry_policy=retry_policy,
             clock=clock,
             uuid_factory=uuid_factory,
         )
         try:
             counts.record(
                 repository.persist_attempt(
-                    _failed_attempt(context, failure_code, False),
+                    _failed_attempt(context, failure_code),
                     claim_token=claim_token,
                 )
             )
@@ -415,7 +348,7 @@ def _renew_claim(
     claim_token: str,
     claim_lease: timedelta,
     clock: Callable[[], datetime],
-    counts: ProfileAnalysisSweepCounts,
+    counts: ProfileAnalysisExecutionCounts,
 ) -> bool:
     try:
         now = profile_analysis_clock_utc(clock)
@@ -436,7 +369,6 @@ def _attempt_context(
     person: ClaimedProfileAnalysisPerson,
     due: DueProfileAnalysis,
     fingerprint: str,
-    retry_policy: ProfileAnalysisRetryPolicy,
     clock: Callable[[], datetime],
     uuid_factory: Callable[[], UUID],
 ) -> ProfileAnalysisAttemptContext:
@@ -447,7 +379,6 @@ def _attempt_context(
         prompt_version=_prompt_version(due.analysis_type),
         text_service=text_service,
         started_at=profile_analysis_clock_utc(clock),
-        retry_policy=retry_policy,
         clock=clock,
         uuid_factory=uuid_factory,
     )
@@ -505,12 +436,8 @@ def _call_provider(
 def _failed_attempt(
     context: ProfileAnalysisAttemptContext,
     failure_code: str,
-    retryable_failure: bool,
 ) -> ProfileAnalysisAttempt:
     completed_at = profile_analysis_clock_utc(context.clock)
-    next_retry_at = (
-        context.retry_policy.next_retry_at(context.due, completed_at) if retryable_failure else None
-    )
     return ProfileAnalysisAttempt(
         analysis_id=context.uuid_factory(),
         person_id=context.person.person_id,
@@ -525,19 +452,19 @@ def _failed_attempt(
         started_at=context.started_at,
         completed_at=completed_at,
         failure_code=failure_code,
-        retryable=next_retry_at is not None,
-        next_retry_at=next_retry_at,
+        retryable=False,
+        next_retry_at=None,
         attempt_number=context.due.attempt_number,
     )
 
 
-def _http_failure(error: httpx.HTTPStatusError) -> tuple[str, bool]:
+def _http_failure(error: httpx.HTTPStatusError) -> str:
     status = error.response.status_code
     if status == 429:
-        return "provider_rate_limited", True
+        return "provider_rate_limited"
     if status >= 500:
-        return "provider_unavailable", True
-    return "provider_rejected", False
+        return "provider_unavailable"
+    return "provider_rejected"
 
 
 def _prompt_version(analysis_type: ProfileAnalysisType) -> str:
@@ -548,14 +475,6 @@ def _prompt_version(analysis_type: ProfileAnalysisType) -> str:
     )
 
 
-def _validate_settings(
-    batch_size: int,
-    claim_lease: timedelta,
-    max_attempts: int,
-    retry_base: timedelta,
-    retry_cap: timedelta,
-) -> None:
-    if batch_size < 1 or max_attempts < 1:
-        raise ValueError("profile analysis bounds must be positive")
-    if claim_lease <= timedelta(0) or retry_base <= timedelta(0) or retry_cap < retry_base:
-        raise ValueError("profile analysis durations are invalid")
+def _validate_settings(claim_lease: timedelta) -> None:
+    if claim_lease <= timedelta(0):
+        raise ValueError("profile analysis claim lease must be positive")
