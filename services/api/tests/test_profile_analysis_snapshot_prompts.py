@@ -7,7 +7,7 @@ from dataclasses import replace
 from decimal import Decimal
 
 import pytest
-from src.models import QualityFlag, RecordType
+from src.profile_analysis_domain_types import QualityFlag, RecordType
 from src.profile_analysis_output import (
     ProfileAnalysisPrivacyOutputError,
     validate_profile_analysis_output,

@@ -1,19 +1,18 @@
-"""Neo4j repository and strict mapping for asynchronous profile analysis."""
+"""Neo4j repository for direct, on-demand profile analysis."""
 
 from __future__ import annotations
 
 import math
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime
 from decimal import Decimal
 from typing import NoReturn, Protocol
 
 from neo4j import ManagedTransaction, Record
-from neo4j.time import DateTime as Neo4jDateTime
 
-from src.graph import queries
-from src.graph.client import Neo4jClient
+from src import profile_analysis_runtime_queries as queries
+from src.profile_analysis_client import Neo4jClient
 from src.profile_analysis_mapping import (
     GraphRow,
     build_profile_analysis_snapshot,
@@ -63,12 +62,6 @@ class ClaimedProfileAnalysisPerson:
 
 
 @dataclass(frozen=True, slots=True)
-class ClaimedProfileAnalysisBatch:
-    people: tuple[ClaimedProfileAnalysisPerson, ...]
-    has_more: bool
-
-
-@dataclass(frozen=True, slots=True)
 class ProfileAnalysisSnapshotBundle:
     snapshot: ProfileAnalysisSnapshot
     known_sensitive_values: tuple[KnownSensitiveValue, ...]
@@ -81,16 +74,7 @@ class ProfileAnalysisPersistenceResult:
 
 
 class ProfileAnalysisRepository(Protocol):
-    """Storage boundary used by the synchronous sweep."""
-
-    def claim_candidates(
-        self,
-        *,
-        batch_size: int,
-        claim_token: str,
-        now: datetime,
-        claim_until: datetime,
-    ) -> ClaimedProfileAnalysisBatch: ...
+    """Storage boundary used by direct, on-demand profile analysis."""
 
     def fetch_snapshot(self, person_id: str) -> ProfileAnalysisSnapshotBundle: ...
 
@@ -112,8 +96,6 @@ class ProfileAnalysisRepository(Protocol):
         claim_until: datetime,
     ) -> bool: ...
 
-    def has_eligible_work(self, *, now: datetime) -> bool: ...
-
     def claim_request(
         self,
         *,
@@ -123,11 +105,17 @@ class ProfileAnalysisRepository(Protocol):
         claim_until: datetime,
     ) -> ClaimedProfileAnalysisPerson | None: ...
 
-    def complete_request(self, *, request_id: str, status: str) -> None: ...
+    def complete_request(
+        self,
+        *,
+        request_id: str,
+        claim_token: str,
+        status: str,
+    ) -> None: ...
+
+    def obsolete_inactive_request(self, *, request_id: str) -> None: ...
 
     def request_is_waiting(self, *, request_id: str) -> bool: ...
-
-    def requeue_request_if_retryable(self, *, request_id: str) -> datetime | None: ...
 
 
 def map_claimed_profile_analysis_people(
@@ -180,32 +168,6 @@ class Neo4jProfileAnalysisRepository:
 
     def __init__(self, client: Neo4jClient) -> None:
         self._client = client
-
-    def claim_candidates(
-        self,
-        *,
-        batch_size: int,
-        claim_token: str,
-        now: datetime,
-        claim_until: datetime,
-    ) -> ClaimedProfileAnalysisBatch:
-        if batch_size < 1:
-            raise ValueError("batch_size must be positive")
-
-        def work(tx: ManagedTransaction) -> ClaimedProfileAnalysisBatch:
-            result = tx.run(
-                queries.CLAIM_PROFILE_ANALYSIS_CANDIDATES,
-                batch_size=batch_size,
-                claim_token=claim_token,
-                now=now,
-                claim_until=claim_until,
-            )
-            people = map_claimed_profile_analysis_people(result)
-            remaining = tx.run(queries.PROFILE_ANALYSIS_WORK_REMAINS, now=now).single()
-            has_more = required_bool(remaining, "has_more") if remaining is not None else False
-            return ClaimedProfileAnalysisBatch(people=people, has_more=has_more)
-
-        return self._client.execute_write(work)
 
     def fetch_snapshot(self, person_id: str) -> ProfileAnalysisSnapshotBundle:
         def work(tx: ManagedTransaction) -> ProfileAnalysisSnapshotBundle:
@@ -277,13 +239,6 @@ class Neo4jProfileAnalysisRepository:
 
         return self._client.execute_write(work)
 
-    def has_eligible_work(self, *, now: datetime) -> bool:
-        def work(tx: ManagedTransaction) -> bool:
-            record = tx.run(queries.PROFILE_ANALYSIS_WORK_REMAINS, now=now).single()
-            return record is not None and required_bool(record, "has_more")
-
-        return self._client.execute_read(work)
-
     def claim_request(
         self,
         *,
@@ -309,7 +264,13 @@ class Neo4jProfileAnalysisRepository:
 
         return self._client.execute_write(work)
 
-    def complete_request(self, *, request_id: str, status: str) -> None:
+    def complete_request(
+        self,
+        *,
+        request_id: str,
+        claim_token: str,
+        status: str,
+    ) -> None:
         if status not in {"succeeded", "failed", "obsolete"}:
             raise ValueError("invalid profile analysis request terminal status")
 
@@ -317,7 +278,17 @@ class Neo4jProfileAnalysisRepository:
             tx.run(
                 queries.COMPLETE_PROFILE_ANALYSIS_REQUEST,
                 request_id=request_id,
+                claim_token=claim_token,
                 status=status,
+            ).consume()
+
+        self._client.execute_write(work)
+
+    def obsolete_inactive_request(self, *, request_id: str) -> None:
+        def work(tx: ManagedTransaction) -> None:
+            tx.run(
+                queries.OBSOLETE_INACTIVE_PROFILE_ANALYSIS_REQUEST,
+                request_id=request_id,
             ).consume()
 
         self._client.execute_write(work)
@@ -331,24 +302,6 @@ class Neo4jProfileAnalysisRepository:
             return record is not None and required_bool(record, "waiting")
 
         return self._client.execute_read(work)
-
-    def requeue_request_if_retryable(self, *, request_id: str) -> datetime | None:
-        def work(tx: ManagedTransaction) -> datetime | None:
-            record = tx.run(
-                queries.REQUEUE_PROFILE_ANALYSIS_REQUEST_IF_RETRYABLE,
-                request_id=request_id,
-            ).single()
-            if record is None:
-                return None
-            raw = record.get("next_retry_at")
-            if raw is None:
-                return None
-            value = raw.to_native() if isinstance(raw, Neo4jDateTime) else raw
-            if not isinstance(value, datetime) or value.tzinfo is None or value.utcoffset() is None:
-                raise ProfileAnalysisMappingError("invalid profile analysis request retry time")
-            return value.astimezone(UTC)
-
-        return self._client.execute_write(work)
 
 
 def map_known_sensitive_values(

@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio
+
 from fastapi import APIRouter, Depends, Query, Request
 
 from src.auth.deps import require_human_admin, require_human_user, require_scope
 from src.auth.models import AuthUser
-from src.celery_client import enqueue_profile_analysis_request
 from src.config import AppConfig, get_config
 from src.http_utils import envelope, http_error, next_cursor, page_window
+from src.profile_analysis_service import run_profile_analysis_request
 from src.repositories.deps import get_person_repo
 from src.repositories.protocols.person import PersonRepository
 from src.types import ApiResponse
@@ -41,19 +43,19 @@ def _profile_analysis_retry_actor_id(user: AuthUser) -> str:
 async def _dispatch_profile_analysis_request(
     request_id: str,
     request: Request,
-    repo: PersonRepository,
-) -> None:
-    """Dispatch a durable request or mark it failed without exposing internals."""
+    app_config: AppConfig,
+) -> bool:
+    """Generate one requested analysis directly, outside the event loop."""
     try:
-        enqueue_profile_analysis_request(request_id)
+        summary = await asyncio.to_thread(run_profile_analysis_request, request_id, app_config)
     except Exception:
-        await repo.mark_profile_analysis_request_dispatch_failed(request_id)
         raise http_error(
             503,
-            "profile_analysis_dispatch_failed",
-            "Profile analysis could not be queued. Try again later.",
+            "profile_analysis_generation_failed",
+            "Profile analysis could not be completed. Try again later.",
             request,
         ) from None
+    return summary["attempted"] == 1
 
 
 @router.get(
@@ -102,7 +104,7 @@ async def get_person_profile_analyses(
 @router.post(
     "/{person_id}/profile-analyses/requests",
     response_model=ApiResponse[ProfileAnalysisRequestResult],
-    status_code=202,
+    status_code=200,
 )
 async def request_person_profile_analysis(
     person_id: str,
@@ -111,7 +113,7 @@ async def request_person_profile_analysis(
     repo: PersonRepository = Depends(get_person_repo),
     app_config: AppConfig = Depends(get_config),
 ) -> ApiResponse[ProfileAnalysisRequestResult]:
-    """Queue one on-demand Sales or Contact Tracing analysis generation."""
+    """Generate one on-demand Sales or Contact Tracing analysis directly."""
     if not app_config.profile_analysis_enabled:
         raise http_error(409, "profile_analysis_disabled", "Profile analysis is disabled.", request)
     result = await repo.request_profile_analysis(person_id, body.analysis_type, body.force)
@@ -133,15 +135,17 @@ async def request_person_profile_analysis(
             request,
             details=details,
         )
-    if result.state == "queued" and result.request_id is not None:
-        await _dispatch_profile_analysis_request(result.request_id, request, repo)
+    if result.request_id is not None and result.state in {"queued", "already_queued"}:
+        completed = await _dispatch_profile_analysis_request(result.request_id, request, app_config)
+        if completed:
+            result = result.model_copy(update={"state": "completed"})
     return envelope(result, request)
 
 
 @router.post(
     "/{person_id}/profile-analyses/retries",
     response_model=ApiResponse[ProfileAnalysisRetryResult],
-    status_code=202,
+    status_code=200,
 )
 async def retry_failed_person_profile_analysis(
     person_id: str,
@@ -184,15 +188,17 @@ async def retry_failed_person_profile_analysis(
             "The selected profile analysis is no longer failed.",
             request,
         )
-    if result.state == "queued" and result.request_id is not None:
-        await _dispatch_profile_analysis_request(result.request_id, request, repo)
+    if result.request_id is not None and result.state in {"queued", "already_active"}:
+        completed = await _dispatch_profile_analysis_request(result.request_id, request, app_config)
+        if completed:
+            result = result.model_copy(update={"state": "completed"})
     return envelope(result, request)
 
 
 @router.post(
     "/{person_id}/profile-analyses/requests/{request_id}/requeue",
     response_model=ApiResponse[ProfileAnalysisRequestRequeueResult],
-    status_code=202,
+    status_code=200,
 )
 async def requeue_failed_person_profile_analysis(
     person_id: str,
@@ -219,7 +225,9 @@ async def requeue_failed_person_profile_analysis(
             "Profile analysis request cannot be requeued.",
             request,
         )
-    await _dispatch_profile_analysis_request(result.request_id, request, repo)
+    completed = await _dispatch_profile_analysis_request(result.request_id, request, app_config)
+    if completed:
+        result = result.model_copy(update={"state": "completed"})
     return envelope(result, request)
 
 

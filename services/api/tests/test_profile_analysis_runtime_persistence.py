@@ -8,7 +8,7 @@ from uuid import UUID
 
 import pytest
 from pydantic import ValidationError
-from src.graph import queries
+from src import profile_analysis_runtime_queries as queries
 from src.profile_analysis_models import (
     ProfileAnalysisAttempt,
     ProfileAnalysisStatus,

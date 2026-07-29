@@ -111,7 +111,6 @@ CALL (person, now) {
     analysis_type: 'sales', force: true
   })
   WHERE request.requested_at > now - duration({hours: 1})
-    AND request.status <> 'dispatch_failed'
   WITH request ORDER BY request.requested_at ASC
   RETURN count(request) AS sales_force_count, head(collect(request.requested_at)) AS sales_oldest_force
 }
@@ -121,7 +120,6 @@ CALL (person, now) {
     analysis_type: 'contact_tracing', force: true
   })
   WHERE request.requested_at > now - duration({hours: 1})
-    AND request.status <> 'dispatch_failed'
   WITH request ORDER BY request.requested_at ASC
   RETURN count(request) AS contact_force_count, head(collect(request.requested_at)) AS contact_oldest_force
 }
@@ -208,17 +206,25 @@ WITH person, now, coalesce(person.analysis_input_revision, 0) AS input_revision
 OPTIONAL MATCH (person)-[:CURRENT_PROFILE_ANALYSIS {analysis_type: $analysis_type}]
                ->(current:ProfileAnalysis)
 WITH person, now, input_revision, head(collect(current)) AS current
-OPTIONAL MATCH (person)-[:HAS_PROFILE_ANALYSIS_REQUEST]->(active:ProfileAnalysisRequest {
-  analysis_type: $analysis_type
-})
-WHERE active.status = 'queued'
-   OR (active.status = 'running' AND person.analysis_claim_until > now)
-WITH person, now, input_revision, current, count(active) > 0 AS active_request
+CALL (person) {
+  WITH person
+  OPTIONAL MATCH (person)-[:HAS_PROFILE_ANALYSIS_REQUEST]->(active:ProfileAnalysisRequest {
+    analysis_type: $analysis_type
+  })
+  WHERE active.status IN ['queued', 'running']
+  WITH active
+  ORDER BY CASE active.status WHEN 'queued' THEN 0 ELSE 1 END,
+           active.requested_at,
+           active.request_id
+  RETURN head(collect(active)) AS active_request
+}
+WITH person, now, input_revision, current, active_request
 OPTIONAL MATCH (person)-[:HAS_PROFILE_ANALYSIS_REQUEST]->(forced:ProfileAnalysisRequest {
   analysis_type: $analysis_type, force: true
 })
 WHERE forced.requested_at > now - duration({hours: 1})
-  AND forced.status <> 'dispatch_failed'
+WITH person, now, input_revision, current, active_request, forced
+ORDER BY forced.requested_at ASC
 WITH person, now, input_revision, current, active_request,
      count(forced) AS force_count,
      head(collect(forced.requested_at)) AS oldest_force
@@ -228,7 +234,7 @@ WITH person, now, input_revision, active_request, force_count, oldest_force,
        AND current.input_revision = input_revision
        AND current.completed_at + duration({hours: 24}) > now AS valid
 WITH person, now, input_revision, active_request, force_count, oldest_force, valid,
-     NOT active_request
+     active_request IS NULL
        AND ($force OR NOT valid)
        AND (NOT $force OR force_count < 3) AS should_create
 FOREACH (_ IN CASE WHEN should_create THEN [1] ELSE [] END |
@@ -246,30 +252,31 @@ FOREACH (_ IN CASE WHEN should_create THEN [1] ELSE [] END |
 WITH person, now, active_request, force_count, oldest_force, valid, should_create
 RETURN person.person_id AS person_id,
        CASE
-         WHEN active_request THEN 'already_queued'
+         WHEN active_request IS NOT NULL THEN 'already_queued'
          WHEN NOT $force AND valid THEN 'already_valid'
          WHEN $force AND force_count >= 3 THEN 'force_limited'
          ELSE 'queued'
        END AS state,
-       CASE WHEN should_create THEN $request_id ELSE null END AS request_id,
+       CASE
+         WHEN should_create THEN $request_id
+         WHEN active_request.status = 'queued' THEN active_request.request_id
+         WHEN active_request.status = 'running'
+           AND (person.analysis_claim_until IS NULL OR person.analysis_claim_until <= now)
+           THEN active_request.request_id
+         ELSE null
+       END AS request_id,
        CASE
          WHEN force_count + CASE WHEN should_create AND $force THEN 1 ELSE 0 END >= 3 THEN 0
          ELSE 3 - force_count - CASE WHEN should_create AND $force THEN 1 ELSE 0 END
        END AS force_attempts_remaining,
        CASE
          WHEN force_count >= 3 THEN oldest_force + duration({hours: 1})
-         WHEN force_count = 2 AND should_create AND $force THEN now + duration({hours: 1})
+         WHEN force_count = 2 AND should_create AND $force
+           THEN oldest_force + duration({hours: 1})
          ELSE null
        END AS force_available_at
 """
 )
-
-MARK_PROFILE_ANALYSIS_REQUEST_DISPATCH_FAILED = """
-MATCH (:Person)-[:HAS_PROFILE_ANALYSIS_REQUEST]->(request:ProfileAnalysisRequest {request_id: $request_id})
-WHERE request.status = 'queued'
-SET request.status = 'dispatch_failed', request.completed_at = datetime.realtime()
-RETURN true AS updated
-"""
 
 CREATE_FAILED_PROFILE_ANALYSIS_RETRY = (
     _RESOLVE_PROFILE_ANALYSIS_PERSON
@@ -302,9 +309,12 @@ CALL (person, now) {
   OPTIONAL MATCH (person)-[:HAS_PROFILE_ANALYSIS_REQUEST]->(active:ProfileAnalysisRequest {
     analysis_type: $analysis_type
   })
-  WHERE active.status = 'queued'
-     OR (active.status = 'running' AND person.analysis_claim_until > now)
-  RETURN count(active) > 0 AS active_request
+  WHERE active.status IN ['queued', 'running']
+  WITH active
+  ORDER BY CASE active.status WHEN 'queued' THEN 0 ELSE 1 END,
+           active.requested_at,
+           active.request_id
+  RETURN head(collect(active)) AS active_request
 }
 CALL (person, now) {
   WITH person, now
@@ -318,8 +328,8 @@ CALL (person, now) {
 }
 WITH person, now, input_revision, failure, active_request, retry_count, oldest_retry,
      CASE
-       WHEN failure IS NULL OR coalesce(failure.retryable, false) THEN 'not_failed'
-       WHEN active_request THEN 'already_active'
+       WHEN failure IS NULL THEN 'not_failed'
+       WHEN active_request IS NOT NULL THEN 'already_active'
        WHEN retry_count >= $max_retries THEN 'retry_limited'
        ELSE 'queued'
      END AS state
@@ -338,16 +348,24 @@ FOREACH (_ IN CASE WHEN state = 'queued' THEN [1] ELSE [] END |
   })
   CREATE (person)-[:HAS_PROFILE_ANALYSIS_REQUEST]->(request)
 )
-WITH person, state, retry_count, oldest_retry,
+WITH person, now, state, active_request, retry_count, oldest_retry,
      CASE WHEN state = 'queued' THEN 1 ELSE 0 END AS created_count
 RETURN person.person_id AS person_id,
-       CASE WHEN state = 'queued' THEN $request_id ELSE null END AS request_id,
+       CASE
+         WHEN state = 'queued' THEN $request_id
+         WHEN state = 'already_active' AND active_request.status = 'queued'
+           THEN active_request.request_id
+         WHEN state = 'already_active' AND active_request.status = 'running'
+           AND (person.analysis_claim_until IS NULL OR person.analysis_claim_until <= now)
+           THEN active_request.request_id
+         ELSE null
+       END AS request_id,
        state,
        CASE WHEN retry_count + created_count >= $max_retries
          THEN 0 ELSE $max_retries - retry_count - created_count END
          AS retry_attempts_remaining,
        CASE WHEN retry_count + created_count >= $max_retries
-         THEN oldest_retry + duration({hours: 1}) ELSE null END
+         THEN coalesce(oldest_retry, now) + duration({hours: 1}) ELSE null END
          AS retry_available_at
 """
 )
@@ -365,10 +383,7 @@ CALL (person, request, now) {
   OPTIONAL MATCH (person)-[:HAS_PROFILE_ANALYSIS_REQUEST]->(active:ProfileAnalysisRequest)
   WHERE request IS NOT NULL
     AND active.analysis_type = request.analysis_type
-    AND (
-      active.status = 'queued'
-      OR (active.status = 'running' AND person.analysis_claim_until > now)
-    )
+    AND active.status IN ['queued', 'running']
     AND active.request_id <> request.request_id
   RETURN count(active) > 0 AS active_request
 }

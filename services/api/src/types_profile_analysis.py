@@ -126,7 +126,7 @@ class ProfileAnalysisRequestResult(BaseModel):
     request_id: str | None
     person_id: str
     analysis_type: ProfileAnalysisType
-    state: Literal["queued", "already_queued", "already_valid", "force_limited"]
+    state: Literal["queued", "completed", "already_queued", "already_valid", "force_limited"]
     force: bool
     force_attempts_remaining: int = Field(ge=0, le=3)
     force_available_at: str | None
@@ -143,6 +143,7 @@ class ProfileAnalysisRequestRequeueResult(BaseModel):
     analysis_type: ProfileAnalysisType
     state: Literal[
         "requeued",
+        "completed",
         "not_terminal",
         "already_active",
         "nonrecoverable",
@@ -160,7 +161,7 @@ class ProfileAnalysisRetryResult(BaseModel):
     request_id: str | None
     person_id: str
     analysis_type: ProfileAnalysisType
-    state: Literal["queued", "already_active", "not_failed", "retry_limited"]
+    state: Literal["queued", "completed", "already_active", "not_failed", "retry_limited"]
     retry_attempts_remaining: int = Field(ge=0, le=PROFILE_ANALYSIS_USER_RETRY_LIMIT)
     retry_available_at: str | None
     retry_available_at_display: str | None

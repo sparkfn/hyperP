@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from src.llm import ChatMessage
+from src.llm.service import ChatMessage
 from src.profile_analysis_snapshot import (
     KnownSensitiveValue,
     ProfileAnalysisPrivacyError,

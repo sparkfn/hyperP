@@ -724,7 +724,10 @@ Per-slot `refresh_state` semantics are:
 - `ready`: the current successful analysis matches the Person input revision and is within its 24-hour validity window.
 - `idle`: the slot has missing, stale, or expired output but no request is active; the Person detail page may request it automatically.
 - `running`: the slot is not fresh and has an active generation claim.
-- `retrying`: generation failed transiently and a bounded retry is scheduled.
+- `retrying`: compatibility state for a historical retryable failure whose stored
+  retry timestamp is still in the future; after that timestamp it becomes
+  `failed` and requires an explicit human retry. Direct executions do not
+  schedule new retries.
 - `failed`: the slot is not fresh, is not actively running, and has a terminal
   failure for the current input revision. `failure_code` contains only a safe
   lower-case code (or `null` if the stored value is unsafe).
@@ -740,7 +743,7 @@ Overall `refresh_state` is derived from the two slots with this precedence:
 
 - `disabled` when profile-analysis generation is disabled;
 - `running` when either slot is running;
-- `retrying` when neither slot is running and either has a scheduled retry;
+- `retrying` when neither slot is running and either has a future legacy retry timestamp;
 - `ready` when both slots are ready;
 - `partial` when exactly one slot is ready and neither is running;
 - `failed` when neither slot is ready or running and at least one has failed; or
@@ -758,25 +761,25 @@ it is not public and is not available to OAuth2 machine clients.
 
 The request body contains the failed `analysis_type`. The server resolves the
 canonical Person, verifies that a terminal failure exists at its current input
-revision, and creates a fresh queued request. If an analysis request for the
-same type is already queued or live-running, it returns that state without
-creating or dispatching a duplicate request.
+revision, creates a fresh request, and runs it directly. If an analysis request
+for the same type is already active, it returns that state without creating a
+duplicate request.
 
 Retries are limited atomically to **three submitted attempts in a rolling hour
 per authenticated user and canonical Person**, shared across both analysis
-types. A dispatch failure is marked as `dispatch_failed`; although it does not
-reach the analysis provider, the submitted retry still counts toward the hourly
-request budget. The current profile-analysis response exposes
+types. A direct generation failure still counts toward the hourly request
+budget. The current profile-analysis response exposes
 `retry_allowed`, `retry_attempts_remaining`, and `retry_available_at` on each
 slot so the UI can disable the retry control before submitting.
 
-It returns `202` when a retry is queued (or the same type is already active),
+It returns `200` when a retry completes (or the same type is already active),
 `409` when the selected slot is no longer terminally failed, `429` when the
-user's rolling retry budget is exhausted, and `503` when Celery dispatch fails.
+user's rolling retry budget is exhausted, and `503` when direct generation
+cannot complete.
 
 ## POST /v1/persons/{person_id}/profile-analyses/requests/{request_id}/requeue
 
-Requeue one terminal failed profile-analysis request after an operator has
+Regenerate one terminal failed profile-analysis request after an operator has
 corrected a recoverable source-data, prompt, or provider-contract issue. This
 is an authenticated human-administrator endpoint served only through the
 `/api/app/v2` mount; it is not public and is not available to OAuth2 machine
@@ -788,8 +791,8 @@ Person's current input revision, have no queued or live-running request of the
 same analysis type, stay below the configured attempt limit, and not have used
 its one operator requeue. It permits only `invalid_snapshot`,
 `invalid_snapshot_temporal`, `invalid_output`, and `provider_rejected` failure
-codes. `privacy_snapshot`, `privacy_output`, transient scheduled retries, and
-unknown failure codes are never requeued automatically.
+codes. `privacy_snapshot`, `privacy_output`, transient provider failures, and
+unknown failure codes are not eligible for operator requeue.
 
 ### Response
 
@@ -799,7 +802,7 @@ unknown failure codes are never requeued automatically.
     "request_id": "d5be6caa-7d38-4b8b-8b4c-f2e2a11709fd",
     "person_id": "7af4b5f5-34c1-4f22-9e2d-95ea8ff3b8c7",
     "analysis_type": "sales",
-    "state": "requeued"
+    "state": "completed"
   },
   "meta": {
     "request_id": "..."
@@ -808,8 +811,8 @@ unknown failure codes are never requeued automatically.
 ```
 
 It returns `404` when the Person or request cannot be resolved, `409` when the
-request is not eligible for requeue, and `503` if the durable request could not
-be delivered to Celery after it was requeued.
+request is not eligible for requeue, and `503` if direct generation cannot
+complete after the request is requeued.
 
 ## GET /v1/persons/{person_id}/profile-analyses/history
 

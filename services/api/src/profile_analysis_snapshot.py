@@ -10,7 +10,7 @@ from decimal import Decimal, InvalidOperation
 
 from pydantic import TypeAdapter, ValidationError
 
-from src.models import JsonValue
+from src.profile_analysis_domain_types import JsonValue
 from src.profile_analysis_snapshot_types import (
     SNAPSHOT_SCHEMA_VERSION,
     AgeBand,

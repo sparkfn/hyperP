@@ -221,19 +221,25 @@ def _map_slot(
     valid_until = (
         datetime.fromisoformat(current.valid_until).astimezone(UTC) if current is not None else None
     )
-    expired = valid_until is not None and valid_until <= datetime.now(UTC)
+    now = datetime.now(UTC)
+    expired = valid_until is not None and valid_until <= now
     valid = current is not None and not stale and not expired
     failure = _as_record(failure_value)
     retryable = _optional_bool(failure, "retryable") if failure else None
     next_retry_at = _optional_timestamp(failure, "next_retry_at") if failure else None
     if retryable is True and next_retry_at is None:
         raise ValueError("retryable profile analysis failure requires next_retry_at")
+    retry_scheduled = (
+        retryable is True
+        and next_retry_at is not None
+        and datetime.fromisoformat(next_retry_at).astimezone(UTC) > now
+    )
     state = _slot_state(
         valid=valid,
         claim_active=claim_active,
         request_queued=request_queued,
         failure_exists=bool(failure),
-        retry_scheduled=retryable is True,
+        retry_scheduled=retry_scheduled,
     )
     return ProfileAnalysisSlot(
         current=current,
@@ -259,8 +265,7 @@ def _map_slot(
             not valid
             and not claim_active
             and not request_queued
-            and not (retryable is True and next_retry_at is not None)
-            and not (failure and retryable is False)
+            and not failure
         ),
         next_retry_at=next_retry_at,
         next_retry_at_display=(

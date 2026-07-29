@@ -15,7 +15,6 @@ from src.graph.queries.profile_analysis import (
     CREATE_PROFILE_ANALYSIS_REQUEST,
     GET_PERSON_PROFILE_ANALYSES,
     GET_PERSON_PROFILE_ANALYSIS_HISTORY,
-    MARK_PROFILE_ANALYSIS_REQUEST_DISPATCH_FAILED,
     REQUEUE_FAILED_PROFILE_ANALYSIS_REQUEST,
 )
 from src.repositories.neo4j.person import Neo4jPersonRepository
@@ -228,6 +227,37 @@ async def test_request_profile_analysis_uses_write_transaction_and_maps_result(
 
 
 @pytest.mark.anyio
+async def test_existing_queued_request_id_is_preserved_for_direct_recovery(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    transaction = _Session(
+        _Record(
+            {
+                "person_id": "canonical-person",
+                "state": "already_queued",
+                "request_id": "existing-request",
+                "force_attempts_remaining": 3,
+                "force_available_at": None,
+            }
+        )
+    )
+    session = _WriteSession(transaction)
+
+    @asynccontextmanager
+    async def fake_get_session(write: bool = False) -> AsyncIterator[_WriteSession]:
+        assert write is True
+        yield session
+
+    monkeypatch.setattr(person_module, "get_session", fake_get_session)
+
+    result = await Neo4jPersonRepository().request_profile_analysis("person-1", "sales", False)
+
+    assert result is not None
+    assert result.state == "already_queued"
+    assert result.request_id == "existing-request"
+
+
+@pytest.mark.anyio
 async def test_current_profile_analysis_retrieval_remains_read_only(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -308,24 +338,6 @@ async def test_retry_failed_profile_analysis_uses_atomic_write_and_maps_budget(
     assert result.request_id == "retry-request-1"
     assert result.state == "queued"
     assert result.retry_attempts_remaining == 2
-
-
-@pytest.mark.anyio
-async def test_dispatch_failure_marker_uses_write_session(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    session = _Session(None)
-    write_modes = _install_session(monkeypatch, session)
-
-    await Neo4jPersonRepository().mark_profile_analysis_request_dispatch_failed("request-1")
-
-    assert write_modes == [True]
-    assert session.calls == [
-        (
-            MARK_PROFILE_ANALYSIS_REQUEST_DISPATCH_FAILED,
-            {"request_id": "request-1"},
-        )
-    ]
 
 
 @pytest.mark.anyio

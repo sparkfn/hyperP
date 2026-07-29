@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Literal, cast
 
 import pytest
@@ -12,6 +13,7 @@ from src.auth.deps import get_current_user_or_oauth_client, require_active_user
 from src.auth.models import AuthUser
 from src.auth.oauth_client_models import OAuthClientUser
 from src.config import AppConfig, get_config
+from src.profile_analysis_worker_types import ProfileAnalysisExecutionSummary
 from src.repositories.deps import get_person_repo
 from src.types_profile_analysis import (
     PersonProfileAnalyses,
@@ -26,6 +28,7 @@ from starlette.routing import Mount
 
 type RequeueState = Literal[
     "requeued",
+    "completed",
     "not_terminal",
     "already_active",
     "nonrecoverable",
@@ -33,7 +36,10 @@ type RequeueState = Literal[
     "attempt_limited",
     "requeue_limited",
 ]
-type RetryState = Literal["queued", "already_active", "not_failed", "retry_limited"]
+type RetryState = Literal["queued", "completed", "already_active", "not_failed", "retry_limited"]
+type RequestState = Literal[
+    "queued", "completed", "already_queued", "already_valid", "force_limited"
+]
 
 
 def _pending() -> PersonProfileAnalyses:
@@ -86,6 +92,38 @@ def _history_item() -> ProfileAnalysisHistoryItem:
     )
 
 
+def _record_completed_generation(
+    processed: list[str],
+) -> Callable[[str, AppConfig], ProfileAnalysisExecutionSummary]:
+    def run(request_id: str, _config: AppConfig) -> ProfileAnalysisExecutionSummary:
+        processed.append(request_id)
+        return {
+            "claimed": 1,
+            "attempted": 1,
+            "succeeded": 1,
+            "failed": 0,
+            "obsolete": 0,
+            "unexpected_failures": 0,
+            "released": 1,
+            "has_more": False,
+        }
+
+    return run
+
+
+def _empty_generation(_request_id: str, _config: AppConfig) -> ProfileAnalysisExecutionSummary:
+    return {
+        "claimed": 0,
+        "attempted": 0,
+        "succeeded": 0,
+        "failed": 0,
+        "obsolete": 0,
+        "unexpected_failures": 0,
+        "released": 0,
+        "has_more": False,
+    }
+
+
 class _ProfileAnalysisRepo:
     def __init__(self) -> None:
         self.missing = False
@@ -95,10 +133,12 @@ class _ProfileAnalysisRepo:
         self.request_args: tuple[str, ProfileAnalysisType, bool] | None = None
         self.requeue_args: tuple[str, str, int] | None = None
         self.retry_args: tuple[str, ProfileAnalysisType, str] | None = None
-        self.dispatch_failed_request_ids: list[str] = []
         self.force_limited = False
+        self.request_state: RequestState = "queued"
+        self.request_id: str | None = "request-1"
         self.requeue_state: RequeueState = "requeued"
         self.retry_state: RetryState = "queued"
+        self.retry_request_id: str | None = "retry-request-1"
         self.retry_available_at: str | None = None
 
     async def get_profile_analyses(
@@ -131,18 +171,15 @@ class _ProfileAnalysisRepo:
         if self.missing:
             return None
         return ProfileAnalysisRequestResult(
-            request_id="request-1",
+            request_id=self.request_id,
             person_id=person_id,
             analysis_type=analysis_type,
-            state="force_limited" if self.force_limited else "queued",
+            state="force_limited" if self.force_limited else self.request_state,
             force=force,
             force_attempts_remaining=0 if self.force_limited else (2 if force else 3),
             force_available_at=("2026-07-27T02:00:00+00:00" if self.force_limited else None),
             force_available_at_display=("27 Jul 2026, 02:00 AM" if self.force_limited else None),
         )
-
-    async def mark_profile_analysis_request_dispatch_failed(self, request_id: str) -> None:
-        self.dispatch_failed_request_ids.append(request_id)
 
     async def retry_failed_profile_analysis(
         self,
@@ -154,7 +191,7 @@ class _ProfileAnalysisRepo:
         if self.missing:
             return None
         return ProfileAnalysisRetryResult(
-            request_id="retry-request-1" if self.retry_state == "queued" else None,
+            request_id=self.retry_request_id,
             person_id=person_id,
             analysis_type=analysis_type,
             state=self.retry_state,
@@ -389,12 +426,12 @@ def test_current_route_404s_for_missing_person() -> None:
     assert response.json()["error"]["code"] == "person_not_found"
 
 
-def test_request_route_queues_one_independent_analysis(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_request_route_runs_one_independent_analysis(monkeypatch: pytest.MonkeyPatch) -> None:
     repo = _ProfileAnalysisRepo()
-    queued: list[str] = []
+    processed: list[str] = []
     monkeypatch.setattr(
-        "src.routes.person_profile_analysis.enqueue_profile_analysis_request",
-        lambda request_id: queued.append(request_id),
+        "src.routes.person_profile_analysis.run_profile_analysis_request",
+        _record_completed_generation(processed),
     )
 
     response = _authenticated_client(repo).post(
@@ -402,9 +439,72 @@ def test_request_route_queues_one_independent_analysis(monkeypatch: pytest.Monke
         json={"analysis_type": "sales", "force": False},
     )
 
-    assert response.status_code == 202
+    assert response.status_code == 200
     assert repo.request_args == ("person-1", "sales", False)
-    assert queued == ["request-1"]
+    assert processed == ["request-1"]
+    assert response.json()["data"]["state"] == "completed"
+
+
+def test_request_route_recovers_an_existing_queued_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = _ProfileAnalysisRepo()
+    repo.request_state = "already_queued"
+    processed: list[str] = []
+    monkeypatch.setattr(
+        "src.routes.person_profile_analysis.run_profile_analysis_request",
+        _record_completed_generation(processed),
+    )
+
+    response = _authenticated_client(repo).post(
+        "/app/v2/persons/person-1/profile-analyses/requests",
+        json={"analysis_type": "sales", "force": False},
+    )
+
+    assert response.status_code == 200
+    assert processed == ["request-1"]
+    assert response.json()["data"]["state"] == "completed"
+
+
+def test_request_route_preserves_active_state_when_another_caller_claimed_first(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = _ProfileAnalysisRepo()
+    repo.request_state = "already_queued"
+    monkeypatch.setattr(
+        "src.routes.person_profile_analysis.run_profile_analysis_request",
+        _empty_generation,
+    )
+
+    response = _authenticated_client(repo).post(
+        "/app/v2/persons/person-1/profile-analyses/requests",
+        json={"analysis_type": "sales", "force": False},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["data"]["state"] == "already_queued"
+
+
+def test_request_route_does_not_duplicate_a_live_running_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = _ProfileAnalysisRepo()
+    repo.request_state = "already_queued"
+    repo.request_id = None
+    processed: list[str] = []
+    monkeypatch.setattr(
+        "src.routes.person_profile_analysis.run_profile_analysis_request",
+        _record_completed_generation(processed),
+    )
+
+    response = _authenticated_client(repo).post(
+        "/app/v2/persons/person-1/profile-analyses/requests",
+        json={"analysis_type": "sales", "force": False},
+    )
+
+    assert response.status_code == 200
+    assert processed == []
+    assert response.json()["data"]["state"] == "already_queued"
 
 
 def test_request_route_returns_force_limit_availability() -> None:
@@ -424,14 +524,14 @@ def test_request_route_returns_force_limit_availability() -> None:
     }
 
 
-def test_retry_route_queues_terminal_failure_for_current_human(
+def test_retry_route_runs_terminal_failure_for_current_human(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     repo = _ProfileAnalysisRepo()
-    queued: list[str] = []
+    processed: list[str] = []
     monkeypatch.setattr(
-        "src.routes.person_profile_analysis.enqueue_profile_analysis_request",
-        lambda request_id: queued.append(request_id),
+        "src.routes.person_profile_analysis.run_profile_analysis_request",
+        _record_completed_generation(processed),
     )
 
     response = _authenticated_client(repo).post(
@@ -439,10 +539,55 @@ def test_retry_route_queues_terminal_failure_for_current_human(
         json={"analysis_type": "sales"},
     )
 
-    assert response.status_code == 202
+    assert response.status_code == 200
     assert repo.retry_args == ("person-1", "sales", "person@example.com")
-    assert queued == ["retry-request-1"]
+    assert processed == ["retry-request-1"]
+    assert response.json()["data"]["state"] == "completed"
     assert response.json()["data"]["retry_attempts_remaining"] == 2
+
+
+def test_retry_route_recovers_an_existing_queued_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = _ProfileAnalysisRepo()
+    repo.retry_state = "already_active"
+    repo.retry_request_id = "existing-retry-request"
+    processed: list[str] = []
+    monkeypatch.setattr(
+        "src.routes.person_profile_analysis.run_profile_analysis_request",
+        _record_completed_generation(processed),
+    )
+
+    response = _authenticated_client(repo).post(
+        "/app/v2/persons/person-1/profile-analyses/retries",
+        json={"analysis_type": "sales"},
+    )
+
+    assert response.status_code == 200
+    assert processed == ["existing-retry-request"]
+    assert response.json()["data"]["state"] == "completed"
+
+
+def test_retry_route_does_not_duplicate_a_live_running_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = _ProfileAnalysisRepo()
+    repo.retry_state = "already_active"
+    repo.retry_request_id = None
+    processed: list[str] = []
+    monkeypatch.setattr(
+        "src.routes.person_profile_analysis.run_profile_analysis_request",
+        _record_completed_generation(processed),
+    )
+
+    response = _authenticated_client(repo).post(
+        "/app/v2/persons/person-1/profile-analyses/retries",
+        json={"analysis_type": "sales"},
+    )
+
+    assert response.status_code == 200
+    assert processed == []
+    assert response.json()["data"]["state"] == "already_active"
 
 
 def test_retry_route_returns_rate_limit_availability() -> None:
@@ -476,17 +621,17 @@ def test_retry_route_rejects_when_failure_is_no_longer_current() -> None:
     assert response.json()["error"]["code"] == "profile_analysis_retry_not_failed"
 
 
-def test_retry_route_marks_dispatch_failure_for_budget_accounting(
+def test_retry_route_returns_safe_direct_generation_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     repo = _ProfileAnalysisRepo()
 
-    def fail_dispatch(_request_id: str) -> None:
-        raise RuntimeError("broker unavailable")
+    def fail_generation(_request_id: str, _config: AppConfig) -> None:
+        raise RuntimeError("provider unavailable")
 
     monkeypatch.setattr(
-        "src.routes.person_profile_analysis.enqueue_profile_analysis_request",
-        fail_dispatch,
+        "src.routes.person_profile_analysis.run_profile_analysis_request",
+        fail_generation,
     )
 
     response = _authenticated_client(repo).post(
@@ -495,8 +640,7 @@ def test_retry_route_marks_dispatch_failure_for_budget_accounting(
     )
 
     assert response.status_code == 503
-    assert response.json()["error"]["code"] == "profile_analysis_dispatch_failed"
-    assert repo.dispatch_failed_request_ids == ["retry-request-1"]
+    assert response.json()["error"]["code"] == "profile_analysis_generation_failed"
 
 
 def test_requeue_route_requires_human_admin() -> None:
@@ -507,24 +651,24 @@ def test_requeue_route_requires_human_admin() -> None:
     assert response.status_code == 403
 
 
-def test_requeue_route_dispatches_one_safe_terminal_request(
+def test_requeue_route_runs_one_safe_terminal_request(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     repo = _ProfileAnalysisRepo()
-    queued: list[str] = []
+    processed: list[str] = []
     monkeypatch.setattr(
-        "src.routes.person_profile_analysis.enqueue_profile_analysis_request",
-        lambda request_id: queued.append(request_id),
+        "src.routes.person_profile_analysis.run_profile_analysis_request",
+        _record_completed_generation(processed),
     )
 
     response = _principal_client(repo, _admin_user()).post(
         "/app/v2/persons/person-1/profile-analyses/requests/request-1/requeue"
     )
 
-    assert response.status_code == 202
+    assert response.status_code == 200
     assert repo.requeue_args == ("person-1", "request-1", 3)
-    assert queued == ["request-1"]
-    assert response.json()["data"]["state"] == "requeued"
+    assert processed == ["request-1"]
+    assert response.json()["data"]["state"] == "completed"
 
 
 def test_requeue_route_rejects_nonrecoverable_terminal_request() -> None:

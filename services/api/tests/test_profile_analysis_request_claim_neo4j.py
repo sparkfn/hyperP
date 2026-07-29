@@ -13,8 +13,8 @@ from datetime import UTC, datetime, timedelta
 from urllib.parse import urlparse
 
 import pytest
-from src.config import Settings
-from src.graph.client import Neo4jClient
+from src.config import AppConfig
+from src.profile_analysis_client import Neo4jClient
 from src.profile_analysis_mapping import ProfileAnalysisTemporalMappingError
 from src.profile_analysis_repository import Neo4jProfileAnalysisRepository
 
@@ -32,7 +32,7 @@ def neo4j_client() -> Iterator[Neo4jClient]:
         pytest.fail("HYPERP_NEO4J_PROFILE_ANALYSIS_TEST_PASSWORD is required")
 
     client = Neo4jClient(
-        Settings(
+        AppConfig(
             neo4j_uri=uri,
             neo4j_user=os.getenv("HYPERP_NEO4J_PROFILE_ANALYSIS_TEST_USER", "neo4j"),
             neo4j_password=password,
@@ -50,9 +50,11 @@ def neo4j_client() -> Iterator[Neo4jClient]:
 
 
 @pytest.mark.parametrize("analysis_type", ("sales", "contact_tracing"))
-def test_request_claim_query_compiles_and_claims_each_analysis_type(
+@pytest.mark.parametrize("request_status", ("queued", "running"))
+def test_request_claim_query_compiles_and_claims_queued_or_expired_running_request(
     neo4j_client: Neo4jClient,
     analysis_type: str,
+    request_status: str,
 ) -> None:
     now = datetime(2026, 7, 28, 4, tzinfo=UTC)
     other_analysis_type = "contact_tracing" if analysis_type == "sales" else "sales"
@@ -63,7 +65,7 @@ def test_request_claim_query_compiles_and_claims_each_analysis_type(
               person_id: 'person-1', status: 'active', analysis_input_revision: 7
             })
             CREATE (request:ProfileAnalysisRequest {
-              request_id: 'request-1', status: 'queued', analysis_type: $analysis_type
+              request_id: 'request-1', status: $request_status, analysis_type: $analysis_type
             })
             CREATE (person)-[:HAS_PROFILE_ANALYSIS_REQUEST]->(request)
             CREATE (person)-[:HAS_PROFILE_ANALYSIS]->(:ProfileAnalysis {
@@ -75,6 +77,7 @@ def test_request_claim_query_compiles_and_claims_each_analysis_type(
             """,
             analysis_type=analysis_type,
             other_analysis_type=other_analysis_type,
+            request_status=request_status,
         ).consume()
 
     repository = Neo4jProfileAnalysisRepository(neo4j_client)
@@ -97,7 +100,11 @@ def test_request_claim_query_compiles_and_claims_each_analysis_type(
             """
         ).single(strict=True)
 
-    repository.complete_request(request_id="request-1", status="succeeded")
+    repository.complete_request(
+        request_id="request-1",
+        claim_token="claim-token",
+        status="succeeded",
+    )
     with neo4j_client.session() as session:
         terminal_state = session.run(
             """

@@ -14,7 +14,6 @@ from src.llm import (
     OpenAIService,
     ProclaudeService,
 )
-from src.profile_analysis_worker_types import LlmProfileAnalysisTextService
 
 
 def _patch_client(monkeypatch: pytest.MonkeyPatch, handler: httpx.MockTransport) -> None:
@@ -259,48 +258,6 @@ async def test_proclaude_service_can_request_plain_text_for_summaries(
     assert out == "=== Summary 0 ===\nCustomer asked for a quote."
     body = captured["body"]
     assert isinstance(body, dict)
-    assert "response_format" not in body
-
-
-def test_profile_analysis_adapter_requests_plain_text(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    captured: dict[str, object] = {}
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        import json as _json
-
-        captured["body"] = _json.loads(request.content)
-        return httpx.Response(
-            200,
-            json={
-                "choices": [
-                    {
-                        "message": {
-                            "role": "assistant",
-                            "content": "Observed activity.\nLimitations: Evidence is sparse.",
-                        }
-                    }
-                ]
-            },
-        )
-
-    _patch_client(monkeypatch, httpx.MockTransport(handler))
-    service = ProclaudeService(
-        base_url="https://proclaude.test",
-        api_key="k",
-        default_model="profile-model",
-    )
-
-    output = LlmProfileAnalysisTextService(service).generate(
-        [ChatMessage(role="user", content="Analyze this safe snapshot")],
-        max_tokens=700,
-    )
-
-    assert output == "Observed activity.\nLimitations: Evidence is sparse."
-    body = captured["body"]
-    assert isinstance(body, dict)
-    assert body["max_tokens"] == 700
     assert "response_format" not in body
 
 

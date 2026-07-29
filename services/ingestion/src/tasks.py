@@ -19,12 +19,11 @@ import time
 import uuid
 from collections.abc import Iterator
 from contextlib import ExitStack, contextmanager
-from datetime import UTC, datetime, timedelta
 from typing import TypedDict, cast
 
 import redis
 from celery import Task
-from celery.exceptions import Reject, Retry
+from celery.exceptions import Reject
 from neo4j import ManagedTransaction
 from pydantic.types import JsonValue
 
@@ -39,12 +38,10 @@ from src.graph.migrations import (
     reconcile_projection_relationship_lifecycle,
     reconcile_source_record_lifecycle,
 )
-from src.ingestion_config import get_ingestion_config
 from src.lifecycle_reconciliation_queue import (
     LifecycleReconciliationTask,
     release_lifecycle_reconciliation_queue_gate,
 )
-from src.llm import get_profile_analysis_service
 from src.main import (
     IngestionSummary,
     finalize_ingest_run,
@@ -54,12 +51,6 @@ from src.main import (
 )
 from src.matching.pair_score import score_person_pair
 from src.pipeline_person_pairs import _ENGINE_VERSION, _POLICY_VERSION
-from src.profile_analysis_repository import Neo4jProfileAnalysisRepository
-from src.profile_analysis_worker import run_profile_analysis_person
-from src.profile_analysis_worker_types import (
-    LlmProfileAnalysisTextService,
-    ProfileAnalysisSweepSummary,
-)
 
 logger = logging.getLogger(__name__)
 
@@ -383,84 +374,6 @@ def _terminal_run_summary(
     }
 
 
-def _empty_profile_analysis_summary(
-    *,
-    unexpected_failures: int = 0,
-    has_more: bool = False,
-) -> ProfileAnalysisSweepSummary:
-    return {
-        "claimed": 0,
-        "attempted": 0,
-        "succeeded": 0,
-        "failed": 0,
-        "obsolete": 0,
-        "unexpected_failures": unexpected_failures,
-        "released": 0,
-        "has_more": has_more,
-    }
-
-
-def _run_profile_analysis_request_once(
-    request_id: str,
-) -> tuple[ProfileAnalysisSweepSummary, datetime | None]:
-    """Claim and process exactly one durable on-demand analysis request."""
-    settings = get_settings()
-    profile_config = settings.profile_analysis
-    llm_config = get_ingestion_config().llm
-    client = Neo4jClient(settings)
-    claim_token = uuid.uuid4().hex
-    repository = Neo4jProfileAnalysisRepository(client)
-    request_claimed = False
-    try:
-        now = datetime.now(UTC)
-        person = repository.claim_request(
-            request_id=request_id,
-            claim_token=claim_token,
-            now=now,
-            claim_until=now + profile_config.claim_lease,
-        )
-        if person is None:
-            # A queued request may be waiting behind the other analysis type's
-            # Person-level lease. Terminal, missing, and inactive requests must
-            # not consume all Celery retries on duplicate delivery.
-            waiting = repository.request_is_waiting(request_id=request_id)
-            return _empty_profile_analysis_summary(has_more=waiting), now if waiting else None
-        request_claimed = True
-        text_service = LlmProfileAnalysisTextService(get_profile_analysis_service())
-        summary = run_profile_analysis_person(
-            repository=repository,
-            text_service=text_service,
-            person=person,
-            claim_token=claim_token,
-            claim_lease=profile_config.claim_lease,
-            max_attempts=profile_config.retry_limit,
-            retry_base=timedelta(seconds=llm_config.retry_base_delay_seconds),
-            retry_cap=timedelta(seconds=llm_config.retry_max_delay_seconds),
-            clock=lambda: datetime.now(UTC),
-        )
-        request_status = (
-            "succeeded"
-            if summary["succeeded"] > 0
-            else "obsolete"
-            if summary["obsolete"] > 0
-            else "failed"
-        )
-        next_retry_at = repository.requeue_request_if_retryable(request_id=request_id)
-        if next_retry_at is not None:
-            return summary, next_retry_at
-        repository.complete_request(request_id=request_id, status=request_status)
-        return summary, None
-    except Exception:
-        if request_claimed:
-            try:
-                repository.complete_request(request_id=request_id, status="failed")
-            except Exception:
-                logger.exception("Failed to finalize profile-analysis request %s", request_id)
-        raise
-    finally:
-        client.close()
-
-
 def run_lifecycle_reconciliation() -> LifecycleReconciliationSummary:
     """Repair lifecycle deltas while serializing concurrent repair attempts."""
     with _acquire_source_lock("lifecycle-reconciliation"), _acquire_init_lock():
@@ -658,32 +571,6 @@ def reconcile_lifecycle_task(self: Task) -> LifecycleReconciliationSummary:
         if task_id is not None:
             release_lifecycle_reconciliation_queue_gate(str(task_id))
 
-
-@celery_app.task(
-    name="src.tasks.run_profile_analysis_request_task",
-    bind=True,
-    max_retries=120,
-)
-def run_profile_analysis_request_task(
-    self: Task,
-    request_id: str,
-) -> ProfileAnalysisSweepSummary:
-    """Run one user/page-requested Person analysis without scanning other Persons."""
-    settings = get_settings()
-    setup_logging(settings.log_level)
-    if not settings.profile_analysis.enabled:
-        return _empty_profile_analysis_summary()
-    try:
-        summary, retry_at = _run_profile_analysis_request_once(request_id)
-        if retry_at is not None and self.request.retries < self.max_retries:
-            countdown = max(1, int((retry_at - datetime.now(UTC)).total_seconds()))
-            raise self.retry(countdown=countdown)
-        return summary
-    except Retry:
-        raise
-    except Exception:
-        logger.exception("Profile-analysis request failed; safe_code=request_failed")
-        return _empty_profile_analysis_summary(unexpected_failures=1)
 
 
 @celery_app.task(

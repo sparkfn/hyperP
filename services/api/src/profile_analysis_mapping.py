@@ -9,7 +9,7 @@ from datetime import date, datetime
 
 from neo4j import Record
 
-from src.models import QualityFlag, RecordType
+from src.profile_analysis_domain_types import QualityFlag, RecordType
 from src.profile_analysis_snapshot import (
     AgeBand,
     CompletenessBand,
