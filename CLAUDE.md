@@ -79,8 +79,9 @@ Eight Docker containers defined in `docker-compose.yml`:
 | `api` | `services/api/Dockerfile` | `http://api:3000` | FastAPI/uvicorn; not exposed directly |
 | `frontend2` | `services/frontend2/Dockerfile` | `http://frontend2:3001` | Next.js **v2** (active app); served at the web root; not exposed directly |
 | `web` | `nginx:1.27-alpine` | exposed on `:80` | Reverse proxy. Longest-prefix routing: `/api/app/*` and `/api/oauth2/*` → FastAPI mounts (path preserved, no strip — mounts need the `/api` prefix kept); `/api/*` → FastAPI (strips `/api`, root_path `/api`); `/` (catch-all) → `frontend2` |
-| `worker` | `services/ingestion/Dockerfile` | — | Celery worker; `celery -A src.celery_app worker` |
-| `beat` | `services/ingestion/Dockerfile` | — | Celery beat scheduler; cron schedules from env vars |
+| `ingestion-worker` | `services/ingestion/Dockerfile` | — | Celery worker restricted to the `ingestion` queue; concurrency fixed at 2 in code |
+| `lifecycle-worker` | `services/ingestion/Dockerfile` | — | Celery worker for `lifecycle` and `miscellaneous`; concurrency fixed at 2 in code |
+| `beat` | `services/ingestion/Dockerfile` | — | Celery beat scheduler; fixed weekly ingestion groups run at 01:00 UTC |
 
 **FastAPI mounts & root surface:** the root app (`src/app.py`) registers only cross-cutting and unauthenticated routes — `GET /api/health`, the machine OAuth2 token flow (`/api/v1/oauth/{token,jwks}`), and the public share-link pages (`/api/v1/public/...`). Every **authenticated business route is mount-only** — the root app no longer serves `/api/v1/persons`, `/api/v1/entities`, etc. Two sub-apps built from the same `src/routes/*` routers carry the authenticated contract: `/app/v2` (the active frontend2 UI contract, `/v1` stripped — `frontend_app.py`) and `/oauth2/v1` (machine OAuth2 — token/jwks + read-only persons list/detail, client-credentials only, `/v1/oauth` → `/oauth2/v1/{token,jwks}` — `oauth2_app.py`). The legacy `/app/v1` frontend contract has been retired along with the v1 frontend. `src/router_copy.py` centralizes the route-copying (strip-`/v1` by default, with optional path filter/transform). To add or remove an endpoint from a mount, change the router membership in the relevant builder, not `app.py`.
 
@@ -241,10 +242,13 @@ Always dispatch via Celery — never call `run_ingestion()` directly:
 # Live source (pulls from configured SSH gateway / external DB):
 run_ingestion_task.delay(source_key, mode="batch")
 
-# File-based (dump): dump_path MUST be relative to DUMPS_ROOT (/app/dumps inside the worker container)
+# File-based (dump): dump_path MUST be relative to DUMPS_ROOT
+# (/app/dumps inside the ingestion-worker container)
 run_ingestion_task.delay(source_key, mode="dump", dump_path="limited-100/fundbox_users_100.sql")
 ```
-The task enforces a Redis-backed cluster-wide concurrency cap (`MAX_CONCURRENT_INGESTIONS`, default 1 in code, overridden to 4 in docker-compose) and retries automatically if a slot is busy.
+The task enforces a fixed Redis-backed cluster-wide concurrency cap of 2 and
+retries automatically if a slot is busy. Celery worker concurrency is also
+fixed at 2 in `src/celery_app.py`; it is not environment-configurable.
 
 **⚠️ `limited-100` dumps are for local and development environments only — never use them in staging or production.**
 
@@ -268,6 +272,11 @@ The task enforces a Redis-backed cluster-wide concurrency cap (`MAX_CONCURRENT_I
 | `onediver:sales` | dump | `limited-100/onediver_sales_100.sql` |
 
 `eko_phppos`, `bitrix_chat`, and `whatsapp_chat` need an SSH gateway in `batch` mode — without one, use `mode='dump'` with `dump_path`. `bitrix_chat` additionally supports incremental `api` and manual `backfill` modes through the Bitrix Open Lines REST client.
+
+Weekly API-ingestion chain dispatch is disabled by default. Set
+`scheduled_ingestion.enabled` to `true` in the mounted ingestion-config JSON to allow the
+scheduled dispatcher task to publish its chains. The dispatcher reads this switch at task
+start, before it claims an idempotency marker or publishes any ingestion task.
 
 `sgbankruptcy` and `sgrentalflats` are **dump-only by design** — they have no live/batch connector (they exist only in the dump connectors factory), so dispatching them with `mode='batch'` raises `KeyError`/`ValueError` and the Celery task Rejects immediately. Always dispatch them with `mode='dump'` and a `dump_path`.
 

@@ -151,7 +151,6 @@ def test_single_entity_connector_factory_builds_only_requested_client(
 @dataclass(frozen=True)
 class TaskSettings:
     log_level: str = "INFO"
-    max_concurrent_ingestions: int = 1
 
 
 def test_celery_task_forwards_entity_key(monkeypatch: MonkeyPatch) -> None:
@@ -166,7 +165,7 @@ def test_celery_task_forwards_entity_key(monkeypatch: MonkeyPatch) -> None:
     monkeypatch.setattr(tasks, "_acquire_source_lock", lambda _source_key: NullContext())
     monkeypatch.setattr(tasks, "_acquire_ingestion_slot", lambda _slots: NullContext())
     monkeypatch.setattr(tasks, "_renew_ingestion_leases", lambda *_args: NullContext())
-    monkeypatch.setattr(tasks, "run_lifecycle_reconciliation", lambda: None)
+    monkeypatch.setattr(tasks.reconcile_lifecycle_task, "apply_async", lambda **_options: None)
 
     def run(
         source_key: str,
@@ -175,7 +174,9 @@ def test_celery_task_forwards_entity_key(monkeypatch: MonkeyPatch) -> None:
         *,
         entity_key: str | None,
         initialize_graph: bool,
+        incremental: bool,
     ) -> dict[str, JsonValue]:
+        assert incremental is True
         calls.append((source_key, mode, dump_path, entity_key, initialize_graph))
         return {
             "source_key": source_key,

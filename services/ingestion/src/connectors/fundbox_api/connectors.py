@@ -84,6 +84,14 @@ class FundboxApiConnector(SourceConnector):
                 self._track_watermark(composite)
                 yield self.build_record(composite)
 
+            if self._previous_source_ids is None:
+                # The initial/full request already enumerated every current
+                # source ID. A second unfiltered pass cannot reconcile
+                # retirements without a prior baseline and only doubles load.
+                self.current_source_ids = emitted_ids
+                self.reconciliation_completed = True
+                return
+
             current_ids: set[int] = set()
             for composite in self._client.iter_source(self.resource):
                 root_id = self._root_id(composite)
@@ -93,11 +101,7 @@ class FundboxApiConnector(SourceConnector):
                     yield self.build_record(composite)
 
             retired_at = datetime.now(UTC).isoformat()
-            missing_ids = (
-                set()
-                if self._previous_source_ids is None
-                else self._previous_source_ids - current_ids
-            )
+            missing_ids = self._previous_source_ids - current_ids
             for root_id in sorted(missing_ids):
                 yield {
                     "_retire_source_record_id": self.source_record_id(root_id),

@@ -1,8 +1,9 @@
-"""Celery producer client used by the API to enqueue ingestion-worker tasks.
+"""Celery producer client used by the API to enqueue background tasks.
 
 The API is not a Celery worker — it only needs to submit tasks to the shared
-Redis broker so the ingestion service can execute them. ``get_celery_app``
-creates a lazy producer-only Celery app wired from ``config.celery_broker_url``.
+Redis broker so the dedicated ingestion or lifecycle/miscellaneous worker can
+execute them. ``get_celery_app`` creates a lazy producer-only Celery app wired
+from ``config.celery_broker_url``.
 """
 
 from __future__ import annotations
@@ -18,6 +19,8 @@ logger = logging.getLogger(__name__)
 
 _RECALCULATE_PAIR_AUDIT_TASK = "src.tasks.recalculate_pair_audit_match_task"
 _RUN_INGESTION_TASK = "src.tasks.run_ingestion_task"
+_INGESTION_QUEUE = "ingestion"
+_MISCELLANEOUS_QUEUE = "miscellaneous"
 
 
 @lru_cache(maxsize=1)
@@ -32,18 +35,22 @@ def get_celery_app() -> Celery:
 
 
 def enqueue_match_recalculation(review_case_ids: list[str]) -> None:
-    """Queue the ingestion worker to re-score each person-pair review case.
+    """Queue the miscellaneous worker to re-score person-pair review cases.
 
     Safe to call with an empty list. Tasks are sent to the shared Redis broker
-    and consumed by the ingestion Celery worker; failures here are logged but
-    do not fail the API request.
+    and consumed by the lifecycle/miscellaneous Celery worker; failures here
+    are logged but do not fail the API request.
     """
     if not review_case_ids:
         return
     try:
         app = get_celery_app()
         for review_case_id in review_case_ids:
-            app.send_task(_RECALCULATE_PAIR_AUDIT_TASK, args=(review_case_id,))
+            app.send_task(
+                _RECALCULATE_PAIR_AUDIT_TASK,
+                args=(review_case_id,),
+                queue=_MISCELLANEOUS_QUEUE,
+            )
     except Exception:
         logger.exception(
             "Failed to enqueue match recalculation tasks for %d review case(s)",
@@ -63,4 +70,5 @@ def enqueue_ingestion_run(
         _RUN_INGESTION_TASK,
         args=(source_key, mode, dump_path),
         kwargs={"ingest_run_id": ingest_run_id},
+        queue=_INGESTION_QUEUE,
     )

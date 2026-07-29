@@ -24,7 +24,7 @@ def test_connector_factory_supports_api_and_backfill(monkeypatch: MonkeyPatch) -
     monkeypatch.setattr(
         main,
         "create_bitrix_openlines_connector",
-        lambda mode: calls.append(mode) or connector,
+        lambda mode, *, incremental=True: calls.append(mode) or connector,
     )
 
     assert main.get_connector("bitrix_chat", mode="api") is connector

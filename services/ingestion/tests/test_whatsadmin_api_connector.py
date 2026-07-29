@@ -117,6 +117,52 @@ class TimeoutClient(StubClient):
         }
 
 
+def test_full_extraction_omits_incremental_state_and_does_not_commit_watermark(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    class FullClient(StubClient):
+        def __init__(self) -> None:
+            self.changed_since_values: list[str | None] = []
+
+        def iter_chat_pages(
+            self,
+            session_id: str,
+            changed_since: str | None,
+            cursor: str | None = None,
+        ) -> Iterator[ChatPage]:
+            assert session_id == "ses_1"
+            assert cursor is None
+            self.changed_since_values.append(changed_since)
+            yield from StubClient.iter_chat_pages(self, session_id, "2026-07-16T00:00:00+00:00")
+
+    class FullWatermark(StubWatermark):
+        def get(self, entity_key: WhatsAdminEntity, session_id: str) -> datetime | None:
+            raise AssertionError("full extraction must not load a watermark")
+
+        def set(
+            self,
+            entity_key: WhatsAdminEntity,
+            session_id: str,
+            value: datetime,
+        ) -> None:
+            raise AssertionError("full extraction must not commit a watermark")
+
+    monkeypatch.setattr(
+        "src.connectors.whatsadmin_api.connector.process_whatsapp_bundles",
+        lambda _bundles, **_kwargs: iter(()),
+    )
+    client = FullClient()
+    connector = WhatsAdminChatApiConnector(
+        (client,),
+        FullWatermark(),
+        incremental=False,
+    )
+
+    assert list(connector.fetch_records()) == []
+    connector.commit_watermark()
+    assert client.changed_since_values == [None]
+
+
 def test_connector_reports_session_checkpoint_when_page_fetch_times_out() -> None:
     connector = WhatsAdminChatApiConnector((TimeoutClient(),), StubWatermark())
 
@@ -237,9 +283,7 @@ def test_rejected_record_does_not_advance_page_checkpoint(
 
     monkeypatch.setattr(
         "src.connectors.whatsadmin_api.connector.process_whatsapp_bundles",
-        lambda _bundles, **_kwargs: iter(
-            ({"source_record_id": "record-1"},)
-        ),
+        lambda _bundles, **_kwargs: iter(({"source_record_id": "record-1"},)),
     )
     watermark = CheckpointWatermark()
     connector = WhatsAdminChatApiConnector((StubClient(),), watermark)

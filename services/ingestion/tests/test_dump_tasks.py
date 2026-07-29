@@ -2,11 +2,50 @@
 
 from __future__ import annotations
 
+from typing import Protocol
+
 import pytest
 from _test_helpers import NullContext as _NullContext
 from _test_helpers import TaskSettings as _Settings
 from celery.exceptions import Reject, Retry
 from pytest import MonkeyPatch
+
+
+class _IngestionStub(Protocol):
+    def __call__(
+        self,
+        source_key: str,
+        mode: str,
+        dump_path: str | None = None,
+        *,
+        initialize_graph: bool = True,
+        incremental: bool = True,
+    ) -> dict[str, object]: ...
+
+
+def _successful_ingestion_stub(
+    calls: list[tuple[str, str, str | None, bool]],
+) -> _IngestionStub:
+    def run(
+        source_key: str,
+        mode: str,
+        dump_path: str | None = None,
+        *,
+        initialize_graph: bool = True,
+        incremental: bool = True,
+    ) -> dict[str, object]:
+        assert incremental is True
+        calls.append((source_key, mode, dump_path, initialize_graph))
+        return {
+            "source_key": source_key,
+            "mode": mode,
+            "records_fetched": 0,
+            "records_written": 0,
+            "matches_evaluated": 0,
+            "dump_path": dump_path,
+        }
+
+    return run
 
 
 def test_run_ingestion_task_passes_dump_path(monkeypatch: MonkeyPatch) -> None:
@@ -21,21 +60,8 @@ def test_run_ingestion_task_passes_dump_path(monkeypatch: MonkeyPatch) -> None:
     monkeypatch.setattr(tasks, "_acquire_init_lock", lambda: _NullContext())
     monkeypatch.setattr(tasks, "_acquire_source_lock", lambda source_key: _NullContext())
     monkeypatch.setattr(tasks, "_acquire_ingestion_slot", lambda max_slots: _NullContext())
-    monkeypatch.setattr(
-        tasks,
-        "run_ingestion",
-        lambda source_key, mode, dump_path=None, initialize_graph=True: (
-            calls.append((source_key, mode, dump_path, initialize_graph))
-            or {
-                "source_key": source_key,
-                "mode": mode,
-                "records_fetched": 0,
-                "records_written": 0,
-                "matches_evaluated": 0,
-                "dump_path": dump_path,
-            }
-        ),
-    )
+    monkeypatch.setattr(tasks.reconcile_lifecycle_task, "apply_async", lambda **_options: None)
+    monkeypatch.setattr(tasks, "run_ingestion", _successful_ingestion_stub(calls))
 
     result = tasks.run_ingestion_task.run("whatsapp_chat", "dump", "whatsapp.sql")
 
@@ -55,21 +81,8 @@ def test_run_ingestion_task_passes_sggov_dump_paths(monkeypatch: MonkeyPatch) ->
     monkeypatch.setattr(tasks, "_acquire_init_lock", lambda: _NullContext())
     monkeypatch.setattr(tasks, "_acquire_source_lock", lambda source_key: _NullContext())
     monkeypatch.setattr(tasks, "_acquire_ingestion_slot", lambda max_slots: _NullContext())
-    monkeypatch.setattr(
-        tasks,
-        "run_ingestion",
-        lambda source_key, mode, dump_path=None, initialize_graph=True: (
-            calls.append((source_key, mode, dump_path, initialize_graph))
-            or {
-                "source_key": source_key,
-                "mode": mode,
-                "records_fetched": 0,
-                "records_written": 0,
-                "matches_evaluated": 0,
-                "dump_path": dump_path,
-            }
-        ),
-    )
+    monkeypatch.setattr(tasks.reconcile_lifecycle_task, "apply_async", lambda **_options: None)
+    monkeypatch.setattr(tasks, "run_ingestion", _successful_ingestion_stub(calls))
 
     bankruptcy = tasks.run_ingestion_task.run(
         "sgbankruptcy",
@@ -103,21 +116,8 @@ def test_run_ingestion_task_passes_sgbankruptcy_api_mode(
     monkeypatch.setattr(tasks, "_acquire_init_lock", lambda: _NullContext())
     monkeypatch.setattr(tasks, "_acquire_source_lock", lambda source_key: _NullContext())
     monkeypatch.setattr(tasks, "_acquire_ingestion_slot", lambda max_slots: _NullContext())
-    monkeypatch.setattr(
-        tasks,
-        "run_ingestion",
-        lambda source_key, mode, dump_path=None, initialize_graph=True: (
-            calls.append((source_key, mode, dump_path, initialize_graph))
-            or {
-                "source_key": source_key,
-                "mode": mode,
-                "records_fetched": 0,
-                "records_written": 0,
-                "matches_evaluated": 0,
-                "dump_path": dump_path,
-            }
-        ),
-    )
+    monkeypatch.setattr(tasks.reconcile_lifecycle_task, "apply_async", lambda **_options: None)
+    monkeypatch.setattr(tasks, "run_ingestion", _successful_ingestion_stub(calls))
 
     result = tasks.run_ingestion_task.run("sgbankruptcy", "api")
 
@@ -138,11 +138,17 @@ def test_run_ingestion_task_reuses_api_created_ingest_run(
     monkeypatch.setattr(tasks, "_acquire_init_lock", lambda: _NullContext())
     monkeypatch.setattr(tasks, "_acquire_source_lock", lambda source_key: _NullContext())
     monkeypatch.setattr(tasks, "_acquire_ingestion_slot", lambda max_slots: _NullContext())
+    monkeypatch.setattr(tasks.reconcile_lifecycle_task, "apply_async", lambda **_options: None)
     status_checks: list[str] = []
+
+    def existing_status(run_id: str) -> str:
+        status_checks.append(run_id)
+        return "started"
+
     monkeypatch.setattr(
         tasks,
         "_get_existing_ingest_run_status",
-        lambda run_id: status_checks.append(run_id) or "started",
+        existing_status,
         raising=False,
     )
 
@@ -153,7 +159,9 @@ def test_run_ingestion_task_reuses_api_created_ingest_run(
         *,
         initialize_graph: bool = True,
         existing_ingest_run_id: str | None = None,
+        incremental: bool = True,
     ) -> dict[str, object]:
+        assert incremental is True
         calls.append((source_key, mode, dump_path, initialize_graph, existing_ingest_run_id))
         return {
             "ingest_run_id": existing_ingest_run_id or "new-run",
@@ -168,9 +176,7 @@ def test_run_ingestion_task_reuses_api_created_ingest_run(
 
     monkeypatch.setattr(tasks, "run_ingestion", fake_run_ingestion)
 
-    result = tasks.run_ingestion_task.run(
-        "bitrix_chat", "backfill", None, ingest_run_id="run-1"
-    )
+    result = tasks.run_ingestion_task.run("bitrix_chat", "backfill", None, ingest_run_id="run-1")
 
     assert calls == [("bitrix_chat", "backfill", None, False, "run-1")]
     assert status_checks == ["run-1"]

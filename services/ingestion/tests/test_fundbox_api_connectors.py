@@ -156,10 +156,7 @@ def test_sales_api_connector_preserves_sales_customer_link() -> None:
     assert record["raw_payload"]["line_items"][0]["product"]["attributes"][  # type: ignore[index]
         "variant_attributes"
     ] == {"colour": "red"}
-    assert (
-        record["raw_payload"]["customer_link"]["identity_source_record_id"]
-        == "fundbox-user-7"
-    )  # type: ignore[index]
+    assert record["raw_payload"]["customer_link"]["identity_source_record_id"] == "fundbox-user-7"  # type: ignore[index]
     assert record["raw_payload"]["line_items"][0]["product"]["model"] == "R1"  # type: ignore[index]
 
 
@@ -171,9 +168,7 @@ def test_api_mode_routes_only_scheduled_fundbox_sources(
     monkeypatch.setattr("src.main.load_watermark", lambda *_args: None)
     monkeypatch.setattr("src.main.load_source_ids", lambda *_args: None)
 
-    assert isinstance(
-        get_connector("fundbox", mode="api"), FundboxUsersApiConnector
-    )
+    assert isinstance(get_connector("fundbox", mode="api"), FundboxUsersApiConnector)
     assert isinstance(
         get_connector("fundbox:contacts", mode="api"),
         FundboxContactsApiConnector,
@@ -185,6 +180,25 @@ def test_api_mode_routes_only_scheduled_fundbox_sources(
 
     with pytest.raises(ValueError, match="API mode"):
         get_connector("fundbox:legacy", mode="api")
+
+
+def test_full_api_mode_does_not_load_incremental_fundbox_checkpoints(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = StubClient([])
+    monkeypatch.setattr("src.main.create_fundbox_api_client", lambda: client)
+    monkeypatch.setattr(
+        "src.main.Redis.from_url",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("full extraction must not open the checkpoint store")
+        ),
+    )
+
+    connector = get_connector("fundbox", mode="api", incremental=False)
+
+    assert isinstance(connector, FundboxUsersApiConnector)
+    assert list(connector.fetch_records()) == []
+    assert client.calls == [("users", None)]
 
 
 def test_connector_reconciles_missing_source_ids_after_full_snapshot() -> None:
@@ -204,9 +218,7 @@ def test_connector_reconciles_missing_source_ids_after_full_snapshot() -> None:
 
     records = list(connector.fetch_records())
 
-    assert [record["source_record_id"] for record in records[:-1]] == [
-        "fundbox-contact-2"
-    ]
+    assert [record["source_record_id"] for record in records[:-1]] == ["fundbox-contact-2"]
     assert records[-1]["_retire_source_record_id"] == "fundbox-contact-1"
     assert client.calls == [
         ("contacts", "2026-07-16T00:00:00Z"),
@@ -267,9 +279,7 @@ def test_full_snapshot_reprocesses_records_absent_from_incremental_pass() -> Non
 
     records = list(connector.fetch_records())
 
-    assert [record["source_record_id"] for record in records] == [
-        "fundbox-contact-4"
-    ]
+    assert [record["source_record_id"] for record in records] == ["fundbox-contact-4"]
     assert connector.current_source_ids == {4}
 
 

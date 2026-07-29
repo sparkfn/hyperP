@@ -12,13 +12,12 @@ from __future__ import annotations
 class TaskSettings:
     """Minimal settings stand-in for ``run_ingestion_task``.
 
-    Only the fields the task reads directly (``log_level`` and
-    ``max_concurrent_ingestions``) are required; add new fields here as the
-    task grows so every task test exercises the same shape.
+    Only the fields the task reads directly (currently ``log_level``) are
+    required; add new fields here as the task grows so every task test
+    exercises the same shape.
     """
 
     log_level: str = "INFO"
-    max_concurrent_ingestions: int = 1
 
 
 class NullContext:

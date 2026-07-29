@@ -354,7 +354,11 @@ def create_sgrentalflats_api_client() -> SGGovernmentRentalFlatsApiClient:
     )
 
 
-def create_whatsadmin_api_connector(entity_key: str | None = None) -> WhatsAdminChatApiConnector:
+def create_whatsadmin_api_connector(
+    entity_key: str | None = None,
+    *,
+    incremental: bool = True,
+) -> WhatsAdminChatApiConnector:
     settings = get_settings()
     resolver = WhatsAdminCredentialResolver(
         base_url=settings.whatsadmin_api_base_url,
@@ -377,10 +381,15 @@ def create_whatsadmin_api_connector(entity_key: str | None = None) -> WhatsAdmin
         clients,
         RedisWatermarkStore(redis, legacy_entity=legacy_entity),
         legacy_entity=legacy_entity,
+        incremental=incremental,
     )
 
 
-def create_bitrix_openlines_connector(mode: str) -> BitrixOpenLinesConnector:
+def create_bitrix_openlines_connector(
+    mode: str,
+    *,
+    incremental: bool = True,
+) -> BitrixOpenLinesConnector:
     settings = get_settings()
     ingestion_config = get_ingestion_config()
     client = BitrixOpenLinesClient(
@@ -401,6 +410,7 @@ def create_bitrix_openlines_connector(mode: str) -> BitrixOpenLinesConnector:
         internal_person_names=settings.internal_person_names,
         file_exclusions=ingestion_config.exclusions,
         dialog_cache=RedisDialogConfigCache(dialog_redis),
+        incremental=incremental,
     )
 
 
@@ -427,6 +437,7 @@ def get_connector(
     *,
     mode: str = "batch",
     entity_key: str | None = None,
+    incremental: bool = True,
 ) -> SourceConnector:
     """Return the appropriate connector for the given source key."""
     if entity_key is not None and (source_key != "whatsapp_chat" or mode != "api"):
@@ -436,7 +447,7 @@ def get_connector(
         resolved_dump_path = resolve_dump_path(dump_path, settings.dumps_root)
         return get_dump_connector(source_key, resolved_dump_path)
     if source_key == "bitrix_chat" and mode in {"api", "backfill"}:
-        return create_bitrix_openlines_connector(mode)
+        return create_bitrix_openlines_connector(mode, incremental=incremental)
     if mode == "backfill":
         raise ValueError(f"Backfill mode is not supported for source {source_key!r}")
     if mode == "api":
@@ -446,8 +457,8 @@ def get_connector(
             return SGGovernmentRentalFlatsApiConnector(create_sgrentalflats_api_client())
         if source_key == "whatsapp_chat":
             if entity_key is None:
-                return create_whatsadmin_api_connector()
-            return create_whatsadmin_api_connector(entity_key)
+                return create_whatsadmin_api_connector(incremental=incremental)
+            return create_whatsadmin_api_connector(entity_key, incremental=incremental)
         fundbox_types: dict[str, type[FundboxApiConnector]] = {
             "fundbox": FundboxUsersApiConnector,
             "fundbox:contacts": FundboxContactsApiConnector,
@@ -456,13 +467,17 @@ def get_connector(
         fundbox_type = fundbox_types.get(source_key)
         if fundbox_type is not None:
             settings = get_settings()
-            with Redis.from_url(settings.celery_broker_url) as checkpoint_store:
-                updated_since = load_watermark(
-                    checkpoint_store,
-                    source_key,
-                    settings.fundbox_api_overlap_seconds,
-                )
-                previous_source_ids = load_source_ids(checkpoint_store, source_key)
+            if incremental:
+                with Redis.from_url(settings.celery_broker_url) as checkpoint_store:
+                    updated_since = load_watermark(
+                        checkpoint_store,
+                        source_key,
+                        settings.fundbox_api_overlap_seconds,
+                    )
+                    previous_source_ids = load_source_ids(checkpoint_store, source_key)
+            else:
+                updated_since = None
+                previous_source_ids = None
             return fundbox_type(
                 create_fundbox_api_client(),
                 updated_since=updated_since,
@@ -699,6 +714,7 @@ def run_ingestion(
     initialize_graph: bool = True,
     existing_ingest_run_id: str | None = None,
     task_id: str | None = None,
+    incremental: bool = True,
 ) -> IngestionSummary:
     """Execute one ingestion run end-to-end."""
     settings = get_settings()
@@ -709,10 +725,11 @@ def run_ingestion(
     if entity_key is not None and (source_key != "whatsapp_chat" or mode != "api"):
         raise ValueError("entity_key is only valid for whatsapp_chat API ingestion")
     logger.info(
-        "Starting ingestion: source=%s mode=%s entity=%s",
+        "Starting ingestion: source=%s mode=%s entity=%s incremental=%s",
         source_key,
         mode,
         entity_key or "all",
+        incremental,
     )
 
     if initialize_graph:
@@ -743,6 +760,7 @@ def run_ingestion(
                 dump_path if mode == "dump" else None,
                 mode=mode,
                 entity_key=entity_key,
+                incremental=incremental,
             )
             logger.info("Connector=%s", type(connector).__name__)
             if source_key in {"bitrix_chat", "whatsapp_chat"}:
@@ -801,6 +819,7 @@ def run_ingestion(
         )
         if (
             final_status == "completed"
+            and incremental
             and isinstance(connector, FundboxApiConnector)
             and connector.reconciliation_completed
             and connector.current_source_ids is not None

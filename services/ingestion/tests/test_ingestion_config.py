@@ -11,6 +11,7 @@ from src.ingestion_config import (
     BitrixOpenLinesConfig,
     IngestionConfig,
     LlmConfig,
+    ScheduledIngestionConfig,
     load_ingestion_config,
 )
 
@@ -25,6 +26,46 @@ def test_bitrix_openlines_defaults_select_safe_channel_types() -> None:
             "instagram",
         ]
     )
+
+
+def test_scheduled_ingestion_is_disabled_by_default() -> None:
+    assert load_ingestion_config("").scheduled_ingestion == ScheduledIngestionConfig(enabled=False)
+
+
+def test_scheduled_ingestion_config_parses_explicit_enablement(tmp_path: Path) -> None:
+    path = tmp_path / "ingestion-config.json"
+    path.write_text(
+        json.dumps({"scheduled_ingestion": {"enabled": True}}),
+        encoding="utf-8",
+    )
+
+    assert load_ingestion_config(str(path)).scheduled_ingestion == ScheduledIngestionConfig(
+        enabled=True
+    )
+
+
+def test_empty_scheduled_ingestion_section_defaults_to_disabled(tmp_path: Path) -> None:
+    path = tmp_path / "ingestion-config.json"
+    path.write_text(json.dumps({"scheduled_ingestion": {}}), encoding="utf-8")
+
+    assert load_ingestion_config(str(path)).scheduled_ingestion == ScheduledIngestionConfig(
+        enabled=False
+    )
+
+
+@pytest.mark.parametrize("enabled", ["true", 1, None])
+def test_scheduled_ingestion_requires_a_boolean_enabled_value(
+    tmp_path: Path,
+    enabled: object,
+) -> None:
+    path = tmp_path / "bad.json"
+    path.write_text(
+        json.dumps({"scheduled_ingestion": {"enabled": enabled}}),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="Invalid ingestion config JSON"):
+        load_ingestion_config(str(path))
 
 
 def test_bitrix_openlines_config_parses_channel_and_entity_overrides(tmp_path: Path) -> None:

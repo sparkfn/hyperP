@@ -95,11 +95,13 @@ class BitrixOpenLinesConnector(SourceConnector):
         internal_person_names: list[str] | None = None,
         file_exclusions: ExclusionFile | None = None,
         dialog_cache: DialogConfigCache | None = None,
+        incremental: bool = True,
     ) -> None:
         self._client = client
         self._watermark = watermark
         self._config = config
         self._mode = mode
+        self._incremental = incremental
         self._pending_watermark: datetime | None = None
         self._builder = BitrixChatConnector()
         self._company_mobile_numbers = list(company_mobile_numbers or [])
@@ -127,7 +129,9 @@ class BitrixOpenLinesConnector(SourceConnector):
     def _fetch_records_inner(self) -> Iterator[dict[str, JsonValue]]:
         line_names = {item.id: item.line_name for item in self._client.list_active_configs()}
         committed_watermark = (
-            self._watermark.get(overlap_seconds=0) if self._mode == "api" else None
+            self._watermark.get(overlap_seconds=0)
+            if self._mode == "api" and self._incremental
+            else None
         )
         since = (
             committed_watermark - timedelta(seconds=self._config.incremental_overlap_seconds)
@@ -375,7 +379,7 @@ class BitrixOpenLinesConnector(SourceConnector):
             raise _retrieval_error(reference, "dialog") from None
 
     def commit_watermark(self) -> None:
-        if self._mode == "api" and self._pending_watermark is not None:
+        if self._mode == "api" and self._incremental and self._pending_watermark is not None:
             self._watermark.set(self._pending_watermark)
             self._pending_watermark = None
         if self._mode == "backfill" and self._backfill_store is not None:

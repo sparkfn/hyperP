@@ -71,21 +71,21 @@ The document set covers:
 
 Agents and server operators can queue one complete, two-phase ingestion without
 using the API or frontend. Identity sources run as the first Celery group; the
-worker only queues dependent sources after every identity task returns
+orchestration task only queues dependent sources after every identity task returns
 `completed`.
 
 Submit a validated inline JSON payload from the ingestion worker container.
 `$PAYLOAD` must contain the complete `identity` and `dependent` arrays:
 
 ```bash
-docker compose exec -T worker python -m src.ingestion_orchestrator trigger \
+docker compose exec -T ingestion-worker python -m src.ingestion_orchestrator trigger \
   --payload "$PAYLOAD"
 ```
 
 When addressing the container directly instead of through Compose:
 
 ```bash
-docker exec <worker-container> python -m src.ingestion_orchestrator trigger \
+docker exec <ingestion-worker-container> python -m src.ingestion_orchestrator trigger \
   --payload "$PAYLOAD"
 ```
 
@@ -93,7 +93,7 @@ For larger payloads, pass JSON on standard input to avoid shell-escaping
 problems:
 
 ```bash
-printf '%s' "$PAYLOAD" | docker compose exec -T worker \
+printf '%s' "$PAYLOAD" | docker compose exec -T ingestion-worker \
   python -m src.ingestion_orchestrator trigger --payload-stdin
 ```
 

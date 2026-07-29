@@ -75,8 +75,14 @@ jobs:
           export WHATSADMIN_API_MAX_ATTEMPTS=5
           export WHATSADMIN_API_RETRY_BASE_DELAY_SECONDS=1
 
-          for ingestion_service in worker beat
+          configured_services=$($COMPOSE config --services)
+          for ingestion_service in ingestion-worker lifecycle-worker beat
           do
+            if ! grep -Fxq "$ingestion_service" <<< "$configured_services"; then
+              echo "Staging Compose is missing required service: ${ingestion_service}"
+              echo "Update .docker/staging/docker-compose.yml before rebuilding"
+              exit 1
+            fi
             resolved_service=$($COMPOSE config "$ingestion_service")
             for expected_setting in \
               WHATSADMIN_API_PAGE_SIZE=25 \
@@ -109,7 +115,7 @@ jobs:
           # npm install) reuse the host layer cache; source changes still bust
           # the COPY layer. We additionally skip services whose code did not
           # change in this deploy's commit range.
-          ALL="api frontend2 worker beat"
+          ALL="api frontend2 ingestion-worker lifecycle-worker beat"
           REBUILD_ALL=false
           # Manual runs and no-op fast-forwards rebuild everything (safe default).
           if [ "$EVENT_NAME" = "workflow_dispatch" ] || [ "$BEFORE" = "$AFTER" ]; then
@@ -123,10 +129,19 @@ jobs:
             [ -z "$f" ] && continue
             case "$f" in
               services/api/*)         NEED[api]=1 ;;
-              services/ingestion/*)   NEED[worker]=1; NEED[beat]=1 ;;
+              services/ingestion/*)
+                NEED[ingestion-worker]=1
+                NEED[lifecycle-worker]=1
+                NEED[beat]=1
+                ;;
               services/frontend2/*)   NEED[frontend2]=1 ;;
               # Root uv workspace files affect the api + ingestion images.
-              pyproject.toml|uv.lock) NEED[api]=1; NEED[worker]=1; NEED[beat]=1 ;;
+              pyproject.toml|uv.lock)
+                NEED[api]=1
+                NEED[ingestion-worker]=1
+                NEED[lifecycle-worker]=1
+                NEED[beat]=1
+                ;;
               # Compose / build infra: rebuild everything to be safe.
               .docker/staging/*|docker-compose.yml) REBUILD_ALL=true ;;
             esac
@@ -147,7 +162,7 @@ jobs:
           fi
           $COMPOSE restart web
 
-          for service in "worker" "beat"; do
+          for service in "ingestion-worker" "lifecycle-worker" "beat"; do
             container_id=$($COMPOSE ps -q "$service")
             if [ -z "$container_id" ]; then
               echo "Staging service container is missing: ${service}"

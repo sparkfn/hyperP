@@ -29,5 +29,8 @@
     "entity_by_config_id": {},
     "incremental_overlap_seconds": 300,
     "recent_page_size": 50
+  },
+  "scheduled_ingestion": {
+    "enabled": false
   }
 }

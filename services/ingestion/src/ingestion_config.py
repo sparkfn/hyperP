@@ -69,12 +69,20 @@ class BitrixOpenLinesConfig:
 
 
 @dataclass
+class ScheduledIngestionConfig:
+    """Controls publication of all scheduled API-ingestion chains."""
+
+    enabled: bool = False
+
+
+@dataclass
 class IngestionConfig:
-    """The whole ingestion config file: exclusions + LLM tuning."""
+    """The whole ingestion config file: exclusions, LLM tuning, and scheduling."""
 
     exclusions: ExclusionFile = field(default_factory=ExclusionFile)
     llm: LlmConfig = field(default_factory=LlmConfig)
     bitrix_openlines: BitrixOpenLinesConfig = field(default_factory=BitrixOpenLinesConfig)
+    scheduled_ingestion: ScheduledIngestionConfig = field(default_factory=ScheduledIngestionConfig)
 
 
 def _exclusion_file(raw: JsonValue, *, path: Path) -> ExclusionFile:
@@ -216,11 +224,22 @@ def _bitrix_openlines_config(raw: JsonValue, *, path: Path) -> BitrixOpenLinesCo
     )
 
 
+def _scheduled_ingestion_config(raw: JsonValue, *, path: Path) -> ScheduledIngestionConfig:
+    if raw is None:
+        return ScheduledIngestionConfig()
+    if not isinstance(raw, dict):
+        raise ValueError(f"Invalid ingestion config JSON: {path}")
+    enabled = raw.get("enabled", False)
+    if not isinstance(enabled, bool):
+        raise ValueError(f"Invalid ingestion config JSON: {path}")
+    return ScheduledIngestionConfig(enabled=enabled)
+
+
 def load_ingestion_config(path_value: str) -> IngestionConfig:
     """Load the consolidated ingestion config.
 
     Backward-compatible with the old bare-exclusions format (top-level
-    exclusion keys, no ``exclusions``/``llm`` wrapper).
+    exclusion keys and no known nested configuration section).
     """
     if not path_value.strip():
         return IngestionConfig()
@@ -234,13 +253,16 @@ def load_ingestion_config(path_value: str) -> IngestionConfig:
     if not isinstance(raw, dict):
         raise ValueError(f"Invalid ingestion config JSON: {path}")
     payload = cast(dict[str, JsonValue], raw)
-    if not {"exclusions", "llm", "bitrix_openlines"}.intersection(payload):
+    if not {"exclusions", "llm", "bitrix_openlines", "scheduled_ingestion"}.intersection(payload):
         # Old format: the whole object is the exclusions block.
         return IngestionConfig(exclusions=_exclusion_file(payload, path=path), llm=LlmConfig())
     return IngestionConfig(
         exclusions=_exclusion_file(payload.get("exclusions"), path=path),
         llm=_llm_config(payload.get("llm"), path=path),
         bitrix_openlines=_bitrix_openlines_config(payload.get("bitrix_openlines"), path=path),
+        scheduled_ingestion=_scheduled_ingestion_config(
+            payload.get("scheduled_ingestion"), path=path
+        ),
     )
 
 
