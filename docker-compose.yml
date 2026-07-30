@@ -109,6 +109,11 @@ services:
   neo4j:
     image: neo4j:5.26-community
     stop_grace_period: 30s
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 3G
     ports:
       - "${NEO4J_HTTP_PORT:-7474}:7474"
       - "${NEO4J_BOLT_PORT:-7687}:7687"
@@ -131,6 +136,11 @@ services:
 
   redis:
     image: redis:7-alpine
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 512M
     command: ["redis-server", "--appendonly", "yes"]
     volumes:
       - ./data/redis:/data
@@ -144,6 +154,11 @@ services:
     build:
       context: .
       dockerfile: services/api/Dockerfile
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1G
     # Not exposed externally — all ingress goes through the nginx web service.
     environment:
       NEO4J_URI: bolt://neo4j:7687
@@ -184,6 +199,11 @@ services:
       dockerfile: services/frontend2/Dockerfile
       args:
         NEXT_PUBLIC_TZ: ${TZ:-UTC}
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1G
     # Not exposed externally — all ingress goes through the nginx web service.
     environment:
       # Base includes the /api prefix; buildApiUrl prepends /app/v2 so
@@ -202,6 +222,11 @@ services:
 
   web:
     image: nginx:1.27-alpine
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 128M
     ports:
       - "${NGINX_PORT:-80}:80"
     volumes:
@@ -214,6 +239,11 @@ services:
     build:
       context: .
       dockerfile: services/ingestion/Dockerfile
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 2G
     environment: *ingestion-env
     volumes:
       - ./.dumps:/app/dumps:ro
@@ -237,6 +267,11 @@ services:
     build:
       context: .
       dockerfile: services/ingestion/Dockerfile
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1G
     environment: *ingestion-env
     volumes:
       - ./config:/app/config:ro
@@ -259,6 +294,11 @@ services:
     build:
       context: .
       dockerfile: services/ingestion/Dockerfile
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 256M
     environment: *ingestion-env
     depends_on:
       redis:
