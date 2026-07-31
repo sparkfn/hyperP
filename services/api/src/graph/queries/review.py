@@ -67,8 +67,11 @@ _FILTER_CONDITIONS: dict[str, str] = {
 
 def _review_filter_clause(active_filters: frozenset[str]) -> str:
     conditions = [_INVOLVED_SOURCE_IS_PENDING.rstrip()]
-    conditions.extend(_FILTER_CONDITIONS[key] for key in _FILTER_CONDITIONS if key in active_filters)
+    conditions.extend(
+        _FILTER_CONDITIONS[key] for key in _FILTER_CONDITIONS if key in active_filters
+    )
     return "WHERE " + "\n  AND ".join(conditions) + "\n"
+
 
 # Appended only when searching; references the joined left/right persons.
 _REVIEW_SEARCH_FILTER = """  AND (toLower(rc.review_case_id) CONTAINS toLower($q)
@@ -89,9 +92,7 @@ _REVIEW_PERSON_FILTER = """  AND (left.person_id = $person_id
 """
 
 
-def _review_body(
-    *, has_q: bool, has_person: bool, active_filters: frozenset[str]
-) -> str:
+def _review_body(*, has_q: bool, has_person: bool, active_filters: frozenset[str]) -> str:
     """MATCH + filter prefix shared by the list and count queries.
 
     ``has_q`` adds the search predicate, ``has_person`` the person-id filter;
@@ -182,9 +183,7 @@ def build_list_review_cases_query(
     """
     col, direction = _resolve_sort(sort_by, sort_order)
     order_by = f"ORDER BY {col} {direction}, rc.sla_due_at ASC, rc.created_at ASC\n"
-    body = _review_body(
-        has_q=has_q, has_person=has_person, active_filters=active_filters
-    )
+    body = _review_body(has_q=has_q, has_person=has_person, active_filters=active_filters)
     return body + _REVIEW_DISPLAY_JOINS + _REVIEW_RETURN + order_by + "SKIP $skip LIMIT $limit\n"
 
 
