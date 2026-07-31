@@ -1,12 +1,4 @@
-"""Generalized person listing query with multi-filter + single-column sort.
-
-Powers ``GET /v1/persons``. Supports fulltext (``q``) or structured-only mode,
-plus optional filters: status, entity_key, is_high_value, is_high_risk,
-has_phone, has_email, updated_after, updated_before.
-
-The ``q`` parameter searches across preferred_full_name, preferred_nric,
-preferred_email, and preferred_phone via the ``person_name_search`` fulltext index.
-"""
+"""Generalized, pagination-aware Person listing query builder."""
 
 from __future__ import annotations
 
@@ -26,8 +18,7 @@ RETURN count(p) AS all_profiles_count,
          AS no_contact_count
 """
 
-
-_ENRICH_AND_RETURN = """
+_SOURCE_RECORD_COUNT = """
 CALL (p) {
   OPTIONAL MATCH (sr:SourceRecord)-[link:LINKED_TO]->(p)
   WHERE coalesce(link.is_active, true) = true
@@ -35,6 +26,9 @@ CALL (p) {
       OR (sr.lifecycle_status IS NULL AND sr.is_latest = true))
   RETURN count(sr) AS source_record_count
 }
+"""
+
+_ENTITY_ENRICHMENT = """
 CALL (p) {
   OPTIONAL MATCH (sr_ent:SourceRecord)-[link:LINKED_TO]->(p)
   WHERE coalesce(link.is_active, true) = true
@@ -54,8 +48,26 @@ CALL (p) {
     is_active: e.is_active,
     source_record_count: e_sr_count
   }) AS entities
-  RETURN entities
+  RETURN entities{entity_count_return}
 }
+"""
+
+_ENTITY_COUNT = """
+CALL (p) {
+  OPTIONAL MATCH (sr_ent:SourceRecord)-[link:LINKED_TO]->(p)
+  WHERE coalesce(link.is_active, true) = true
+    AND (sr_ent.lifecycle_status = 'active'
+      OR (sr_ent.lifecycle_status IS NULL AND sr_ent.is_latest = true))
+  OPTIONAL MATCH (sr_ent)-[:FROM_SOURCE]->(ss_ent:SourceSystem)
+  OPTIONAL MATCH (sr_ent)-[:OWNED_BY]->(record_entity:Entity)
+  OPTIONAL MATCH (ss_ent)-[:OPERATED_BY]->(source_entity:Entity)
+  WITH DISTINCT coalesce(record_entity, source_entity) AS entity
+  WHERE entity IS NOT NULL
+  RETURN count(entity) AS entity_count
+}
+"""
+
+_CONNECTION_COUNT = """
 CALL (p) {
   OPTIONAL MATCH (p)-[p_addr:LIVES_AT]->(:Address)
     <-[ca_addr:LIVES_AT]-(ca:Person)
@@ -69,6 +81,9 @@ CALL (p) {
   UNWIND all_conn AS c
   RETURN count(DISTINCT c) AS connection_count
 }
+"""
+
+_PHONE_CONFIDENCE = """
 CALL (p) {
   OPTIONAL MATCH (p)-[pi:IDENTIFIED_BY]->(phone_id:Identifier)
   WHERE coalesce(pi.is_active, true) = true
@@ -88,11 +103,17 @@ CALL (p) {
     ELSE null
   END AS phone_confidence
 }
+"""
+
+_IDENTIFIER_COUNT = """
 CALL (p) {
   OPTIONAL MATCH (p)-[id_count:IDENTIFIED_BY]->(idc:Identifier)
   WHERE coalesce(id_count.is_active, true) = true
   RETURN count(idc) AS identifier_count
 }
+"""
+
+_POSSIBLE_MATCH_COUNT = """
 CALL (p) {
   OPTIONAL MATCH (p)-[p_shared_id:IDENTIFIED_BY]->(shared_id:Identifier)
     <-[other_shared_id:IDENTIFIED_BY]-(other:Person)
@@ -101,6 +122,9 @@ CALL (p) {
       AND other.person_id <> p.person_id AND other.status <> 'merged'
   RETURN count(DISTINCT other) AS possible_match_count
 }
+"""
+
+_SYSTEM_MATCH_COUNT = """
 CALL (p) {
   OPTIONAL MATCH (md:MatchDecision)-[:ABOUT_LEFT|ABOUT_RIGHT]->(p)
   WHERE EXISTS { (md)-[:ABOUT_LEFT]->(:Person) }
@@ -111,27 +135,32 @@ CALL (p) {
     }
   RETURN count(DISTINCT md) AS system_match_count
 }
+"""
+
+_ORDER_COUNT = """
 CALL (p) {
   RETURN count{ (p)-[:PURCHASED]->(:Order) } AS order_count
 }
+"""
+
+_BANKRUPTCY_CASE_COUNT = """
 CALL (p) {
   OPTIONAL MATCH (p)-[bankruptcy_rel:HAS_BANKRUPTCY_CASE]->(:BankruptcyCase)
   WHERE coalesce(bankruptcy_rel.is_active, true) = true
   RETURN count(bankruptcy_rel) AS bankruptcy_case_count
 }
-RETURN p {
-  .person_id, .status, .is_high_value, .is_high_risk,
-  .preferred_full_name, .preferred_phone, .preferred_email, .preferred_dob, .preferred_nric,
-  .profile_completeness_score, .golden_profile_computed_at, .golden_profile_version,
-  .created_at, .updated_at
-} AS person,
-addr {
-  .address_id, .unit_number, .street_number, .street_name,
-  .city, .postal_code, .country_code, .normalized_full
-} AS preferred_address,
-source_record_count, connection_count, phone_confidence, entities,
-size(entities) AS entity_count, identifier_count, possible_match_count, system_match_count, order_count, bankruptcy_case_count, score
 """
+
+_METRIC_CALLS: dict[str, str] = {
+    "source_record_count": _SOURCE_RECORD_COUNT,
+    "connection_count": _CONNECTION_COUNT,
+    "phone_confidence": _PHONE_CONFIDENCE,
+    "identifier_count": _IDENTIFIER_COUNT,
+    "possible_match_count": _POSSIBLE_MATCH_COUNT,
+    "system_match_count": _SYSTEM_MATCH_COUNT,
+    "order_count": _ORDER_COUNT,
+    "bankruptcy_case_count": _BANKRUPTCY_CASE_COUNT,
+}
 
 _SORT_COLUMNS: dict[str, str] = {
     "preferred_full_name": "person.preferred_full_name",
@@ -157,29 +186,72 @@ _DEFAULT_SORT_WITHOUT_Q = "profile_completeness_score"
 _DEFAULT_ORDER_WITH_Q = "DESC"
 _DEFAULT_ORDER_WITHOUT_Q = "DESC"
 
-# Sort columns that are native Person node properties (or fulltext score).
-# For these, SKIP/LIMIT can happen BEFORE the 8 CALL enrichments so only
-# the requested page of rows is ever enriched instead of the full match set.
 _PRE_ENRICH_SORT_MAP: dict[str, str] = {
-    "person.preferred_full_name": "p.preferred_full_name",
-    "person.preferred_phone": "p.preferred_phone",
-    "person.preferred_email": "p.preferred_email",
-    "person.preferred_dob": "p.preferred_dob",
-    "person.preferred_nric": "p.preferred_nric",
-    "person.updated_at": "p.updated_at",
-    "person.profile_completeness_score": "p.profile_completeness_score",
-    "score": "score",
+    "preferred_full_name": "p.preferred_full_name",
+    "preferred_phone": "p.preferred_phone",
+    "preferred_email": "p.preferred_email",
+    "preferred_dob": "p.preferred_dob",
+    "preferred_nric": "p.preferred_nric",
+    "updated_at": "p.updated_at",
+    "profile_completeness_score": "p.profile_completeness_score",
+    "relevance": "score",
+}
+
+_FINAL_SORT_MAP: dict[str, str] = {
+    "preferred_full_name": "person.preferred_full_name",
+    "preferred_phone": "person.preferred_phone",
+    "preferred_email": "person.preferred_email",
+    "preferred_dob": "person.preferred_dob",
+    "preferred_nric": "person.preferred_nric",
+    "updated_at": "person.updated_at",
+    "profile_completeness_score": "person.profile_completeness_score",
+    "relevance": "score",
 }
 
 
 def _resolve_sort(sort_by: str | None, sort_order: str | None, *, has_q: bool) -> tuple[str, str]:
-    default_col = _DEFAULT_SORT_WITH_Q if has_q else _DEFAULT_SORT_WITHOUT_Q
+    default_key = _DEFAULT_SORT_WITH_Q if has_q else _DEFAULT_SORT_WITHOUT_Q
     default_dir = _DEFAULT_ORDER_WITH_Q if has_q else _DEFAULT_ORDER_WITHOUT_Q
-    col_key = sort_by if sort_by and sort_by in _SORT_COLUMNS else default_col
-    if col_key == "relevance" and not has_q:
-        col_key = default_col
+    key = sort_by if sort_by and sort_by in _SORT_COLUMNS else default_key
+    if key == "relevance" and not has_q:
+        key = default_key
     direction = "DESC" if (sort_order or default_dir).upper() == "DESC" else "ASC"
-    return _SORT_COLUMNS[col_key], direction
+    return key, direction
+
+
+def _entity_enrichment(*, include_count: bool) -> str:
+    suffix = ", size(entities) AS entity_count" if include_count else ""
+    return _ENTITY_ENRICHMENT.replace("{entity_count_return}", suffix)
+
+
+def _page_enrichment(excluded_metric: str | None = None) -> str:
+    calls: list[str] = []
+    if excluded_metric == "entity_count":
+        calls.append(_entity_enrichment(include_count=False))
+    else:
+        calls.append(_entity_enrichment(include_count=True))
+    for metric, call in _METRIC_CALLS.items():
+        if metric != excluded_metric:
+            calls.append(call)
+    return "".join(calls)
+
+
+def _return_clause() -> str:
+    return """
+RETURN p {
+  .person_id, .status, .is_high_value, .is_high_risk,
+  .preferred_full_name, .preferred_phone, .preferred_email, .preferred_dob, .preferred_nric,
+  .profile_completeness_score, .golden_profile_computed_at, .golden_profile_version,
+  .created_at, .updated_at
+} AS person,
+addr {
+  .address_id, .unit_number, .street_number, .street_name,
+  .city, .postal_code, .country_code, .normalized_full
+} AS preferred_address,
+source_record_count, connection_count, phone_confidence, entities,
+entity_count, identifier_count, possible_match_count, system_match_count, order_count,
+bankruptcy_case_count, score
+"""
 
 
 def build_list_persons_query(
@@ -191,13 +263,8 @@ def build_list_persons_query(
     entity_mode: str = "or",
     source_mode: str = "or",
 ) -> str:
-    """Build the list query for ``GET /v1/persons``.
-
-    For stored-property sorts and full-text relevance, pagination occurs before
-    enrichment. Computed sorts still calculate their ordering metric before
-    pagination, but all inactive filters are omitted from both query paths.
-    """
-    col, direction = _resolve_sort(sort_by, sort_order, has_q=has_q)
+    """Build a list query that enriches only the requested page whenever possible."""
+    key, direction = _resolve_sort(sort_by, sort_order, has_q=has_q)
     entity_clause = build_entity_filter_clause(
         entity_mode,
         source_mode,
@@ -205,23 +272,31 @@ def build_list_persons_query(
         include_preferred_address=True,
     )
     common_clause = build_common_filter_clause(active_filters)
-    pre_col = _PRE_ENRICH_SORT_MAP.get(col)
     head = _head(has_q=has_q, skip_address=not bool(active_filters & ADDRESS_FILTERS))
-    if pre_col:
+    pre_col = _PRE_ENRICH_SORT_MAP.get(key)
+    if pre_col is not None:
         return (
             head
             + common_clause
             + entity_clause
             + f"WITH p, addr, score\nORDER BY {pre_col} {direction}, p.person_id ASC\n"
             + "SKIP $skip LIMIT $limit\n"
-            + _ENRICH_AND_RETURN
+            + _page_enrichment()
+            + _return_clause()
+            + f"ORDER BY {_FINAL_SORT_MAP[key]} {direction}, person.person_id ASC\n"
         )
+
+    pre_metric = _ENTITY_COUNT if key == "entity_count" else _METRIC_CALLS[key]
     return (
         head
         + common_clause
         + entity_clause
-        + _ENRICH_AND_RETURN
-        + f"ORDER BY {col} {direction}, person.person_id ASC\nSKIP $skip LIMIT $limit\n"
+        + pre_metric
+        + f"WITH p, addr, score, {key}\nORDER BY {key} {direction}, p.person_id ASC\n"
+        + "SKIP $skip LIMIT $limit\n"
+        + _page_enrichment(excluded_metric=key)
+        + _return_clause()
+        + f"ORDER BY {key} {direction}, person.person_id ASC\n"
     )
 
 

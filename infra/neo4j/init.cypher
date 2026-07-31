@@ -101,6 +101,22 @@ CREATE INDEX idx_match_decision_created IF NOT EXISTS
 CREATE INDEX idx_person_status IF NOT EXISTS
   FOR (p:Person) ON (p.status);
 
+CREATE INDEX idx_person_completeness IF NOT EXISTS
+  FOR (p:Person) ON (p.profile_completeness_score);
+
+CREATE INDEX idx_person_high_value IF NOT EXISTS
+  FOR (p:Person) ON (p.is_high_value);
+
+CREATE INDEX idx_person_high_risk IF NOT EXISTS
+  FOR (p:Person) ON (p.is_high_risk);
+
+CREATE INDEX idx_person_updated_at IF NOT EXISTS
+  FOR (p:Person) ON (p.updated_at);
+
+// Deferred KNOWS materialization checks source-record provenance by relationship property.
+CREATE INDEX idx_knows_source_record_pk IF NOT EXISTS
+  FOR ()-[r:KNOWS]-() ON (r.source_record_pk);
+
 // Profile analysis history
 CREATE INDEX idx_profile_analysis_history IF NOT EXISTS
   FOR (pa:ProfileAnalysis)

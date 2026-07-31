@@ -17,6 +17,7 @@ from __future__ import annotations
 import logging
 import time
 from collections.abc import Callable
+from typing import Literal, TypedDict
 
 from neo4j import ManagedTransaction
 from neo4j.exceptions import TransientError
@@ -31,6 +32,17 @@ logger = logging.getLogger(__name__)
 
 _DEADLOCK_CODE = "Neo.TransientError.Transaction.DeadlockDetected"
 _BatchResult = tuple[int, str | None]
+_BoundedBatchResult = tuple[int, int, str | None]
+KnowsMaterializationPhase = Literal["chat_relationships", "contacts"]
+
+
+class KnowsMaterializationBatch(TypedDict):
+    """Progress returned by one bounded KNOWS materialization batch."""
+
+    phase: KnowsMaterializationPhase
+    linked: int
+    scanned: int
+    next_cursor: str | None
 
 
 def _execute_batch_with_deadlock_retry(
@@ -40,6 +52,32 @@ def _execute_batch_with_deadlock_retry(
     max_deadlock_retries: int,
     retry_base_delay_seconds: float,
 ) -> _BatchResult:
+    attempts = max(max_deadlock_retries, 0) + 1
+    for attempt in range(attempts):
+        try:
+            with client.session() as session:
+                return session.execute_write(work)
+        except TransientError as exc:
+            if exc.code != _DEADLOCK_CODE or attempt == attempts - 1:
+                raise
+            delay = max(retry_base_delay_seconds, 0.0) * (2**attempt)
+            logger.warning(
+                "KNOWS batch deadlocked; retrying attempt=%d/%d delay_seconds=%.3f",
+                attempt + 2,
+                attempts,
+                delay,
+            )
+            time.sleep(delay)
+    raise AssertionError("unreachable KNOWS retry state")
+
+
+def _execute_bounded_batch_with_deadlock_retry(
+    client: Neo4jClient,
+    work: Callable[[ManagedTransaction], _BoundedBatchResult],
+    *,
+    max_deadlock_retries: int,
+    retry_base_delay_seconds: float,
+) -> _BoundedBatchResult:
     attempts = max(max_deadlock_retries, 0) + 1
     for attempt in range(attempts):
         try:
@@ -299,6 +337,63 @@ def materialize_knows_from_chat_relationships(
     else:
         logger.debug("No new chat relationship KNOWS edges materialized")
     return total_linked
+
+
+def materialize_knows_batch(
+    client: Neo4jClient,
+    phase: KnowsMaterializationPhase,
+    *,
+    cursor: str = "",
+    batch_size: int = 100,
+    max_deadlock_retries: int = 3,
+    retry_base_delay_seconds: float = 0.25,
+) -> KnowsMaterializationBatch:
+    """Materialize one resumable batch for a declared KNOWS projection phase.
+
+    A non-null ``next_cursor`` instructs the caller to queue a continuation.
+    Replayed cursors are safe because scans exclude records with active KNOWS
+    projections, so a failed worker can restart from the last known boundary.
+    """
+    if phase not in {"chat_relationships", "contacts"}:
+        raise ValueError(f"Unknown KNOWS materialization phase: {phase}")
+    if phase == "contacts":
+        scan_query = queries.SCAN_CONTACT_SOURCE_RECORDS
+        link_one = _link_one_contact
+    else:
+        scan_query = queries.SCAN_CHAT_RELATIONSHIP_SOURCE_RECORDS
+        link_one = _link_one_chat_relationship
+
+    def _work(tx: ManagedTransaction) -> _BoundedBatchResult:
+        result = tx.run(scan_query, cursor=cursor, batch_size=batch_size)
+        rows = list(result)
+        if not rows:
+            return 0, 0, None
+        linked = 0
+        last_pk = cursor
+        for row in rows:
+            pk: str = row["source_record_pk"]
+            source_system_key: str = row["source_system_key"]
+            last_pk = pk
+            raw = decode_raw_payload(row["raw_payload"])
+            if raw is None:
+                logger.warning("Skipping source record %s: raw_payload undecodable", pk)
+                continue
+            if link_one(tx, pk, source_system_key, raw):
+                linked += 1
+        return linked, len(rows), last_pk
+
+    linked, scanned, next_cursor = _execute_bounded_batch_with_deadlock_retry(
+        client,
+        _work,
+        max_deadlock_retries=max_deadlock_retries,
+        retry_base_delay_seconds=retry_base_delay_seconds,
+    )
+    return {
+        "phase": phase,
+        "linked": linked,
+        "scanned": scanned,
+        "next_cursor": next_cursor,
+    }
 
 
 def materialize_knows_from_contacts(

@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from src.celery_app import celery_app
+from src.tasks import materialize_knows_task
 
 
 def test_worker_concurrency_and_task_routes_are_fixed_in_code() -> None:
@@ -14,9 +15,12 @@ def test_worker_concurrency_and_task_routes_are_fixed_in_code() -> None:
         "src.ingestion_orchestration_tasks.*": {"queue": "ingestion"},
         "src.scheduled_ingestion_tasks.*": {"queue": "ingestion"},
         "src.tasks.reconcile_lifecycle_task": {"queue": "lifecycle"},
+        "src.tasks.materialize_knows_task": {"queue": "lifecycle"},
         "src.tasks.send_birthday_messages_task": {"queue": "miscellaneous"},
         "src.tasks.recalculate_pair_audit_match_task": {"queue": "miscellaneous"},
     }
+    assert materialize_knows_task.soft_time_limit == 300
+    assert materialize_knows_task.time_limit == 330
 
 
 def test_compose_workers_are_exclusive_and_use_code_concurrency() -> None:

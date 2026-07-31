@@ -25,6 +25,10 @@ def test_person_pair_query_constants_exist() -> None:
     assert "confidence: $confidence" in queries.CREATE_PERSON_PAIR_REVIEW_CASE
     assert "queue_state IN ['open', 'assigned', 'deferred']" in queries.CHECK_OPEN_PERSON_PAIR_CASE
     assert "IDENTIFIED_BY" in queries.FIND_PERSONS_SHARING_IDENTIFIER
+    batch = queries.FIND_PERSONS_SHARING_IDENTIFIERS_BATCH
+    assert "fanout_rel.is_active = true" in batch
+    assert "fanout_rel.quality_flag" not in batch
+    assert "rel.quality_flag IN ['valid', 'partial_parse']" in batch
 
 
 class _Result:
@@ -75,6 +79,16 @@ class _ScriptedTx:
         self._created = 0
 
     def run(self, query: str, **params: object) -> _Result:
+        if "input.input_index AS input_index" in query:
+            return _Result(
+                [
+                    {
+                        "input_index": 0,
+                        "fanout": self.fanout,
+                        "person_ids": list(self.person_ids),
+                    }
+                ]
+            )
         if "RETURN count(DISTINCT p) AS fanout" in query:
             return _Result([{"fanout": self.fanout}])
         if "RETURN id.identifier_type AS identifier_type" in query:

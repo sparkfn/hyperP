@@ -42,30 +42,36 @@ _INVOLVED_SOURCE_IS_PENDING = """NOT EXISTS {
   }
 """
 
-# Non-search filters, shared by list and count. Every condition is a
-# parameterised IS NULL guard so absent filters pass harmlessly.
-_REVIEW_FILTER_BASE = f"""WHERE {_INVOLVED_SOURCE_IS_PENDING.rstrip()}
-  AND ($queue_state IS NULL OR rc.queue_state = $queue_state)
-  AND ($assigned_to IS NULL OR rc.assigned_to = $assigned_to)
-  AND ($priority_lte IS NULL OR rc.priority <= $priority_lte)
-  AND ($priority_gte IS NULL OR rc.priority >= $priority_gte)
-  AND ($decision IS NULL OR md.decision = $decision)
-  AND ($engine_type IS NULL OR md.engine_type = $engine_type)
-  AND ($confidence_gte IS NULL OR md.confidence >= $confidence_gte)
-  AND ($confidence_lte IS NULL OR md.confidence <= $confidence_lte)
-  AND ($created_after  IS NULL OR rc.created_at >= datetime($created_after))
-  AND ($created_before IS NULL OR rc.created_at <= datetime($created_before))
-  AND ($sla_due_after  IS NULL OR rc.sla_due_at >= datetime($sla_due_after))
-  AND ($sla_due_before IS NULL OR rc.sla_due_at <= datetime($sla_due_before))
-  AND ($overdue_sla IS NULL OR $overdue_sla = false
-       OR (rc.sla_due_at IS NOT NULL AND rc.sla_due_at < datetime()
-           AND NOT rc.queue_state IN {_CLOSED_STATES}))
-  AND ($resolved IS NULL OR (rc.queue_state IN {_CLOSED_STATES}) = $resolved)
-"""
+# Non-search filters are emitted only when active. This avoids null-guarded
+# predicates that hide direct indexable conditions from Neo4j.
+_FILTER_CONDITIONS: dict[str, str] = {
+    "queue_state": "rc.queue_state = $queue_state",
+    "assigned_to": "rc.assigned_to = $assigned_to",
+    "priority_lte": "rc.priority <= $priority_lte",
+    "priority_gte": "rc.priority >= $priority_gte",
+    "decision": "md.decision = $decision",
+    "engine_type": "md.engine_type = $engine_type",
+    "confidence_gte": "md.confidence >= $confidence_gte",
+    "confidence_lte": "md.confidence <= $confidence_lte",
+    "created_after": "rc.created_at >= datetime($created_after)",
+    "created_before": "rc.created_at <= datetime($created_before)",
+    "sla_due_after": "rc.sla_due_at >= datetime($sla_due_after)",
+    "sla_due_before": "rc.sla_due_at <= datetime($sla_due_before)",
+    "overdue_sla": (
+        "rc.sla_due_at IS NOT NULL AND rc.sla_due_at < datetime() "
+        f"AND NOT rc.queue_state IN {_CLOSED_STATES}"
+    ),
+    "resolved": f"(rc.queue_state IN {_CLOSED_STATES}) = $resolved",
+}
+
+
+def _review_filter_clause(active_filters: frozenset[str]) -> str:
+    conditions = [_INVOLVED_SOURCE_IS_PENDING.rstrip()]
+    conditions.extend(_FILTER_CONDITIONS[key] for key in _FILTER_CONDITIONS if key in active_filters)
+    return "WHERE " + "\n  AND ".join(conditions) + "\n"
 
 # Appended only when searching; references the joined left/right persons.
-_REVIEW_SEARCH_FILTER = """  AND ($q IS NULL
-       OR toLower(rc.review_case_id) CONTAINS toLower($q)
+_REVIEW_SEARCH_FILTER = """  AND (toLower(rc.review_case_id) CONTAINS toLower($q)
        OR toLower(md.decision) CONTAINS toLower($q)
        OR toLower(md.engine_type) CONTAINS toLower($q)
        OR toLower(coalesce(rc.assigned_to, '')) CONTAINS toLower($q)
@@ -78,13 +84,14 @@ _REVIEW_SEARCH_FILTER = """  AND ($q IS NULL
 """
 
 # Appended only when filtering by person; matches either side of the decision.
-_REVIEW_PERSON_FILTER = """  AND ($person_id IS NULL
-       OR left.person_id = $person_id
+_REVIEW_PERSON_FILTER = """  AND (left.person_id = $person_id
        OR right.person_id = $person_id)
 """
 
 
-def _review_body(*, has_q: bool, has_person: bool) -> str:
+def _review_body(
+    *, has_q: bool, has_person: bool, active_filters: frozenset[str]
+) -> str:
     """MATCH + filter prefix shared by the list and count queries.
 
     ``has_q`` adds the search predicate, ``has_person`` the person-id filter;
@@ -94,7 +101,7 @@ def _review_body(*, has_q: bool, has_person: bool) -> str:
     parts: list[str] = [_REVIEW_MATCH]
     if has_q or has_person:
         parts.append(_REVIEW_SEARCH_JOINS)
-    parts.append(_REVIEW_FILTER_BASE)
+    parts.append(_review_filter_clause(active_filters))
     if has_q:
         parts.append(_REVIEW_SEARCH_FILTER)
     if has_person:
@@ -160,7 +167,12 @@ def _resolve_sort(sort_by: str | None, sort_order: str | None) -> tuple[str, str
 
 
 def build_list_review_cases_query(
-    sort_by: str | None, sort_order: str | None, *, has_q: bool, has_person: bool = False
+    sort_by: str | None,
+    sort_order: str | None,
+    *,
+    has_q: bool,
+    has_person: bool = False,
+    active_filters: frozenset[str] = frozenset(),
 ) -> str:
     """Build the paginated list query for ``GET /v1/review-cases``.
 
@@ -170,13 +182,20 @@ def build_list_review_cases_query(
     """
     col, direction = _resolve_sort(sort_by, sort_order)
     order_by = f"ORDER BY {col} {direction}, rc.sla_due_at ASC, rc.created_at ASC\n"
-    body = _review_body(has_q=has_q, has_person=has_person)
+    body = _review_body(
+        has_q=has_q, has_person=has_person, active_filters=active_filters
+    )
     return body + _REVIEW_DISPLAY_JOINS + _REVIEW_RETURN + order_by + "SKIP $skip LIMIT $limit\n"
 
 
-def build_count_review_cases_query(*, has_q: bool, has_person: bool = False) -> str:
+def build_count_review_cases_query(
+    *, has_q: bool, has_person: bool = False, active_filters: frozenset[str] = frozenset()
+) -> str:
     """Build the total-count query matching the list query's filters."""
-    return _review_body(has_q=has_q, has_person=has_person) + "RETURN count(rc) AS total\n"
+    return (
+        _review_body(has_q=has_q, has_person=has_person, active_filters=active_filters)
+        + "RETURN count(rc) AS total\n"
+    )
 
 
 GET_REVIEW_CASE = """

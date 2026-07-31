@@ -41,26 +41,37 @@ def upsert_nodes(
     addresses: list[NormalizedAddressModel],
 ) -> None:
     """Step 3: ensure Identifier and Address nodes exist."""
-    for ident in identifiers:
+    identifier_rows = [
+        {
+            "identifier_type": ident.identifier_type,
+            "normalized_value": ident.normalized_value,
+        }
+        for ident in identifiers
+    ]
+    if identifier_rows:
         tx.run(
-            queries.UPSERT_IDENTIFIER,
-            identifier_type=ident.identifier_type,
-            normalized_value=ident.normalized_value,
+            queries.UPSERT_IDENTIFIERS_BATCH,
+            identifiers=identifier_rows,
         )
-    for address in addresses:
-        if not is_usable(address.quality_flag):
-            continue
+    address_rows = [
+        {
+            "country_code": address.country_code,
+            "postal_code": address.postal_code,
+            "street_name": address.street_name,
+            "street_number": address.street_number,
+            "unit_number": address.unit_number or "",
+            "building_name": address.building_name,
+            "city": address.city,
+            "state_province": address.state_province,
+            "normalized_full": address.normalized_full,
+        }
+        for address in addresses
+        if is_usable(address.quality_flag)
+    ]
+    if address_rows:
         tx.run(
-            queries.UPSERT_ADDRESS,
-            country_code=address.country_code,
-            postal_code=address.postal_code,
-            street_name=address.street_name,
-            street_number=address.street_number,
-            unit_number=address.unit_number or "",
-            building_name=address.building_name,
-            city=address.city,
-            state_province=address.state_province,
-            normalized_full=address.normalized_full,
+            queries.UPSERT_ADDRESSES_BATCH,
+            addresses=address_rows,
         )
 
 
@@ -83,32 +94,53 @@ def find_candidates(
         seen.add(key)
         candidates.append(CandidateResult(person_id=person_id, source=source))
 
-    for ident in identifiers:
-        if not is_usable(ident.quality_flag):
-            continue
-        if exceeds_fanout_cap(tx, ident):
-            continue
-        result = tx.run(
-            queries.FIND_CANDIDATES_BY_IDENTIFIER,
-            identifier_type=ident.identifier_type,
-            normalized_value=ident.normalized_value,
+    usable_identifiers = [ident for ident in identifiers if is_usable(ident.quality_flag)]
+    identifier_rows = [
+        {
+            "input_index": index,
+            "identifier_type": ident.identifier_type,
+            "normalized_value": ident.normalized_value,
+        }
+        for index, ident in enumerate(usable_identifiers)
+    ]
+    if identifier_rows:
+        rows = tx.run(
+            queries.FIND_CANDIDATES_BY_IDENTIFIERS_BATCH,
+            identifiers=identifier_rows,
         )
-        for record in result:
-            append_candidate(str(record["person_id"]), "identifier")
+        for record in rows:
+            index = int(record["input_index"])
+            ident = usable_identifiers[index]
+            fanout = int(record["fanout"])
+            cap = fanout_cap_for(ident.identifier_type)
+            if cap is not None and fanout > cap:
+                logger.warning(
+                    "Skipping high-fanout identifier %s=%s (fanout=%d, cap=%d)",
+                    ident.identifier_type,
+                    ident.normalized_value,
+                    fanout,
+                    cap,
+                )
+                continue
+            for person_id in record["person_ids"]:
+                append_candidate(str(person_id), "identifier")
 
-    for address in addresses:
-        if not is_usable(address.quality_flag):
-            continue
-        result = tx.run(
-            queries.FIND_CANDIDATES_BY_ADDRESS,
-            country_code=address.country_code,
-            postal_code=address.postal_code,
-            street_name=address.street_name,
-            street_number=address.street_number,
-            unit_number=address.unit_number or "",
-        )
-        for record in result:
-            append_candidate(str(record["person_id"]), "address")
+    usable_addresses = [address for address in addresses if is_usable(address.quality_flag)]
+    address_rows = [
+        {
+            "input_index": index,
+            "country_code": address.country_code,
+            "postal_code": address.postal_code,
+            "street_name": address.street_name,
+            "street_number": address.street_number,
+            "unit_number": address.unit_number or "",
+        }
+        for index, address in enumerate(usable_addresses)
+    ]
+    if address_rows:
+        for record in tx.run(queries.FIND_CANDIDATES_BY_ADDRESSES_BATCH, addresses=address_rows):
+            for person_id in record["person_ids"]:
+                append_candidate(str(person_id), "address")
 
     return candidates
 

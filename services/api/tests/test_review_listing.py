@@ -64,8 +64,8 @@ def test_no_search_path_skips_person_joins() -> None:
         assert "$q IS NULL" not in query
         assert "toLower($q)" not in query
         assert "left.preferred_full_name" not in query
-    # But the non-search filters are still present.
-    assert "$overdue_sla" in count_q
+    # No inactive optional filters are emitted.
+    assert "$overdue_sla" not in count_q
 
 
 def test_search_path_includes_person_joins() -> None:
@@ -102,18 +102,42 @@ def test_person_filter_combines_with_search() -> None:
 
 
 def test_count_query_shares_filter_clause() -> None:
-    count = build_count_review_cases_query(has_q=True)
+    active_filters = frozenset({"overdue_sla", "confidence_gte"})
+    count = build_count_review_cases_query(has_q=True, active_filters=active_filters)
     assert "RETURN count(rc) AS total" in count
     # Search + filter conditions must be present so counts match the listing.
-    assert "$q IS NULL" in count
-    assert "$overdue_sla" in count
+    assert "toLower(rc.review_case_id) CONTAINS toLower($q)" in count
+    assert "rc.sla_due_at < datetime()" in count
     assert "$confidence_gte" in count
     # Count query never paginates.
     assert "SKIP" not in count
 
 
 def test_filter_clause_covers_all_new_filters() -> None:
-    query = build_list_review_cases_query(None, None, has_q=True)
+    active_filters = frozenset(
+        {
+            "queue_state",
+            "assigned_to",
+            "priority_lte",
+            "priority_gte",
+            "decision",
+            "engine_type",
+            "confidence_gte",
+            "confidence_lte",
+            "created_after",
+            "created_before",
+            "sla_due_after",
+            "sla_due_before",
+            "overdue_sla",
+            "resolved",
+        }
+    )
+    query = build_list_review_cases_query(
+        None,
+        None,
+        has_q=True,
+        active_filters=active_filters,
+    )
     for param in (
         "$queue_state",
         "$assigned_to",
@@ -127,22 +151,41 @@ def test_filter_clause_covers_all_new_filters() -> None:
         "$created_before",
         "$sla_due_after",
         "$sla_due_before",
-        "$overdue_sla",
-        "$resolved",
-        "$q IS NULL",
-    ):
+            "$resolved",
+        ):
         assert param in query, f"missing filter param {param}"
+    assert "rc.sla_due_at < datetime()" in query
+    assert "toLower(rc.review_case_id) CONTAINS toLower($q)" in query
 
 
-def test_resolved_filter_in_base_clause_without_joins() -> None:
+def test_resolved_filter_is_emitted_without_person_joins() -> None:
     # The resolved filter only touches rc.queue_state, so it must be present
     # even on the no-search path (which skips the person joins).
-    query = build_list_review_cases_query(None, None, has_q=False, has_person=False)
+    query = build_list_review_cases_query(
+        None,
+        None,
+        has_q=False,
+        has_person=False,
+        active_filters=frozenset({"resolved"}),
+    )
     assert "(rc.queue_state IN ['resolved', 'cancelled']) = $resolved" in query
     # No-search path skips the search-only person joins (left:Person/right:Person);
     # display OPTIONAL MATCHes are always present.
     assert "OPTIONAL MATCH (md)-[:ABOUT_LEFT]->(left:Person)" not in query
     assert "OPTIONAL MATCH (md)-[:ABOUT_RIGHT]->(right:Person)" not in query
+
+
+def test_inactive_filters_are_not_emitted() -> None:
+    query = build_list_review_cases_query(
+        None,
+        None,
+        has_q=False,
+        active_filters=frozenset({"queue_state"}),
+    )
+
+    assert "$queue_state" in query
+    assert "$assigned_to" not in query
+    assert "$overdue_sla" not in query
 
 
 # ── Route-level tests ───────────────────────────────────────────────────────

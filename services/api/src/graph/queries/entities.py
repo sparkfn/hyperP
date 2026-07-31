@@ -53,7 +53,6 @@ source_record_count, last_ingested_at
 ORDER BY ss.display_name
 """
 
-# Allowlisted sort columns for entity persons query.
 _SORT_COLUMNS: dict[str, str] = {
     "preferred_full_name": "p.preferred_full_name",
     "status": "p.status",
@@ -63,36 +62,42 @@ _SORT_COLUMNS: dict[str, str] = {
     "connection_count": "connection_count",
     "phone_confidence": "phone_confidence",
 }
-
+_NATIVE_SORTS = frozenset({"preferred_full_name", "status", "preferred_phone", "preferred_email"})
 _DEFAULT_SORT = "preferred_full_name"
-_DEFAULT_ORDER = "ASC"
 
-_ENTITY_PERSONS_BODY = """
+_ENTITY_PERSONS_HEAD = """
 MATCH (e:Entity {entity_key: $entity_key})
-MATCH (sr:SourceRecord)<-[entity_fact:HAS_FACT]-(p:Person)
-WHERE p.status <> 'merged'
-  AND coalesce(entity_fact.is_active, true) = true
-  AND (sr.lifecycle_status = 'active'
-    OR (sr.lifecycle_status IS NULL AND sr.is_latest = true))
-  AND (
-    EXISTS { MATCH (sr)-[:OWNED_BY]->(e) }
-    OR (
-      NOT EXISTS { MATCH (sr)-[:OWNED_BY]->(:Entity) }
-      AND EXISTS {
-        MATCH (sr)-[:FROM_SOURCE]->(:SourceSystem)-[:OPERATED_BY]->(e)
-      }
-    )
-  )
-WITH DISTINCT p
-OPTIONAL MATCH (addr:Address {address_id: p.preferred_address_id})
-CALL {
-  WITH p
+CALL (e) {
+  MATCH (e)<-[:OWNED_BY]-(sr:SourceRecord)<-[entity_fact:HAS_FACT]-(p:Person)
+  WHERE p.status <> 'merged'
+    AND coalesce(entity_fact.is_active, true) = true
+    AND (sr.lifecycle_status = 'active'
+      OR (sr.lifecycle_status IS NULL AND sr.is_latest = true))
+  RETURN p
+
+  UNION ALL
+
+  WITH e
+  MATCH (e)<-[:OPERATED_BY]-(:SourceSystem)<-[:FROM_SOURCE]-(sr:SourceRecord)<-[entity_fact:HAS_FACT]-(p:Person)
+  WHERE p.status <> 'merged'
+    AND coalesce(entity_fact.is_active, true) = true
+    AND (sr.lifecycle_status = 'active'
+      OR (sr.lifecycle_status IS NULL AND sr.is_latest = true))
+    AND NOT EXISTS { MATCH (sr)-[:OWNED_BY]->(:Entity) }
+  RETURN p
+}
+"""
+
+_SOURCE_RECORD_COUNT = """
+CALL (p) {
   MATCH (p)-[fact:HAS_FACT]->(sr2:SourceRecord)
   WHERE coalesce(fact.is_active, true) = true
   RETURN count(sr2) AS source_record_count
 }
-CALL {
-  WITH p
+"""
+
+_CONNECTION_COUNT = """
+CALL (p) {
   OPTIONAL MATCH (p)-[p_id:IDENTIFIED_BY]->(:Identifier)
     <-[c_id:IDENTIFIED_BY]-(ci:Person)
     WHERE coalesce(p_id.is_active, true) = true
@@ -110,17 +115,16 @@ CALL {
   UNWIND all_conn AS c
   RETURN count(DISTINCT c) AS connection_count
 }
-CALL {
-  WITH p
+"""
+
+_PHONE_CONFIDENCE = """
+CALL (p) {
   OPTIONAL MATCH (p)-[pi:IDENTIFIED_BY]->(phone_id:Identifier)
   WHERE coalesce(pi.is_active, true) = true
     AND phone_id.identifier_type = 'phone'
     AND phone_id.normalized_value = p.preferred_phone
   WITH pi.quality_flag AS qf
-  ORDER BY CASE qf
-    WHEN 'valid' THEN 0
-    ELSE 1
-  END
+  ORDER BY CASE qf WHEN 'valid' THEN 0 ELSE 1 END
   LIMIT 1
   RETURN CASE qf
     WHEN 'valid' THEN 1.0
@@ -133,6 +137,16 @@ CALL {
     ELSE null
   END AS phone_confidence
 }
+"""
+
+_METRICS: dict[str, str] = {
+    "source_record_count": _SOURCE_RECORD_COUNT,
+    "connection_count": _CONNECTION_COUNT,
+    "phone_confidence": _PHONE_CONFIDENCE,
+}
+
+_RETURN = """
+OPTIONAL MATCH (addr:Address {address_id: p.preferred_address_id})
 RETURN p {
   .person_id, .status, .is_high_value, .is_high_risk,
   .preferred_full_name, .preferred_phone, .preferred_email, .preferred_dob,
@@ -147,8 +161,31 @@ source_record_count, connection_count, phone_confidence
 """
 
 
+def _enrich(excluded: str | None = None) -> str:
+    return "".join(call for key, call in _METRICS.items() if key != excluded)
+
+
 def get_entity_persons_query(sort_by: str, sort_order: str) -> str:
-    """Build entity-persons query with validated sort column and direction."""
-    col = _SORT_COLUMNS.get(sort_by, _SORT_COLUMNS[_DEFAULT_SORT])
+    """Build an Entity-scoped Person query that paginates before page enrichment."""
+    key = sort_by if sort_by in _SORT_COLUMNS else _DEFAULT_SORT
     direction = "DESC" if sort_order.upper() == "DESC" else "ASC"
-    return f"{_ENTITY_PERSONS_BODY}ORDER BY {col} {direction}\nSKIP $skip LIMIT $limit\n"
+    if key in _NATIVE_SORTS:
+        final_col = _SORT_COLUMNS[key].replace("p.", "person.")
+        return (
+            _ENTITY_PERSONS_HEAD
+            + f"WITH DISTINCT p\nORDER BY {_SORT_COLUMNS[key]} {direction}, p.person_id ASC\n"
+            + "SKIP $skip LIMIT $limit\n"
+            + _enrich()
+            + _RETURN
+            + f"ORDER BY {final_col} {direction}, person.person_id ASC\n"
+        )
+    return (
+        _ENTITY_PERSONS_HEAD
+        + "WITH DISTINCT p\n"
+        + _METRICS[key]
+        + f"WITH p, {key}\nORDER BY {key} {direction}, p.person_id ASC\n"
+        + "SKIP $skip LIMIT $limit\n"
+        + _enrich(excluded=key)
+        + _RETURN
+        + f"ORDER BY {key} {direction}, person.person_id ASC\n"
+    )

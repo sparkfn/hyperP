@@ -1,24 +1,28 @@
+"""Deferred KNOWS materialization dispatch contracts."""
+
 from __future__ import annotations
 
 from pytest import MonkeyPatch
-from src import main
+from src import tasks
 
 
-def test_knows_post_processing_failure_is_isolated(monkeypatch: MonkeyPatch) -> None:
-    contacts_called = False
+def test_only_relationship_sources_enqueue_deferred_knows(monkeypatch: MonkeyPatch) -> None:
+    queued: list[tuple[object, ...]] = []
 
-    def fail_chat(_client: object) -> int:
-        raise RuntimeError("deadlock retries exhausted")
+    def apply_async(*, args: tuple[object, ...], queue: str) -> None:
+        assert queue == "lifecycle"
+        queued.append(args)
 
-    def link_contacts(_client: object) -> int:
-        nonlocal contacts_called
-        contacts_called = True
-        return 3
+    monkeypatch.setattr(tasks.materialize_knows_task, "apply_async", apply_async)
 
-    monkeypatch.setattr(main, "materialize_knows_from_chat_relationships", fail_chat)
-    monkeypatch.setattr(main, "materialize_knows_from_contacts", link_contacts)
+    tasks._enqueue_knows_materialization("sgbankruptcy")
+    tasks._enqueue_knows_materialization("fundbox:contacts")
+    tasks._enqueue_knows_materialization("bitrix_chat")
 
-    failures = main._materialize_optional_knows(object())
+    assert queued == [("contacts",), ("chat_relationships",)]
 
-    assert failures == ["chat_relationships"]
-    assert contacts_called
+
+def test_knows_phase_selection_excludes_unrelated_sources() -> None:
+    assert tasks._knows_phase_for_source("sgbankruptcy") is None
+    assert tasks._knows_phase_for_source("fundbox:contacts") == "contacts"
+    assert tasks._knows_phase_for_source("whatsapp_chat") == "chat_relationships"

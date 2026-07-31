@@ -10,6 +10,29 @@ WHERE rel.is_active = true
 RETURN collect(DISTINCT p.person_id) AS person_ids
 """
 
+FIND_PERSONS_SHARING_IDENTIFIERS_BATCH = """
+UNWIND $identifiers AS input
+OPTIONAL MATCH (id:Identifier {
+    identifier_type: input.identifier_type,
+    normalized_value: input.normalized_value
+})
+CALL (id) {
+  OPTIONAL MATCH (id)<-[fanout_rel:IDENTIFIED_BY]-(fanout_person:Person {status: 'active'})
+  WHERE fanout_rel.is_active = true
+  RETURN count(DISTINCT fanout_person) AS fanout
+}
+CALL (id) {
+  OPTIONAL MATCH (id)<-[rel:IDENTIFIED_BY]-(p:Person {status: 'active'})
+  WHERE rel.is_active = true
+    AND rel.quality_flag IN ['valid', 'partial_parse']
+  RETURN collect(DISTINCT p.person_id) AS person_ids
+}
+RETURN input.input_index AS input_index,
+       fanout,
+       person_ids
+ORDER BY input_index
+"""
+
 CHECK_OPEN_PERSON_PAIR_CASE = """
 MATCH (rc:ReviewCase)-[:FOR_DECISION]->(md:MatchDecision)
 MATCH (md)-[:ABOUT_LEFT {entity_type: 'person'}]->(a:Person)

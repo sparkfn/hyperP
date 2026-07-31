@@ -47,6 +47,7 @@ from src.main import (
     setup_logging,
 )
 from src.matching.pair_score import score_person_pair
+from src.pipeline_knows import KnowsMaterializationPhase, materialize_knows_batch
 from src.pipeline_person_pairs import _ENGINE_VERSION, _POLICY_VERSION
 
 logger = logging.getLogger(__name__)
@@ -364,6 +365,16 @@ class LifecycleReconciliationSummary(TypedDict):
     projections: int
 
 
+class KnowsMaterializationSummary(TypedDict):
+    """JSON-safe result emitted by a bounded deferred KNOWS task."""
+
+    phase: KnowsMaterializationPhase
+    linked: int
+    scanned: int
+    complete: bool
+    next_cursor: str | None
+
+
 def _terminal_run_summary(
     ingest_run_id: str,
     status: str,
@@ -400,6 +411,89 @@ def run_lifecycle_reconciliation() -> LifecycleReconciliationSummary:
         "status": "complete",
         "source_records": source_records,
         "projections": projections,
+    }
+
+
+def _knows_phase_for_source(source_key: str) -> KnowsMaterializationPhase | None:
+    """Return the deferred projection phase affected by one source ingestion."""
+    if source_key == "fundbox:contacts":
+        return "contacts"
+    if source_key in {"bitrix_chat", "whatsapp_chat"}:
+        return "chat_relationships"
+    return None
+
+
+def _enqueue_knows_materialization(source_key: str) -> None:
+    """Best-effort enqueue; source ingestion must never wait for a global sweep."""
+    phase = _knows_phase_for_source(source_key)
+    if phase is None:
+        return
+    try:
+        materialize_knows_task.apply_async(args=(phase,), queue=LIFECYCLE_QUEUE)
+    except Exception:
+        logger.exception("Could not queue deferred KNOWS materialization phase=%s", phase)
+
+
+@celery_app.task(
+    name="src.tasks.materialize_knows_task",
+    bind=True,
+    acks_late=True,
+    soft_time_limit=300,
+    time_limit=330,
+    max_retries=0,
+)
+def materialize_knows_task(
+    self: Task,
+    phase: KnowsMaterializationPhase,
+    cursor: str = "",
+) -> KnowsMaterializationSummary:
+    """Process one bounded, locked KNOWS batch and continue from its cursor."""
+    settings = get_settings()
+    setup_logging(settings.log_level)
+    started = time.monotonic()
+    try:
+        with _acquire_source_lock(f"knows-materialization:{phase}"), _acquire_init_lock():
+            initialize_ingestion_graph()
+            client = Neo4jClient(settings)
+            try:
+                result = materialize_knows_batch(client, phase, cursor=cursor)
+            finally:
+                client.close()
+    except _SourceAlreadyRunningError:
+        logger.info("KNOWS materialization phase=%s is already running; skipping duplicate", phase)
+        return {
+            "phase": phase,
+            "linked": 0,
+            "scanned": 0,
+            "complete": False,
+            "next_cursor": cursor,
+        }
+    except Exception as exc:
+        logger.exception("KNOWS materialization failed phase=%s cursor=%s", phase, cursor)
+        raise Reject(str(exc), requeue=False) from exc
+
+    next_cursor = result["next_cursor"]
+    complete = next_cursor is None
+    elapsed = time.monotonic() - started
+    logger.info(
+        "KNOWS materialization phase=%s cursor=%s scanned=%d linked=%d next_cursor=%s "
+        "complete=%s elapsed_seconds=%.3f",
+        phase,
+        cursor,
+        result["scanned"],
+        result["linked"],
+        next_cursor,
+        complete,
+        elapsed,
+    )
+    if next_cursor is not None:
+        materialize_knows_task.apply_async(args=(phase, next_cursor), queue=LIFECYCLE_QUEUE)
+    return {
+        "phase": phase,
+        "linked": result["linked"],
+        "scanned": result["scanned"],
+        "complete": complete,
+        "next_cursor": next_cursor,
     }
 
 
@@ -537,6 +631,11 @@ def run_ingestion_task(
                     logger.exception("Could not queue post-ingestion lifecycle reconciliation")
                 if idempotency_key is not None and summary["status"] == "completed":
                     _mark_scheduled_step_completed(idempotency_key)
+                if (
+                    celery_task_id is not None
+                    and summary.get("status") in {"completed", "completed_with_errors"}
+                ):
+                    _enqueue_knows_materialization(source_key)
                 return summary
     except _SourceAlreadyRunningError as exc:
         if ingest_run_id is not None or wait_for_source:

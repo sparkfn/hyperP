@@ -69,6 +69,10 @@ def test_person_assertions_are_keyed_by_immutable_source_provenance() -> None:
         assert "source_system_key: $source_system_key" in merge_clause
     assert "RETURN DISTINCT candidate.person_id" in queries.FIND_CANDIDATES_BY_IDENTIFIER
     assert "RETURN DISTINCT candidate.person_id" in queries.FIND_CANDIDATES_BY_ADDRESS
+    batch = queries.FIND_CANDIDATES_BY_IDENTIFIERS_BATCH
+    assert "fanout_rel.is_active = true" in batch
+    assert "fanout_rel.quality_flag" not in batch
+    assert "rel.quality_flag IN ['valid', 'partial_parse']" in batch
 
 
 def test_auto_merge_rewires_each_source_assertion_independently() -> None:

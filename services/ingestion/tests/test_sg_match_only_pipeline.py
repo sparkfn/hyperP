@@ -67,8 +67,18 @@ class _MatchedTx(_RecordingTx):
             return _Result({"source_record_pk": "sr-1"})
         if "person_id AS person_id" in query and "rel.quality_flag = 'valid'" in query:
             return _Result({"person_id": "person-1"})
-        if "candidate:Person" in query:
-            return _Result(rows=[{"person_id": "person-1"}])
+        if "input.input_index AS input_index" in query:
+            return _Result(
+                rows=[
+                    {
+                        "input_index": 0,
+                        "identifier_type": "nric",
+                        "normalized_value": "S1234567A",
+                        "fanout": 1,
+                        "person_ids": ["person-1"],
+                    }
+                ]
+            )
         if "RETURN sr.source_record_pk AS source_record_pk" in query:
             return _Result({"source_record_pk": "sr-1"})
         if "match_decision_id" in query:
