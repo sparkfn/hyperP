@@ -55,6 +55,52 @@ class OpenLineMessage:
     is_agent: bool
 
 
+@dataclass(frozen=True)
+class CrmContact:
+    """Contact or lead identity evidence returned by the Bitrix CRM API."""
+
+    id: str
+    full_name: str | None
+    phones: tuple[str, ...] = ()
+    emails: tuple[str, ...] = ()
+    kind: str = "contact"
+
+
+@dataclass(frozen=True)
+class CrmDeal:
+    """Minimal deal representation needed for person resolution and timeline."""
+
+    id: str
+    title: str
+    category_id: str | None
+    stage_id: str | None
+    observed_at: datetime | None
+    primary_contact: CrmContact | None
+    contacts: tuple[CrmContact, ...]
+    contact_count: int
+    has_ambiguous_contacts: bool
+    raw_payload: dict[str, JsonValue]
+
+
+@dataclass(frozen=True)
+class CrmActivity:
+    """Immutable activity/timeline data from ``crm.activity.list``."""
+
+    id: str
+    owner_type: str
+    owner_id: str
+    history_kind: str
+    subject: str | None
+    observed_at: datetime | None
+    start_at: datetime | None
+    end_at: datetime | None
+    duration_seconds: int | None
+    direction: str | None
+    outcome: str | None
+    is_call: bool
+    raw_payload: dict[str, JsonValue]
+
+
 def merge_chat_references(first: ChatReference, second: ChatReference) -> ChatReference:
     """Merge two discoveries without dropping their typed provenance."""
     changed_at = _latest_changed_at(first.changed_at, second.changed_at)

@@ -231,6 +231,17 @@ def persist_source_record(
         extraction_confidence=envelope.extraction_confidence,
         extraction_method=envelope.extraction_method,
         conversation_ref=conv_ref,
+        parent_source_system=(
+            envelope.parent_ref.parent_source_system if envelope.parent_ref is not None else None
+        ),
+        parent_source_record_id=(
+            envelope.parent_ref.parent_source_record_id if envelope.parent_ref is not None else None
+        ),
+        parent_record_type=(
+            envelope.parent_ref.parent_record_type.value
+            if envelope.parent_ref is not None
+            else None
+        ),
         link_status="linked" if is_linked else "pending_review",
         observed_at=envelope.observed_at,
         record_hash=envelope.record_hash,

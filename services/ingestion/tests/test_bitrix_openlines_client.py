@@ -687,3 +687,118 @@ def test_client_captures_openline_origin_from_recent_dialogs() -> None:
 
     references = client.iter_recent_chat_refs(50)
     assert [(ref.config_id, ref.connector_id) for ref in references] == [("46", "facebook")]
+
+
+def test_client_fetches_all_deal_contacts_and_call_activity_details() -> None:
+    requests: list[tuple[str, dict[str, object]]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        method = request.url.path.rsplit("/", 1)[-1]
+        body = json.loads(request.content)
+        requests.append((method, body))
+        if method == "crm.deal.get":
+            return httpx.Response(
+                200,
+                json={
+                    "result": {
+                        "ID": "501",
+                        "TITLE": "Ada service",
+                        "CONTACT_ID": "400",
+                        "DATE_MODIFY": "2026-07-20T10:00:00+00:00",
+                    }
+                },
+            )
+        if method == "crm.deal.contact.items.get":
+            return httpx.Response(
+                200,
+                json={"result": [{"CONTACT_ID": "400"}, {"CONTACT_ID": "401"}]},
+            )
+        if method == "crm.contact.get":
+            contact_id = body["id"]
+            return httpx.Response(
+                200,
+                json={
+                    "result": {
+                        "ID": str(contact_id),
+                        "NAME": "Ada" if contact_id == "400" else "Grace",
+                        "LAST_NAME": "Lovelace" if contact_id == "400" else "Hopper",
+                        "PHONE": [{"VALUE": "+6591234567"}],
+                        "EMAIL": [{"VALUE": "ada@example.com"}],
+                    }
+                },
+            )
+        assert method == "crm.activity.list"
+        return httpx.Response(
+            200,
+            json={
+                "result": [
+                    {
+                        "ID": "901",
+                        "OWNER_TYPE_ID": "2",
+                        "OWNER_ID": "501",
+                        "TYPE_ID": "2",
+                        "SUBJECT": "Follow-up call",
+                        "START_TIME": "2026-07-20T10:00:00+00:00",
+                        "END_TIME": "2026-07-20T10:05:00+00:00",
+                        "DIRECTION": "2",
+                        "RESULT_STATUS": "Y",
+                    }
+                ]
+            },
+        )
+
+    client = BitrixOpenLinesClient(
+        base_url="https://bitrix.test/rest/hook",
+        timeout_seconds=5,
+        max_attempts=1,
+        http=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+
+    deal = client.get_deal(501)
+    activities = client.list_deal_activities(501)
+
+    assert deal.primary_contact is not None
+    assert deal.primary_contact.id == "400"
+    assert [contact.id for contact in deal.contacts] == ["400", "401"]
+    assert deal.has_ambiguous_contacts is False
+    assert activities[0].is_call is True
+    assert activities[0].duration_seconds == 300
+    assert activities[0].start_at == datetime(2026, 7, 20, 10, tzinfo=UTC)
+    assert ("crm.deal.contact.items.get", {"id": 501}) in requests
+
+
+def test_client_treats_zero_contact_and_lead_ids_as_unset() -> None:
+    methods: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        method = request.url.path.rsplit("/", 1)[-1]
+        methods.append(method)
+        if method == "crm.deal.get":
+            return httpx.Response(
+                200,
+                json={
+                    "result": {
+                        "ID": "501",
+                        "TITLE": "No contact yet",
+                        "CONTACT_ID": "0",
+                        "CONTACT_IDS": ["0"],
+                        "LEAD_ID": 0,
+                    }
+                },
+            )
+        assert method == "crm.deal.contact.items.get"
+        return httpx.Response(200, json={"result": [{"CONTACT_ID": "0"}]})
+
+    client = BitrixOpenLinesClient(
+        base_url="https://bitrix.test/rest/hook",
+        timeout_seconds=5,
+        max_attempts=1,
+        http=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+
+    deal = client.get_deal(501)
+
+    assert deal.primary_contact is None
+    assert deal.contacts == ()
+    assert deal.contact_count == 0
+    assert methods == ["crm.deal.get", "crm.deal.contact.items.get"]

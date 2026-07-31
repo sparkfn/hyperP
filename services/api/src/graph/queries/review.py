@@ -852,6 +852,28 @@ WITH pending, approved, source, old_versions,
 FOREACH (rel IN unsafe_links | DELETE rel)
 MERGE (pending)-[:LINKED_TO {linked_at: datetime()}]->(approved)
 WITH pending, approved, source, old_versions, prior_person_ids
+CALL (pending, approved, source) {
+  OPTIONAL MATCH (call:SourceRecord {record_type: 'call', lifecycle_status: 'pending_review'})
+        -[:CHILD_OF]->(:SourceRecord {record_type: 'crm_history'})
+        -[:CHILD_OF]->(logical_deal:SourceRecord {record_type: 'crm_deal'})
+        -[:FROM_SOURCE]->(source)
+  WHERE pending.record_type = 'crm_deal'
+    AND logical_deal.source_record_id = pending.source_record_id
+  WITH approved, collect(DISTINCT call) AS calls
+  CALL (calls) {
+    UNWIND calls AS call
+    OPTIONAL MATCH (call)-[old_call_link:LINKED_TO]->(:Person)
+    DELETE old_call_link
+    RETURN count(*) AS removed_call_link_count
+  }
+  FOREACH (call IN calls |
+    SET call.lifecycle_status = 'active', call.link_status = 'linked',
+        call.activated_at = datetime(), call.updated_at = datetime()
+    CREATE (call)-[:LINKED_TO {linked_at: datetime()}]->(approved)
+  )
+  RETURN size(calls) AS activated_call_count
+}
+WITH pending, approved, source, old_versions, prior_person_ids
 CALL (old_versions) {
   UNWIND old_versions AS old
   OPTIONAL MATCH (owner:Person)-[rel:IDENTIFIED_BY|LIVES_AT]->()
@@ -1039,9 +1061,29 @@ RETURN pending.source_record_pk AS pending_source_record_pk,
 REJECT_PENDING_REVIEW_RECORD = """
 MATCH (rc:ReviewCase {review_case_id: $review_case_id})-[:FOR_DECISION]->(md:MatchDecision)
 MATCH (md)-[:ABOUT_LEFT]->(pending:SourceRecord {lifecycle_status: 'pending_review'})
-MATCH (pending)-[:FROM_SOURCE]->(:SourceSystem)
+MATCH (pending)-[:FROM_SOURCE]->(source:SourceSystem)
 SET pending.lifecycle_status = 'rejected', pending.is_latest = false,
     pending.rejection_reason = $reason, pending.rejected_at = datetime(),
     pending.resolved_at = datetime(), pending.updated_at = datetime()
+WITH pending, source
+OPTIONAL MATCH (call:SourceRecord {record_type: 'call', lifecycle_status: 'pending_review'})
+      -[:CHILD_OF]->(:SourceRecord {record_type: 'crm_history'})
+      -[:CHILD_OF]->(logical_deal:SourceRecord {record_type: 'crm_deal'})
+      -[:FROM_SOURCE]->(source)
+WHERE pending.record_type = 'crm_deal'
+  AND logical_deal.source_record_id = pending.source_record_id
+WITH pending, collect(DISTINCT call) AS calls
+CALL (calls) {
+  UNWIND calls AS call
+  OPTIONAL MATCH (call)-[old_call_link:LINKED_TO]->(:Person)
+  DELETE old_call_link
+  RETURN count(*) AS removed_call_link_count
+}
+FOREACH (call IN calls |
+  SET call.lifecycle_status = 'rejected', call.is_latest = false,
+      call.link_status = 'unresolved', call.rejection_reason = $reason,
+      call.rejected_at = datetime(), call.resolved_at = datetime(),
+      call.updated_at = datetime()
+)
 RETURN pending.source_record_pk AS pending_source_record_pk
 """

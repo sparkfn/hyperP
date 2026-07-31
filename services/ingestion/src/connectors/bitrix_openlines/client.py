@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import time
 from collections.abc import Iterator, Mapping
+from datetime import datetime
 from typing import cast
 from urllib.parse import urlencode
 
@@ -12,6 +13,9 @@ import httpx
 
 from src.connectors.bitrix_openlines.models import (
     ChatReference,
+    CrmActivity,
+    CrmContact,
+    CrmDeal,
     CrmDiscoveryPage,
     DialogMetadata,
     OpenLineConfig,
@@ -340,6 +344,123 @@ class BitrixOpenLinesClient:
             key=lambda item: (item.date, item.id),
         )
 
+    def get_deal(self, deal_id: int) -> CrmDeal:
+        """Fetch a deal and the primary contact/lead identity evidence."""
+        result = self._call("crm.deal.get", {"id": deal_id})
+        if not isinstance(result, dict):
+            raise RuntimeError("Bitrix deal returned an invalid result")
+        raw = result
+        raw_id = _positive_id_string(raw.get("ID"))
+        if raw_id is None:
+            raise RuntimeError("Bitrix deal omitted its ID")
+        explicit_contact_id = _positive_id_string(raw.get("CONTACT_ID"))
+        contact_ids = self._deal_contact_ids(deal_id, raw)
+        if explicit_contact_id is not None and explicit_contact_id not in contact_ids:
+            contact_ids = (explicit_contact_id, *contact_ids)
+        primary_contact: CrmContact | None = None
+        contacts: tuple[CrmContact, ...] = ()
+        if contact_ids:
+            contacts = tuple(self.get_contact(contact_id) for contact_id in contact_ids)
+            if explicit_contact_id is not None:
+                primary_contact = next(
+                    contact for contact in contacts if contact.id == explicit_contact_id
+                )
+            elif len(contacts) == 1:
+                primary_contact = contacts[0]
+        elif not contact_ids:
+            lead_id = _positive_id_string(raw.get("LEAD_ID"))
+            if lead_id is not None:
+                primary_contact = self.get_lead(lead_id)
+                contacts = (primary_contact,)
+        return CrmDeal(
+            id=raw_id,
+            title=_string(raw.get("TITLE")) or "",
+            category_id=_string(raw.get("CATEGORY_ID")),
+            stage_id=_string(raw.get("STAGE_ID")),
+            observed_at=_first_datetime(raw, "DATE_MODIFY", "DATE_CREATE"),
+            primary_contact=primary_contact,
+            contacts=contacts,
+            contact_count=len(contact_ids),
+            has_ambiguous_contacts=len(contact_ids) > 1 and explicit_contact_id is None,
+            raw_payload=raw,
+        )
+
+    def _deal_contact_ids(
+        self,
+        deal_id: int,
+        deal: Mapping[str, JsonValue],
+    ) -> tuple[str, ...]:
+        """Read all deal contacts, falling back to legacy deal fields.
+
+        ``CONTACT_ID`` identifies the primary contact, but it does not include
+        every contact associated with the deal. The association endpoint is
+        therefore required to enforce the no-primary multi-contact policy.
+        """
+        fallback = _string_values(deal.get("CONTACT_IDS"))
+        result = self._call("crm.deal.contact.items.get", {"id": deal_id})
+        if not isinstance(result, list):
+            return fallback
+        contact_ids: list[str] = []
+        for item in result:
+            if isinstance(item, dict):
+                contact_id = _positive_id_string(item.get("CONTACT_ID"))
+                if contact_id is not None:
+                    contact_ids.append(contact_id)
+        return tuple(dict.fromkeys(contact_ids)) or fallback
+
+    def get_contact(self, contact_id: str) -> CrmContact:
+        result = self._call("crm.contact.get", {"id": contact_id})
+        return _crm_contact(result, kind="contact")
+
+    def get_lead(self, lead_id: str) -> CrmContact:
+        result = self._call("crm.lead.get", {"id": lead_id})
+        return _crm_contact(result, kind="lead")
+
+    def list_deal_activities(self, deal_id: int) -> list[CrmActivity]:
+        """Return all current activities for a deal; callers make them immutable."""
+        activities: list[CrmActivity] = []
+        start = 0
+        while True:
+            payload = self._request(
+                "crm.activity.list",
+                {
+                    "filter": {"OWNER_TYPE_ID": 2, "OWNER_ID": deal_id},
+                    "select": [
+                        "ID",
+                        "OWNER_TYPE_ID",
+                        "OWNER_ID",
+                        "TYPE_ID",
+                        "PROVIDER_ID",
+                        "PROVIDER_TYPE_ID",
+                        "SUBJECT",
+                        "LAST_UPDATED",
+                        "CREATED",
+                        "START_TIME",
+                        "END_TIME",
+                        "DURATION",
+                        "DIRECTION",
+                        "RESULT_STATUS",
+                        "COMPLETED",
+                        "PROVIDER_PARAMS",
+                        "SETTINGS",
+                    ],
+                    "order": {"ID": "ASC"},
+                    "start": start,
+                },
+            )
+            result = payload.get("result")
+            if not isinstance(result, list):
+                raise RuntimeError("Bitrix deal activities returned an invalid result")
+            for item in result:
+                if isinstance(item, dict):
+                    activity = _crm_activity(item)
+                    if activity is not None:
+                        activities.append(activity)
+            next_page = next_start(payload, start)
+            if next_page is None:
+                return activities
+            start = next_page
+
     def _get_message_collection(
         self,
         method: str,
@@ -408,3 +529,123 @@ class BitrixOpenLinesClient:
                     raise RuntimeError(f"Bitrix method {method} request failed") from None
                 time.sleep(min(2 ** (attempt - 1), 8))
         raise AssertionError("unreachable")
+
+
+def _string(value: object) -> str | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return None
+
+
+def _string_values(value: object) -> tuple[str, ...]:
+    if not isinstance(value, list):
+        return ()
+    values = [_positive_id_string(item) for item in value]
+    return tuple(item for item in values if item is not None)
+
+
+def _positive_id_string(value: object) -> str | None:
+    parsed = _string(value)
+    if parsed is None:
+        return None
+    try:
+        return parsed if int(parsed) > 0 else None
+    except ValueError:
+        return parsed
+
+
+def _first_datetime(payload: Mapping[str, JsonValue], *keys: str) -> datetime | None:
+    for key in keys:
+        value = optional_datetime(payload.get(key))
+        if value is not None:
+            return value
+    return None
+
+
+def _crm_contact(result: JsonValue, *, kind: str) -> CrmContact:
+    if not isinstance(result, dict):
+        raise RuntimeError(f"Bitrix {kind} returned an invalid result")
+    payload = result
+    contact_id = _positive_id_string(payload.get("ID"))
+    if contact_id is None:
+        raise RuntimeError(f"Bitrix {kind} omitted its ID")
+    name_parts = [
+        _string(payload.get(key))
+        for key in ("NAME", "SECOND_NAME", "LAST_NAME")
+    ]
+    full_name = " ".join(value for value in name_parts if value) or None
+    return CrmContact(
+        id=contact_id,
+        full_name=full_name,
+        phones=_multi_value_field(payload.get("PHONE")),
+        emails=_multi_value_field(payload.get("EMAIL")),
+        kind=kind,
+    )
+
+
+def _multi_value_field(value: object) -> tuple[str, ...]:
+    if not isinstance(value, list):
+        return ()
+    values: list[str] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        raw_value = _string(item.get("VALUE"))
+        if raw_value is not None:
+            values.append(raw_value)
+    return tuple(dict.fromkeys(values))
+
+
+def _crm_activity(payload: dict[str, JsonValue]) -> CrmActivity | None:
+    activity_id = _string(payload.get("ID"))
+    owner_id = _string(payload.get("OWNER_ID"))
+    owner_type = _string(payload.get("OWNER_TYPE_ID"))
+    if activity_id is None or owner_id is None or owner_type is None:
+        return None
+    provider_id = (_string(payload.get("PROVIDER_ID")) or "").upper()
+    provider_type = (_string(payload.get("PROVIDER_TYPE_ID")) or "").upper()
+    type_id = _string(payload.get("TYPE_ID"))
+    is_call = type_id == "2" or "CALL" in provider_id or "CALL" in provider_type
+    history_kind = "call" if is_call else _history_kind(provider_id, provider_type, type_id)
+    start_at = _first_datetime(payload, "START_TIME")
+    end_at = _first_datetime(payload, "END_TIME")
+    duration_seconds = _duration_seconds(payload.get("DURATION"))
+    if duration_seconds is None and start_at is not None and end_at is not None:
+        duration_seconds = max(int((end_at - start_at).total_seconds()), 0)
+    return CrmActivity(
+        id=activity_id,
+        owner_type=owner_type,
+        owner_id=owner_id,
+        history_kind=history_kind,
+        subject=_string(payload.get("SUBJECT")),
+        observed_at=_first_datetime(payload, "LAST_UPDATED", "CREATED", "START_TIME"),
+        start_at=start_at,
+        end_at=end_at,
+        duration_seconds=duration_seconds,
+        direction=_string(payload.get("DIRECTION")),
+        outcome=_string(payload.get("RESULT_STATUS")) or _string(payload.get("COMPLETED")),
+        is_call=is_call,
+        raw_payload=payload,
+    )
+
+
+def _history_kind(provider_id: str, provider_type: str, type_id: str | None) -> str:
+    if provider_id == "IMOPENLINES_SESSION":
+        return "openlines_session"
+    if provider_type:
+        return provider_type.lower()
+    if type_id is not None:
+        return f"activity_type_{type_id}"
+    return "activity"
+
+
+def _duration_seconds(value: object) -> int | None:
+    if isinstance(value, int) and not isinstance(value, bool):
+        return max(value, 0)
+    if isinstance(value, str) and value.isdigit():
+        return int(value)
+    return None

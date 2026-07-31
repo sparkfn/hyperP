@@ -144,6 +144,7 @@ RETURN sr {
   .source_record_pk, .source_record_id, .source_record_version,
   .record_type, .extraction_confidence, .extraction_method,
   .link_status, .lifecycle_status, .observed_at, .ingested_at,
+  .parent_source_system, .parent_source_record_id, .parent_record_type,
   .conversation_ref, .raw_payload, .normalized_payload
 } AS source_record,
 ss.source_key AS source_system,
@@ -490,7 +491,9 @@ CALL {
     source_record: sr {
       .source_record_pk, .source_record_id, .source_record_version,
       .record_type, .extraction_confidence, .extraction_method,
-      .link_status, .lifecycle_status, .observed_at, .ingested_at, .conversation_ref,
+      .link_status, .lifecycle_status, .observed_at, .ingested_at,
+      .parent_source_system, .parent_source_record_id, .parent_record_type,
+      .conversation_ref,
       .raw_payload, .normalized_payload
     },
     source_system: ss.source_key,
@@ -659,6 +662,7 @@ CALL {
     entity_display_name: entity.display_name,
     .record_type, .extraction_confidence, .extraction_method,
     .link_status, .lifecycle_status, .linked_person_id, .observed_at, .ingested_at,
+    .parent_source_system, .parent_source_record_id, .parent_record_type,
     .conversation_ref, .raw_payload, .normalized_payload
   }) AS current_person_source_records
 }
@@ -680,6 +684,7 @@ CALL {
     entity_display_name: entity.display_name,
     .record_type, .extraction_confidence, .extraction_method,
     .link_status, .lifecycle_status, .linked_person_id, .observed_at, .ingested_at,
+    .parent_source_system, .parent_source_record_id, .parent_record_type,
     .conversation_ref, .raw_payload, .normalized_payload
   }) AS candidate_source_records
 }

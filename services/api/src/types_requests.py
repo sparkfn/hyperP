@@ -11,9 +11,17 @@ from src.repositories.protocols.merge import GoldenProfileSelection
 from src.types import (
     ApiReviewActionType,
     GoldenFieldName,
-    SourceRecordTypeLiteral,
     TrustTier,
 )
+
+IngestSourceRecordTypeLiteral = Literal[
+    "identity",
+    "bankruptcy",
+    "rental_flat",
+    "relationship",
+    "conversation",
+    "sales",
+]
 
 
 class GoldenProfileSelectionRequest(BaseModel):
@@ -123,7 +131,7 @@ class IngestRecord(BaseModel):
     source_record_id: str
     entity_key: str | None = None
     source_record_version: str | None = None
-    record_type: SourceRecordTypeLiteral = "identity"
+    record_type: IngestSourceRecordTypeLiteral = "identity"
     extraction_confidence: float | None = None
     extraction_method: str | None = None
     conversation_ref: dict[str, str | int | float | bool | None] | None = None

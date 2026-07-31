@@ -217,7 +217,7 @@ paths:
           description: Filter by source record type.
           schema:
             type: string
-            enum: [identity, bankruptcy, relationship, rental_flat, conversation, sales]
+            enum: [identity, bankruptcy, relationship, rental_flat, conversation, sales, crm_deal, crm_history, call]
         - name: is_high_value
           in: query
           description: Filter by high-value flag.
@@ -2102,7 +2102,7 @@ components:
           type: [string, 'null']
         record_type:
           type: string
-          enum: [identity, bankruptcy, rental_flat, relationship, conversation, sales]
+          enum: [identity, bankruptcy, rental_flat, relationship, conversation, sales, crm_deal, crm_history, call]
         lifecycle_status:
           type: string
           description: >-
@@ -2124,6 +2124,13 @@ components:
           type:
             - string
             - 'null'
+        parent_source_system:
+          type: [string, 'null']
+        parent_source_record_id:
+          type: [string, 'null']
+        parent_record_type:
+          type: [string, 'null']
+          enum: [identity, bankruptcy, rental_flat, relationship, conversation, sales, crm_deal, crm_history, call, null]
         observed_at:
           type: string
         ingested_at:
@@ -2181,7 +2188,7 @@ components:
           type: [string, 'null']
         record_type:
           type: string
-          enum: [identity, bankruptcy, rental_flat, relationship, conversation, sales]
+          enum: [identity, bankruptcy, rental_flat, relationship, conversation, sales, crm_deal, crm_history, call]
         lifecycle_status:
           type: string
           enum: [active, pending_review, superseded, rejected, link_failed]
@@ -2195,6 +2202,13 @@ components:
           type: string
         linked_person_id:
           type: [string, 'null']
+        parent_source_system:
+          type: [string, 'null']
+        parent_source_record_id:
+          type: [string, 'null']
+        parent_record_type:
+          type: [string, 'null']
+          enum: [identity, bankruptcy, rental_flat, relationship, conversation, sales, crm_deal, crm_history, call, null]
         observed_at:
           type: string
         ingested_at:
@@ -2607,9 +2621,10 @@ components:
           description: |
             Selects the source fact domain and its specialized projection:
             `identity`, `bankruptcy`, `rental_flat`, `relationship`,
-            `conversation`, or `sales`. Conversation records are heuristic
-            extracts from chat or voice transcripts and are never eligible for
-            deterministic auto-merge.
+            `conversation`, or `sales`. Hierarchical CRM records are created by
+            the internal Bitrix incremental connector rather than this raw
+            source-record endpoint. Conversation records are evidence-only and
+            are never eligible to create a Person through deterministic auto-merge.
         extraction_confidence:
           type:
             - number

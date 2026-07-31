@@ -26,3 +26,6 @@ class RecordType(StrEnum):
     RELATIONSHIP = "relationship"
     CONVERSATION = "conversation"
     SALES = "sales"
+    CRM_DEAL = "crm_deal"
+    CRM_HISTORY = "crm_history"
+    CALL = "call"

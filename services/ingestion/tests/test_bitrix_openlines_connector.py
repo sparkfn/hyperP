@@ -726,3 +726,205 @@ def test_connector_attributes_inaccessible_recent_messages_without_upstream_text
     assert exc_info.value.__cause__ is None
     connector.commit_watermark()
     assert watermark.committed is None
+
+
+def test_incremental_api_emits_deal_history_call_and_exact_chat_parent(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    from src.connectors.bitrix_openlines.models import CrmActivity, CrmContact, CrmDeal
+
+    class CrmStubClient(StubClient):
+        def get_deal(self, deal_id: int) -> CrmDeal:
+            assert deal_id == 501
+            return CrmDeal(
+                id="501",
+                title="Ada service",
+                category_id="2",
+                stage_id="C2:NEW",
+                observed_at=datetime(2026, 7, 20, 9, tzinfo=UTC),
+                primary_contact=CrmContact(
+                    id="400",
+                    full_name="Ada Lovelace",
+                    phones=("+6591234567",),
+                ),
+                contacts=(
+                    CrmContact(
+                        id="400",
+                        full_name="Ada Lovelace",
+                        phones=("+6591234567",),
+                    ),
+                ),
+                contact_count=1,
+                has_ambiguous_contacts=False,
+                raw_payload={"ID": "501"},
+            )
+
+        def list_deal_activities(self, deal_id: int) -> list[CrmActivity]:
+            assert deal_id == 501
+            return [
+                CrmActivity(
+                    id="900",
+                    owner_type="deal",
+                    owner_id="501",
+                    history_kind="openlines_session",
+                    subject="Open Lines session",
+                    observed_at=datetime(2026, 7, 20, 9, tzinfo=UTC),
+                    start_at=None,
+                    end_at=None,
+                    duration_seconds=None,
+                    direction=None,
+                    outcome=None,
+                    is_call=False,
+                    raw_payload={"ID": "900"},
+                ),
+                CrmActivity(
+                    id="901",
+                    owner_type="deal",
+                    owner_id="501",
+                    history_kind="call",
+                    subject="Follow-up call",
+                    observed_at=datetime(2026, 7, 20, 10, tzinfo=UTC),
+                    start_at=datetime(2026, 7, 20, 10, tzinfo=UTC),
+                    end_at=datetime(2026, 7, 20, 10, 5, tzinfo=UTC),
+                    duration_seconds=300,
+                    direction="2",
+                    outcome="Y",
+                    is_call=True,
+                    raw_payload={"ID": "901", "TYPE_ID": "2"},
+                ),
+            ]
+
+    monkeypatch.setattr(
+        "src.connectors.bitrix_openlines.connector.run_extraction_batch",
+        lambda texts: [
+            {
+                "persons": [{"name": "Ada", "phone": "+6591234567"}],
+                "transactions": [],
+                "summary": "Ada supplied a phone number.",
+                "confidence": 0.95,
+            }
+            for _ in texts
+        ],
+    )
+    connector = BitrixOpenLinesConnector(
+        CrmStubClient(),
+        StubWatermark(),
+        BitrixOpenLinesConfig(entity_by_config_id={"46": "speedzone"}),
+        mode="api",
+        incremental=True,
+    )
+
+    records = list(connector.fetch_records())
+
+    assert [record["record_type"] for record in records] == [
+        "crm_deal",
+        "crm_history",
+        "crm_history",
+        "call",
+        "conversation",
+    ]
+    assert records[2]["raw_payload"]["crm_activity_id"] == "901"
+    assert records[3]["raw_payload"]["duration_seconds"] == 300
+    assert records[4]["parent_ref"] == {
+        "parent_source_system": "bitrix_chat",
+        "parent_source_record_id": "bitrix-crm-history-900",
+        "parent_record_type": "crm_history",
+    }
+
+
+def test_non_incremental_api_does_not_request_crm_enrichment(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    class EnrichmentForbiddenClient(StubClient):
+        def get_deal(self, deal_id: int) -> object:
+            raise AssertionError(f"unexpected deal enrichment for {deal_id}")
+
+        def list_deal_activities(self, deal_id: int) -> list[object]:
+            raise AssertionError(f"unexpected activity enrichment for {deal_id}")
+
+    monkeypatch.setattr(
+        "src.connectors.bitrix_openlines.connector.run_extraction_batch",
+        lambda texts: [
+            {"persons": [], "transactions": [], "summary": "Full run.", "confidence": 0.95}
+            for _ in texts
+        ],
+    )
+    connector = BitrixOpenLinesConnector(
+        EnrichmentForbiddenClient(),
+        StubWatermark(),
+        BitrixOpenLinesConfig(entity_by_config_id={"46": "speedzone"}),
+        mode="api",
+        incremental=False,
+    )
+
+    assert [record["record_type"] for record in connector.fetch_records()] == []
+
+
+def test_stale_chat_still_emits_new_crm_history_without_running_chat_extraction(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    from src.connectors.bitrix_openlines.models import CrmActivity, CrmDeal
+
+    class StaleCrmClient(StubClient):
+        def get_deal(self, deal_id: int) -> CrmDeal:
+            assert deal_id == 501
+            return CrmDeal(
+                id="501",
+                title="Unidentified service deal",
+                category_id=None,
+                stage_id="NEW",
+                observed_at=datetime(2026, 7, 20, 8, tzinfo=UTC),
+                primary_contact=None,
+                contacts=(),
+                contact_count=0,
+                has_ambiguous_contacts=False,
+                raw_payload={"ID": "501"},
+            )
+
+        def list_deal_activities(self, deal_id: int) -> list[CrmActivity]:
+            assert deal_id == 501
+            return [
+                CrmActivity(
+                    id="902",
+                    owner_type="2",
+                    owner_id="501",
+                    history_kind="call",
+                    subject="New call on an old chat",
+                    observed_at=datetime(2026, 7, 20, 11, tzinfo=UTC),
+                    start_at=datetime(2026, 7, 20, 11, tzinfo=UTC),
+                    end_at=datetime(2026, 7, 20, 11, 1, tzinfo=UTC),
+                    duration_seconds=60,
+                    direction="2",
+                    outcome="Y",
+                    is_call=True,
+                    raw_payload={"ID": "902", "TYPE_ID": "2"},
+                )
+            ]
+
+    monkeypatch.setattr(
+        "src.connectors.bitrix_openlines.connector.run_extraction_batch",
+        lambda _texts: (_ for _ in ()).throw(
+            AssertionError("stale conversations must not run chat extraction")
+        ),
+    )
+    connector = BitrixOpenLinesConnector(
+        StaleCrmClient(),
+        StubWatermark(datetime(2026, 7, 20, 10, tzinfo=UTC)),
+        BitrixOpenLinesConfig(
+            entity_by_config_id={"46": "speedzone"},
+            incremental_overlap_seconds=0,
+        ),
+        mode="api",
+        incremental=True,
+    )
+
+    records = list(connector.fetch_records())
+
+    assert [record["record_type"] for record in records] == [
+        "crm_deal",
+        "crm_history",
+        "call",
+    ]
+    assert records[0]["identifiers"] == []
+    assert records[1]["source_record_id"] == "bitrix-crm-history-902"
+    assert records[2]["source_record_id"] == "bitrix-call-902"

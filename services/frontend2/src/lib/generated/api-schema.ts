@@ -874,7 +874,7 @@ export interface components {
             entity_key?: string | null;
             entity_display_name?: string | null;
             /** @enum {string} */
-            record_type: "identity" | "bankruptcy" | "rental_flat" | "relationship" | "conversation" | "sales";
+            record_type: "identity" | "bankruptcy" | "rental_flat" | "relationship" | "conversation" | "sales" | "crm_deal" | "crm_history" | "call";
             /**
              * @description Accepted-version lifecycle authority. link_status independently describes domain-link progress. Legacy effective-active records are normalized to active in API responses during migration.
              * @enum {string}
@@ -884,6 +884,10 @@ export interface components {
             extraction_method?: string | null;
             link_status: string;
             linked_person_id?: string | null;
+            parent_source_system?: string | null;
+            parent_source_record_id?: string | null;
+            /** @enum {string|null} */
+            parent_record_type?: "identity" | "bankruptcy" | "rental_flat" | "relationship" | "conversation" | "sales" | "crm_deal" | "crm_history" | "call" | null;
             observed_at: string;
             ingested_at: string;
             conversation_ref?: {
@@ -912,13 +916,17 @@ export interface components {
             entity_key?: string | null;
             entity_display_name?: string | null;
             /** @enum {string} */
-            record_type: "identity" | "bankruptcy" | "rental_flat" | "relationship" | "conversation" | "sales";
+            record_type: "identity" | "bankruptcy" | "rental_flat" | "relationship" | "conversation" | "sales" | "crm_deal" | "crm_history" | "call";
             /** @enum {string} */
             lifecycle_status: "active" | "pending_review" | "superseded" | "rejected" | "link_failed";
             extraction_confidence?: number | null;
             extraction_method?: string | null;
             link_status: string;
             linked_person_id?: string | null;
+            parent_source_system?: string | null;
+            parent_source_record_id?: string | null;
+            /** @enum {string|null} */
+            parent_record_type?: "identity" | "bankruptcy" | "rental_flat" | "relationship" | "conversation" | "sales" | "crm_deal" | "crm_history" | "call" | null;
             observed_at: string;
             ingested_at: string;
             conversation_ref?: {
@@ -1088,9 +1096,10 @@ export interface components {
             /**
              * @description Selects the source fact domain and its specialized projection:
              *     `identity`, `bankruptcy`, `rental_flat`, `relationship`,
-             *     `conversation`, or `sales`. Conversation records are heuristic
-             *     extracts from chat or voice transcripts and are never eligible for
-             *     deterministic auto-merge.
+             *     `conversation`, or `sales`. Hierarchical CRM records are created by
+             *     the internal Bitrix incremental connector rather than this raw
+             *     source-record endpoint. Conversation records are evidence-only and
+             *     are never eligible to create a Person through deterministic auto-merge.
              * @default identity
              * @enum {string}
              */
@@ -1955,7 +1964,7 @@ export interface operations {
                 /** @description How to combine multiple `source_key` values. `or` means any match; `and` means the person must have source records from all supplied systems. */
                 source_key_mode?: "or" | "and";
                 /** @description Filter by source record type. */
-                source_record_type?: "identity" | "bankruptcy" | "relationship" | "rental_flat" | "conversation" | "sales";
+                source_record_type?: "identity" | "bankruptcy" | "relationship" | "rental_flat" | "conversation" | "sales" | "crm_deal" | "crm_history" | "call";
                 /** @description Filter by high-value flag. */
                 is_high_value?: boolean;
                 /**
