@@ -2,49 +2,13 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, FastAPI
+from fastapi import Depends, FastAPI
 from fastapi.params import Depends as DependsMarker
 
 from src.auth.deps import require_active_user
 from src.error_handlers import register_error_handlers
+from src.route_catalog import FRONTEND_ROUTERS
 from src.router_copy import copy_router_routes
-from src.routes import (
-    admin,
-    dumps,
-    entities,
-    events,
-    ingest,
-    merge,
-    person_profile_analysis,
-    person_sales,
-    persons,
-    reports,
-    review,
-    survivorship,
-)
-from src.routes import auth as auth_routes
-from src.routes import oauth_clients as oauth_client_routes
-from src.routes import users as users_routes
-from src.routes.public_pages import person_links_router
-
-_FRONTEND_ROUTERS: tuple[APIRouter, ...] = (
-    auth_routes.router,
-    person_links_router,
-    entities.router,
-    reports.router,
-    persons.router,
-    person_profile_analysis.router,
-    person_sales.router,
-    review.router,
-    merge.router,
-    survivorship.router,
-    ingest.router,
-    dumps.router,
-    admin.router,
-    oauth_client_routes.router,
-    events.router,
-    users_routes.router,
-)
 
 
 def build_frontend_app() -> FastAPI:
@@ -93,7 +57,7 @@ def build_frontend_app() -> FastAPI:
         ],
     )
     dependencies: list[DependsMarker] = [Depends(require_active_user)]
-    for router in _FRONTEND_ROUTERS:
+    for router in FRONTEND_ROUTERS:
         copy_router_routes(app, router, dependencies=dependencies)
     register_error_handlers(app)
     return app
