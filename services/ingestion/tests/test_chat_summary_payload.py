@@ -43,6 +43,10 @@ def test_persist_source_record_includes_chat_summary_in_normalized_payload() -> 
         raw_payload={
             "summary": " Customer asks about delivery. ",
             "customer_sentiment": "frustrated",
+            "tone": "negative",
+            "purpose": "support_request",
+            "outcome": "pending_business",
+            "difficulty": "medium",
             "chat_members": [
                 {"name": "Ben", "phone": "+6588880000", "role": "agent", "notes": "Sales"}
             ],
@@ -86,6 +90,10 @@ def test_persist_source_record_includes_chat_summary_in_normalized_payload() -> 
     payload = json.loads(payload_raw)
     assert payload["summary"] == "Customer asks about delivery."
     assert payload["customer_sentiment"] == "frustrated"
+    assert payload["tone"] == "negative"
+    assert payload["purpose"] == "support_request"
+    assert payload["outcome"] == "pending_business"
+    assert payload["difficulty"] == "medium"
     assert payload["chat_members"] == [
         {"name": "Ben", "phone": "+6588880000", "role": "agent", "notes": "Sales"}
     ]
@@ -98,3 +106,51 @@ def test_persist_source_record_includes_chat_summary_in_normalized_payload() -> 
             "notes": "Asked for availability",
         }
     ]
+
+
+def test_persist_source_record_drops_invalid_chat_classifications() -> None:
+    tx = _Tx()
+    envelope = SourceRecordEnvelope(
+        source_system="whatsapp_chat",
+        source_record_id="whatsapp-chat-2",
+        source_record_version="1",
+        record_type=RecordType.CONVERSATION,
+        observed_at="2026-05-06T00:00:00",
+        record_hash="hash-2",
+        raw_payload={
+            "tone": "urgent",
+            "purpose": 42,
+            "outcome": "unknown",
+            "difficulty": None,
+        },
+        extraction_confidence=0.9,
+        extraction_method="llm:qwen-max",
+    )
+    match_result = MatchResult(
+        decision=MatchDecision.NO_MATCH,
+        confidence=0.0,
+        reasons=[],
+        engine_type=EngineType.HEURISTIC,
+    )
+
+    persist_source_record(
+        cast(ManagedTransaction, tx),
+        envelope=envelope,
+        identifiers=[],
+        addresses=[],
+        attributes=[],
+        match_result=match_result,
+        is_new_person=False,
+        ingest_run_id=None,
+        lifecycle_status=SourceRecordLifecycleStatus.PENDING_REVIEW,
+        expected_active_source_record_pk=None,
+    )
+
+    assert tx.params is not None
+    payload_raw = tx.params["normalized_payload"]
+    assert isinstance(payload_raw, str)
+    payload = json.loads(payload_raw)
+    assert payload["outcome"] == "unknown"
+    assert "tone" not in payload
+    assert "purpose" not in payload
+    assert "difficulty" not in payload

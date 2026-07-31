@@ -297,6 +297,10 @@ def test_whatsapp_chat_envelope_keeps_agent_identity_raw_only(monkeypatch: Monke
             }
         ],
         "summary": "Ada ordered item A; Tonni confirmed follow-up state.",
+        "tone": "positive",
+        "purpose": "purchase_intent",
+        "outcome": "pending_business",
+        "difficulty": "low",
         "confidence": 0.95,
     }
 
@@ -317,6 +321,10 @@ def test_whatsapp_chat_envelope_keeps_agent_identity_raw_only(monkeypatch: Monke
     assert record["raw_payload"]["transactions"][0]["notes"] == (
         "Tonni confirmed the order details"
     )
+    assert record["raw_payload"]["tone"] == "positive"
+    assert record["raw_payload"]["purpose"] == "purchase_intent"
+    assert record["raw_payload"]["outcome"] == "pending_business"
+    assert record["raw_payload"]["difficulty"] == "low"
 
 
 def test_whatsapp_chat_envelopes_split_possible_people(monkeypatch: MonkeyPatch) -> None:
@@ -368,6 +376,10 @@ def test_whatsapp_chat_envelopes_split_possible_people(monkeypatch: MonkeyPatch)
         "weak_identifiers": [],
         "summary": "Alice mentioned Bob.",
         "customer_sentiment": "neutral",
+        "tone": "mixed",
+        "purpose": "relationship_management",
+        "outcome": "no_action_required",
+        "difficulty": "low",
         "confidence": 0.9,
     }
 
@@ -383,3 +395,8 @@ def test_whatsapp_chat_envelopes_split_possible_people(monkeypatch: MonkeyPatch)
     assert {item["value"] for item in records[1]["identifiers"]} == {"bob@example.com"}
     assert records[1]["raw_payload"]["primary_source_record_id"] == records[0]["source_record_id"]
     assert records[1]["raw_payload"]["relationship_to_primary"] == "brother"
+    for record in records:
+        assert record["raw_payload"]["tone"] == "mixed"
+        assert record["raw_payload"]["purpose"] == "relationship_management"
+        assert record["raw_payload"]["outcome"] == "no_action_required"
+        assert record["raw_payload"]["difficulty"] == "low"

@@ -20,7 +20,7 @@ from src.llm_prompts import (
     build_batch_extraction_prompt,
     build_batch_summary_prompt,
 )
-from src.models import JsonValue, QualityFlag
+from src.models import ChatDifficulty, ChatOutcome, ChatPurpose, ChatTone, JsonValue, QualityFlag
 from src.normalizers.email import normalize_email
 from src.normalizers.phone import normalize_phone
 
@@ -118,6 +118,10 @@ class ExtractionResult(TypedDict):
     weak_identifiers: list[ExtractedWeakIdentifier]
     summary: str | None
     customer_sentiment: str | None
+    tone: ChatTone | None
+    purpose: ChatPurpose | None
+    outcome: ChatOutcome | None
+    difficulty: ChatDifficulty | None
     confidence: float
 
 
@@ -445,8 +449,61 @@ def _parse_extraction_object(obj: JsonValue) -> ExtractionResult | None:
         # not the structured extraction response.
         summary=None,
         customer_sentiment=sentiment_raw if isinstance(sentiment_raw, str) else None,
+        tone=_parse_chat_tone(obj.get("tone")),
+        purpose=_parse_chat_purpose(obj.get("purpose")),
+        outcome=_parse_chat_outcome(obj.get("outcome")),
+        difficulty=_parse_chat_difficulty(obj.get("difficulty")),
         confidence=(float(confidence_raw) if isinstance(confidence_raw, int | float) else 0.0),
     )
+
+
+def _normalized_classification_value(value: JsonValue | None) -> str | None:
+    """Return an enum-compatible value while rejecting non-string LLM output."""
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip().lower().replace("-", " ")
+    normalized = "_".join(normalized.split())
+    return normalized or None
+
+
+def _parse_chat_tone(value: JsonValue | None) -> ChatTone | None:
+    normalized = _normalized_classification_value(value)
+    if normalized is None:
+        return None
+    try:
+        return ChatTone(normalized)
+    except ValueError:
+        return None
+
+
+def _parse_chat_purpose(value: JsonValue | None) -> ChatPurpose | None:
+    normalized = _normalized_classification_value(value)
+    if normalized is None:
+        return None
+    try:
+        return ChatPurpose(normalized)
+    except ValueError:
+        return None
+
+
+def _parse_chat_outcome(value: JsonValue | None) -> ChatOutcome | None:
+    normalized = _normalized_classification_value(value)
+    if normalized is None:
+        return None
+    try:
+        return ChatOutcome(normalized)
+    except ValueError:
+        return None
+
+
+def _parse_chat_difficulty(value: JsonValue | None) -> ChatDifficulty | None:
+    normalized = _normalized_classification_value(value)
+    if normalized is None:
+        return None
+    try:
+        return ChatDifficulty(normalized)
+    except ValueError:
+        return None
 
 
 def _parse_transactions(raw: JsonValue) -> list[ExtractedTransaction]:

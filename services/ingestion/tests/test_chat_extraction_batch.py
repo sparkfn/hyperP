@@ -31,6 +31,10 @@ def _conversation_object(index: int) -> dict[str, object]:
             }
         ],
         "customer_sentiment": "positive",
+        "tone": "positive",
+        "purpose": "product_inquiry",
+        "outcome": "pending_business",
+        "difficulty": "medium",
         "strong_identifiers": [
             {
                 "type": "phone",
@@ -136,6 +140,10 @@ def test_chat_extraction_batch_splits_by_conversation_index(
         assert result["inquiries"][0]["lta_tag"] == "LTA123"
         assert result["inquiries"][0]["serial_number"] == "SN-9"
         assert result["customer_sentiment"] == "positive"
+        assert result["tone"] == "positive"
+        assert result["purpose"] == "product_inquiry"
+        assert result["outcome"] == "pending_business"
+        assert result["difficulty"] == "medium"
         assert result["summary"].startswith("Customer / Participants")
         assert result["strong_identifiers"][0]["type"] == "phone"
         assert result["weak_identifiers"][0]["type"] == "vehicle_lta_tag"
@@ -318,6 +326,10 @@ def test_chat_extraction_prompt_keeps_persons_customer_only() -> None:
     assert "customers, clients, prospects" in prompt
     assert "Do not include sales agents" in prompt
     assert "staff" in prompt
+    assert '"tone"' in prompt
+    assert '"purpose"' in prompt
+    assert '"outcome"' in prompt
+    assert '"difficulty"' in prompt
     assert "internal users" in prompt
     assert "tenant or business representatives" in prompt
     assert "message senders acting" in prompt
@@ -343,6 +355,56 @@ def test_chat_extraction_prompt_keeps_persons_customer_only() -> None:
     assert "primary_customer" in prompt
     # Summary moved to the dedicated summary prompt — not asked of the extractor.
     assert "summary" not in prompt
+
+
+def test_chat_classifications_are_canonicalized_and_invalid_values_are_dropped() -> None:
+    from src.connectors.chat_helpers import _split_batch_extraction
+
+    extraction = json.dumps(
+        {
+            "conversations": [
+                {
+                    **_conversation_object(0),
+                    "tone": " Negative ",
+                    "purpose": "support request",
+                    "outcome": "PARTIALLY-RESOLVED",
+                    "difficulty": "High",
+                },
+                {
+                    **_conversation_object(1),
+                    "tone": "unknown",
+                    "purpose": "unknown",
+                    "outcome": "unknown",
+                    "difficulty": "unknown",
+                },
+                {
+                    **_conversation_object(2),
+                    "tone": "urgent",
+                    "purpose": 42,
+                    "outcome": "",
+                    "difficulty": "very_high",
+                },
+            ]
+        }
+    )
+
+    results = _split_batch_extraction(extraction, 3)
+
+    assert results[0] is not None
+    assert results[0]["tone"] == "negative"
+    assert results[0]["purpose"] == "support_request"
+    assert results[0]["outcome"] == "partially_resolved"
+    assert results[0]["difficulty"] == "high"
+    assert results[1] is not None
+    assert results[1]["tone"] == "unknown"
+    assert results[1]["purpose"] == "unknown"
+    assert results[1]["outcome"] == "unknown"
+    assert results[1]["difficulty"] == "unknown"
+    assert results[2] is not None
+    assert results[2]["tone"] is None
+    assert results[2]["purpose"] is None
+    assert results[2]["outcome"] is None
+    assert results[2]["difficulty"] is None
 
 
 def test_chat_summary_prompt_uses_plain_text_markers() -> None:

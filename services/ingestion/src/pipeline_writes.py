@@ -9,12 +9,17 @@ from __future__ import annotations
 import json
 import logging
 from datetime import UTC, datetime, timedelta
+from enum import StrEnum
 
 from neo4j import ManagedTransaction
 
 from src.graph import queries
 from src.models import (
     CandidateResult,
+    ChatDifficulty,
+    ChatOutcome,
+    ChatPurpose,
+    ChatTone,
     JsonValue,
     MatchDecision,
     MatchResult,
@@ -30,6 +35,13 @@ from src.pipeline_normalization import fanout_cap_for, is_usable
 from src.source_version_keys import encode_source_version_key
 
 logger = logging.getLogger(__name__)
+
+_CHAT_CLASSIFICATION_TYPES: dict[str, type[StrEnum]] = {
+    "tone": ChatTone,
+    "purpose": ChatPurpose,
+    "outcome": ChatOutcome,
+    "difficulty": ChatDifficulty,
+}
 
 
 # --- Step 3: ensure shared nodes exist ------------------------------------
@@ -233,6 +245,14 @@ def persist_source_record(
     ):
         normalized["summary"] = summary.strip()
     if envelope.record_type.value == "conversation":
+        for key, enum_type in _CHAT_CLASSIFICATION_TYPES.items():
+            value = envelope.raw_payload.get(key)
+            if not isinstance(value, str):
+                continue
+            try:
+                normalized[key] = enum_type(value).value
+            except ValueError:
+                continue
         for key in ("customer_sentiment", "chat_members", "inquiries"):
             value = envelope.raw_payload.get(key)
             if value is not None:
