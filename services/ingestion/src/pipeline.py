@@ -79,10 +79,15 @@ from src.vehicles import (
 )
 
 
+def _is_match_only_source(source_key: str) -> bool:
+    """Compatibility helper for source-wide match-only policy checks."""
+    return source_key in MATCH_ONLY_SOURCE_KEYS
+
+
 def _is_match_only_record(source_key: str, record_type: RecordType) -> bool:
     """Whether this source record may only attach to an existing Person."""
     return (
-        source_key in MATCH_ONLY_SOURCE_KEYS
+        _is_match_only_source(source_key)
         or record_type in MATCH_ONLY_RECORD_TYPES
         or record_type not in PERSON_CREATING_RECORD_TYPES
     )
