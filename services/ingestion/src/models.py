@@ -45,6 +45,53 @@ class EngineType(StrEnum):
     MANUAL = "manual"
 
 
+class ChatTone(StrEnum):
+    """Normalized overall tone for an LLM-extracted conversation."""
+
+    POSITIVE = "positive"
+    NEUTRAL = "neutral"
+    NEGATIVE = "negative"
+    MIXED = "mixed"
+    UNKNOWN = "unknown"
+
+
+class ChatPurpose(StrEnum):
+    """Primary customer purpose for an LLM-extracted conversation."""
+
+    PRODUCT_INQUIRY = "product_inquiry"
+    PURCHASE_INTENT = "purchase_intent"
+    ORDER_MANAGEMENT = "order_management"
+    SUPPORT_REQUEST = "support_request"
+    COMPLAINT = "complaint"
+    APPOINTMENT = "appointment"
+    FOLLOW_UP = "follow_up"
+    FEEDBACK = "feedback"
+    RELATIONSHIP_MANAGEMENT = "relationship_management"
+    OTHER = "other"
+    UNKNOWN = "unknown"
+
+
+class ChatOutcome(StrEnum):
+    """End-state for an LLM-extracted conversation."""
+
+    RESOLVED = "resolved"
+    PARTIALLY_RESOLVED = "partially_resolved"
+    PENDING_CUSTOMER = "pending_customer"
+    PENDING_BUSINESS = "pending_business"
+    UNRESOLVED = "unresolved"
+    NO_ACTION_REQUIRED = "no_action_required"
+    UNKNOWN = "unknown"
+
+
+class ChatDifficulty(StrEnum):
+    """Handling complexity for an LLM-extracted conversation."""
+
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+    UNKNOWN = "unknown"
+
+
 class RecordType(StrEnum):
     """Provenance class of a SourceRecord.
 

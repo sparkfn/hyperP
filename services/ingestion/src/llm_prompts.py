@@ -68,6 +68,21 @@ Each conversation object has:
     - "serial_number": serial number if stated
     - "notes": any other relevant context
 - "customer_sentiment": concise customer sentiment label or phrase if evident
+- "tone": one overall customer-facing tone: "positive" | "neutral" | "negative" | "mixed" |
+  "unknown". Classify the conversation as a whole; do not use this field for urgency or handling
+  complexity. Use "unknown" when the messages do not support a reliable tone.
+- "purpose": one primary conversation purpose: "product_inquiry" | "purchase_intent" |
+  "order_management" | "support_request" | "complaint" | "appointment" | "follow_up" |
+  "feedback" | "relationship_management" | "other" | "unknown". Choose the dominant purpose
+  when several topics appear; use "unknown" when no primary purpose is reliably established.
+- "outcome": the state at the end of the available transcript: "resolved" |
+  "partially_resolved" | "pending_customer" | "pending_business" | "unresolved" |
+  "no_action_required" | "unknown". Use "unknown" only when the transcript does not establish
+  an end-state.
+- "difficulty": one handling-complexity level: "low" | "medium" | "high" | "unknown". Use low
+  for routine direct requests, medium for requests needing clarification or coordination, and high
+  for complex, escalated, contentious, or materially blocked requests. Use "unknown" when the
+  transcript does not support a reliable complexity assessment.
 - "strong_identifiers": array of explicitly stated customer identity identifiers. Each has:
     - "type": "phone" | "email" | "government_id" | "source_customer_ref"
     - "value": exact extracted value
