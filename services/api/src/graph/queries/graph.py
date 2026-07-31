@@ -48,19 +48,18 @@ CALL {{
   WHERE {label_filter}
     AND ALL(r IN relationships(path) WHERE {rel_filter})
     AND {dead_end_filter}
-  WITH start, collect(DISTINCT n)[0..{node_cap}] AS neighbors
+  WITH DISTINCT start, n
+  LIMIT {node_cap}
+  WITH start, collect(n) AS neighbors
   RETURN neighbors + [start] AS raw_nodes
 }}
 WITH raw_nodes
 UNWIND raw_nodes AS node
 WITH collect(DISTINCT node) AS unique_nodes
 UNWIND unique_nodes AS a
-WITH unique_nodes, a
-UNWIND unique_nodes AS b
-WITH unique_nodes, a, b
-WHERE elementId(a) < elementId(b)
 OPTIONAL MATCH (a)-[r]-(b)
-WHERE r IS NOT NULL
+WHERE b IN unique_nodes
+  AND elementId(a) < elementId(b)
 WITH unique_nodes, collect(DISTINCT r) AS unique_rels
 UNWIND unique_nodes AS node
 WITH collect(DISTINCT {{

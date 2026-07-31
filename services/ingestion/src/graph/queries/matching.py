@@ -15,6 +15,31 @@ WHERE rel.is_active = true
 RETURN DISTINCT candidate.person_id AS person_id
 """
 
+FIND_CANDIDATES_BY_IDENTIFIERS_BATCH = """
+UNWIND $identifiers AS input
+OPTIONAL MATCH (id:Identifier {
+    identifier_type: input.identifier_type,
+    normalized_value: input.normalized_value
+})
+CALL (id) {
+  OPTIONAL MATCH (id)<-[fanout_rel:IDENTIFIED_BY]-(fanout_person:Person {status: 'active'})
+  WHERE fanout_rel.is_active = true
+  RETURN count(DISTINCT fanout_person) AS fanout
+}
+CALL (id) {
+  OPTIONAL MATCH (id)<-[rel:IDENTIFIED_BY]-(candidate:Person {status: 'active'})
+  WHERE rel.is_active = true
+    AND rel.quality_flag IN ['valid', 'partial_parse']
+  RETURN collect(DISTINCT candidate.person_id) AS person_ids
+}
+RETURN input.input_index AS input_index,
+       input.identifier_type AS identifier_type,
+       input.normalized_value AS normalized_value,
+       fanout,
+       person_ids
+ORDER BY input_index
+"""
+
 FIND_CANDIDATES_BY_ADDRESS = """
 MATCH (addr:Address {
     country_code:  $country_code,
@@ -27,6 +52,23 @@ MATCH (addr:Address {
 WHERE rel.is_active = true
   AND rel.quality_flag IN ['valid', 'partial_parse']
 RETURN DISTINCT candidate.person_id AS person_id
+"""
+
+FIND_CANDIDATES_BY_ADDRESSES_BATCH = """
+UNWIND $addresses AS input
+OPTIONAL MATCH (addr:Address {
+    country_code: input.country_code,
+    postal_code: input.postal_code,
+    street_name: input.street_name,
+    street_number: input.street_number,
+    unit_number: input.unit_number
+})
+OPTIONAL MATCH (addr)<-[rel:LIVES_AT]-(candidate:Person {status: 'active'})
+WHERE rel.is_active = true
+  AND rel.quality_flag IN ['valid', 'partial_parse']
+RETURN input.input_index AS input_index,
+       collect(DISTINCT candidate.person_id) AS person_ids
+ORDER BY input_index
 """
 
 CHECK_IDENTIFIER_FANOUT = """

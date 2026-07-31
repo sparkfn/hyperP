@@ -275,6 +275,9 @@ def test_stored_sort_paginates_before_enrichment() -> None:
     order_by_pos = query.index("ORDER BY p.profile_completeness_score DESC, p.person_id ASC")
     first_call_pos = query.index("CALL (p)")
     assert order_by_pos < first_call_pos
+    assert query.rstrip().endswith(
+        "ORDER BY person.profile_completeness_score DESC, person.person_id ASC"
+    )
 
 
 def test_computed_sort_paginates_after_enrichment() -> None:
@@ -283,6 +286,32 @@ def test_computed_sort_paginates_after_enrichment() -> None:
     order_by_pos = query.index("ORDER BY source_record_count ASC, person.person_id ASC")
     first_call_pos = query.index("CALL (p)")
     assert order_by_pos > first_call_pos
+
+
+def test_computed_sort_only_calculates_selected_metric_before_pagination() -> None:
+    query = build_list_persons_query("connection_count", "desc", has_q=False)
+
+    page_pos = query.index("SKIP $skip LIMIT $limit")
+    before_page = query[:page_pos]
+    after_page = query[page_pos:]
+
+    assert "AS connection_count" in before_page
+    assert "AS source_record_count" not in before_page
+    assert "AS possible_match_count" not in before_page
+    assert "AS connection_count" not in after_page
+    assert "AS source_record_count" in after_page
+
+
+def test_entity_count_sort_collects_entities_only_after_pagination() -> None:
+    query = build_list_persons_query("entity_count", "desc", has_q=False)
+
+    page_pos = query.index("SKIP $skip LIMIT $limit")
+    before_page = query[:page_pos]
+    after_page = query[page_pos:]
+
+    assert "RETURN count(entity) AS entity_count" in before_page
+    assert "collect({" not in before_page
+    assert "collect({" in after_page
 
 
 def test_stored_sort_fulltext_paginates_before_enrichment() -> None:

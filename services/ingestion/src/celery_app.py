@@ -39,6 +39,7 @@ celery_app.conf.update(
         "src.ingestion_orchestration_tasks.*": {"queue": INGESTION_QUEUE},
         "src.scheduled_ingestion_tasks.*": {"queue": INGESTION_QUEUE},
         "src.tasks.reconcile_lifecycle_task": {"queue": LIFECYCLE_QUEUE},
+        "src.tasks.materialize_knows_task": {"queue": LIFECYCLE_QUEUE},
         "src.tasks.send_birthday_messages_task": {"queue": MISCELLANEOUS_QUEUE},
         "src.tasks.recalculate_pair_audit_match_task": {"queue": MISCELLANEOUS_QUEUE},
     },
@@ -61,6 +62,18 @@ _beat_schedule: dict[str, dict[str, object]] = {
     "lifecycle-reconciliation": {
         "task": "src.tasks.reconcile_lifecycle_task",
         "schedule": 60.0 * 60.0,
+        "options": {"queue": LIFECYCLE_QUEUE},
+    },
+    "knows-materialization-contacts": {
+        "task": "src.tasks.materialize_knows_task",
+        "schedule": 60.0 * 60.0,
+        "args": ("contacts",),
+        "options": {"queue": LIFECYCLE_QUEUE},
+    },
+    "knows-materialization-chat-relationships": {
+        "task": "src.tasks.materialize_knows_task",
+        "schedule": 60.0 * 60.0,
+        "args": ("chat_relationships",),
         "options": {"queue": LIFECYCLE_QUEUE},
     },
 }

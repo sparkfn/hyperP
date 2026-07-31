@@ -35,7 +35,6 @@ def test_profile_analysis_schema_statements_are_idempotent() -> None:
     profile_analysis_statements = [
         statement for statement in statements if "ProfileAnalysis" in statement
     ]
-
     assert profile_analysis_statements == [
         """CREATE CONSTRAINT profile_analysis_id_unique IF NOT EXISTS
   FOR (pa:ProfileAnalysis) REQUIRE pa.analysis_id IS UNIQUE""",
@@ -44,6 +43,20 @@ def test_profile_analysis_schema_statements_are_idempotent() -> None:
   ON (pa.person_id, pa.analysis_type, pa.completed_at)""",
     ]
 
+
+def test_canonical_schema_contains_person_and_knows_performance_indexes() -> None:
+    statements = _split_statements(_find_init_cypher().read_text(encoding="utf-8"))
+    schema = "\n".join(statements)
+
+    for name in (
+        "idx_person_completeness",
+        "idx_person_high_value",
+        "idx_person_high_risk",
+        "idx_person_updated_at",
+        "idx_knows_source_record_pk",
+    ):
+        assert name in schema
+    assert "FOR ()-[r:KNOWS]-() ON (r.source_record_pk)" in schema
 
 def test_lifecycle_repair_precedes_source_version_uniqueness(
     monkeypatch: pytest.MonkeyPatch,

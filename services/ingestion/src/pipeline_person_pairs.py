@@ -24,14 +24,13 @@ from src.graph import queries
 from src.matching.pair_score import score_person_pair
 from src.matching.thresholds import classify_confidence, has_hard_conflict, thresholds_for
 from src.models import JsonValue, MatchDecision, NormalizedIdentifier, RecordType
-from src.pipeline_normalization import is_usable
+from src.pipeline_normalization import fanout_cap_for, is_usable
 from src.pipeline_person_merge import (
     PairPersonAttrs,
     fetch_pair_attrs,
     merge_person_pair,
     select_survivor,
 )
-from src.pipeline_writes import exceeds_fanout_cap
 
 logger = logging.getLogger(__name__)
 
@@ -60,17 +59,30 @@ def audit_person_pairs(
     merged: list[str] = []
     seen_pairs: set[tuple[str, str]] = set()
 
-    for ident in identifiers:
-        if not is_usable(ident.quality_flag):
-            continue
-        if exceeds_fanout_cap(tx, ident):
-            continue
-        record = tx.run(
-            queries.FIND_PERSONS_SHARING_IDENTIFIER,
-            identifier_type=ident.identifier_type,
-            normalized_value=ident.normalized_value,
-        ).single()
-        if record is None:
+    usable_identifiers = [ident for ident in identifiers if is_usable(ident.quality_flag)]
+    rows = [
+        {
+            "input_index": index,
+            "identifier_type": ident.identifier_type,
+            "normalized_value": ident.normalized_value,
+        }
+        for index, ident in enumerate(usable_identifiers)
+    ]
+    if not rows:
+        return []
+
+    for record in tx.run(queries.FIND_PERSONS_SHARING_IDENTIFIERS_BATCH, identifiers=rows):
+        ident = usable_identifiers[int(record["input_index"])]
+        fanout = int(record["fanout"])
+        cap = fanout_cap_for(ident.identifier_type)
+        if cap is not None and fanout > cap:
+            logger.warning(
+                "Skipping high-fanout identifier %s=%s (fanout=%d, cap=%d)",
+                ident.identifier_type,
+                ident.normalized_value,
+                fanout,
+                cap,
+            )
             continue
         person_ids = sorted({str(pid) for pid in record["person_ids"]})
         for i in range(len(person_ids)):

@@ -13,6 +13,18 @@ ON CREATE SET
 RETURN id.identifier_id AS identifier_id
 """
 
+UPSERT_IDENTIFIERS_BATCH = """
+UNWIND $identifiers AS input
+MERGE (id:Identifier {
+    identifier_type: input.identifier_type,
+    normalized_value: input.normalized_value
+})
+ON CREATE SET
+    id.identifier_id = randomUUID(),
+    id.created_at = datetime()
+RETURN count(id) AS upserted_count
+"""
+
 UPSERT_ADDRESS = """
 MERGE (addr:Address {
     country_code:  $country_code,
@@ -34,6 +46,30 @@ ON MATCH SET
     addr.state_province = CASE WHEN coalesce(addr.state_province, '') = '' THEN $state_province ELSE addr.state_province END,
     addr.normalized_full = CASE WHEN coalesce(addr.normalized_full, '') = '' THEN $normalized_full ELSE addr.normalized_full END
 RETURN addr.address_id AS address_id
+"""
+
+UPSERT_ADDRESSES_BATCH = """
+UNWIND $addresses AS input
+MERGE (addr:Address {
+    country_code: input.country_code,
+    postal_code: input.postal_code,
+    street_name: input.street_name,
+    street_number: input.street_number,
+    unit_number: input.unit_number
+})
+ON CREATE SET
+    addr.address_id = randomUUID(),
+    addr.building_name = input.building_name,
+    addr.city = input.city,
+    addr.state_province = input.state_province,
+    addr.normalized_full = input.normalized_full,
+    addr.created_at = datetime()
+ON MATCH SET
+    addr.building_name = CASE WHEN coalesce(addr.building_name, '') = '' THEN input.building_name ELSE addr.building_name END,
+    addr.city = CASE WHEN coalesce(addr.city, '') = '' THEN input.city ELSE addr.city END,
+    addr.state_province = CASE WHEN coalesce(addr.state_province, '') = '' THEN input.state_province ELSE addr.state_province END,
+    addr.normalized_full = CASE WHEN coalesce(addr.normalized_full, '') = '' THEN input.normalized_full ELSE addr.normalized_full END
+RETURN count(addr) AS upserted_count
 """
 
 CREATE_PERSON = """

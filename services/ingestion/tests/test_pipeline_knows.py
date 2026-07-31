@@ -4,10 +4,15 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
 from src import pipeline_knows
 from src.graph import queries
 from src.models import RecordType, SourceRecordEnvelope
-from src.pipeline_knows import _link_one_chat_relationship, _link_one_contact
+from src.pipeline_knows import (
+    _link_one_chat_relationship,
+    _link_one_contact,
+    materialize_knows_batch,
+)
 
 
 class _Row:
@@ -50,6 +55,11 @@ class _Tx:
         if query == queries.MARK_PROFILE_ANALYSIS_DIRTY:
             return _Result(None)
         raise AssertionError(f"unexpected query: {query}")
+
+
+def test_materialization_batch_rejects_unknown_phase() -> None:
+    with pytest.raises(ValueError, match="Unknown KNOWS materialization phase"):
+        materialize_knows_batch(object(), "unknown")  # type: ignore[arg-type]
 
 
 def test_chat_relationship_materializer_creates_pending_knows() -> None:

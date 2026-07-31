@@ -87,10 +87,6 @@ from src.pipeline_crm import (
     ingest_crm_history_record,
     link_conversation_to_crm_history,
 )
-from src.pipeline_knows import (
-    materialize_knows_from_chat_relationships,
-    materialize_knows_from_contacts,
-)
 from src.pipeline_sales import (
     drain_pending_customer_sales,
     ingest_sales_record,
@@ -271,27 +267,6 @@ def setup_logging(level: str) -> None:
         datefmt="%Y-%m-%dT%H:%M:%S",
     )
     logging.getLogger("neo4j.notifications").setLevel(logging.ERROR)
-
-
-def _materialize_optional_knows(client: Neo4jClient) -> list[str]:
-    """Run optional KNOWS projections independently and report deferred phases."""
-    failures: list[str] = []
-    phases = (
-        ("chat_relationships", materialize_knows_from_chat_relationships),
-        ("contacts", materialize_knows_from_contacts),
-    )
-    for phase, materialize in phases:
-        try:
-            linked = materialize(client)
-            if linked:
-                logger.info("Materialized %d KNOWS edges from %s", linked, phase)
-        except Exception:
-            failures.append(phase)
-            logger.exception(
-                "Optional KNOWS materialization phase %s failed; a later ingestion can retry it",
-                phase,
-            )
-    return failures
 
 
 def _finalize_connector_progress(connector: object, *, error_count: int) -> None:
@@ -829,7 +804,6 @@ def run_ingestion(
             proposed = propose_vehicle_matches_for_pending_sales(client)
             if proposed:
                 logger.info("Proposed %d vehicle matches for pending sales", proposed)
-            _materialize_optional_knows(client)
             _finalize_connector_progress(connector, error_count=errors)
         except Exception as exc:
             checkpoint: dict[str, JsonValue] = {
