@@ -373,9 +373,7 @@ class BitrixOpenLinesConnector(SourceConnector):
 
     def _crm_enrichment_enabled(self) -> bool:
         return (
-            self._mode == "api"
-            and self._incremental
-            and isinstance(self._client, CrmDetailsClient)
+            self._mode == "api" and self._incremental and isinstance(self._client, CrmDetailsClient)
         )
 
     def _crm_details(
@@ -385,11 +383,7 @@ class BitrixOpenLinesConnector(SourceConnector):
         if not self._crm_enrichment_enabled():
             return None, ()
         deal_ids = sorted(
-            {
-                item.owner_id
-                for item in reference.crm_owner_references
-                if item.owner_type == "deal"
-            }
+            {item.owner_id for item in reference.crm_owner_references if item.owner_type == "deal"}
         )
         if len(deal_ids) != 1:
             return None, ()
@@ -590,12 +584,10 @@ def _deal_envelope(deal: CrmDeal, entity_key: str) -> dict[str, JsonValue]:
             }
         )
         identifiers.extend(
-            {"type": "phone", "value": value, "is_verified": True}
-            for value in candidate.phones
+            {"type": "phone", "value": value, "is_verified": True} for value in candidate.phones
         )
         identifiers.extend(
-            {"type": "email", "value": value, "is_verified": True}
-            for value in candidate.emails
+            {"type": "email", "value": value, "is_verified": True} for value in candidate.emails
         )
     if contact is not None and contact.full_name is not None:
         attributes["full_name"] = contact.full_name
@@ -637,12 +629,10 @@ def _contact_identifier_group(contact: CrmContact) -> list[JsonValue]:
         }
     ]
     identifiers.extend(
-        {"type": "phone", "value": value, "is_verified": True}
-        for value in contact.phones
+        {"type": "phone", "value": value, "is_verified": True} for value in contact.phones
     )
     identifiers.extend(
-        {"type": "email", "value": value, "is_verified": True}
-        for value in contact.emails
+        {"type": "email", "value": value, "is_verified": True} for value in contact.emails
     )
     return identifiers
 
