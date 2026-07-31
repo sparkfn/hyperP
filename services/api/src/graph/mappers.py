@@ -253,6 +253,13 @@ def map_source_record(record: GraphRecord) -> SourceRecord:
         extraction_method=to_optional_str(sr.get("extraction_method")),
         link_status=to_str(sr.get("link_status")),
         linked_person_id=to_optional_str(record.get("linked_person_id")),
+        parent_source_system=to_optional_str(sr.get("parent_source_system")),
+        parent_source_record_id=to_optional_str(sr.get("parent_source_record_id")),
+        parent_record_type=(
+            _to_record_type(sr.get("parent_record_type"))
+            if sr.get("parent_record_type") is not None
+            else None
+        ),
         observed_at=to_iso_or_empty(sr.get("observed_at")),
         ingested_at=to_iso_or_empty(sr.get("ingested_at")),
         conversation_ref=_parse_normalized_payload(sr.get("conversation_ref")) or None,

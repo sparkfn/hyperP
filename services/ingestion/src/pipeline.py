@@ -26,13 +26,17 @@ from src.graph.bootstrap import MATCH_ONLY_SOURCE_KEYS
 from src.graph.client import Neo4jClient
 from src.matching.engine import MatchEngine, ambiguous_prior_owners_result
 from src.models import (
+    MATCH_ONLY_RECORD_TYPES,
+    PERSON_CREATING_RECORD_TYPES,
     CandidateResult,
+    EngineType,
     IngestResult,
     JsonValue,
     MatchDecision,
     MatchResult,
     NormalizedAttribute,
     NormalizedIdentifier,
+    RawIdentifier,
     RecordType,
     SourceRecordEnvelope,
     SourceRecordLifecycleStatus,
@@ -75,8 +79,13 @@ from src.vehicles import (
 )
 
 
-def _is_match_only_source(source_key: str) -> bool:
-    return source_key in MATCH_ONLY_SOURCE_KEYS
+def _is_match_only_record(source_key: str, record_type: RecordType) -> bool:
+    """Whether this source record may only attach to an existing Person."""
+    return (
+        source_key in MATCH_ONLY_SOURCE_KEYS
+        or record_type in MATCH_ONLY_RECORD_TYPES
+        or record_type not in PERSON_CREATING_RECORD_TYPES
+    )
 
 
 logger = logging.getLogger(__name__)
@@ -185,7 +194,29 @@ class IngestPipeline:
         if lifecycle_plan.pending_to_reject is not None:
             reject_replaced_pending(tx, lifecycle_plan.pending_to_reject)
         candidates = find_candidates(tx, identifiers, addresses)
-        if len(lifecycle_plan.prior_person_ids) > 1:
+        multi_contact_person_id = self._resolve_ambiguous_crm_deal_contacts(tx, envelope)
+        if (
+            self._requires_ambiguous_crm_contact_resolution(envelope)
+            and multi_contact_person_id is None
+        ):
+            logger.info(
+                "Dropping CRM deal %s: contacts do not resolve to one existing person",
+                envelope.source_record_id,
+            )
+            return IngestResult(
+                source_record_id=envelope.source_record_id,
+                ingest_run_id=ingest_run_id,
+                dropped=True,
+            )
+        if multi_contact_person_id is not None:
+            match_result = MatchResult(
+                decision=MatchDecision.MERGE,
+                confidence=1.0,
+                reasons=["All non-primary CRM contacts resolve to the same existing person"],
+                engine_type=EngineType.DETERMINISTIC,
+                matched_person_id=multi_contact_person_id,
+            )
+        elif len(lifecycle_plan.prior_person_ids) > 1:
             match_result = ambiguous_prior_owners_result(lifecycle_plan.prior_person_ids)
         else:
             match_result = self._match_engine.evaluate(
@@ -199,9 +230,9 @@ class IngestPipeline:
                     lifecycle_plan.prior_person_ids[0] if lifecycle_plan.prior_person_ids else None
                 ),
             )
-        if _is_match_only_source(envelope.source_system) and not self._has_usable_match(
-            match_result, candidates
-        ):
+        if _is_match_only_record(
+            envelope.source_system, envelope.record_type
+        ) and not self._has_usable_match(match_result, candidates):
             logger.info(
                 "Dropping unmatched match-only record %s (source=%s, decision=%s)",
                 envelope.source_record_id,
@@ -309,6 +340,11 @@ class IngestPipeline:
                 old_source_record_pk=lifecycle_plan.active_source_record_pk,
                 new_source_record_pk=source_record_pk,
             )
+            if envelope.record_type == RecordType.CRM_DEAL:
+                tx.run(
+                    queries.ACTIVATE_PENDING_CALLS_FOR_DEAL,
+                    deal_source_record_pk=source_record_pk,
+                )
             for affected_person_id in sorted(affected_person_ids):
                 compute_golden_profile(tx, affected_person_id)
             audit_person_pairs(tx, identifiers, envelope.record_type)
@@ -453,6 +489,54 @@ class IngestPipeline:
         if match_result.decision == MatchDecision.REVIEW:
             return match_result.matched_person_id is not None or bool(candidates)
         return False
+
+    @staticmethod
+    def _requires_ambiguous_crm_contact_resolution(envelope: SourceRecordEnvelope) -> bool:
+        return (
+            envelope.record_type == RecordType.CRM_DEAL
+            and envelope.raw_payload.get("crm_contact_resolution_required") is True
+        )
+
+    @staticmethod
+    def _resolve_ambiguous_crm_deal_contacts(
+        tx: ManagedTransaction,
+        envelope: SourceRecordEnvelope,
+    ) -> str | None:
+        """Resolve every non-primary contact to one already-existing Person.
+
+        This deliberately runs before generic deal matching. A multi-contact
+        deal without an explicit primary must never synthesize a Person or
+        attach to only one of several unrelated contact candidates.
+        """
+        if not IngestPipeline._requires_ambiguous_crm_contact_resolution(envelope):
+            return None
+        raw_groups = envelope.raw_payload.get("crm_contact_groups")
+        if not isinstance(raw_groups, list) or len(raw_groups) < 2:
+            return None
+        resolved_person_id: str | None = None
+        for raw_group in raw_groups:
+            if not isinstance(raw_group, list):
+                return None
+            try:
+                raw_identifiers = [RawIdentifier.model_validate(item) for item in raw_group]
+            except ValueError:
+                return None
+            group_envelope = envelope.model_copy(
+                update={"identifiers": raw_identifiers, "addresses": [], "attributes": {}}
+            )
+            group_candidates = find_candidates(
+                tx,
+                normalize_envelope_identifiers(group_envelope),
+                [],
+            )
+            person_ids = {candidate.person_id for candidate in group_candidates}
+            if len(person_ids) != 1:
+                return None
+            person_id = next(iter(person_ids))
+            if resolved_person_id is not None and person_id != resolved_person_id:
+                return None
+            resolved_person_id = person_id
+        return resolved_person_id
 
     @staticmethod
     def _resolve_person(

@@ -83,6 +83,9 @@ export interface PersonSourceRecord {
   extraction_confidence: number | null;
   link_status: string;
   linked_person_id: string | null;
+  parent_source_system?: string | null;
+  parent_source_record_id?: string | null;
+  parent_record_type?: SourceRecordType | null;
   observed_at: string;
   ingested_at: string;
   normalized_payload: SourceRecordNormalizedPayload | null;

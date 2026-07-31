@@ -119,17 +119,20 @@ export interface NonVehicleLine {
 }
 
 // Provenance class of a SourceRecord. `identity` / `bankruptcy` /
-// `relationship` form the "system family" (bankruptcy + rental_flat replaced
-// the former single "public_record" value); `rental_flat` is a place register
-// routed address-only. Mirrors the API SourceRecordTypeLiteral / ingestion
-// RecordType. Labels are derived via titleCase ("Bankruptcy", "Rental Flat").
+// `relationship` / `crm_deal` form the person-capable system family;
+// `rental_flat` is a place register routed address-only. Mirrors the API
+// SourceRecordTypeLiteral / ingestion RecordType. Labels are derived via
+// titleCase ("Bankruptcy", "Rental Flat", "Crm Deal").
 export type SourceRecordType =
   | "identity"
   | "bankruptcy"
   | "rental_flat"
   | "relationship"
   | "conversation"
-  | "sales";
+  | "sales"
+  | "crm_deal"
+  | "crm_history"
+  | "call";
 
 export interface SourceRecord {
   source_record_pk: string;
@@ -140,6 +143,9 @@ export interface SourceRecord {
   extraction_confidence: number | null;
   link_status: string;
   linked_person_id: string | null;
+  parent_source_system?: string | null;
+  parent_source_record_id?: string | null;
+  parent_record_type?: SourceRecordType | null;
   observed_at: string;
   ingested_at: string;
 }

@@ -780,6 +780,12 @@ def test_pending_review_queries_guard_lifecycle_and_source_identity() -> None:
     assert "lifecycle_status: 'pending_review'" in REJECT_PENDING_REVIEW_RECORD
     assert "rejection_reason" in REJECT_PENDING_REVIEW_RECORD
     assert "pending.is_latest = false" in REJECT_PENDING_REVIEW_RECORD
+    assert "logical_deal.source_record_id = pending.source_record_id" in (
+        ACTIVATE_PENDING_REVIEW_RECORD
+    )
+    assert "call.lifecycle_status = 'active'" in ACTIVATE_PENDING_REVIEW_RECORD
+    assert "call.lifecycle_status = 'rejected'" in REJECT_PENDING_REVIEW_RECORD
+    assert "old_call_link:LINKED_TO" in REJECT_PENDING_REVIEW_RECORD
     assert "item.declarer_source_system_key" in ACTIVATE_PENDING_REVIEW_RECORD
 
 

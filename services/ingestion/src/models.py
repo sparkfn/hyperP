@@ -72,6 +72,11 @@ class RecordType(StrEnum):
     ``sales`` — order/line-item/product extract from a commerce system. Linked
     to a Person indirectly via FOR_CUSTOMER_RECORD; sales records never force
     identity resolution on their own and never auto-merge.
+    ``crm_deal`` — a versioned Bitrix CRM deal, with its primary CRM contact as
+    system-of-record identity evidence.
+    ``crm_history`` — an immutable Bitrix CRM activity attached to a deal.
+    ``call`` — an immutable, source-neutral detailed call record. Calls may
+    link only to an existing or provisional Person; they never create one.
     """
 
     IDENTITY = "identity"
@@ -80,6 +85,9 @@ class RecordType(StrEnum):
     RELATIONSHIP = "relationship"
     CONVERSATION = "conversation"
     SALES = "sales"
+    CRM_DEAL = "crm_deal"
+    CRM_HISTORY = "crm_history"
+    CALL = "call"
 
 
 class SourceRecordLifecycleStatus(StrEnum):
@@ -118,7 +126,25 @@ class SourceLifecycleState:
 #: deliberately diverged. ``rental_flat`` is deliberately excluded — it is a
 #: place register routed address-only, never reaching the person match engine.
 SYSTEM_FAMILY: frozenset[RecordType] = frozenset(
-    {RecordType.IDENTITY, RecordType.BANKRUPTCY, RecordType.RELATIONSHIP}
+    {
+        RecordType.IDENTITY,
+        RecordType.BANKRUPTCY,
+        RecordType.RELATIONSHIP,
+        RecordType.CRM_DEAL,
+    }
+)
+
+#: Records allowed to create a new Person after ordinary matching has found no
+#: existing or reviewable candidate. This is deliberately a record-type policy:
+#: one source system may produce both system-of-record deals and match-only
+#: conversations/calls.
+PERSON_CREATING_RECORD_TYPES: frozenset[RecordType] = SYSTEM_FAMILY
+
+#: Extracted conversations and universal call records are evidence only. They
+#: may be linked to an existing person or a provisional review candidate, but
+#: they must never create a person as a fallback.
+MATCH_ONLY_RECORD_TYPES: frozenset[RecordType] = frozenset(
+    {RecordType.CONVERSATION, RecordType.CALL}
 )
 
 
@@ -150,6 +176,19 @@ class RawAddress(BaseModel):
     country_code: str | None = None
 
 
+class SourceRecordParentRef(BaseModel):
+    """Stable logical parent for a hierarchical SourceRecord.
+
+    Parent references use source identity rather than a version-specific graph
+    PK. This keeps a child attached to the logical CRM deal even after a later
+    version of that deal is ingested.
+    """
+
+    parent_source_system: str
+    parent_source_record_id: str
+    parent_record_type: RecordType
+
+
 class SourceRecordEnvelope(BaseModel):
     """Common envelope for raw source records.
 
@@ -172,6 +211,7 @@ class SourceRecordEnvelope(BaseModel):
     addresses: list[RawAddress] = Field(default_factory=list)
     attributes: dict[str, JsonValue] = Field(default_factory=dict)
     raw_payload: dict[str, JsonValue] = Field(default_factory=dict)
+    parent_ref: SourceRecordParentRef | None = None
     # Conversation-only provenance fields. Required when record_type ==
     # CONVERSATION; ignored otherwise.
     extraction_confidence: float | None = None
@@ -208,6 +248,26 @@ class SourceRecordEnvelope(BaseModel):
                     "extraction_confidence / extraction_method / conversation_ref "
                     "are only valid on record_type='conversation'"
                 )
+        expected_parent_type = {
+            RecordType.CRM_HISTORY: RecordType.CRM_DEAL,
+            RecordType.CONVERSATION: RecordType.CRM_HISTORY,
+            RecordType.CALL: RecordType.CRM_HISTORY,
+        }.get(self.record_type)
+        if expected_parent_type is None:
+            if self.parent_ref is not None:
+                raise ValueError(f"parent_ref is not valid for record_type={self.record_type!r}")
+        elif (
+            self.parent_ref is not None
+            and self.parent_ref.parent_record_type != expected_parent_type
+        ):
+            raise ValueError(
+                f"{self.record_type.value} parent_ref must target {expected_parent_type.value}"
+            )
+        elif (
+            self.record_type in {RecordType.CRM_HISTORY, RecordType.CALL}
+            and self.parent_ref is None
+        ):
+            raise ValueError(f"{self.record_type.value} source records require parent_ref")
         return self
 
 

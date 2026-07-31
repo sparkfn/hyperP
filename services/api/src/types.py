@@ -12,7 +12,15 @@ from pydantic.types import JsonValue
 # the former single "system" value; they share matching behaviour today but are
 # distinct so they can diverge later. Mirrors ingestion's ``RecordType`` enum.
 SourceRecordTypeLiteral = Literal[
-    "identity", "bankruptcy", "rental_flat", "relationship", "conversation", "sales"
+    "identity",
+    "bankruptcy",
+    "rental_flat",
+    "relationship",
+    "conversation",
+    "sales",
+    "crm_deal",
+    "crm_history",
+    "call",
 ]
 SourceRecordLifecycleStatus = Literal[
     "active", "pending_review", "superseded", "rejected", "link_failed"
@@ -234,6 +242,9 @@ class SourceRecord(BaseModel):
     extraction_method: str | None = None
     link_status: str
     linked_person_id: str | None = None
+    parent_source_system: str | None = None
+    parent_source_record_id: str | None = None
+    parent_record_type: SourceRecordTypeLiteral | None = None
     observed_at: str
     ingested_at: str
     conversation_ref: dict[str, JsonValue] | None = None

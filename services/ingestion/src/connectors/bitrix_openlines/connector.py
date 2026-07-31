@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Protocol, runtime_checkable
+from typing import Protocol, cast, runtime_checkable
 
 from src.connectors.base import SourceConnector
 from src.connectors.bitrix.connector import (
@@ -18,6 +20,9 @@ from src.connectors.bitrix_openlines.dialog_cache import DialogConfigCache
 from src.connectors.bitrix_openlines.discovery import stream_chats
 from src.connectors.bitrix_openlines.models import (
     ChatReference,
+    CrmActivity,
+    CrmContact,
+    CrmDeal,
     CrmDiscoveryPage,
     DialogMetadata,
     OpenLineConfig,
@@ -57,6 +62,14 @@ class OpenLinesClient(Protocol):
 
 
 @runtime_checkable
+class CrmDetailsClient(Protocol):
+    """Read-only CRM detail methods used only by API incremental ingestion."""
+
+    def get_deal(self, deal_id: int) -> CrmDeal: ...
+    def list_deal_activities(self, deal_id: int) -> list[CrmActivity]: ...
+
+
+@runtime_checkable
 class ResumableOpenLinesClient(Protocol):
     def iter_crm_discovery_pages(self, *, start: int = 0) -> Iterable[CrmDiscoveryPage]: ...
 
@@ -72,6 +85,9 @@ class _PreparedChat:
     reference: ChatReference
     bundle: _ChatBundle
     extra_raw_payload: dict[str, JsonValue]
+    crm_deal: CrmDeal | None
+    crm_activities: tuple[CrmActivity, ...]
+    conversation_is_fresh: bool
 
 
 @dataclass
@@ -114,6 +130,9 @@ class BitrixOpenLinesConnector(SourceConnector):
         self._dialog_cache = dialog_cache
         self._counters = DiscoveryCounters()
         self._no_config_selectable = no_config_selectable(config)
+        self._emitted_crm_deal_ids: set[str] = set()
+        self._emitted_crm_history_ids: set[str] = set()
+        self._emitted_call_ids: set[str] = set()
 
     def get_source_key(self) -> str:
         return "bitrix_chat"
@@ -121,6 +140,9 @@ class BitrixOpenLinesConnector(SourceConnector):
     def fetch_records(self) -> Iterator[dict[str, JsonValue]]:
         self._counters = DiscoveryCounters()
         self._no_config_selectable = no_config_selectable(self._config)
+        self._emitted_crm_deal_ids = set()
+        self._emitted_crm_history_ids = set()
+        self._emitted_call_ids = set()
         try:
             yield from self._fetch_records_inner()
         finally:
@@ -223,6 +245,9 @@ class BitrixOpenLinesConnector(SourceConnector):
             prepared = self._prepare_chat(reference, line_names, since)
             if prepared is None:
                 continue
+            yield from self._crm_envelopes(prepared)
+            if not prepared.conversation_is_fresh:
+                continue
             prepared_chars = len(prepared.bundle.conv_text)
             if prepared_batch and batch_chars + prepared_chars > max_chars:
                 yield from self._extract_batch(prepared_batch)
@@ -273,8 +298,7 @@ class BitrixOpenLinesConnector(SourceConnector):
             if reference.changed_at is not None
             else last_message_at
         )
-        if since is not None and effective_changed_at < since:
-            return None
+        conversation_is_fresh = since is None or effective_changed_at >= since
         bundle = _ChatBundle(
             chat_id=reference.chat_id,
             deal_id=None,
@@ -287,6 +311,7 @@ class BitrixOpenLinesConnector(SourceConnector):
             deal=None,
             agents=_agent_members(messages),
         )
+        crm_deal, crm_activities = self._crm_details(reference)
         return _PreparedChat(
             reference=reference,
             bundle=bundle,
@@ -297,6 +322,9 @@ class BitrixOpenLinesConnector(SourceConnector):
                 channel_type,
                 messages,
             ),
+            crm_deal=crm_deal,
+            crm_activities=crm_activities,
+            conversation_is_fresh=conversation_is_fresh,
         )
 
     def _extract_batch(
@@ -311,6 +339,7 @@ class BitrixOpenLinesConnector(SourceConnector):
                 raise RuntimeError(
                     f"Bitrix Open Lines extraction failed for chat {prepared.reference.chat_id}"
                 )
+            conversation_parent = _conversation_parent(prepared)
             for record in self._builder._build_envelopes(
                 bundle=prepared.bundle,
                 extraction=extraction,
@@ -322,11 +351,79 @@ class BitrixOpenLinesConnector(SourceConnector):
                 platform="bitrix_openlines",
                 extra_raw_payload=prepared.extra_raw_payload,
             ):
+                if conversation_parent is not None:
+                    record["parent_ref"] = conversation_parent
+                    raw_payload = record.get("raw_payload")
+                    parent_id = conversation_parent.get("parent_source_record_id")
+                    if isinstance(raw_payload, dict) and isinstance(parent_id, str):
+                        raw_payload["crm_activity_id"] = parent_id.removeprefix(
+                            "bitrix-crm-history-"
+                        )
+                        record["record_hash"] = _hash_payload(
+                            {
+                                "raw_payload": raw_payload,
+                                "parent_ref": conversation_parent,
+                            }
+                        )
                 self._counters.records_emitted += 1
                 yield record
             prepared_last_message_at = prepared.bundle.last_message_at
             assert prepared_last_message_at is not None
             self._track_watermark(prepared.reference, prepared_last_message_at)
+
+    def _crm_enrichment_enabled(self) -> bool:
+        return (
+            self._mode == "api"
+            and self._incremental
+            and isinstance(self._client, CrmDetailsClient)
+        )
+
+    def _crm_details(
+        self,
+        reference: ChatReference,
+    ) -> tuple[CrmDeal | None, tuple[CrmActivity, ...]]:
+        if not self._crm_enrichment_enabled():
+            return None, ()
+        deal_ids = sorted(
+            {
+                item.owner_id
+                for item in reference.crm_owner_references
+                if item.owner_type == "deal"
+            }
+        )
+        if len(deal_ids) != 1:
+            return None, ()
+        client = cast(CrmDetailsClient, self._client)
+        try:
+            deal = client.get_deal(deal_ids[0])
+            return deal, tuple(client.list_deal_activities(deal_ids[0]))
+        except Exception:  # noqa: BLE001 -- retain no partial CRM hierarchy
+            self._pending_watermark = None
+            raise RuntimeError(
+                f"Bitrix CRM detail retrieval failed for deal {deal_ids[0]}"
+            ) from None
+
+    def _crm_envelopes(self, prepared: _PreparedChat) -> Iterator[dict[str, JsonValue]]:
+        deal = prepared.crm_deal
+        if deal is None:
+            return
+        deal_source_record_id = f"bitrix-crm-deal-{deal.id}"
+        if deal_source_record_id not in self._emitted_crm_deal_ids:
+            self._emitted_crm_deal_ids.add(deal_source_record_id)
+            yield _deal_envelope(deal, prepared.bundle.entity)
+            self._counters.records_emitted += 1
+        for activity in prepared.crm_activities:
+            history_source_record_id = f"bitrix-crm-history-{activity.id}"
+            if history_source_record_id not in self._emitted_crm_history_ids:
+                self._emitted_crm_history_ids.add(history_source_record_id)
+                yield _history_envelope(activity, deal_source_record_id, prepared.bundle.entity)
+                self._counters.records_emitted += 1
+            if activity.is_call:
+                call_source_record_id = f"bitrix-call-{activity.id}"
+                if call_source_record_id not in self._emitted_call_ids:
+                    self._emitted_call_ids.add(call_source_record_id)
+                    yield _call_envelope(activity, history_source_record_id, prepared.bundle.entity)
+                    self._counters.records_emitted += 1
 
     def _messages_for(self, reference: ChatReference) -> list[OpenLineMessage]:
         resource = "message"
@@ -462,3 +559,164 @@ def _retrieval_error(reference: ChatReference, resource: str) -> RuntimeError:
         f"Bitrix Open Lines chat {reference.chat_id} discovered via "
         f"{reference.discovery}: {resource} retrieval failed"
     )
+
+
+def _conversation_parent(prepared: _PreparedChat) -> dict[str, JsonValue] | None:
+    deal = prepared.crm_deal
+    activity_ids = prepared.reference.activity_ids
+    if deal is None or len(activity_ids) != 1:
+        return None
+    activity_id = activity_ids[0]
+    if not any(item.id == activity_id for item in prepared.crm_activities):
+        return None
+    return {
+        "parent_source_system": "bitrix_chat",
+        "parent_source_record_id": f"bitrix-crm-history-{activity_id}",
+        "parent_record_type": "crm_history",
+    }
+
+
+def _deal_envelope(deal: CrmDeal, entity_key: str) -> dict[str, JsonValue]:
+    contact = deal.primary_contact
+    identifiers: list[JsonValue] = []
+    attributes: dict[str, JsonValue] = {}
+    identity_contacts = (contact,) if contact is not None else deal.contacts
+    for candidate in identity_contacts:
+        identifiers.append(
+            {
+                "type": "crm_contact_id" if candidate.kind == "contact" else "external_customer_id",
+                "value": candidate.id,
+                "is_verified": True,
+            }
+        )
+        identifiers.extend(
+            {"type": "phone", "value": value, "is_verified": True}
+            for value in candidate.phones
+        )
+        identifiers.extend(
+            {"type": "email", "value": value, "is_verified": True}
+            for value in candidate.emails
+        )
+    if contact is not None and contact.full_name is not None:
+        attributes["full_name"] = contact.full_name
+    contact_groups: list[JsonValue] = []
+    for deal_contact in deal.contacts:
+        contact_groups.append(_contact_identifier_group(deal_contact))
+    raw_payload: dict[str, JsonValue] = {
+        "crm_deal_id": deal.id,
+        "title": deal.title,
+        "category_id": deal.category_id,
+        "stage_id": deal.stage_id,
+        "primary_contact_id": contact.id if contact is not None else None,
+        "primary_contact_kind": contact.kind if contact is not None else None,
+        "contact_count": deal.contact_count,
+        "crm_contact_groups": contact_groups,
+        "crm_contact_ids": [item.id for item in deal.contacts],
+        "crm_contact_resolution_required": deal.has_ambiguous_contacts,
+        "deal": deal.raw_payload,
+    }
+    return {
+        "source_record_id": f"bitrix-crm-deal-{deal.id}",
+        "entity_key": entity_key,
+        "record_type": "crm_deal",
+        "ingest_type": "api_incremental",
+        "observed_at": _iso_or_now(deal.observed_at),
+        "record_hash": _hash_payload(raw_payload),
+        "identifiers": identifiers,
+        "attributes": attributes,
+        "raw_payload": raw_payload,
+    }
+
+
+def _contact_identifier_group(contact: CrmContact) -> list[JsonValue]:
+    identifiers: list[JsonValue] = [
+        {
+            "type": "crm_contact_id" if contact.kind == "contact" else "external_customer_id",
+            "value": contact.id,
+            "is_verified": True,
+        }
+    ]
+    identifiers.extend(
+        {"type": "phone", "value": value, "is_verified": True}
+        for value in contact.phones
+    )
+    identifiers.extend(
+        {"type": "email", "value": value, "is_verified": True}
+        for value in contact.emails
+    )
+    return identifiers
+
+
+def _history_envelope(
+    activity: CrmActivity,
+    deal_source_record_id: str,
+    entity_key: str,
+) -> dict[str, JsonValue]:
+    raw_payload = _activity_payload(activity)
+    return {
+        "source_record_id": f"bitrix-crm-history-{activity.id}",
+        "entity_key": entity_key,
+        "record_type": "crm_history",
+        "ingest_type": "api_incremental",
+        "observed_at": _iso_or_now(activity.observed_at),
+        "record_hash": _hash_payload(raw_payload),
+        "raw_payload": raw_payload,
+        "parent_ref": {
+            "parent_source_system": "bitrix_chat",
+            "parent_source_record_id": deal_source_record_id,
+            "parent_record_type": "crm_deal",
+        },
+    }
+
+
+def _call_envelope(
+    activity: CrmActivity,
+    history_source_record_id: str,
+    entity_key: str,
+) -> dict[str, JsonValue]:
+    raw_payload = _activity_payload(activity)
+    raw_payload["crm_activity_id"] = activity.id
+    return {
+        "source_record_id": f"bitrix-call-{activity.id}",
+        "entity_key": entity_key,
+        "record_type": "call",
+        "ingest_type": "api_incremental",
+        "observed_at": _iso_or_now(activity.observed_at),
+        "record_hash": _hash_payload(raw_payload),
+        "raw_payload": raw_payload,
+        "parent_ref": {
+            "parent_source_system": "bitrix_chat",
+            "parent_source_record_id": history_source_record_id,
+            "parent_record_type": "crm_history",
+        },
+    }
+
+
+def _activity_payload(activity: CrmActivity) -> dict[str, JsonValue]:
+    return {
+        "crm_activity_id": activity.id,
+        "history_kind": activity.history_kind,
+        "subject": activity.subject,
+        "owner_type": activity.owner_type,
+        "owner_id": activity.owner_id,
+        "observed_at": _iso_or_none(activity.observed_at),
+        "start_at": _iso_or_none(activity.start_at),
+        "end_at": _iso_or_none(activity.end_at),
+        "duration_seconds": activity.duration_seconds,
+        "direction": activity.direction,
+        "outcome": activity.outcome,
+        "activity": activity.raw_payload,
+    }
+
+
+def _iso_or_none(value: datetime | None) -> str | None:
+    return value.isoformat() if value is not None else None
+
+
+def _iso_or_now(value: datetime | None) -> str:
+    return value.isoformat() if value is not None else datetime.now().astimezone().isoformat()
+
+
+def _hash_payload(payload: dict[str, JsonValue]) -> str:
+    serialized = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()

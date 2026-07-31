@@ -1,7 +1,7 @@
 """Regression: system-family matching, with the per-record-type divergences.
 
-`identity`, `bankruptcy`, and `relationship` make up the system family (they
-replaced the former single `system` record type). They share the same
+`identity`, `bankruptcy`, `relationship`, and `crm_deal` make up the system
+family (they replaced the former single `system` record type). They share the same
 deterministic NRIC merge regardless of name. The one deliberate divergence
 (Spec 2) is pinned here: `relationship` adds a Layer-2 phone + partial-name
 auto-merge promotion. `identity` and `bankruptcy` keep the plain additive
@@ -25,14 +25,21 @@ from src.models import (
     RecordType,
 )
 
-_FAMILY = (RecordType.IDENTITY, RecordType.BANKRUPTCY, RecordType.RELATIONSHIP)
+_FAMILY = (
+    RecordType.IDENTITY,
+    RecordType.BANKRUPTCY,
+    RecordType.RELATIONSHIP,
+    RecordType.CRM_DEAL,
+)
 
 
-def test_system_family_membership_is_exactly_the_three_subtypes() -> None:
+def test_system_family_membership_includes_person_capable_crm_deals() -> None:
     assert SYSTEM_FAMILY == frozenset(_FAMILY)
     assert RecordType.CONVERSATION not in SYSTEM_FAMILY
     assert RecordType.SALES not in SYSTEM_FAMILY
     assert RecordType.RENTAL_FLAT not in SYSTEM_FAMILY
+    assert RecordType.CRM_HISTORY not in SYSTEM_FAMILY
+    assert RecordType.CALL not in SYSTEM_FAMILY
 
 
 class _Result:
