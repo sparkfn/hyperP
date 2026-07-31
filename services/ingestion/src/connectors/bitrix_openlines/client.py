@@ -573,10 +573,7 @@ def _crm_contact(result: JsonValue, *, kind: str) -> CrmContact:
     contact_id = _positive_id_string(payload.get("ID"))
     if contact_id is None:
         raise RuntimeError(f"Bitrix {kind} omitted its ID")
-    name_parts = [
-        _string(payload.get(key))
-        for key in ("NAME", "SECOND_NAME", "LAST_NAME")
-    ]
+    name_parts = [_string(payload.get(key)) for key in ("NAME", "SECOND_NAME", "LAST_NAME")]
     full_name = " ".join(value for value in name_parts if value) or None
     return CrmContact(
         id=contact_id,
