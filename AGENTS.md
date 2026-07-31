@@ -116,6 +116,9 @@ production Python install. Do not add Docker sockets, `volumes:`, or
   call FastAPI directly. Public pages use `/api/v1/public/...` with no bearer token.
 - Keep `NEXT_PUBLIC_BASE_PATH`, Next config, middleware, nginx locations, and API
   mount behavior distinct and aligned when changing route topology.
+- Every schema-visible FastAPI endpoint must be exposed through MCP. Add new routers to
+  `src.route_catalog`, verify each operation resolves to a stable unique operation ID, and extend the
+  API-to-MCP parity test. Exclusions require an explicit documented security or transport reason.
 
 ## Backend rules
 

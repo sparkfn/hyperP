@@ -17,6 +17,7 @@ from src.frontend_app import build_frontend_app
 from src.graph.client import close_driver, get_session
 from src.graph.queries.users import CREATE_USER_CONSTRAINT
 from src.llm.service import close_llm_service
+from src.mcp_app import mount_mcp, shutdown_mcp
 from src.oauth2_app import build_oauth2_app
 from src.proclaude.service import close_proclaude_service
 from src.redis_client import close_redis
@@ -24,8 +25,7 @@ from src.repositories.neo4j.bootstrap import (
     ensure_ingest_run_idempotency_constraint,
     ensure_source_record_identity_lock_constraint,
 )
-from src.routes import health, oauth
-from src.routes.public_pages import public_router
+from src.route_catalog import ROOT_ROUTERS
 
 logger = logging.getLogger("profile_unifier_api")
 
@@ -82,11 +82,14 @@ async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
     await _ensure_user_constraint()
     await _ensure_oauth_client_constraints()
     await _ensure_person_indexes()
-    yield
-    await close_driver()
-    await close_redis()
-    await close_llm_service()
-    await close_proclaude_service()
+    try:
+        yield
+    finally:
+        await shutdown_mcp(_app)
+        await close_driver()
+        await close_redis()
+        await close_llm_service()
+        await close_proclaude_service()
 
 
 def build_app() -> FastAPI:
@@ -122,9 +125,8 @@ def build_app() -> FastAPI:
     # mounted sub-apps below — /app/v2 (active frontend2 UI contract) and
     # /oauth2/v1 (machine clients). The business routers live in src/routes/*
     # and are copied into those mounts; the root app no longer registers them.
-    app.include_router(health.router)  # infra healthcheck — /api/health
-    app.include_router(oauth.router)  # machine OAuth2 token + JWKS — /v1/oauth/*
-    app.include_router(public_router)  # unauthenticated public pages — /v1/public/*
+    for router in ROOT_ROUTERS:
+        app.include_router(router)
 
     # Frontend-facing API contract. A fresh FastAPI instance exposing the
     # authenticated router set with the /v1 prefix stripped, mounted for the
@@ -137,6 +139,10 @@ def build_app() -> FastAPI:
     # accepting OAuth2 client credentials only. Served externally at
     # /api/oauth2/v1/... via the existing /api/ nginx route.
     app.mount("/oauth2/v1", build_oauth2_app())
+
+    # The MCP surface is generated from the canonical route catalog and is
+    # independently authenticated. It is publicly proxied by nginx at /mcp.
+    mount_mcp(app)
 
     register_error_handlers(app)
     return app

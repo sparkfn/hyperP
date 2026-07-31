@@ -153,8 +153,18 @@ module = [
     "sqlalchemy.*",
     "sshtunnel",
     "google.*",
+    "fastapi_mcp.*",
 ]
 ignore_missing_imports = true
+
+# FastAPI-MCP has no py.typed marker. Keep its untyped boundary isolated to
+# the small adapter module rather than weakening checks for API code.
+[[tool.mypy.overrides]]
+module = ["src.mcp_app"]
+disallow_any_explicit = false
+disallow_any_generics = false
+disallow_untyped_calls = false
+warn_return_any = false
 
 [tool.pytest.ini_options]
 testpaths = ["services/api/tests", "services/ingestion/tests"]
