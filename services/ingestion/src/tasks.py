@@ -631,10 +631,10 @@ def run_ingestion_task(
                     logger.exception("Could not queue post-ingestion lifecycle reconciliation")
                 if idempotency_key is not None and summary["status"] == "completed":
                     _mark_scheduled_step_completed(idempotency_key)
-                if (
-                    celery_task_id is not None
-                    and summary.get("status") in {"completed", "completed_with_errors"}
-                ):
+                if celery_task_id is not None and summary.get("status") in {
+                    "completed",
+                    "completed_with_errors",
+                }:
                     _enqueue_knows_materialization(source_key)
                 return summary
     except _SourceAlreadyRunningError as exc:
