@@ -130,8 +130,9 @@ required key is absent.
 ## Scheduling and checkpoints
 
 The three Fundbox Celery Beat entries switch from `batch` to `api`. Each source
-has an independent durable successful watermark and a Redis snapshot of source
-root IDs. Every run first reads its watermark, subtracts a small configurable
+has an independent durable successful watermark and source-root ID snapshot in
+Neo4j. Redis can provide one-time legacy migration input, but is not an
+authoritative checkpoint store. Every run first reads its watermark, subtracts a small configurable
 overlap, and performs an incremental traversal using `updated_since`. It then
 performs a complete unfiltered traversal for reconciliation. Records returned by
 the full traversal but not the incremental traversal are reprocessed; existing
@@ -144,7 +145,8 @@ provenance-keyed projections; unified people, entities, and audit history remain
 The first successful run establishes a baseline and retires nothing.
 
 The watermark and current-ID snapshot are stored only after the entire ingestion
-run succeeds. Failed, rejected, or partial runs replace neither checkpoint. The
+run succeeds, in the same graph transaction that completes the IngestRun.
+Failed, rejected, or partial runs replace neither checkpoint. The
 new watermark is based on the maximum effective timestamp successfully traversed,
 not worker wall-clock time. Existing source locks continue to prevent concurrent
 runs for the same source.

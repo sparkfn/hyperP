@@ -7,7 +7,6 @@ import json
 import logging
 import re
 import sys
-from collections.abc import Callable
 from typing import Protocol, TypedDict, runtime_checkable
 
 import httpx
@@ -53,7 +52,6 @@ from src.connectors.phppos_api import (
     SpeedZoneSalesApiConnector,
 )
 from src.connectors.phppos_api.client import ApiCredentials, PhpposApiClient
-from src.connectors.phppos_api.connectors import ApiClient
 from src.connectors.sggov.bankruptcy_api import SGGovernmentBankruptcyApiConnector
 from src.connectors.sggov.rental_flats_api import (
     SGGovernmentRentalFlatsApiClient,
@@ -75,6 +73,7 @@ from src.exclusions import (
 from src.graph import queries
 from src.graph.bootstrap import bootstrap_entities_and_sources
 from src.graph.client import Neo4jClient
+from src.graph.incremental_checkpoints import Neo4jCheckpointRedis
 from src.graph.migrations import apply_data_migrations
 from src.graph.schema_init import apply_deferred_source_record_constraints, apply_schema
 from src.ingestion_config import get_ingestion_config
@@ -339,6 +338,7 @@ def create_whatsadmin_api_connector(
     entity_key: str | None = None,
     *,
     incremental: bool = True,
+    checkpoint_store: Neo4jCheckpointRedis | None = None,
 ) -> WhatsAdminChatApiConnector:
     settings = get_settings()
     resolver = WhatsAdminCredentialResolver(
@@ -356,7 +356,7 @@ def create_whatsadmin_api_connector(
         )
         for credential in resolver.resolve_job(entity_key)
     )
-    redis = Redis.from_url(settings.celery_broker_url, decode_responses=True)
+    redis = checkpoint_store or Redis.from_url(settings.celery_broker_url, decode_responses=True)
     legacy_entity = settings.whatsadmin_legacy_entity
     return WhatsAdminChatApiConnector(
         clients,
@@ -370,6 +370,7 @@ def create_bitrix_openlines_connector(
     mode: str,
     *,
     incremental: bool = True,
+    checkpoint_store: Neo4jCheckpointRedis | None = None,
 ) -> BitrixOpenLinesConnector:
     settings = get_settings()
     ingestion_config = get_ingestion_config()
@@ -379,7 +380,7 @@ def create_bitrix_openlines_connector(
         max_attempts=settings.bitrix_openlines_api_max_attempts,
         request_delay_seconds=settings.bitrix_openlines_api_request_delay_seconds,
     )
-    redis = Redis.from_url(settings.celery_broker_url, decode_responses=True)
+    redis = checkpoint_store or Redis.from_url(settings.celery_broker_url, decode_responses=True)
     dialog_redis = Redis.from_url(settings.celery_broker_url, decode_responses=True)
     return BitrixOpenLinesConnector(
         client,
@@ -419,6 +420,7 @@ def get_connector(
     mode: str = "batch",
     entity_key: str | None = None,
     incremental: bool = True,
+    checkpoint_store: Neo4jCheckpointRedis | None = None,
 ) -> SourceConnector:
     """Return the appropriate connector for the given source key."""
     if entity_key is not None and (source_key != "whatsapp_chat" or mode != "api"):
@@ -428,7 +430,13 @@ def get_connector(
         resolved_dump_path = resolve_dump_path(dump_path, settings.dumps_root)
         return get_dump_connector(source_key, resolved_dump_path)
     if source_key == "bitrix_chat" and mode in {"api", "backfill"}:
-        return create_bitrix_openlines_connector(mode, incremental=incremental)
+        if checkpoint_store is None:
+            return create_bitrix_openlines_connector(mode, incremental=incremental)
+        return create_bitrix_openlines_connector(
+            mode,
+            incremental=incremental,
+            checkpoint_store=checkpoint_store,
+        )
     if mode == "backfill":
         raise ValueError(f"Backfill mode is not supported for source {source_key!r}")
     if mode == "api":
@@ -438,8 +446,19 @@ def get_connector(
             return SGGovernmentRentalFlatsApiConnector(create_sgrentalflats_api_client())
         if source_key == "whatsapp_chat":
             if entity_key is None:
-                return create_whatsadmin_api_connector(incremental=incremental)
-            return create_whatsadmin_api_connector(entity_key, incremental=incremental)
+                if checkpoint_store is None:
+                    return create_whatsadmin_api_connector(incremental=incremental)
+                return create_whatsadmin_api_connector(
+                    incremental=incremental,
+                    checkpoint_store=checkpoint_store,
+                )
+            if checkpoint_store is None:
+                return create_whatsadmin_api_connector(entity_key, incremental=incremental)
+            return create_whatsadmin_api_connector(
+                entity_key,
+                incremental=incremental,
+                checkpoint_store=checkpoint_store,
+            )
         fundbox_types: dict[str, type[FundboxApiConnector]] = {
             "fundbox": FundboxUsersApiConnector,
             "fundbox:contacts": FundboxContactsApiConnector,
@@ -448,23 +467,33 @@ def get_connector(
         fundbox_type = fundbox_types.get(source_key)
         if fundbox_type is not None:
             settings = get_settings()
+            api_client = create_fundbox_api_client()
             if incremental:
-                with Redis.from_url(settings.celery_broker_url) as checkpoint_store:
+                store = checkpoint_store or Redis.from_url(settings.celery_broker_url)
+                with store:
                     updated_since = load_watermark(
-                        checkpoint_store,
+                        store,
                         source_key,
                         settings.fundbox_api_overlap_seconds,
                     )
-                    previous_source_ids = load_source_ids(checkpoint_store, source_key)
+                    previous_source_ids = load_source_ids(store, source_key)
             else:
                 updated_since = None
                 previous_source_ids = None
             return fundbox_type(
-                create_fundbox_api_client(),
+                api_client,
                 updated_since=updated_since,
                 previous_source_ids=previous_source_ids,
             )
-        api_types: dict[str, Callable[[ApiClient], SourceConnector]] = {
+        api_types: dict[
+            str,
+            type[
+                EkoApiConnector
+                | EkoSalesApiConnector
+                | SpeedZoneApiConnector
+                | SpeedZoneSalesApiConnector
+            ],
+        ] = {
             "eko_phppos": EkoApiConnector,
             "eko_phppos:sales": EkoSalesApiConnector,
             "speedzone_phppos": SpeedZoneApiConnector,
@@ -474,7 +503,16 @@ def get_connector(
             connector_type = api_types[source_key]
         except KeyError as exc:
             raise ValueError(f"API mode is not supported for source {source_key!r}") from exc
-        return connector_type(create_phppos_api_client(source_key))
+        updated_since = None
+        if incremental and checkpoint_store is not None:
+            updated_since = checkpoint_store.get(
+                f"profile_unifier:phppos_api:watermark:{source_key}"
+            )
+        return connector_type(
+            create_phppos_api_client(source_key),
+            updated_since=updated_since,
+            watermark_store=checkpoint_store,
+        )
     try:
         return _CONNECTOR_REGISTRY[source_key]()
     except KeyError as exc:
@@ -522,6 +560,7 @@ def finalize_ingest_run(
     status: str,
     record_count: int,
     rejected_count: int,
+    checkpoint_store: Neo4jCheckpointRedis | None = None,
 ) -> None:
     """Update the IngestRun with final status and counts."""
 
@@ -533,9 +572,13 @@ def finalize_ingest_run(
             record_count=record_count,
             rejected_count=rejected_count,
         )
+        if checkpoint_store is not None and status in {"completed", "completed_with_errors"}:
+            checkpoint_store.flush(tx, ingest_run_id, status)
 
     with client.session() as session:
         session.execute_write(_tx)
+    if checkpoint_store is not None:
+        checkpoint_store.clear_staged()
 
 
 def _process_record(
@@ -746,6 +789,7 @@ def run_ingestion(
 
     client = Neo4jClient(settings)
     connector: SourceConnector | None = None
+    checkpoint_store: Neo4jCheckpointRedis | None = None
     try:
         if not initialize_graph:
             client.verify_connectivity()
@@ -764,12 +808,36 @@ def run_ingestion(
 
         success = errors = skipped = 0
         try:
+            if incremental and mode == "api" and source_key in {
+                "fundbox",
+                "fundbox:contacts",
+                "fundbox:sales",
+                "bitrix_chat",
+                "whatsapp_chat",
+                "eko_phppos",
+                "eko_phppos:sales",
+                "speedzone_phppos",
+                "speedzone_phppos:sales",
+            }:
+                broker_url = getattr(settings, "celery_broker_url", None)
+                legacy = (
+                    Redis.from_url(broker_url)
+                    if isinstance(broker_url, str)
+                    else None
+                )
+                checkpoint_store = Neo4jCheckpointRedis(
+                    client,
+                    source_key,
+                    legacy=legacy,
+                    active_ingest_run_id=ingest_run_id,
+                )
             connector = get_connector(
                 source_key,
                 dump_path if mode == "dump" else None,
                 mode=mode,
                 entity_key=entity_key,
                 incremental=incremental,
+                checkpoint_store=checkpoint_store,
             )
             logger.info("Connector=%s", type(connector).__name__)
             if source_key in {"bitrix_chat", "whatsapp_chat"}:
@@ -818,13 +886,6 @@ def run_ingestion(
             raise
 
         final_status = "completed" if errors == 0 else "completed_with_errors"
-        finalize_ingest_run(
-            client,
-            ingest_run_id,
-            final_status,
-            success + errors + skipped,
-            errors,
-        )
         if (
             final_status == "completed"
             and incremental
@@ -832,13 +893,21 @@ def run_ingestion(
             and connector.reconciliation_completed
             and connector.current_source_ids is not None
         ):
-            with Redis.from_url(settings.celery_broker_url) as checkpoint_store:
-                save_reconciliation_state(
-                    checkpoint_store,
-                    source_key,
-                    connector.current_source_ids,
-                    connector.latest_effective_updated_at,
-                )
+            assert checkpoint_store is not None
+            save_reconciliation_state(
+                checkpoint_store,
+                source_key,
+                connector.current_source_ids,
+                connector.latest_effective_updated_at,
+            )
+        finalize_ingest_run(
+            client,
+            ingest_run_id,
+            final_status,
+            success + errors + skipped,
+            errors,
+            checkpoint_store,
+        )
         logger.info(
             "Ingestion complete: %d succeeded, %d errors, %d skipped",
             success,

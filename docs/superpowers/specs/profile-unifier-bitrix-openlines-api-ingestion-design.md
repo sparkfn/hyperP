@@ -87,7 +87,7 @@ in operational documentation and must not claim exhaustive portal history.
 REST methods. It is manually dispatched and does not establish that all portal
 history was discovered.
 
-`api` performs incremental synchronization. It reads the last committed
+`api` performs incremental synchronization. It reads the last committed durable
 watermark and applies a configured overlap window so late changes are safely
 re-read. Stable source-record IDs and the existing ingestion idempotency rules
 prevent duplicate graph evidence.

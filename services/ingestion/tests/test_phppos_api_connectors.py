@@ -249,3 +249,49 @@ def test_run_ingestion_closes_api_connector_when_ingestion_fails(
         run_ingestion("eko_phppos", mode="api", initialize_graph=False)
 
     assert api_client.closed is True
+
+
+class IncrementalCustomerClient(StubClient):
+    def __init__(self) -> None:
+        super().__init__()
+        self.updated_since: str | None = None
+
+    def iter_customers(
+        self,
+        *,
+        updated_since: str | None = None,
+    ) -> Iterator[CustomerRow]:
+        self.updated_since = updated_since
+        yield CustomerRow.model_validate(
+            {
+                "person_id": 9,
+                "create_date": "2026-08-03T01:00:00",
+                "last_modified": None,
+            }
+        )
+
+
+class CapturingWatermarkStore:
+    def __init__(self) -> None:
+        self.values: dict[str, str] = {}
+
+    def set(self, name: str, value: str) -> None:
+        self.values[name] = value
+
+
+def test_customer_connector_uses_checkpoint_and_stages_normalized_source_watermark() -> None:
+    client = IncrementalCustomerClient()
+    store = CapturingWatermarkStore()
+    connector = EkoApiConnector(
+        client,
+        updated_since="2026-08-02T01:00:00+00:00",
+        watermark_store=store,
+    )
+
+    list(connector.fetch_records())
+    connector.commit_watermark()
+
+    assert client.updated_since == "2026-08-02T01:00:00+00:00"
+    assert store.values == {
+        "profile_unifier:phppos_api:watermark:eko_phppos": "2026-08-03T01:00:00+00:00"
+    }

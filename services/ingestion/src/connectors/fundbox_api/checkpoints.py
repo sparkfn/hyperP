@@ -1,17 +1,27 @@
-"""Durable per-source Fundbox API reconciliation state stored in Redis."""
+"""Per-source Fundbox API checkpoint serialization."""
 
 from __future__ import annotations
 
 import json
 from datetime import UTC, datetime, timedelta
-
-from redis import Redis
+from typing import Protocol
 
 _PREFIX = "profile_unifier:fundbox_api:watermark"
 _SOURCE_IDS_PREFIX = "profile_unifier:fundbox_api:source_ids"
 
 
-def load_watermark(redis: Redis, source_key: str, overlap_seconds: int) -> str | None:
+class CheckpointPipeline(Protocol):
+    def set(self, key: str, value: str) -> object: ...
+    def execute(self) -> object: ...
+
+
+class CheckpointStore(Protocol):
+    def get(self, key: str) -> object: ...
+    def set(self, key: str, value: str) -> object: ...
+    def pipeline(self, *, transaction: bool) -> CheckpointPipeline: ...
+
+
+def load_watermark(redis: CheckpointStore, source_key: str, overlap_seconds: int) -> str | None:
     raw = redis.get(f"{_PREFIX}:{source_key}")
     if raw is None:
         return None
@@ -21,12 +31,12 @@ def load_watermark(redis: Redis, source_key: str, overlap_seconds: int) -> str |
     return overlapped.isoformat()
 
 
-def save_watermark(redis: Redis, source_key: str, watermark: str) -> None:
+def save_watermark(redis: CheckpointStore, source_key: str, watermark: str) -> None:
     value = datetime.fromisoformat(watermark.replace("Z", "+00:00")).astimezone(UTC)
     redis.set(f"{_PREFIX}:{source_key}", value.isoformat())
 
 
-def load_source_ids(redis: Redis, source_key: str) -> set[int] | None:
+def load_source_ids(redis: CheckpointStore, source_key: str) -> set[int] | None:
     raw = redis.get(f"{_SOURCE_IDS_PREFIX}:{source_key}")
     if raw is None:
         return None
@@ -38,7 +48,7 @@ def load_source_ids(redis: Redis, source_key: str) -> set[int] | None:
 
 
 def save_reconciliation_state(
-    redis: Redis,
+    redis: CheckpointStore,
     source_key: str,
     source_ids: set[int],
     watermark: str | None,

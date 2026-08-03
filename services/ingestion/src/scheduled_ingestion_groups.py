@@ -14,6 +14,7 @@ class ScheduledIngestionSpec:
 
     source_key: str
     entity_key: str | None = None
+    supports_incremental: bool = True
 
 
 @dataclass(frozen=True)
@@ -61,12 +62,12 @@ SCHEDULED_INGESTION_GROUPS: tuple[ScheduledIngestionGroup, ...] = (
     ScheduledIngestionGroup(
         key="sgbankruptcy",
         weekday="friday",
-        tasks=(ScheduledIngestionSpec("sgbankruptcy"),),
+        tasks=(ScheduledIngestionSpec("sgbankruptcy", supports_incremental=False),),
     ),
     ScheduledIngestionGroup(
         key="sgrentalflats",
         weekday="saturday",
-        tasks=(ScheduledIngestionSpec("sgrentalflats"),),
+        tasks=(ScheduledIngestionSpec("sgrentalflats", supports_incremental=False),),
     ),
 )
 

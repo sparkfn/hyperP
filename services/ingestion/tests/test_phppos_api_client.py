@@ -334,3 +334,31 @@ def test_client_does_not_retry_api_bad_request() -> None:
     with pytest.raises(httpx.HTTPStatusError):
         list(_client(handler).iter_customers())
     assert api_attempts == 1
+
+
+def test_incremental_watermark_is_forwarded_on_every_customer_page() -> None:
+    api_requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/oauth/token":
+            return httpx.Response(200, json={"access_token": "access", "expires_in": 3600})
+        api_requests.append(request)
+        cursor = request.url.params.get("cursor")
+        return httpx.Response(
+            200,
+            json={
+                "data": [],
+                "pagination": {
+                    "next_cursor": "next" if cursor is None else None,
+                    "has_more": cursor is None,
+                },
+            },
+        )
+
+    list(_client(handler).iter_customers(updated_since="2026-08-03T01:00:00+00:00"))
+
+    assert len(api_requests) == 2
+    assert all(
+        request.url.params["updated_since"] == "2026-08-03T01:00:00+00:00"
+        for request in api_requests
+    )
