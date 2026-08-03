@@ -191,3 +191,13 @@ def test_manual_full_chain_step_forwards_disabled_incremental_policy(
     assert result["status"] == "completed"
     assert incremental_values == [False]
     assert marked == ["manual:fundbox:step:0"]
+
+
+def test_full_snapshot_sources_do_not_claim_incremental_support() -> None:
+    from src.scheduled_ingestion_groups import scheduled_ingestion_group
+
+    bankruptcy = scheduled_ingestion_group("sgbankruptcy").tasks[0]
+    rental_flats = scheduled_ingestion_group("sgrentalflats").tasks[0]
+
+    assert bankruptcy.supports_incremental is False
+    assert rental_flats.supports_incremental is False

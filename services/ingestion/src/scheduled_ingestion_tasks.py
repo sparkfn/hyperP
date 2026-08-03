@@ -135,7 +135,7 @@ def dispatch_ingestion_group_task(
                 _signature(
                     spec.source_key,
                     spec.entity_key,
-                    incremental,
+                    incremental and spec.supports_incremental,
                     f"{marker_key}:step:{index}",
                 )
                 for index, spec in enumerate(group.tasks)

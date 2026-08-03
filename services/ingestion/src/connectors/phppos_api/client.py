@@ -48,19 +48,19 @@ class PhpposApiClient:
         self._access_expires_at = 0.0
         self._closed = False
 
-    def iter_customers(self) -> Iterator[CustomerRow]:
+    def iter_customers(self, *, updated_since: str | None = None) -> Iterator[CustomerRow]:
         cursor: str | None = None
         while True:
-            page = CustomerPage.model_validate(self._get_page("customers", cursor))
+            page = CustomerPage.model_validate(self._get_page("customers", cursor, updated_since))
             yield from page.data
             if not page.pagination.has_more:
                 return
             cursor = page.pagination.next_cursor
 
-    def iter_sales(self) -> Iterator[SaleRow]:
+    def iter_sales(self, *, updated_since: str | None = None) -> Iterator[SaleRow]:
         cursor: str | None = None
         while True:
-            page = SalesPage.model_validate(self._get_page("sales", cursor))
+            page = SalesPage.model_validate(self._get_page("sales", cursor, updated_since))
             yield from page.data
             if not page.pagination.has_more:
                 return
@@ -72,10 +72,12 @@ class PhpposApiClient:
         self._closed = True
         self._http.close()
 
-    def _get_page(self, resource: str, cursor: str | None) -> object:
+    def _get_page(self, resource: str, cursor: str | None, updated_since: str | None) -> object:
         params: dict[str, str | int] = {"limit": self._credentials.page_size}
         if cursor is not None:
             params["cursor"] = cursor
+        if updated_since is not None:
+            params["updated_since"] = updated_since
         response = self._request(
             "GET",
             f"/api/v1/custom/hyperp/{resource}",

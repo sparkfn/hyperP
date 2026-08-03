@@ -139,7 +139,9 @@ both variables. The example values above are placeholders, not credentials.
 `eko` or `speedzone` according to the organization that owned the retired
 global key, and keep it configured so that tenant continues using its existing
 source-record identities. HyperP reads that tenant's legacy per-session
-watermarks and writes new tenant-scoped watermarks after successful runs. The
+watermarks from durable application storage and writes new tenant-scoped
+watermarks atomically with successful runs. Redis may retain only ephemeral
+coordination and legacy-migration duties. The
 other tenant always uses entity-scoped identities and state. If HyperP finds a
 legacy watermark without this setting, extraction will fail closed rather than
 replay data under new identities. Fresh installations must leave it unset.

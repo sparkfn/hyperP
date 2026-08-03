@@ -119,10 +119,9 @@ authorization failures, malformed payloads, and other non-transient 4xx failures
 fail immediately. A failed page is not treated as complete and its continuation
 cursor is not advanced.
 
-The initial feature does not add a durable cross-run checkpoint. Each scheduled
-API ingestion can perform a complete traversal; `updated_since` is available to
-callers and for a later checkpoint feature without changing the endpoint
-contract.
+Each source has an independent durable successful watermark. HyperP sends it as
+the inclusive `updated_since` bound on every page and replaces it only in the
+same graph transaction that completes the ingestion run.
 
 ## Compatibility and errors
 
@@ -171,7 +170,6 @@ duplicate records, and schema compatibility.
 
 ## Out of scope
 
-- Durable per-source incremental checkpoints.
 - API mode for sources other than Eko and SpeedZone.
 - Changes to HyperP canonical identity, sales, or graph contracts.
 - Write access to either POS database.

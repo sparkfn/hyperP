@@ -65,8 +65,9 @@ settings. Secrets are never logged or returned in task results.
 Transport failures, HTTP 429, and 5xx responses use bounded exponential retry.
 Authentication, other client errors, and response-schema failures are not
 retried. The fixed weekly Celery schedule dispatches the standalone
-`sgbankruptcy` API group every Friday at 01:00 UTC with incremental extraction
-enabled.
+`sgbankruptcy` API group every Friday at 01:00 UTC as a full-snapshot
+extraction: the upstream export has an in-run cursor but no durable cross-run
+incremental boundary.
 
 Dump and API connectors use one canonical bankruptcy envelope builder so the
 same case produces the same raw payload and record hash in either mode. Adopting

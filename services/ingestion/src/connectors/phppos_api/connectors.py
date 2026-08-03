@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterator, Mapping
+from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Protocol, cast
 
@@ -17,9 +18,13 @@ from src.models import JsonValue
 
 
 class ApiClient(Protocol):
-    def iter_customers(self) -> Iterator[CustomerRow]: ...
-    def iter_sales(self) -> Iterator[SaleRow]: ...
+    def iter_customers(self, *, updated_since: str | None = None) -> Iterator[CustomerRow]: ...
+    def iter_sales(self, *, updated_since: str | None = None) -> Iterator[SaleRow]: ...
     def close(self) -> None: ...
+
+
+class WatermarkStore(Protocol):
+    def set(self, name: str, value: str) -> None: ...
 
 
 class ApiRow:
@@ -38,8 +43,17 @@ class ApiRow:
 class _CustomerApiConnector(SourceConnector):
     source_key: str
 
-    def __init__(self, client: ApiClient) -> None:
+    def __init__(
+        self,
+        client: ApiClient,
+        *,
+        updated_since: str | None = None,
+        watermark_store: WatermarkStore | None = None,
+    ) -> None:
         self._client = client
+        self._updated_since = updated_since
+        self._watermark_store = watermark_store
+        self._latest_updated_at: datetime | None = None
 
     def get_source_key(self) -> str:
         return self.source_key
@@ -49,8 +63,14 @@ class _CustomerApiConnector(SourceConnector):
 
     def fetch_records(self) -> Iterator[dict[str, JsonValue]]:
         try:
-            for row in self._client.iter_customers():
+            rows = (
+                self._client.iter_customers(updated_since=self._updated_since)
+                if self._updated_since is not None
+                else self._client.iter_customers()
+            )
+            for row in rows:
                 values = row.model_dump()
+                self._track_watermark(values.get("last_modified") or values.get("create_date"))
                 for field in _OPTIONAL_CUSTOMER_FIELDS:
                     values.setdefault(field, None)
                 api_row = ApiRow(values)
@@ -60,6 +80,23 @@ class _CustomerApiConnector(SourceConnector):
                     yield SpeedZoneConnector._build_envelope_with_customer(api_row)
         finally:
             self._client.close()
+
+    def commit_watermark(self) -> None:
+        if self._watermark_store is not None and self._latest_updated_at is not None:
+            self._watermark_store.set(
+                self._watermark_key(),
+                self._latest_updated_at.isoformat(),
+            )
+
+    def _watermark_key(self) -> str:
+        return f"profile_unifier:phppos_api:watermark:{self.source_key}"
+
+    def _track_watermark(self, value: object) -> None:
+        parsed = _parse_source_timestamp(value)
+        if parsed is not None and (
+            self._latest_updated_at is None or parsed > self._latest_updated_at
+        ):
+            self._latest_updated_at = parsed
 
 
 class EkoApiConnector(_CustomerApiConnector):
@@ -73,8 +110,17 @@ class SpeedZoneApiConnector(_CustomerApiConnector):
 class _SalesApiConnector(SourceConnector):
     source_key: str
 
-    def __init__(self, client: ApiClient) -> None:
+    def __init__(
+        self,
+        client: ApiClient,
+        *,
+        updated_since: str | None = None,
+        watermark_store: WatermarkStore | None = None,
+    ) -> None:
         self._client = client
+        self._updated_since = updated_since
+        self._watermark_store = watermark_store
+        self._latest_updated_at: datetime | None = None
 
     def get_source_key(self) -> str:
         return f"{self.source_key}:sales"
@@ -84,7 +130,13 @@ class _SalesApiConnector(SourceConnector):
 
     def fetch_records(self) -> Iterator[dict[str, JsonValue]]:
         try:
-            for row in self._client.iter_sales():
+            rows = (
+                self._client.iter_sales(updated_since=self._updated_since)
+                if self._updated_since is not None
+                else self._client.iter_sales()
+            )
+            for row in rows:
+                self._track_watermark(row.sale_time)
                 yield self._build_record(row)
         finally:
             self._client.close()
@@ -139,6 +191,23 @@ class _SalesApiConnector(SourceConnector):
             extract_bike_plate=self.source_key == "speedzone_phppos",
         )
 
+    def commit_watermark(self) -> None:
+        if self._watermark_store is not None and self._latest_updated_at is not None:
+            self._watermark_store.set(
+                self._watermark_key(),
+                self._latest_updated_at.isoformat(),
+            )
+
+    def _watermark_key(self) -> str:
+        return f"profile_unifier:phppos_api:watermark:{self.source_key}:sales"
+
+    def _track_watermark(self, value: str) -> None:
+        parsed = _parse_source_timestamp(value)
+        if parsed is not None and (
+            self._latest_updated_at is None or parsed > self._latest_updated_at
+        ):
+            self._latest_updated_at = parsed
+
 
 class EkoSalesApiConnector(_SalesApiConnector):
     source_key = "eko_phppos"
@@ -162,6 +231,15 @@ _OPTIONAL_CUSTOMER_FIELDS = frozenset(
         "create_date",
     }
 )
+
+
+def _parse_source_timestamp(value: object) -> datetime | None:
+    if not isinstance(value, str):
+        return None
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
 
 
 def _optional_int(value: object) -> int | None:
