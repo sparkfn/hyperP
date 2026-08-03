@@ -808,23 +808,24 @@ def run_ingestion(
 
         success = errors = skipped = 0
         try:
-            if incremental and mode == "api" and source_key in {
-                "fundbox",
-                "fundbox:contacts",
-                "fundbox:sales",
-                "bitrix_chat",
-                "whatsapp_chat",
-                "eko_phppos",
-                "eko_phppos:sales",
-                "speedzone_phppos",
-                "speedzone_phppos:sales",
-            }:
+            if (
+                incremental
+                and mode == "api"
+                and source_key
+                in {
+                    "fundbox",
+                    "fundbox:contacts",
+                    "fundbox:sales",
+                    "bitrix_chat",
+                    "whatsapp_chat",
+                    "eko_phppos",
+                    "eko_phppos:sales",
+                    "speedzone_phppos",
+                    "speedzone_phppos:sales",
+                }
+            ):
                 broker_url = getattr(settings, "celery_broker_url", None)
-                legacy = (
-                    Redis.from_url(broker_url)
-                    if isinstance(broker_url, str)
-                    else None
-                )
+                legacy = Redis.from_url(broker_url) if isinstance(broker_url, str) else None
                 checkpoint_store = Neo4jCheckpointRedis(
                     client,
                     source_key,

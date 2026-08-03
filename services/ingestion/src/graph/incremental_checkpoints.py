@@ -5,6 +5,7 @@ connectors.  Successful watermarks are staged and flushed by the same Neo4j
 transaction that completes the IngestRun; resumable page/retry state is written
 immediately so a worker loss can resume safely.
 """
+
 from __future__ import annotations
 
 import logging
@@ -168,9 +169,7 @@ class Neo4jCheckpointRedis:
     @staticmethod
     def _defer_set(key: str) -> bool:
         return (
-            ":watermark:" in key
-            or key.endswith(":watermark")
-            or ":fundbox_api:source_ids:" in key
+            ":watermark:" in key or key.endswith(":watermark") or ":fundbox_api:source_ids:" in key
         )
 
     @staticmethod
