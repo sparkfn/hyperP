@@ -802,3 +802,93 @@ def test_client_treats_zero_contact_and_lead_ids_as_unset() -> None:
     assert deal.contacts == ()
     assert deal.contact_count == 0
     assert methods == ["crm.deal.get", "crm.deal.contact.items.get"]
+
+
+def test_client_lists_crm_deals_independently_of_openlines_activities() -> None:
+    requests: list[tuple[str, dict[str, object]]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        method = request.url.path.rsplit("/", 1)[-1]
+        body = json.loads(request.content)
+        requests.append((method, body))
+        if method == "crm.deal.list":
+            start = body["start"]
+            if start == 0:
+                return httpx.Response(
+                    200,
+                    json={"result": [{"ID": "501", "TITLE": "Deal 501"}], "next": 1},
+                )
+            assert start == 1
+            return httpx.Response(
+                200,
+                json={
+                    "result": [
+                        {"ID": "501", "TITLE": "Duplicate Deal 501"},
+                        {"ID": "502", "TITLE": "Deal 502"},
+                    ]
+                },
+            )
+        assert method == "crm.deal.contact.items.get"
+        return httpx.Response(200, json={"result": []})
+
+    client = BitrixOpenLinesClient(
+        base_url="https://bitrix.test/rest/hook",
+        timeout_seconds=5,
+        max_attempts=1,
+        http=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+
+    deals = list(client.iter_crm_deals())
+
+    assert [deal.id for deal in deals] == ["501", "502"]
+    assert [deal.title for deal in deals] == ["Deal 501", "Deal 502"]
+    assert (
+        "crm.deal.list",
+        {"order": {"ID": "ASC"}, "start": 0},
+    ) in requests
+    assert (
+        "crm.deal.list",
+        {"order": {"ID": "ASC"}, "start": 1},
+    ) in requests
+    assert all(method != "crm.deal.get" for method, _body in requests)
+    assert [body["id"] for method, body in requests if method == "crm.deal.contact.items.get"] == [
+        501,
+        502,
+    ]
+
+
+def test_client_scans_all_deal_activities_without_per_deal_requests() -> None:
+    requests: list[tuple[str, dict[str, object]]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        method = request.url.path.rsplit("/", 1)[-1]
+        body = json.loads(request.content)
+        requests.append((method, body))
+        assert method == "crm.activity.list"
+        if body["start"] == 0:
+            return httpx.Response(
+                200,
+                json={
+                    "result": [{"ID": "900", "OWNER_TYPE_ID": "2", "OWNER_ID": "501"}],
+                    "next": 1,
+                },
+            )
+        return httpx.Response(
+            200,
+            json={"result": [{"ID": "901", "OWNER_TYPE_ID": "2", "OWNER_ID": "502"}]},
+        )
+
+    client = BitrixOpenLinesClient(
+        base_url="https://bitrix.test/rest/hook",
+        timeout_seconds=5,
+        max_attempts=1,
+        http=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+
+    activities = list(client.iter_crm_activities())
+
+    assert [activity.id for activity in activities] == ["900", "901"]
+    assert [body["filter"] for _method, body in requests] == [
+        {"OWNER_TYPE_ID": 2},
+        {"OWNER_TYPE_ID": 2},
+    ]

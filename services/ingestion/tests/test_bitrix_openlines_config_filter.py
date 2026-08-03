@@ -137,7 +137,7 @@ def test_backfill_with_no_selected_config_makes_no_dialog_lookups(
     assert client.dialog_calls == []
     assert client.message_calls == []
     assert connector._counters.dialogs_requested == 0
-    assert connector._counters.chats_skipped_by_config == 1
+    assert connector._counters.chats_skipped_by_config == 0
     assert connector._counters.records_emitted == 0
 
 

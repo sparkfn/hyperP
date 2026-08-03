@@ -29,6 +29,7 @@ from src.connectors.bitrix_openlines.models import (
     OpenLineMessage,
     merge_chat_references,
 )
+from src.connectors.bitrix_openlines.response_helpers import provider_chat_id
 from src.connectors.bitrix_openlines.selection import (
     classify_channel,
     mapped_entity,
@@ -65,8 +66,8 @@ class OpenLinesClient(Protocol):
 class CrmDetailsClient(Protocol):
     """Read-only CRM detail methods used only by API incremental ingestion."""
 
-    def get_deal(self, deal_id: int) -> CrmDeal: ...
-    def list_deal_activities(self, deal_id: int) -> list[CrmActivity]: ...
+    def iter_crm_deals(self) -> Iterable[CrmDeal]: ...
+    def iter_crm_activities(self) -> Iterable[CrmActivity]: ...
 
 
 @runtime_checkable
@@ -85,13 +86,14 @@ class _PreparedChat:
     reference: ChatReference
     bundle: _ChatBundle
     extra_raw_payload: dict[str, JsonValue]
-    crm_deal: CrmDeal | None
-    crm_activities: tuple[CrmActivity, ...]
     conversation_is_fresh: bool
 
 
 @dataclass
 class DiscoveryCounters:
+    crm_deals_scanned: int = 0
+    crm_activities_scanned: int = 0
+    crm_activities_skipped_missing_deal: int = 0
     chats_scanned: int = 0
     dialogs_requested: int = 0
     chats_skipped_by_config: int = 0
@@ -149,6 +151,9 @@ class BitrixOpenLinesConnector(SourceConnector):
             self._log_counters()
 
     def _fetch_records_inner(self) -> Iterator[dict[str, JsonValue]]:
+        yield from self._fetch_crm_records()
+        if self._no_config_selectable:
+            return
         line_names = {item.id: item.line_name for item in self._client.list_active_configs()}
         committed_watermark = (
             self._watermark.get(overlap_seconds=0)
@@ -178,11 +183,42 @@ class BitrixOpenLinesConnector(SourceConnector):
             since,
         )
 
+    def _fetch_crm_records(self) -> Iterator[dict[str, JsonValue]]:
+        """Emit CRM records without depending on Open Lines chat selection."""
+        if not self._crm_enrichment_enabled():
+            return
+        client = cast(CrmDetailsClient, self._client)
+        deal_ids: set[str] = set()
+        try:
+            for deal in client.iter_crm_deals():
+                self._counters.crm_deals_scanned += 1
+                deal_source_record_id = f"bitrix-crm-deal-{deal.id}"
+                if deal_source_record_id in self._emitted_crm_deal_ids:
+                    continue
+                deal_ids.add(deal.id)
+                self._emitted_crm_deal_ids.add(deal_source_record_id)
+                yield _deal_envelope(deal, None)
+                self._counters.records_emitted += 1
+            for activity in client.iter_crm_activities():
+                self._counters.crm_activities_scanned += 1
+                if activity.owner_id not in deal_ids:
+                    self._counters.crm_activities_skipped_missing_deal += 1
+                    continue
+                yield from self._crm_activity_envelopes(activity)
+        except Exception:  # noqa: BLE001 -- force an idempotent replay on the next run
+            self._pending_watermark = None
+            raise RuntimeError("Bitrix CRM detail retrieval failed") from None
+
     def _log_counters(self) -> None:
         logger.info(
-            "Bitrix Open Lines discovery summary mode=%s chats_scanned=%d "
+            "Bitrix Open Lines discovery summary mode=%s crm_deals_scanned=%d "
+            "crm_activities_scanned=%d crm_activities_skipped_missing_deal=%d "
+            "chats_scanned=%d "
             "dialogs_requested=%d chats_skipped_by_config=%d records_emitted=%d",
             self._mode,
+            self._counters.crm_deals_scanned,
+            self._counters.crm_activities_scanned,
+            self._counters.crm_activities_skipped_missing_deal,
             self._counters.chats_scanned,
             self._counters.dialogs_requested,
             self._counters.chats_skipped_by_config,
@@ -245,7 +281,6 @@ class BitrixOpenLinesConnector(SourceConnector):
             prepared = self._prepare_chat(reference, line_names, since)
             if prepared is None:
                 continue
-            yield from self._crm_envelopes(prepared)
             if not prepared.conversation_is_fresh:
                 continue
             prepared_chars = len(prepared.bundle.conv_text)
@@ -311,7 +346,6 @@ class BitrixOpenLinesConnector(SourceConnector):
             deal=None,
             agents=_agent_members(messages),
         )
-        crm_deal, crm_activities = self._crm_details(reference)
         return _PreparedChat(
             reference=reference,
             bundle=bundle,
@@ -322,8 +356,6 @@ class BitrixOpenLinesConnector(SourceConnector):
                 channel_type,
                 messages,
             ),
-            crm_deal=crm_deal,
-            crm_activities=crm_activities,
             conversation_is_fresh=conversation_is_fresh,
         )
 
@@ -339,7 +371,6 @@ class BitrixOpenLinesConnector(SourceConnector):
                 raise RuntimeError(
                     f"Bitrix Open Lines extraction failed for chat {prepared.reference.chat_id}"
                 )
-            conversation_parent = _conversation_parent(prepared)
             for record in self._builder._build_envelopes(
                 bundle=prepared.bundle,
                 extraction=extraction,
@@ -351,20 +382,7 @@ class BitrixOpenLinesConnector(SourceConnector):
                 platform="bitrix_openlines",
                 extra_raw_payload=prepared.extra_raw_payload,
             ):
-                if conversation_parent is not None:
-                    record["parent_ref"] = conversation_parent
-                    raw_payload = record.get("raw_payload")
-                    parent_id = conversation_parent.get("parent_source_record_id")
-                    if isinstance(raw_payload, dict) and isinstance(parent_id, str):
-                        raw_payload["crm_activity_id"] = parent_id.removeprefix(
-                            "bitrix-crm-history-"
-                        )
-                        record["record_hash"] = _hash_payload(
-                            {
-                                "raw_payload": raw_payload,
-                                "parent_ref": conversation_parent,
-                            }
-                        )
+                _add_crm_activity_references(record, prepared.reference.activity_ids)
                 self._counters.records_emitted += 1
                 yield record
             prepared_last_message_at = prepared.bundle.last_message_at
@@ -376,48 +394,22 @@ class BitrixOpenLinesConnector(SourceConnector):
             self._mode == "api" and self._incremental and isinstance(self._client, CrmDetailsClient)
         )
 
-    def _crm_details(
+    def _crm_activity_envelopes(
         self,
-        reference: ChatReference,
-    ) -> tuple[CrmDeal | None, tuple[CrmActivity, ...]]:
-        if not self._crm_enrichment_enabled():
-            return None, ()
-        deal_ids = sorted(
-            {item.owner_id for item in reference.crm_owner_references if item.owner_type == "deal"}
-        )
-        if len(deal_ids) != 1:
-            return None, ()
-        client = cast(CrmDetailsClient, self._client)
-        try:
-            deal = client.get_deal(deal_ids[0])
-            return deal, tuple(client.list_deal_activities(deal_ids[0]))
-        except Exception:  # noqa: BLE001 -- retain no partial CRM hierarchy
-            self._pending_watermark = None
-            raise RuntimeError(
-                f"Bitrix CRM detail retrieval failed for deal {deal_ids[0]}"
-            ) from None
-
-    def _crm_envelopes(self, prepared: _PreparedChat) -> Iterator[dict[str, JsonValue]]:
-        deal = prepared.crm_deal
-        if deal is None:
-            return
-        deal_source_record_id = f"bitrix-crm-deal-{deal.id}"
-        if deal_source_record_id not in self._emitted_crm_deal_ids:
-            self._emitted_crm_deal_ids.add(deal_source_record_id)
-            yield _deal_envelope(deal, prepared.bundle.entity)
+        activity: CrmActivity,
+    ) -> Iterator[dict[str, JsonValue]]:
+        deal_source_record_id = f"bitrix-crm-deal-{activity.owner_id}"
+        history_source_record_id = f"bitrix-crm-history-{activity.id}"
+        if history_source_record_id not in self._emitted_crm_history_ids:
+            self._emitted_crm_history_ids.add(history_source_record_id)
+            yield _history_envelope(activity, deal_source_record_id, None)
             self._counters.records_emitted += 1
-        for activity in prepared.crm_activities:
-            history_source_record_id = f"bitrix-crm-history-{activity.id}"
-            if history_source_record_id not in self._emitted_crm_history_ids:
-                self._emitted_crm_history_ids.add(history_source_record_id)
-                yield _history_envelope(activity, deal_source_record_id, prepared.bundle.entity)
+        if activity.is_call:
+            call_source_record_id = f"bitrix-call-{activity.id}"
+            if call_source_record_id not in self._emitted_call_ids:
+                self._emitted_call_ids.add(call_source_record_id)
+                yield _call_envelope(activity, history_source_record_id, None)
                 self._counters.records_emitted += 1
-            if activity.is_call:
-                call_source_record_id = f"bitrix-call-{activity.id}"
-                if call_source_record_id not in self._emitted_call_ids:
-                    self._emitted_call_ids.add(call_source_record_id)
-                    yield _call_envelope(activity, history_source_record_id, prepared.bundle.entity)
-                    self._counters.records_emitted += 1
 
     def _messages_for(self, reference: ChatReference) -> list[OpenLineMessage]:
         resource = "message"
@@ -555,22 +547,24 @@ def _retrieval_error(reference: ChatReference, resource: str) -> RuntimeError:
     )
 
 
-def _conversation_parent(prepared: _PreparedChat) -> dict[str, JsonValue] | None:
-    deal = prepared.crm_deal
-    activity_ids = prepared.reference.activity_ids
-    if deal is None or len(activity_ids) != 1:
-        return None
-    activity_id = activity_ids[0]
-    if not any(item.id == activity_id for item in prepared.crm_activities):
-        return None
-    return {
-        "parent_source_system": "bitrix_chat",
-        "parent_source_record_id": f"bitrix-crm-history-{activity_id}",
-        "parent_record_type": "crm_history",
-    }
+def _add_crm_activity_references(
+    record: dict[str, JsonValue],
+    activity_ids: tuple[str, ...],
+) -> None:
+    """Preserve every CRM activity associated with an extracted conversation."""
+    if not activity_ids:
+        return
+    raw_payload = record.get("raw_payload")
+    if not isinstance(raw_payload, dict):
+        return
+    raw_payload["crm_activity_ids"] = list(activity_ids)
+    from src.connectors.fundbox.builders import compute_hash
+
+    hash_payload = {key: value for key, value in record.items() if key != "record_hash"}
+    record["record_hash"] = compute_hash(hash_payload)
 
 
-def _deal_envelope(deal: CrmDeal, entity_key: str) -> dict[str, JsonValue]:
+def _deal_envelope(deal: CrmDeal, entity_key: str | None) -> dict[str, JsonValue]:
     contact = deal.primary_contact
     identifiers: list[JsonValue] = []
     attributes: dict[str, JsonValue] = {}
@@ -640,7 +634,7 @@ def _contact_identifier_group(contact: CrmContact) -> list[JsonValue]:
 def _history_envelope(
     activity: CrmActivity,
     deal_source_record_id: str,
-    entity_key: str,
+    entity_key: str | None,
 ) -> dict[str, JsonValue]:
     raw_payload = _activity_payload(activity)
     return {
@@ -662,7 +656,7 @@ def _history_envelope(
 def _call_envelope(
     activity: CrmActivity,
     history_source_record_id: str,
-    entity_key: str,
+    entity_key: str | None,
 ) -> dict[str, JsonValue]:
     raw_payload = _activity_payload(activity)
     raw_payload["crm_activity_id"] = activity.id
@@ -685,6 +679,7 @@ def _call_envelope(
 def _activity_payload(activity: CrmActivity) -> dict[str, JsonValue]:
     return {
         "crm_activity_id": activity.id,
+        "bitrix_chat_id_numeric": provider_chat_id(activity.raw_payload.get("PROVIDER_PARAMS")),
         "history_kind": activity.history_kind,
         "subject": activity.subject,
         "owner_type": activity.owner_type,

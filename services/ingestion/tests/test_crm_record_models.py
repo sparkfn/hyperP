@@ -7,6 +7,8 @@ from src.graph.queries.crm_history import (
     ACTIVATE_PENDING_CALLS_FOR_DEAL,
     CREATE_CALL_FROM_HISTORY,
     CREATE_CRM_HISTORY,
+    LINK_CONVERSATION_TO_CRM_HISTORY,
+    LINK_CRM_HISTORY_TO_EXISTING_CONVERSATIONS,
 )
 from src.models import RecordType, SourceRecordEnvelope
 from src.pipeline import _is_match_only_record
@@ -66,7 +68,20 @@ def test_accepted_deal_rehomes_pending_calls_across_logical_deal_versions() -> N
 
 def test_late_call_uses_current_logical_deal_for_person_context() -> None:
     assert "origin_deal.source_record_id" in CREATE_CALL_FROM_HISTORY
-    assert "deal.lifecycle_status IN ['active', 'pending_review']" in (
-        CREATE_CALL_FROM_HISTORY
-    )
+    assert "deal.lifecycle_status IN ['active', 'pending_review']" in (CREATE_CALL_FROM_HISTORY)
     assert "WHEN 'active' THEN 0" in CREATE_CALL_FROM_HISTORY
+
+
+def test_crm_history_can_link_to_one_conversation_for_each_activity() -> None:
+    assert "UNWIND $crm_activity_ids AS crm_activity_id" in LINK_CONVERSATION_TO_CRM_HISTORY
+    assert "MERGE (history)-[:LINKED_TO" in LINK_CONVERSATION_TO_CRM_HISTORY
+    assert "MERGE (conversation)-[:CHILD_OF]" not in LINK_CONVERSATION_TO_CRM_HISTORY
+
+
+def test_history_links_to_existing_current_bitrix_chat_conversations() -> None:
+    assert "is_latest: true" in LINK_CRM_HISTORY_TO_EXISTING_CONVERSATIONS
+    assert "bitrix-openlines-chat-" in LINK_CRM_HISTORY_TO_EXISTING_CONVERSATIONS
+    assert "MERGE (history)-[:LINKED_TO]->(conversation)" in (
+        LINK_CRM_HISTORY_TO_EXISTING_CONVERSATIONS
+    )
+    assert "link_method: 'crm_activity_id'" in LINK_CRM_HISTORY_TO_EXISTING_CONVERSATIONS
