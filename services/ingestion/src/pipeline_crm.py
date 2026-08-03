@@ -146,23 +146,55 @@ def link_conversation_to_crm_history(
     envelope: SourceRecordEnvelope,
     source_record_pk: str,
 ) -> bool:
-    """Link a persisted Open Lines conversation to an exact CRM activity ID."""
-    if envelope.parent_ref is None:
+    """Link a persisted Open Lines conversation to all matching CRM activities."""
+    raw_activity_ids = envelope.raw_payload.get("crm_activity_ids")
+    if not isinstance(raw_activity_ids, list):
         return False
-    parent_ref = envelope.parent_ref
-    crm_activity_id = envelope.raw_payload.get("crm_activity_id")
-    if not isinstance(crm_activity_id, str) or not crm_activity_id:
+    activity_ids = list(
+        dict.fromkeys(
+            activity_id
+            for activity_id in raw_activity_ids
+            if isinstance(activity_id, str) and activity_id
+        )
+    )
+    if not activity_ids:
         return False
 
     def _work(tx: ManagedTransaction) -> bool:
         row = tx.run(
             queries.LINK_CONVERSATION_TO_CRM_HISTORY,
             conversation_source_record_pk=source_record_pk,
-            parent_source_system=parent_ref.parent_source_system,
-            parent_source_record_id=parent_ref.parent_source_record_id,
-            crm_activity_id=crm_activity_id,
+            source_system=envelope.source_system,
+            crm_activity_ids=activity_ids,
         ).single()
-        return row is not None
+        return row is not None and int(row["linked_history_count"]) > 0
+
+    with client.session() as session:
+        return session.execute_write(_work)
+
+
+def link_crm_history_to_existing_conversations(
+    client: Neo4jClient,
+    envelope: SourceRecordEnvelope,
+    history_source_record_pk: str,
+) -> bool:
+    """Link a CRM activity to every current conversation for its Bitrix chat."""
+    chat_id = envelope.raw_payload.get("bitrix_chat_id_numeric")
+    activity_id = envelope.raw_payload.get("crm_activity_id")
+    if not isinstance(chat_id, int) or isinstance(chat_id, bool):
+        return False
+    if not isinstance(activity_id, str) or not activity_id:
+        return False
+
+    def _work(tx: ManagedTransaction) -> bool:
+        row = tx.run(
+            queries.LINK_CRM_HISTORY_TO_EXISTING_CONVERSATIONS,
+            history_source_record_pk=history_source_record_pk,
+            source_system=envelope.source_system,
+            bitrix_chat_id=chat_id,
+            crm_activity_id=activity_id,
+        ).single()
+        return row is not None and int(row["linked_conversation_count"]) > 0
 
     with client.session() as session:
         return session.execute_write(_work)

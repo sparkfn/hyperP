@@ -86,6 +86,7 @@ from src.pipeline_crm import (
     ingest_call_record,
     ingest_crm_history_record,
     link_conversation_to_crm_history,
+    link_crm_history_to_existing_conversations,
 )
 from src.pipeline_sales import (
     drain_pending_customer_sales,
@@ -546,7 +547,10 @@ def _process_record(
 ) -> IngestResult:
     """Route a single envelope to the correct ingestion pipeline."""
     if envelope.record_type == RecordType.CRM_HISTORY:
-        return ingest_crm_history_record(client, envelope, ingest_run_id=ingest_run_id)
+        result = ingest_crm_history_record(client, envelope, ingest_run_id=ingest_run_id)
+        if result.source_record_pk is not None and not result.dropped:
+            link_crm_history_to_existing_conversations(client, envelope, result.source_record_pk)
+        return result
     if envelope.record_type == RecordType.CALL:
         return ingest_call_record(client, envelope, ingest_run_id=ingest_run_id)
     if envelope.record_type == RecordType.SALES:
@@ -558,13 +562,6 @@ def _process_record(
         )
     if _is_address_only_source(envelope.source_system):
         return ingest_address_record(client, envelope, ingest_run_id=ingest_run_id)
-    if envelope.record_type == RecordType.CONVERSATION and envelope.parent_ref is not None:
-        if not _crm_history_parent_exists(client, envelope):
-            return IngestResult(
-                source_record_id=envelope.source_record_id,
-                ingest_run_id=ingest_run_id,
-                dropped=True,
-            )
     result = pipeline.ingest(
         envelope,
         ingest_run_id=ingest_run_id,
@@ -572,33 +569,25 @@ def _process_record(
     )
     if (
         envelope.record_type == RecordType.CONVERSATION
-        and envelope.parent_ref is not None
         and result.source_record_pk is not None
         and not result.dropped
+        and _has_crm_activity_references(envelope)
     ):
         linked = link_conversation_to_crm_history(client, envelope, result.source_record_pk)
         if not linked:
             logger.warning(
-                "Conversation %s was persisted without its CRM history parent",
+                "Conversation %s was persisted without a matching CRM history item",
                 envelope.source_record_id,
             )
     return result
 
 
-def _crm_history_parent_exists(client: Neo4jClient, envelope: SourceRecordEnvelope) -> bool:
-    """Require a linked Open Lines conversation's immutable history parent."""
-    assert envelope.parent_ref is not None
-    parent_ref = envelope.parent_ref
-
-    def _read(tx: ManagedTransaction) -> bool:
-        row = tx.run(
-            queries.FIND_ANY_SOURCE_RECORD,
-            source_system=parent_ref.parent_source_system,
-            source_record_id=parent_ref.parent_source_record_id,
-        ).single()
-        return row is not None
-
-    return client.execute_read(_read)
+def _has_crm_activity_references(envelope: SourceRecordEnvelope) -> bool:
+    """Return whether a conversation carries one or more CRM activity IDs."""
+    activity_ids = envelope.raw_payload.get("crm_activity_ids")
+    return isinstance(activity_ids, list) and any(
+        isinstance(activity_id, str) and activity_id for activity_id in activity_ids
+    )
 
 
 def _record_is_excluded(envelope: SourceRecordEnvelope, context: ExclusionContext) -> bool:

@@ -344,9 +344,43 @@ class BitrixOpenLinesClient:
             key=lambda item: (item.date, item.id),
         )
 
+    def iter_crm_deals(self) -> Iterator[CrmDeal]:
+        """Yield every CRM deal independently of Open Lines activity discovery."""
+        start = 0
+        seen_deal_ids: set[str] = set()
+        while True:
+            payload = self._request(
+                "crm.deal.list",
+                {
+                    "order": {"ID": "ASC"},
+                    "start": start,
+                },
+            )
+            result = payload.get("result")
+            if not isinstance(result, list):
+                raise RuntimeError("Bitrix CRM deal list returned an invalid result")
+            for item in result:
+                if not isinstance(item, dict):
+                    raise RuntimeError("Bitrix CRM deal list contained an invalid item")
+                deal_id = _positive_id_string(item.get("ID"))
+                if deal_id is None or not deal_id.isdigit():
+                    raise RuntimeError("Bitrix CRM deal list omitted a valid ID")
+                if deal_id in seen_deal_ids:
+                    continue
+                seen_deal_ids.add(deal_id)
+                yield self._deal_from_payload(int(deal_id), item)
+            next_page = next_start(payload, start)
+            if next_page is None:
+                return
+            start = next_page
+
     def get_deal(self, deal_id: int) -> CrmDeal:
         """Fetch a deal and the primary contact/lead identity evidence."""
         result = self._call("crm.deal.get", {"id": deal_id})
+        return self._deal_from_payload(deal_id, result)
+
+    def _deal_from_payload(self, deal_id: int, result: JsonValue) -> CrmDeal:
+        """Convert a deal-list or deal-get response into the shared CRM model."""
         if not isinstance(result, dict):
             raise RuntimeError("Bitrix deal returned an invalid result")
         raw = result
@@ -418,13 +452,32 @@ class BitrixOpenLinesClient:
 
     def list_deal_activities(self, deal_id: int) -> list[CrmActivity]:
         """Return all current activities for a deal; callers make them immutable."""
-        activities: list[CrmActivity] = []
+        return list(
+            self._iter_crm_activities(
+                {"OWNER_TYPE_ID": 2, "OWNER_ID": deal_id},
+                invalid_result_message="Bitrix deal activities returned an invalid result",
+            )
+        )
+
+    def iter_crm_activities(self) -> Iterator[CrmActivity]:
+        """Yield all deal-owned CRM activities in one paginated discovery scan."""
+        yield from self._iter_crm_activities(
+            {"OWNER_TYPE_ID": 2},
+            invalid_result_message="Bitrix CRM activities returned an invalid result",
+        )
+
+    def _iter_crm_activities(
+        self,
+        filters: dict[str, JsonValue],
+        *,
+        invalid_result_message: str,
+    ) -> Iterator[CrmActivity]:
         start = 0
         while True:
             payload = self._request(
                 "crm.activity.list",
                 {
-                    "filter": {"OWNER_TYPE_ID": 2, "OWNER_ID": deal_id},
+                    "filter": filters,
                     "select": [
                         "ID",
                         "OWNER_TYPE_ID",
@@ -450,15 +503,15 @@ class BitrixOpenLinesClient:
             )
             result = payload.get("result")
             if not isinstance(result, list):
-                raise RuntimeError("Bitrix deal activities returned an invalid result")
+                raise RuntimeError(invalid_result_message)
             for item in result:
                 if isinstance(item, dict):
                     activity = _crm_activity(item)
                     if activity is not None:
-                        activities.append(activity)
+                        yield activity
             next_page = next_start(payload, start)
             if next_page is None:
-                return activities
+                return
             start = next_page
 
     def _get_message_collection(

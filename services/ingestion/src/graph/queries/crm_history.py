@@ -118,17 +118,33 @@ LIMIT 1
 
 LINK_CONVERSATION_TO_CRM_HISTORY = """
 MATCH (conversation:SourceRecord {source_record_pk: $conversation_source_record_pk})
+UNWIND $crm_activity_ids AS crm_activity_id
 MATCH (history:SourceRecord {
-    source_record_id: $parent_source_record_id,
+    source_record_id: 'bitrix-crm-history-' + crm_activity_id,
     record_type: 'crm_history'
-})-[:FROM_SOURCE]->(:SourceSystem {source_key: $parent_source_system})
-MERGE (conversation)-[:CHILD_OF]->(history)
+})-[:FROM_SOURCE]->(:SourceSystem {source_key: $source_system})
+MERGE (history)-[:LINKED_TO]->(conversation)
+MERGE (conversation)-[:REPRESENTS_HISTORY_ITEM {
+    crm_activity_id: crm_activity_id,
+    link_method: 'crm_activity_id'
+}]->(history)
+RETURN count(history) AS linked_history_count
+"""
+
+LINK_CRM_HISTORY_TO_EXISTING_CONVERSATIONS = """
+MATCH (history:SourceRecord {source_record_pk: $history_source_record_pk})
+MATCH (conversation:SourceRecord {
+    record_type: 'conversation',
+    is_latest: true
+})-[:FROM_SOURCE]->(:SourceSystem {source_key: $source_system})
+WHERE conversation.source_record_id STARTS WITH
+      'bitrix-openlines-chat-' + toString($bitrix_chat_id) + '-'
+MERGE (history)-[:LINKED_TO]->(conversation)
 MERGE (conversation)-[:REPRESENTS_HISTORY_ITEM {
     crm_activity_id: $crm_activity_id,
     link_method: 'crm_activity_id'
 }]->(history)
-RETURN history.source_record_pk AS history_source_record_pk
-LIMIT 1
+RETURN count(conversation) AS linked_conversation_count
 """
 
 ACTIVATE_PENDING_CALLS_FOR_DEAL = """

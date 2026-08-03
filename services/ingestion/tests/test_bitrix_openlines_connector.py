@@ -728,12 +728,15 @@ def test_connector_attributes_inaccessible_recent_messages_without_upstream_text
     assert watermark.committed is None
 
 
-def test_incremental_api_emits_deal_history_call_and_exact_chat_parent(
+def test_incremental_api_emits_deal_history_call_and_chat_activity_references(
     monkeypatch: MonkeyPatch,
 ) -> None:
     from src.connectors.bitrix_openlines.models import CrmActivity, CrmContact, CrmDeal
 
     class CrmStubClient(StubClient):
+        def iter_crm_deals(self) -> Iterator[CrmDeal]:
+            yield self.get_deal(501)
+
         def get_deal(self, deal_id: int) -> CrmDeal:
             assert deal_id == 501
             return CrmDeal(
@@ -759,8 +762,7 @@ def test_incremental_api_emits_deal_history_call_and_exact_chat_parent(
                 raw_payload={"ID": "501"},
             )
 
-        def list_deal_activities(self, deal_id: int) -> list[CrmActivity]:
-            assert deal_id == 501
+        def iter_crm_activities(self) -> list[CrmActivity]:
             return [
                 CrmActivity(
                     id="900",
@@ -775,7 +777,7 @@ def test_incremental_api_emits_deal_history_call_and_exact_chat_parent(
                     direction=None,
                     outcome=None,
                     is_call=False,
-                    raw_payload={"ID": "900"},
+                    raw_payload={"ID": "900", "PROVIDER_PARAMS": {"CHAT_ID": "77"}},
                 ),
                 CrmActivity(
                     id="901",
@@ -824,23 +826,21 @@ def test_incremental_api_emits_deal_history_call_and_exact_chat_parent(
         "conversation",
     ]
     assert records[2]["raw_payload"]["crm_activity_id"] == "901"
+    assert records[1]["raw_payload"]["bitrix_chat_id_numeric"] == 77
     assert records[3]["raw_payload"]["duration_seconds"] == 300
-    assert records[4]["parent_ref"] == {
-        "parent_source_system": "bitrix_chat",
-        "parent_source_record_id": "bitrix-crm-history-900",
-        "parent_record_type": "crm_history",
-    }
+    assert "parent_ref" not in records[4]
+    assert records[4]["raw_payload"]["crm_activity_ids"] == ["900"]
 
 
 def test_non_incremental_api_does_not_request_crm_enrichment(
     monkeypatch: MonkeyPatch,
 ) -> None:
     class EnrichmentForbiddenClient(StubClient):
-        def get_deal(self, deal_id: int) -> object:
-            raise AssertionError(f"unexpected deal enrichment for {deal_id}")
+        def iter_crm_deals(self) -> list[object]:
+            raise AssertionError("unexpected CRM deal discovery")
 
-        def list_deal_activities(self, deal_id: int) -> list[object]:
-            raise AssertionError(f"unexpected activity enrichment for {deal_id}")
+        def iter_crm_activities(self) -> list[object]:
+            raise AssertionError("unexpected CRM activity discovery")
 
     monkeypatch.setattr(
         "src.connectors.bitrix_openlines.connector.run_extraction_batch",
@@ -866,6 +866,9 @@ def test_stale_chat_still_emits_new_crm_history_without_running_chat_extraction(
     from src.connectors.bitrix_openlines.models import CrmActivity, CrmDeal
 
     class StaleCrmClient(StubClient):
+        def iter_crm_deals(self) -> Iterator[CrmDeal]:
+            yield self.get_deal(501)
+
         def get_deal(self, deal_id: int) -> CrmDeal:
             assert deal_id == 501
             return CrmDeal(
@@ -881,8 +884,7 @@ def test_stale_chat_still_emits_new_crm_history_without_running_chat_extraction(
                 raw_payload={"ID": "501"},
             )
 
-        def list_deal_activities(self, deal_id: int) -> list[CrmActivity]:
-            assert deal_id == 501
+        def iter_crm_activities(self) -> list[CrmActivity]:
             return [
                 CrmActivity(
                     id="902",
@@ -928,3 +930,159 @@ def test_stale_chat_still_emits_new_crm_history_without_running_chat_extraction(
     assert records[0]["identifiers"] == []
     assert records[1]["source_record_id"] == "bitrix-crm-history-902"
     assert records[2]["source_record_id"] == "bitrix-call-902"
+
+
+def test_incremental_crm_emits_when_every_openlines_channel_is_excluded() -> None:
+    from src.connectors.bitrix_openlines.models import CrmActivity, CrmDeal
+
+    class IndependentCrmClient(StubClient):
+        def list_active_configs(self) -> list[OpenLineConfig]:
+            raise AssertionError("chat configuration must not load when none can be selected")
+
+        def iter_crm_chat_ref_pages(self) -> Iterator[list[ChatReference]]:
+            raise AssertionError("chat discovery must not run when none can be selected")
+
+        def iter_crm_deals(self) -> Iterator[CrmDeal]:
+            yield CrmDeal(
+                id="701",
+                title="Deal without a selected chat",
+                category_id=None,
+                stage_id="NEW",
+                observed_at=datetime(2026, 7, 20, 8, tzinfo=UTC),
+                primary_contact=None,
+                contacts=(),
+                contact_count=0,
+                has_ambiguous_contacts=False,
+                raw_payload={"ID": "701"},
+            )
+
+        def iter_crm_activities(self) -> list[CrmActivity]:
+            return [
+                CrmActivity(
+                    id="990",
+                    owner_type="2",
+                    owner_id="701",
+                    history_kind="call",
+                    subject="Independent call",
+                    observed_at=datetime(2026, 7, 20, 9, tzinfo=UTC),
+                    start_at=None,
+                    end_at=None,
+                    duration_seconds=None,
+                    direction=None,
+                    outcome=None,
+                    is_call=True,
+                    raw_payload={"ID": "990", "TYPE_ID": "2"},
+                )
+            ]
+
+    connector = BitrixOpenLinesConnector(
+        IndependentCrmClient(),
+        StubWatermark(),
+        BitrixOpenLinesConfig(
+            included_channel_types=[],
+            entity_by_config_id={"46": "speedzone"},
+        ),
+        mode="api",
+        incremental=True,
+    )
+
+    records = list(connector.fetch_records())
+
+    assert [record["record_type"] for record in records] == [
+        "crm_deal",
+        "crm_history",
+        "call",
+    ]
+    assert records[0]["source_record_id"] == "bitrix-crm-deal-701"
+    assert records[0]["entity_key"] is None
+    assert records[1]["source_record_id"] == "bitrix-crm-history-990"
+    assert records[1]["raw_payload"]["bitrix_chat_id_numeric"] is None
+    assert records[2]["source_record_id"] == "bitrix-call-990"
+    assert connector._counters.crm_deals_scanned == 1
+    assert connector._counters.crm_activities_scanned == 1
+    assert connector._counters.crm_activities_skipped_missing_deal == 0
+    assert connector._counters.chats_skipped_by_config == 0
+
+
+def test_conversation_preserves_multiple_crm_activity_links(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    class MultipleActivityClient(StubClient):
+        def iter_crm_chat_refs(self) -> list[ChatReference]:
+            return [
+                ChatReference(
+                    77,
+                    None,
+                    "crm_activity",
+                    activity_ids=("900", "901"),
+                )
+            ]
+
+    monkeypatch.setattr(
+        "src.connectors.bitrix_openlines.connector.run_extraction_batch",
+        lambda _texts: [
+            {
+                "persons": [{"name": "Ada", "phone": "+6591234567"}],
+                "transactions": [],
+                "summary": "Customer conversation.",
+                "confidence": 0.95,
+            }
+        ],
+    )
+    connector = BitrixOpenLinesConnector(
+        MultipleActivityClient(),
+        StubWatermark(),
+        BitrixOpenLinesConfig(entity_by_config_id={"46": "speedzone"}),
+        mode="api",
+    )
+
+    records = list(connector.fetch_records())
+
+    assert len(records) == 1
+    assert "parent_ref" not in records[0]
+    assert records[0]["raw_payload"]["crm_activity_ids"] == ["900", "901"]
+    from src.connectors.fundbox.builders import compute_hash
+
+    hash_payload = {key: value for key, value in records[0].items() if key != "record_hash"}
+    assert records[0]["record_hash"] == compute_hash(hash_payload)
+
+
+def test_duplicate_crm_deal_discovery_scans_activities_once() -> None:
+    from src.connectors.bitrix_openlines.models import CrmActivity, CrmDeal
+
+    class DuplicateDealClient(StubClient):
+        def __init__(self) -> None:
+            self.activity_scans = 0
+
+        def iter_crm_deals(self) -> Iterator[CrmDeal]:
+            deal = CrmDeal(
+                id="701",
+                title="Duplicate discovery",
+                category_id=None,
+                stage_id="NEW",
+                observed_at=datetime(2026, 7, 20, 8, tzinfo=UTC),
+                primary_contact=None,
+                contacts=(),
+                contact_count=0,
+                has_ambiguous_contacts=False,
+                raw_payload={"ID": "701"},
+            )
+            yield deal
+            yield deal
+
+        def iter_crm_activities(self) -> list[CrmActivity]:
+            self.activity_scans += 1
+            return []
+
+    client = DuplicateDealClient()
+    connector = BitrixOpenLinesConnector(
+        client,
+        StubWatermark(),
+        BitrixOpenLinesConfig(),
+        mode="api",
+    )
+
+    records = list(connector.fetch_records())
+
+    assert [record["source_record_id"] for record in records] == ["bitrix-crm-deal-701"]
+    assert client.activity_scans == 1
