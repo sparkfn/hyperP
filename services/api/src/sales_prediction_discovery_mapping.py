@@ -24,9 +24,7 @@ def aggregate_deals(rows: list[DiscoveryRow], as_of_at: str) -> list[DiscoveryRo
         )
         stage_id = _string(raw_stage_id)
         contact_count = _integer(raw_contact_count)
-        ambiguous = (
-            _boolean(raw_ambiguous) if payload is not None else None
-        )
+        ambiguous = _boolean(raw_ambiguous) if payload is not None else None
         key = (
             row.get("entity_key"),
             stage_id or "",
@@ -38,8 +36,7 @@ def aggregate_deals(rows: list[DiscoveryRow], as_of_at: str) -> list[DiscoveryRo
             row.get("observed_at") is None,
             raw_stage_id is None or (stage_id is not None and not stage_id.strip()),
             raw_stage_id is not None and stage_id is None,
-            raw_contact_count is not None
-            and (contact_count is None or contact_count < 0),
+            raw_contact_count is not None and (contact_count is None or contact_count < 0),
             raw_ambiguous is not None and ambiguous is None,
             payload is None,
         )

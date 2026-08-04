@@ -159,9 +159,7 @@ async def run_discovery(settings: DiscoverySettings) -> DiscoveryOutput:
         settings=settings,
         source_coverage=source_coverage,
         deal_coverage=aggregate_deals(private_deal_rows, settings.as_of_at),
-        interaction_coverage=aggregate_interactions(
-            private_interaction_rows, settings.as_of_at
-        ),
+        interaction_coverage=aggregate_interactions(private_interaction_rows, settings.as_of_at),
         order_coverage=aggregate_sales(private_sales_rows, settings.as_of_at),
         deal_order_linkage=deal_order_linkage,
         late_arrival=late_arrival,
