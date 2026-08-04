@@ -29,6 +29,7 @@ is sales. Built on Neo4j for native graph traversal.
 - [Bitrix Chat Open Lines API Ingestion Design](./docs/superpowers/specs/profile-unifier-bitrix-openlines-api-ingestion-design.md)
 - [Person Profile Analysis Design](./docs/superpowers/specs/profile-unifier-person-profile-analysis-design.md)
 - [Sales Prediction Approach and PRD](./docs/profile-unifier-sales-prediction-prd.md)
+- [Sales Prediction Feasibility Discovery](./docs/profile-unifier-sales-prediction-discovery.md)
 
 ## Recommended Reading Order
 
@@ -47,6 +48,7 @@ is sales. Built on Neo4j for native graph traversal.
 13. Scaffold Architecture
 14. Person Profile Analysis Design
 15. Sales Prediction Approach and PRD
+16. Sales Prediction Feasibility Discovery
 
 ## Current Scope
 
