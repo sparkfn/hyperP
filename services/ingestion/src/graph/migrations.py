@@ -11,7 +11,7 @@ from __future__ import annotations
 import logging
 import time
 import uuid
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass
 from typing import Literal, cast
 
@@ -672,11 +672,16 @@ def apply_data_migrations(
     client: Neo4jClient,
     *,
     bitrix_crm_category_entities: Mapping[str, str] | None = None,
+    included_bitrix_crm_category_ids: Collection[str] | None = None,
 ) -> None:
     """Run every idempotent data migration in order."""
     backfill_record_type_subtypes(client)
     migrate_bitrix_chat_source(client)
-    migrate_bitrix_crm_entities(client, bitrix_crm_category_entities or {})
+    migrate_bitrix_crm_entities(
+        client,
+        bitrix_crm_category_entities or {},
+        included_bitrix_crm_category_ids or (),
+    )
     migrate_fundbox_source_keys(client)
     migrate_source_record_lifecycle(client)
     migrate_projection_relationship_lifecycle(client)

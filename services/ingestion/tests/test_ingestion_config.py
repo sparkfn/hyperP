@@ -77,6 +77,7 @@ def test_bitrix_openlines_config_parses_channel_and_entity_overrides(tmp_path: P
                     "included_config_ids": [46],
                     "excluded_config_ids": [54],
                     "entity_by_config_id": {"46": "speedzone"},
+                    "included_crm_category_ids": [0, 2],
                     "entity_by_crm_category_id": {"0": "eko", "2": "speedzone"},
                     "incremental_overlap_seconds": 120,
                     "recent_page_size": 25,
@@ -90,6 +91,7 @@ def test_bitrix_openlines_config_parses_channel_and_entity_overrides(tmp_path: P
         included_config_ids=["46"],
         excluded_config_ids=["54"],
         entity_by_config_id={"46": "speedzone"},
+        included_crm_category_ids=["0", "2"],
         entity_by_crm_category_id={"0": "eko", "2": "speedzone"},
         incremental_overlap_seconds=120,
         recent_page_size=25,
@@ -120,6 +122,26 @@ def test_bitrix_openlines_config_rejects_invalid_crm_category_entity_mappings(
     )
 
     with pytest.raises(ValueError, match="Invalid ingestion config JSON"):
+        load_ingestion_config(str(path))
+
+
+def test_bitrix_openlines_config_requires_mappings_for_included_crm_categories(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "ingestion-config.json"
+    path.write_text(
+        json.dumps(
+            {
+                "bitrix_openlines": {
+                    "included_crm_category_ids": ["2"],
+                    "entity_by_crm_category_id": {"7": "fundbox"},
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="included CRM categories require entity mappings: 2"):
         load_ingestion_config(str(path))
 
 

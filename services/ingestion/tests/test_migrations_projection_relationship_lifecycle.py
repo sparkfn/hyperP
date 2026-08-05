@@ -161,7 +161,11 @@ def test_projection_migration_runs_after_source_record_lifecycle(
     calls: list[str] = []
     monkeypatch.setattr(migrations, "backfill_record_type_subtypes", lambda _client: 0)
     monkeypatch.setattr(migrations, "migrate_bitrix_chat_source", lambda _client: 0)
-    monkeypatch.setattr(migrations, "migrate_bitrix_crm_entities", lambda _client, _entities: 0)
+    monkeypatch.setattr(
+        migrations,
+        "migrate_bitrix_crm_entities",
+        lambda _client, _entities, _included_categories: 0,
+    )
     monkeypatch.setattr(migrations, "migrate_fundbox_source_keys", lambda _client: 0)
     monkeypatch.setattr(
         migrations,

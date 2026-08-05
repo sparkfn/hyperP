@@ -116,9 +116,11 @@ Extend the consolidated ingestion configuration with a typed
       "47": "eko",
       "79": "speedzone"
     },
+    "included_crm_category_ids": ["2", "7", "8"],
     "entity_by_crm_category_id": {
-      "0": "eko",
-      "2": "speedzone"
+      "2": "eko",
+      "7": "fundbox",
+      "8": "speedzone"
     },
     "incremental_overlap_seconds": 300,
     "recent_page_size": 50
@@ -129,10 +131,11 @@ Extend the consolidated ingestion configuration with a typed
 The example entity mappings are illustrative rather than production defaults.
 The committed example configuration should include only mappings verified for
 this repository's known entities. `entity_by_config_id` maps Open Lines
-configuration IDs, while `entity_by_crm_category_id` maps Bitrix CRM deal
-pipeline/category IDs. Every CRM deal category that HyperP ingests must have an
-explicit CRM-category mapping; unmapped deals fail closed rather than creating
-records without record-scoped ownership.
+configuration IDs. `included_crm_category_ids` is the explicit CRM deal
+pipeline/category allowlist, while `entity_by_crm_category_id` maps those
+included categories to owning entities. Every included CRM deal category must
+have an explicit CRM-category mapping; categories outside the allowlist are
+skipped rather than assigned to a fallback entity.
 
 Supported channel-type values are:
 
