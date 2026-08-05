@@ -64,6 +64,7 @@ class BitrixOpenLinesConfig:
     included_config_ids: list[str] = field(default_factory=list)
     excluded_config_ids: list[str] = field(default_factory=list)
     entity_by_config_id: dict[str, str] = field(default_factory=dict)
+    included_crm_category_ids: list[str] = field(default_factory=list)
     entity_by_crm_category_id: dict[str, str] = field(default_factory=dict)
     incremental_overlap_seconds: int = 300
     recent_page_size: int = 50
@@ -210,7 +211,21 @@ def _bitrix_openlines_config(raw: JsonValue, *, path: Path) -> BitrixOpenLinesCo
     else:
         included_types = cast(list[BitrixOpenLinesChannelType], list(raw_types))
     entity_map = _entity_by_numeric_id(raw.get("entity_by_config_id"), path=path)
+    included_crm_category_ids = _config_ids(
+        raw.get("included_crm_category_ids"), path=path
+    )
     crm_category_entity_map = _entity_by_numeric_id(raw.get("entity_by_crm_category_id"), path=path)
+    missing_category_mappings = [
+        category_id
+        for category_id in included_crm_category_ids
+        if category_id not in crm_category_entity_map
+    ]
+    if missing_category_mappings:
+        formatted_ids = ", ".join(sorted(set(missing_category_mappings)))
+        raise ValueError(
+            "Invalid ingestion config JSON: "
+            f"{path}: included CRM categories require entity mappings: {formatted_ids}"
+        )
     overlap = _int(
         raw.get("incremental_overlap_seconds"),
         defaults.incremental_overlap_seconds,
@@ -224,6 +239,7 @@ def _bitrix_openlines_config(raw: JsonValue, *, path: Path) -> BitrixOpenLinesCo
         included_config_ids=_config_ids(raw.get("included_config_ids"), path=path),
         excluded_config_ids=_config_ids(raw.get("excluded_config_ids"), path=path),
         entity_by_config_id=entity_map,
+        included_crm_category_ids=included_crm_category_ids,
         entity_by_crm_category_id=crm_category_entity_map,
         incremental_overlap_seconds=overlap,
         recent_page_size=page_size,

@@ -800,6 +800,9 @@ def initialize_ingestion_graph() -> None:
             bitrix_crm_category_entities=(
                 ingestion_config.bitrix_openlines.entity_by_crm_category_id
             ),
+            included_bitrix_crm_category_ids=(
+                ingestion_config.bitrix_openlines.included_crm_category_ids
+            ),
         )
         apply_deferred_source_record_constraints(client)
     finally:

@@ -813,6 +813,7 @@ def test_incremental_api_emits_deal_history_call_and_chat_activity_references(
         StubWatermark(),
         BitrixOpenLinesConfig(
             entity_by_config_id={"46": "speedzone"},
+            included_crm_category_ids=["2"],
             entity_by_crm_category_id={"2": "speedzone"},
         ),
         mode="api",
@@ -917,6 +918,7 @@ def test_stale_chat_still_emits_new_crm_history_without_running_chat_extraction(
         StubWatermark(datetime(2026, 7, 20, 10, tzinfo=UTC)),
         BitrixOpenLinesConfig(
             entity_by_config_id={"46": "speedzone"},
+            included_crm_category_ids=["2"],
             entity_by_crm_category_id={"2": "speedzone"},
             incremental_overlap_seconds=0,
         ),
@@ -985,6 +987,7 @@ def test_incremental_crm_emits_when_every_openlines_channel_is_excluded() -> Non
         BitrixOpenLinesConfig(
             included_channel_types=[],
             entity_by_config_id={"46": "speedzone"},
+            included_crm_category_ids=["2"],
             entity_by_crm_category_id={"2": "speedzone"},
         ),
         mode="api",
@@ -1073,6 +1076,7 @@ def test_incremental_crm_assigns_each_deal_and_activity_to_its_category_entity()
         StubWatermark(),
         BitrixOpenLinesConfig(
             included_channel_types=[],
+            included_crm_category_ids=["1", "2"],
             entity_by_crm_category_id={"1": "eko", "2": "speedzone"},
         ),
         mode="api",
@@ -1088,6 +1092,98 @@ def test_incremental_crm_assigns_each_deal_and_activity_to_its_category_entity()
         ("crm_history", "speedzone"),
         ("call", "speedzone"),
     ]
+
+
+def test_incremental_crm_skips_excluded_categories_and_their_activities() -> None:
+    from src.connectors.bitrix_openlines.models import CrmActivity, CrmDeal
+
+    class MixedCategoryCrmClient(StubClient):
+        def iter_crm_deals(self) -> Iterator[CrmDeal]:
+            for deal_id, category_id in (("701", "2"), ("702", "99"), ("703", None)):
+                yield CrmDeal(
+                    id=deal_id,
+                    title="Scoped deal",
+                    category_id=category_id,
+                    stage_id="NEW",
+                    observed_at=datetime(2026, 7, 20, 8, tzinfo=UTC),
+                    primary_contact=None,
+                    contacts=(),
+                    contact_count=0,
+                    has_ambiguous_contacts=False,
+                    raw_payload={"ID": deal_id},
+                )
+
+        def iter_crm_activities(self) -> list[CrmActivity]:
+            return [
+                CrmActivity(
+                    id="901",
+                    owner_type="deal",
+                    owner_id="701",
+                    history_kind="openlines_session",
+                    subject="Included activity",
+                    observed_at=datetime(2026, 7, 20, 9, tzinfo=UTC),
+                    start_at=None,
+                    end_at=None,
+                    duration_seconds=None,
+                    direction=None,
+                    outcome=None,
+                    is_call=False,
+                    raw_payload={"ID": "901"},
+                ),
+                CrmActivity(
+                    id="902",
+                    owner_type="deal",
+                    owner_id="702",
+                    history_kind="call",
+                    subject="Excluded activity",
+                    observed_at=datetime(2026, 7, 20, 9, tzinfo=UTC),
+                    start_at=None,
+                    end_at=None,
+                    duration_seconds=None,
+                    direction=None,
+                    outcome=None,
+                    is_call=True,
+                    raw_payload={"ID": "902", "TYPE_ID": "2"},
+                ),
+                CrmActivity(
+                    id="903",
+                    owner_type="deal",
+                    owner_id="703",
+                    history_kind="call",
+                    subject="Missing-category activity",
+                    observed_at=datetime(2026, 7, 20, 9, tzinfo=UTC),
+                    start_at=None,
+                    end_at=None,
+                    duration_seconds=None,
+                    direction=None,
+                    outcome=None,
+                    is_call=True,
+                    raw_payload={"ID": "903", "TYPE_ID": "2"},
+                ),
+            ]
+
+    connector = BitrixOpenLinesConnector(
+        MixedCategoryCrmClient(),
+        StubWatermark(),
+        BitrixOpenLinesConfig(
+            included_channel_types=[],
+            included_crm_category_ids=["2"],
+            entity_by_crm_category_id={"2": "speedzone"},
+        ),
+        mode="api",
+        incremental=True,
+    )
+
+    records = list(connector.fetch_records())
+
+    assert [(record["record_type"], record["entity_key"]) for record in records] == [
+        ("crm_deal", "speedzone"),
+        ("crm_history", "speedzone"),
+    ]
+    assert connector._counters.crm_deals_skipped_excluded_category == 1
+    assert connector._counters.crm_deals_skipped_missing_category == 1
+    assert connector._counters.crm_activities_skipped_excluded_deal == 2
+    assert connector._counters.crm_activities_skipped_missing_deal == 0
 
 
 def test_incremental_crm_rejects_an_unmapped_deal_category() -> None:
@@ -1114,12 +1210,18 @@ def test_incremental_crm_rejects_an_unmapped_deal_category() -> None:
     connector = BitrixOpenLinesConnector(
         UnmappedCrmClient(),
         StubWatermark(),
-        BitrixOpenLinesConfig(entity_by_crm_category_id={"2": "speedzone"}),
+        BitrixOpenLinesConfig(
+            included_crm_category_ids=["99"],
+            entity_by_crm_category_id={"2": "speedzone"},
+        ),
         mode="api",
         incremental=True,
     )
 
-    with pytest.raises(ValueError, match="category '99'.*no entity mapping"):
+    with pytest.raises(
+        ValueError,
+        match="Included Bitrix CRM categories have no entity mapping: 99",
+    ):
         list(connector.fetch_records())
 
 
@@ -1134,7 +1236,10 @@ def test_incremental_crm_sanitizes_unrelated_value_errors() -> None:
     connector = BitrixOpenLinesConnector(
         InvalidCrmResponseClient(),
         StubWatermark(),
-        BitrixOpenLinesConfig(entity_by_crm_category_id={"2": "speedzone"}),
+        BitrixOpenLinesConfig(
+            included_crm_category_ids=["2"],
+            entity_by_crm_category_id={"2": "speedzone"},
+        ),
         mode="api",
         incremental=True,
     )
@@ -1220,7 +1325,10 @@ def test_duplicate_crm_deal_discovery_scans_activities_once() -> None:
     connector = BitrixOpenLinesConnector(
         client,
         StubWatermark(),
-        BitrixOpenLinesConfig(entity_by_crm_category_id={"2": "speedzone"}),
+        BitrixOpenLinesConfig(
+            included_crm_category_ids=["2"],
+            entity_by_crm_category_id={"2": "speedzone"},
+        ),
         mode="api",
     )
 

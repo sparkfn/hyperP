@@ -72,7 +72,10 @@ def test_lifecycle_repair_precedes_source_version_uniqueness(
         main,
         "get_ingestion_config",
         lambda: IngestionConfig(
-            bitrix_openlines=BitrixOpenLinesConfig(entity_by_crm_category_id={"2": "speedzone"})
+            bitrix_openlines=BitrixOpenLinesConfig(
+                included_crm_category_ids=["2"],
+                entity_by_crm_category_id={"2": "speedzone"},
+            )
         ),
     )
     monkeypatch.setattr(main, "Neo4jClient", lambda _settings: client)
@@ -104,5 +107,8 @@ def test_lifecycle_repair_precedes_source_version_uniqueness(
         "source_version_constraint",
     ]
     assert migration_options == [
-        {"bitrix_crm_category_entities": {"2": "speedzone"}},
+        {
+            "bitrix_crm_category_entities": {"2": "speedzone"},
+            "included_bitrix_crm_category_ids": ["2"],
+        },
     ]
