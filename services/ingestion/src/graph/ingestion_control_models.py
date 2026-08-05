@@ -149,26 +149,26 @@ def _logical_status(record: Record, key: str) -> LogicalRunStatus:
 
 
 def _required_str(record: Record, key: str) -> str:
-    value = record[key]
+    value: object = record[key]
     if not isinstance(value, str) or not value:
         raise ValueError(f"Expected a non-empty string for {key}")
     return value
 
 
 def _optional_str(record: Record, key: str) -> str | None:
-    value = record[key]
+    value: object = record[key]
     return value if isinstance(value, str) and value else None
 
 
 def _required_int(record: Record, key: str) -> int:
-    value = record[key]
+    value: object = record[key]
     if isinstance(value, bool) or not isinstance(value, int):
         raise ValueError(f"Expected an integer for {key}")
     return value
 
 
 def _required_bool(record: Record, key: str) -> bool:
-    value = record[key]
+    value: object = record[key]
     if not isinstance(value, bool):
         raise ValueError(f"Expected a boolean for {key}")
     return value
