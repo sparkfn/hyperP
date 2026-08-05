@@ -51,6 +51,10 @@ from src.models import JsonValue
 logger = logging.getLogger(__name__)
 
 
+class _CrmEntityMappingError(ValueError):
+    """Raised when a CRM deal cannot be assigned to a configured entity."""
+
+
 class OpenLinesClient(Protocol):
     def list_active_configs(self) -> list[OpenLineConfig]: ...
     def iter_crm_chat_refs(self) -> Iterable[ChatReference]: ...
@@ -188,23 +192,28 @@ class BitrixOpenLinesConnector(SourceConnector):
         if not self._crm_enrichment_enabled():
             return
         client = cast(CrmDetailsClient, self._client)
-        deal_ids: set[str] = set()
+        deal_entities: dict[str, str] = {}
         try:
             for deal in client.iter_crm_deals():
                 self._counters.crm_deals_scanned += 1
                 deal_source_record_id = f"bitrix-crm-deal-{deal.id}"
                 if deal_source_record_id in self._emitted_crm_deal_ids:
                     continue
-                deal_ids.add(deal.id)
+                entity_key = _crm_deal_entity_key(deal, self._config.entity_by_crm_category_id)
+                deal_entities[deal.id] = entity_key
                 self._emitted_crm_deal_ids.add(deal_source_record_id)
-                yield _deal_envelope(deal, None)
+                yield _deal_envelope(deal, entity_key)
                 self._counters.records_emitted += 1
             for activity in client.iter_crm_activities():
                 self._counters.crm_activities_scanned += 1
-                if activity.owner_id not in deal_ids:
+                activity_entity_key: str | None = deal_entities.get(activity.owner_id)
+                if activity_entity_key is None:
                     self._counters.crm_activities_skipped_missing_deal += 1
                     continue
-                yield from self._crm_activity_envelopes(activity)
+                yield from self._crm_activity_envelopes(activity, activity_entity_key)
+        except _CrmEntityMappingError:
+            self._pending_watermark = None
+            raise
         except Exception:  # noqa: BLE001 -- force an idempotent replay on the next run
             self._pending_watermark = None
             raise RuntimeError("Bitrix CRM detail retrieval failed") from None
@@ -397,18 +406,19 @@ class BitrixOpenLinesConnector(SourceConnector):
     def _crm_activity_envelopes(
         self,
         activity: CrmActivity,
+        entity_key: str,
     ) -> Iterator[dict[str, JsonValue]]:
         deal_source_record_id = f"bitrix-crm-deal-{activity.owner_id}"
         history_source_record_id = f"bitrix-crm-history-{activity.id}"
         if history_source_record_id not in self._emitted_crm_history_ids:
             self._emitted_crm_history_ids.add(history_source_record_id)
-            yield _history_envelope(activity, deal_source_record_id, None)
+            yield _history_envelope(activity, deal_source_record_id, entity_key)
             self._counters.records_emitted += 1
         if activity.is_call:
             call_source_record_id = f"bitrix-call-{activity.id}"
             if call_source_record_id not in self._emitted_call_ids:
                 self._emitted_call_ids.add(call_source_record_id)
-                yield _call_envelope(activity, history_source_record_id, None)
+                yield _call_envelope(activity, history_source_record_id, entity_key)
                 self._counters.records_emitted += 1
 
     def _messages_for(self, reference: ChatReference) -> list[OpenLineMessage]:
@@ -564,7 +574,7 @@ def _add_crm_activity_references(
     record["record_hash"] = compute_hash(hash_payload)
 
 
-def _deal_envelope(deal: CrmDeal, entity_key: str | None) -> dict[str, JsonValue]:
+def _deal_envelope(deal: CrmDeal, entity_key: str) -> dict[str, JsonValue]:
     contact = deal.primary_contact
     identifiers: list[JsonValue] = []
     attributes: dict[str, JsonValue] = {}
@@ -612,6 +622,19 @@ def _deal_envelope(deal: CrmDeal, entity_key: str | None) -> dict[str, JsonValue
         "attributes": attributes,
         "raw_payload": raw_payload,
     }
+
+
+def _crm_deal_entity_key(deal: CrmDeal, category_entities: dict[str, str]) -> str:
+    """Resolve one CRM deal to its configured, record-scoped HyperP entity."""
+    category_id = deal.category_id
+    if category_id is None:
+        raise _CrmEntityMappingError(f"Bitrix CRM deal {deal.id} has no CATEGORY_ID entity mapping")
+    entity_key = category_entities.get(category_id)
+    if entity_key is None:
+        raise _CrmEntityMappingError(
+            f"Bitrix CRM deal {deal.id} category {category_id!r} has no entity mapping"
+        )
+    return entity_key
 
 
 def _contact_identifier_group(contact: CrmContact) -> list[JsonValue]:

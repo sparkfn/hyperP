@@ -38,7 +38,6 @@ def test_scheduled_ingestion_config_parses_explicit_enablement(tmp_path: Path) -
         json.dumps({"scheduled_ingestion": {"enabled": True}}),
         encoding="utf-8",
     )
-
     assert load_ingestion_config(str(path)).scheduled_ingestion == ScheduledIngestionConfig(
         enabled=True
     )
@@ -78,6 +77,7 @@ def test_bitrix_openlines_config_parses_channel_and_entity_overrides(tmp_path: P
                     "included_config_ids": [46],
                     "excluded_config_ids": [54],
                     "entity_by_config_id": {"46": "speedzone"},
+                    "entity_by_crm_category_id": {"0": "eko", "2": "speedzone"},
                     "incremental_overlap_seconds": 120,
                     "recent_page_size": 25,
                 }
@@ -85,15 +85,42 @@ def test_bitrix_openlines_config_parses_channel_and_entity_overrides(tmp_path: P
         ),
         encoding="utf-8",
     )
-
     assert load_ingestion_config(str(path)).bitrix_openlines == BitrixOpenLinesConfig(
         included_channel_types=["facebook_direct"],
         included_config_ids=["46"],
         excluded_config_ids=["54"],
         entity_by_config_id={"46": "speedzone"},
+        entity_by_crm_category_id={"0": "eko", "2": "speedzone"},
         incremental_overlap_seconds=120,
         recent_page_size=25,
     )
+
+
+@pytest.mark.parametrize(
+    "crm_category_map",
+    [
+        {"category": "eko"},
+        {"2": "   "},
+    ],
+)
+def test_bitrix_openlines_config_rejects_invalid_crm_category_entity_mappings(
+    tmp_path: Path,
+    crm_category_map: dict[str, str],
+) -> None:
+    path = tmp_path / "ingestion-config.json"
+    path.write_text(
+        json.dumps(
+            {
+                "bitrix_openlines": {
+                    "entity_by_crm_category_id": crm_category_map,
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="Invalid ingestion config JSON"):
+        load_ingestion_config(str(path))
 
 
 def test_nested_format_parses_exclusions_and_llm(tmp_path: Path) -> None:

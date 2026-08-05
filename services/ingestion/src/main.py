@@ -746,12 +746,18 @@ def _ingest_all_records_open(
 
 def initialize_ingestion_graph() -> None:
     settings = get_settings()
+    ingestion_config = get_ingestion_config()
     client = Neo4jClient(settings)
     try:
         client.verify_connectivity()
         apply_schema(client)
         bootstrap_entities_and_sources(client)
-        apply_data_migrations(client)
+        apply_data_migrations(
+            client,
+            bitrix_crm_category_entities=(
+                ingestion_config.bitrix_openlines.entity_by_crm_category_id
+            ),
+        )
         apply_deferred_source_record_constraints(client)
     finally:
         client.close()

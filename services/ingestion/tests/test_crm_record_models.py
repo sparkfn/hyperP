@@ -53,8 +53,10 @@ def test_conversation_and_call_are_match_only_independent_of_source() -> None:
 
 def test_crm_children_inherit_deal_entity_ownership() -> None:
     assert "(parent)-[:OWNED_BY]->(entity:Entity)" in CREATE_CRM_HISTORY
+    assert "entity.entity_key = parent.entity_key" in CREATE_CRM_HISTORY
     assert "CREATE (history)-[:OWNED_BY]->(entity)" in CREATE_CRM_HISTORY
     assert "(deal)-[:OWNED_BY]->(entity:Entity)" in CREATE_CALL_FROM_HISTORY
+    assert "entity.entity_key = deal.entity_key" in CREATE_CALL_FROM_HISTORY
     assert "CREATE (call)-[:OWNED_BY]->(entity)" in CREATE_CALL_FROM_HISTORY
 
 

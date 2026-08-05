@@ -16,7 +16,8 @@ MATCH (parent:SourceRecord {
     record_type: 'crm_deal'
 })-[:FROM_SOURCE]->(:SourceSystem {source_key: $parent_source_system})
 WHERE parent.lifecycle_status IN ['active', 'pending_review']
-OPTIONAL MATCH (parent)-[:OWNED_BY]->(entity:Entity)
+MATCH (parent)-[:OWNED_BY]->(entity:Entity)
+WHERE entity.entity_key = parent.entity_key
 WITH ss, parent, entity
 ORDER BY CASE parent.lifecycle_status WHEN 'active' THEN 0 ELSE 1 END,
          toInteger(parent.source_record_version) DESC
@@ -70,7 +71,8 @@ ORDER BY CASE deal.lifecycle_status WHEN 'active' THEN 0 ELSE 1 END,
          toInteger(deal.source_record_version) DESC
 LIMIT 1
 MATCH (deal)-[:LINKED_TO]->(person:Person)
-OPTIONAL MATCH (deal)-[:OWNED_BY]->(entity:Entity)
+MATCH (deal)-[:OWNED_BY]->(entity:Entity)
+WHERE entity.entity_key = deal.entity_key
 WITH ss, history, deal, entity, collect(DISTINCT person) AS people
 CREATE (call:SourceRecord {
     source_record_pk: randomUUID(),

@@ -18,6 +18,7 @@ from typing import Literal, cast
 from neo4j import ManagedTransaction, Record
 
 from src.graph import queries
+from src.graph.bitrix_crm_entity_migration import migrate_bitrix_crm_entities
 from src.graph.client import Neo4jClient
 from src.graph.fundbox_source_migration import migrate_fundbox_source_keys
 from src.graph.queries.lifecycle_migrations import (
@@ -667,10 +668,15 @@ def migrate_bitrix_chat_source(client: Neo4jClient) -> int:
     return linked
 
 
-def apply_data_migrations(client: Neo4jClient) -> None:
+def apply_data_migrations(
+    client: Neo4jClient,
+    *,
+    bitrix_crm_category_entities: Mapping[str, str] | None = None,
+) -> None:
     """Run every idempotent data migration in order."""
     backfill_record_type_subtypes(client)
     migrate_bitrix_chat_source(client)
+    migrate_bitrix_crm_entities(client, bitrix_crm_category_entities or {})
     migrate_fundbox_source_keys(client)
     migrate_source_record_lifecycle(client)
     migrate_projection_relationship_lifecycle(client)

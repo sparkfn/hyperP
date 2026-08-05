@@ -13,6 +13,7 @@ from src.graph.schema_init import (
     _find_init_cypher,
     _split_statements,
 )
+from src.ingestion_config import BitrixOpenLinesConfig, IngestionConfig
 
 
 class _Client:
@@ -58,20 +59,34 @@ def test_canonical_schema_contains_person_and_knows_performance_indexes() -> Non
         assert name in schema
     assert "FOR ()-[r:KNOWS]-() ON (r.source_record_pk)" in schema
 
+
 def test_lifecycle_repair_precedes_source_version_uniqueness(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls: list[str] = []
+    migration_options: list[dict[str, object]] = []
     client = _Client()
 
     monkeypatch.setattr(main, "get_settings", lambda: cast(Settings, object()))
+    monkeypatch.setattr(
+        main,
+        "get_ingestion_config",
+        lambda: IngestionConfig(
+            bitrix_openlines=BitrixOpenLinesConfig(entity_by_crm_category_id={"2": "speedzone"})
+        ),
+    )
     monkeypatch.setattr(main, "Neo4jClient", lambda _settings: client)
     monkeypatch.setattr(main, "apply_schema", lambda _client: calls.append("base_schema"))
     monkeypatch.setattr(
         main, "bootstrap_entities_and_sources", lambda _client: calls.append("bootstrap")
     )
     monkeypatch.setattr(
-        main, "apply_data_migrations", lambda _client: calls.append("lifecycle_repair")
+        main,
+        "apply_data_migrations",
+        lambda _client, **kwargs: (
+            calls.append("lifecycle_repair"),
+            migration_options.append(kwargs),
+        ),
     )
     monkeypatch.setattr(
         main,
@@ -87,4 +102,7 @@ def test_lifecycle_repair_precedes_source_version_uniqueness(
         "bootstrap",
         "lifecycle_repair",
         "source_version_constraint",
+    ]
+    assert migration_options == [
+        {"bitrix_crm_category_entities": {"2": "speedzone"}},
     ]
