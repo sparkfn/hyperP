@@ -220,6 +220,7 @@ def test_connector_reconciles_missing_source_ids_after_full_snapshot() -> None:
 
     assert [record["source_record_id"] for record in records[:-1]] == ["fundbox-contact-2"]
     assert records[-1]["_retire_source_record_id"] == "fundbox-contact-1"
+    assert isinstance(records[-1]["_reconciliation_snapshot_at"], str)
     assert client.calls == [
         ("contacts", "2026-07-16T00:00:00Z"),
         ("contacts", None),
@@ -256,6 +257,7 @@ def test_all_scheduled_sources_retire_roots_missing_from_full_snapshot(
     records = list(connector.fetch_records())
 
     assert records[0]["_retire_source_record_id"] == expected_source_record_id
+    assert records[0]["_reconciliation_snapshot_at"] == connector.reconciliation_snapshot_at
 
 
 def test_full_snapshot_reprocesses_records_absent_from_incremental_pass() -> None:

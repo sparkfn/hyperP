@@ -56,6 +56,7 @@ _INGEST_SEMAPHORE_KEY = "profile_unifier:ingestion:active"
 MAX_CONCURRENT_INGESTIONS: Final[int] = 2
 _SOURCE_LOCK_PREFIX = "profile_unifier:ingestion:source"
 _INIT_LOCK_KEY = "profile_unifier:ingestion:init"
+_LEGACY_SOURCE_LOCK_MODES = ("api", "backfill", "batch", "dump")
 # Leases are renewed while ingestion is running. Keeping the base TTL modest
 # bounds the unavailable period after a worker crashes.
 _LOCK_LEASE_SECONDS = 60 * 60
@@ -189,15 +190,30 @@ def _acquire_ingestion_slot(max_slots: int) -> Iterator[str]:
             logger.exception("Failed to release ingestion slot %s", slot_id)
 
 
+def _lock_owner(client: redis.Redis, lock_key: str) -> str | None:
+    """Read a Redis lock owner, normalizing Redis's bytes response."""
+    value = client.get(lock_key)
+    if isinstance(value, bytes):
+        return value.decode("utf-8")
+    return value if isinstance(value, str) else None
+
+
 @contextmanager
-def _acquire_source_lock(source_key: str) -> Iterator[str]:
+def _acquire_source_lock(source_key: str, owner_id: str | None = None) -> Iterator[str]:
     """Reserve an ingestion lock scope or raise if that scope is already running."""
     client = _redis_client()
-    lock_id = uuid.uuid4().hex
+    lock_id = owner_id or uuid.uuid4().hex
     lock_key = f"{_SOURCE_LOCK_PREFIX}:{source_key}"
-    lock_acquired = client.set(lock_key, lock_id, nx=True, ex=_LOCK_LEASE_SECONDS)
-    if not lock_acquired:
-        raise _SourceAlreadyRunningError(source_key=source_key)
+    while not client.set(lock_key, lock_id, nx=True, ex=_LOCK_LEASE_SECONDS):
+        current_owner = _lock_owner(client, lock_key)
+        if current_owner is None:
+            # The lease expired between SET NX and GET. Retry acquisition
+            # rather than misclassifying the delivery as a distinct duplicate.
+            continue
+        raise _SourceAlreadyRunningError(
+            source_key=source_key,
+            held_by_same_task=owner_id is not None and current_owner == owner_id,
+        )
 
     logger.info("Acquired ingestion lock for %s", source_key)
     try:
@@ -215,23 +231,36 @@ def _source_lock_keys(
     mode: str,
     entity_key: str | None,
 ) -> tuple[str, ...]:
-    """Return the independent source-and-mode locks required for an ingestion run."""
-    source_mode_key = f"{source_key}:{mode}"
+    """Return source scopes, including legacy mode keys for rolling upgrades."""
+    legacy_modes = tuple(sorted({*_LEGACY_SOURCE_LOCK_MODES, mode}))
     if source_key != "whatsapp_chat":
-        return (source_mode_key,)
+        return (source_key, *(f"{source_key}:{legacy_mode}" for legacy_mode in legacy_modes))
     entities = (entity_key,) if mode == "api" and entity_key is not None else WHATSADMIN_ENTITIES
-    return tuple(f"{source_mode_key}:{entity}" for entity in entities)
+    return tuple(
+        lock_key
+        for entity in entities
+        for lock_key in (
+            f"{source_key}:{entity}",
+            *(f"{source_key}:{legacy_mode}:{entity}" for legacy_mode in legacy_modes),
+        )
+    )
 
 
 @contextmanager
 def _acquire_source_locks(
     source_keys: tuple[str, ...],
+    owner_id: str | None = None,
 ) -> Iterator[tuple[_SourceLockLease, ...]]:
     """Acquire all ingestion locks, releasing earlier locks if a later one is busy."""
     with ExitStack() as stack:
         leases: list[_SourceLockLease] = []
         for source_key in source_keys:
-            lock_id = stack.enter_context(_acquire_source_lock(source_key))
+            lock_context = (
+                _acquire_source_lock(source_key, owner_id)
+                if owner_id is not None
+                else _acquire_source_lock(source_key)
+            )
+            lock_id = stack.enter_context(lock_context)
             leases.append((source_key, lock_id))
         yield tuple(leases)
 
@@ -273,6 +302,22 @@ def _renew_source_lock(client: redis.Redis, source_key: str, lock_id: str) -> No
     )
     if renewed != 1:
         raise RuntimeError(f"Ingestion lock for {source_key} was lost before renewal")
+
+
+def _renew_init_lock(client: redis.Redis, lock_id: str) -> None:
+    """Extend graph initialization exclusivity only while still owned."""
+    renewed = cast(
+        int,
+        client.eval(
+            _SOURCE_LOCK_RENEW_SCRIPT,
+            1,
+            _INIT_LOCK_KEY,
+            lock_id,
+            str(_LOCK_LEASE_SECONDS),
+        ),
+    )
+    if renewed != 1:
+        raise RuntimeError("Ingestion graph initialization lock was lost before renewal")
 
 
 def _renew_source_locks(
@@ -325,6 +370,36 @@ def _renew_ingestion_leases(
 
 
 @contextmanager
+def _renew_init_lock_lease(lock_id: str) -> Iterator[None]:
+    """Keep the initialization lock alive for the whole protected section."""
+    stop_event = threading.Event()
+
+    def renew() -> None:
+        while not stop_event.wait(_LEASE_RENEWAL_INTERVAL_SECONDS):
+            try:
+                _renew_init_lock(_redis_client(), lock_id)
+            except Exception:
+                logger.critical(
+                    "Failed to renew ingestion graph initialization lock; terminating worker",
+                    exc_info=True,
+                )
+                os.kill(os.getpid(), signal.SIGTERM)
+                return
+
+    renewal_thread = threading.Thread(
+        target=renew,
+        name="ingestion-init-lock-renewal",
+        daemon=True,
+    )
+    renewal_thread.start()
+    try:
+        yield
+    finally:
+        stop_event.set()
+        renewal_thread.join(timeout=1)
+
+
+@contextmanager
 def _acquire_init_lock() -> Iterator[str]:
     client = _redis_client()
     lock_id = uuid.uuid4().hex
@@ -354,9 +429,10 @@ class _SlotUnavailableError(Exception):
 
 
 class _SourceAlreadyRunningError(Exception):
-    def __init__(self, source_key: str) -> None:
+    def __init__(self, source_key: str, held_by_same_task: bool = False) -> None:
         super().__init__(f"Ingestion lock already held: {source_key}")
         self.source_key = source_key
+        self.held_by_same_task = held_by_same_task
 
 
 class LifecycleReconciliationSummary(TypedDict):
@@ -398,15 +474,16 @@ def _terminal_run_summary(
 
 def run_lifecycle_reconciliation() -> LifecycleReconciliationSummary:
     """Repair lifecycle deltas while serializing concurrent repair attempts."""
-    with _acquire_source_lock("lifecycle-reconciliation"), _acquire_init_lock():
-        settings = get_settings()
-        client = Neo4jClient(settings)
-        try:
-            client.verify_connectivity()
-            source_records = reconcile_source_record_lifecycle(client)
-            projections = reconcile_projection_relationship_lifecycle(client)
-        finally:
-            client.close()
+    with _acquire_source_lock("lifecycle-reconciliation"), _acquire_init_lock() as init_lock_id:
+        with _renew_init_lock_lease(init_lock_id):
+            settings = get_settings()
+            client = Neo4jClient(settings)
+            try:
+                client.verify_connectivity()
+                source_records = reconcile_source_record_lifecycle(client)
+                projections = reconcile_projection_relationship_lifecycle(client)
+            finally:
+                client.close()
     return {
         "status": "complete",
         "source_records": source_records,
@@ -452,13 +529,17 @@ def materialize_knows_task(
     setup_logging(settings.log_level)
     started = time.monotonic()
     try:
-        with _acquire_source_lock(f"knows-materialization:{phase}"), _acquire_init_lock():
-            initialize_ingestion_graph()
-            client = Neo4jClient(settings)
-            try:
-                result = materialize_knows_batch(client, phase, cursor=cursor)
-            finally:
-                client.close()
+        with (
+            _acquire_source_lock(f"knows-materialization:{phase}"),
+            _acquire_init_lock() as init_lock_id,
+        ):
+            with _renew_init_lock_lease(init_lock_id):
+                initialize_ingestion_graph()
+                client = Neo4jClient(settings)
+                try:
+                    result = materialize_knows_batch(client, phase, cursor=cursor)
+                finally:
+                    client.close()
     except _SourceAlreadyRunningError:
         logger.info("KNOWS materialization phase=%s is already running; skipping duplicate", phase)
         return {
@@ -546,9 +627,11 @@ def run_ingestion_task(
             }
         settings = get_settings()
         setup_logging(settings.log_level)
-        with _acquire_init_lock():
+        with _acquire_init_lock() as init_lock_id, _renew_init_lock_lease(init_lock_id):
             initialize_ingestion_graph()
-        with _acquire_source_locks(source_lock_keys) as source_lock_leases:
+        celery_task_id = self.request.id
+        source_lock_owner = str(celery_task_id) if celery_task_id is not None else None
+        with _acquire_source_locks(source_lock_keys, source_lock_owner) as source_lock_leases:
             if ingest_run_id is not None:
                 status = _get_existing_ingest_run_status(ingest_run_id)
                 if status in _TERMINAL_INGEST_RUN_STATUSES:
@@ -570,7 +653,6 @@ def run_ingestion_task(
                 _acquire_ingestion_slot(MAX_CONCURRENT_INGESTIONS) as slot_id,
                 _renew_ingestion_leases(source_lock_leases, slot_id),
             ):
-                celery_task_id = self.request.id
                 if celery_task_id is not None:
                     summary = run_ingestion(
                         source_key,
@@ -638,7 +720,7 @@ def run_ingestion_task(
                     _enqueue_knows_materialization(source_key)
                 return summary
     except _SourceAlreadyRunningError as exc:
-        if ingest_run_id is not None or wait_for_source:
+        if exc.held_by_same_task or ingest_run_id is not None or wait_for_source:
             retry_number = min(self.request.retries, 8)
             countdown = min(2**retry_number, 300)
             logger.warning(

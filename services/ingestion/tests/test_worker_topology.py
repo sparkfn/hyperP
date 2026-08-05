@@ -36,3 +36,5 @@ def test_compose_workers_are_exclusive_and_use_code_concurrency() -> None:
     assert "--concurrency" not in lifecycle_worker
     assert "CELERY_WORKER_CONCURRENCY" not in compose
     assert "MAX_CONCURRENT_INGESTIONS" not in compose
+    assert "stop_grace_period: 5m" in ingestion_worker
+    assert "stop_grace_period: 5m" in lifecycle_worker

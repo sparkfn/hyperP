@@ -226,6 +226,7 @@ services:
       dockerfile: services/ingestion/Dockerfile
     cpus: 2.0
     mem_limit: 2G
+    stop_grace_period: 5m
     environment: *ingestion-env
     volumes:
       - ./.dumps:/app/dumps:ro
@@ -251,6 +252,7 @@ services:
       dockerfile: services/ingestion/Dockerfile
     cpus: 1.0
     mem_limit: 1G
+    stop_grace_period: 5m
     environment: *ingestion-env
     volumes:
       - ./config:/app/config:ro

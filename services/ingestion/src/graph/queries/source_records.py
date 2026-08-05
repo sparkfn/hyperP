@@ -249,6 +249,31 @@ CREATE (ir:IngestRun {
 RETURN ir.ingest_run_id AS ingest_run_id
 """
 
+CREATE_OR_REUSE_WORKER_INGEST_RUN = """
+MATCH (ss:SourceSystem {source_key: $source_key})
+MERGE (ir:IngestRun {worker_task_id: $worker_task_id})
+ON CREATE SET
+    ir.ingest_run_id = randomUUID(),
+    ir.source_key = $source_key,
+    ir.run_type = $run_type,
+    ir.mode = $mode,
+    ir.status = 'started',
+    ir.started_at = datetime(),
+    ir.finished_at = null,
+    ir.record_count = 0,
+    ir.rejected_count = 0,
+    ir.metadata = '{}',
+    ir.creation_token = $creation_token
+WITH ss, ir, coalesce(ir.creation_token = $creation_token, false) AS created,
+     ir.source_key = $source_key AND ir.mode = $mode AS is_compatible
+WHERE is_compatible
+MERGE (ir)-[:FROM_SOURCE]->(ss)
+REMOVE ir.creation_token
+RETURN ir.ingest_run_id AS ingest_run_id,
+       ir.status AS status,
+       created AS created
+"""
+
 UPDATE_INGEST_RUN = """
 MATCH (ir:IngestRun {ingest_run_id: $ingest_run_id})
 SET ir.status = $status,

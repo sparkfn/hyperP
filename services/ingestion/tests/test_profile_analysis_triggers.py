@@ -72,6 +72,9 @@ def test_dirty_helper_is_a_noop_without_accepted_change_context() -> None:
 def test_retirement_query_collects_affected_people_before_deactivation() -> None:
     query = queries.RETIRE_SOURCE_EVIDENCE
 
+    assert "MERGE (lock:SourceRecordIdentityLock" in query
+    assert "record.ingested_at > datetime($reconciliation_snapshot_at)" in query
+    assert "record.activated_at > datetime($reconciliation_snapshot_at)" in query
     assert "collect(DISTINCT person.person_id)" in query
     assert "collect(DISTINCT knows_from.person_id)" in query
     assert "collect(DISTINCT knows_to.person_id)" in query
