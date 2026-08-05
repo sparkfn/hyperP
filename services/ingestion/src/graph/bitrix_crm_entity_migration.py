@@ -178,8 +178,7 @@ def _scope_signature(
     category_entities: Mapping[str, str],
 ) -> str:
     scoped_mapping = [
-        [category_id, category_entities[category_id]]
-        for category_id in sorted(included_categories)
+        [category_id, category_entities[category_id]] for category_id in sorted(included_categories)
     ]
     return json.dumps(scoped_mapping, separators=(",", ":"))
 

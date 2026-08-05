@@ -211,9 +211,7 @@ def _bitrix_openlines_config(raw: JsonValue, *, path: Path) -> BitrixOpenLinesCo
     else:
         included_types = cast(list[BitrixOpenLinesChannelType], list(raw_types))
     entity_map = _entity_by_numeric_id(raw.get("entity_by_config_id"), path=path)
-    included_crm_category_ids = _config_ids(
-        raw.get("included_crm_category_ids"), path=path
-    )
+    included_crm_category_ids = _config_ids(raw.get("included_crm_category_ids"), path=path)
     crm_category_entity_map = _entity_by_numeric_id(raw.get("entity_by_crm_category_id"), path=path)
     missing_category_mappings = [
         category_id

@@ -672,7 +672,7 @@ def _validate_included_crm_category_mappings(config: BitrixOpenLinesConfig) -> N
     if missing_category_ids:
         formatted_ids = ", ".join(sorted(set(missing_category_ids)))
         raise _CrmEntityMappingError(
-            "Included Bitrix CRM categories have no entity mapping: " f"{formatted_ids}"
+            f"Included Bitrix CRM categories have no entity mapping: {formatted_ids}"
         )
 
 
