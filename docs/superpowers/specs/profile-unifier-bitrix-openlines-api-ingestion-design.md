@@ -137,6 +137,17 @@ included categories to owning entities. Every included CRM deal category must
 have an explicit CRM-category mapping; categories outside the allowlist are
 skipped rather than assigned to a fallback entity.
 
+During incremental CRM enrichment, every `crm.deal.list` request applies the
+allowlist at the Bitrix boundary with
+`filter: {"@CATEGORY_ID": ["2", "7", "8"]}`. The same normalized filter is
+sent for every page and retry. An empty `included_crm_category_ids` allowlist is
+fail-closed: HyperP logs a structured empty-scope reason and makes no CRM deal
+request or CRM enrichment activity scan. Open Lines chat discovery remains
+independent. The connector still validates every returned deal's
+category and mapped entity before emitting records, because source filtering is
+an optimization rather than a trust boundary. Operational logs report only
+category/page/deal/skip counters; they do not include deal IDs or raw payloads.
+
 Supported channel-type values are:
 
 - `whatsapp_business_api`;

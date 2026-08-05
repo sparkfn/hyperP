@@ -98,6 +98,25 @@ def test_bitrix_openlines_config_parses_channel_and_entity_overrides(tmp_path: P
     )
 
 
+def test_bitrix_openlines_config_deduplicates_crm_category_allowlist(tmp_path: Path) -> None:
+    path = tmp_path / "ingestion-config.json"
+    path.write_text(
+        json.dumps(
+            {
+                "bitrix_openlines": {
+                    "included_crm_category_ids": [2, "7", 2, "7"],
+                    "entity_by_crm_category_id": {"2": "eko", "7": "fundbox"},
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    config = load_ingestion_config(str(path)).bitrix_openlines
+
+    assert config.included_crm_category_ids == ["2", "7"]
+
+
 @pytest.mark.parametrize(
     "crm_category_map",
     [

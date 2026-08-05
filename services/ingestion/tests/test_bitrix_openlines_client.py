@@ -838,22 +838,87 @@ def test_client_lists_crm_deals_independently_of_openlines_activities() -> None:
         http=httpx.Client(transport=httpx.MockTransport(handler)),
     )
 
-    deals = list(client.iter_crm_deals())
+    deals = list(client.iter_crm_deals(["2", "7"]))
 
     assert [deal.id for deal in deals] == ["501", "502"]
     assert [deal.title for deal in deals] == ["Deal 501", "Deal 502"]
     assert (
         "crm.deal.list",
-        {"order": {"ID": "ASC"}, "start": 0},
+        {
+            "filter": {"@CATEGORY_ID": ["2", "7"]},
+            "order": {"ID": "ASC"},
+            "start": 0,
+        },
     ) in requests
     assert (
         "crm.deal.list",
-        {"order": {"ID": "ASC"}, "start": 1},
+        {
+            "filter": {"@CATEGORY_ID": ["2", "7"]},
+            "order": {"ID": "ASC"},
+            "start": 1,
+        },
     ) in requests
     assert all(method != "crm.deal.get" for method, _body in requests)
     assert [body["id"] for method, body in requests if method == "crm.deal.contact.items.get"] == [
         501,
         502,
+    ]
+
+
+def test_client_does_not_request_crm_deals_for_an_empty_category_scope() -> None:
+    def handler(_request: httpx.Request) -> httpx.Response:
+        raise AssertionError("empty category scope must not make an HTTP request")
+
+    client = BitrixOpenLinesClient(
+        base_url="https://bitrix.test/rest/hook",
+        timeout_seconds=5,
+        max_attempts=1,
+        http=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+
+    assert list(client.iter_crm_deal_pages([])) == []
+
+
+def test_client_retries_the_same_filtered_crm_deal_page(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requests: list[dict[str, object]] = []
+    attempts = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal attempts
+        body = json.loads(request.content)
+        requests.append(body)
+        assert request.url.path.endswith("/crm.deal.list")
+        if attempts == 0:
+            attempts += 1
+            return httpx.Response(429, headers={"Retry-After": "0"})
+        return httpx.Response(200, json={"result": []})
+
+    monkeypatch.setattr("src.connectors.bitrix_openlines.client.time.sleep", lambda _delay: None)
+    client = BitrixOpenLinesClient(
+        base_url="https://bitrix.test/rest/hook",
+        timeout_seconds=5,
+        max_attempts=2,
+        http=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+
+    pages = list(client.iter_crm_deal_pages(["8", "2", "8"]))
+
+    assert len(pages) == 1
+    assert pages[0].deals == ()
+    assert pages[0].returned_count == 0
+    assert requests == [
+        {
+            "filter": {"@CATEGORY_ID": ["8", "2"]},
+            "order": {"ID": "ASC"},
+            "start": 0,
+        },
+        {
+            "filter": {"@CATEGORY_ID": ["8", "2"]},
+            "order": {"ID": "ASC"},
+            "start": 0,
+        },
     ]
 
 

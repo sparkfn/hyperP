@@ -4,13 +4,18 @@ from __future__ import annotations
 
 import logging
 import time
-from collections.abc import Iterator, Mapping
+from collections.abc import Collection, Iterator, Mapping
 from datetime import datetime
 from typing import cast
 from urllib.parse import urlencode
 
 import httpx
 
+from src.connectors.bitrix_openlines.crm_deal_filter import (
+    CrmDealPage,
+    crm_deal_category_filter,
+    normalize_crm_category_ids,
+)
 from src.connectors.bitrix_openlines.models import (
     ChatReference,
     CrmActivity,
@@ -344,14 +349,24 @@ class BitrixOpenLinesClient:
             key=lambda item: (item.date, item.id),
         )
 
-    def iter_crm_deals(self) -> Iterator[CrmDeal]:
-        """Yield every CRM deal independently of Open Lines activity discovery."""
+    def iter_crm_deal_pages(self, category_ids: Collection[str]) -> Iterator[CrmDealPage]:
+        """Yield filtered CRM deal pages independently of Open Lines discovery."""
+        normalized_categories = normalize_crm_category_ids(category_ids)
+        if not normalized_categories:
+            logger.info(
+                "Bitrix CRM deal source filter skipped reason=empty_category_allowlist "
+                "crm_categories_requested=0 crm_deal_api_pages=0 crm_deals_returned=0"
+            )
+            return
         start = 0
+        page_count = 0
+        returned_count = 0
         seen_deal_ids: set[str] = set()
         while True:
             payload = self._request(
                 "crm.deal.list",
                 {
+                    "filter": crm_deal_category_filter(normalized_categories),
                     "order": {"ID": "ASC"},
                     "start": start,
                 },
@@ -359,6 +374,16 @@ class BitrixOpenLinesClient:
             result = payload.get("result")
             if not isinstance(result, list):
                 raise RuntimeError("Bitrix CRM deal list returned an invalid result")
+            page_count += 1
+            returned_count += len(result)
+            logger.info(
+                "Bitrix CRM deal page crm_categories_requested=%d crm_deal_api_pages=%d "
+                "crm_deals_returned=%d",
+                len(normalized_categories),
+                page_count,
+                returned_count,
+            )
+            deals: list[CrmDeal] = []
             for item in result:
                 if not isinstance(item, dict):
                     raise RuntimeError("Bitrix CRM deal list contained an invalid item")
@@ -368,11 +393,17 @@ class BitrixOpenLinesClient:
                 if deal_id in seen_deal_ids:
                     continue
                 seen_deal_ids.add(deal_id)
-                yield self._deal_from_payload(int(deal_id), item)
+                deals.append(self._deal_from_payload(int(deal_id), item))
+            yield CrmDealPage(tuple(deals), len(result))
             next_page = next_start(payload, start)
             if next_page is None:
                 return
             start = next_page
+
+    def iter_crm_deals(self, category_ids: Collection[str]) -> Iterator[CrmDeal]:
+        """Yield filtered CRM deals while retaining a simple item iterator."""
+        for page in self.iter_crm_deal_pages(category_ids):
+            yield from page.deals
 
     def get_deal(self, deal_id: int) -> CrmDeal:
         """Fetch a deal and the primary contact/lead identity evidence."""
