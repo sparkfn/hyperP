@@ -64,6 +64,7 @@ class BitrixOpenLinesConfig:
     included_config_ids: list[str] = field(default_factory=list)
     excluded_config_ids: list[str] = field(default_factory=list)
     entity_by_config_id: dict[str, str] = field(default_factory=dict)
+    entity_by_crm_category_id: dict[str, str] = field(default_factory=dict)
     incremental_overlap_seconds: int = 300
     recent_page_size: int = 50
 
@@ -178,6 +179,21 @@ def _config_ids(raw: JsonValue, *, path: Path) -> list[str]:
     return result
 
 
+def _entity_by_numeric_id(raw: JsonValue, *, path: Path) -> dict[str, str]:
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise ValueError(f"Invalid ingestion config JSON: {path}")
+    entity_map: dict[str, str] = {}
+    for raw_id, entity_key in raw.items():
+        if not isinstance(raw_id, str) or not raw_id.isdigit():
+            raise ValueError(f"Invalid ingestion config JSON: {path}")
+        if not isinstance(entity_key, str) or not entity_key.strip():
+            raise ValueError(f"Invalid ingestion config JSON: {path}")
+        entity_map[raw_id] = entity_key.strip()
+    return entity_map
+
+
 def _bitrix_openlines_config(raw: JsonValue, *, path: Path) -> BitrixOpenLinesConfig:
     if raw is None:
         return BitrixOpenLinesConfig()
@@ -193,19 +209,8 @@ def _bitrix_openlines_config(raw: JsonValue, *, path: Path) -> BitrixOpenLinesCo
         raise ValueError(f"Invalid ingestion config JSON: {path}")
     else:
         included_types = cast(list[BitrixOpenLinesChannelType], list(raw_types))
-    raw_entities = raw.get("entity_by_config_id")
-    if raw_entities is None:
-        entity_map: dict[str, str] = {}
-    elif not isinstance(raw_entities, dict):
-        raise ValueError(f"Invalid ingestion config JSON: {path}")
-    else:
-        entity_map = {}
-        for config_id, entity_key in raw_entities.items():
-            if not isinstance(config_id, str) or not config_id.isdigit():
-                raise ValueError(f"Invalid ingestion config JSON: {path}")
-            if not isinstance(entity_key, str) or not entity_key.strip():
-                raise ValueError(f"Invalid ingestion config JSON: {path}")
-            entity_map[config_id] = entity_key.strip()
+    entity_map = _entity_by_numeric_id(raw.get("entity_by_config_id"), path=path)
+    crm_category_entity_map = _entity_by_numeric_id(raw.get("entity_by_crm_category_id"), path=path)
     overlap = _int(
         raw.get("incremental_overlap_seconds"),
         defaults.incremental_overlap_seconds,
@@ -219,6 +224,7 @@ def _bitrix_openlines_config(raw: JsonValue, *, path: Path) -> BitrixOpenLinesCo
         included_config_ids=_config_ids(raw.get("included_config_ids"), path=path),
         excluded_config_ids=_config_ids(raw.get("excluded_config_ids"), path=path),
         entity_by_config_id=entity_map,
+        entity_by_crm_category_id=crm_category_entity_map,
         incremental_overlap_seconds=overlap,
         recent_page_size=page_size,
     )

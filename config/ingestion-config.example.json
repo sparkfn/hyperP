@@ -27,6 +27,7 @@
     "included_config_ids": [],
     "excluded_config_ids": [],
     "entity_by_config_id": {},
+    "entity_by_crm_category_id": {},
     "incremental_overlap_seconds": 300,
     "recent_page_size": 50
   },
