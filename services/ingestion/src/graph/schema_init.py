@@ -13,6 +13,7 @@ import logging
 from pathlib import Path
 
 from src.graph.client import Neo4jClient
+from src.graph.queries.ingestion_control import CREATE_LOGICAL_RUN_CONSTRAINTS
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +37,7 @@ ON (sr.migration_identity_key, sr.migration_source_record_version,
     """CREATE INDEX source_record_lifecycle_existing_version_key IF NOT EXISTS
 FOR (sr:SourceRecord)
 ON (sr.source_version_key)""",
+    *CREATE_LOGICAL_RUN_CONSTRAINTS,
 )
 
 DEFERRED_SOURCE_RECORD_CONSTRAINTS: tuple[str, ...] = (
