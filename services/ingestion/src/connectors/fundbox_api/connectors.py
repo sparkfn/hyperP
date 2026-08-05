@@ -69,11 +69,13 @@ class FundboxApiConnector(SourceConnector):
         self._previous_source_ids = previous_source_ids
         self.latest_effective_updated_at: str | None = None
         self.current_source_ids: set[int] | None = None
+        self.reconciliation_snapshot_at: str | None = None
         self.reconciliation_completed = False
         self._closed = False
 
     def fetch_records(self) -> Iterator[dict[str, JsonValue]]:
         try:
+            self.reconciliation_snapshot_at = datetime.now(UTC).isoformat()
             emitted_ids: set[int] = set()
             for composite in self._client.iter_source(
                 self.resource,
@@ -101,11 +103,14 @@ class FundboxApiConnector(SourceConnector):
                     yield self.build_record(composite)
 
             retired_at = datetime.now(UTC).isoformat()
+            snapshot_at = self.reconciliation_snapshot_at
+            assert snapshot_at is not None
             missing_ids = self._previous_source_ids - current_ids
             for root_id in sorted(missing_ids):
                 yield {
                     "_retire_source_record_id": self.source_record_id(root_id),
                     "_retired_at": retired_at,
+                    "_reconciliation_snapshot_at": snapshot_at,
                 }
             self.current_source_ids = current_ids
             self.reconciliation_completed = True

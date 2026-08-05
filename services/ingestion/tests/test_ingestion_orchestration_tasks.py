@@ -86,6 +86,10 @@ def test_start_task_builds_identity_group_before_the_dependent_callback(
     callback = cast(Signature, captured_steps[1])
     assert callback.task == "src.ingestion_orchestration_tasks.start_dependent_ingestions_task"
     assert [signature.options["priority"] for signature in captured_groups[0].signatures] == [1] * 6
+    assert all(
+        signature.kwargs["wait_for_source"] is True
+        for signature in captured_groups[0].signatures
+    )
 
 
 def test_dependent_phase_is_only_queued_after_clean_identity_results(

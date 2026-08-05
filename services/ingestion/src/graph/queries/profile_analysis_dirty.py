@@ -60,11 +60,23 @@ RETURN [person_id IN collect(DISTINCT neighbor.person_id)
 
 
 RETIRE_SOURCE_EVIDENCE = """
+MERGE (lock:SourceRecordIdentityLock {
+    source_system: $source_system,
+    source_record_id: $source_record_id
+})
+SET lock.locked_at = datetime()
+WITH lock
 MATCH (sr:SourceRecord {source_record_id: $source_record_id})
       -[:FROM_SOURCE]->(:SourceSystem {source_key: $source_system})
 WHERE sr.lifecycle_status IN ['active', 'pending_review']
    OR (sr.lifecycle_status IS NULL AND sr.is_latest = true)
 WITH collect(sr) AS records
+WHERE NOT any(record IN records WHERE
+    (record.ingested_at IS NOT NULL
+        AND record.ingested_at > datetime($reconciliation_snapshot_at))
+    OR (record.activated_at IS NOT NULL
+        AND record.activated_at > datetime($reconciliation_snapshot_at))
+)
 CALL (records) {
   WITH records
   WITH [source IN records WHERE source.lifecycle_status = 'active'

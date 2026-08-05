@@ -7,6 +7,7 @@ import json
 import logging
 import re
 import sys
+import uuid
 from typing import Protocol, TypedDict, runtime_checkable
 
 import httpx
@@ -554,6 +555,42 @@ def _create_ingest_run(client: Neo4jClient, source_key: str, mode: str) -> str:
         return session.execute_write(_tx)
 
 
+def _create_or_reuse_worker_ingest_run(
+    client: Neo4jClient,
+    source_key: str,
+    mode: str,
+    task_id: str,
+) -> tuple[str, str, bool]:
+    """Return the durable run for one logical Celery task delivery."""
+
+    def _tx(tx: ManagedTransaction) -> tuple[str, str, bool]:
+        record = tx.run(
+            queries.CREATE_OR_REUSE_WORKER_INGEST_RUN,
+            source_key=source_key,
+            run_type=mode,
+            mode=mode,
+            worker_task_id=task_id,
+            creation_token=uuid.uuid4().hex,
+        ).single()
+        if record is None:
+            raise ValueError(
+                f"Worker task {task_id} is already associated with a different source or mode"
+            )
+        run_id_value = record["ingest_run_id"]
+        status_value = record["status"]
+        created_value = record["created"]
+        if (
+            not isinstance(run_id_value, str)
+            or not isinstance(status_value, str)
+            or not isinstance(created_value, bool)
+        ):
+            raise ValueError("Worker IngestRun query returned invalid data")
+        return run_id_value, status_value, created_value
+
+    with client.session() as session:
+        return session.execute_write(_tx)
+
+
 def finalize_ingest_run(
     client: Neo4jClient,
     ingest_run_id: str,
@@ -686,12 +723,18 @@ def _ingest_all_records_open(
     for raw_record in connector.fetch_records():
         retirement_id = raw_record.get("_retire_source_record_id")
         retired_at = raw_record.get("_retired_at")
-        if isinstance(retirement_id, str) and isinstance(retired_at, str):
+        reconciliation_snapshot_at = raw_record.get("_reconciliation_snapshot_at")
+        if (
+            isinstance(retirement_id, str)
+            and isinstance(retired_at, str)
+            and isinstance(reconciliation_snapshot_at, str)
+        ):
             retire_source_evidence(
                 client,
                 connector.get_source_key(),
                 retirement_id,
                 retired_at,
+                reconciliation_snapshot_at,
             )
             success += 1
             _report_record_outcome(connector, succeeded=True)
@@ -805,12 +848,39 @@ def run_ingestion(
         # connector-construction failure (e.g. a source dispatched before its
         # env is provisioned) is recorded as a failed run instead of vanishing
         # from the runs UI.
-        ingest_run_id = existing_ingest_run_id or _create_ingest_run(client, source_key, mode)
+        if existing_ingest_run_id is not None:
+            ingest_run_id = existing_ingest_run_id
+            existing_status: str | None = None
+            worker_run_created = False
+        elif task_id is not None:
+            ingest_run_id, existing_status, worker_run_created = _create_or_reuse_worker_ingest_run(
+                client,
+                source_key,
+                mode,
+                task_id,
+            )
+        else:
+            ingest_run_id = _create_ingest_run(client, source_key, mode)
+            existing_status = None
+            worker_run_created = True
         logger.info(
             "IngestRun %s %s",
             ingest_run_id,
-            "reused" if existing_ingest_run_id is not None else "created",
+            "reused" if existing_ingest_run_id is not None or not worker_run_created else "created",
         )
+
+        if existing_status in {"completed", "completed_with_errors", "failed"}:
+            return {
+                "ingest_run_id": ingest_run_id,
+                "status": existing_status,
+                "succeeded": 0,
+                "errors": 0,
+                "skipped": 1,
+                "source_key": source_key,
+                "mode": mode,
+                "dump_path": dump_path,
+                "entity_key": entity_key,
+            }
 
         success = errors = skipped = 0
         try:

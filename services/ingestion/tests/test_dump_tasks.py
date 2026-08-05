@@ -222,6 +222,77 @@ def test_run_ingestion_task_retries_distinct_dispatched_run_when_source_is_busy(
     assert isinstance(retry_calls[0], tasks._SourceAlreadyRunningError)
 
 
+def test_worker_loss_redelivery_retries_its_own_stale_source_lock(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("NEO4J_PASSWORD", "test")
+    from src import tasks
+
+    class FakeRedis:
+        def set(self, _name: str, _value: str, *, nx: bool, ex: int) -> bool:
+            assert nx is True
+            assert ex > 0
+            return False
+
+        def get(self, _name: str) -> str:
+            return "task-redelivered"
+
+    monkeypatch.setattr(tasks, "setup_logging", lambda _level: None)
+    monkeypatch.setattr(tasks, "get_settings", lambda: _Settings())
+    monkeypatch.setattr(tasks, "initialize_ingestion_graph", lambda: None)
+    monkeypatch.setattr(tasks, "_acquire_init_lock", lambda: _NullContext())
+    monkeypatch.setattr(tasks, "_redis_client", FakeRedis)
+
+    retry_calls: list[Exception | None] = []
+
+    def retry(*, exc: Exception | None = None, **_kwargs: object) -> Retry:
+        retry_calls.append(exc)
+        raise Retry()
+
+    monkeypatch.setattr(tasks.run_ingestion_task, "retry", retry)
+    tasks.run_ingestion_task.push_request(id="task-redelivered", retries=0)
+    try:
+        with pytest.raises(Retry):
+            tasks.run_ingestion_task.run("bitrix_chat", "api")
+    finally:
+        tasks.run_ingestion_task.pop_request()
+
+    assert len(retry_calls) == 1
+    error = retry_calls[0]
+    assert isinstance(error, tasks._SourceAlreadyRunningError)
+    assert error.held_by_same_task is True
+
+
+def test_separate_duplicate_task_remains_safely_deduplicated(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("NEO4J_PASSWORD", "test")
+    from src import tasks
+
+    class FakeRedis:
+        def set(self, _name: str, _value: str, *, nx: bool, ex: int) -> bool:
+            assert nx is True
+            assert ex > 0
+            return False
+
+        def get(self, _name: str) -> str:
+            return "different-task"
+
+    monkeypatch.setattr(tasks, "setup_logging", lambda _level: None)
+    monkeypatch.setattr(tasks, "get_settings", lambda: _Settings())
+    monkeypatch.setattr(tasks, "initialize_ingestion_graph", lambda: None)
+    monkeypatch.setattr(tasks, "_acquire_init_lock", lambda: _NullContext())
+    monkeypatch.setattr(tasks, "_redis_client", FakeRedis)
+    tasks.run_ingestion_task.push_request(id="new-task", retries=0)
+    try:
+        result = tasks.run_ingestion_task.run("bitrix_chat", "api")
+    finally:
+        tasks.run_ingestion_task.pop_request()
+
+    assert result["status"] == "already_running"
+    assert result["skipped"] == 1
+
+
 def test_terminal_dispatched_run_redelivery_is_idempotent_noop(
     monkeypatch: MonkeyPatch,
 ) -> None:

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import httpx
+from pytest import MonkeyPatch
 from src import main
 from src.graph import queries
+from src.graph.schema_init import BASE_LIFECYCLE_CONSTRAINTS
 
 
 def test_failure_summary_classifies_timeout_and_retains_task_context() -> None:
@@ -87,6 +89,57 @@ def test_safe_resume_checkpoint_is_preserved_when_records_are_rejected() -> None
 
 def test_worker_created_ingest_run_retains_mode() -> None:
     assert "mode: $mode" in queries.CREATE_INGEST_RUN
+
+
+def test_worker_created_ingest_run_reuses_the_stable_celery_task_identity() -> None:
+    query = queries.CREATE_OR_REUSE_WORKER_INGEST_RUN
+
+    assert "MERGE (ir:IngestRun {worker_task_id: $worker_task_id})" in query
+    assert "coalesce(ir.creation_token = $creation_token, false) AS created" in query
+    assert "ir.source_key = $source_key AND ir.mode = $mode" in query
+    assert any("ingest_run_worker_task_id_unique" in item for item in BASE_LIFECYCLE_CONSTRAINTS)
+
+
+def test_terminal_worker_run_redelivery_skips_connector_creation(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    class GraphClient:
+        closed = False
+
+        def verify_connectivity(self) -> None:
+            return None
+
+        def close(self) -> None:
+            self.closed = True
+
+    client = GraphClient()
+    monkeypatch.setattr(main, "get_settings", lambda: object())
+    monkeypatch.setattr(main, "Neo4jClient", lambda _settings: client)
+    monkeypatch.setattr(main, "IngestPipeline", lambda _client: object())
+    monkeypatch.setattr(
+        main,
+        "_create_or_reuse_worker_ingest_run",
+        lambda *_args: ("run-1", "completed", False),
+    )
+    monkeypatch.setattr(
+        main,
+        "get_connector",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("terminal redelivery must not create a connector")
+        ),
+    )
+
+    result = main.run_ingestion(
+        "fundbox",
+        mode="api",
+        initialize_graph=False,
+        task_id="task-123",
+    )
+
+    assert result["ingest_run_id"] == "run-1"
+    assert result["status"] == "completed"
+    assert result["skipped"] == 1
+    assert client.closed is True
 
 
 def test_isolated_durable_failures_can_commit_connector_progress() -> None:

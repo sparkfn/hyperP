@@ -104,7 +104,7 @@ def _ingestion_signature(spec: IngestionTaskSpec) -> Signature:
     return celery_app.signature(
         "src.tasks.run_ingestion_task",
         args=(spec.source_key, spec.mode, spec.dump_path),
-        kwargs={"entity_key": spec.entity_key},
+        kwargs={"entity_key": spec.entity_key, "wait_for_source": True},
         queue=INGESTION_QUEUE,
         priority=spec.priority,
     )
