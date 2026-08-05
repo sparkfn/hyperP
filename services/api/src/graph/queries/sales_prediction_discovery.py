@@ -1,11 +1,11 @@
-"""Read-only Cypher used by sales-prediction feasibility discovery."""
+"""Read-only Cypher used by CRM-WON feasibility discovery."""
 
 from __future__ import annotations
 
 DISCOVERY_SOURCE_COVERAGE = """
 MATCH (source:SourceSystem)
 OPTIONAL MATCH (record:SourceRecord)-[:FROM_SOURCE]->(source)
-WHERE record.ingested_at IS NULL OR record.ingested_at <= datetime($as_of_at)
+WHERE record.ingested_at IS NULL OR record.ingested_at <= datetime($report_cutoff_at)
 WITH source, record
 WHERE $entity_keys = [] OR record.entity_key IN $entity_keys
 RETURN source.source_key AS source_key,
@@ -28,11 +28,21 @@ ORDER BY entity_key, source_key, record_type
 """
 
 DISCOVERY_DEAL_RECORDS = """
-MATCH (record:SourceRecord {record_type: 'crm_deal'})-[:FROM_SOURCE]->(source:SourceSystem)
+MATCH (scoped:SourceRecord {record_type: 'crm_deal'})-[:FROM_SOURCE]->(source:SourceSystem)
+WHERE scoped.ingested_at IS NOT NULL
+  AND scoped.ingested_at <= datetime($report_cutoff_at)
+  AND ($entity_keys = [] OR scoped.entity_key IN $entity_keys)
+WITH DISTINCT source, scoped.source_record_id AS logical_record_id
+MATCH (record:SourceRecord {
+    record_type: 'crm_deal',
+    source_record_id: logical_record_id
+})-[:FROM_SOURCE]->(source)
 WHERE record.ingested_at IS NOT NULL
-  AND record.ingested_at <= datetime($as_of_at)
-  AND ($entity_keys = [] OR record.entity_key IN $entity_keys)
+  AND record.ingested_at <= datetime($report_cutoff_at)
 OPTIONAL MATCH (record)-[:LINKED_TO]->(person:Person)
+OPTIONAL MATCH (history:SourceRecord {record_type: 'crm_history'})-[:CHILD_OF]->(record)
+WHERE history.ingested_at IS NOT NULL
+  AND history.ingested_at <= datetime($report_cutoff_at)
 RETURN coalesce(record.entity_key, '') AS entity_key,
        source.source_key AS source_key,
        record.source_record_id AS logical_record_id,
@@ -45,7 +55,8 @@ RETURN coalesce(record.entity_key, '') AS entity_key,
        toString(record.rejected_at) AS rejected_at,
        toString(record.link_failed_at) AS link_failed_at,
        record.raw_payload AS raw_payload,
-       count(DISTINCT person) AS linked_person_count
+       count(DISTINCT person) AS linked_person_count,
+       count(DISTINCT history) AS crm_history_child_count
 ORDER BY source_key, logical_record_id, source_record_version
 """
 
@@ -53,7 +64,7 @@ DISCOVERY_INTERACTION_RECORDS = """
 MATCH (record:SourceRecord)-[:FROM_SOURCE]->(source:SourceSystem)
 WHERE record.record_type IN ['conversation', 'call', 'crm_history']
   AND record.ingested_at IS NOT NULL
-  AND record.ingested_at <= datetime($as_of_at)
+  AND record.ingested_at <= datetime($report_cutoff_at)
   AND ($entity_keys = [] OR record.entity_key IN $entity_keys)
 RETURN coalesce(record.entity_key, '') AS entity_key,
        source.source_key AS source_key,
@@ -72,47 +83,11 @@ RETURN coalesce(record.entity_key, '') AS entity_key,
 ORDER BY source_key, record_type, logical_record_id, source_record_version
 """
 
-DISCOVERY_SALES_RECORDS = """
-MATCH (record:SourceRecord {record_type: 'sales'})-[:FROM_SOURCE]->(source:SourceSystem)
-WHERE record.ingested_at IS NOT NULL
-  AND record.ingested_at <= datetime($as_of_at)
-  AND ($entity_keys = [] OR record.entity_key IN $entity_keys)
-OPTIONAL MATCH (record)-[:FOR_CUSTOMER_RECORD]->(:SourceRecord)-[:LINKED_TO]->(person:Person)
-RETURN coalesce(record.entity_key, '') AS entity_key,
-       source.source_key AS source_key,
-       record.source_record_id AS logical_record_id,
-       toInteger(coalesce(record.source_record_version, '1')) AS source_record_version,
-       coalesce(record.lifecycle_status, 'active') AS lifecycle_status,
-       toString(record.observed_at) AS observed_at,
-       toString(record.ingested_at) AS ingested_at,
-       toString(record.activated_at) AS activated_at,
-       toString(record.superseded_at) AS superseded_at,
-       toString(record.rejected_at) AS rejected_at,
-       toString(record.link_failed_at) AS link_failed_at,
-       record.raw_payload AS raw_payload,
-       count(DISTINCT person) AS linked_person_count
-ORDER BY source_key, logical_record_id, source_record_version
-"""
-
-DISCOVERY_DEAL_ORDER_LINKAGE = """
-MATCH (deal:SourceRecord {record_type: 'crm_deal'})
-WHERE deal.ingested_at IS NOT NULL
-  AND deal.ingested_at <= datetime($as_of_at)
-  AND ($entity_keys = [] OR deal.entity_key IN $entity_keys)
-OPTIONAL MATCH (deal)-[relationship]-(order:Order)
-RETURN coalesce(deal.entity_key, '') AS entity_key,
-       count(DISTINCT deal.source_record_id) AS logical_deal_count,
-       count(DISTINCT CASE WHEN order IS NOT NULL THEN deal.source_record_id END)
-           AS directly_linked_deal_count,
-       count(DISTINCT order) AS directly_linked_order_count
-ORDER BY entity_key
-"""
-
 DISCOVERY_LATE_ARRIVAL = """
 MATCH (record:SourceRecord)
 WHERE record.observed_at IS NOT NULL
   AND record.ingested_at IS NOT NULL
-  AND record.ingested_at <= datetime($as_of_at)
+  AND record.ingested_at <= datetime($report_cutoff_at)
   AND ($entity_keys = [] OR record.entity_key IN $entity_keys)
 WITH record,
      duration.inSeconds(record.observed_at, record.ingested_at).seconds AS delay_seconds

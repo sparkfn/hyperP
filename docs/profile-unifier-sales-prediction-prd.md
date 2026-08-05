@@ -2,23 +2,24 @@
 
 Status: draft
 
-Date: 2026-08-04
+Date: 2026-08-05
 
-Initial use case: 30-day sales conversion propensity
+Initial use case: 30-day CRM WON propensity
 
 ## Purpose
 
-HyperP has customer and commercial evidence across CRM deals, CRM activity,
-invoices, orders, messages, and calls. This document proposes an explainable
+HyperP has customer and relationship evidence across CRM deals, CRM activity,
+messages, and calls. This document proposes an explainable
 predictive capability that helps sales teams prioritize open opportunities.
 
 The first model should answer one specific decision question:
 
 > For an active Person with an open CRM opportunity, what is the probability
-> that the opportunity will produce a won deal, paid invoice, or completed order
-> within the next 30 days?
+> that the deal will first enter an approved CRM WON stage within the next 30 days?
 
-Call this the **Sales Conversion Propensity** prediction. Expected value,
+Call this the **CRM WON Propensity** prediction. CRM WON is an operational sales
+outcome, not evidence of payment, fulfillment, order completion, or realized revenue.
+Expected value,
 time-to-close, repeat purchase, churn, product affinity, and next-best-action
 should remain separate future models with their own labels and evaluation.
 
@@ -49,15 +50,15 @@ A Person may have several open deals, but each deal receives its own probability
 The Person page can present the highest-priority opportunity or an aggregate,
 while the model continues to train and evaluate at deal level.
 
-A positive outcome occurs within 30 days after `as_of_at` when:
+A positive outcome occurs only when the deal first enters an approved WON stage
+in `(as_of_at, as_of_at + 30 days]`.
 
-- the CRM deal reaches an approved won stage;
-- an invoice becomes paid; or
-- an order reaches an approved completed or fulfilled state.
-
-A row becomes negative only when the deal is explicitly lost or the complete
-30-day window passes without a qualifying conversion. Recent open deals must
-not be labeled negative before their outcome window matures.
+A row becomes negative only after the complete 30-day window passes without a
+qualifying conversion. A LOST transition before the horizon ends does not by
+itself prove a negative because the deal may reopen; the approved reopen/revert
+policy determines whether such rows remain eligible, are censored, or are
+excluded. Recent open deals must remain unlabeled until their outcome window
+matures.
 
 ### Phase 2 — Expected value
 
@@ -138,18 +139,17 @@ quality differ materially.
 - days in stage and since creation;
 - stage-transition and regression counts;
 - expected amount and product/category;
-- quote, discount, and invoice indicators;
-- invoice state at the cutoff;
+- quote and discount indicators;
 - open deal count for the Person;
 - prior won/lost counts and win rate;
 - days since the last won deal;
 - historical sales-cycle duration; and
-- current amount relative to prior order value.
+- amount revision and availability status.
 
 Historical source versions must reconstruct state at the prediction cutoff.
 Current mutable deal fields are not sufficient for training.
 
-### Invoice and order features
+### Deferred commerce features
 
 - purchase recency and frequency;
 - lifetime revenue;
@@ -161,7 +161,8 @@ Current mutable deal fields are not sufficient for training.
 - previous invoice payment delay; and
 - similarity between the current deal and historical purchases.
 
-Normalize amounts into an agreed reporting currency before combining entities.
+Orders, invoices, payments, fulfillment, and realized revenue are deferred to a
+separately governed future outcome version. They are not label evidence for this MVP.
 
 ### Message features
 
@@ -245,7 +246,7 @@ After the baseline is stable, add explicitly defined sequences such as:
 - message → call → quote within seven days;
 - prompt agent response after a customer message;
 - call followed by customer reply;
-- product inquiry followed by invoice;
+- product inquiry followed by quote activity;
 - repeated engagement without stage movement;
 - multiple channels active in one week; and
 - engagement acceleration or decline.
@@ -278,7 +279,7 @@ values must not become features.
 ### Business-rule baseline
 
 Benchmark simple rules using recent customer replies, substantive calls, quotes,
-invoices, previous purchases, and normal stage age. Machine learning must show
+deal amount availability, and normal stage age. Machine learning must show
 material improvement over this baseline.
 
 ### Logistic-regression baseline
@@ -339,7 +340,7 @@ not offline model performance alone.
 ## Problem statement
 
 Sales representatives must manually determine which customers to contact first
-despite having fragmented deal, invoice, order, message, and call evidence.
+despite having fragmented deal, message, and call evidence.
 Activity volume is ambiguous and does not provide a consistent priority.
 
 HyperP should provide an explainable, calibrated estimate for prioritizing open
@@ -348,8 +349,7 @@ opportunities without automating customer treatment.
 ## Product objective
 
 Provide a daily prioritized list of open opportunities ranked by their
-probability of producing a won deal, paid invoice, or completed order within 30
-days.
+probability of first entering an approved CRM WON stage within 30 days.
 
 The product must use point-in-time evidence, support incomplete modalities,
 show reasons and cautions, distinguish insufficient data, retain immutable
@@ -407,14 +407,9 @@ recomputation is pending.
 
 ## Outcome contract
 
-The primary label is `conversion_30d`. Recommended evidence precedence is:
-
-1. completed or fulfilled order;
-2. paid invoice; and
-3. approved CRM won state.
-
-Configuration must define refunds, chargebacks, cancellations, reopened deals,
-duplicate invoices, and administrative won stages.
+The primary label is `crm_won_30d`: first entry into an approved CRM WON stage
+in the 30-day horizon. Configuration must define entity-specific open, WON,
+LOST, excluded, reopened, reverted, stale, and administrative-stage treatment.
 
 ## Functional requirements
 
@@ -425,7 +420,7 @@ available at or before `as_of_at`.
 
 ### FR-2 — Prediction generation
 
-Generate one current `conversion_30d` prediction per eligible deal and approved
+Generate one current `crm_won_30d` prediction per eligible deal and approved
 model version.
 
 ### FR-3 — Immutable history
@@ -442,8 +437,8 @@ and score-change analysis.
 ### FR-5 — Invalidation
 
 Mark a prediction stale after material accepted changes to deal stage/amount,
-invoice state, order state, valid messages, substantive calls, source-record
-versions, Person merge/unmerge, or customer assignment.
+valid messages, substantive calls, source-record versions, Person merge/unmerge,
+or customer assignment.
 
 ### FR-6 — Explanation
 
@@ -463,8 +458,8 @@ Feedback does not automatically become a training label.
 
 ### FR-9 — Administrative controls
 
-Allow entity enablement, stage/outcome mappings, accepted order/invoice states,
-active model inspection, monitoring, disablement, and rollback.
+Allow entity enablement, stage/outcome mappings, reopen/revert policy, active
+model inspection, monitoring, disablement, and rollback.
 
 ## Output contract
 
@@ -473,21 +468,21 @@ active model inspection, monitoring, disablement, and rollback.
   "prediction_id": "uuid",
   "person_id": "uuid",
   "deal_key": "bitrix:12345",
-  "prediction_type": "conversion_30d",
+  "prediction_type": "crm_won_30d",
   "as_of_at": "2026-08-04T00:00:00Z",
   "valid_until": "2026-08-05T00:00:00Z",
   "probability": 0.72,
   "score": 72,
   "priority_band": "high",
   "data_sufficiency": "medium",
-  "model_version": "conversion-30d-v1",
+  "model_version": "crm-won-30d-v1",
   "feature_version": "sales-features-v1",
   "input_revision": 19,
   "reason_codes": [
     "customer_replied_recently",
     "substantive_call_completed",
-    "repeat_customer",
-    "invoice_created"
+    "deal_amount_available",
+    "normal_stage_age"
   ],
   "caution_codes": ["limited_message_history"]
 }
@@ -526,7 +521,7 @@ Suggested graph relationships:
 (:SourceRecord {record_type: "crm_deal"})-[:HAS_SALES_PREDICTION]
   ->(:SalesPrediction)
 (:Person)-[:CURRENT_SALES_PREDICTION {
-  prediction_type: "conversion_30d",
+      prediction_type: "crm_won_30d",
   deal_key: "..."
 }]->(:SalesPrediction)
 ```
@@ -566,7 +561,7 @@ priority, sufficiency, top reason, last interaction, and prediction age.
 The Person/deal card presents an estimate such as:
 
 ```text
-72% estimated probability of conversion within 30 days
+72% estimated probability of entering CRM WON within 30 days
 Data sufficiency: Medium
 Calculated: 04 Aug 2026
 
@@ -680,7 +675,7 @@ purchase, product affinity, and uplift-based next-best-action.
 
 ## Decisions required before implementation
 
-1. Outcome and precedence across deal, invoice, and order evidence.
+1. Entity-specific CRM stage, reopen, revert, and exclusion mappings.
 2. Prediction horizon; 30 days is recommended.
 3. Prediction unit; deal-level is recommended with Person-level presentation.
 4. Pooled versus entity-specific models and calibration.
