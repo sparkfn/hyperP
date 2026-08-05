@@ -1,13 +1,16 @@
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Collection, Iterable, Iterator
 from datetime import UTC, datetime, timedelta
+from typing import Protocol, runtime_checkable
 
 import pytest
 from pytest import MonkeyPatch
 from src.connectors.bitrix_openlines.connector import BitrixOpenLinesConnector
+from src.connectors.bitrix_openlines.crm_deal_filter import CrmDealPage
 from src.connectors.bitrix_openlines.models import (
     ChatReference,
+    CrmDeal,
     CrmDiscoveryPage,
     CrmOwnerReference,
     DialogMetadata,
@@ -17,6 +20,11 @@ from src.connectors.bitrix_openlines.models import (
 from src.connectors.bitrix_openlines.watermark import BackfillCheckpoint
 from src.exclusion_config import ExclusionFile
 from src.ingestion_config import BitrixOpenLinesConfig
+
+
+@runtime_checkable
+class LegacyCrmDealClient(Protocol):
+    def iter_crm_deals(self) -> Iterable[CrmDeal]: ...
 
 
 class StubClient:
@@ -58,6 +66,15 @@ class StubClient:
 
     def get_history(self, chat_id: int) -> list[OpenLineMessage]:
         return self.get_messages(chat_id)
+
+    def iter_crm_deal_pages(
+        self,
+        _category_ids: Collection[str],
+    ) -> Iterator[CrmDealPage]:
+        if not isinstance(self, LegacyCrmDealClient):
+            return
+        deals = tuple(self.iter_crm_deals())
+        yield CrmDealPage(deals, len(deals))
 
     def close(self) -> None:
         return None
@@ -1184,6 +1201,161 @@ def test_incremental_crm_skips_excluded_categories_and_their_activities() -> Non
     assert connector._counters.crm_deals_skipped_missing_category == 1
     assert connector._counters.crm_activities_skipped_excluded_deal == 2
     assert connector._counters.crm_activities_skipped_missing_deal == 0
+
+
+def test_incremental_crm_passes_the_source_scope_and_defensively_skips_bad_response(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    from src.connectors.bitrix_openlines.models import CrmActivity
+
+    caplog.set_level("INFO")
+
+    class FilteredCrmClient(StubClient):
+        def __init__(self) -> None:
+            self.requested_categories: tuple[str, ...] | None = None
+            self.activity_requests = 0
+
+        def iter_crm_deal_pages(
+            self,
+            category_ids: Collection[str],
+        ) -> Iterator[CrmDealPage]:
+            self.requested_categories = tuple(category_ids)
+            yield CrmDealPage(
+                (
+                    CrmDeal(
+                        id="701",
+                        title="Scoped deal",
+                        category_id="2",
+                        stage_id="NEW",
+                        observed_at=datetime(2026, 7, 20, 8, tzinfo=UTC),
+                        primary_contact=None,
+                        contacts=(),
+                        contact_count=0,
+                        has_ambiguous_contacts=False,
+                        raw_payload={"ID": "701"},
+                    ),
+                    CrmDeal(
+                        id="702",
+                        title="Unexpected deal",
+                        category_id="99",
+                        stage_id="NEW",
+                        observed_at=datetime(2026, 7, 20, 8, tzinfo=UTC),
+                        primary_contact=None,
+                        contacts=(),
+                        contact_count=0,
+                        has_ambiguous_contacts=False,
+                        raw_payload={"ID": "702"},
+                    ),
+                ),
+                2,
+            )
+
+        def iter_crm_activities(self) -> list[CrmActivity]:
+            self.activity_requests += 1
+            return []
+
+    client = FilteredCrmClient()
+    connector = BitrixOpenLinesConnector(
+        client,
+        StubWatermark(),
+        BitrixOpenLinesConfig(
+            included_channel_types=[],
+            included_crm_category_ids=["2", "2"],
+            entity_by_crm_category_id={"2": "speedzone"},
+        ),
+        mode="api",
+        incremental=True,
+    )
+
+    records = list(connector.fetch_records())
+
+    assert [record["source_record_id"] for record in records] == ["bitrix-crm-deal-701"]
+    assert client.requested_categories == ("2",)
+    assert client.activity_requests == 1
+    assert connector._counters.crm_categories_requested == 1
+    assert connector._counters.crm_deal_api_pages == 1
+    assert connector._counters.crm_deals_returned == 2
+    assert connector._counters.crm_deals_skipped_excluded_category == 1
+    assert "crm_deal_api_pages=1" in caplog.text
+
+
+def test_incremental_crm_empty_source_scope_does_not_request_crm(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level("INFO")
+
+    class NoCrmRequestsClient(StubClient):
+        def iter_crm_deal_pages(
+            self,
+            _category_ids: Collection[str],
+        ) -> Iterator[CrmDealPage]:
+            raise AssertionError("empty category scope must not request CRM deals")
+            yield
+
+        def iter_crm_activities(self) -> list[object]:
+            raise AssertionError("empty category scope must not request CRM activities")
+
+    connector = BitrixOpenLinesConnector(
+        NoCrmRequestsClient(),
+        StubWatermark(),
+        BitrixOpenLinesConfig(included_channel_types=[]),
+        mode="api",
+        incremental=True,
+    )
+
+    assert list(connector.fetch_records()) == []
+    assert connector._counters.crm_categories_requested == 0
+    assert connector._counters.crm_deal_api_pages == 0
+    assert "reason=empty_category_allowlist" in caplog.text
+
+
+def test_incremental_crm_page_failure_does_not_commit_the_watermark() -> None:
+    class FailingPagedCrmClient(StubClient):
+        def iter_crm_deal_pages(
+            self,
+            _category_ids: Collection[str],
+        ) -> Iterator[CrmDealPage]:
+            yield CrmDealPage(
+                (
+                    CrmDeal(
+                        id="701",
+                        title="First page deal",
+                        category_id="2",
+                        stage_id="NEW",
+                        observed_at=datetime(2026, 7, 20, 8, tzinfo=UTC),
+                        primary_contact=None,
+                        contacts=(),
+                        contact_count=0,
+                        has_ambiguous_contacts=False,
+                        raw_payload={"ID": "701"},
+                    ),
+                ),
+                1,
+            )
+            raise RuntimeError("upstream page failed")
+
+        def iter_crm_activities(self) -> list[object]:
+            raise AssertionError("activities must not run after a page failure")
+
+    watermark = StubWatermark()
+    connector = BitrixOpenLinesConnector(
+        FailingPagedCrmClient(),
+        watermark,
+        BitrixOpenLinesConfig(
+            included_channel_types=[],
+            included_crm_category_ids=["2"],
+            entity_by_crm_category_id={"2": "speedzone"},
+        ),
+        mode="api",
+        incremental=True,
+    )
+
+    with pytest.raises(RuntimeError, match="Bitrix CRM detail retrieval failed"):
+        list(connector.fetch_records())
+
+    connector.commit_watermark()
+
+    assert watermark.committed is None
 
 
 def test_incremental_crm_rejects_an_unmapped_deal_category() -> None:

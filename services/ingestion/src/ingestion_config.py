@@ -170,13 +170,16 @@ def _config_ids(raw: JsonValue, *, path: Path) -> list[str]:
     if not isinstance(raw, list):
         raise ValueError(f"Invalid ingestion config JSON: {path}")
     result: list[str] = []
+    seen: set[str] = set()
     for value in raw:
         if isinstance(value, bool) or not isinstance(value, (str, int)):
             raise ValueError(f"Invalid ingestion config JSON: {path}")
         normalized = str(value).strip()
         if not normalized.isdigit():
             raise ValueError(f"Invalid ingestion config JSON: {path}")
-        result.append(normalized)
+        if normalized not in seen:
+            seen.add(normalized)
+            result.append(normalized)
     return result
 
 

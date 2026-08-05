@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-from collections.abc import Iterable, Iterator
+from collections.abc import Collection, Iterable, Iterator
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Protocol, cast, runtime_checkable
@@ -15,6 +15,10 @@ from src.connectors.bitrix.connector import (
     BitrixChatConnector,
     _AgentMember,
     _ChatBundle,
+)
+from src.connectors.bitrix_openlines.crm_deal_filter import (
+    CrmDealPage,
+    normalize_crm_category_ids,
 )
 from src.connectors.bitrix_openlines.dialog_cache import DialogConfigCache
 from src.connectors.bitrix_openlines.discovery import stream_chats
@@ -70,7 +74,7 @@ class OpenLinesClient(Protocol):
 class CrmDetailsClient(Protocol):
     """Read-only CRM detail methods used only by API incremental ingestion."""
 
-    def iter_crm_deals(self) -> Iterable[CrmDeal]: ...
+    def iter_crm_deal_pages(self, category_ids: Collection[str]) -> Iterable[CrmDealPage]: ...
     def iter_crm_activities(self) -> Iterable[CrmActivity]: ...
 
 
@@ -95,6 +99,9 @@ class _PreparedChat:
 
 @dataclass
 class DiscoveryCounters:
+    crm_categories_requested: int = 0
+    crm_deal_api_pages: int = 0
+    crm_deals_returned: int = 0
     crm_deals_scanned: int = 0
     crm_deals_skipped_excluded_category: int = 0
     crm_deals_skipped_missing_category: int = 0
@@ -192,26 +199,37 @@ class BitrixOpenLinesConnector(SourceConnector):
 
     def _fetch_crm_records(self) -> Iterator[dict[str, JsonValue]]:
         """Emit CRM records without depending on Open Lines chat selection."""
-        if not self._crm_enrichment_enabled() or not self._config.included_crm_category_ids:
+        if not self._crm_enrichment_enabled():
             return
-        _validate_included_crm_category_mappings(self._config)
+        category_ids = _validate_included_crm_category_mappings(self._config)
+        self._counters.crm_categories_requested = len(category_ids)
+        if not category_ids:
+            logger.info(
+                "Bitrix CRM deal source filter skipped reason=empty_category_allowlist "
+                "crm_categories_requested=0 crm_deal_api_pages=0 crm_deals_returned=0"
+            )
+            return
         client = cast(CrmDetailsClient, self._client)
+        included_categories = frozenset(category_ids)
         deal_entities: dict[str, str] = {}
         excluded_deal_ids: set[str] = set()
         try:
-            for deal in client.iter_crm_deals():
-                self._counters.crm_deals_scanned += 1
-                deal_source_record_id = f"bitrix-crm-deal-{deal.id}"
-                if deal_source_record_id in self._emitted_crm_deal_ids:
-                    continue
-                entity_key = self._included_crm_deal_entity_key(deal)
-                if entity_key is None:
-                    excluded_deal_ids.add(deal.id)
-                    continue
-                deal_entities[deal.id] = entity_key
-                self._emitted_crm_deal_ids.add(deal_source_record_id)
-                yield _deal_envelope(deal, entity_key)
-                self._counters.records_emitted += 1
+            for page in client.iter_crm_deal_pages(category_ids):
+                self._counters.crm_deal_api_pages += 1
+                self._counters.crm_deals_returned += page.returned_count
+                for deal in page.deals:
+                    self._counters.crm_deals_scanned += 1
+                    deal_source_record_id = f"bitrix-crm-deal-{deal.id}"
+                    if deal_source_record_id in self._emitted_crm_deal_ids:
+                        continue
+                    entity_key = self._included_crm_deal_entity_key(deal, included_categories)
+                    if entity_key is None:
+                        excluded_deal_ids.add(deal.id)
+                        continue
+                    deal_entities[deal.id] = entity_key
+                    self._emitted_crm_deal_ids.add(deal_source_record_id)
+                    yield _deal_envelope(deal, entity_key)
+                    self._counters.records_emitted += 1
             for activity in client.iter_crm_activities():
                 self._counters.crm_activities_scanned += 1
                 activity_entity_key: str | None = deal_entities.get(activity.owner_id)
@@ -231,13 +249,17 @@ class BitrixOpenLinesConnector(SourceConnector):
 
     def _log_counters(self) -> None:
         logger.info(
-            "Bitrix Open Lines discovery summary mode=%s crm_deals_scanned=%d "
+            "Bitrix Open Lines discovery summary mode=%s crm_categories_requested=%d "
+            "crm_deal_api_pages=%d crm_deals_returned=%d crm_deals_scanned=%d "
             "crm_deals_skipped_excluded_category=%d crm_deals_skipped_missing_category=%d "
             "crm_activities_scanned=%d crm_activities_skipped_excluded_deal=%d "
             "crm_activities_skipped_missing_deal=%d "
             "chats_scanned=%d "
             "dialogs_requested=%d chats_skipped_by_config=%d records_emitted=%d",
             self._mode,
+            self._counters.crm_categories_requested,
+            self._counters.crm_deal_api_pages,
+            self._counters.crm_deals_returned,
             self._counters.crm_deals_scanned,
             self._counters.crm_deals_skipped_excluded_category,
             self._counters.crm_deals_skipped_missing_category,
@@ -419,12 +441,16 @@ class BitrixOpenLinesConnector(SourceConnector):
             self._mode == "api" and self._incremental and isinstance(self._client, CrmDetailsClient)
         )
 
-    def _included_crm_deal_entity_key(self, deal: CrmDeal) -> str | None:
+    def _included_crm_deal_entity_key(
+        self,
+        deal: CrmDeal,
+        included_categories: Collection[str],
+    ) -> str | None:
         category_id = deal.category_id
         if category_id is None or not category_id.isdigit():
             self._counters.crm_deals_skipped_missing_category += 1
             return None
-        if category_id not in self._config.included_crm_category_ids:
+        if category_id not in included_categories:
             self._counters.crm_deals_skipped_excluded_category += 1
             return None
         return _crm_deal_entity_key(deal, self._config.entity_by_crm_category_id)
@@ -663,10 +689,11 @@ def _crm_deal_entity_key(deal: CrmDeal, category_entities: dict[str, str]) -> st
     return entity_key
 
 
-def _validate_included_crm_category_mappings(config: BitrixOpenLinesConfig) -> None:
+def _validate_included_crm_category_mappings(config: BitrixOpenLinesConfig) -> tuple[str, ...]:
+    category_ids = normalize_crm_category_ids(config.included_crm_category_ids)
     missing_category_ids = [
         category_id
-        for category_id in config.included_crm_category_ids
+        for category_id in category_ids
         if category_id not in config.entity_by_crm_category_id
     ]
     if missing_category_ids:
@@ -674,6 +701,7 @@ def _validate_included_crm_category_mappings(config: BitrixOpenLinesConfig) -> N
         raise _CrmEntityMappingError(
             f"Included Bitrix CRM categories have no entity mapping: {formatted_ids}"
         )
+    return category_ids
 
 
 def _contact_identifier_group(contact: CrmContact) -> list[JsonValue]:
