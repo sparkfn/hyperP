@@ -22,6 +22,7 @@ _SOURCE_RECORD_COUNT = """
 CALL (p) {
   OPTIONAL MATCH (sr:SourceRecord)-[link:LINKED_TO]->(p)
   WHERE coalesce(link.is_active, true) = true
+    AND (sr.history_family IS NULL OR sr.history_family = 'activity')
     AND (sr.lifecycle_status = 'active'
       OR (sr.lifecycle_status IS NULL AND sr.is_latest = true))
   RETURN count(sr) AS source_record_count
@@ -32,6 +33,7 @@ _ENTITY_ENRICHMENT = """
 CALL (p) {
   OPTIONAL MATCH (sr_ent:SourceRecord)-[link:LINKED_TO]->(p)
   WHERE coalesce(link.is_active, true) = true
+    AND (sr_ent.history_family IS NULL OR sr_ent.history_family = 'activity')
     AND (sr_ent.lifecycle_status = 'active'
       OR (sr_ent.lifecycle_status IS NULL AND sr_ent.is_latest = true))
   OPTIONAL MATCH (sr_ent)-[:FROM_SOURCE]->(ss_ent:SourceSystem)
@@ -56,6 +58,7 @@ _ENTITY_COUNT = """
 CALL (p) {
   OPTIONAL MATCH (sr_ent:SourceRecord)-[link:LINKED_TO]->(p)
   WHERE coalesce(link.is_active, true) = true
+    AND (sr_ent.history_family IS NULL OR sr_ent.history_family = 'activity')
     AND (sr_ent.lifecycle_status = 'active'
       OR (sr_ent.lifecycle_status IS NULL AND sr_ent.is_latest = true))
   OPTIONAL MATCH (sr_ent)-[:FROM_SOURCE]->(ss_ent:SourceSystem)

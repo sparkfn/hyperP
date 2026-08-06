@@ -132,12 +132,12 @@ async def delete_report(
 @router.post(
     "/{report_key}/execute",
     response_model=ApiResponse[ReportResult],
-    dependencies=[Depends(require_scope("persons:read"))],
 )
 async def execute_report(
     report_key: str,
     body: ExecuteReportRequest,
     request: Request,
+    _user: AuthUser = Depends(require_admin),
     repo: ReportRepository = Depends(get_report_repo),
 ) -> ApiResponse[ReportResult]:
     """Execute a stored report with the supplied parameters."""

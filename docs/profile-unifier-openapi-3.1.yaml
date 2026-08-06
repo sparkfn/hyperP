@@ -2131,6 +2131,30 @@ components:
         parent_record_type:
           type: [string, 'null']
           enum: [identity, bankruptcy, rental_flat, relationship, conversation, sales, crm_deal, crm_history, call, null]
+        history_family:
+          type: [string, 'null']
+          enum: [activity, stage, null]
+          description: Typed CRM-history family; readers exclude unknown families.
+        history_kind:
+          type: [string, 'null']
+        history_source:
+          type: [string, 'null']
+        event_category_id:
+          type: [string, 'null']
+        event_stage_id:
+          type: [string, 'null']
+        event_stage_semantic_id:
+          type: [string, 'null']
+        event_at:
+          type: [string, 'null']
+          format: date-time
+        history_projection_version:
+          type: [string, 'null']
+        history_projection_source:
+          type: [string, 'null']
+        history_projected_at:
+          type: [string, 'null']
+          format: date-time
         observed_at:
           type: string
         ingested_at:
@@ -2209,6 +2233,29 @@ components:
         parent_record_type:
           type: [string, 'null']
           enum: [identity, bankruptcy, rental_flat, relationship, conversation, sales, crm_deal, crm_history, call, null]
+        history_family:
+          type: [string, 'null']
+          enum: [activity, stage, null]
+        history_kind:
+          type: [string, 'null']
+        history_source:
+          type: [string, 'null']
+        event_category_id:
+          type: [string, 'null']
+        event_stage_id:
+          type: [string, 'null']
+        event_stage_semantic_id:
+          type: [string, 'null']
+        event_at:
+          type: [string, 'null']
+          format: date-time
+        history_projection_version:
+          type: [string, 'null']
+        history_projection_source:
+          type: [string, 'null']
+        history_projected_at:
+          type: [string, 'null']
+          format: date-time
         observed_at:
           type: string
         ingested_at:

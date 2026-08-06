@@ -70,6 +70,16 @@ CREATE (history:SourceRecord {
     expected_active_source_record_pk: null,
     lifecycle_status: 'active',
     record_type: 'crm_history',
+    history_family: $history_family,
+    history_kind: $history_kind,
+    history_source: $history_source,
+    event_category_id: $event_category_id,
+    event_stage_id: $event_stage_id,
+    event_stage_semantic_id: $event_stage_semantic_id,
+    event_at: datetime($event_at),
+    history_projection_version: $history_projection_version,
+    history_projection_source: $history_projection_source,
+    history_projected_at: datetime(),
     extraction_confidence: null,
     extraction_method: null,
     conversation_ref: null,
@@ -173,6 +183,7 @@ MATCH (history:SourceRecord {
     source_record_id: 'bitrix-crm-history-' + crm_activity_id,
     record_type: 'crm_history'
 })-[:FROM_SOURCE]->(:SourceSystem {source_key: $source_system})
+WHERE history.history_family IS NULL OR history.history_family = 'activity'
 MERGE (history)-[:LINKED_TO]->(conversation)
 MERGE (conversation)-[:REPRESENTS_HISTORY_ITEM {
     crm_activity_id: crm_activity_id,
@@ -183,6 +194,7 @@ RETURN count(history) AS linked_history_count
 
 LINK_CRM_HISTORY_TO_EXISTING_CONVERSATIONS = """
 MATCH (history:SourceRecord {source_record_pk: $history_source_record_pk})
+WHERE history.history_family IS NULL OR history.history_family = 'activity'
 MATCH (conversation:SourceRecord {
     record_type: 'conversation',
     is_latest: true

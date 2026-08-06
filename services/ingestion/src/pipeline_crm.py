@@ -6,6 +6,7 @@ import json
 
 from neo4j import ManagedTransaction, Record
 
+from src.crm_history_contract import generic_activity_properties
 from src.graph import queries
 from src.graph.client import Neo4jClient
 from src.models import IngestResult, RecordType, SourceRecordEnvelope
@@ -23,6 +24,7 @@ def ingest_crm_history_record(
     if envelope.record_type != RecordType.CRM_HISTORY or envelope.parent_ref is None:
         raise ValueError("crm history ingestion requires a crm_history envelope with parent_ref")
     parent_ref = envelope.parent_ref
+    history = generic_activity_properties(envelope)
 
     def _work(tx: ManagedTransaction) -> IngestResult:
         load_locked_source_state(tx, envelope.source_system, envelope.source_record_id)
@@ -52,12 +54,24 @@ def ingest_crm_history_record(
             observed_at=envelope.observed_at,
             record_hash=envelope.record_hash,
             raw_payload=json.dumps(envelope.raw_payload, default=str),
+<<<<<<< HEAD
             history_family=envelope.history_family,
             history_kind=envelope.history_kind,
             history_source=envelope.history_source,
             event_at=envelope.event_at,
             projection_version=envelope.projection_version,
             projection_source=envelope.projection_source,
+=======
+            history_family=history.history_family.value,
+            history_kind=history.history_kind,
+            history_source=history.history_source,
+            event_category_id=history.event_category_id,
+            event_stage_id=history.event_stage_id,
+            event_stage_semantic_id=history.event_stage_semantic_id,
+            event_at=history.event_at,
+            history_projection_version=history.history_projection_version,
+            history_projection_source=history.history_projection_source,
+>>>>>>> e3e4753 (feat(crm): add history authority contract)
         ).single()
         if created is None:
             return IngestResult(

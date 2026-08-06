@@ -8,6 +8,7 @@ CALL (e) {
   CALL (e) {
     MATCH (e)<-[:OWNED_BY]-(sr:SourceRecord)-[link:LINKED_TO]->(p:Person)
     WHERE coalesce(link.is_active, true) = true
+      AND (sr.history_family IS NULL OR sr.history_family = 'activity')
       AND (sr.lifecycle_status = 'active'
         OR (sr.lifecycle_status IS NULL AND sr.is_latest = true))
       AND p.status <> 'merged'
@@ -18,6 +19,7 @@ CALL (e) {
     WITH e
     MATCH (e)<-[:OPERATED_BY]-(:SourceSystem)<-[:FROM_SOURCE]-(sr:SourceRecord)-[link:LINKED_TO]->(p:Person)
     WHERE coalesce(link.is_active, true) = true
+      AND (sr.history_family IS NULL OR sr.history_family = 'activity')
       AND (sr.lifecycle_status = 'active'
         OR (sr.lifecycle_status IS NULL AND sr.is_latest = true))
       AND p.status <> 'merged'
@@ -41,6 +43,7 @@ CALL {
   WITH ss
   OPTIONAL MATCH (ss)<-[:FROM_SOURCE]-(sr:SourceRecord)-[link:LINKED_TO]->(:Person)
   WHERE coalesce(link.is_active, true) = true
+    AND (sr.history_family IS NULL OR sr.history_family = 'activity')
     AND (sr.lifecycle_status = 'active'
       OR (sr.lifecycle_status IS NULL AND sr.is_latest = true))
   RETURN count(sr) AS source_record_count,
@@ -71,6 +74,7 @@ CALL (e) {
   MATCH (e)<-[:OWNED_BY]-(sr:SourceRecord)<-[entity_fact:HAS_FACT]-(p:Person)
   WHERE p.status <> 'merged'
     AND coalesce(entity_fact.is_active, true) = true
+    AND (sr.history_family IS NULL OR sr.history_family = 'activity')
     AND (sr.lifecycle_status = 'active'
       OR (sr.lifecycle_status IS NULL AND sr.is_latest = true))
   RETURN p
@@ -81,6 +85,7 @@ CALL (e) {
   MATCH (e)<-[:OPERATED_BY]-(:SourceSystem)<-[:FROM_SOURCE]-(sr:SourceRecord)<-[entity_fact:HAS_FACT]-(p:Person)
   WHERE p.status <> 'merged'
     AND coalesce(entity_fact.is_active, true) = true
+    AND (sr.history_family IS NULL OR sr.history_family = 'activity')
     AND (sr.lifecycle_status = 'active'
       OR (sr.lifecycle_status IS NULL AND sr.is_latest = true))
     AND NOT EXISTS { MATCH (sr)-[:OWNED_BY]->(:Entity) }

@@ -10,6 +10,7 @@ WHERE coalesce(lookup_identifier.is_active, true) = true
 OPTIONAL MATCH (addr:Address {address_id: p.preferred_address_id})
 OPTIONAL MATCH (sr:SourceRecord)-[link:LINKED_TO]->(p)
 WHERE coalesce(link.is_active, true) = true
+  AND (sr.history_family IS NULL OR sr.history_family = 'activity')
   AND (sr.lifecycle_status = 'active'
     OR (sr.lifecycle_status IS NULL AND sr.is_latest = true))
 WITH p, addr, count(sr) AS source_record_count
@@ -55,6 +56,7 @@ WITH coalesce(canonical, p) AS person
 OPTIONAL MATCH (addr:Address {address_id: person.preferred_address_id})
 OPTIONAL MATCH (sr:SourceRecord)-[link:LINKED_TO]->(person)
 WHERE coalesce(link.is_active, true) = true
+  AND (sr.history_family IS NULL OR sr.history_family = 'activity')
   AND (sr.lifecycle_status = 'active'
     OR (sr.lifecycle_status IS NULL AND sr.is_latest = true))
 WITH person, addr, count(sr) AS source_record_count
@@ -133,6 +135,7 @@ vehicles
 GET_PERSON_SOURCE_RECORDS = """
 MATCH (sr:SourceRecord)-[:LINKED_TO]->(p:Person {person_id: $person_id})
 MATCH (sr)-[:FROM_SOURCE]->(ss:SourceSystem)
+WHERE sr.history_family IS NULL OR sr.history_family = 'activity'
 OPTIONAL MATCH (sr)-[:OWNED_BY]->(record_entity:Entity)
 OPTIONAL MATCH (ss)-[:OPERATED_BY]->(source_entity:Entity)
 WITH sr, p, ss, coalesce(record_entity, source_entity) AS entity
@@ -145,6 +148,9 @@ RETURN sr {
   .record_type, .extraction_confidence, .extraction_method,
   .link_status, .lifecycle_status, .observed_at, .ingested_at,
   .parent_source_system, .parent_source_record_id, .parent_record_type,
+  .history_family, .history_kind, .history_source,
+  .event_category_id, .event_stage_id, .event_stage_semantic_id, .event_at,
+  .history_projection_version, .history_projection_source, .history_projected_at,
   .conversation_ref, .raw_payload, .normalized_payload
 } AS source_record,
 ss.source_key AS source_system,
@@ -158,6 +164,7 @@ SKIP $skip LIMIT $limit
 GET_PERSON_SOURCE_RECORD_ENTITY_FACETS = """
 MATCH (sr:SourceRecord)-[:LINKED_TO]->(:Person {person_id: $person_id})
 MATCH (sr)-[:FROM_SOURCE]->(ss:SourceSystem)
+WHERE sr.history_family IS NULL OR sr.history_family = 'activity'
 OPTIONAL MATCH (sr)-[:OWNED_BY]->(record_entity:Entity)
 OPTIONAL MATCH (ss)-[:OPERATED_BY]->(source_entity:Entity)
 WITH sr, ss, coalesce(record_entity, source_entity) AS entity
@@ -192,6 +199,7 @@ RETURN count(bc) AS total
 GET_PERSON_TIMELINE = """
 MATCH (sr:SourceRecord)-[:LINKED_TO]->(p:Person {person_id: $person_id})
 MATCH (sr)-[:FROM_SOURCE]->(ss:SourceSystem)
+WHERE sr.history_family IS NULL OR sr.history_family = 'activity'
 OPTIONAL MATCH (sr)-[:DESCRIBES_CASE]->(bc:BankruptcyCase)
 RETURN sr {
   .source_record_pk, .source_record_id, .source_record_version,
@@ -212,12 +220,14 @@ SKIP $skip LIMIT $limit
 
 COUNT_PERSON_TIMELINE = """
 MATCH (sr:SourceRecord)-[:LINKED_TO]->(:Person {person_id: $person_id})
+WHERE sr.history_family IS NULL OR sr.history_family = 'activity'
 RETURN count(sr) AS total
 """
 
 GET_PERSON_TIMELINE_TARGET = """
 MATCH (sr:SourceRecord {source_record_pk: $source_record_pk})-[:LINKED_TO]->(p:Person {person_id: $person_id})
 MATCH (sr)-[:FROM_SOURCE]->(ss:SourceSystem)
+WHERE sr.history_family IS NULL OR sr.history_family = 'activity'
 OPTIONAL MATCH (sr)-[:DESCRIBES_CASE]->(bc:BankruptcyCase)
 RETURN sr {
   .source_record_pk, .source_record_id, .source_record_version,
@@ -396,6 +406,7 @@ WHERE p.status <> 'merged'
 OPTIONAL MATCH (addr:Address {address_id: p.preferred_address_id})
 OPTIONAL MATCH (sr:SourceRecord)-[link:LINKED_TO]->(p)
 WHERE coalesce(link.is_active, true) = true
+  AND (sr.history_family IS NULL OR sr.history_family = 'activity')
   AND (sr.lifecycle_status = 'active'
     OR (sr.lifecycle_status IS NULL AND sr.is_latest = true))
 WITH p, addr, score, count(sr) AS source_record_count
@@ -457,8 +468,9 @@ SKIP $skip LIMIT $limit
 
 GET_PERSON_ENTITIES = """
 MATCH (sr:SourceRecord)-[:LINKED_TO]->(p:Person {person_id: $person_id})
-WHERE sr.lifecycle_status = 'active'
-   OR (sr.lifecycle_status IS NULL AND sr.is_latest = true)
+WHERE (sr.lifecycle_status = 'active'
+   OR (sr.lifecycle_status IS NULL AND sr.is_latest = true))
+  AND (sr.history_family IS NULL OR sr.history_family = 'activity')
 MATCH (sr)-[:FROM_SOURCE]->(ss:SourceSystem)
 OPTIONAL MATCH (sr)-[:OWNED_BY]->(record_entity:Entity)
 OPTIONAL MATCH (ss)-[:OPERATED_BY]->(source_entity:Entity)
@@ -557,6 +569,7 @@ SKIP $skip LIMIT $limit
 COUNT_PERSON_SOURCE_RECORDS = """
 MATCH (sr:SourceRecord)-[:LINKED_TO]->(p:Person {person_id: $person_id})
 MATCH (sr)-[:FROM_SOURCE]->(ss:SourceSystem)
+WHERE sr.history_family IS NULL OR sr.history_family = 'activity'
 OPTIONAL MATCH (sr)-[:OWNED_BY]->(record_entity:Entity)
 OPTIONAL MATCH (ss)-[:OPERATED_BY]->(source_entity:Entity)
 WITH sr, coalesce(record_entity, source_entity) AS entity

@@ -3,9 +3,22 @@
 from __future__ import annotations
 
 # Labels to exclude from traversal — too noisy for interactive exploration.
-_EXCLUDED_LABELS = ("IngestRun", "SourceSystem", "Entity")
+_EXCLUDED_LABELS = (
+    "IngestRun",
+    "SourceSystem",
+    "Entity",
+    "CrmHistoryConflictGroup",
+    "CrmHistoryHashVariant",
+    "CrmHistoryAuthorityDecision",
+    "CrmHistoryAuthorityHead",
+)
 
-_LABEL_FILTER = " AND ".join(f"NOT n:{label}" for label in _EXCLUDED_LABELS)
+_LABEL_FILTER = " AND ".join(
+    (
+        *[f"NOT n:{label}" for label in _EXCLUDED_LABELS],
+        "(NOT n:SourceRecord OR n.history_family IS NULL OR n.history_family = 'activity')",
+    )
+)
 
 # Relationship types the traversal must never follow.
 # FROM_SOURCE: SourceRecord -> SourceSystem fan-out.
@@ -79,7 +92,13 @@ RETURN nodes,
 """
 
 _PERSON_START = "MATCH (start:Person {person_id: $person_id})\n"
-_NODE_START = "MATCH (start) WHERE elementId(start) = $element_id\n"
+_NODE_START = """MATCH (start) WHERE elementId(start) = $element_id
+  AND NOT start:CrmHistoryConflictGroup
+  AND NOT start:CrmHistoryHashVariant
+  AND NOT start:CrmHistoryAuthorityDecision
+  AND NOT start:CrmHistoryAuthorityHead
+  AND (NOT start:SourceRecord OR start.history_family IS NULL OR start.history_family = 'activity')
+"""
 
 _FMT: dict[str, str | int] = {
     "label_filter": _LABEL_FILTER,

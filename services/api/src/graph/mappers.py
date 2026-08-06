@@ -67,6 +67,14 @@ _RECORD_TYPES: frozenset[str] = frozenset(get_args(SourceRecordTypeLiteral))
 _LIFECYCLE_STATUSES: frozenset[str] = frozenset(get_args(SourceRecordLifecycleStatus))
 
 
+def _to_history_family(value: GraphValue) -> Literal["activity", "stage"] | None:
+    """Return a known history family; unknown values remain non-disclosive."""
+    raw = to_optional_str(value)
+    if raw in {"activity", "stage"}:
+        return cast("Literal['activity', 'stage']", raw)
+    return None
+
+
 def _to_record_type(value: GraphValue) -> SourceRecordTypeLiteral:
     """Coerce a stored ``record_type`` to the current literal.
 
@@ -260,6 +268,16 @@ def map_source_record(record: GraphRecord) -> SourceRecord:
             if sr.get("parent_record_type") is not None
             else None
         ),
+        history_family=_to_history_family(sr.get("history_family")),
+        history_kind=to_optional_str(sr.get("history_kind")),
+        history_source=to_optional_str(sr.get("history_source")),
+        event_category_id=to_optional_str(sr.get("event_category_id")),
+        event_stage_id=to_optional_str(sr.get("event_stage_id")),
+        event_stage_semantic_id=to_optional_str(sr.get("event_stage_semantic_id")),
+        event_at=to_iso_or_none(sr.get("event_at")),
+        history_projection_version=to_optional_str(sr.get("history_projection_version")),
+        history_projection_source=to_optional_str(sr.get("history_projection_source")),
+        history_projected_at=to_iso_or_none(sr.get("history_projected_at")),
         observed_at=to_iso_or_empty(sr.get("observed_at")),
         ingested_at=to_iso_or_empty(sr.get("ingested_at")),
         conversation_ref=_parse_normalized_payload(sr.get("conversation_ref")) or None,

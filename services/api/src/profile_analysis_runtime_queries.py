@@ -49,6 +49,7 @@ CALL (person) {
   CALL (person) {
     MATCH (source:SourceRecord)-[:LINKED_TO]->(person)
     WHERE source.lifecycle_status = 'active'
+      AND (source.history_family IS NULL OR source.history_family = 'activity')
     RETURN count(DISTINCT source) AS total_sources
   }
   CALL (person) {
@@ -91,6 +92,7 @@ CALL (person) {
       MATCH (source:SourceRecord)-[:LINKED_TO]->(person)
       MATCH (source)-[vehicle_link:MENTIONS_VEHICLE]->(vehicle:Vehicle)
       WHERE source.lifecycle_status = 'active'
+        AND (source.history_family IS NULL OR source.history_family = 'activity')
         AND coalesce(vehicle_link.is_active, true) = true
       RETURN DISTINCT vehicle.vehicle_id AS vehicle_id,
              'MENTIONS_VEHICLE' AS relationship_type
@@ -124,6 +126,7 @@ CALL (person) {
   WITH person
   MATCH (source:SourceRecord)-[:LINKED_TO]->(person)
   WHERE source.lifecycle_status = 'active'
+    AND (source.history_family IS NULL OR source.history_family = 'activity')
   WITH person, source
   ORDER BY source.observed_at DESC, source.source_record_pk DESC
   LIMIT 20
@@ -240,6 +243,7 @@ CALL (person) {
     MATCH (source:SourceRecord)-[:LINKED_TO]->(person)
     MATCH (source)-[vehicle_link:MENTIONS_VEHICLE]->(vehicle:Vehicle)
     WHERE source.lifecycle_status = 'active'
+      AND (source.history_family IS NULL OR source.history_family = 'activity')
       AND coalesce(vehicle_link.is_active, true) = true
     RETURN DISTINCT vehicle, 'inquired' AS relationship_category
   }
