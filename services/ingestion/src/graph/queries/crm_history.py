@@ -6,7 +6,46 @@ FIND_ANY_SOURCE_RECORD = """
 MATCH (sr:SourceRecord {source_record_id: $source_record_id})
       -[:FROM_SOURCE]->(:SourceSystem {source_key: $source_system})
 RETURN sr.source_record_pk AS source_record_pk
+      ,sr.record_hash AS record_hash
+      ,sr.history_family AS history_family
+      ,sr.history_kind AS history_kind
+      ,sr.history_source AS history_source
+      ,toString(sr.event_at) AS event_at
+      ,sr.projection_version AS projection_version
+      ,sr.projection_source AS projection_source
 LIMIT 1
+"""
+
+REMATERIALIZE_CRM_HISTORY_PROJECTION = """
+MATCH (history:SourceRecord {
+  source_record_pk: $source_record_pk,
+  record_type: 'crm_history',
+  record_hash: $record_hash
+})
+WHERE coalesce(history.projection_version, 0) < $projection_version
+FOREACH (_ IN CASE WHEN history.projection_version IS NULL THEN [] ELSE [1] END |
+  CREATE (prior:CrmHistoryProjection {
+    source_record_pk: history.source_record_pk,
+    projection_version: history.projection_version,
+    history_family: history.history_family,
+    history_kind: history.history_kind,
+    history_source: history.history_source,
+    event_at: history.event_at,
+    projection_source: history.projection_source,
+    superseded_at: datetime()
+  })
+  CREATE (prior)-[:PRIOR_PROJECTION_OF]->(history)
+)
+SET history.history_family = $history_family,
+    history.history_kind = $history_kind,
+    history.history_source = $history_source,
+    history.event_category_id = null,
+    history.event_stage_id = null,
+    history.event_at = CASE WHEN $event_at IS NULL THEN null ELSE datetime($event_at) END,
+    history.projection_version = $projection_version,
+    history.projection_time = datetime(),
+    history.projection_source = $projection_source
+RETURN history.source_record_pk AS source_record_pk
 """
 
 CREATE_CRM_HISTORY = """
@@ -42,6 +81,15 @@ CREATE (history:SourceRecord {
     ingested_at: datetime(),
     record_hash: $record_hash,
     raw_payload: $raw_payload,
+    history_family: $history_family,
+    history_kind: $history_kind,
+    history_source: $history_source,
+    event_category_id: null,
+    event_stage_id: null,
+    event_at: CASE WHEN $event_at IS NULL THEN null ELSE datetime($event_at) END,
+    projection_version: $projection_version,
+    projection_time: datetime(),
+    projection_source: $projection_source,
     normalized_payload: '{}',
     is_latest: true,
     retention_expires_at: null
