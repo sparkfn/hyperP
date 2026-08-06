@@ -35,26 +35,40 @@ class ProjectionMigrationPolicy:
 # or synthesized: it has a distinct lifecycle meaning.
 PROJECT_LEGACY_ACTIVITY_BATCH = """
 MATCH (migration:DataMigration {migration_key: $migration_key})
+SET migration.lease_expires_at = migration.lease_expires_at
+WITH migration
 WHERE migration.lease_owner = $lease_owner
   AND migration.lease_expires_at >= datetime()
 SET migration.lease_expires_at = datetime() + duration({seconds: $lease_seconds}),
     migration.updated_at = datetime()
 MATCH (record:SourceRecord {record_type: 'crm_history'})
 WHERE record.history_family IS NULL
+  AND record.history_kind IS NULL
+  AND record.history_source IS NULL
+  AND record.event_at IS NULL
+  AND record.history_projection_version IS NULL
+  AND record.history_projection_source IS NULL
+  AND record.history_projected_at IS NULL
+  AND record.crm_history_projection_migration IS NULL
+  AND record.crm_history_projection_migrated_at IS NULL
 WITH record ORDER BY record.source_record_pk LIMIT $batch_size
+WITH record, datetime() AS projected_at
 SET record.history_family = $history_family,
     record.history_kind = $history_kind,
     record.history_source = $history_source,
     record.event_at = record.observed_at,
     record.history_projection_version = $projection_version,
     record.history_projection_source = $projection_source,
-    record.history_projected_at = datetime(),
-    record.crm_history_projection_migration = $migration_key
+    record.history_projected_at = projected_at,
+    record.crm_history_projection_migration = $migration_key,
+    record.crm_history_projection_migrated_at = projected_at
 RETURN count(record) AS projected
 """
 
 ROLLBACK_LEGACY_ACTIVITY_BATCH = """
 MATCH (migration:DataMigration {migration_key: $migration_key})
+SET migration.lease_expires_at = migration.lease_expires_at
+WITH migration
 WHERE migration.lease_owner = $lease_owner
   AND migration.lease_expires_at >= datetime()
 SET migration.lease_expires_at = datetime() + duration({seconds: $lease_seconds}),
@@ -64,9 +78,11 @@ MATCH (record:SourceRecord {record_type: 'crm_history',
 WHERE record.history_family = $history_family
   AND record.history_kind = $history_kind
   AND record.history_source = $history_source
-  AND record.event_at = record.observed_at
+  AND ((record.event_at IS NULL AND record.observed_at IS NULL)
+    OR record.event_at = record.observed_at)
   AND record.history_projection_version = $projection_version
   AND record.history_projection_source = $projection_source
+  AND record.history_projected_at = record.crm_history_projection_migrated_at
 WITH record ORDER BY record.source_record_pk LIMIT $batch_size
 REMOVE record.history_family,
        record.history_kind,
@@ -75,13 +91,15 @@ REMOVE record.history_family,
        record.history_projection_version,
        record.history_projection_source,
        record.history_projected_at,
-       record.crm_history_projection_migration
+       record.crm_history_projection_migration,
+       record.crm_history_projection_migrated_at
 RETURN count(record) AS rolled_back
 """
 
 ACQUIRE_PROJECTION_MIGRATION = """
 MERGE (migration:DataMigration {migration_key: $migration_key})
 ON CREATE SET migration.created_at = datetime()
+SET migration.lease_expires_at = migration.lease_expires_at
 WITH migration, datetime() AS now
 WHERE migration.lease_owner IS NULL
    OR migration.lease_expires_at IS NULL
@@ -94,6 +112,8 @@ RETURN true AS acquired
 
 RELEASE_PROJECTION_MIGRATION = """
 MATCH (migration:DataMigration {migration_key: $migration_key})
+SET migration.lease_expires_at = migration.lease_expires_at
+WITH migration
 WHERE migration.lease_owner = $lease_owner
 SET migration.lease_owner = null,
     migration.lease_expires_at = null,
@@ -148,7 +168,9 @@ def project_legacy_generic_activities(
                     projection_version=effective_policy.projection_version,
                     projection_source=effective_policy.projection_source,
                 ).single()
-                return 0 if row is None else int(row["projected"])
+                if row is None:
+                    raise RuntimeError("CRM history projection migration lost its lease")
+                return int(row["projected"])
 
             updated = client.execute_write(_batch)
             total += updated
@@ -205,7 +227,9 @@ def rollback_legacy_generic_activities(
                     projection_version=effective_policy.projection_version,
                     projection_source=effective_policy.projection_source,
                 ).single()
-                return 0 if row is None else int(row["rolled_back"])
+                if row is None:
+                    raise RuntimeError("CRM history projection rollback lost its lease")
+                return int(row["rolled_back"])
 
             removed = client.execute_write(_batch)
             total += removed

@@ -872,11 +872,12 @@ MERGE (pending)-[:LINKED_TO {linked_at: datetime()}]->(approved)
 WITH pending, approved, source, old_versions, prior_person_ids
 CALL (pending, approved, source) {
   OPTIONAL MATCH (call:SourceRecord {record_type: 'call', lifecycle_status: 'pending_review'})
-        -[:CHILD_OF]->(:SourceRecord {record_type: 'crm_history'})
+        -[:CHILD_OF]->(history:SourceRecord {record_type: 'crm_history'})
         -[:CHILD_OF]->(logical_deal:SourceRecord {record_type: 'crm_deal'})
         -[:FROM_SOURCE]->(source)
   WHERE pending.record_type = 'crm_deal'
     AND logical_deal.source_record_id = pending.source_record_id
+    AND (history.history_family IS NULL OR history.history_family = 'activity')
   WITH approved, collect(DISTINCT call) AS calls
   CALL (calls) {
     UNWIND calls AS call
@@ -1085,11 +1086,12 @@ SET pending.lifecycle_status = 'rejected', pending.is_latest = false,
     pending.resolved_at = datetime(), pending.updated_at = datetime()
 WITH pending, source
 OPTIONAL MATCH (call:SourceRecord {record_type: 'call', lifecycle_status: 'pending_review'})
-      -[:CHILD_OF]->(:SourceRecord {record_type: 'crm_history'})
+      -[:CHILD_OF]->(history:SourceRecord {record_type: 'crm_history'})
       -[:CHILD_OF]->(logical_deal:SourceRecord {record_type: 'crm_deal'})
       -[:FROM_SOURCE]->(source)
 WHERE pending.record_type = 'crm_deal'
   AND logical_deal.source_record_id = pending.source_record_id
+  AND (history.history_family IS NULL OR history.history_family = 'activity')
 WITH pending, collect(DISTINCT call) AS calls
 CALL (calls) {
   UNWIND calls AS call
