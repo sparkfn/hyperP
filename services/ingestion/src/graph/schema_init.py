@@ -13,11 +13,8 @@ import logging
 from pathlib import Path
 
 from src.graph.client import Neo4jClient
-<<<<<<< HEAD
 from src.graph.queries.bitrix_deal_scope import CREATE_BITRIX_DEAL_SCOPE_CONSTRAINTS
-=======
 from src.graph.queries.crm_history_authority import CREATE_CRM_HISTORY_AUTHORITY_CONSTRAINTS
->>>>>>> e3e4753 (feat(crm): add history authority contract)
 from src.graph.queries.ingestion_control import CREATE_LOGICAL_RUN_CONSTRAINTS
 
 logger = logging.getLogger(__name__)
@@ -43,11 +40,8 @@ ON (sr.migration_identity_key, sr.migration_source_record_version,
 FOR (sr:SourceRecord)
 ON (sr.source_version_key)""",
     *CREATE_LOGICAL_RUN_CONSTRAINTS,
-<<<<<<< HEAD
     *CREATE_BITRIX_DEAL_SCOPE_CONSTRAINTS,
-=======
     *CREATE_CRM_HISTORY_AUTHORITY_CONSTRAINTS,
->>>>>>> e3e4753 (feat(crm): add history authority contract)
 )
 
 DEFERRED_SOURCE_RECORD_CONSTRAINTS: tuple[str, ...] = (
