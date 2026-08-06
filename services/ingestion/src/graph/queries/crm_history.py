@@ -117,6 +117,7 @@ MATCH (history:SourceRecord {
     source_record_id: $parent_source_record_id,
     record_type: 'crm_history'
 })-[:FROM_SOURCE]->(:SourceSystem {source_key: $parent_source_system})
+WHERE history.history_family IS NULL OR history.history_family = 'activity'
 MATCH (history)-[:CHILD_OF]->(origin_deal:SourceRecord {record_type: 'crm_deal'})
       -[:FROM_SOURCE]->(deal_source:SourceSystem)
 MATCH (deal:SourceRecord {
@@ -218,10 +219,11 @@ MATCH (deal:SourceRecord {
 MATCH (deal)-[:LINKED_TO]->(person:Person)
 WITH deal, source, collect(DISTINCT person) AS people
 OPTIONAL MATCH (call:SourceRecord {record_type: 'call', lifecycle_status: 'pending_review'})
-      -[:CHILD_OF]->(:SourceRecord {record_type: 'crm_history'})
+      -[:CHILD_OF]->(history:SourceRecord {record_type: 'crm_history'})
       -[:CHILD_OF]->(logical_deal:SourceRecord {record_type: 'crm_deal'})
       -[:FROM_SOURCE]->(source)
 WHERE logical_deal.source_record_id = deal.source_record_id
+  AND (history.history_family IS NULL OR history.history_family = 'activity')
 WITH people, collect(DISTINCT call) AS calls
 CALL (calls) {
     UNWIND calls AS call

@@ -90,7 +90,12 @@ PROPAGATE_ENTITY_TO_CHILDREN = """
 MATCH (deal:SourceRecord {source_record_pk: $deal_source_record_pk, record_type: 'crm_deal'})
 MATCH (entity:Entity {entity_key: $entity_key})
 MATCH (child:SourceRecord)-[:CHILD_OF*1..2]->(deal)
-WHERE child.record_type IN ['crm_history', 'call']
+WHERE (child.record_type = 'crm_history'
+    AND (child.history_family IS NULL OR child.history_family = 'activity'))
+   OR (child.record_type = 'call' AND EXISTS {
+     MATCH (child)-[:CHILD_OF]->(history:SourceRecord {record_type: 'crm_history'})
+     WHERE history.history_family IS NULL OR history.history_family = 'activity'
+   })
 OPTIONAL MATCH (child)-[stale_owner:OWNED_BY]->(:Entity)
 WITH child, entity, collect(DISTINCT stale_owner) AS stale_owners
 FOREACH (stale_owner IN stale_owners | DELETE stale_owner)

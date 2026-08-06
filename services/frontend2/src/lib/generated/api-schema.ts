@@ -888,6 +888,22 @@ export interface components {
             parent_source_record_id?: string | null;
             /** @enum {string|null} */
             parent_record_type?: "identity" | "bankruptcy" | "rental_flat" | "relationship" | "conversation" | "sales" | "crm_deal" | "crm_history" | "call" | null;
+            /**
+             * @description Typed CRM-history family; readers exclude unknown families.
+             * @enum {string|null}
+             */
+            history_family?: "activity" | "stage" | null;
+            history_kind?: string | null;
+            history_source?: string | null;
+            event_category_id?: string | null;
+            event_stage_id?: string | null;
+            event_stage_semantic_id?: string | null;
+            /** Format: date-time */
+            event_at?: string | null;
+            history_projection_version?: string | null;
+            history_projection_source?: string | null;
+            /** Format: date-time */
+            history_projected_at?: string | null;
             observed_at: string;
             ingested_at: string;
             conversation_ref?: {
@@ -927,6 +943,19 @@ export interface components {
             parent_source_record_id?: string | null;
             /** @enum {string|null} */
             parent_record_type?: "identity" | "bankruptcy" | "rental_flat" | "relationship" | "conversation" | "sales" | "crm_deal" | "crm_history" | "call" | null;
+            /** @enum {string|null} */
+            history_family?: "activity" | "stage" | null;
+            history_kind?: string | null;
+            history_source?: string | null;
+            event_category_id?: string | null;
+            event_stage_id?: string | null;
+            event_stage_semantic_id?: string | null;
+            /** Format: date-time */
+            event_at?: string | null;
+            history_projection_version?: string | null;
+            history_projection_source?: string | null;
+            /** Format: date-time */
+            history_projected_at?: string | null;
             observed_at: string;
             ingested_at: string;
             conversation_ref?: {
