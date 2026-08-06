@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 
-from neo4j import ManagedTransaction
+from neo4j import ManagedTransaction, Record
 
 from src.graph import queries
 from src.graph.client import Neo4jClient
@@ -32,6 +32,8 @@ def ingest_crm_history_record(
             source_record_id=envelope.source_record_id,
         ).single()
         if existing is not None:
+            _validate_existing_hash(existing, envelope.record_hash)
+            _rematerialize_activity_projection(tx, existing, envelope)
             return IngestResult(
                 source_record_id=envelope.source_record_id,
                 source_record_pk=str(existing["source_record_pk"]),
@@ -50,6 +52,12 @@ def ingest_crm_history_record(
             observed_at=envelope.observed_at,
             record_hash=envelope.record_hash,
             raw_payload=json.dumps(envelope.raw_payload, default=str),
+            history_family=envelope.history_family,
+            history_kind=envelope.history_kind,
+            history_source=envelope.history_source,
+            event_at=envelope.event_at,
+            projection_version=envelope.projection_version,
+            projection_source=envelope.projection_source,
         ).single()
         if created is None:
             return IngestResult(
@@ -96,6 +104,7 @@ def ingest_call_record(
             source_record_id=envelope.source_record_id,
         ).single()
         if existing is not None:
+            _validate_existing_hash(existing, envelope.record_hash)
             return IngestResult(
                 source_record_id=envelope.source_record_id,
                 source_record_pk=str(existing["source_record_pk"]),
@@ -139,6 +148,54 @@ def ingest_call_record(
 
     with client.session() as session:
         return session.execute_write(_work)
+
+
+def _validate_existing_hash(existing: Record, incoming_hash: str) -> None:
+    existing_hash: object = existing["record_hash"]
+    if not isinstance(existing_hash, str) or existing_hash != incoming_hash:
+        raise ValueError("CRM immutable source ID was observed with a different record hash")
+
+
+def _rematerialize_activity_projection(
+    tx: ManagedTransaction,
+    existing: Record,
+    envelope: SourceRecordEnvelope,
+) -> None:
+    version = envelope.projection_version
+    if version is None:
+        return
+    existing_version = existing["projection_version"]
+    if existing_version == version:
+        expected = (
+            envelope.history_family,
+            envelope.history_kind,
+            envelope.history_source,
+            envelope.event_at,
+            envelope.projection_source,
+        )
+        actual = (
+            existing["history_family"],
+            existing["history_kind"],
+            existing["history_source"],
+            existing["event_at"],
+            existing["projection_source"],
+        )
+        if actual != expected:
+            raise ValueError("CRM activity projection conflicts with its materialized version")
+        return
+    if isinstance(existing_version, int) and existing_version > version:
+        return
+    tx.run(
+        queries.REMATERIALIZE_CRM_HISTORY_PROJECTION,
+        source_record_pk=existing["source_record_pk"],
+        record_hash=envelope.record_hash,
+        history_family=envelope.history_family,
+        history_kind=envelope.history_kind,
+        history_source=envelope.history_source,
+        event_at=envelope.event_at,
+        projection_version=version,
+        projection_source=envelope.projection_source,
+    ).consume()
 
 
 def link_conversation_to_crm_history(

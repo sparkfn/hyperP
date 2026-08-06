@@ -10,6 +10,11 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Protocol, cast, runtime_checkable
 
+from src.bitrix_ingestion_models import (
+    CrmActivityProjection,
+    activity_event_at,
+    normalize_history_kind,
+)
 from src.connectors.base import SourceConnector
 from src.connectors.bitrix.connector import (
     BitrixChatConnector,
@@ -727,6 +732,10 @@ def _history_envelope(
     entity_key: str | None,
 ) -> dict[str, JsonValue]:
     raw_payload = _activity_payload(activity)
+    projection = CrmActivityProjection(
+        history_kind=normalize_history_kind(activity.history_kind),
+        event_at=activity_event_at(activity.start_at, activity.observed_at),
+    )
     return {
         "source_record_id": f"bitrix-crm-history-{activity.id}",
         "entity_key": entity_key,
@@ -735,6 +744,12 @@ def _history_envelope(
         "observed_at": _iso_or_now(activity.observed_at),
         "record_hash": _hash_payload(raw_payload),
         "raw_payload": raw_payload,
+        "history_family": projection.history_family,
+        "history_kind": projection.history_kind,
+        "history_source": projection.history_source,
+        "event_at": projection.event_at_iso,
+        "projection_version": projection.projection_version,
+        "projection_source": projection.projection_source,
         "parent_ref": {
             "parent_source_system": "bitrix_chat",
             "parent_source_record_id": deal_source_record_id,
