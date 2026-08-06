@@ -957,3 +957,120 @@ def test_client_scans_all_deal_activities_without_per_deal_requests() -> None:
         {"OWNER_TYPE_ID": 2},
         {"OWNER_TYPE_ID": 2},
     ]
+
+
+def test_client_reads_typed_stage_history_page_with_nested_items() -> None:
+    requests: list[dict[str, object]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path.endswith("/crm.stagehistory.list")
+        body = json.loads(request.content)
+        requests.append(body)
+        return httpx.Response(
+            200,
+            json={
+                "result": {
+                    "items": [
+                        {
+                            "ID": "900",
+                            "OWNER_ID": "501",
+                            "TYPE_ID": "1",
+                            "CREATED_TIME": "2026-08-06T12:00:00+08:00",
+                            "CATEGORY_ID": "2",
+                            "STAGE_SEMANTIC_ID": "P",
+                            "STAGE_ID": "C2:NEW",
+                        }
+                    ]
+                },
+                "next": 50,
+                "total": 87,
+                "time": {"operating": 0.02, "operating_reset_at": 12345},
+            },
+        )
+
+    client = BitrixOpenLinesClient(
+        base_url="https://bitrix.test/rest/hook",
+        timeout_seconds=5,
+        max_attempts=1,
+        http=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+
+    page = client.list_stage_history_page(
+        entity_type_id=2,
+        filters={">ID": "899", "@OWNER_ID": ["501"]},
+        start=-1,
+    )
+
+    assert requests == [
+        {
+            "entityTypeId": 2,
+            "filter": {">ID": "899", "@OWNER_ID": ["501"]},
+            "order": {"ID": "ASC"},
+            "start": -1,
+        }
+    ]
+    assert page.next_start == 50
+    assert page.total == 87
+    assert page.operating == 0.02
+    assert page.items[0].history_id == "900"
+    assert page.items[0].entity_type_id == "2"
+    assert page.items[0].created_time == datetime(2026, 8, 6, 4, tzinfo=UTC)
+
+
+@pytest.mark.parametrize("order_direction", ["", "ascending", "DESCENDING"])
+def test_client_rejects_invalid_stage_history_order_direction(order_direction: str) -> None:
+    client = BitrixOpenLinesClient(
+        base_url="https://bitrix.test/rest/hook",
+        timeout_seconds=5,
+        max_attempts=1,
+        http=httpx.Client(transport=httpx.MockTransport(lambda _request: httpx.Response(500))),
+    )
+
+    with pytest.raises(ValueError, match="order_direction"):
+        client.list_stage_history_page(entity_type_id=2, order_direction=order_direction)
+
+
+def test_client_rejects_stage_history_timestamp_without_timezone() -> None:
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "result": {
+                    "items": [
+                        {
+                            "ID": "900",
+                            "OWNER_ID": "501",
+                            "CREATED_TIME": "2026-08-06T12:00:00",
+                        }
+                    ]
+                }
+            },
+        )
+
+    client = BitrixOpenLinesClient(
+        base_url="https://bitrix.test/rest/hook",
+        timeout_seconds=5,
+        max_attempts=1,
+        http=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+
+    with pytest.raises(RuntimeError, match="must include a timezone"):
+        client.list_stage_history_page(entity_type_id=2)
+
+
+@pytest.mark.parametrize(
+    "entity_type_id,start",
+    [(True, -1), (2, True), (2, -2)],
+)
+def test_client_rejects_invalid_stage_history_numeric_arguments(
+    entity_type_id: int, start: int
+) -> None:
+    client = BitrixOpenLinesClient(
+        base_url="https://bitrix.test/rest/hook",
+        timeout_seconds=5,
+        max_attempts=1,
+        http=httpx.Client(transport=httpx.MockTransport(lambda _request: httpx.Response(500))),
+    )
+
+    with pytest.raises(ValueError):
+        client.list_stage_history_page(entity_type_id=entity_type_id, start=start)

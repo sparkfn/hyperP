@@ -42,6 +42,10 @@ from src.connectors.bitrix_openlines.response_helpers import (
     recent_references,
     retry_delay,
 )
+from src.connectors.bitrix_stage_history.models import (
+    StageHistoryPage,
+    parse_stage_history_page,
+)
 from src.models import JsonValue
 
 logger = logging.getLogger(__name__)
@@ -404,6 +408,40 @@ class BitrixOpenLinesClient:
         """Yield filtered CRM deals while retaining a simple item iterator."""
         for page in self.iter_crm_deal_pages(category_ids):
             yield from page.deals
+
+    def list_stage_history_page(
+        self,
+        *,
+        entity_type_id: int,
+        filters: Mapping[str, JsonValue] | None = None,
+        order_direction: str = "ASC",
+        start: int = -1,
+    ) -> StageHistoryPage:
+        """Fetch one read-only, typed ``crm.stagehistory.list`` page.
+
+        This method is intentionally capability-only: it returns source evidence
+        and does not create records, checkpoints, or side effects.
+        """
+        if isinstance(entity_type_id, bool) or entity_type_id < 1:
+            raise ValueError("Bitrix stage-history entity_type_id must be positive")
+        if isinstance(start, bool) or start < -1:
+            raise ValueError("Bitrix stage-history start must be -1 or non-negative")
+        if order_direction not in {"ASC", "DESC"}:
+            raise ValueError("Bitrix stage-history order_direction must be ASC or DESC")
+        payload = self._request(
+            "crm.stagehistory.list",
+            {
+                "entityTypeId": entity_type_id,
+                "filter": dict(filters or {}),
+                "order": {"ID": order_direction},
+                "start": start,
+            },
+        )
+        return parse_stage_history_page(
+            payload,
+            entity_type_id=str(entity_type_id),
+            current_start=start,
+        )
 
     def get_deal(self, deal_id: int) -> CrmDeal:
         """Fetch a deal and the primary contact/lead identity evidence."""
