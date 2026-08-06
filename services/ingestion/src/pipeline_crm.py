@@ -25,6 +25,12 @@ def ingest_crm_history_record(
         raise ValueError("crm history ingestion requires a crm_history envelope with parent_ref")
     parent_ref = envelope.parent_ref
     history = generic_activity_properties(envelope)
+    history_family = envelope.history_family or history.history_family.value
+    history_kind = envelope.history_kind or history.history_kind
+    history_source = envelope.history_source or history.history_source
+    event_at = envelope.event_at or history.event_at
+    projection_version = envelope.projection_version or 1
+    projection_source = envelope.projection_source or history.history_projection_source
 
     def _work(tx: ManagedTransaction) -> IngestResult:
         load_locked_source_state(tx, envelope.source_system, envelope.source_record_id)
@@ -54,24 +60,17 @@ def ingest_crm_history_record(
             observed_at=envelope.observed_at,
             record_hash=envelope.record_hash,
             raw_payload=json.dumps(envelope.raw_payload, default=str),
-<<<<<<< HEAD
-            history_family=envelope.history_family,
-            history_kind=envelope.history_kind,
-            history_source=envelope.history_source,
-            event_at=envelope.event_at,
-            projection_version=envelope.projection_version,
-            projection_source=envelope.projection_source,
-=======
-            history_family=history.history_family.value,
-            history_kind=history.history_kind,
-            history_source=history.history_source,
+            history_family=history_family,
+            history_kind=history_kind,
+            history_source=history_source,
             event_category_id=history.event_category_id,
             event_stage_id=history.event_stage_id,
             event_stage_semantic_id=history.event_stage_semantic_id,
-            event_at=history.event_at,
+            event_at=event_at,
+            projection_version=projection_version,
+            projection_source=projection_source,
             history_projection_version=history.history_projection_version,
             history_projection_source=history.history_projection_source,
->>>>>>> e3e4753 (feat(crm): add history authority contract)
         ).single()
         if created is None:
             return IngestResult(
