@@ -59,6 +59,18 @@ CREATE CONSTRAINT ingest_run_source_idempotency_unique IF NOT EXISTS
 CREATE CONSTRAINT profile_analysis_id_unique IF NOT EXISTS
   FOR (pa:ProfileAnalysis) REQUIRE pa.analysis_id IS UNIQUE;
 
+CREATE CONSTRAINT crm_history_conflict_group_identity_unique IF NOT EXISTS
+  FOR (group:CrmHistoryConflictGroup) REQUIRE group.event_identity IS UNIQUE;
+
+CREATE CONSTRAINT crm_history_hash_variant_identity_unique IF NOT EXISTS
+  FOR (variant:CrmHistoryHashVariant) REQUIRE (variant.event_identity, variant.canonical_hash) IS UNIQUE;
+
+CREATE CONSTRAINT crm_history_authority_decision_id_unique IF NOT EXISTS
+  FOR (decision:CrmHistoryAuthorityDecision) REQUIRE decision.decision_id IS UNIQUE;
+
+CREATE CONSTRAINT crm_history_authority_head_identity_unique IF NOT EXISTS
+  FOR (head:CrmHistoryAuthorityHead) REQUIRE head.event_identity IS UNIQUE;
+
 // Identifier lookups (hot path)
 CREATE INDEX idx_identifier_type_norm IF NOT EXISTS
   FOR (id:Identifier) ON (id.identifier_type, id.normalized_value);

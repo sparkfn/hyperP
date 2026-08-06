@@ -245,6 +245,17 @@ class SourceRecord(BaseModel):
     parent_source_system: str | None = None
     parent_source_record_id: str | None = None
     parent_record_type: SourceRecordTypeLiteral | None = None
+    # Optional during the migration from untyped generic CRM activities.
+    history_family: Literal["activity", "stage"] | None = None
+    history_kind: str | None = None
+    history_source: str | None = None
+    event_category_id: str | None = None
+    event_stage_id: str | None = None
+    event_stage_semantic_id: str | None = None
+    event_at: str | None = None
+    history_projection_version: str | None = None
+    history_projection_source: str | None = None
+    history_projected_at: str | None = None
     observed_at: str
     ingested_at: str
     conversation_ref: dict[str, JsonValue] | None = None
