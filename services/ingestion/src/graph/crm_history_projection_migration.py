@@ -134,6 +134,7 @@ def project_legacy_generic_activities(
     total = 0
     try:
         while True:
+
             def _batch(tx: ManagedTransaction) -> int:
                 row = tx.run(
                     PROJECT_LEGACY_ACTIVITY_BATCH,
@@ -190,6 +191,7 @@ def rollback_legacy_generic_activities(
     total = 0
     try:
         while True:
+
             def _batch(tx: ManagedTransaction) -> int:
                 row = tx.run(
                     ROLLBACK_LEGACY_ACTIVITY_BATCH,
