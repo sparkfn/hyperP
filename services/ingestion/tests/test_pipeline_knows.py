@@ -203,3 +203,84 @@ def test_contact_sweep_propagates_scanned_exact_source_system() -> None:
     assert tx.link_params is not None
     assert tx.link_params["source_system_key"] == "fundbox:contacts"
     assert "ss.source_key" in queries.SCAN_CONTACT_SOURCE_RECORDS
+
+
+def test_bounded_batch_failure_replays_real_link_queries_without_undoing_prior_commit() -> None:
+    committed: set[str] = set()
+    scan_cursors: list[str] = []
+    fail_after_linking: str | None = None
+
+    class _ReplayTx:
+        def __init__(self) -> None:
+            self.pending = set(committed)
+
+        def run(self, query: str, **params: Any) -> object:
+            if query == queries.SCAN_CONTACT_SOURCE_RECORDS:
+                cursor = str(params["cursor"])
+                scan_cursors.append(cursor)
+                candidate = "pk-1" if cursor == "" else "pk-2"
+                if candidate in committed:
+                    return []
+                return [
+                    {
+                        "source_record_pk": candidate,
+                        "source_system_key": "fundbox:contacts",
+                        "raw_payload": (
+                            '{"linked_to_source_record_id":"source-1",'
+                            '"contact":{"relationship":"friend"}}'
+                        ),
+                    }
+                ]
+            if query == queries.RESOLVE_PERSON_FROM_SOURCE_RECORD_ID:
+                return _Result(_Row(person_id="declarer"))
+            if query == queries.RESOLVE_PERSON_FROM_SOURCE_RECORD_PK:
+                return _Result(_Row(person_id=f"contact-{params['source_record_pk']}"))
+            if query == queries.LINK_PERSON_KNOWS:
+                self.pending.add(str(params["source_record_pk"]))
+                return _Result(_Row(knows_id="knows"))
+            if query == queries.MARK_PROFILE_ANALYSIS_DIRTY:
+                source_record_pks = params["source_record_pks"]
+                assert isinstance(source_record_pks, list)
+                if fail_after_linking is not None and fail_after_linking in source_record_pks:
+                    raise RuntimeError("transaction aborted after KNOWS write")
+                return []
+            raise AssertionError(f"unexpected query: {query}")
+
+    class _ReplaySession:
+        def __enter__(self) -> _ReplaySession:
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            pass
+
+        def execute_write(self, work: Any) -> object:
+            tx = _ReplayTx()
+            result = work(tx)
+            committed.clear()
+            committed.update(tx.pending)
+            return result
+
+    class _ReplayClient:
+        def session(self) -> _ReplaySession:
+            return _ReplaySession()
+
+    client = _ReplayClient()
+
+    first = materialize_knows_batch(client, "contacts", cursor="")  # type: ignore[arg-type]
+    assert first["next_cursor"] == "pk-1"
+    assert committed == {"pk-1"}
+
+    fail_after_linking = "pk-2"
+    with pytest.raises(RuntimeError, match="transaction aborted after KNOWS write"):
+        materialize_knows_batch(client, "contacts", cursor="pk-1")  # type: ignore[arg-type]
+    assert committed == {"pk-1"}
+
+    fail_after_linking = None
+    replay = materialize_knows_batch(  # type: ignore[arg-type]
+        client,
+        "contacts",
+        cursor="pk-1",
+    )
+    assert replay["next_cursor"] == "pk-2"
+    assert committed == {"pk-1", "pk-2"}
+    assert scan_cursors == ["", "pk-1", "pk-1"]

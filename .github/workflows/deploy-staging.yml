@@ -25,6 +25,13 @@ jobs:
           cd "$REPO_DIR"
 
           COMPOSE="docker compose -f .docker/staging/docker-compose.yml"
+          LIFECYCLE_PAUSE_MARKER="$REPO_DIR/.lifecycle-worker-paused"
+          LIFECYCLE_PAUSED=false
+          if [ -f "$LIFECYCLE_PAUSE_MARKER" ]; then
+            LIFECYCLE_PAUSED=true
+            echo "Lifecycle worker pause marker is present; deployment will preserve the pause."
+            $COMPOSE stop lifecycle-worker
+          fi
 
           # The staging Compose file is intentionally host-managed and untracked
           # (see commit 547572b). Validate the runtime contract's key names, but
@@ -156,13 +163,26 @@ jobs:
           if [ -z "${SERVICES// }" ]; then
             echo "No service code changed — skipping image build/recreate."
           else
-            echo "Rebuilding services: $SERVICES"
+            eval "$(scripts/lifecycle-worker-deploy-guard.sh \
+              plan "$LIFECYCLE_PAUSED" $SERVICES)"
+            echo "Rebuilding services: $BUILD_SERVICES"
+            SERVICES="$BUILD_SERVICES"
             $COMPOSE build $SERVICES
-            $COMPOSE up -d --no-deps --force-recreate $SERVICES
+            if [ -n "${RECREATE_SERVICES// }" ]; then
+              echo "Recreating services: $RECREATE_SERVICES"
+              $COMPOSE up -d --no-deps --force-recreate $RECREATE_SERVICES
+            else
+              echo "No services will be recreated while lifecycle consumption is paused."
+            fi
           fi
           $COMPOSE restart web
 
           for service in "ingestion-worker" "lifecycle-worker" "beat"; do
+            if [ "$service" = "lifecycle-worker" ] && [ "$LIFECYCLE_PAUSED" = true ]; then
+              scripts/lifecycle-worker-deploy-guard.sh \
+                verify-paused .docker/staging/docker-compose.yml
+              continue
+            fi
             container_id=$($COMPOSE ps -q "$service")
             if [ -z "$container_id" ]; then
               echo "Staging service container is missing: ${service}"

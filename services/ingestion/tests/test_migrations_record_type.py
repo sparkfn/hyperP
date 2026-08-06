@@ -78,8 +78,6 @@ def test_apply_data_migrations_runs_in_dependency_order(
         ("fundbox_migration", "migrate_fundbox_source_keys"),
         ("source_migration", "migrate_source_record_lifecycle"),
         ("projection_migration", "migrate_projection_relationship_lifecycle"),
-        ("source_reconciliation", "reconcile_source_record_lifecycle"),
-        ("projection_reconciliation", "reconcile_projection_relationship_lifecycle"),
     )
     for label, name in functions:
         monkeypatch.setattr(
@@ -97,6 +95,4 @@ def test_apply_data_migrations_runs_in_dependency_order(
         "fundbox_migration",
         "source_migration",
         "projection_migration",
-        "source_reconciliation",
-        "projection_reconciliation",
     ]

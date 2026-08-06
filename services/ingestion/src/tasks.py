@@ -16,11 +16,12 @@ import time
 import uuid
 from collections.abc import Iterator
 from contextlib import ExitStack, contextmanager
-from typing import Final, TypedDict, cast
+from contextvars import ContextVar
+from typing import Final, NoReturn, TypedDict, cast
 
 import redis
 from celery import Task
-from celery.exceptions import Reject
+from celery.exceptions import Reject, Retry
 from neo4j import ManagedTransaction
 from pydantic.types import JsonValue
 
@@ -35,8 +36,18 @@ from src.graph.migrations import (
     reconcile_projection_relationship_lifecycle,
     reconcile_source_record_lifecycle,
 )
+from src.knows_materialization_queue import (
+    KnowsMaterializationTask,
+    allow_knows_retry_publication,
+    claim_knows_materialization_gate,
+    mark_knows_materialization_queued,
+    release_knows_materialization_queue_gate,
+    transfer_knows_materialization_gate,
+)
 from src.lifecycle_reconciliation_queue import (
     LifecycleReconciliationTask,
+    allow_lifecycle_retry_publication,
+    claim_lifecycle_reconciliation_queue_gate,
     release_lifecycle_reconciliation_queue_gate,
 )
 from src.main import (
@@ -56,6 +67,14 @@ _INGEST_SEMAPHORE_KEY = "profile_unifier:ingestion:active"
 MAX_CONCURRENT_INGESTIONS: Final[int] = 2
 _SOURCE_LOCK_PREFIX = "profile_unifier:ingestion:source"
 _INIT_LOCK_KEY = "profile_unifier:ingestion:init"
+_INIT_SOURCE_WAITER_ORDER_KEY = "profile_unifier:ingestion:init:source-waiters:order"
+_INIT_SOURCE_WAITER_EXPIRY_KEY = "profile_unifier:ingestion:init:source-waiters:expiry"
+_INIT_SOURCE_WAITER_SEQUENCE_KEY = "profile_unifier:ingestion:init:source-waiters:sequence"
+_INIT_WAITER_LEASE_SECONDS = 30
+_INIT_LOCK_WAIT_SLO_SECONDS = 5.0
+_INIT_LOCK_RELEASE_ATTEMPTS = 3
+_INIT_LOCK_RELEASE_RETRY_SECONDS = 0.2
+_INIT_REQUESTER_CLASS: ContextVar[str] = ContextVar("init_requester_class", default="unknown")
 _LEGACY_SOURCE_LOCK_MODES = ("api", "backfill", "batch", "dump")
 # Leases are renewed while ingestion is running. Keeping the base TTL modest
 # bounds the unavailable period after a worker crashes.
@@ -80,6 +99,44 @@ if redis.call('zscore', KEYS[1], ARGV[1]) == false then
 end
 redis.call('zadd', KEYS[1], ARGV[2], ARGV[1])
 return redis.call('expire', KEYS[1], ARGV[3])
+"""
+_INIT_LOCK_ACQUIRE_SCRIPT = """
+local now = tonumber(redis.call('time')[1])
+local expired = redis.call('zrangebyscore', KEYS[1], '-inf', now)
+for _, waiter in ipairs(expired) do
+    redis.call('zrem', KEYS[1], waiter)
+    redis.call('zrem', KEYS[2], waiter)
+end
+if ARGV[2] == 'source_ingestion' then
+    local has_expiry = redis.call('zscore', KEYS[1], ARGV[1])
+    local has_order = redis.call('zscore', KEYS[2], ARGV[1])
+    if not has_expiry or not has_order then
+        redis.call('zrem', KEYS[1], ARGV[1])
+        redis.call('zrem', KEYS[2], ARGV[1])
+        local sequence = redis.call('incr', KEYS[3])
+        redis.call('zadd', KEYS[2], sequence, ARGV[1])
+    end
+    redis.call('zadd', KEYS[1], now + tonumber(ARGV[3]), ARGV[1])
+    local oldest = redis.call('zrange', KEYS[2], 0, 0)
+    if oldest[1] ~= ARGV[1] then
+        return 0
+    end
+elseif redis.call('zcard', KEYS[2]) > 0 then
+    return 0
+end
+if not redis.call('set', KEYS[4], ARGV[5], 'NX', 'EX', ARGV[4]) then
+    return 0
+end
+if ARGV[2] == 'source_ingestion' then
+    redis.call('zrem', KEYS[1], ARGV[1])
+    redis.call('zrem', KEYS[2], ARGV[1])
+end
+return 1
+"""
+_INIT_WAITER_CLEANUP_SCRIPT = """
+redis.call('zrem', KEYS[1], ARGV[1])
+redis.call('zrem', KEYS[2], ARGV[1])
+return 1
 """
 _TERMINAL_INGEST_RUN_STATUSES = frozenset(
     {"already_running", "completed", "completed_with_errors", "failed"}
@@ -320,12 +377,70 @@ def _renew_init_lock(client: redis.Redis, lock_id: str) -> None:
         raise RuntimeError("Ingestion graph initialization lock was lost before renewal")
 
 
+def _release_init_lock(client: redis.Redis, lock_id: str) -> None:
+    """Confirm owner-safe init-lock release, retrying transient Redis failures."""
+    last_error: Exception | None = None
+    for attempt in range(_INIT_LOCK_RELEASE_ATTEMPTS):
+        try:
+            released = cast(
+                int,
+                client.eval(_SOURCE_LOCK_RELEASE_SCRIPT, 1, _INIT_LOCK_KEY, lock_id),
+            )
+            if released == 1:
+                return
+            if _lock_owner(client, _INIT_LOCK_KEY) != lock_id:
+                logger.warning("Initialization lock was already absent or owned elsewhere")
+                return
+            last_error = RuntimeError("Redis did not release the owned initialization lock")
+        except Exception as exc:
+            last_error = exc
+        if attempt + 1 < _INIT_LOCK_RELEASE_ATTEMPTS:
+            time.sleep(_INIT_LOCK_RELEASE_RETRY_SECONDS)
+    logger.critical(
+        "Could not confirm initialization lock release after %d attempts",
+        _INIT_LOCK_RELEASE_ATTEMPTS,
+        exc_info=last_error,
+    )
+    raise RuntimeError("Could not confirm ingestion initialization lock release") from last_error
+
+
 def _renew_source_locks(
     client: redis.Redis,
     source_lock_leases: tuple[_SourceLockLease, ...],
 ) -> None:
     for source_key, lock_id in source_lock_leases:
         _renew_source_lock(client, source_key, lock_id)
+
+
+@contextmanager
+def _renew_source_lock_lease(source_key: str, lock_id: str) -> Iterator[None]:
+    """Keep one unbounded lifecycle source lock alive while it is in use."""
+    stop_event = threading.Event()
+
+    def renew() -> None:
+        while not stop_event.wait(_LEASE_RENEWAL_INTERVAL_SECONDS):
+            try:
+                _renew_source_lock(_redis_client(), source_key, lock_id)
+            except Exception:
+                logger.critical(
+                    "Failed to renew ingestion lock for %s; terminating worker",
+                    source_key,
+                    exc_info=True,
+                )
+                os.kill(os.getpid(), signal.SIGTERM)
+                return
+
+    renewal_thread = threading.Thread(
+        target=renew,
+        name=f"ingestion-source-lock-renewal:{source_key}",
+        daemon=True,
+    )
+    renewal_thread.start()
+    try:
+        yield
+    finally:
+        stop_event.set()
+        renewal_thread.join(timeout=1)
 
 
 @contextmanager
@@ -400,25 +515,115 @@ def _renew_init_lock_lease(lock_id: str) -> Iterator[None]:
 
 
 @contextmanager
-def _acquire_init_lock() -> Iterator[str]:
+def _acquire_init_lock(requester_class: str = "unknown") -> Iterator[str]:
     client = _redis_client()
-    lock_id = uuid.uuid4().hex
-    while True:
-        lock_acquired = client.set(_INIT_LOCK_KEY, lock_id, nx=True, ex=_LOCK_LEASE_SECONDS)
-        if lock_acquired:
-            break
-        logger.info("Waiting for ingestion graph initialization lock")
-        time.sleep(1.0)
+    requester_class = (
+        _INIT_REQUESTER_CLASS.get() if requester_class == "unknown" else requester_class
+    )
+    owner_id = uuid.uuid4().hex
+    lock_id = f"{requester_class}:{owner_id}"
+    waiter_id = owner_id if requester_class == "source_ingestion" else None
+    started = time.monotonic()
+    wait_slo_logged = False
+    try:
+        while True:
+            lock_acquired = (
+                cast(
+                    int,
+                    client.eval(
+                        _INIT_LOCK_ACQUIRE_SCRIPT,
+                        4,
+                        _INIT_SOURCE_WAITER_EXPIRY_KEY,
+                        _INIT_SOURCE_WAITER_ORDER_KEY,
+                        _INIT_SOURCE_WAITER_SEQUENCE_KEY,
+                        _INIT_LOCK_KEY,
+                        waiter_id or "",
+                        requester_class,
+                        str(_INIT_WAITER_LEASE_SECONDS),
+                        str(_LOCK_LEASE_SECONDS),
+                        lock_id,
+                    ),
+                )
+                == 1
+            )
+            if lock_acquired:
+                break
+            if not wait_slo_logged and time.monotonic() - started >= _INIT_LOCK_WAIT_SLO_SECONDS:
+                wait_seconds = max(time.monotonic() - started, 0.0)
+                logger.warning(
+                    "initialization_lock_wait_slo_exceeded requester_class=%s wait_seconds=%.3f",
+                    requester_class,
+                    wait_seconds,
+                )
+                wait_slo_logged = True
+            time.sleep(1.0)
+    except Exception:
+        if waiter_id is not None:
+            try:
+                client.eval(
+                    _INIT_WAITER_CLEANUP_SCRIPT,
+                    2,
+                    _INIT_SOURCE_WAITER_EXPIRY_KEY,
+                    _INIT_SOURCE_WAITER_ORDER_KEY,
+                    waiter_id,
+                )
+            except Exception:
+                logger.exception("Failed to clean up initialization source waiter")
+        raise
 
-    logger.info("Acquired ingestion graph initialization lock")
+    logger.info(
+        "initialization_lock_acquired requester_class=%s wait_seconds=%.3f",
+        requester_class,
+        max(time.monotonic() - started, 0.0),
+    )
+    acquired_at = time.monotonic()
+    body_failed = False
     try:
         yield lock_id
+    except BaseException:
+        body_failed = True
+        raise
     finally:
         try:
-            client.eval(_SOURCE_LOCK_RELEASE_SCRIPT, 1, _INIT_LOCK_KEY, lock_id)
-            logger.info("Released ingestion graph initialization lock")
+            _release_init_lock(client, lock_id)
+            logger.info(
+                "initialization_lock_released requester_class=%s hold_seconds=%.3f",
+                requester_class,
+                max(time.monotonic() - acquired_at, 0.0),
+            )
         except Exception:
             logger.exception("Failed to release ingestion graph initialization lock")
+            if not body_failed:
+                raise
+        finally:
+            if waiter_id is not None:
+                try:
+                    client.eval(
+                        _INIT_WAITER_CLEANUP_SCRIPT,
+                        2,
+                        _INIT_SOURCE_WAITER_EXPIRY_KEY,
+                        _INIT_SOURCE_WAITER_ORDER_KEY,
+                        waiter_id,
+                    )
+                except Exception:
+                    logger.exception("Failed to clean up initialization source waiter")
+
+
+def _initialize_graph_under_lock(requester_class: str) -> None:
+    """Serialize only schema/bootstrap/migration initialization work."""
+    requester_token = _INIT_REQUESTER_CLASS.set(requester_class)
+    try:
+        with _acquire_init_lock() as init_lock_id, _renew_init_lock_lease(init_lock_id):
+            started = time.monotonic()
+            initialize_ingestion_graph()
+            elapsed = max(time.monotonic() - started, 0.0)
+    finally:
+        _INIT_REQUESTER_CLASS.reset(requester_token)
+    logger.info(
+        "initialization_graph_complete requester_class=%s initialization_seconds=%.3f",
+        requester_class,
+        elapsed,
+    )
 
 
 class _SlotUnavailableError(Exception):
@@ -451,6 +656,32 @@ class KnowsMaterializationSummary(TypedDict):
     next_cursor: str | None
 
 
+def _retry_knows_or_requeue(self: Task, exc: Exception, countdown: int) -> NoReturn:
+    """Publish a same-ID retry or preserve this delivery when publication fails."""
+    try:
+        with allow_knows_retry_publication():
+            retry_exception = self.retry(exc=exc, countdown=countdown)
+    except Retry:
+        raise
+    except Exception as publication_exc:
+        logger.exception("KNOWS retry publication failed; requeueing current delivery")
+        raise Reject(str(publication_exc), requeue=True) from publication_exc
+    raise retry_exception
+
+
+def _retry_lifecycle_or_requeue(self: Task, exc: Exception, countdown: int) -> NoReturn:
+    """Publish a same-ID retry or preserve this delivery when publication fails."""
+    try:
+        with allow_lifecycle_retry_publication():
+            retry_exception = self.retry(exc=exc, countdown=countdown)
+    except Retry:
+        raise
+    except Exception as publication_exc:
+        logger.exception("Lifecycle retry publication failed; requeueing current delivery")
+        raise Reject(str(publication_exc), requeue=True) from publication_exc
+    raise retry_exception
+
+
 def _terminal_run_summary(
     ingest_run_id: str,
     status: str,
@@ -472,18 +703,23 @@ def _terminal_run_summary(
     }
 
 
-def run_lifecycle_reconciliation() -> LifecycleReconciliationSummary:
+def run_lifecycle_reconciliation(task_id: str | None = None) -> LifecycleReconciliationSummary:
     """Repair lifecycle deltas while serializing concurrent repair attempts."""
-    with _acquire_source_lock("lifecycle-reconciliation"), _acquire_init_lock() as init_lock_id:
-        with _renew_init_lock_lease(init_lock_id):
-            settings = get_settings()
-            client = Neo4jClient(settings)
-            try:
-                client.verify_connectivity()
-                source_records = reconcile_source_record_lifecycle(client)
-                projections = reconcile_projection_relationship_lifecycle(client)
-            finally:
-                client.close()
+    lock_context = (
+        _acquire_source_lock("lifecycle-reconciliation", task_id)
+        if task_id is not None
+        else _acquire_source_lock("lifecycle-reconciliation")
+    )
+    with lock_context as lock_id, _renew_source_lock_lease("lifecycle-reconciliation", lock_id):
+        _initialize_graph_under_lock("lifecycle_reconciliation")
+        settings = get_settings()
+        client = Neo4jClient(settings)
+        try:
+            client.verify_connectivity()
+            source_records = reconcile_source_record_lifecycle(client)
+            projections = reconcile_projection_relationship_lifecycle(client)
+        finally:
+            client.close()
     return {
         "status": "complete",
         "source_records": source_records,
@@ -514,60 +750,110 @@ def _enqueue_knows_materialization(source_key: str) -> None:
 @celery_app.task(
     name="src.tasks.materialize_knows_task",
     bind=True,
+    base=KnowsMaterializationTask,
     acks_late=True,
     soft_time_limit=300,
     time_limit=330,
-    max_retries=0,
+    max_retries=None,
 )
 def materialize_knows_task(
     self: Task,
     phase: KnowsMaterializationPhase,
     cursor: str = "",
+    predecessor_task_id: str | None = None,
 ) -> KnowsMaterializationSummary:
     """Process one bounded, locked KNOWS batch and continue from its cursor."""
     settings = get_settings()
     setup_logging(settings.log_level)
     started = time.monotonic()
+    celery_task_id = self.request.id
+    task_id = str(celery_task_id) if celery_task_id is not None else None
     try:
-        with (
-            _acquire_source_lock(f"knows-materialization:{phase}"),
-            _acquire_init_lock() as init_lock_id,
+        if task_id is not None and not claim_knows_materialization_gate(
+            phase, task_id, predecessor_task_id
         ):
-            with _renew_init_lock_lease(init_lock_id):
-                initialize_ingestion_graph()
-                client = Neo4jClient(settings)
+            logger.info("KNOWS materialization stale phase=%s", phase)
+            return {
+                "phase": phase,
+                "linked": 0,
+                "scanned": 0,
+                "complete": False,
+                "next_cursor": cursor,
+            }
+        source_lock_context = (
+            _acquire_source_lock(f"knows-materialization:{phase}", task_id)
+            if task_id is not None
+            else _acquire_source_lock(f"knows-materialization:{phase}")
+        )
+        with source_lock_context:
+            if task_id is not None and not claim_knows_materialization_gate(phase, task_id, None):
+                logger.info("KNOWS materialization lost ownership phase=%s", phase)
+                return {
+                    "phase": phase,
+                    "linked": 0,
+                    "scanned": 0,
+                    "complete": False,
+                    "next_cursor": cursor,
+                }
+            _initialize_graph_under_lock(f"knows_{phase}")
+            client = Neo4jClient(settings)
+            try:
+                result = materialize_knows_batch(client, phase, cursor=cursor)
+            finally:
+                client.close()
+            next_cursor = result["next_cursor"]
+            if next_cursor is not None and task_id is not None:
+                next_task_id = uuid.uuid4().hex
+                if not transfer_knows_materialization_gate(phase, task_id, next_task_id):
+                    raise RuntimeError("KNOWS continuation gate ownership was lost")
                 try:
-                    result = materialize_knows_batch(client, phase, cursor=cursor)
-                finally:
-                    client.close()
-    except _SourceAlreadyRunningError:
-        logger.info("KNOWS materialization phase=%s is already running; skipping duplicate", phase)
-        return {
-            "phase": phase,
-            "linked": 0,
-            "scanned": 0,
-            "complete": False,
-            "next_cursor": cursor,
-        }
+                    Task.apply_async(
+                        materialize_knows_task,
+                        args=(phase, next_cursor, task_id),
+                        task_id=next_task_id,
+                        queue=LIFECYCLE_QUEUE,
+                    )
+                except Exception:
+                    logger.exception("KNOWS continuation publication uncertain phase=%s", phase)
+                    raise
+                if not mark_knows_materialization_queued(phase, next_task_id):
+                    logger.warning(
+                        "KNOWS continuation accepted after gate ownership changed phase=%s",
+                        phase,
+                    )
+            elif next_cursor is None and task_id is not None:
+                release_knows_materialization_queue_gate(phase, task_id)
+    except _SourceAlreadyRunningError as exc:
+        if task_id is not None:
+            countdown = min(2 ** min(self.request.retries, 8), 300)
+            _retry_knows_or_requeue(self, exc, countdown)
+        raise
     except Exception as exc:
-        logger.exception("KNOWS materialization failed phase=%s cursor=%s", phase, cursor)
+        if task_id is not None:
+            try:
+                release_knows_materialization_queue_gate(phase, task_id)
+            except Exception as release_exc:
+                countdown = min(2 ** min(self.request.retries, 8), 300)
+                logger.exception("KNOWS materialization gate cleanup failed phase=%s", phase)
+                _retry_knows_or_requeue(self, release_exc, countdown)
+        logger.exception("KNOWS materialization failed phase=%s", phase)
         raise Reject(str(exc), requeue=False) from exc
 
     next_cursor = result["next_cursor"]
     complete = next_cursor is None
     elapsed = time.monotonic() - started
     logger.info(
-        "KNOWS materialization phase=%s cursor=%s scanned=%d linked=%d next_cursor=%s "
-        "complete=%s elapsed_seconds=%.3f",
+        "KNOWS materialization phase=%s cursor_present=%s scanned=%d linked=%d "
+        "continuation_pending=%s complete=%s elapsed_seconds=%.3f",
         phase,
-        cursor,
+        bool(cursor),
         result["scanned"],
         result["linked"],
-        next_cursor,
+        next_cursor is not None,
         complete,
         elapsed,
     )
-    if next_cursor is not None:
+    if next_cursor is not None and task_id is None:
         materialize_knows_task.apply_async(args=(phase, next_cursor), queue=LIFECYCLE_QUEUE)
     return {
         "phase": phase,
@@ -627,8 +913,7 @@ def run_ingestion_task(
             }
         settings = get_settings()
         setup_logging(settings.log_level)
-        with _acquire_init_lock() as init_lock_id, _renew_init_lock_lease(init_lock_id):
-            initialize_ingestion_graph()
+        _initialize_graph_under_lock("source_ingestion")
         celery_task_id = self.request.id
         source_lock_owner = str(celery_task_id) if celery_task_id is not None else None
         with _acquire_source_locks(source_lock_keys, source_lock_owner) as source_lock_leases:
@@ -767,29 +1052,46 @@ def run_ingestion_task(
     name="src.tasks.reconcile_lifecycle_task",
     bind=True,
     base=LifecycleReconciliationTask,
-    max_retries=0,
+    max_retries=None,
 )
 def reconcile_lifecycle_task(self: Task) -> LifecycleReconciliationSummary:
     """Periodically repair lifecycle state for late-arriving legacy records."""
     settings = get_settings()
     setup_logging(settings.log_level)
+    celery_task_id = self.request.id
+    task_id = str(celery_task_id) if celery_task_id is not None else None
     try:
-        try:
-            return run_lifecycle_reconciliation()
-        except _SourceAlreadyRunningError:
-            logger.info("Lifecycle reconciliation is already running; skipping duplicate")
-            return {
-                "status": "already_running",
-                "source_records": 0,
-                "projections": 0,
-            }
-        except Exception as exc:
-            logger.exception("Lifecycle reconciliation failed")
-            raise Reject(str(exc), requeue=False) from exc
-    finally:
-        task_id = self.request.id
+        if task_id is not None and not claim_lifecycle_reconciliation_queue_gate(task_id):
+            logger.info("Lifecycle reconciliation delivery is stale")
+            return {"status": "already_running", "source_records": 0, "projections": 0}
+        summary = run_lifecycle_reconciliation(task_id)
+    except _SourceAlreadyRunningError as exc:
+        if exc.held_by_same_task:
+            countdown = min(2 ** min(self.request.retries, 8), 300)
+            _retry_lifecycle_or_requeue(self, exc, countdown)
+        logger.info("Lifecycle reconciliation is already running; skipping duplicate")
+        summary = {"status": "already_running", "source_records": 0, "projections": 0}
+    except Retry:
+        raise
+    except Exception as exc:
+        logger.exception("Lifecycle reconciliation failed")
         if task_id is not None:
-            release_lifecycle_reconciliation_queue_gate(str(task_id))
+            try:
+                release_lifecycle_reconciliation_queue_gate(task_id)
+            except Exception as release_exc:
+                countdown = min(2 ** min(self.request.retries, 8), 300)
+                logger.exception("Lifecycle reconciliation gate cleanup failed")
+                _retry_lifecycle_or_requeue(self, release_exc, countdown)
+        raise Reject(str(exc), requeue=False) from exc
+
+    if task_id is not None:
+        try:
+            release_lifecycle_reconciliation_queue_gate(task_id)
+        except Exception as exc:
+            countdown = min(2 ** min(self.request.retries, 8), 300)
+            logger.exception("Lifecycle reconciliation gate release failed")
+            _retry_lifecycle_or_requeue(self, exc, countdown)
+    return summary
 
 
 @celery_app.task(
