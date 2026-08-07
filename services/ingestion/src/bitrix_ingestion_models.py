@@ -17,6 +17,13 @@ DealScopeState = Literal["in_scope", "out_of_scope", "indeterminate"]
 CRM_DEALS_STREAM: BitrixStreamKey = "crm_deals"
 CRM_ACTIVITIES_STREAM: BitrixStreamKey = "crm_activities"
 OPENLINES_CONVERSATIONS_STREAM: BitrixStreamKey = "openlines_conversations"
+BITRIX_STREAM_KEYS: frozenset[BitrixStreamKey] = frozenset(
+    {
+        CRM_DEALS_STREAM,
+        CRM_ACTIVITIES_STREAM,
+        OPENLINES_CONVERSATIONS_STREAM,
+    }
+)
 
 _HISTORY_KIND_PATTERN = re.compile(r"[a-z][a-z0-9_]{0,63}\Z")
 
@@ -36,12 +43,17 @@ class FenceContext:
     def __post_init__(self) -> None:
         if self.source_key != "bitrix_chat":
             raise ValueError("Bitrix fences require source_key='bitrix_chat'")
+        if self.stream_key not in BITRIX_STREAM_KEYS:
+            raise ValueError("Fence stream_key must be a supported Bitrix stream")
         if not all(
             value.strip()
             for value in (self.logical_run_id, self.ingest_run_id, self.source_key, self.stream_key)
         ):
             raise ValueError("Fence identity values must be non-empty")
-        if min(self.stream_generation, self.fencing_token, self.attempt_generation) < 1:
+        if any(
+            isinstance(value, bool) or not isinstance(value, int) or value < 1
+            for value in (self.stream_generation, self.fencing_token, self.attempt_generation)
+        ):
             raise ValueError("Fence generation and token values must be positive")
 
 
@@ -51,18 +63,20 @@ class CrmActivityProjection:
 
     history_kind: str
     event_at: datetime | None
-    projection_version: int = 1
-    history_family: str = "crm_activity"
+    projection_version: int = 2
+    history_family: str = "activity"
     history_source: str = "bitrix_crm_activity"
-    projection_source: str = "bitrix_crm_activity_v1"
+    projection_source: str = "bitrix_crm_activity_v2"
 
     def __post_init__(self) -> None:
-        if self.history_family != "crm_activity":
-            raise ValueError("history_family must be crm_activity")
+        if self.history_family != "activity":
+            raise ValueError("history_family must be activity")
         if self.history_source != "bitrix_crm_activity":
             raise ValueError("history_source must be bitrix_crm_activity")
-        if self.projection_version < 1:
-            raise ValueError("projection_version must be positive")
+        if self.projection_version != 2:
+            raise ValueError("projection_version must be 2")
+        if self.projection_source != "bitrix_crm_activity_v2":
+            raise ValueError("projection_source must be bitrix_crm_activity_v2")
         if not _HISTORY_KIND_PATTERN.fullmatch(self.history_kind):
             raise ValueError("history_kind must be a normalized stable identifier")
         if self.event_at is not None and self.event_at.tzinfo is None:

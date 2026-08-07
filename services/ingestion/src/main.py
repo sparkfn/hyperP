@@ -8,7 +8,7 @@ import logging
 import re
 import sys
 import uuid
-from typing import Protocol, TypedDict, runtime_checkable
+from typing import Literal, Protocol, TypedDict, runtime_checkable
 
 import httpx
 from neo4j import ManagedTransaction
@@ -17,6 +17,8 @@ from redis import Redis
 from src.config import get_settings
 from src.connectors.base import SourceConnector
 from src.connectors.bitrix import BitrixChatConnector
+from src.connectors.bitrix_crm.activity_connector import BitrixCrmActivityConnector
+from src.connectors.bitrix_crm.deal_connector import BitrixCrmDealConnector
 from src.connectors.bitrix_openlines.client import BitrixOpenLinesClient
 from src.connectors.bitrix_openlines.connector import BitrixOpenLinesConnector
 from src.connectors.bitrix_openlines.dialog_cache import RedisDialogConfigCache
@@ -106,6 +108,16 @@ _SECRET_IN_FAILURE = re.compile(
 _BEARER_IN_FAILURE = re.compile(
     r"\b(Authorization\s*:\s*)?Bearer\s+[^\s,;}\]]+",
     re.IGNORECASE,
+)
+
+BitrixExecutionStream = Literal[
+    "legacy",
+    "crm_deals",
+    "crm_activities",
+    "openlines_conversations",
+]
+_BITRIX_EXECUTION_STREAMS = frozenset(
+    {"legacy", "crm_deals", "crm_activities", "openlines_conversations"}
 )
 
 
@@ -372,6 +384,7 @@ def create_bitrix_openlines_connector(
     *,
     incremental: bool = True,
     checkpoint_store: Neo4jCheckpointRedis | None = None,
+    include_crm_records: bool = True,
 ) -> BitrixOpenLinesConnector:
     settings = get_settings()
     ingestion_config = get_ingestion_config()
@@ -394,7 +407,33 @@ def create_bitrix_openlines_connector(
         file_exclusions=ingestion_config.exclusions,
         dialog_cache=RedisDialogConfigCache(dialog_redis),
         incremental=incremental,
+        include_crm_records=include_crm_records,
     )
+
+
+def create_bitrix_crm_deal_connector() -> BitrixCrmDealConnector:
+    """Create the dormant independent CRM-deal stream connector."""
+    settings = get_settings()
+    ingestion_config = get_ingestion_config()
+    client = BitrixOpenLinesClient(
+        base_url=settings.bitrix_openlines_api_base_url.get_secret_value(),
+        timeout_seconds=settings.bitrix_openlines_api_timeout_seconds,
+        max_attempts=settings.bitrix_openlines_api_max_attempts,
+        request_delay_seconds=settings.bitrix_openlines_api_request_delay_seconds,
+    )
+    return BitrixCrmDealConnector(client, ingestion_config.bitrix_openlines)
+
+
+def create_bitrix_crm_activity_connector() -> BitrixCrmActivityConnector:
+    """Create the dormant independent CRM-activity stream connector."""
+    settings = get_settings()
+    client = BitrixOpenLinesClient(
+        base_url=settings.bitrix_openlines_api_base_url.get_secret_value(),
+        timeout_seconds=settings.bitrix_openlines_api_timeout_seconds,
+        max_attempts=settings.bitrix_openlines_api_max_attempts,
+        request_delay_seconds=settings.bitrix_openlines_api_request_delay_seconds,
+    )
+    return BitrixCrmActivityConnector(client)
 
 
 def create_fundbox_api_client() -> FundboxApiClient:
@@ -422,6 +461,7 @@ def get_connector(
     entity_key: str | None = None,
     incremental: bool = True,
     checkpoint_store: Neo4jCheckpointRedis | None = None,
+    bitrix_execution_stream: BitrixExecutionStream | None = None,
 ) -> SourceConnector:
     """Return the appropriate connector for the given source key."""
     if entity_key is not None and (source_key != "whatsapp_chat" or mode != "api"):
@@ -430,14 +470,38 @@ def get_connector(
         settings = get_settings()
         resolved_dump_path = resolve_dump_path(dump_path, settings.dumps_root)
         return get_dump_connector(source_key, resolved_dump_path)
+    if bitrix_execution_stream is not None:
+        if source_key != "bitrix_chat":
+            raise ValueError("bitrix_execution_stream is only valid for bitrix_chat ingestion")
+        if bitrix_execution_stream not in _BITRIX_EXECUTION_STREAMS:
+            raise ValueError(f"Unsupported Bitrix execution stream {bitrix_execution_stream!r}")
     if source_key == "bitrix_chat" and mode in {"api", "backfill"}:
+        if bitrix_execution_stream == "crm_deals":
+            return create_bitrix_crm_deal_connector()
+        if bitrix_execution_stream == "crm_activities":
+            return create_bitrix_crm_activity_connector()
         if checkpoint_store is None:
-            return create_bitrix_openlines_connector(mode, incremental=incremental)
+            if bitrix_execution_stream != "openlines_conversations":
+                return create_bitrix_openlines_connector(mode, incremental=incremental)
+            return create_bitrix_openlines_connector(
+                mode,
+                incremental=incremental,
+                include_crm_records=False,
+            )
+        if bitrix_execution_stream != "openlines_conversations":
+            return create_bitrix_openlines_connector(
+                mode,
+                incremental=incremental,
+                checkpoint_store=checkpoint_store,
+            )
         return create_bitrix_openlines_connector(
             mode,
             incremental=incremental,
             checkpoint_store=checkpoint_store,
+            include_crm_records=False,
         )
+    if bitrix_execution_stream is not None:
+        raise ValueError("bitrix_execution_stream requires bitrix_chat API or backfill ingestion")
     if mode == "backfill":
         raise ValueError(f"Backfill mode is not supported for source {source_key!r}")
     if mode == "api":
@@ -819,8 +883,14 @@ def run_ingestion(
     existing_ingest_run_id: str | None = None,
     task_id: str | None = None,
     incremental: bool = True,
+    bitrix_execution_stream: BitrixExecutionStream | None = None,
 ) -> IngestionSummary:
     """Execute one ingestion run end-to-end."""
+    if bitrix_execution_stream not in {None, "legacy"}:
+        raise ValueError(
+            "Split Bitrix execution streams are not enabled until durable owner lookup, "
+            "logical-run admission, and transaction fencing are wired into the task runner"
+        )
     settings = get_settings()
     if mode == "dump" and dump_path is None:
         raise ValueError("dump_path is required when mode='dump'")
@@ -829,11 +899,12 @@ def run_ingestion(
     if entity_key is not None and (source_key != "whatsapp_chat" or mode != "api"):
         raise ValueError("entity_key is only valid for whatsapp_chat API ingestion")
     logger.info(
-        "Starting ingestion: source=%s mode=%s entity=%s incremental=%s",
+        "Starting ingestion: source=%s mode=%s entity=%s incremental=%s bitrix_stream=%s",
         source_key,
         mode,
         entity_key or "all",
         incremental,
+        bitrix_execution_stream or "legacy",
     )
 
     if initialize_graph:
@@ -918,6 +989,7 @@ def run_ingestion(
                 entity_key=entity_key,
                 incremental=incremental,
                 checkpoint_store=checkpoint_store,
+                bitrix_execution_stream=bitrix_execution_stream,
             )
             logger.info("Connector=%s", type(connector).__name__)
             if source_key in {"bitrix_chat", "whatsapp_chat"}:
@@ -1020,11 +1092,22 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--mode", choices=["batch", "backfill", "dump", "api"], default="batch")
     parser.add_argument("--dump-path", default=None)
     parser.add_argument("--entity-key", choices=["eko", "speedzone"], default=None)
+    parser.add_argument(
+        "--bitrix-execution-stream",
+        choices=sorted(_BITRIX_EXECUTION_STREAMS),
+        default=None,
+    )
     args = parser.parse_args(argv)
 
     setup_logging(get_settings().log_level)
     try:
-        run_ingestion(args.source_key, args.mode, args.dump_path, entity_key=args.entity_key)
+        run_ingestion(
+            args.source_key,
+            args.mode,
+            args.dump_path,
+            entity_key=args.entity_key,
+            bitrix_execution_stream=args.bitrix_execution_stream,
+        )
     except Exception:
         logger.exception("Fatal error during ingestion")
         sys.exit(1)

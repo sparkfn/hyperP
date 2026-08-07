@@ -59,3 +59,89 @@ def test_deployment_examples_forward_bitrix_openlines_api_configuration() -> Non
         assert f"{name}: ${{{name}" in compose
         assert f"{name}=" in root_env
         assert f"{name}=" in ingestion_env
+
+
+def test_connector_factory_selects_dormant_bitrix_crm_streams(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    deal_connector = StubConnector()
+    activity_connector = StubConnector()
+    monkeypatch.setattr(main, "create_bitrix_crm_deal_connector", lambda: deal_connector)
+    monkeypatch.setattr(main, "create_bitrix_crm_activity_connector", lambda: activity_connector)
+
+    assert (
+        main.get_connector(
+            "bitrix_chat",
+            mode="api",
+            bitrix_execution_stream="crm_deals",
+        )
+        is deal_connector
+    )
+    assert (
+        main.get_connector(
+            "bitrix_chat",
+            mode="api",
+            bitrix_execution_stream="crm_activities",
+        )
+        is activity_connector
+    )
+
+
+def test_connector_factory_uses_conversation_only_legacy_mode(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+    connector = StubConnector()
+
+    def create(
+        mode: str,
+        *,
+        incremental: bool = True,
+        checkpoint_store: object | None = None,
+        include_crm_records: bool = True,
+    ) -> StubConnector:
+        captured.update(
+            mode=mode,
+            incremental=incremental,
+            checkpoint_store=checkpoint_store,
+            include_crm_records=include_crm_records,
+        )
+        return connector
+
+    monkeypatch.setattr(main, "create_bitrix_openlines_connector", create)
+
+    assert (
+        main.get_connector(
+            "bitrix_chat",
+            mode="api",
+            bitrix_execution_stream="openlines_conversations",
+        )
+        is connector
+    )
+    assert captured == {
+        "mode": "api",
+        "incremental": True,
+        "checkpoint_store": None,
+        "include_crm_records": False,
+    }
+
+
+@pytest.mark.parametrize(
+    ("source_key", "mode", "stream", "message"),
+    [
+        ("fundbox", "api", "crm_deals", "only valid for bitrix_chat"),
+        ("bitrix_chat", "batch", "crm_deals", "requires bitrix_chat API or backfill"),
+    ],
+)
+def test_connector_factory_rejects_invalid_bitrix_stream_context(
+    source_key: str,
+    mode: str,
+    stream: main.BitrixExecutionStream,
+    message: str,
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        main.get_connector(
+            source_key,
+            mode=mode,
+            bitrix_execution_stream=stream,
+        )

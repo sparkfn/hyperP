@@ -13,14 +13,22 @@ import httpx
 
 from src.connectors.bitrix_openlines.crm_deal_filter import (
     CrmDealPage,
+    crm_deal_capability_filter,
     crm_deal_category_filter,
     normalize_crm_category_ids,
+    parse_crm_deal_capability_page,
+)
+from src.connectors.bitrix_openlines.crm_status_catalog import (
+    deal_stage_status_entity_id,
+    parse_crm_deal_stage_catalog_page,
 )
 from src.connectors.bitrix_openlines.models import (
     ChatReference,
     CrmActivity,
     CrmContact,
     CrmDeal,
+    CrmDealCapabilityPage,
+    CrmDealStageCatalogPage,
     CrmDiscoveryPage,
     DialogMetadata,
     OpenLineConfig,
@@ -409,6 +417,38 @@ class BitrixOpenLinesClient:
         for page in self.iter_crm_deal_pages(category_ids):
             yield from page.deals
 
+    def list_crm_deal_capability_page(
+        self,
+        *,
+        category_ids: Collection[str],
+        greater_than_id: int | None = None,
+        less_than_or_equal_to_id: int | None = None,
+        order_direction: str = "ASC",
+    ) -> CrmDealCapabilityPage:
+        """Fetch one minimal, read-only keyset page for a deal capability census.
+
+        This boundary deliberately does not create ``CrmDeal`` values because
+        those hydrate contacts and leads. It sends only source fields necessary
+        for a bounded owner census and has no graph, checkpoint, or enrichment
+        side effects.
+        """
+        if not isinstance(order_direction, str) or order_direction not in {"ASC", "DESC"}:
+            raise ValueError("Bitrix CRM deal capability order_direction must be ASC or DESC")
+        payload = self._request(
+            "crm.deal.list",
+            {
+                "filter": crm_deal_capability_filter(
+                    category_ids,
+                    greater_than_id=greater_than_id,
+                    less_than_or_equal_to_id=less_than_or_equal_to_id,
+                ),
+                "select": ["ID", "CATEGORY_ID", "STAGE_ID"],
+                "order": {"ID": order_direction},
+                "start": -1,
+            },
+        )
+        return parse_crm_deal_capability_page(payload)
+
     def list_stage_history_page(
         self,
         *,
@@ -440,6 +480,33 @@ class BitrixOpenLinesClient:
         return parse_stage_history_page(
             payload,
             entity_type_id=str(entity_type_id),
+            current_start=start,
+        )
+
+    def list_crm_deal_stage_catalog_page(
+        self,
+        *,
+        category_id: int,
+        start: int = 0,
+    ) -> CrmDealStageCatalogPage:
+        """Fetch one read-only current stage-catalog page for a deal category.
+
+        This capability boundary uses ``crm.status.list`` only. It neither
+        reads deal/activity records nor creates graph, checkpoint, or
+        ingestion side effects.
+        """
+        entity_id = deal_stage_status_entity_id(category_id)
+        payload = self._request(
+            "crm.status.list",
+            {
+                "filter": {"ENTITY_ID": entity_id},
+                "order": {"SORT": "ASC"},
+                "start": start,
+            },
+        )
+        return parse_crm_deal_stage_catalog_page(
+            payload,
+            category_id=category_id,
             current_start=start,
         )
 

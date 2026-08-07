@@ -187,3 +187,28 @@ def test_projection_reports_lease_loss_instead_of_false_completion() -> None:
         project_legacy_generic_activities(
             cast(Neo4jClient, _LeaseLossClient()), history_source="bitrix_chat"
         )
+
+
+def test_bitrix_activity_alias_repair_is_separate_reversible_and_never_rewrites_source_data() -> (
+    None
+):
+    from src.graph.crm_history_projection_migration import (
+        BITRIX_ACTIVITY_ALIAS_MIGRATION_KEY,
+        PROJECT_BITRIX_ACTIVITY_ALIAS_BATCH,
+        ROLLBACK_BITRIX_ACTIVITY_ALIAS_BATCH,
+    )
+
+    assert BITRIX_ACTIVITY_ALIAS_MIGRATION_KEY != "crm_history_activity_projection_v1"
+    assert "history_family: 'crm_activity'" in PROJECT_BITRIX_ACTIVITY_ALIAS_BATCH
+    assert "record.history_source = 'bitrix_crm_activity'" in PROJECT_BITRIX_ACTIVITY_ALIAS_BATCH
+    assert (
+        "record.projection_source = 'bitrix_crm_activity_v1'" in PROJECT_BITRIX_ACTIVITY_ALIAS_BATCH
+    )
+    assert "SET record.history_family = 'activity'" in PROJECT_BITRIX_ACTIVITY_ALIAS_BATCH
+    assert "record_hash" not in PROJECT_BITRIX_ACTIVITY_ALIAS_BATCH
+    assert "raw_payload" not in PROJECT_BITRIX_ACTIVITY_ALIAS_BATCH
+    assert "source_record_id" not in PROJECT_BITRIX_ACTIVITY_ALIAS_BATCH
+    assert (
+        "crm_history_projection_migration: $migration_key" in ROLLBACK_BITRIX_ACTIVITY_ALIAS_BATCH
+    )
+    assert "SET record.history_family = 'crm_activity'" in ROLLBACK_BITRIX_ACTIVITY_ALIAS_BATCH

@@ -83,6 +83,46 @@ class CrmDeal:
 
 
 @dataclass(frozen=True)
+class CrmDealCapabilityItem:
+    """Minimal, read-only deal observation used by capability censuses."""
+
+    deal_id: str
+    category_id: str
+    stage_id: str | None
+
+
+@dataclass(frozen=True)
+class CrmDealCapabilityPage:
+    """One validated minimal ``crm.deal.list`` capability response page."""
+
+    items: tuple[CrmDealCapabilityItem, ...]
+    next_start: int | None
+    total: int | None
+    operating: float | None
+    operating_reset_at: float | None
+
+
+@dataclass(frozen=True)
+class CrmDealStageCatalogItem:
+    """One current deal-stage status from the read-only Bitrix catalog."""
+
+    category_id: str
+    stage_id: str
+    semantic_id: str | None
+
+
+@dataclass(frozen=True)
+class CrmDealStageCatalogPage:
+    """One validated ``crm.status.list`` page for a deal category."""
+
+    items: tuple[CrmDealStageCatalogItem, ...]
+    next_start: int | None
+    total: int | None
+    operating: float | None
+    operating_reset_at: float | None
+
+
+@dataclass(frozen=True)
 class CrmActivity:
     """Immutable activity/timeline data from ``crm.activity.list``."""
 

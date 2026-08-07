@@ -22,7 +22,15 @@ MATCH (history:SourceRecord {
   record_type: 'crm_history',
   record_hash: $record_hash
 })
-WHERE coalesce(history.projection_version, 0) < $projection_version
+WHERE (
+  coalesce(history.projection_version, 0) < $projection_version
+  OR (
+    history.history_family = 'crm_activity'
+    AND history.history_source = 'bitrix_crm_activity'
+    AND history.projection_source = 'bitrix_crm_activity_v1'
+    AND coalesce(history.projection_version, 0) <= $projection_version
+  )
+)
 FOREACH (_ IN CASE WHEN history.projection_version IS NULL THEN [] ELSE [1] END |
   CREATE (prior:CrmHistoryProjection {
     source_record_pk: history.source_record_pk,
@@ -41,6 +49,7 @@ SET history.history_family = $history_family,
     history.history_source = $history_source,
     history.event_category_id = null,
     history.event_stage_id = null,
+    history.event_stage_semantic_id = null,
     history.event_at = CASE WHEN $event_at IS NULL THEN null ELSE datetime($event_at) END,
     history.projection_version = $projection_version,
     history.projection_time = datetime(),

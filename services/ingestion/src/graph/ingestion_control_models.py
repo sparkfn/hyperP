@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from typing import NoReturn, cast
+from typing import Literal, NoReturn, cast
 
 from neo4j import Record
 
+from src.bitrix_ingestion_models import BitrixStreamKey, FenceContext
 from src.models import JsonValue
 from src.resumable import LogicalRunStatus
 
@@ -41,6 +42,44 @@ class LogicalRunState:
     phase: str | None
     cursor: dict[str, JsonValue] | None
     checkpointed_at: str | None
+
+
+BitrixStreamAdmissionOutcome = Literal["admitted", "coalesced", "replaced"]
+
+
+@dataclass(frozen=True)
+class BitrixStreamAdmission:
+    """Durable ownership result for one Bitrix execution stream.
+
+    This records admission only. Domain write queries will consume
+    ``fence_context`` in a later wiring change; this foundation does not yet
+    fence those mutations.
+    """
+
+    outcome: BitrixStreamAdmissionOutcome
+    fence_context: FenceContext
+    worker_task_id: str
+
+
+def bitrix_stream_admission(record: Record | None) -> BitrixStreamAdmission:
+    """Map the active Bitrix stream control row returned by admission."""
+    if record is None:
+        raise ValueError("Bitrix stream admission did not return a record")
+    outcome = _bitrix_stream_admission_outcome(record)
+    fence_context = FenceContext(
+        logical_run_id=_required_str(record, "logical_run_id"),
+        ingest_run_id=_required_str(record, "ingest_run_id"),
+        source_key=_required_str(record, "source_key"),
+        stream_key=_bitrix_stream_key(record),
+        stream_generation=_required_positive_int(record, "stream_generation"),
+        fencing_token=_required_positive_int(record, "fencing_token"),
+        attempt_generation=_required_positive_int(record, "attempt_generation"),
+    )
+    return BitrixStreamAdmission(
+        outcome=outcome,
+        fence_context=fence_context,
+        worker_task_id=_required_str(record, "worker_task_id"),
+    )
 
 
 def logical_attempt(record: Record | None) -> LogicalRunAttempt:
@@ -167,8 +206,29 @@ def _required_int(record: Record, key: str) -> int:
     return value
 
 
+def _required_positive_int(record: Record, key: str) -> int:
+    value = _required_int(record, key)
+    if value < 1:
+        raise ValueError(f"Expected a positive integer for {key}")
+    return value
+
+
 def _required_bool(record: Record, key: str) -> bool:
     value: object = record[key]
     if not isinstance(value, bool):
         raise ValueError(f"Expected a boolean for {key}")
     return value
+
+
+def _bitrix_stream_key(record: Record) -> BitrixStreamKey:
+    value = _required_str(record, "stream_key")
+    if value not in {"crm_deals", "crm_activities", "openlines_conversations"}:
+        raise ValueError(f"Unexpected Bitrix stream key: {value}")
+    return cast(BitrixStreamKey, value)
+
+
+def _bitrix_stream_admission_outcome(record: Record) -> BitrixStreamAdmissionOutcome:
+    value = _required_str(record, "admission_outcome")
+    if value not in {"admitted", "coalesced", "replaced"}:
+        raise ValueError(f"Unexpected Bitrix stream admission outcome: {value}")
+    return cast(BitrixStreamAdmissionOutcome, value)

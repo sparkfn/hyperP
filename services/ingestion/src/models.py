@@ -336,12 +336,12 @@ class SourceRecordEnvelope(BaseModel):
             if self.record_type != RecordType.CRM_HISTORY:
                 raise ValueError("typed activity projection is only valid on crm_history")
             if (
-                self.history_family != "crm_activity"
+                self.history_family != "activity"
                 or self.history_source != "bitrix_crm_activity"
-                or self.projection_source != "bitrix_crm_activity_v1"
+                or self.projection_source != "bitrix_crm_activity_v2"
                 or not isinstance(self.history_kind, str)
                 or not self.history_kind
-                or self.projection_version != 1
+                or self.projection_version != 2
             ):
                 raise ValueError("crm_history typed activity projection is incomplete or invalid")
         return self

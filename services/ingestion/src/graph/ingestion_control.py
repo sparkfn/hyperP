@@ -6,10 +6,13 @@ import uuid
 
 from neo4j import ManagedTransaction
 
+from src.bitrix_ingestion_models import BITRIX_STREAM_KEYS, BitrixStreamKey
 from src.graph.client import Neo4jClient
 from src.graph.ingestion_control_models import (
+    BitrixStreamAdmission,
     LogicalRunAttempt,
     LogicalRunState,
+    bitrix_stream_admission,
     encode_json,
     logical_attempt,
     logical_state,
@@ -17,6 +20,7 @@ from src.graph.ingestion_control_models import (
     validate_counts,
 )
 from src.graph.queries.ingestion_control import (
+    ADMIT_OR_COALESCE_BITRIX_STREAM,
     ADVANCE_LOGICAL_CHECKPOINT,
     CLAIM_QUEUED_ATTEMPT,
     CREATE_LOGICAL_RUN_AND_ATTEMPT,
@@ -329,3 +333,84 @@ class LogicalRunControl:
             return record is not None
 
         return self._client.execute_write(_work)
+
+
+class BitrixStreamControl:
+    """Durable admission for a single split Bitrix execution stream.
+
+    This boundary only establishes an active stream owner and returns a future
+    ``FenceContext``. It intentionally does not yet guard domain mutations;
+    callers must not claim transaction fencing until those writes consume the
+    returned context.
+    """
+
+    def __init__(self, client: Neo4jClient) -> None:
+        self._client = client
+
+    def admit_or_coalesce(
+        self,
+        *,
+        stream_key: BitrixStreamKey,
+        logical_run_id: str,
+        ingest_run_id: str,
+        attempt_generation: int,
+        worker_task_id: str,
+        replace_active: bool = False,
+    ) -> BitrixStreamAdmission:
+        """Admit a stream, coalesce a duplicate, or atomically replace it.
+
+        A delivery for the same logical attempt coalesces. A different attempt
+        fails closed unless ``replace_active`` is explicit; replacement advances
+        both the stream generation and its fencing token in the same transaction.
+        """
+        _validate_bitrix_stream_admission(
+            stream_key=stream_key,
+            logical_run_id=logical_run_id,
+            ingest_run_id=ingest_run_id,
+            attempt_generation=attempt_generation,
+            worker_task_id=worker_task_id,
+            replace_active=replace_active,
+        )
+        creation_token = uuid.uuid4().hex
+
+        def _work(tx: ManagedTransaction) -> BitrixStreamAdmission:
+            record = tx.run(
+                ADMIT_OR_COALESCE_BITRIX_STREAM,
+                source_key="bitrix_chat",
+                stream_key=stream_key,
+                logical_run_id=logical_run_id,
+                ingest_run_id=ingest_run_id,
+                attempt_generation=attempt_generation,
+                worker_task_id=worker_task_id,
+                replace_active=replace_active,
+                creation_token=creation_token,
+            ).single()
+            return bitrix_stream_admission(record)
+
+        return self._client.execute_write(_work)
+
+
+def _validate_bitrix_stream_admission(
+    *,
+    stream_key: BitrixStreamKey,
+    logical_run_id: str,
+    ingest_run_id: str,
+    attempt_generation: int,
+    worker_task_id: str,
+    replace_active: bool,
+) -> None:
+    if stream_key not in BITRIX_STREAM_KEYS:
+        raise ValueError("stream_key must be a supported Bitrix stream")
+    if not all(
+        isinstance(value, str) and value.strip()
+        for value in (logical_run_id, ingest_run_id, worker_task_id)
+    ):
+        raise ValueError("Bitrix stream admission identity values must be non-empty")
+    if (
+        isinstance(attempt_generation, bool)
+        or not isinstance(attempt_generation, int)
+        or attempt_generation < 1
+    ):
+        raise ValueError("attempt_generation must be a positive integer")
+    if not isinstance(replace_active, bool):
+        raise ValueError("replace_active must be a boolean")

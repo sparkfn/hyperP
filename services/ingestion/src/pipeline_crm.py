@@ -13,6 +13,10 @@ from src.models import IngestResult, RecordType, SourceRecordEnvelope
 from src.record_lifecycle import load_locked_source_state
 from src.source_version_keys import encode_source_version_key
 
+_LEGACY_CRM_ACTIVITY_FAMILY = "crm_activity"
+_BITRIX_ACTIVITY_HISTORY_SOURCE = "bitrix_crm_activity"
+_LEGACY_BITRIX_ACTIVITY_PROJECTION_SOURCE = "bitrix_crm_activity_v1"
+
 
 def ingest_crm_history_record(
     client: Neo4jClient,
@@ -178,7 +182,12 @@ def _rematerialize_activity_projection(
     if version is None:
         return
     existing_version = existing["projection_version"]
-    if existing_version == version:
+    legacy_bitrix_alias = (
+        existing["history_family"] == _LEGACY_CRM_ACTIVITY_FAMILY
+        and existing["history_source"] == _BITRIX_ACTIVITY_HISTORY_SOURCE
+        and existing["projection_source"] == _LEGACY_BITRIX_ACTIVITY_PROJECTION_SOURCE
+    )
+    if existing_version == version and not legacy_bitrix_alias:
         expected = (
             envelope.history_family,
             envelope.history_kind,
