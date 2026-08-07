@@ -3,8 +3,29 @@
 ## Status
 
 Issue #146 establishes the typed storage and authority contract. As of **August
-6, 2026**, Bitrix stage-history traversal remains `unsupported`; this document
+7, 2026**, Bitrix stage-history traversal remains `unsupported`; this document
 does not authorize source access, stage ingestion, checkpoints, or a backfill.
+
+## Current stage-catalog semantic boundary
+
+The read-only #145 capability re-gate validates current deal stages through
+`crm.status.list` before it freezes a deal or stage-history boundary. Bitrix
+returns two compatible semantic representations: top-level `SEMANTICS` is a
+compact lifecycle class (`S`, `F`, or null), while `EXTRA.SEMANTICS` is the
+descriptive source value. The descriptive value is retained when present:
+
+| `SEMANTICS` | `EXTRA.SEMANTICS` | retained value |
+| --- | --- | --- |
+| null | `process` | `process` |
+| `S` | `success` | `success` |
+| `F` | `failure` | `failure` |
+| `F` | `apology` | `apology` |
+
+Rows with incompatible, malformed, or unknown values fail closed. If the
+descriptive value is absent, a compact `S` or `F` is normalized to `success` or
+`failure`; both fields absent remain unknown. A catalog-preflight failure writes
+only a restricted redacted failure manifest and must not begin deal or global
+stage-history traversal.
 
 ## Typed source-record projection
 

@@ -15,10 +15,10 @@ class _Client:
         self.calls.append((category_id, start))
         if category_id == 2:
             return CrmDealStageCatalogPage(
-                (CrmDealStageCatalogItem("2", "C2:NEW", "P"),), None, 1, 0.1, 10.0
+                (CrmDealStageCatalogItem("2", "C2:NEW", "process"),), None, 1, 0.1, 10.0
             )
         return CrmDealStageCatalogPage(
-            (CrmDealStageCatalogItem("3", "C3:NEW", "P"),), None, 1, 0.1, 10.0
+            (CrmDealStageCatalogItem("3", "C3:NEW", "process"),), None, 1, 0.1, 10.0
         )
 
 
@@ -47,7 +47,7 @@ def test_catalog_total_none_does_not_hide_a_later_mismatch() -> None:
         ) -> CrmDealStageCatalogPage:
             del category_id, start
             self.calls += 1
-            item = CrmDealStageCatalogItem("2", f"C2:{self.calls}", "P")
+            item = CrmDealStageCatalogItem("2", f"C2:{self.calls}", "process")
             if self.calls == 1:
                 return CrmDealStageCatalogPage((item,), 1, None, None, None)
             return CrmDealStageCatalogPage((item,), None, 3, None, None)

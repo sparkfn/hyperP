@@ -109,16 +109,35 @@ def recommendation(
     return "unsupported"
 
 
-def write_failure_manifest(output_directory: Path, *, reason: str) -> None:
+def write_failure_manifest(
+    output_directory: Path,
+    *,
+    phase: str,
+    reason: str,
+    exception_type: str,
+    portal_digest: str | None,
+    config_digest: str | None,
+    image_digest: str | None,
+    included_deal_category_count: int,
+) -> None:
+    """Write one redacted, restricted artifact for a failed capability run."""
     write_json(
         output_directory / "failure-manifest.json",
         {
             "report_schema_version": "bitrix-source-capability-v2",
             "generated_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
             "repository_sha": repository_sha(),
+            "failure_phase": phase,
             "traversal_outcome": "unsupported",
             "human_approval_required": True,
             "failure_reason": reason,
+            "exception_type": exception_type,
+            "provenance": {
+                "portal_origin_digest": portal_digest,
+                "effective_ingestion_config_digest": config_digest,
+                "deployment_image_digest": image_digest,
+            },
+            "included_deal_category_count": included_deal_category_count,
             "writes": {
                 "graph": False,
                 "celery": False,
