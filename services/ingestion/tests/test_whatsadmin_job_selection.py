@@ -194,14 +194,14 @@ def test_celery_task_forwards_entity_key(monkeypatch: MonkeyPatch) -> None:
 
 
 def test_cli_forwards_optional_entity_key(monkeypatch: MonkeyPatch) -> None:
-    calls: list[tuple[str, str, str | None, str | None]] = []
+    calls: list[tuple[str, str, str | None, str | None, str | None]] = []
     monkeypatch.setattr(main, "setup_logging", lambda _level: None)
     monkeypatch.setattr(main, "get_settings", lambda: TaskSettings())
     monkeypatch.setattr(
         main,
         "run_ingestion",
-        lambda source_key, mode, dump_path, *, entity_key=None: calls.append(
-            (source_key, mode, dump_path, entity_key)
+        lambda source_key, mode, dump_path, *, entity_key=None, bitrix_execution_stream=None: (
+            calls.append((source_key, mode, dump_path, entity_key, bitrix_execution_stream))
         ),
     )
 
@@ -216,4 +216,4 @@ def test_cli_forwards_optional_entity_key(monkeypatch: MonkeyPatch) -> None:
         ]
     )
 
-    assert calls == [("whatsapp_chat", "api", None, "eko")]
+    assert calls == [("whatsapp_chat", "api", None, "eko", None)]
