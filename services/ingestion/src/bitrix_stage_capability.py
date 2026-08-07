@@ -40,6 +40,9 @@ from src.bitrix_stage_capability_report import (
 )
 from src.config import get_settings
 from src.connectors.bitrix_openlines.client import BitrixOpenLinesClient
+from src.connectors.bitrix_openlines.crm_status_catalog import (
+    CrmStageCatalogSemanticContractError,
+)
 from src.connectors.bitrix_stage_history.canonical import normalize_source_contract_id
 from src.connectors.bitrix_stage_history.capability_provenance import (
     effective_config_fingerprint,
@@ -352,6 +355,10 @@ def _run_locked(
     client = _client()
     redaction_key = new_redaction_key()
     artifacts: list[_RestrictedArtifact] = []
+    failure_phase = "capability_initialization"
+    failure_reason = "capability_initialization_failed"
+    portal_digest: str | None = None
+    config_digest: str | None = None
     try:
         key_artifact = _RedactionKeyArtifact(args.restricted_output_dir, redaction_key)
         artifacts.append(key_artifact)
@@ -362,6 +369,8 @@ def _run_locked(
         config_digest = effective_config_fingerprint(
             redaction_key, get_ingestion_config().bitrix_openlines, categories
         )
+        failure_phase = "current_stage_catalog_preflight"
+        failure_reason = "current_stage_catalog_preflight_failed"
         catalog_manifest, catalog_keys = collect_current_stage_catalog(
             client,
             category_ids=categories,
@@ -369,14 +378,15 @@ def _run_locked(
             redaction_key=redaction_key,
         )
         if not _catalog_machine_qualified(catalog_manifest):
-            _write_failure_manifest(
-                args.restricted_output_dir,
-                reason="current_stage_catalog_not_qualified",
-            )
+            failure_reason = "current_stage_catalog_not_qualified"
             raise RuntimeError(
                 "current deal-stage catalog is incomplete or internally inconsistent"
             )
+        failure_phase = "deal_upper_boundary"
+        failure_reason = "deal_upper_boundary_failed"
         upper_deal_id = freeze_deal_upper_id(client, categories)
+        failure_phase = "deal_owner_census"
+        failure_reason = "deal_owner_census_failed"
         deal_manifests, owner_spools = _collect_deal_passes(
             client,
             categories=categories,
@@ -389,15 +399,16 @@ def _run_locked(
         if not _has_deal_converged(deal_manifests, limits) or not _passes_machine_qualified(
             deal_manifests, stage=False
         ):
-            _write_failure_manifest(
-                args.restricted_output_dir,
-                reason="deal_owner_census_not_converged_or_not_qualified",
-            )
+            failure_reason = "deal_owner_census_not_converged_or_not_qualified"
             raise RuntimeError(
                 "deal owner manifests did not converge into a complete frozen census"
             )
         selected_owner = owner_spools[-1]
+        failure_phase = "stage_history_upper_boundary"
+        failure_reason = "stage_history_upper_boundary_failed"
         upper_history_id = freeze_stage_history_upper_id(client, args.entity_type_id)
+        failure_phase = "global_stage_history"
+        failure_reason = "global_stage_history_failed"
         stage_manifests, stage_spools = _collect_global_stage_passes(
             client,
             source_contract_id=args.source_contract_id,
@@ -414,13 +425,12 @@ def _run_locked(
         if not _has_stage_converged(stage_manifests, limits) or not _passes_machine_qualified(
             stage_manifests, stage=True
         ):
-            _write_failure_manifest(
-                args.restricted_output_dir,
-                reason="global_stage_history_not_converged_or_not_qualified",
-            )
+            failure_reason = "global_stage_history_not_converged_or_not_qualified"
             raise RuntimeError(
                 "global stage-history manifests did not converge into a complete frozen census"
             )
+        failure_phase = "final_evidence_summary"
+        failure_reason = "final_evidence_summary_failed"
         summary = _evidence_summary(
             source_contract_id=args.source_contract_id,
             entity_type_id=args.entity_type_id,
@@ -438,6 +448,30 @@ def _run_locked(
         _write_json(args.restricted_output_dir / "final-evidence-summary.json", summary)
         print(json.dumps(summary, sort_keys=True, separators=(",", ":")))
         return 0
+    except CrmStageCatalogSemanticContractError as exc:
+        _write_failure_manifest(
+            args.restricted_output_dir,
+            phase="current_stage_catalog_preflight",
+            reason="current_stage_catalog_semantic_contract_violation",
+            exception_type=type(exc).__name__,
+            portal_digest=portal_digest,
+            config_digest=config_digest,
+            image_digest=image_digest,
+            included_deal_category_count=len(categories),
+        )
+        raise
+    except (OSError, RuntimeError, ValueError) as exc:
+        _write_failure_manifest(
+            args.restricted_output_dir,
+            phase=failure_phase,
+            reason=failure_reason,
+            exception_type=type(exc).__name__,
+            portal_digest=portal_digest,
+            config_digest=config_digest,
+            image_digest=image_digest,
+            included_deal_category_count=len(categories),
+        )
+        raise
     finally:
         if not args.retain_spool:
             for artifact in artifacts:

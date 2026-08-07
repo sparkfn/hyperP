@@ -8,7 +8,10 @@ from typing import cast
 import httpx
 import pytest
 from src.connectors.bitrix_openlines.client import BitrixOpenLinesClient
-from src.connectors.bitrix_openlines.crm_status_catalog import deal_stage_status_entity_id
+from src.connectors.bitrix_openlines.crm_status_catalog import (
+    CrmStageCatalogSemanticContractError,
+    deal_stage_status_entity_id,
+)
 
 
 def _client(handler: httpx.MockTransport) -> BitrixOpenLinesClient:
@@ -40,8 +43,22 @@ def test_client_reads_a_typed_current_stage_catalog_page() -> None:
                         "ENTITY_ID": "DEAL_STAGE_2",
                         "STATUS_ID": "C2:WON",
                         "CATEGORY_ID": 2,
-                        "SEMANTICS": "success",
+                        "SEMANTICS": "S",
                         "EXTRA": {"SEMANTICS": "success"},
+                    },
+                    {
+                        "ENTITY_ID": "DEAL_STAGE_2",
+                        "STATUS_ID": "C2:LOSE",
+                        "CATEGORY_ID": 2,
+                        "SEMANTICS": "F",
+                        "EXTRA": {"SEMANTICS": "failure"},
+                    },
+                    {
+                        "ENTITY_ID": "DEAL_STAGE_2",
+                        "STATUS_ID": "C2:APOLOGY",
+                        "CATEGORY_ID": 2,
+                        "SEMANTICS": "F",
+                        "EXTRA": {"SEMANTICS": "apology"},
                     },
                 ],
                 "next": 50,
@@ -65,6 +82,8 @@ def test_client_reads_a_typed_current_stage_catalog_page() -> None:
     assert [(item.category_id, item.stage_id, item.semantic_id) for item in page.items] == [
         ("2", "C2:NEW", "process"),
         ("2", "C2:WON", "success"),
+        ("2", "C2:LOSE", "failure"),
+        ("2", "C2:APOLOGY", "apology"),
     ]
     assert page.next_start == 50
     assert page.total == 51
@@ -120,8 +139,36 @@ def test_default_category_uses_the_default_deal_stage_directory() -> None:
                 {
                     "ENTITY_ID": "DEAL_STAGE_2",
                     "STATUS_ID": "C2:NEW",
-                    "SEMANTICS": "process",
+                    "SEMANTICS": "S",
+                    "EXTRA": {"SEMANTICS": "failure"},
+                }
+            ]
+        },
+        {
+            "result": [
+                {
+                    "ENTITY_ID": "DEAL_STAGE_2",
+                    "STATUS_ID": "C2:NEW",
+                    "SEMANTICS": " S",
                     "EXTRA": {"SEMANTICS": "success"},
+                }
+            ]
+        },
+        {
+            "result": [
+                {
+                    "ENTITY_ID": "DEAL_STAGE_2",
+                    "STATUS_ID": "C2:NEW",
+                    "EXTRA": {"SEMANTICS": "process "},
+                }
+            ]
+        },
+        {
+            "result": [
+                {
+                    "ENTITY_ID": "DEAL_STAGE_2",
+                    "STATUS_ID": "C2:NEW",
+                    "EXTRA": [],
                 }
             ]
         },
@@ -145,3 +192,67 @@ def test_client_rejects_invalid_stage_catalog_category_ids(category_id: object) 
 
     with pytest.raises(ValueError, match="category_id"):
         client.list_crm_deal_stage_catalog_page(category_id=cast(int, category_id))
+
+
+@pytest.mark.parametrize(
+    ("compact_semantic", "descriptive_semantic", "expected"),
+    [
+        ("S", None, "success"),
+        ("F", None, "failure"),
+        (None, None, None),
+    ],
+)
+def test_client_normalizes_legacy_missing_descriptive_semantics(
+    compact_semantic: str | None,
+    descriptive_semantic: str | None,
+    expected: str | None,
+) -> None:
+    item: dict[str, object] = {
+        "ENTITY_ID": "DEAL_STAGE_2",
+        "STATUS_ID": "C2:NEW",
+    }
+    if compact_semantic is not None:
+        item["SEMANTICS"] = compact_semantic
+    if descriptive_semantic is not None:
+        item["EXTRA"] = {"SEMANTICS": descriptive_semantic}
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"result": [item]})
+
+    page = _client(httpx.MockTransport(handler)).list_crm_deal_stage_catalog_page(category_id=2)
+
+    assert page.items[0].semantic_id == expected
+
+
+@pytest.mark.parametrize(
+    ("compact_semantic", "descriptive_semantic"),
+    [
+        ("S", "failure"),
+        ("S", "apology"),
+        ("F", "success"),
+        ("F", "process"),
+        (None, "success"),
+        (None, "failure"),
+        ("P", "process"),
+        ("S", "unknown"),
+        ("X", None),
+    ],
+)
+def test_client_fails_closed_for_incompatible_stage_semantics(
+    compact_semantic: str | None,
+    descriptive_semantic: str | None,
+) -> None:
+    item: dict[str, object] = {
+        "ENTITY_ID": "DEAL_STAGE_2",
+        "STATUS_ID": "C2:NEW",
+    }
+    if compact_semantic is not None:
+        item["SEMANTICS"] = compact_semantic
+    if descriptive_semantic is not None:
+        item["EXTRA"] = {"SEMANTICS": descriptive_semantic}
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"result": [item]})
+
+    with pytest.raises(CrmStageCatalogSemanticContractError, match="semantic"):
+        _client(httpx.MockTransport(handler)).list_crm_deal_stage_catalog_page(category_id=2)

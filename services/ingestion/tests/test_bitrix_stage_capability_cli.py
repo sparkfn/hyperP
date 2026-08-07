@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 from contextlib import nullcontext
 from pathlib import Path
 
@@ -13,6 +14,9 @@ from src.bitrix_stage_capability import (
     _recommendation,
     _write_json,
     build_parser,
+)
+from src.connectors.bitrix_openlines.crm_status_catalog import (
+    CrmStageCatalogSemanticContractError,
 )
 from src.connectors.bitrix_stage_history.models import ProbeLimits
 from src.connectors.bitrix_stage_history.probe import PassManifest
@@ -164,7 +168,7 @@ def test_run_emits_redacted_v2_combined_re_gate_summary(
 
         def list_crm_deal_stage_catalog_page(self, **_kwargs: object) -> CrmDealStageCatalogPage:
             return CrmDealStageCatalogPage(
-                (CrmDealStageCatalogItem("2", "C2:NEW", "P"),),
+                (CrmDealStageCatalogItem("2", "C2:NEW", "process"),),
                 None,
                 1,
                 None,
@@ -241,8 +245,101 @@ def test_run_emits_redacted_v2_combined_re_gate_summary(
     assert summary["global_stage_history"]["pass_manifests"][0][
         "upper_history_id_digest"
     ].startswith("hmac-sha256:")
-    assert "501" not in json.dumps(summary)
+    assert re.search(r"(?<![0-9A-Za-z])501(?![0-9A-Za-z])", json.dumps(summary)) is None
     assert client.stage_calls[0]["order_direction"] == "DESC"
     assert client.stage_calls[0]["filters"] == {}
     assert client.stage_calls[1]["filters"] == {"<=ID": "11"}
     assert (tmp_path / "restricted" / "final-evidence-summary.json").exists()
+
+
+@pytest.mark.parametrize(
+    ("preflight_error", "expected_reason"),
+    [
+        (
+            CrmStageCatalogSemanticContractError("source-value-which-must-not-leak"),
+            "current_stage_catalog_semantic_contract_violation",
+        ),
+        (
+            RuntimeError("different-source-value-which-must-not-leak"),
+            "current_stage_catalog_preflight_failed",
+        ),
+    ],
+)
+def test_catalog_preflight_writes_a_redacted_failure_manifest(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    preflight_error: RuntimeError,
+    expected_reason: str,
+) -> None:
+    class Client:
+        def __init__(self) -> None:
+            self.deal_calls = 0
+            self.stage_calls = 0
+
+        def list_crm_deal_capability_page(self, **_kwargs: object) -> object:
+            self.deal_calls += 1
+            raise AssertionError("deal census must not start after catalog preflight failure")
+
+        def list_stage_history_page(self, **_kwargs: object) -> object:
+            self.stage_calls += 1
+            raise AssertionError("stage traversal must not start after catalog preflight failure")
+
+        def close(self) -> None:
+            return None
+
+    client = Client()
+    monkeypatch.setattr(capability_cli, "_client", lambda: client)
+    monkeypatch.setattr(capability_cli, "_capability_run_lock", nullcontext)
+    monkeypatch.setattr(capability_cli, "portal_fingerprint", lambda *_args: "hmac-sha256:portal")
+    monkeypatch.setattr(
+        capability_cli,
+        "effective_config_fingerprint",
+        lambda *_args: "hmac-sha256:config",
+    )
+
+    def fail_catalog_preflight(*_args: object, **_kwargs: object) -> object:
+        raise preflight_error
+
+    monkeypatch.setattr(capability_cli, "collect_current_stage_catalog", fail_catalog_preflight)
+    output_directory = tmp_path / "restricted"
+
+    with pytest.raises(type(preflight_error)):
+        capability_cli.run(
+            [
+                "--source-contract-id",
+                "123E4567-E89B-12D3-A456-426614174000",
+                "--category-id",
+                "2",
+                "--restricted-output-dir",
+                str(output_directory),
+                "--max-calls-per-pass",
+                "3",
+                "--max-rows-per-pass",
+                "100",
+                "--max-spool-bytes-per-pass",
+                "1000000",
+                "--max-runtime-seconds-per-pass",
+                "5",
+                "--deployment-image-digest",
+                "sha256:" + ("a" * 64),
+            ]
+        )
+
+    manifest_path = output_directory / "failure-manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    encoded = json.dumps(manifest, sort_keys=True)
+    assert manifest["failure_phase"] == "current_stage_catalog_preflight"
+    assert manifest["failure_reason"] == expected_reason
+    assert manifest["exception_type"] == type(preflight_error).__name__
+    assert manifest["traversal_outcome"] == "unsupported"
+    assert manifest["included_deal_category_count"] == 1
+    assert manifest["provenance"]["portal_origin_digest"] == "hmac-sha256:portal"
+    assert manifest["provenance"]["effective_ingestion_config_digest"] == "hmac-sha256:config"
+    assert manifest["provenance"]["deployment_image_digest"] == "sha256:" + ("a" * 64)
+    assert "source-value-which-must-not-leak" not in encoded
+    assert "different-source-value-which-must-not-leak" not in encoded
+    assert manifest_path.stat().st_mode & 0o077 == 0
+    assert not (output_directory / "capability-redaction-key.bin").exists()
+    assert not (output_directory / "final-evidence-summary.json").exists()
+    assert client.deal_calls == 0
+    assert client.stage_calls == 0

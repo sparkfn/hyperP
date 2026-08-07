@@ -11,6 +11,22 @@ from src.connectors.bitrix_openlines.models import (
 from src.models import JsonValue
 
 
+class CrmStageCatalogSemanticContractError(RuntimeError):
+    """A catalog row violated the documented compact/descriptive semantic contract."""
+
+
+_COMPACT_TO_FALLBACK_SEMANTIC = {
+    "S": "success",
+    "F": "failure",
+}
+_DESCRIPTIVE_TO_COMPACT_SEMANTIC = {
+    "process": None,
+    "success": "S",
+    "failure": "F",
+    "apology": "F",
+}
+
+
 def deal_stage_status_entity_id(category_id: int) -> str:
     """Return the Bitrix status-directory identity for one deal category."""
     _validate_category_id(category_id)
@@ -71,17 +87,43 @@ def _parse_stage_catalog_item(
     if extra_value is not None and not isinstance(extra_value, dict):
         raise RuntimeError("Bitrix CRM stage catalog contained an invalid EXTRA")
     extra_semantic = _optional_text(extra_value, "SEMANTICS") if extra_value is not None else None
-    if (
-        top_level_semantic is not None
-        and extra_semantic is not None
-        and top_level_semantic != extra_semantic
-    ):
-        raise RuntimeError("Bitrix CRM stage catalog contained conflicting semantics")
     return CrmDealStageCatalogItem(
         category_id=str(category_id),
         stage_id=_required_text(raw, "STATUS_ID"),
-        semantic_id=extra_semantic if extra_semantic is not None else top_level_semantic,
+        semantic_id=_normalize_stage_semantic(top_level_semantic, extra_semantic),
     )
+
+
+def _normalize_stage_semantic(
+    compact_semantic: str | None,
+    descriptive_semantic: str | None,
+) -> str | None:
+    """Validate Bitrix's compact/descriptive stage-semantic representations.
+
+    ``SEMANTICS`` is the compact terminal class (``S`` or ``F``), while
+    ``EXTRA.SEMANTICS`` is the descriptive source value. A null compact value
+    is compatible only with the ``process`` description. The descriptive value
+    remains authoritative so an ``F`` / ``apology`` row retains its detail.
+    """
+    if descriptive_semantic is None:
+        if compact_semantic is None:
+            return None
+        fallback = _COMPACT_TO_FALLBACK_SEMANTIC.get(compact_semantic)
+        if fallback is None:
+            raise CrmStageCatalogSemanticContractError(
+                "Bitrix CRM stage catalog contained an unknown compact semantic"
+            )
+        return fallback
+    expected_compact = _DESCRIPTIVE_TO_COMPACT_SEMANTIC.get(descriptive_semantic)
+    if descriptive_semantic not in _DESCRIPTIVE_TO_COMPACT_SEMANTIC:
+        raise CrmStageCatalogSemanticContractError(
+            "Bitrix CRM stage catalog contained an unknown descriptive semantic"
+        )
+    if compact_semantic != expected_compact:
+        raise CrmStageCatalogSemanticContractError(
+            "Bitrix CRM stage catalog contained incompatible semantic representations"
+        )
+    return descriptive_semantic
 
 
 def _validate_category_id(category_id: int) -> None:
