@@ -40,6 +40,7 @@ class _Client:
     def __init__(self, pages: list[StageHistoryPage]) -> None:
         self._pages = pages
         self.calls: list[tuple[int, dict[str, JsonValue]]] = []
+        self.orders: list[str] = []
 
     def list_stage_history_page(
         self,
@@ -50,7 +51,7 @@ class _Client:
         start: int = -1,
     ) -> StageHistoryPage:
         assert entity_type_id == 2
-        assert order_direction == "ASC"
+        self.orders.append(order_direction)
         self.calls.append((start, dict(filters or {})))
         return self._pages[len(self.calls) - 1]
 
@@ -554,3 +555,130 @@ def test_runtime_limit_covers_manifest_digest(
         )
 
     assert list((tmp_path / "restricted").iterdir()) == []
+
+
+def test_global_frozen_stage_pass_reconciles_against_restricted_owner_manifest(
+    tmp_path: Path,
+) -> None:
+    from src.connectors.bitrix_openlines.models import CrmDealCapabilityItem
+    from src.connectors.bitrix_stage_history.deal_probe import RestrictedOwnerManifest
+    from src.connectors.bitrix_stage_history.probe import freeze_stage_history_upper_id
+
+    owner_manifest = RestrictedOwnerManifest(tmp_path / "restricted", 1)
+    owner_manifest.add(CrmDealCapabilityItem("501", "2", "C2:NEW"))
+    owner_manifest.flush()
+    redaction_key = b"a" * 32
+    owner_digest = owner_manifest.manifest_digest(redaction_key=redaction_key)
+    boundary_client = _Client([StageHistoryPage((_item("10"), _item("9")), None, None, None, None)])
+    assert freeze_stage_history_upper_id(boundary_client, 2) == 10
+    assert boundary_client.calls == [(-1, {})]
+    assert boundary_client.orders == ["DESC"]
+
+    client = _Client(
+        [
+            StageHistoryPage(
+                (_item("1"), replace(_item("2"), owner_id="999")),
+                None,
+                2,
+                None,
+                None,
+            )
+        ]
+    )
+    manifest, spool = collect_stage_history_pass(
+        client,
+        source_contract_id="123e4567-e89b-12d3-a456-426614174000",
+        entity_type_id=2,
+        filters={},
+        limits=_limits(),
+        spool_directory=tmp_path / "restricted",
+        pass_number=2,
+        traversal_mode="id_keyset",
+        upper_history_id=10,
+        owner_manifest_path=owner_manifest.path,
+        owner_manifest_digest=owner_digest,
+        redaction_key=redaction_key,
+        current_catalog_stage_keys=(("2", "C2:NEW"),),
+    )
+
+    assert client.calls == [(-1, {"<=ID": "10"})]
+    assert client.orders == ["ASC"]
+    assert manifest.upper_history_id_digest is not None
+    assert manifest.owner_manifest_digest == owner_digest
+    assert manifest.upper_history_id_digest.startswith("hmac-sha256:")
+    assert manifest.identity_hash_digest.startswith("hmac-sha256:")
+    assert manifest.global_rows == 2
+    assert manifest.in_scope_rows == 1
+    assert manifest.out_of_scope_rows == 1
+    assert manifest.owners_without_history == 0
+    assert manifest.in_scope_identity_hash_digest is not None
+    assert manifest.current_catalog_stage_count == 1
+    assert manifest.in_scope_historical_stage_count == 1
+    assert manifest.in_scope_historical_stage_missing_catalog_count == 0
+    assert manifest.in_scope_rows_missing_stage_identity == 0
+    spool.delete()
+    owner_manifest.delete()
+
+
+def test_stage_boundary_rejects_duplicate_descending_ids() -> None:
+    from src.connectors.bitrix_stage_history.probe import freeze_stage_history_upper_id
+
+    client = _Client([StageHistoryPage((_item("10"), _item("10")), None, None, None, None)])
+
+    with pytest.raises(RuntimeError, match="not descending"):
+        freeze_stage_history_upper_id(client, 2)
+
+
+def test_global_reconciliation_rejects_an_owner_manifest_digest_from_another_run(
+    tmp_path: Path,
+) -> None:
+    from src.connectors.bitrix_openlines.models import CrmDealCapabilityItem
+    from src.connectors.bitrix_stage_history.deal_probe import RestrictedOwnerManifest
+
+    owner_manifest = RestrictedOwnerManifest(tmp_path / "restricted", 1)
+    owner_manifest.add(CrmDealCapabilityItem("501", "2", "C2:NEW"))
+    owner_manifest.flush()
+
+    with pytest.raises(RuntimeError, match="owner manifest digest"):
+        collect_stage_history_pass(
+            _Client([StageHistoryPage((_item("1"),), None, 1, None, None)]),
+            source_contract_id="123e4567-e89b-12d3-a456-426614174000",
+            entity_type_id=2,
+            filters={},
+            limits=_limits(),
+            spool_directory=tmp_path / "restricted",
+            pass_number=2,
+            traversal_mode="id_keyset",
+            upper_history_id=10,
+            owner_manifest_path=owner_manifest.path,
+            owner_manifest_digest=owner_manifest.manifest_digest(redaction_key=b"a" * 32),
+            redaction_key=b"b" * 32,
+        )
+
+    owner_manifest.delete()
+
+
+def test_global_frozen_stage_pass_rejects_source_rows_above_boundary(tmp_path: Path) -> None:
+    from src.connectors.bitrix_openlines.models import CrmDealCapabilityItem
+    from src.connectors.bitrix_stage_history.deal_probe import RestrictedOwnerManifest
+
+    owner_manifest = RestrictedOwnerManifest(tmp_path / "restricted", 1)
+    owner_manifest.add(CrmDealCapabilityItem("501", "2", "C2:NEW"))
+    owner_manifest.flush()
+
+    with pytest.raises(RuntimeError, match="frozen upper boundary"):
+        collect_stage_history_pass(
+            _Client([StageHistoryPage((_item("11"),), None, 1, None, None)]),
+            source_contract_id="123e4567-e89b-12d3-a456-426614174000",
+            entity_type_id=2,
+            filters={},
+            limits=_limits(),
+            spool_directory=tmp_path / "restricted",
+            pass_number=2,
+            traversal_mode="id_keyset",
+            upper_history_id=10,
+            owner_manifest_path=owner_manifest.path,
+            owner_manifest_digest=owner_manifest.manifest_digest(),
+        )
+
+    owner_manifest.delete()

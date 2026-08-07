@@ -11,47 +11,79 @@ FOR (membership:CrmDealScopeMembership)
 REQUIRE (membership.source_record_pk, membership.scope_state) IS UNIQUE""",
 )
 
-UPSERT_IN_SCOPE_DEAL_MEMBERSHIP = """
-MATCH (record:SourceRecord {source_record_pk: $source_record_pk, record_type: 'crm_deal'})
-      -[:FROM_SOURCE]->(:SourceSystem {source_key: 'bitrix_chat'})
-MATCH (record)-[:OWNED_BY]->(entity:Entity {entity_key: $entity_key})
-MERGE (deal:CrmLogicalDeal {source_key: 'bitrix_chat', deal_id: $deal_id})
-ON CREATE SET deal.logical_deal_key = 'bitrix-crm-deal-' + $deal_id,
+# Do not include these statements in routine graph initialization. Existing
+# membership nodes require an explicit data backfill before the legacy identity
+# constraint can be replaced safely.
+MIGRATE_BITRIX_DEAL_SCOPE_LINEAGE_CONSTRAINTS: tuple[str, ...] = (
+    "DROP CONSTRAINT crm_deal_scope_membership_identity_unique IF EXISTS",
+    """CREATE CONSTRAINT crm_deal_scope_lineage_identity_unique IF NOT EXISTS
+FOR (membership:CrmDealScopeMembership)
+REQUIRE (membership.source_key, membership.deal_id, membership.scope_sequence) IS UNIQUE""",
+)
+
+UPSERT_DEAL_SCOPE_MEMBERSHIPS = """
+UNWIND $observations AS observation
+MERGE (deal:CrmLogicalDeal {source_key: $source_key, deal_id: observation.deal_id})
+ON CREATE SET deal.logical_deal_key = 'bitrix-crm-deal-' + observation.deal_id,
               deal.created_at = datetime(),
               deal.current_scope_sequence = 0
+WITH deal, observation,
+     CASE
+       WHEN deal.current_scope_state IS NULL
+         OR deal.current_scope_state <> observation.scope_state
+         OR coalesce(deal.current_entity_key, '') <> coalesce(observation.entity_key, '')
+         OR coalesce(deal.current_category_id, '') <> coalesce(observation.category_id, '')
+       THEN true
+       ELSE false
+     END AS semantic_change
 SET deal.current_scope_sequence = CASE
-      WHEN deal.current_source_record_pk = record.source_record_pk
-      THEN deal.current_scope_sequence
-      ELSE deal.current_scope_sequence + 1
+      WHEN semantic_change THEN coalesce(deal.current_scope_sequence, 0) + 1
+      ELSE coalesce(deal.current_scope_sequence, 1)
     END,
-    deal.current_scope_state = 'in_scope',
-    deal.current_entity_key = entity.entity_key,
-    deal.current_category_id = $category_id,
-    deal.current_observed_at = record.observed_at,
-    deal.current_source_record_pk = record.source_record_pk,
+    deal.current_scope_state = observation.scope_state,
+    deal.current_entity_key = observation.entity_key,
+    deal.current_category_id = observation.category_id,
+    deal.current_source_record_pk = observation.source_record_pk,
+    deal.current_observed_at = datetime(),
     deal.updated_at = datetime()
 MERGE (membership:CrmDealScopeMembership {
-  source_record_pk: record.source_record_pk,
-  scope_state: 'in_scope'
+  source_key: $source_key,
+  deal_id: observation.deal_id,
+  scope_sequence: deal.current_scope_sequence
 })
 ON CREATE SET membership.membership_id = randomUUID(),
-              membership.source_key = 'bitrix_chat',
-              membership.deal_id = $deal_id,
-              membership.entity_key = entity.entity_key,
-              membership.category_id = $category_id,
-              membership.observed_at = record.observed_at,
+              membership.scope_state = observation.scope_state,
+              membership.entity_key = observation.entity_key,
+              membership.category_id = observation.category_id,
+              membership.source_record_pk = observation.source_record_pk,
               membership.provenance = 'deal_census',
+              membership.observed_at = deal.current_observed_at,
               membership.created_at = datetime()
 MERGE (membership)-[:FOR_LOGICAL_DEAL]->(deal)
-MERGE (membership)-[:OBSERVED_FROM]->(record)
-RETURN deal.current_scope_sequence AS scope_sequence,
+RETURN deal.deal_id AS deal_id,
+       deal.current_scope_sequence AS scope_sequence,
        deal.current_scope_state AS scope_state,
-       deal.current_entity_key AS entity_key
+       deal.current_entity_key AS entity_key,
+       deal.current_category_id AS category_id,
+       deal.current_source_record_pk AS source_record_pk
+"""
+
+GET_CURRENT_DEAL_SCOPE_BATCH = """
+UNWIND $deal_ids AS requested_deal_id
+OPTIONAL MATCH (deal:CrmLogicalDeal {source_key: $source_key, deal_id: requested_deal_id})
+RETURN requested_deal_id AS deal_id,
+       deal.current_scope_sequence AS scope_sequence,
+       deal.current_scope_state AS scope_state,
+       deal.current_entity_key AS entity_key,
+       deal.current_category_id AS category_id,
+       deal.current_source_record_pk AS source_record_pk
+ORDER BY deal_id
 """
 
 GET_CURRENT_DEAL_SCOPE = """
-MATCH (deal:CrmLogicalDeal {source_key: 'bitrix_chat', deal_id: $deal_id})
-RETURN deal.current_scope_sequence AS scope_sequence,
+MATCH (deal:CrmLogicalDeal {source_key: $source_key, deal_id: $deal_id})
+RETURN deal.deal_id AS deal_id,
+       deal.current_scope_sequence AS scope_sequence,
        deal.current_scope_state AS scope_state,
        deal.current_entity_key AS entity_key,
        deal.current_category_id AS category_id,

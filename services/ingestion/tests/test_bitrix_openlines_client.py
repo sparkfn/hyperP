@@ -879,6 +879,157 @@ def test_client_does_not_request_crm_deals_for_an_empty_category_scope() -> None
     assert list(client.iter_crm_deal_pages([])) == []
 
 
+def test_client_reads_minimal_bounded_crm_deal_capability_page_without_enrichment() -> None:
+    requests: list[tuple[str, dict[str, object]]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        method = request.url.path.rsplit("/", 1)[-1]
+        body = json.loads(request.content)
+        requests.append((method, body))
+        assert method == "crm.deal.list"
+        return httpx.Response(
+            200,
+            json={
+                "result": [
+                    {"ID": "501", "CATEGORY_ID": "2", "STAGE_ID": "C2:NEW"},
+                    {"ID": 502, "CATEGORY_ID": 0},
+                ],
+                "next": 50,
+                "total": "143000",
+                "time": {"operating": 0.02, "operating_reset_at": 12345},
+            },
+        )
+
+    client = BitrixOpenLinesClient(
+        base_url="https://bitrix.test/rest/hook",
+        timeout_seconds=5,
+        max_attempts=1,
+        http=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+
+    page = client.list_crm_deal_capability_page(
+        category_ids=["2", "7", "2"],
+        greater_than_id=500,
+        less_than_or_equal_to_id=900,
+    )
+
+    assert requests == [
+        (
+            "crm.deal.list",
+            {
+                "filter": {"@CATEGORY_ID": ["2", "7"], ">ID": 500, "<=ID": 900},
+                "select": ["ID", "CATEGORY_ID", "STAGE_ID"],
+                "order": {"ID": "ASC"},
+                "start": -1,
+            },
+        )
+    ]
+    assert [(item.deal_id, item.category_id, item.stage_id) for item in page.items] == [
+        ("501", "2", "C2:NEW"),
+        ("502", "0", None),
+    ]
+    assert page.next_start == 50
+    assert page.total == 143000
+    assert page.operating == 0.02
+    assert page.operating_reset_at == 12345.0
+    assert all(
+        method not in {"crm.deal.contact.items.get", "crm.contact.get", "crm.lead.get"}
+        for method, _body in requests
+    )
+
+
+def test_client_supports_descending_crm_deal_capability_boundary_probe() -> None:
+    requests: list[dict[str, object]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        requests.append(body)
+        return httpx.Response(200, json={"result": [{"ID": "900", "CATEGORY_ID": "2"}]})
+
+    client = BitrixOpenLinesClient(
+        base_url="https://bitrix.test/rest/hook",
+        timeout_seconds=5,
+        max_attempts=1,
+        http=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+
+    page = client.list_crm_deal_capability_page(category_ids=["2"], order_direction="DESC")
+
+    assert page.items[0].deal_id == "900"
+    assert requests == [
+        {
+            "filter": {"@CATEGORY_ID": ["2"]},
+            "select": ["ID", "CATEGORY_ID", "STAGE_ID"],
+            "order": {"ID": "DESC"},
+            "start": -1,
+        }
+    ]
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        {"result": {}},
+        {"result": [{"ID": "", "CATEGORY_ID": "2"}]},
+        {"result": [{"ID": "501", "CATEGORY_ID": "two"}]},
+        {"result": [{"ID": "501", "CATEGORY_ID": "2", "STAGE_ID": "  "}]},
+        {"result": [{"ID": "501", "CATEGORY_ID": "2"}], "next": -1},
+        {"result": [{"ID": "501", "CATEGORY_ID": "2"}], "total": True},
+        {"result": [{"ID": "501", "CATEGORY_ID": "2"}], "time": {"operating": "0.2"}},
+    ],
+)
+def test_client_fails_closed_for_malformed_crm_deal_capability_values(
+    response: dict[str, object],
+) -> None:
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=response)
+
+    client = BitrixOpenLinesClient(
+        base_url="https://bitrix.test/rest/hook",
+        timeout_seconds=5,
+        max_attempts=1,
+        http=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+
+    with pytest.raises(RuntimeError, match="Bitrix CRM deal capability"):
+        client.list_crm_deal_capability_page(category_ids=["2"])
+
+
+@pytest.mark.parametrize(
+    ("greater_than_id", "less_than_or_equal_to_id"),
+    [(True, None), (0, None), (None, 0), (900, 900), (901, 900)],
+)
+def test_client_rejects_invalid_crm_deal_capability_bounds(
+    greater_than_id: int | None,
+    less_than_or_equal_to_id: int | None,
+) -> None:
+    client = BitrixOpenLinesClient(
+        base_url="https://bitrix.test/rest/hook",
+        timeout_seconds=5,
+        max_attempts=1,
+        http=httpx.Client(transport=httpx.MockTransport(lambda _request: httpx.Response(500))),
+    )
+
+    with pytest.raises(ValueError, match="capability"):
+        client.list_crm_deal_capability_page(
+            category_ids=["2"],
+            greater_than_id=greater_than_id,
+            less_than_or_equal_to_id=less_than_or_equal_to_id,
+        )
+
+
+def test_client_rejects_invalid_crm_deal_capability_order_direction() -> None:
+    client = BitrixOpenLinesClient(
+        base_url="https://bitrix.test/rest/hook",
+        timeout_seconds=5,
+        max_attempts=1,
+        http=httpx.Client(transport=httpx.MockTransport(lambda _request: httpx.Response(500))),
+    )
+
+    with pytest.raises(ValueError, match="order_direction"):
+        client.list_crm_deal_capability_page(category_ids=["2"], order_direction="ascending")
+
+
 def test_client_retries_the_same_filtered_crm_deal_page(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

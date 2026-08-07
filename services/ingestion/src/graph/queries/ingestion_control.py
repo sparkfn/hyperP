@@ -14,6 +14,97 @@ FOR (run:IngestionLogicalRun)
 REQUIRE (run.source_key, run.idempotency_key) IS UNIQUE""",
 )
 
+CREATE_BITRIX_INGESTION_STREAM_CONSTRAINTS: tuple[str, ...] = (
+    """CREATE CONSTRAINT bitrix_ingestion_stream_identity_unique IF NOT EXISTS
+FOR (stream:BitrixIngestionStream)
+REQUIRE (stream.source_key, stream.stream_key) IS UNIQUE""",
+)
+
+# This is deliberately an admission control record, rather than a domain-write
+# guard. Fenced SourceRecord and graph mutations will be wired separately.
+ADMIT_OR_COALESCE_BITRIX_STREAM = """
+MATCH (source:SourceSystem {source_key: $source_key, is_active: true})
+MATCH (logical:IngestionLogicalRun {logical_run_id: $logical_run_id})
+      -[:FOR_SOURCE]->(source)
+MATCH (logical)-[:ACTIVE_ATTEMPT]->(attempt:IngestRun {ingest_run_id: $ingest_run_id})
+WHERE logical.active_generation = $attempt_generation
+  AND attempt.generation = $attempt_generation
+  AND logical.status IN ['queued', 'running', 'stop_requested']
+  AND attempt.status IN ['queued', 'started']
+MERGE (stream:BitrixIngestionStream {
+  source_key: $source_key,
+  stream_key: $stream_key
+})
+ON CREATE SET
+  stream.logical_run_id = $logical_run_id,
+  stream.ingest_run_id = $ingest_run_id,
+  stream.attempt_generation = $attempt_generation,
+  stream.worker_task_id = $worker_task_id,
+  stream.stream_generation = 1,
+  stream.fencing_token = 1,
+  stream.status = 'active',
+  stream.created_at = datetime(),
+  stream.updated_at = datetime(),
+  stream.creation_token = $creation_token
+MERGE (stream)-[:FOR_SOURCE]->(source)
+WITH stream, logical, attempt, stream.creation_token = $creation_token AS created
+REMOVE stream.creation_token
+WITH stream, logical, attempt,
+     created,
+     stream.logical_run_id = $logical_run_id
+       AND stream.ingest_run_id = $ingest_run_id
+       AND stream.attempt_generation = $attempt_generation AS same_attempt,
+     stream.stream_generation AS current_stream_generation,
+     stream.fencing_token AS current_fencing_token
+WHERE created OR same_attempt OR $replace_active
+SET stream.logical_run_id = CASE
+      WHEN created OR same_attempt THEN stream.logical_run_id
+      WHEN $replace_active THEN $logical_run_id
+      ELSE stream.logical_run_id
+    END,
+    stream.ingest_run_id = CASE
+      WHEN created OR same_attempt THEN stream.ingest_run_id
+      WHEN $replace_active THEN $ingest_run_id
+      ELSE stream.ingest_run_id
+    END,
+    stream.attempt_generation = CASE
+      WHEN created OR same_attempt THEN stream.attempt_generation
+      WHEN $replace_active THEN $attempt_generation
+      ELSE stream.attempt_generation
+    END,
+    stream.worker_task_id = CASE
+      WHEN created OR same_attempt THEN stream.worker_task_id
+      WHEN $replace_active THEN $worker_task_id
+      ELSE stream.worker_task_id
+    END,
+    stream.stream_generation = CASE
+      WHEN created OR same_attempt THEN current_stream_generation
+      WHEN $replace_active THEN current_stream_generation + 1
+      ELSE current_stream_generation
+    END,
+    stream.fencing_token = CASE
+      WHEN created OR same_attempt THEN current_fencing_token
+      WHEN $replace_active THEN current_fencing_token + 1
+      ELSE current_fencing_token
+    END,
+    stream.status = 'active',
+    stream.updated_at = datetime()
+RETURN CASE
+         WHEN created THEN 'admitted'
+         WHEN same_attempt THEN 'coalesced'
+         WHEN $replace_active THEN 'replaced'
+         ELSE 'coalesced'
+       END AS admission_outcome,
+       stream.source_key AS source_key,
+       stream.stream_key AS stream_key,
+       stream.logical_run_id AS logical_run_id,
+       stream.ingest_run_id AS ingest_run_id,
+       stream.attempt_generation AS attempt_generation,
+       stream.stream_generation AS stream_generation,
+       stream.fencing_token AS fencing_token,
+       stream.worker_task_id AS worker_task_id
+"""
+
 CREATE_LOGICAL_RUN_AND_ATTEMPT = """
 MATCH (source:SourceSystem {source_key: $source_key, is_active: true})
 MERGE (logical:IngestionLogicalRun {

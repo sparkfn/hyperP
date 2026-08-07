@@ -1508,3 +1508,23 @@ def test_duplicate_crm_deal_discovery_scans_activities_once() -> None:
 
     assert [record["source_record_id"] for record in records] == ["bitrix-crm-deal-701"]
     assert client.activity_scans == 1
+
+
+def test_conversation_only_mode_does_not_request_crm_records() -> None:
+    class CrmForbiddenClient(StubClient):
+        def iter_crm_deal_pages(self, category_ids: object) -> Iterator[object]:
+            raise AssertionError(f"unexpected CRM deal discovery: {category_ids!r}")
+
+        def iter_crm_activities(self) -> Iterator[object]:
+            raise AssertionError("unexpected CRM activity discovery")
+
+    connector = BitrixOpenLinesConnector(
+        CrmForbiddenClient(),
+        StubWatermark(),
+        BitrixOpenLinesConfig(),
+        mode="api",
+        incremental=True,
+        include_crm_records=False,
+    )
+
+    assert list(connector.fetch_records()) == []

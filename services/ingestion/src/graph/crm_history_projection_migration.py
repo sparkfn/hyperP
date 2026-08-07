@@ -243,3 +243,145 @@ def rollback_legacy_generic_activities(
                 lease_owner=lease_owner,
             ).single()
         )
+
+
+# This repair is deliberately separate from the generic NULL-family migration.
+# It fixes only the erroneous PR #152 producer alias and remains opt-in until
+# stream fencing is wired through the active runner.
+BITRIX_ACTIVITY_ALIAS_MIGRATION_KEY = "crm_history_bitrix_activity_alias_v1"
+
+PROJECT_BITRIX_ACTIVITY_ALIAS_BATCH = """
+MATCH (migration:DataMigration {migration_key: $migration_key})
+SET migration.lease_expires_at = migration.lease_expires_at
+WITH migration
+WHERE migration.lease_owner = $lease_owner
+  AND migration.lease_expires_at >= datetime()
+SET migration.lease_expires_at = datetime() + duration({seconds: $lease_seconds}),
+    migration.updated_at = datetime()
+MATCH (record:SourceRecord {record_type: 'crm_history', history_family: 'crm_activity'})
+WHERE record.history_source = 'bitrix_crm_activity'
+  AND record.projection_source = 'bitrix_crm_activity_v1'
+  AND record.projection_version = 1
+  AND record.crm_history_projection_migration IS NULL
+WITH record ORDER BY record.source_record_pk LIMIT $batch_size
+WITH record, datetime() AS migrated_at
+SET record.history_family = 'activity',
+    record.projection_version = 2,
+    record.projection_source = 'bitrix_crm_activity_v2',
+    record.projection_time = migrated_at,
+    record.crm_history_projection_migration = $migration_key,
+    record.crm_history_projection_migrated_at = migrated_at,
+    record.crm_history_projection_prior_family = 'crm_activity',
+    record.crm_history_projection_prior_version = 1,
+    record.crm_history_projection_prior_source = 'bitrix_crm_activity_v1'
+RETURN count(record) AS projected
+"""
+
+ROLLBACK_BITRIX_ACTIVITY_ALIAS_BATCH = """
+MATCH (migration:DataMigration {migration_key: $migration_key})
+SET migration.lease_expires_at = migration.lease_expires_at
+WITH migration
+WHERE migration.lease_owner = $lease_owner
+  AND migration.lease_expires_at >= datetime()
+SET migration.lease_expires_at = datetime() + duration({seconds: $lease_seconds}),
+    migration.updated_at = datetime()
+MATCH (record:SourceRecord {record_type: 'crm_history',
+  crm_history_projection_migration: $migration_key})
+WHERE record.history_family = 'activity'
+  AND record.history_source = 'bitrix_crm_activity'
+  AND record.projection_version = 2
+  AND record.projection_source = 'bitrix_crm_activity_v2'
+  AND record.crm_history_projection_prior_family = 'crm_activity'
+  AND record.crm_history_projection_prior_version = 1
+  AND record.crm_history_projection_prior_source = 'bitrix_crm_activity_v1'
+WITH record ORDER BY record.source_record_pk LIMIT $batch_size
+SET record.history_family = 'crm_activity',
+    record.projection_version = 1,
+    record.projection_source = 'bitrix_crm_activity_v1'
+REMOVE record.crm_history_projection_migration,
+       record.crm_history_projection_migrated_at,
+       record.crm_history_projection_prior_family,
+       record.crm_history_projection_prior_version,
+       record.crm_history_projection_prior_source
+RETURN count(record) AS rolled_back
+"""
+
+
+def migrate_bitrix_activity_family_aliases(
+    client: Neo4jClient,
+    *,
+    batch_size: int = 500,
+) -> int:
+    """Explicitly repair only legacy ``crm_activity`` alias projections."""
+    return _run_bitrix_activity_alias_batches(
+        client,
+        batch_size=batch_size,
+        query=PROJECT_BITRIX_ACTIVITY_ALIAS_BATCH,
+        result_key="projected",
+    )
+
+
+def rollback_bitrix_activity_family_aliases(
+    client: Neo4jClient,
+    *,
+    batch_size: int = 500,
+) -> int:
+    """Undo only alias repairs still carrying this migration's marker."""
+    return _run_bitrix_activity_alias_batches(
+        client,
+        batch_size=batch_size,
+        query=ROLLBACK_BITRIX_ACTIVITY_ALIAS_BATCH,
+        result_key="rolled_back",
+    )
+
+
+def _run_bitrix_activity_alias_batches(
+    client: Neo4jClient,
+    *,
+    batch_size: int,
+    query: str,
+    result_key: str,
+) -> int:
+    if batch_size < 1:
+        raise ValueError("batch_size must be positive")
+    lease_owner = str(uuid4())
+
+    def _acquire(tx: ManagedTransaction) -> bool:
+        row = tx.run(
+            ACQUIRE_PROJECTION_MIGRATION,
+            migration_key=BITRIX_ACTIVITY_ALIAS_MIGRATION_KEY,
+            lease_owner=lease_owner,
+            lease_seconds=_LEASE_SECONDS,
+        ).single()
+        return row is not None and bool(row["acquired"])
+
+    if not client.execute_write(_acquire):
+        return 0
+    total = 0
+    try:
+        while True:
+
+            def _batch(tx: ManagedTransaction) -> int:
+                row = tx.run(
+                    query,
+                    migration_key=BITRIX_ACTIVITY_ALIAS_MIGRATION_KEY,
+                    lease_owner=lease_owner,
+                    lease_seconds=_LEASE_SECONDS,
+                    batch_size=batch_size,
+                ).single()
+                if row is None:
+                    raise RuntimeError("CRM activity alias migration lost its lease")
+                return int(row[result_key])
+
+            updated = client.execute_write(_batch)
+            total += updated
+            if updated == 0:
+                return total
+    finally:
+        client.execute_write(
+            lambda tx: tx.run(
+                RELEASE_PROJECTION_MIGRATION,
+                migration_key=BITRIX_ACTIVITY_ALIAS_MIGRATION_KEY,
+                lease_owner=lease_owner,
+            ).single()
+        )

@@ -133,12 +133,14 @@ class BitrixOpenLinesConnector(SourceConnector):
         file_exclusions: ExclusionFile | None = None,
         dialog_cache: DialogConfigCache | None = None,
         incremental: bool = True,
+        include_crm_records: bool = True,
     ) -> None:
         self._client = client
         self._watermark = watermark
         self._config = config
         self._mode = mode
         self._incremental = incremental
+        self._include_crm_records = include_crm_records
         self._pending_watermark: datetime | None = None
         self._builder = BitrixChatConnector()
         self._company_mobile_numbers = list(company_mobile_numbers or [])
@@ -170,7 +172,8 @@ class BitrixOpenLinesConnector(SourceConnector):
             self._log_counters()
 
     def _fetch_records_inner(self) -> Iterator[dict[str, JsonValue]]:
-        yield from self._fetch_crm_records()
+        if self._include_crm_records:
+            yield from self._fetch_crm_records()
         if self._no_config_selectable:
             return
         line_names = {item.id: item.line_name for item in self._client.list_active_configs()}
