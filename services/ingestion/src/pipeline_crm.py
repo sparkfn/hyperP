@@ -13,6 +13,10 @@ from src.crm_history_contract import generic_activity_properties
 from src.graph import queries
 from src.graph.client import Neo4jClient
 from src.graph.ingestion_control import assert_active_bitrix_fence
+from src.graph.queries.bitrix_backfill import (
+    RECORD_BITRIX_ACTIVITY_OWNER_RETRY,
+    RESOLVE_BITRIX_ACTIVITY_OWNER_RETRY,
+)
 from src.graph.queries.bitrix_deal_scope import GET_CURRENT_DEAL_SCOPE_BATCH
 from src.models import IngestResult, RecordType, SourceRecordEnvelope
 from src.record_lifecycle import load_locked_source_state
@@ -53,11 +57,14 @@ def ingest_crm_history_record(
     def _work(tx: ManagedTransaction) -> IngestResult:
         if active_fence is not None:
             assert_active_bitrix_fence(tx, active_fence)
-        owner_scope = (
-            _require_activity_owner_scope(tx, envelope)
-            if execution_context is not None
-            else "in_scope"
-        )
+        owner_scope = _owner_scope_or_retry(tx, envelope, execution_context)
+        if owner_scope is None:
+            return IngestResult(
+                source_record_id=envelope.source_record_id,
+                dropped=True,
+                retry_pending=True,
+                ingest_run_id=ingest_run_id,
+            )
         if owner_scope == "out_of_scope":
             result = IngestResult(
                 source_record_id=envelope.source_record_id,
@@ -160,7 +167,10 @@ def ingest_crm_history_record(
         return result
 
     with client.session() as session:
-        return session.execute_write(_work)
+        result = session.execute_write(_work)
+    if result.retry_pending:
+        raise UnresolvedActivityOwnerError("activity owner requires reviewed resolution")
+    return result
 
 
 def ingest_call_record(
@@ -185,11 +195,14 @@ def ingest_call_record(
     def _work(tx: ManagedTransaction) -> IngestResult:
         if active_fence is not None:
             assert_active_bitrix_fence(tx, active_fence)
-        owner_scope = (
-            _require_activity_owner_scope(tx, envelope)
-            if execution_context is not None
-            else "in_scope"
-        )
+        owner_scope = _owner_scope_or_retry(tx, envelope, execution_context)
+        if owner_scope is None:
+            return IngestResult(
+                source_record_id=envelope.source_record_id,
+                dropped=True,
+                retry_pending=True,
+                ingest_run_id=ingest_run_id,
+            )
         if owner_scope == "out_of_scope":
             result = IngestResult(
                 source_record_id=envelope.source_record_id,
@@ -282,7 +295,10 @@ def ingest_call_record(
         return result
 
     with client.session() as session:
-        return session.execute_write(_work)
+        result = session.execute_write(_work)
+    if result.retry_pending:
+        raise UnresolvedActivityOwnerError("activity owner requires reviewed resolution")
+    return result
 
 
 def _validate_existing_hash(existing: Record, incoming_hash: str) -> None:
@@ -315,6 +331,40 @@ def _require_activity_owner_scope(
     return "in_scope"
 
 
+def _owner_scope_or_retry(
+    tx: ManagedTransaction,
+    envelope: SourceRecordEnvelope,
+    context: ExecutionContext | None,
+) -> str | None:
+    if context is None:
+        return "in_scope"
+    try:
+        return _require_activity_owner_scope(tx, envelope)
+    except UnresolvedActivityOwnerError as exc:
+        generation = context.generation_context
+        if generation is None:
+            raise
+        if envelope.parent_ref is None:
+            raise
+        owner_deal_id = envelope.parent_ref.parent_source_record_id.rsplit("-", maxsplit=1)[-1]
+        record = tx.run(
+            RECORD_BITRIX_ACTIVITY_OWNER_RETRY,
+            generation_id=generation.generation_id,
+            logical_run_id=context.fence_context.logical_run_id,
+            ingest_run_id=context.fence_context.ingest_run_id,
+            attempt_generation=context.fence_context.attempt_generation,
+            stream_generation=context.fence_context.stream_generation,
+            fencing_token=context.fence_context.fencing_token,
+            source_identity=envelope.source_record_id,
+            source_boundary=f"{generation.boundary_digest}:{context.checkpoint.phase}",
+            owner_deal_id=owner_deal_id,
+            owner_state="missing_or_indeterminate",
+        ).single()
+        if record is None:
+            raise RuntimeError("activity owner retry evidence was not persisted") from exc
+        return None
+
+
 def _record_activity_unit(
     tx: ManagedTransaction,
     context: ExecutionContext | None,
@@ -326,6 +376,17 @@ def _record_activity_unit(
 ) -> None:
     if context is None:
         return
+    generation = context.generation_context
+    if generation is not None:
+        tx.run(
+            RESOLVE_BITRIX_ACTIVITY_OWNER_RETRY,
+            generation_id=generation.generation_id,
+            source_identity=envelope.source_record_id,
+            source_boundary=f"{generation.boundary_digest}:{context.checkpoint.phase}",
+            resolution=(
+                "reviewed_excluded" if scope_state == "out_of_scope" else "resolved_in_scope"
+            ),
+        ).consume()
     if (
         envelope.record_type == RecordType.CRM_HISTORY
         and envelope.raw_payload.get("has_call_record") is True

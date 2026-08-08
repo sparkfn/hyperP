@@ -249,6 +249,12 @@ class BitrixBackfillControl:
             )
             if not reconciliation.complete:
                 raise RuntimeError(f"coverage reconciliation failed for {entry.stream_key}")
+            if reconciliation.coverage_count != entry.bounded_population:
+                raise RuntimeError(
+                    f"{entry.stream_key} coverage does not equal reviewed bounded population"
+                )
+            if reconciliation.coverage_count > entry.max_rows:
+                raise RuntimeError(f"{entry.stream_key} exceeded its approved row ceiling")
             evidence.append(cast(dict[str, JsonValue], asdict(reconciliation)))
         encoded = json.dumps(evidence, sort_keys=True, separators=(",", ":"))
         digest = _digest_text("coverage-reconciliation", encoded)

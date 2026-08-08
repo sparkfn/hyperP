@@ -201,3 +201,46 @@ def test_full_snapshot_sources_do_not_claim_incremental_support() -> None:
 
     assert bankruptcy.supports_incremental is False
     assert rental_flats.supports_incremental is False
+
+
+def test_active_bitrix_successor_replaces_legacy_weekly_dispatch(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    from src import scheduled_ingestion_tasks as tasks
+
+    class _Redis:
+        def __enter__(self) -> _Redis:
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def set(self, *_args: object, **_kwargs: object) -> bool:
+            return True
+
+    monkeypatch.setattr(
+        tasks,
+        "get_ingestion_config",
+        lambda: IngestionConfig(scheduled_ingestion=ScheduledIngestionConfig(enabled=True)),
+    )
+    monkeypatch.setattr(tasks, "_claim_dispatch", lambda *_args: (True, None))
+    monkeypatch.setattr(tasks, "_utc_occurrence_date", lambda: "2026-08-08")
+    monkeypatch.setattr(
+        tasks,
+        "_dispatch_active_bitrix_successor",
+        lambda occurrence: "split-workflow" if occurrence == "2026-08-08" else None,
+    )
+    monkeypatch.setattr(
+        tasks,
+        "_signature",
+        lambda *_args: pytest.fail("active successor must not publish legacy Bitrix"),
+    )
+    monkeypatch.setattr(
+        "src.scheduled_ingestion_tasks.redis.Redis.from_url",
+        lambda *_args, **_kwargs: _Redis(),
+    )
+
+    result = tasks.dispatch_ingestion_group_task.run("bitrix_chat", incremental=True)
+
+    assert result["workflow_task_id"] == "split-workflow"
+    assert result["status"] == "queued"

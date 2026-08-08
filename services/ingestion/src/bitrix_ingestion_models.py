@@ -69,10 +69,14 @@ class ExecutionContext:
     fence_context: FenceContext
     checkpoint: CheckpointDescriptor
     generation_context: GenerationRunContext | None = None
+    max_rows: int | None = None
+    deadline_monotonic: float | None = None
 
     def __post_init__(self) -> None:
         if not self.worker_task_id.strip():
             raise ValueError("execution worker task ID must be non-empty")
+        if self.max_rows is not None and self.max_rows < 1:
+            raise ValueError("execution max_rows must be positive")
 
 
 @dataclass(frozen=True)

@@ -196,8 +196,12 @@ def _run_split_bitrix_ingestion(
     worker_task_id: str,
     generation_context: GenerationRunContext | None = None,
     source_window: dict[str, JsonValue] | None = None,
+    max_calls: int | None = None,
+    max_rows: int | None = None,
+    max_runtime_seconds: int | None = None,
 ) -> IngestionSummary:
     """Create, claim, fence, execute, and terminate one canonical split attempt."""
+    started_at = time.monotonic()
     checkpoint = _split_checkpoint(stream_key, source_window)
     client = Neo4jClient(get_settings())
     logical = LogicalRunControl(client)
@@ -272,7 +276,7 @@ def _run_split_bitrix_ingestion(
             and state.phase == "known_owner_refresh_v1"
         )
         membership_set_id = (
-            f"{generation_context.generation_id}:known-owners:1"
+            f"{generation_context.generation_id}:known-owners:{generation_context.boundary_digest}"
             if generation_context is not None and stream_key == "crm_deals"
             else None
         )
@@ -328,6 +332,10 @@ def _run_split_bitrix_ingestion(
             fence_context=admission.fence_context,
             checkpoint=checkpoint,
             generation_context=generation_context,
+            max_rows=max_rows,
+            deadline_monotonic=(
+                started_at + max_runtime_seconds if max_runtime_seconds is not None else None
+            ),
         )
         if membership_set_id is not None and membership is None:
             assert generation_context is not None
@@ -388,9 +396,30 @@ def _run_split_bitrix_ingestion(
                 safe_failure_message=str(exc),
             )
             raise
-        completion_status = summary["status"]
-        if completion_status not in {"completed", "completed_with_errors"}:
-            raise RuntimeError(f"split Bitrix runner returned invalid status {completion_status}")
+        try:
+            completion_status = summary["status"]
+            if completion_status not in {"completed", "completed_with_errors"}:
+                raise RuntimeError(
+                    f"split Bitrix runner returned invalid status {completion_status}"
+                )
+            record_count = summary["succeeded"] + summary["errors"] + summary["skipped"]
+            estimated_calls = record_count + (record_count + 49) // 50 + 2
+            if max_rows is not None and record_count > max_rows:
+                raise RuntimeError("split Bitrix row ceiling was exceeded")
+            if max_calls is not None and estimated_calls > max_calls:
+                raise RuntimeError("split Bitrix API-call ceiling was exceeded")
+            if (
+                max_runtime_seconds is not None
+                and time.monotonic() - started_at > max_runtime_seconds
+            ):
+                raise RuntimeError("split Bitrix runtime ceiling was exceeded")
+        except Exception as exc:
+            logical.fail_fenced(
+                context=admission.fence_context,
+                failure_category=type(exc).__name__,
+                safe_failure_message=str(exc),
+            )
+            raise
         logical.finalize_fenced(
             context=admission.fence_context,
             phase=active_checkpoint.phase,
@@ -399,7 +428,7 @@ def _run_split_bitrix_ingestion(
             duplicate_count=summary["skipped"],
             excluded_count=0,
             retry_count=0,
-            record_count=summary["succeeded"] + summary["errors"] + summary["skipped"],
+            record_count=record_count,
             rejected_count=summary["errors"],
         )
         return summary
@@ -906,6 +935,9 @@ def run_ingestion_task(
     bitrix_boundary_digest: str | None = None,
     bitrix_configuration_digest: str | None = None,
     bitrix_source_window: dict[str, JsonValue] | None = None,
+    bitrix_max_calls: int | None = None,
+    bitrix_max_rows: int | None = None,
+    bitrix_max_runtime_seconds: int | None = None,
 ) -> IngestionSummary:
     """Run a single ingestion under the cluster-wide concurrency cap."""
     # PR #62 introduced ``entity_key`` as the fourth positional task argument.
@@ -1009,6 +1041,9 @@ def run_ingestion_task(
                             else None
                         ),
                         source_window=bitrix_source_window,
+                        max_calls=bitrix_max_calls,
+                        max_rows=bitrix_max_rows,
+                        max_runtime_seconds=bitrix_max_runtime_seconds,
                     )
                 elif celery_task_id is not None:
                     summary = run_ingestion(

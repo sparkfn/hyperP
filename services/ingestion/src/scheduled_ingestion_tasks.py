@@ -2,17 +2,25 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
+from dataclasses import replace
 from datetime import UTC, datetime
 from typing import TypedDict
 
 import redis
 from celery import Task, chain
 from celery.canvas import Signature
+from neo4j import ManagedTransaction
+from pydantic import TypeAdapter
 
 from src.celery_app import INGESTION_QUEUE, celery_app
 from src.config import get_settings
+from src.graph.client import Neo4jClient
+from src.graph.queries.bitrix_backfill import GET_ACTIVE_BITRIX_SUCCESSOR_SCHEDULE
 from src.ingestion_config import get_ingestion_config
+from src.models import JsonValue
 from src.scheduled_ingestion_groups import scheduled_ingestion_group
 
 logger = logging.getLogger(__name__)
@@ -95,6 +103,70 @@ def _signature(
     )
 
 
+def _dispatch_active_bitrix_successor(occurrence: str) -> str | None:
+    """Publish one fresh bounded split cadence when cutover is active."""
+    from src.bitrix_backfill_control import _manifest_from_payload
+    from src.bitrix_backfill_tasks import dispatch_generation_canvas
+    from src.connectors.bitrix_crm.activity_probe import freeze_activity_upper_id
+    from src.connectors.bitrix_stage_history.deal_probe import freeze_deal_upper_id
+    from src.main import create_bitrix_known_owner_client
+
+    graph = Neo4jClient(get_settings())
+    try:
+
+        def _read(tx: ManagedTransaction) -> tuple[str, str, str] | None:
+            record = tx.run(GET_ACTIVE_BITRIX_SUCCESSOR_SCHEDULE).single()
+            if record is None:
+                return None
+            return (
+                str(record["generation_id"]),
+                str(record["configuration_digest"]),
+                str(record["manifest_json"]),
+            )
+
+        active = graph.execute_read(_read)
+    finally:
+        graph.close()
+    if active is None:
+        return None
+    generation_id, configuration_digest, manifest_json = active
+    payload = TypeAdapter(dict[str, JsonValue]).validate_json(manifest_json)
+    manifest = _manifest_from_payload(payload)
+    categories = tuple(get_ingestion_config().bitrix_openlines.included_crm_category_ids)
+    source = create_bitrix_known_owner_client()
+    try:
+        upper_deal_id = freeze_deal_upper_id(source, categories)
+        upper_activity_id = freeze_activity_upper_id(source)
+    finally:
+        source.close()
+    entries = []
+    windows: list[dict[str, JsonValue]] = []
+    for entry in manifest.executable_entries:
+        window = dict(entry.source_window or {})
+        if entry.stream_key == "crm_deals":
+            window["upper_deal_id"] = upper_deal_id
+            window["owner_artifact_id"] = None
+        elif entry.stream_key == "crm_activities":
+            window["upper_activity_id"] = upper_activity_id
+            window["owner_artifact_id"] = None
+        entries.append(replace(entry, source_window=window))
+        windows.append(window)
+    encoded = json.dumps(
+        {"occurrence": occurrence, "windows": windows},
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    boundary_digest = "sha256:" + hashlib.sha256(encoded).hexdigest()
+    return dispatch_generation_canvas(
+        generation_id=generation_id,
+        boundary_digest=boundary_digest,
+        configuration_digest=configuration_digest,
+        entries=tuple(entries),
+        task_kind="live",
+        occurrence=occurrence,
+    )
+
+
 @celery_app.task(  # type: ignore[untyped-decorator]
     name="src.scheduled_ingestion_tasks.dispatch_ingestion_group_task",
     bind=True,
@@ -130,22 +202,30 @@ def dispatch_ingestion_group_task(
             "workflow_task_id": existing or task_id,
         }
     try:
-        workflow = chain(
-            *(
-                _signature(
-                    spec.source_key,
-                    spec.entity_key,
-                    incremental and spec.supports_incremental,
-                    f"{marker_key}:step:{index}",
-                )
-                for index, spec in enumerate(group.tasks)
-            )
+        split_workflow_id = (
+            _dispatch_active_bitrix_successor(_utc_occurrence_date())
+            if group.key == "bitrix_chat"
+            else None
         )
-        result = workflow.apply_async(queue=INGESTION_QUEUE)
+        if split_workflow_id is None:
+            workflow = chain(
+                *(
+                    _signature(
+                        spec.source_key,
+                        spec.entity_key,
+                        incremental and spec.supports_incremental,
+                        f"{marker_key}:step:{index}",
+                    )
+                    for index, spec in enumerate(group.tasks)
+                )
+            )
+            result = workflow.apply_async(queue=INGESTION_QUEUE)
+            workflow_task_id = str(result.id)
+        else:
+            workflow_task_id = split_workflow_id
     except Exception:
         _release_claim(marker_key, task_id)
         raise
-    workflow_task_id = str(result.id)
     # Replace the reservation with the workflow ID while retaining the same TTL.
     with redis.Redis.from_url(get_settings().celery_broker_url, decode_responses=True) as client:
         client.set(marker_key, workflow_task_id, xx=True, ex=_MARKER_TTL_SECONDS)

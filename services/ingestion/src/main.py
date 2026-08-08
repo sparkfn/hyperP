@@ -7,6 +7,7 @@ import json
 import logging
 import re
 import sys
+import time
 import uuid
 from typing import Literal, Protocol, TypedDict, runtime_checkable
 
@@ -889,6 +890,15 @@ def _ingest_all_records_open(
         exclusion_context if exclusion_context is not None else _load_exclusion_context()
     )
     for raw_record in connector.fetch_records():
+        if execution_context is not None:
+            processed = success + errors + skipped
+            if execution_context.max_rows is not None and processed >= execution_context.max_rows:
+                raise RuntimeError("split Bitrix row ceiling reached before the next write")
+            if (
+                execution_context.deadline_monotonic is not None
+                and time.monotonic() >= execution_context.deadline_monotonic
+            ):
+                raise RuntimeError("split Bitrix runtime ceiling reached before the next write")
         retirement_id = raw_record.get("_retire_source_record_id")
         retired_at = raw_record.get("_retired_at")
         reconciliation_snapshot_at = raw_record.get("_reconciliation_snapshot_at")
