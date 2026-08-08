@@ -674,7 +674,12 @@ def apply_data_migrations(
     bitrix_crm_category_entities: Mapping[str, str] | None = None,
     included_bitrix_crm_category_ids: Collection[str] | None = None,
 ) -> None:
-    """Run every idempotent data migration in order."""
+    """Run idempotent graph migrations required before ingestion can begin.
+
+    Recurring lifecycle repair deliberately lives outside this initialization
+    path.  It can be expensive on a populated graph and is scheduled by the
+    lifecycle worker after graph initialization has released its global lock.
+    """
     backfill_record_type_subtypes(client)
     migrate_bitrix_chat_source(client)
     migrate_bitrix_crm_entities(
@@ -685,5 +690,3 @@ def apply_data_migrations(
     migrate_fundbox_source_keys(client)
     migrate_source_record_lifecycle(client)
     migrate_projection_relationship_lifecycle(client)
-    reconcile_source_record_lifecycle(client)
-    reconcile_projection_relationship_lifecycle(client)

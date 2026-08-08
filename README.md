@@ -27,6 +27,7 @@ is sales. Built on Neo4j for native graph traversal.
 - [WhatsAdmin API Ingestion Design](./docs/superpowers/specs/profile-unifier-whatsadmin-api-ingestion-design.md)
 - [Fundbox API Ingestion Design](./docs/superpowers/specs/profile-unifier-fundbox-api-ingestion-design.md)
 - [Bitrix Chat Open Lines API Ingestion Design](./docs/superpowers/specs/profile-unifier-bitrix-openlines-api-ingestion-design.md)
+- [Ingestion Operations](./docs/profile-unifier-ingestion-operations.md)
 - [Person Profile Analysis Design](./docs/superpowers/specs/profile-unifier-person-profile-analysis-design.md)
 - [Sales Prediction Approach and PRD](./docs/profile-unifier-sales-prediction-prd.md)
 - [Sales Prediction Feasibility Discovery](./docs/profile-unifier-sales-prediction-discovery.md)

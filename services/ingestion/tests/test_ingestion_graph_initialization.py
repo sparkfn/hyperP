@@ -1,4 +1,4 @@
-"""Startup ordering tests for lifecycle data repair and deferred constraints."""
+"""Graph initialization ordering tests for migrations and deferred constraints."""
 
 from __future__ import annotations
 
@@ -7,6 +7,8 @@ from typing import cast
 import pytest
 from src import main
 from src.config import Settings
+from src.graph import migrations
+from src.graph.client import Neo4jClient
 from src.graph.schema_init import (
     BASE_LIFECYCLE_CONSTRAINTS,
     DEFERRED_SOURCE_RECORD_CONSTRAINTS,
@@ -60,7 +62,7 @@ def test_canonical_schema_contains_person_and_knows_performance_indexes() -> Non
     assert "FOR ()-[r:KNOWS]-() ON (r.source_record_pk)" in schema
 
 
-def test_lifecycle_repair_precedes_source_version_uniqueness(
+def test_data_migrations_precede_source_version_uniqueness(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls: list[str] = []
@@ -87,7 +89,7 @@ def test_lifecycle_repair_precedes_source_version_uniqueness(
         main,
         "apply_data_migrations",
         lambda _client, **kwargs: (
-            calls.append("lifecycle_repair"),
+            calls.append("data_migrations"),
             migration_options.append(kwargs),
         ),
     )
@@ -103,7 +105,7 @@ def test_lifecycle_repair_precedes_source_version_uniqueness(
     assert calls == [
         "base_schema",
         "bootstrap",
-        "lifecycle_repair",
+        "data_migrations",
         "source_version_constraint",
     ]
     assert migration_options == [
@@ -111,4 +113,59 @@ def test_lifecycle_repair_precedes_source_version_uniqueness(
             "bitrix_crm_category_entities": {"2": "speedzone"},
             "included_bitrix_crm_category_ids": ["2"],
         },
+    ]
+
+
+def test_data_migrations_exclude_recurring_lifecycle_reconciliation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+    client = cast(Neo4jClient, _Client())
+
+    for name in (
+        "backfill_record_type_subtypes",
+        "migrate_bitrix_chat_source",
+        "migrate_fundbox_source_keys",
+        "migrate_source_record_lifecycle",
+        "migrate_projection_relationship_lifecycle",
+    ):
+        monkeypatch.setattr(
+            migrations,
+            name,
+            lambda _client, migration=name: calls.append(migration),
+        )
+
+    monkeypatch.setattr(
+        migrations,
+        "migrate_bitrix_crm_entities",
+        lambda _client, _entities, _category_ids: calls.append("migrate_bitrix_crm_entities"),
+    )
+
+    def _unexpected_reconciliation(_client: object) -> int:
+        pytest.fail("recurring lifecycle reconciliation ran during graph initialization")
+
+    monkeypatch.setattr(
+        migrations,
+        "reconcile_source_record_lifecycle",
+        _unexpected_reconciliation,
+    )
+    monkeypatch.setattr(
+        migrations,
+        "reconcile_projection_relationship_lifecycle",
+        _unexpected_reconciliation,
+    )
+
+    migrations.apply_data_migrations(
+        client,
+        bitrix_crm_category_entities={"2": "speedzone"},
+        included_bitrix_crm_category_ids=["2"],
+    )
+
+    assert calls == [
+        "backfill_record_type_subtypes",
+        "migrate_bitrix_chat_source",
+        "migrate_bitrix_crm_entities",
+        "migrate_fundbox_source_keys",
+        "migrate_source_record_lifecycle",
+        "migrate_projection_relationship_lifecycle",
     ]

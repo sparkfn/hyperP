@@ -177,13 +177,6 @@ def test_projection_migration_runs_after_source_record_lifecycle(
         "migrate_projection_relationship_lifecycle",
         lambda _client: calls.append("projection"),
     )
-    monkeypatch.setattr(migrations, "reconcile_source_record_lifecycle", lambda _client: 0)
-    monkeypatch.setattr(
-        migrations,
-        "reconcile_projection_relationship_lifecycle",
-        lambda _client: 0,
-    )
-
     migrations.apply_data_migrations(cast(Neo4jClient, object()))
 
     assert calls == ["source", "projection"]
