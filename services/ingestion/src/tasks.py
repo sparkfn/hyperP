@@ -26,12 +26,14 @@ from neo4j import ManagedTransaction
 from pydantic.types import JsonValue
 
 from src.birthday import BirthdayRunSummary, run_birthday_greetings
+from src.bitrix_backfill_models import GenerationRunContext, initial_stream_checkpoint
 from src.bitrix_ingestion_models import BitrixStreamKey, ExecutionContext
 from src.celery_app import LIFECYCLE_QUEUE, celery_app
 from src.config import get_settings
 from src.connectors.whatsadmin_api.credentials import WHATSADMIN_ENTITIES
 from src.errors import SourceNotConfiguredError
 from src.graph import queries
+from src.graph.bitrix_backfill import BitrixBackfillRepository
 from src.graph.client import Neo4jClient
 from src.graph.ingestion_control import BitrixStreamControl, LogicalRunControl
 from src.graph.migrations import (
@@ -89,29 +91,6 @@ _TERMINAL_INGEST_RUN_STATUSES = frozenset(
     {"already_running", "completed", "completed_with_errors", "failed"}
 )
 
-_BITRIX_SPLIT_CHECKPOINTS: Final[
-    dict[BitrixStreamKey, tuple[str, dict[str, JsonValue], str, str]]
-] = {
-    "crm_deals": (
-        "scoped_deal_census_v1",
-        {"last_deal_id": None, "census_epoch": 1},
-        "bitrix-crm-deals-keyset-v1",
-        "exclusive_last_deal_id",
-    ),
-    "crm_activities": (
-        "crm_activity_keyset_v1",
-        {"last_activity_id": None},
-        "bitrix-crm-activity-keyset-v1",
-        "exclusive_last_activity_id",
-    ),
-    "openlines_conversations": (
-        "openlines_conversation_replay_v1",
-        {"crm_start": None},
-        "bitrix-openlines-replay-v1",
-        "at_least_once_page_start",
-    ),
-}
-
 
 def _finalize_dispatched_run(ingest_run_id: str, status: str) -> None:
     """Finalize a run created by the API before task-level locking."""
@@ -135,21 +114,21 @@ def _finalize_rejected_dispatched_run(ingest_run_id: str | None) -> None:
         logger.exception("Failed to finalize rejected IngestRun %s", ingest_run_id)
 
 
-def _split_checkpoint(stream_key: BitrixStreamKey) -> CheckpointDescriptor:
-    phase, cursor, connector_version, replay_boundary = _BITRIX_SPLIT_CHECKPOINTS[stream_key]
-    return CheckpointDescriptor(
-        phase=phase,
-        cursor=dict(cursor),
-        source_window={},
-        last_committed_record_id=None,
-        connector_version=connector_version,
-        schema_version=1,
-        replay_boundary=replay_boundary,
-    )
+def _split_checkpoint(
+    stream_key: BitrixStreamKey,
+    source_window: dict[str, JsonValue] | None = None,
+) -> CheckpointDescriptor:
+    return initial_stream_checkpoint(stream_key, source_window=source_window or {})
 
 
 def _split_configuration_fingerprint(
-    *, source_key: str, mode: str, stream_key: BitrixStreamKey, incremental: bool
+    *,
+    source_key: str,
+    mode: str,
+    stream_key: BitrixStreamKey,
+    incremental: bool,
+    checkpoint: CheckpointDescriptor,
+    generation_context: GenerationRunContext | None,
 ) -> str:
     payload = json.dumps(
         {
@@ -158,6 +137,17 @@ def _split_configuration_fingerprint(
             "stream_key": stream_key,
             "incremental": incremental,
             "checkpoint_schema_version": 1,
+            "checkpoint_phase": checkpoint.phase,
+            "checkpoint_source_window": checkpoint.source_window,
+            "generation_id": (
+                generation_context.generation_id if generation_context is not None else None
+            ),
+            "boundary_digest": (
+                generation_context.boundary_digest if generation_context is not None else None
+            ),
+            "configuration_digest": (
+                generation_context.configuration_digest if generation_context is not None else None
+            ),
         },
         sort_keys=True,
         separators=(",", ":"),
@@ -195,9 +185,11 @@ def _run_split_bitrix_ingestion(
     idempotency_key: str,
     stream_key: BitrixStreamKey,
     worker_task_id: str,
+    generation_context: GenerationRunContext | None = None,
+    source_window: dict[str, JsonValue] | None = None,
 ) -> IngestionSummary:
     """Create, claim, fence, execute, and terminate one canonical split attempt."""
-    checkpoint = _split_checkpoint(stream_key)
+    checkpoint = _split_checkpoint(stream_key, source_window)
     client = Neo4jClient(get_settings())
     logical = LogicalRunControl(client)
     try:
@@ -213,6 +205,8 @@ def _run_split_bitrix_ingestion(
                 mode=mode,
                 stream_key=stream_key,
                 incremental=incremental,
+                checkpoint=checkpoint,
+                generation_context=generation_context,
             ),
             connector_version=checkpoint.connector_version,
             checkpoint_schema_version=checkpoint.schema_version,
@@ -261,9 +255,27 @@ def _run_split_bitrix_ingestion(
                 safe_failure_message=str(exc),
             )
             raise
+        if generation_context is not None:
+            try:
+                BitrixBackfillRepository(client).attach_logical_run(
+                    generation_id=generation_context.generation_id,
+                    stream_key=stream_key,
+                    logical_run_id=attempt.logical_run_id,
+                    fence_context=admission.fence_context,
+                    boundary_digest=generation_context.boundary_digest,
+                    configuration_digest=generation_context.configuration_digest,
+                )
+            except Exception as exc:
+                logical.fail_fenced(
+                    context=admission.fence_context,
+                    failure_category="generation_attachment_failed",
+                    safe_failure_message=str(exc),
+                )
+                raise
         context = ExecutionContext(
             worker_task_id=worker_task_id,
             fence_context=admission.fence_context,
+            generation_context=generation_context,
         )
         try:
             summary = run_ingestion(
@@ -796,6 +808,10 @@ def run_ingestion_task(
     require_clean_completion: bool = False,
     idempotency_key: str | None = None,
     bitrix_execution_stream: BitrixStreamKey | None = None,
+    bitrix_generation_id: str | None = None,
+    bitrix_boundary_digest: str | None = None,
+    bitrix_configuration_digest: str | None = None,
+    bitrix_source_window: dict[str, JsonValue] | None = None,
 ) -> IngestionSummary:
     """Run a single ingestion under the cluster-wide concurrency cap."""
     # PR #62 introduced ``entity_key`` as the fourth positional task argument.
@@ -817,6 +833,17 @@ def run_ingestion_task(
             raise ValueError("split Bitrix tasks require a stable idempotency_key")
         if entity_key is not None:
             raise ValueError("split Bitrix tasks do not accept entity_key")
+        if bitrix_source_window is None:
+            raise ValueError("split Bitrix tasks require a frozen source window")
+        generation_values = (
+            bitrix_generation_id,
+            bitrix_boundary_digest,
+            bitrix_configuration_digest,
+        )
+        if any(value is not None for value in generation_values) and not all(
+            isinstance(value, str) and value.strip() for value in generation_values
+        ):
+            raise ValueError("corrective split tasks require complete generation identity")
     source_lock_keys = _source_lock_keys(source_key, mode, entity_key)
     try:
         if (
@@ -876,6 +903,18 @@ def run_ingestion_task(
                         idempotency_key=idempotency_key,
                         stream_key=bitrix_execution_stream,
                         worker_task_id=str(celery_task_id),
+                        generation_context=(
+                            GenerationRunContext(
+                                generation_id=bitrix_generation_id,
+                                boundary_digest=bitrix_boundary_digest,
+                                configuration_digest=bitrix_configuration_digest,
+                            )
+                            if bitrix_generation_id is not None
+                            and bitrix_boundary_digest is not None
+                            and bitrix_configuration_digest is not None
+                            else None
+                        ),
+                        source_window=bitrix_source_window,
                     )
                 elif celery_task_id is not None:
                     summary = run_ingestion(
