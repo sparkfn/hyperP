@@ -7,6 +7,7 @@ via a Redis-backed semaphore.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -17,6 +18,7 @@ import uuid
 from collections.abc import Iterator
 from contextlib import ExitStack, contextmanager
 from contextvars import ContextVar
+from dataclasses import replace
 from typing import Final, NoReturn, TypedDict, cast
 
 import redis
@@ -26,16 +28,27 @@ from neo4j import ManagedTransaction
 from pydantic.types import JsonValue
 
 from src.birthday import BirthdayRunSummary, run_birthday_greetings
+from src.bitrix_backfill_models import (
+    GenerationRunContext,
+    KnownOwnerMembershipSet,
+    initial_stream_checkpoint,
+    known_owner_refresh_checkpoint,
+)
+from src.bitrix_deal_scope_reconciliation import refresh_known_owner_set
+from src.bitrix_ingestion_models import BitrixStreamKey, ExecutionContext
 from src.celery_app import LIFECYCLE_QUEUE, celery_app
 from src.config import get_settings
 from src.connectors.whatsadmin_api.credentials import WHATSADMIN_ENTITIES
 from src.errors import SourceNotConfiguredError
 from src.graph import queries
+from src.graph.bitrix_backfill import BitrixBackfillRepository
 from src.graph.client import Neo4jClient
+from src.graph.ingestion_control import BitrixStreamControl, LogicalRunControl
 from src.graph.migrations import (
     reconcile_projection_relationship_lifecycle,
     reconcile_source_record_lifecycle,
 )
+from src.ingestion_config import get_ingestion_config
 from src.knows_materialization_queue import (
     KnowsMaterializationTask,
     allow_knows_retry_publication,
@@ -52,6 +65,7 @@ from src.lifecycle_reconciliation_queue import (
 )
 from src.main import (
     IngestionSummary,
+    create_bitrix_known_owner_client,
     finalize_ingest_run,
     initialize_ingestion_graph,
     run_ingestion,
@@ -60,6 +74,7 @@ from src.main import (
 from src.matching.pair_score import score_person_pair
 from src.pipeline_knows import KnowsMaterializationPhase, materialize_knows_batch
 from src.pipeline_person_pairs import _ENGINE_VERSION, _POLICY_VERSION
+from src.resumable import AttemptStatus, CheckpointDescriptor
 
 logger = logging.getLogger(__name__)
 
@@ -163,6 +178,319 @@ def _finalize_rejected_dispatched_run(ingest_run_id: str | None) -> None:
         _finalize_dispatched_run(ingest_run_id, "failed")
     except Exception:
         logger.exception("Failed to finalize rejected IngestRun %s", ingest_run_id)
+
+
+def _split_checkpoint(
+    stream_key: BitrixStreamKey,
+    source_window: dict[str, JsonValue] | None = None,
+) -> CheckpointDescriptor:
+    return initial_stream_checkpoint(stream_key, source_window=source_window or {})
+
+
+def _split_configuration_fingerprint(
+    *,
+    source_key: str,
+    mode: str,
+    stream_key: BitrixStreamKey,
+    incremental: bool,
+    checkpoint: CheckpointDescriptor,
+    generation_context: GenerationRunContext | None,
+) -> str:
+    payload = json.dumps(
+        {
+            "source_key": source_key,
+            "mode": mode,
+            "stream_key": stream_key,
+            "incremental": incremental,
+            "checkpoint_schema_version": 1,
+            "checkpoint_phase": checkpoint.phase,
+            "checkpoint_source_window": checkpoint.source_window,
+            "generation_id": (
+                generation_context.generation_id if generation_context is not None else None
+            ),
+            "boundary_digest": (
+                generation_context.boundary_digest if generation_context is not None else None
+            ),
+            "configuration_digest": (
+                generation_context.configuration_digest if generation_context is not None else None
+            ),
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _skipped_split_summary(
+    *,
+    ingest_run_id: str,
+    status: str,
+    source_key: str,
+    mode: str,
+    dump_path: str | None,
+) -> IngestionSummary:
+    return {
+        "ingest_run_id": ingest_run_id,
+        "status": status,
+        "succeeded": 0,
+        "errors": 0,
+        "skipped": 1,
+        "source_key": source_key,
+        "mode": mode,
+        "dump_path": dump_path,
+        "entity_key": None,
+    }
+
+
+def _run_split_bitrix_ingestion(
+    *,
+    source_key: str,
+    mode: str,
+    dump_path: str | None,
+    incremental: bool,
+    idempotency_key: str,
+    stream_key: BitrixStreamKey,
+    worker_task_id: str,
+    generation_context: GenerationRunContext | None = None,
+    source_window: dict[str, JsonValue] | None = None,
+    max_calls: int | None = None,
+    max_rows: int | None = None,
+    max_runtime_seconds: int | None = None,
+) -> IngestionSummary:
+    """Create, claim, fence, execute, and terminate one canonical split attempt."""
+    started_at = time.monotonic()
+    checkpoint = _split_checkpoint(stream_key, source_window)
+    client = Neo4jClient(get_settings())
+    logical = LogicalRunControl(client)
+    try:
+        configuration_fingerprint = _split_configuration_fingerprint(
+            source_key=source_key,
+            mode=mode,
+            stream_key=stream_key,
+            incremental=incremental,
+            checkpoint=checkpoint,
+            generation_context=generation_context,
+        )
+        attempt = logical.create_or_reuse(
+            source_key=source_key,
+            mode=mode,
+            dump_path=dump_path,
+            entity_key=None,
+            idempotency_key=idempotency_key,
+            worker_task_id=worker_task_id,
+            configuration_fingerprint=configuration_fingerprint,
+            connector_version=checkpoint.connector_version,
+            checkpoint_schema_version=checkpoint.schema_version,
+            initial_checkpoint=checkpoint,
+        )
+        if attempt.worker_task_id != worker_task_id and attempt.logical_status in {
+            "paused_with_checkpoint",
+            "failed",
+        }:
+            resumed = logical.resume(
+                logical_run_id=attempt.logical_run_id,
+                worker_task_id=worker_task_id,
+                configuration_fingerprint=configuration_fingerprint,
+                connector_version=checkpoint.connector_version,
+                checkpoint_schema_version=checkpoint.schema_version,
+            )
+            if resumed is None:
+                raise RuntimeError("split Bitrix logical run could not resume from its checkpoint")
+            attempt = resumed
+        if attempt.worker_task_id != worker_task_id:
+            status = (
+                attempt.logical_status
+                if attempt.logical_status in _TERMINAL_INGEST_RUN_STATUSES
+                else "already_running"
+            )
+            return _skipped_split_summary(
+                ingest_run_id=attempt.ingest_run_id,
+                status=status,
+                source_key=source_key,
+                mode=mode,
+                dump_path=dump_path,
+            )
+        if not logical.claim(
+            logical_run_id=attempt.logical_run_id,
+            ingest_run_id=attempt.ingest_run_id,
+            generation=attempt.generation,
+            worker_task_id=worker_task_id,
+        ):
+            return _skipped_split_summary(
+                ingest_run_id=attempt.ingest_run_id,
+                status=attempt.logical_status,
+                source_key=source_key,
+                mode=mode,
+                dump_path=dump_path,
+            )
+        state = logical.get(attempt.logical_run_id)
+        if state is None:
+            raise RuntimeError("split Bitrix logical run lost its active checkpoint")
+        membership: KnownOwnerMembershipSet | None = None
+        resume_known_refresh = (
+            generation_context is not None
+            and stream_key == "crm_deals"
+            and state.phase == "known_owner_refresh_v1"
+        )
+        membership_set_id = (
+            f"{generation_context.generation_id}:known-owners:{generation_context.boundary_digest}"
+            if generation_context is not None and stream_key == "crm_deals"
+            else None
+        )
+        if resume_known_refresh:
+            assert generation_context is not None
+            assert membership_set_id is not None
+            membership = BitrixBackfillRepository(client).get_known_owner_set(
+                generation_id=generation_context.generation_id,
+                membership_set_id=membership_set_id,
+            )
+            checkpoint = known_owner_refresh_checkpoint(membership, census_epoch=1)
+        elif state.phase != checkpoint.phase:
+            raise RuntimeError("split Bitrix logical run has an incompatible checkpoint phase")
+        if state.cursor is not None:
+            checkpoint = replace(checkpoint, cursor=state.cursor)
+        try:
+            admission = BitrixStreamControl(client).admit_or_coalesce(
+                stream_key=stream_key,
+                logical_run_id=attempt.logical_run_id,
+                ingest_run_id=attempt.ingest_run_id,
+                attempt_generation=attempt.generation,
+                worker_task_id=worker_task_id,
+                replace_active=generation_context is not None,
+            )
+        except Exception as exc:
+            logical.fail(
+                logical_run_id=attempt.logical_run_id,
+                ingest_run_id=attempt.ingest_run_id,
+                generation=attempt.generation,
+                failure_category="stream_admission_failed",
+                safe_failure_message=str(exc),
+            )
+            raise
+        if generation_context is not None:
+            try:
+                BitrixBackfillRepository(client).attach_logical_run(
+                    generation_id=generation_context.generation_id,
+                    stream_key=stream_key,
+                    logical_run_id=attempt.logical_run_id,
+                    fence_context=admission.fence_context,
+                    boundary_digest=generation_context.boundary_digest,
+                    configuration_digest=generation_context.configuration_digest,
+                )
+            except Exception as exc:
+                logical.fail_fenced(
+                    context=admission.fence_context,
+                    failure_category="generation_attachment_failed",
+                    safe_failure_message=str(exc),
+                )
+                raise
+        context = ExecutionContext(
+            worker_task_id=worker_task_id,
+            fence_context=admission.fence_context,
+            checkpoint=checkpoint,
+            generation_context=generation_context,
+            max_rows=max_rows,
+            deadline_monotonic=(
+                started_at + max_runtime_seconds if max_runtime_seconds is not None else None
+            ),
+        )
+        if membership_set_id is not None and membership is None:
+            assert generation_context is not None
+            membership = BitrixBackfillRepository(client).materialize_known_owner_set(
+                generation_id=generation_context.generation_id,
+                membership_set_id=membership_set_id,
+            )
+        try:
+            if resume_known_refresh:
+                summary = _skipped_split_summary(
+                    ingest_run_id=attempt.ingest_run_id,
+                    status="completed",
+                    source_key=source_key,
+                    mode=mode,
+                    dump_path=dump_path,
+                )
+                summary["skipped"] = 0
+            else:
+                summary = run_ingestion(
+                    source_key,
+                    mode,
+                    dump_path,
+                    initialize_graph=False,
+                    incremental=incremental,
+                    bitrix_execution_stream=stream_key,
+                    execution_context=context,
+                )
+            active_checkpoint = checkpoint
+            if membership is not None and not resume_known_refresh:
+                active_checkpoint = known_owner_refresh_checkpoint(membership, census_epoch=1)
+                transitioned = logical.transition_phase_fenced(
+                    context=admission.fence_context,
+                    current_phase=checkpoint.phase,
+                    next_checkpoint=active_checkpoint,
+                    committed_count=summary["succeeded"],
+                    duplicate_count=summary["skipped"],
+                    excluded_count=0,
+                    retry_count=0,
+                )
+                if transitioned is None:
+                    raise RuntimeError("deal run could not enter known-owner refresh")
+            if membership is not None:
+                refresh_context = replace(context, checkpoint=active_checkpoint)
+                ingestion_config = get_ingestion_config().bitrix_openlines
+                refresh = refresh_known_owner_set(
+                    create_bitrix_known_owner_client(),
+                    client,
+                    membership=membership,
+                    context=refresh_context,
+                    included_category_ids=ingestion_config.included_crm_category_ids,
+                    entity_by_category_id=ingestion_config.entity_by_crm_category_id,
+                )
+                summary["succeeded"] += refresh.refreshed + refresh.moved_out_of_scope
+        except Exception as exc:
+            logical.fail_fenced(
+                context=admission.fence_context,
+                failure_category=type(exc).__name__,
+                safe_failure_message=str(exc),
+            )
+            raise
+        try:
+            completion_status = summary["status"]
+            if completion_status not in {"completed", "completed_with_errors"}:
+                raise RuntimeError(
+                    f"split Bitrix runner returned invalid status {completion_status}"
+                )
+            record_count = summary["succeeded"] + summary["errors"] + summary["skipped"]
+            estimated_calls = record_count + (record_count + 49) // 50 + 2
+            if max_rows is not None and record_count > max_rows:
+                raise RuntimeError("split Bitrix row ceiling was exceeded")
+            if max_calls is not None and estimated_calls > max_calls:
+                raise RuntimeError("split Bitrix API-call ceiling was exceeded")
+            if (
+                max_runtime_seconds is not None
+                and time.monotonic() - started_at > max_runtime_seconds
+            ):
+                raise RuntimeError("split Bitrix runtime ceiling was exceeded")
+        except Exception as exc:
+            logical.fail_fenced(
+                context=admission.fence_context,
+                failure_category=type(exc).__name__,
+                safe_failure_message=str(exc),
+            )
+            raise
+        logical.finalize_fenced(
+            context=admission.fence_context,
+            phase=active_checkpoint.phase,
+            status=cast(AttemptStatus, completion_status),
+            committed_count=summary["succeeded"],
+            duplicate_count=summary["skipped"],
+            excluded_count=0,
+            retry_count=0,
+            record_count=record_count,
+            rejected_count=summary["errors"],
+        )
+        return summary
+    finally:
+        client.close()
 
 
 def _get_existing_ingest_run_status(ingest_run_id: str) -> str | None:
@@ -888,6 +1216,14 @@ def run_ingestion_task(
     wait_for_source: bool = False,
     require_clean_completion: bool = False,
     idempotency_key: str | None = None,
+    bitrix_execution_stream: BitrixStreamKey | None = None,
+    bitrix_generation_id: str | None = None,
+    bitrix_boundary_digest: str | None = None,
+    bitrix_configuration_digest: str | None = None,
+    bitrix_source_window: dict[str, JsonValue] | None = None,
+    bitrix_max_calls: int | None = None,
+    bitrix_max_rows: int | None = None,
+    bitrix_max_runtime_seconds: int | None = None,
 ) -> IngestionSummary:
     """Run a single ingestion under the cluster-wide concurrency cap."""
     # PR #62 introduced ``entity_key`` as the fourth positional task argument.
@@ -897,9 +1233,36 @@ def run_ingestion_task(
     if source_key == "bitrix_chat" and ingest_run_id is None and entity_key is not None:
         ingest_run_id = entity_key
         entity_key = None
+    split_bitrix = bitrix_execution_stream is not None
+    if split_bitrix:
+        if source_key != "bitrix_chat":
+            raise ValueError("split Bitrix streams require source_key='bitrix_chat'")
+        if mode not in {"api", "backfill"}:
+            raise ValueError("split Bitrix streams require API or backfill mode")
+        if ingest_run_id is not None:
+            raise ValueError("split Bitrix tasks cannot receive a legacy ingest_run_id")
+        if idempotency_key is None or not idempotency_key.strip():
+            raise ValueError("split Bitrix tasks require a stable idempotency_key")
+        if entity_key is not None:
+            raise ValueError("split Bitrix tasks do not accept entity_key")
+        if bitrix_source_window is None:
+            raise ValueError("split Bitrix tasks require a frozen source window")
+        generation_values = (
+            bitrix_generation_id,
+            bitrix_boundary_digest,
+            bitrix_configuration_digest,
+        )
+        if any(value is not None for value in generation_values) and not all(
+            isinstance(value, str) and value.strip() for value in generation_values
+        ):
+            raise ValueError("corrective split tasks require complete generation identity")
     source_lock_keys = _source_lock_keys(source_key, mode, entity_key)
     try:
-        if idempotency_key is not None and _scheduled_step_completed(idempotency_key):
+        if (
+            not split_bitrix
+            and idempotency_key is not None
+            and _scheduled_step_completed(idempotency_key)
+        ):
             return {
                 "ingest_run_id": "",
                 "status": "completed",
@@ -938,7 +1301,36 @@ def run_ingestion_task(
                 _acquire_ingestion_slot(MAX_CONCURRENT_INGESTIONS) as slot_id,
                 _renew_ingestion_leases(source_lock_leases, slot_id),
             ):
-                if celery_task_id is not None:
+                if split_bitrix:
+                    if celery_task_id is None:
+                        raise ValueError("split Bitrix tasks require a Celery worker task ID")
+                    assert idempotency_key is not None
+                    assert bitrix_execution_stream is not None
+                    summary = _run_split_bitrix_ingestion(
+                        source_key=source_key,
+                        mode=mode,
+                        dump_path=dump_path,
+                        incremental=incremental,
+                        idempotency_key=idempotency_key,
+                        stream_key=bitrix_execution_stream,
+                        worker_task_id=str(celery_task_id),
+                        generation_context=(
+                            GenerationRunContext(
+                                generation_id=bitrix_generation_id,
+                                boundary_digest=bitrix_boundary_digest,
+                                configuration_digest=bitrix_configuration_digest,
+                            )
+                            if bitrix_generation_id is not None
+                            and bitrix_boundary_digest is not None
+                            and bitrix_configuration_digest is not None
+                            else None
+                        ),
+                        source_window=bitrix_source_window,
+                        max_calls=bitrix_max_calls,
+                        max_rows=bitrix_max_rows,
+                        max_runtime_seconds=bitrix_max_runtime_seconds,
+                    )
+                elif celery_task_id is not None:
                     summary = run_ingestion(
                         source_key,
                         mode,
@@ -996,7 +1388,11 @@ def run_ingestion_task(
                     reconcile_lifecycle_task.apply_async(queue=LIFECYCLE_QUEUE)
                 except Exception:
                     logger.exception("Could not queue post-ingestion lifecycle reconciliation")
-                if idempotency_key is not None and summary["status"] == "completed":
+                if (
+                    not split_bitrix
+                    and idempotency_key is not None
+                    and summary["status"] == "completed"
+                ):
                     _mark_scheduled_step_completed(idempotency_key)
                 if celery_task_id is not None and summary.get("status") in {
                     "completed",
@@ -1005,7 +1401,7 @@ def run_ingestion_task(
                     _enqueue_knows_materialization(source_key)
                 return summary
     except _SourceAlreadyRunningError as exc:
-        if exc.held_by_same_task or ingest_run_id is not None or wait_for_source:
+        if split_bitrix or exc.held_by_same_task or ingest_run_id is not None or wait_for_source:
             retry_number = min(self.request.retries, 8)
             countdown = min(2**retry_number, 300)
             logger.warning(
@@ -1043,6 +1439,10 @@ def run_ingestion_task(
         raise
     except Exception as exc:
         logger.exception("Ingestion task failed for %s", source_key)
+        if split_bitrix:
+            retry_number = min(self.request.retries, 8)
+            countdown = min(2**retry_number, 300)
+            raise self.retry(exc=exc, countdown=countdown) from exc
         # Don't retry on real errors — surface them to the caller.
         _finalize_rejected_dispatched_run(ingest_run_id)
         raise Reject(str(exc), requeue=False) from exc

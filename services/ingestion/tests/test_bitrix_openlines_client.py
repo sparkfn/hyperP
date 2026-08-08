@@ -879,6 +879,157 @@ def test_client_does_not_request_crm_deals_for_an_empty_category_scope() -> None
     assert list(client.iter_crm_deal_pages([])) == []
 
 
+def test_client_reads_minimal_bounded_crm_deal_capability_page_without_enrichment() -> None:
+    requests: list[tuple[str, dict[str, object]]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        method = request.url.path.rsplit("/", 1)[-1]
+        body = json.loads(request.content)
+        requests.append((method, body))
+        assert method == "crm.deal.list"
+        return httpx.Response(
+            200,
+            json={
+                "result": [
+                    {"ID": "501", "CATEGORY_ID": "2", "STAGE_ID": "C2:NEW"},
+                    {"ID": 502, "CATEGORY_ID": 0},
+                ],
+                "next": 50,
+                "total": "143000",
+                "time": {"operating": 0.02, "operating_reset_at": 12345},
+            },
+        )
+
+    client = BitrixOpenLinesClient(
+        base_url="https://bitrix.test/rest/hook",
+        timeout_seconds=5,
+        max_attempts=1,
+        http=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+
+    page = client.list_crm_deal_capability_page(
+        category_ids=["2", "7", "2"],
+        greater_than_id=500,
+        less_than_or_equal_to_id=900,
+    )
+
+    assert requests == [
+        (
+            "crm.deal.list",
+            {
+                "filter": {"@CATEGORY_ID": ["2", "7"], ">ID": 500, "<=ID": 900},
+                "select": ["ID", "CATEGORY_ID", "STAGE_ID"],
+                "order": {"ID": "ASC"},
+                "start": -1,
+            },
+        )
+    ]
+    assert [(item.deal_id, item.category_id, item.stage_id) for item in page.items] == [
+        ("501", "2", "C2:NEW"),
+        ("502", "0", None),
+    ]
+    assert page.next_start == 50
+    assert page.total == 143000
+    assert page.operating == 0.02
+    assert page.operating_reset_at == 12345.0
+    assert all(
+        method not in {"crm.deal.contact.items.get", "crm.contact.get", "crm.lead.get"}
+        for method, _body in requests
+    )
+
+
+def test_client_supports_descending_crm_deal_capability_boundary_probe() -> None:
+    requests: list[dict[str, object]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        requests.append(body)
+        return httpx.Response(200, json={"result": [{"ID": "900", "CATEGORY_ID": "2"}]})
+
+    client = BitrixOpenLinesClient(
+        base_url="https://bitrix.test/rest/hook",
+        timeout_seconds=5,
+        max_attempts=1,
+        http=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+
+    page = client.list_crm_deal_capability_page(category_ids=["2"], order_direction="DESC")
+
+    assert page.items[0].deal_id == "900"
+    assert requests == [
+        {
+            "filter": {"@CATEGORY_ID": ["2"]},
+            "select": ["ID", "CATEGORY_ID", "STAGE_ID"],
+            "order": {"ID": "DESC"},
+            "start": -1,
+        }
+    ]
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        {"result": {}},
+        {"result": [{"ID": "", "CATEGORY_ID": "2"}]},
+        {"result": [{"ID": "501", "CATEGORY_ID": "two"}]},
+        {"result": [{"ID": "501", "CATEGORY_ID": "2", "STAGE_ID": "  "}]},
+        {"result": [{"ID": "501", "CATEGORY_ID": "2"}], "next": -1},
+        {"result": [{"ID": "501", "CATEGORY_ID": "2"}], "total": True},
+        {"result": [{"ID": "501", "CATEGORY_ID": "2"}], "time": {"operating": "0.2"}},
+    ],
+)
+def test_client_fails_closed_for_malformed_crm_deal_capability_values(
+    response: dict[str, object],
+) -> None:
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=response)
+
+    client = BitrixOpenLinesClient(
+        base_url="https://bitrix.test/rest/hook",
+        timeout_seconds=5,
+        max_attempts=1,
+        http=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+
+    with pytest.raises(RuntimeError, match="Bitrix CRM deal capability"):
+        client.list_crm_deal_capability_page(category_ids=["2"])
+
+
+@pytest.mark.parametrize(
+    ("greater_than_id", "less_than_or_equal_to_id"),
+    [(True, None), (0, None), (None, 0), (900, 900), (901, 900)],
+)
+def test_client_rejects_invalid_crm_deal_capability_bounds(
+    greater_than_id: int | None,
+    less_than_or_equal_to_id: int | None,
+) -> None:
+    client = BitrixOpenLinesClient(
+        base_url="https://bitrix.test/rest/hook",
+        timeout_seconds=5,
+        max_attempts=1,
+        http=httpx.Client(transport=httpx.MockTransport(lambda _request: httpx.Response(500))),
+    )
+
+    with pytest.raises(ValueError, match="capability"):
+        client.list_crm_deal_capability_page(
+            category_ids=["2"],
+            greater_than_id=greater_than_id,
+            less_than_or_equal_to_id=less_than_or_equal_to_id,
+        )
+
+
+def test_client_rejects_invalid_crm_deal_capability_order_direction() -> None:
+    client = BitrixOpenLinesClient(
+        base_url="https://bitrix.test/rest/hook",
+        timeout_seconds=5,
+        max_attempts=1,
+        http=httpx.Client(transport=httpx.MockTransport(lambda _request: httpx.Response(500))),
+    )
+
+    with pytest.raises(ValueError, match="order_direction"):
+        client.list_crm_deal_capability_page(category_ids=["2"], order_direction="ascending")
+
+
 def test_client_retries_the_same_filtered_crm_deal_page(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -957,3 +1108,120 @@ def test_client_scans_all_deal_activities_without_per_deal_requests() -> None:
         {"OWNER_TYPE_ID": 2},
         {"OWNER_TYPE_ID": 2},
     ]
+
+
+def test_client_reads_typed_stage_history_page_with_nested_items() -> None:
+    requests: list[dict[str, object]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path.endswith("/crm.stagehistory.list")
+        body = json.loads(request.content)
+        requests.append(body)
+        return httpx.Response(
+            200,
+            json={
+                "result": {
+                    "items": [
+                        {
+                            "ID": "900",
+                            "OWNER_ID": "501",
+                            "TYPE_ID": "1",
+                            "CREATED_TIME": "2026-08-06T12:00:00+08:00",
+                            "CATEGORY_ID": "2",
+                            "STAGE_SEMANTIC_ID": "P",
+                            "STAGE_ID": "C2:NEW",
+                        }
+                    ]
+                },
+                "next": 50,
+                "total": 87,
+                "time": {"operating": 0.02, "operating_reset_at": 12345},
+            },
+        )
+
+    client = BitrixOpenLinesClient(
+        base_url="https://bitrix.test/rest/hook",
+        timeout_seconds=5,
+        max_attempts=1,
+        http=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+
+    page = client.list_stage_history_page(
+        entity_type_id=2,
+        filters={">ID": "899", "@OWNER_ID": ["501"]},
+        start=-1,
+    )
+
+    assert requests == [
+        {
+            "entityTypeId": 2,
+            "filter": {">ID": "899", "@OWNER_ID": ["501"]},
+            "order": {"ID": "ASC"},
+            "start": -1,
+        }
+    ]
+    assert page.next_start == 50
+    assert page.total == 87
+    assert page.operating == 0.02
+    assert page.items[0].history_id == "900"
+    assert page.items[0].entity_type_id == "2"
+    assert page.items[0].created_time == datetime(2026, 8, 6, 4, tzinfo=UTC)
+
+
+@pytest.mark.parametrize("order_direction", ["", "ascending", "DESCENDING"])
+def test_client_rejects_invalid_stage_history_order_direction(order_direction: str) -> None:
+    client = BitrixOpenLinesClient(
+        base_url="https://bitrix.test/rest/hook",
+        timeout_seconds=5,
+        max_attempts=1,
+        http=httpx.Client(transport=httpx.MockTransport(lambda _request: httpx.Response(500))),
+    )
+
+    with pytest.raises(ValueError, match="order_direction"):
+        client.list_stage_history_page(entity_type_id=2, order_direction=order_direction)
+
+
+def test_client_rejects_stage_history_timestamp_without_timezone() -> None:
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "result": {
+                    "items": [
+                        {
+                            "ID": "900",
+                            "OWNER_ID": "501",
+                            "CREATED_TIME": "2026-08-06T12:00:00",
+                        }
+                    ]
+                }
+            },
+        )
+
+    client = BitrixOpenLinesClient(
+        base_url="https://bitrix.test/rest/hook",
+        timeout_seconds=5,
+        max_attempts=1,
+        http=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+
+    with pytest.raises(RuntimeError, match="must include a timezone"):
+        client.list_stage_history_page(entity_type_id=2)
+
+
+@pytest.mark.parametrize(
+    "entity_type_id,start",
+    [(True, -1), (2, True), (2, -2)],
+)
+def test_client_rejects_invalid_stage_history_numeric_arguments(
+    entity_type_id: int, start: int
+) -> None:
+    client = BitrixOpenLinesClient(
+        base_url="https://bitrix.test/rest/hook",
+        timeout_seconds=5,
+        max_attempts=1,
+        http=httpx.Client(transport=httpx.MockTransport(lambda _request: httpx.Response(500))),
+    )
+
+    with pytest.raises(ValueError):
+        client.list_stage_history_page(entity_type_id=entity_type_id, start=start)

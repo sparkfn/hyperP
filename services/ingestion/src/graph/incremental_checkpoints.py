@@ -14,7 +14,9 @@ from typing import Literal, Protocol
 
 from neo4j import ManagedTransaction
 
+from src.bitrix_ingestion_models import FenceContext
 from src.graph.client import Neo4jClient
+from src.graph.ingestion_control import assert_active_bitrix_fence
 from src.graph.queries.incremental_checkpoints import (
     DELETE_INCREMENTAL_CHECKPOINT,
     LOAD_INCREMENTAL_CHECKPOINT,
@@ -46,11 +48,15 @@ class Neo4jCheckpointRedis:
         *,
         legacy: LegacyStateClient | None = None,
         active_ingest_run_id: str | None = None,
+        fence_context: FenceContext | None = None,
+        defer_terminal_updates: bool = True,
     ) -> None:
         self._client = client
         self._source_key = source_key
         self._legacy = legacy
         self._active_ingest_run_id = active_ingest_run_id
+        self._fence_context = fence_context
+        self._defer_terminal_updates = defer_terminal_updates
         self._staged: dict[str, _Operation] = {}
 
     def __enter__(self) -> Neo4jCheckpointRedis:
@@ -150,6 +156,8 @@ class Neo4jCheckpointRedis:
         operation: _Operation,
         ingest_run_id: str | None,
     ) -> None:
+        if self._fence_context is not None:
+            assert_active_bitrix_fence(tx, self._fence_context)
         if operation.value is None:
             tx.run(
                 DELETE_INCREMENTAL_CHECKPOINT,
@@ -166,12 +174,10 @@ class Neo4jCheckpointRedis:
             ingest_run_id=ingest_run_id,
         )
 
-    @staticmethod
-    def _defer_set(key: str) -> bool:
-        return (
+    def _defer_set(self, key: str) -> bool:
+        return self._defer_terminal_updates and (
             ":watermark:" in key or key.endswith(":watermark") or ":fundbox_api:source_ids:" in key
         )
 
-    @staticmethod
-    def _defer_delete(key: str) -> bool:
-        return key.endswith(":page")
+    def _defer_delete(self, key: str) -> bool:
+        return self._defer_terminal_updates and key.endswith(":page")

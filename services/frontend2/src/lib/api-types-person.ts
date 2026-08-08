@@ -86,6 +86,16 @@ export interface PersonSourceRecord {
   parent_source_system?: string | null;
   parent_source_record_id?: string | null;
   parent_record_type?: SourceRecordType | null;
+  history_family?: "activity" | "stage" | null;
+  history_kind?: string | null;
+  history_source?: string | null;
+  event_category_id?: string | null;
+  event_stage_id?: string | null;
+  event_stage_semantic_id?: string | null;
+  event_at?: string | null;
+  history_projection_version?: string | null;
+  history_projection_source?: string | null;
+  history_projected_at?: string | null;
   observed_at: string;
   ingested_at: string;
   normalized_payload: SourceRecordNormalizedPayload | null;

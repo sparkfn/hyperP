@@ -264,6 +264,15 @@ class SourceRecordEnvelope(BaseModel):
     extraction_confidence: float | None = None
     extraction_method: str | None = None
     conversation_ref: dict[str, JsonValue] | None = None
+    # Typed generic CRM activity projection. These values intentionally live
+    # outside raw_payload so projection evolution does not change the legacy
+    # upstream payload hash.
+    history_family: str | None = None
+    history_kind: str | None = None
+    history_source: str | None = None
+    event_at: str | None = None
+    projection_version: int | None = None
+    projection_source: str | None = None
 
     @model_validator(mode="after")
     def _check_record_type_invariants(self) -> SourceRecordEnvelope:
@@ -315,6 +324,26 @@ class SourceRecordEnvelope(BaseModel):
             and self.parent_ref is None
         ):
             raise ValueError(f"{self.record_type.value} source records require parent_ref")
+        projection_values = (
+            self.history_family,
+            self.history_kind,
+            self.history_source,
+            self.event_at,
+            self.projection_version,
+            self.projection_source,
+        )
+        if any(value is not None for value in projection_values):
+            if self.record_type != RecordType.CRM_HISTORY:
+                raise ValueError("typed activity projection is only valid on crm_history")
+            if (
+                self.history_family != "activity"
+                or self.history_source != "bitrix_crm_activity"
+                or self.projection_source != "bitrix_crm_activity_v2"
+                or not isinstance(self.history_kind, str)
+                or not self.history_kind
+                or self.projection_version != 2
+            ):
+                raise ValueError("crm_history typed activity projection is incomplete or invalid")
         return self
 
 
@@ -407,3 +436,4 @@ class IngestResult(BaseModel):
     errors: list[str] = Field(default_factory=list)
     skipped_duplicate: bool = False
     dropped: bool = False
+    retry_pending: bool = False

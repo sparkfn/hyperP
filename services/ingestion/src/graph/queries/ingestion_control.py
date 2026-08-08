@@ -14,8 +14,138 @@ FOR (run:IngestionLogicalRun)
 REQUIRE (run.source_key, run.idempotency_key) IS UNIQUE""",
 )
 
+CREATE_BITRIX_INGESTION_STREAM_CONSTRAINTS: tuple[str, ...] = (
+    """CREATE CONSTRAINT bitrix_ingestion_stream_identity_unique IF NOT EXISTS
+FOR (stream:BitrixIngestionStream)
+REQUIRE (stream.source_key, stream.stream_key) IS UNIQUE""",
+)
+
+LOCK_AND_ASSERT_ACTIVE_BITRIX_FENCE = """
+MATCH (stream:BitrixIngestionStream {
+  source_key: $source_key,
+  stream_key: $stream_key
+})
+SET stream.fence_lock_version = coalesce(stream.fence_lock_version, 0) + 1
+WITH stream
+WHERE stream.logical_run_id = $logical_run_id
+  AND stream.ingest_run_id = $ingest_run_id
+  AND stream.attempt_generation = $attempt_generation
+  AND stream.stream_generation = $stream_generation
+  AND stream.fencing_token = $fencing_token
+  AND stream.status = 'active'
+RETURN stream.fence_lock_version AS fence_lock_version
+"""
+
+SET_FENCED_BITRIX_STREAM_STATUS = """
+MATCH (stream:BitrixIngestionStream {
+  source_key: $source_key,
+  stream_key: $stream_key,
+  logical_run_id: $logical_run_id,
+  ingest_run_id: $ingest_run_id,
+  attempt_generation: $attempt_generation,
+  stream_generation: $stream_generation,
+  fencing_token: $fencing_token
+})
+WHERE stream.status = 'active'
+  AND $status IN ['draining', 'completed', 'terminated', 'superseded']
+SET stream.status = $status,
+    stream.updated_at = datetime(),
+    stream.finished_at = CASE
+      WHEN $status IN ['completed', 'terminated', 'superseded'] THEN datetime()
+      ELSE stream.finished_at
+    END
+RETURN stream.status AS status
+"""
+
+# Admission establishes the identity consumed by same-transaction mutation fences.
+ADMIT_OR_COALESCE_BITRIX_STREAM = """
+MATCH (source:SourceSystem {source_key: $source_key, is_active: true})
+MATCH (logical:IngestionLogicalRun {logical_run_id: $logical_run_id})
+      -[:FOR_SOURCE]->(source)
+MATCH (logical)-[:ACTIVE_ATTEMPT]->(attempt:IngestRun {ingest_run_id: $ingest_run_id})
+WHERE logical.active_generation = $attempt_generation
+  AND attempt.generation = $attempt_generation
+  AND logical.status IN ['queued', 'running', 'stop_requested']
+  AND attempt.status IN ['queued', 'started']
+MERGE (stream:BitrixIngestionStream {
+  source_key: $source_key,
+  stream_key: $stream_key
+})
+ON CREATE SET
+  stream.logical_run_id = $logical_run_id,
+  stream.ingest_run_id = $ingest_run_id,
+  stream.attempt_generation = $attempt_generation,
+  stream.worker_task_id = $worker_task_id,
+  stream.stream_generation = 1,
+  stream.fencing_token = 1,
+  stream.status = 'active',
+  stream.created_at = datetime(),
+  stream.updated_at = datetime(),
+  stream.creation_token = $creation_token
+MERGE (stream)-[:FOR_SOURCE]->(source)
+WITH stream, logical, attempt, stream.creation_token = $creation_token AS created
+REMOVE stream.creation_token
+WITH stream, logical, attempt,
+     created,
+     stream.logical_run_id = $logical_run_id
+       AND stream.ingest_run_id = $ingest_run_id
+       AND stream.attempt_generation = $attempt_generation AS same_attempt,
+     stream.stream_generation AS current_stream_generation,
+     stream.fencing_token AS current_fencing_token
+WHERE created OR same_attempt OR $replace_active
+SET stream.logical_run_id = CASE
+      WHEN created OR same_attempt THEN stream.logical_run_id
+      WHEN $replace_active THEN $logical_run_id
+      ELSE stream.logical_run_id
+    END,
+    stream.ingest_run_id = CASE
+      WHEN created OR same_attempt THEN stream.ingest_run_id
+      WHEN $replace_active THEN $ingest_run_id
+      ELSE stream.ingest_run_id
+    END,
+    stream.attempt_generation = CASE
+      WHEN created OR same_attempt THEN stream.attempt_generation
+      WHEN $replace_active THEN $attempt_generation
+      ELSE stream.attempt_generation
+    END,
+    stream.worker_task_id = CASE
+      WHEN created OR same_attempt THEN stream.worker_task_id
+      WHEN $replace_active THEN $worker_task_id
+      ELSE stream.worker_task_id
+    END,
+    stream.stream_generation = CASE
+      WHEN created OR same_attempt THEN current_stream_generation
+      WHEN $replace_active THEN current_stream_generation + 1
+      ELSE current_stream_generation
+    END,
+    stream.fencing_token = CASE
+      WHEN created OR same_attempt THEN current_fencing_token
+      WHEN $replace_active THEN current_fencing_token + 1
+      ELSE current_fencing_token
+    END,
+    stream.status = 'active',
+    stream.updated_at = datetime()
+RETURN CASE
+         WHEN created THEN 'admitted'
+         WHEN same_attempt THEN 'coalesced'
+         WHEN $replace_active THEN 'replaced'
+         ELSE 'coalesced'
+       END AS admission_outcome,
+       stream.source_key AS source_key,
+       stream.stream_key AS stream_key,
+       stream.logical_run_id AS logical_run_id,
+       stream.ingest_run_id AS ingest_run_id,
+       stream.attempt_generation AS attempt_generation,
+       stream.stream_generation AS stream_generation,
+       stream.fencing_token AS fencing_token,
+       stream.worker_task_id AS worker_task_id
+"""
+
 CREATE_LOGICAL_RUN_AND_ATTEMPT = """
 MATCH (source:SourceSystem {source_key: $source_key, is_active: true})
+OPTIONAL MATCH (dispatch:BitrixDispatchControl {source_key: $source_key})
+WITH source, dispatch
+WHERE coalesce(dispatch.blocked, false) = false
 MERGE (logical:IngestionLogicalRun {
   source_key: $source_key,
   idempotency_key: $idempotency_key
@@ -171,9 +301,9 @@ WHERE logical.active_generation = $generation
   AND checkpoint.status = 'active'
   AND checkpoint.connector_version = $connector_version
   AND checkpoint.schema_version = $checkpoint_schema_version
+  AND checkpoint.source_window_json = $source_window_json
   AND logical.status IN ['running', 'stop_requested']
 SET checkpoint.cursor_json = $cursor_json,
-    checkpoint.source_window_json = $source_window_json,
     checkpoint.last_committed_record_id = $last_committed_record_id,
     checkpoint.committed_count = $committed_count,
     checkpoint.duplicate_count = $duplicate_count,
@@ -185,6 +315,47 @@ SET checkpoint.cursor_json = $cursor_json,
     logical.duplicate_count = $duplicate_count,
     logical.excluded_count = $excluded_count,
     logical.retry_count = $retry_count,
+    logical.updated_at = datetime()
+RETURN logical.stop_requested_at IS NOT NULL AS stop_requested
+"""
+
+ADVANCE_BITRIX_UNIT_CHECKPOINT = """
+MATCH (stream:BitrixIngestionStream {
+  source_key: $source_key,
+  stream_key: $stream_key,
+  logical_run_id: $logical_run_id,
+  ingest_run_id: $ingest_run_id,
+  attempt_generation: $attempt_generation,
+  stream_generation: $stream_generation,
+  fencing_token: $fencing_token,
+  status: 'active'
+})
+MATCH (logical:IngestionLogicalRun {logical_run_id: $logical_run_id})
+      -[:ACTIVE_ATTEMPT]->(attempt:IngestRun {ingest_run_id: $ingest_run_id})
+MATCH (checkpoint:IngestionCheckpoint {
+  logical_run_id: $logical_run_id,
+  phase: $phase
+})
+WHERE logical.active_generation = $attempt_generation
+  AND attempt.generation = $attempt_generation
+  AND checkpoint.generation = $attempt_generation
+  AND checkpoint.status = 'active'
+  AND checkpoint.connector_version = $connector_version
+  AND checkpoint.schema_version = $checkpoint_schema_version
+  AND checkpoint.source_window_json = $source_window_json
+  AND logical.status IN ['running', 'stop_requested']
+SET checkpoint.cursor_json = $cursor_json,
+    checkpoint.last_committed_record_id = $last_committed_record_id,
+    checkpoint.committed_count = coalesce(checkpoint.committed_count, 0) + $committed_delta,
+    checkpoint.duplicate_count = coalesce(checkpoint.duplicate_count, 0) + $duplicate_delta,
+    checkpoint.excluded_count = coalesce(checkpoint.excluded_count, 0) + $excluded_delta,
+    checkpoint.retry_count = coalesce(checkpoint.retry_count, 0) + $retry_delta,
+    checkpoint.updated_at = datetime(),
+    logical.current_phase = $phase,
+    logical.committed_count = checkpoint.committed_count,
+    logical.duplicate_count = checkpoint.duplicate_count,
+    logical.excluded_count = checkpoint.excluded_count,
+    logical.retry_count = checkpoint.retry_count,
     logical.updated_at = datetime()
 RETURN logical.stop_requested_at IS NOT NULL AS stop_requested
 """
@@ -217,8 +388,8 @@ MATCH (logical:IngestionLogicalRun {logical_run_id: $logical_run_id})
       -[active_relation:ACTIVE_ATTEMPT]->(prior:IngestRun)
 MATCH (logical)-[:FOR_SOURCE]->(source:SourceSystem)
 MATCH (checkpoint:IngestionCheckpoint {logical_run_id: $logical_run_id})
-WHERE logical.status = 'paused_with_checkpoint'
-  AND checkpoint.status = 'paused'
+WHERE logical.status IN ['paused_with_checkpoint', 'failed']
+  AND checkpoint.status IN ['paused', 'active']
   AND logical.active_generation = checkpoint.generation
   AND logical.configuration_fingerprint = $configuration_fingerprint
   AND logical.connector_version = $connector_version

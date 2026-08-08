@@ -43,6 +43,7 @@ OPTIONAL MATCH (record)-[:LINKED_TO]->(person:Person)
 OPTIONAL MATCH (history:SourceRecord {record_type: 'crm_history'})-[:CHILD_OF]->(record)
 WHERE history.ingested_at IS NOT NULL
   AND history.ingested_at <= datetime($report_cutoff_at)
+  AND (history.history_family IS NULL OR history.history_family = 'activity')
 RETURN coalesce(record.entity_key, '') AS entity_key,
        source.source_key AS source_key,
        record.source_record_id AS logical_record_id,
@@ -63,6 +64,7 @@ ORDER BY source_key, logical_record_id, source_record_version
 DISCOVERY_INTERACTION_RECORDS = """
 MATCH (record:SourceRecord)-[:FROM_SOURCE]->(source:SourceSystem)
 WHERE record.record_type IN ['conversation', 'call', 'crm_history']
+  AND (record.history_family IS NULL OR record.history_family = 'activity')
   AND record.ingested_at IS NOT NULL
   AND record.ingested_at <= datetime($report_cutoff_at)
   AND ($entity_keys = [] OR record.entity_key IN $entity_keys)

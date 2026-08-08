@@ -6,10 +6,13 @@ import uuid
 
 from neo4j import ManagedTransaction
 
+from src.bitrix_ingestion_models import BITRIX_STREAM_KEYS, BitrixStreamKey, FenceContext
 from src.graph.client import Neo4jClient
 from src.graph.ingestion_control_models import (
+    BitrixStreamAdmission,
     LogicalRunAttempt,
     LogicalRunState,
+    bitrix_stream_admission,
     encode_json,
     logical_attempt,
     logical_state,
@@ -17,6 +20,7 @@ from src.graph.ingestion_control_models import (
     validate_counts,
 )
 from src.graph.queries.ingestion_control import (
+    ADMIT_OR_COALESCE_BITRIX_STREAM,
     ADVANCE_LOGICAL_CHECKPOINT,
     CLAIM_QUEUED_ATTEMPT,
     CREATE_LOGICAL_RUN_AND_ATTEMPT,
@@ -24,11 +28,29 @@ from src.graph.queries.ingestion_control import (
     FAIL_LOGICAL_RUN,
     FINALIZE_LOGICAL_RUN,
     GET_ACTIVE_LOGICAL_RUN,
+    LOCK_AND_ASSERT_ACTIVE_BITRIX_FENCE,
     PAUSE_LOGICAL_RUN,
     REQUEST_LOGICAL_RUN_STOP,
+    SET_FENCED_BITRIX_STREAM_STATUS,
     TRANSITION_LOGICAL_PHASE,
 )
 from src.resumable import AttemptStatus, CheckpointDescriptor
+
+
+def assert_active_bitrix_fence(tx: ManagedTransaction, context: FenceContext) -> None:
+    """Acquire the stream write lock and reject stale mutation ownership."""
+    record = tx.run(
+        LOCK_AND_ASSERT_ACTIVE_BITRIX_FENCE,
+        source_key=context.source_key,
+        stream_key=context.stream_key,
+        logical_run_id=context.logical_run_id,
+        ingest_run_id=context.ingest_run_id,
+        attempt_generation=context.attempt_generation,
+        stream_generation=context.stream_generation,
+        fencing_token=context.fencing_token,
+    ).single()
+    if record is None:
+        raise RuntimeError("Bitrix mutation fence is stale or inactive")
 
 
 class LogicalRunControl:
@@ -171,6 +193,43 @@ class LogicalRunControl:
 
         return self._client.execute_write(_work)
 
+    def advance_checkpoint_fenced(
+        self,
+        *,
+        context: FenceContext,
+        checkpoint: CheckpointDescriptor,
+        committed_count: int,
+        duplicate_count: int,
+        excluded_count: int,
+        retry_count: int,
+    ) -> bool | None:
+        """Advance a split checkpoint while holding its stream-node write lock."""
+        validate_counts(committed_count, duplicate_count, excluded_count, retry_count)
+
+        def _work(tx: ManagedTransaction) -> bool | None:
+            assert_active_bitrix_fence(tx, context)
+            record = tx.run(
+                ADVANCE_LOGICAL_CHECKPOINT,
+                logical_run_id=context.logical_run_id,
+                ingest_run_id=context.ingest_run_id,
+                generation=context.attempt_generation,
+                phase=checkpoint.phase,
+                cursor_json=encode_json(checkpoint.cursor),
+                source_window_json=encode_json(checkpoint.source_window),
+                connector_version=checkpoint.connector_version,
+                checkpoint_schema_version=checkpoint.schema_version,
+                last_committed_record_id=checkpoint.last_committed_record_id,
+                committed_count=committed_count,
+                duplicate_count=duplicate_count,
+                excluded_count=excluded_count,
+                retry_count=retry_count,
+            ).single()
+            if record is None:
+                return None
+            return record["stop_requested"] is True
+
+        return self._client.execute_write(_work)
+
     def pause(
         self,
         *,
@@ -217,6 +276,47 @@ class LogicalRunControl:
                 logical_run_id=logical_run_id,
                 ingest_run_id=ingest_run_id,
                 generation=generation,
+                current_phase=current_phase,
+                next_phase=next_checkpoint.phase,
+                cursor_json=encode_json(next_checkpoint.cursor),
+                source_window_json=encode_json(next_checkpoint.source_window),
+                connector_version=next_checkpoint.connector_version,
+                checkpoint_schema_version=next_checkpoint.schema_version,
+                replay_boundary=next_checkpoint.replay_boundary,
+                committed_count=committed_count,
+                duplicate_count=duplicate_count,
+                excluded_count=excluded_count,
+                retry_count=retry_count,
+            ).single()
+            if record is None:
+                return None
+            return record["stop_requested"] is True
+
+        return self._client.execute_write(_work)
+
+    def transition_phase_fenced(
+        self,
+        *,
+        context: FenceContext,
+        current_phase: str,
+        next_checkpoint: CheckpointDescriptor,
+        committed_count: int,
+        duplicate_count: int,
+        excluded_count: int,
+        retry_count: int,
+    ) -> bool | None:
+        """Advance a split run to its next schema phase under the stream fence."""
+        if current_phase == next_checkpoint.phase:
+            raise ValueError("Checkpoint phase transition must advance to a new phase")
+        validate_counts(committed_count, duplicate_count, excluded_count, retry_count)
+
+        def _work(tx: ManagedTransaction) -> bool | None:
+            assert_active_bitrix_fence(tx, context)
+            record = tx.run(
+                TRANSITION_LOGICAL_PHASE,
+                logical_run_id=context.logical_run_id,
+                ingest_run_id=context.ingest_run_id,
+                generation=context.attempt_generation,
                 current_phase=current_phase,
                 next_phase=next_checkpoint.phase,
                 cursor_json=encode_json(next_checkpoint.cursor),
@@ -304,6 +404,65 @@ class LogicalRunControl:
 
         return self._client.execute_write(_work)
 
+    def finalize_fenced(
+        self,
+        *,
+        context: FenceContext,
+        phase: str,
+        status: AttemptStatus,
+        committed_count: int,
+        duplicate_count: int,
+        excluded_count: int,
+        retry_count: int,
+        record_count: int,
+        rejected_count: int,
+    ) -> None:
+        """Complete the logical run and its stream under one stream-node lock."""
+        if status not in {"completed", "completed_with_errors"}:
+            raise ValueError("Logical-run final status must be a completion status")
+        validate_counts(
+            committed_count,
+            duplicate_count,
+            excluded_count,
+            retry_count,
+            record_count,
+            rejected_count,
+        )
+
+        def _work(tx: ManagedTransaction) -> None:
+            assert_active_bitrix_fence(tx, context)
+            finalized = tx.run(
+                FINALIZE_LOGICAL_RUN,
+                logical_run_id=context.logical_run_id,
+                ingest_run_id=context.ingest_run_id,
+                generation=context.attempt_generation,
+                phase=phase,
+                status=status,
+                committed_count=committed_count,
+                duplicate_count=duplicate_count,
+                excluded_count=excluded_count,
+                retry_count=retry_count,
+                record_count=record_count,
+                rejected_count=rejected_count,
+            ).single()
+            if finalized is None:
+                raise RuntimeError("Bitrix logical run could not be finalized under its fence")
+            terminal = tx.run(
+                SET_FENCED_BITRIX_STREAM_STATUS,
+                source_key=context.source_key,
+                stream_key=context.stream_key,
+                logical_run_id=context.logical_run_id,
+                ingest_run_id=context.ingest_run_id,
+                attempt_generation=context.attempt_generation,
+                stream_generation=context.stream_generation,
+                fencing_token=context.fencing_token,
+                status="completed",
+            ).single()
+            if terminal is None:
+                raise RuntimeError("Bitrix stream could not be completed under its fence")
+
+        self._client.execute_write(_work)
+
     def fail(
         self,
         *,
@@ -329,3 +488,117 @@ class LogicalRunControl:
             return record is not None
 
         return self._client.execute_write(_work)
+
+    def fail_fenced(
+        self,
+        *,
+        context: FenceContext,
+        failure_category: str,
+        safe_failure_message: str,
+    ) -> None:
+        """Fail the logical attempt and terminate the stream atomically."""
+        if not failure_category.strip():
+            raise ValueError("Failure category must be non-empty")
+
+        def _work(tx: ManagedTransaction) -> None:
+            assert_active_bitrix_fence(tx, context)
+            failed = tx.run(
+                FAIL_LOGICAL_RUN,
+                logical_run_id=context.logical_run_id,
+                ingest_run_id=context.ingest_run_id,
+                generation=context.attempt_generation,
+                failure_category=failure_category,
+                failure_message=safe_failure_message[:1000],
+            ).single()
+            if failed is None:
+                raise RuntimeError("Bitrix logical run could not be failed under its fence")
+            terminal = tx.run(
+                SET_FENCED_BITRIX_STREAM_STATUS,
+                source_key=context.source_key,
+                stream_key=context.stream_key,
+                logical_run_id=context.logical_run_id,
+                ingest_run_id=context.ingest_run_id,
+                attempt_generation=context.attempt_generation,
+                stream_generation=context.stream_generation,
+                fencing_token=context.fencing_token,
+                status="terminated",
+            ).single()
+            if terminal is None:
+                raise RuntimeError("Bitrix stream could not be terminated under its fence")
+
+        self._client.execute_write(_work)
+
+
+class BitrixStreamControl:
+    """Durable admission for a single transaction-fenced Bitrix stream."""
+
+    def __init__(self, client: Neo4jClient) -> None:
+        self._client = client
+
+    def admit_or_coalesce(
+        self,
+        *,
+        stream_key: BitrixStreamKey,
+        logical_run_id: str,
+        ingest_run_id: str,
+        attempt_generation: int,
+        worker_task_id: str,
+        replace_active: bool = False,
+    ) -> BitrixStreamAdmission:
+        """Admit a stream, coalesce a duplicate, or atomically replace it.
+
+        A delivery for the same logical attempt coalesces. A different attempt
+        fails closed unless ``replace_active`` is explicit; replacement advances
+        both the stream generation and its fencing token in the same transaction.
+        """
+        _validate_bitrix_stream_admission(
+            stream_key=stream_key,
+            logical_run_id=logical_run_id,
+            ingest_run_id=ingest_run_id,
+            attempt_generation=attempt_generation,
+            worker_task_id=worker_task_id,
+            replace_active=replace_active,
+        )
+        creation_token = uuid.uuid4().hex
+
+        def _work(tx: ManagedTransaction) -> BitrixStreamAdmission:
+            record = tx.run(
+                ADMIT_OR_COALESCE_BITRIX_STREAM,
+                source_key="bitrix_chat",
+                stream_key=stream_key,
+                logical_run_id=logical_run_id,
+                ingest_run_id=ingest_run_id,
+                attempt_generation=attempt_generation,
+                worker_task_id=worker_task_id,
+                replace_active=replace_active,
+                creation_token=creation_token,
+            ).single()
+            return bitrix_stream_admission(record)
+
+        return self._client.execute_write(_work)
+
+
+def _validate_bitrix_stream_admission(
+    *,
+    stream_key: BitrixStreamKey,
+    logical_run_id: str,
+    ingest_run_id: str,
+    attempt_generation: int,
+    worker_task_id: str,
+    replace_active: bool,
+) -> None:
+    if stream_key not in BITRIX_STREAM_KEYS:
+        raise ValueError("stream_key must be a supported Bitrix stream")
+    if not all(
+        isinstance(value, str) and value.strip()
+        for value in (logical_run_id, ingest_run_id, worker_task_id)
+    ):
+        raise ValueError("Bitrix stream admission identity values must be non-empty")
+    if (
+        isinstance(attempt_generation, bool)
+        or not isinstance(attempt_generation, int)
+        or attempt_generation < 1
+    ):
+        raise ValueError("attempt_generation must be a positive integer")
+    if not isinstance(replace_active, bool):
+        raise ValueError("replace_active must be a boolean")

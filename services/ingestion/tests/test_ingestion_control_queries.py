@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from src.graph.queries.ingestion_control import (
+    ADVANCE_BITRIX_UNIT_CHECKPOINT,
     ADVANCE_LOGICAL_CHECKPOINT,
     CLAIM_QUEUED_ATTEMPT,
     CREATE_LOGICAL_RUN_AND_ATTEMPT,
@@ -31,6 +32,22 @@ def test_checkpoint_writes_are_fenced_by_attempt_and_generation() -> None:
     assert "cursor_json = $cursor_json" in ADVANCE_LOGICAL_CHECKPOINT
     assert "checkpoint.status = 'active'" in ADVANCE_LOGICAL_CHECKPOINT
     assert "checkpoint.connector_version = $connector_version" in ADVANCE_LOGICAL_CHECKPOINT
+    assert "checkpoint.source_window_json = $source_window_json" in ADVANCE_LOGICAL_CHECKPOINT
+    assert "SET checkpoint.cursor_json" in ADVANCE_LOGICAL_CHECKPOINT
+    assert "SET checkpoint.source_window_json" not in ADVANCE_LOGICAL_CHECKPOINT
+
+
+def test_bitrix_unit_checkpoint_is_bound_to_the_full_stream_fence() -> None:
+    for field in (
+        "logical_run_id",
+        "ingest_run_id",
+        "attempt_generation",
+        "stream_generation",
+        "fencing_token",
+    ):
+        assert f"{field}: ${field}" in ADVANCE_BITRIX_UNIT_CHECKPOINT
+    assert "checkpoint.source_window_json = $source_window_json" in (ADVANCE_BITRIX_UNIT_CHECKPOINT)
+    assert "checkpoint.committed_count" in ADVANCE_BITRIX_UNIT_CHECKPOINT
 
 
 def test_stop_and_pause_have_distinct_durable_states() -> None:

@@ -19,11 +19,15 @@ import logging
 
 from neo4j import ManagedTransaction
 
+from src.bitrix_backfill_runtime import record_terminal_unit
+from src.bitrix_ingestion_models import ExecutionContext, FenceContext
 from src.exclusions import ExclusionContext, is_excluded_vehicle_observation
 from src.golden_profile import compute_golden_profile
 from src.graph import queries
+from src.graph.bitrix_deal_scope import DealScopeObservation, record_scope_batch_in_transaction
 from src.graph.bootstrap import MATCH_ONLY_SOURCE_KEYS
 from src.graph.client import Neo4jClient
+from src.graph.ingestion_control import assert_active_bitrix_fence
 from src.matching.engine import MatchEngine, ambiguous_prior_owners_result
 from src.models import (
     MATCH_ONLY_RECORD_TYPES,
@@ -103,9 +107,21 @@ class IngestPipeline:
     ``session.execute_write`` transaction.
     """
 
-    def __init__(self, client: Neo4jClient) -> None:
+    def __init__(
+        self,
+        client: Neo4jClient,
+        *,
+        fence_context: FenceContext | None = None,
+        execution_context: ExecutionContext | None = None,
+    ) -> None:
+        if execution_context is not None and fence_context is not None:
+            raise ValueError("supply execution_context or fence_context, not both")
         self._client = client
         self._match_engine = MatchEngine()
+        self._execution_context = execution_context
+        self._fence_context = (
+            execution_context.fence_context if execution_context is not None else fence_context
+        )
 
     def ingest(
         self,
@@ -123,17 +139,21 @@ class IngestPipeline:
 
         # Steps 3-13 run inside a single write transaction
         def _work(tx: ManagedTransaction) -> IngestResult:
+            if self._fence_context is not None:
+                assert_active_bitrix_fence(tx, self._fence_context)
             state = load_locked_source_state(tx, envelope.source_system, envelope.source_record_id)
             plan = plan_incoming_version(state, envelope.record_hash)
             if isinstance(plan, DuplicateVersion):
-                return IngestResult(
+                result = IngestResult(
                     source_record_id=envelope.source_record_id,
                     source_record_pk=plan.source_record_pk,
                     skipped_duplicate=True,
                     ingest_run_id=ingest_run_id,
                 )
+                self._finalize_bitrix_unit(tx, envelope, result)
+                return result
             envelope.source_record_version = str(plan.version)
-            return self._execute_ingest(
+            result = self._execute_ingest(
                 tx,
                 envelope,
                 normalize_envelope_identifiers(envelope),
@@ -143,9 +163,61 @@ class IngestPipeline:
                 lifecycle_plan=plan,
                 exclusion_context=active_exclusion_context,
             )
+            self._finalize_bitrix_unit(tx, envelope, result)
+            return result
 
         with self._client.session() as session:
             return session.execute_write(_work)
+
+    def _finalize_bitrix_unit(
+        self,
+        tx: ManagedTransaction,
+        envelope: SourceRecordEnvelope,
+        result: IngestResult,
+    ) -> None:
+        context = self._execution_context
+        if context is None:
+            return
+        scope_state: str | None = None
+        if envelope.record_type == RecordType.CRM_DEAL:
+            deal_id = envelope.source_record_id.rsplit("-", maxsplit=1)[-1]
+            category_id = envelope.raw_payload.get("CATEGORY_ID")
+            if not isinstance(category_id, str) or not category_id:
+                raise ValueError("Bitrix CRM deal requires CATEGORY_ID for scope lineage")
+            if envelope.entity_key is None:
+                raise ValueError("Bitrix CRM deal requires entity ownership")
+            record_scope_batch_in_transaction(
+                tx,
+                [
+                    DealScopeObservation(
+                        deal_id=deal_id,
+                        scope_state="in_scope",
+                        category_id=category_id,
+                        entity_key=envelope.entity_key,
+                        source_record_pk=result.source_record_pk,
+                    )
+                ],
+                fence_context=context.fence_context,
+            )
+            scope_state = "in_scope"
+        if envelope.record_type == RecordType.CONVERSATION and result.source_record_pk is not None:
+            activity_ids = envelope.raw_payload.get("crm_activity_ids")
+            if isinstance(activity_ids, list):
+                tx.run(
+                    queries.LINK_CONVERSATION_TO_CRM_HISTORY,
+                    conversation_source_record_pk=result.source_record_pk,
+                    source_system=envelope.source_system,
+                    crm_activity_ids=[
+                        value for value in activity_ids if isinstance(value, str) and value
+                    ],
+                ).consume()
+        record_terminal_unit(
+            tx,
+            context=context,
+            envelope=envelope,
+            result=result,
+            scope_state=scope_state,
+        )
 
     def _latest_source_record(
         self,

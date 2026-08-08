@@ -1242,7 +1242,7 @@ def test_ingest_run_detail_route_rejects_oauth_client_without_ingest_write_scope
     res = client.post("/reports/entity_person_summary/execute", json={})
 
     assert res.status_code == 403
-    assert res.json()["error"]["message"] == "OAuth client lacks required scope: persons:read"
+    assert res.json()["error"]["message"] == "This action requires administrator privileges."
 
 
 def test_reports_metadata_route_rejects_oauth_client_without_persons_read_scope() -> None:

@@ -13,14 +13,23 @@ import httpx
 
 from src.connectors.bitrix_openlines.crm_deal_filter import (
     CrmDealPage,
+    crm_deal_capability_filter,
     crm_deal_category_filter,
     normalize_crm_category_ids,
+    parse_crm_deal_capability_page,
+)
+from src.connectors.bitrix_openlines.crm_status_catalog import (
+    deal_stage_status_entity_id,
+    parse_crm_deal_stage_catalog_page,
 )
 from src.connectors.bitrix_openlines.models import (
     ChatReference,
     CrmActivity,
+    CrmActivityCapabilityPage,
     CrmContact,
     CrmDeal,
+    CrmDealCapabilityPage,
+    CrmDealStageCatalogPage,
     CrmDiscoveryPage,
     DialogMetadata,
     OpenLineConfig,
@@ -41,6 +50,10 @@ from src.connectors.bitrix_openlines.response_helpers import (
     provider_references,
     recent_references,
     retry_delay,
+)
+from src.connectors.bitrix_stage_history.models import (
+    StageHistoryPage,
+    parse_stage_history_page,
 )
 from src.models import JsonValue
 
@@ -405,10 +418,115 @@ class BitrixOpenLinesClient:
         for page in self.iter_crm_deal_pages(category_ids):
             yield from page.deals
 
+    def list_crm_deal_capability_page(
+        self,
+        *,
+        category_ids: Collection[str],
+        greater_than_id: int | None = None,
+        less_than_or_equal_to_id: int | None = None,
+        order_direction: str = "ASC",
+    ) -> CrmDealCapabilityPage:
+        """Fetch one minimal, read-only keyset page for a deal capability census.
+
+        This boundary deliberately does not create ``CrmDeal`` values because
+        those hydrate contacts and leads. It sends only source fields necessary
+        for a bounded owner census and has no graph, checkpoint, or enrichment
+        side effects.
+        """
+        if not isinstance(order_direction, str) or order_direction not in {"ASC", "DESC"}:
+            raise ValueError("Bitrix CRM deal capability order_direction must be ASC or DESC")
+        payload = self._request(
+            "crm.deal.list",
+            {
+                "filter": crm_deal_capability_filter(
+                    category_ids,
+                    greater_than_id=greater_than_id,
+                    less_than_or_equal_to_id=less_than_or_equal_to_id,
+                ),
+                "select": ["ID", "CATEGORY_ID", "STAGE_ID"],
+                "order": {"ID": order_direction},
+                "start": -1,
+            },
+        )
+        return parse_crm_deal_capability_page(payload)
+
+    def list_stage_history_page(
+        self,
+        *,
+        entity_type_id: int,
+        filters: Mapping[str, JsonValue] | None = None,
+        order_direction: str = "ASC",
+        start: int = -1,
+    ) -> StageHistoryPage:
+        """Fetch one read-only, typed ``crm.stagehistory.list`` page.
+
+        This method is intentionally capability-only: it returns source evidence
+        and does not create records, checkpoints, or side effects.
+        """
+        if isinstance(entity_type_id, bool) or entity_type_id < 1:
+            raise ValueError("Bitrix stage-history entity_type_id must be positive")
+        if isinstance(start, bool) or start < -1:
+            raise ValueError("Bitrix stage-history start must be -1 or non-negative")
+        if order_direction not in {"ASC", "DESC"}:
+            raise ValueError("Bitrix stage-history order_direction must be ASC or DESC")
+        payload = self._request(
+            "crm.stagehistory.list",
+            {
+                "entityTypeId": entity_type_id,
+                "filter": dict(filters or {}),
+                "order": {"ID": order_direction},
+                "start": start,
+            },
+        )
+        return parse_stage_history_page(
+            payload,
+            entity_type_id=str(entity_type_id),
+            current_start=start,
+        )
+
+    def list_crm_deal_stage_catalog_page(
+        self,
+        *,
+        category_id: int,
+        start: int = 0,
+    ) -> CrmDealStageCatalogPage:
+        """Fetch one read-only current stage-catalog page for a deal category.
+
+        This capability boundary uses ``crm.status.list`` only. It neither
+        reads deal/activity records nor creates graph, checkpoint, or
+        ingestion side effects.
+        """
+        entity_id = deal_stage_status_entity_id(category_id)
+        payload = self._request(
+            "crm.status.list",
+            {
+                "filter": {"ENTITY_ID": entity_id},
+                "order": {"SORT": "ASC"},
+                "start": start,
+            },
+        )
+        return parse_crm_deal_stage_catalog_page(
+            payload,
+            category_id=category_id,
+            current_start=start,
+        )
+
     def get_deal(self, deal_id: int) -> CrmDeal:
         """Fetch a deal and the primary contact/lead identity evidence."""
         result = self._call("crm.deal.get", {"id": deal_id})
         return self._deal_from_payload(deal_id, result)
+
+    def get_deal_or_none(self, deal_id: int) -> CrmDeal | None:
+        """Return ``None`` only for an explicit healthy Bitrix not-found response."""
+        payload = self._request(
+            "crm.deal.get",
+            {"id": deal_id},
+            allowed_errors=frozenset({"ERROR_NOT_FOUND", "CRM_DEAL_NOT_FOUND"}),
+        )
+        error = payload.get("error")
+        if isinstance(error, str):
+            return None
+        return self._deal_from_payload(deal_id, payload.get("result"))
 
     def _deal_from_payload(self, deal_id: int, result: JsonValue) -> CrmDeal:
         """Convert a deal-list or deal-get response into the shared CRM model."""
@@ -497,6 +615,77 @@ class BitrixOpenLinesClient:
             invalid_result_message="Bitrix CRM activities returned an invalid result",
         )
 
+    def list_crm_activity_capability_page(
+        self,
+        *,
+        greater_than_id: int | None,
+        less_than_or_equal_to_id: int,
+        order_direction: str = "ASC",
+    ) -> CrmActivityCapabilityPage:
+        """Fetch one strict activity-ID keyset page without offset fallback."""
+        if order_direction not in {"ASC", "DESC"}:
+            raise ValueError("Bitrix CRM activity order_direction must be ASC or DESC")
+        if isinstance(less_than_or_equal_to_id, bool) or less_than_or_equal_to_id < 1:
+            raise ValueError("Bitrix CRM activity upper ID must be positive")
+        filters: dict[str, JsonValue] = {
+            "OWNER_TYPE_ID": 2,
+            "<=ID": less_than_or_equal_to_id,
+        }
+        if greater_than_id is not None:
+            if isinstance(greater_than_id, bool) or greater_than_id < 1:
+                raise ValueError("Bitrix CRM activity lower ID must be positive")
+            if greater_than_id >= less_than_or_equal_to_id:
+                raise ValueError("Bitrix CRM activity keyset bounds must increase")
+            filters[">ID"] = greater_than_id
+        payload = self._request(
+            "crm.activity.list",
+            {
+                "filter": filters,
+                "select": [
+                    "ID",
+                    "OWNER_TYPE_ID",
+                    "OWNER_ID",
+                    "TYPE_ID",
+                    "PROVIDER_ID",
+                    "PROVIDER_TYPE_ID",
+                    "SUBJECT",
+                    "LAST_UPDATED",
+                    "CREATED",
+                    "START_TIME",
+                    "END_TIME",
+                    "DURATION",
+                    "DIRECTION",
+                    "RESULT_STATUS",
+                    "COMPLETED",
+                    "PROVIDER_PARAMS",
+                    "SETTINGS",
+                ],
+                "order": {"ID": order_direction},
+                "start": -1,
+            },
+        )
+        raw_items = payload.get("result")
+        if not isinstance(raw_items, list):
+            raise RuntimeError("Bitrix CRM activity capability returned an invalid result")
+        items: list[CrmActivity] = []
+        for raw in raw_items:
+            if not isinstance(raw, dict):
+                raise RuntimeError("Bitrix CRM activity capability contained an invalid item")
+            activity = _crm_activity(raw)
+            if activity is None or not activity.id.isdigit():
+                raise RuntimeError("Bitrix CRM activity capability omitted a numeric identity")
+            items.append(activity)
+        timing = payload.get("time")
+        if timing is not None and not isinstance(timing, dict):
+            raise RuntimeError("Bitrix CRM activity capability returned invalid timing")
+        timing_map = timing if isinstance(timing, dict) else {}
+        return CrmActivityCapabilityPage(
+            items=tuple(items),
+            total=_optional_non_negative_number(payload.get("total")),
+            operating=_optional_number(timing_map.get("operating")),
+            operating_reset_at=_optional_number(timing_map.get("operating_reset_at")),
+        )
+
     def _iter_crm_activities(
         self,
         filters: dict[str, JsonValue],
@@ -574,7 +763,13 @@ class BitrixOpenLinesClient:
     def _call(self, method: str, params: Mapping[str, JsonValue]) -> JsonValue:
         return self._request(method, params)["result"]
 
-    def _request(self, method: str, params: Mapping[str, JsonValue]) -> dict[str, JsonValue]:
+    def _request(
+        self,
+        method: str,
+        params: Mapping[str, JsonValue],
+        *,
+        allowed_errors: frozenset[str] = frozenset(),
+    ) -> dict[str, JsonValue]:
         for attempt in range(1, self._max_attempts + 1):
             try:
                 elapsed = time.monotonic() - self._last_request_at
@@ -590,6 +785,8 @@ class BitrixOpenLinesClient:
                 typed_payload = cast(dict[str, JsonValue], payload)
                 error = typed_payload.get("error")
                 if isinstance(error, str):
+                    if error in allowed_errors:
+                        return typed_payload
                     if error not in RETRYABLE_ERRORS:
                         raise RuntimeError(f"Bitrix method {method} failed with {error}")
                     if attempt == self._max_attempts:
@@ -623,6 +820,26 @@ def _string(value: object) -> str | None:
     if isinstance(value, str) and value.strip():
         return value.strip()
     return None
+
+
+def _optional_non_negative_number(value: object) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        raise RuntimeError("Bitrix capability returned an invalid total")
+    if isinstance(value, int) and value >= 0:
+        return value
+    if isinstance(value, str) and value.isdigit():
+        return int(value)
+    raise RuntimeError("Bitrix capability returned an invalid total")
+
+
+def _optional_number(value: object) -> float | None:
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        raise RuntimeError("Bitrix capability returned invalid timing")
+    return float(value)
 
 
 def _string_values(value: object) -> tuple[str, ...]:
