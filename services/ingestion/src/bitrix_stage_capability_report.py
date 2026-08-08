@@ -124,7 +124,7 @@ def write_failure_manifest(
     write_json(
         output_directory / "failure-manifest.json",
         {
-            "report_schema_version": "bitrix-source-capability-v2",
+            "report_schema_version": "bitrix-source-capability-v3",
             "generated_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
             "repository_sha": repository_sha(),
             "failure_phase": phase,
@@ -183,7 +183,7 @@ def evidence_summary(
     return cast(
         dict[str, JsonValue],
         {
-            "report_schema_version": "bitrix-source-capability-v2",
+            "report_schema_version": "bitrix-source-capability-v3",
             "generated_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
             "source_contract_id": source_contract_id,
             "entity_type_id": entity_type_id,
