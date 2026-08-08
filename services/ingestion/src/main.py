@@ -1029,9 +1029,10 @@ def run_ingestion(
         if not initialize_graph:
             client.verify_connectivity()
 
-        pipeline = IngestPipeline(
-            client,
-            execution_context=execution_context,
+        pipeline = (
+            IngestPipeline(client, execution_context=execution_context)
+            if execution_context is not None
+            else IngestPipeline(client)
         )
         # Create the IngestRun before building the connector so a
         # connector-construction failure (e.g. a source dispatched before its

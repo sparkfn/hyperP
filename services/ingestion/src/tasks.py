@@ -202,6 +202,14 @@ def _run_split_bitrix_ingestion(
     client = Neo4jClient(get_settings())
     logical = LogicalRunControl(client)
     try:
+        configuration_fingerprint = _split_configuration_fingerprint(
+            source_key=source_key,
+            mode=mode,
+            stream_key=stream_key,
+            incremental=incremental,
+            checkpoint=checkpoint,
+            generation_context=generation_context,
+        )
         attempt = logical.create_or_reuse(
             source_key=source_key,
             mode=mode,
@@ -209,18 +217,25 @@ def _run_split_bitrix_ingestion(
             entity_key=None,
             idempotency_key=idempotency_key,
             worker_task_id=worker_task_id,
-            configuration_fingerprint=_split_configuration_fingerprint(
-                source_key=source_key,
-                mode=mode,
-                stream_key=stream_key,
-                incremental=incremental,
-                checkpoint=checkpoint,
-                generation_context=generation_context,
-            ),
+            configuration_fingerprint=configuration_fingerprint,
             connector_version=checkpoint.connector_version,
             checkpoint_schema_version=checkpoint.schema_version,
             initial_checkpoint=checkpoint,
         )
+        if attempt.worker_task_id != worker_task_id and attempt.logical_status in {
+            "paused_with_checkpoint",
+            "failed",
+        }:
+            resumed = logical.resume(
+                logical_run_id=attempt.logical_run_id,
+                worker_task_id=worker_task_id,
+                configuration_fingerprint=configuration_fingerprint,
+                connector_version=checkpoint.connector_version,
+                checkpoint_schema_version=checkpoint.schema_version,
+            )
+            if resumed is None:
+                raise RuntimeError("split Bitrix logical run could not resume from its checkpoint")
+            attempt = resumed
         if attempt.worker_task_id != worker_task_id:
             status = (
                 attempt.logical_status
@@ -280,6 +295,7 @@ def _run_split_bitrix_ingestion(
                 ingest_run_id=attempt.ingest_run_id,
                 attempt_generation=attempt.generation,
                 worker_task_id=worker_task_id,
+                replace_active=generation_context is not None,
             )
         except Exception as exc:
             logical.fail(

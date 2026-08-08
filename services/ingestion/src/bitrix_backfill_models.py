@@ -21,6 +21,8 @@ GenerationStatus = Literal[
     "failed",
     "rejected",
     "superseded",
+    "active",
+    "activating",
 ]
 CoverageDisposition = Literal[
     "created",
@@ -243,3 +245,225 @@ def known_owner_refresh_checkpoint(
         schema_version=1,
         replay_boundary="exclusive_sorted_known_deal_id",
     )
+
+
+InventoryReplayMode = Literal["strict_keyset", "targeted_refresh", "bounded_replay", "excluded"]
+RollbackClass = Literal[
+    "pre_write_image_rollback",
+    "post_activation_pre_write_supersession",
+    "post_write_compensation_or_restore",
+]
+
+
+@dataclass(frozen=True)
+class BackfillInventoryEntry:
+    """One reviewed Bitrix gap and its bounded completion contract."""
+
+    gap_id: str
+    stream_key: BitrixStreamKey
+    bounded_population: int
+    current_count: int
+    source_basis: str
+    expected_repair: str
+    replay_mode: InventoryReplayMode
+    source_window: dict[str, JsonValue] | None
+    completion_equation: str
+    max_calls: int
+    max_rows: int
+    max_runtime_seconds: int
+    max_storage_bytes: int
+    max_lock_seconds: int
+    max_lag_seconds: int
+    rollback_path: str
+    reviewed_exclusion: str | None = None
+
+    def __post_init__(self) -> None:
+        if not all(
+            value.strip()
+            for value in (
+                self.gap_id,
+                self.source_basis,
+                self.expected_repair,
+                self.completion_equation,
+                self.rollback_path,
+            )
+        ):
+            raise ValueError("inventory text fields must be non-empty")
+        values = (
+            self.bounded_population,
+            self.current_count,
+            self.max_calls,
+            self.max_rows,
+            self.max_runtime_seconds,
+            self.max_storage_bytes,
+            self.max_lock_seconds,
+            self.max_lag_seconds,
+        )
+        if any(isinstance(value, bool) or value < 0 for value in values):
+            raise ValueError("inventory counts and ceilings must be non-negative")
+        if self.current_count > self.bounded_population:
+            raise ValueError("inventory current count cannot exceed bounded population")
+        if self.replay_mode == "excluded":
+            if self.reviewed_exclusion is None or not self.reviewed_exclusion.strip():
+                raise ValueError("excluded inventory entries require reviewed_exclusion")
+            if self.source_window is not None:
+                raise ValueError("excluded inventory entries cannot dispatch a source window")
+        else:
+            if self.reviewed_exclusion is not None:
+                raise ValueError("executed inventory entries cannot have reviewed_exclusion")
+            if self.source_window is None:
+                raise ValueError("executed inventory entries require a source window")
+            validate_stream_source_window(self.stream_key, self.source_window)
+
+    @property
+    def executes(self) -> bool:
+        return self.replay_mode != "excluded"
+
+
+@dataclass(frozen=True)
+class BackfillInventoryManifest:
+    """Human-reviewed complete Bitrix gap inventory."""
+
+    source_key: str
+    reviewed_by: str
+    backup_id: str
+    backup_restore_evidence_digest: str
+    minimum_fence_image_digest: str
+    legacy_dispatch_paused: bool
+    predecessor_quiescent: bool
+    entries: tuple[BackfillInventoryEntry, ...]
+
+    def __post_init__(self) -> None:
+        if self.source_key != "bitrix_chat":
+            raise ValueError("corrective inventory must be Bitrix-only")
+        for value in (
+            self.reviewed_by,
+            self.backup_id,
+            self.backup_restore_evidence_digest,
+            self.minimum_fence_image_digest,
+        ):
+            if not value.strip():
+                raise ValueError("inventory prerequisite evidence must be non-empty")
+        if not self.legacy_dispatch_paused or not self.predecessor_quiescent:
+            raise ValueError("legacy dispatch and predecessor activity must be quiescent")
+        if not self.entries:
+            raise ValueError("inventory must contain at least one reviewed gap")
+        gap_ids = [entry.gap_id for entry in self.entries]
+        if len(set(gap_ids)) != len(gap_ids):
+            raise ValueError("inventory gap IDs must be unique")
+        executed = [entry.stream_key for entry in self.entries if entry.executes]
+        if "crm_deals" not in executed or "crm_activities" not in executed:
+            raise ValueError("inventory must execute deal and activity corrective streams")
+        if executed.index("crm_deals") > executed.index("crm_activities"):
+            raise ValueError("deal inventory must precede activity inventory")
+
+    @property
+    def canonical_json(self) -> str:
+        payload = {
+            "source_key": self.source_key,
+            "reviewed_by": self.reviewed_by,
+            "backup_id": self.backup_id,
+            "backup_restore_evidence_digest": self.backup_restore_evidence_digest,
+            "minimum_fence_image_digest": self.minimum_fence_image_digest,
+            "legacy_dispatch_paused": self.legacy_dispatch_paused,
+            "predecessor_quiescent": self.predecessor_quiescent,
+            "entries": [vars(entry) for entry in self.entries],
+        }
+        return json.dumps(payload, sort_keys=True, separators=(",", ":"))
+
+    @property
+    def digest(self) -> str:
+        encoded = self.canonical_json.encode("utf-8")
+        return "sha256:" + hashlib.sha256(b"bitrix-backfill-inventory-v1\x00" + encoded).hexdigest()
+
+    @property
+    def executable_entries(self) -> tuple[BackfillInventoryEntry, ...]:
+        return tuple(entry for entry in self.entries if entry.executes)
+
+
+@dataclass(frozen=True)
+class GenerationState:
+    generation_id: str
+    status: GenerationStatus
+    generation_kind: str
+    inventory_digest: str | None
+    corrective_generation_id: str | None
+    frozen_at: str | None
+    material_write_count: int
+    repository_sha: str
+    image_digest: str
+    configuration_digest: str
+    boundary_digest: str
+    source_contract_uuid: str
+
+
+@dataclass(frozen=True)
+class QualificationResult:
+    owner_artifact_id: str
+    stage_artifact_id: str
+    owner_recommendation: str
+    stage_recommendation: str
+    replay_digest: str
+    stage_domain_writes: int
+
+    def __post_init__(self) -> None:
+        if self.owner_recommendation != "verified_keyset":
+            raise ValueError("owner artifact is not verified_keyset")
+        if self.stage_recommendation != "bounded_spool_reconcile":
+            raise ValueError("stage artifact is not bounded_spool_reconcile")
+        if self.stage_domain_writes != 0:
+            raise ValueError("qualification detected forbidden stage-domain writes")
+        if not all(
+            value.strip()
+            for value in (self.owner_artifact_id, self.stage_artifact_id, self.replay_digest)
+        ):
+            raise ValueError("qualification evidence identifiers must be non-empty")
+
+    @property
+    def evidence_digest(self) -> str:
+        encoded = json.dumps(vars(self), sort_keys=True, separators=(",", ":")).encode("utf-8")
+        digest = hashlib.sha256(b"bitrix-qualification-result-v1\x00" + encoded).hexdigest()
+        return "sha256:" + digest
+
+
+@dataclass(frozen=True)
+class RollbackStatus:
+    rollback_class: RollbackClass
+    dispatch_must_remain_blocked: bool
+    required_action: str
+
+
+@dataclass(frozen=True)
+class TailVerification:
+    corrective_status: str
+    successor_status: str
+    predecessor_frozen: bool
+    expected_streams: tuple[BitrixStreamKey, ...]
+    actual_streams: tuple[BitrixStreamKey, ...]
+    cadence_run_count: int
+    cadence_complete: bool
+    successor_coverage_count: int
+    coverage_complete: bool
+
+    @property
+    def passed(self) -> bool:
+        return (
+            self.corrective_status == "accepted"
+            and self.successor_status == "active"
+            and self.predecessor_frozen
+            and len(self.actual_streams) == len(self.expected_streams)
+            and set(self.actual_streams) == set(self.expected_streams)
+            and self.cadence_run_count > 0
+            and self.cadence_complete
+            and self.successor_coverage_count > 0
+            and self.coverage_complete
+        )
+
+
+@dataclass(frozen=True)
+class GenerationChildRun:
+    stream_key: BitrixStreamKey
+    logical_run_id: str
+    logical_status: str
+    attempt_generation: int
+    stream_status: str | None
