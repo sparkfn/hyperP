@@ -298,9 +298,9 @@ WHERE logical.active_generation = $generation
   AND checkpoint.status = 'active'
   AND checkpoint.connector_version = $connector_version
   AND checkpoint.schema_version = $checkpoint_schema_version
+  AND checkpoint.source_window_json = $source_window_json
   AND logical.status IN ['running', 'stop_requested']
 SET checkpoint.cursor_json = $cursor_json,
-    checkpoint.source_window_json = $source_window_json,
     checkpoint.last_committed_record_id = $last_committed_record_id,
     checkpoint.committed_count = $committed_count,
     checkpoint.duplicate_count = $duplicate_count,

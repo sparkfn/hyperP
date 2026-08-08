@@ -111,6 +111,11 @@ def test_split_helper_uses_one_control_plane_run_and_passes_execution_context(
         idempotency_key="bitrix-backfill:generation-1:crm_deals:boundary:config",
         stream_key="crm_deals",
         worker_task_id="task-1",
+        source_window={
+            "upper_deal_id": "900",
+            "included_category_digest": "sha256:categories",
+            "owner_artifact_id": None,
+        },
     )
 
     assert _LogicalControl.created == ["bitrix-backfill:generation-1:crm_deals:boundary:config"]
@@ -146,6 +151,11 @@ def test_admission_failure_fails_the_claimed_attempt(monkeypatch: MonkeyPatch) -
             idempotency_key="bitrix-backfill:generation-1:crm_deals:boundary:config",
             stream_key="crm_deals",
             worker_task_id="task-1",
+            source_window={
+                "upper_deal_id": "900",
+                "included_category_digest": "sha256:categories",
+                "owner_artifact_id": None,
+            },
         )
 
     assert _LogicalControl.failed == ["stream_admission_failed"]

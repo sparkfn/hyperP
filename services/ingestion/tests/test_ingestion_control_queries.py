@@ -31,6 +31,9 @@ def test_checkpoint_writes_are_fenced_by_attempt_and_generation() -> None:
     assert "cursor_json = $cursor_json" in ADVANCE_LOGICAL_CHECKPOINT
     assert "checkpoint.status = 'active'" in ADVANCE_LOGICAL_CHECKPOINT
     assert "checkpoint.connector_version = $connector_version" in ADVANCE_LOGICAL_CHECKPOINT
+    assert "checkpoint.source_window_json = $source_window_json" in ADVANCE_LOGICAL_CHECKPOINT
+    assert "SET checkpoint.cursor_json" in ADVANCE_LOGICAL_CHECKPOINT
+    assert "SET checkpoint.source_window_json" not in ADVANCE_LOGICAL_CHECKPOINT
 
 
 def test_stop_and_pause_have_distinct_durable_states() -> None:

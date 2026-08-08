@@ -1,0 +1,33 @@
+"""Coverage-ledger identity and conflict behavior."""
+
+from src.bitrix_backfill_models import CoverageEntry
+from src.graph.queries.bitrix_backfill import UPSERT_BITRIX_BACKFILL_COVERAGE
+
+
+def test_coverage_entry_requires_a_terminal_source_identity() -> None:
+    entry = CoverageEntry(
+        source_identity="bitrix-crm-deal-7",
+        source_boundary="upper-deal-900",
+        disposition="existing_same_hash",
+        source_observation_hash="sha256:observation",
+        deal_id="7",
+        scope_state="in_scope",
+        category_id="2",
+        stage_id="C2:NEW",
+        census_epoch=1,
+    )
+
+    assert entry.terminal is True
+    assert entry.disposition == "existing_same_hash"
+
+
+def test_coverage_query_fails_closed_on_conflicting_replay() -> None:
+    assert "source_identity: $source_identity" in UPSERT_BITRIX_BACKFILL_COVERAGE
+    assert "source_boundary: $source_boundary" in UPSERT_BITRIX_BACKFILL_COVERAGE
+    assert "coverage.outcome_digest = $outcome_digest" in UPSERT_BITRIX_BACKFILL_COVERAGE
+    assert "CASE WHEN created THEN [1] ELSE []" in UPSERT_BITRIX_BACKFILL_COVERAGE
+    assert "generation.status IN ['backfilling', 'reconciling']" in (
+        UPSERT_BITRIX_BACKFILL_COVERAGE
+    )
+    assert "(generation)-[:HAS_LOGICAL_RUN]" in UPSERT_BITRIX_BACKFILL_COVERAGE
+    assert "(generation)-[:HAS_STREAM]" in UPSERT_BITRIX_BACKFILL_COVERAGE

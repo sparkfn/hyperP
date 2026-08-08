@@ -9,7 +9,10 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
+
+if TYPE_CHECKING:
+    from src.bitrix_backfill_models import GenerationRunContext
 
 BitrixStreamKey = Literal["crm_deals", "crm_activities", "openlines_conversations"]
 DealScopeState = Literal["in_scope", "out_of_scope", "indeterminate"]
@@ -63,6 +66,7 @@ class ExecutionContext:
 
     worker_task_id: str
     fence_context: FenceContext
+    generation_context: GenerationRunContext | None = None
 
     def __post_init__(self) -> None:
         if not self.worker_task_id.strip():

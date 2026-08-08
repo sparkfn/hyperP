@@ -193,6 +193,43 @@ class LogicalRunControl:
 
         return self._client.execute_write(_work)
 
+    def advance_checkpoint_fenced(
+        self,
+        *,
+        context: FenceContext,
+        checkpoint: CheckpointDescriptor,
+        committed_count: int,
+        duplicate_count: int,
+        excluded_count: int,
+        retry_count: int,
+    ) -> bool | None:
+        """Advance a split checkpoint while holding its stream-node write lock."""
+        validate_counts(committed_count, duplicate_count, excluded_count, retry_count)
+
+        def _work(tx: ManagedTransaction) -> bool | None:
+            assert_active_bitrix_fence(tx, context)
+            record = tx.run(
+                ADVANCE_LOGICAL_CHECKPOINT,
+                logical_run_id=context.logical_run_id,
+                ingest_run_id=context.ingest_run_id,
+                generation=context.attempt_generation,
+                phase=checkpoint.phase,
+                cursor_json=encode_json(checkpoint.cursor),
+                source_window_json=encode_json(checkpoint.source_window),
+                connector_version=checkpoint.connector_version,
+                checkpoint_schema_version=checkpoint.schema_version,
+                last_committed_record_id=checkpoint.last_committed_record_id,
+                committed_count=committed_count,
+                duplicate_count=duplicate_count,
+                excluded_count=excluded_count,
+                retry_count=retry_count,
+            ).single()
+            if record is None:
+                return None
+            return record["stop_requested"] is True
+
+        return self._client.execute_write(_work)
+
     def pause(
         self,
         *,
@@ -239,6 +276,47 @@ class LogicalRunControl:
                 logical_run_id=logical_run_id,
                 ingest_run_id=ingest_run_id,
                 generation=generation,
+                current_phase=current_phase,
+                next_phase=next_checkpoint.phase,
+                cursor_json=encode_json(next_checkpoint.cursor),
+                source_window_json=encode_json(next_checkpoint.source_window),
+                connector_version=next_checkpoint.connector_version,
+                checkpoint_schema_version=next_checkpoint.schema_version,
+                replay_boundary=next_checkpoint.replay_boundary,
+                committed_count=committed_count,
+                duplicate_count=duplicate_count,
+                excluded_count=excluded_count,
+                retry_count=retry_count,
+            ).single()
+            if record is None:
+                return None
+            return record["stop_requested"] is True
+
+        return self._client.execute_write(_work)
+
+    def transition_phase_fenced(
+        self,
+        *,
+        context: FenceContext,
+        current_phase: str,
+        next_checkpoint: CheckpointDescriptor,
+        committed_count: int,
+        duplicate_count: int,
+        excluded_count: int,
+        retry_count: int,
+    ) -> bool | None:
+        """Advance a split run to its next schema phase under the stream fence."""
+        if current_phase == next_checkpoint.phase:
+            raise ValueError("Checkpoint phase transition must advance to a new phase")
+        validate_counts(committed_count, duplicate_count, excluded_count, retry_count)
+
+        def _work(tx: ManagedTransaction) -> bool | None:
+            assert_active_bitrix_fence(tx, context)
+            record = tx.run(
+                TRANSITION_LOGICAL_PHASE,
+                logical_run_id=context.logical_run_id,
+                ingest_run_id=context.ingest_run_id,
+                generation=context.attempt_generation,
                 current_phase=current_phase,
                 next_phase=next_checkpoint.phase,
                 cursor_json=encode_json(next_checkpoint.cursor),
