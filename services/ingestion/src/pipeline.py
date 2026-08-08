@@ -19,11 +19,13 @@ import logging
 
 from neo4j import ManagedTransaction
 
+from src.bitrix_ingestion_models import FenceContext
 from src.exclusions import ExclusionContext, is_excluded_vehicle_observation
 from src.golden_profile import compute_golden_profile
 from src.graph import queries
 from src.graph.bootstrap import MATCH_ONLY_SOURCE_KEYS
 from src.graph.client import Neo4jClient
+from src.graph.ingestion_control import assert_active_bitrix_fence
 from src.matching.engine import MatchEngine, ambiguous_prior_owners_result
 from src.models import (
     MATCH_ONLY_RECORD_TYPES,
@@ -103,9 +105,10 @@ class IngestPipeline:
     ``session.execute_write`` transaction.
     """
 
-    def __init__(self, client: Neo4jClient) -> None:
+    def __init__(self, client: Neo4jClient, *, fence_context: FenceContext | None = None) -> None:
         self._client = client
         self._match_engine = MatchEngine()
+        self._fence_context = fence_context
 
     def ingest(
         self,
@@ -123,6 +126,8 @@ class IngestPipeline:
 
         # Steps 3-13 run inside a single write transaction
         def _work(tx: ManagedTransaction) -> IngestResult:
+            if self._fence_context is not None:
+                assert_active_bitrix_fence(tx, self._fence_context)
             state = load_locked_source_state(tx, envelope.source_system, envelope.source_record_id)
             plan = plan_incoming_version(state, envelope.record_hash)
             if isinstance(plan, DuplicateVersion):

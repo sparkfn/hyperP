@@ -4,19 +4,17 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Literal
+from typing import Literal
 
 from neo4j import ManagedTransaction, Record
 
-from src.bitrix_ingestion_models import DealScopeState
+from src.bitrix_ingestion_models import DealScopeState, FenceContext
 from src.graph.client import Neo4jClient
+from src.graph.ingestion_control import assert_active_bitrix_fence
 from src.graph.queries.bitrix_deal_scope import (
     GET_CURRENT_DEAL_SCOPE_BATCH,
     UPSERT_DEAL_SCOPE_MEMBERSHIPS,
 )
-
-if TYPE_CHECKING:
-    from src.bitrix_ingestion_models import FenceContext
 
 MAX_DEAL_SCOPE_BATCH_SIZE = 250
 DealScopeLookupState = Literal["in_scope", "out_of_scope", "indeterminate", "missing"]
@@ -84,10 +82,8 @@ class DealScopeLookup:
 class BitrixDealScopeRepository:
     """Persist and retrieve current deal scope without task-local maps.
 
-    ``fence_context`` parameters are reserved for the future fenced mutation
-    contract. This isolated repository does not yet make a global-run claim or
-    assert stream ownership; callers must not treat supplying a fence as proof
-    of transaction fencing until that contract is wired into the runner.
+    Mutations supplied with a split-stream fence acquire and validate that
+    stream lock in the same transaction as the scope write.
     """
 
     def __init__(self, client: Neo4jClient) -> None:
@@ -101,7 +97,6 @@ class BitrixDealScopeRepository:
     ) -> dict[str, CurrentDealScope]:
         """Record up to ``MAX_DEAL_SCOPE_BATCH_SIZE`` distinct scope observations."""
         _validate_observations(observations)
-        _reserve_fence_context(fence_context)
         if not observations:
             return {}
         params = [
@@ -116,6 +111,8 @@ class BitrixDealScopeRepository:
         ]
 
         def _work(tx: ManagedTransaction) -> dict[str, CurrentDealScope]:
+            if fence_context is not None:
+                assert_active_bitrix_fence(tx, fence_context)
             records = tx.run(
                 UPSERT_DEAL_SCOPE_MEMBERSHIPS,
                 source_key="bitrix_chat",
@@ -268,7 +265,7 @@ def _validate_deal_ids(deal_ids: Sequence[str]) -> None:
 
 
 def _reserve_fence_context(fence_context: FenceContext | None) -> None:
-    """Keep the eventual fence boundary explicit without claiming enforcement."""
+    """Reads accept a fence for call-site symmetry but do not acquire a write lock."""
     _ = fence_context
 
 

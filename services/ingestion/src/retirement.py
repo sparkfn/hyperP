@@ -4,8 +4,10 @@ from __future__ import annotations
 
 from neo4j import ManagedTransaction
 
+from src.bitrix_ingestion_models import FenceContext
 from src.graph import queries
 from src.graph.client import Neo4jClient
+from src.graph.ingestion_control import assert_active_bitrix_fence
 
 
 def retire_source_evidence(
@@ -14,8 +16,12 @@ def retire_source_evidence(
     source_record_id: str,
     retired_at: str,
     reconciliation_snapshot_at: str,
+    *,
+    fence_context: FenceContext | None = None,
 ) -> int:
     def _work(tx: ManagedTransaction) -> int:
+        if fence_context is not None:
+            assert_active_bitrix_fence(tx, fence_context)
         record = tx.run(
             queries.RETIRE_SOURCE_EVIDENCE,
             source_system=source_system,

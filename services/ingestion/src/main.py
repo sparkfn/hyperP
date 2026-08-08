@@ -14,6 +14,7 @@ import httpx
 from neo4j import ManagedTransaction
 from redis import Redis
 
+from src.bitrix_ingestion_models import ExecutionContext, FenceContext
 from src.config import get_settings
 from src.connectors.base import SourceConnector
 from src.connectors.bitrix import BitrixChatConnector
@@ -688,15 +689,31 @@ def _process_record(
     envelope: SourceRecordEnvelope,
     ingest_run_id: str,
     exclusion_context: ExclusionContext,
+    fence_context: FenceContext | None = None,
 ) -> IngestResult:
     """Route a single envelope to the correct ingestion pipeline."""
     if envelope.record_type == RecordType.CRM_HISTORY:
-        result = ingest_crm_history_record(client, envelope, ingest_run_id=ingest_run_id)
+        result = ingest_crm_history_record(
+            client,
+            envelope,
+            ingest_run_id=ingest_run_id,
+            fence_context=fence_context,
+        )
         if result.source_record_pk is not None and not result.dropped:
-            link_crm_history_to_existing_conversations(client, envelope, result.source_record_pk)
+            link_crm_history_to_existing_conversations(
+                client,
+                envelope,
+                result.source_record_pk,
+                fence_context=fence_context,
+            )
         return result
     if envelope.record_type == RecordType.CALL:
-        return ingest_call_record(client, envelope, ingest_run_id=ingest_run_id)
+        return ingest_call_record(
+            client,
+            envelope,
+            ingest_run_id=ingest_run_id,
+            fence_context=fence_context,
+        )
     if envelope.record_type == RecordType.SALES:
         return ingest_sales_record(
             client,
@@ -717,7 +734,12 @@ def _process_record(
         and not result.dropped
         and _has_crm_activity_references(envelope)
     ):
-        linked = link_conversation_to_crm_history(client, envelope, result.source_record_pk)
+        linked = link_conversation_to_crm_history(
+            client,
+            envelope,
+            result.source_record_pk,
+            fence_context=fence_context,
+        )
         if not linked:
             logger.warning(
                 "Conversation %s was persisted without a matching CRM history item",
@@ -761,6 +783,7 @@ def _ingest_all_records(
     connector: SourceConnector,
     ingest_run_id: str,
     exclusion_context: ExclusionContext | None = None,
+    fence_context: FenceContext | None = None,
 ) -> tuple[int, int, int]:
     """Process all connector records; the run owner releases connector resources."""
     return _ingest_all_records_open(
@@ -769,6 +792,7 @@ def _ingest_all_records(
         connector,
         ingest_run_id,
         exclusion_context,
+        fence_context,
     )
 
 
@@ -778,6 +802,7 @@ def _ingest_all_records_open(
     connector: SourceConnector,
     ingest_run_id: str,
     exclusion_context: ExclusionContext | None = None,
+    fence_context: FenceContext | None = None,
 ) -> tuple[int, int, int]:
     """Process every record from the connector. Returns (success, errors, skipped)."""
     success = errors = skipped = 0
@@ -799,6 +824,7 @@ def _ingest_all_records_open(
                 retirement_id,
                 retired_at,
                 reconciliation_snapshot_at,
+                fence_context=fence_context,
             )
             success += 1
             _report_record_outcome(connector, succeeded=True)
@@ -817,6 +843,7 @@ def _ingest_all_records_open(
             envelope,
             ingest_run_id,
             active_exclusion_context,
+            fence_context,
         )
         if result.skipped_duplicate:
             skipped += 1
@@ -884,13 +911,17 @@ def run_ingestion(
     task_id: str | None = None,
     incremental: bool = True,
     bitrix_execution_stream: BitrixExecutionStream | None = None,
+    execution_context: ExecutionContext | None = None,
 ) -> IngestionSummary:
     """Execute one ingestion run end-to-end."""
-    if bitrix_execution_stream not in {None, "legacy"}:
-        raise ValueError(
-            "Split Bitrix execution streams are not enabled until durable owner lookup, "
-            "logical-run admission, and transaction fencing are wired into the task runner"
-        )
+    split_stream = bitrix_execution_stream not in {None, "legacy"}
+    if split_stream and execution_context is None:
+        raise ValueError("split Bitrix execution requires a claimed execution context")
+    if execution_context is not None:
+        if not split_stream:
+            raise ValueError("execution context is only valid for split Bitrix streams")
+        if execution_context.fence_context.stream_key != bitrix_execution_stream:
+            raise ValueError("execution context stream does not match the requested stream")
     settings = get_settings()
     if mode == "dump" and dump_path is None:
         raise ValueError("dump_path is required when mode='dump'")
@@ -917,14 +948,22 @@ def run_ingestion(
         if not initialize_graph:
             client.verify_connectivity()
 
-        pipeline = IngestPipeline(client)
+        pipeline = IngestPipeline(
+            client,
+            fence_context=(execution_context.fence_context if execution_context else None),
+        )
         # Create the IngestRun before building the connector so a
         # connector-construction failure (e.g. a source dispatched before its
         # env is provisioned) is recorded as a failed run instead of vanishing
         # from the runs UI.
-        if existing_ingest_run_id is not None:
+        existing_status: str | None
+        if execution_context is not None:
+            ingest_run_id = execution_context.fence_context.ingest_run_id
+            existing_status = None
+            worker_run_created = False
+        elif existing_ingest_run_id is not None:
             ingest_run_id = existing_ingest_run_id
-            existing_status: str | None = None
+            existing_status = None
             worker_run_created = False
         elif task_id is not None:
             ingest_run_id, existing_status, worker_run_created = _create_or_reuse_worker_ingest_run(
@@ -958,7 +997,7 @@ def run_ingestion(
 
         success = errors = skipped = 0
         try:
-            if (
+            uses_incremental_store = (
                 incremental
                 and mode == "api"
                 and source_key
@@ -973,14 +1012,28 @@ def run_ingestion(
                     "speedzone_phppos",
                     "speedzone_phppos:sales",
                 }
-            ):
+            )
+            split_openlines_backfill = (
+                execution_context is not None
+                and bitrix_execution_stream == "openlines_conversations"
+                and mode == "backfill"
+            )
+            if uses_incremental_store or split_openlines_backfill:
                 broker_url = getattr(settings, "celery_broker_url", None)
-                legacy = Redis.from_url(broker_url) if isinstance(broker_url, str) else None
+                legacy = (
+                    Redis.from_url(broker_url)
+                    if execution_context is None and isinstance(broker_url, str)
+                    else None
+                )
                 checkpoint_store = Neo4jCheckpointRedis(
                     client,
                     source_key,
                     legacy=legacy,
                     active_ingest_run_id=ingest_run_id,
+                    fence_context=(
+                        execution_context.fence_context if execution_context is not None else None
+                    ),
+                    defer_terminal_updates=execution_context is None,
                 )
             connector = get_connector(
                 source_key,
@@ -1001,18 +1054,20 @@ def run_ingestion(
                 connector,
                 ingest_run_id,
                 exclusion_context,
+                execution_context.fence_context if execution_context else None,
             )
             if isinstance(connector, _ConnectorErrorReporter):
                 errors += connector.connector_error_count()
-            drained = drain_pending_customer_sales(
-                client,
-                exclusion_context=exclusion_context,
-            )
-            if drained:
-                logger.info("Drained %d pending sales records", drained)
-            proposed = propose_vehicle_matches_for_pending_sales(client)
-            if proposed:
-                logger.info("Proposed %d vehicle matches for pending sales", proposed)
+            if execution_context is None:
+                drained = drain_pending_customer_sales(
+                    client,
+                    exclusion_context=exclusion_context,
+                )
+                if drained:
+                    logger.info("Drained %d pending sales records", drained)
+                proposed = propose_vehicle_matches_for_pending_sales(client)
+                if proposed:
+                    logger.info("Proposed %d vehicle matches for pending sales", proposed)
             _finalize_connector_progress(connector, error_count=errors)
         except Exception as exc:
             checkpoint: dict[str, JsonValue] = {
@@ -1028,13 +1083,14 @@ def run_ingestion(
                 task_id=task_id,
                 checkpoint=checkpoint,
             )
-            _mark_run_failed(
-                client,
-                ingest_run_id,
-                success + errors + skipped,
-                errors,
-                summary,
-            )
+            if execution_context is None:
+                _mark_run_failed(
+                    client,
+                    ingest_run_id,
+                    success + errors + skipped,
+                    errors,
+                    summary,
+                )
             raise
 
         final_status = "completed" if errors == 0 else "completed_with_errors"
@@ -1052,14 +1108,15 @@ def run_ingestion(
                 connector.current_source_ids,
                 connector.latest_effective_updated_at,
             )
-        finalize_ingest_run(
-            client,
-            ingest_run_id,
-            final_status,
-            success + errors + skipped,
-            errors,
-            checkpoint_store,
-        )
+        if execution_context is None:
+            finalize_ingest_run(
+                client,
+                ingest_run_id,
+                final_status,
+                success + errors + skipped,
+                errors,
+                checkpoint_store,
+            )
         logger.info(
             "Ingestion complete: %d succeeded, %d errors, %d skipped",
             success,

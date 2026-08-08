@@ -6,9 +6,11 @@ import json
 
 from neo4j import ManagedTransaction, Record
 
+from src.bitrix_ingestion_models import FenceContext
 from src.crm_history_contract import generic_activity_properties
 from src.graph import queries
 from src.graph.client import Neo4jClient
+from src.graph.ingestion_control import assert_active_bitrix_fence
 from src.models import IngestResult, RecordType, SourceRecordEnvelope
 from src.record_lifecycle import load_locked_source_state
 from src.source_version_keys import encode_source_version_key
@@ -23,6 +25,7 @@ def ingest_crm_history_record(
     envelope: SourceRecordEnvelope,
     *,
     ingest_run_id: str,
+    fence_context: FenceContext | None = None,
 ) -> IngestResult:
     """Create a first-observed CRM activity, never a replacement version."""
     if envelope.record_type != RecordType.CRM_HISTORY or envelope.parent_ref is None:
@@ -37,6 +40,8 @@ def ingest_crm_history_record(
     projection_source = envelope.projection_source or history.history_projection_source
 
     def _work(tx: ManagedTransaction) -> IngestResult:
+        if fence_context is not None:
+            assert_active_bitrix_fence(tx, fence_context)
         load_locked_source_state(tx, envelope.source_system, envelope.source_record_id)
         existing = tx.run(
             queries.FIND_ANY_SOURCE_RECORD,
@@ -104,6 +109,7 @@ def ingest_call_record(
     envelope: SourceRecordEnvelope,
     *,
     ingest_run_id: str,
+    fence_context: FenceContext | None = None,
 ) -> IngestResult:
     """Create a call only when its immutable history parent has person context."""
     if envelope.record_type != RecordType.CALL or envelope.parent_ref is None:
@@ -114,6 +120,8 @@ def ingest_call_record(
         raise ValueError("call source records require raw_payload.crm_activity_id")
 
     def _work(tx: ManagedTransaction) -> IngestResult:
+        if fence_context is not None:
+            assert_active_bitrix_fence(tx, fence_context)
         load_locked_source_state(tx, envelope.source_system, envelope.source_record_id)
         existing = tx.run(
             queries.FIND_ANY_SOURCE_RECORD,
@@ -224,6 +232,8 @@ def link_conversation_to_crm_history(
     client: Neo4jClient,
     envelope: SourceRecordEnvelope,
     source_record_pk: str,
+    *,
+    fence_context: FenceContext | None = None,
 ) -> bool:
     """Link a persisted Open Lines conversation to all matching CRM activities."""
     raw_activity_ids = envelope.raw_payload.get("crm_activity_ids")
@@ -240,6 +250,8 @@ def link_conversation_to_crm_history(
         return False
 
     def _work(tx: ManagedTransaction) -> bool:
+        if fence_context is not None:
+            assert_active_bitrix_fence(tx, fence_context)
         row = tx.run(
             queries.LINK_CONVERSATION_TO_CRM_HISTORY,
             conversation_source_record_pk=source_record_pk,
@@ -256,6 +268,8 @@ def link_crm_history_to_existing_conversations(
     client: Neo4jClient,
     envelope: SourceRecordEnvelope,
     history_source_record_pk: str,
+    *,
+    fence_context: FenceContext | None = None,
 ) -> bool:
     """Link a CRM activity to every current conversation for its Bitrix chat."""
     chat_id = envelope.raw_payload.get("bitrix_chat_id_numeric")
@@ -266,6 +280,8 @@ def link_crm_history_to_existing_conversations(
         return False
 
     def _work(tx: ManagedTransaction) -> bool:
+        if fence_context is not None:
+            assert_active_bitrix_fence(tx, fence_context)
         row = tx.run(
             queries.LINK_CRM_HISTORY_TO_EXISTING_CONVERSATIONS,
             history_source_record_pk=history_source_record_pk,
