@@ -1,6 +1,9 @@
 """Coverage-ledger identity and conflict behavior."""
 
+from inspect import getsource
+
 from src.bitrix_backfill_models import CoverageEntry, CoverageReconciliation
+from src.bitrix_backfill_runtime import record_terminal_unit
 from src.graph.queries.bitrix_backfill import (
     GET_BITRIX_COVERAGE_RECONCILIATION,
     UPSERT_BITRIX_BACKFILL_COVERAGE,
@@ -29,7 +32,7 @@ def test_coverage_query_fails_closed_on_conflicting_replay() -> None:
     assert "source_boundary: $source_boundary" in UPSERT_BITRIX_BACKFILL_COVERAGE
     assert "coverage.outcome_digest = $outcome_digest" in UPSERT_BITRIX_BACKFILL_COVERAGE
     assert "CASE WHEN created THEN [1] ELSE []" in UPSERT_BITRIX_BACKFILL_COVERAGE
-    assert "generation.status IN ['backfilling', 'reconciling']" in (
+    assert "generation.status IN ['backfilling', 'reconciling', 'activating', 'active']" in (
         UPSERT_BITRIX_BACKFILL_COVERAGE
     )
     assert "(generation)-[:HAS_LOGICAL_RUN]" in UPSERT_BITRIX_BACKFILL_COVERAGE
@@ -58,3 +61,10 @@ def test_coverage_completion_equation_reconciles_checkpoint_counters() -> None:
     assert reconciliation.complete is True
     assert "checkpoint.committed_count" in GET_BITRIX_COVERAGE_RECONCILIATION
     assert "coverage.disposition = 'failed'" in GET_BITRIX_COVERAGE_RECONCILIATION
+
+
+def test_coverage_identity_separates_deal_census_from_known_owner_refresh() -> None:
+    source = getsource(record_terminal_unit)
+
+    assert "generation.boundary_digest" in source
+    assert "context.checkpoint.phase" in source

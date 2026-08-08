@@ -143,6 +143,9 @@ RETURN CASE
 
 CREATE_LOGICAL_RUN_AND_ATTEMPT = """
 MATCH (source:SourceSystem {source_key: $source_key, is_active: true})
+OPTIONAL MATCH (dispatch:BitrixDispatchControl {source_key: $source_key})
+WITH source, dispatch
+WHERE coalesce(dispatch.blocked, false) = false
 MERGE (logical:IngestionLogicalRun {
   source_key: $source_key,
   idempotency_key: $idempotency_key
@@ -385,8 +388,8 @@ MATCH (logical:IngestionLogicalRun {logical_run_id: $logical_run_id})
       -[active_relation:ACTIVE_ATTEMPT]->(prior:IngestRun)
 MATCH (logical)-[:FOR_SOURCE]->(source:SourceSystem)
 MATCH (checkpoint:IngestionCheckpoint {logical_run_id: $logical_run_id})
-WHERE logical.status = 'paused_with_checkpoint'
-  AND checkpoint.status = 'paused'
+WHERE logical.status IN ['paused_with_checkpoint', 'failed']
+  AND checkpoint.status IN ['paused', 'active']
   AND logical.active_generation = checkpoint.generation
   AND logical.configuration_fingerprint = $configuration_fingerprint
   AND logical.connector_version = $connector_version

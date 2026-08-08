@@ -235,6 +235,9 @@ CREATE (sr)-[:LINKED_TO {linked_at: datetime()}]->(p)
 
 CREATE_INGEST_RUN = """
 MATCH (ss:SourceSystem {source_key: $source_key})
+OPTIONAL MATCH (dispatch:BitrixDispatchControl {source_key: $source_key})
+WITH ss, dispatch
+WHERE coalesce(dispatch.blocked, false) = false
 CREATE (ir:IngestRun {
     ingest_run_id: randomUUID(),
     run_type: $run_type,
@@ -251,6 +254,9 @@ RETURN ir.ingest_run_id AS ingest_run_id
 
 CREATE_OR_REUSE_WORKER_INGEST_RUN = """
 MATCH (ss:SourceSystem {source_key: $source_key})
+OPTIONAL MATCH (dispatch:BitrixDispatchControl {source_key: $source_key})
+WITH ss, dispatch
+WHERE coalesce(dispatch.blocked, false) = false
 MERGE (ir:IngestRun {worker_task_id: $worker_task_id})
 ON CREATE SET
     ir.ingest_run_id = randomUUID(),

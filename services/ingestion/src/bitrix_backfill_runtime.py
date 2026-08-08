@@ -35,7 +35,7 @@ def record_terminal_unit(
     census_epoch = _census_epoch(context)
     entry = CoverageEntry(
         source_identity=envelope.source_record_id,
-        source_boundary=generation.boundary_digest,
+        source_boundary=f"{generation.boundary_digest}:{context.checkpoint.phase}",
         disposition=resolved_disposition,
         source_observation_hash=envelope.record_hash,
         deal_id=deal_id,
