@@ -679,9 +679,14 @@ class BitrixOpenLinesClient:
         if timing is not None and not isinstance(timing, dict):
             raise RuntimeError("Bitrix CRM activity capability returned invalid timing")
         timing_map = timing if isinstance(timing, dict) else {}
+        total = _optional_non_negative_number(payload.get("total"))
+        # ``start=-1`` enables Bitrix fast keyset pagination and uses zero as
+        # an unavailable-total sentinel, including on non-empty pages.
+        if total == 0:
+            total = None
         return CrmActivityCapabilityPage(
             items=tuple(items),
-            total=_optional_non_negative_number(payload.get("total")),
+            total=total,
             operating=_optional_number(timing_map.get("operating")),
             operating_reset_at=_optional_number(timing_map.get("operating_reset_at")),
         )

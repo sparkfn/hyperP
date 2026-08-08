@@ -1225,3 +1225,47 @@ def test_client_rejects_invalid_stage_history_numeric_arguments(
 
     with pytest.raises(ValueError):
         client.list_stage_history_page(entity_type_id=entity_type_id, start=start)
+
+
+def test_fast_keyset_capability_zero_total_is_unavailable_metadata() -> None:
+    responses = {
+        "crm.deal.list": {
+            "result": [{"ID": "501", "CATEGORY_ID": "2", "STAGE_ID": "C2:NEW"}],
+            "total": 0,
+        },
+        "crm.activity.list": {
+            "result": [
+                {
+                    "ID": "900",
+                    "OWNER_TYPE_ID": "2",
+                    "OWNER_ID": "501",
+                    "TYPE_ID": "2",
+                }
+            ],
+            "total": "0",
+        },
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        method = request.url.path.rsplit("/", 1)[-1]
+        body = json.loads(request.content)
+        assert body["start"] == -1
+        return httpx.Response(200, json=responses[method])
+
+    client = BitrixOpenLinesClient(
+        base_url="https://bitrix.test/rest/hook",
+        timeout_seconds=5,
+        max_attempts=1,
+        http=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+
+    deal_page = client.list_crm_deal_capability_page(category_ids=["2"])
+    activity_page = client.list_crm_activity_capability_page(
+        greater_than_id=None,
+        less_than_or_equal_to_id=900,
+    )
+
+    assert len(deal_page.items) == 1
+    assert deal_page.total is None
+    assert len(activity_page.items) == 1
+    assert activity_page.total is None

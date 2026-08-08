@@ -75,10 +75,16 @@ def parse_crm_deal_capability_page(payload: dict[str, JsonValue]) -> CrmDealCapa
     if "time" in payload and timing_value is not None and not isinstance(timing_value, dict):
         raise RuntimeError("Bitrix CRM deal capability returned an invalid time")
     timing = timing_value if isinstance(timing_value, dict) else {}
+    total = _optional_non_negative_int(payload, "total")
+    # Bitrix fast keyset pagination (``start=-1``) returns ``total: 0`` as a
+    # sentinel even when the result contains rows. Treat that sentinel as
+    # unavailable metadata; the bounded keyset traversal accounts for rows.
+    if total == 0:
+        total = None
     return CrmDealCapabilityPage(
         items=items,
         next_start=_optional_non_negative_int(payload, "next"),
-        total=_optional_non_negative_int(payload, "total"),
+        total=total,
         operating=_optional_finite_number(timing, "operating"),
         operating_reset_at=_optional_finite_number(timing, "operating_reset_at"),
     )
