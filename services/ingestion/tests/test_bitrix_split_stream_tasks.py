@@ -9,7 +9,11 @@ import pytest
 from pytest import MonkeyPatch
 from src import tasks
 from src.bitrix_ingestion_models import FenceContext
-from src.graph.ingestion_control_models import BitrixStreamAdmission, LogicalRunAttempt
+from src.graph.ingestion_control_models import (
+    BitrixStreamAdmission,
+    LogicalRunAttempt,
+    LogicalRunState,
+)
 from src.main import IngestionSummary
 
 
@@ -42,6 +46,23 @@ class _LogicalControl:
 
     def claim(self, **_parameters: object) -> bool:
         return True
+
+    def get(self, _logical_run_id: str) -> LogicalRunState:
+        return LogicalRunState(
+            logical_run_id="logical-1",
+            status="running",
+            generation=1,
+            source_key="bitrix_chat",
+            mode="backfill",
+            dump_path=None,
+            entity_key=None,
+            stop_requested=False,
+            stop_reason=None,
+            ingest_run_id="ingest-1",
+            phase="scoped_deal_census_v1",
+            cursor={"last_deal_id": None, "census_epoch": 1},
+            checkpointed_at="2026-08-08T00:00:00Z",
+        )
 
     def finalize_fenced(self, **parameters: object) -> None:
         self.finalized.append(cast(str, parameters["status"]))

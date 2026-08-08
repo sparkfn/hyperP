@@ -14,6 +14,7 @@ from src.graph.bitrix_deal_scope import (
 from src.graph.queries.bitrix_deal_scope import (
     CREATE_BITRIX_DEAL_SCOPE_CONSTRAINTS,
     GET_CURRENT_DEAL_SCOPE_BATCH,
+    LOCK_AND_RECORD_KNOWN_DEAL_ABSENCE,
     MIGRATE_BITRIX_DEAL_SCOPE_LINEAGE_CONSTRAINTS,
     UPSERT_DEAL_SCOPE_MEMBERSHIPS,
 )
@@ -89,6 +90,19 @@ def test_batch_write_uses_a_semantic_change_to_append_immutable_lineage() -> Non
     assert "ON CREATE SET membership.membership_id" in after_current_update
     assert after_current_update.count("SET membership.") == 1
     assert "DETACH DELETE" not in UPSERT_DEAL_SCOPE_MEMBERSHIPS
+    assert "WHEN observation.preserve_absence_streak" in UPSERT_DEAL_SCOPE_MEMBERSHIPS
+    assert "THEN coalesce(deal.absence_streak, 0)" in UPSERT_DEAL_SCOPE_MEMBERSHIPS
+    assert "ELSE 0" in UPSERT_DEAL_SCOPE_MEMBERSHIPS
+
+
+def test_known_owner_absence_is_locked_and_requires_two_healthy_misses() -> None:
+    lock = LOCK_AND_RECORD_KNOWN_DEAL_ABSENCE.index("SET deal.absence_lock_version")
+    streak = LOCK_AND_RECORD_KNOWN_DEAL_ABSENCE.index("SET deal.absence_streak")
+
+    assert lock < streak
+    assert "MATCH (deal:CrmLogicalDeal" in LOCK_AND_RECORD_KNOWN_DEAL_ABSENCE
+    assert "MERGE (deal:CrmLogicalDeal" not in LOCK_AND_RECORD_KNOWN_DEAL_ABSENCE
+    assert "coalesce(deal.absence_streak, 0) + 1" in LOCK_AND_RECORD_KNOWN_DEAL_ABSENCE
 
 
 def test_batch_lookup_returns_every_requested_deal_with_an_optional_match() -> None:

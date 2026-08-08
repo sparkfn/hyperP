@@ -6,11 +6,14 @@ import json
 
 from neo4j import ManagedTransaction, Record
 
-from src.bitrix_ingestion_models import FenceContext
+from src.bitrix_backfill_models import CoverageDisposition
+from src.bitrix_backfill_runtime import record_terminal_unit
+from src.bitrix_ingestion_models import ExecutionContext, FenceContext
 from src.crm_history_contract import generic_activity_properties
 from src.graph import queries
 from src.graph.client import Neo4jClient
 from src.graph.ingestion_control import assert_active_bitrix_fence
+from src.graph.queries.bitrix_deal_scope import GET_CURRENT_DEAL_SCOPE_BATCH
 from src.models import IngestResult, RecordType, SourceRecordEnvelope
 from src.record_lifecycle import load_locked_source_state
 from src.source_version_keys import encode_source_version_key
@@ -20,12 +23,17 @@ _BITRIX_ACTIVITY_HISTORY_SOURCE = "bitrix_crm_activity"
 _LEGACY_BITRIX_ACTIVITY_PROJECTION_SOURCE = "bitrix_crm_activity_v1"
 
 
+class UnresolvedActivityOwnerError(RuntimeError):
+    """Owner scope must be reviewed before this activity cursor can advance."""
+
+
 def ingest_crm_history_record(
     client: Neo4jClient,
     envelope: SourceRecordEnvelope,
     *,
     ingest_run_id: str,
     fence_context: FenceContext | None = None,
+    execution_context: ExecutionContext | None = None,
 ) -> IngestResult:
     """Create a first-observed CRM activity, never a replacement version."""
     if envelope.record_type != RecordType.CRM_HISTORY or envelope.parent_ref is None:
@@ -38,10 +46,33 @@ def ingest_crm_history_record(
     event_at = envelope.event_at or history.event_at
     projection_version = envelope.projection_version or 1
     projection_source = envelope.projection_source or history.history_projection_source
+    active_fence = (
+        execution_context.fence_context if execution_context is not None else fence_context
+    )
 
     def _work(tx: ManagedTransaction) -> IngestResult:
-        if fence_context is not None:
-            assert_active_bitrix_fence(tx, fence_context)
+        if active_fence is not None:
+            assert_active_bitrix_fence(tx, active_fence)
+        owner_scope = (
+            _require_activity_owner_scope(tx, envelope)
+            if execution_context is not None
+            else "in_scope"
+        )
+        if owner_scope == "out_of_scope":
+            result = IngestResult(
+                source_record_id=envelope.source_record_id,
+                dropped=True,
+                ingest_run_id=ingest_run_id,
+            )
+            _record_activity_unit(
+                tx,
+                execution_context,
+                envelope,
+                result,
+                disposition="excluded_out_of_scope",
+                scope_state=owner_scope,
+            )
+            return result
         load_locked_source_state(tx, envelope.source_system, envelope.source_record_id)
         existing = tx.run(
             queries.FIND_ANY_SOURCE_RECORD,
@@ -50,13 +81,22 @@ def ingest_crm_history_record(
         ).single()
         if existing is not None:
             _validate_existing_hash(existing, envelope.record_hash)
-            _rematerialize_activity_projection(tx, existing, envelope)
-            return IngestResult(
+            updated = _rematerialize_activity_projection(tx, existing, envelope)
+            result = IngestResult(
                 source_record_id=envelope.source_record_id,
                 source_record_pk=str(existing["source_record_pk"]),
                 skipped_duplicate=True,
                 ingest_run_id=ingest_run_id,
             )
+            _record_activity_unit(
+                tx,
+                execution_context,
+                envelope,
+                result,
+                disposition="updated_projection" if updated else "existing_same_hash",
+                scope_state=owner_scope,
+            )
+            return result
         created = tx.run(
             queries.CREATE_CRM_HISTORY,
             source_system=envelope.source_system,
@@ -82,11 +122,20 @@ def ingest_crm_history_record(
             history_projection_source=history.history_projection_source,
         ).single()
         if created is None:
-            return IngestResult(
+            result = IngestResult(
                 source_record_id=envelope.source_record_id,
                 dropped=True,
                 ingest_run_id=ingest_run_id,
             )
+            _record_activity_unit(
+                tx,
+                execution_context,
+                envelope,
+                result,
+                disposition="conflict",
+                scope_state=owner_scope,
+            )
+            return result
         source_record_pk = str(created["source_record_pk"])
         if ingest_run_id:
             tx.run(
@@ -94,11 +143,21 @@ def ingest_crm_history_record(
                 source_record_pk=source_record_pk,
                 ingest_run_id=ingest_run_id,
             )
-        return IngestResult(
+        result = IngestResult(
             source_record_id=envelope.source_record_id,
             source_record_pk=source_record_pk,
             ingest_run_id=ingest_run_id,
         )
+        _link_history_to_conversations_in_transaction(tx, envelope, source_record_pk)
+        _record_activity_unit(
+            tx,
+            execution_context,
+            envelope,
+            result,
+            disposition="created",
+            scope_state=owner_scope,
+        )
+        return result
 
     with client.session() as session:
         return session.execute_write(_work)
@@ -110,6 +169,7 @@ def ingest_call_record(
     *,
     ingest_run_id: str,
     fence_context: FenceContext | None = None,
+    execution_context: ExecutionContext | None = None,
 ) -> IngestResult:
     """Create a call only when its immutable history parent has person context."""
     if envelope.record_type != RecordType.CALL or envelope.parent_ref is None:
@@ -118,10 +178,33 @@ def ingest_call_record(
     crm_activity_id = envelope.raw_payload.get("crm_activity_id")
     if not isinstance(crm_activity_id, str) or not crm_activity_id:
         raise ValueError("call source records require raw_payload.crm_activity_id")
+    active_fence = (
+        execution_context.fence_context if execution_context is not None else fence_context
+    )
 
     def _work(tx: ManagedTransaction) -> IngestResult:
-        if fence_context is not None:
-            assert_active_bitrix_fence(tx, fence_context)
+        if active_fence is not None:
+            assert_active_bitrix_fence(tx, active_fence)
+        owner_scope = (
+            _require_activity_owner_scope(tx, envelope)
+            if execution_context is not None
+            else "in_scope"
+        )
+        if owner_scope == "out_of_scope":
+            result = IngestResult(
+                source_record_id=envelope.source_record_id,
+                dropped=True,
+                ingest_run_id=ingest_run_id,
+            )
+            _record_activity_unit(
+                tx,
+                execution_context,
+                envelope,
+                result,
+                disposition="excluded_out_of_scope",
+                scope_state=owner_scope,
+            )
+            return result
         load_locked_source_state(tx, envelope.source_system, envelope.source_record_id)
         existing = tx.run(
             queries.FIND_ANY_SOURCE_RECORD,
@@ -130,12 +213,21 @@ def ingest_call_record(
         ).single()
         if existing is not None:
             _validate_existing_hash(existing, envelope.record_hash)
-            return IngestResult(
+            result = IngestResult(
                 source_record_id=envelope.source_record_id,
                 source_record_pk=str(existing["source_record_pk"]),
                 skipped_duplicate=True,
                 ingest_run_id=ingest_run_id,
             )
+            _record_activity_unit(
+                tx,
+                execution_context,
+                envelope,
+                result,
+                disposition="existing_same_hash",
+                scope_state=owner_scope,
+            )
+            return result
         created = tx.run(
             queries.CREATE_CALL_FROM_HISTORY,
             source_system=envelope.source_system,
@@ -151,11 +243,20 @@ def ingest_call_record(
             crm_activity_id=crm_activity_id,
         ).single()
         if created is None:
-            return IngestResult(
+            result = IngestResult(
                 source_record_id=envelope.source_record_id,
                 dropped=True,
                 ingest_run_id=ingest_run_id,
             )
+            _record_activity_unit(
+                tx,
+                execution_context,
+                envelope,
+                result,
+                disposition="conflict",
+                scope_state=owner_scope,
+            )
+            return result
         source_record_pk = str(created["source_record_pk"])
         person_id = str(created["person_id"])
         if ingest_run_id:
@@ -164,12 +265,21 @@ def ingest_call_record(
                 source_record_pk=source_record_pk,
                 ingest_run_id=ingest_run_id,
             )
-        return IngestResult(
+        result = IngestResult(
             source_record_id=envelope.source_record_id,
             source_record_pk=source_record_pk,
             person_id=person_id,
             ingest_run_id=ingest_run_id,
         )
+        _record_activity_unit(
+            tx,
+            execution_context,
+            envelope,
+            result,
+            disposition="created",
+            scope_state=owner_scope,
+        )
+        return result
 
     with client.session() as session:
         return session.execute_write(_work)
@@ -181,14 +291,86 @@ def _validate_existing_hash(existing: Record, incoming_hash: str) -> None:
         raise ValueError("CRM immutable source ID was observed with a different record hash")
 
 
+def _require_activity_owner_scope(
+    tx: ManagedTransaction,
+    envelope: SourceRecordEnvelope,
+) -> str:
+    if envelope.parent_ref is None:
+        raise ValueError("Bitrix activity requires a parent deal")
+    deal_id = envelope.parent_ref.parent_source_record_id.rsplit("-", maxsplit=1)[-1]
+    record = tx.run(
+        GET_CURRENT_DEAL_SCOPE_BATCH,
+        source_key="bitrix_chat",
+        deal_ids=[deal_id],
+    ).single()
+    if record is None or record["scope_state"] is None:
+        raise UnresolvedActivityOwnerError(f"activity owner {deal_id} is missing from scope")
+    state: object = record["scope_state"]
+    if state == "out_of_scope":
+        return "out_of_scope"
+    if state in {"indeterminate", "missing"}:
+        raise UnresolvedActivityOwnerError(f"activity owner {deal_id} requires review")
+    if state != "in_scope":
+        raise RuntimeError("activity owner scope returned an invalid state")
+    return "in_scope"
+
+
+def _record_activity_unit(
+    tx: ManagedTransaction,
+    context: ExecutionContext | None,
+    envelope: SourceRecordEnvelope,
+    result: IngestResult,
+    *,
+    disposition: CoverageDisposition,
+    scope_state: str,
+) -> None:
+    if context is None:
+        return
+    if (
+        envelope.record_type == RecordType.CRM_HISTORY
+        and envelope.raw_payload.get("has_call_record") is True
+    ):
+        # The companion call is the terminal unit for this source activity.
+        # If the worker dies between the two writes, the unchanged activity
+        # cursor causes the history to replay idempotently before the call.
+        return
+    resolved = "excluded_out_of_scope" if scope_state == "out_of_scope" else disposition
+    if scope_state == "out_of_scope" and not result.dropped:
+        raise RuntimeError("out-of-scope activity attempted to persist")
+    record_terminal_unit(
+        tx,
+        context=context,
+        envelope=envelope,
+        result=result,
+        disposition=resolved,
+        scope_state=scope_state,
+    )
+
+
+def _link_history_to_conversations_in_transaction(
+    tx: ManagedTransaction,
+    envelope: SourceRecordEnvelope,
+    history_source_record_pk: str,
+) -> None:
+    chat_id = envelope.raw_payload.get("bitrix_chat_id_numeric")
+    if not isinstance(chat_id, int) or isinstance(chat_id, bool):
+        return
+    tx.run(
+        queries.LINK_CRM_HISTORY_TO_EXISTING_CONVERSATIONS,
+        history_source_record_pk=history_source_record_pk,
+        source_system=envelope.source_system,
+        bitrix_chat_id_numeric=chat_id,
+    ).consume()
+
+
 def _rematerialize_activity_projection(
     tx: ManagedTransaction,
     existing: Record,
     envelope: SourceRecordEnvelope,
-) -> None:
+) -> bool:
     version = envelope.projection_version
     if version is None:
-        return
+        return False
     existing_version = existing["projection_version"]
     legacy_bitrix_alias = (
         existing["history_family"] == _LEGACY_CRM_ACTIVITY_FAMILY
@@ -212,9 +394,9 @@ def _rematerialize_activity_projection(
         )
         if actual != expected:
             raise ValueError("CRM activity projection conflicts with its materialized version")
-        return
+        return False
     if isinstance(existing_version, int) and existing_version > version:
-        return
+        return False
     tx.run(
         queries.REMATERIALIZE_CRM_HISTORY_PROJECTION,
         source_record_pk=existing["source_record_pk"],
@@ -226,6 +408,7 @@ def _rematerialize_activity_projection(
         projection_version=version,
         projection_source=envelope.projection_source,
     ).consume()
+    return True
 
 
 def link_conversation_to_crm_history(

@@ -13,6 +13,7 @@ from src.graph.client import Neo4jClient
 from src.graph.ingestion_control import assert_active_bitrix_fence
 from src.graph.queries.bitrix_deal_scope import (
     GET_CURRENT_DEAL_SCOPE_BATCH,
+    LOCK_AND_RECORD_KNOWN_DEAL_ABSENCE,
     UPSERT_DEAL_SCOPE_MEMBERSHIPS,
 )
 
@@ -99,37 +100,13 @@ class BitrixDealScopeRepository:
         _validate_observations(observations)
         if not observations:
             return {}
-        params = [
-            {
-                "deal_id": observation.deal_id,
-                "scope_state": observation.scope_state,
-                "category_id": observation.category_id,
-                "entity_key": observation.entity_key,
-                "source_record_pk": observation.source_record_pk,
-            }
-            for observation in observations
-        ]
 
         def _work(tx: ManagedTransaction) -> dict[str, CurrentDealScope]:
-            if fence_context is not None:
-                assert_active_bitrix_fence(tx, fence_context)
-            records = tx.run(
-                UPSERT_DEAL_SCOPE_MEMBERSHIPS,
-                source_key="bitrix_chat",
-                observations=params,
+            return record_scope_batch_in_transaction(
+                tx,
+                observations,
+                fence_context=fence_context,
             )
-            result: dict[str, CurrentDealScope] = {}
-            for record in records:
-                current = _current_scope_from_record(record)
-                if current.deal_id in result:
-                    raise ValueError("Bitrix deal scope batch write returned duplicate deal IDs")
-                result[current.deal_id] = current
-            expected_deal_ids = {observation.deal_id for observation in observations}
-            if set(result) != expected_deal_ids:
-                raise ValueError(
-                    "Bitrix deal scope batch write did not return every requested deal"
-                )
-            return result
 
         return self._client.execute_write(_work)
 
@@ -244,6 +221,61 @@ class BitrixDealScopeRepository:
         lookup = self.get_current_batch([deal_id], fence_context=fence_context)[deal_id]
         return lookup.current
 
+    def record_healthy_not_found(
+        self,
+        deal_id: str,
+        *,
+        fence_context: FenceContext,
+    ) -> tuple[int, CurrentDealScope]:
+        """Record one healthy targeted miss; only the second makes scope indeterminate."""
+        _require_identifier(deal_id, "deal_id")
+
+        def _work(tx: ManagedTransaction) -> tuple[int, CurrentDealScope]:
+            assert_active_bitrix_fence(tx, fence_context)
+            record = tx.run(
+                LOCK_AND_RECORD_KNOWN_DEAL_ABSENCE,
+                source_key="bitrix_chat",
+                deal_id=deal_id,
+            ).single()
+            if record is None:
+                raise ValueError("absence may only be recorded for a previously known deal")
+            streak: object = record["absence_streak"]
+            if isinstance(streak, bool) or not isinstance(streak, int) or streak < 1:
+                raise RuntimeError("Bitrix deal absence streak is invalid")
+            if streak < 2:
+                current = self._current_in_transaction(tx, deal_id)
+                return streak, current
+            updated = record_scope_batch_in_transaction(
+                tx,
+                [
+                    DealScopeObservation(
+                        deal_id=deal_id,
+                        scope_state="indeterminate",
+                        category_id=_optional_str(record, "category_id"),
+                        source_record_pk=_optional_str(record, "source_record_pk"),
+                    )
+                ],
+                fence_context=fence_context,
+                preserve_absence_streak=True,
+            )[deal_id]
+            return streak, updated
+
+        return self._client.execute_write(_work)
+
+    def _current_in_transaction(
+        self,
+        tx: ManagedTransaction,
+        deal_id: str,
+    ) -> CurrentDealScope:
+        record = tx.run(
+            GET_CURRENT_DEAL_SCOPE_BATCH,
+            source_key="bitrix_chat",
+            deal_ids=[deal_id],
+        ).single()
+        if record is None or record["scope_state"] is None:
+            raise RuntimeError("known deal disappeared from durable scope state")
+        return _current_scope_from_record(record)
+
 
 def _validate_observations(observations: Sequence[DealScopeObservation]) -> None:
     if len(observations) > MAX_DEAL_SCOPE_BATCH_SIZE:
@@ -253,6 +285,45 @@ def _validate_observations(observations: Sequence[DealScopeObservation]) -> None
     deal_ids = [observation.deal_id for observation in observations]
     if len(set(deal_ids)) != len(deal_ids):
         raise ValueError("Bitrix deal scope batches require distinct deal IDs")
+
+
+def record_scope_batch_in_transaction(
+    tx: ManagedTransaction,
+    observations: Sequence[DealScopeObservation],
+    *,
+    fence_context: FenceContext | None,
+    preserve_absence_streak: bool = False,
+) -> dict[str, CurrentDealScope]:
+    """Write scope lineage inside an existing fenced domain transaction."""
+    _validate_observations(observations)
+    if fence_context is not None:
+        assert_active_bitrix_fence(tx, fence_context)
+    params = [
+        {
+            "deal_id": observation.deal_id,
+            "scope_state": observation.scope_state,
+            "category_id": observation.category_id,
+            "entity_key": observation.entity_key,
+            "source_record_pk": observation.source_record_pk,
+            "preserve_absence_streak": preserve_absence_streak,
+        }
+        for observation in observations
+    ]
+    records = tx.run(
+        UPSERT_DEAL_SCOPE_MEMBERSHIPS,
+        source_key="bitrix_chat",
+        observations=params,
+    )
+    result: dict[str, CurrentDealScope] = {}
+    for record in records:
+        current = _current_scope_from_record(record)
+        if current.deal_id in result:
+            raise ValueError("Bitrix deal scope batch write returned duplicate deal IDs")
+        result[current.deal_id] = current
+    expected_deal_ids = {observation.deal_id for observation in observations}
+    if set(result) != expected_deal_ids:
+        raise ValueError("Bitrix deal scope batch write did not return every requested deal")
+    return result
 
 
 def _validate_deal_ids(deal_ids: Sequence[str]) -> None:

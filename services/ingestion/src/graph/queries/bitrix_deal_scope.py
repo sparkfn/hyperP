@@ -45,6 +45,16 @@ SET deal.current_scope_sequence = CASE
     deal.current_category_id = observation.category_id,
     deal.current_source_record_pk = observation.source_record_pk,
     deal.current_observed_at = datetime(),
+    deal.absence_streak = CASE
+      WHEN observation.preserve_absence_streak
+      THEN coalesce(deal.absence_streak, 0)
+      ELSE 0
+    END,
+    deal.last_present_at = CASE
+      WHEN observation.preserve_absence_streak
+      THEN deal.last_present_at
+      ELSE datetime()
+    END,
     deal.updated_at = datetime()
 MERGE (membership:CrmDealScopeMembership {
   source_key: $source_key,
@@ -64,6 +74,20 @@ RETURN deal.deal_id AS deal_id,
        deal.current_scope_sequence AS scope_sequence,
        deal.current_scope_state AS scope_state,
        deal.current_entity_key AS entity_key,
+       deal.current_category_id AS category_id,
+       deal.current_source_record_pk AS source_record_pk
+"""
+
+LOCK_AND_RECORD_KNOWN_DEAL_ABSENCE = """
+MATCH (deal:CrmLogicalDeal {source_key: $source_key, deal_id: $deal_id})
+WHERE deal.current_scope_state IN ['in_scope', 'indeterminate', 'out_of_scope']
+SET deal.absence_lock_version = coalesce(deal.absence_lock_version, 0) + 1
+WITH deal
+SET deal.absence_streak = coalesce(deal.absence_streak, 0) + 1,
+    deal.last_absent_at = datetime(),
+    deal.updated_at = datetime()
+RETURN deal.absence_streak AS absence_streak,
+       deal.current_scope_state AS scope_state,
        deal.current_category_id AS category_id,
        deal.current_source_record_pk AS source_record_pk
 """

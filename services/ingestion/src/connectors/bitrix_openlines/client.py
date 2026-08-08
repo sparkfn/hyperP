@@ -25,6 +25,7 @@ from src.connectors.bitrix_openlines.crm_status_catalog import (
 from src.connectors.bitrix_openlines.models import (
     ChatReference,
     CrmActivity,
+    CrmActivityCapabilityPage,
     CrmContact,
     CrmDeal,
     CrmDealCapabilityPage,
@@ -515,6 +516,18 @@ class BitrixOpenLinesClient:
         result = self._call("crm.deal.get", {"id": deal_id})
         return self._deal_from_payload(deal_id, result)
 
+    def get_deal_or_none(self, deal_id: int) -> CrmDeal | None:
+        """Return ``None`` only for an explicit healthy Bitrix not-found response."""
+        payload = self._request(
+            "crm.deal.get",
+            {"id": deal_id},
+            allowed_errors=frozenset({"ERROR_NOT_FOUND", "CRM_DEAL_NOT_FOUND"}),
+        )
+        error = payload.get("error")
+        if isinstance(error, str):
+            return None
+        return self._deal_from_payload(deal_id, payload.get("result"))
+
     def _deal_from_payload(self, deal_id: int, result: JsonValue) -> CrmDeal:
         """Convert a deal-list or deal-get response into the shared CRM model."""
         if not isinstance(result, dict):
@@ -602,6 +615,77 @@ class BitrixOpenLinesClient:
             invalid_result_message="Bitrix CRM activities returned an invalid result",
         )
 
+    def list_crm_activity_capability_page(
+        self,
+        *,
+        greater_than_id: int | None,
+        less_than_or_equal_to_id: int,
+        order_direction: str = "ASC",
+    ) -> CrmActivityCapabilityPage:
+        """Fetch one strict activity-ID keyset page without offset fallback."""
+        if order_direction not in {"ASC", "DESC"}:
+            raise ValueError("Bitrix CRM activity order_direction must be ASC or DESC")
+        if isinstance(less_than_or_equal_to_id, bool) or less_than_or_equal_to_id < 1:
+            raise ValueError("Bitrix CRM activity upper ID must be positive")
+        filters: dict[str, JsonValue] = {
+            "OWNER_TYPE_ID": 2,
+            "<=ID": less_than_or_equal_to_id,
+        }
+        if greater_than_id is not None:
+            if isinstance(greater_than_id, bool) or greater_than_id < 1:
+                raise ValueError("Bitrix CRM activity lower ID must be positive")
+            if greater_than_id >= less_than_or_equal_to_id:
+                raise ValueError("Bitrix CRM activity keyset bounds must increase")
+            filters[">ID"] = greater_than_id
+        payload = self._request(
+            "crm.activity.list",
+            {
+                "filter": filters,
+                "select": [
+                    "ID",
+                    "OWNER_TYPE_ID",
+                    "OWNER_ID",
+                    "TYPE_ID",
+                    "PROVIDER_ID",
+                    "PROVIDER_TYPE_ID",
+                    "SUBJECT",
+                    "LAST_UPDATED",
+                    "CREATED",
+                    "START_TIME",
+                    "END_TIME",
+                    "DURATION",
+                    "DIRECTION",
+                    "RESULT_STATUS",
+                    "COMPLETED",
+                    "PROVIDER_PARAMS",
+                    "SETTINGS",
+                ],
+                "order": {"ID": order_direction},
+                "start": -1,
+            },
+        )
+        raw_items = payload.get("result")
+        if not isinstance(raw_items, list):
+            raise RuntimeError("Bitrix CRM activity capability returned an invalid result")
+        items: list[CrmActivity] = []
+        for raw in raw_items:
+            if not isinstance(raw, dict):
+                raise RuntimeError("Bitrix CRM activity capability contained an invalid item")
+            activity = _crm_activity(raw)
+            if activity is None or not activity.id.isdigit():
+                raise RuntimeError("Bitrix CRM activity capability omitted a numeric identity")
+            items.append(activity)
+        timing = payload.get("time")
+        if timing is not None and not isinstance(timing, dict):
+            raise RuntimeError("Bitrix CRM activity capability returned invalid timing")
+        timing_map = timing if isinstance(timing, dict) else {}
+        return CrmActivityCapabilityPage(
+            items=tuple(items),
+            total=_optional_non_negative_number(payload.get("total")),
+            operating=_optional_number(timing_map.get("operating")),
+            operating_reset_at=_optional_number(timing_map.get("operating_reset_at")),
+        )
+
     def _iter_crm_activities(
         self,
         filters: dict[str, JsonValue],
@@ -679,7 +763,13 @@ class BitrixOpenLinesClient:
     def _call(self, method: str, params: Mapping[str, JsonValue]) -> JsonValue:
         return self._request(method, params)["result"]
 
-    def _request(self, method: str, params: Mapping[str, JsonValue]) -> dict[str, JsonValue]:
+    def _request(
+        self,
+        method: str,
+        params: Mapping[str, JsonValue],
+        *,
+        allowed_errors: frozenset[str] = frozenset(),
+    ) -> dict[str, JsonValue]:
         for attempt in range(1, self._max_attempts + 1):
             try:
                 elapsed = time.monotonic() - self._last_request_at
@@ -695,6 +785,8 @@ class BitrixOpenLinesClient:
                 typed_payload = cast(dict[str, JsonValue], payload)
                 error = typed_payload.get("error")
                 if isinstance(error, str):
+                    if error in allowed_errors:
+                        return typed_payload
                     if error not in RETRYABLE_ERRORS:
                         raise RuntimeError(f"Bitrix method {method} failed with {error}")
                     if attempt == self._max_attempts:
@@ -728,6 +820,26 @@ def _string(value: object) -> str | None:
     if isinstance(value, str) and value.strip():
         return value.strip()
     return None
+
+
+def _optional_non_negative_number(value: object) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        raise RuntimeError("Bitrix capability returned an invalid total")
+    if isinstance(value, int) and value >= 0:
+        return value
+    if isinstance(value, str) and value.isdigit():
+        return int(value)
+    raise RuntimeError("Bitrix capability returned an invalid total")
+
+
+def _optional_number(value: object) -> float | None:
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        raise RuntimeError("Bitrix capability returned invalid timing")
+    return float(value)
 
 
 def _string_values(value: object) -> tuple[str, ...]:

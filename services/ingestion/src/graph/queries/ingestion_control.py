@@ -316,6 +316,47 @@ SET checkpoint.cursor_json = $cursor_json,
 RETURN logical.stop_requested_at IS NOT NULL AS stop_requested
 """
 
+ADVANCE_BITRIX_UNIT_CHECKPOINT = """
+MATCH (stream:BitrixIngestionStream {
+  source_key: $source_key,
+  stream_key: $stream_key,
+  logical_run_id: $logical_run_id,
+  ingest_run_id: $ingest_run_id,
+  attempt_generation: $attempt_generation,
+  stream_generation: $stream_generation,
+  fencing_token: $fencing_token,
+  status: 'active'
+})
+MATCH (logical:IngestionLogicalRun {logical_run_id: $logical_run_id})
+      -[:ACTIVE_ATTEMPT]->(attempt:IngestRun {ingest_run_id: $ingest_run_id})
+MATCH (checkpoint:IngestionCheckpoint {
+  logical_run_id: $logical_run_id,
+  phase: $phase
+})
+WHERE logical.active_generation = $attempt_generation
+  AND attempt.generation = $attempt_generation
+  AND checkpoint.generation = $attempt_generation
+  AND checkpoint.status = 'active'
+  AND checkpoint.connector_version = $connector_version
+  AND checkpoint.schema_version = $checkpoint_schema_version
+  AND checkpoint.source_window_json = $source_window_json
+  AND logical.status IN ['running', 'stop_requested']
+SET checkpoint.cursor_json = $cursor_json,
+    checkpoint.last_committed_record_id = $last_committed_record_id,
+    checkpoint.committed_count = coalesce(checkpoint.committed_count, 0) + $committed_delta,
+    checkpoint.duplicate_count = coalesce(checkpoint.duplicate_count, 0) + $duplicate_delta,
+    checkpoint.excluded_count = coalesce(checkpoint.excluded_count, 0) + $excluded_delta,
+    checkpoint.retry_count = coalesce(checkpoint.retry_count, 0) + $retry_delta,
+    checkpoint.updated_at = datetime(),
+    logical.current_phase = $phase,
+    logical.committed_count = checkpoint.committed_count,
+    logical.duplicate_count = checkpoint.duplicate_count,
+    logical.excluded_count = checkpoint.excluded_count,
+    logical.retry_count = checkpoint.retry_count,
+    logical.updated_at = datetime()
+RETURN logical.stop_requested_at IS NOT NULL AS stop_requested
+"""
+
 PAUSE_LOGICAL_RUN = """
 MATCH (logical:IngestionLogicalRun {logical_run_id: $logical_run_id})
       -[:ACTIVE_ATTEMPT]->(attempt:IngestRun {ingest_run_id: $ingest_run_id})
