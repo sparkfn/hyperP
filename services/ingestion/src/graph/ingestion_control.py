@@ -6,7 +6,7 @@ import uuid
 
 from neo4j import ManagedTransaction
 
-from src.bitrix_ingestion_models import BITRIX_STREAM_KEYS, BitrixStreamKey
+from src.bitrix_ingestion_models import BITRIX_STREAM_KEYS, BitrixStreamKey, FenceContext
 from src.graph.client import Neo4jClient
 from src.graph.ingestion_control_models import (
     BitrixStreamAdmission,
@@ -28,11 +28,29 @@ from src.graph.queries.ingestion_control import (
     FAIL_LOGICAL_RUN,
     FINALIZE_LOGICAL_RUN,
     GET_ACTIVE_LOGICAL_RUN,
+    LOCK_AND_ASSERT_ACTIVE_BITRIX_FENCE,
     PAUSE_LOGICAL_RUN,
     REQUEST_LOGICAL_RUN_STOP,
+    SET_FENCED_BITRIX_STREAM_STATUS,
     TRANSITION_LOGICAL_PHASE,
 )
 from src.resumable import AttemptStatus, CheckpointDescriptor
+
+
+def assert_active_bitrix_fence(tx: ManagedTransaction, context: FenceContext) -> None:
+    """Acquire the stream write lock and reject stale mutation ownership."""
+    record = tx.run(
+        LOCK_AND_ASSERT_ACTIVE_BITRIX_FENCE,
+        source_key=context.source_key,
+        stream_key=context.stream_key,
+        logical_run_id=context.logical_run_id,
+        ingest_run_id=context.ingest_run_id,
+        attempt_generation=context.attempt_generation,
+        stream_generation=context.stream_generation,
+        fencing_token=context.fencing_token,
+    ).single()
+    if record is None:
+        raise RuntimeError("Bitrix mutation fence is stale or inactive")
 
 
 class LogicalRunControl:
@@ -308,6 +326,65 @@ class LogicalRunControl:
 
         return self._client.execute_write(_work)
 
+    def finalize_fenced(
+        self,
+        *,
+        context: FenceContext,
+        phase: str,
+        status: AttemptStatus,
+        committed_count: int,
+        duplicate_count: int,
+        excluded_count: int,
+        retry_count: int,
+        record_count: int,
+        rejected_count: int,
+    ) -> None:
+        """Complete the logical run and its stream under one stream-node lock."""
+        if status not in {"completed", "completed_with_errors"}:
+            raise ValueError("Logical-run final status must be a completion status")
+        validate_counts(
+            committed_count,
+            duplicate_count,
+            excluded_count,
+            retry_count,
+            record_count,
+            rejected_count,
+        )
+
+        def _work(tx: ManagedTransaction) -> None:
+            assert_active_bitrix_fence(tx, context)
+            finalized = tx.run(
+                FINALIZE_LOGICAL_RUN,
+                logical_run_id=context.logical_run_id,
+                ingest_run_id=context.ingest_run_id,
+                generation=context.attempt_generation,
+                phase=phase,
+                status=status,
+                committed_count=committed_count,
+                duplicate_count=duplicate_count,
+                excluded_count=excluded_count,
+                retry_count=retry_count,
+                record_count=record_count,
+                rejected_count=rejected_count,
+            ).single()
+            if finalized is None:
+                raise RuntimeError("Bitrix logical run could not be finalized under its fence")
+            terminal = tx.run(
+                SET_FENCED_BITRIX_STREAM_STATUS,
+                source_key=context.source_key,
+                stream_key=context.stream_key,
+                logical_run_id=context.logical_run_id,
+                ingest_run_id=context.ingest_run_id,
+                attempt_generation=context.attempt_generation,
+                stream_generation=context.stream_generation,
+                fencing_token=context.fencing_token,
+                status="completed",
+            ).single()
+            if terminal is None:
+                raise RuntimeError("Bitrix stream could not be completed under its fence")
+
+        self._client.execute_write(_work)
+
     def fail(
         self,
         *,
@@ -334,15 +411,48 @@ class LogicalRunControl:
 
         return self._client.execute_write(_work)
 
+    def fail_fenced(
+        self,
+        *,
+        context: FenceContext,
+        failure_category: str,
+        safe_failure_message: str,
+    ) -> None:
+        """Fail the logical attempt and terminate the stream atomically."""
+        if not failure_category.strip():
+            raise ValueError("Failure category must be non-empty")
+
+        def _work(tx: ManagedTransaction) -> None:
+            assert_active_bitrix_fence(tx, context)
+            failed = tx.run(
+                FAIL_LOGICAL_RUN,
+                logical_run_id=context.logical_run_id,
+                ingest_run_id=context.ingest_run_id,
+                generation=context.attempt_generation,
+                failure_category=failure_category,
+                failure_message=safe_failure_message[:1000],
+            ).single()
+            if failed is None:
+                raise RuntimeError("Bitrix logical run could not be failed under its fence")
+            terminal = tx.run(
+                SET_FENCED_BITRIX_STREAM_STATUS,
+                source_key=context.source_key,
+                stream_key=context.stream_key,
+                logical_run_id=context.logical_run_id,
+                ingest_run_id=context.ingest_run_id,
+                attempt_generation=context.attempt_generation,
+                stream_generation=context.stream_generation,
+                fencing_token=context.fencing_token,
+                status="terminated",
+            ).single()
+            if terminal is None:
+                raise RuntimeError("Bitrix stream could not be terminated under its fence")
+
+        self._client.execute_write(_work)
+
 
 class BitrixStreamControl:
-    """Durable admission for a single split Bitrix execution stream.
-
-    This boundary only establishes an active stream owner and returns a future
-    ``FenceContext``. It intentionally does not yet guard domain mutations;
-    callers must not claim transaction fencing until those writes consume the
-    returned context.
-    """
+    """Durable admission for a single transaction-fenced Bitrix stream."""
 
     def __init__(self, client: Neo4jClient) -> None:
         self._client = client

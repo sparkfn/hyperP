@@ -58,6 +58,18 @@ class FenceContext:
 
 
 @dataclass(frozen=True)
+class ExecutionContext:
+    """Claimed split-run identity passed intact into the ingestion runner."""
+
+    worker_task_id: str
+    fence_context: FenceContext
+
+    def __post_init__(self) -> None:
+        if not self.worker_task_id.strip():
+            raise ValueError("execution worker task ID must be non-empty")
+
+
+@dataclass(frozen=True)
 class CrmActivityProjection:
     """Typed metadata born with a generic CRM activity SourceRecord."""
 

@@ -20,8 +20,44 @@ FOR (stream:BitrixIngestionStream)
 REQUIRE (stream.source_key, stream.stream_key) IS UNIQUE""",
 )
 
-# This is deliberately an admission control record, rather than a domain-write
-# guard. Fenced SourceRecord and graph mutations will be wired separately.
+LOCK_AND_ASSERT_ACTIVE_BITRIX_FENCE = """
+MATCH (stream:BitrixIngestionStream {
+  source_key: $source_key,
+  stream_key: $stream_key
+})
+SET stream.fence_lock_version = coalesce(stream.fence_lock_version, 0) + 1
+WITH stream
+WHERE stream.logical_run_id = $logical_run_id
+  AND stream.ingest_run_id = $ingest_run_id
+  AND stream.attempt_generation = $attempt_generation
+  AND stream.stream_generation = $stream_generation
+  AND stream.fencing_token = $fencing_token
+  AND stream.status = 'active'
+RETURN stream.fence_lock_version AS fence_lock_version
+"""
+
+SET_FENCED_BITRIX_STREAM_STATUS = """
+MATCH (stream:BitrixIngestionStream {
+  source_key: $source_key,
+  stream_key: $stream_key,
+  logical_run_id: $logical_run_id,
+  ingest_run_id: $ingest_run_id,
+  attempt_generation: $attempt_generation,
+  stream_generation: $stream_generation,
+  fencing_token: $fencing_token
+})
+WHERE stream.status = 'active'
+  AND $status IN ['draining', 'completed', 'terminated', 'superseded']
+SET stream.status = $status,
+    stream.updated_at = datetime(),
+    stream.finished_at = CASE
+      WHEN $status IN ['completed', 'terminated', 'superseded'] THEN datetime()
+      ELSE stream.finished_at
+    END
+RETURN stream.status AS status
+"""
+
+# Admission establishes the identity consumed by same-transaction mutation fences.
 ADMIT_OR_COALESCE_BITRIX_STREAM = """
 MATCH (source:SourceSystem {source_key: $source_key, is_active: true})
 MATCH (logical:IngestionLogicalRun {logical_run_id: $logical_run_id})

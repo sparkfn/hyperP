@@ -49,12 +49,7 @@ BitrixStreamAdmissionOutcome = Literal["admitted", "coalesced", "replaced"]
 
 @dataclass(frozen=True)
 class BitrixStreamAdmission:
-    """Durable ownership result for one Bitrix execution stream.
-
-    This records admission only. Domain write queries will consume
-    ``fence_context`` in a later wiring change; this foundation does not yet
-    fence those mutations.
-    """
+    """Durable ownership result consumed by every fenced stream mutation."""
 
     outcome: BitrixStreamAdmissionOutcome
     fence_context: FenceContext

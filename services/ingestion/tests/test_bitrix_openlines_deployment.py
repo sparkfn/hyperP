@@ -2,11 +2,13 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from pathlib import Path
+from typing import cast
 
 import pytest
 from pytest import MonkeyPatch
 from src import main
 from src.connectors.base import SourceConnector
+from src.graph.incremental_checkpoints import Neo4jCheckpointRedis
 from src.models import JsonValue
 
 
@@ -124,6 +126,43 @@ def test_connector_factory_uses_conversation_only_legacy_mode(
         "checkpoint_store": None,
         "include_crm_records": False,
     }
+
+
+def test_split_openlines_backfill_accepts_a_fence_aware_checkpoint_store(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+    connector = StubConnector()
+    checkpoint_store = object()
+
+    def create(
+        mode: str,
+        *,
+        incremental: bool = True,
+        checkpoint_store: object | None = None,
+        include_crm_records: bool = True,
+    ) -> StubConnector:
+        captured.update(
+            mode=mode,
+            incremental=incremental,
+            checkpoint_store=checkpoint_store,
+            include_crm_records=include_crm_records,
+        )
+        return connector
+
+    monkeypatch.setattr(main, "create_bitrix_openlines_connector", create)
+
+    assert (
+        main.get_connector(
+            "bitrix_chat",
+            mode="backfill",
+            checkpoint_store=cast(Neo4jCheckpointRedis, checkpoint_store),
+            bitrix_execution_stream="openlines_conversations",
+        )
+        is connector
+    )
+    assert captured["checkpoint_store"] is checkpoint_store
+    assert captured["include_crm_records"] is False
 
 
 @pytest.mark.parametrize(
