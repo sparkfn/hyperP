@@ -20,7 +20,6 @@ from src.bitrix_backfill_models import (
     QualificationResult,
     RollbackStatus,
 )
-from src.bitrix_backfill_tasks import dispatch_generation_canvas
 from src.bitrix_ingestion_models import BitrixStreamKey
 from src.config import get_settings
 from src.connectors.bitrix_stage_history.artifact_runtime import (
@@ -169,6 +168,8 @@ class BitrixBackfillControl:
         return created
 
     def start(self, generation_id: str, *, actor: str) -> str:
+        from src.bitrix_backfill_tasks import dispatch_generation_canvas
+
         state = self._repository.get_generation(generation_id)
         manifest = self._manifest_for(generation_id)
         if state.status == "allocated":
@@ -207,6 +208,8 @@ class BitrixBackfillControl:
         return requested
 
     def resume(self, generation_id: str) -> str:
+        from src.bitrix_backfill_tasks import dispatch_generation_canvas
+
         state = self._repository.get_generation(generation_id)
         if state.status != "backfilling":
             raise RuntimeError("resume requires a backfilling generation")
@@ -349,6 +352,8 @@ class BitrixBackfillControl:
         occurrence: str,
         actor: str,
     ) -> str:
+        from src.bitrix_backfill_tasks import dispatch_generation_canvas
+
         corrective = self._repository.get_generation(corrective_generation_id)
         if corrective.status != "accepted":
             raise RuntimeError("only an accepted corrective generation can activate a successor")
