@@ -436,3 +436,4 @@ class IngestResult(BaseModel):
     errors: list[str] = Field(default_factory=list)
     skipped_duplicate: bool = False
     dropped: bool = False
+    retry_pending: bool = False

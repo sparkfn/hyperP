@@ -309,6 +309,20 @@ class BackfillInventoryEntry:
             if self.source_window is not None:
                 raise ValueError("excluded inventory entries cannot dispatch a source window")
         else:
+            if any(
+                value < 1
+                for value in (
+                    self.max_calls,
+                    self.max_rows,
+                    self.max_runtime_seconds,
+                    self.max_storage_bytes,
+                    self.max_lock_seconds,
+                    self.max_lag_seconds,
+                )
+            ):
+                raise ValueError("executed inventory ceilings must be positive")
+            if self.bounded_population > self.max_rows:
+                raise ValueError("bounded population exceeds the approved row ceiling")
             if self.reviewed_exclusion is not None:
                 raise ValueError("executed inventory entries cannot have reviewed_exclusion")
             if self.source_window is None:

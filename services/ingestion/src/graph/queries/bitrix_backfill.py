@@ -55,7 +55,10 @@ RETURN generation.generation_id AS generation_id,
 ATTACH_BACKFILL_LOGICAL_RUN = """
 MATCH (generation:BitrixBackfillGeneration {generation_id: $generation_id})
 WHERE generation.status IN ['allocated', 'backfilling', 'activating', 'active']
-  AND generation.boundary_digest = $boundary_digest
+  AND (
+    generation.boundary_digest = $boundary_digest
+    OR generation.generation_kind = 'live_successor'
+  )
   AND generation.configuration_digest = $configuration_digest
 MATCH (logical:IngestionLogicalRun {logical_run_id: $logical_run_id})
 MATCH (stream:BitrixIngestionStream {
@@ -628,4 +631,57 @@ SET active_dispatch.blocked = false,
     active_dispatch.unblocked_by = $actor,
     active_dispatch.updated_at = datetime()
 RETURN successor.generation_id AS generation_id
+"""
+
+GET_ACTIVE_BITRIX_SUCCESSOR_SCHEDULE = """
+MATCH (successor:BitrixBackfillGeneration {
+  generation_kind: 'live_successor',
+  status: 'active',
+  scheduling_enabled: true
+})-[:USES_INVENTORY]->(inventory:BitrixBackfillInventory)
+RETURN successor.generation_id AS generation_id,
+       successor.configuration_digest AS configuration_digest,
+       inventory.manifest_json AS manifest_json
+ORDER BY successor.activated_at DESC
+LIMIT 1
+"""
+
+RECORD_BITRIX_ACTIVITY_OWNER_RETRY = """
+MATCH (generation:BitrixBackfillGeneration {generation_id: $generation_id})
+WHERE generation.status IN ['backfilling', 'reconciling', 'activating', 'active']
+MATCH (generation)-[:HAS_STREAM]->(stream:BitrixIngestionStream {
+  stream_key: 'crm_activities',
+  logical_run_id: $logical_run_id,
+  ingest_run_id: $ingest_run_id,
+  attempt_generation: $attempt_generation,
+  stream_generation: $stream_generation,
+  fencing_token: $fencing_token,
+  status: 'active'
+})
+MERGE (retry:BitrixActivityOwnerRetry {
+  generation_id: $generation_id,
+  source_identity: $source_identity,
+  source_boundary: $source_boundary
+})
+ON CREATE SET retry.created_at = datetime(), retry.attempt_count = 0
+SET retry.owner_deal_id = $owner_deal_id,
+    retry.owner_state = $owner_state,
+    retry.status = 'retryable',
+    retry.attempt_count = retry.attempt_count + 1,
+    retry.updated_at = datetime()
+MERGE (generation)-[:HAS_OWNER_RETRY]->(retry)
+RETURN retry.attempt_count AS attempt_count
+"""
+
+RESOLVE_BITRIX_ACTIVITY_OWNER_RETRY = """
+MATCH (retry:BitrixActivityOwnerRetry {
+  generation_id: $generation_id,
+  source_identity: $source_identity,
+  source_boundary: $source_boundary,
+  status: 'retryable'
+})
+SET retry.status = $resolution,
+    retry.resolved_at = datetime(),
+    retry.updated_at = datetime()
+RETURN retry.source_identity AS source_identity
 """
