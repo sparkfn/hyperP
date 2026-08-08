@@ -87,6 +87,25 @@ def test_evidence_writer_does_not_follow_symlinks(tmp_path: Path) -> None:
     assert target.read_text(encoding="utf-8") == "unchanged"
 
 
+def test_managed_artifact_client_closes_after_collection_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Client:
+        closed = False
+
+        def close(self) -> None:
+            self.closed = True
+
+    client = Client()
+    monkeypatch.setattr(capability_cli, "_client", lambda: client)
+
+    with pytest.raises(RuntimeError, match="collection failed"):
+        with capability_cli._managed_client():
+            raise RuntimeError("collection failed")
+
+    assert client.closed is True
+
+
 def test_manifest_collection_cleans_prior_spools_when_later_pass_fails(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -231,7 +250,7 @@ def test_run_emits_redacted_v2_combined_re_gate_summary(
 
     assert result == 0
     summary = json.loads(capsys.readouterr().out)
-    assert summary["report_schema_version"] == "bitrix-source-capability-v2"
+    assert summary["report_schema_version"] == "bitrix-source-capability-v3"
     assert summary["human_approval_required"] is True
     assert summary["approved_traversal_outcome"] is None
     # This fixture intentionally omits image, cadence, and operating metadata.
