@@ -141,6 +141,16 @@ class CrmActivity:
     raw_payload: dict[str, JsonValue]
 
 
+@dataclass(frozen=True)
+class CrmActivityCapabilityPage:
+    """One strict-ID-keyset activity page below a frozen upper boundary."""
+
+    items: tuple[CrmActivity, ...]
+    total: int | None
+    operating: float | None
+    operating_reset_at: float | None
+
+
 def merge_chat_references(first: ChatReference, second: ChatReference) -> ChatReference:
     """Merge two discoveries without dropping their typed provenance."""
     changed_at = _latest_changed_at(first.changed_at, second.changed_at)

@@ -17,6 +17,7 @@ import time
 import uuid
 from collections.abc import Iterator
 from contextlib import ExitStack, contextmanager
+from dataclasses import replace
 from typing import Final, TypedDict, cast
 
 import redis
@@ -26,7 +27,13 @@ from neo4j import ManagedTransaction
 from pydantic.types import JsonValue
 
 from src.birthday import BirthdayRunSummary, run_birthday_greetings
-from src.bitrix_backfill_models import GenerationRunContext, initial_stream_checkpoint
+from src.bitrix_backfill_models import (
+    GenerationRunContext,
+    KnownOwnerMembershipSet,
+    initial_stream_checkpoint,
+    known_owner_refresh_checkpoint,
+)
+from src.bitrix_deal_scope_reconciliation import refresh_known_owner_set
 from src.bitrix_ingestion_models import BitrixStreamKey, ExecutionContext
 from src.celery_app import LIFECYCLE_QUEUE, celery_app
 from src.config import get_settings
@@ -40,12 +47,14 @@ from src.graph.migrations import (
     reconcile_projection_relationship_lifecycle,
     reconcile_source_record_lifecycle,
 )
+from src.ingestion_config import get_ingestion_config
 from src.lifecycle_reconciliation_queue import (
     LifecycleReconciliationTask,
     release_lifecycle_reconciliation_queue_gate,
 )
 from src.main import (
     IngestionSummary,
+    create_bitrix_known_owner_client,
     finalize_ingest_run,
     initialize_ingestion_graph,
     run_ingestion,
@@ -238,6 +247,32 @@ def _run_split_bitrix_ingestion(
                 mode=mode,
                 dump_path=dump_path,
             )
+        state = logical.get(attempt.logical_run_id)
+        if state is None:
+            raise RuntimeError("split Bitrix logical run lost its active checkpoint")
+        membership: KnownOwnerMembershipSet | None = None
+        resume_known_refresh = (
+            generation_context is not None
+            and stream_key == "crm_deals"
+            and state.phase == "known_owner_refresh_v1"
+        )
+        membership_set_id = (
+            f"{generation_context.generation_id}:known-owners:1"
+            if generation_context is not None and stream_key == "crm_deals"
+            else None
+        )
+        if resume_known_refresh:
+            assert generation_context is not None
+            assert membership_set_id is not None
+            membership = BitrixBackfillRepository(client).get_known_owner_set(
+                generation_id=generation_context.generation_id,
+                membership_set_id=membership_set_id,
+            )
+            checkpoint = known_owner_refresh_checkpoint(membership, census_epoch=1)
+        elif state.phase != checkpoint.phase:
+            raise RuntimeError("split Bitrix logical run has an incompatible checkpoint phase")
+        if state.cursor is not None:
+            checkpoint = replace(checkpoint, cursor=state.cursor)
         try:
             admission = BitrixStreamControl(client).admit_or_coalesce(
                 stream_key=stream_key,
@@ -275,18 +310,61 @@ def _run_split_bitrix_ingestion(
         context = ExecutionContext(
             worker_task_id=worker_task_id,
             fence_context=admission.fence_context,
+            checkpoint=checkpoint,
             generation_context=generation_context,
         )
-        try:
-            summary = run_ingestion(
-                source_key,
-                mode,
-                dump_path,
-                initialize_graph=False,
-                incremental=incremental,
-                bitrix_execution_stream=stream_key,
-                execution_context=context,
+        if membership_set_id is not None and membership is None:
+            assert generation_context is not None
+            membership = BitrixBackfillRepository(client).materialize_known_owner_set(
+                generation_id=generation_context.generation_id,
+                membership_set_id=membership_set_id,
             )
+        try:
+            if resume_known_refresh:
+                summary = _skipped_split_summary(
+                    ingest_run_id=attempt.ingest_run_id,
+                    status="completed",
+                    source_key=source_key,
+                    mode=mode,
+                    dump_path=dump_path,
+                )
+                summary["skipped"] = 0
+            else:
+                summary = run_ingestion(
+                    source_key,
+                    mode,
+                    dump_path,
+                    initialize_graph=False,
+                    incremental=incremental,
+                    bitrix_execution_stream=stream_key,
+                    execution_context=context,
+                )
+            active_checkpoint = checkpoint
+            if membership is not None and not resume_known_refresh:
+                active_checkpoint = known_owner_refresh_checkpoint(membership, census_epoch=1)
+                transitioned = logical.transition_phase_fenced(
+                    context=admission.fence_context,
+                    current_phase=checkpoint.phase,
+                    next_checkpoint=active_checkpoint,
+                    committed_count=summary["succeeded"],
+                    duplicate_count=summary["skipped"],
+                    excluded_count=0,
+                    retry_count=0,
+                )
+                if transitioned is None:
+                    raise RuntimeError("deal run could not enter known-owner refresh")
+            if membership is not None:
+                refresh_context = replace(context, checkpoint=active_checkpoint)
+                ingestion_config = get_ingestion_config().bitrix_openlines
+                refresh = refresh_known_owner_set(
+                    create_bitrix_known_owner_client(),
+                    client,
+                    membership=membership,
+                    context=refresh_context,
+                    included_category_ids=ingestion_config.included_crm_category_ids,
+                    entity_by_category_id=ingestion_config.entity_by_crm_category_id,
+                )
+                summary["succeeded"] += refresh.refreshed + refresh.moved_out_of_scope
         except Exception as exc:
             logical.fail_fenced(
                 context=admission.fence_context,
@@ -299,7 +377,7 @@ def _run_split_bitrix_ingestion(
             raise RuntimeError(f"split Bitrix runner returned invalid status {completion_status}")
         logical.finalize_fenced(
             context=admission.fence_context,
-            phase=checkpoint.phase,
+            phase=active_checkpoint.phase,
             status=cast(AttemptStatus, completion_status),
             committed_count=summary["succeeded"],
             duplicate_count=summary["skipped"],

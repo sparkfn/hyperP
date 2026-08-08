@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
     from src.bitrix_backfill_models import GenerationRunContext
+    from src.resumable import CheckpointDescriptor
 
 BitrixStreamKey = Literal["crm_deals", "crm_activities", "openlines_conversations"]
 DealScopeState = Literal["in_scope", "out_of_scope", "indeterminate"]
@@ -66,6 +67,7 @@ class ExecutionContext:
 
     worker_task_id: str
     fence_context: FenceContext
+    checkpoint: CheckpointDescriptor
     generation_context: GenerationRunContext | None = None
 
     def __post_init__(self) -> None:

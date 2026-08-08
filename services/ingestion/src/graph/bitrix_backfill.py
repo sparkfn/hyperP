@@ -11,6 +11,7 @@ from neo4j import ManagedTransaction, Record
 
 from src.bitrix_backfill_models import (
     CoverageEntry,
+    CoverageReconciliation,
     GenerationProvenance,
     KnownOwnerMembershipSet,
 )
@@ -21,6 +22,8 @@ from src.graph.queries.bitrix_backfill import (
     ALLOCATE_BITRIX_BACKFILL_GENERATION,
     ATTACH_BACKFILL_LOGICAL_RUN,
     EXPORT_FROZEN_OWNER_COVERAGE,
+    GET_BITRIX_COVERAGE_RECONCILIATION,
+    GET_KNOWN_OWNER_SET,
     LIST_KNOWN_OWNER_IDS,
     MATERIALIZE_KNOWN_OWNER_SET,
     UPSERT_BITRIX_BACKFILL_COVERAGE,
@@ -142,6 +145,75 @@ class BitrixBackfillRepository:
             )
 
         return self._client.execute_write(_write)
+
+    def get_known_owner_set(
+        self,
+        *,
+        generation_id: str,
+        membership_set_id: str,
+    ) -> KnownOwnerMembershipSet:
+        def _read(tx: ManagedTransaction) -> KnownOwnerMembershipSet:
+            record = tx.run(
+                GET_KNOWN_OWNER_SET,
+                generation_id=generation_id,
+                membership_set_id=membership_set_id,
+            ).single()
+            if record is None:
+                raise RuntimeError("corrective generation has no sealed known-owner set")
+            raw_ids: object = record["deal_ids"]
+            if not isinstance(raw_ids, list) or not all(
+                isinstance(value, str) for value in raw_ids
+            ):
+                raise RuntimeError("known-owner membership contains invalid deal IDs")
+            deal_ids = tuple(raw_ids)
+            digest = _required_str(record["digest"], "known_owner_digest")
+            count: object = record["member_count"]
+            if isinstance(count, bool) or not isinstance(count, int) or count != len(deal_ids):
+                raise RuntimeError("known-owner membership count did not reconcile")
+            if _known_owner_digest(deal_ids) != digest:
+                raise RuntimeError("known-owner membership digest did not reconcile")
+            return KnownOwnerMembershipSet(
+                generation_id=generation_id,
+                membership_set_id=membership_set_id,
+                digest=digest,
+                deal_ids=deal_ids,
+            )
+
+        return self._client.execute_read(_read)
+
+    def reconcile_coverage(
+        self,
+        *,
+        generation_id: str,
+        stream_key: BitrixStreamKey,
+    ) -> CoverageReconciliation:
+        def _read(tx: ManagedTransaction) -> CoverageReconciliation:
+            record = tx.run(
+                GET_BITRIX_COVERAGE_RECONCILIATION,
+                generation_id=generation_id,
+                stream_key=stream_key,
+            ).single()
+            if record is None:
+                raise RuntimeError("corrective stream has no coverage reconciliation row")
+            return CoverageReconciliation(
+                stream_key=stream_key,
+                coverage_count=_non_negative_int(record, "coverage_count"),
+                terminal_count=_non_negative_int(record, "terminal_count"),
+                created_count=_non_negative_int(record, "created_count"),
+                duplicate_count=_non_negative_int(record, "duplicate_count"),
+                projection_count=_non_negative_int(record, "projection_count"),
+                unchanged_count=_non_negative_int(record, "unchanged_count"),
+                excluded_count=_non_negative_int(record, "excluded_count"),
+                quarantine_count=_non_negative_int(record, "quarantine_count"),
+                conflict_count=_non_negative_int(record, "conflict_count"),
+                failed_count=_non_negative_int(record, "failed_count"),
+                checkpoint_committed_count=_non_negative_int(record, "checkpoint_committed_count"),
+                checkpoint_duplicate_count=_non_negative_int(record, "checkpoint_duplicate_count"),
+                checkpoint_excluded_count=_non_negative_int(record, "checkpoint_excluded_count"),
+                checkpoint_retry_count=_non_negative_int(record, "checkpoint_retry_count"),
+            )
+
+        return self._client.execute_read(_read)
 
     @staticmethod
     def record_coverage_in_transaction(
@@ -271,3 +343,10 @@ def _owner_set_digest(rows: list[FrozenOwnerRow]) -> str:
 def _known_owner_digest(deal_ids: tuple[str, ...]) -> str:
     encoded = json.dumps(deal_ids, separators=(",", ":")).encode("utf-8")
     return "sha256:" + hashlib.sha256(b"bitrix-known-owner-set-v1\x00" + encoded).hexdigest()
+
+
+def _non_negative_int(record: Record, key: str) -> int:
+    value: object = record[key]
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise RuntimeError(f"coverage reconciliation contains an invalid {key}")
+    return value

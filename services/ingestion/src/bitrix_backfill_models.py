@@ -78,6 +78,48 @@ class KnownOwnerMembershipSet:
 
 
 @dataclass(frozen=True)
+class CoverageReconciliation:
+    stream_key: BitrixStreamKey
+    coverage_count: int
+    terminal_count: int
+    created_count: int
+    duplicate_count: int
+    projection_count: int
+    unchanged_count: int
+    excluded_count: int
+    quarantine_count: int
+    conflict_count: int
+    failed_count: int
+    checkpoint_committed_count: int
+    checkpoint_duplicate_count: int
+    checkpoint_excluded_count: int
+    checkpoint_retry_count: int
+
+    @property
+    def complete(self) -> bool:
+        accounted = (
+            self.created_count
+            + self.duplicate_count
+            + self.projection_count
+            + self.unchanged_count
+            + self.excluded_count
+            + self.quarantine_count
+            + self.conflict_count
+            + self.failed_count
+        )
+        return (
+            self.coverage_count == self.terminal_count == accounted
+            and self.conflict_count == 0
+            and self.failed_count == 0
+            and self.checkpoint_committed_count == self.created_count + self.projection_count
+            and self.checkpoint_duplicate_count == self.duplicate_count + self.unchanged_count
+            and self.checkpoint_excluded_count
+            == self.excluded_count + self.quarantine_count + self.conflict_count
+            and self.checkpoint_retry_count == self.failed_count
+        )
+
+
+@dataclass(frozen=True)
 class CoverageEntry:
     """One terminal source identity accounting row."""
 

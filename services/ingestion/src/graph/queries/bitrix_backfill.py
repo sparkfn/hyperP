@@ -110,6 +110,17 @@ RETURN owner_set.membership_set_id AS membership_set_id,
        owner_set.digest AS digest
 """
 
+GET_KNOWN_OWNER_SET = """
+MATCH (generation:BitrixBackfillGeneration {generation_id: $generation_id})
+      -[:HAS_KNOWN_OWNER_SET]->
+      (owner_set:BitrixKnownOwnerRefreshSet {membership_set_id: $membership_set_id})
+OPTIONAL MATCH (owner_set)-[:HAS_MEMBER]->(member:BitrixKnownOwnerRefreshMember)
+WITH owner_set, member ORDER BY member.ordinal
+RETURN owner_set.digest AS digest,
+       owner_set.member_count AS member_count,
+       [value IN collect(member.deal_id) WHERE value IS NOT NULL] AS deal_ids
+"""
+
 UPSERT_BITRIX_BACKFILL_COVERAGE = """
 MATCH (generation:BitrixBackfillGeneration {generation_id: $generation_id})
 WHERE generation.status IN ['backfilling', 'reconciling']
@@ -152,6 +163,51 @@ FOREACH (_ IN CASE WHEN created THEN [1] ELSE [] END |
 )
 MERGE (generation)-[:HAS_COVERAGE]->(coverage)
 RETURN coverage.source_identity AS source_identity
+"""
+
+GET_BITRIX_COVERAGE_RECONCILIATION = """
+MATCH (generation:BitrixBackfillGeneration {generation_id: $generation_id})
+MATCH (generation)-[:HAS_LOGICAL_RUN {stream_key: $stream_key}]->
+      (logical:IngestionLogicalRun)
+MATCH (generation)-[:HAS_COVERAGE]->(coverage:BitrixBackfillCoverage {
+  stream_key: $stream_key
+})
+WITH generation, logical,
+     count(coverage) AS coverage_count,
+     count(CASE WHEN coverage.terminal THEN 1 END) AS terminal_count,
+     count(CASE WHEN coverage.disposition = 'created' THEN 1 END) AS created_count,
+     count(CASE WHEN coverage.disposition = 'existing_same_hash' THEN 1 END) AS duplicate_count,
+     count(CASE WHEN coverage.disposition = 'updated_projection' THEN 1 END) AS projection_count,
+     count(CASE WHEN coverage.disposition = 'scope_unchanged' THEN 1 END) AS unchanged_count,
+     count(CASE WHEN coverage.disposition = 'excluded_out_of_scope' THEN 1 END) AS excluded_count,
+     count(CASE WHEN coverage.disposition = 'quarantined_owner_unresolved' THEN 1 END)
+       AS quarantine_count,
+     count(CASE WHEN coverage.disposition = 'conflict' THEN 1 END) AS conflict_count,
+     count(CASE WHEN coverage.disposition = 'failed' THEN 1 END) AS failed_count
+OPTIONAL MATCH (checkpoint:IngestionCheckpoint {logical_run_id: logical.logical_run_id})
+WITH generation, logical, coverage_count, terminal_count, created_count, duplicate_count,
+     projection_count, unchanged_count, excluded_count, quarantine_count, conflict_count,
+     failed_count, checkpoint
+ORDER BY checkpoint.updated_at DESC
+WITH generation, logical, coverage_count, terminal_count, created_count, duplicate_count,
+     projection_count, unchanged_count, excluded_count, quarantine_count, conflict_count,
+     failed_count, collect(checkpoint)[0] AS checkpoint
+RETURN generation.status AS generation_status,
+       logical.status AS logical_status,
+       coverage_count,
+       terminal_count,
+       created_count,
+       duplicate_count,
+       projection_count,
+       unchanged_count,
+       excluded_count,
+       quarantine_count,
+       conflict_count,
+       failed_count,
+       checkpoint.committed_count AS checkpoint_committed_count,
+       checkpoint.duplicate_count AS checkpoint_duplicate_count,
+       checkpoint.excluded_count AS checkpoint_excluded_count,
+       checkpoint.retry_count AS checkpoint_retry_count
 """
 
 EXPORT_FROZEN_OWNER_COVERAGE = """

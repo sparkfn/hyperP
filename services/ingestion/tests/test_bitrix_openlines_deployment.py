@@ -8,6 +8,7 @@ import pytest
 from pytest import MonkeyPatch
 from src import main
 from src.connectors.base import SourceConnector
+from src.connectors.bitrix import BitrixChatConnector
 from src.graph.incremental_checkpoints import Neo4jCheckpointRedis
 from src.models import JsonValue
 
@@ -23,10 +24,16 @@ class StubConnector(SourceConnector):
 def test_connector_factory_supports_api_and_backfill(monkeypatch: MonkeyPatch) -> None:
     calls: list[str] = []
     connector = StubConnector()
+
+    def create_connector(mode: str, *, incremental: bool = True) -> SourceConnector:
+        del incremental
+        calls.append(mode)
+        return connector
+
     monkeypatch.setattr(
         main,
         "create_bitrix_openlines_connector",
-        lambda mode, *, incremental=True: calls.append(mode) or connector,
+        create_connector,
     )
 
     assert main.get_connector("bitrix_chat", mode="api") is connector
@@ -37,7 +44,7 @@ def test_connector_factory_supports_api_and_backfill(monkeypatch: MonkeyPatch) -
 def test_connector_factory_preserves_bitrix_chat_batch_connector() -> None:
     connector = main.get_connector("bitrix_chat", mode="batch")
 
-    assert isinstance(connector, main.BitrixChatConnector)
+    assert isinstance(connector, BitrixChatConnector)
 
 
 def test_connector_factory_rejects_backfill_for_other_sources() -> None:
@@ -68,14 +75,27 @@ def test_connector_factory_selects_dormant_bitrix_crm_streams(
 ) -> None:
     deal_connector = StubConnector()
     activity_connector = StubConnector()
-    monkeypatch.setattr(main, "create_bitrix_crm_deal_connector", lambda: deal_connector)
-    monkeypatch.setattr(main, "create_bitrix_crm_activity_connector", lambda: activity_connector)
+    monkeypatch.setattr(
+        main,
+        "create_bitrix_crm_deal_connector",
+        lambda *, upper_deal_id, last_deal_id: deal_connector,
+    )
+    monkeypatch.setattr(
+        main,
+        "create_bitrix_crm_activity_connector",
+        lambda *, upper_activity_id, last_activity_id: activity_connector,
+    )
 
     assert (
         main.get_connector(
             "bitrix_chat",
             mode="api",
             bitrix_execution_stream="crm_deals",
+            bitrix_source_window={
+                "upper_deal_id": "900",
+                "included_category_digest": "sha256:categories",
+                "owner_artifact_id": None,
+            },
         )
         is deal_connector
     )
@@ -84,6 +104,10 @@ def test_connector_factory_selects_dormant_bitrix_crm_streams(
             "bitrix_chat",
             mode="api",
             bitrix_execution_stream="crm_activities",
+            bitrix_source_window={
+                "upper_activity_id": "1200",
+                "owner_artifact_id": None,
+            },
         )
         is activity_connector
     )

@@ -14,7 +14,7 @@ import httpx
 from neo4j import ManagedTransaction
 from redis import Redis
 
-from src.bitrix_ingestion_models import ExecutionContext, FenceContext
+from src.bitrix_ingestion_models import ExecutionContext
 from src.config import get_settings
 from src.connectors.base import SourceConnector
 from src.connectors.bitrix import BitrixChatConnector
@@ -412,7 +412,11 @@ def create_bitrix_openlines_connector(
     )
 
 
-def create_bitrix_crm_deal_connector() -> BitrixCrmDealConnector:
+def create_bitrix_crm_deal_connector(
+    *,
+    upper_deal_id: int,
+    last_deal_id: int | None,
+) -> BitrixCrmDealConnector:
     """Create the dormant independent CRM-deal stream connector."""
     settings = get_settings()
     ingestion_config = get_ingestion_config()
@@ -422,10 +426,19 @@ def create_bitrix_crm_deal_connector() -> BitrixCrmDealConnector:
         max_attempts=settings.bitrix_openlines_api_max_attempts,
         request_delay_seconds=settings.bitrix_openlines_api_request_delay_seconds,
     )
-    return BitrixCrmDealConnector(client, ingestion_config.bitrix_openlines)
+    return BitrixCrmDealConnector(
+        client,
+        ingestion_config.bitrix_openlines,
+        upper_deal_id=upper_deal_id,
+        last_deal_id=last_deal_id,
+    )
 
 
-def create_bitrix_crm_activity_connector() -> BitrixCrmActivityConnector:
+def create_bitrix_crm_activity_connector(
+    *,
+    upper_activity_id: int,
+    last_activity_id: int | None,
+) -> BitrixCrmActivityConnector:
     """Create the dormant independent CRM-activity stream connector."""
     settings = get_settings()
     client = BitrixOpenLinesClient(
@@ -434,7 +447,50 @@ def create_bitrix_crm_activity_connector() -> BitrixCrmActivityConnector:
         max_attempts=settings.bitrix_openlines_api_max_attempts,
         request_delay_seconds=settings.bitrix_openlines_api_request_delay_seconds,
     )
-    return BitrixCrmActivityConnector(client)
+    return BitrixCrmActivityConnector(
+        client,
+        upper_activity_id=upper_activity_id,
+        last_activity_id=last_activity_id,
+    )
+
+
+def create_bitrix_known_owner_client() -> BitrixOpenLinesClient:
+    """Create the targeted deal-get client used after the scoped census."""
+    settings = get_settings()
+    return BitrixOpenLinesClient(
+        base_url=settings.bitrix_openlines_api_base_url.get_secret_value(),
+        timeout_seconds=settings.bitrix_openlines_api_timeout_seconds,
+        max_attempts=settings.bitrix_openlines_api_max_attempts,
+        request_delay_seconds=settings.bitrix_openlines_api_request_delay_seconds,
+    )
+
+
+def _required_source_window_id(
+    source_window: dict[str, JsonValue] | None,
+    key: str,
+) -> int:
+    value = source_window.get(key) if source_window is not None else None
+    if isinstance(value, bool) or not isinstance(value, (str, int)):
+        raise ValueError(f"split Bitrix source window requires numeric {key}")
+    parsed = int(value)
+    if parsed < 0:
+        raise ValueError(f"split Bitrix source window requires non-negative {key}")
+    return parsed
+
+
+def _optional_checkpoint_cursor_id(
+    cursor: dict[str, JsonValue] | None,
+    key: str,
+) -> int | None:
+    value = cursor.get(key) if cursor is not None else None
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (str, int)):
+        raise ValueError(f"split Bitrix checkpoint contains invalid {key}")
+    parsed = int(value)
+    if parsed < 1:
+        raise ValueError(f"split Bitrix checkpoint contains invalid {key}")
+    return parsed
 
 
 def create_fundbox_api_client() -> FundboxApiClient:
@@ -463,6 +519,8 @@ def get_connector(
     incremental: bool = True,
     checkpoint_store: Neo4jCheckpointRedis | None = None,
     bitrix_execution_stream: BitrixExecutionStream | None = None,
+    bitrix_source_window: dict[str, JsonValue] | None = None,
+    bitrix_checkpoint_cursor: dict[str, JsonValue] | None = None,
 ) -> SourceConnector:
     """Return the appropriate connector for the given source key."""
     if entity_key is not None and (source_key != "whatsapp_chat" or mode != "api"):
@@ -478,9 +536,27 @@ def get_connector(
             raise ValueError(f"Unsupported Bitrix execution stream {bitrix_execution_stream!r}")
     if source_key == "bitrix_chat" and mode in {"api", "backfill"}:
         if bitrix_execution_stream == "crm_deals":
-            return create_bitrix_crm_deal_connector()
+            return create_bitrix_crm_deal_connector(
+                upper_deal_id=_required_source_window_id(
+                    bitrix_source_window,
+                    "upper_deal_id",
+                ),
+                last_deal_id=_optional_checkpoint_cursor_id(
+                    bitrix_checkpoint_cursor,
+                    "last_deal_id",
+                ),
+            )
         if bitrix_execution_stream == "crm_activities":
-            return create_bitrix_crm_activity_connector()
+            return create_bitrix_crm_activity_connector(
+                upper_activity_id=_required_source_window_id(
+                    bitrix_source_window,
+                    "upper_activity_id",
+                ),
+                last_activity_id=_optional_checkpoint_cursor_id(
+                    bitrix_checkpoint_cursor,
+                    "last_activity_id",
+                ),
+            )
         if checkpoint_store is None:
             if bitrix_execution_stream != "openlines_conversations":
                 return create_bitrix_openlines_connector(mode, incremental=incremental)
@@ -689,22 +765,25 @@ def _process_record(
     envelope: SourceRecordEnvelope,
     ingest_run_id: str,
     exclusion_context: ExclusionContext,
-    fence_context: FenceContext | None = None,
+    execution_context: ExecutionContext | None = None,
 ) -> IngestResult:
     """Route a single envelope to the correct ingestion pipeline."""
+    fence_context = execution_context.fence_context if execution_context is not None else None
     if envelope.record_type == RecordType.CRM_HISTORY:
         result = ingest_crm_history_record(
             client,
             envelope,
             ingest_run_id=ingest_run_id,
-            fence_context=fence_context,
+            execution_context=execution_context,
         )
-        if result.source_record_pk is not None and not result.dropped:
+        if execution_context is None and result.source_record_pk is not None and not result.dropped:
             link_crm_history_to_existing_conversations(
                 client,
                 envelope,
                 result.source_record_pk,
-                fence_context=fence_context,
+                fence_context=(
+                    execution_context.fence_context if execution_context is not None else None
+                ),
             )
         return result
     if envelope.record_type == RecordType.CALL:
@@ -712,7 +791,7 @@ def _process_record(
             client,
             envelope,
             ingest_run_id=ingest_run_id,
-            fence_context=fence_context,
+            execution_context=execution_context,
         )
     if envelope.record_type == RecordType.SALES:
         return ingest_sales_record(
@@ -734,7 +813,7 @@ def _process_record(
         and not result.dropped
         and _has_crm_activity_references(envelope)
     ):
-        linked = link_conversation_to_crm_history(
+        linked = execution_context is not None or link_conversation_to_crm_history(
             client,
             envelope,
             result.source_record_pk,
@@ -783,7 +862,7 @@ def _ingest_all_records(
     connector: SourceConnector,
     ingest_run_id: str,
     exclusion_context: ExclusionContext | None = None,
-    fence_context: FenceContext | None = None,
+    execution_context: ExecutionContext | None = None,
 ) -> tuple[int, int, int]:
     """Process all connector records; the run owner releases connector resources."""
     return _ingest_all_records_open(
@@ -792,7 +871,7 @@ def _ingest_all_records(
         connector,
         ingest_run_id,
         exclusion_context,
-        fence_context,
+        execution_context,
     )
 
 
@@ -802,7 +881,7 @@ def _ingest_all_records_open(
     connector: SourceConnector,
     ingest_run_id: str,
     exclusion_context: ExclusionContext | None = None,
-    fence_context: FenceContext | None = None,
+    execution_context: ExecutionContext | None = None,
 ) -> tuple[int, int, int]:
     """Process every record from the connector. Returns (success, errors, skipped)."""
     success = errors = skipped = 0
@@ -824,7 +903,9 @@ def _ingest_all_records_open(
                 retirement_id,
                 retired_at,
                 reconciliation_snapshot_at,
-                fence_context=fence_context,
+                fence_context=(
+                    execution_context.fence_context if execution_context is not None else None
+                ),
             )
             success += 1
             _report_record_outcome(connector, succeeded=True)
@@ -843,7 +924,7 @@ def _ingest_all_records_open(
             envelope,
             ingest_run_id,
             active_exclusion_context,
-            fence_context,
+            execution_context,
         )
         if result.skipped_duplicate:
             skipped += 1
@@ -950,7 +1031,7 @@ def run_ingestion(
 
         pipeline = IngestPipeline(
             client,
-            fence_context=(execution_context.fence_context if execution_context else None),
+            execution_context=execution_context,
         )
         # Create the IngestRun before building the connector so a
         # connector-construction failure (e.g. a source dispatched before its
@@ -1043,6 +1124,14 @@ def run_ingestion(
                 incremental=incremental,
                 checkpoint_store=checkpoint_store,
                 bitrix_execution_stream=bitrix_execution_stream,
+                bitrix_source_window=(
+                    execution_context.checkpoint.source_window
+                    if execution_context is not None
+                    else None
+                ),
+                bitrix_checkpoint_cursor=(
+                    execution_context.checkpoint.cursor if execution_context is not None else None
+                ),
             )
             logger.info("Connector=%s", type(connector).__name__)
             if source_key in {"bitrix_chat", "whatsapp_chat"}:
@@ -1054,7 +1143,7 @@ def run_ingestion(
                 connector,
                 ingest_run_id,
                 exclusion_context,
-                execution_context.fence_context if execution_context else None,
+                execution_context,
             )
             if isinstance(connector, _ConnectorErrorReporter):
                 errors += connector.connector_error_count()
