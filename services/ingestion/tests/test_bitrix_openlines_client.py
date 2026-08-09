@@ -937,8 +937,16 @@ def test_client_rejects_batch_command_errors() -> None:
         client.get_deals([501])
 
 
+@pytest.mark.parametrize(
+    "missing_error",
+    [
+        {"error": "CRM_CONTACT_NOT_FOUND"},
+        {"error": "", "error_description": "Not found"},
+    ],
+)
 def test_client_skips_missing_related_contacts_in_batch_hydration(
     caplog: pytest.LogCaptureFixture,
+    missing_error: dict[str, str],
 ) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content)
@@ -955,7 +963,7 @@ def test_client_skips_missing_related_contacts_in_batch_hydration(
                     {"CONTACT_ID": "401"},
                 ]
             elif entity_id == "400":
-                errors[command_key] = {"error": "CRM_CONTACT_NOT_FOUND"}
+                errors[command_key] = missing_error
             else:
                 results[command_key] = {"ID": entity_id, "NAME": "Available"}
         return httpx.Response(

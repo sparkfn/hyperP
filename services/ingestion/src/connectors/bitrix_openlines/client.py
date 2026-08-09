@@ -627,7 +627,16 @@ class BitrixOpenLinesClient:
                 if not isinstance(error_payload, dict):
                     raise RuntimeError(f"Bitrix {context} batch returned invalid command errors")
                 error = error_payload.get("error")
-                if not isinstance(error, str) or error not in allowed_errors:
+                description = error_payload.get("error_description")
+                canonical_not_found = (
+                    bool(allowed_errors)
+                    and error == ""
+                    and isinstance(description, str)
+                    and description.strip().casefold() == "not found"
+                )
+                if not (
+                    isinstance(error, str) and (error in allowed_errors or canonical_not_found)
+                ):
                     raise RuntimeError(f"Bitrix {context} batch contained a command error")
                 allowed_error_commands.add(command_key)
         missing = set(commands).difference(raw_results).difference(allowed_error_commands)
