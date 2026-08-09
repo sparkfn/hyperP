@@ -41,19 +41,26 @@ class _DealClient:
             None,
         )
 
-    def get_deal(self, deal_id: int) -> CrmDeal:
-        return CrmDeal(
-            id=str(deal_id),
-            title="Deal",
-            category_id="2",
-            stage_id="C2:NEW",
-            observed_at=datetime(2026, 8, 8, tzinfo=UTC),
-            primary_contact=None,
-            contacts=(),
-            contact_count=0,
-            has_ambiguous_contacts=False,
-            raw_payload={"ID": str(deal_id), "CATEGORY_ID": "2", "STAGE_ID": "C2:NEW"},
-        )
+    def get_deals(self, deal_ids: Collection[int]) -> list[CrmDeal]:
+        return [
+            CrmDeal(
+                id=str(deal_id),
+                title="Deal",
+                category_id="2",
+                stage_id="C2:NEW",
+                observed_at=datetime(2026, 8, 8, tzinfo=UTC),
+                primary_contact=None,
+                contacts=(),
+                contact_count=0,
+                has_ambiguous_contacts=False,
+                raw_payload={
+                    "ID": str(deal_id),
+                    "CATEGORY_ID": "2",
+                    "STAGE_ID": "C2:NEW",
+                },
+            )
+            for deal_id in deal_ids
+        ]
 
     def close(self) -> None:
         pass

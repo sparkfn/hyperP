@@ -516,6 +516,165 @@ class BitrixOpenLinesClient:
         result = self._call("crm.deal.get", {"id": deal_id})
         return self._deal_from_payload(deal_id, result)
 
+    def get_deals(self, deal_ids: Collection[int]) -> list[CrmDeal]:
+        """Hydrate one capability page through Bitrix batch requests."""
+        ordered_ids = list(deal_ids)
+        if len(ordered_ids) > 50:
+            raise ValueError("Bitrix deal hydration accepts at most 50 deals")
+        if any(isinstance(deal_id, bool) or deal_id < 1 for deal_id in ordered_ids):
+            raise ValueError("Bitrix deal hydration IDs must be positive")
+        if len(ordered_ids) != len(set(ordered_ids)):
+            raise ValueError("Bitrix deal hydration IDs must be unique")
+        if not ordered_ids:
+            return []
+
+        raw_deals = self._batch_entity_results("crm.deal.get", ordered_ids, "deal")
+        raw_contact_items = self._batch_entity_results(
+            "crm.deal.contact.items.get", ordered_ids, "deal_contacts"
+        )
+        contact_ids_by_deal: dict[int, tuple[str, ...]] = {}
+        contact_ids: list[str] = []
+        lead_ids: list[str] = []
+        for deal_id in ordered_ids:
+            raw_deal = raw_deals[str(deal_id)]
+            if not isinstance(raw_deal, dict):
+                raise RuntimeError("Bitrix deal batch returned an invalid deal")
+            raw_items = raw_contact_items[str(deal_id)]
+            if not isinstance(raw_items, list):
+                raise RuntimeError("Bitrix deal contact batch returned an invalid collection")
+            associated_ids = self._contact_ids_from_items(raw_items)
+            if not associated_ids:
+                associated_ids = _string_values(raw_deal.get("CONTACT_IDS"))
+            explicit_contact_id = _positive_id_string(raw_deal.get("CONTACT_ID"))
+            if explicit_contact_id is not None and explicit_contact_id not in associated_ids:
+                associated_ids = (explicit_contact_id, *associated_ids)
+            contact_ids_by_deal[deal_id] = associated_ids
+            contact_ids.extend(associated_ids)
+            if not associated_ids:
+                lead_id = _positive_id_string(raw_deal.get("LEAD_ID"))
+                if lead_id is not None:
+                    lead_ids.append(lead_id)
+
+        contacts_by_id = self._batch_crm_contacts("crm.contact.get", contact_ids, "contact")
+        leads_by_id = self._batch_crm_contacts("crm.lead.get", lead_ids, "lead")
+        return [
+            self._deal_from_hydrated_payload(
+                deal_id,
+                raw_deals[str(deal_id)],
+                contact_ids_by_deal[deal_id],
+                contacts_by_id,
+                leads_by_id,
+            )
+            for deal_id in ordered_ids
+        ]
+
+    def _batch_entity_results(
+        self,
+        method: str,
+        entity_ids: Collection[int | str],
+        command_prefix: str,
+    ) -> dict[str, JsonValue]:
+        ordered_ids = list(dict.fromkeys(str(entity_id) for entity_id in entity_ids))
+        results: dict[str, JsonValue] = {}
+        for offset in range(0, len(ordered_ids), 50):
+            chunk = ordered_ids[offset : offset + 50]
+            command_ids = {
+                f"{command_prefix}_{index}": entity_id for index, entity_id in enumerate(chunk)
+            }
+            commands: dict[str, JsonValue] = {
+                command_key: f"{method}?{urlencode({'id': entity_id})}"
+                for command_key, entity_id in command_ids.items()
+            }
+            batch_results = self._validated_batch_results(commands, command_prefix)
+            for command_key, entity_id in command_ids.items():
+                results[entity_id] = batch_results[command_key]
+        return results
+
+    def _validated_batch_results(
+        self,
+        commands: Mapping[str, JsonValue],
+        context: str,
+    ) -> dict[str, JsonValue]:
+        raw_batch = self._call("batch", {"halt": 0, "cmd": dict(commands)})
+        if not isinstance(raw_batch, dict):
+            raise RuntimeError(f"Bitrix {context} batch returned an invalid result")
+        raw_results = raw_batch.get("result")
+        raw_errors = raw_batch.get("result_error")
+        if not isinstance(raw_results, dict):
+            raise RuntimeError(f"Bitrix {context} batch omitted command results")
+        if raw_errors is not None and not isinstance(raw_errors, dict):
+            raise RuntimeError(f"Bitrix {context} batch returned invalid command errors")
+        if isinstance(raw_errors, dict) and raw_errors:
+            raise RuntimeError(f"Bitrix {context} batch contained a command error")
+        missing = set(commands).difference(raw_results)
+        if missing:
+            raise RuntimeError(f"Bitrix {context} batch omitted a command result")
+        return raw_results
+
+    def _batch_crm_contacts(
+        self,
+        method: str,
+        entity_ids: Collection[str],
+        kind: str,
+    ) -> dict[str, CrmContact]:
+        raw_results = self._batch_entity_results(method, entity_ids, kind)
+        contacts: dict[str, CrmContact] = {}
+        for requested_id, result in raw_results.items():
+            contact = _crm_contact(result, kind=kind)
+            if contact.id != requested_id:
+                raise RuntimeError(f"Bitrix {kind} batch returned a mismatched ID")
+            contacts[requested_id] = contact
+        return contacts
+
+    def _deal_from_hydrated_payload(
+        self,
+        deal_id: int,
+        result: JsonValue,
+        contact_ids: tuple[str, ...],
+        contacts_by_id: Mapping[str, CrmContact],
+        leads_by_id: Mapping[str, CrmContact],
+    ) -> CrmDeal:
+        if not isinstance(result, dict):
+            raise RuntimeError("Bitrix deal batch returned an invalid result")
+        raw_id = _positive_id_string(result.get("ID"))
+        if raw_id != str(deal_id):
+            raise RuntimeError("Bitrix deal batch returned a mismatched ID")
+        explicit_contact_id = _positive_id_string(result.get("CONTACT_ID"))
+        contacts = tuple(contacts_by_id[contact_id] for contact_id in contact_ids)
+        primary_contact: CrmContact | None = None
+        if explicit_contact_id is not None:
+            primary_contact = contacts_by_id[explicit_contact_id]
+        elif len(contacts) == 1:
+            primary_contact = contacts[0]
+        elif not contacts:
+            lead_id = _positive_id_string(result.get("LEAD_ID"))
+            if lead_id is not None:
+                primary_contact = leads_by_id[lead_id]
+                contacts = (primary_contact,)
+        return CrmDeal(
+            id=raw_id,
+            title=_string(result.get("TITLE")) or "",
+            category_id=_string(result.get("CATEGORY_ID")),
+            stage_id=_string(result.get("STAGE_ID")),
+            observed_at=_first_datetime(result, "DATE_MODIFY", "DATE_CREATE"),
+            primary_contact=primary_contact,
+            contacts=contacts,
+            contact_count=len(contact_ids),
+            has_ambiguous_contacts=len(contact_ids) > 1 and explicit_contact_id is None,
+            raw_payload=result,
+        )
+
+    @staticmethod
+    def _contact_ids_from_items(items: list[JsonValue]) -> tuple[str, ...]:
+        contact_ids: list[str] = []
+        for item in items:
+            if not isinstance(item, dict):
+                raise RuntimeError("Bitrix deal contact batch contained an invalid item")
+            contact_id = _positive_id_string(item.get("CONTACT_ID"))
+            if contact_id is not None:
+                contact_ids.append(contact_id)
+        return tuple(dict.fromkeys(contact_ids))
+
     def get_deal_or_none(self, deal_id: int) -> CrmDeal | None:
         """Return ``None`` only for an explicit healthy Bitrix not-found response."""
         payload = self._request(
