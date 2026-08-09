@@ -60,7 +60,14 @@ def test_resume_increments_generation_and_supersedes_stale_attempt() -> None:
     assert "logical.active_generation + 1 AS generation" in CREATE_RESUME_ATTEMPT
     assert "'superseded'" in CREATE_RESUME_ATTEMPT
     assert "resumed_from_run_id" in CREATE_RESUME_ATTEMPT
-    assert "DELETE active_relation" in CREATE_RESUME_ATTEMPT
+    assert "OPTIONAL MATCH (logical)-[active_relation:ACTIVE_ATTEMPT]" in CREATE_RESUME_ATTEMPT
+    assert "OPTIONAL MATCH (logical)-[:HAS_ATTEMPT]->(historical_prior:IngestRun)" in (
+        CREATE_RESUME_ATTEMPT
+    )
+    assert "coalesce(active_prior, latest_prior) AS prior" in CREATE_RESUME_ATTEMPT
+    assert "CASE WHEN active_relation IS NULL THEN [] ELSE [active_relation] END" in (
+        CREATE_RESUME_ATTEMPT
+    )
     assert "checkpoint.connector_version = $connector_version" in CREATE_RESUME_ATTEMPT
     source_match = CREATE_RESUME_ATTEMPT.index("MATCH (logical)-[:FOR_SOURCE]->(source")
     generation_write = CREATE_RESUME_ATTEMPT.index("SET logical.active_generation")
