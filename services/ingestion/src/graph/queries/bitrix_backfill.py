@@ -40,6 +40,7 @@ ON CREATE SET generation.status = 'allocated',
               generation.creation_token = $creation_token
 WITH generation, generation.creation_token = $creation_token AS created
 REMOVE generation.creation_token
+WITH generation, created
 WHERE created OR (
   generation.repository_sha = $repository_sha
   AND generation.image_digest = $image_digest
@@ -161,6 +162,7 @@ MERGE (coverage:BitrixBackfillCoverage {
 ON CREATE SET coverage.created_at = datetime(), coverage.creation_token = $creation_token
 WITH generation, coverage, coverage.creation_token = $creation_token AS created
 REMOVE coverage.creation_token
+WITH generation, coverage, created
 WHERE created OR coverage.outcome_digest = $outcome_digest
 FOREACH (_ IN CASE WHEN created THEN [1] ELSE [] END |
   SET coverage.disposition = $disposition,
@@ -453,6 +455,7 @@ ON CREATE SET successor.status = 'allocated',
               successor.creation_token = $creation_token
 WITH corrective, successor, successor.creation_token = $creation_token AS created
 REMOVE successor.creation_token
+WITH corrective, successor, created
 WHERE created OR (
   successor.generation_kind = 'live_successor'
   AND successor.corrective_generation_id = $corrective_generation_id

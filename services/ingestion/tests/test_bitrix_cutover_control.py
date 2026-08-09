@@ -6,6 +6,7 @@ from pathlib import Path
 from src.bitrix_backfill_control import CONTROL_COMMANDS, load_qualification
 from src.graph.queries.bitrix_backfill import (
     ACTIVATE_BITRIX_SUCCESSOR_GENERATION,
+    ALLOCATE_BITRIX_BACKFILL_GENERATION,
     ALLOCATE_BITRIX_SUCCESSOR_GENERATION,
     CAS_BITRIX_BACKFILL_GENERATION_STATUS,
     CONFIRM_BITRIX_SUCCESSOR_PUBLICATION,
@@ -47,6 +48,17 @@ def test_acceptance_and_activation_use_distinct_cas_bound_generations() -> None:
     assert "successor.status = 'activating'" in ACTIVATE_BITRIX_SUCCESSOR_GENERATION
     assert "successor.status = 'active'" in CONFIRM_BITRIX_SUCCESSOR_PUBLICATION
     assert "outbox.status = 'published'" in CONFIRM_BITRIX_SUCCESSOR_PUBLICATION
+
+
+def test_generation_allocation_preserves_scope_after_creation_token_removal() -> None:
+    assert (
+        "REMOVE generation.creation_token\nWITH generation, created\nWHERE"
+        in ALLOCATE_BITRIX_BACKFILL_GENERATION
+    )
+    assert (
+        "REMOVE successor.creation_token\nWITH corrective, successor, created\nWHERE"
+        in ALLOCATE_BITRIX_SUCCESSOR_GENERATION
+    )
 
 
 def test_rejection_is_terminal_and_blocks_all_bitrix_dispatch() -> None:
