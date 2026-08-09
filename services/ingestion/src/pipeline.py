@@ -19,7 +19,7 @@ import logging
 
 from neo4j import ManagedTransaction
 
-from src.bitrix_backfill_runtime import record_terminal_unit
+from src.bitrix_backfill_runtime import record_terminal_unit, source_lineage_text
 from src.bitrix_ingestion_models import ExecutionContext, FenceContext
 from src.exclusions import ExclusionContext, is_excluded_vehicle_observation
 from src.golden_profile import compute_golden_profile
@@ -181,9 +181,13 @@ class IngestPipeline:
         scope_state: str | None = None
         if envelope.record_type == RecordType.CRM_DEAL:
             deal_id = envelope.source_record_id.rsplit("-", maxsplit=1)[-1]
-            category_id = envelope.raw_payload.get("CATEGORY_ID")
-            if not isinstance(category_id, str) or not category_id:
-                raise ValueError("Bitrix CRM deal requires CATEGORY_ID for scope lineage")
+            category_id = source_lineage_text(
+                envelope.raw_payload,
+                "category_id",
+                "CATEGORY_ID",
+            )
+            if category_id is None:
+                raise ValueError("Bitrix CRM deal requires category lineage")
             if envelope.entity_key is None:
                 raise ValueError("Bitrix CRM deal requires entity ownership")
             record_scope_batch_in_transaction(
