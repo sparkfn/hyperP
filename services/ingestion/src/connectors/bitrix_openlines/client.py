@@ -59,6 +59,9 @@ from src.models import JsonValue
 
 logger = logging.getLogger(__name__)
 
+_MISSING_CONTACT_ERRORS = frozenset({"ERROR_NOT_FOUND", "CRM_CONTACT_NOT_FOUND"})
+_MISSING_LEAD_ERRORS = frozenset({"ERROR_NOT_FOUND", "CRM_LEAD_NOT_FOUND"})
+
 
 class BitrixOpenLinesClient:
     def __init__(
@@ -573,6 +576,8 @@ class BitrixOpenLinesClient:
         method: str,
         entity_ids: Collection[int | str],
         command_prefix: str,
+        *,
+        allowed_errors: frozenset[str] = frozenset(),
     ) -> dict[str, JsonValue]:
         ordered_ids = list(dict.fromkeys(str(entity_id) for entity_id in entity_ids))
         results: dict[str, JsonValue] = {}
@@ -585,15 +590,22 @@ class BitrixOpenLinesClient:
                 command_key: f"{method}?{urlencode({'id': entity_id})}"
                 for command_key, entity_id in command_ids.items()
             }
-            batch_results = self._validated_batch_results(commands, command_prefix)
+            batch_results = self._validated_batch_results(
+                commands,
+                command_prefix,
+                allowed_errors=allowed_errors,
+            )
             for command_key, entity_id in command_ids.items():
-                results[entity_id] = batch_results[command_key]
+                if command_key in batch_results:
+                    results[entity_id] = batch_results[command_key]
         return results
 
     def _validated_batch_results(
         self,
         commands: Mapping[str, JsonValue],
         context: str,
+        *,
+        allowed_errors: frozenset[str] = frozenset(),
     ) -> dict[str, JsonValue]:
         raw_batch = self._call("batch", {"halt": 0, "cmd": dict(commands)})
         if not isinstance(raw_batch, dict):
@@ -604,9 +616,21 @@ class BitrixOpenLinesClient:
             raise RuntimeError(f"Bitrix {context} batch omitted command results")
         if raw_errors is not None and not isinstance(raw_errors, dict | list):
             raise RuntimeError(f"Bitrix {context} batch returned invalid command errors")
-        if isinstance(raw_errors, dict | list) and raw_errors:
-            raise RuntimeError(f"Bitrix {context} batch contained a command error")
-        missing = set(commands).difference(raw_results)
+        allowed_error_commands: set[str] = set()
+        if isinstance(raw_errors, list) and raw_errors:
+            raise RuntimeError(f"Bitrix {context} batch contained invalid command errors")
+        if isinstance(raw_errors, dict):
+            unknown_commands = set(raw_errors).difference(commands)
+            if unknown_commands:
+                raise RuntimeError(f"Bitrix {context} batch returned unknown command errors")
+            for command_key, error_payload in raw_errors.items():
+                if not isinstance(error_payload, dict):
+                    raise RuntimeError(f"Bitrix {context} batch returned invalid command errors")
+                error = error_payload.get("error")
+                if not isinstance(error, str) or error not in allowed_errors:
+                    raise RuntimeError(f"Bitrix {context} batch contained a command error")
+                allowed_error_commands.add(command_key)
+        missing = set(commands).difference(raw_results).difference(allowed_error_commands)
         if missing:
             raise RuntimeError(f"Bitrix {context} batch omitted a command result")
         return raw_results
@@ -617,7 +641,21 @@ class BitrixOpenLinesClient:
         entity_ids: Collection[str],
         kind: str,
     ) -> dict[str, CrmContact]:
-        raw_results = self._batch_entity_results(method, entity_ids, kind)
+        requested_count = len(set(entity_ids))
+        allowed_errors = _MISSING_CONTACT_ERRORS if kind == "contact" else _MISSING_LEAD_ERRORS
+        raw_results = self._batch_entity_results(
+            method,
+            entity_ids,
+            kind,
+            allowed_errors=allowed_errors,
+        )
+        missing_count = requested_count - len(raw_results)
+        if missing_count:
+            logger.warning(
+                "Bitrix %s batch skipped %d missing related CRM records",
+                kind,
+                missing_count,
+            )
         contacts: dict[str, CrmContact] = {}
         for requested_id, result in raw_results.items():
             contact = _crm_contact(result, kind=kind)
@@ -640,17 +678,20 @@ class BitrixOpenLinesClient:
         if raw_id != str(deal_id):
             raise RuntimeError("Bitrix deal batch returned a mismatched ID")
         explicit_contact_id = _positive_id_string(result.get("CONTACT_ID"))
-        contacts = tuple(contacts_by_id[contact_id] for contact_id in contact_ids)
+        contacts = tuple(
+            contacts_by_id[contact_id] for contact_id in contact_ids if contact_id in contacts_by_id
+        )
         primary_contact: CrmContact | None = None
         if explicit_contact_id is not None:
-            primary_contact = contacts_by_id[explicit_contact_id]
+            primary_contact = contacts_by_id.get(explicit_contact_id)
         elif len(contacts) == 1:
             primary_contact = contacts[0]
         elif not contacts:
             lead_id = _positive_id_string(result.get("LEAD_ID"))
             if lead_id is not None:
-                primary_contact = leads_by_id[lead_id]
-                contacts = (primary_contact,)
+                primary_contact = leads_by_id.get(lead_id)
+                if primary_contact is not None:
+                    contacts = (primary_contact,)
         return CrmDeal(
             id=raw_id,
             title=_string(result.get("TITLE")) or "",
