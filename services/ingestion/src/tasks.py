@@ -413,14 +413,14 @@ def _run_split_bitrix_ingestion(
                 started_at + max_runtime_seconds if max_runtime_seconds is not None else None
             ),
         )
-        if membership_set_id is not None and membership is None:
-            assert generation_context is not None
-            membership = _get_or_materialize_known_owner_set(
-                client=client,
-                generation_id=generation_context.generation_id,
-                membership_set_id=membership_set_id,
-            )
         try:
+            if membership_set_id is not None and membership is None:
+                assert generation_context is not None
+                membership = _get_or_materialize_known_owner_set(
+                    client=client,
+                    generation_id=generation_context.generation_id,
+                    membership_set_id=membership_set_id,
+                )
             if resume_known_refresh:
                 summary = _skipped_split_summary(
                     ingest_run_id=attempt.ingest_run_id,

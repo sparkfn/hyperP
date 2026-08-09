@@ -8,7 +8,7 @@ from typing import cast
 import pytest
 from pytest import MonkeyPatch
 from src import tasks
-from src.bitrix_backfill_models import KnownOwnerMembershipSet
+from src.bitrix_backfill_models import GenerationRunContext, KnownOwnerMembershipSet
 from src.bitrix_ingestion_models import FenceContext
 from src.graph.ingestion_control_models import (
     BitrixStreamAdmission,
@@ -258,3 +258,57 @@ def test_first_census_materializes_missing_known_owner_set(
 
     assert membership is created
     assert calls == ["find", "materialize"]
+
+
+def test_known_owner_load_failure_terminates_the_admitted_attempt(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    client = _Client()
+    failed: list[str] = []
+
+    class LogicalControl(_LogicalControl):
+        def fail_fenced(self, **parameters: object) -> None:
+            failed.append(cast(str, parameters["failure_category"]))
+
+    class Repository:
+        def __init__(self, _client: object) -> None:
+            pass
+
+        def attach_logical_run(self, **_parameters: object) -> None:
+            pass
+
+        def find_known_owner_set(self, **_parameters: object) -> KnownOwnerMembershipSet | None:
+            raise RuntimeError("sealed owner set unavailable")
+
+        def materialize_known_owner_set(self, **_parameters: object) -> KnownOwnerMembershipSet:
+            raise AssertionError("find failure must fail closed")
+
+    monkeypatch.setattr(tasks, "Neo4jClient", lambda _settings: client)
+    monkeypatch.setattr(tasks, "LogicalRunControl", LogicalControl)
+    monkeypatch.setattr(tasks, "BitrixStreamControl", _StreamControl)
+    monkeypatch.setattr(tasks, "BitrixBackfillRepository", Repository)
+    monkeypatch.setattr(tasks, "get_settings", lambda: object())
+
+    with pytest.raises(RuntimeError, match="sealed owner set unavailable"):
+        tasks._run_split_bitrix_ingestion(
+            source_key="bitrix_chat",
+            mode="backfill",
+            dump_path=None,
+            incremental=False,
+            idempotency_key="bitrix-backfill:generation-1:crm_deals:boundary:config",
+            stream_key="crm_deals",
+            worker_task_id="task-1",
+            generation_context=GenerationRunContext(
+                generation_id="generation-1",
+                boundary_digest="sha256:boundary",
+                configuration_digest="sha256:config",
+            ),
+            source_window={
+                "upper_deal_id": "900",
+                "included_category_digest": "sha256:categories",
+                "owner_artifact_id": None,
+            },
+        )
+
+    assert failed == ["RuntimeError"]
+    assert client.closed is True
