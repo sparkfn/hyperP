@@ -70,6 +70,10 @@ def test_predecessor_freeze_is_generation_scoped() -> None:
         assert snapshot in FREEZE_BITRIX_BACKFILL_GENERATION
         assert snapshot in REJECT_BITRIX_BACKFILL_GENERATION
     assert "generation_stream.status = 'superseded'" in (FREEZE_BITRIX_BACKFILL_GENERATION)
+    assert (
+        ")\nWITH generation, logicals\nUNWIND logicals AS logical"
+        in FREEZE_BITRIX_BACKFILL_GENERATION
+    )
     assert "collect(old_relation) AS old_relations" in VERIFY_BITRIX_SUCCESSOR_TAIL
     assert "relation.status = 'superseded'" in VERIFY_BITRIX_SUCCESSOR_TAIL
     assert "old_streams" not in VERIFY_BITRIX_SUCCESSOR_TAIL

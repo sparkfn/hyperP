@@ -407,6 +407,7 @@ FOREACH (generation_stream IN generation_streams |
       generation_stream.ended_at = datetime(),
       generation_stream.updated_at = datetime()
 )
+WITH generation, logicals
 UNWIND logicals AS logical
 OPTIONAL MATCH (checkpoint:IngestionCheckpoint {logical_run_id: logical.logical_run_id})
 SET checkpoint.status = 'archived', checkpoint.archived_at = datetime()
