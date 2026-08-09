@@ -30,8 +30,8 @@ def record_terminal_unit(
     resolved_disposition = disposition or _result_disposition(result)
     raw_deal_id = envelope.raw_payload.get("ID")
     deal_id = str(raw_deal_id) if raw_deal_id is not None else _parent_deal_id(envelope)
-    category_id = _optional_text(envelope.raw_payload.get("CATEGORY_ID"))
-    stage_id = _optional_text(envelope.raw_payload.get("STAGE_ID"))
+    category_id = source_lineage_text(envelope.raw_payload, "category_id", "CATEGORY_ID")
+    stage_id = source_lineage_text(envelope.raw_payload, "stage_id", "STAGE_ID")
     census_epoch = _census_epoch(context)
     entry = CoverageEntry(
         source_identity=envelope.source_record_id,
@@ -83,6 +83,16 @@ def record_terminal_unit(
         raise RuntimeError("Bitrix checkpoint did not advance with its terminal coverage row")
     if record["stop_requested"] is True:
         raise RuntimeError("Bitrix logical run stop was requested at a committed unit boundary")
+
+
+def source_lineage_text(
+    raw_payload: dict[str, JsonValue],
+    canonical_key: str,
+    source_key: str,
+) -> str | None:
+    """Read canonical envelope lineage without changing the record hash contract."""
+    canonical = _optional_text(raw_payload.get(canonical_key))
+    return canonical if canonical is not None else _optional_text(raw_payload.get(source_key))
 
 
 def _result_disposition(result: IngestResult) -> CoverageDisposition:

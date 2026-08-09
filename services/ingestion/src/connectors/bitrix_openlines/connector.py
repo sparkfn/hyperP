@@ -663,8 +663,6 @@ def _deal_envelope(deal: CrmDeal, entity_key: str) -> dict[str, JsonValue]:
         "title": deal.title,
         "category_id": deal.category_id,
         "stage_id": deal.stage_id,
-        "CATEGORY_ID": deal.category_id,
-        "STAGE_ID": deal.stage_id,
         "primary_contact_id": contact.id if contact is not None else None,
         "primary_contact_kind": contact.kind if contact is not None else None,
         "contact_count": deal.contact_count,

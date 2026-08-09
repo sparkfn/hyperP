@@ -3,7 +3,7 @@
 from inspect import getsource
 
 from src.bitrix_backfill_models import CoverageEntry, CoverageReconciliation
-from src.bitrix_backfill_runtime import record_terminal_unit
+from src.bitrix_backfill_runtime import record_terminal_unit, source_lineage_text
 from src.graph.queries.bitrix_backfill import (
     GET_BITRIX_COVERAGE_RECONCILIATION,
     UPSERT_BITRIX_BACKFILL_COVERAGE,
@@ -25,6 +25,18 @@ def test_coverage_entry_requires_a_terminal_source_identity() -> None:
 
     assert entry.terminal is True
     assert entry.disposition == "existing_same_hash"
+
+
+def test_source_lineage_prefers_hash_stable_canonical_fields() -> None:
+    payload = {
+        "category_id": "2",
+        "stage_id": "C2:NEW",
+        "CATEGORY_ID": "legacy-category",
+    }
+
+    assert source_lineage_text(payload, "category_id", "CATEGORY_ID") == "2"
+    assert source_lineage_text(payload, "stage_id", "STAGE_ID") == "C2:NEW"
+    assert source_lineage_text({"CATEGORY_ID": "7"}, "category_id", "CATEGORY_ID") == "7"
 
 
 def test_coverage_query_fails_closed_on_conflicting_replay() -> None:
