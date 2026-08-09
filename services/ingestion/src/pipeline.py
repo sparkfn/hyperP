@@ -417,9 +417,17 @@ class IngestPipeline:
                 exclusion_context=active_exclusion_context,
             )
             if lifecycle_plan.active_source_record_pk is not None:
-                affected_person_ids.update(
-                    retire_identity_projections(tx, lifecycle_plan.active_source_record_pk)
-                )
+                if continuity_fast_path:
+                    retired_person_ids = retire_identity_projections(
+                        tx,
+                        lifecycle_plan.active_source_record_pk,
+                        person_ids=lifecycle_plan.prior_person_ids,
+                    )
+                else:
+                    retired_person_ids = retire_identity_projections(
+                        tx, lifecycle_plan.active_source_record_pk
+                    )
+                affected_person_ids.update(retired_person_ids)
             materialize_bankruptcy_case(
                 tx,
                 envelope=envelope,
@@ -469,8 +477,12 @@ class IngestPipeline:
             mark_profile_analysis_dirty(
                 tx,
                 source_record_pks=(
-                    source_record_pk,
-                    lifecycle_plan.active_source_record_pk or "",
+                    ()
+                    if continuity_fast_path
+                    else (
+                        source_record_pk,
+                        lifecycle_plan.active_source_record_pk or "",
+                    )
                 ),
                 person_ids=affected_person_ids,
             )

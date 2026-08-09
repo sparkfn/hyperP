@@ -222,6 +222,23 @@ UNWIND all_owners AS person_id
 RETURN DISTINCT person_id
 """
 
+RETIRE_IDENTITY_PROJECTIONS_FOR_PERSONS = """
+UNWIND $person_ids AS person_id
+MATCH (person:Person {person_id: person_id})
+OPTIONAL MATCH (person)-[identified:IDENTIFIED_BY]->(:Identifier)
+WHERE identified.source_record_pk = $source_record_pk
+SET identified.is_active = false, identified.updated_at = datetime()
+WITH DISTINCT person
+OPTIONAL MATCH (person)-[address:LIVES_AT]->(:Address)
+WHERE address.source_record_pk = $source_record_pk
+SET address.is_active = false, address.updated_at = datetime()
+WITH DISTINCT person
+OPTIONAL MATCH (person)-[fact:HAS_FACT]->(:SourceRecord {source_record_pk: $source_record_pk})
+WHERE fact.source_record_pk = $source_record_pk
+SET fact.is_active = false, fact.updated_at = datetime()
+RETURN DISTINCT person.person_id AS person_id
+"""
+
 RETIRE_ADDRESS_PROJECTION = """
 MATCH (source:SourceRecord {source_record_pk: $source_record_pk})
 OPTIONAL MATCH (source)-[rel:DESCRIBES_ADDRESS]->(:Address)
