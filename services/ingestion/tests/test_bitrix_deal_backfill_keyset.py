@@ -112,6 +112,10 @@ def test_deal_connector_resumes_exclusive_keyset_cursor() -> None:
 
     assert client.lower_bounds == [8]
     assert records[0]["source_record_id"] == "bitrix-crm-deal-9"
+    raw_payload = records[0]["raw_payload"]
+    assert isinstance(raw_payload, dict)
+    assert raw_payload["CATEGORY_ID"] == "2"
+    assert raw_payload["STAGE_ID"] == "C2:NEW"
 
 
 def test_activity_connector_resumes_exclusive_keyset_cursor() -> None:
