@@ -18,13 +18,37 @@ CALL (source_record_pks, direct_person_ids) {
   UNION
   WITH source_record_pks
   UNWIND source_record_pks AS source_record_pk
-  MATCH (person:Person)-[projection:IDENTIFIED_BY|LIVES_AT|HAS_FACT]->()
+  MATCH (person:Person)-[projection:IDENTIFIED_BY]->()
   WHERE projection.source_record_pk = source_record_pk
   RETURN person.person_id AS person_id
   UNION
   WITH source_record_pks
   UNWIND source_record_pks AS source_record_pk
-  MATCH (person:Person)-[context:PURCHASED|BOUGHT_VEHICLE|OWNS_VEHICLE]->()
+  MATCH (person:Person)-[projection:LIVES_AT]->()
+  WHERE projection.source_record_pk = source_record_pk
+  RETURN person.person_id AS person_id
+  UNION
+  WITH source_record_pks
+  UNWIND source_record_pks AS source_record_pk
+  MATCH (person:Person)-[projection:HAS_FACT]->()
+  WHERE projection.source_record_pk = source_record_pk
+  RETURN person.person_id AS person_id
+  UNION
+  WITH source_record_pks
+  UNWIND source_record_pks AS source_record_pk
+  MATCH (person:Person)-[context:PURCHASED]->()
+  WHERE context.source_record_pk = source_record_pk
+  RETURN person.person_id AS person_id
+  UNION
+  WITH source_record_pks
+  UNWIND source_record_pks AS source_record_pk
+  MATCH (person:Person)-[context:BOUGHT_VEHICLE]->()
+  WHERE context.source_record_pk = source_record_pk
+  RETURN person.person_id AS person_id
+  UNION
+  WITH source_record_pks
+  UNWIND source_record_pks AS source_record_pk
+  MATCH (person:Person)-[context:OWNS_VEHICLE]->()
   WHERE context.source_record_pk = source_record_pk
   RETURN person.person_id AS person_id
   UNION

@@ -32,8 +32,17 @@ def test_dirty_query_resolves_all_accepted_person_context_once() -> None:
     query = queries.MARK_PROFILE_ANALYSIS_DIRTY
 
     assert "MATCH (source)-[:LINKED_TO]->(direct:Person)" in query
-    assert "IDENTIFIED_BY|LIVES_AT|HAS_FACT" in query
-    assert "PURCHASED|BOUGHT_VEHICLE|OWNS_VEHICLE" in query
+    for relationship_type in (
+        "IDENTIFIED_BY",
+        "LIVES_AT",
+        "HAS_FACT",
+        "PURCHASED",
+        "BOUGHT_VEHICLE",
+        "OWNS_VEHICLE",
+    ):
+        assert f":{relationship_type}]->()" in query
+    assert "IDENTIFIED_BY|LIVES_AT|HAS_FACT" not in query
+    assert "PURCHASED|BOUGHT_VEHICLE|OWNS_VEHICLE" not in query
     assert "MATCH (left:Person)-[knows:KNOWS]->(right:Person)" in query
     assert "WITH DISTINCT person_id" in query
     assert "MATCH (person:Person {person_id: person_id, status: 'active'})" in query

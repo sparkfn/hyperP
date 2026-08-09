@@ -132,6 +132,25 @@ CREATE INDEX idx_person_updated_at IF NOT EXISTS
 CREATE INDEX idx_knows_source_record_pk IF NOT EXISTS
   FOR ()-[r:KNOWS]-() ON (r.source_record_pk);
 
+// Profile-analysis invalidation resolves accepted projections by source provenance.
+CREATE INDEX idx_identified_by_source_record_pk IF NOT EXISTS
+  FOR ()-[r:IDENTIFIED_BY]-() ON (r.source_record_pk);
+
+CREATE INDEX idx_lives_at_source_record_pk IF NOT EXISTS
+  FOR ()-[r:LIVES_AT]-() ON (r.source_record_pk);
+
+CREATE INDEX idx_has_fact_source_record_pk IF NOT EXISTS
+  FOR ()-[r:HAS_FACT]-() ON (r.source_record_pk);
+
+CREATE INDEX idx_purchased_source_record_pk IF NOT EXISTS
+  FOR ()-[r:PURCHASED]-() ON (r.source_record_pk);
+
+CREATE INDEX idx_bought_vehicle_source_record_pk IF NOT EXISTS
+  FOR ()-[r:BOUGHT_VEHICLE]-() ON (r.source_record_pk);
+
+CREATE INDEX idx_owns_vehicle_source_record_pk IF NOT EXISTS
+  FOR ()-[r:OWNS_VEHICLE]-() ON (r.source_record_pk);
+
 // Profile analysis history
 CREATE INDEX idx_profile_analysis_history IF NOT EXISTS
   FOR (pa:ProfileAnalysis)
