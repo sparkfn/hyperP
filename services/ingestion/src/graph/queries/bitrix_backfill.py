@@ -72,8 +72,16 @@ WHERE other.generation_id <> $generation_id
 WITH generation, logical, stream, other
 WHERE other IS NULL
 MERGE (generation)-[:HAS_LOGICAL_RUN {stream_key: $stream_key}]->(logical)
-MERGE (generation)-[:HAS_STREAM]->(stream)
-SET generation.status = CASE
+MERGE (generation)-[generation_stream:HAS_STREAM]->(stream)
+SET generation_stream.status = 'active',
+    generation_stream.logical_run_id = stream.logical_run_id,
+    generation_stream.ingest_run_id = stream.ingest_run_id,
+    generation_stream.attempt_generation = stream.attempt_generation,
+    generation_stream.stream_generation = stream.stream_generation,
+    generation_stream.fencing_token = stream.fencing_token,
+    generation_stream.attached_at = coalesce(generation_stream.attached_at, datetime()),
+    generation_stream.updated_at = datetime(),
+    generation.status = CASE
       WHEN generation.generation_kind = 'live_successor' THEN generation.status
       ELSE 'backfilling'
     END,
@@ -365,13 +373,20 @@ MATCH (generation)-[:HAS_LOGICAL_RUN]->(logical:IngestionLogicalRun)
 WITH generation, collect(logical) AS logicals
 WHERE size(logicals) > 0
   AND all(logical IN logicals WHERE logical.status IN ['completed', 'completed_with_errors'])
-MATCH (generation)-[:HAS_STREAM]->(stream:BitrixIngestionStream)
-WITH generation, logicals, collect(stream) AS streams
+MATCH (generation)-[generation_stream:HAS_STREAM]->(stream:BitrixIngestionStream)
+WITH generation, logicals, collect(stream) AS streams,
+     collect(generation_stream) AS generation_streams
 WHERE size(streams) = size(logicals)
+  AND size(generation_streams) = size(logicals)
 FOREACH (stream IN streams |
   SET stream.status = 'superseded',
       stream.ended_at = datetime(),
       stream.fence_lock_version = coalesce(stream.fence_lock_version, 0) + 1
+)
+FOREACH (generation_stream IN generation_streams |
+  SET generation_stream.status = 'superseded',
+      generation_stream.ended_at = datetime(),
+      generation_stream.updated_at = datetime()
 )
 UNWIND logicals AS logical
 OPTIONAL MATCH (checkpoint:IngestionCheckpoint {logical_run_id: logical.logical_run_id})
@@ -429,10 +444,13 @@ SET dispatch.blocked = true,
     dispatch.blocked_generation_id = $generation_id,
     dispatch.updated_at = datetime()
 WITH generation
-OPTIONAL MATCH (generation)-[:HAS_STREAM]->(stream:BitrixIngestionStream)
+OPTIONAL MATCH (generation)-[generation_stream:HAS_STREAM]->(stream:BitrixIngestionStream)
 SET stream.status = 'superseded',
     stream.ended_at = datetime(),
-    stream.fence_lock_version = coalesce(stream.fence_lock_version, 0) + 1
+    stream.fence_lock_version = coalesce(stream.fence_lock_version, 0) + 1,
+    generation_stream.status = 'superseded',
+    generation_stream.ended_at = datetime(),
+    generation_stream.updated_at = datetime()
 RETURN DISTINCT generation.generation_id AS generation_id
 """
 
@@ -504,18 +522,20 @@ VERIFY_BITRIX_SUCCESSOR_TAIL = """
 MATCH (corrective:BitrixBackfillGeneration {generation_id: $corrective_generation_id})
       -[:HAS_SUCCESSOR]->
       (successor:BitrixBackfillGeneration {generation_id: $successor_generation_id})
-OPTIONAL MATCH (corrective)-[:HAS_STREAM]->(old_stream:BitrixIngestionStream)
-WITH corrective, successor, collect(old_stream) AS old_streams
+OPTIONAL MATCH (corrective)-[old_relation:HAS_STREAM]->(:BitrixIngestionStream)
+WITH corrective, successor, collect(old_relation) AS old_relations
 MATCH (successor)-[:USES_INVENTORY]->(inventory:BitrixBackfillInventory)
 OPTIONAL MATCH (successor)-[relation:HAS_LOGICAL_RUN]->(logical:IngestionLogicalRun)
-WITH corrective, successor, old_streams, inventory.executed_stream_keys AS expected_streams,
+WITH corrective, successor, old_relations, inventory.executed_stream_keys AS expected_streams,
      collect(logical) AS live_runs,
      [key IN collect(relation.stream_key) WHERE key IS NOT NULL | key]
        AS actual_streams
 OPTIONAL MATCH (successor)-[:HAS_COVERAGE]->(coverage:BitrixBackfillCoverage)
 RETURN corrective.status AS corrective_status,
        successor.status AS successor_status,
-       all(stream IN old_streams WHERE stream.status = 'superseded') AS predecessor_frozen,
+       size(old_relations) > 0
+         AND all(relation IN old_relations WHERE relation.status = 'superseded')
+         AS predecessor_frozen,
        expected_streams,
        actual_streams,
        size(live_runs) AS cadence_run_count,

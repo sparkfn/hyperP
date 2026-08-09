@@ -8,10 +8,13 @@ from src.graph.queries.bitrix_backfill import (
     ACTIVATE_BITRIX_SUCCESSOR_GENERATION,
     ALLOCATE_BITRIX_BACKFILL_GENERATION,
     ALLOCATE_BITRIX_SUCCESSOR_GENERATION,
+    ATTACH_BACKFILL_LOGICAL_RUN,
     CAS_BITRIX_BACKFILL_GENERATION_STATUS,
     CONFIRM_BITRIX_SUCCESSOR_PUBLICATION,
+    FREEZE_BITRIX_BACKFILL_GENERATION,
     RECORD_BITRIX_QUALIFICATION,
     REJECT_BITRIX_BACKFILL_GENERATION,
+    VERIFY_BITRIX_SUCCESSOR_TAIL,
 )
 from src.graph.queries.ingestion_control import CREATE_LOGICAL_RUN_AND_ATTEMPT
 from src.graph.queries.source_records import (
@@ -48,6 +51,18 @@ def test_acceptance_and_activation_use_distinct_cas_bound_generations() -> None:
     assert "successor.status = 'activating'" in ACTIVATE_BITRIX_SUCCESSOR_GENERATION
     assert "successor.status = 'active'" in CONFIRM_BITRIX_SUCCESSOR_PUBLICATION
     assert "outbox.status = 'published'" in CONFIRM_BITRIX_SUCCESSOR_PUBLICATION
+
+
+def test_predecessor_freeze_is_generation_scoped() -> None:
+    assert "MERGE (generation)-[generation_stream:HAS_STREAM]->(stream)" in (
+        ATTACH_BACKFILL_LOGICAL_RUN
+    )
+    assert "generation_stream.fencing_token = stream.fencing_token" in (ATTACH_BACKFILL_LOGICAL_RUN)
+    assert "collect(generation_stream) AS generation_streams" in (FREEZE_BITRIX_BACKFILL_GENERATION)
+    assert "generation_stream.status = 'superseded'" in (FREEZE_BITRIX_BACKFILL_GENERATION)
+    assert "collect(old_relation) AS old_relations" in VERIFY_BITRIX_SUCCESSOR_TAIL
+    assert "relation.status = 'superseded'" in VERIFY_BITRIX_SUCCESSOR_TAIL
+    assert "old_streams" not in VERIFY_BITRIX_SUCCESSOR_TAIL
 
 
 def test_generation_allocation_preserves_scope_after_creation_token_removal() -> None:
