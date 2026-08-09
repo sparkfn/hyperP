@@ -31,6 +31,10 @@ def test_coverage_query_fails_closed_on_conflicting_replay() -> None:
     assert "source_identity: $source_identity" in UPSERT_BITRIX_BACKFILL_COVERAGE
     assert "source_boundary: $source_boundary" in UPSERT_BITRIX_BACKFILL_COVERAGE
     assert "coverage.outcome_digest = $outcome_digest" in UPSERT_BITRIX_BACKFILL_COVERAGE
+    assert (
+        "REMOVE coverage.creation_token\nWITH generation, coverage, created\nWHERE"
+        in UPSERT_BITRIX_BACKFILL_COVERAGE
+    )
     assert "CASE WHEN created THEN [1] ELSE []" in UPSERT_BITRIX_BACKFILL_COVERAGE
     assert "generation.status IN ['backfilling', 'reconciling', 'activating', 'active']" in (
         UPSERT_BITRIX_BACKFILL_COVERAGE
