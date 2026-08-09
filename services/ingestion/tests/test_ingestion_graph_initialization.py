@@ -57,9 +57,24 @@ def test_canonical_schema_contains_person_and_knows_performance_indexes() -> Non
         "idx_person_high_risk",
         "idx_person_updated_at",
         "idx_knows_source_record_pk",
+        "idx_identified_by_source_record_pk",
+        "idx_lives_at_source_record_pk",
+        "idx_has_fact_source_record_pk",
+        "idx_purchased_source_record_pk",
+        "idx_bought_vehicle_source_record_pk",
+        "idx_owns_vehicle_source_record_pk",
     ):
         assert name in schema
     assert "FOR ()-[r:KNOWS]-() ON (r.source_record_pk)" in schema
+    for relationship_type in (
+        "IDENTIFIED_BY",
+        "LIVES_AT",
+        "HAS_FACT",
+        "PURCHASED",
+        "BOUGHT_VEHICLE",
+        "OWNS_VEHICLE",
+    ):
+        assert f"FOR ()-[r:{relationship_type}]-() ON (r.source_record_pk)" in schema
 
 
 def test_data_migrations_precede_source_version_uniqueness(
