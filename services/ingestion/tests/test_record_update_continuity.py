@@ -37,6 +37,35 @@ def test_retire_identity_projections_returns_sorted_distinct_owners() -> None:
     assert retire_identity_projections(_Tx(), "old-sr") == ("person-a", "person-b")  # type: ignore[arg-type]
 
 
+class _ScopedTx:
+    def run(self, query: str, **params: object) -> _Rows:
+        assert query == queries.RETIRE_IDENTITY_PROJECTIONS_FOR_PERSONS
+        assert params == {
+            "source_record_pk": "old-sr",
+            "person_ids": ["person-a", "person-b"],
+        }
+        return _Rows()
+
+
+def test_retire_identity_projections_scopes_through_known_prior_owners() -> None:
+    assert retire_identity_projections(
+        _ScopedTx(),  # type: ignore[arg-type]
+        "old-sr",
+        person_ids=("person-b", "person-a", "person-a"),
+    ) == ("person-a", "person-b")
+
+
+def test_scoped_retirement_preserves_source_version_fencing() -> None:
+    query = queries.RETIRE_IDENTITY_PROJECTIONS_FOR_PERSONS
+    assert "UNWIND $person_ids AS person_id" in query
+    assert query.count("source_record_pk = $source_record_pk") == 3
+    assert "Person {person_id: person_id}" in query
+    assert "IDENTIFIED_BY" in query
+    assert "LIVES_AT" in query
+    assert "HAS_FACT" in query
+    assert "DELETE" not in query
+
+
 def test_create_source_record_stores_authoritative_lifecycle_identity() -> None:
     query = queries.CREATE_SOURCE_RECORD
     assert "lifecycle_status:     $lifecycle_status" in query
@@ -411,12 +440,12 @@ def test_unchanged_crm_identity_update_reuses_continuity_without_rematching() ->
     pipeline._match_engine.evaluate.assert_not_called()
     upsert.assert_not_called()
     assert persist.call_args.kwargs["match_result"].reasons == ["unchanged_crm_identity_continuity"]
-    retire.assert_called_once_with(tx, "old-sr")
+    retire.assert_called_once_with(tx, "old-sr", person_ids=("person-a",))
     activate.assert_called_once()
     golden.assert_not_called()
     audit.assert_not_called()
     merge_event.assert_not_called()
-    dirty.assert_called_once()
+    dirty.assert_called_once_with(tx, source_record_pks=(), person_ids={"person-a"})
 
 
 def test_crm_contact_change_uses_full_matching_and_projection_refresh() -> None:

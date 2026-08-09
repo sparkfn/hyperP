@@ -197,12 +197,30 @@ def create_person(tx: ManagedTransaction) -> str:
     return person_id
 
 
-def retire_identity_projections(tx: ManagedTransaction, source_record_pk: str) -> tuple[str, ...]:
-    """Deactivate identity evidence belonging strictly to one source version."""
-    rows = tx.run(
-        queries.RETIRE_IDENTITY_PROJECTIONS,
-        source_record_pk=source_record_pk,
-    )
+def retire_identity_projections(
+    tx: ManagedTransaction,
+    source_record_pk: str,
+    *,
+    person_ids: tuple[str, ...] = (),
+) -> tuple[str, ...]:
+    """Deactivate identity evidence belonging strictly to one source version.
+
+    When the lifecycle fence already proved the complete prior owner set, scope
+    projection retirement through those indexed Person nodes. This preserves
+    the same source-version semantics without scanning every relationship of
+    each projection type in the graph.
+    """
+    if person_ids:
+        rows = tx.run(
+            queries.RETIRE_IDENTITY_PROJECTIONS_FOR_PERSONS,
+            source_record_pk=source_record_pk,
+            person_ids=sorted(set(person_ids)),
+        )
+    else:
+        rows = tx.run(
+            queries.RETIRE_IDENTITY_PROJECTIONS,
+            source_record_pk=source_record_pk,
+        )
     return tuple(sorted({str(row["person_id"]) for row in rows}))
 
 
