@@ -242,6 +242,25 @@ def _skipped_split_summary(
     }
 
 
+def _get_or_materialize_known_owner_set(
+    *,
+    client: Neo4jClient,
+    generation_id: str,
+    membership_set_id: str,
+) -> KnownOwnerMembershipSet:
+    repository = BitrixBackfillRepository(client)
+    existing = repository.find_known_owner_set(
+        generation_id=generation_id,
+        membership_set_id=membership_set_id,
+    )
+    if existing is not None:
+        return existing
+    return repository.materialize_known_owner_set(
+        generation_id=generation_id,
+        membership_set_id=membership_set_id,
+    )
+
+
 def _run_split_bitrix_ingestion(
     *,
     source_key: str,
@@ -396,7 +415,8 @@ def _run_split_bitrix_ingestion(
         )
         if membership_set_id is not None and membership is None:
             assert generation_context is not None
-            membership = BitrixBackfillRepository(client).materialize_known_owner_set(
+            membership = _get_or_materialize_known_owner_set(
+                client=client,
                 generation_id=generation_context.generation_id,
                 membership_set_id=membership_set_id,
             )

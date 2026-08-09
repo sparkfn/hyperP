@@ -8,6 +8,7 @@ from typing import cast
 import pytest
 from pytest import MonkeyPatch
 from src import tasks
+from src.bitrix_backfill_models import KnownOwnerMembershipSet
 from src.bitrix_ingestion_models import FenceContext
 from src.graph.ingestion_control_models import (
     BitrixStreamAdmission,
@@ -189,3 +190,71 @@ def test_split_task_requires_stable_idempotency_key() -> None:
             "backfill",
             bitrix_execution_stream="crm_deals",
         )
+
+
+def test_resume_reuses_existing_sealed_known_owner_set(monkeypatch: MonkeyPatch) -> None:
+    existing = KnownOwnerMembershipSet(
+        generation_id="generation-1",
+        membership_set_id="owners-1",
+        digest="sha256:owners",
+        deal_ids=("2", "10"),
+    )
+    calls: list[str] = []
+
+    class Repository:
+        def __init__(self, _client: object) -> None:
+            pass
+
+        def find_known_owner_set(self, **_parameters: object) -> KnownOwnerMembershipSet | None:
+            calls.append("find")
+            return existing
+
+        def materialize_known_owner_set(self, **_parameters: object) -> KnownOwnerMembershipSet:
+            calls.append("materialize")
+            raise AssertionError("a sealed resume set must never be rebuilt from mutable scope")
+
+    monkeypatch.setattr(tasks, "BitrixBackfillRepository", Repository)
+
+    membership = tasks._get_or_materialize_known_owner_set(
+        client=object(),
+        generation_id="generation-1",
+        membership_set_id="owners-1",
+    )
+
+    assert membership is existing
+    assert calls == ["find"]
+
+
+def test_first_census_materializes_missing_known_owner_set(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    created = KnownOwnerMembershipSet(
+        generation_id="generation-1",
+        membership_set_id="owners-1",
+        digest="sha256:owners",
+        deal_ids=("2", "10"),
+    )
+    calls: list[str] = []
+
+    class Repository:
+        def __init__(self, _client: object) -> None:
+            pass
+
+        def find_known_owner_set(self, **_parameters: object) -> KnownOwnerMembershipSet | None:
+            calls.append("find")
+            return None
+
+        def materialize_known_owner_set(self, **_parameters: object) -> KnownOwnerMembershipSet:
+            calls.append("materialize")
+            return created
+
+    monkeypatch.setattr(tasks, "BitrixBackfillRepository", Repository)
+
+    membership = tasks._get_or_materialize_known_owner_set(
+        client=object(),
+        generation_id="generation-1",
+        membership_set_id="owners-1",
+    )
+
+    assert membership is created
+    assert calls == ["find", "materialize"]

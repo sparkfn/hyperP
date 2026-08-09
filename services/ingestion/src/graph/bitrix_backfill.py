@@ -513,20 +513,20 @@ class BitrixBackfillRepository:
 
         return self._client.execute_write(_write)
 
-    def get_known_owner_set(
+    def find_known_owner_set(
         self,
         *,
         generation_id: str,
         membership_set_id: str,
-    ) -> KnownOwnerMembershipSet:
-        def _read(tx: ManagedTransaction) -> KnownOwnerMembershipSet:
+    ) -> KnownOwnerMembershipSet | None:
+        def _read(tx: ManagedTransaction) -> KnownOwnerMembershipSet | None:
             record = tx.run(
                 GET_KNOWN_OWNER_SET,
                 generation_id=generation_id,
                 membership_set_id=membership_set_id,
             ).single()
             if record is None:
-                raise RuntimeError("corrective generation has no sealed known-owner set")
+                return None
             raw_ids: object = record["deal_ids"]
             if not isinstance(raw_ids, list) or not all(
                 isinstance(value, str) for value in raw_ids
@@ -547,6 +547,20 @@ class BitrixBackfillRepository:
             )
 
         return self._client.execute_read(_read)
+
+    def get_known_owner_set(
+        self,
+        *,
+        generation_id: str,
+        membership_set_id: str,
+    ) -> KnownOwnerMembershipSet:
+        membership = self.find_known_owner_set(
+            generation_id=generation_id,
+            membership_set_id=membership_set_id,
+        )
+        if membership is None:
+            raise RuntimeError("corrective generation has no sealed known-owner set")
+        return membership
 
     def reconcile_coverage(
         self,
