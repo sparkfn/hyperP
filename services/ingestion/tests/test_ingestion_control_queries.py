@@ -81,6 +81,10 @@ def test_new_logical_run_starts_with_a_queued_attempt_and_checkpoint() -> None:
     assert "logical.configuration_fingerprint = $configuration_fingerprint" in (
         CREATE_LOGICAL_RUN_AND_ATTEMPT
     )
+    assert (
+        "coalesce(logical.creation_token = $creation_token, false) AS created"
+        in CREATE_LOGICAL_RUN_AND_ATTEMPT
+    )
 
 
 def test_completion_is_fenced_and_refuses_a_pending_stop() -> None:

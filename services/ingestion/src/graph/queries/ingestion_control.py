@@ -164,7 +164,7 @@ ON CREATE SET
   logical.created_at = datetime(),
   logical.updated_at = datetime(),
   logical.creation_token = $creation_token
-WITH source, logical, logical.creation_token = $creation_token AS created
+WITH source, logical, coalesce(logical.creation_token = $creation_token, false) AS created
 MERGE (logical)-[:FOR_SOURCE]->(source)
 REMOVE logical.creation_token
 WITH source, logical, created
