@@ -385,10 +385,18 @@ RETURN logical.logical_run_id AS logical_run_id,
 
 CREATE_RESUME_ATTEMPT = """
 MATCH (logical:IngestionLogicalRun {logical_run_id: $logical_run_id})
-      -[active_relation:ACTIVE_ATTEMPT]->(prior:IngestRun)
 MATCH (logical)-[:FOR_SOURCE]->(source:SourceSystem)
+OPTIONAL MATCH (logical)-[active_relation:ACTIVE_ATTEMPT]->(active_prior:IngestRun)
+OPTIONAL MATCH (logical)-[:HAS_ATTEMPT]->(historical_prior:IngestRun)
+WITH logical, source, active_relation, active_prior, historical_prior
+ORDER BY historical_prior.queued_at DESC
+WITH logical, source, active_relation, active_prior,
+     collect(historical_prior)[0] AS latest_prior
+WITH logical, source, active_relation,
+     coalesce(active_prior, latest_prior) AS prior
 MATCH (checkpoint:IngestionCheckpoint {logical_run_id: $logical_run_id})
-WHERE logical.status IN ['paused_with_checkpoint', 'failed']
+WHERE prior IS NOT NULL
+  AND logical.status IN ['paused_with_checkpoint', 'failed']
   AND checkpoint.status IN ['paused', 'active']
   AND logical.active_generation = checkpoint.generation
   AND logical.configuration_fingerprint = $configuration_fingerprint
@@ -396,7 +404,7 @@ WHERE logical.status IN ['paused_with_checkpoint', 'failed']
   AND logical.checkpoint_schema_version = $checkpoint_schema_version
   AND checkpoint.connector_version = $connector_version
   AND checkpoint.schema_version = $checkpoint_schema_version
-WITH logical, prior, active_relation, checkpoint,
+WITH logical, source, active_relation, prior, checkpoint,
      logical.active_generation + 1 AS generation
 SET logical.active_generation = generation,
     logical.status = 'queued',
@@ -429,7 +437,9 @@ CREATE (attempt:IngestRun {
 })
 CREATE (attempt)-[:FROM_SOURCE]->(source)
 CREATE (logical)-[:HAS_ATTEMPT]->(attempt)
-DELETE active_relation
+FOREACH (relation IN CASE WHEN active_relation IS NULL THEN [] ELSE [active_relation] END |
+  DELETE relation
+)
 CREATE (logical)-[:ACTIVE_ATTEMPT]->(attempt)
 MERGE (checkpoint)-[:PRODUCED_BY]->(attempt)
 RETURN logical.logical_run_id AS logical_run_id,
