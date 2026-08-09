@@ -374,6 +374,25 @@ WITH generation, collect(logical) AS logicals
 WHERE size(logicals) > 0
   AND all(logical IN logicals WHERE logical.status IN ['completed', 'completed_with_errors'])
 MATCH (generation)-[generation_stream:HAS_STREAM]->(stream:BitrixIngestionStream)
+SET generation_stream.logical_run_id = coalesce(
+      generation_stream.logical_run_id, stream.logical_run_id
+    ),
+    generation_stream.ingest_run_id = coalesce(
+      generation_stream.ingest_run_id, stream.ingest_run_id
+    ),
+    generation_stream.attempt_generation = coalesce(
+      generation_stream.attempt_generation, stream.attempt_generation
+    ),
+    generation_stream.stream_generation = coalesce(
+      generation_stream.stream_generation, stream.stream_generation
+    ),
+    generation_stream.fencing_token = coalesce(
+      generation_stream.fencing_token, stream.fencing_token
+    ),
+    generation_stream.attached_at = coalesce(
+      generation_stream.attached_at, stream.started_at, datetime()
+    ),
+    generation_stream.updated_at = datetime()
 WITH generation, logicals, collect(stream) AS streams,
      collect(generation_stream) AS generation_streams
 WHERE size(streams) = size(logicals)
@@ -445,7 +464,25 @@ SET dispatch.blocked = true,
     dispatch.updated_at = datetime()
 WITH generation
 OPTIONAL MATCH (generation)-[generation_stream:HAS_STREAM]->(stream:BitrixIngestionStream)
-SET stream.status = 'superseded',
+SET generation_stream.logical_run_id = coalesce(
+      generation_stream.logical_run_id, stream.logical_run_id
+    ),
+    generation_stream.ingest_run_id = coalesce(
+      generation_stream.ingest_run_id, stream.ingest_run_id
+    ),
+    generation_stream.attempt_generation = coalesce(
+      generation_stream.attempt_generation, stream.attempt_generation
+    ),
+    generation_stream.stream_generation = coalesce(
+      generation_stream.stream_generation, stream.stream_generation
+    ),
+    generation_stream.fencing_token = coalesce(
+      generation_stream.fencing_token, stream.fencing_token
+    ),
+    generation_stream.attached_at = coalesce(
+      generation_stream.attached_at, stream.started_at, datetime()
+    ),
+    stream.status = 'superseded',
     stream.ended_at = datetime(),
     stream.fence_lock_version = coalesce(stream.fence_lock_version, 0) + 1,
     generation_stream.status = 'superseded',
