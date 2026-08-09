@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Iterator
 from contextlib import ExitStack
 from typing import cast
@@ -328,3 +329,143 @@ def test_duplicate_open_hash_returns_existing_record_without_writes(status: str)
     assert result.skipped_duplicate is True
     assert result.source_record_pk == f"{status}-sr"
     assert tx.calls == [queries.LOCK_AND_GET_SOURCE_STATE]
+
+
+def _crm_deal_envelope(*, contact_ids: list[str] | None = None) -> SourceRecordEnvelope:
+    ids = contact_ids or ["contact-1"]
+    return SourceRecordEnvelope(
+        source_system="bitrix_chat",
+        source_record_id="bitrix-crm-deal-5",
+        source_record_version="2",
+        record_type=RecordType.CRM_DEAL,
+        observed_at="2026-08-09T00:00:00Z",
+        record_hash="changed-raw-hash",
+        entity_key="eko",
+        raw_payload={
+            "category_id": "2",
+            "stage_id": "NEW",
+            "primary_contact_id": ids[0],
+            "primary_contact_kind": "contact",
+            "contact_count": len(ids),
+            "crm_contact_groups": [
+                [{"type": "crm_contact_id", "value": item, "is_verified": True}] for item in ids
+            ],
+            "crm_contact_ids": ids,
+            "crm_contact_resolution_required": len(ids) > 1,
+            "deal": {"ID": "5"},
+        },
+    )
+
+
+def _crm_normalized_payload() -> str:
+    return json.dumps(
+        {
+            "identifiers": [],
+            "address": None,
+            "addresses": [],
+            "attributes": [],
+            "knows_relationships": [],
+        }
+    )
+
+
+def test_unchanged_crm_identity_update_reuses_continuity_without_rematching() -> None:
+    pipeline = IngestPipeline(cast(object, MagicMock()))
+    pipeline._match_engine = MagicMock()
+    tx = cast(ManagedTransaction, MagicMock())
+    envelope = _crm_deal_envelope()
+    plan = PlannedVersion(
+        version=2,
+        active_source_record_pk="old-sr",
+        prior_person_ids=("person-a",),
+        pending_to_reject=None,
+        active_normalized_payload=_crm_normalized_payload(),
+        active_raw_payload=json.dumps(envelope.raw_payload),
+    )
+
+    with ExitStack() as stack:
+        find = stack.enter_context(patch("src.pipeline.find_candidates", return_value=[]))
+        upsert = stack.enter_context(patch("src.pipeline.upsert_nodes"))
+        persist = stack.enter_context(
+            patch("src.pipeline.persist_source_record", return_value="new-sr")
+        )
+        stack.enter_context(patch("src.pipeline.persist_match_decision", return_value="decision-1"))
+        stack.enter_context(patch("src.pipeline.create_review_case_if_needed", return_value=None))
+        stack.enter_context(patch("src.pipeline.link_record_to_graph"))
+        retire = stack.enter_context(
+            patch("src.pipeline.retire_identity_projections", return_value=("person-a",))
+        )
+        activate = stack.enter_context(patch("src.pipeline.activate_staged_version"))
+        stack.enter_context(patch("src.pipeline.materialize_bankruptcy_case"))
+        golden = stack.enter_context(patch("src.pipeline.compute_golden_profile"))
+        audit = stack.enter_context(patch("src.pipeline.audit_person_pairs"))
+        dirty = stack.enter_context(patch("src.pipeline.mark_profile_analysis_dirty"))
+        merge_event = stack.enter_context(patch("src.pipeline.record_auto_merge_event"))
+        stack.enter_context(patch.object(pipeline, "_write_chat_vehicle_observations"))
+
+        result = pipeline._execute_ingest(tx, envelope, [], [], [], lifecycle_plan=plan)
+
+    assert result.person_id == "person-a"
+    assert result.match_decision is MatchDecision.MERGE
+    find.assert_not_called()
+    pipeline._match_engine.evaluate.assert_not_called()
+    upsert.assert_not_called()
+    assert persist.call_args.kwargs["match_result"].reasons == ["unchanged_crm_identity_continuity"]
+    retire.assert_called_once_with(tx, "old-sr")
+    activate.assert_called_once()
+    golden.assert_not_called()
+    audit.assert_not_called()
+    merge_event.assert_not_called()
+    dirty.assert_called_once()
+
+
+def test_crm_contact_change_uses_full_matching_and_projection_refresh() -> None:
+    pipeline = IngestPipeline(cast(object, MagicMock()))
+    pipeline._match_engine = MagicMock(
+        evaluate=MagicMock(
+            return_value=MatchResult(
+                decision=MatchDecision.MERGE,
+                confidence=1.0,
+                matched_person_id="person-a",
+            )
+        )
+    )
+    tx = cast(ManagedTransaction, MagicMock())
+    envelope = _crm_deal_envelope(contact_ids=["contact-1"])
+    prior_raw = dict(envelope.raw_payload)
+    prior_raw["crm_contact_ids"] = ["contact-old"]
+    plan = PlannedVersion(
+        version=2,
+        active_source_record_pk="old-sr",
+        prior_person_ids=("person-a",),
+        pending_to_reject=None,
+        active_normalized_payload=_crm_normalized_payload(),
+        active_raw_payload=json.dumps(prior_raw),
+    )
+
+    with ExitStack() as stack:
+        find = stack.enter_context(patch("src.pipeline.find_candidates", return_value=[]))
+        upsert = stack.enter_context(patch("src.pipeline.upsert_nodes"))
+        stack.enter_context(patch("src.pipeline.persist_source_record", return_value="new-sr"))
+        stack.enter_context(patch("src.pipeline.persist_match_decision", return_value="decision-1"))
+        stack.enter_context(patch("src.pipeline.create_review_case_if_needed", return_value=None))
+        stack.enter_context(patch("src.pipeline.link_record_to_graph"))
+        stack.enter_context(
+            patch("src.pipeline.retire_identity_projections", return_value=("person-a",))
+        )
+        stack.enter_context(patch("src.pipeline.activate_staged_version"))
+        stack.enter_context(patch("src.pipeline.materialize_bankruptcy_case"))
+        golden = stack.enter_context(patch("src.pipeline.compute_golden_profile"))
+        audit = stack.enter_context(patch("src.pipeline.audit_person_pairs"))
+        stack.enter_context(patch("src.pipeline.mark_profile_analysis_dirty"))
+        merge_event = stack.enter_context(patch("src.pipeline.record_auto_merge_event"))
+        stack.enter_context(patch.object(pipeline, "_write_chat_vehicle_observations"))
+
+        pipeline._execute_ingest(tx, envelope, [], [], [], lifecycle_plan=plan)
+
+    find.assert_called_once()
+    pipeline._match_engine.evaluate.assert_called_once()
+    upsert.assert_called_once()
+    golden.assert_called_once_with(tx, "person-a")
+    audit.assert_called_once()
+    merge_event.assert_called_once()

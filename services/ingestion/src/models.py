@@ -156,6 +156,8 @@ class SourceVersionState:
     record_hash: str
     lifecycle_status: SourceRecordLifecycleStatus
     linked_person_ids: tuple[str, ...]
+    normalized_payload: str | None = None
+    raw_payload: str | None = None
 
 
 @dataclass(frozen=True)

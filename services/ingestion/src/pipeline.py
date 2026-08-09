@@ -15,6 +15,7 @@ check, so the per-record flow is readable end-to-end in one screen.
 
 from __future__ import annotations
 
+import json
 import logging
 
 from neo4j import ManagedTransaction
@@ -57,6 +58,7 @@ from src.pipeline_normalization import (
 )
 from src.pipeline_person_pairs import audit_person_pairs
 from src.pipeline_writes import (
+    build_normalized_source_payload,
     create_person,
     create_review_case_if_needed,
     find_candidates,
@@ -98,6 +100,15 @@ def _is_match_only_record(source_key: str, record_type: RecordType) -> bool:
 
 
 logger = logging.getLogger(__name__)
+
+_CRM_DEAL_CONTINUITY_RAW_KEYS = (
+    "primary_contact_id",
+    "primary_contact_kind",
+    "contact_count",
+    "crm_contact_groups",
+    "crm_contact_ids",
+    "crm_contact_resolution_required",
+)
 
 
 class IngestPipeline:
@@ -274,43 +285,67 @@ class IngestPipeline:
             )
         if lifecycle_plan.pending_to_reject is not None:
             reject_replaced_pending(tx, lifecycle_plan.pending_to_reject)
-        candidates = find_candidates(tx, identifiers, addresses)
-        multi_contact_person_id = self._resolve_ambiguous_crm_deal_contacts(tx, envelope)
-        if (
-            self._requires_ambiguous_crm_contact_resolution(envelope)
-            and multi_contact_person_id is None
-        ):
-            logger.info(
-                "Dropping CRM deal %s: contacts do not resolve to one existing person",
-                envelope.source_record_id,
-            )
-            return IngestResult(
-                source_record_id=envelope.source_record_id,
-                ingest_run_id=ingest_run_id,
-                dropped=True,
-            )
-        if multi_contact_person_id is not None:
+        activation_blueprint = self._activation_blueprint(
+            envelope,
+            active_exclusion_context,
+        )
+        continuity_fast_path = self._has_unchanged_crm_identity(
+            envelope=envelope,
+            identifiers=identifiers,
+            addresses=addresses,
+            attributes=attributes,
+            activation_blueprint=activation_blueprint,
+            lifecycle_plan=lifecycle_plan,
+        )
+        if continuity_fast_path:
+            candidates: list[CandidateResult] = []
             match_result = MatchResult(
                 decision=MatchDecision.MERGE,
                 confidence=1.0,
-                reasons=["All non-primary CRM contacts resolve to the same existing person"],
+                reasons=["unchanged_crm_identity_continuity"],
                 engine_type=EngineType.DETERMINISTIC,
-                matched_person_id=multi_contact_person_id,
+                matched_person_id=lifecycle_plan.prior_person_ids[0],
             )
-        elif len(lifecycle_plan.prior_person_ids) > 1:
-            match_result = ambiguous_prior_owners_result(lifecycle_plan.prior_person_ids)
         else:
-            match_result = self._match_engine.evaluate(
-                tx,
-                candidates,
-                identifiers,
-                addresses[0] if addresses else None,
-                attributes,
-                record_type=envelope.record_type,
-                continuity_person_id=(
-                    lifecycle_plan.prior_person_ids[0] if lifecycle_plan.prior_person_ids else None
-                ),
-            )
+            candidates = find_candidates(tx, identifiers, addresses)
+            multi_contact_person_id = self._resolve_ambiguous_crm_deal_contacts(tx, envelope)
+            if (
+                self._requires_ambiguous_crm_contact_resolution(envelope)
+                and multi_contact_person_id is None
+            ):
+                logger.info(
+                    "Dropping CRM deal %s: contacts do not resolve to one existing person",
+                    envelope.source_record_id,
+                )
+                return IngestResult(
+                    source_record_id=envelope.source_record_id,
+                    ingest_run_id=ingest_run_id,
+                    dropped=True,
+                )
+            if multi_contact_person_id is not None:
+                match_result = MatchResult(
+                    decision=MatchDecision.MERGE,
+                    confidence=1.0,
+                    reasons=["All non-primary CRM contacts resolve to the same existing person"],
+                    engine_type=EngineType.DETERMINISTIC,
+                    matched_person_id=multi_contact_person_id,
+                )
+            elif len(lifecycle_plan.prior_person_ids) > 1:
+                match_result = ambiguous_prior_owners_result(lifecycle_plan.prior_person_ids)
+            else:
+                match_result = self._match_engine.evaluate(
+                    tx,
+                    candidates,
+                    identifiers,
+                    addresses[0] if addresses else None,
+                    attributes,
+                    record_type=envelope.record_type,
+                    continuity_person_id=(
+                        lifecycle_plan.prior_person_ids[0]
+                        if lifecycle_plan.prior_person_ids
+                        else None
+                    ),
+                )
         if _is_match_only_record(
             envelope.source_system, envelope.record_type
         ) and not self._has_usable_match(match_result, candidates):
@@ -325,7 +360,8 @@ class IngestPipeline:
                 ingest_run_id=ingest_run_id,
                 dropped=True,
             )
-        upsert_nodes(tx, identifiers, addresses)
+        if not continuity_fast_path:
+            upsert_nodes(tx, identifiers, addresses)
         person_id, is_new_person = self._resolve_person(tx, match_result, candidates)
         source_record_pk = persist_source_record(
             tx,
@@ -338,7 +374,7 @@ class IngestPipeline:
             ingest_run_id=ingest_run_id,
             lifecycle_status=SourceRecordLifecycleStatus.PENDING_REVIEW,
             expected_active_source_record_pk=lifecycle_plan.active_source_record_pk,
-            activation_blueprint=self._activation_blueprint(envelope, active_exclusion_context),
+            activation_blueprint=activation_blueprint,
         )
         match_decision_id = persist_match_decision(tx, match_result, source_record_pk)
         review_case_id = create_review_case_if_needed(tx, match_result, match_decision_id)
@@ -426,9 +462,10 @@ class IngestPipeline:
                     queries.ACTIVATE_PENDING_CALLS_FOR_DEAL,
                     deal_source_record_pk=source_record_pk,
                 )
-            for affected_person_id in sorted(affected_person_ids):
-                compute_golden_profile(tx, affected_person_id)
-            audit_person_pairs(tx, identifiers, envelope.record_type)
+            if not continuity_fast_path:
+                for affected_person_id in sorted(affected_person_ids):
+                    compute_golden_profile(tx, affected_person_id)
+                audit_person_pairs(tx, identifiers, envelope.record_type)
             mark_profile_analysis_dirty(
                 tx,
                 source_record_pks=(
@@ -437,7 +474,11 @@ class IngestPipeline:
                 ),
                 person_ids=affected_person_ids,
             )
-        if match_result.decision == MatchDecision.MERGE and not is_new_person:
+        if (
+            match_result.decision == MatchDecision.MERGE
+            and not is_new_person
+            and not continuity_fast_path
+        ):
             record_auto_merge_event(
                 tx,
                 match_result=match_result,
@@ -549,6 +590,46 @@ class IngestPipeline:
             )
         blueprint["vehicle_mentions"] = mentions
         return blueprint
+
+    @staticmethod
+    def _has_unchanged_crm_identity(
+        *,
+        envelope: SourceRecordEnvelope,
+        identifiers: list[NormalizedIdentifier],
+        addresses: list[NormalizedAddressModel],
+        attributes: list[NormalizedAttribute],
+        activation_blueprint: dict[str, JsonValue],
+        lifecycle_plan: PlannedVersion,
+    ) -> bool:
+        """Reuse one prior owner only when every identity-bearing value is unchanged."""
+        if (
+            envelope.record_type is not RecordType.CRM_DEAL
+            or lifecycle_plan.active_source_record_pk is None
+            or len(lifecycle_plan.prior_person_ids) != 1
+            or lifecycle_plan.active_normalized_payload is None
+            or lifecycle_plan.active_raw_payload is None
+        ):
+            return False
+        try:
+            prior_normalized = json.loads(lifecycle_plan.active_normalized_payload)
+            prior_raw = json.loads(lifecycle_plan.active_raw_payload)
+        except (TypeError, ValueError):
+            return False
+        if not isinstance(prior_normalized, dict) or not isinstance(prior_raw, dict):
+            return False
+        incoming_normalized = build_normalized_source_payload(
+            envelope=envelope,
+            identifiers=identifiers,
+            addresses=addresses,
+            attributes=attributes,
+            activation_blueprint=activation_blueprint,
+        )
+        if prior_normalized != incoming_normalized:
+            return False
+        return all(
+            prior_raw.get(key) == envelope.raw_payload.get(key)
+            for key in _CRM_DEAL_CONTINUITY_RAW_KEYS
+        )
 
     @staticmethod
     def _has_usable_match(
