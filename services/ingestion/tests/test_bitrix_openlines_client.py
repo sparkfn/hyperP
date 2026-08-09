@@ -937,6 +937,83 @@ def test_client_rejects_batch_command_errors() -> None:
         client.get_deals([501])
 
 
+def test_client_skips_missing_related_contacts_in_batch_hydration(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        commands = body["cmd"]
+        results: dict[str, object] = {}
+        errors: dict[str, object] = {}
+        for command_key, command in commands.items():
+            entity_id = command.rsplit("=", 1)[-1]
+            if command.startswith("crm.deal.get?"):
+                results[command_key] = {"ID": entity_id, "CONTACT_ID": "400"}
+            elif command.startswith("crm.deal.contact.items.get?"):
+                results[command_key] = [
+                    {"CONTACT_ID": "400"},
+                    {"CONTACT_ID": "401"},
+                ]
+            elif entity_id == "400":
+                errors[command_key] = {"error": "CRM_CONTACT_NOT_FOUND"}
+            else:
+                results[command_key] = {"ID": entity_id, "NAME": "Available"}
+        return httpx.Response(
+            200,
+            json={"result": {"result": results, "result_error": errors}},
+        )
+
+    client = BitrixOpenLinesClient(
+        base_url="https://bitrix.test/rest/hook",
+        timeout_seconds=5,
+        max_attempts=1,
+        http=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+
+    deal = client.get_deals([501])[0]
+
+    assert [contact.id for contact in deal.contacts] == ["401"]
+    assert deal.primary_contact is None
+    assert deal.contact_count == 2
+    assert deal.has_ambiguous_contacts is False
+    assert "skipped 1 missing related CRM records" in caplog.text
+
+
+def test_client_rejects_unexpected_related_contact_batch_errors() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        commands = body["cmd"]
+        command_key, command = next(iter(commands.items()))
+        if command.startswith("crm.deal.get?"):
+            result: object = {"ID": "501", "CONTACT_ID": "400"}
+        elif command.startswith("crm.deal.contact.items.get?"):
+            result = [{"CONTACT_ID": "400"}]
+        else:
+            return httpx.Response(
+                200,
+                json={
+                    "result": {
+                        "result": {},
+                        "result_error": {command_key: {"error": "ACCESS_DENIED"}},
+                    }
+                },
+            )
+        return httpx.Response(
+            200,
+            json={"result": {"result": {command_key: result}, "result_error": {}}},
+        )
+
+    client = BitrixOpenLinesClient(
+        base_url="https://bitrix.test/rest/hook",
+        timeout_seconds=5,
+        max_attempts=1,
+        http=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+
+    with pytest.raises(RuntimeError, match="contact batch contained a command error"):
+        client.get_deals([501])
+
+
 def test_client_treats_zero_contact_and_lead_ids_as_unset() -> None:
     methods: list[str] = []
 
