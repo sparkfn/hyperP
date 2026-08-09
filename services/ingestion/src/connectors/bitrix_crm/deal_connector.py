@@ -28,7 +28,7 @@ class CrmDealClient(Protocol):
         order_direction: str = "ASC",
     ) -> CrmDealCapabilityPage: ...
 
-    def get_deal(self, deal_id: int) -> CrmDeal: ...
+    def get_deals(self, deal_ids: Collection[int]) -> list[CrmDeal]: ...
 
     def close(self) -> None: ...
 
@@ -72,8 +72,10 @@ class BitrixCrmDealConnector(SourceConnector):
                 raise RuntimeError("Bitrix deal backfill keyset was not strictly increasing")
             if cursor is not None and ids and ids[0] <= cursor:
                 raise RuntimeError("Bitrix deal backfill keyset did not advance")
-            for item in page.items:
-                deal = self._client.get_deal(int(item.deal_id))
+            deals = self._client.get_deals(ids)
+            if [int(deal.id) for deal in deals] != ids:
+                raise RuntimeError("Bitrix deal hydration did not preserve capability order")
+            for item, deal in zip(page.items, deals, strict=True):
                 category_id = deal.category_id
                 if category_id != item.category_id:
                     raise RuntimeError("Bitrix deal changed category during bounded hydration")

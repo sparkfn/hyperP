@@ -767,6 +767,141 @@ def test_client_fetches_all_deal_contacts_and_call_activity_details() -> None:
     assert ("crm.deal.contact.items.get", {"id": 501}) in requests
 
 
+def test_client_batches_deal_contact_and_lead_hydration() -> None:
+    batches: list[dict[str, str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path.endswith("/batch")
+        body = json.loads(request.content)
+        commands = body["cmd"]
+        assert isinstance(commands, dict)
+        batches.append(commands)
+        results: dict[str, object] = {}
+        for command_key, command in commands.items():
+            if command.startswith("crm.deal.get?"):
+                deal_id = command.rsplit("=", 1)[-1]
+                results[command_key] = {
+                    "ID": deal_id,
+                    "TITLE": f"Deal {deal_id}",
+                    "CATEGORY_ID": "2",
+                    "STAGE_ID": "C2:NEW",
+                    "CONTACT_ID": "400" if deal_id == "501" else "0",
+                    "LEAD_ID": "700" if deal_id == "503" else "0",
+                }
+            elif command.startswith("crm.deal.contact.items.get?"):
+                deal_id = command.rsplit("=", 1)[-1]
+                associations = {
+                    "501": [{"CONTACT_ID": "400"}, {"CONTACT_ID": "401"}],
+                    "502": [{"CONTACT_ID": "402"}, {"CONTACT_ID": "403"}],
+                    "503": [],
+                }
+                results[command_key] = associations[deal_id]
+            elif command.startswith("crm.contact.get?"):
+                contact_id = command.rsplit("=", 1)[-1]
+                results[command_key] = {"ID": contact_id, "NAME": f"Contact {contact_id}"}
+            else:
+                assert command.startswith("crm.lead.get?")
+                lead_id = command.rsplit("=", 1)[-1]
+                results[command_key] = {"ID": lead_id, "NAME": f"Lead {lead_id}"}
+        return httpx.Response(
+            200,
+            json={"result": {"result": results, "result_error": {}}},
+        )
+
+    client = BitrixOpenLinesClient(
+        base_url="https://bitrix.test/rest/hook",
+        timeout_seconds=5,
+        max_attempts=1,
+        http=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+
+    deals = client.get_deals([501, 502, 503])
+
+    assert [deal.id for deal in deals] == ["501", "502", "503"]
+    assert [contact.id for contact in deals[0].contacts] == ["400", "401"]
+    assert deals[0].primary_contact is not None
+    assert deals[0].primary_contact.id == "400"
+    assert deals[0].has_ambiguous_contacts is False
+    assert [contact.id for contact in deals[1].contacts] == ["402", "403"]
+    assert deals[1].primary_contact is None
+    assert deals[1].has_ambiguous_contacts is True
+    assert deals[2].primary_contact is not None
+    assert deals[2].primary_contact.id == "700"
+    assert [contact.kind for contact in deals[2].contacts] == ["lead"]
+    assert len(batches) == 4
+    assert [len(batch) for batch in batches] == [3, 3, 4, 1]
+
+
+def test_client_splits_more_than_fifty_unique_contact_commands() -> None:
+    batch_sizes: list[tuple[str, int]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        commands = body["cmd"]
+        assert isinstance(commands, dict)
+        first_command = next(iter(commands.values()))
+        assert isinstance(first_command, str)
+        batch_sizes.append((first_command.split("?", 1)[0], len(commands)))
+        results: dict[str, object] = {}
+        for command_key, command in commands.items():
+            entity_id = command.rsplit("=", 1)[-1]
+            if command.startswith("crm.deal.get?"):
+                results[command_key] = {"ID": entity_id, "CATEGORY_ID": "2"}
+            elif command.startswith("crm.deal.contact.items.get?"):
+                results[command_key] = [
+                    {"CONTACT_ID": str(contact_id)} for contact_id in range(1, 52)
+                ]
+            else:
+                assert command.startswith("crm.contact.get?")
+                results[command_key] = {"ID": entity_id, "NAME": f"Contact {entity_id}"}
+        return httpx.Response(
+            200,
+            json={"result": {"result": results, "result_error": {}}},
+        )
+
+    client = BitrixOpenLinesClient(
+        base_url="https://bitrix.test/rest/hook",
+        timeout_seconds=5,
+        max_attempts=1,
+        http=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+
+    deal = client.get_deals([501])[0]
+
+    assert len(deal.contacts) == 51
+    assert deal.contact_count == 51
+    assert deal.has_ambiguous_contacts is True
+    assert batch_sizes == [
+        ("crm.deal.get", 1),
+        ("crm.deal.contact.items.get", 1),
+        ("crm.contact.get", 50),
+        ("crm.contact.get", 1),
+    ]
+
+
+def test_client_rejects_batch_command_errors() -> None:
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "result": {
+                    "result": {},
+                    "result_error": {"deal_0": {"error": "ERROR_NOT_FOUND"}},
+                }
+            },
+        )
+
+    client = BitrixOpenLinesClient(
+        base_url="https://bitrix.test/rest/hook",
+        timeout_seconds=5,
+        max_attempts=1,
+        http=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+
+    with pytest.raises(RuntimeError, match="deal batch contained a command error"):
+        client.get_deals([501])
+
+
 def test_client_treats_zero_contact_and_lead_ids_as_unset() -> None:
     methods: list[str] = []
 
