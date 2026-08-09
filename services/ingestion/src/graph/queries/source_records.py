@@ -28,6 +28,8 @@ RETURN sr.source_record_pk AS source_record_pk,
            ELSE sr.lifecycle_status
        END AS lifecycle_status,
        collect(DISTINCT person.person_id) AS linked_person_ids,
+       sr.normalized_payload AS normalized_payload,
+       sr.raw_payload AS raw_payload,
        max_source_record_version
 ORDER BY toInteger(sr.source_record_version) DESC
 """

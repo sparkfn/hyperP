@@ -21,6 +21,8 @@ class PlannedVersion:
     active_source_record_pk: str | None
     prior_person_ids: tuple[str, ...]
     pending_to_reject: str | None
+    active_normalized_payload: str | None = None
+    active_raw_payload: str | None = None
 
 
 class SourceLifecycleConflict(RuntimeError):  # noqa: N818 - required domain term
@@ -56,6 +58,10 @@ def plan_incoming_version(
         ),
         prior_person_ids=(state.active.linked_person_ids if state.active is not None else ()),
         pending_to_reject=(state.pending.source_record_pk if state.pending is not None else None),
+        active_normalized_payload=(
+            state.active.normalized_payload if state.active is not None else None
+        ),
+        active_raw_payload=(state.active.raw_payload if state.active is not None else None),
     )
 
 
@@ -71,6 +77,18 @@ def _parse_string(row: Record, key: str) -> str:
     value = _row_value(row, key)
     if not isinstance(value, str):
         raise SourceLifecycleDataError(f"{key} must be a string")
+    return value
+
+
+def _parse_optional_string(row: Record, key: str) -> str | None:
+    try:
+        value: object = row[key]
+    except KeyError:
+        return None
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise SourceLifecycleDataError(f"{key} must be a string or null")
     return value
 
 
@@ -127,6 +145,8 @@ def _parse_version_state(row: Record) -> SourceVersionState | None:
         record_hash=_parse_string(row, "record_hash"),
         lifecycle_status=status,
         linked_person_ids=_parse_person_ids(row),
+        normalized_payload=_parse_optional_string(row, "normalized_payload"),
+        raw_payload=_parse_optional_string(row, "raw_payload"),
     )
 
 

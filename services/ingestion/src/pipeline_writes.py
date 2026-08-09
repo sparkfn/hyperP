@@ -229,34 +229,13 @@ def persist_source_record(
     activation_blueprint: dict[str, JsonValue] | None = None,
 ) -> str:
     """Step 7 + 7b: persist SourceRecord and link to IngestRun."""
-    normalized: dict[str, JsonValue] = {
-        "identifiers": [i.model_dump() for i in identifiers],
-        "address": addresses[0].model_dump() if addresses else None,
-        "addresses": [address.model_dump() for address in addresses],
-        "attributes": [a.model_dump() for a in attributes],
-    }
-    if activation_blueprint is not None:
-        normalized.update(activation_blueprint)
-    summary = envelope.raw_payload.get("summary")
-    if (
-        envelope.record_type.value == "conversation"
-        and isinstance(summary, str)
-        and summary.strip()
-    ):
-        normalized["summary"] = summary.strip()
-    if envelope.record_type.value == "conversation":
-        for key, enum_type in _CHAT_CLASSIFICATION_TYPES.items():
-            value = envelope.raw_payload.get(key)
-            if not isinstance(value, str):
-                continue
-            try:
-                normalized[key] = enum_type(value).value
-            except ValueError:
-                continue
-        for key in ("customer_sentiment", "chat_members", "inquiries"):
-            value = envelope.raw_payload.get(key)
-            if value is not None:
-                normalized[key] = value
+    normalized = build_normalized_source_payload(
+        envelope=envelope,
+        identifiers=identifiers,
+        addresses=addresses,
+        attributes=attributes,
+        activation_blueprint=activation_blueprint,
+    )
     is_linked = match_result.decision == MatchDecision.MERGE or is_new_person
     conv_ref = (
         json.dumps(envelope.conversation_ref, default=str)
@@ -368,6 +347,46 @@ def create_review_case_if_needed(
         match_decision_id,
     )
     return review_case_id
+
+
+def build_normalized_source_payload(
+    *,
+    envelope: SourceRecordEnvelope,
+    identifiers: list[NormalizedIdentifier],
+    addresses: list[NormalizedAddressModel],
+    attributes: list[NormalizedAttribute],
+    activation_blueprint: dict[str, JsonValue] | None = None,
+) -> dict[str, JsonValue]:
+    """Build the canonical normalized payload stored on a SourceRecord."""
+    normalized: dict[str, JsonValue] = {
+        "identifiers": [i.model_dump() for i in identifiers],
+        "address": addresses[0].model_dump() if addresses else None,
+        "addresses": [address.model_dump() for address in addresses],
+        "attributes": [a.model_dump() for a in attributes],
+    }
+    if activation_blueprint is not None:
+        normalized.update(activation_blueprint)
+    summary = envelope.raw_payload.get("summary")
+    if (
+        envelope.record_type.value == "conversation"
+        and isinstance(summary, str)
+        and summary.strip()
+    ):
+        normalized["summary"] = summary.strip()
+    if envelope.record_type.value == "conversation":
+        for key, enum_type in _CHAT_CLASSIFICATION_TYPES.items():
+            value = envelope.raw_payload.get(key)
+            if not isinstance(value, str):
+                continue
+            try:
+                normalized[key] = enum_type(value).value
+            except ValueError:
+                continue
+        for key in ("customer_sentiment", "chat_members", "inquiries"):
+            value = envelope.raw_payload.get(key)
+            if value is not None:
+                normalized[key] = value
+    return normalized
 
 
 def _attribute_str(envelope: SourceRecordEnvelope, key: str) -> str:
