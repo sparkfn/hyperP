@@ -602,9 +602,9 @@ class BitrixOpenLinesClient:
         raw_errors = raw_batch.get("result_error")
         if not isinstance(raw_results, dict):
             raise RuntimeError(f"Bitrix {context} batch omitted command results")
-        if raw_errors is not None and not isinstance(raw_errors, dict):
+        if raw_errors is not None and not isinstance(raw_errors, dict | list):
             raise RuntimeError(f"Bitrix {context} batch returned invalid command errors")
-        if isinstance(raw_errors, dict) and raw_errors:
+        if isinstance(raw_errors, dict | list) and raw_errors:
             raise RuntimeError(f"Bitrix {context} batch contained a command error")
         missing = set(commands).difference(raw_results)
         if missing:

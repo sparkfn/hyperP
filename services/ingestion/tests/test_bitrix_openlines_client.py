@@ -879,6 +879,41 @@ def test_client_splits_more_than_fifty_unique_contact_commands() -> None:
     ]
 
 
+def test_client_accepts_bitrix_empty_list_for_batch_command_errors() -> None:
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        body = json.loads(request.content)
+        commands = body["cmd"]
+        results: dict[str, object] = {}
+        for command_key, command in commands.items():
+            entity_id = command.rsplit("=", 1)[-1]
+            if command.startswith("crm.deal.get?"):
+                results[command_key] = {"ID": entity_id, "CATEGORY_ID": "2"}
+            else:
+                assert command.startswith("crm.deal.contact.items.get?")
+                results[command_key] = []
+        return httpx.Response(
+            200,
+            json={"result": {"result": results, "result_error": []}},
+        )
+
+    client = BitrixOpenLinesClient(
+        base_url="https://bitrix.test/rest/hook",
+        timeout_seconds=5,
+        max_attempts=1,
+        http=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+
+    deal = client.get_deals([501])[0]
+
+    assert deal.id == "501"
+    assert deal.contacts == ()
+    assert calls == 2
+
+
 def test_client_rejects_batch_command_errors() -> None:
     def handler(_request: httpx.Request) -> httpx.Response:
         return httpx.Response(
