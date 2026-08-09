@@ -59,6 +59,16 @@ def test_predecessor_freeze_is_generation_scoped() -> None:
     )
     assert "generation_stream.fencing_token = stream.fencing_token" in (ATTACH_BACKFILL_LOGICAL_RUN)
     assert "collect(generation_stream) AS generation_streams" in (FREEZE_BITRIX_BACKFILL_GENERATION)
+    for field in (
+        "logical_run_id",
+        "ingest_run_id",
+        "attempt_generation",
+        "stream_generation",
+        "fencing_token",
+    ):
+        snapshot = f"generation_stream.{field}, stream.{field}"
+        assert snapshot in FREEZE_BITRIX_BACKFILL_GENERATION
+        assert snapshot in REJECT_BITRIX_BACKFILL_GENERATION
     assert "generation_stream.status = 'superseded'" in (FREEZE_BITRIX_BACKFILL_GENERATION)
     assert "collect(old_relation) AS old_relations" in VERIFY_BITRIX_SUCCESSOR_TAIL
     assert "relation.status = 'superseded'" in VERIFY_BITRIX_SUCCESSOR_TAIL
