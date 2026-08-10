@@ -492,8 +492,8 @@ WHERE logical.active_generation = $generation
   AND attempt.generation = $generation
   AND current.generation = $generation
   AND current.status = 'active'
-  AND logical.connector_version = $connector_version
-  AND logical.checkpoint_schema_version = $checkpoint_schema_version
+  AND current.connector_version = logical.connector_version
+  AND current.schema_version = logical.checkpoint_schema_version
   AND logical.status IN ['running', 'stop_requested']
 OPTIONAL MATCH (existing_next:IngestionCheckpoint {
   logical_run_id: $logical_run_id,
