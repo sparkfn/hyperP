@@ -362,7 +362,15 @@ def _owner_scope_or_retry(
         ).single()
         if record is None:
             raise RuntimeError("activity owner retry evidence was not persisted") from exc
-        return None
+        return _reviewed_owner_scope(record["status"])
+
+
+def _reviewed_owner_scope(status: object) -> str | None:
+    if status == "reviewed_excluded":
+        return "out_of_scope"
+    if status != "retryable":
+        raise RuntimeError("activity owner retry returned an invalid review status")
+    return None
 
 
 def _record_activity_unit(

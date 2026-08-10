@@ -724,14 +724,20 @@ MERGE (retry:BitrixActivityOwnerRetry {
   source_identity: $source_identity,
   source_boundary: $source_boundary
 })
-ON CREATE SET retry.created_at = datetime(), retry.attempt_count = 0
+ON CREATE SET retry.created_at = datetime(),
+              retry.attempt_count = 0,
+              retry.status = 'retryable'
 SET retry.owner_deal_id = $owner_deal_id,
     retry.owner_state = $owner_state,
-    retry.status = 'retryable',
+    retry.status = CASE
+      WHEN retry.status = 'reviewed_excluded' THEN retry.status
+      ELSE 'retryable'
+    END,
     retry.attempt_count = retry.attempt_count + 1,
     retry.updated_at = datetime()
 MERGE (generation)-[:HAS_OWNER_RETRY]->(retry)
-RETURN retry.attempt_count AS attempt_count
+RETURN retry.attempt_count AS attempt_count,
+       retry.status AS status
 """
 
 RESOLVE_BITRIX_ACTIVITY_OWNER_RETRY = """
