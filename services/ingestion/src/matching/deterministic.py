@@ -13,7 +13,6 @@ import logging
 
 from neo4j import ManagedTransaction
 
-from src.graph import queries
 from src.models import (
     SYSTEM_FAMILY,
     EngineType,
@@ -30,14 +29,22 @@ logger = logging.getLogger(__name__)
 
 # Cypher snippets only used by this module — kept here so the deterministic
 # layer is self-contained.
-_FIND_OWNERS_OF_IDENTIFIER = """
+_FIND_ACTIVE_NO_MATCH_LOCKS = """
+UNWIND $candidate_inputs AS candidate_input
+MATCH (candidate:Person {person_id: candidate_input.person_id})
+UNWIND $identifier_inputs AS identifier_input
 MATCH (id:Identifier {
-    identifier_type: $identifier_type,
-    normalized_value: $normalized_value
+    identifier_type: identifier_input.identifier_type,
+    normalized_value: identifier_input.normalized_value
 })<-[rel:IDENTIFIED_BY]-(owner:Person {status: 'active'})
 WHERE rel.is_active = true
-  AND owner.person_id <> $candidate_person_id
-RETURN owner.person_id AS owner_person_id
+  AND owner.person_id <> candidate.person_id
+MATCH (owner)-[lock:NO_MATCH_LOCK]-(candidate)
+WHERE lock.expires_at IS NULL OR lock.expires_at > datetime()
+WITH candidate_input, identifier_input, owner
+ORDER BY candidate_input.input_index, identifier_input.input_index, owner.person_id
+RETURN candidate_input.person_id AS candidate_person_id,
+       owner.person_id AS owner_person_id
 """
 
 _PERSON_HAS_IDENTIFIER = """
@@ -93,6 +100,8 @@ def evaluate_deterministic(
     identifiers: list[NormalizedIdentifier],
     attributes: list[NormalizedAttribute],
     record_type: RecordType,
+    *,
+    no_match_lock_owners: dict[str, str] | None = None,
 ) -> MatchResult | None:
     """Apply hard rules. Returns a result or ``None`` to fall through.
 
@@ -100,7 +109,16 @@ def evaluate_deterministic(
     only support for the matching identifier is a conversation source
     record, the deterministic merge should likewise be suppressed.
     """
-    if locked := _check_no_match_lock(tx, candidate_person_id, identifiers):
+    if no_match_lock_owners is None:
+        locked = _check_no_match_lock(tx, candidate_person_id, identifiers)
+    else:
+        owner_person_id = no_match_lock_owners.get(candidate_person_id)
+        locked = (
+            _no_match_lock_result(owner_person_id, candidate_person_id)
+            if owner_person_id is not None
+            else None
+        )
+    if locked is not None:
         return locked
     if govt := _check_government_id(tx, candidate_person_id, identifiers):
         # Conflicting govt IDs (hard NO_MATCH) still apply for conversation
@@ -116,46 +134,73 @@ def evaluate_deterministic(
     return None
 
 
+def prefetch_no_match_lock_owners(
+    tx: ManagedTransaction,
+    candidate_person_ids: list[str],
+    identifiers: list[NormalizedIdentifier],
+) -> dict[str, str]:
+    """Return one active lock owner per blocked candidate in a single query.
+
+    Candidate and identifier input indexes preserve the engine's evaluation
+    order. The owner ID is used only for the persisted explanation; the hard
+    NO_MATCH decision remains identical when several active owners exist.
+    """
+    identifier_inputs = [
+        {
+            "input_index": input_index,
+            "identifier_type": ident.identifier_type,
+            "normalized_value": ident.normalized_value,
+        }
+        for input_index, ident in enumerate(identifiers)
+        if is_usable(ident.quality_flag)
+    ]
+    if not candidate_person_ids or not identifier_inputs:
+        return {}
+
+    candidate_inputs = [
+        {"input_index": input_index, "person_id": person_id}
+        for input_index, person_id in enumerate(candidate_person_ids)
+    ]
+    owners: dict[str, str] = {}
+    for record in tx.run(
+        _FIND_ACTIVE_NO_MATCH_LOCKS,
+        candidate_inputs=candidate_inputs,
+        identifier_inputs=identifier_inputs,
+    ):
+        candidate_person_id = str(record["candidate_person_id"])
+        owners.setdefault(candidate_person_id, str(record["owner_person_id"]))
+    return owners
+
+
 def _check_no_match_lock(
     tx: ManagedTransaction,
     candidate_person_id: str,
     identifiers: list[NormalizedIdentifier],
 ) -> MatchResult | None:
-    """Hard NO_MATCH if any owner of these identifiers has a lock vs. candidate."""
-    for ident in identifiers:
-        if not is_usable(ident.quality_flag):
-            continue
-        owner_result = tx.run(
-            _FIND_OWNERS_OF_IDENTIFIER,
-            identifier_type=ident.identifier_type,
-            normalized_value=ident.normalized_value,
-            candidate_person_id=candidate_person_id,
-        )
-        for owner_rec in owner_result:
-            owner_pid = owner_rec["owner_person_id"]
-            lock_result = tx.run(
-                queries.CHECK_NO_MATCH_LOCK,
-                left_person_id=owner_pid,
-                right_person_id=candidate_person_id,
-            )
-            lock_rec = lock_result.single()
-            if lock_rec and lock_rec["is_locked"]:
-                logger.info(
-                    "NO_MATCH_LOCK between %s and candidate %s — hard no-match",
-                    owner_pid,
-                    candidate_person_id,
-                )
-                return MatchResult(
-                    decision=MatchDecision.NO_MATCH,
-                    confidence=1.0,
-                    reasons=[
-                        f"NO_MATCH_LOCK exists between person {owner_pid} "
-                        f"and candidate {candidate_person_id}"
-                    ],
-                    engine_type=EngineType.DETERMINISTIC,
-                    matched_person_id=None,
-                )
-    return None
+    """Hard NO_MATCH if an identifier owner has an active lock vs. candidate."""
+    owners = prefetch_no_match_lock_owners(tx, [candidate_person_id], identifiers)
+    owner_person_id = owners.get(candidate_person_id)
+    if owner_person_id is None:
+        return None
+    return _no_match_lock_result(owner_person_id, candidate_person_id)
+
+
+def _no_match_lock_result(owner_person_id: str, candidate_person_id: str) -> MatchResult:
+    logger.info(
+        "NO_MATCH_LOCK between %s and candidate %s - hard no-match",
+        owner_person_id,
+        candidate_person_id,
+    )
+    return MatchResult(
+        decision=MatchDecision.NO_MATCH,
+        confidence=1.0,
+        reasons=[
+            f"NO_MATCH_LOCK exists between person {owner_person_id} "
+            f"and candidate {candidate_person_id}"
+        ],
+        engine_type=EngineType.DETERMINISTIC,
+        matched_person_id=None,
+    )
 
 
 def _check_government_id(
