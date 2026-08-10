@@ -207,6 +207,39 @@ RETURN addr.address_id AS address_id,
        rel.last_confirmed_at AS last_confirmed_at
 """
 
+# Matching needs only compact, value-level evidence. Golden-profile recomputation
+# deliberately retains the full provenance-bearing queries above.
+FETCH_PERSON_MATCH_IDENTIFIERS = """
+MATCH (p:Person {person_id: $person_id})-[rel:IDENTIFIED_BY]->(id:Identifier)
+WHERE rel.is_active = true
+  AND id.identifier_type IN ['phone', 'email']
+OPTIONAL MATCH (src:SourceRecord {source_record_pk: rel.source_record_pk})
+RETURN id.identifier_type AS identifier_type,
+       id.normalized_value AS normalized_value,
+       max(CASE WHEN rel.is_verified = true THEN 1 ELSE 0 END) = 1 AS is_verified,
+       max(rel.last_confirmed_at) AS last_confirmed_at,
+       max(
+         CASE
+           WHEN src.record_type IS NOT NULL AND src.record_type <> 'conversation' THEN 1
+           ELSE 0
+         END
+       ) = 1 AS is_system_sourced
+"""
+
+FETCH_PERSON_MATCH_FACTS = """
+MATCH (p:Person {person_id: $person_id})-[f:HAS_FACT]->(:SourceRecord)
+WHERE coalesce(f.is_active, true) = true
+  AND f.attribute_name IN ['full_name', 'preferred_name', 'legal_name', 'dob']
+RETURN DISTINCT f.attribute_name AS attribute_name,
+                f.attribute_value AS attribute_value
+"""
+
+FETCH_PERSON_MATCH_ADDRESSES = """
+MATCH (p:Person {person_id: $person_id})-[rel:LIVES_AT]->(addr:Address)
+WHERE rel.is_active = true
+RETURN DISTINCT addr.normalized_full AS normalized_full
+"""
+
 FIND_BIRTHDAY_PERSONS = """
 MATCH (p:Person)
 WHERE p.status = 'active'
