@@ -123,6 +123,8 @@ def evaluate_heuristic(
     address: NormalizedAddress | None,
     attributes: list[NormalizedAttribute],
     record_type: RecordType = RecordType.IDENTITY,
+    *,
+    phone_fanout_cache: dict[str, int] | None = None,
 ) -> MatchResult:
     """Conditional-weight heuristic scoring across phone/email/DOB/name/address."""
     snapshot = fetch_candidate_snapshot(tx, candidate_person_id)
@@ -131,7 +133,14 @@ def evaluate_heuristic(
     reasons: list[str] = []
     signals = HeuristicSignals()
 
-    raw_ident_evidence = _score_identifiers(tx, identifiers, snapshot, reasons, signals)
+    raw_ident_evidence = _score_identifiers(
+        tx,
+        identifiers,
+        snapshot,
+        reasons,
+        signals,
+        phone_fanout_cache=phone_fanout_cache,
+    )
     signals.identifier_evidence_raw = raw_ident_evidence
     score += _cap_identifier_evidence(raw_ident_evidence, reasons)
     score += _score_dob(attributes, snapshot, reasons, signals)
@@ -173,6 +182,8 @@ def _score_identifiers(
     snapshot: CandidateSnapshot,
     reasons: list[str],
     signals: HeuristicSignals,
+    *,
+    phone_fanout_cache: dict[str, int] | None = None,
 ) -> float:
     """Phone + email match scoring; returns raw (uncapped) identifier evidence.
 
@@ -181,6 +192,7 @@ def _score_identifiers(
     a net negative versus no match at all.
     """
     evidence = 0.0
+    fanout_cache = phone_fanout_cache if phone_fanout_cache is not None else {}
     cand_phones = snapshot.phones_by_value()
     cand_emails = snapshot.emails_by_value()
 
@@ -197,12 +209,15 @@ def _score_identifiers(
             reasons.append(
                 f"Phone match ({'verified' if verified else 'unverified'}: +{weight:.2f})"
             )
-            fanout_rec = tx.run(
-                queries.CHECK_IDENTIFIER_FANOUT,
-                identifier_type="phone",
-                normalized_value=ident.normalized_value,
-            ).single()
-            fanout = int(fanout_rec["fanout"]) if fanout_rec else 0
+            fanout = fanout_cache.get(ident.normalized_value)
+            if fanout is None:
+                fanout_rec = tx.run(
+                    queries.CHECK_IDENTIFIER_FANOUT,
+                    identifier_type="phone",
+                    normalized_value=ident.normalized_value,
+                ).single()
+                fanout = int(fanout_rec["fanout"]) if fanout_rec else 0
+                fanout_cache[ident.normalized_value] = fanout
             if fanout > PHONE_FANOUT_PENALTY_THRESHOLD:
                 evidence += PHONE_FANOUT_PENALTY
                 signals.phone_high_fanout = True

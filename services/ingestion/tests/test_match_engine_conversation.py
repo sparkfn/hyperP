@@ -31,6 +31,7 @@ class _Tx:
     def __init__(self, *, phone_fanout: int = 1, identifier_source_type: str = "system") -> None:
         self.phone_fanout = phone_fanout
         self.identifier_source_type = identifier_source_type
+        self.fanout_calls = 0
 
     def run(self, query: str, **params: object) -> _Result:
         _ = params
@@ -70,6 +71,7 @@ class _Tx:
         if "MATCH (p:Person {person_id: $person_id})-[rel:LIVES_AT]->" in query:
             return _Result([])
         if "AS fanout" in query:
+            self.fanout_calls += 1
             return _Result([{"fanout": self.phone_fanout}])
         return _Result([])
 
@@ -235,3 +237,36 @@ def test_conversation_record_does_not_auto_merge_high_fanout_phone() -> None:
     )
 
     assert result.decision != MatchDecision.MERGE
+
+
+def test_match_engine_reuses_phone_fanout_across_candidates() -> None:
+    tx = _Tx()
+    MatchEngine().evaluate(
+        tx,  # type: ignore[arg-type]
+        [CandidateResult(person_id="person-1"), CandidateResult(person_id="person-2")],
+        [
+            NormalizedIdentifier(
+                identifier_type="phone",
+                normalized_value="+6512345678",
+                is_verified=False,
+                quality_flag=QualityFlag.VALID,
+            ),
+            NormalizedIdentifier(
+                identifier_type="email",
+                normalized_value="ada@example.com",
+                is_verified=False,
+                quality_flag=QualityFlag.VALID,
+            ),
+        ],
+        None,
+        [
+            NormalizedAttribute(
+                attribute_name="full_name",
+                attribute_value="Ada Lovelace",
+                quality_flag=QualityFlag.VALID,
+            )
+        ],
+        record_type=RecordType.CONVERSATION,
+    )
+
+    assert tx.fanout_calls == 1

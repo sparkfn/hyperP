@@ -85,6 +85,7 @@ class MatchEngine:
             )
         collected: list[MatchResult] = []
         continuity_result: MatchResult | None = None
+        phone_fanout_cache: dict[str, int] = {}
 
         # Evaluate every candidate (no short-circuit on the first deterministic
         # MERGE): an incoming record that independently MERGE-matches more than
@@ -98,6 +99,7 @@ class MatchEngine:
                 address,
                 attributes,
                 record_type,
+                phone_fanout_cache,
             )
             if per_candidate is None:
                 continue
@@ -184,6 +186,7 @@ class MatchEngine:
         address: NormalizedAddress | None,
         attributes: list[NormalizedAttribute],
         record_type: RecordType,
+        phone_fanout_cache: dict[str, int],
     ) -> MatchResult | None:
         """Run one candidate through deterministic → heuristic → LLM."""
         det = evaluate_deterministic(
@@ -206,6 +209,7 @@ class MatchEngine:
             address,
             attributes,
             record_type,
+            phone_fanout_cache=phone_fanout_cache,
         )
         if heur.decision != MatchDecision.NO_MATCH:
             return heur

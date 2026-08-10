@@ -24,6 +24,8 @@ class CandidateSnapshot:
         "addrs",
         "_phones_by_value",
         "_emails_by_value",
+        "_phones",
+        "_emails",
         "_names",
         "_dobs",
     )
@@ -40,6 +42,8 @@ class CandidateSnapshot:
         self.addrs = addrs
         self._phones_by_value: dict[str, RecordDict] | None = None
         self._emails_by_value: dict[str, RecordDict] | None = None
+        self._phones: list[RecordDict] | None = None
+        self._emails: list[RecordDict] | None = None
         self._names: list[str] | None = None
         self._dobs: list[str] | None = None
 
@@ -63,11 +67,15 @@ class CandidateSnapshot:
 
     def phones(self) -> list[RecordDict]:
         """All candidate phone identifier records (for approximate matching)."""
-        return [i for i in self.idents if i.get("identifier_type") == "phone"]
+        if self._phones is None:
+            self._phones = [i for i in self.idents if i.get("identifier_type") == "phone"]
+        return self._phones
 
     def emails(self) -> list[RecordDict]:
         """All candidate email identifier records (for approximate matching)."""
-        return [i for i in self.idents if i.get("identifier_type") == "email"]
+        if self._emails is None:
+            self._emails = [i for i in self.idents if i.get("identifier_type") == "email"]
+        return self._emails
 
     def names(self) -> list[str]:
         if self._names is None:

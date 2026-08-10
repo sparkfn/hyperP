@@ -78,3 +78,22 @@ def test_email_short_local_part_is_not_near_match() -> None:
 
 def test_email_identical_addresses_are_not_near_match() -> None:
     assert email_near_match("john@gmail.com", "john@gmail.com") is False
+
+
+def test_phone_near_match_reuses_parsed_normalized_values(monkeypatch: object) -> None:
+    from src.matching import identifier_similarity as similarity
+
+    original_parse = similarity.phonenumbers.parse
+    calls = 0
+
+    def counting_parse(value: str, region: str | None) -> object:
+        nonlocal calls
+        calls += 1
+        return original_parse(value, region)
+
+    monkeypatch.setattr(similarity.phonenumbers, "parse", counting_parse)  # type: ignore[attr-defined]
+    similarity._region_and_nsn.cache_clear()
+    for _ in range(10):
+        assert similarity.phone_near_match("+6591234567", "+6591234568") is True
+
+    assert calls == 2
