@@ -9,6 +9,8 @@ review threshold.
 
 from __future__ import annotations
 
+from functools import lru_cache
+
 import phonenumbers
 
 from src.matching.similarity import damerau_levenshtein_distance, jaro_winkler_similarity
@@ -49,6 +51,7 @@ EMAIL_KNOWN_DOMAINS = frozenset(
 _NON_GEOGRAPHIC_REGION = "001"
 
 
+@lru_cache(maxsize=65_536)
 def _region_and_nsn(value: str) -> tuple[str, str] | None:
     """Return ``(region_code, national_significant_number)`` for an E.164 value.
 
@@ -86,6 +89,7 @@ def phone_near_match(value1: str, value2: str) -> bool:
     return damerau_levenshtein_distance(nsn1, nsn2) == PHONE_NSN_EDIT_DISTANCE_THRESHOLD
 
 
+@lru_cache(maxsize=65_536)
 def _split_email(value: str) -> tuple[str, str] | None:
     local, sep, domain = value.rpartition("@")
     if not sep or not local or not domain:

@@ -80,3 +80,10 @@ def test_fetch_candidate_snapshot_uses_matching_only_compacted_queries() -> None
     assert snapshot.phones_by_value()["+6591234567"]["is_system_sourced"] is True
     assert snapshot.names() == ["Ada"]
     assert snapshot.addrs == [{"normalized_full": "1 ada street"}]
+
+
+def test_phone_and_email_lists_are_reused_during_one_candidate_score() -> None:
+    snapshot = _snapshot()
+
+    assert snapshot.phones() is snapshot.phones()
+    assert snapshot.emails() is snapshot.emails()
