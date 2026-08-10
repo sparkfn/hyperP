@@ -101,7 +101,7 @@ def _normalize_phone_with_hint(
 def normalize_envelope_identifiers(
     envelope: SourceRecordEnvelope,
 ) -> list[NormalizedIdentifier]:
-    results: list[NormalizedIdentifier] = []
+    results: dict[tuple[str, str], NormalizedIdentifier] = {}
     for raw_id in envelope.identifiers:
         id_type = raw_id.type.lower().strip()
         if id_type == "phone":
@@ -110,14 +110,26 @@ def normalize_envelope_identifiers(
             normalizer = _IDENTIFIER_NORMALIZERS.get(id_type, _passthrough_normalize)
             normalized, flag = normalizer(raw_id.value)
         if normalized:
-            results.append(
-                NormalizedIdentifier(
+            key = (id_type, normalized)
+            existing = results.get(key)
+            if existing is None:
+                results[key] = NormalizedIdentifier(
                     identifier_type=id_type,
                     normalized_value=normalized,
                     is_verified=raw_id.is_verified,
                     quality_flag=flag,
                 )
-            )
+            else:
+                results[key] = existing.model_copy(
+                    update={
+                        "is_verified": existing.is_verified or raw_id.is_verified,
+                        "quality_flag": (
+                            QualityFlag.VALID
+                            if QualityFlag.VALID in {existing.quality_flag, flag}
+                            else existing.quality_flag
+                        ),
+                    }
+                )
         else:
             logger.warning(
                 "%s normalization failed for %s: %s",
@@ -125,7 +137,7 @@ def normalize_envelope_identifiers(
                 raw_id.value,
                 flag,
             )
-    return results
+    return list(results.values())
 
 
 def normalize_envelope_addresses(

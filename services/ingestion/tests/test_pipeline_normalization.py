@@ -46,3 +46,18 @@ def test_non_phone_identifiers_ignore_region_hint() -> None:
     envelope = _envelope(RawIdentifier(type="email", value="Ada@Example.com", region_hint="MY"))
     results = normalize_envelope_identifiers(envelope)
     assert results[0].normalized_value == "ada@example.com"
+
+
+def test_duplicate_normalized_identifiers_collapse_to_strongest_evidence() -> None:
+    envelope = _envelope(
+        RawIdentifier(type="phone", value="96542555", is_verified=False),
+        RawIdentifier(type="phone", value="+6596542555", is_verified=True),
+    )
+
+    results = normalize_envelope_identifiers(envelope)
+
+    assert len(results) == 1
+    assert results[0].identifier_type == "phone"
+    assert results[0].normalized_value == "+6596542555"
+    assert results[0].is_verified is True
+    assert results[0].quality_flag == QualityFlag.VALID

@@ -160,6 +160,9 @@ def _is_system_sourced(cand_rec: dict[str, object]) -> bool:
     system-sourced, so a conversation record cannot be promoted to auto-merge on
     evidence we cannot confirm is independent of conversation extraction.
     """
+    compact_flag = cand_rec.get("is_system_sourced")
+    if isinstance(compact_flag, bool):
+        return compact_flag
     src_type = cand_rec.get("source_record_type")
     return isinstance(src_type, str) and src_type != RecordType.CONVERSATION.value
 

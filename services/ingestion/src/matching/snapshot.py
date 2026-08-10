@@ -94,21 +94,21 @@ def fetch_candidate_snapshot(
     idents: list[RecordDict] = [
         dict(r)
         for r in tx.run(
-            queries.FETCH_PERSON_IDENTIFIERS,
+            queries.FETCH_PERSON_MATCH_IDENTIFIERS,
             person_id=candidate_person_id,
         )
     ]
     facts: list[RecordDict] = [
         dict(r)
         for r in tx.run(
-            queries.FETCH_PERSON_FACTS,
+            queries.FETCH_PERSON_MATCH_FACTS,
             person_id=candidate_person_id,
         )
     ]
     addrs: list[RecordDict] = [
         dict(r)
         for r in tx.run(
-            queries.FETCH_PERSON_ADDRESSES,
+            queries.FETCH_PERSON_MATCH_ADDRESSES,
             person_id=candidate_person_id,
         )
     ]
