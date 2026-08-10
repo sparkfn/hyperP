@@ -15,7 +15,7 @@ import logging
 
 from neo4j import ManagedTransaction
 
-from src.matching.deterministic import evaluate_deterministic
+from src.matching.deterministic import evaluate_deterministic, prefetch_no_match_lock_owners
 from src.matching.heuristic import evaluate_heuristic
 from src.models import (
     CandidateResult,
@@ -86,6 +86,11 @@ class MatchEngine:
         collected: list[MatchResult] = []
         continuity_result: MatchResult | None = None
         phone_fanout_cache: dict[str, int] = {}
+        no_match_lock_owners = prefetch_no_match_lock_owners(
+            tx,
+            list(unique_candidates),
+            identifiers,
+        )
 
         # Evaluate every candidate (no short-circuit on the first deterministic
         # MERGE): an incoming record that independently MERGE-matches more than
@@ -100,6 +105,7 @@ class MatchEngine:
                 attributes,
                 record_type,
                 phone_fanout_cache,
+                no_match_lock_owners,
             )
             if per_candidate is None:
                 continue
@@ -187,6 +193,7 @@ class MatchEngine:
         attributes: list[NormalizedAttribute],
         record_type: RecordType,
         phone_fanout_cache: dict[str, int],
+        no_match_lock_owners: dict[str, str],
     ) -> MatchResult | None:
         """Run one candidate through deterministic → heuristic → LLM."""
         det = evaluate_deterministic(
@@ -195,6 +202,7 @@ class MatchEngine:
             identifiers,
             attributes,
             record_type,
+            no_match_lock_owners=no_match_lock_owners,
         )
         if det is not None:
             # Hard NO_MATCH: drop the candidate without falling through.

@@ -32,9 +32,13 @@ class _Tx:
         self.phone_fanout = phone_fanout
         self.identifier_source_type = identifier_source_type
         self.fanout_calls = 0
+        self.no_match_lock_prefetch_calls = 0
 
     def run(self, query: str, **params: object) -> _Result:
         _ = params
+        if "UNWIND $candidate_inputs AS candidate_input" in query:
+            self.no_match_lock_prefetch_calls += 1
+            return _Result([])
         if "MATCH (a:Person {person_id: $left_person_id})" in query:
             return _Result([{"is_locked": False}])
         if "MATCH (p:Person {person_id: $person_id})-[rel:IDENTIFIED_BY]->" in query:
@@ -270,3 +274,30 @@ def test_match_engine_reuses_phone_fanout_across_candidates() -> None:
     )
 
     assert tx.fanout_calls == 1
+
+
+def test_match_engine_prefetches_no_match_locks_once_for_all_candidates() -> None:
+    tx = _Tx()
+    MatchEngine().evaluate(
+        tx,  # type: ignore[arg-type]
+        [CandidateResult(person_id="person-1"), CandidateResult(person_id="person-2")],
+        [
+            NormalizedIdentifier(
+                identifier_type="phone",
+                normalized_value="+6512345678",
+                is_verified=False,
+                quality_flag=QualityFlag.VALID,
+            ),
+            NormalizedIdentifier(
+                identifier_type="email",
+                normalized_value="ada@example.com",
+                is_verified=False,
+                quality_flag=QualityFlag.VALID,
+            ),
+        ],
+        None,
+        [],
+        record_type=RecordType.CONVERSATION,
+    )
+
+    assert tx.no_match_lock_prefetch_calls == 1
