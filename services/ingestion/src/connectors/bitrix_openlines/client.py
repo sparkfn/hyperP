@@ -63,6 +63,21 @@ _MISSING_CONTACT_ERRORS = frozenset({"ERROR_NOT_FOUND", "CRM_CONTACT_NOT_FOUND"}
 _MISSING_LEAD_ERRORS = frozenset({"ERROR_NOT_FOUND", "CRM_LEAD_NOT_FOUND"})
 
 
+def _is_allowed_error_payload(
+    payload: Mapping[str, JsonValue],
+    allowed_errors: frozenset[str],
+) -> bool:
+    error = payload.get("error")
+    description = payload.get("error_description")
+    canonical_not_found = (
+        bool(allowed_errors)
+        and error == ""
+        and isinstance(description, str)
+        and description.strip().casefold() == "not found"
+    )
+    return isinstance(error, str) and (error in allowed_errors or canonical_not_found)
+
+
 class BitrixOpenLinesClient:
     def __init__(
         self,
@@ -612,6 +627,8 @@ class BitrixOpenLinesClient:
             raise RuntimeError(f"Bitrix {context} batch returned an invalid result")
         raw_results = raw_batch.get("result")
         raw_errors = raw_batch.get("result_error")
+        if isinstance(raw_results, list) and not raw_results:
+            raw_results = {}
         if not isinstance(raw_results, dict):
             raise RuntimeError(f"Bitrix {context} batch omitted command results")
         if raw_errors is not None and not isinstance(raw_errors, dict | list):
@@ -626,17 +643,7 @@ class BitrixOpenLinesClient:
             for command_key, error_payload in raw_errors.items():
                 if not isinstance(error_payload, dict):
                     raise RuntimeError(f"Bitrix {context} batch returned invalid command errors")
-                error = error_payload.get("error")
-                description = error_payload.get("error_description")
-                canonical_not_found = (
-                    bool(allowed_errors)
-                    and error == ""
-                    and isinstance(description, str)
-                    and description.strip().casefold() == "not found"
-                )
-                if not (
-                    isinstance(error, str) and (error in allowed_errors or canonical_not_found)
-                ):
+                if not _is_allowed_error_payload(error_payload, allowed_errors):
                     raise RuntimeError(f"Bitrix {context} batch contained a command error")
                 allowed_error_commands.add(command_key)
         missing = set(commands).difference(raw_results).difference(allowed_error_commands)
@@ -1011,6 +1018,15 @@ class BitrixOpenLinesClient:
                     raise RuntimeError(f"Bitrix method {method} returned an invalid envelope")
                 return typed_payload
             except httpx.HTTPStatusError as exc:
+                error_payload: object = None
+                try:
+                    error_payload = exc.response.json()
+                except ValueError:
+                    pass
+                if isinstance(error_payload, dict):
+                    typed_error_payload = cast(dict[str, JsonValue], error_payload)
+                    if _is_allowed_error_payload(typed_error_payload, allowed_errors):
+                        return typed_error_payload
                 if exc.response.status_code != 429 and exc.response.status_code < 500:
                     raise RuntimeError(
                         f"Bitrix method {method} failed with HTTP {exc.response.status_code}"

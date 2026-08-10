@@ -1524,3 +1524,81 @@ def test_fast_keyset_capability_zero_total_is_unavailable_metadata() -> None:
     assert deal_page.total is None
     assert len(activity_page.items) == 1
     assert activity_page.total is None
+
+
+def test_client_accepts_all_missing_batch_results_encoded_as_empty_list(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        commands = body["cmd"]
+        results: dict[str, object] = {}
+        errors: dict[str, object] = {}
+        for command_key, command in commands.items():
+            entity_id = command.rsplit("=", 1)[-1]
+            if command.startswith("crm.deal.get?"):
+                results[command_key] = {"ID": entity_id, "CONTACT_ID": "400"}
+            elif command.startswith("crm.deal.contact.items.get?"):
+                results[command_key] = [{"CONTACT_ID": "400"}]
+            else:
+                assert command.startswith("crm.contact.get?")
+                errors[command_key] = {"error": "", "error_description": "Not found"}
+        encoded_results: object = [] if errors and not results else results
+        return httpx.Response(
+            200,
+            json={
+                "result": {
+                    "result": encoded_results,
+                    "result_error": errors,
+                }
+            },
+        )
+
+    client = BitrixOpenLinesClient(
+        base_url="https://bitrix.test/rest/hook",
+        timeout_seconds=5,
+        max_attempts=1,
+        http=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+
+    deal = client.get_deals([501])[0]
+
+    assert deal.contacts == ()
+    assert deal.contact_count == 1
+    assert "skipped 1 missing related CRM records" in caplog.text
+
+
+def test_client_get_deal_or_none_accepts_canonical_http_400_not_found() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path.endswith("/crm.deal.get")
+        return httpx.Response(
+            400,
+            json={"error": "", "error_description": "Not found"},
+        )
+
+    client = BitrixOpenLinesClient(
+        base_url="https://bitrix.test/rest/hook",
+        timeout_seconds=5,
+        max_attempts=1,
+        http=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+
+    assert client.get_deal_or_none(501) is None
+
+
+def test_client_get_deal_or_none_still_rejects_unexpected_http_400() -> None:
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            400,
+            json={"error": "ACCESS_DENIED", "error_description": "Denied"},
+        )
+
+    client = BitrixOpenLinesClient(
+        base_url="https://bitrix.test/rest/hook",
+        timeout_seconds=5,
+        max_attempts=1,
+        http=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+
+    with pytest.raises(RuntimeError, match="failed with HTTP 400"):
+        client.get_deal_or_none(501)
