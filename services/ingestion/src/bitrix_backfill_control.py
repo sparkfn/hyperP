@@ -220,7 +220,13 @@ class BitrixBackfillControl:
         if not resumable:
             raise RuntimeError("generation has no paused or failed child run")
         manifest = self._manifest_for(generation_id)
-        resume_generation = max(run.attempt_generation for run in runs) + 1
+        resume_generation = (
+            max(
+                max(run.attempt_generation for run in runs),
+                self._repository.get_max_resume_worker_generation(generation_id),
+            )
+            + 1
+        )
         return dispatch_generation_canvas(
             generation_id=generation_id,
             boundary_digest=state.boundary_digest,
