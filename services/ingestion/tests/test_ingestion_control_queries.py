@@ -111,6 +111,27 @@ def test_phase_transition_completes_current_checkpoint_and_fences_successor() ->
     assert "next.status = 'active'" in TRANSITION_LOGICAL_PHASE
 
 
+def test_phase_transition_allows_a_new_connector_contract() -> None:
+    assert "current.connector_version = logical.connector_version" in (
+        TRANSITION_LOGICAL_PHASE
+    )
+    assert "current.schema_version = logical.checkpoint_schema_version" in (
+        TRANSITION_LOGICAL_PHASE
+    )
+    assert "logical.connector_version = $connector_version" not in (
+        TRANSITION_LOGICAL_PHASE
+    )
+    assert "logical.checkpoint_schema_version = $checkpoint_schema_version" not in (
+        TRANSITION_LOGICAL_PHASE
+    )
+    assert "existing_next.connector_version = $connector_version" in (
+        TRANSITION_LOGICAL_PHASE
+    )
+    assert "existing_next.schema_version = $checkpoint_schema_version" in (
+        TRANSITION_LOGICAL_PHASE
+    )
+
+
 def test_failure_is_fenced_and_releases_active_ownership() -> None:
     assert "logical.active_generation = $generation" in FAIL_LOGICAL_RUN
     assert "attempt.status = 'failed'" in FAIL_LOGICAL_RUN
