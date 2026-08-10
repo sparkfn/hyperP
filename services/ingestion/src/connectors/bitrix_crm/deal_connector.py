@@ -61,6 +61,8 @@ class BitrixCrmDealConnector(SourceConnector):
     def fetch_records(self) -> Iterator[dict[str, JsonValue]]:
         category_ids = _validate_included_crm_category_mappings(self._config)
         cursor = self._last_deal_id
+        if cursor == self._upper_deal_id:
+            return
         while self._upper_deal_id > 0:
             page = self._client.list_crm_deal_capability_page(
                 category_ids=category_ids,

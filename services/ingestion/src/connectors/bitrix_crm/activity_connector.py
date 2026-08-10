@@ -61,6 +61,8 @@ class BitrixCrmActivityConnector(SourceConnector):
 
     def fetch_records(self) -> Iterator[dict[str, JsonValue]]:
         cursor = self._last_activity_id
+        if cursor == self._upper_activity_id:
+            return
         while self._upper_activity_id > 0:
             page = self._client.list_crm_activity_capability_page(
                 greater_than_id=cursor,
