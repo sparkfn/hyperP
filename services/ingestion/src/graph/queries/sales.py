@@ -486,10 +486,9 @@ WHERE NOT EXISTS {
     MATCH (md:MatchDecision)-[:ABOUT_LEFT {entity_type: 'source_record'}]->(sr)
     MATCH (md)-[:ABOUT_RIGHT {entity_type: 'person'}]->(p)
 }
-MATCH (pi:Identifier)
-WHERE ((pi.value IN $customer_emails AND pi.kind IN ['email'])
-   OR (pi.value IN $customer_phones AND pi.kind IN ['mobile','phone']))
-  AND (p)-[:IDENTIFIED_BY]->(pi)
+MATCH (p)-[:IDENTIFIED_BY]->(pi:Identifier)
+WHERE (pi.value IN $customer_emails AND pi.kind IN ['email'])
+   OR (pi.value IN $customer_phones AND pi.kind IN ['mobile','phone'])
 WITH sr, v, p, rel, collect(DISTINCT pi.kind) AS contact_channels, $customer_nric AS customer_nric
 OPTIONAL MATCH (p)-[:IDENTIFIED_BY]->(ni:Identifier)
 WHERE ni.kind IN ['nric','nric_hash'] AND customer_nric IS NOT NULL AND customer_nric <> '' AND ni.value <> customer_nric

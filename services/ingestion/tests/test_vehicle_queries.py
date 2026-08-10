@@ -295,7 +295,11 @@ def test_find_vehicle_candidates_for_sales_requires_contact_overlap_and_nric_blo
     # identity alone is NOT enough — a sale with no customer emails and no
     # customer phones yields zero candidates.
     assert "OPTIONAL MATCH (p)-[:IDENTIFIED_BY]->(pi:Identifier)" not in query
-    assert "MATCH (pi:Identifier)" in query
+    # Expand identifiers from the already selective candidate Person. A
+    # standalone Identifier MATCH produces a global label scan and held the
+    # corrective write transaction beyond the reviewed lock ceiling.
+    assert "MATCH (p)-[:IDENTIFIED_BY]->(pi:Identifier)" in query
+    assert "MATCH (pi:Identifier)" not in query
     assert "pi.value IN $customer_emails AND pi.kind IN ['email']" in query
     assert "pi.value IN $customer_phones AND pi.kind IN ['mobile','phone']" in query
     # The combined value-list + broadened kind gate must be gone.
