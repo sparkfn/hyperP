@@ -127,6 +127,23 @@ def test_deal_connector_resumes_exclusive_keyset_cursor() -> None:
     assert "STAGE_ID" not in raw_payload
 
 
+def test_deal_connector_returns_empty_for_an_exhausted_frozen_window() -> None:
+    client = _DealClient()
+    config = BitrixOpenLinesConfig(
+        included_crm_category_ids=["2"],
+        entity_by_crm_category_id={"2": "eko"},
+    )
+    connector = BitrixCrmDealConnector(
+        client,
+        config,
+        upper_deal_id=9,
+        last_deal_id=9,
+    )
+
+    assert list(connector.fetch_records()) == []
+    assert client.lower_bounds == []
+
+
 def test_activity_connector_resumes_exclusive_keyset_cursor() -> None:
     client = _ActivityClient()
     connector = BitrixCrmActivityConnector(
@@ -139,6 +156,18 @@ def test_activity_connector_resumes_exclusive_keyset_cursor() -> None:
 
     assert client.lower_bounds == [10]
     assert records[0]["source_record_id"] == "bitrix-crm-history-11"
+
+
+def test_activity_connector_returns_empty_for_an_exhausted_frozen_window() -> None:
+    client = _ActivityClient()
+    connector = BitrixCrmActivityConnector(
+        client,
+        upper_activity_id=11,
+        last_activity_id=11,
+    )
+
+    assert list(connector.fetch_records()) == []
+    assert client.lower_bounds == []
 
 
 def test_call_activity_marks_history_as_non_terminal_until_call_commits() -> None:
