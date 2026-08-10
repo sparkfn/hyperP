@@ -732,6 +732,19 @@ MATCH (generation)-[:HAS_STREAM]->(stream:BitrixIngestionStream {
   fencing_token: $fencing_token,
   status: 'active'
 })
+OPTIONAL MATCH (generation)-[:HAS_OWNER_RETRY]->(
+  reviewed_owner_retry:BitrixActivityOwnerRetry {
+    generation_id: $generation_id,
+    owner_deal_id: $owner_deal_id,
+    status: 'reviewed_excluded'
+  }
+)
+WHERE reviewed_owner_retry IS NULL
+   OR reviewed_owner_retry.source_identity <> $source_identity
+   OR reviewed_owner_retry.source_boundary <> $source_boundary
+WITH generation,
+     stream,
+     min(reviewed_owner_retry.review_evidence_digest) AS reviewed_owner_evidence_digest
 MERGE (retry:BitrixActivityOwnerRetry {
   generation_id: $generation_id,
   source_identity: $source_identity,
@@ -744,7 +757,16 @@ SET retry.owner_deal_id = $owner_deal_id,
     retry.owner_state = $owner_state,
     retry.status = CASE
       WHEN retry.status = 'reviewed_excluded' THEN retry.status
+      WHEN reviewed_owner_evidence_digest IS NOT NULL THEN 'reviewed_excluded'
       ELSE 'retryable'
+    END,
+    retry.review_basis_evidence_digest = CASE
+      WHEN reviewed_owner_evidence_digest IS NOT NULL THEN reviewed_owner_evidence_digest
+      ELSE retry.review_basis_evidence_digest
+    END,
+    retry.review_reused_at = CASE
+      WHEN reviewed_owner_evidence_digest IS NOT NULL THEN datetime()
+      ELSE retry.review_reused_at
     END,
     retry.attempt_count = retry.attempt_count + 1,
     retry.updated_at = datetime()
