@@ -7,13 +7,14 @@ from src.bitrix_backfill_control import BitrixBackfillControl
 from src.bitrix_backfill_models import GenerationChildRun
 
 
-def test_resume_advances_past_completed_sibling_generation(monkeypatch) -> None:
+def test_resume_advances_past_historical_worker_generation(monkeypatch) -> None:
     repository = Mock()
     repository.get_generation.return_value = SimpleNamespace(
         status="backfilling",
         boundary_digest="sha256:boundary",
         configuration_digest="sha256:configuration",
     )
+    repository.get_max_resume_worker_generation.return_value = 13
     repository.list_child_runs.return_value = [
         GenerationChildRun(
             stream_key="crm_deals",
@@ -47,4 +48,4 @@ def test_resume_advances_past_completed_sibling_generation(monkeypatch) -> None:
     )
 
     assert control.resume("corrective-generation") == "canvas-id"
-    assert dispatched["resume_generation"] == 12
+    assert dispatched["resume_generation"] == 14

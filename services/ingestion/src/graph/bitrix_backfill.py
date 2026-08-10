@@ -39,6 +39,7 @@ from src.graph.queries.bitrix_backfill import (
     GET_BITRIX_BACKFILL_INVENTORY,
     GET_BITRIX_COVERAGE_RECONCILIATION,
     GET_KNOWN_OWNER_SET,
+    GET_MAX_BITRIX_RESUME_WORKER_GENERATION,
     LIST_BITRIX_GENERATION_LOGICAL_RUNS,
     LIST_KNOWN_OWNER_IDS,
     MATERIALIZE_KNOWN_OWNER_SET,
@@ -180,6 +181,18 @@ class BitrixBackfillRepository:
                 _required_str(record["manifest_json"], "manifest_json"),
                 _required_str(record["inventory_digest"], "inventory_digest"),
             )
+
+        return self._client.execute_read(_read)
+
+    def get_max_resume_worker_generation(self, generation_id: str) -> int:
+        def _read(tx: ManagedTransaction) -> int:
+            record = tx.run(
+                GET_MAX_BITRIX_RESUME_WORKER_GENERATION,
+                generation_id=generation_id,
+            ).single()
+            if record is None:
+                raise RuntimeError("Bitrix generation resume history was not returned")
+            return _non_negative_int(record, "max_resume_generation")
 
         return self._client.execute_read(_read)
 

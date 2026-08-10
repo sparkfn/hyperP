@@ -322,6 +322,19 @@ RETURN generation.generation_id AS generation_id,
        generation.status AS status
 """
 
+GET_MAX_BITRIX_RESUME_WORKER_GENERATION = """
+MATCH (generation:BitrixBackfillGeneration {generation_id: $generation_id})
+OPTIONAL MATCH (generation)-[:HAS_LOGICAL_RUN]->(:IngestionLogicalRun)
+               -[:HAS_ATTEMPT]->(attempt:IngestRun)
+WITH attempt.worker_task_id AS worker_task_id
+WHERE worker_task_id =~ '.*:resume:[0-9]+'
+RETURN coalesce(
+  max(toInteger(last(split(worker_task_id, ':resume:')))),
+  0
+) AS max_resume_generation
+"""
+
+
 LIST_BITRIX_GENERATION_LOGICAL_RUNS = """
 MATCH (generation:BitrixBackfillGeneration {generation_id: $generation_id})
 OPTIONAL MATCH (generation)-[relation:HAS_LOGICAL_RUN]->(logical:IngestionLogicalRun)

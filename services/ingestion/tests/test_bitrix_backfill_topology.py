@@ -8,6 +8,7 @@ from src.bitrix_backfill_models import (
 from src.graph.queries.bitrix_backfill import (
     ATTACH_BACKFILL_LOGICAL_RUN,
     CREATE_BITRIX_BACKFILL_CONSTRAINTS,
+    GET_MAX_BITRIX_RESUME_WORKER_GENERATION,
     MATERIALIZE_KNOWN_OWNER_SET,
 )
 
@@ -69,3 +70,10 @@ def test_generation_topology_is_unique_and_child_runs_are_explicit() -> None:
     assert "current_ids = $deal_ids" in MATERIALIZE_KNOWN_OWNER_SET
     assert "sealed_at" in MATERIALIZE_KNOWN_OWNER_SET
     assert "DELETE" not in MATERIALIZE_KNOWN_OWNER_SET
+
+
+def test_resume_worker_generation_uses_durable_attempt_history() -> None:
+    assert "HAS_ATTEMPT" in GET_MAX_BITRIX_RESUME_WORKER_GENERATION
+    assert ":resume:" in GET_MAX_BITRIX_RESUME_WORKER_GENERATION
+    assert "max(toInteger" in GET_MAX_BITRIX_RESUME_WORKER_GENERATION
+    assert "coalesce" in GET_MAX_BITRIX_RESUME_WORKER_GENERATION
