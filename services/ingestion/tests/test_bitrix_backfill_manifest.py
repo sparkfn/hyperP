@@ -83,3 +83,35 @@ def test_manifest_rejects_missing_prerequisites_or_reversed_stream_order() -> No
         )
     with pytest.raises(ValueError, match="precede"):
         _manifest((_entry("crm_activities"), _entry("crm_deals")))
+
+
+def test_manifest_allows_reviewed_activity_exclusion_for_partial_successor() -> None:
+    activity = BackfillInventoryEntry(
+        gap_id="deferred-activities",
+        stream_key="crm_activities",
+        bounded_population=100,
+        current_count=0,
+        source_basis="explicit partial-completion waiver",
+        expected_repair="tracked by the scoped follow-up issue",
+        replay_mode="excluded",
+        source_window=None,
+        completion_equation="all deferred activity units remain owned by the follow-up",
+        max_calls=0,
+        max_rows=0,
+        max_runtime_seconds=0,
+        max_storage_bytes=0,
+        max_lock_seconds=0,
+        max_lag_seconds=0,
+        rollback_path="not dispatched",
+        reviewed_exclusion="Deferred under the reviewed partial-completion waiver.",
+    )
+    manifest = _manifest((_entry("crm_deals"), activity))
+
+    assert [entry.stream_key for entry in manifest.executable_entries] == ["crm_deals"]
+
+
+def test_fixed_keyset_inventory_entry_is_executable_with_a_pinned_window() -> None:
+    entry = _entry("crm_deals")
+    fixed = BackfillInventoryEntry(**{**vars(entry), "replay_mode": "fixed_keyset"})
+
+    assert fixed.executes is True

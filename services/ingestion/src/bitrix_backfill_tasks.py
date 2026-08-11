@@ -47,8 +47,15 @@ def build_generation_canvas(
     order = {"crm_deals": 0, "crm_activities": 1, "openlines_conversations": 2}
     executable.sort(key=lambda entry: order[entry.stream_key])
     streams = [entry.stream_key for entry in executable]
-    if streams[:2] != ["crm_deals", "crm_activities"]:
-        raise ValueError("generation canvas requires deals before activities")
+    valid_orders = (
+        ["crm_deals"],
+        ["crm_deals", "crm_activities"],
+        ["crm_deals", "crm_activities", "openlines_conversations"],
+    )
+    if streams not in valid_orders:
+        raise ValueError(
+            "generation canvas requires deals first; activities may be reviewed-excluded"
+        )
     if len(set(streams)) != len(streams):
         raise ValueError("generation canvas accepts one executable entry per stream")
     signatures: list[Signature] = []

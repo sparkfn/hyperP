@@ -133,20 +133,36 @@ def _dispatch_active_bitrix_successor(occurrence: str) -> str | None:
     payload = TypeAdapter(dict[str, JsonValue]).validate_json(manifest_json)
     manifest = _manifest_from_payload(payload)
     categories = tuple(get_ingestion_config().bitrix_openlines.included_crm_category_ids)
-    source = create_bitrix_known_owner_client()
-    try:
-        upper_deal_id = freeze_deal_upper_id(source, categories)
-        upper_activity_id = freeze_activity_upper_id(source)
-    finally:
-        source.close()
+    executable = manifest.executable_entries
+    refresh_deals = any(
+        entry.stream_key == "crm_deals" and entry.replay_mode != "fixed_keyset"
+        for entry in executable
+    )
+    refresh_activities = any(
+        entry.stream_key == "crm_activities" and entry.replay_mode != "fixed_keyset"
+        for entry in executable
+    )
+    upper_deal_id = None
+    upper_activity_id = None
+    if refresh_deals or refresh_activities:
+        source = create_bitrix_known_owner_client()
+        try:
+            if refresh_deals:
+                upper_deal_id = freeze_deal_upper_id(source, categories)
+            if refresh_activities:
+                upper_activity_id = freeze_activity_upper_id(source)
+        finally:
+            source.close()
     entries = []
     windows: list[dict[str, JsonValue]] = []
-    for entry in manifest.executable_entries:
+    for entry in executable:
         window = dict(entry.source_window or {})
-        if entry.stream_key == "crm_deals":
+        if entry.stream_key == "crm_deals" and refresh_deals:
+            assert upper_deal_id is not None
             window["upper_deal_id"] = upper_deal_id
             window["owner_artifact_id"] = None
-        elif entry.stream_key == "crm_activities":
+        elif entry.stream_key == "crm_activities" and refresh_activities:
+            assert upper_activity_id is not None
             window["upper_activity_id"] = upper_activity_id
             window["owner_artifact_id"] = None
         entries.append(replace(entry, source_window=window))
