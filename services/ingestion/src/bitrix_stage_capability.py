@@ -15,7 +15,6 @@ import os
 import sys
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
-from dataclasses import asdict
 from pathlib import Path
 from typing import Protocol, cast
 
@@ -49,7 +48,6 @@ from src.connectors.bitrix_stage_history.artifact_runtime import (
     ArtifactStoreConfiguration,
     decode_signing_secret,
     retained_keys_from_environment,
-    sha256_digest,
 )
 from src.connectors.bitrix_stage_history.canonical import normalize_source_contract_id
 from src.connectors.bitrix_stage_history.capability_artifacts import (
@@ -88,7 +86,7 @@ from src.connectors.bitrix_stage_history.replay import qualify_artifacts
 from src.connectors.bitrix_stage_history.spool import RestrictedSpool, _prepare_restricted_directory
 from src.graph.bitrix_backfill import BitrixBackfillRepository
 from src.graph.client import Neo4jClient
-from src.ingestion_config import get_ingestion_config
+from src.ingestion_config import bitrix_configuration_digest, get_ingestion_config
 from src.models import JsonValue
 
 _recommendation = recommendation
@@ -693,16 +691,7 @@ def _artifact_store_configuration(args: argparse.Namespace) -> ArtifactStoreConf
 
 
 def _artifact_configuration_digest(categories: tuple[str, ...]) -> str:
-    config = get_ingestion_config().bitrix_openlines
-    encoded = json.dumps(
-        {
-            "categories": categories,
-            "config": asdict(config),
-        },
-        sort_keys=True,
-        separators=(",", ":"),
-    )
-    return sha256_digest(encoded)
+    return bitrix_configuration_digest(get_ingestion_config().bitrix_openlines, categories)
 
 
 def _required_argument(value: str | None, name: str) -> str:

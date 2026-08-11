@@ -42,12 +42,16 @@ from src.graph.queries.bitrix_backfill import (
     GET_MAX_BITRIX_RESUME_WORKER_GENERATION,
     LIST_BITRIX_GENERATION_LOGICAL_RUNS,
     LIST_KNOWN_OWNER_IDS,
-    MATERIALIZE_KNOWN_OWNER_SET,
+    LIST_KNOWN_OWNER_MEMBERS_PAGE,
+    PREPARE_KNOWN_OWNER_SET,
     RECORD_BITRIX_BACKFILL_RECONCILIATION,
     RECORD_BITRIX_QUALIFICATION,
     REGISTER_BITRIX_BACKFILL_INVENTORY,
     REJECT_BITRIX_BACKFILL_GENERATION,
+    SEAL_KNOWN_OWNER_SET,
+    SUPERSEDE_ZERO_WRITE_BITRIX_SUCCESSOR,
     UPSERT_BITRIX_BACKFILL_COVERAGE,
+    UPSERT_KNOWN_OWNER_MEMBERS,
     VERIFY_BITRIX_SUCCESSOR_TAIL,
 )
 
@@ -69,6 +73,9 @@ class FrozenOwnerExport:
     boundary_digest: str
     owner_set_digest: str
     rows: tuple[FrozenOwnerRow, ...]
+
+
+_KNOWN_OWNER_BATCH_SIZE = 1000
 
 
 class BitrixBackfillRepository:
@@ -433,6 +440,31 @@ class BitrixBackfillRepository:
 
         self._client.execute_write(_work)
 
+    def supersede_zero_write_successor(
+        self,
+        *,
+        corrective_generation_id: str,
+        successor_generation_id: str,
+        replacement_successor_generation_id: str,
+        actor: str,
+        reason: str,
+        evidence_digest: str,
+    ) -> None:
+        def _work(tx: ManagedTransaction) -> None:
+            record = tx.run(
+                SUPERSEDE_ZERO_WRITE_BITRIX_SUCCESSOR,
+                corrective_generation_id=corrective_generation_id,
+                successor_generation_id=successor_generation_id,
+                replacement_successor_generation_id=replacement_successor_generation_id,
+                actor=actor,
+                reason=reason,
+                evidence_digest=evidence_digest,
+            ).single()
+            if record is None:
+                raise RuntimeError("failed successor could not be safely superseded")
+
+        self._client.execute_write(_work)
+
     def verify_tail(
         self,
         *,
@@ -504,27 +536,68 @@ class BitrixBackfillRepository:
         deal_ids = self._client.execute_read(_read)
         digest = _known_owner_digest(deal_ids)
 
-        def _write(tx: ManagedTransaction) -> KnownOwnerMembershipSet:
+        def _prepare(tx: ManagedTransaction) -> str:
             record = tx.run(
-                MATERIALIZE_KNOWN_OWNER_SET,
+                PREPARE_KNOWN_OWNER_SET,
                 generation_id=generation_id,
                 membership_set_id=membership_set_id,
-                deal_ids=list(deal_ids),
                 digest=digest,
+                member_count=len(deal_ids),
             ).single()
             if record is None:
-                raise RuntimeError("known-owner set changed while it was being sealed")
-            count: object = record["member_count"]
-            if isinstance(count, bool) or not isinstance(count, int) or count != len(deal_ids):
-                raise RuntimeError("known-owner membership count did not reconcile")
-            return KnownOwnerMembershipSet(
-                generation_id=generation_id,
-                membership_set_id=membership_set_id,
-                digest=digest,
-                deal_ids=deal_ids,
-            )
+                raise RuntimeError("known-owner set conflicts with an existing snapshot")
+            return _required_str(record["status"], "known_owner_status")
 
-        return self._client.execute_write(_write)
+        status = self._client.execute_write(_prepare)
+        if status == "building":
+            for offset in range(0, len(deal_ids), _KNOWN_OWNER_BATCH_SIZE):
+                batch: list[dict[str, str | int]] = [
+                    {"deal_id": deal_id, "ordinal": ordinal}
+                    for ordinal, deal_id in enumerate(
+                        deal_ids[offset : offset + _KNOWN_OWNER_BATCH_SIZE],
+                        start=offset,
+                    )
+                ]
+
+                def _write_batch(
+                    tx: ManagedTransaction,
+                    _batch: list[dict[str, str | int]] = batch,
+                ) -> None:
+                    record = tx.run(
+                        UPSERT_KNOWN_OWNER_MEMBERS,
+                        generation_id=generation_id,
+                        membership_set_id=membership_set_id,
+                        digest=digest,
+                        members=_batch,
+                    ).single()
+                    if record is None or _non_negative_int(record, "batch_count") != len(_batch):
+                        raise RuntimeError("known-owner membership batch did not reconcile")
+
+                self._client.execute_write(_write_batch)
+
+            def _seal(tx: ManagedTransaction) -> None:
+                record = tx.run(
+                    SEAL_KNOWN_OWNER_SET,
+                    generation_id=generation_id,
+                    membership_set_id=membership_set_id,
+                    digest=digest,
+                ).single()
+                if record is None:
+                    raise RuntimeError("known-owner set changed before it could be sealed")
+                if _non_negative_int(record, "member_count") != len(deal_ids):
+                    raise RuntimeError("known-owner membership count did not reconcile")
+                if _required_str(record["digest"], "known_owner_digest") != digest:
+                    raise RuntimeError("known-owner membership digest did not reconcile")
+
+            self._client.execute_write(_seal)
+        elif status != "sealed":
+            raise RuntimeError("known-owner set has an invalid build status")
+        return KnownOwnerMembershipSet(
+            generation_id=generation_id,
+            membership_set_id=membership_set_id,
+            digest=digest,
+            deal_ids=deal_ids,
+        )
 
     def find_known_owner_set(
         self,
@@ -532,7 +605,7 @@ class BitrixBackfillRepository:
         generation_id: str,
         membership_set_id: str,
     ) -> KnownOwnerMembershipSet | None:
-        def _read(tx: ManagedTransaction) -> KnownOwnerMembershipSet | None:
+        def _read_metadata(tx: ManagedTransaction) -> tuple[str, int, str] | None:
             record = tx.run(
                 GET_KNOWN_OWNER_SET,
                 generation_id=generation_id,
@@ -540,26 +613,63 @@ class BitrixBackfillRepository:
             ).single()
             if record is None:
                 return None
-            raw_ids: object = record["deal_ids"]
-            if not isinstance(raw_ids, list) or not all(
-                isinstance(value, str) for value in raw_ids
-            ):
-                raise RuntimeError("known-owner membership contains invalid deal IDs")
-            deal_ids = tuple(raw_ids)
-            digest = _required_str(record["digest"], "known_owner_digest")
-            count: object = record["member_count"]
-            if isinstance(count, bool) or not isinstance(count, int) or count != len(deal_ids):
-                raise RuntimeError("known-owner membership count did not reconcile")
-            if _known_owner_digest(deal_ids) != digest:
-                raise RuntimeError("known-owner membership digest did not reconcile")
-            return KnownOwnerMembershipSet(
-                generation_id=generation_id,
-                membership_set_id=membership_set_id,
-                digest=digest,
-                deal_ids=deal_ids,
+            return (
+                _required_str(record["digest"], "known_owner_digest"),
+                _non_negative_int(record, "member_count"),
+                _required_str(record["status"], "known_owner_status"),
             )
 
-        return self._client.execute_read(_read)
+        metadata = self._client.execute_read(_read_metadata)
+        if metadata is None:
+            return None
+        digest, expected_count, status = metadata
+        if status == "building":
+            return None
+        if status != "sealed":
+            raise RuntimeError("known-owner set has an invalid build status")
+        deal_ids: list[str] = []
+        after_ordinal = -1
+        while len(deal_ids) < expected_count:
+
+            def _read_page(
+                tx: ManagedTransaction,
+                _after_ordinal: int = after_ordinal,
+            ) -> tuple[tuple[int, str], ...]:
+                rows: list[tuple[int, str]] = []
+                for record in tx.run(
+                    LIST_KNOWN_OWNER_MEMBERS_PAGE,
+                    generation_id=generation_id,
+                    membership_set_id=membership_set_id,
+                    after_ordinal=_after_ordinal,
+                    limit=_KNOWN_OWNER_BATCH_SIZE,
+                ):
+                    rows.append(
+                        (
+                            _non_negative_int(record, "ordinal"),
+                            _required_str(record["deal_id"], "deal_id"),
+                        )
+                    )
+                return tuple(rows)
+
+            page = self._client.execute_read(_read_page)
+            if not page:
+                raise RuntimeError("known-owner membership ended before its declared count")
+            for ordinal, deal_id in page:
+                if ordinal != len(deal_ids):
+                    raise RuntimeError("known-owner membership ordinals are not contiguous")
+                deal_ids.append(deal_id)
+            after_ordinal = page[-1][0]
+        if len(deal_ids) != expected_count:
+            raise RuntimeError("known-owner membership count did not reconcile")
+        frozen_ids = tuple(deal_ids)
+        if _known_owner_digest(frozen_ids) != digest:
+            raise RuntimeError("known-owner membership digest did not reconcile")
+        return KnownOwnerMembershipSet(
+            generation_id=generation_id,
+            membership_set_id=membership_set_id,
+            digest=digest,
+            deal_ids=frozen_ids,
+        )
 
     def get_known_owner_set(
         self,

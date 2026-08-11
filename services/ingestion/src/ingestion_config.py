@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Literal, cast
 
@@ -287,6 +288,22 @@ def load_ingestion_config(path_value: str) -> IngestionConfig:
             payload.get("scheduled_ingestion"), path=path
         ),
     )
+
+
+def bitrix_configuration_digest(
+    config: BitrixOpenLinesConfig,
+    included_category_ids: tuple[str, ...],
+) -> str:
+    """Hash the effective non-secret Bitrix runtime selection configuration."""
+    encoded = json.dumps(
+        {
+            "categories": included_category_ids,
+            "config": asdict(config),
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return "sha256:" + hashlib.sha256(encoded).hexdigest()
 
 
 def get_ingestion_config() -> IngestionConfig:
