@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Literal, cast
 
@@ -304,6 +304,19 @@ def bitrix_configuration_digest(
         separators=(",", ":"),
     ).encode("utf-8")
     return "sha256:" + hashlib.sha256(encoded).hexdigest()
+
+
+def bitrix_legacy_explicit_category_digest(
+    config: BitrixOpenLinesConfig,
+    included_category_ids: tuple[str, ...],
+) -> str:
+    """Reconstruct v1 evidence where CRM scope came only from CLI categories."""
+    legacy_config = replace(
+        config,
+        included_crm_category_ids=[],
+        entity_by_crm_category_id={},
+    )
+    return bitrix_configuration_digest(legacy_config, included_category_ids)
 
 
 def get_ingestion_config() -> IngestionConfig:

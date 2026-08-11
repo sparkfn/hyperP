@@ -16,6 +16,7 @@ from src.graph.queries.bitrix_backfill import (
     CAS_BITRIX_BACKFILL_GENERATION_STATUS,
     CONFIRM_BITRIX_SUCCESSOR_PUBLICATION,
     FREEZE_BITRIX_BACKFILL_GENERATION,
+    GET_BITRIX_GENERATION_CATEGORY_MAPPING,
     GET_CONFIRMED_BITRIX_SUCCESSOR_PUBLICATION,
     RECORD_BITRIX_QUALIFICATION,
     REJECT_BITRIX_BACKFILL_GENERATION,
@@ -27,6 +28,7 @@ from src.graph.queries.source_records import (
     CREATE_INGEST_RUN,
     CREATE_OR_REUSE_WORKER_INGEST_RUN,
 )
+from src.ingestion_config import BitrixOpenLinesConfig
 
 
 def test_cli_exposes_the_complete_operator_workflow() -> None:
@@ -126,7 +128,7 @@ def test_recovery_supersedes_before_activating_replacement(
     control._repository = repository
     monkeypatch.setattr(
         "src.bitrix_backfill_control._require_runtime_configuration",
-        lambda _expected: None,
+        lambda _expected, **_kwargs: None,
     )
     control.activate = Mock(return_value="replacement-canvas")
     manifest = Mock()
@@ -154,6 +156,72 @@ def test_recovery_supersedes_before_activating_replacement(
     )
 
 
+def test_allocation_rejects_an_unbound_configuration_digest_before_mutation(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    repository = Mock()
+    control = object.__new__(BitrixBackfillControl)
+    control._repository = repository
+    runtime_config = BitrixOpenLinesConfig()
+    monkeypatch.setattr(
+        "src.bitrix_backfill_control.get_ingestion_config",
+        lambda: SimpleNamespace(bitrix_openlines=runtime_config),
+    )
+    manifest = SimpleNamespace(minimum_fence_image_digest="sha256:image")
+
+    with pytest.raises(ValueError, match="must include CRM categories"):
+        control.allocate(
+            "corrective",
+            manifest,
+            repository_sha="repository-sha",
+            image_digest="sha256:image",
+            configuration_digest=(
+                "sha256:24ad8341df1613f75207dd5b9fab8c739e6ac162e12f64e1713c8114a565fd04"
+            ),
+            source_contract_uuid="source-contract",
+            boundary_digest="sha256:boundary",
+        )
+
+    repository.allocate_generation.assert_not_called()
+
+
+def test_acceptance_revalidates_legacy_digest_against_generation_mapping(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    repository = Mock()
+    repository.get_generation.return_value = SimpleNamespace(
+        status="qualified",
+        configuration_digest=(
+            "sha256:24ad8341df1613f75207dd5b9fab8c739e6ac162e12f64e1713c8114a565fd04"
+        ),
+    )
+    repository.get_generation_category_mapping.return_value = {
+        "2": "eko",
+        "7": "fundbox",
+        "8": "speedzone",
+    }
+    control = object.__new__(BitrixBackfillControl)
+    control._repository = repository
+    monkeypatch.setattr(
+        "src.bitrix_backfill_control.get_ingestion_config",
+        lambda: SimpleNamespace(
+            bitrix_openlines=BitrixOpenLinesConfig(
+                included_crm_category_ids=["2", "7", "8"],
+                entity_by_crm_category_id={
+                    "2": "eko",
+                    "7": "fundbox",
+                    "8": "speedzone",
+                },
+            )
+        ),
+    )
+
+    control.accept("corrective", actor="operator", reason="reviewed evidence")
+
+    repository.get_generation_category_mapping.assert_called_once_with("corrective")
+    repository.transition.assert_called_once()
+
+
 def test_activation_rejects_a_non_container_runtime_configuration(
     monkeypatch: MonkeyPatch,
 ) -> None:
@@ -165,7 +233,10 @@ def test_activation_rejects_a_non_container_runtime_configuration(
     control = object.__new__(BitrixBackfillControl)
     control._repository = repository
     runtime_config = SimpleNamespace(
-        bitrix_openlines=SimpleNamespace(included_crm_category_ids=[]),
+        bitrix_openlines=BitrixOpenLinesConfig(
+            included_crm_category_ids=["2"],
+            entity_by_crm_category_id={"2": "eko"},
+        )
     )
     monkeypatch.setattr(
         "src.bitrix_backfill_control.get_ingestion_config",
@@ -189,6 +260,104 @@ def test_activation_rejects_a_non_container_runtime_configuration(
     repository.allocate_successor.assert_not_called()
 
 
+def test_legacy_explicit_category_digest_requires_accepted_mapping_evidence(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    repository = Mock()
+    repository.get_generation.return_value = SimpleNamespace(
+        status="accepted",
+        configuration_digest=(
+            "sha256:24ad8341df1613f75207dd5b9fab8c739e6ac162e12f64e1713c8114a565fd04"
+        ),
+    )
+    repository.get_generation_category_mapping.return_value = {
+        "2": "eko",
+        "7": "fundbox",
+        "8": "speedzone",
+    }
+    repository.allocate_successor.side_effect = RuntimeError("runtime gate passed")
+    control = object.__new__(BitrixBackfillControl)
+    control._repository = repository
+    monkeypatch.setattr(
+        "src.bitrix_backfill_control.get_ingestion_config",
+        lambda: SimpleNamespace(
+            bitrix_openlines=BitrixOpenLinesConfig(
+                included_crm_category_ids=["2", "7", "8"],
+                entity_by_crm_category_id={
+                    "2": "eko",
+                    "7": "fundbox",
+                    "8": "speedzone",
+                },
+            )
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="runtime gate passed"):
+        control.activate(
+            corrective_generation_id="corrective",
+            successor_generation_id="successor-2",
+            manifest=Mock(),
+            successor_boundary_digest="sha256:replacement-boundary",
+            occurrence="2026-08-11",
+            actor="operator",
+        )
+
+    repository.get_generation_category_mapping.assert_called_once_with("corrective")
+    repository.allocate_successor.assert_called_once()
+    assert "generation.status IN ['qualified', 'accepted']" in (
+        GET_BITRIX_GENERATION_CATEGORY_MAPPING
+    )
+    assert "coverage.category_id" in GET_BITRIX_GENERATION_CATEGORY_MAPPING
+    assert "coverage.entity_key" in GET_BITRIX_GENERATION_CATEGORY_MAPPING
+
+
+def test_legacy_explicit_category_digest_rejects_changed_mapping_evidence(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    repository = Mock()
+    repository.get_generation.return_value = SimpleNamespace(
+        status="accepted",
+        configuration_digest=(
+            "sha256:24ad8341df1613f75207dd5b9fab8c739e6ac162e12f64e1713c8114a565fd04"
+        ),
+    )
+    repository.get_generation_category_mapping.return_value = {
+        "2": "eko",
+        "7": "fundbox",
+        "8": "different-entity",
+    }
+    control = object.__new__(BitrixBackfillControl)
+    control._repository = repository
+    monkeypatch.setattr(
+        "src.bitrix_backfill_control.get_ingestion_config",
+        lambda: SimpleNamespace(
+            bitrix_openlines=BitrixOpenLinesConfig(
+                included_crm_category_ids=["2", "7", "8"],
+                entity_by_crm_category_id={
+                    "2": "eko",
+                    "7": "fundbox",
+                    "8": "speedzone",
+                },
+            )
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="generation category mapping evidence"):
+        control.recover_successor(
+            corrective_generation_id="corrective",
+            failed_successor_generation_id="successor-1",
+            replacement_successor_generation_id="successor-2",
+            manifest=Mock(),
+            successor_boundary_digest="sha256:replacement-boundary",
+            occurrence="2026-08-11",
+            actor="operator",
+            reason="zero-write failure",
+        )
+
+    repository.supersede_zero_write_successor.assert_not_called()
+    repository.allocate_successor.assert_not_called()
+
+
 def test_active_successor_retry_returns_the_confirmed_canvas_without_redispatch(
     monkeypatch: MonkeyPatch,
 ) -> None:
@@ -204,7 +373,7 @@ def test_active_successor_retry_returns_the_confirmed_canvas_without_redispatch(
     control._manifest_for = Mock(return_value=manifest)
     monkeypatch.setattr(
         "src.bitrix_backfill_control._require_runtime_configuration",
-        lambda _expected: None,
+        lambda _expected, **_kwargs: None,
     )
 
     canvas_id = control.activate(

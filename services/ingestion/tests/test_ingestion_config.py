@@ -12,6 +12,8 @@ from src.ingestion_config import (
     IngestionConfig,
     LlmConfig,
     ScheduledIngestionConfig,
+    bitrix_configuration_digest,
+    bitrix_legacy_explicit_category_digest,
     load_ingestion_config,
 )
 
@@ -26,6 +28,29 @@ def test_bitrix_openlines_defaults_select_safe_channel_types() -> None:
             "instagram",
         ]
     )
+
+
+def test_legacy_explicit_category_digest_reconstructs_accepted_gate_evidence() -> None:
+    categories = ("2", "7", "8")
+    runtime_config = BitrixOpenLinesConfig(
+        included_crm_category_ids=list(categories),
+        entity_by_crm_category_id={
+            "2": "eko",
+            "7": "fundbox",
+            "8": "speedzone",
+        },
+    )
+    accepted_digest = bitrix_legacy_explicit_category_digest(runtime_config, categories)
+    runtime_digest = bitrix_configuration_digest(runtime_config, categories)
+
+    assert accepted_digest == (
+        "sha256:24ad8341df1613f75207dd5b9fab8c739e6ac162e12f64e1713c8114a565fd04"
+    )
+    assert accepted_digest == bitrix_configuration_digest(BitrixOpenLinesConfig(), categories)
+    assert runtime_digest == (
+        "sha256:a449c56111af4eff4d8d3182355d037bee51760c45fc77c1451b4cac5bb4e75a"
+    )
+    assert runtime_digest != accepted_digest
 
 
 def test_scheduled_ingestion_is_disabled_by_default() -> None:

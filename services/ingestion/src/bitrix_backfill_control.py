@@ -32,7 +32,12 @@ from src.connectors.bitrix_stage_history.replay import qualify_artifacts
 from src.graph.bitrix_backfill import BitrixBackfillRepository
 from src.graph.client import Neo4jClient
 from src.graph.ingestion_control import LogicalRunControl
-from src.ingestion_config import bitrix_configuration_digest, get_ingestion_config
+from src.ingestion_config import (
+    BitrixOpenLinesConfig,
+    bitrix_configuration_digest,
+    bitrix_legacy_explicit_category_digest,
+    get_ingestion_config,
+)
 from src.models import JsonValue
 
 _JSON_OBJECT = TypeAdapter(dict[str, JsonValue])
@@ -162,6 +167,7 @@ class BitrixBackfillControl:
 
         if image_digest != manifest.minimum_fence_image_digest:
             raise ValueError("allocation image is below or different from the reviewed fence floor")
+        _require_new_generation_configuration(configuration_digest)
         created = self._repository.allocate_generation(
             generation_id,
             GenerationProvenance(
@@ -338,6 +344,14 @@ class BitrixBackfillControl:
         return result
 
     def accept(self, generation_id: str, *, actor: str, reason: str) -> None:
+        state = self._repository.get_generation(generation_id)
+        if state.status != "qualified":
+            raise RuntimeError("acceptance requires a qualified corrective generation")
+        _require_runtime_configuration(
+            state.configuration_digest,
+            generation_id=generation_id,
+            repository=self._repository,
+        )
         evidence = _digest_text("human-acceptance", f"{actor}\x00{reason}")
         self._repository.transition(
             generation_id,
@@ -377,7 +391,11 @@ class BitrixBackfillControl:
         corrective = self._repository.get_generation(corrective_generation_id)
         if corrective.status != "accepted":
             raise RuntimeError("only an accepted corrective generation can activate a successor")
-        _require_runtime_configuration(corrective.configuration_digest)
+        _require_runtime_configuration(
+            corrective.configuration_digest,
+            generation_id=corrective_generation_id,
+            repository=self._repository,
+        )
         self._repository.allocate_successor(
             corrective_generation_id=corrective_generation_id,
             successor_generation_id=successor_generation_id,
@@ -467,7 +485,11 @@ class BitrixBackfillControl:
         corrective = self._repository.get_generation(corrective_generation_id)
         if corrective.status != "accepted":
             raise RuntimeError("successor recovery requires an accepted corrective generation")
-        _require_runtime_configuration(corrective.configuration_digest)
+        _require_runtime_configuration(
+            corrective.configuration_digest,
+            generation_id=corrective_generation_id,
+            repository=self._repository,
+        )
         failed = self._repository.get_generation(failed_successor_generation_id)
         if (
             failed.generation_kind != "live_successor"
@@ -846,15 +868,49 @@ def _required_list(payload: dict[str, JsonValue], key: str) -> list[JsonValue]:
     return value
 
 
-def _require_runtime_configuration(expected_digest: str) -> None:
+def _runtime_category_mapping(
+    runtime_config: BitrixOpenLinesConfig,
+) -> tuple[tuple[str, ...], dict[str, str]]:
+    categories = tuple(runtime_config.included_crm_category_ids)
+    if not categories:
+        raise ValueError("deployed runtime configuration must include CRM categories")
+    mapping = {
+        category_id: runtime_config.entity_by_crm_category_id[category_id]
+        for category_id in categories
+        if category_id in runtime_config.entity_by_crm_category_id
+    }
+    if len(mapping) != len(categories):
+        raise ValueError("deployed runtime configuration has incomplete category mappings")
+    return categories, mapping
+
+
+def _require_new_generation_configuration(expected_digest: str) -> None:
     runtime_config = get_ingestion_config().bitrix_openlines
-    runtime_digest = bitrix_configuration_digest(
-        runtime_config,
-        tuple(runtime_config.included_crm_category_ids),
-    )
-    if runtime_digest != expected_digest:
+    categories, _mapping = _runtime_category_mapping(runtime_config)
+    if bitrix_configuration_digest(runtime_config, categories) != expected_digest:
+        raise ValueError("new generation configuration digest does not match the deployed runtime")
+
+
+def _require_runtime_configuration(
+    expected_digest: str,
+    *,
+    generation_id: str,
+    repository: BitrixBackfillRepository,
+) -> None:
+    runtime_config = get_ingestion_config().bitrix_openlines
+    categories, runtime_mapping = _runtime_category_mapping(runtime_config)
+    runtime_digest = bitrix_configuration_digest(runtime_config, categories)
+    if runtime_digest == expected_digest:
+        return
+    legacy_digest = bitrix_legacy_explicit_category_digest(runtime_config, categories)
+    if legacy_digest != expected_digest:
         raise RuntimeError(
             "deployed container ingestion config does not match the accepted generation"
+        )
+    accepted_mapping = repository.get_generation_category_mapping(generation_id)
+    if accepted_mapping != runtime_mapping:
+        raise RuntimeError(
+            "deployed runtime configuration does not match generation category mapping evidence"
         )
 
 
