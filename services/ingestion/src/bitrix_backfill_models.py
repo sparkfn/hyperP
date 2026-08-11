@@ -247,7 +247,13 @@ def known_owner_refresh_checkpoint(
     )
 
 
-InventoryReplayMode = Literal["strict_keyset", "targeted_refresh", "bounded_replay", "excluded"]
+InventoryReplayMode = Literal[
+    "strict_keyset",
+    "fixed_keyset",
+    "targeted_refresh",
+    "bounded_replay",
+    "excluded",
+]
 RollbackClass = Literal[
     "pre_write_image_rollback",
     "post_activation_pre_write_supersession",
@@ -366,10 +372,15 @@ class BackfillInventoryManifest:
         if len(set(gap_ids)) != len(gap_ids):
             raise ValueError("inventory gap IDs must be unique")
         executed = [entry.stream_key for entry in self.entries if entry.executes]
-        if "crm_deals" not in executed or "crm_activities" not in executed:
-            raise ValueError("inventory must execute deal and activity corrective streams")
-        if executed.index("crm_deals") > executed.index("crm_activities"):
+        if "crm_deals" not in executed:
+            raise ValueError("inventory must execute the deal stream")
+        if "crm_activities" in executed and executed.index("crm_deals") > executed.index(
+            "crm_activities"
+        ):
             raise ValueError("deal inventory must precede activity inventory")
+        activity_entries = [entry for entry in self.entries if entry.stream_key == "crm_activities"]
+        if not activity_entries:
+            raise ValueError("inventory must review the activity stream")
 
     @property
     def canonical_json(self) -> str:
