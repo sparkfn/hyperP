@@ -35,7 +35,7 @@ from src.bitrix_backfill_models import (
     known_owner_refresh_checkpoint,
 )
 from src.bitrix_deal_scope_reconciliation import refresh_known_owner_set
-from src.bitrix_ingestion_models import BitrixStreamKey, ExecutionContext
+from src.bitrix_ingestion_models import BitrixStreamKey, ExecutionContext, FenceContext
 from src.celery_app import LIFECYCLE_QUEUE, celery_app
 from src.config import get_settings
 from src.connectors.whatsadmin_api.credentials import WHATSADMIN_ENTITIES
@@ -247,6 +247,7 @@ def _get_or_materialize_known_owner_set(
     client: Neo4jClient,
     generation_id: str,
     membership_set_id: str,
+    fence_context: FenceContext,
 ) -> KnownOwnerMembershipSet:
     repository = BitrixBackfillRepository(client)
     existing = repository.find_known_owner_set(
@@ -258,6 +259,7 @@ def _get_or_materialize_known_owner_set(
     return repository.materialize_known_owner_set(
         generation_id=generation_id,
         membership_set_id=membership_set_id,
+        fence_context=fence_context,
     )
 
 
@@ -420,6 +422,7 @@ def _run_split_bitrix_ingestion(
                     client=client,
                     generation_id=generation_context.generation_id,
                     membership_set_id=membership_set_id,
+                    fence_context=admission.fence_context,
                 )
             if resume_known_refresh:
                 summary = _skipped_split_summary(

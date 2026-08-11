@@ -384,25 +384,43 @@ class BitrixBackfillControl:
             successor_boundary_digest=successor_boundary_digest,
         )
         successor = self._repository.get_generation(successor_generation_id)
-        if successor.status == "allocated":
-            self._repository.register_inventory(successor_generation_id, manifest)
-        elif successor.status == "activating":
-            stored_manifest = self._manifest_for(successor_generation_id)
-            if stored_manifest.digest != manifest.digest:
-                raise RuntimeError("activation retry changed the successor inventory")
-        else:
-            raise RuntimeError("successor is not in an activatable state")
         evidence = _digest_text(
             "successor-activation",
             f"{corrective_generation_id}\x00{manifest.digest}\x00{occurrence}",
         )
-        self._repository.activate_successor(
-            corrective_generation_id=corrective_generation_id,
-            successor_generation_id=successor_generation_id,
-            actor=actor,
-            evidence_digest=evidence,
-            occurrence=occurrence,
-        )
+        if successor.status == "allocated":
+            self._repository.register_inventory(successor_generation_id, manifest)
+        elif successor.status in {"activating", "active"}:
+            stored_manifest = self._manifest_for(successor_generation_id)
+            if stored_manifest.digest != manifest.digest:
+                raise RuntimeError("activation retry changed the successor inventory")
+            if successor.status == "active":
+                return self._repository.get_confirmed_successor_canvas(
+                    corrective_generation_id=corrective_generation_id,
+                    successor_generation_id=successor_generation_id,
+                    evidence_digest=evidence,
+                    occurrence=occurrence,
+                )
+        else:
+            raise RuntimeError("successor is not in an activatable state")
+        try:
+            self._repository.activate_successor(
+                corrective_generation_id=corrective_generation_id,
+                successor_generation_id=successor_generation_id,
+                actor=actor,
+                evidence_digest=evidence,
+                occurrence=occurrence,
+            )
+        except RuntimeError:
+            refreshed = self._repository.get_generation(successor_generation_id)
+            if refreshed.status == "active":
+                return self._repository.get_confirmed_successor_canvas(
+                    corrective_generation_id=corrective_generation_id,
+                    successor_generation_id=successor_generation_id,
+                    evidence_digest=evidence,
+                    occurrence=occurrence,
+                )
+            raise
         successor = self._repository.get_generation(successor_generation_id)
         canvas_id = dispatch_generation_canvas(
             generation_id=successor_generation_id,
@@ -412,14 +430,22 @@ class BitrixBackfillControl:
             task_kind="live",
             occurrence=occurrence,
         )
-        self._repository.confirm_successor_publication(
-            corrective_generation_id=corrective_generation_id,
-            successor_generation_id=successor_generation_id,
-            actor=actor,
-            evidence_digest=evidence,
-            canvas_id=canvas_id,
-        )
-        return canvas_id
+        try:
+            self._repository.confirm_successor_publication(
+                corrective_generation_id=corrective_generation_id,
+                successor_generation_id=successor_generation_id,
+                actor=actor,
+                evidence_digest=evidence,
+                canvas_id=canvas_id,
+            )
+            return canvas_id
+        except RuntimeError:
+            return self._repository.get_confirmed_successor_canvas(
+                corrective_generation_id=corrective_generation_id,
+                successor_generation_id=successor_generation_id,
+                evidence_digest=evidence,
+                occurrence=occurrence,
+            )
 
     def recover_successor(
         self,

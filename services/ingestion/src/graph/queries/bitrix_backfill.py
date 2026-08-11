@@ -133,6 +133,8 @@ MERGE (member:BitrixKnownOwnerRefreshMember {
 })
 ON CREATE SET member.ordinal = item.ordinal,
               member.created_at = datetime()
+WITH owner_set, item, member
+WHERE member.ordinal = item.ordinal
 MERGE (owner_set)-[:HAS_MEMBER]->(member)
 WITH owner_set, count(member) AS batch_count
 RETURN batch_count
@@ -578,6 +580,8 @@ RETURN DISTINCT generation.generation_id AS generation_id
 
 ALLOCATE_BITRIX_SUCCESSOR_GENERATION = """
 MATCH (corrective:BitrixBackfillGeneration {generation_id: $corrective_generation_id})
+SET corrective.successor_lock_version = coalesce(corrective.successor_lock_version, 0) + 1
+WITH corrective
 WHERE corrective.status = 'accepted'
 OPTIONAL MATCH (corrective)-[:HAS_SUCCESSOR]->(existing:BitrixBackfillGeneration)
 WHERE existing.generation_id <> $successor_generation_id
@@ -618,15 +622,6 @@ MATCH (corrective:BitrixBackfillGeneration {generation_id: $corrective_generatio
 WHERE corrective.status = 'accepted'
   AND successor.generation_kind = 'live_successor'
   AND successor.corrective_generation_id = $corrective_generation_id
-  AND (
-    successor.status IN ['activating', 'active', 'failed']
-    OR (
-      successor.status = 'superseded'
-      AND successor.superseded_by_generation_id = $replacement_successor_generation_id
-      AND successor.supersession_evidence_digest = $evidence_digest
-    )
-  )
-  AND NOT (successor)-[:HAS_COVERAGE]->()
   AND $successor_generation_id <> $replacement_successor_generation_id
 OPTIONAL MATCH (successor)-[:HAS_LOGICAL_RUN]->(logical:IngestionLogicalRun)
 WITH corrective, successor, collect(logical) AS logicals
@@ -636,21 +631,40 @@ WHERE size(logicals) > 0
                                                        'completed_with_errors'])
 OPTIONAL MATCH (successor)-[generation_stream:HAS_STREAM]->(stream:BitrixIngestionStream)
 WITH corrective, successor, logicals,
-     collect(generation_stream) AS generation_streams, collect(stream) AS streams
-FOREACH (stream IN streams |
-  SET stream.fence_lock_version = CASE
-        WHEN stream.status = 'superseded' THEN stream.fence_lock_version
-        ELSE coalesce(stream.fence_lock_version, 0) + 1
-      END,
+     successor.status = 'superseded'
+       AND successor.superseded_by_generation_id = $replacement_successor_generation_id
+       AND successor.supersession_evidence_digest = $evidence_digest AS retry,
+     [binding IN collect({relation: generation_stream, stream: stream})
+       WHERE binding.stream IS NOT NULL | binding] AS bindings
+WHERE retry OR (
+  successor.status IN ['activating', 'active', 'failed']
+  AND size(bindings) = size(logicals)
+  AND all(binding IN bindings WHERE
+    binding.relation.logical_run_id = binding.stream.logical_run_id
+    AND binding.relation.ingest_run_id = binding.stream.ingest_run_id
+    AND binding.relation.attempt_generation = binding.stream.attempt_generation
+    AND binding.relation.stream_generation = binding.stream.stream_generation
+    AND binding.relation.fencing_token = binding.stream.fencing_token
+    AND binding.stream.logical_run_id IN [logical IN logicals | logical.logical_run_id]
+  )
+)
+CALL (bindings, retry) {
+  UNWIND CASE WHEN retry THEN [] ELSE bindings END AS binding
+  WITH binding.relation AS generation_stream, binding.stream AS stream
+  SET stream.fence_lock_version = coalesce(stream.fence_lock_version, 0) + 1,
       stream.status = 'superseded',
-      stream.ended_at = coalesce(stream.ended_at, datetime())
-)
-FOREACH (generation_stream IN generation_streams |
-  SET generation_stream.status = 'superseded',
-      generation_stream.ended_at = datetime(),
+      stream.ended_at = coalesce(stream.ended_at, datetime()),
+      generation_stream.status = 'superseded',
+      generation_stream.ended_at = coalesce(generation_stream.ended_at, datetime()),
       generation_stream.updated_at = datetime()
-)
-WITH corrective, successor
+  RETURN count(*) AS locked_binding_count
+}
+WITH corrective, successor, retry, bindings, locked_binding_count
+WHERE retry OR locked_binding_count = size(bindings)
+OPTIONAL MATCH (successor)-[:HAS_COVERAGE]->(coverage:BitrixBackfillCoverage)
+WITH corrective, successor, retry, count(coverage) AS material_write_count
+WHERE material_write_count = 0
+  AND (retry OR successor.status IN ['activating', 'active', 'failed'])
 OPTIONAL MATCH (outbox:BitrixBackfillDispatchOutbox {
   successor_generation_id: $successor_generation_id
 })
@@ -845,6 +859,23 @@ SET active_dispatch.blocked = false,
     active_dispatch.unblocked_by = $actor,
     active_dispatch.updated_at = datetime()
 RETURN successor.generation_id AS generation_id
+"""
+
+GET_CONFIRMED_BITRIX_SUCCESSOR_PUBLICATION = """
+MATCH (corrective:BitrixBackfillGeneration {generation_id: $corrective_generation_id})
+      -[:HAS_SUCCESSOR]->
+      (successor:BitrixBackfillGeneration {generation_id: $successor_generation_id})
+MATCH (outbox:BitrixBackfillDispatchOutbox {
+  successor_generation_id: $successor_generation_id,
+  evidence_digest: $evidence_digest,
+  occurrence: $occurrence,
+  status: 'published'
+})
+WHERE corrective.status = 'accepted'
+  AND successor.status = 'active'
+  AND successor.activation_evidence_digest = $evidence_digest
+  AND outbox.canvas_id IS NOT NULL
+RETURN outbox.canvas_id AS canvas_id
 """
 
 GET_ACTIVE_BITRIX_SUCCESSOR_SCHEDULE = """

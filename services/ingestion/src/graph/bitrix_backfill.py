@@ -38,6 +38,7 @@ from src.graph.queries.bitrix_backfill import (
     GET_BITRIX_BACKFILL_GENERATION,
     GET_BITRIX_BACKFILL_INVENTORY,
     GET_BITRIX_COVERAGE_RECONCILIATION,
+    GET_CONFIRMED_BITRIX_SUCCESSOR_PUBLICATION,
     GET_KNOWN_OWNER_SET,
     GET_MAX_BITRIX_RESUME_WORKER_GENERATION,
     LIST_BITRIX_GENERATION_LOGICAL_RUNS,
@@ -440,6 +441,28 @@ class BitrixBackfillRepository:
 
         self._client.execute_write(_work)
 
+    def get_confirmed_successor_canvas(
+        self,
+        *,
+        corrective_generation_id: str,
+        successor_generation_id: str,
+        evidence_digest: str,
+        occurrence: str,
+    ) -> str:
+        def _read(tx: ManagedTransaction) -> str:
+            record = tx.run(
+                GET_CONFIRMED_BITRIX_SUCCESSOR_PUBLICATION,
+                corrective_generation_id=corrective_generation_id,
+                successor_generation_id=successor_generation_id,
+                evidence_digest=evidence_digest,
+                occurrence=occurrence,
+            ).single()
+            if record is None:
+                raise RuntimeError("successor publication retry does not match stored evidence")
+            return _required_str(record["canvas_id"], "successor_canvas_id")
+
+        return self._client.execute_read(_read)
+
     def supersede_zero_write_successor(
         self,
         *,
@@ -523,6 +546,7 @@ class BitrixBackfillRepository:
         *,
         generation_id: str,
         membership_set_id: str,
+        fence_context: FenceContext,
     ) -> KnownOwnerMembershipSet:
         if not generation_id.strip() or not membership_set_id.strip():
             raise ValueError("generation and membership set IDs must be non-empty")
@@ -537,6 +561,7 @@ class BitrixBackfillRepository:
         digest = _known_owner_digest(deal_ids)
 
         def _prepare(tx: ManagedTransaction) -> str:
+            assert_active_bitrix_fence(tx, fence_context)
             record = tx.run(
                 PREPARE_KNOWN_OWNER_SET,
                 generation_id=generation_id,
@@ -563,6 +588,7 @@ class BitrixBackfillRepository:
                     tx: ManagedTransaction,
                     _batch: list[dict[str, str | int]] = batch,
                 ) -> None:
+                    assert_active_bitrix_fence(tx, fence_context)
                     record = tx.run(
                         UPSERT_KNOWN_OWNER_MEMBERS,
                         generation_id=generation_id,
@@ -576,6 +602,7 @@ class BitrixBackfillRepository:
                 self._client.execute_write(_write_batch)
 
             def _seal(tx: ManagedTransaction) -> None:
+                assert_active_bitrix_fence(tx, fence_context)
                 record = tx.run(
                     SEAL_KNOWN_OWNER_SET,
                     generation_id=generation_id,
