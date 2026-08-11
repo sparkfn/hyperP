@@ -373,6 +373,25 @@ RETURN generation.generation_id AS generation_id,
        generation.source_contract_uuid AS source_contract_uuid
 """
 
+GET_BITRIX_GENERATION_CATEGORY_MAPPING = """
+MATCH (generation:BitrixBackfillGeneration {generation_id: $generation_id})
+WHERE generation.status IN ['qualified', 'accepted']
+MATCH (generation)-[:HAS_COVERAGE]->(coverage:BitrixBackfillCoverage {
+  stream_key: 'crm_deals'
+})
+WHERE coverage.terminal = true
+  AND coverage.deal_id IS NOT NULL
+WITH coverage.deal_id AS deal_id, coverage
+ORDER BY coverage.updated_at DESC, coverage.source_boundary DESC
+WITH deal_id, collect(coverage)[0] AS coverage
+WHERE coverage.scope_state = 'in_scope'
+  AND coverage.category_id IS NOT NULL
+  AND coverage.entity_key IS NOT NULL
+RETURN coverage.category_id AS category_id,
+       collect(DISTINCT coverage.entity_key) AS entity_keys
+ORDER BY category_id
+"""
+
 GET_BITRIX_BACKFILL_INVENTORY = """
 MATCH (generation:BitrixBackfillGeneration {generation_id: $generation_id})
       -[:USES_INVENTORY]->(inventory:BitrixBackfillInventory)

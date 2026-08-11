@@ -35,6 +35,7 @@ from src.graph.queries.bitrix_backfill import (
     CONFIRM_BITRIX_SUCCESSOR_PUBLICATION,
     EXPORT_FROZEN_OWNER_COVERAGE,
     FREEZE_BITRIX_BACKFILL_GENERATION,
+    GET_BITRIX_GENERATION_CATEGORY_MAPPING,
     GET_BITRIX_BACKFILL_GENERATION,
     GET_BITRIX_BACKFILL_INVENTORY,
     GET_BITRIX_COVERAGE_RECONCILIATION,
@@ -371,6 +372,35 @@ class BitrixBackfillRepository:
                 raise RuntimeError("generation cannot be rejected from its current state")
 
         self._client.execute_write(_work)
+
+    def get_generation_category_mapping(self, generation_id: str) -> dict[str, str]:
+        if not generation_id.strip():
+            raise ValueError("generation_id must be non-empty")
+
+        def _read(tx: ManagedTransaction) -> dict[str, str]:
+            records = tx.run(
+                GET_BITRIX_GENERATION_CATEGORY_MAPPING,
+                generation_id=generation_id,
+            )
+            mapping: dict[str, str] = {}
+            for record in records:
+                category_id = _required_str(record["category_id"], "category_id")
+                entity_keys = record["entity_keys"]
+                if (
+                    not isinstance(entity_keys, list)
+                    or len(entity_keys) != 1
+                    or not isinstance(entity_keys[0], str)
+                    or not entity_keys[0]
+                ):
+                    raise RuntimeError("corrective category has ambiguous entity mapping evidence")
+                mapping[category_id] = entity_keys[0]
+            if not mapping:
+                raise RuntimeError(
+                    "accepted corrective generation has no category mapping evidence"
+                )
+            return mapping
+
+        return self._client.execute_read(_read)
 
     def allocate_successor(
         self,
