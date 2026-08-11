@@ -154,6 +154,7 @@ class CapabilityReconciliationSpool:
                 "PRIMARY KEY (stable_id, canonical_hash)"
                 ")"
             )
+            self._connection.execute("CREATE INDEX events_owner_id_idx ON events(owner_id)")
             self._connection.commit()
         except BaseException:
             self.close()

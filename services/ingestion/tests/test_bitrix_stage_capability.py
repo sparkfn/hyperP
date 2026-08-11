@@ -557,6 +557,30 @@ def test_runtime_limit_covers_manifest_digest(
     assert list((tmp_path / "restricted").iterdir()) == []
 
 
+def test_reconciliation_spool_indexes_owner_lookups(tmp_path: Path) -> None:
+    from src.connectors.bitrix_stage_history.reconciliation_spool import (
+        CapabilityReconciliationSpool,
+    )
+
+    spool = CapabilityReconciliationSpool(tmp_path / "restricted", 1)
+    connection = sqlite3.connect(spool.path)
+    try:
+        indexes = {row[1] for row in connection.execute("PRAGMA index_list('events')")}
+        assert "events_owner_id_idx" in indexes
+        plan = " ".join(
+            str(part)
+            for row in connection.execute(
+                "EXPLAIN QUERY PLAN SELECT 1 FROM events WHERE owner_id = ? LIMIT 1",
+                ("501",),
+            )
+            for part in row
+        )
+        assert "events_owner_id_idx" in plan
+    finally:
+        connection.close()
+        spool.delete()
+
+
 def test_global_frozen_stage_pass_reconciles_against_restricted_owner_manifest(
     tmp_path: Path,
 ) -> None:
