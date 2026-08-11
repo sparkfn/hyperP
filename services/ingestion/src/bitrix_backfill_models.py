@@ -378,9 +378,7 @@ class BackfillInventoryManifest:
             "crm_activities"
         ):
             raise ValueError("deal inventory must precede activity inventory")
-        activity_entries = [
-            entry for entry in self.entries if entry.stream_key == "crm_activities"
-        ]
+        activity_entries = [entry for entry in self.entries if entry.stream_key == "crm_activities"]
         if not activity_entries:
             raise ValueError("inventory must review the activity stream")
 
