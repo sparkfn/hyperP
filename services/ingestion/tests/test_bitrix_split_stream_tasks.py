@@ -83,17 +83,21 @@ class _StreamControl:
     def admit_or_coalesce(self, **_parameters: object) -> BitrixStreamAdmission:
         return BitrixStreamAdmission(
             outcome="admitted",
-            fence_context=FenceContext(
-                logical_run_id="logical-1",
-                ingest_run_id="ingest-1",
-                source_key="bitrix_chat",
-                stream_key="crm_deals",
-                stream_generation=1,
-                fencing_token=1,
-                attempt_generation=1,
-            ),
+            fence_context=_fence(),
             worker_task_id="task-1",
         )
+
+
+def _fence() -> FenceContext:
+    return FenceContext(
+        logical_run_id="logical-1",
+        ingest_run_id="ingest-1",
+        source_key="bitrix_chat",
+        stream_key="crm_deals",
+        stream_generation=1,
+        fencing_token=1,
+        attempt_generation=1,
+    )
 
 
 def test_split_helper_uses_one_control_plane_run_and_passes_execution_context(
@@ -219,6 +223,7 @@ def test_resume_reuses_existing_sealed_known_owner_set(monkeypatch: MonkeyPatch)
         client=object(),
         generation_id="generation-1",
         membership_set_id="owners-1",
+        fence_context=_fence(),
     )
 
     assert membership is existing
@@ -235,6 +240,7 @@ def test_first_census_materializes_missing_known_owner_set(
         deal_ids=("2", "10"),
     )
     calls: list[str] = []
+    materialize_parameters: dict[str, object] = {}
 
     class Repository:
         def __init__(self, _client: object) -> None:
@@ -246,6 +252,7 @@ def test_first_census_materializes_missing_known_owner_set(
 
         def materialize_known_owner_set(self, **_parameters: object) -> KnownOwnerMembershipSet:
             calls.append("materialize")
+            materialize_parameters.update(_parameters)
             return created
 
     monkeypatch.setattr(tasks, "BitrixBackfillRepository", Repository)
@@ -254,10 +261,12 @@ def test_first_census_materializes_missing_known_owner_set(
         client=object(),
         generation_id="generation-1",
         membership_set_id="owners-1",
+        fence_context=_fence(),
     )
 
     assert membership is created
     assert calls == ["find", "materialize"]
+    assert materialize_parameters["fence_context"] == _fence()
 
 
 def test_known_owner_load_failure_terminates_the_admitted_attempt(
