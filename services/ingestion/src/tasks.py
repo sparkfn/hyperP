@@ -35,7 +35,7 @@ from src.bitrix_backfill_models import (
     known_owner_refresh_checkpoint,
 )
 from src.bitrix_deal_scope_reconciliation import refresh_known_owner_set
-from src.bitrix_ingestion_models import BitrixStreamKey, ExecutionContext
+from src.bitrix_ingestion_models import BitrixStreamKey, ExecutionContext, FenceContext
 from src.celery_app import LIFECYCLE_QUEUE, celery_app
 from src.config import get_settings
 from src.connectors.whatsadmin_api.credentials import WHATSADMIN_ENTITIES
