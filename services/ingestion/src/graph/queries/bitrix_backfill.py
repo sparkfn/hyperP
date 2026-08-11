@@ -98,39 +98,98 @@ RETURN deal.deal_id AS deal_id
 ORDER BY toInteger(deal.deal_id), deal.deal_id
 """
 
-MATERIALIZE_KNOWN_OWNER_SET = """
+PREPARE_KNOWN_OWNER_SET = """
 MATCH (generation:BitrixBackfillGeneration {generation_id: $generation_id})
 WHERE generation.status IN ['allocated', 'backfilling', 'activating', 'active']
-OPTIONAL MATCH (deal:CrmLogicalDeal {source_key: 'bitrix_chat'})
-WHERE deal.current_scope_state IN ['in_scope', 'indeterminate']
-WITH generation, [id IN collect(deal.deal_id) WHERE id IS NOT NULL] AS unsorted
-UNWIND CASE WHEN unsorted = [] THEN [NULL] ELSE unsorted END AS value
-WITH generation, value ORDER BY toInteger(value), value
-WITH generation, [value IN collect(value) WHERE value IS NOT NULL] AS current_ids
-WHERE current_ids = $deal_ids
 MERGE (owner_set:BitrixKnownOwnerRefreshSet {
   generation_id: $generation_id,
   membership_set_id: $membership_set_id
 })
 ON CREATE SET owner_set.digest = $digest,
-              owner_set.member_count = size($deal_ids),
-              owner_set.created_at = datetime(),
-              owner_set.sealed_at = datetime()
+              owner_set.member_count = $member_count,
+              owner_set.status = 'building',
+              owner_set.created_at = datetime()
 WITH generation, owner_set
-WHERE owner_set.digest = $digest AND owner_set.member_count = size($deal_ids)
+WHERE owner_set.digest = $digest
+  AND owner_set.member_count = $member_count
+  AND coalesce(owner_set.status, 'sealed') IN ['building', 'sealed']
 MERGE (generation)-[:HAS_KNOWN_OWNER_SET]->(owner_set)
-FOREACH (ordinal IN CASE WHEN $deal_ids = [] THEN [] ELSE range(0, size($deal_ids) - 1) END |
-  MERGE (member:BitrixKnownOwnerRefreshMember {
-    generation_id: $generation_id,
-    membership_set_id: $membership_set_id,
-    deal_id: $deal_ids[ordinal]
-  })
-  ON CREATE SET member.ordinal = ordinal,
-                member.created_at = datetime()
-  MERGE (owner_set)-[:HAS_MEMBER]->(member)
-)
-RETURN owner_set.membership_set_id AS membership_set_id,
-       owner_set.member_count AS member_count,
+RETURN coalesce(owner_set.status, 'sealed') AS status
+"""
+
+UPSERT_KNOWN_OWNER_MEMBERS = """
+MATCH (generation:BitrixBackfillGeneration {generation_id: $generation_id})
+      -[:HAS_KNOWN_OWNER_SET]->
+      (owner_set:BitrixKnownOwnerRefreshSet {
+        membership_set_id: $membership_set_id,
+        digest: $digest,
+        status: 'building'
+      })
+UNWIND $members AS item
+MERGE (member:BitrixKnownOwnerRefreshMember {
+  generation_id: $generation_id,
+  membership_set_id: $membership_set_id,
+  deal_id: item.deal_id
+})
+ON CREATE SET member.ordinal = item.ordinal,
+              member.created_at = datetime()
+MERGE (owner_set)-[:HAS_MEMBER]->(member)
+WITH owner_set, count(member) AS batch_count
+RETURN batch_count
+"""
+
+SEAL_KNOWN_OWNER_SET = """
+MATCH (generation:BitrixBackfillGeneration {generation_id: $generation_id})
+      -[:HAS_KNOWN_OWNER_SET]->
+      (owner_set:BitrixKnownOwnerRefreshSet {
+        membership_set_id: $membership_set_id,
+        digest: $digest,
+        status: 'building'
+      })
+CALL (owner_set) {
+  MATCH (owner_set)-[:HAS_MEMBER]->(member:BitrixKnownOwnerRefreshMember)
+  RETURN count(member) AS stored_count,
+         count(DISTINCT member.ordinal) AS ordinal_count
+}
+CALL () {
+  MATCH (deal:CrmLogicalDeal {source_key: 'bitrix_chat'})
+  WHERE deal.current_scope_state IN ['in_scope', 'indeterminate']
+  RETURN count(deal) AS current_count
+}
+CALL (owner_set) {
+  MATCH (deal:CrmLogicalDeal {source_key: 'bitrix_chat'})
+  WHERE deal.current_scope_state IN ['in_scope', 'indeterminate']
+    AND NOT EXISTS {
+      MATCH (member:BitrixKnownOwnerRefreshMember {
+        generation_id: $generation_id,
+        membership_set_id: $membership_set_id,
+        deal_id: deal.deal_id
+      })
+      WHERE (owner_set)-[:HAS_MEMBER]->(member)
+    }
+  RETURN count(deal) AS missing_member_count
+}
+CALL (owner_set) {
+  MATCH (owner_set)-[:HAS_MEMBER]->(member:BitrixKnownOwnerRefreshMember)
+  WHERE NOT EXISTS {
+    MATCH (deal:CrmLogicalDeal {
+      source_key: 'bitrix_chat',
+      deal_id: member.deal_id
+    })
+    WHERE deal.current_scope_state IN ['in_scope', 'indeterminate']
+  }
+  RETURN count(member) AS stale_member_count
+}
+WITH owner_set, stored_count, ordinal_count, current_count,
+     missing_member_count, stale_member_count
+WHERE stored_count = owner_set.member_count
+  AND ordinal_count = owner_set.member_count
+  AND current_count = owner_set.member_count
+  AND missing_member_count = 0
+  AND stale_member_count = 0
+SET owner_set.status = 'sealed',
+    owner_set.sealed_at = datetime()
+RETURN owner_set.member_count AS member_count,
        owner_set.digest AS digest
 """
 
@@ -138,11 +197,23 @@ GET_KNOWN_OWNER_SET = """
 MATCH (generation:BitrixBackfillGeneration {generation_id: $generation_id})
       -[:HAS_KNOWN_OWNER_SET]->
       (owner_set:BitrixKnownOwnerRefreshSet {membership_set_id: $membership_set_id})
-OPTIONAL MATCH (owner_set)-[:HAS_MEMBER]->(member:BitrixKnownOwnerRefreshMember)
-WITH owner_set, member ORDER BY member.ordinal
 RETURN owner_set.digest AS digest,
        owner_set.member_count AS member_count,
-       [value IN collect(member.deal_id) WHERE value IS NOT NULL] AS deal_ids
+       coalesce(owner_set.status, 'sealed') AS status
+"""
+
+LIST_KNOWN_OWNER_MEMBERS_PAGE = """
+MATCH (generation:BitrixBackfillGeneration {generation_id: $generation_id})
+      -[:HAS_KNOWN_OWNER_SET]->
+      (owner_set:BitrixKnownOwnerRefreshSet {
+        membership_set_id: $membership_set_id
+      })-[:HAS_MEMBER]->(member:BitrixKnownOwnerRefreshMember)
+WHERE coalesce(owner_set.status, 'sealed') = 'sealed'
+  AND member.ordinal > $after_ordinal
+RETURN member.ordinal AS ordinal,
+       member.deal_id AS deal_id
+ORDER BY member.ordinal
+LIMIT $limit
 """
 
 UPSERT_BITRIX_BACKFILL_COVERAGE = """
@@ -508,6 +579,11 @@ RETURN DISTINCT generation.generation_id AS generation_id
 ALLOCATE_BITRIX_SUCCESSOR_GENERATION = """
 MATCH (corrective:BitrixBackfillGeneration {generation_id: $corrective_generation_id})
 WHERE corrective.status = 'accepted'
+OPTIONAL MATCH (corrective)-[:HAS_SUCCESSOR]->(existing:BitrixBackfillGeneration)
+WHERE existing.generation_id <> $successor_generation_id
+  AND existing.status IN ['allocated', 'activating', 'active']
+WITH corrective, collect(existing) AS competing_successors
+WHERE size(competing_successors) = 0
 MERGE (successor:BitrixBackfillGeneration {generation_id: $successor_generation_id})
 ON CREATE SET successor.status = 'allocated',
               successor.generation_kind = 'live_successor',
@@ -533,6 +609,70 @@ WHERE created OR (
 )
 MERGE (corrective)-[:HAS_SUCCESSOR]->(successor)
 RETURN successor.generation_id AS generation_id, created AS created
+"""
+
+SUPERSEDE_ZERO_WRITE_BITRIX_SUCCESSOR = """
+MATCH (corrective:BitrixBackfillGeneration {generation_id: $corrective_generation_id})
+      -[:HAS_SUCCESSOR]->
+      (successor:BitrixBackfillGeneration {generation_id: $successor_generation_id})
+WHERE corrective.status = 'accepted'
+  AND successor.generation_kind = 'live_successor'
+  AND successor.corrective_generation_id = $corrective_generation_id
+  AND (
+    successor.status IN ['activating', 'active', 'failed']
+    OR (
+      successor.status = 'superseded'
+      AND successor.superseded_by_generation_id = $replacement_successor_generation_id
+      AND successor.supersession_evidence_digest = $evidence_digest
+    )
+  )
+  AND NOT (successor)-[:HAS_COVERAGE]->()
+  AND $successor_generation_id <> $replacement_successor_generation_id
+OPTIONAL MATCH (successor)-[:HAS_LOGICAL_RUN]->(logical:IngestionLogicalRun)
+WITH corrective, successor, collect(logical) AS logicals
+WHERE size(logicals) > 0
+  AND any(logical IN logicals WHERE logical.status = 'failed')
+  AND all(logical IN logicals WHERE logical.status IN ['failed', 'completed',
+                                                       'completed_with_errors'])
+OPTIONAL MATCH (successor)-[generation_stream:HAS_STREAM]->(stream:BitrixIngestionStream)
+WITH corrective, successor, logicals,
+     collect(generation_stream) AS generation_streams, collect(stream) AS streams
+FOREACH (stream IN streams |
+  SET stream.fence_lock_version = CASE
+        WHEN stream.status = 'superseded' THEN stream.fence_lock_version
+        ELSE coalesce(stream.fence_lock_version, 0) + 1
+      END,
+      stream.status = 'superseded',
+      stream.ended_at = coalesce(stream.ended_at, datetime())
+)
+FOREACH (generation_stream IN generation_streams |
+  SET generation_stream.status = 'superseded',
+      generation_stream.ended_at = datetime(),
+      generation_stream.updated_at = datetime()
+)
+WITH corrective, successor
+OPTIONAL MATCH (outbox:BitrixBackfillDispatchOutbox {
+  successor_generation_id: $successor_generation_id
+})
+WITH corrective, successor, collect(outbox) AS outboxes
+SET successor.status = 'superseded',
+    successor.scheduling_enabled = false,
+    successor.superseded_by_generation_id = $replacement_successor_generation_id,
+    successor.superseded_by = $actor,
+    successor.supersession_reason = $reason,
+    successor.supersession_evidence_digest = $evidence_digest,
+    successor.superseded_at = datetime(),
+    successor.updated_at = datetime()
+FOREACH (outbox IN outboxes |
+  SET outbox.status = 'superseded',
+      outbox.superseded_at = datetime()
+)
+MERGE (dispatch:BitrixDispatchControl {source_key: 'bitrix_chat'})
+SET dispatch.blocked = true,
+    dispatch.block_reason = 'zero_write_successor_recovery',
+    dispatch.blocked_generation_id = $corrective_generation_id,
+    dispatch.updated_at = datetime()
+RETURN successor.generation_id AS generation_id
 """
 
 ACTIVATE_BITRIX_SUCCESSOR_GENERATION = """

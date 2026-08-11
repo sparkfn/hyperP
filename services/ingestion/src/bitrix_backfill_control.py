@@ -32,6 +32,7 @@ from src.connectors.bitrix_stage_history.replay import qualify_artifacts
 from src.graph.bitrix_backfill import BitrixBackfillRepository
 from src.graph.client import Neo4jClient
 from src.graph.ingestion_control import LogicalRunControl
+from src.ingestion_config import bitrix_configuration_digest, get_ingestion_config
 from src.models import JsonValue
 
 _JSON_OBJECT = TypeAdapter(dict[str, JsonValue])
@@ -50,6 +51,7 @@ CONTROL_COMMANDS = frozenset(
         "accept",
         "reject",
         "activate",
+        "recover-successor",
         "verify-tail",
         "rollback-status",
     }
@@ -67,7 +69,13 @@ def load_inventory(path: Path) -> BackfillInventoryManifest:
         if stream not in {"crm_deals", "crm_activities", "openlines_conversations"}:
             raise ValueError("inventory contains an unsupported Bitrix stream")
         replay_mode = _required_text(raw_entry, "replay_mode")
-        if replay_mode not in {"strict_keyset", "targeted_refresh", "bounded_replay", "excluded"}:
+        if replay_mode not in {
+            "strict_keyset",
+            "fixed_keyset",
+            "targeted_refresh",
+            "bounded_replay",
+            "excluded",
+        }:
             raise ValueError("inventory contains an unsupported replay mode")
         raw_window = raw_entry.get("source_window")
         if raw_window is not None and not isinstance(raw_window, dict):
@@ -369,6 +377,7 @@ class BitrixBackfillControl:
         corrective = self._repository.get_generation(corrective_generation_id)
         if corrective.status != "accepted":
             raise RuntimeError("only an accepted corrective generation can activate a successor")
+        _require_runtime_configuration(corrective.configuration_digest)
         self._repository.allocate_successor(
             corrective_generation_id=corrective_generation_id,
             successor_generation_id=successor_generation_id,
@@ -411,6 +420,57 @@ class BitrixBackfillControl:
             canvas_id=canvas_id,
         )
         return canvas_id
+
+    def recover_successor(
+        self,
+        *,
+        corrective_generation_id: str,
+        failed_successor_generation_id: str,
+        replacement_successor_generation_id: str,
+        manifest: BackfillInventoryManifest,
+        successor_boundary_digest: str,
+        occurrence: str,
+        actor: str,
+        reason: str,
+    ) -> str:
+        """Fence a zero-write failed successor and publish a distinct replacement."""
+        if failed_successor_generation_id == replacement_successor_generation_id:
+            raise ValueError("replacement successor generation must be distinct")
+        if not reason.strip():
+            raise ValueError("successor recovery reason must be non-empty")
+        corrective = self._repository.get_generation(corrective_generation_id)
+        if corrective.status != "accepted":
+            raise RuntimeError("successor recovery requires an accepted corrective generation")
+        _require_runtime_configuration(corrective.configuration_digest)
+        failed = self._repository.get_generation(failed_successor_generation_id)
+        if (
+            failed.generation_kind != "live_successor"
+            or failed.corrective_generation_id != corrective_generation_id
+        ):
+            raise RuntimeError("failed successor does not belong to the corrective generation")
+        if failed.material_write_count != 0:
+            raise RuntimeError("successor recovery is limited to zero-write failures")
+        evidence = _digest_text(
+            "zero-write-successor-recovery",
+            f"{corrective_generation_id}\x00{failed_successor_generation_id}"
+            f"\x00{replacement_successor_generation_id}\x00{actor}\x00{reason}",
+        )
+        self._repository.supersede_zero_write_successor(
+            corrective_generation_id=corrective_generation_id,
+            successor_generation_id=failed_successor_generation_id,
+            replacement_successor_generation_id=replacement_successor_generation_id,
+            actor=actor,
+            reason=reason,
+            evidence_digest=evidence,
+        )
+        return self.activate(
+            corrective_generation_id=corrective_generation_id,
+            successor_generation_id=replacement_successor_generation_id,
+            manifest=manifest,
+            successor_boundary_digest=successor_boundary_digest,
+            occurrence=occurrence,
+            actor=actor,
+        )
 
     def rollback_status(
         self,
@@ -553,6 +613,15 @@ def build_parser() -> argparse.ArgumentParser:
     activate.add_argument("--successor-boundary-digest", required=True)
     activate.add_argument("--occurrence", required=True)
     activate.add_argument("--actor", required=True)
+    recover = commands.add_parser("recover-successor")
+    recover.add_argument("--generation-id", required=True)
+    recover.add_argument("--failed-successor-generation-id", required=True)
+    recover.add_argument("--replacement-successor-generation-id", required=True)
+    recover.add_argument("--manifest", type=Path, required=True)
+    recover.add_argument("--successor-boundary-digest", required=True)
+    recover.add_argument("--occurrence", required=True)
+    recover.add_argument("--actor", required=True)
+    recover.add_argument("--reason", required=True)
     verify = commands.add_parser("verify-tail")
     verify.add_argument("--generation-id", required=True)
     verify.add_argument("--successor-generation-id", required=True)
@@ -670,6 +739,28 @@ def run(arguments: list[str] | None = None) -> int:
                     "canvas_id": canvas_id,
                 }
             )
+        elif args.command == "recover-successor":
+            manifest = load_inventory(args.manifest)
+            canvas_id = control.recover_successor(
+                corrective_generation_id=generation_id,
+                failed_successor_generation_id=args.failed_successor_generation_id,
+                replacement_successor_generation_id=args.replacement_successor_generation_id,
+                manifest=manifest,
+                successor_boundary_digest=args.successor_boundary_digest,
+                occurrence=args.occurrence,
+                actor=args.actor,
+                reason=args.reason,
+            )
+            _print(
+                {
+                    "superseded_successor_generation_id": args.failed_successor_generation_id,
+                    "replacement_successor_generation_id": (
+                        args.replacement_successor_generation_id
+                    ),
+                    "status": "active",
+                    "canvas_id": canvas_id,
+                }
+            )
         elif args.command == "verify-tail":
             tail_result = control._repository.verify_tail(
                 corrective_generation_id=generation_id,
@@ -727,6 +818,18 @@ def _required_list(payload: dict[str, JsonValue], key: str) -> list[JsonValue]:
     if not isinstance(value, list):
         raise ValueError(f"{key} must be a list")
     return value
+
+
+def _require_runtime_configuration(expected_digest: str) -> None:
+    runtime_config = get_ingestion_config().bitrix_openlines
+    runtime_digest = bitrix_configuration_digest(
+        runtime_config,
+        tuple(runtime_config.included_crm_category_ids),
+    )
+    if runtime_digest != expected_digest:
+        raise RuntimeError(
+            "deployed container ingestion config does not match the accepted generation"
+        )
 
 
 def _digest_text(domain: str, value: str) -> str:
