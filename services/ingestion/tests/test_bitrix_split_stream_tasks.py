@@ -9,13 +9,16 @@ import pytest
 from pytest import MonkeyPatch
 from src import tasks
 from src.bitrix_backfill_models import GenerationRunContext, KnownOwnerMembershipSet
-from src.bitrix_ingestion_models import FenceContext
+from src.bitrix_deal_scope_reconciliation import KnownOwnerRefreshSummary
+from src.bitrix_ingestion_models import ExecutionContext, FenceContext
 from src.graph.ingestion_control_models import (
     BitrixStreamAdmission,
     LogicalRunAttempt,
     LogicalRunState,
 )
 from src.main import IngestionSummary
+from src.models import JsonValue
+from src.resumable import LogicalRunStatus
 
 
 @dataclass
@@ -386,6 +389,167 @@ def test_known_owner_load_failure_terminates_the_admitted_attempt(
         )
 
     assert failed == ["RuntimeError"]
+    assert client.closed is True
+
+
+def test_failed_refresh_phase_resumes_with_durable_connector_and_cursor(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    client = _Client()
+    resume_parameters: dict[str, object] = {}
+    refresh_cursor: dict[str, JsonValue] = {}
+    finalized: list[tuple[int, int]] = []
+    membership = KnownOwnerMembershipSet(
+        generation_id="generation-1",
+        membership_set_id="generation-1:known-owners:sha256:boundary",
+        digest="sha256:owners",
+        deal_ids=("2", "10", "901", "950"),
+    )
+
+    def state(*, status: LogicalRunStatus, generation: int, ingest_run_id: str) -> LogicalRunState:
+        return LogicalRunState(
+            logical_run_id="logical-1",
+            status=status,
+            generation=generation,
+            source_key="bitrix_chat",
+            mode="api",
+            dump_path=None,
+            entity_key=None,
+            stop_requested=False,
+            stop_reason=None,
+            ingest_run_id=ingest_run_id,
+            phase="known_owner_refresh_v1",
+            cursor={"last_known_deal_id": "901", "census_epoch": 1},
+            committed_count=149_578,
+            duplicate_count=0,
+            excluded_count=0,
+            retry_count=0,
+            checkpointed_at="2026-08-13T00:00:00Z",
+        )
+
+    class LogicalControl(_LogicalControl):
+        reads = 0
+
+        def create_or_reuse(self, **_parameters: object) -> LogicalRunAttempt:
+            return LogicalRunAttempt(
+                logical_run_id="logical-1",
+                ingest_run_id="ingest-2",
+                worker_task_id="task-2",
+                generation=2,
+                logical_status="failed",
+                created=False,
+            )
+
+        def get(self, _logical_run_id: str) -> LogicalRunState:
+            self.reads += 1
+            return state(
+                status="failed" if self.reads == 1 else "running",
+                generation=2 if self.reads == 1 else 3,
+                ingest_run_id="ingest-2" if self.reads == 1 else "ingest-3",
+            )
+
+        def resume(self, **parameters: object) -> LogicalRunAttempt:
+            resume_parameters.update(parameters)
+            return LogicalRunAttempt(
+                logical_run_id="logical-1",
+                ingest_run_id="ingest-3",
+                worker_task_id="task-3",
+                generation=3,
+                logical_status="queued",
+                created=True,
+            )
+
+        def finalize_fenced(self, **parameters: object) -> None:
+            finalized.append(
+                (
+                    cast(FenceContext, parameters["context"]).attempt_generation,
+                    cast(int, parameters["committed_count"]),
+                )
+            )
+
+    class StreamControl(_StreamControl):
+        def admit_or_coalesce(self, **_parameters: object) -> BitrixStreamAdmission:
+            return BitrixStreamAdmission(
+                outcome="admitted",
+                fence_context=FenceContext(
+                    logical_run_id="logical-1",
+                    ingest_run_id="ingest-3",
+                    source_key="bitrix_chat",
+                    stream_key="crm_deals",
+                    stream_generation=2,
+                    fencing_token=2,
+                    attempt_generation=3,
+                ),
+                worker_task_id="task-3",
+            )
+
+    class Repository:
+        def __init__(self, _client: object) -> None:
+            pass
+
+        def get_known_owner_set(self, **_parameters: object) -> KnownOwnerMembershipSet:
+            return membership
+
+        def attach_logical_run(self, **_parameters: object) -> None:
+            pass
+
+    class Config:
+        included_crm_category_ids = ("1",)
+        entity_by_crm_category_id = {"1": "entity-1"}
+
+    class IngestionConfig:
+        bitrix_openlines = Config()
+
+    def refresh(*_args: object, **parameters: object) -> KnownOwnerRefreshSummary:
+        context = cast(ExecutionContext, parameters["context"])
+        refresh_cursor.update(context.checkpoint.cursor)
+        return KnownOwnerRefreshSummary(
+            refreshed=1,
+            moved_out_of_scope=0,
+            missing_candidates=0,
+            unresolved=0,
+            http_request_count=1,
+        )
+
+    monkeypatch.setattr(tasks, "Neo4jClient", lambda _settings: client)
+    monkeypatch.setattr(tasks, "LogicalRunControl", LogicalControl)
+    monkeypatch.setattr(tasks, "BitrixStreamControl", StreamControl)
+    monkeypatch.setattr(tasks, "BitrixBackfillRepository", Repository)
+    monkeypatch.setattr(tasks, "get_settings", lambda: object())
+    monkeypatch.setattr(tasks, "get_ingestion_config", lambda: IngestionConfig())
+    monkeypatch.setattr(tasks, "create_bitrix_known_owner_client", lambda: object())
+    monkeypatch.setattr(tasks, "refresh_known_owner_set", refresh)
+    monkeypatch.setattr(
+        tasks,
+        "run_ingestion",
+        lambda *_args, **_kwargs: pytest.fail("refresh resume must not replay the census"),
+    )
+
+    summary = tasks._run_split_bitrix_ingestion(
+        source_key="bitrix_chat",
+        mode="api",
+        dump_path=None,
+        incremental=True,
+        idempotency_key="bitrix-live:occurrence:crm_deals:config",
+        stream_key="crm_deals",
+        worker_task_id="task-3",
+        generation_context=GenerationRunContext(
+            generation_id="generation-1",
+            boundary_digest="sha256:boundary",
+            configuration_digest="sha256:config",
+        ),
+        source_window={
+            "upper_deal_id": "900",
+            "included_category_digest": "sha256:categories",
+            "owner_artifact_id": None,
+        },
+    )
+
+    assert resume_parameters["logical_connector_version"] == "bitrix-crm-deals-keyset-v1"
+    assert resume_parameters["checkpoint_connector_version"] == "bitrix-crm-known-owner-refresh-v1"
+    assert refresh_cursor == {"last_known_deal_id": "901", "census_epoch": 1}
+    assert finalized == [(3, 149_578)]
+    assert summary["succeeded"] == 1
     assert client.closed is True
 
 

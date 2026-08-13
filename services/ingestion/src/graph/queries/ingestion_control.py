@@ -433,9 +433,9 @@ WHERE prior IS NOT NULL
   AND checkpoint.status IN ['paused', 'active']
   AND logical.active_generation = checkpoint.generation
   AND logical.configuration_fingerprint = $configuration_fingerprint
-  AND logical.connector_version = $connector_version
+  AND logical.connector_version = $logical_connector_version
   AND logical.checkpoint_schema_version = $checkpoint_schema_version
-  AND checkpoint.connector_version = $connector_version
+  AND checkpoint.connector_version = $checkpoint_connector_version
   AND checkpoint.schema_version = $checkpoint_schema_version
 WITH logical, source, active_relation, prior, checkpoint,
      logical.active_generation + 1 AS generation
