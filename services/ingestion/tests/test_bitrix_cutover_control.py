@@ -17,6 +17,7 @@ from src.graph.queries.bitrix_backfill import (
     CONFIRM_BITRIX_SUCCESSOR_PUBLICATION,
     FREEZE_BITRIX_BACKFILL_GENERATION,
     GET_BITRIX_GENERATION_CATEGORY_MAPPING,
+    GET_BITRIX_SUCCESSOR_PUBLICATION_OCCURRENCE,
     GET_CONFIRMED_BITRIX_SUCCESSOR_PUBLICATION,
     RECORD_BITRIX_QUALIFICATION,
     REJECT_BITRIX_BACKFILL_GENERATION,
@@ -484,3 +485,9 @@ def test_qualification_loader_accepts_the_source_free_capability_result(
 
     assert result.replay_digest.startswith("sha256:")
     assert result.stage_domain_writes == 0
+
+
+def test_successor_resume_occurrence_comes_from_published_outbox() -> None:
+    assert "generation_kind: 'live_successor'" in GET_BITRIX_SUCCESSOR_PUBLICATION_OCCURRENCE
+    assert "status: 'published'" in GET_BITRIX_SUCCESSOR_PUBLICATION_OCCURRENCE
+    assert "outbox.occurrence IS NOT NULL" in GET_BITRIX_SUCCESSOR_PUBLICATION_OCCURRENCE

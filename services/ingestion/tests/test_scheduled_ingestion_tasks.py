@@ -21,6 +21,7 @@ def test_manual_group_dispatch_defaults_to_full_extraction() -> None:
         "wait_for_source": True,
         "require_clean_completion": True,
         "idempotency_key": "run:step:0",
+        "scheduled_dispatch": True,
     }
     assert signature.options["queue"] == "ingestion"
     assert signature.immutable
@@ -65,6 +66,64 @@ def test_disabled_scheduled_ingestion_exits_before_resolving_or_claiming(
         "incremental": True,
         "workflow_task_id": "",
     }
+
+
+def test_disabled_checker_cancels_an_already_published_chain_step(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    from src import tasks
+
+    monkeypatch.setattr(
+        tasks,
+        "get_ingestion_config",
+        lambda: IngestionConfig(scheduled_ingestion=ScheduledIngestionConfig(enabled=False)),
+    )
+    monkeypatch.setattr(
+        tasks,
+        "get_settings",
+        lambda: pytest.fail("disabled chain step must exit before runtime setup"),
+    )
+
+    result = tasks.run_ingestion_task.run(
+        "fundbox",
+        "api",
+        idempotency_key="weekly:fundbox:step:0",
+        scheduled_dispatch=True,
+    )
+
+    assert result["status"] == "disabled"
+    assert result["skipped"] == 1
+
+
+def test_disabled_checker_cancels_legacy_same_id_live_delivery(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    from src import tasks
+
+    logical_task_id = "bitrix-live:2026-08-11:crm_deals:sha256:config"
+    monkeypatch.setattr(
+        tasks,
+        "get_ingestion_config",
+        lambda: IngestionConfig(scheduled_ingestion=ScheduledIngestionConfig(enabled=False)),
+    )
+    monkeypatch.setattr(
+        tasks,
+        "get_settings",
+        lambda: pytest.fail("disabled delayed delivery must exit before runtime setup"),
+    )
+    tasks.run_ingestion_task.push_request(id=logical_task_id, retries=4)
+    try:
+        result = tasks.run_ingestion_task.run(
+            "bitrix_chat",
+            "api",
+            idempotency_key=logical_task_id,
+            bitrix_execution_stream="crm_deals",
+        )
+    finally:
+        tasks.run_ingestion_task.pop_request()
+
+    assert result["status"] == "disabled"
+    assert result["skipped"] == 1
 
 
 def test_enabled_scheduled_ingestion_continues_to_idempotent_dispatch(

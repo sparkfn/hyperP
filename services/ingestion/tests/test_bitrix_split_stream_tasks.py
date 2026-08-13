@@ -34,6 +34,9 @@ class _LogicalControl:
     def __init__(self, _client: object) -> None:
         pass
 
+    def get_by_idempotency(self, **_parameters: object) -> LogicalRunAttempt | None:
+        return None
+
     def create_or_reuse(self, **parameters: object) -> LogicalRunAttempt:
         self.created.append(cast(str, parameters["idempotency_key"]))
         return LogicalRunAttempt(
@@ -151,6 +154,64 @@ def test_split_helper_uses_one_control_plane_run_and_passes_execution_context(
     assert "existing_ingest_run_id" not in observed
     assert _LogicalControl.finalized == ["completed"]
     assert summary["succeeded"] == 3
+    assert client.closed is True
+
+
+def test_duplicate_delivery_coalesces_before_generation_or_domain_mutation(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    client = _Client()
+    attached: list[str] = []
+
+    class CoalescedStreamControl(_StreamControl):
+        def admit_or_coalesce(self, **_parameters: object) -> BitrixStreamAdmission:
+            return BitrixStreamAdmission(
+                outcome="coalesced",
+                fence_context=_fence(),
+                worker_task_id="task-1",
+            )
+
+    class Repository:
+        def __init__(self, _client: object) -> None:
+            pass
+
+        def attach_logical_run(self, **_parameters: object) -> None:
+            attached.append("attached")
+
+    monkeypatch.setattr(tasks, "Neo4jClient", lambda _settings: client)
+    monkeypatch.setattr(tasks, "LogicalRunControl", _LogicalControl)
+    monkeypatch.setattr(tasks, "BitrixStreamControl", CoalescedStreamControl)
+    monkeypatch.setattr(tasks, "BitrixBackfillRepository", Repository)
+    monkeypatch.setattr(tasks, "get_settings", lambda: object())
+    monkeypatch.setattr(
+        tasks,
+        "run_ingestion",
+        lambda *_args, **_kwargs: pytest.fail("duplicate delivery must not run ingestion"),
+    )
+
+    summary = tasks._run_split_bitrix_ingestion(
+        source_key="bitrix_chat",
+        mode="api",
+        dump_path=None,
+        incremental=True,
+        idempotency_key="bitrix-live:occurrence:crm_deals:config",
+        stream_key="crm_deals",
+        worker_task_id="task-1",
+        generation_context=GenerationRunContext(
+            generation_id="successor-1",
+            boundary_digest="sha256:boundary",
+            configuration_digest="sha256:config",
+        ),
+        source_window={
+            "upper_deal_id": "900",
+            "included_category_digest": "sha256:categories",
+            "owner_artifact_id": None,
+        },
+    )
+
+    assert summary["status"] == "already_running"
+    assert summary["skipped"] == 1
+    assert attached == []
     assert client.closed is True
 
 

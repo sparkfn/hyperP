@@ -388,6 +388,19 @@ def _run_split_bitrix_ingestion(
                 safe_failure_message=str(exc),
             )
             raise
+        if admission.outcome == "coalesced":
+            logger.info(
+                "Coalesced duplicate Bitrix delivery stream=%s logical_run=%s",
+                stream_key,
+                attempt.logical_run_id,
+            )
+            return _skipped_split_summary(
+                ingest_run_id=attempt.ingest_run_id,
+                status="already_running",
+                source_key=source_key,
+                mode=mode,
+                dump_path=dump_path,
+            )
         if generation_context is not None:
             try:
                 BitrixBackfillRepository(client).attach_logical_run(
@@ -1247,8 +1260,36 @@ def run_ingestion_task(
     bitrix_max_calls: int | None = None,
     bitrix_max_rows: int | None = None,
     bitrix_max_runtime_seconds: int | None = None,
+    scheduled_dispatch: bool = False,
 ) -> IngestionSummary:
     """Run a single ingestion under the cluster-wide concurrency cap."""
+    task_id = str(self.request.id) if self.request.id is not None else None
+    legacy_live_delivery = (
+        source_key == "bitrix_chat"
+        and mode == "api"
+        and bitrix_execution_stream is not None
+        and idempotency_key is not None
+        and idempotency_key.startswith("bitrix-live:")
+        and task_id == idempotency_key
+    )
+    if (scheduled_dispatch or legacy_live_delivery) and not (
+        get_ingestion_config().scheduled_ingestion.enabled
+    ):
+        logger.info(
+            "Skipped scheduled ingestion step source=%s because scheduling is disabled",
+            source_key,
+        )
+        return {
+            "ingest_run_id": "",
+            "status": "disabled",
+            "succeeded": 0,
+            "errors": 0,
+            "skipped": 1,
+            "source_key": source_key,
+            "mode": mode,
+            "dump_path": dump_path,
+            "entity_key": entity_key,
+        }
     # PR #62 introduced ``entity_key`` as the fourth positional task argument.
     # PR #63's API producer used that position for its Bitrix ingest-run ID.
     # Keep existing WhatsAdmin task messages valid while interpreting the

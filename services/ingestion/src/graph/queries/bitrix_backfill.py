@@ -897,6 +897,21 @@ WHERE corrective.status = 'accepted'
 RETURN outbox.canvas_id AS canvas_id
 """
 
+GET_BITRIX_SUCCESSOR_PUBLICATION_OCCURRENCE = """
+MATCH (successor:BitrixBackfillGeneration {
+  generation_id: $successor_generation_id,
+  generation_kind: 'live_successor',
+  status: 'active'
+})
+MATCH (outbox:BitrixBackfillDispatchOutbox {
+  successor_generation_id: $successor_generation_id,
+  status: 'published'
+})
+WHERE outbox.canvas_id IS NOT NULL
+  AND outbox.occurrence IS NOT NULL
+RETURN outbox.occurrence AS occurrence
+"""
+
 GET_ACTIVE_BITRIX_SUCCESSOR_SCHEDULE = """
 MATCH (successor:BitrixBackfillGeneration {
   generation_kind: 'live_successor',

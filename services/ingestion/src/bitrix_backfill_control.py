@@ -221,12 +221,19 @@ class BitrixBackfillControl:
                 requested += 1
         return requested
 
-    def resume(self, generation_id: str) -> str:
+    def resume(self, generation_id: str, *, occurrence: str | None = None) -> str:
         from src.bitrix_backfill_tasks import dispatch_generation_canvas
 
         state = self._repository.get_generation(generation_id)
-        if state.status != "backfilling":
-            raise RuntimeError("resume requires a backfilling generation")
+        corrective_resume = state.generation_kind == "corrective" and state.status == "backfilling"
+        successor_resume = state.generation_kind == "live_successor" and state.status == "active"
+        if not corrective_resume and not successor_resume:
+            raise RuntimeError("resume requires a backfilling corrective or active successor")
+        if successor_resume:
+            stored_occurrence = self._repository.get_successor_publication_occurrence(generation_id)
+            if occurrence is not None and occurrence != stored_occurrence:
+                raise ValueError("successor resume occurrence does not match activation evidence")
+            occurrence = stored_occurrence
         runs = self._repository.list_child_runs(generation_id)
         resumable = [
             run for run in runs if run.logical_status in {"paused_with_checkpoint", "failed"}
@@ -234,6 +241,9 @@ class BitrixBackfillControl:
         if not resumable:
             raise RuntimeError("generation has no paused or failed child run")
         manifest = self._manifest_for(generation_id)
+        inventory_streams = {entry.stream_key for entry in manifest.executable_entries}
+        if any(run.stream_key not in inventory_streams for run in resumable):
+            raise RuntimeError("resumable child runs do not match the generation inventory")
         resume_generation = (
             max(
                 max(run.attempt_generation for run in runs),
@@ -247,6 +257,8 @@ class BitrixBackfillControl:
             configuration_digest=state.configuration_digest,
             entries=manifest.executable_entries,
             resume_generation=resume_generation,
+            task_kind="live" if successor_resume else "corrective",
+            occurrence=occurrence,
         )
 
     def reconcile(self, generation_id: str, *, actor: str) -> str:
@@ -654,6 +666,8 @@ def build_parser() -> argparse.ArgumentParser:
             command.add_argument("--artifact-retained-key-env", action="append", default=[])
         if name == "rollback-status":
             command.add_argument("--successor-generation-id")
+        if name == "resume":
+            command.add_argument("--occurrence")
     activate = commands.add_parser("activate")
     activate.add_argument("--generation-id", required=True)
     activate.add_argument("--successor-generation-id", required=True)
@@ -726,7 +740,7 @@ def run(arguments: list[str] | None = None) -> int:
                 }
             )
         elif args.command == "resume":
-            _print({"canvas_id": control.resume(generation_id)})
+            _print({"canvas_id": control.resume(generation_id, occurrence=args.occurrence)})
         elif args.command == "reconcile":
             _print({"reconciliation_digest": control.reconcile(generation_id, actor=args.actor)})
         elif args.command == "freeze":

@@ -39,6 +39,7 @@ from src.graph.queries.bitrix_backfill import (
     GET_BITRIX_BACKFILL_INVENTORY,
     GET_BITRIX_COVERAGE_RECONCILIATION,
     GET_BITRIX_GENERATION_CATEGORY_MAPPING,
+    GET_BITRIX_SUCCESSOR_PUBLICATION_OCCURRENCE,
     GET_CONFIRMED_BITRIX_SUCCESSOR_PUBLICATION,
     GET_KNOWN_OWNER_SET,
     GET_MAX_BITRIX_RESUME_WORKER_GENERATION,
@@ -490,6 +491,18 @@ class BitrixBackfillRepository:
             if record is None:
                 raise RuntimeError("successor publication retry does not match stored evidence")
             return _required_str(record["canvas_id"], "successor_canvas_id")
+
+        return self._client.execute_read(_read)
+
+    def get_successor_publication_occurrence(self, successor_generation_id: str) -> str:
+        def _read(tx: ManagedTransaction) -> str:
+            record = tx.run(
+                GET_BITRIX_SUCCESSOR_PUBLICATION_OCCURRENCE,
+                successor_generation_id=successor_generation_id,
+            ).single()
+            if record is None:
+                raise RuntimeError("active successor has no confirmed publication occurrence")
+            return _required_str(record["occurrence"], "successor_publication_occurrence")
 
         return self._client.execute_read(_read)
 
