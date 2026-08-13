@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import time
 from collections.abc import Collection
 from dataclasses import dataclass
 from typing import Protocol
@@ -70,6 +71,8 @@ def refresh_known_owner_set(
     scope = BitrixDealScopeRepository(graph)
     cursor = context.checkpoint.cursor.get("last_known_deal_id")
     last_known = int(cursor) if isinstance(cursor, str) and cursor.isdigit() else None
+    if context.max_rows is not None and len(membership.deal_ids) > context.max_rows:
+        raise RuntimeError("known owner refresh row ceiling was exceeded")
     pending_ids = [
         int(deal_id)
         for deal_id in membership.deal_ids
@@ -78,11 +81,13 @@ def refresh_known_owner_set(
     refreshed = moved = missing = unresolved = 0
     try:
         for offset in range(0, len(pending_ids), 50):
+            _assert_refresh_runtime(context)
             numeric_ids = pending_ids[offset : offset + 50]
             deals = source.get_deals_or_none(numeric_ids)
             if set(deals) != set(numeric_ids):
                 raise RuntimeError("known owner batch did not account for every requested deal")
             for numeric_id in numeric_ids:
+                _assert_refresh_runtime(context)
                 deal_id = str(numeric_id)
                 deal = deals[numeric_id]
                 absence = 0
@@ -127,6 +132,12 @@ def refresh_known_owner_set(
     )
 
 
+def _assert_refresh_runtime(context: ExecutionContext) -> None:
+    deadline = context.deadline_monotonic
+    if deadline is not None and time.monotonic() >= deadline:
+        raise RuntimeError("known owner refresh runtime ceiling reached before the next write")
+
+
 def _confirm_missing_deal(
     source: KnownOwnerClient,
     scope: KnownOwnerScope,
@@ -135,6 +146,7 @@ def _confirm_missing_deal(
     context: ExecutionContext,
 ) -> tuple[CrmDeal | None, int]:
     """Confirm a healthy batch miss once more before making it indeterminate."""
+    _assert_refresh_runtime(context)
     streak, current = scope.record_healthy_not_found(
         deal_id,
         fence_context=context.fence_context,
@@ -144,6 +156,7 @@ def _confirm_missing_deal(
     deal = source.get_deal_or_none(numeric_id)
     if deal is not None:
         return deal, streak
+    _assert_refresh_runtime(context)
     streak, current = scope.record_healthy_not_found(
         deal_id,
         fence_context=context.fence_context,
@@ -164,6 +177,7 @@ def _get_deal_with_absence_confirmation(
     deal = source.get_deal_or_none(numeric_id)
     if deal is not None:
         return deal, 0
+    _assert_refresh_runtime(context)
     streak, current = scope.record_healthy_not_found(
         deal_id,
         fence_context=context.fence_context,
@@ -173,6 +187,7 @@ def _get_deal_with_absence_confirmation(
     deal = source.get_deal_or_none(numeric_id)
     if deal is not None:
         return deal, streak
+    _assert_refresh_runtime(context)
     streak, current = scope.record_healthy_not_found(
         deal_id,
         fence_context=context.fence_context,

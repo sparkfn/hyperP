@@ -157,12 +157,66 @@ def test_split_helper_uses_one_control_plane_run_and_passes_execution_context(
 
     assert _LogicalControl.created == ["bitrix-backfill:generation-1:crm_deals:boundary:config"]
     assert observed["bitrix_execution_stream"] == "crm_deals"
-    assert observed["execution_context"] is not None
+    execution_context = cast(ExecutionContext, observed["execution_context"])
+    assert execution_context.max_calls is None
     assert "task_id" not in observed
     assert "existing_ingest_run_id" not in observed
     assert _LogicalControl.finalized == ["completed"]
     assert summary["succeeded"] == 3
     assert client.closed is True
+
+
+def test_split_helper_passes_live_request_and_runtime_ceilings_to_connector(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    client = _Client()
+    observed: dict[str, object] = {}
+    _LogicalControl.created.clear()
+    _LogicalControl.finalized.clear()
+    _LogicalControl.failed.clear()
+    monkeypatch.setattr(tasks, "Neo4jClient", lambda _settings: client)
+    monkeypatch.setattr(tasks, "LogicalRunControl", _LogicalControl)
+    monkeypatch.setattr(tasks, "BitrixStreamControl", _StreamControl)
+    monkeypatch.setattr(tasks, "get_settings", lambda: object())
+
+    def run_ingestion(*_args: object, **kwargs: object) -> IngestionSummary:
+        execution_context = cast(ExecutionContext, kwargs["execution_context"])
+        observed["max_calls"] = execution_context.max_calls
+        observed["deadline_monotonic"] = execution_context.deadline_monotonic
+        return {
+            "ingest_run_id": "ingest-1",
+            "status": "completed",
+            "succeeded": 1,
+            "errors": 0,
+            "skipped": 0,
+            "source_key": "bitrix_chat",
+            "mode": "api",
+            "dump_path": None,
+            "entity_key": None,
+            "http_request_count": 1,
+        }
+
+    monkeypatch.setattr(tasks, "run_ingestion", run_ingestion)
+
+    tasks._run_split_bitrix_ingestion(
+        source_key="bitrix_chat",
+        mode="api",
+        dump_path=None,
+        incremental=True,
+        idempotency_key="bitrix-live:occurrence:crm_deals:config",
+        stream_key="crm_deals",
+        worker_task_id="task-1",
+        source_window={
+            "upper_deal_id": "900",
+            "included_category_digest": "sha256:categories",
+            "owner_artifact_id": None,
+        },
+        max_calls=100,
+        max_runtime_seconds=60,
+    )
+
+    assert observed["max_calls"] == 100
+    assert isinstance(observed["deadline_monotonic"], float)
 
 
 def test_duplicate_delivery_coalesces_before_generation_or_domain_mutation(
@@ -398,6 +452,7 @@ def test_failed_refresh_phase_resumes_with_durable_connector_and_cursor(
     client = _Client()
     resume_parameters: dict[str, object] = {}
     refresh_cursor: dict[str, JsonValue] = {}
+    refresh_client_parameters: dict[str, object] = {}
     finalized: list[tuple[int, int]] = []
     membership = KnownOwnerMembershipSet(
         generation_id="generation-1",
@@ -517,7 +572,12 @@ def test_failed_refresh_phase_resumes_with_durable_connector_and_cursor(
     monkeypatch.setattr(tasks, "BitrixBackfillRepository", Repository)
     monkeypatch.setattr(tasks, "get_settings", lambda: object())
     monkeypatch.setattr(tasks, "get_ingestion_config", lambda: IngestionConfig())
-    monkeypatch.setattr(tasks, "create_bitrix_known_owner_client", lambda: object())
+
+    def create_refresh_client(**parameters: object) -> object:
+        refresh_client_parameters.update(parameters)
+        return object()
+
+    monkeypatch.setattr(tasks, "create_bitrix_known_owner_client", create_refresh_client)
     monkeypatch.setattr(tasks, "refresh_known_owner_set", refresh)
     monkeypatch.setattr(
         tasks,
@@ -543,8 +603,12 @@ def test_failed_refresh_phase_resumes_with_durable_connector_and_cursor(
             "included_category_digest": "sha256:categories",
             "owner_artifact_id": None,
         },
+        max_calls=10,
+        max_runtime_seconds=60,
     )
 
+    assert refresh_client_parameters["max_request_count"] == 10
+    assert isinstance(refresh_client_parameters["deadline_monotonic"], float)
     assert resume_parameters["logical_connector_version"] == "bitrix-crm-deals-keyset-v1"
     assert resume_parameters["checkpoint_connector_version"] == "bitrix-crm-known-owner-refresh-v1"
     assert refresh_cursor == {"last_known_deal_id": "901", "census_epoch": 1}

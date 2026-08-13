@@ -380,3 +380,46 @@ def test_rejected_task_does_not_overwrite_structured_terminal_failure(
     tasks._finalize_rejected_dispatched_run("run-1")
 
     assert finalized == []
+
+
+def test_split_bitrix_failure_requires_explicit_control_plane_resume(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("NEO4J_PASSWORD", "test")
+    from src import tasks
+
+    monkeypatch.setattr(tasks, "setup_logging", lambda _level: None)
+    monkeypatch.setattr(tasks, "get_settings", lambda: _Settings())
+    monkeypatch.setattr(tasks, "_initialize_graph_under_lock", lambda _requester: None)
+    monkeypatch.setattr(tasks, "_acquire_source_locks", lambda *_args: _NullContext())
+    monkeypatch.setattr(tasks, "_renew_ingestion_leases", lambda *_args: _NullContext())
+    monkeypatch.setattr(tasks, "_acquire_ingestion_slot", lambda _max_slots: _NullContext())
+    monkeypatch.setattr(
+        tasks,
+        "_run_split_bitrix_ingestion",
+        lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("resume required")),
+    )
+    retry_calls: list[Exception | None] = []
+
+    def retry(*, exc: Exception | None = None, **_kwargs: object) -> Retry:
+        retry_calls.append(exc)
+        raise Retry()
+
+    monkeypatch.setattr(tasks.run_ingestion_task, "retry", retry)
+    tasks.run_ingestion_task.push_request(id="split-task", retries=0)
+    try:
+        with pytest.raises(Reject, match="resume required"):
+            tasks.run_ingestion_task.run(
+                "bitrix_chat",
+                "api",
+                idempotency_key="bitrix-live:occurrence:crm_deals:config",
+                bitrix_execution_stream="crm_deals",
+                bitrix_generation_id="successor-1",
+                bitrix_boundary_digest="sha256:boundary",
+                bitrix_configuration_digest="sha256:config",
+                bitrix_source_window={"upper_deal_id": "900"},
+            )
+    finally:
+        tasks.run_ingestion_task.pop_request()
+
+    assert retry_calls == []
