@@ -112,27 +112,36 @@ def test_phase_transition_completes_current_checkpoint_and_fences_successor() ->
 
 
 def test_phase_transition_allows_a_new_connector_contract() -> None:
-    assert "current.connector_version = logical.connector_version" in (
-        TRANSITION_LOGICAL_PHASE
-    )
+    assert "current.connector_version = logical.connector_version" in (TRANSITION_LOGICAL_PHASE)
     assert "current.schema_version = logical.checkpoint_schema_version" in (
         TRANSITION_LOGICAL_PHASE
     )
-    assert "logical.connector_version = $connector_version" not in (
-        TRANSITION_LOGICAL_PHASE
-    )
+    assert "logical.connector_version = $connector_version" not in (TRANSITION_LOGICAL_PHASE)
     assert "logical.checkpoint_schema_version = $checkpoint_schema_version" not in (
         TRANSITION_LOGICAL_PHASE
     )
-    assert "existing_next.connector_version = $connector_version" in (
-        TRANSITION_LOGICAL_PHASE
-    )
-    assert "existing_next.schema_version = $checkpoint_schema_version" in (
-        TRANSITION_LOGICAL_PHASE
-    )
+    assert "existing_next.connector_version = $connector_version" in (TRANSITION_LOGICAL_PHASE)
+    assert "existing_next.schema_version = $checkpoint_schema_version" in (TRANSITION_LOGICAL_PHASE)
 
 
 def test_failure_is_fenced_and_releases_active_ownership() -> None:
     assert "logical.active_generation = $generation" in FAIL_LOGICAL_RUN
     assert "attempt.status = 'failed'" in FAIL_LOGICAL_RUN
     assert "DELETE active_relation" in FAIL_LOGICAL_RUN
+
+
+def test_existing_logical_run_can_resume_while_new_dispatch_is_blocked() -> None:
+    existing_match = CREATE_LOGICAL_RUN_AND_ATTEMPT.index(
+        "OPTIONAL MATCH (existing:IngestionLogicalRun"
+    )
+    gate = CREATE_LOGICAL_RUN_AND_ATTEMPT.index(
+        "existing.status IN ['paused_with_checkpoint', 'failed']"
+    )
+    merge = CREATE_LOGICAL_RUN_AND_ATTEMPT.index("MERGE (logical:IngestionLogicalRun")
+    assert existing_match < gate < merge
+
+
+def test_dispatch_block_does_not_admit_running_or_completed_logical_runs() -> None:
+    query = CREATE_LOGICAL_RUN_AND_ATTEMPT
+    assert "existing.status IN ['paused_with_checkpoint', 'failed']" in query
+    assert "existing IS NOT NULL OR" not in query

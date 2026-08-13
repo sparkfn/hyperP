@@ -97,6 +97,7 @@ def _signature(
             "wait_for_source": True,
             "require_clean_completion": True,
             "idempotency_key": idempotency_key,
+            "scheduled_dispatch": True,
         },
         immutable=True,
         queue=INGESTION_QUEUE,
@@ -180,6 +181,7 @@ def _dispatch_active_bitrix_successor(occurrence: str) -> str | None:
         entries=tuple(entries),
         task_kind="live",
         occurrence=occurrence,
+        scheduled_dispatch=True,
     )
 
 

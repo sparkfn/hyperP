@@ -94,3 +94,37 @@ def test_canvas_rejects_activity_without_deal() -> None:
             task_kind="live",
             occurrence="2026-08-11",
         )
+
+
+def test_live_resume_changes_worker_task_id_but_preserves_idempotency_key() -> None:
+    canvas = build_generation_canvas(
+        generation_id="successor-1",
+        boundary_digest="sha256:boundary",
+        configuration_digest="sha256:config",
+        entries=(_entry("crm_deals"),),
+        task_kind="live",
+        occurrence="2026-08-11T13:18:52Z",
+        resume_generation=4,
+    )
+    task = canvas.tasks[0]
+    original_id = live_task_id(
+        "2026-08-11T13:18:52Z",
+        "crm_deals",
+        "sha256:config",
+    )
+    assert task.kwargs["idempotency_key"] == original_id
+    assert task.options["task_id"] == f"{original_id}:resume:4"
+
+
+def test_scheduled_live_canvas_marks_every_delayed_step_as_cancellable() -> None:
+    canvas = build_generation_canvas(
+        generation_id="successor-1",
+        boundary_digest="sha256:boundary",
+        configuration_digest="sha256:config",
+        entries=(_entry("crm_deals"), _entry("crm_activities")),
+        task_kind="live",
+        occurrence="2026-08-11",
+        scheduled_dispatch=True,
+    )
+
+    assert all(task.kwargs["scheduled_dispatch"] is True for task in canvas.tasks)

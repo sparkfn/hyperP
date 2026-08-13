@@ -28,8 +28,11 @@ def live_task_id(
     occurrence: str,
     stream_key: BitrixStreamKey,
     configuration_digest: str,
+    *,
+    resume_generation: int | None = None,
 ) -> str:
-    return f"bitrix-live:{occurrence}:{stream_key}:{configuration_digest}"
+    base = f"bitrix-live:{occurrence}:{stream_key}:{configuration_digest}"
+    return base if resume_generation is None else f"{base}:resume:{resume_generation}"
 
 
 def build_generation_canvas(
@@ -41,6 +44,7 @@ def build_generation_canvas(
     task_kind: str = "corrective",
     occurrence: str | None = None,
     resume_generation: int | None = None,
+    scheduled_dispatch: bool = False,
 ) -> Signature:
     """Build a strict deals -> activities -> optional Open Lines chain."""
     executable = [entry for entry in entries if entry.executes]
@@ -76,8 +80,17 @@ def build_generation_canvas(
                 configuration_digest,
             )
         elif task_kind == "live" and occurrence is not None:
-            task_id = live_task_id(occurrence, entry.stream_key, configuration_digest)
-            idempotency_key = task_id
+            task_id = live_task_id(
+                occurrence,
+                entry.stream_key,
+                configuration_digest,
+                resume_generation=resume_generation,
+            )
+            idempotency_key = live_task_id(
+                occurrence,
+                entry.stream_key,
+                configuration_digest,
+            )
         else:
             raise ValueError("live generation canvases require a UTC occurrence")
         signatures.append(
@@ -96,6 +109,7 @@ def build_generation_canvas(
                     "bitrix_max_calls": entry.max_calls,
                     "bitrix_max_rows": entry.max_rows,
                     "bitrix_max_runtime_seconds": entry.max_runtime_seconds,
+                    "scheduled_dispatch": scheduled_dispatch,
                 },
                 immutable=True,
                 queue=INGESTION_QUEUE,
@@ -115,6 +129,7 @@ def dispatch_generation_canvas(
     task_kind: str = "corrective",
     occurrence: str | None = None,
     resume_generation: int | None = None,
+    scheduled_dispatch: bool = False,
 ) -> str:
     canvas = build_generation_canvas(
         generation_id=generation_id,
@@ -124,6 +139,7 @@ def dispatch_generation_canvas(
         task_kind=task_kind,
         occurrence=occurrence,
         resume_generation=resume_generation,
+        scheduled_dispatch=scheduled_dispatch,
     )
     result = canvas.apply_async()
     return str(result.id)

@@ -27,9 +27,11 @@ from src.graph.queries.ingestion_control import (
     CREATE_RESUME_ATTEMPT,
     FAIL_LOGICAL_RUN,
     FINALIZE_LOGICAL_RUN,
+    FIND_BITRIX_FENCE_ROLLBACK_PROBE,
     GET_ACTIVE_LOGICAL_RUN,
     LOCK_AND_ASSERT_ACTIVE_BITRIX_FENCE,
     PAUSE_LOGICAL_RUN,
+    PROBE_REJECTED_BITRIX_FENCE_ROLLBACK,
     REQUEST_LOGICAL_RUN_STOP,
     SET_FENCED_BITRIX_STREAM_STATUS,
     TRANSITION_LOGICAL_PHASE,
@@ -51,6 +53,51 @@ def assert_active_bitrix_fence(tx: ManagedTransaction, context: FenceContext) ->
     ).single()
     if record is None:
         raise RuntimeError("Bitrix mutation fence is stale or inactive")
+
+
+class _RollbackProbeCompleteError(Exception):
+    """Internal signal that forces the probe transaction to roll back."""
+
+
+def verify_rejected_bitrix_fence_rollback(
+    client: Neo4jClient,
+    context: FenceContext,
+) -> bool:
+    """Prove a rejected fence assertion rolls back without racing live lock increments."""
+    probe_token = uuid.uuid4().hex
+    rejected = False
+
+    def _probe(tx: ManagedTransaction) -> None:
+        nonlocal rejected
+        record = tx.run(
+            PROBE_REJECTED_BITRIX_FENCE_ROLLBACK,
+            source_key=context.source_key,
+            stream_key=context.stream_key,
+            logical_run_id=context.logical_run_id,
+            ingest_run_id=context.ingest_run_id,
+            attempt_generation=context.attempt_generation,
+            stream_generation=context.stream_generation,
+            fencing_token=context.fencing_token,
+            probe_token=probe_token,
+        ).single()
+        rejected = record is not None and record["fence_accepted"] is False
+        raise _RollbackProbeCompleteError
+
+    try:
+        client.execute_write(_probe)
+    except _RollbackProbeCompleteError:
+        pass
+    if not rejected:
+        return False
+
+    def _verify(tx: ManagedTransaction) -> bool:
+        record = tx.run(
+            FIND_BITRIX_FENCE_ROLLBACK_PROBE,
+            probe_token=probe_token,
+        ).single()
+        return record is not None and int(record["persisted_probe_count"]) == 0
+
+    return client.execute_read(_verify)
 
 
 class LogicalRunControl:

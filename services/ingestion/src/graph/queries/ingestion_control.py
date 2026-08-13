@@ -36,6 +36,27 @@ WHERE stream.logical_run_id = $logical_run_id
 RETURN stream.fence_lock_version AS fence_lock_version
 """
 
+PROBE_REJECTED_BITRIX_FENCE_ROLLBACK = """
+MATCH (stream:BitrixIngestionStream {
+  source_key: $source_key,
+  stream_key: $stream_key
+})
+SET stream.fence_lock_version = coalesce(stream.fence_lock_version, 0) + 1,
+    stream.rollback_probe_token = $probe_token
+RETURN stream.logical_run_id = $logical_run_id
+  AND stream.ingest_run_id = $ingest_run_id
+  AND stream.attempt_generation = $attempt_generation
+  AND stream.stream_generation = $stream_generation
+  AND stream.fencing_token = $fencing_token
+  AND stream.status = 'active' AS fence_accepted,
+  stream.rollback_probe_token AS rollback_probe_token
+"""
+
+FIND_BITRIX_FENCE_ROLLBACK_PROBE = """
+MATCH (stream:BitrixIngestionStream {rollback_probe_token: $probe_token})
+RETURN count(stream) AS persisted_probe_count
+"""
+
 SET_FENCED_BITRIX_STREAM_STATUS = """
 MATCH (stream:BitrixIngestionStream {
   source_key: $source_key,
@@ -144,8 +165,16 @@ RETURN CASE
 CREATE_LOGICAL_RUN_AND_ATTEMPT = """
 MATCH (source:SourceSystem {source_key: $source_key, is_active: true})
 OPTIONAL MATCH (dispatch:BitrixDispatchControl {source_key: $source_key})
-WITH source, dispatch
+OPTIONAL MATCH (existing:IngestionLogicalRun {
+  source_key: $source_key,
+  idempotency_key: $idempotency_key
+})
+WITH source, dispatch, existing
 WHERE coalesce(dispatch.blocked, false) = false
+   OR (
+     existing IS NOT NULL
+     AND existing.status IN ['paused_with_checkpoint', 'failed']
+   )
 MERGE (logical:IngestionLogicalRun {
   source_key: $source_key,
   idempotency_key: $idempotency_key
