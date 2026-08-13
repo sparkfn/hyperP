@@ -312,6 +312,10 @@ RETURN logical.logical_run_id AS logical_run_id,
        attempt.ingest_run_id AS ingest_run_id,
        checkpoint.phase AS phase,
        checkpoint.cursor_json AS cursor_json,
+       coalesce(checkpoint.committed_count, 0) AS committed_count,
+       coalesce(checkpoint.duplicate_count, 0) AS duplicate_count,
+       coalesce(checkpoint.excluded_count, 0) AS excluded_count,
+       coalesce(checkpoint.retry_count, 0) AS retry_count,
        toString(checkpoint.updated_at) AS checkpointed_at
 ORDER BY checkpoint.updated_at DESC
 LIMIT 1

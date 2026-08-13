@@ -832,6 +832,51 @@ def test_client_batches_deal_contact_and_lead_hydration() -> None:
     assert [len(batch) for batch in batches] == [3, 3, 4, 1]
 
 
+def test_client_batches_known_owner_refresh_and_preserves_healthy_missing_deals() -> None:
+    batch_methods: list[list[str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        commands = body["cmd"]
+        methods = [command.split("?", 1)[0] for command in commands.values()]
+        batch_methods.append(methods)
+        results: dict[str, object] = {}
+        errors: dict[str, object] = {}
+        for command_key, command in commands.items():
+            entity_id = command.rsplit("=", 1)[-1]
+            if command.startswith("crm.deal.get?"):
+                if entity_id == "502":
+                    errors[command_key] = {"error": "CRM_DEAL_NOT_FOUND"}
+                else:
+                    results[command_key] = {"ID": entity_id, "CATEGORY_ID": "2"}
+            else:
+                assert command.startswith("crm.deal.contact.items.get?")
+                assert entity_id != "502"
+                results[command_key] = []
+        return httpx.Response(
+            200,
+            json={"result": {"result": results, "result_error": errors}},
+        )
+
+    client = BitrixOpenLinesClient(
+        base_url="https://bitrix.test/rest/hook",
+        timeout_seconds=5,
+        max_attempts=1,
+        http=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+
+    deals = client.get_deals_or_none([501, 502, 503])
+
+    assert deals[501] is not None
+    assert deals[502] is None
+    assert deals[503] is not None
+    assert batch_methods == [
+        ["crm.deal.get", "crm.deal.get", "crm.deal.get"],
+        ["crm.deal.contact.items.get", "crm.deal.contact.items.get"],
+    ]
+    assert client.request_count == 2
+
+
 def test_client_splits_more_than_fifty_unique_contact_commands() -> None:
     batch_sizes: list[tuple[str, int]] = []
 

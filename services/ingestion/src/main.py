@@ -9,7 +9,7 @@ import re
 import sys
 import time
 import uuid
-from typing import Literal, Protocol, TypedDict, runtime_checkable
+from typing import Literal, NotRequired, Protocol, TypedDict, runtime_checkable
 
 import httpx
 from neo4j import ManagedTransaction
@@ -146,6 +146,12 @@ class _RecordOutcomeReporter(Protocol):
 @runtime_checkable
 class _ConnectorErrorReporter(Protocol):
     def connector_error_count(self) -> int: ...
+
+
+@runtime_checkable
+class _HttpRequestCounter(Protocol):
+    @property
+    def request_count(self) -> int: ...
 
 
 @runtime_checkable
@@ -675,6 +681,7 @@ class IngestionSummary(TypedDict):
     mode: str
     dump_path: str | None
     entity_key: str | None
+    http_request_count: NotRequired[int]
 
 
 def _create_ingest_run(client: Neo4jClient, source_key: str, mode: str) -> str:
@@ -1085,6 +1092,7 @@ def run_ingestion(
                 "mode": mode,
                 "dump_path": dump_path,
                 "entity_key": entity_key,
+                "http_request_count": 0,
             }
 
         success = errors = skipped = 0
@@ -1217,11 +1225,15 @@ def run_ingestion(
                 errors,
                 checkpoint_store,
             )
+        http_request_count = (
+            connector.request_count if isinstance(connector, _HttpRequestCounter) else 0
+        )
         logger.info(
-            "Ingestion complete: %d succeeded, %d errors, %d skipped",
+            "Ingestion complete: %d succeeded, %d errors, %d skipped, %d HTTP requests",
             success,
             errors,
             skipped,
+            http_request_count,
         )
         return {
             "ingest_run_id": ingest_run_id,
@@ -1233,6 +1245,7 @@ def run_ingestion(
             "mode": mode,
             "dump_path": dump_path,
             "entity_key": entity_key,
+            "http_request_count": http_request_count,
         }
     finally:
         if isinstance(connector, _ClosableConnector):

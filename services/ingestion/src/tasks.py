@@ -44,6 +44,7 @@ from src.graph import queries
 from src.graph.bitrix_backfill import BitrixBackfillRepository
 from src.graph.client import Neo4jClient
 from src.graph.ingestion_control import BitrixStreamControl, LogicalRunControl
+from src.graph.ingestion_control_models import LogicalRunState
 from src.graph.migrations import (
     reconcile_projection_relationship_lifecycle,
     reconcile_source_record_lifecycle,
@@ -239,7 +240,53 @@ def _skipped_split_summary(
         "mode": mode,
         "dump_path": dump_path,
         "entity_key": None,
+        "http_request_count": 0,
     }
+
+
+def _normalized_split_cursor(
+    phase: str | None,
+    cursor: dict[str, JsonValue],
+) -> dict[str, JsonValue]:
+    """Normalize the one deployed refresh cursor written under the census key."""
+    normalized = dict(cursor)
+    if (
+        phase == "known_owner_refresh_v1"
+        and normalized.get("last_known_deal_id") is None
+        and isinstance(normalized.get("last_deal_id"), str)
+        and cast(str, normalized["last_deal_id"]).isdigit()
+    ):
+        normalized["last_known_deal_id"] = normalized.pop("last_deal_id")
+    return normalized
+
+
+def _validate_split_limits(
+    *,
+    census_record_count: int,
+    refresh_population: int,
+    http_request_count: int,
+    max_rows: int | None,
+    max_calls: int | None,
+) -> None:
+    """Apply independent phase bounds and exact current-attempt HTTP accounting."""
+    if max_rows is not None and max(census_record_count, refresh_population) > max_rows:
+        raise RuntimeError("split Bitrix phase row ceiling was exceeded")
+    if max_calls is not None and http_request_count > max_calls:
+        raise RuntimeError("split Bitrix API-call ceiling was exceeded")
+
+
+def _terminal_checkpoint_counts(state: LogicalRunState) -> tuple[int, int, int, int, int]:
+    """Return durable counters used to finalize a resumed logical run."""
+    record_count = (
+        state.committed_count + state.duplicate_count + state.excluded_count + state.retry_count
+    )
+    return (
+        state.committed_count,
+        state.duplicate_count,
+        state.excluded_count,
+        state.retry_count,
+        record_count,
+    )
 
 
 def _get_or_materialize_known_owner_set(
@@ -369,7 +416,10 @@ def _run_split_bitrix_ingestion(
         elif state.phase != checkpoint.phase:
             raise RuntimeError("split Bitrix logical run has an incompatible checkpoint phase")
         if state.cursor is not None:
-            checkpoint = replace(checkpoint, cursor=state.cursor)
+            checkpoint = replace(
+                checkpoint,
+                cursor=_normalized_split_cursor(state.phase, state.cursor),
+            )
         try:
             admission = BitrixStreamControl(client).admit_or_coalesce(
                 stream_key=stream_key,
@@ -470,6 +520,8 @@ def _run_split_bitrix_ingestion(
                 )
                 if transitioned is None:
                     raise RuntimeError("deal run could not enter known-owner refresh")
+            census_record_count = summary["succeeded"] + summary["errors"] + summary["skipped"]
+            refresh_record_count = 0
             if membership is not None:
                 refresh_context = replace(context, checkpoint=active_checkpoint)
                 ingestion_config = get_ingestion_config().bitrix_openlines
@@ -481,7 +533,11 @@ def _run_split_bitrix_ingestion(
                     included_category_ids=ingestion_config.included_crm_category_ids,
                     entity_by_category_id=ingestion_config.entity_by_crm_category_id,
                 )
-                summary["succeeded"] += refresh.refreshed + refresh.moved_out_of_scope
+                refresh_record_count = refresh.refreshed + refresh.moved_out_of_scope
+                summary["succeeded"] += refresh_record_count
+                summary["http_request_count"] = (
+                    summary.get("http_request_count", 0) + refresh.http_request_count
+                )
         except Exception as exc:
             logical.fail_fenced(
                 context=admission.fence_context,
@@ -495,12 +551,14 @@ def _run_split_bitrix_ingestion(
                 raise RuntimeError(
                     f"split Bitrix runner returned invalid status {completion_status}"
                 )
-            record_count = summary["succeeded"] + summary["errors"] + summary["skipped"]
-            estimated_calls = record_count + (record_count + 49) // 50 + 2
-            if max_rows is not None and record_count > max_rows:
-                raise RuntimeError("split Bitrix row ceiling was exceeded")
-            if max_calls is not None and estimated_calls > max_calls:
-                raise RuntimeError("split Bitrix API-call ceiling was exceeded")
+            refresh_population = len(membership.deal_ids) if membership is not None else 0
+            _validate_split_limits(
+                census_record_count=census_record_count,
+                refresh_population=refresh_population,
+                http_request_count=summary.get("http_request_count", 0),
+                max_rows=max_rows,
+                max_calls=max_calls,
+            )
             if (
                 max_runtime_seconds is not None
                 and time.monotonic() - started_at > max_runtime_seconds
@@ -513,16 +571,26 @@ def _run_split_bitrix_ingestion(
                 safe_failure_message=str(exc),
             )
             raise
+        terminal_state = logical.get(attempt.logical_run_id)
+        if terminal_state is None or terminal_state.phase != active_checkpoint.phase:
+            raise RuntimeError("split Bitrix logical run lost its terminal checkpoint")
+        (
+            terminal_committed_count,
+            terminal_duplicate_count,
+            terminal_excluded_count,
+            terminal_retry_count,
+            terminal_record_count,
+        ) = _terminal_checkpoint_counts(terminal_state)
         logical.finalize_fenced(
             context=admission.fence_context,
             phase=active_checkpoint.phase,
             status=cast(AttemptStatus, completion_status),
-            committed_count=summary["succeeded"],
-            duplicate_count=summary["skipped"],
-            excluded_count=0,
-            retry_count=0,
-            record_count=record_count,
-            rejected_count=summary["errors"],
+            committed_count=terminal_committed_count,
+            duplicate_count=terminal_duplicate_count,
+            excluded_count=terminal_excluded_count,
+            retry_count=terminal_retry_count,
+            record_count=terminal_record_count,
+            rejected_count=terminal_retry_count,
         )
         return summary
     finally:

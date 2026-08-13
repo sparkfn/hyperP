@@ -61,6 +61,7 @@ logger = logging.getLogger(__name__)
 
 _MISSING_CONTACT_ERRORS = frozenset({"ERROR_NOT_FOUND", "CRM_CONTACT_NOT_FOUND"})
 _MISSING_LEAD_ERRORS = frozenset({"ERROR_NOT_FOUND", "CRM_LEAD_NOT_FOUND"})
+_MISSING_DEAL_ERRORS = frozenset({"ERROR_NOT_FOUND", "CRM_DEAL_NOT_FOUND"})
 
 
 def _is_allowed_error_payload(
@@ -97,6 +98,11 @@ class BitrixOpenLinesClient:
         self._request_count = 0
         self._activities_scanned = 0
         self._http = http or httpx.Client(timeout=timeout_seconds)
+
+    @property
+    def request_count(self) -> int:
+        """Return completed HTTP attempts for bounded runtime accounting."""
+        return self._request_count
 
     def list_active_configs(self) -> list[OpenLineConfig]:
         configs: list[OpenLineConfig] = []
@@ -536,6 +542,22 @@ class BitrixOpenLinesClient:
 
     def get_deals(self, deal_ids: Collection[int]) -> list[CrmDeal]:
         """Hydrate one capability page through Bitrix batch requests."""
+        ordered_ids = self._validated_deal_ids(deal_ids)
+        if not ordered_ids:
+            return []
+        hydrated = self._get_deals_batch(ordered_ids)
+        return [hydrated[deal_id] for deal_id in ordered_ids]
+
+    def get_deals_or_none(self, deal_ids: Collection[int]) -> dict[int, CrmDeal | None]:
+        """Batch-hydrate deals while preserving explicit healthy not-found results."""
+        ordered_ids = self._validated_deal_ids(deal_ids)
+        if not ordered_ids:
+            return {}
+        hydrated = self._get_deals_batch(ordered_ids, allow_missing=True)
+        return {deal_id: hydrated.get(deal_id) for deal_id in ordered_ids}
+
+    @staticmethod
+    def _validated_deal_ids(deal_ids: Collection[int]) -> list[int]:
         ordered_ids = list(deal_ids)
         if len(ordered_ids) > 50:
             raise ValueError("Bitrix deal hydration accepts at most 50 deals")
@@ -543,17 +565,28 @@ class BitrixOpenLinesClient:
             raise ValueError("Bitrix deal hydration IDs must be positive")
         if len(ordered_ids) != len(set(ordered_ids)):
             raise ValueError("Bitrix deal hydration IDs must be unique")
-        if not ordered_ids:
-            return []
+        return ordered_ids
 
-        raw_deals = self._batch_entity_results("crm.deal.get", ordered_ids, "deal")
+    def _get_deals_batch(
+        self,
+        ordered_ids: list[int],
+        *,
+        allow_missing: bool = False,
+    ) -> dict[int, CrmDeal]:
+        raw_deals = self._batch_entity_results(
+            "crm.deal.get",
+            ordered_ids,
+            "deal",
+            allowed_errors=_MISSING_DEAL_ERRORS if allow_missing else frozenset(),
+        )
+        found_ids = [deal_id for deal_id in ordered_ids if str(deal_id) in raw_deals]
         raw_contact_items = self._batch_entity_results(
-            "crm.deal.contact.items.get", ordered_ids, "deal_contacts"
+            "crm.deal.contact.items.get", found_ids, "deal_contacts"
         )
         contact_ids_by_deal: dict[int, tuple[str, ...]] = {}
         contact_ids: list[str] = []
         lead_ids: list[str] = []
-        for deal_id in ordered_ids:
+        for deal_id in found_ids:
             raw_deal = raw_deals[str(deal_id)]
             if not isinstance(raw_deal, dict):
                 raise RuntimeError("Bitrix deal batch returned an invalid deal")
@@ -575,16 +608,16 @@ class BitrixOpenLinesClient:
 
         contacts_by_id = self._batch_crm_contacts("crm.contact.get", contact_ids, "contact")
         leads_by_id = self._batch_crm_contacts("crm.lead.get", lead_ids, "lead")
-        return [
-            self._deal_from_hydrated_payload(
+        return {
+            deal_id: self._deal_from_hydrated_payload(
                 deal_id,
                 raw_deals[str(deal_id)],
                 contact_ids_by_deal[deal_id],
                 contacts_by_id,
                 leads_by_id,
             )
-            for deal_id in ordered_ids
-        ]
+            for deal_id in found_ids
+        }
 
     def _batch_entity_results(
         self,
@@ -737,7 +770,7 @@ class BitrixOpenLinesClient:
         payload = self._request(
             "crm.deal.get",
             {"id": deal_id},
-            allowed_errors=frozenset({"ERROR_NOT_FOUND", "CRM_DEAL_NOT_FOUND"}),
+            allowed_errors=_MISSING_DEAL_ERRORS,
         )
         error = payload.get("error")
         if isinstance(error, str):

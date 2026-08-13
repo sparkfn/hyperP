@@ -65,6 +65,10 @@ class _LogicalControl:
             ingest_run_id="ingest-1",
             phase="scoped_deal_census_v1",
             cursor={"last_deal_id": None, "census_epoch": 1},
+            committed_count=0,
+            duplicate_count=0,
+            excluded_count=0,
+            retry_count=0,
             checkpointed_at="2026-08-08T00:00:00Z",
         )
 
@@ -128,6 +132,7 @@ def test_split_helper_uses_one_control_plane_run_and_passes_execution_context(
             "mode": "backfill",
             "dump_path": None,
             "entity_key": None,
+            "http_request_count": 7,
         }
 
     monkeypatch.setattr(tasks, "run_ingestion", run_ingestion)
@@ -382,3 +387,72 @@ def test_known_owner_load_failure_terminates_the_admitted_attempt(
 
     assert failed == ["RuntimeError"]
     assert client.closed is True
+
+
+def test_resume_normalizes_deployed_known_owner_cursor_key() -> None:
+    assert tasks._normalized_split_cursor(
+        "known_owner_refresh_v1",
+        {"last_known_deal_id": None, "last_deal_id": "901", "census_epoch": 1},
+    ) == {"last_known_deal_id": "901", "census_epoch": 1}
+
+
+def test_cursor_normalization_does_not_rewrite_census_state() -> None:
+    cursor = {"last_deal_id": "901", "census_epoch": 1}
+
+    assert tasks._normalized_split_cursor("scoped_deal_census_v1", cursor) == cursor
+
+
+def test_phase_row_ceiling_bounds_each_phase_without_summing_them() -> None:
+    tasks._validate_split_limits(
+        census_record_count=143_719,
+        refresh_population=143_719,
+        http_request_count=12_000,
+        max_rows=143_719,
+        max_calls=300_000,
+    )
+
+
+def test_phase_row_ceiling_rejects_an_oversized_refresh_population() -> None:
+    with pytest.raises(RuntimeError, match="phase row ceiling"):
+        tasks._validate_split_limits(
+            census_record_count=10,
+            refresh_population=11,
+            http_request_count=2,
+            max_rows=10,
+            max_calls=100,
+        )
+
+
+def test_api_call_ceiling_uses_measured_http_attempts() -> None:
+    with pytest.raises(RuntimeError, match="API-call ceiling"):
+        tasks._validate_split_limits(
+            census_record_count=10,
+            refresh_population=10,
+            http_request_count=101,
+            max_rows=10,
+            max_calls=100,
+        )
+
+
+def test_terminal_finalization_uses_durable_resumed_checkpoint_counts() -> None:
+    state = LogicalRunState(
+        logical_run_id="logical-1",
+        status="running",
+        generation=2,
+        source_key="bitrix_chat",
+        mode="api",
+        dump_path=None,
+        entity_key=None,
+        stop_requested=False,
+        stop_reason=None,
+        ingest_run_id="ingest-2",
+        phase="known_owner_refresh_v1",
+        cursor={"last_known_deal_id": "901", "census_epoch": 1},
+        committed_count=100,
+        duplicate_count=20,
+        excluded_count=3,
+        retry_count=2,
+        checkpointed_at="2026-08-13T00:00:00Z",
+    )
+
+    assert tasks._terminal_checkpoint_counts(state) == (100, 20, 3, 2, 125)
