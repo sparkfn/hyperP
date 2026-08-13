@@ -75,16 +75,18 @@ def test_connector_factory_selects_dormant_bitrix_crm_streams(
 ) -> None:
     deal_connector = StubConnector()
     activity_connector = StubConnector()
-    monkeypatch.setattr(
-        main,
-        "create_bitrix_crm_deal_connector",
-        lambda *, upper_deal_id, last_deal_id: deal_connector,
-    )
-    monkeypatch.setattr(
-        main,
-        "create_bitrix_crm_activity_connector",
-        lambda *, upper_activity_id, last_activity_id: activity_connector,
-    )
+    captured: dict[str, dict[str, object]] = {}
+
+    def create_deal(**parameters: object) -> StubConnector:
+        captured["deal"] = parameters
+        return deal_connector
+
+    def create_activity(**parameters: object) -> StubConnector:
+        captured["activity"] = parameters
+        return activity_connector
+
+    monkeypatch.setattr(main, "create_bitrix_crm_deal_connector", create_deal)
+    monkeypatch.setattr(main, "create_bitrix_crm_activity_connector", create_activity)
 
     assert (
         main.get_connector(
@@ -96,6 +98,8 @@ def test_connector_factory_selects_dormant_bitrix_crm_streams(
                 "included_category_digest": "sha256:categories",
                 "owner_artifact_id": None,
             },
+            bitrix_max_calls=100,
+            bitrix_deadline_monotonic=200.0,
         )
         is deal_connector
     )
@@ -108,9 +112,23 @@ def test_connector_factory_selects_dormant_bitrix_crm_streams(
                 "upper_activity_id": "1200",
                 "owner_artifact_id": None,
             },
+            bitrix_max_calls=101,
+            bitrix_deadline_monotonic=201.0,
         )
         is activity_connector
     )
+    assert captured["deal"] == {
+        "upper_deal_id": 900,
+        "last_deal_id": None,
+        "max_request_count": 100,
+        "deadline_monotonic": 200.0,
+    }
+    assert captured["activity"] == {
+        "upper_activity_id": 1200,
+        "last_activity_id": None,
+        "max_request_count": 101,
+        "deadline_monotonic": 201.0,
+    }
 
 
 def test_connector_factory_uses_conversation_only_legacy_mode(

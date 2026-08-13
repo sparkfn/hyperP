@@ -87,13 +87,22 @@ class BitrixOpenLinesClient:
         timeout_seconds: float,
         max_attempts: int,
         request_delay_seconds: float = 0.0,
+        max_request_count: int | None = None,
+        deadline_monotonic: float | None = None,
         http: httpx.Client | None = None,
     ) -> None:
         if not base_url.strip():
             raise ValueError("Bitrix Open Lines API base URL is required")
+        if timeout_seconds <= 0:
+            raise ValueError("Bitrix timeout_seconds must be positive")
         self._base_url = base_url.strip().rstrip("/")
+        if max_request_count is not None and max_request_count < 1:
+            raise ValueError("Bitrix max_request_count must be positive")
         self._max_attempts = max_attempts
         self._request_delay_seconds = request_delay_seconds
+        self._timeout_seconds = timeout_seconds
+        self._max_request_count = max_request_count
+        self._deadline_monotonic = deadline_monotonic
         self._last_request_at = 0.0
         self._request_count = 0
         self._activities_scanned = 0
@@ -1017,6 +1026,33 @@ class BitrixOpenLinesClient:
     def _call(self, method: str, params: Mapping[str, JsonValue]) -> JsonValue:
         return self._request(method, params)["result"]
 
+    def _sleep_with_deadline(self, delay_seconds: float) -> None:
+        if delay_seconds <= 0:
+            return
+        if (
+            self._deadline_monotonic is not None
+            and time.monotonic() + delay_seconds >= self._deadline_monotonic
+        ):
+            raise RuntimeError("Bitrix request runtime ceiling reached before the next attempt")
+        time.sleep(delay_seconds)
+
+    def _assert_runtime_budget(self) -> None:
+        if self._deadline_monotonic is not None and time.monotonic() >= self._deadline_monotonic:
+            raise RuntimeError("Bitrix request runtime ceiling reached before the next request")
+
+    def _assert_request_budget(self) -> None:
+        if self._max_request_count is not None and self._request_count >= self._max_request_count:
+            raise RuntimeError("Bitrix API-call ceiling reached before the next request")
+        self._assert_runtime_budget()
+
+    def _request_timeout(self) -> float:
+        if self._deadline_monotonic is None:
+            return self._timeout_seconds
+        remaining = self._deadline_monotonic - time.monotonic()
+        if remaining <= 0:
+            raise RuntimeError("Bitrix request runtime ceiling reached before the next request")
+        return min(self._timeout_seconds, remaining)
+
     def _request(
         self,
         method: str,
@@ -1026,12 +1062,20 @@ class BitrixOpenLinesClient:
     ) -> dict[str, JsonValue]:
         for attempt in range(1, self._max_attempts + 1):
             try:
+                self._assert_request_budget()
                 elapsed = time.monotonic() - self._last_request_at
                 if elapsed < self._request_delay_seconds:
-                    time.sleep(self._request_delay_seconds - elapsed)
-                response = self._http.post(f"{self._base_url}/{method}", json=dict(params))
+                    self._sleep_with_deadline(self._request_delay_seconds - elapsed)
+                self._assert_request_budget()
+                request_timeout = self._request_timeout()
                 self._request_count += 1
+                response = self._http.post(
+                    f"{self._base_url}/{method}",
+                    json=dict(params),
+                    timeout=request_timeout,
+                )
                 self._last_request_at = time.monotonic()
+                self._assert_runtime_budget()
                 response.raise_for_status()
                 payload = cast(object, response.json())
                 if not isinstance(payload, dict):
@@ -1045,12 +1089,13 @@ class BitrixOpenLinesClient:
                         raise RuntimeError(f"Bitrix method {method} failed with {error}")
                     if attempt == self._max_attempts:
                         raise RuntimeError(f"Bitrix method {method} failed with {error}")
-                    time.sleep(envelope_retry_delay(typed_payload, attempt))
+                    self._sleep_with_deadline(envelope_retry_delay(typed_payload, attempt))
                     continue
                 if "result" not in typed_payload:
                     raise RuntimeError(f"Bitrix method {method} returned an invalid envelope")
                 return typed_payload
             except httpx.HTTPStatusError as exc:
+                self._assert_runtime_budget()
                 error_payload: object = None
                 try:
                     error_payload = exc.response.json()
@@ -1067,11 +1112,12 @@ class BitrixOpenLinesClient:
                 if attempt == self._max_attempts:
                     raise RuntimeError(f"Bitrix method {method} request failed") from None
                 delay = retry_delay(exc.response, attempt)
-                time.sleep(delay)
+                self._sleep_with_deadline(delay)
             except httpx.TransportError:
+                self._assert_runtime_budget()
                 if attempt == self._max_attempts:
                     raise RuntimeError(f"Bitrix method {method} request failed") from None
-                time.sleep(min(2 ** (attempt - 1), 8))
+                self._sleep_with_deadline(min(2 ** (attempt - 1), 8))
         raise AssertionError("unreachable")
 
 

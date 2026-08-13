@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import cast
 
+import pytest
 from pytest import MonkeyPatch
 from src import bitrix_deal_scope_reconciliation as reconciliation
 from src.bitrix_backfill_models import KnownOwnerMembershipSet
@@ -229,3 +230,73 @@ def test_known_owner_refresh_resume_skips_checkpointed_members(
     assert client.chunks == [tuple(range(76, 121))]
     assert _Pipeline.ingested == [f"bitrix-crm-deal-{value}" for value in range(76, 121)]
     assert summary.refreshed == 45
+
+
+def test_known_owner_refresh_rejects_oversized_membership_before_source_calls(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    client = _BatchClient(chunks=[])
+    monkeypatch.setattr(reconciliation, "IngestPipeline", _Pipeline)
+    monkeypatch.setattr(reconciliation, "BitrixDealScopeRepository", lambda _graph: object())
+    membership = KnownOwnerMembershipSet(
+        generation_id="generation-1",
+        membership_set_id="owners-1",
+        digest="sha256:owners",
+        deal_ids=("1", "2"),
+    )
+    base = _context()
+    context = ExecutionContext(
+        worker_task_id=base.worker_task_id,
+        fence_context=base.fence_context,
+        checkpoint=base.checkpoint,
+        max_rows=1,
+    )
+
+    with pytest.raises(RuntimeError, match="row ceiling"):
+        refresh_known_owner_set(
+            client,
+            cast(Neo4jClient, object()),
+            membership=membership,
+            context=context,
+            included_category_ids=["2"],
+            entity_by_category_id={"2": "eko"},
+        )
+
+    assert client.chunks == []
+
+
+def test_known_owner_refresh_rechecks_runtime_after_batch_before_writes(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    client = _BatchClient(chunks=[])
+    _Pipeline.ingested.clear()
+    monotonic_values = iter((9.0, 11.0))
+    monkeypatch.setattr(reconciliation, "IngestPipeline", _Pipeline)
+    monkeypatch.setattr(reconciliation, "BitrixDealScopeRepository", lambda _graph: object())
+    monkeypatch.setattr(reconciliation.time, "monotonic", lambda: next(monotonic_values))
+    membership = KnownOwnerMembershipSet(
+        generation_id="generation-1",
+        membership_set_id="owners-1",
+        digest="sha256:owners",
+        deal_ids=("1",),
+    )
+    base = _context()
+    context = ExecutionContext(
+        worker_task_id=base.worker_task_id,
+        fence_context=base.fence_context,
+        checkpoint=base.checkpoint,
+        deadline_monotonic=10.0,
+    )
+
+    with pytest.raises(RuntimeError, match="runtime ceiling"):
+        refresh_known_owner_set(
+            client,
+            cast(Neo4jClient, object()),
+            membership=membership,
+            context=context,
+            included_category_ids=["2"],
+            entity_by_category_id={"2": "eko"},
+        )
+
+    assert client.chunks == [(1,)]
+    assert _Pipeline.ingested == []

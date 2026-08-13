@@ -423,6 +423,8 @@ def create_bitrix_crm_deal_connector(
     *,
     upper_deal_id: int,
     last_deal_id: int | None,
+    max_request_count: int | None = None,
+    deadline_monotonic: float | None = None,
 ) -> BitrixCrmDealConnector:
     """Create the dormant independent CRM-deal stream connector."""
     settings = get_settings()
@@ -432,6 +434,8 @@ def create_bitrix_crm_deal_connector(
         timeout_seconds=settings.bitrix_openlines_api_timeout_seconds,
         max_attempts=settings.bitrix_openlines_api_max_attempts,
         request_delay_seconds=settings.bitrix_openlines_api_request_delay_seconds,
+        max_request_count=max_request_count,
+        deadline_monotonic=deadline_monotonic,
     )
     return BitrixCrmDealConnector(
         client,
@@ -445,6 +449,8 @@ def create_bitrix_crm_activity_connector(
     *,
     upper_activity_id: int,
     last_activity_id: int | None,
+    max_request_count: int | None = None,
+    deadline_monotonic: float | None = None,
 ) -> BitrixCrmActivityConnector:
     """Create the dormant independent CRM-activity stream connector."""
     settings = get_settings()
@@ -453,6 +459,8 @@ def create_bitrix_crm_activity_connector(
         timeout_seconds=settings.bitrix_openlines_api_timeout_seconds,
         max_attempts=settings.bitrix_openlines_api_max_attempts,
         request_delay_seconds=settings.bitrix_openlines_api_request_delay_seconds,
+        max_request_count=max_request_count,
+        deadline_monotonic=deadline_monotonic,
     )
     return BitrixCrmActivityConnector(
         client,
@@ -461,7 +469,11 @@ def create_bitrix_crm_activity_connector(
     )
 
 
-def create_bitrix_known_owner_client() -> BitrixOpenLinesClient:
+def create_bitrix_known_owner_client(
+    *,
+    max_request_count: int | None = None,
+    deadline_monotonic: float | None = None,
+) -> BitrixOpenLinesClient:
     """Create the targeted deal-get client used after the scoped census."""
     settings = get_settings()
     return BitrixOpenLinesClient(
@@ -469,6 +481,8 @@ def create_bitrix_known_owner_client() -> BitrixOpenLinesClient:
         timeout_seconds=settings.bitrix_openlines_api_timeout_seconds,
         max_attempts=settings.bitrix_openlines_api_max_attempts,
         request_delay_seconds=settings.bitrix_openlines_api_request_delay_seconds,
+        max_request_count=max_request_count,
+        deadline_monotonic=deadline_monotonic,
     )
 
 
@@ -528,6 +542,8 @@ def get_connector(
     bitrix_execution_stream: BitrixExecutionStream | None = None,
     bitrix_source_window: dict[str, JsonValue] | None = None,
     bitrix_checkpoint_cursor: dict[str, JsonValue] | None = None,
+    bitrix_max_calls: int | None = None,
+    bitrix_deadline_monotonic: float | None = None,
 ) -> SourceConnector:
     """Return the appropriate connector for the given source key."""
     if entity_key is not None and (source_key != "whatsapp_chat" or mode != "api"):
@@ -552,6 +568,8 @@ def get_connector(
                     bitrix_checkpoint_cursor,
                     "last_deal_id",
                 ),
+                max_request_count=bitrix_max_calls,
+                deadline_monotonic=bitrix_deadline_monotonic,
             )
         if bitrix_execution_stream == "crm_activities":
             return create_bitrix_crm_activity_connector(
@@ -563,6 +581,8 @@ def get_connector(
                     bitrix_checkpoint_cursor,
                     "last_activity_id",
                 ),
+                max_request_count=bitrix_max_calls,
+                deadline_monotonic=bitrix_deadline_monotonic,
             )
         if checkpoint_store is None:
             if bitrix_execution_stream != "openlines_conversations":
@@ -1150,6 +1170,12 @@ def run_ingestion(
                 ),
                 bitrix_checkpoint_cursor=(
                     execution_context.checkpoint.cursor if execution_context is not None else None
+                ),
+                bitrix_max_calls=(
+                    execution_context.max_calls if execution_context is not None else None
+                ),
+                bitrix_deadline_monotonic=(
+                    execution_context.deadline_monotonic if execution_context is not None else None
                 ),
             )
             logger.info("Connector=%s", type(connector).__name__)

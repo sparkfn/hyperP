@@ -498,6 +498,7 @@ def _run_split_bitrix_ingestion(
             checkpoint=checkpoint,
             generation_context=generation_context,
             max_rows=max_rows,
+            max_calls=max_calls,
             deadline_monotonic=(
                 started_at + max_runtime_seconds if max_runtime_seconds is not None else None
             ),
@@ -549,8 +550,17 @@ def _run_split_bitrix_ingestion(
             if membership is not None:
                 refresh_context = replace(context, checkpoint=active_checkpoint)
                 ingestion_config = get_ingestion_config().bitrix_openlines
+                census_request_count = summary.get("http_request_count", 0)
+                remaining_request_count = (
+                    max_calls - census_request_count if max_calls is not None else None
+                )
+                if remaining_request_count is not None and remaining_request_count < 1:
+                    raise RuntimeError("split Bitrix API-call ceiling reached before owner refresh")
                 refresh = refresh_known_owner_set(
-                    create_bitrix_known_owner_client(),
+                    create_bitrix_known_owner_client(
+                        max_request_count=remaining_request_count,
+                        deadline_monotonic=context.deadline_monotonic,
+                    ),
                     client,
                     membership=membership,
                     context=refresh_context,
@@ -1596,9 +1606,7 @@ def run_ingestion_task(
     except Exception as exc:
         logger.exception("Ingestion task failed for %s", source_key)
         if split_bitrix:
-            retry_number = min(self.request.retries, 8)
-            countdown = min(2**retry_number, 300)
-            raise self.retry(exc=exc, countdown=countdown) from exc
+            raise Reject(str(exc), requeue=False) from exc
         # Don't retry on real errors — surface them to the caller.
         _finalize_rejected_dispatched_run(ingest_run_id)
         raise Reject(str(exc), requeue=False) from exc

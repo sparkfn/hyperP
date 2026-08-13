@@ -1647,3 +1647,120 @@ def test_client_get_deal_or_none_still_rejects_unexpected_http_400() -> None:
 
     with pytest.raises(RuntimeError, match="failed with HTTP 400"):
         client.get_deal_or_none(501)
+
+
+def test_client_rejects_non_positive_request_ceiling() -> None:
+    with pytest.raises(ValueError, match="max_request_count"):
+        BitrixOpenLinesClient(
+            base_url="https://bitrix.test/rest/hook",
+            timeout_seconds=5,
+            max_attempts=1,
+            max_request_count=0,
+        )
+
+
+def test_client_rejects_before_exceeding_the_request_ceiling() -> None:
+    posts: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        posts.append(request.url.path)
+        return httpx.Response(200, json={"error": "CRM_DEAL_NOT_FOUND"})
+
+    client = BitrixOpenLinesClient(
+        base_url="https://bitrix.test/rest/hook",
+        timeout_seconds=5,
+        max_attempts=1,
+        max_request_count=1,
+        http=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+
+    assert client.get_deal_or_none(1) is None
+    with pytest.raises(RuntimeError, match="API-call ceiling"):
+        client.get_deal_or_none(1)
+
+    assert len(posts) == 1
+
+
+def test_client_rejects_retry_sleep_that_would_cross_runtime_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sleeps: list[float] = []
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"error": "QUERY_LIMIT_EXCEEDED"})
+
+    monkeypatch.setattr(
+        "src.connectors.bitrix_openlines.client.time.monotonic",
+        lambda: 10.0,
+    )
+    monkeypatch.setattr(
+        "src.connectors.bitrix_openlines.client.time.sleep",
+        sleeps.append,
+    )
+    client = BitrixOpenLinesClient(
+        base_url="https://bitrix.test/rest/hook",
+        timeout_seconds=5,
+        max_attempts=2,
+        deadline_monotonic=10.5,
+        http=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+
+    with pytest.raises(RuntimeError, match="runtime ceiling"):
+        client.get_deal(1)
+
+    assert sleeps == []
+
+
+def test_client_counts_transport_failures_against_the_request_ceiling(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    posts: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        posts.append(request.url.path)
+        raise httpx.ConnectError("offline", request=request)
+
+    monkeypatch.setattr(
+        "src.connectors.bitrix_openlines.client.time.sleep",
+        lambda _delay: None,
+    )
+    client = BitrixOpenLinesClient(
+        base_url="https://bitrix.test/rest/hook",
+        timeout_seconds=5,
+        max_attempts=2,
+        max_request_count=1,
+        http=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+
+    with pytest.raises(RuntimeError, match="API-call ceiling"):
+        client.get_deal(1)
+
+    assert client.request_count == 1
+    assert len(posts) == 1
+
+
+def test_client_rejects_a_response_that_finishes_after_the_runtime_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monotonic_values = iter((0.0, 0.0, 0.0, 0.0, 11.0, 11.0))
+
+    monkeypatch.setattr(
+        "src.connectors.bitrix_openlines.client.time.monotonic",
+        lambda: next(monotonic_values),
+    )
+    client = BitrixOpenLinesClient(
+        base_url="https://bitrix.test/rest/hook",
+        timeout_seconds=30,
+        max_attempts=1,
+        deadline_monotonic=10.0,
+        http=httpx.Client(
+            transport=httpx.MockTransport(
+                lambda _request: httpx.Response(200, json={"result": {"ID": "1"}})
+            )
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="runtime ceiling"):
+        client.get_deal(1)
+
+    assert client.request_count == 1
