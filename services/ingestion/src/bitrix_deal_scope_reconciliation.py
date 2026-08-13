@@ -27,6 +27,11 @@ from src.pipeline import IngestPipeline
 
 
 class KnownOwnerClient(Protocol):
+    @property
+    def request_count(self) -> int: ...
+
+    def get_deals_or_none(self, deal_ids: Collection[int]) -> dict[int, CrmDeal | None]: ...
+
     def get_deal_or_none(self, deal_id: int) -> CrmDeal | None: ...
 
     def close(self) -> None: ...
@@ -47,6 +52,7 @@ class KnownOwnerRefreshSummary:
     moved_out_of_scope: int
     missing_candidates: int
     unresolved: int
+    http_request_count: int
 
 
 def refresh_known_owner_set(
@@ -64,44 +70,87 @@ def refresh_known_owner_set(
     scope = BitrixDealScopeRepository(graph)
     cursor = context.checkpoint.cursor.get("last_known_deal_id")
     last_known = int(cursor) if isinstance(cursor, str) and cursor.isdigit() else None
+    pending_ids = [
+        int(deal_id)
+        for deal_id in membership.deal_ids
+        if last_known is None or int(deal_id) > last_known
+    ]
     refreshed = moved = missing = unresolved = 0
     try:
-        for deal_id in membership.deal_ids:
-            numeric_id = int(deal_id)
-            if last_known is not None and numeric_id <= last_known:
-                continue
-            deal, absence = _get_deal_with_absence_confirmation(
-                source,
-                scope,
-                deal_id,
-                numeric_id,
-                context,
-            )
-            if deal is None:
-                missing += 1
-                unresolved += 1
-                raise RuntimeError(
-                    f"known owner {deal_id} is absent after {absence} healthy observations "
-                    "and requires reviewed quarantine"
-                )
-            category_id = deal.category_id
-            if category_id is None:
-                raise RuntimeError("known owner refresh returned a deal without category")
-            if category_id in included:
-                entity_key = entity_by_category_id.get(category_id)
-                if entity_key is None:
-                    raise RuntimeError("known owner refresh category has no entity mapping")
-                envelope = SourceRecordEnvelope.model_validate(
-                    {"source_system": "bitrix_chat", **_deal_envelope(deal, entity_key)}
-                )
-                pipeline.ingest(envelope, ingest_run_id=context.fence_context.ingest_run_id)
-                refreshed += 1
-                continue
-            _record_out_of_scope(graph, deal, context)
-            moved += 1
+        for offset in range(0, len(pending_ids), 50):
+            numeric_ids = pending_ids[offset : offset + 50]
+            deals = source.get_deals_or_none(numeric_ids)
+            if set(deals) != set(numeric_ids):
+                raise RuntimeError("known owner batch did not account for every requested deal")
+            for numeric_id in numeric_ids:
+                deal_id = str(numeric_id)
+                deal = deals[numeric_id]
+                absence = 0
+                if deal is None:
+                    deal, absence = _confirm_missing_deal(
+                        source,
+                        scope,
+                        deal_id,
+                        numeric_id,
+                        context,
+                    )
+                if deal is None:
+                    missing += 1
+                    unresolved += 1
+                    raise RuntimeError(
+                        f"known owner {deal_id} is absent after {absence} healthy observations "
+                        "and requires reviewed quarantine"
+                    )
+                category_id = deal.category_id
+                if category_id is None:
+                    raise RuntimeError("known owner refresh returned a deal without category")
+                if category_id in included:
+                    entity_key = entity_by_category_id.get(category_id)
+                    if entity_key is None:
+                        raise RuntimeError("known owner refresh category has no entity mapping")
+                    envelope = SourceRecordEnvelope.model_validate(
+                        {"source_system": "bitrix_chat", **_deal_envelope(deal, entity_key)}
+                    )
+                    pipeline.ingest(envelope, ingest_run_id=context.fence_context.ingest_run_id)
+                    refreshed += 1
+                    continue
+                _record_out_of_scope(graph, deal, context)
+                moved += 1
     finally:
         source.close()
-    return KnownOwnerRefreshSummary(refreshed, moved, missing, unresolved)
+    return KnownOwnerRefreshSummary(
+        refreshed,
+        moved,
+        missing,
+        unresolved,
+        source.request_count,
+    )
+
+
+def _confirm_missing_deal(
+    source: KnownOwnerClient,
+    scope: KnownOwnerScope,
+    deal_id: str,
+    numeric_id: int,
+    context: ExecutionContext,
+) -> tuple[CrmDeal | None, int]:
+    """Confirm a healthy batch miss once more before making it indeterminate."""
+    streak, current = scope.record_healthy_not_found(
+        deal_id,
+        fence_context=context.fence_context,
+    )
+    if _absence_is_confirmed(streak, current):
+        return None, streak
+    deal = source.get_deal_or_none(numeric_id)
+    if deal is not None:
+        return deal, streak
+    streak, current = scope.record_healthy_not_found(
+        deal_id,
+        fence_context=context.fence_context,
+    )
+    if not _absence_is_confirmed(streak, current):
+        raise RuntimeError("second healthy deal absence did not become indeterminate")
+    return None, streak
 
 
 def _get_deal_with_absence_confirmation(

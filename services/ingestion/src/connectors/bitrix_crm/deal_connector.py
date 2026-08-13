@@ -30,6 +30,9 @@ class CrmDealClient(Protocol):
 
     def get_deals(self, deal_ids: Collection[int]) -> list[CrmDeal]: ...
 
+    @property
+    def request_count(self) -> int: ...
+
     def close(self) -> None: ...
 
 
@@ -92,6 +95,11 @@ class BitrixCrmDealConnector(SourceConnector):
             if not ids:
                 raise RuntimeError("Bitrix deal backfill returned an invalid full page")
             cursor = ids[-1]
+
+    @property
+    def request_count(self) -> int:
+        """Expose source HTTP attempts for the enclosing bounded run."""
+        return self._client.request_count
 
     def close(self) -> None:
         self._client.close()

@@ -45,6 +45,10 @@ def test_logical_state_decodes_the_current_checkpoint_cursor() -> None:
             "ingest_run_id": "attempt-2",
             "phase": "users",
             "cursor_json": '{"cursor":"next"}',
+            "committed_count": 10,
+            "duplicate_count": 2,
+            "excluded_count": 1,
+            "retry_count": 0,
             "checkpointed_at": "2026-08-05T10:00:00Z",
         },
     )
@@ -54,3 +58,7 @@ def test_logical_state_decodes_the_current_checkpoint_cursor() -> None:
     assert state.cursor == {"cursor": "next"}
     assert state.status == "paused_with_checkpoint"
     assert state.generation == 2
+    assert state.committed_count == 10
+    assert state.duplicate_count == 2
+    assert state.excluded_count == 1
+    assert state.retry_count == 0

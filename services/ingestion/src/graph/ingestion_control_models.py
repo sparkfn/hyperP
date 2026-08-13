@@ -41,6 +41,10 @@ class LogicalRunState:
     ingest_run_id: str | None
     phase: str | None
     cursor: dict[str, JsonValue] | None
+    committed_count: int
+    duplicate_count: int
+    excluded_count: int
+    retry_count: int
     checkpointed_at: str | None
 
 
@@ -117,6 +121,10 @@ def logical_state(record: Record) -> LogicalRunState:
         ingest_run_id=_optional_str(record, "ingest_run_id"),
         phase=_optional_str(record, "phase"),
         cursor=decode_json_object(cursor_json) if cursor_json is not None else None,
+        committed_count=_required_non_negative_int(record, "committed_count"),
+        duplicate_count=_required_non_negative_int(record, "duplicate_count"),
+        excluded_count=_required_non_negative_int(record, "excluded_count"),
+        retry_count=_required_non_negative_int(record, "retry_count"),
         checkpointed_at=_optional_str(record, "checkpointed_at"),
     )
 
@@ -198,6 +206,13 @@ def _required_int(record: Record, key: str) -> int:
     value: object = record[key]
     if isinstance(value, bool) or not isinstance(value, int):
         raise ValueError(f"Expected an integer for {key}")
+    return value
+
+
+def _required_non_negative_int(record: Record, key: str) -> int:
+    value = _required_int(record, key)
+    if value < 0:
+        raise ValueError(f"Expected a non-negative integer for {key}")
     return value
 
 

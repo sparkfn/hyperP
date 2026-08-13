@@ -110,7 +110,12 @@ def _cursor_after(
     cursor = dict(context.checkpoint.cursor)
     source_id = _numeric_suffix(envelope.source_record_id)
     if context.fence_context.stream_key == "crm_deals":
-        cursor["last_deal_id"] = source_id
+        cursor_key = (
+            "last_known_deal_id"
+            if context.checkpoint.phase == "known_owner_refresh_v1"
+            else "last_deal_id"
+        )
+        cursor[cursor_key] = source_id
     elif context.fence_context.stream_key == "crm_activities":
         cursor["last_activity_id"] = source_id
     else:
