@@ -68,7 +68,8 @@ def test_resume_increments_generation_and_supersedes_stale_attempt() -> None:
     assert "CASE WHEN active_relation IS NULL THEN [] ELSE [active_relation] END" in (
         CREATE_RESUME_ATTEMPT
     )
-    assert "checkpoint.connector_version = $connector_version" in CREATE_RESUME_ATTEMPT
+    assert "logical.connector_version = $logical_connector_version" in CREATE_RESUME_ATTEMPT
+    assert "checkpoint.connector_version = $checkpoint_connector_version" in CREATE_RESUME_ATTEMPT
     source_match = CREATE_RESUME_ATTEMPT.index("MATCH (logical)-[:FOR_SOURCE]->(source")
     generation_write = CREATE_RESUME_ATTEMPT.index("SET logical.active_generation")
     assert source_match < generation_write

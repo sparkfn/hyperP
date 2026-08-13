@@ -11,6 +11,8 @@ from src.bitrix_ingestion_models import BitrixStreamKey
 from src.models import JsonValue
 from src.resumable import CheckpointDescriptor
 
+KNOWN_OWNER_REFRESH_CONNECTOR_VERSION = "bitrix-crm-known-owner-refresh-v1"
+
 GenerationStatus = Literal[
     "allocated",
     "backfilling",
@@ -241,7 +243,7 @@ def known_owner_refresh_checkpoint(
             "known_owner_count": len(membership.deal_ids),
         },
         last_committed_record_id=None,
-        connector_version="bitrix-crm-known-owner-refresh-v1",
+        connector_version=KNOWN_OWNER_REFRESH_CONNECTOR_VERSION,
         schema_version=1,
         replay_boundary="exclusive_sorted_known_deal_id",
     )

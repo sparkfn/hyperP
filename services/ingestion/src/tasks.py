@@ -29,6 +29,7 @@ from pydantic.types import JsonValue
 
 from src.birthday import BirthdayRunSummary, run_birthday_greetings
 from src.bitrix_backfill_models import (
+    KNOWN_OWNER_REFRESH_CONNECTOR_VERSION,
     GenerationRunContext,
     KnownOwnerMembershipSet,
     initial_stream_checkpoint,
@@ -260,6 +261,20 @@ def _normalized_split_cursor(
     return normalized
 
 
+def _resume_checkpoint_connector_version(
+    *,
+    stream_key: BitrixStreamKey,
+    phase: str | None,
+    initial_checkpoint: CheckpointDescriptor,
+) -> str:
+    """Return the expected connector for the durable active split phase."""
+    if phase == initial_checkpoint.phase:
+        return initial_checkpoint.connector_version
+    if stream_key == "crm_deals" and phase == "known_owner_refresh_v1":
+        return KNOWN_OWNER_REFRESH_CONNECTOR_VERSION
+    raise RuntimeError("split Bitrix logical run has an incompatible checkpoint phase")
+
+
 def _validate_split_limits(
     *,
     census_record_count: int,
@@ -355,11 +370,20 @@ def _run_split_bitrix_ingestion(
             "paused_with_checkpoint",
             "failed",
         }:
+            resume_state = logical.get(attempt.logical_run_id)
+            if resume_state is None:
+                raise RuntimeError("split Bitrix logical run lost its active checkpoint")
+            resume_checkpoint_connector = _resume_checkpoint_connector_version(
+                stream_key=stream_key,
+                phase=resume_state.phase,
+                initial_checkpoint=checkpoint,
+            )
             resumed = logical.resume(
                 logical_run_id=attempt.logical_run_id,
                 worker_task_id=worker_task_id,
                 configuration_fingerprint=configuration_fingerprint,
-                connector_version=checkpoint.connector_version,
+                logical_connector_version=checkpoint.connector_version,
+                checkpoint_connector_version=resume_checkpoint_connector,
                 checkpoint_schema_version=checkpoint.schema_version,
             )
             if resumed is None:

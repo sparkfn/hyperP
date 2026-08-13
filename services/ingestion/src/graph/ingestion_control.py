@@ -388,7 +388,8 @@ class LogicalRunControl:
         logical_run_id: str,
         worker_task_id: str,
         configuration_fingerprint: str,
-        connector_version: str,
+        logical_connector_version: str,
+        checkpoint_connector_version: str,
         checkpoint_schema_version: int,
     ) -> LogicalRunAttempt | None:
         def _work(tx: ManagedTransaction) -> LogicalRunAttempt | None:
@@ -397,7 +398,8 @@ class LogicalRunControl:
                 logical_run_id=logical_run_id,
                 worker_task_id=worker_task_id,
                 configuration_fingerprint=configuration_fingerprint,
-                connector_version=connector_version,
+                logical_connector_version=logical_connector_version,
+                checkpoint_connector_version=checkpoint_connector_version,
                 checkpoint_schema_version=checkpoint_schema_version,
             ).single()
             if record is None:
