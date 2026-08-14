@@ -47,13 +47,19 @@ class _Client:
         return work(cast(ManagedTransaction, self.transaction))
 
 
-def _record(*, outcome: str = "admitted", generation: int = 1, token: int = 1) -> Record:
+def _record(
+    *,
+    outcome: str = "admitted",
+    generation: int = 1,
+    token: int = 1,
+    stream_key: str = "crm_deals",
+) -> Record:
     return cast(
         Record,
         {
             "admission_outcome": outcome,
             "source_key": "bitrix_chat",
-            "stream_key": "crm_deals",
+            "stream_key": stream_key,
             "logical_run_id": "logical-1",
             "ingest_run_id": "ingest-1",
             "attempt_generation": 2,
@@ -78,6 +84,12 @@ def test_admission_mapping_returns_a_typed_future_fence_context() -> None:
         fencing_token=5,
         attempt_generation=2,
     )
+
+
+def test_admission_mapping_accepts_the_canonical_stage_history_stream() -> None:
+    admission = bitrix_stream_admission(_record(stream_key="crm_stage_history"))
+
+    assert admission.fence_context.stream_key == "crm_stage_history"
 
 
 def test_admission_rejects_invalid_stream_control_records() -> None:

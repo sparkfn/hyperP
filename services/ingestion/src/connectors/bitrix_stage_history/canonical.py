@@ -33,6 +33,41 @@ def encode_stage_source_record_id(
     )
 
 
+def decode_stage_source_record_id(value: str) -> tuple[str, str, str]:
+    """Decode the frozen injective identity without changing its encoded bytes."""
+    prefix = "bitrix-crm-stagehistory-v1:"
+    if not isinstance(value, str) or not value.startswith(prefix):
+        raise ValueError("stage source record identity has an invalid prefix")
+    remainder = value[len(prefix) :]
+    components: list[str] = []
+    for field_name in ("source_contract_id", "entity_type_id", "history_id"):
+        separator = remainder.find(":")
+        if separator < 1:
+            raise ValueError(f"stage source record identity lacks {field_name} length")
+        length_text = remainder[:separator]
+        if not length_text.isascii() or not length_text.isdecimal():
+            raise ValueError(f"stage source record identity has invalid {field_name} length")
+        length = int(length_text)
+        if length < 1:
+            raise ValueError(f"stage source record identity has empty {field_name}")
+        start = separator + 1
+        end = start + length
+        component = remainder[start:end]
+        if len(component) != length:
+            raise ValueError(f"stage source record identity truncates {field_name}")
+        components.append(component)
+        remainder = remainder[end:]
+    if remainder:
+        raise ValueError("stage source record identity has trailing bytes")
+    source_contract_id, entity_type_id, history_id = components
+    normalized_contract = normalize_source_contract_id(source_contract_id)
+    if source_contract_id != normalized_contract:
+        raise ValueError("stage source record identity uses a non-canonical source contract")
+    if encode_stage_source_record_id(*components) != value:
+        raise ValueError("stage source record identity is not canonically encoded")
+    return normalized_contract, entity_type_id, history_id
+
+
 def canonical_stage_hash_v1(source_contract_id: str, item: StageHistoryItem) -> str:
     """Return the canonical v1 SHA-256 for one typed source observation."""
     payload = {

@@ -71,6 +71,35 @@ CREATE CONSTRAINT crm_history_authority_decision_id_unique IF NOT EXISTS
 CREATE CONSTRAINT crm_history_authority_head_identity_unique IF NOT EXISTS
   FOR (head:CrmHistoryAuthorityHead) REQUIRE head.event_identity IS UNIQUE;
 
+CREATE CONSTRAINT stage_history_unit_identity_unique IF NOT EXISTS
+  FOR (unit:StageHistoryUnit) REQUIRE unit.unit_id IS UNIQUE;
+
+CREATE CONSTRAINT stage_history_unit_run_page_unique IF NOT EXISTS
+  FOR (unit:StageHistoryUnit)
+  REQUIRE (unit.logical_run_id, unit.page_sequence) IS UNIQUE;
+
+CREATE CONSTRAINT stage_history_occurrence_identity_unique IF NOT EXISTS
+  FOR (occurrence:StageHistoryOccurrence) REQUIRE occurrence.occurrence_id IS UNIQUE;
+
+CREATE CONSTRAINT stage_history_identity_lock_unique IF NOT EXISTS
+  FOR (lock:StageHistoryIdentityLock) REQUIRE lock.event_identity IS UNIQUE;
+
+CREATE CONSTRAINT stage_history_parent_decision_id_unique IF NOT EXISTS
+  FOR (decision:CrmHistoryParentAssociationDecision) REQUIRE decision.decision_id IS UNIQUE;
+
+CREATE CONSTRAINT stage_history_retry_identity_unique IF NOT EXISTS
+  FOR (retry:StageHistoryRetry)
+  REQUIRE (retry.occurrence_id, retry.retry_sequence) IS UNIQUE;
+
+CREATE CONSTRAINT stage_history_review_command_id_unique IF NOT EXISTS
+  FOR (command:StageHistoryReviewCommand) REQUIRE command.command_id IS UNIQUE;
+
+CREATE CONSTRAINT stage_history_invalidation_intent_id_unique IF NOT EXISTS
+  FOR (intent:CrmHistoryInvalidationIntent) REQUIRE intent.intent_id IS UNIQUE;
+
+CREATE CONSTRAINT stage_history_unit_accounting_identity_unique IF NOT EXISTS
+  FOR (accounting:StageHistoryUnitAccounting) REQUIRE accounting.unit_id IS UNIQUE;
+
 // Identifier lookups (hot path)
 CREATE INDEX idx_identifier_type_norm IF NOT EXISTS
   FOR (id:Identifier) ON (id.identifier_type, id.normalized_value);
@@ -92,6 +121,39 @@ CREATE INDEX idx_source_record_type IF NOT EXISTS
 
 CREATE INDEX idx_source_record_link_state IF NOT EXISTS
   FOR (sr:SourceRecord) ON (sr.record_type, sr.link_status);
+
+// Stage-history replay, review, reconciliation, and outbox claim paths.
+CREATE INDEX stage_history_unit_run_sequence IF NOT EXISTS
+  FOR (unit:StageHistoryUnit) ON (unit.logical_run_id, unit.page_sequence);
+
+CREATE INDEX stage_history_unit_status IF NOT EXISTS
+  FOR (unit:StageHistoryUnit) ON (unit.logical_run_id, unit.status);
+
+CREATE INDEX stage_history_occurrence_run_disposition IF NOT EXISTS
+  FOR (occurrence:StageHistoryOccurrence)
+  ON (occurrence.logical_run_id, occurrence.terminal_disposition);
+
+CREATE INDEX stage_history_occurrence_event_identity IF NOT EXISTS
+  FOR (occurrence:StageHistoryOccurrence) ON (occurrence.event_identity);
+
+CREATE INDEX stage_history_parent_decision_event_state IF NOT EXISTS
+  FOR (decision:CrmHistoryParentAssociationDecision)
+  ON (decision.event_identity, decision.association_state);
+
+CREATE INDEX stage_history_retry_claim_scan IF NOT EXISTS
+  FOR (retry:StageHistoryRetry)
+  ON (retry.status, retry.next_attempt_at, retry.lease_expires_at);
+
+CREATE INDEX stage_history_review_command_claim_scan IF NOT EXISTS
+  FOR (command:StageHistoryReviewCommand)
+  ON (command.status, command.lease_expires_at);
+
+CREATE INDEX stage_history_invalidation_claim_scan IF NOT EXISTS
+  FOR (intent:CrmHistoryInvalidationIntent)
+  ON (intent.status, intent.sequence, intent.lease_expires_at);
+
+CREATE INDEX stage_history_source_record_family IF NOT EXISTS
+  FOR (record:SourceRecord) ON (record.record_type, record.history_family);
 
 // Vehicle lookups
 CREATE INDEX idx_vehicle_serial IF NOT EXISTS

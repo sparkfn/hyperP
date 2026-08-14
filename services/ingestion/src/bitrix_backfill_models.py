@@ -177,6 +177,8 @@ def initial_stream_checkpoint(
     census_epoch: int = 1,
 ) -> CheckpointDescriptor:
     """Build the fixed version-1 checkpoint contract for a child stream."""
+    if stream_key == "crm_stage_history":
+        raise ValueError("stage history uses standalone artifact replay checkpoints")
     validate_stream_source_window(stream_key, source_window)
     if stream_key == "crm_deals":
         phase = "scoped_deal_census_v1"
@@ -212,6 +214,8 @@ def validate_stream_source_window(
     source_window: dict[str, JsonValue],
 ) -> None:
     """Reject incomplete or ambiguous corrective source-window boundaries."""
+    if stream_key == "crm_stage_history":
+        raise ValueError("stage history is not part of a Bitrix backfill generation")
     required = {
         "crm_deals": {"upper_deal_id", "included_category_digest", "owner_artifact_id"},
         "crm_activities": {"upper_activity_id", "owner_artifact_id"},

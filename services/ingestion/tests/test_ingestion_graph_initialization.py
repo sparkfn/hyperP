@@ -9,6 +9,9 @@ from src import main
 from src.config import Settings
 from src.graph import migrations
 from src.graph.client import Neo4jClient
+from src.graph.queries.stage_history_ingestion import (
+    CREATE_STAGE_HISTORY_INGESTION_CONSTRAINTS,
+)
 from src.graph.schema_init import (
     BASE_LIFECYCLE_CONSTRAINTS,
     DEFERRED_SOURCE_RECORD_CONSTRAINTS,
@@ -75,6 +78,20 @@ def test_canonical_schema_contains_person_and_knows_performance_indexes() -> Non
         "OWNS_VEHICLE",
     ):
         assert f"FOR ()-[r:{relationship_type}]-() ON (r.source_record_pk)" in schema
+
+
+def test_stage_history_schema_is_available_in_both_initialization_paths() -> None:
+    def normalized(statements: tuple[str, ...] | list[str]) -> set[str]:
+        return {" ".join(statement.split()) for statement in statements}
+
+    dynamic_schema = normalized(CREATE_STAGE_HISTORY_INGESTION_CONSTRAINTS)
+    base_schema = normalized(BASE_LIFECYCLE_CONSTRAINTS)
+    canonical_schema = normalized(
+        _split_statements(_find_init_cypher().read_text(encoding="utf-8"))
+    )
+
+    assert dynamic_schema <= base_schema
+    assert dynamic_schema <= canonical_schema
 
 
 def test_data_migrations_precede_source_version_uniqueness(

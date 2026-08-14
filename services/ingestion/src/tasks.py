@@ -19,7 +19,7 @@ from collections.abc import Iterator
 from contextlib import ExitStack, contextmanager
 from contextvars import ContextVar
 from dataclasses import replace
-from typing import Final, NoReturn, TypedDict, cast
+from typing import Final, Literal, NoReturn, TypedDict, cast
 
 import redis
 from celery import Task
@@ -77,6 +77,8 @@ from src.matching.pair_score import score_person_pair
 from src.pipeline_knows import KnowsMaterializationPhase, materialize_knows_batch
 from src.pipeline_person_pairs import _ENGINE_VERSION, _POLICY_VERSION
 from src.resumable import AttemptStatus, CheckpointDescriptor
+
+LegacyBitrixExecutionStream = Literal["crm_deals", "crm_activities", "openlines_conversations"]
 
 logger = logging.getLogger(__name__)
 
@@ -341,6 +343,9 @@ def _run_split_bitrix_ingestion(
     max_runtime_seconds: int | None = None,
 ) -> IngestionSummary:
     """Create, claim, fence, execute, and terminate one canonical split attempt."""
+    if stream_key == "crm_stage_history":
+        raise ValueError("stage history uses dedicated source-free replay tasks")
+    execution_stream: LegacyBitrixExecutionStream = stream_key
     started_at = time.monotonic()
     checkpoint = _split_checkpoint(stream_key, source_window)
     client = Neo4jClient(get_settings())
@@ -528,7 +533,7 @@ def _run_split_bitrix_ingestion(
                     dump_path,
                     initialize_graph=False,
                     incremental=incremental,
-                    bitrix_execution_stream=stream_key,
+                    bitrix_execution_stream=execution_stream,
                     execution_context=context,
                 )
             active_checkpoint = checkpoint

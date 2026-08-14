@@ -9,7 +9,13 @@ import pytest
 from neo4j import ManagedTransaction
 from src.crm_history_contract import activity_reader_predicate, generic_activity_properties
 from src.graph.client import Neo4jClient
-from src.graph.crm_history_authority import AuthorityDecision, AuthorityWriteContext
+from src.graph.crm_history_authority import (
+    AuthorityDecision,
+    AuthorityDecisionConflictError,
+    AuthorityWriteContext,
+    append_authority_decision,
+    append_authority_decision_in_transaction,
+)
 from src.graph.crm_history_projection_migration import (
     ACQUIRE_PROJECTION_MIGRATION,
     PROJECT_LEGACY_ACTIVITY_BATCH,
@@ -64,17 +70,31 @@ def test_authority_ledger_requires_active_run_generation_and_head_cas() -> None:
     assert len(CREATE_CRM_HISTORY_AUTHORITY_CONSTRAINTS) == 4
     assert "[:ACTIVE_ATTEMPT]" in APPEND_CRM_HISTORY_AUTHORITY_DECISION
     assert "logical.active_generation = $generation" in APPEND_CRM_HISTORY_AUTHORITY_DECISION
-    assert APPEND_CRM_HISTORY_AUTHORITY_DECISION.index("MERGE (resolved_head") < (
-        APPEND_CRM_HISTORY_AUTHORITY_DECISION.index("MERGE (group")
-    )
+    assert callable(append_authority_decision)
+    assert callable(append_authority_decision_in_transaction)
+    assert "BitrixIngestionStream" not in APPEND_CRM_HISTORY_AUTHORITY_DECISION
     assert "resolved_head.head_version = $expected_head_version" in (
         APPEND_CRM_HISTORY_AUTHORITY_DECISION
     )
-    assert "resolved_head.fence_token = $expected_fence_token" in (
+    assert "current_authority_token = $expected_authority_token" in (
         APPEND_CRM_HISTORY_AUTHORITY_DECISION
     )
-    assert "$next_fence_token > $expected_fence_token" in APPEND_CRM_HISTORY_AUTHORITY_DECISION
-    assert "$decision_kind IN ['accepted', 'variant', 'parent', 'correction']" in (
+    assert "$next_authority_token = $expected_authority_token + 1" in (
+        APPEND_CRM_HISTORY_AUTHORITY_DECISION
+    )
+    assert "coalesce(resolved_head.authority_token, resolved_head.fence_token, 0)" in (
+        APPEND_CRM_HISTORY_AUTHORITY_DECISION
+    )
+    assert "resolved_head.authority_token = decision.authority_token" in (
+        APPEND_CRM_HISTORY_AUTHORITY_DECISION
+    )
+    assert "resolved_head.fence_token = decision.authority_token" in (
+        APPEND_CRM_HISTORY_AUTHORITY_DECISION
+    )
+    assert "$decision_kind = 'accepted' AND $authority_state = 'effective'" in (
+        APPEND_CRM_HISTORY_AUTHORITY_DECISION
+    )
+    assert "$authority_state IN ['withheld_parent', 'rejected']" in (
         APPEND_CRM_HISTORY_AUTHORITY_DECISION
     )
     assert "existing.available_at = datetime($available_at)" in (
@@ -83,19 +103,23 @@ def test_authority_ledger_requires_active_run_generation_and_head_cas() -> None:
     assert "known_variant IS NULL OR known_variant.hash_version = $hash_version" in (
         APPEND_CRM_HISTORY_AUTHORITY_DECISION
     )
-    assert "head_version: resolved_head.head_version + 1" in (APPEND_CRM_HISTORY_AUTHORITY_DECISION)
-    assert "existing.prior_head_version = $expected_head_version" in (
+    assert "head_version: $expected_head_version + 1" in APPEND_CRM_HISTORY_AUTHORITY_DECISION
+    assert "existing.run_id = attempt.ingest_run_id" not in APPEND_CRM_HISTORY_AUTHORITY_DECISION
+    assert "existing.run_generation = logical.active_generation" not in (
         APPEND_CRM_HISTORY_AUTHORITY_DECISION
     )
-    assert "existing.run_id = attempt.ingest_run_id" in APPEND_CRM_HISTORY_AUTHORITY_DECISION
+    assert "existing.prior_head_version = $expected_head_version" not in (
+        APPEND_CRM_HISTORY_AUTHORITY_DECISION
+    )
     assert "datetime($available_at) >= correction_target.available_at" in (
         APPEND_CRM_HISTORY_AUTHORITY_DECISION
     )
     assert "datetime($available_at) >= current_decision.available_at" in (
         APPEND_CRM_HISTORY_AUTHORITY_DECISION
     )
-    assert "RETURN existing.decision_id AS decision_id" in APPEND_CRM_HISTORY_AUTHORITY_DECISION
-    assert "SET resolved_head.head_version = resolved_head.head_version" in (
+    assert "semantic_match AS semantic_match" in APPEND_CRM_HISTORY_AUTHORITY_DECISION
+    assert "true AS replayed" in APPEND_CRM_HISTORY_AUTHORITY_DECISION
+    assert "coalesce(existing.authority_token, existing.fence_token)" in (
         APPEND_CRM_HISTORY_AUTHORITY_DECISION
     )
     assert "CREATE (decision)-[:CORRECTS]->(correction_target)" in (
@@ -103,6 +127,11 @@ def test_authority_ledger_requires_active_run_generation_and_head_cas() -> None:
     )
     assert "[:SELECTS_VARIANT]->(variant)" in APPEND_CRM_HISTORY_AUTHORITY_DECISION
     assert "CREATE (decision:CrmHistoryAuthorityDecision" in APPEND_CRM_HISTORY_AUTHORITY_DECISION
+    assert "size(association_parents) = 1" in APPEND_CRM_HISTORY_AUTHORITY_DECISION
+    assert "association_parent.record_type = 'crm_deal'" in (APPEND_CRM_HISTORY_AUTHORITY_DECISION)
+    assert "association_parent.lifecycle_status = 'active'" in (
+        APPEND_CRM_HISTORY_AUTHORITY_DECISION
+    )
 
 
 def test_legacy_projection_is_marked_and_rollback_refuses_native_overwrite() -> None:
@@ -143,6 +172,17 @@ def test_authority_models_reject_invalid_fences_and_correction_shapes() -> None:
             expected_fence_token=4,
             next_fence_token=4,
         )
+    context = AuthorityWriteContext(
+        logical_run_id="logical",
+        ingest_run_id="attempt",
+        generation=1,
+        expected_head_version=2,
+        expected_fence_token=4,
+        next_fence_token=5,
+    )
+    assert context.expected_authority_token == 4
+    assert context.next_authority_token == 5
+    assert context.expected_fence_token == 4
     with pytest.raises(ValueError, match="require"):
         AuthorityDecision(
             decision_id="decision",
@@ -153,6 +193,100 @@ def test_authority_models_reject_invalid_fences_and_correction_shapes() -> None:
             available_at="2026-08-06T04:00:00Z",
             logical_parent_source_system="bitrix_chat",
             logical_parent_source_record_id="deal-1",
+        )
+    with pytest.raises(ValueError, match="kind/state"):
+        AuthorityDecision(
+            decision_id="decision",
+            event_identity="event",
+            canonical_hash="sha256:event",
+            hash_version="bitrix-stage-history-v1",
+            decision_kind="accepted",
+            authority_state="withheld_conflict",
+            available_at="2026-08-06T04:00:00Z",
+            logical_parent_source_system="bitrix_chat",
+            logical_parent_source_record_id="deal-1",
+        )
+
+
+class _AuthorityTx:
+    def __init__(self, row: dict[str, object] | None) -> None:
+        self.row = row
+        self.query: str | None = None
+        self.params: dict[str, object] = {}
+
+    def run(self, query: str, **params: object) -> _Result:
+        self.query = query
+        self.params = params
+        return _Result(self.row)
+
+
+def _authority_context() -> AuthorityWriteContext:
+    return AuthorityWriteContext(
+        logical_run_id="logical",
+        ingest_run_id="attempt-2",
+        generation=2,
+        expected_head_version=1,
+        expected_authority_token=1,
+        next_authority_token=2,
+    )
+
+
+def _authority_decision() -> AuthorityDecision:
+    return AuthorityDecision(
+        decision_id="decision",
+        event_identity="event",
+        canonical_hash="sha256:event",
+        hash_version="bitrix-stage-history-v1",
+        decision_kind="variant",
+        authority_state="withheld_conflict",
+        available_at="2026-08-14T04:00:00Z",
+        logical_parent_source_system="bitrix_chat",
+        logical_parent_source_record_id="deal-1",
+    )
+
+
+def test_in_transaction_authority_append_maps_replay_and_authority_token() -> None:
+    tx = _AuthorityTx(
+        {
+            "decision_id": "decision",
+            "head_version": 2,
+            "authority_token": 2,
+            "replayed": True,
+            "semantic_match": True,
+        }
+    )
+
+    result = append_authority_decision_in_transaction(
+        cast(ManagedTransaction, tx),
+        _authority_context(),
+        _authority_decision(),
+    )
+
+    assert result is not None
+    assert result.replayed is True
+    assert result.authority_token == result.fence_token == 2
+    assert tx.query == APPEND_CRM_HISTORY_AUTHORITY_DECISION
+    assert tx.params["expected_authority_token"] == 1
+    assert tx.params["authority_state"] == "withheld_conflict"
+    assert "expected_fence_token" not in tx.params
+
+
+def test_in_transaction_authority_append_rejects_same_id_different_semantics() -> None:
+    tx = _AuthorityTx(
+        {
+            "decision_id": "decision",
+            "head_version": 2,
+            "authority_token": 2,
+            "replayed": True,
+            "semantic_match": False,
+        }
+    )
+
+    with pytest.raises(AuthorityDecisionConflictError, match="different immutable semantics"):
+        append_authority_decision_in_transaction(
+            cast(ManagedTransaction, tx),
+            _authority_context(),
+            _authority_decision(),
         )
 
 

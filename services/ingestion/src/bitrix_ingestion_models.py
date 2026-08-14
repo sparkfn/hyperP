@@ -15,17 +15,24 @@ if TYPE_CHECKING:
     from src.bitrix_backfill_models import GenerationRunContext
     from src.resumable import CheckpointDescriptor
 
-BitrixStreamKey = Literal["crm_deals", "crm_activities", "openlines_conversations"]
+BitrixStreamKey = Literal[
+    "crm_deals",
+    "crm_activities",
+    "openlines_conversations",
+    "crm_stage_history",
+]
 DealScopeState = Literal["in_scope", "out_of_scope", "indeterminate"]
 
 CRM_DEALS_STREAM: BitrixStreamKey = "crm_deals"
 CRM_ACTIVITIES_STREAM: BitrixStreamKey = "crm_activities"
 OPENLINES_CONVERSATIONS_STREAM: BitrixStreamKey = "openlines_conversations"
+CRM_STAGE_HISTORY_STREAM: BitrixStreamKey = "crm_stage_history"
 BITRIX_STREAM_KEYS: frozenset[BitrixStreamKey] = frozenset(
     {
         CRM_DEALS_STREAM,
         CRM_ACTIVITIES_STREAM,
         OPENLINES_CONVERSATIONS_STREAM,
+        CRM_STAGE_HISTORY_STREAM,
     }
 )
 

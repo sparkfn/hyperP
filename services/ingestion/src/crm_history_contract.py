@@ -8,8 +8,10 @@ write for stage-history observations.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import UTC
 from enum import StrEnum
 
+from src.connectors.bitrix_stage_history.models import StageHistoryItem
 from src.models import SourceRecordEnvelope
 
 HISTORY_PROJECTION_VERSION = "crm-history-projection-v1"
@@ -48,6 +50,21 @@ def generic_activity_properties(envelope: SourceRecordEnvelope) -> CrmHistoryPro
         event_stage_id=None,
         event_stage_semantic_id=None,
         event_at=envelope.observed_at,
+        history_projection_version=HISTORY_PROJECTION_VERSION,
+        history_projection_source=HISTORY_PROJECTION_SOURCE,
+    )
+
+
+def stage_history_properties(item: StageHistoryItem) -> CrmHistoryProperties:
+    """Return the immutable typed projection for one stage-history observation."""
+    return CrmHistoryProperties(
+        history_family=CrmHistoryFamily.STAGE,
+        history_kind=item.type_id or "stage_transition",
+        history_source="bitrix_chat",
+        event_category_id=item.category_id,
+        event_stage_id=item.stage_id,
+        event_stage_semantic_id=item.stage_semantic_id,
+        event_at=item.created_time.astimezone(UTC).isoformat().replace("+00:00", "Z"),
         history_projection_version=HISTORY_PROJECTION_VERSION,
         history_projection_source=HISTORY_PROJECTION_SOURCE,
     )
