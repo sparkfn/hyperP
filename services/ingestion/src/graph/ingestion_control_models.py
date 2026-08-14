@@ -232,9 +232,15 @@ def _required_bool(record: Record, key: str) -> bool:
 
 def _bitrix_stream_key(record: Record) -> BitrixStreamKey:
     value = _required_str(record, "stream_key")
-    if value not in {"crm_deals", "crm_activities", "openlines_conversations"}:
-        raise ValueError(f"Unexpected Bitrix stream key: {value}")
-    return cast(BitrixStreamKey, value)
+    if value == "crm_deals":
+        return "crm_deals"
+    if value == "crm_activities":
+        return "crm_activities"
+    if value == "openlines_conversations":
+        return "openlines_conversations"
+    if value == "crm_stage_history":
+        return "crm_stage_history"
+    raise ValueError(f"Unexpected Bitrix stream key: {value}")
 
 
 def _bitrix_stream_admission_outcome(record: Record) -> BitrixStreamAdmissionOutcome:

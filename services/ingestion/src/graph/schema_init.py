@@ -20,6 +20,9 @@ from src.graph.queries.ingestion_control import (
     CREATE_BITRIX_INGESTION_STREAM_CONSTRAINTS,
     CREATE_LOGICAL_RUN_CONSTRAINTS,
 )
+from src.graph.queries.stage_history_ingestion import (
+    CREATE_STAGE_HISTORY_INGESTION_CONSTRAINTS,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +51,7 @@ ON (sr.source_version_key)""",
     *CREATE_BITRIX_DEAL_SCOPE_CONSTRAINTS,
     *CREATE_BITRIX_BACKFILL_CONSTRAINTS,
     *CREATE_CRM_HISTORY_AUTHORITY_CONSTRAINTS,
+    *CREATE_STAGE_HISTORY_INGESTION_CONSTRAINTS,
 )
 
 DEFERRED_SOURCE_RECORD_CONSTRAINTS: tuple[str, ...] = (

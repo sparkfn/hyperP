@@ -48,6 +48,8 @@ def build_generation_canvas(
 ) -> Signature:
     """Build a strict deals -> activities -> optional Open Lines chain."""
     executable = [entry for entry in entries if entry.executes]
+    if any(entry.stream_key == "crm_stage_history" for entry in executable):
+        raise ValueError("stage history cannot join a Bitrix backfill generation canvas")
     order = {"crm_deals": 0, "crm_activities": 1, "openlines_conversations": 2}
     executable.sort(key=lambda entry: order[entry.stream_key])
     streams = [entry.stream_key for entry in executable]

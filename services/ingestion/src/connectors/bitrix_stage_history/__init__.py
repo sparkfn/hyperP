@@ -2,6 +2,7 @@
 
 from src.connectors.bitrix_stage_history.canonical import (
     canonical_stage_hash_v1,
+    decode_stage_source_record_id,
     encode_stage_source_record_id,
     normalize_source_contract_id,
 )
@@ -20,6 +21,7 @@ __all__ = [
     "parse_stage_history_page",
     "TraversalOutcome",
     "canonical_stage_hash_v1",
+    "decode_stage_source_record_id",
     "encode_stage_source_record_id",
     "normalize_source_contract_id",
 ]

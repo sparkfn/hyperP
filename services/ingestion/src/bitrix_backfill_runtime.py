@@ -118,10 +118,12 @@ def _cursor_after(
         cursor[cursor_key] = source_id
     elif context.fence_context.stream_key == "crm_activities":
         cursor["last_activity_id"] = source_id
-    else:
+    elif context.fence_context.stream_key == "openlines_conversations":
         crm_start = envelope.raw_payload.get("crm_start")
         if isinstance(crm_start, int) and not isinstance(crm_start, bool):
             cursor["crm_start"] = crm_start
+    else:
+        raise ValueError("stage history cannot use the backfill runtime cursor fallback")
     return cursor
 
 

@@ -5,6 +5,7 @@ from datetime import UTC, datetime, timedelta, timezone
 import pytest
 from src.connectors.bitrix_stage_history.canonical import (
     canonical_stage_hash_v1,
+    decode_stage_source_record_id,
     encode_stage_source_record_id,
     normalize_source_contract_id,
 )
@@ -38,6 +39,26 @@ def test_stage_source_record_identity_is_injective() -> None:
 
     assert first != second
     assert first.startswith("bitrix-crm-stagehistory-v1:")
+
+
+def test_stage_source_record_identity_round_trips_frozen_golden_vector() -> None:
+    encoded = encode_stage_source_record_id(_CONTRACT_ID, "2", "001")
+
+    assert encoded == ("bitrix-crm-stagehistory-v1:36:123e4567-e89b-12d3-a456-4266141740001:23:001")
+    assert decode_stage_source_record_id(encoded) == (_CONTRACT_ID, "2", "001")
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "bitrix-crm-stagehistory-v1:36:123e4567-e89b-12d3-a456-4266141740001:2",
+        "bitrix-crm-stagehistory-v1:x:value",
+        "bitrix-crm-stagehistory-v2:1:a1:b1:c",
+    ],
+)
+def test_stage_source_record_decoder_rejects_noncanonical_values(value: str) -> None:
+    with pytest.raises(ValueError, match="stage source record identity"):
+        decode_stage_source_record_id(value)
 
 
 def test_canonical_hash_preserves_opaque_identifier_lexemes() -> None:
