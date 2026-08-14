@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Literal, TypeVar, cast
 
 import pytest
@@ -421,6 +421,72 @@ def test_variant_identity_classification_is_derived_from_locked_graph_evidence(
             transaction.queries.index(APPEND_STAGE_HISTORY_INVALIDATION_INTENTS)
         ]
         assert outbox_parameters["expected_intent_count"] == 0
+
+
+def test_same_hash_replay_accepts_a_later_artifact_observation_timestamp() -> None:
+    unit = _unit_with_identity_outcome(
+        disposition="same_hash_replay",
+        identity_hash_state="existing_same_hash",
+        authority_state="effective",
+    )
+    original = unit.occurrences[0].observation
+    assert isinstance(original, StageHistoryValidObservation)
+    later_observation = replace(
+        original,
+        artifact_id="artifact-2",
+        occurrence_id="occurrence-2",
+        source_observed_at=_NOW + timedelta(hours=1),
+    )
+    later_occurrence = replace(unit.occurrences[0], observation=later_observation)
+    later_unit = replace(
+        unit,
+        unit_id="unit-2",
+        artifact_id="artifact-2",
+        occurrences=(later_occurrence,),
+        accounting=StageHistoryAccounting.from_occurrences((later_occurrence,)),
+    )
+    responses = _success_responses()
+    responses[CREATE_STAGE_HISTORY_UNIT] = [_record(unit_id="unit-2")]
+    responses[UPSERT_STAGE_HISTORY_OCCURRENCE] = [_record(occurrence_id="occurrence-2")]
+    responses[UPSERT_STAGE_HISTORY_VARIANT_SOURCE_RECORD] = [
+        _record(
+            source_record_pk="source-1",
+            created=False,
+            prior_different_variant_count=1,
+        )
+    ]
+    responses[GET_STAGE_HISTORY_AUTHORITY_HEAD] = [
+        _record(
+            head_version=1,
+            authority_token=1,
+            authority_state="effective",
+            decision_id="authority-0",
+            selected_variant_hash=later_observation.canonical_hash,
+            selected_association_current=True,
+            logical_parent_source_system="bitrix_chat",
+            logical_parent_source_record_id="bitrix-crm-deal-42",
+        )
+    ]
+    transaction = _Transaction(responses)
+    repository = StageHistoryIngestionRepository(cast(Neo4jClient, _Client(transaction)))
+    checkpoint = _checkpoint()
+    checkpoint = replace(
+        checkpoint,
+        source_window=replace(
+            checkpoint.source_window,
+            stage_ingestion_artifact_id="artifact-2",
+        ),
+    )
+
+    result = repository.persist_unit(later_unit, checkpoint, _fence())
+
+    assert result.outcome == "committed"
+    variant_parameters = transaction.parameters[
+        transaction.queries.index(UPSERT_STAGE_HISTORY_VARIANT_SOURCE_RECORD)
+    ]
+    assert (
+        variant_parameters["source_observed_at"] == later_observation.source_observed_at.isoformat()
+    )
 
 
 def test_mismatched_caller_identity_classification_rolls_back() -> None:
