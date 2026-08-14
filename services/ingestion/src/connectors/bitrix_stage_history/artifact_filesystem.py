@@ -5,6 +5,7 @@ from __future__ import annotations
 import hmac
 import os
 import stat
+from collections.abc import Callable
 from pathlib import Path
 
 from src.connectors.bitrix_stage_history import artifact_fs_primitives as fs
@@ -121,8 +122,12 @@ class ArtifactFilesystem:
         return session.path / name
 
     def snapshot_session(
-        self, session: SessionDirectory
+        self,
+        session: SessionDirectory,
+        *,
+        guard: Callable[[], None] | None = None,
     ) -> tuple[PreparedObject, tuple[ArtifactFileDigest, ...]]:
+        _run_guard(guard)
         self.assert_session_path_identity(session)
         destination = _create_object(self._primary, session.artifact_id)
         try:
@@ -134,20 +139,32 @@ class ArtifactFilesystem:
             collected: list[ArtifactFileDigest] = []
             total_bytes = 0
             for name in names:
+                _run_guard(guard)
                 remaining = self.limits.max_total_bytes - total_bytes
                 if remaining < 0:
                     raise RuntimeError("artifact total-byte limit exceeded")
-                digest = fs.snapshot_file(
-                    session.descriptor,
-                    destination.descriptor,
-                    name,
-                    max_file_bytes=min(self.limits.max_file_bytes, remaining),
+                digest = (
+                    fs.snapshot_file(
+                        session.descriptor,
+                        destination.descriptor,
+                        name,
+                        max_file_bytes=min(self.limits.max_file_bytes, remaining),
+                    )
+                    if guard is None
+                    else fs.snapshot_file(
+                        session.descriptor,
+                        destination.descriptor,
+                        name,
+                        max_file_bytes=min(self.limits.max_file_bytes, remaining),
+                        guard=guard,
+                    )
                 )
                 collected.append(digest)
                 total_bytes += digest.byte_count
             digests = tuple(collected)
             if tuple(sorted(os.listdir(session.descriptor))) != names:
                 raise RuntimeError("artifact source directory changed during snapshot")
+            _run_guard(guard)
             os.fsync(destination.descriptor)
             return destination, digests
         except BaseException as exc:
@@ -166,11 +183,23 @@ class ArtifactFilesystem:
         primary: PreparedObject,
         artifact_id: str,
         expected: tuple[ArtifactFileDigest, ...],
+        *,
+        guard: Callable[[], None] | None = None,
     ) -> PreparedObject:
         backup = _create_object(self._backup, artifact_id)
         try:
             for item in expected:
-                fs.copy_verified_file(primary.descriptor, backup.descriptor, item)
+                _run_guard(guard)
+                if guard is None:
+                    fs.copy_verified_file(primary.descriptor, backup.descriptor, item)
+                else:
+                    fs.copy_verified_file(
+                        primary.descriptor,
+                        backup.descriptor,
+                        item,
+                        guard=guard,
+                    )
+            _run_guard(guard)
             os.fsync(backup.descriptor)
             return backup
         except BaseException as exc:
@@ -184,29 +213,53 @@ class ArtifactFilesystem:
                 exc.add_note(f"artifact backup descriptor cleanup failed: {cleanup_error!r}")
             raise
 
-    def write_manifest(self, artifact: PreparedObject, content: bytes) -> None:
+    def write_manifest(
+        self,
+        artifact: PreparedObject,
+        content: bytes,
+        *,
+        guard: Callable[[], None] | None = None,
+    ) -> None:
         if len(content) > self.limits.max_manifest_bytes:
             raise RuntimeError("artifact manifest byte limit exceeded")
-        fs.write_new_file(artifact.descriptor, MANIFEST_NAME, content, mode=0o600)
+        if guard is None:
+            fs.write_new_file(artifact.descriptor, MANIFEST_NAME, content, mode=0o600)
+        else:
+            fs.write_new_file(
+                artifact.descriptor,
+                MANIFEST_NAME,
+                content,
+                mode=0o600,
+                guard=guard,
+            )
 
-    def make_immutable(self, artifact: PreparedObject) -> None:
-        fs.make_directory_immutable(artifact.descriptor)
+    def make_immutable(
+        self,
+        artifact: PreparedObject,
+        *,
+        guard: Callable[[], None] | None = None,
+    ) -> None:
+        fs.make_directory_immutable(artifact.descriptor, guard=guard)
 
     def publish_backup_object(
         self,
         artifact: PreparedObject,
         artifact_id: str,
         expected: tuple[ArtifactFileDigest, ...],
+        *,
+        guard: Callable[[], None] | None = None,
     ) -> Path:
-        return self._publish_object(self._backup, artifact, artifact_id, expected)
+        return self._publish_object(self._backup, artifact, artifact_id, expected, guard=guard)
 
     def publish_primary_object(
         self,
         artifact: PreparedObject,
         artifact_id: str,
         expected: tuple[ArtifactFileDigest, ...],
+        *,
+        guard: Callable[[], None] | None = None,
     ) -> Path:
-        return self._publish_object(self._primary, artifact, artifact_id, expected)
+        return self._publish_object(self._primary, artifact, artifact_id, expected, guard=guard)
 
     def verify_published_object(
         self,
@@ -253,11 +306,23 @@ class ArtifactFilesystem:
         finally:
             os.close(descriptor)
 
-    def publish_backup_marker(self, artifact_id: str, content: bytes) -> PublishedMarker:
-        return self._publish_marker(self._backup, artifact_id, content)
+    def publish_backup_marker(
+        self,
+        artifact_id: str,
+        content: bytes,
+        *,
+        guard: Callable[[], None] | None = None,
+    ) -> PublishedMarker:
+        return self._publish_marker(self._backup, artifact_id, content, guard=guard)
 
-    def publish_primary_marker(self, artifact_id: str, content: bytes) -> PublishedMarker:
-        return self._publish_marker(self._primary, artifact_id, content)
+    def publish_primary_marker(
+        self,
+        artifact_id: str,
+        content: bytes,
+        *,
+        guard: Callable[[], None] | None = None,
+    ) -> PublishedMarker:
+        return self._publish_marker(self._primary, artifact_id, content, guard=guard)
 
     def read_primary_marker(self, artifact_id: str) -> bytes:
         return fs.read_file(
@@ -408,7 +473,12 @@ class ArtifactFilesystem:
             raise RuntimeError("committed artifact provenance does not match filesystem identity")
 
     def _publish_marker(
-        self, state: RootState, artifact_id: str, content: bytes
+        self,
+        state: RootState,
+        artifact_id: str,
+        content: bytes,
+        *,
+        guard: Callable[[], None] | None,
     ) -> PublishedMarker:
         if len(content) > self.limits.max_marker_bytes:
             raise RuntimeError("artifact marker byte limit exceeded")
@@ -417,6 +487,7 @@ class ArtifactFilesystem:
         descriptor = -1
         marker: PublishedMarker | None = None
         try:
+            _run_guard(guard)
             descriptor = fs.open_new_file(state.preparing_fd, temporary, 0o400)
             try:
                 pinned = os.fstat(descriptor)
@@ -426,17 +497,30 @@ class ArtifactFilesystem:
             details = os.fstat(descriptor)
             if (details.st_dev, details.st_ino) != (marker.device, marker.inode):
                 raise RuntimeError("artifact temporary marker identity changed")
-            fs.write_all(descriptor, content)
+            if guard is None:
+                fs.write_all(descriptor, content)
+            else:
+                fs.write_all(descriptor, content, guard=guard)
+            _run_guard(guard)
             os.fsync(descriptor)
             closing = descriptor
             descriptor = -1
             os.close(closing)
-            fs.rename_entry_no_replace(
-                state.preparing_fd,
-                temporary,
-                state.sealed_fd,
-                final,
-            )
+            if guard is None:
+                fs.rename_entry_no_replace(
+                    state.preparing_fd,
+                    temporary,
+                    state.sealed_fd,
+                    final,
+                )
+            else:
+                fs.rename_entry_no_replace(
+                    state.preparing_fd,
+                    temporary,
+                    state.sealed_fd,
+                    final,
+                    guard=guard,
+                )
             published = os.stat(final, dir_fd=state.sealed_fd, follow_symlinks=False)
             if (published.st_dev, published.st_ino) != (marker.device, marker.inode):
                 raise RuntimeError("artifact published marker identity changed")
@@ -453,23 +537,35 @@ class ArtifactFilesystem:
                 _remove_marker_identity(state, marker)
             raise
 
-    @staticmethod
     def _publish_object(
+        self,
         state: RootState,
         artifact: PreparedObject,
         artifact_id: str,
         expected: tuple[ArtifactFileDigest, ...],
+        *,
+        guard: Callable[[], None] | None,
     ) -> Path:
+        _run_guard(guard)
         _validate_object(artifact, state, artifact_id)
         current = os.stat(artifact_id, dir_fd=state.preparing_fd, follow_symlinks=False)
         if (current.st_dev, current.st_ino) != (artifact.device, artifact.inode):
             raise RuntimeError("artifact prepared pathname identity changed")
-        fs.rename_entry_no_replace(
-            state.preparing_fd,
-            artifact_id,
-            state.objects_fd,
-            artifact_id,
-        )
+        if guard is None:
+            fs.rename_entry_no_replace(
+                state.preparing_fd,
+                artifact_id,
+                state.objects_fd,
+                artifact_id,
+            )
+        else:
+            fs.rename_entry_no_replace(
+                state.preparing_fd,
+                artifact_id,
+                state.objects_fd,
+                artifact_id,
+                guard=guard,
+            )
         artifact.parent_descriptor = state.objects_fd
         artifact.path = state.path / OBJECTS_DIRECTORY / artifact_id
         published = fs.open_private_directory(state.objects_fd, artifact_id)
@@ -605,3 +701,8 @@ def _remove_uncommitted_objects(state: RootState, committed: set[str]) -> None:
         raise RuntimeError("committed artifact marker is missing its immutable object")
     for artifact_id in object_ids - committed:
         fs.remove_flat_directory(state.objects_fd, artifact_id)
+
+
+def _run_guard(guard: Callable[[], None] | None) -> None:
+    if guard is not None:
+        guard()

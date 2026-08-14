@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hmac
 import uuid
-from collections.abc import Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import replace
 from datetime import UTC, datetime
@@ -113,6 +113,7 @@ class RestrictedArtifactSession:
         metadata: Mapping[str, JsonValue],
         provenance: ArtifactProvenanceInput,
         retention_expires_at: datetime,
+        guard: Callable[[], None] | None = None,
     ) -> ArtifactManifest:
         """Snapshot producer files, authenticate both copies, and commit atomically."""
         self._ensure_open()
@@ -122,6 +123,7 @@ class RestrictedArtifactSession:
             metadata=metadata,
             provenance=provenance,
             retention_expires_at=retention_expires_at,
+            guard=guard,
         )
         self._closed = True
         return manifest
@@ -270,6 +272,7 @@ class LocalRestrictedArtifactStore:
         metadata: Mapping[str, JsonValue],
         provenance: ArtifactProvenanceInput,
         retention_expires_at: datetime,
+        guard: Callable[[], None] | None,
     ) -> ArtifactManifest:
         if retention_expires_at.tzinfo is None:
             raise ValueError("artifact retention expiry must be timezone-aware")
@@ -283,9 +286,30 @@ class LocalRestrictedArtifactStore:
         primary_marker: PublishedMarker | None = None
         backup_marker: PublishedMarker | None = None
         try:
+            _run_guard(guard)
             self.filesystem.assert_session_path_identity(directory)
-            primary, files = self.filesystem.snapshot_session(directory)
-            backup = self.filesystem.copy_primary_to_backup(primary, directory.artifact_id, files)
+            _run_guard(guard)
+            primary, files = (
+                self.filesystem.snapshot_session(directory)
+                if guard is None
+                else self.filesystem.snapshot_session(directory, guard=guard)
+            )
+            _run_guard(guard)
+            backup = (
+                self.filesystem.copy_primary_to_backup(
+                    primary,
+                    directory.artifact_id,
+                    files,
+                )
+                if guard is None
+                else self.filesystem.copy_primary_to_backup(
+                    primary,
+                    directory.artifact_id,
+                    files,
+                    guard=guard,
+                )
+            )
+            _run_guard(guard)
             self.filesystem.abandon_session(directory)
             primary_owner = self.filesystem.prepared_owner_group(primary)
             backup_owner = self.filesystem.prepared_owner_group(backup)
@@ -314,19 +338,60 @@ class LocalRestrictedArtifactStore:
             )
             manifest_bytes = canonical_json_bytes(manifest.to_dict())
             marker_bytes = _marker_bytes(manifest)
-            self.filesystem.write_manifest(primary, manifest_bytes)
-            self.filesystem.write_manifest(backup, manifest_bytes)
-            self.filesystem.publish_backup_object(backup, directory.artifact_id, files)
-            self.filesystem.publish_primary_object(primary, directory.artifact_id, files)
-            self.filesystem.make_immutable(backup)
-            self.filesystem.make_immutable(primary)
+            _run_guard(guard)
+            if guard is None:
+                self.filesystem.write_manifest(primary, manifest_bytes)
+            else:
+                self.filesystem.write_manifest(primary, manifest_bytes, guard=guard)
+            _run_guard(guard)
+            if guard is None:
+                self.filesystem.write_manifest(backup, manifest_bytes)
+            else:
+                self.filesystem.write_manifest(backup, manifest_bytes, guard=guard)
+            _run_guard(guard)
+            if guard is None:
+                self.filesystem.publish_backup_object(backup, directory.artifact_id, files)
+            else:
+                self.filesystem.publish_backup_object(
+                    backup,
+                    directory.artifact_id,
+                    files,
+                    guard=guard,
+                )
+            _run_guard(guard)
+            if guard is None:
+                self.filesystem.publish_primary_object(primary, directory.artifact_id, files)
+            else:
+                self.filesystem.publish_primary_object(
+                    primary,
+                    directory.artifact_id,
+                    files,
+                    guard=guard,
+                )
+            _run_guard(guard)
+            if guard is None:
+                self.filesystem.make_immutable(backup)
+            else:
+                self.filesystem.make_immutable(backup, guard=guard)
+            _run_guard(guard)
+            if guard is None:
+                self.filesystem.make_immutable(primary)
+            else:
+                self.filesystem.make_immutable(primary, guard=guard)
             self.filesystem.verify_published_object(backup, files, manifest_bytes)
             self.filesystem.verify_published_object(primary, files, manifest_bytes)
             self._verify_provenance_identity(manifest)
             backup.close()
             primary.close()
-            backup_marker = self.filesystem.publish_backup_marker(
-                directory.artifact_id, marker_bytes
+            _run_guard(guard)
+            backup_marker = (
+                self.filesystem.publish_backup_marker(directory.artifact_id, marker_bytes)
+                if guard is None
+                else self.filesystem.publish_backup_marker(
+                    directory.artifact_id,
+                    marker_bytes,
+                    guard=guard,
+                )
             )
             self._verify_publication_state(
                 manifest,
@@ -334,9 +399,17 @@ class LocalRestrictedArtifactStore:
                 marker_bytes,
                 primary_marker_published=False,
             )
-            primary_marker = self.filesystem.publish_primary_marker(
-                directory.artifact_id, marker_bytes
+            _run_guard(guard)
+            primary_marker = (
+                self.filesystem.publish_primary_marker(directory.artifact_id, marker_bytes)
+                if guard is None
+                else self.filesystem.publish_primary_marker(
+                    directory.artifact_id,
+                    marker_bytes,
+                    guard=guard,
+                )
             )
+            _run_guard(guard)
             self._verify_publication_state(
                 manifest,
                 manifest_bytes,
@@ -504,3 +577,8 @@ def _validate_artifact_id(artifact_id: str) -> None:
         character not in "0123456789abcdef" for character in artifact_id
     ):
         raise ValueError("artifact ID must be a lowercase UUID hex value")
+
+
+def _run_guard(guard: Callable[[], None] | None) -> None:
+    if guard is not None:
+        guard()

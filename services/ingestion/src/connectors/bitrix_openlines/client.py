@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import time
 from collections.abc import Collection, Iterator, Mapping
 from datetime import datetime
@@ -53,7 +54,9 @@ from src.connectors.bitrix_openlines.response_helpers import (
 )
 from src.connectors.bitrix_stage_history.models import (
     StageHistoryPage,
+    StageHistoryRawPage,
     parse_stage_history_page,
+    parse_stage_history_raw_page,
 )
 from src.models import JsonValue
 
@@ -96,8 +99,18 @@ class BitrixOpenLinesClient:
         if timeout_seconds <= 0:
             raise ValueError("Bitrix timeout_seconds must be positive")
         self._base_url = base_url.strip().rstrip("/")
-        if max_request_count is not None and max_request_count < 1:
+        if max_request_count is not None and (
+            isinstance(max_request_count, bool)
+            or not isinstance(max_request_count, int)
+            or max_request_count < 1
+        ):
             raise ValueError("Bitrix max_request_count must be positive")
+        if deadline_monotonic is not None and (
+            isinstance(deadline_monotonic, bool)
+            or not isinstance(deadline_monotonic, (int, float))
+            or not math.isfinite(deadline_monotonic)
+        ):
+            raise ValueError("Bitrix deadline_monotonic must be finite")
         self._max_attempts = max_attempts
         self._request_delay_seconds = request_delay_seconds
         self._timeout_seconds = timeout_seconds
@@ -112,6 +125,29 @@ class BitrixOpenLinesClient:
     def request_count(self) -> int:
         """Return completed HTTP attempts for bounded runtime accounting."""
         return self._request_count
+
+    def constrain_request_budget(
+        self, *, max_request_count: int, deadline_monotonic: float
+    ) -> None:
+        """Install a stricter finite budget before a dedicated bounded capture."""
+        if self._request_count != 0:
+            raise RuntimeError("Bitrix request budget must be bound before source calls")
+        if (
+            isinstance(max_request_count, bool)
+            or not isinstance(max_request_count, int)
+            or max_request_count < 1
+        ):
+            raise ValueError("Bitrix max_request_count must be positive")
+        if not math.isfinite(deadline_monotonic) or deadline_monotonic <= time.monotonic():
+            raise ValueError("Bitrix request deadline must be finite and in the future")
+        if self._max_request_count is None or max_request_count < self._max_request_count:
+            self._max_request_count = max_request_count
+        if (
+            self._deadline_monotonic is None
+            or not math.isfinite(self._deadline_monotonic)
+            or deadline_monotonic < self._deadline_monotonic
+        ):
+            self._deadline_monotonic = deadline_monotonic
 
     def list_active_configs(self) -> list[OpenLineConfig]:
         configs: list[OpenLineConfig] = []
@@ -496,9 +532,13 @@ class BitrixOpenLinesClient:
         This method is intentionally capability-only: it returns source evidence
         and does not create records, checkpoints, or side effects.
         """
-        if isinstance(entity_type_id, bool) or entity_type_id < 1:
+        if (
+            isinstance(entity_type_id, bool)
+            or not isinstance(entity_type_id, int)
+            or entity_type_id < 1
+        ):
             raise ValueError("Bitrix stage-history entity_type_id must be positive")
-        if isinstance(start, bool) or start < -1:
+        if isinstance(start, bool) or not isinstance(start, int) or start < -1:
             raise ValueError("Bitrix stage-history start must be -1 or non-negative")
         if order_direction not in {"ASC", "DESC"}:
             raise ValueError("Bitrix stage-history order_direction must be ASC or DESC")
@@ -516,6 +556,36 @@ class BitrixOpenLinesClient:
             entity_type_id=str(entity_type_id),
             current_start=start,
         )
+
+    def list_stage_history_raw_page(
+        self,
+        *,
+        entity_type_id: int,
+        filters: Mapping[str, JsonValue] | None = None,
+        order_direction: str = "ASC",
+        start: int = -1,
+    ) -> StageHistoryRawPage:
+        """Fetch one strict-envelope page while preserving malformed row values."""
+        if (
+            isinstance(entity_type_id, bool)
+            or not isinstance(entity_type_id, int)
+            or entity_type_id < 1
+        ):
+            raise ValueError("Bitrix stage-history entity_type_id must be positive")
+        if isinstance(start, bool) or not isinstance(start, int) or start < -1:
+            raise ValueError("Bitrix stage-history start must be -1 or non-negative")
+        if order_direction not in {"ASC", "DESC"}:
+            raise ValueError("Bitrix stage-history order_direction must be ASC or DESC")
+        payload = self._request(
+            "crm.stagehistory.list",
+            {
+                "entityTypeId": entity_type_id,
+                "filter": dict(filters or {}),
+                "order": {"ID": order_direction},
+                "start": start,
+            },
+        )
+        return parse_stage_history_raw_page(payload, current_start=start)
 
     def list_crm_deal_stage_catalog_page(
         self,

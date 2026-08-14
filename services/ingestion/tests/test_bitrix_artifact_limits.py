@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -16,7 +16,11 @@ from _bitrix_artifact_store_support import new_store as _new_store
 from _bitrix_artifact_store_support import object_path as _object_path
 from _bitrix_artifact_store_support import provenance as _provenance
 from _bitrix_artifact_store_support import seal as _seal
-from src.connectors.bitrix_stage_history.artifact_filesystem import ArtifactStorageLimits
+from src.connectors.bitrix_stage_history.artifact_filesystem import (
+    ArtifactFilesystem,
+    ArtifactStorageLimits,
+    PreparedObject,
+)
 from src.connectors.bitrix_stage_history.artifact_store import ArtifactSigningKey
 
 
@@ -152,6 +156,58 @@ def test_manifest_and_marker_limits_fail_with_artifact_specific_cleanup(tmp_path
     with pytest.raises(RuntimeError, match="marker byte limit"):
         _seal(marker_limited)
     assert list((tmp_path / "marker-primary" / ".objects").iterdir()) == []
+
+
+@pytest.mark.parametrize("failure_call", [3, 8])
+def test_guard_failure_inside_immutability_cleans_all_publication_state(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure_call: int,
+) -> None:
+    filesystem = ArtifactFilesystem(tmp_path / "primary", tmp_path / "backup")
+    store = _new_store(
+        tmp_path / "primary",
+        tmp_path / "backup",
+        _provider(),
+        filesystem=filesystem,
+    )
+    original = filesystem.make_immutable
+
+    def fail_inside_immutability(
+        artifact: PreparedObject,
+        *,
+        guard: Callable[[], None] | None = None,
+    ) -> None:
+        calls = 0
+
+        def internal_guard() -> None:
+            nonlocal calls
+            calls += 1
+            if calls == failure_call:
+                raise RuntimeError("injected internal immutability guard failure")
+            if guard is not None:
+                guard()
+
+        original(artifact, guard=internal_guard)
+
+    monkeypatch.setattr(filesystem, "make_immutable", fail_inside_immutability)
+    with pytest.raises(RuntimeError, match="internal immutability guard"):
+        with store.begin(artifact_kind="owner-manifest") as artifact:
+            artifact_id = artifact.artifact_id
+            artifact.write_json("summary.json", {"rows": 1})
+            artifact.seal(
+                metadata={},
+                provenance=_provenance(),
+                retention_expires_at=datetime.now(UTC) + timedelta(days=1),
+                guard=lambda: None,
+            )
+
+    for copy_name in ("primary", "backup"):
+        root = tmp_path / copy_name
+        assert list((root / ".preparing").iterdir()) == []
+        assert list((root / ".objects").iterdir()) == []
+        assert list((root / "sealed").iterdir()) == []
+        assert not _object_path(tmp_path, copy_name, artifact_id).exists()
 
 
 @pytest.mark.parametrize(
