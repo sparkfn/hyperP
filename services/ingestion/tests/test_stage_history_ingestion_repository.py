@@ -481,6 +481,13 @@ def test_same_hash_replay_accepts_a_later_artifact_observation_timestamp() -> No
     result = repository.persist_unit(later_unit, checkpoint, _fence())
 
     assert result.outcome == "committed"
+    occurrence_parameters = transaction.parameters[
+        transaction.queries.index(UPSERT_STAGE_HISTORY_OCCURRENCE)
+    ]
+    assert (
+        occurrence_parameters["source_observed_at"]
+        == later_observation.source_observed_at.isoformat()
+    )
     variant_parameters = transaction.parameters[
         transaction.queries.index(UPSERT_STAGE_HISTORY_VARIANT_SOURCE_RECORD)
     ]
