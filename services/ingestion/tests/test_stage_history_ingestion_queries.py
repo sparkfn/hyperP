@@ -143,6 +143,7 @@ def test_occurrences_have_immutable_terminal_dispositions_without_identity_poiso
 
 def test_stage_variants_use_numeric_versions_and_authority_only_lifecycle() -> None:
     query = UPSERT_STAGE_HISTORY_VARIANT_SOURCE_RECORD
+    existing_variant_branch = query.split("UNION", maxsplit=1)[0]
 
     assert "StageHistoryIdentityLock" in query
     assert "max(toInteger(prior.source_record_version))" in query
@@ -161,6 +162,12 @@ def test_stage_variants_use_numeric_versions_and_authority_only_lifecycle() -> N
     assert "event_category_id: $event_category_id" in query
     assert "event_stage_id: $event_stage_id" in query
     assert "event_stage_semantic_id: $event_stage_semantic_id" in query
+    assert "known_record.observed_at = datetime($source_observed_at)" not in existing_variant_branch
+    assert (
+        "valueType(known_record.observed_at) STARTS WITH 'ZONED DATETIME'"
+        in existing_variant_branch
+    )
+    assert "observed_at: datetime($source_observed_at)" in query
     assert "category_id: $category_id" not in query
 
 

@@ -423,7 +423,7 @@ CALL (unit, occurrence, source, known_variant, known_record, next_version) {
     AND coalesce(known_record.event_stage_semantic_id, '') =
         coalesce($event_stage_semantic_id, '')
     AND known_record.event_at = datetime($event_at)
-    AND known_record.observed_at = datetime($source_observed_at)
+    AND valueType(known_record.observed_at) STARTS WITH 'ZONED DATETIME'
     AND known_record.record_hash = $canonical_hash
     AND known_record.raw_payload = $raw_payload
     AND known_record.lifecycle_status = 'pending_review'
