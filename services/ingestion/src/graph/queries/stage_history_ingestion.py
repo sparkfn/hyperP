@@ -603,7 +603,12 @@ WHERE decision.event_identity = occurrence.event_identity
   AND decision.available_at = datetime($available_at)
   AND coalesce(decision.review_command_id, '') = coalesce($review_command_id, '')
 MERGE (decision)-[:ASSOCIATION_FOR]->(occurrence)
-FOREACH (_ IN CASE WHEN recounted_parent IS NULL THEN [] ELSE [1] END |
+FOREACH (_ IN CASE
+  WHEN $association_state IN ['selected_active', 'selected_pending_review']
+    AND recounted_parent IS NOT NULL
+  THEN [1]
+  ELSE []
+END |
   MERGE (decision)-[:SELECTS_STAGE_HISTORY_PARENT]->(recounted_parent)
 )
 RETURN decision.decision_id AS decision_id,
@@ -1455,6 +1460,27 @@ CALL (logical) {
 CALL (logical) {
   OPTIONAL MATCH (logical)-[:HAS_STAGE_HISTORY_UNIT]->(:StageHistoryUnit)
         -[:CONTAINS_STAGE_HISTORY_OCCURRENCE]->(occurrence:StageHistoryOccurrence)
+  OPTIONAL MATCH (decision:CrmHistoryParentAssociationDecision)
+        -[:ASSOCIATION_FOR]->(occurrence)
+  OPTIONAL MATCH (decision)-[:SELECTS_STAGE_HISTORY_PARENT]->(parent:SourceRecord)
+  WITH decision, collect(DISTINCT parent) AS selected_parents
+  WITH decision, selected_parents,
+       CASE
+         WHEN decision IS NULL THEN false
+         WHEN decision.association_state IN [
+           'selected_active', 'selected_pending_review'
+         ] THEN size(selected_parents) <> 1
+           OR coalesce(selected_parents[0].source_record_pk, '') <>
+              coalesce(decision.selected_parent_source_record_pk, '')
+         ELSE size(selected_parents) <> 0
+           OR decision.selected_parent_source_record_pk IS NOT NULL
+       END AS invalid_parent_association
+  RETURN count(CASE WHEN invalid_parent_association THEN 1 END)
+    AS invalid_parent_association_count
+}
+CALL (logical) {
+  OPTIONAL MATCH (logical)-[:HAS_STAGE_HISTORY_UNIT]->(:StageHistoryUnit)
+        -[:CONTAINS_STAGE_HISTORY_OCCURRENCE]->(occurrence:StageHistoryOccurrence)
   WITH collect(DISTINCT occurrence.event_identity) AS event_identities
   OPTIONAL MATCH (head:CrmHistoryAuthorityHead)
   WHERE head.event_identity IN event_identities
@@ -1638,6 +1664,7 @@ CALL (logical) {
 }
 WITH logical, units, variant_count, source_record_count,
      invalid_variant_evidence_count, shared_variant_evidence_count,
+     invalid_parent_association_count,
      invalid_authority_head_count, invalid_effective_head_count,
      invalid_invalidation_transition_count,
      invalidation_intent_count, committed_page_sequences, committed_unit_ids,
@@ -1673,6 +1700,8 @@ RETURN logical.logical_run_id AS logical_run_id,
          AND shared_variant_evidence_count = 0
          AND variant_count = source_record_count AS variant_source_records_balanced,
        shared_variant_evidence_count,
+       invalid_parent_association_count,
+       invalid_parent_association_count = 0 AS parent_associations_balanced,
        invalid_authority_head_count,
        invalid_effective_head_count,
        invalid_invalidation_transition_count,

@@ -43,6 +43,7 @@ from src.connectors.bitrix_stage_history.models import (
 from src.models import JsonValue
 
 _SOURCE_CONTRACT = "12345678-1234-5678-9234-567812345678"
+_REPOSITORY_SHA = "a" * 40
 _IMAGE_DIGEST = f"sha256:{'b' * 64}"
 _CONFIG_DIGEST = f"sha256:{'c' * 64}"
 _QUALIFICATION_DIGEST = f"sha256:{'e' * 64}"
@@ -239,6 +240,7 @@ def _collect(
         plan=plan,
         authorization=selected_authorization,
         limits=selected_limits,
+        repository_sha=_REPOSITORY_SHA,
         image_digest=_IMAGE_DIGEST,
         configuration_digest=_CONFIG_DIGEST,
         limits_digest=stage_capture_limits_digest(selected_limits),
@@ -268,8 +270,27 @@ def test_exact_capture_seals_authenticated_stage_ingestion_artifact(tmp_path: Pa
         assert verified.artifact_kind == "stage-ingestion"
         assert verified.metadata["status"] == "qualified"
         assert verified.metadata["failure_reason"] is None
+        assert verified.provenance.repository_sha == _REPOSITORY_SHA
         assert verified.metadata["stage_artifact_id"] == fixture.evidence.stage_manifest.artifact_id
         assert client.calls == [(2, {">ID": "0", "<=ID": "2"}, "ASC", -1)]
+    finally:
+        fixture.store.close()
+
+
+def test_capture_uses_injected_repository_sha_without_a_git_checkout(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    expected = (_expected(_raw(1)),)
+    fixture = _capture_fixture(tmp_path, expected)
+    client = _RawClient((_page(_raw(1)),))
+    checkout_free_directory = tmp_path / "runtime"
+    checkout_free_directory.mkdir()
+    monkeypatch.chdir(checkout_free_directory)
+    try:
+        result = _collect(fixture, client, _plan(expected))
+
+        assert result.manifest.provenance.repository_sha == _REPOSITORY_SHA
     finally:
         fixture.store.close()
 

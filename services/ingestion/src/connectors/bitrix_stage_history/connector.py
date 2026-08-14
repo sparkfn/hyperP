@@ -6,7 +6,6 @@ import hashlib
 import hmac
 import math
 import sqlite3
-import subprocess
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -179,6 +178,7 @@ def collect_stage_history_smoke(
     plan: StageSmokePlan,
     authorization: StageCaptureAuthorization,
     limits: StageCaptureLimits,
+    repository_sha: str,
     image_digest: str,
     configuration_digest: str,
     limits_digest: str,
@@ -189,6 +189,7 @@ def collect_stage_history_smoke(
     """Capture only the artifact-derived range; never write graph/control state."""
     checked_at = now()
     authorization.assert_active(now=checked_at)
+    _validate_repository_sha(repository_sha)
     expected_limits_digest = stage_capture_limits_digest(limits)
     if not hmac.compare_digest(limits_digest, expected_limits_digest) or not hmac.compare_digest(
         authorization.limits_digest,
@@ -264,7 +265,7 @@ def collect_stage_history_smoke(
                 ),
                 provenance=ArtifactProvenanceInput.create(
                     source_contract_uuid=evidence.stage_manifest.provenance.source_contract_uuid,
-                    repository_sha=_repository_sha(),
+                    repository_sha=repository_sha,
                     image_digest=image_digest,
                     configuration_digest=configuration_digest,
                     restricted_boundaries={
@@ -537,14 +538,6 @@ def _retention_expiry(now: datetime, retention_days: int) -> datetime:
     return now.astimezone(UTC) + timedelta(days=retention_days)
 
 
-def _repository_sha() -> str:
-    result = subprocess.run(
-        ["git", "rev-parse", "HEAD"],
-        capture_output=True,
-        check=True,
-        text=True,
-    )
-    sha = result.stdout.strip()
-    if len(sha) != 40:
-        raise RuntimeError("repository HEAD is not a full Git SHA")
-    return sha
+def _validate_repository_sha(value: str) -> None:
+    if len(value) != 40 or any(character not in "0123456789abcdef" for character in value):
+        raise ValueError("repository_sha must be a full lowercase Git SHA")

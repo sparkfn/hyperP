@@ -20,8 +20,8 @@ from src.graph.queries.ingestion_control import LOCK_AND_ASSERT_ACTIVE_BITRIX_FE
 from src.graph.queries.stage_history_ingestion import (
     APPEND_STAGE_HISTORY_INVALIDATION_INTENTS,
     APPEND_STAGE_HISTORY_PARENT_DECISION,
-    CLAIM_STAGE_HISTORY_REVIEW_COMMAND,
     CLAIM_STAGE_HISTORY_RETRY_BY_REVIEW,
+    CLAIM_STAGE_HISTORY_REVIEW_COMMAND,
     COMPLETE_STAGE_HISTORY_REVIEW_COMMAND,
     GET_COMPLETED_STAGE_HISTORY_REVIEW_COMMAND,
     GET_STAGE_HISTORY_REVIEW_OCCURRENCE,
@@ -227,6 +227,37 @@ def test_record_command_persists_provenance_before_execution() -> None:
     assert tx.parameters[-1]["authorization_reference"] == "authorization-1"
 
 
+def test_record_command_revalidates_correction_before_durable_write() -> None:
+    command = StageHistoryReviewCommand(
+        command_id="command-1",
+        kind="apply_correction",
+        status="pending",
+        event_identity="event-1",
+        reviewer_id="reviewer-1",
+        available_at=_NOW,
+        expected_head_version=1,
+        expected_authority_token=1,
+        expected_authority_state="withheld_conflict",
+        expected_variant_set_digest=_VARIANT_SET_DIGEST,
+        selected_variant_hash=_HASH,
+        selected_association_decision_id="parent-1",
+        correction_of_decision_id="authority-0",
+    )
+    object.__setattr__(command, "selected_association_decision_id", None)
+    tx = _Tx({})
+    repository = StageHistoryReviewRepository(cast(Neo4jClient, _Client(tx)))
+
+    with pytest.raises(ValueError, match="selected association"):
+        repository.record_command(
+            command,
+            occurrence_id="occurrence-1",
+            authorization_reference="authorization-1",
+            fence=_fence(),
+        )
+
+    assert tx.queries == []
+
+
 def test_resolve_parent_claims_mutates_invalidates_and_completes_atomically() -> None:
     tx = _Tx(
         {
@@ -303,6 +334,26 @@ def test_resolve_parent_claims_mutates_invalidates_and_completes_atomically() ->
     )
     retry_parameters = tx.parameters[tx.queries.index(RESOLVE_STAGE_HISTORY_RETRY_BY_REVIEW)]
     assert retry_parameters["retry_sequence"] == 1
+
+
+def test_reject_parent_with_one_candidate_persists_no_selected_parent() -> None:
+    tx = _Tx(_review_success_responses())
+    repository = StageHistoryReviewRepository(cast(Neo4jClient, _Client(tx)))
+
+    result = repository.execute_command(
+        _command("reject_parent"),
+        occurrence_id="occurrence-1",
+        authorization_reference="authorization-1",
+        lease_owner="worker-1",
+        lease_expires_at=_NOW + timedelta(minutes=5),
+        fence=_fence(),
+    )
+
+    assert result.authority_state == "rejected"
+    decision_parameters = tx.parameters[tx.queries.index(APPEND_STAGE_HISTORY_PARENT_DECISION)]
+    assert decision_parameters["association_state"] == "rejected"
+    assert decision_parameters["selected_parent_source_record_pk"] is None
+    assert decision_parameters["active_candidate_count"] == 1
 
 
 def test_review_command_rejects_a_stale_authority_head_before_domain_mutation() -> None:

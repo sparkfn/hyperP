@@ -183,3 +183,21 @@ def test_parent_review_cannot_select_a_variant_or_wrong_authority_state() -> Non
             expected_authority_state="withheld_parent",
             selected_variant_hash=_DIGEST,
         )
+
+
+def test_correction_requires_a_selected_association_before_persistence() -> None:
+    with pytest.raises(ValueError, match="selected association"):
+        StageHistoryReviewCommand(
+            command_id="command-1",
+            kind="apply_correction",
+            status="pending",
+            event_identity="event-1",
+            reviewer_id="reviewer-1",
+            available_at=_NOW,
+            expected_head_version=1,
+            expected_authority_token=1,
+            expected_authority_state="withheld_conflict",
+            expected_variant_set_digest=_DIGEST,
+            selected_variant_hash=_DIGEST,
+            correction_of_decision_id="authority-1",
+        )

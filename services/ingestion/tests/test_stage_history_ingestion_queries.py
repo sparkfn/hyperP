@@ -193,6 +193,11 @@ def test_parent_resolution_fails_closed_and_retry_claims_are_fenced() -> None:
     assert "candidate.lifecycle_status = 'active'" in APPEND_STAGE_HISTORY_PARENT_DECISION
     assert "candidate.lifecycle_status = 'pending_review'" in (APPEND_STAGE_HISTORY_PARENT_DECISION)
     assert "$association_state = recounted_state" in APPEND_STAGE_HISTORY_PARENT_DECISION
+    assert (
+        "$association_state IN ['selected_active', 'selected_pending_review']"
+        in APPEND_STAGE_HISTORY_PARENT_DECISION
+    )
+    assert "AND recounted_parent IS NOT NULL" in APPEND_STAGE_HISTORY_PARENT_DECISION
 
     assert "retry.status = 'pending'" in UPSERT_STAGE_HISTORY_RETRY
     assert "retry.lease_expires_at < datetime()" in CLAIM_STAGE_HISTORY_RETRY
@@ -274,6 +279,12 @@ def test_invalidation_and_accounting_queries_encode_required_equations() -> None
     assert "variant_source_records_balanced" in GET_STAGE_HISTORY_RECONCILIATION
     assert "invalid_effective_head_count" in GET_STAGE_HISTORY_RECONCILIATION
     assert "association IS NULL" in GET_STAGE_HISTORY_RECONCILIATION
+    assert "invalid_parent_association_count" in GET_STAGE_HISTORY_RECONCILIATION
+    assert "parent_associations_balanced" in GET_STAGE_HISTORY_RECONCILIATION
+    assert "ELSE size(selected_parents) <> 0" in GET_STAGE_HISTORY_RECONCILIATION
+    assert "decision.selected_parent_source_record_pk IS NOT NULL" in (
+        GET_STAGE_HISTORY_RECONCILIATION
+    )
     assert "invalid_variant_evidence_count" in GET_STAGE_HISTORY_RECONCILIATION
     assert "checkpoint_last_unit_balanced" in GET_STAGE_HISTORY_RECONCILIATION
     assert "checkpoint_cursor_page_balanced" in GET_STAGE_HISTORY_RECONCILIATION
