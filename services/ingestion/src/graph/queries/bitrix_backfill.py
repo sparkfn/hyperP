@@ -755,6 +755,12 @@ WITH corrective, successor, old_relations, inventory.executed_stream_keys AS exp
      [key IN collect(relation.stream_key) WHERE key IS NOT NULL | key]
        AS actual_streams
 OPTIONAL MATCH (successor)-[:HAS_COVERAGE]->(coverage:BitrixBackfillCoverage)
+WITH corrective, successor, old_relations, expected_streams, live_runs, actual_streams,
+     count(coverage) AS successor_coverage_count,
+     count(CASE WHEN coverage.terminal = true
+       AND NOT coverage.disposition IN ['conflict', 'failed'] THEN 1 END)
+       AS acceptable_coverage_count,
+     collect(DISTINCT coverage.stream_key) AS coverage_streams
 RETURN corrective.status AS corrective_status,
        successor.status AS successor_status,
        size(old_relations) > 0
@@ -765,11 +771,9 @@ RETURN corrective.status AS corrective_status,
        size(live_runs) AS cadence_run_count,
        all(run IN live_runs WHERE run.status IN ['completed', 'completed_with_errors'])
          AS cadence_complete,
-       count(coverage) AS successor_coverage_count,
-       all(item IN collect(coverage) WHERE item.terminal = true
-         AND item.disposition NOT IN ['conflict', 'failed'])
-         AND all(expected IN expected_streams
-           WHERE expected IN [item IN collect(coverage) | item.stream_key])
+       successor_coverage_count,
+       acceptable_coverage_count = successor_coverage_count
+         AND all(expected IN expected_streams WHERE expected IN coverage_streams)
          AS coverage_complete
 """
 
