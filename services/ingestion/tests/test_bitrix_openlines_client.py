@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime
 from email.utils import formatdate
+from typing import cast
 
 import httpx
 import pytest
@@ -1468,6 +1469,82 @@ def test_client_reads_typed_stage_history_page_with_nested_items() -> None:
     assert page.items[0].created_time == datetime(2026, 8, 6, 4, tzinfo=UTC)
 
 
+def test_client_reads_raw_stage_history_page_without_decoding_malformed_rows() -> None:
+    requests: list[dict[str, object]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path.endswith("/crm.stagehistory.list")
+        body = json.loads(request.content)
+        requests.append(body)
+        return httpx.Response(
+            200,
+            json={
+                "result": {
+                    "items": [
+                        {
+                            "ID": "900",
+                            "OWNER_ID": "501",
+                            "CREATED_TIME": "2026-08-06T12:00:00+08:00",
+                        },
+                        ["malformed", "row"],
+                    ]
+                },
+                "next": 50,
+                "total": 2,
+            },
+        )
+
+    client = BitrixOpenLinesClient(
+        base_url="https://bitrix.test/rest/hook",
+        timeout_seconds=5,
+        max_attempts=1,
+        http=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+
+    page = client.list_stage_history_raw_page(
+        entity_type_id=2,
+        filters={">ID": "899"},
+        start=-1,
+    )
+
+    assert requests == [
+        {
+            "entityTypeId": 2,
+            "filter": {">ID": "899"},
+            "order": {"ID": "ASC"},
+            "start": -1,
+        }
+    ]
+    assert page.items[1] == ["malformed", "row"]
+    assert page.next_start == 50
+    assert page.total == 2
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        {"result": []},
+        {"result": {}},
+        {"result": {"items": []}, "next": True},
+        {"result": {"items": []}, "time": "invalid"},
+    ],
+)
+def test_client_raw_stage_history_page_keeps_strict_envelope_validation(
+    response: dict[str, object],
+) -> None:
+    client = BitrixOpenLinesClient(
+        base_url="https://bitrix.test/rest/hook",
+        timeout_seconds=5,
+        max_attempts=1,
+        http=httpx.Client(
+            transport=httpx.MockTransport(lambda _request: httpx.Response(200, json=response))
+        ),
+    )
+
+    with pytest.raises(RuntimeError):
+        client.list_stage_history_raw_page(entity_type_id=2)
+
+
 @pytest.mark.parametrize("order_direction", ["", "ascending", "DESCENDING"])
 def test_client_rejects_invalid_stage_history_order_direction(order_direction: str) -> None:
     client = BitrixOpenLinesClient(
@@ -1656,6 +1733,35 @@ def test_client_rejects_non_positive_request_ceiling() -> None:
             timeout_seconds=5,
             max_attempts=1,
             max_request_count=0,
+        )
+
+
+def test_client_rejects_non_integer_request_and_stage_cursors() -> None:
+    with pytest.raises(ValueError, match="max_request_count"):
+        BitrixOpenLinesClient(
+            base_url="https://bitrix.test/rest/hook",
+            timeout_seconds=5,
+            max_attempts=1,
+            max_request_count=cast(int, 1.5),
+        )
+    client = BitrixOpenLinesClient(
+        base_url="https://bitrix.test/rest/hook",
+        timeout_seconds=5,
+        max_attempts=1,
+    )
+    with pytest.raises(ValueError, match="entity_type_id"):
+        client.list_stage_history_raw_page(entity_type_id=cast(int, 2.5))
+    with pytest.raises(ValueError, match="start"):
+        client.list_stage_history_raw_page(entity_type_id=2, start=cast(int, 0.5))
+
+
+def test_client_rejects_nonfinite_preconfigured_deadline() -> None:
+    with pytest.raises(ValueError, match="deadline_monotonic"):
+        BitrixOpenLinesClient(
+            base_url="https://bitrix.test/rest/hook",
+            timeout_seconds=5,
+            max_attempts=1,
+            deadline_monotonic=float("nan"),
         )
 
 

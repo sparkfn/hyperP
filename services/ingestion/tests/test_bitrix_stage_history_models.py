@@ -3,7 +3,14 @@ from __future__ import annotations
 import math
 
 import pytest
-from src.connectors.bitrix_stage_history.models import parse_stage_history_page
+from src.connectors.bitrix_stage_history.models import (
+    DecodedStageHistoryRow,
+    MalformedStageHistoryRow,
+    StageHistoryRowErrorCode,
+    decode_stage_history_item,
+    parse_stage_history_page,
+    parse_stage_history_raw_page,
+)
 from src.models import JsonValue
 
 
@@ -119,3 +126,108 @@ def test_stage_history_preserves_blank_optional_source_text() -> None:
     page = parse_stage_history_page(payload, entity_type_id="2", current_start=-1)
 
     assert page.items[0].stage_semantic_id == ""
+
+
+def test_raw_stage_history_page_preserves_rows_without_decoding_them() -> None:
+    malformed: JsonValue = ["not", "an", "object"]
+    payload = _payload()
+    result = payload["result"]
+    assert isinstance(result, dict)
+    items = result["items"]
+    assert isinstance(items, list)
+    items.append(malformed)
+    payload["next"] = 50
+    payload["total"] = 2
+    payload["time"] = {"operating": 0.25}
+
+    page = parse_stage_history_raw_page(payload, current_start=-1)
+
+    assert page.items == (items[0], malformed)
+    assert page.next_start == 50
+    assert page.total == 2
+    assert page.operating == 0.25
+
+
+def test_tolerant_stage_history_decoder_returns_a_typed_valid_row() -> None:
+    payload = _payload()
+    result = payload["result"]
+    assert isinstance(result, dict)
+    items = result["items"]
+    assert isinstance(items, list)
+    raw = items[0]
+
+    decoded = decode_stage_history_item(raw, entity_type_id="2")
+
+    assert isinstance(decoded, DecodedStageHistoryRow)
+    assert decoded.raw is raw
+    assert decoded.item.history_id == "900"
+    assert decoded.item.owner_id == "501"
+
+
+@pytest.mark.parametrize(
+    ("raw,error_code"),
+    [
+        ("not-an-object", "invalid_row_shape"),
+        ({"OWNER_ID": "501", "CREATED_TIME": "2026-08-06T12:00:00+08:00"}, "missing_history_id"),
+        (
+            {"ID": " ", "OWNER_ID": "501", "CREATED_TIME": "2026-08-06T12:00:00+08:00"},
+            "blank_history_id",
+        ),
+        (
+            {"ID": "900", "OWNER_ID": [], "CREATED_TIME": "2026-08-06T12:00:00+08:00"},
+            "invalid_owner_id",
+        ),
+        (
+            {"ID": "900", "OWNER_ID": "501", "CREATED_TIME": "not-a-time"},
+            "invalid_created_time",
+        ),
+        (
+            {"ID": "900", "OWNER_ID": "501", "CREATED_TIME": "2026-08-06T12:00:00"},
+            "created_time_without_timezone",
+        ),
+        (
+            {
+                "ID": "900",
+                "OWNER_ID": "501",
+                "CREATED_TIME": "2026-08-06T12:00:00+08:00",
+                "STAGE_ID": {},
+            },
+            "invalid_stage_id",
+        ),
+    ],
+)
+def test_tolerant_stage_history_decoder_preserves_malformed_row_and_safe_code(
+    raw: JsonValue,
+    error_code: StageHistoryRowErrorCode,
+) -> None:
+    decoded = decode_stage_history_item(raw, entity_type_id="2")
+
+    assert isinstance(decoded, MalformedStageHistoryRow)
+    assert decoded.raw is raw
+    assert decoded.error_code == error_code
+
+
+def test_strict_stage_history_page_still_rejects_one_malformed_row() -> None:
+    payload = _payload()
+    result = payload["result"]
+    assert isinstance(result, dict)
+    items = result["items"]
+    assert isinstance(items, list)
+    items.append({"ID": "901", "OWNER_ID": "502"})
+
+    with pytest.raises(RuntimeError, match="omitted CREATED_TIME"):
+        parse_stage_history_page(payload, entity_type_id="2", current_start=-1)
+
+
+@pytest.mark.parametrize("value", ("0", "01", "+1", " 1", "١"))
+def test_positive_history_id_rejects_noncanonical_numeric_text(value: str) -> None:
+    from src.connectors.bitrix_stage_history.models import parse_positive_history_id
+
+    with pytest.raises(ValueError, match="canonical positive ASCII"):
+        parse_positive_history_id(value)
+
+
+def test_positive_history_id_accepts_canonical_ascii_text() -> None:
+    from src.connectors.bitrix_stage_history.models import parse_positive_history_id
+
+    assert parse_positive_history_id("123") == 123
