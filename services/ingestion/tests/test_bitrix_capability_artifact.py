@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -13,6 +14,10 @@ from src.connectors.bitrix_openlines.models import (
     CrmDealStageCatalogItem,
     CrmDealStageCatalogPage,
 )
+from src.connectors.bitrix_stage_history.artifact_connector import (
+    load_qualification_evidence,
+)
+from src.connectors.bitrix_stage_history.artifact_manifest import canonical_json_bytes
 from src.connectors.bitrix_stage_history.artifact_provenance import ArtifactProvenanceInput
 from src.connectors.bitrix_stage_history.artifact_runtime import ArtifactStoreConfiguration
 from src.connectors.bitrix_stage_history.capability_artifacts import (
@@ -142,6 +147,16 @@ def test_collect_and_source_free_replay_sealed_artifacts(tmp_path: Path) -> None
         owner_artifact_id=owner.artifact_id,
         stage_artifact_id=stage.artifact_id,
     )
+    qualification_digest = "sha256:" + hashlib.sha256(canonical_json_bytes(result)).hexdigest()
+    evidence = load_qualification_evidence(
+        store,
+        owner_artifact_id=owner.artifact_id,
+        stage_artifact_id=stage.artifact_id,
+        expected_qualification_evidence_digest=qualification_digest,
+        expected_source_contract_uuid=_SOURCE_CONTRACT,
+        expected_configuration_digest=_CONFIG_DIGEST,
+        entity_type_id=2,
+    )
 
     assert owner_pass.unique_owner_rows == 2
     assert stage_pass.global_rows == 3
@@ -150,6 +165,8 @@ def test_collect_and_source_free_replay_sealed_artifacts(tmp_path: Path) -> None
     assert result["source_calls"] == 0
     assert result["graph_writes"] == 0
     assert result["stage_domain_writes"] == 0
+    assert tuple(row.history_id for row in evidence.expected_rows) == (1, 2, 3)
+    assert evidence.owner_ids == frozenset({"2", "10"})
     store.close()
 
 

@@ -201,8 +201,8 @@ class StageHistoryOccurrence:
             return
         if self.disposition == "capture_rejected_valid":
             self._require_no_domain_dimensions()
-            if self.parse_scope != "in_scope":
-                raise ValueError("capture_rejected_valid must be an in-scope valid row")
+            if self.parse_scope not in {"in_scope", "out_of_scope"}:
+                raise ValueError("capture_rejected_valid must retain a valid-row scope")
             return
         if self.disposition == "excluded_out_of_scope":
             self._require_no_domain_dimensions()

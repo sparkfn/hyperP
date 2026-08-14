@@ -6,6 +6,7 @@ import ctypes
 import hashlib
 import os
 import stat
+from collections.abc import Callable
 from pathlib import Path
 from typing import Protocol, cast
 
@@ -130,13 +131,23 @@ def open_new_file(parent_fd: int, name: str, mode: int) -> int:
     return os.open(name, flags, mode, dir_fd=parent_fd)
 
 
-def write_new_file(parent_fd: int, name: str, content: bytes, *, mode: int) -> None:
+def write_new_file(
+    parent_fd: int,
+    name: str,
+    content: bytes,
+    *,
+    mode: int,
+    guard: Callable[[], None] | None = None,
+) -> None:
+    _run_guard(guard)
     descriptor = open_new_file(parent_fd, name, mode)
     try:
-        write_all(descriptor, content)
+        write_all(descriptor, content, guard=guard)
+        _run_guard(guard)
         os.fsync(descriptor)
     finally:
         os.close(descriptor)
+    _run_guard(guard)
     os.fsync(parent_fd)
 
 
@@ -145,6 +156,8 @@ def rename_entry_no_replace(
     source_name: str,
     destination_fd: int,
     destination_name: str,
+    *,
+    guard: Callable[[], None] | None = None,
 ) -> None:
     """Atomically publish one flat entry without replacing an existing name."""
     validate_flat_name(source_name)
@@ -164,6 +177,7 @@ def rename_entry_no_replace(
     renameat2.restype = ctypes.c_int
     source_encoded = os.fsencode(source_name)
     destination_encoded = os.fsencode(destination_name)
+    _run_guard(guard)
     if (
         renameat2(
             source_fd,
@@ -176,7 +190,9 @@ def rename_entry_no_replace(
     ):
         error_number = ctypes.get_errno()
         raise OSError(error_number, os.strerror(error_number), destination_name)
+    _run_guard(guard)
     os.fsync(source_fd)
+    _run_guard(guard)
     os.fsync(destination_fd)
 
 
@@ -206,7 +222,9 @@ def snapshot_file(
     name: str,
     *,
     max_file_bytes: int,
+    guard: Callable[[], None] | None = None,
 ) -> ArtifactFileDigest:
+    _run_guard(guard)
     source = open_regular_file(source_fd, name)
     try:
         destination = open_new_file(destination_fd, name, 0o600)
@@ -215,7 +233,8 @@ def snapshot_file(
             before = os.fstat(source)
             if before.st_size > max_file_bytes:
                 raise RuntimeError("artifact source file exceeds its byte limit")
-            byte_count = _copy_stream(source, destination, digest, max_file_bytes)
+            byte_count = _copy_stream(source, destination, digest, max_file_bytes, guard=guard)
+            _run_guard(guard)
             os.fsync(destination)
             after = os.fstat(source)
             if _mutation_identity(before) != _mutation_identity(after):
@@ -231,13 +250,17 @@ def copy_verified_file(
     source_fd: int,
     destination_fd: int,
     expected: ArtifactFileDigest,
+    *,
+    guard: Callable[[], None] | None = None,
 ) -> None:
+    _run_guard(guard)
     source = open_regular_file(source_fd, expected.relative_path)
     try:
         target = open_new_file(destination_fd, expected.relative_path, 0o600)
         digest = hashlib.sha256()
         try:
-            byte_count = _copy_stream(source, target, digest, expected.byte_count)
+            byte_count = _copy_stream(source, target, digest, expected.byte_count, guard=guard)
+            _run_guard(guard)
             os.fsync(target)
         finally:
             os.close(target)
@@ -266,15 +289,24 @@ def verify_data_file(parent_fd: int, expected: ArtifactFileDigest) -> None:
         os.close(descriptor)
 
 
-def make_directory_immutable(directory_fd: int) -> None:
+def make_directory_immutable(
+    directory_fd: int,
+    *,
+    guard: Callable[[], None] | None = None,
+) -> None:
     for name in sorted(os.listdir(directory_fd)):
+        _run_guard(guard)
         descriptor = open_regular_file(directory_fd, name)
         try:
+            _run_guard(guard)
             os.fchmod(descriptor, 0o400)
+            _run_guard(guard)
             os.fsync(descriptor)
         finally:
             os.close(descriptor)
+    _run_guard(guard)
     os.fchmod(directory_fd, 0o500)
+    _run_guard(guard)
     os.fsync(directory_fd)
 
 
@@ -359,24 +391,42 @@ def validate_flat_name(name: str) -> None:
         raise ValueError("artifact file name must be a safe flat name")
 
 
-def write_all(descriptor: int, content: bytes) -> None:
+def write_all(
+    descriptor: int,
+    content: bytes,
+    *,
+    guard: Callable[[], None] | None = None,
+) -> None:
     view = memoryview(content)
     while view:
+        _run_guard(guard)
         written = os.write(descriptor, view)
         if written < 1:
             raise OSError("artifact file write did not advance")
         view = view[written:]
 
 
-def _copy_stream(source: int, destination: int, digest: hashlib._Hash, limit: int) -> int:
+def _copy_stream(
+    source: int,
+    destination: int,
+    digest: hashlib._Hash,
+    limit: int,
+    *,
+    guard: Callable[[], None] | None,
+) -> int:
     byte_count = 0
     while chunk := os.read(source, min(READ_SIZE, limit + 1 - byte_count)):
-        write_all(destination, chunk)
+        write_all(destination, chunk, guard=guard)
         digest.update(chunk)
         byte_count += len(chunk)
         if byte_count > limit:
             raise RuntimeError("artifact file exceeds its byte limit")
     return byte_count
+
+
+def _run_guard(guard: Callable[[], None] | None) -> None:
+    if guard is not None:
+        guard()
 
 
 def _mutation_identity(details: os.stat_result) -> tuple[int, int, int, int, int]:

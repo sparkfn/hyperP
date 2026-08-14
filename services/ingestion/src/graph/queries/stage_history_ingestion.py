@@ -324,7 +324,8 @@ MATCH (unit:StageHistoryUnit {
 WHERE unit.unit_digest = $unit_digest
   AND $terminal_disposition IN ['malformed_excluded', 'capture_rejected_valid']
   AND (($terminal_disposition = 'malformed_excluded' AND $parse_scope = 'malformed')
-    OR ($terminal_disposition = 'capture_rejected_valid' AND $parse_scope = 'in_scope'))
+    OR ($terminal_disposition = 'capture_rejected_valid'
+      AND $parse_scope IN ['in_scope', 'out_of_scope']))
   AND $retry_state = 'none'
 MERGE (occurrence:StageHistoryOccurrence {occurrence_id: $occurrence_id})
 ON CREATE SET occurrence.logical_run_id = $logical_run_id,
@@ -1970,3 +1971,33 @@ STAGE_HISTORY_REVIEW_MUTATION_QUERIES: tuple[str, ...] = (
     CLAIM_STAGE_HISTORY_RETRY_BY_REVIEW,
     RESOLVE_STAGE_HISTORY_RETRY_BY_REVIEW,
 )
+
+
+CLASSIFY_STAGE_HISTORY_OBSERVATION = """
+OPTIONAL MATCH (variant:CrmHistoryHashVariant {event_identity: $event_identity})
+WITH collect(DISTINCT variant) AS variants
+OPTIONAL MATCH (parent:SourceRecord {
+  source_record_id: $logical_parent_source_record_id,
+  record_type: 'crm_deal'
+})-[:FROM_SOURCE]->(:SourceSystem {source_key: $logical_parent_source_system})
+WHERE parent.lifecycle_status IN ['active', 'pending_review']
+WITH variants,
+     [candidate IN collect(parent)
+      WHERE candidate IS NOT NULL AND candidate.lifecycle_status = 'active'] AS active,
+     [candidate IN collect(parent)
+      WHERE candidate IS NOT NULL AND candidate.lifecycle_status = 'pending_review'] AS pending
+OPTIONAL MATCH (head:CrmHistoryAuthorityHead {event_identity: $event_identity})
+WITH variants, active, pending, head,
+     size([known IN variants WHERE known.canonical_hash = $canonical_hash]) AS exact_count,
+     CASE
+       WHEN size(active) = 1 THEN 'selected_active'
+       WHEN size(active) > 1 THEN 'ambiguous'
+       WHEN size(pending) = 1 THEN 'selected_pending_review'
+       WHEN size(pending) > 1 THEN 'ambiguous'
+       ELSE 'waiting'
+     END AS association_state
+RETURN exact_count,
+       size(variants) AS variant_count,
+       association_state,
+       head.authority_state AS current_authority_state
+"""
