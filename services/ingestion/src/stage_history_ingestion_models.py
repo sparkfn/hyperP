@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Literal, TypeGuard
@@ -61,6 +63,35 @@ REPLAY_TERMINAL_DISPOSITIONS: frozenset[StageHistoryTerminalDisposition] = froze
 FAILURE_TERMINAL_DISPOSITIONS: frozenset[StageHistoryTerminalDisposition] = frozenset(
     {"malformed_excluded", "capture_rejected_valid"}
 )
+
+
+def stage_history_review_configuration_fingerprint(
+    command_id: str,
+    kind: StageHistoryReviewKind,
+    authorization_reference: str,
+    *,
+    review_lease_seconds: int,
+    retry_backoff_seconds: int,
+) -> str:
+    _require_text_values(
+        ("command_id", command_id),
+        ("authorization_reference", authorization_reference),
+    )
+    _require_positive(review_lease_seconds, "review_lease_seconds")
+    _require_positive(retry_backoff_seconds, "retry_backoff_seconds")
+    payload = json.dumps(
+        {
+            "authorization_reference_digest": "sha256:"
+            + hashlib.sha256(authorization_reference.encode("utf-8")).hexdigest(),
+            "command_id": command_id,
+            "kind": kind,
+            "retry_backoff_seconds": retry_backoff_seconds,
+            "review_lease_seconds": review_lease_seconds,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
 
 
 @dataclass(frozen=True, slots=True)
@@ -700,15 +731,24 @@ class StageHistoryReviewCommand:
         _require_aware(self.available_at, "available_at")
         if self.kind in {"resolve_parent", "reject_parent"}:
             _require_positive(self.retry_sequence, "retry_sequence")
-            if self.expected_authority_state != "withheld_parent":
-                raise ValueError("parent review commands require withheld-parent authority")
+            if self.expected_authority_state not in {
+                "withheld_parent",
+                "withheld_conflict",
+            }:
+                raise ValueError(
+                    "parent review commands require withheld parent/conflict authority"
+                )
             if self.selected_variant_hash is not None:
                 raise ValueError("parent review commands cannot select a hash variant")
         elif self.kind == "resolve_conflict":
             if self.expected_authority_state != "withheld_conflict":
                 raise ValueError("conflict review commands require withheld-conflict authority")
-        elif self.retry_sequence is not None:
+        if self.kind not in {"resolve_parent", "reject_parent"} and self.retry_sequence is not None:
             raise ValueError("only parent review commands may select a retry sequence")
+        if self.kind in {"resolve_parent", "reject_parent"} and (
+            self.selected_association_decision_id is not None
+        ):
+            raise ValueError("parent review commands resolve their own association")
         if self.selected_variant_hash is not None:
             _require_prefixed_digest(self.selected_variant_hash, "sha256:", "selected_variant_hash")
         if self.kind in {"resolve_conflict", "apply_correction"} and (

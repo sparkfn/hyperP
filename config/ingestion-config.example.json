@@ -34,5 +34,27 @@
   },
   "scheduled_ingestion": {
     "enabled": false
+  },
+  "stage_history_ingestion": {
+    "enabled": false,
+    "authorization_reference": "",
+    "authorized_actor": "",
+    "authorization_expires_at": "",
+    "owner_artifact_id": "",
+    "owner_manifest_hmac": "",
+    "stage_artifact_id": "",
+    "stage_manifest_hmac": "",
+    "qualification_evidence_digest": "",
+    "accepted_configuration_digest": "",
+    "source_contract_uuid": "",
+    "entity_type_id": 0,
+    "max_calls": 1,
+    "max_rows": 50,
+    "max_spool_bytes": 10000000,
+    "max_runtime_seconds": 300.0,
+    "retention_days": 7,
+    "retry_max_attempts": 5,
+    "retry_backoff_seconds": 300,
+    "review_lease_seconds": 900
   }
 }

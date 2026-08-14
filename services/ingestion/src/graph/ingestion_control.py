@@ -297,6 +297,36 @@ class LogicalRunControl:
 
         return self._client.execute_write(_work)
 
+    def pause_fenced(self, *, context: FenceContext, phase: str) -> None:
+        """Pause a stop-requested run and retire its exact stream fence atomically."""
+
+        def _work(tx: ManagedTransaction) -> None:
+            assert_active_bitrix_fence(tx, context)
+            paused = tx.run(
+                PAUSE_LOGICAL_RUN,
+                logical_run_id=context.logical_run_id,
+                ingest_run_id=context.ingest_run_id,
+                generation=context.attempt_generation,
+                phase=phase,
+            ).single()
+            if paused is None:
+                raise RuntimeError("Bitrix logical run could not pause under its fence")
+            retired = tx.run(
+                SET_FENCED_BITRIX_STREAM_STATUS,
+                source_key=context.source_key,
+                stream_key=context.stream_key,
+                logical_run_id=context.logical_run_id,
+                ingest_run_id=context.ingest_run_id,
+                attempt_generation=context.attempt_generation,
+                stream_generation=context.stream_generation,
+                fencing_token=context.fencing_token,
+                status="superseded",
+            ).single()
+            if retired is None:
+                raise RuntimeError("Bitrix stream could not retire after a fenced pause")
+
+        self._client.execute_write(_work)
+
     def transition_phase(
         self,
         *,

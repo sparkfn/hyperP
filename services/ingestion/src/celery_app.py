@@ -25,6 +25,7 @@ celery_app = Celery(
         "src.tasks",
         "src.ingestion_orchestration_tasks",
         "src.scheduled_ingestion_tasks",
+        "src.stage_history_tasks",
     ],
 )
 
@@ -38,6 +39,7 @@ celery_app.conf.update(
         "src.tasks.run_ingestion_task": {"queue": INGESTION_QUEUE},
         "src.ingestion_orchestration_tasks.*": {"queue": INGESTION_QUEUE},
         "src.scheduled_ingestion_tasks.*": {"queue": INGESTION_QUEUE},
+        "src.stage_history_tasks.*": {"queue": INGESTION_QUEUE},
         "src.tasks.reconcile_lifecycle_task": {"queue": LIFECYCLE_QUEUE},
         "src.tasks.materialize_knows_task": {"queue": LIFECYCLE_QUEUE},
         "src.tasks.send_birthday_messages_task": {"queue": MISCELLANEOUS_QUEUE},

@@ -7,11 +7,15 @@ import os
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from src.connectors.bitrix_stage_history.artifact_signing import (
     StaticArtifactSigningKeyProvider,
 )
 from src.connectors.bitrix_stage_history.artifact_store import LocalRestrictedArtifactStore
+
+if TYPE_CHECKING:
+    from src.config import Settings
 
 
 @dataclass(frozen=True)
@@ -84,3 +88,16 @@ def retained_keys_from_environment(specifications: list[str]) -> dict[str, bytes
             raise ValueError(f"retained artifact key environment is missing: {environment_name}")
         resolved[key_id] = decode_signing_secret(raw_secret)
     return resolved
+
+
+def stage_history_store_from_settings(settings: Settings) -> LocalRestrictedArtifactStore:
+    """Open the restricted store without exposing its signing secret."""
+    secret = decode_signing_secret(
+        settings.stage_history_artifact_signing_key_secret.get_secret_value()
+    )
+    return ArtifactStoreConfiguration(
+        primary_root=Path(settings.stage_history_artifact_primary_root),
+        backup_root=Path(settings.stage_history_artifact_backup_root),
+        signing_key_id=settings.stage_history_artifact_signing_key_id,
+        signing_key_secret=secret,
+    ).open()

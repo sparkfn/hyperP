@@ -6,8 +6,8 @@ import hashlib
 import json
 from collections.abc import Callable
 from dataclasses import dataclass, replace
-from datetime import datetime
-from typing import Literal, TypedDict
+from datetime import datetime, timedelta
+from typing import Literal, TypedDict, cast
 
 from neo4j import ManagedTransaction, Record
 
@@ -28,10 +28,13 @@ from src.graph.queries.stage_history_ingestion import (
     COMPLETE_STAGE_HISTORY_REVIEW_COMMAND,
     GET_COMPLETED_STAGE_HISTORY_REVIEW_COMMAND,
     GET_STAGE_HISTORY_REVIEW_ASSOCIATION,
+    GET_STAGE_HISTORY_REVIEW_COMMAND_CONTEXT,
     GET_STAGE_HISTORY_REVIEW_OCCURRENCE,
+    GET_STAGE_HISTORY_REVIEW_RESUME_CONTEXT,
     GET_STAGE_HISTORY_REVIEW_VARIANT_SET,
     LOCK_STAGE_HISTORY_REVIEW_EVENT,
     PERSIST_STAGE_HISTORY_REVIEW_COMMAND,
+    PROJECT_STAGE_HISTORY_REVIEW_OUTCOME,
     RESOLVE_STAGE_HISTORY_RETRY_BY_REVIEW,
     RESOLVE_STAGE_HISTORY_REVIEW_PARENT_CANDIDATES,
 )
@@ -39,6 +42,7 @@ from src.stage_history_ingestion_models import (
     StageHistoryAssociationState,
     StageHistoryAuthorityState,
     StageHistoryReviewCommand,
+    StageHistoryReviewKind,
 )
 
 FailureInjector = Callable[[str], None]
@@ -56,6 +60,28 @@ class StageHistoryReviewResult:
     head_version: int
     authority_token: int
     invalidation_count: int
+
+
+@dataclass(frozen=True, slots=True)
+class StageHistoryReviewExecution:
+    command: StageHistoryReviewCommand
+    occurrence_id: str
+    authorization_reference: str
+    configuration_fingerprint: str
+    worker_task_id: str
+    fence: FenceContext
+
+
+@dataclass(frozen=True, slots=True)
+class StageHistoryReviewResumeContext:
+    logical_run_id: str
+    logical_status: str
+    run_type: str
+    command: StageHistoryReviewCommand
+    occurrence_id: str
+    authorization_reference: str
+    configuration_fingerprint: str
+    worker_task_id: str | None
 
 
 class _FenceParams(TypedDict):
@@ -104,6 +130,12 @@ class _Association:
     selected_pk: str | None
 
 
+@dataclass(frozen=True, slots=True)
+class _RetryClaim:
+    attempt_count: int
+    max_attempts: int
+
+
 class StageHistoryReviewRepository:
     """Persist commands before execution and apply each mutation atomically."""
 
@@ -141,6 +173,78 @@ class StageHistoryReviewRepository:
 
         self._client.execute_write(_work)
 
+    def load_execution(self, command_id: str) -> StageHistoryReviewExecution | None:
+        _require_text(command_id, "command_id")
+
+        def _read(tx: ManagedTransaction) -> Record | None:
+            return tx.run(
+                GET_STAGE_HISTORY_REVIEW_COMMAND_CONTEXT,
+                command_id=command_id,
+            ).single()
+
+        row = self._client.execute_read(_read)
+        if row is None:
+            return None
+        command_status = _string(row, "command_status")
+        if command_status not in {"pending", "claimed", "completed"}:
+            raise StageHistoryReviewError("review command is not executable")
+        command = _command_from_record(row)
+        occurrence_id = _string(row, "target_occurrence_id")
+        if _string(row, "request_payload_digest") != _command_digest(command, occurrence_id):
+            raise StageHistoryReviewError("review command payload digest changed")
+        if _string(row, "run_type") != _required_run_type(command):
+            raise StageHistoryReviewError("review command run type changed")
+        return StageHistoryReviewExecution(
+            command=command,
+            occurrence_id=occurrence_id,
+            authorization_reference=_string(row, "authorization_reference"),
+            configuration_fingerprint=_string(row, "configuration_fingerprint"),
+            worker_task_id=_string(row, "worker_task_id"),
+            fence=FenceContext(
+                logical_run_id=_string(row, "logical_run_id"),
+                ingest_run_id=_string(row, "ingest_run_id"),
+                source_key="bitrix_chat",
+                stream_key="crm_stage_history",
+                stream_generation=_positive_integer(row, "stream_generation"),
+                fencing_token=_positive_integer(row, "fencing_token"),
+                attempt_generation=_positive_integer(row, "attempt_generation"),
+            ),
+        )
+
+    def load_resume_context(self, command_id: str) -> StageHistoryReviewResumeContext | None:
+        _require_text(command_id, "command_id")
+
+        def _read(tx: ManagedTransaction) -> Record | None:
+            return tx.run(
+                GET_STAGE_HISTORY_REVIEW_RESUME_CONTEXT,
+                command_id=command_id,
+            ).single()
+
+        row = self._client.execute_read(_read)
+        if row is None:
+            return None
+        command_status = _string(row, "command_status")
+        if command_status not in {"pending", "claimed", "completed"}:
+            raise StageHistoryReviewError("review command is not resumable")
+        command = _command_from_record(row)
+        if _string(row, "request_payload_digest") != _command_digest(
+            command, _string(row, "target_occurrence_id")
+        ):
+            raise StageHistoryReviewError("review command payload digest changed")
+        run_type = _string(row, "run_type")
+        if run_type != _required_run_type(command):
+            raise StageHistoryReviewError("review command run type changed")
+        return StageHistoryReviewResumeContext(
+            logical_run_id=_string(row, "logical_run_id"),
+            logical_status=_string(row, "logical_status"),
+            run_type=run_type,
+            command=command,
+            occurrence_id=_string(row, "target_occurrence_id"),
+            authorization_reference=_string(row, "authorization_reference"),
+            configuration_fingerprint=_string(row, "configuration_fingerprint"),
+            worker_task_id=_optional_string(row.get("worker_task_id")),
+        )
+
     def execute_command(
         self,
         command: StageHistoryReviewCommand,
@@ -149,6 +253,7 @@ class StageHistoryReviewRepository:
         authorization_reference: str,
         lease_owner: str,
         lease_expires_at: datetime,
+        retry_backoff_seconds: int = 300,
         fence: FenceContext,
     ) -> StageHistoryReviewResult:
         command = replace(command)
@@ -157,6 +262,12 @@ class StageHistoryReviewRepository:
         _require_text(lease_owner, "lease_owner")
         if lease_expires_at.tzinfo is None or lease_expires_at.utcoffset() is None:
             raise ValueError("lease_expires_at must be timezone-aware")
+        if (
+            isinstance(retry_backoff_seconds, bool)
+            or not isinstance(retry_backoff_seconds, int)
+            or retry_backoff_seconds < 1
+        ):
+            raise ValueError("retry_backoff_seconds must be positive")
 
         def _work(tx: ManagedTransaction) -> StageHistoryReviewResult:
             assert_active_bitrix_fence(tx, fence)
@@ -197,8 +308,9 @@ class StageHistoryReviewRepository:
             variant_digest = _load_variant_set_digest(tx, fence, command)
             if variant_digest != command.expected_variant_set_digest:
                 raise StageHistoryReviewError("review command variant set is stale")
+            retry_claim: _RetryClaim | None = None
             if command.kind in {"resolve_parent", "reject_parent"}:
-                retry_claim = tx.run(
+                retry_claim_row = tx.run(
                     CLAIM_STAGE_HISTORY_RETRY_BY_REVIEW,
                     **_fence(fence, command),
                     occurrence_id=occurrence_id,
@@ -207,7 +319,16 @@ class StageHistoryReviewRepository:
                     lease_owner=lease_owner,
                     lease_expires_at=lease_expires_at.isoformat(),
                 ).single()
-                _required(retry_claim, "review command could not claim its exact retry")
+                claimed = _required(
+                    retry_claim_row,
+                    "review command could not claim its exact retry",
+                )
+                retry_claim = _RetryClaim(
+                    attempt_count=_positive_integer(claimed, "attempt_count"),
+                    max_attempts=_positive_integer(claimed, "max_attempts"),
+                )
+                if retry_claim.attempt_count > retry_claim.max_attempts:
+                    raise StageHistoryReviewError("review retry exceeded its maximum attempts")
             self._inject("after_retry_claim")
             association = _resolve_association(tx, fence, command, occurrence)
             self._inject("after_parent")
@@ -275,8 +396,10 @@ class StageHistoryReviewRepository:
                 targets,
             )
             self._inject("after_outbox")
-            if command.kind in {"resolve_parent", "reject_parent"}:
-                retry_resolution = "resolved" if command.kind == "resolve_parent" else "rejected"
+            retry_resolution: str | None = None
+            if retry_claim is not None:
+                retry_resolution = _retry_resolution(command, association, retry_claim)
+                next_attempt_at = command.available_at + timedelta(seconds=retry_backoff_seconds)
                 retry_row = tx.run(
                     RESOLVE_STAGE_HISTORY_RETRY_BY_REVIEW,
                     **_fence(fence, command),
@@ -286,6 +409,7 @@ class StageHistoryReviewRepository:
                     resolution_decision_id=authority_id,
                     review_command_id=command.command_id,
                     lease_owner=lease_owner,
+                    next_attempt_at=next_attempt_at.isoformat(),
                 ).single()
                 retry_record = _required(retry_row, "review retry projection update failed")
                 if _integer(retry_record, "resolved_retry_count") < 1:
@@ -293,6 +417,42 @@ class StageHistoryReviewRepository:
                         "review command did not own an unresolved parent retry"
                     )
             self._inject("after_retry")
+            projected_association = (
+                association.state
+                if association is not None
+                else _association_state(occurrence["association_state"])
+            )
+            projected_retry = retry_resolution
+            projection = tx.run(
+                PROJECT_STAGE_HISTORY_REVIEW_OUTCOME,
+                **_fence(fence, command),
+                command_id=command.command_id,
+                event_identity=command.event_identity,
+                occurrence_id=occurrence_id,
+                lease_owner=lease_owner,
+                authority_decision_id=authority_id,
+                authority_state=state,
+                authority_head_version=result.head_version,
+                authority_token=result.authority_token,
+                association_state=projected_association,
+                association_decision_id=(
+                    association.decision_id if association is not None else None
+                ),
+                retry_state=projected_retry,
+            ).single()
+            projection_record = _required(
+                projection, "review command current projection CAS failed"
+            )
+            if (
+                _association_state(projection_record["association_state"]) != projected_association
+                or _authority_state(_string(projection_record, "authority_state")) != state
+                or _integer(projection_record, "projected_occurrence_count") < 1
+            ):
+                raise StageHistoryReviewError("review command current projection is invalid")
+            actual_retry = _string(projection_record, "retry_state")
+            if projected_retry is not None and actual_retry != projected_retry:
+                raise StageHistoryReviewError("review command retry projection is invalid")
+            self._inject("after_projection")
             completion_digest = _stable_digest(
                 "stage-review-result",
                 command.command_id,
@@ -352,6 +512,7 @@ def _resolve_association(
                 **_fence(fence, command),
                 association_decision_id=decision_id,
                 event_identity=command.event_identity,
+                occurrence_id=occurrence_id,
             ).single(),
             "selected review association is unavailable",
         )
@@ -383,8 +544,6 @@ def _resolve_association(
         selected_pk = None
     else:
         state = _association_state(parent["association_state"])
-        if state != "selected_active":
-            raise StageHistoryReviewError("resolve-parent requires exactly one active parent")
         selected_pk = _optional_string(parent.get("selected_parent_source_record_pk"))
     decision_id = _stable_id(
         "stage-review-parent",
@@ -532,9 +691,32 @@ def _review_authority_state(
         return "rejected"
     if command.kind == "apply_correction":
         return "corrected"
-    if association is None or association.state != "selected_active":
+    if association is None:
         raise StageHistoryReviewError("review command lacks an active selected association")
-    return "effective"
+    if association.state == "selected_active":
+        return "effective"
+    if command.kind == "resolve_parent" and association.state == "ambiguous":
+        return "withheld_conflict"
+    if command.kind == "resolve_parent" and association.state in {
+        "selected_pending_review",
+        "waiting",
+    }:
+        return "withheld_parent"
+    raise StageHistoryReviewError("review command produced an incompatible association")
+
+
+def _retry_resolution(
+    command: StageHistoryReviewCommand,
+    association: _Association | None,
+    claim: _RetryClaim,
+) -> Literal["pending", "resolved", "rejected", "quarantined"]:
+    if command.kind == "reject_parent":
+        return "rejected"
+    if association is not None and association.state == "selected_active":
+        return "resolved"
+    if claim.attempt_count >= claim.max_attempts:
+        return "quarantined"
+    return "pending"
 
 
 def _decision_kind(
@@ -546,6 +728,8 @@ def _decision_kind(
         return "variant"
     if command.kind == "resolve_conflict":
         return "accepted"
+    if state == "withheld_conflict":
+        return "variant"
     if state == "effective":
         return "accepted"
     return "parent"
@@ -643,6 +827,35 @@ def _command_params(
         "selected_association_decision_id": command.selected_association_decision_id,
         "correction_of_decision_id": command.correction_of_decision_id,
     }
+
+
+def _command_from_record(row: Record) -> StageHistoryReviewCommand:
+    kind_text = _string(row, "review_kind")
+    if kind_text not in {
+        "resolve_parent",
+        "reject_parent",
+        "resolve_conflict",
+        "apply_correction",
+    }:
+        raise StageHistoryReviewError("graph returned an invalid review kind")
+    return StageHistoryReviewCommand(
+        command_id=_string(row, "command_id"),
+        kind=cast(StageHistoryReviewKind, kind_text),
+        status="pending",
+        event_identity=_string(row, "target_event_identity"),
+        reviewer_id=_string(row, "reviewer_actor"),
+        available_at=datetime.fromisoformat(_string(row, "available_at")),
+        expected_head_version=_integer(row, "expected_head_version"),
+        expected_authority_token=_integer(row, "expected_authority_token"),
+        expected_authority_state=_authority_state(_string(row, "expected_authority_state")),
+        expected_variant_set_digest=_string(row, "expected_variant_set_digest"),
+        retry_sequence=_optional_integer(row.get("retry_sequence")),
+        selected_variant_hash=_optional_string(row.get("selected_variant_hash")),
+        selected_association_decision_id=_optional_string(
+            row.get("selected_association_decision_id")
+        ),
+        correction_of_decision_id=_optional_string(row.get("correction_of_decision_id")),
+    )
 
 
 def _completed_result(record: Record, command_id: str) -> StageHistoryReviewResult:
@@ -749,6 +962,21 @@ def _integer(record: Record, key: str) -> int:
     value: object = record[key]
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
         raise StageHistoryReviewError(f"graph returned invalid {key}")
+    return value
+
+
+def _positive_integer(record: Record, key: str) -> int:
+    value = _integer(record, key)
+    if value < 1:
+        raise StageHistoryReviewError(f"graph returned invalid {key}")
+    return value
+
+
+def _optional_integer(value: object) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise StageHistoryReviewError("graph returned an invalid optional integer")
     return value
 
 

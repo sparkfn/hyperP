@@ -68,6 +68,7 @@ class RawStageHistoryClient(Protocol):
 class StageCaptureAuthorization:
     enabled: bool
     reference: str
+    actor: str
     expires_at: datetime
     owner_artifact_id: str
     owner_manifest_hmac: str
@@ -84,6 +85,7 @@ class StageCaptureAuthorization:
             raise ValueError("capture authorization enabled must be boolean")
         strings = (
             self.reference,
+            self.actor,
             self.owner_artifact_id,
             self.owner_manifest_hmac,
             self.stage_artifact_id,
@@ -183,13 +185,16 @@ def collect_stage_history_smoke(
     configuration_digest: str,
     limits_digest: str,
     retention_days: int,
+    ownership_guard: Callable[[], None] = lambda: None,
     now: Callable[[], datetime] = lambda: datetime.now(UTC),
     monotonic: Callable[[], float] = time.monotonic,
 ) -> StageCaptureResult:
     """Capture only the artifact-derived range; never write graph/control state."""
+    ownership_guard()
     checked_at = now()
     authorization.assert_active(now=checked_at)
     _validate_repository_sha(repository_sha)
+    _validate_sha256_digest(image_digest, "image_digest")
     expected_limits_digest = stage_capture_limits_digest(limits)
     if not hmac.compare_digest(limits_digest, expected_limits_digest) or not hmac.compare_digest(
         authorization.limits_digest,
@@ -234,11 +239,13 @@ def collect_stage_history_smoke(
                 state=state,
                 now=now,
                 monotonic=monotonic,
+                ownership_guard=ownership_guard,
             )
             if failure is None and not _matches_expected(spool, plan):
                 failure = "expected_row_mismatch"
 
             def write_guard() -> None:
+                ownership_guard()
                 _capture_write_guard(
                     authorization,
                     state,
@@ -308,17 +315,20 @@ def _capture_pages(
     state: _CaptureState,
     now: Callable[[], datetime],
     monotonic: Callable[[], float],
+    ownership_guard: Callable[[], None],
 ) -> CaptureFailureReason | None:
     filters: dict[str, JsonValue] = {
         ">ID": str(plan.lower_history_id),
         "<=ID": str(plan.upper_history_id),
     }
     while True:
+        ownership_guard()
         authorization.assert_active(now=now())
         _check_limits(state, spool, limits, monotonic)
         state.calls = client.request_count
         if state.calls >= limits.max_calls:
             raise RuntimeError("stage-history smoke call limit exceeded before range completion")
+        ownership_guard()
         page = client.list_stage_history_raw_page(
             entity_type_id=evidence.entity_type_id,
             filters=filters,
@@ -373,19 +383,25 @@ def _capture_pages(
                 state.malformed_rows += 1
                 page_failed = True
         authorization.assert_active(now=now())
+        ownership_guard()
         _check_limits(state, spool, limits, monotonic)
-        spool.append_page(
-            decoded_rows,
-            source_observed_at=now(),
-            max_storage_bytes=limits.max_spool_bytes,
-            guard=lambda: _capture_write_guard(
+
+        def page_write_guard() -> None:
+            ownership_guard()
+            _capture_write_guard(
                 authorization,
                 state,
                 spool,
                 limits,
                 now=now,
                 monotonic=monotonic,
-            ),
+            )
+
+        spool.append_page(
+            decoded_rows,
+            source_observed_at=now(),
+            max_storage_bytes=limits.max_spool_bytes,
+            guard=page_write_guard,
         )
         state.pages += 1
         _check_limits(state, spool, limits, monotonic)
@@ -494,6 +510,8 @@ def _metadata(
         "configuration_digest": configuration_digest,
         "limits_digest": limits_digest,
         "authorization_reference": authorization.reference,
+        "authorization_actor_digest": "sha256:"
+        + hashlib.sha256(authorization.actor.encode("utf-8")).hexdigest(),
         "pages": state.pages,
         "rows": state.rows,
         "valid_rows": state.valid_rows,
@@ -541,3 +559,14 @@ def _retention_expiry(now: datetime, retention_days: int) -> datetime:
 def _validate_repository_sha(value: str) -> None:
     if len(value) != 40 or any(character not in "0123456789abcdef" for character in value):
         raise ValueError("repository_sha must be a full lowercase Git SHA")
+
+
+def _validate_sha256_digest(value: str, field_name: str) -> None:
+    prefix = "sha256:"
+    payload = value.removeprefix(prefix)
+    if (
+        not value.startswith(prefix)
+        or len(payload) != 64
+        or any(character not in "0123456789abcdef" for character in payload)
+    ):
+        raise ValueError(f"{field_name} must be a canonical SHA-256 digest")

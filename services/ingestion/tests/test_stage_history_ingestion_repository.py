@@ -27,6 +27,7 @@ from src.graph.queries.stage_history_ingestion import (
     CREATE_STAGE_HISTORY_UNIT,
     GET_STAGE_HISTORY_AUTHORITY_HEAD,
     GET_STAGE_HISTORY_COMMITTED_UNIT,
+    PROJECT_STAGE_HISTORY_AUTHORITY_HEAD,
     RESOLVE_STAGE_HISTORY_PARENT_CANDIDATES,
     UPSERT_STAGE_HISTORY_OCCURRENCE,
     UPSERT_STAGE_HISTORY_UNIT_ACCOUNTING,
@@ -254,6 +255,7 @@ def _success_responses() -> dict[str, list[Record | None]]:
                 semantic_match=True,
             )
         ],
+        PROJECT_STAGE_HISTORY_AUTHORITY_HEAD: [_record(projected_occurrence_count=1)],
         APPEND_STAGE_HISTORY_INVALIDATION_INTENTS: [_record(intent_count=1)],
         UPSERT_STAGE_HISTORY_UNIT_ACCOUNTING: [_record(unit_id="unit-1")],
         COMMIT_STAGE_HISTORY_UNIT_AND_ADVANCE_CHECKPOINT: [_record(unit_id="unit-1", revision=1)],
