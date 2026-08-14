@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Literal, TypedDict
 
@@ -124,6 +124,7 @@ class StageHistoryReviewRepository:
         authorization_reference: str,
         fence: FenceContext,
     ) -> None:
+        command = replace(command)
         if command.status != "pending":
             raise ValueError("new review commands must be pending")
         _require_text(occurrence_id, "occurrence_id")
@@ -150,6 +151,7 @@ class StageHistoryReviewRepository:
         lease_expires_at: datetime,
         fence: FenceContext,
     ) -> StageHistoryReviewResult:
+        command = replace(command)
         _require_text(occurrence_id, "occurrence_id")
         _require_text(authorization_reference, "authorization_reference")
         _require_text(lease_owner, "lease_owner")

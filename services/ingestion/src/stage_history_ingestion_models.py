@@ -717,6 +717,8 @@ class StageHistoryReviewCommand:
             raise ValueError("variant review commands require an explicit selected hash")
         if self.kind == "apply_correction" and self.correction_of_decision_id is None:
             raise ValueError("correction commands require a prior decision")
+        if self.kind == "apply_correction" and self.selected_association_decision_id is None:
+            raise ValueError("correction commands require a selected association")
         if self.kind != "apply_correction" and self.correction_of_decision_id is not None:
             raise ValueError("only correction commands may reference a prior decision")
         if (self.status == "failed") != (self.failure_code is not None):
