@@ -216,6 +216,7 @@ def _collect(
     monotonic: Callable[[], float] | None = None,
     now: Callable[[], datetime] = lambda: _NOW,
     authorization: StageCaptureAuthorization | None = None,
+    repository_sha: str = _REPOSITORY_SHA,
 ) -> StageCaptureResult:
     selected_monotonic = monotonic or time.monotonic
     selected_limits = limits or StageCaptureLimits(4, 100, 10_000_000, 30)
@@ -240,7 +241,7 @@ def _collect(
         plan=plan,
         authorization=selected_authorization,
         limits=selected_limits,
-        repository_sha=_REPOSITORY_SHA,
+        repository_sha=repository_sha,
         image_digest=_IMAGE_DIGEST,
         configuration_digest=_CONFIG_DIGEST,
         limits_digest=stage_capture_limits_digest(selected_limits),
@@ -291,6 +292,28 @@ def test_capture_uses_injected_repository_sha_without_a_git_checkout(
         result = _collect(fixture, client, _plan(expected))
 
         assert result.manifest.provenance.repository_sha == _REPOSITORY_SHA
+    finally:
+        fixture.store.close()
+
+
+@pytest.mark.parametrize("repository_sha", ["abc", "A" * 40, "g" * 40])
+def test_capture_rejects_noncanonical_repository_sha_before_source_calls(
+    tmp_path: Path,
+    repository_sha: str,
+) -> None:
+    expected = (_expected(_raw(1)),)
+    fixture = _capture_fixture(tmp_path, expected)
+    client = _RawClient((_page(_raw(1)),))
+    try:
+        with pytest.raises(ValueError, match="repository_sha"):
+            _collect(
+                fixture,
+                client,
+                _plan(expected),
+                repository_sha=repository_sha,
+            )
+
+        assert client.calls == []
     finally:
         fixture.store.close()
 
