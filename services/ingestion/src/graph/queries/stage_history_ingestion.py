@@ -603,6 +603,9 @@ WHERE decision.event_identity = occurrence.event_identity
   AND decision.available_at = datetime($available_at)
   AND coalesce(decision.review_command_id, '') = coalesce($review_command_id, '')
 MERGE (decision)-[:ASSOCIATION_FOR]->(occurrence)
+SET occurrence.association_state = decision.association_state,
+    occurrence.current_association_decision_id = decision.decision_id,
+    occurrence.projection_updated_at = datetime()
 FOREACH (_ IN CASE
   WHEN $association_state IN ['selected_active', 'selected_pending_review']
     AND recounted_parent IS NOT NULL
@@ -813,6 +816,9 @@ WHERE retry.status IN ['pending', 'claimed', 'resolved', 'rejected', 'quarantine
   AND coalesce(retry.review_command_id, '') = coalesce($review_command_id, '')
   AND retry.initial_next_attempt_at = datetime($next_attempt_at)
 MERGE (occurrence)-[:HAS_STAGE_HISTORY_RETRY]->(retry)
+SET occurrence.retry_state = retry.status,
+    occurrence.current_retry_sequence = retry.retry_sequence,
+    occurrence.projection_updated_at = datetime()
 RETURN retry.retry_sequence AS retry_sequence,
        retry.status AS status
 """
@@ -822,11 +828,13 @@ RETURN retry.retry_sequence AS retry_sequence,
 CLAIM_STAGE_HISTORY_RETRY = (
     _ACTIVE_STAGE_FENCE
     + """
+MATCH (occurrence:StageHistoryOccurrence {occurrence_id: $occurrence_id})
 MATCH (retry:StageHistoryRetry {
   occurrence_id: $occurrence_id,
   retry_sequence: $retry_sequence
 })
-WHERE coalesce(retry.attempt_count, 0) < retry.max_attempts
+WHERE EXISTS { MATCH (occurrence)-[:HAS_STAGE_HISTORY_RETRY]->(retry) }
+  AND coalesce(retry.attempt_count, 0) < retry.max_attempts
   AND ((retry.status = 'pending' AND retry.next_attempt_at <= datetime())
    OR (retry.status = 'claimed' AND retry.lease_expires_at < datetime()))
 SET retry.status = 'claimed',
@@ -839,6 +847,9 @@ SET retry.status = 'claimed',
     retry.attempt_count = coalesce(retry.attempt_count, 0) + 1,
     retry.claimed_at = datetime(),
     retry.updated_at = datetime()
+SET occurrence.retry_state = retry.status,
+    occurrence.current_retry_sequence = retry.retry_sequence,
+    occurrence.projection_updated_at = datetime()
 RETURN retry.retry_sequence AS retry_sequence,
        retry.attempt_count AS attempt_count,
        retry.lease_expires_at AS lease_expires_at
@@ -849,6 +860,7 @@ RETURN retry.retry_sequence AS retry_sequence,
 RESOLVE_STAGE_HISTORY_RETRY = (
     _ACTIVE_STAGE_FENCE
     + """
+MATCH (occurrence:StageHistoryOccurrence {occurrence_id: $occurrence_id})
 MATCH (retry:StageHistoryRetry {
   occurrence_id: $occurrence_id,
   retry_sequence: $retry_sequence,
@@ -859,7 +871,8 @@ MATCH (retry:StageHistoryRetry {
   lease_stream_generation: $stream_generation,
   lease_fencing_token: $fencing_token
 })
-WHERE retry.lease_expires_at >= datetime()
+WHERE EXISTS { MATCH (occurrence)-[:HAS_STAGE_HISTORY_RETRY]->(retry) }
+  AND retry.lease_expires_at >= datetime()
   AND $resolution IN ['resolved', 'rejected', 'quarantined']
 SET retry.status = $resolution,
     retry.resolution_decision_id = $resolution_decision_id,
@@ -872,6 +885,9 @@ SET retry.status = $resolution,
     retry.lease_fencing_token = NULL,
     retry.claimed_at = NULL,
     retry.lease_expires_at = NULL
+SET occurrence.retry_state = retry.status,
+    occurrence.current_retry_sequence = retry.retry_sequence,
+    occurrence.projection_updated_at = datetime()
 RETURN retry.retry_sequence AS retry_sequence,
        retry.status AS status
 """
@@ -880,6 +896,35 @@ RETURN retry.retry_sequence AS retry_sequence,
 
 # Compatibility alias; authority writes use the shared in-transaction ledger.
 APPEND_STAGE_HISTORY_AUTHORITY_TRANSITION = APPEND_CRM_HISTORY_AUTHORITY_DECISION
+
+
+PROJECT_STAGE_HISTORY_AUTHORITY_HEAD = (
+    _ACTIVE_STAGE_FENCE
+    + """
+MATCH (head:CrmHistoryAuthorityHead {
+  event_identity: $event_identity,
+  decision_id: $authority_decision_id,
+  head_version: $authority_head_version,
+  authority_token: $authority_token,
+  authority_state: $authority_state
+})
+MATCH (decision:CrmHistoryAuthorityDecision {
+  decision_id: $authority_decision_id,
+  head_version: $authority_head_version,
+  authority_token: $authority_token,
+  authority_state: $authority_state
+})-[:DECIDES_FOR]->(:CrmHistoryConflictGroup {event_identity: $event_identity})
+MATCH (occurrence:StageHistoryOccurrence {event_identity: $event_identity})
+WHERE occurrence.parse_scope = 'in_scope'
+  AND $authority_state IN [
+    'effective', 'withheld_parent', 'withheld_conflict', 'rejected', 'corrected'
+  ]
+SET occurrence.authority_state = head.authority_state,
+    occurrence.current_authority_decision_id = head.decision_id,
+    occurrence.projection_updated_at = datetime()
+RETURN count(occurrence) AS projected_occurrence_count
+"""
+)
 
 
 APPEND_STAGE_HISTORY_INVALIDATION_INTENTS = (
@@ -1296,6 +1341,11 @@ RETURN unit.unit_id AS unit_id,
 
 GET_STAGE_HISTORY_STATUS = """
 MATCH (logical:IngestionLogicalRun {logical_run_id: $logical_run_id})
+WHERE logical.source_key = 'bitrix_chat'
+  AND logical.mode IN [
+    'bounded_smoke_replay', 'capture_failure_accounting',
+    'parent_reconcile', 'conflict_review', 'correction_review'
+  ]
 OPTIONAL MATCH (logical)-[:ACTIVE_ATTEMPT]->(attempt:IngestRun)
 OPTIONAL MATCH (stream:BitrixIngestionStream {
   source_key: logical.source_key,
@@ -1311,6 +1361,7 @@ OPTIONAL MATCH (unit)-[:HAS_STAGE_HISTORY_ACCOUNTING]->(
   accounting:StageHistoryUnitAccounting
 )
 RETURN logical.logical_run_id AS logical_run_id,
+       logical.mode AS run_type,
        logical.status AS logical_status,
        attempt.ingest_run_id AS ingest_run_id,
        attempt.status AS attempt_status,
@@ -1318,6 +1369,7 @@ RETURN logical.logical_run_id AS logical_run_id,
        stream.stream_generation AS stream_generation,
        checkpoint.phase AS phase,
        checkpoint.revision AS checkpoint_revision,
+       checkpoint.last_page_sequence AS checkpoint_last_page_sequence,
        count(DISTINCT unit) AS unit_count,
        count(DISTINCT CASE WHEN unit.status = 'committed' THEN unit END)
          AS committed_unit_count,
@@ -1327,6 +1379,8 @@ RETURN logical.logical_run_id AS logical_run_id,
 
 GET_STAGE_HISTORY_RECONCILIATION = """
 MATCH (logical:IngestionLogicalRun {logical_run_id: $logical_run_id})
+WHERE logical.source_key = 'bitrix_chat'
+  AND logical.mode IN ['bounded_smoke_replay', 'capture_failure_accounting']
 CALL (logical) {
   OPTIONAL MATCH (logical)-[:HAS_STAGE_HISTORY_UNIT]->(unit:StageHistoryUnit)
   OPTIONAL MATCH (unit)-[:CONTAINS_STAGE_HISTORY_OCCURRENCE]->(
@@ -1417,22 +1471,6 @@ CALL (logical) {
       AND new_variant_count = accounting.new_variant_count
       AND existing_same_hash_count = accounting.existing_same_hash_count
       AND new_conflict_variant_count = accounting.new_conflict_variant_count
-      AND selected_active_count = accounting.selected_active_count
-      AND selected_pending_review_count = accounting.selected_pending_review_count
-      AND waiting_count = accounting.waiting_count
-      AND ambiguous_count = accounting.ambiguous_count
-      AND association_rejected_count = accounting.association_rejected_count
-      AND effective_count = accounting.effective_count
-      AND withheld_parent_count = accounting.withheld_parent_count
-      AND withheld_conflict_count = accounting.withheld_conflict_count
-      AND authority_rejected_count = accounting.authority_rejected_count
-      AND corrected_count = accounting.corrected_count
-      AND retry_none_count = accounting.retry_none_count
-      AND retry_pending_count = accounting.retry_pending_count
-      AND retry_claimed_count = accounting.retry_claimed_count
-      AND retry_resolved_count = accounting.retry_resolved_count
-      AND retry_rejected_count = accounting.retry_rejected_count
-      AND retry_quarantined_count = accounting.retry_quarantined_count
   } END) WHERE item IS NOT NULL] AS units
 }
 CALL (logical) {
@@ -1456,6 +1494,25 @@ CALL (logical) {
   WITH record, count(DISTINCT variant) AS variant_evidence_count
   RETURN count(CASE WHEN record IS NOT NULL AND variant_evidence_count <> 1 THEN 1 END)
     AS shared_variant_evidence_count
+}
+CALL (logical) {
+  OPTIONAL MATCH (logical)-[:HAS_STAGE_HISTORY_UNIT]->(:StageHistoryUnit)
+        -[:CONTAINS_STAGE_HISTORY_OCCURRENCE]->(occurrence:StageHistoryOccurrence)
+  OPTIONAL MATCH (occurrence)-[:OBSERVED_STAGE_HISTORY_VARIANT]->(
+    variant:CrmHistoryHashVariant
+  )
+  WITH occurrence, collect(DISTINCT variant) AS observed_variants
+  RETURN count(DISTINCT CASE WHEN occurrence.identity_hash_state IS NOT NULL
+    THEN [occurrence.event_identity, occurrence.canonical_hash] END)
+      AS occurrence_variant_identity_count,
+    count(CASE WHEN occurrence.identity_hash_state IS NOT NULL AND (
+      size(observed_variants) <> 1
+      OR observed_variants[0].event_identity <> occurrence.event_identity
+      OR observed_variants[0].canonical_hash <> occurrence.canonical_hash
+    ) THEN 1 END) AS invalid_occurrence_variant_link_count,
+    count(CASE WHEN occurrence.identity_hash_state IS NULL AND
+      size(observed_variants) <> 0 THEN 1 END)
+      AS invalid_empty_occurrence_variant_link_count
 }
 CALL (logical) {
   OPTIONAL MATCH (logical)-[:HAS_STAGE_HISTORY_UNIT]->(:StageHistoryUnit)
@@ -1581,7 +1638,9 @@ CALL (logical) {
   RETURN [unit IN collect(committed) WHERE unit IS NOT NULL |
     unit.page_sequence] AS committed_page_sequences,
     [unit IN collect(committed) WHERE unit IS NOT NULL |
-      unit.unit_id] AS committed_unit_ids
+      unit.unit_id] AS committed_unit_ids,
+    [unit IN collect(committed) WHERE unit IS NOT NULL |
+      unit.unit_digest] AS committed_unit_digests
 }
 CALL (logical) {
   OPTIONAL MATCH (logical)-[:HAS_STAGE_HISTORY_UNIT]->(unit:StageHistoryUnit)
@@ -1613,30 +1672,73 @@ CALL (logical) {
          coalesce(sum(accounting.existing_same_hash_count), 0)
            AS total_existing_same_hash_count,
          coalesce(sum(accounting.new_conflict_variant_count), 0)
-           AS total_new_conflict_variant_count,
-         coalesce(sum(accounting.selected_active_count), 0)
+           AS total_new_conflict_variant_count
+}
+CALL (logical) {
+  OPTIONAL MATCH (logical)-[:HAS_STAGE_HISTORY_UNIT]->(:StageHistoryUnit)
+        -[:CONTAINS_STAGE_HISTORY_OCCURRENCE]->(occurrence:StageHistoryOccurrence)
+  OPTIONAL MATCH (association:CrmHistoryParentAssociationDecision {
+    decision_id: occurrence.current_association_decision_id
+  })-[:ASSOCIATION_FOR]->(occurrence)
+  OPTIONAL MATCH (head:CrmHistoryAuthorityHead {event_identity: occurrence.event_identity})
+  OPTIONAL MATCH (occurrence)-[:HAS_STAGE_HISTORY_RETRY]->(retry:StageHistoryRetry)
+  WHERE retry.retry_sequence = occurrence.current_retry_sequence
+  RETURN count(CASE WHEN occurrence.association_state = 'selected_active' THEN 1 END)
            AS total_selected_active_count,
-         coalesce(sum(accounting.selected_pending_review_count), 0)
+         count(CASE WHEN occurrence.association_state = 'selected_pending_review' THEN 1 END)
            AS total_selected_pending_review_count,
-         coalesce(sum(accounting.waiting_count), 0) AS total_waiting_count,
-         coalesce(sum(accounting.ambiguous_count), 0) AS total_ambiguous_count,
-         coalesce(sum(accounting.association_rejected_count), 0)
+         count(CASE WHEN occurrence.association_state = 'waiting' THEN 1 END)
+           AS total_waiting_count,
+         count(CASE WHEN occurrence.association_state = 'ambiguous' THEN 1 END)
+           AS total_ambiguous_count,
+         count(CASE WHEN occurrence.association_state = 'rejected' THEN 1 END)
            AS total_association_rejected_count,
-         coalesce(sum(accounting.effective_count), 0) AS total_effective_count,
-         coalesce(sum(accounting.withheld_parent_count), 0)
+         count(CASE WHEN occurrence.authority_state = 'effective' THEN 1 END)
+           AS total_effective_count,
+         count(CASE WHEN occurrence.authority_state = 'withheld_parent' THEN 1 END)
            AS total_withheld_parent_count,
-         coalesce(sum(accounting.withheld_conflict_count), 0)
+         count(CASE WHEN occurrence.authority_state = 'withheld_conflict' THEN 1 END)
            AS total_withheld_conflict_count,
-         coalesce(sum(accounting.authority_rejected_count), 0)
+         count(CASE WHEN occurrence.authority_state = 'rejected' THEN 1 END)
            AS total_authority_rejected_count,
-         coalesce(sum(accounting.corrected_count), 0) AS total_corrected_count,
-         coalesce(sum(accounting.retry_none_count), 0) AS total_retry_none_count,
-         coalesce(sum(accounting.retry_pending_count), 0) AS total_retry_pending_count,
-         coalesce(sum(accounting.retry_claimed_count), 0) AS total_retry_claimed_count,
-         coalesce(sum(accounting.retry_resolved_count), 0) AS total_retry_resolved_count,
-         coalesce(sum(accounting.retry_rejected_count), 0) AS total_retry_rejected_count,
-         coalesce(sum(accounting.retry_quarantined_count), 0)
-           AS total_retry_quarantined_count
+         count(CASE WHEN occurrence.authority_state = 'corrected' THEN 1 END)
+           AS total_corrected_count,
+         count(CASE WHEN occurrence.retry_state = 'none' THEN 1 END)
+           AS total_retry_none_count,
+         count(CASE WHEN occurrence.retry_state = 'pending' THEN 1 END)
+           AS total_retry_pending_count,
+         count(CASE WHEN occurrence.retry_state = 'claimed' THEN 1 END)
+           AS total_retry_claimed_count,
+         count(CASE WHEN occurrence.retry_state = 'resolved' THEN 1 END)
+           AS total_retry_resolved_count,
+         count(CASE WHEN occurrence.retry_state = 'rejected' THEN 1 END)
+           AS total_retry_rejected_count,
+         count(CASE WHEN occurrence.retry_state = 'quarantined' THEN 1 END)
+           AS total_retry_quarantined_count,
+         count(CASE WHEN occurrence.identity_hash_state IS NOT NULL AND (
+           association IS NULL
+           OR association.occurrence_id <> occurrence.occurrence_id
+           OR association.association_state <> occurrence.association_state
+         ) THEN 1 END) AS invalid_current_association_projection_count,
+         count(CASE WHEN occurrence.identity_hash_state IS NULL AND (
+           occurrence.association_state IS NOT NULL
+           OR occurrence.current_association_decision_id IS NOT NULL
+         ) THEN 1 END) AS invalid_empty_association_projection_count,
+         count(CASE WHEN occurrence.identity_hash_state IS NOT NULL AND (
+           head IS NULL
+           OR head.decision_id <> occurrence.current_authority_decision_id
+           OR head.authority_state <> occurrence.authority_state
+         ) THEN 1 END) AS invalid_current_authority_projection_count,
+         count(CASE WHEN occurrence.identity_hash_state IS NULL AND (
+           occurrence.authority_state IS NOT NULL
+           OR occurrence.current_authority_decision_id IS NOT NULL
+         ) THEN 1 END) AS invalid_empty_authority_projection_count,
+         count(CASE WHEN occurrence.retry_state <> 'none' AND (
+           retry IS NULL OR retry.status <> occurrence.retry_state
+         ) THEN 1 END) AS invalid_current_retry_projection_count,
+         count(CASE WHEN occurrence.retry_state = 'none' AND
+           occurrence.current_retry_sequence IS NOT NULL
+         THEN 1 END) AS invalid_empty_retry_projection_count
 }
 CALL (logical) {
   OPTIONAL MATCH (checkpoint:IngestionCheckpoint {
@@ -1646,6 +1748,7 @@ CALL (logical) {
   RETURN checkpoint.revision AS checkpoint_revision,
          checkpoint.last_page_sequence AS checkpoint_last_page_sequence,
          checkpoint.cursor_json AS checkpoint_cursor_json,
+         checkpoint.source_window_json AS checkpoint_source_window_json,
          checkpoint.replay_boundary AS replay_boundary,
          checkpoint.last_committed_record_id AS last_committed_unit_id,
          checkpoint.committed_count AS checkpoint_committed_count,
@@ -1664,10 +1767,13 @@ CALL (logical) {
 }
 WITH logical, units, variant_count, source_record_count,
      invalid_variant_evidence_count, shared_variant_evidence_count,
+     occurrence_variant_identity_count, invalid_occurrence_variant_link_count,
+     invalid_empty_occurrence_variant_link_count,
      invalid_parent_association_count,
      invalid_authority_head_count, invalid_effective_head_count,
      invalid_invalidation_transition_count,
      invalidation_intent_count, committed_page_sequences, committed_unit_ids,
+     committed_unit_digests,
      nonterminal_unit_count, total_fetched_count,
      total_malformed_excluded_count, total_capture_rejected_valid_count,
      total_excluded_out_of_scope_count, total_canonical_effective_count,
@@ -1682,7 +1788,14 @@ WITH logical, units, variant_count, source_record_count,
      total_corrected_count, total_retry_none_count, total_retry_pending_count,
      total_retry_claimed_count, total_retry_resolved_count,
      total_retry_rejected_count, total_retry_quarantined_count,
+     invalid_current_association_projection_count,
+     invalid_empty_association_projection_count,
+     invalid_current_authority_projection_count,
+     invalid_empty_authority_projection_count,
+     invalid_current_retry_projection_count,
+     invalid_empty_retry_projection_count,
      checkpoint_revision, checkpoint_last_page_sequence, checkpoint_cursor_json,
+     checkpoint_source_window_json,
      replay_boundary,
      last_committed_unit_id,
      checkpoint_committed_count, checkpoint_duplicate_count,
@@ -1691,6 +1804,7 @@ WITH logical, units, variant_count, source_record_count,
      CASE WHEN size(committed_page_sequences) = 0 THEN []
           ELSE range(1, size(committed_page_sequences)) END AS expected_pages
 RETURN logical.logical_run_id AS logical_run_id,
+       logical.mode AS run_type,
        units,
        all(unit IN units WHERE unit.balanced) AS units_balanced,
        variant_count,
@@ -1698,8 +1812,14 @@ RETURN logical.logical_run_id AS logical_run_id,
        invalid_variant_evidence_count,
        invalid_variant_evidence_count = 0
          AND shared_variant_evidence_count = 0
+         AND invalid_occurrence_variant_link_count = 0
+         AND invalid_empty_occurrence_variant_link_count = 0
+         AND occurrence_variant_identity_count = variant_count
          AND variant_count = source_record_count AS variant_source_records_balanced,
        shared_variant_evidence_count,
+       occurrence_variant_identity_count,
+       invalid_occurrence_variant_link_count,
+       invalid_empty_occurrence_variant_link_count,
        invalid_parent_association_count,
        invalid_parent_association_count = 0 AS parent_associations_balanced,
        invalid_authority_head_count,
@@ -1729,6 +1849,15 @@ RETURN logical.logical_run_id AS logical_run_id,
          AS checkpoint_last_unit_balanced,
        nonterminal_unit_count,
        total_fetched_count,
+       total_malformed_excluded_count,
+       total_capture_rejected_valid_count,
+       total_excluded_out_of_scope_count,
+       total_canonical_effective_count,
+       total_canonical_pending_parent_count,
+       total_parent_waiting_count,
+       total_parent_ambiguous_count,
+       total_same_hash_replay_count,
+       total_differing_hash_conflict_count,
        total_new_variant_count,
        total_existing_same_hash_count,
        total_new_conflict_variant_count,
@@ -1748,6 +1877,28 @@ RETURN logical.logical_run_id AS logical_run_id,
        total_retry_resolved_count,
        total_retry_rejected_count,
        total_retry_quarantined_count,
+       total_selected_active_count + total_selected_pending_review_count +
+         total_waiting_count + total_ambiguous_count +
+         total_association_rejected_count =
+         total_new_variant_count + total_existing_same_hash_count +
+         total_new_conflict_variant_count AS current_association_partition_balanced,
+       total_effective_count + total_withheld_parent_count +
+         total_withheld_conflict_count + total_authority_rejected_count +
+         total_corrected_count =
+         total_new_variant_count + total_existing_same_hash_count +
+         total_new_conflict_variant_count AS current_authority_partition_balanced,
+       total_retry_none_count + total_retry_pending_count +
+         total_retry_claimed_count + total_retry_resolved_count +
+         total_retry_rejected_count + total_retry_quarantined_count =
+         total_fetched_count AS current_retry_partition_balanced,
+       invalid_current_association_projection_count,
+       invalid_empty_association_projection_count,
+       invalid_current_authority_projection_count,
+       invalid_empty_authority_projection_count,
+       invalid_current_retry_projection_count,
+       invalid_empty_retry_projection_count,
+       checkpoint_source_window_json,
+       committed_unit_digests,
        checkpoint_committed_count =
          total_canonical_effective_count + total_canonical_pending_parent_count +
          total_parent_waiting_count + total_parent_ambiguous_count +
@@ -1776,6 +1927,7 @@ STAGE_HISTORY_MUTATION_QUERIES: tuple[str, ...] = (
     UPSERT_STAGE_HISTORY_FAILED_OCCURRENCE,
     UPSERT_STAGE_HISTORY_VARIANT_SOURCE_RECORD,
     APPEND_STAGE_HISTORY_PARENT_DECISION,
+    PROJECT_STAGE_HISTORY_AUTHORITY_HEAD,
     PERSIST_STAGE_HISTORY_REVIEW_COMMAND,
     CLAIM_STAGE_HISTORY_REVIEW_COMMAND,
     COMPLETE_STAGE_HISTORY_REVIEW_COMMAND,
@@ -1792,6 +1944,9 @@ GET_STAGE_HISTORY_REVIEW_ASSOCIATION = (
     + """
 MATCH (association:CrmHistoryParentAssociationDecision {
   decision_id: $association_decision_id,
+  event_identity: $event_identity
+})-[:ASSOCIATION_FOR]->(occurrence:StageHistoryOccurrence {
+  occurrence_id: $occurrence_id,
   event_identity: $event_identity
 })
 WHERE association.association_state IN ['selected_active', 'selected_pending_review']
@@ -1874,6 +2029,9 @@ MATCH (occurrence:StageHistoryOccurrence {
 })
 RETURN occurrence.occurrence_id AS occurrence_id,
        occurrence.canonical_hash AS canonical_hash,
+       occurrence.association_state AS association_state,
+       occurrence.current_association_decision_id AS current_association_decision_id,
+       occurrence.retry_state AS retry_state,
        occurrence.logical_parent_source_system AS logical_parent_source_system,
        occurrence.logical_parent_source_record_id AS logical_parent_source_record_id,
        occurrence.source_observed_at AS source_observed_at
@@ -1927,6 +2085,7 @@ RETURN occurrence.logical_parent_source_system AS logical_parent_source_system,
 RESOLVE_STAGE_HISTORY_RETRY_BY_REVIEW = (
     _ACTIVE_STAGE_FENCE
     + """
+MATCH (occurrence:StageHistoryOccurrence {occurrence_id: $occurrence_id})
 MATCH (retry:StageHistoryRetry {
   occurrence_id: $occurrence_id,
   retry_sequence: $retry_sequence,
@@ -1937,13 +2096,16 @@ MATCH (retry:StageHistoryRetry {
   lease_stream_generation: $stream_generation,
   lease_fencing_token: $fencing_token
 })
-WHERE retry.lease_expires_at >= datetime()
+WHERE EXISTS { MATCH (occurrence)-[:HAS_STAGE_HISTORY_RETRY]->(retry) }
+  AND retry.lease_expires_at >= datetime()
   AND retry.review_command_id = $review_command_id
-  AND $resolution IN ['resolved', 'rejected', 'quarantined']
+  AND $resolution IN ['pending', 'resolved', 'rejected', 'quarantined']
 SET retry.status = $resolution,
     retry.resolution_decision_id = $resolution_decision_id,
     retry.review_command_id = $review_command_id,
-    retry.resolved_at = datetime(),
+    retry.next_attempt_at = CASE WHEN $resolution = 'pending'
+      THEN datetime($next_attempt_at) ELSE retry.next_attempt_at END,
+    retry.resolved_at = CASE WHEN $resolution = 'pending' THEN NULL ELSE datetime() END,
     retry.updated_at = datetime(),
     retry.lease_owner = NULL,
     retry.lease_attempt_id = NULL,
@@ -1952,7 +2114,72 @@ SET retry.status = $resolution,
     retry.lease_fencing_token = NULL,
     retry.claimed_at = NULL,
     retry.lease_expires_at = NULL
+SET occurrence.retry_state = retry.status,
+    occurrence.current_retry_sequence = retry.retry_sequence,
+    occurrence.projection_updated_at = datetime()
 RETURN count(retry) AS resolved_retry_count
+"""
+)
+
+
+PROJECT_STAGE_HISTORY_REVIEW_OUTCOME = (
+    _ACTIVE_STAGE_FENCE
+    + """
+MATCH (command:StageHistoryReviewCommand {
+  command_id: $command_id,
+  target_event_identity: $event_identity,
+  target_occurrence_id: $occurrence_id,
+  status: 'claimed'
+})
+MATCH (target:StageHistoryOccurrence {
+  occurrence_id: $occurrence_id,
+  event_identity: $event_identity
+})
+MATCH (head:CrmHistoryAuthorityHead {
+  event_identity: $event_identity,
+  decision_id: $authority_decision_id,
+  head_version: $authority_head_version,
+  authority_token: $authority_token,
+  authority_state: $authority_state
+})
+MATCH (decision:CrmHistoryAuthorityDecision {
+  decision_id: $authority_decision_id,
+  review_command_id: $command_id,
+  head_version: $authority_head_version,
+  authority_token: $authority_token,
+  authority_state: $authority_state
+})-[:DECIDES_FOR]->(:CrmHistoryConflictGroup {event_identity: $event_identity})
+WHERE command.lease_owner = $lease_owner
+  AND command.lease_attempt_id = $ingest_run_id
+  AND command.lease_attempt_generation = $attempt_generation
+  AND command.lease_stream_generation = $stream_generation
+  AND command.lease_fencing_token = $fencing_token
+  AND command.lease_expires_at >= datetime()
+  AND $association_state IN [
+    'selected_active', 'selected_pending_review', 'waiting', 'ambiguous', 'rejected'
+  ]
+  AND $authority_state IN [
+    'effective', 'withheld_parent', 'withheld_conflict', 'rejected', 'corrected'
+  ]
+  AND ($retry_state IS NULL OR $retry_state IN [
+    'none', 'pending', 'claimed', 'resolved', 'rejected', 'quarantined'
+  ])
+SET target.association_state = $association_state,
+    target.current_association_decision_id = coalesce(
+      $association_decision_id, target.current_association_decision_id
+    ),
+    target.retry_state = coalesce($retry_state, target.retry_state),
+    target.projection_updated_at = datetime()
+WITH target, head
+MATCH (event_occurrence:StageHistoryOccurrence {event_identity: $event_identity})
+WHERE event_occurrence.parse_scope = 'in_scope'
+SET event_occurrence.authority_state = head.authority_state,
+    event_occurrence.current_authority_decision_id = head.decision_id,
+    event_occurrence.projection_updated_at = datetime()
+RETURN target.association_state AS association_state,
+       target.authority_state AS authority_state,
+       target.retry_state AS retry_state,
+       count(event_occurrence) AS projected_occurrence_count
 """
 )
 
@@ -1969,12 +2196,16 @@ MATCH (retry:StageHistoryRetry {
   occurrence_id: $occurrence_id,
   retry_sequence: $retry_sequence
 })
+MATCH (occurrence:StageHistoryOccurrence {occurrence_id: $occurrence_id})
 WHERE command.lease_owner = $lease_owner
   AND command.lease_attempt_id = $ingest_run_id
   AND command.lease_attempt_generation = $attempt_generation
   AND command.lease_stream_generation = $stream_generation
   AND command.lease_fencing_token = $fencing_token
   AND command.lease_expires_at >= datetime()
+  AND EXISTS { MATCH (occurrence)-[:HAS_STAGE_HISTORY_RETRY]->(retry) }
+  AND coalesce(retry.attempt_count, 0) < retry.max_attempts
+  AND retry.next_attempt_at <= datetime()
   AND (retry.status = 'pending'
     OR (retry.status = 'claimed' AND retry.lease_expires_at < datetime()))
 SET retry.status = 'claimed',
@@ -1984,11 +2215,17 @@ SET retry.status = 'claimed',
     retry.lease_stream_generation = $stream_generation,
     retry.lease_fencing_token = $fencing_token,
     retry.lease_expires_at = datetime($lease_expires_at),
+    retry.attempt_count = coalesce(retry.attempt_count, 0) + 1,
     retry.claimed_at = datetime(),
     retry.review_command_id = $review_command_id,
     retry.updated_at = datetime()
+SET occurrence.retry_state = retry.status,
+    occurrence.current_retry_sequence = retry.retry_sequence,
+    occurrence.projection_updated_at = datetime()
 RETURN retry.retry_sequence AS retry_sequence,
-       retry.status AS status
+       retry.status AS status,
+       retry.attempt_count AS attempt_count,
+       retry.max_attempts AS max_attempts
 """
 )
 
@@ -1999,6 +2236,7 @@ STAGE_HISTORY_REVIEW_MUTATION_QUERIES: tuple[str, ...] = (
     COMPLETE_STAGE_HISTORY_REVIEW_COMMAND,
     CLAIM_STAGE_HISTORY_RETRY_BY_REVIEW,
     RESOLVE_STAGE_HISTORY_RETRY_BY_REVIEW,
+    PROJECT_STAGE_HISTORY_REVIEW_OUTCOME,
 )
 
 
@@ -2029,4 +2267,84 @@ RETURN exact_count,
        size(variants) AS variant_count,
        association_state,
        head.authority_state AS current_authority_state
+"""
+
+GET_STAGE_HISTORY_REVIEW_COMMAND_CONTEXT = """
+MATCH (logical:IngestionLogicalRun)-[:HAS_STAGE_HISTORY_REVIEW_COMMAND]->(
+  command:StageHistoryReviewCommand {command_id: $command_id}
+)
+WHERE logical.source_key = 'bitrix_chat'
+  AND logical.mode IN [
+    'parent_reconcile', 'conflict_review', 'correction_review'
+  ]
+MATCH (logical)-[:ACTIVE_ATTEMPT]->(attempt:IngestRun)
+MATCH (stream:BitrixIngestionStream {
+  source_key: 'bitrix_chat',
+  stream_key: 'crm_stage_history',
+  logical_run_id: logical.logical_run_id,
+  ingest_run_id: attempt.ingest_run_id,
+  attempt_generation: logical.active_generation,
+  status: 'active'
+})
+WHERE attempt.generation = logical.active_generation
+RETURN logical.logical_run_id AS logical_run_id,
+       logical.mode AS run_type,
+       logical.status AS logical_status,
+       logical.configuration_fingerprint AS configuration_fingerprint,
+       attempt.ingest_run_id AS ingest_run_id,
+       attempt.worker_task_id AS worker_task_id,
+       attempt.generation AS attempt_generation,
+       stream.stream_generation AS stream_generation,
+       stream.fencing_token AS fencing_token,
+       command.command_id AS command_id,
+       command.review_kind AS review_kind,
+       command.status AS command_status,
+       command.target_event_identity AS target_event_identity,
+       command.target_occurrence_id AS target_occurrence_id,
+       command.request_payload_digest AS request_payload_digest,
+       command.reviewer_actor AS reviewer_actor,
+       command.authorization_reference AS authorization_reference,
+       toString(command.available_at) AS available_at,
+       command.expected_head_version AS expected_head_version,
+       command.expected_authority_token AS expected_authority_token,
+       command.expected_authority_state AS expected_authority_state,
+       command.expected_variant_set_digest AS expected_variant_set_digest,
+       command.retry_sequence AS retry_sequence,
+       command.selected_variant_hash AS selected_variant_hash,
+       command.selected_association_decision_id AS selected_association_decision_id,
+       command.correction_of_decision_id AS correction_of_decision_id
+"""
+
+
+GET_STAGE_HISTORY_REVIEW_RESUME_CONTEXT = """
+MATCH (logical:IngestionLogicalRun)-[:HAS_STAGE_HISTORY_REVIEW_COMMAND]->(
+  command:StageHistoryReviewCommand {command_id: $command_id}
+)
+WHERE logical.source_key = 'bitrix_chat'
+  AND logical.mode IN [
+    'parent_reconcile', 'conflict_review', 'correction_review'
+  ]
+OPTIONAL MATCH (logical)-[:ACTIVE_ATTEMPT]->(attempt:IngestRun)
+RETURN logical.logical_run_id AS logical_run_id,
+       logical.mode AS run_type,
+       logical.status AS logical_status,
+       logical.configuration_fingerprint AS configuration_fingerprint,
+       attempt.worker_task_id AS worker_task_id,
+       command.command_id AS command_id,
+       command.review_kind AS review_kind,
+       command.status AS command_status,
+       command.target_event_identity AS target_event_identity,
+       command.target_occurrence_id AS target_occurrence_id,
+       command.request_payload_digest AS request_payload_digest,
+       command.reviewer_actor AS reviewer_actor,
+       command.authorization_reference AS authorization_reference,
+       toString(command.available_at) AS available_at,
+       command.expected_head_version AS expected_head_version,
+       command.expected_authority_token AS expected_authority_token,
+       command.expected_authority_state AS expected_authority_state,
+       command.expected_variant_set_digest AS expected_variant_set_digest,
+       command.retry_sequence AS retry_sequence,
+       command.selected_variant_hash AS selected_variant_hash,
+       command.selected_association_decision_id AS selected_association_decision_id,
+       command.correction_of_decision_id AS correction_of_decision_id
 """

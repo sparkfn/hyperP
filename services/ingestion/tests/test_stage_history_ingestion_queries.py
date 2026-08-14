@@ -19,9 +19,14 @@ from src.graph.queries.stage_history_ingestion import (
     GET_STAGE_HISTORY_AUTHORITY_HEAD,
     GET_STAGE_HISTORY_RECONCILIATION,
     GET_STAGE_HISTORY_REVIEW_ASSOCIATION,
+    GET_STAGE_HISTORY_REVIEW_COMMAND_CONTEXT,
+    GET_STAGE_HISTORY_REVIEW_RESUME_CONTEXT,
     GET_STAGE_HISTORY_REVIEW_VARIANT_SET,
+    GET_STAGE_HISTORY_STATUS,
     LOCK_STAGE_HISTORY_UNIT_FENCE,
     PERSIST_STAGE_HISTORY_REVIEW_COMMAND,
+    PROJECT_STAGE_HISTORY_AUTHORITY_HEAD,
+    PROJECT_STAGE_HISTORY_REVIEW_OUTCOME,
     RESOLVE_STAGE_HISTORY_PARENT_CANDIDATES,
     RESOLVE_STAGE_HISTORY_RETRY,
     RESOLVE_STAGE_HISTORY_RETRY_BY_REVIEW,
@@ -198,11 +203,18 @@ def test_parent_resolution_fails_closed_and_retry_claims_are_fenced() -> None:
         in APPEND_STAGE_HISTORY_PARENT_DECISION
     )
     assert "AND recounted_parent IS NOT NULL" in APPEND_STAGE_HISTORY_PARENT_DECISION
+    assert "occurrence.current_association_decision_id = decision.decision_id" in (
+        APPEND_STAGE_HISTORY_PARENT_DECISION
+    )
 
     assert "retry.status = 'pending'" in UPSERT_STAGE_HISTORY_RETRY
     assert "retry.lease_expires_at < datetime()" in CLAIM_STAGE_HISTORY_RETRY
     assert "retry.lease_fencing_token = $fencing_token" in CLAIM_STAGE_HISTORY_RETRY
     assert "coalesce(retry.attempt_count, 0) < retry.max_attempts" in (CLAIM_STAGE_HISTORY_RETRY)
+    assert "retry.next_attempt_at <= datetime()" in CLAIM_STAGE_HISTORY_RETRY_BY_REVIEW
+    assert "retry.attempt_count = coalesce(retry.attempt_count, 0) + 1" in (
+        CLAIM_STAGE_HISTORY_RETRY_BY_REVIEW
+    )
     assert "lease_fencing_token: $fencing_token" in RESOLVE_STAGE_HISTORY_RETRY
     for lease_field in (
         "lease_attempt_id",
@@ -213,6 +225,35 @@ def test_parent_resolution_fails_closed_and_retry_claims_are_fenced() -> None:
     ):
         assert f"retry.{lease_field} = NULL" in RESOLVE_STAGE_HISTORY_RETRY
     assert "$resolution IN ['resolved', 'rejected', 'quarantined']" in (RESOLVE_STAGE_HISTORY_RETRY)
+    assert "$resolution IN ['pending', 'resolved', 'rejected', 'quarantined']" in (
+        RESOLVE_STAGE_HISTORY_RETRY_BY_REVIEW
+    )
+    assert "datetime($next_attempt_at)" in RESOLVE_STAGE_HISTORY_RETRY_BY_REVIEW
+    assert "occurrence.retry_state = retry.status" in CLAIM_STAGE_HISTORY_RETRY
+    assert "occurrence.retry_state = retry.status" in RESOLVE_STAGE_HISTORY_RETRY
+
+
+def test_current_projections_are_fenced_without_rewriting_source_unit_history() -> None:
+    for query in (
+        PROJECT_STAGE_HISTORY_AUTHORITY_HEAD,
+        PROJECT_STAGE_HISTORY_REVIEW_OUTCOME,
+        APPEND_STAGE_HISTORY_PARENT_DECISION,
+        CLAIM_STAGE_HISTORY_RETRY,
+        RESOLVE_STAGE_HISTORY_RETRY,
+        CLAIM_STAGE_HISTORY_RETRY_BY_REVIEW,
+        RESOLVE_STAGE_HISTORY_RETRY_BY_REVIEW,
+    ):
+        assert "terminal_disposition =" not in query
+
+    assert "occurrence.current_authority_decision_id = head.decision_id" in (
+        PROJECT_STAGE_HISTORY_AUTHORITY_HEAD
+    )
+    assert "MATCH (command:StageHistoryReviewCommand" in PROJECT_STAGE_HISTORY_REVIEW_OUTCOME
+    assert "command.lease_owner = $lease_owner" in PROJECT_STAGE_HISTORY_REVIEW_OUTCOME
+    assert "event_occurrence.authority_state = head.authority_state" in (
+        PROJECT_STAGE_HISTORY_REVIEW_OUTCOME
+    )
+    assert "target.association_state = $association_state" in (PROJECT_STAGE_HISTORY_REVIEW_OUTCOME)
 
 
 def test_authority_replay_is_attempt_independent_and_head_cas_is_exact() -> None:
@@ -288,6 +329,18 @@ def test_invalidation_and_accounting_queries_encode_required_equations() -> None
     assert "invalid_variant_evidence_count" in GET_STAGE_HISTORY_RECONCILIATION
     assert "checkpoint_last_unit_balanced" in GET_STAGE_HISTORY_RECONCILIATION
     assert "checkpoint_cursor_page_balanced" in GET_STAGE_HISTORY_RECONCILIATION
+
+    unit_balance = GET_STAGE_HISTORY_RECONCILIATION.split(
+        "balanced: accounting IS NOT NULL", maxsplit=1
+    )[1].split("} END)", maxsplit=1)[0]
+    assert "terminal_disposition" not in unit_balance
+    assert "selected_active_count = accounting.selected_active_count" not in unit_balance
+    assert "effective_count = accounting.effective_count" not in unit_balance
+    assert "retry_resolved_count = accounting.retry_resolved_count" not in unit_balance
+    assert "invalid_current_authority_projection_count" in GET_STAGE_HISTORY_RECONCILIATION
+    assert "current_authority_partition_balanced" in GET_STAGE_HISTORY_RECONCILIATION
+    assert "occurrence_variant_identity_count = variant_count" in (GET_STAGE_HISTORY_RECONCILIATION)
+    assert "invalid_occurrence_variant_link_count = 0" in (GET_STAGE_HISTORY_RECONCILIATION)
     assert "nonterminal_unit_count" in GET_STAGE_HISTORY_RECONCILIATION
     for partition in (
         "total_new_variant_count",
@@ -330,6 +383,18 @@ def test_review_commands_are_durable_fenced_and_lease_owned() -> None:
     assert "command.lease_fencing_token = $fencing_token" in (COMPLETE_STAGE_HISTORY_REVIEW_COMMAND)
     assert "command.lease_fencing_token = NULL" in (COMPLETE_STAGE_HISTORY_REVIEW_COMMAND)
     assert "result_authority_decision_id" in COMPLETE_STAGE_HISTORY_REVIEW_COMMAND
+
+
+def test_operator_reads_fail_closed_to_stage_history_run_types() -> None:
+    for query in (GET_STAGE_HISTORY_STATUS, GET_STAGE_HISTORY_RECONCILIATION):
+        assert "logical.source_key = 'bitrix_chat'" in query
+    assert "'bounded_smoke_replay', 'capture_failure_accounting'" in (
+        GET_STAGE_HISTORY_RECONCILIATION
+    )
+    assert "logical.mode AS run_type" in GET_STAGE_HISTORY_RECONCILIATION
+    assert "'parent_reconcile', 'conflict_review', 'correction_review'" in (
+        GET_STAGE_HISTORY_STATUS
+    )
     assert "status: 'completed'" in GET_COMPLETED_STAGE_HISTORY_REVIEW_COMMAND
     assert "ORDER BY variant.canonical_hash" in GET_STAGE_HISTORY_REVIEW_VARIANT_SET
     assert "size(selected_parents) = 1" in GET_STAGE_HISTORY_REVIEW_ASSOCIATION
@@ -340,6 +405,21 @@ def test_review_commands_are_durable_fenced_and_lease_owned() -> None:
     assert "selected_association_current" in GET_STAGE_HISTORY_AUTHORITY_HEAD
     assert "selected_parent.lifecycle_status = 'active'" in GET_STAGE_HISTORY_AUTHORITY_HEAD
     assert "[:FROM_SOURCE]" in GET_STAGE_HISTORY_AUTHORITY_HEAD
+    assert "command.request_payload_digest AS request_payload_digest" in (
+        GET_STAGE_HISTORY_REVIEW_RESUME_CONTEXT
+    )
+    assert "toString(command.available_at) AS available_at" in (
+        GET_STAGE_HISTORY_REVIEW_RESUME_CONTEXT
+    )
+    assert "logical.status AS logical_status" in GET_STAGE_HISTORY_REVIEW_RESUME_CONTEXT
+    for query in (
+        GET_STAGE_HISTORY_REVIEW_COMMAND_CONTEXT,
+        GET_STAGE_HISTORY_REVIEW_RESUME_CONTEXT,
+    ):
+        assert "logical.source_key = 'bitrix_chat'" in query
+        assert "'parent_reconcile', 'conflict_review', 'correction_review'" in query
+        assert "logical.configuration_fingerprint AS configuration_fingerprint" in query
+        assert "command.request_payload_digest AS request_payload_digest" in query
 
 
 def test_stage_query_primitives_are_reexported_on_compatibility_surface() -> None:

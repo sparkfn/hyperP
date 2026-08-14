@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -47,6 +48,7 @@ class StageHistoryUnitRepository(Protocol):
 class StageHistoryPipelineResult:
     checkpoint: StageHistoryCheckpointSnapshot
     units: tuple[StageHistoryUnitResult, ...]
+    stopped: bool = False
 
 
 def initial_replay_checkpoint(
@@ -109,6 +111,7 @@ def replay_stage_history_artifact(
     repository: StageHistoryUnitRepository,
     checkpoint: StageHistoryCheckpointSnapshot,
     fence: FenceContext,
+    stop_requested: Callable[[], bool] | None = None,
 ) -> StageHistoryPipelineResult:
     """Replay every immutable successful page, one fenced transaction per page."""
     if artifact.manifest.artifact_kind != "stage-ingestion":
@@ -117,6 +120,8 @@ def replay_stage_history_artifact(
     current = checkpoint
     results: list[StageHistoryUnitResult] = []
     for page in artifact.pages:
+        if stop_requested is not None and stop_requested():
+            return StageHistoryPipelineResult(current, tuple(results), stopped=True)
         if page.page_sequence <= current.committed_unit_count:
             continue
         occurrences: list[StageHistoryOccurrence] = []
@@ -158,6 +163,7 @@ def record_stage_history_capture_failure(
     repository: StageHistoryUnitRepository,
     checkpoint: StageHistoryCheckpointSnapshot,
     fence: FenceContext,
+    stop_requested: Callable[[], bool] | None = None,
 ) -> StageHistoryPipelineResult:
     """Persist failed-capture accounting without canonical/domain mutations."""
     if artifact.manifest.artifact_kind != "stage-ingestion-failed":
@@ -166,6 +172,8 @@ def record_stage_history_capture_failure(
     current = checkpoint
     results: list[StageHistoryUnitResult] = []
     for page in artifact.pages:
+        if stop_requested is not None and stop_requested():
+            return StageHistoryPipelineResult(current, tuple(results), stopped=True)
         if page.page_sequence <= current.committed_unit_count:
             continue
         occurrences = tuple(_failure_occurrence(row) for row in page.rows)

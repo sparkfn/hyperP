@@ -293,14 +293,19 @@ class VerifiedStageIngestionArtifact:
 @dataclass(frozen=True, slots=True)
 class StageArtifactReplayAuthorization:
     reference: str
+    actor: str
     artifact_id: str
     manifest_hmac: str
     artifact_kind: str
     manifest_schema_version: int
+    repository_sha: str
+    image_digest: str
     source_contract_uuid: str
     entity_type_id: str
     owner_artifact_id: str
+    owner_manifest_hmac: str
     stage_artifact_id: str
+    stage_manifest_hmac: str
     qualification_evidence_digest: str
     configuration_digest: str
     limits_digest: str
@@ -310,13 +315,18 @@ class StageArtifactReplayAuthorization:
     def __post_init__(self) -> None:
         values = (
             self.reference,
+            self.actor,
             self.artifact_id,
             self.manifest_hmac,
             self.artifact_kind,
+            self.repository_sha,
+            self.image_digest,
             self.source_contract_uuid,
             self.entity_type_id,
             self.owner_artifact_id,
+            self.owner_manifest_hmac,
             self.stage_artifact_id,
+            self.stage_manifest_hmac,
             self.qualification_evidence_digest,
             self.configuration_digest,
             self.limits_digest,
@@ -370,6 +380,10 @@ def read_stage_ingestion_artifact(
     _validate_replay_authorization(manifest, authorization)
     owner = store.verify(_metadata_string(manifest, "owner_artifact_id"))
     stage = store.verify(_metadata_string(manifest, "stage_artifact_id"))
+    if not hmac.compare_digest(owner.manifest_hmac, authorization.owner_manifest_hmac):
+        raise ValueError("stage ingestion owner manifest HMAC changed")
+    if not hmac.compare_digest(stage.manifest_hmac, authorization.stage_manifest_hmac):
+        raise ValueError("stage ingestion stage manifest HMAC changed")
     _validate_ingestion_bindings(manifest, owner, stage)
     qualified = qualify_artifacts(
         store,
@@ -543,6 +557,8 @@ def _validate_replay_authorization(
         raise ValueError("sealed stage ingestion manifest HMAC changed")
     expected_metadata = {
         "authorization_reference": authorization.reference,
+        "authorization_actor_digest": "sha256:"
+        + hashlib.sha256(authorization.actor.encode("utf-8")).hexdigest(),
         "entity_type_id": authorization.entity_type_id,
         "owner_artifact_id": authorization.owner_artifact_id,
         "stage_artifact_id": authorization.stage_artifact_id,
@@ -560,6 +576,10 @@ def _validate_replay_authorization(
         authorization.source_contract_uuid,
     ):
         raise ValueError("sealed stage ingestion source contract changed")
+    if not hmac.compare_digest(manifest.provenance.repository_sha, authorization.repository_sha):
+        raise ValueError("sealed stage ingestion repository provenance changed")
+    if not hmac.compare_digest(manifest.provenance.image_digest, authorization.image_digest):
+        raise ValueError("sealed stage ingestion image provenance changed")
     if not hmac.compare_digest(
         manifest.provenance.configuration_digest,
         authorization.configuration_digest,

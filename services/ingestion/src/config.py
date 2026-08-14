@@ -151,6 +151,15 @@ class Settings(BaseSettings):
     bitrix_openlines_api_max_attempts: int = Field(default=3, ge=1, le=10)
     bitrix_openlines_api_request_delay_seconds: float = Field(default=0.5, ge=0)
 
+    # Restricted stage-history artifacts. The signing secret is supplied only
+    # to the worker/operator runtime; it must never be placed in task payloads.
+    stage_history_artifact_primary_root: str = "/app/restricted/stage-history"
+    stage_history_artifact_backup_root: str = "/app/restricted/stage-history-backup"
+    stage_history_artifact_signing_key_id: str = ""
+    stage_history_artifact_signing_key_secret: SecretStr = SecretStr("")
+    stage_history_repository_sha: str = ""
+    stage_history_image_digest: str = ""
+
     # WhatsApp chat database (PostgreSQL) ------------------------------------
     # Set WHATSAPP_CHAT_SSH_HOST to enable SSH tunnelling.
     whatsapp_chat_ssh_host: str = ""

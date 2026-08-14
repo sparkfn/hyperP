@@ -217,12 +217,15 @@ def _collect(
     now: Callable[[], datetime] = lambda: _NOW,
     authorization: StageCaptureAuthorization | None = None,
     repository_sha: str = _REPOSITORY_SHA,
+    image_digest: str = _IMAGE_DIGEST,
+    ownership_guard: Callable[[], None] = lambda: None,
 ) -> StageCaptureResult:
     selected_monotonic = monotonic or time.monotonic
     selected_limits = limits or StageCaptureLimits(4, 100, 10_000_000, 30)
     selected_authorization = authorization or StageCaptureAuthorization(
         enabled=True,
         reference="authorization-147-smoke",
+        actor="reviewer-147",
         expires_at=_NOW + timedelta(days=1),
         owner_artifact_id=fixture.evidence.owner_manifest.artifact_id,
         owner_manifest_hmac=fixture.evidence.owner_manifest.manifest_hmac,
@@ -242,10 +245,11 @@ def _collect(
         authorization=selected_authorization,
         limits=selected_limits,
         repository_sha=repository_sha,
-        image_digest=_IMAGE_DIGEST,
+        image_digest=image_digest,
         configuration_digest=_CONFIG_DIGEST,
         limits_digest=stage_capture_limits_digest(selected_limits),
         retention_days=30,
+        ownership_guard=ownership_guard,
         now=now,
         monotonic=selected_monotonic,
     )
@@ -274,6 +278,34 @@ def test_exact_capture_seals_authenticated_stage_ingestion_artifact(tmp_path: Pa
         assert verified.provenance.repository_sha == _REPOSITORY_SHA
         assert verified.metadata["stage_artifact_id"] == fixture.evidence.stage_manifest.artifact_id
         assert client.calls == [(2, {">ID": "0", "<=ID": "2"}, "ASC", -1)]
+    finally:
+        fixture.store.close()
+
+
+def test_capture_aborts_before_source_access_when_contention_ownership_is_lost(
+    tmp_path: Path,
+) -> None:
+    expected = (_expected(_raw(1)),)
+    fixture = _capture_fixture(tmp_path, expected)
+    client = _RawClient((_page(_raw(1)),))
+    checks = 0
+
+    def ownership_guard() -> None:
+        nonlocal checks
+        checks += 1
+        if checks > 1:
+            raise RuntimeError("contention ownership lost")
+
+    try:
+        with pytest.raises(RuntimeError, match="ownership lost"):
+            _collect(
+                fixture,
+                client,
+                _plan(expected),
+                ownership_guard=ownership_guard,
+            )
+
+        assert client.calls == []
     finally:
         fixture.store.close()
 
@@ -311,6 +343,28 @@ def test_capture_rejects_noncanonical_repository_sha_before_source_calls(
                 client,
                 _plan(expected),
                 repository_sha=repository_sha,
+            )
+
+        assert client.calls == []
+    finally:
+        fixture.store.close()
+
+
+@pytest.mark.parametrize("image_digest", ["", "sha256:abc", "sha256:" + "A" * 64])
+def test_capture_rejects_noncanonical_image_digest_before_source_calls(
+    tmp_path: Path,
+    image_digest: str,
+) -> None:
+    expected = (_expected(_raw(1)),)
+    fixture = _capture_fixture(tmp_path, expected)
+    client = _RawClient((_page(_raw(1)),))
+    try:
+        with pytest.raises(ValueError, match="image_digest"):
+            _collect(
+                fixture,
+                client,
+                _plan(expected),
+                image_digest=image_digest,
             )
 
         assert client.calls == []
@@ -502,6 +556,7 @@ def test_capture_rejects_an_unauthorized_manifest_substitution(tmp_path: Path) -
     authorized = StageCaptureAuthorization(
         enabled=True,
         reference="authorization-147-smoke",
+        actor="reviewer-147",
         expires_at=_NOW + timedelta(days=1),
         owner_artifact_id=fixture.evidence.owner_manifest.artifact_id,
         owner_manifest_hmac="0" * 64,
@@ -574,6 +629,7 @@ def test_capture_authorization_and_integer_limits_require_exact_runtime_types() 
     authorization = StageCaptureAuthorization(
         enabled=True,
         reference="authorization-147-smoke",
+        actor="reviewer-147",
         expires_at=_NOW + timedelta(days=1),
         owner_artifact_id="owner-artifact",
         owner_manifest_hmac="a" * 64,

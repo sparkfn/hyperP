@@ -31,6 +31,7 @@ from src.graph.queries.stage_history_ingestion import (
     CREATE_STAGE_HISTORY_UNIT,
     GET_STAGE_HISTORY_AUTHORITY_HEAD,
     GET_STAGE_HISTORY_COMMITTED_UNIT,
+    PROJECT_STAGE_HISTORY_AUTHORITY_HEAD,
     RESOLVE_STAGE_HISTORY_PARENT_CANDIDATES,
     UPSERT_STAGE_HISTORY_FAILED_OCCURRENCE,
     UPSERT_STAGE_HISTORY_OCCURRENCE,
@@ -573,6 +574,18 @@ def _persist_authority_if_required(
                 raise StageHistoryPersistenceError(
                     "same-hash replay effective authority lacks its current variant or parent"
                 )
+        if head.decision_id is None or head.authority_state is None:
+            raise StageHistoryPersistenceError("same-hash replay lacks a durable authority head")
+        _project_authority_head(
+            tx,
+            fence,
+            required_run_type,
+            observation.event_identity,
+            head.decision_id,
+            head.authority_state,
+            head.head_version,
+            head.authority_token,
+        )
         return None, ()
     state = occurrence.authority_state
     if state is None:
@@ -630,6 +643,16 @@ def _persist_authority_if_required(
     )
     if result is None:
         raise StageHistoryPersistenceError("stage-history authority head CAS failed")
+    _project_authority_head(
+        tx,
+        fence,
+        required_run_type,
+        observation.event_identity,
+        decision_id,
+        state,
+        result.head_version,
+        result.authority_token,
+    )
     after_authority("after_authority")
     emitted = _persist_invalidation_intents(
         tx,
@@ -657,6 +680,30 @@ def _persist_authority_if_required(
         association_decision_id=(association.decision_id if state == "effective" else None),
     )
     return transition, emitted
+
+
+def _project_authority_head(
+    tx: ManagedTransaction,
+    fence: FenceContext,
+    required_run_type: StageHistoryReplayRunType,
+    event_identity: str,
+    decision_id: str,
+    state: StageHistoryAuthorityState,
+    head_version: int,
+    authority_token: int,
+) -> None:
+    row = tx.run(
+        PROJECT_STAGE_HISTORY_AUTHORITY_HEAD,
+        **_fence_params(fence, required_run_type),
+        event_identity=event_identity,
+        authority_decision_id=decision_id,
+        authority_state=state,
+        authority_head_version=head_version,
+        authority_token=authority_token,
+    ).single()
+    projected = _require_record(row, "stage-history authority projection CAS failed")
+    if _record_int(projected, "projected_occurrence_count") < 1:
+        raise StageHistoryPersistenceError("stage-history authority projection updated no rows")
 
 
 def _load_authority_head(

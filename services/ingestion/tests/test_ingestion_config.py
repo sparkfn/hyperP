@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -12,6 +13,7 @@ from src.ingestion_config import (
     IngestionConfig,
     LlmConfig,
     ScheduledIngestionConfig,
+    StageHistoryIngestionConfig,
     bitrix_configuration_digest,
     bitrix_legacy_explicit_category_digest,
     load_ingestion_config,
@@ -55,6 +57,101 @@ def test_legacy_explicit_category_digest_reconstructs_accepted_gate_evidence() -
 
 def test_scheduled_ingestion_is_disabled_by_default() -> None:
     assert load_ingestion_config("").scheduled_ingestion == ScheduledIngestionConfig(enabled=False)
+
+
+def test_stage_history_ingestion_is_hard_disabled_by_default() -> None:
+    config = load_ingestion_config("").stage_history_ingestion
+
+    assert config == StageHistoryIngestionConfig(enabled=False)
+    with pytest.raises(PermissionError, match="disabled"):
+        config.assert_dispatch_enabled(now=datetime(2026, 8, 14, tzinfo=UTC))
+
+
+def test_stage_history_ingestion_parses_bounded_authorization(tmp_path: Path) -> None:
+    path = tmp_path / "ingestion-config.json"
+    path.write_text(
+        json.dumps(
+            {
+                "stage_history_ingestion": {
+                    "enabled": True,
+                    "authorization_reference": "approval-147",
+                    "authorized_actor": "reviewer@example.com",
+                    "authorization_expires_at": "2026-08-15T00:00:00Z",
+                    "owner_artifact_id": "owner-1",
+                    "owner_manifest_hmac": "a" * 64,
+                    "stage_artifact_id": "stage-1",
+                    "stage_manifest_hmac": "b" * 64,
+                    "qualification_evidence_digest": "sha256:" + "c" * 64,
+                    "accepted_configuration_digest": "sha256:" + "d" * 64,
+                    "source_contract_uuid": "12345678-1234-5678-9234-567812345678",
+                    "entity_type_id": 2,
+                    "max_calls": 2,
+                    "max_rows": 100,
+                    "max_spool_bytes": 1000000,
+                    "max_runtime_seconds": 120.0,
+                    "retention_days": 7,
+                    "retry_max_attempts": 4,
+                    "retry_backoff_seconds": 180,
+                    "review_lease_seconds": 600,
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    config = load_ingestion_config(str(path)).stage_history_ingestion
+
+    assert config.enabled is True
+    assert config.entity_type_id == 2
+    assert config.max_rows == 100
+    assert config.retry_backoff_seconds == 180
+    config.assert_dispatch_enabled(now=datetime(2026, 8, 14, tzinfo=UTC))
+
+
+@pytest.mark.parametrize(
+    "override",
+    [
+        {"authorization_reference": ""},
+        {"authorization_expires_at": "2026-08-15"},
+        {"entity_type_id": 0},
+        {"max_calls": 0},
+        {"max_rows": 49},
+        {"max_runtime_seconds": float("inf")},
+        {"retry_backoff_seconds": 0},
+    ],
+)
+def test_enabled_stage_history_requires_complete_finite_bounds(
+    tmp_path: Path,
+    override: dict[str, object],
+) -> None:
+    payload: dict[str, object] = {
+        "enabled": True,
+        "authorization_reference": "approval-147",
+        "authorized_actor": "reviewer@example.com",
+        "authorization_expires_at": "2026-08-15T00:00:00Z",
+        "owner_artifact_id": "owner-1",
+        "owner_manifest_hmac": "a" * 64,
+        "stage_artifact_id": "stage-1",
+        "stage_manifest_hmac": "b" * 64,
+        "qualification_evidence_digest": "sha256:" + "c" * 64,
+        "accepted_configuration_digest": "sha256:" + "d" * 64,
+        "source_contract_uuid": "12345678-1234-5678-9234-567812345678",
+        "entity_type_id": 2,
+        "max_calls": 1,
+        "max_rows": 50,
+        "max_spool_bytes": 1000000,
+        "max_runtime_seconds": 120.0,
+        "retention_days": 7,
+        "retry_max_attempts": 4,
+        "retry_backoff_seconds": 180,
+        "review_lease_seconds": 600,
+    }
+    payload.update(override)
+    path = tmp_path / "bad.json"
+    path.write_text(json.dumps({"stage_history_ingestion": payload}), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="Invalid ingestion config JSON"):
+        load_ingestion_config(str(path))
 
 
 def test_scheduled_ingestion_config_parses_explicit_enablement(tmp_path: Path) -> None:

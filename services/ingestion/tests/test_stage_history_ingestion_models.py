@@ -14,6 +14,7 @@ from src.stage_history_ingestion_models import (
     StageHistoryReplayUnit,
     StageHistoryReviewCommand,
     StageHistoryValidObservation,
+    stage_history_review_configuration_fingerprint,
 )
 
 _DIGEST = "sha256:" + "a" * 64
@@ -75,6 +76,38 @@ def test_replay_source_window_rejects_clear_or_invalid_contract_values() -> None
             configuration_digest=_HMAC,
             limits_digest=_HMAC,
         )
+
+
+def test_review_configuration_fingerprint_binds_retry_and_lease_semantics() -> None:
+    baseline = stage_history_review_configuration_fingerprint(
+        "command-1",
+        "resolve_parent",
+        "approval-1",
+        review_lease_seconds=900,
+        retry_backoff_seconds=300,
+    )
+
+    assert baseline == stage_history_review_configuration_fingerprint(
+        "command-1",
+        "resolve_parent",
+        "approval-1",
+        review_lease_seconds=900,
+        retry_backoff_seconds=300,
+    )
+    assert baseline != stage_history_review_configuration_fingerprint(
+        "command-1",
+        "resolve_parent",
+        "approval-1",
+        review_lease_seconds=901,
+        retry_backoff_seconds=300,
+    )
+    assert baseline != stage_history_review_configuration_fingerprint(
+        "command-1",
+        "resolve_parent",
+        "approval-1",
+        review_lease_seconds=900,
+        retry_backoff_seconds=301,
+    )
 
 
 def test_occurrence_rejects_terminal_and_dimension_disagreement() -> None:
@@ -159,7 +192,7 @@ def test_valid_observation_requires_the_existing_crm_deal_source_identity() -> N
         )
 
 
-def test_parent_review_cannot_select_a_variant_or_wrong_authority_state() -> None:
+def test_parent_review_accepts_parent_conflict_but_rejects_other_states_or_selection() -> None:
     common = {
         "command_id": "command-1",
         "kind": "resolve_parent",
@@ -172,15 +205,44 @@ def test_parent_review_cannot_select_a_variant_or_wrong_authority_state() -> Non
         "expected_variant_set_digest": _DIGEST,
         "retry_sequence": 1,
     }
-    with pytest.raises(ValueError, match="withheld-parent"):
+    ambiguous = StageHistoryReviewCommand(
+        **common,
+        expected_authority_state="withheld_conflict",
+    )
+    assert ambiguous.expected_authority_state == "withheld_conflict"
+    with pytest.raises(ValueError, match="withheld parent/conflict"):
         StageHistoryReviewCommand(
             **common,
-            expected_authority_state="withheld_conflict",
+            expected_authority_state="effective",
         )
     with pytest.raises(ValueError, match="cannot select"):
         StageHistoryReviewCommand(
             **common,
             expected_authority_state="withheld_parent",
+            selected_variant_hash=_DIGEST,
+        )
+    with pytest.raises(ValueError, match="resolve their own association"):
+        StageHistoryReviewCommand(
+            **common,
+            expected_authority_state="withheld_parent",
+            selected_association_decision_id="association-1",
+        )
+
+
+def test_conflict_review_cannot_claim_a_parent_retry() -> None:
+    with pytest.raises(ValueError, match="only parent review commands"):
+        StageHistoryReviewCommand(
+            command_id="command-1",
+            kind="resolve_conflict",
+            status="pending",
+            event_identity="event-1",
+            reviewer_id="reviewer-1",
+            available_at=_NOW,
+            expected_head_version=1,
+            expected_authority_token=1,
+            expected_authority_state="withheld_conflict",
+            expected_variant_set_digest=_DIGEST,
+            retry_sequence=1,
             selected_variant_hash=_DIGEST,
         )
 

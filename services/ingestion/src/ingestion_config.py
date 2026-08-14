@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from dataclasses import asdict, dataclass, field, replace
+from datetime import datetime
 from pathlib import Path
 from typing import Literal, cast
 
@@ -78,6 +80,41 @@ class ScheduledIngestionConfig:
     enabled: bool = False
 
 
+@dataclass(frozen=True)
+class StageHistoryIngestionConfig:
+    """Default-off authorization and finite limits for the #147 smoke path."""
+
+    enabled: bool = False
+    authorization_reference: str = ""
+    authorized_actor: str = ""
+    authorization_expires_at: datetime | None = None
+    owner_artifact_id: str = ""
+    owner_manifest_hmac: str = ""
+    stage_artifact_id: str = ""
+    stage_manifest_hmac: str = ""
+    qualification_evidence_digest: str = ""
+    accepted_configuration_digest: str = ""
+    source_contract_uuid: str = ""
+    entity_type_id: int = 0
+    max_calls: int = 1
+    max_rows: int = 50
+    max_spool_bytes: int = 10_000_000
+    max_runtime_seconds: float = 300.0
+    retention_days: int = 7
+    retry_max_attempts: int = 5
+    retry_backoff_seconds: int = 300
+    review_lease_seconds: int = 900
+
+    def assert_dispatch_enabled(self, *, now: datetime) -> None:
+        """Fail closed before any source call, task publication, or graph write."""
+        if not self.enabled:
+            raise PermissionError("stage-history ingestion is disabled")
+        if now.tzinfo is None or now.utcoffset() is None:
+            raise ValueError("stage-history authorization check time must be timezone-aware")
+        if self.authorization_expires_at is None or now >= self.authorization_expires_at:
+            raise PermissionError("stage-history ingestion authorization has expired")
+
+
 @dataclass
 class IngestionConfig:
     """The whole ingestion config file: exclusions, LLM tuning, and scheduling."""
@@ -86,6 +123,9 @@ class IngestionConfig:
     llm: LlmConfig = field(default_factory=LlmConfig)
     bitrix_openlines: BitrixOpenLinesConfig = field(default_factory=BitrixOpenLinesConfig)
     scheduled_ingestion: ScheduledIngestionConfig = field(default_factory=ScheduledIngestionConfig)
+    stage_history_ingestion: StageHistoryIngestionConfig = field(
+        default_factory=StageHistoryIngestionConfig
+    )
 
 
 def _exclusion_file(raw: JsonValue, *, path: Path) -> ExclusionFile:
@@ -259,6 +299,107 @@ def _scheduled_ingestion_config(raw: JsonValue, *, path: Path) -> ScheduledInges
     return ScheduledIngestionConfig(enabled=enabled)
 
 
+def _optional_datetime(raw: JsonValue, *, path: Path) -> datetime | None:
+    if raw is None or raw == "":
+        return None
+    if not isinstance(raw, str):
+        raise ValueError(f"Invalid ingestion config JSON: {path}")
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValueError(f"Invalid ingestion config JSON: {path}") from exc
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise ValueError(f"Invalid ingestion config JSON: {path}")
+    return parsed
+
+
+def _required_text(payload: dict[str, JsonValue], key: str, *, path: Path) -> str:
+    value = payload.get(key)
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"Invalid ingestion config JSON: {path}")
+    return value.strip()
+
+
+def _stage_history_ingestion_config(raw: JsonValue, *, path: Path) -> StageHistoryIngestionConfig:
+    if raw is None:
+        return StageHistoryIngestionConfig()
+    if not isinstance(raw, dict):
+        raise ValueError(f"Invalid ingestion config JSON: {path}")
+    payload = raw
+    enabled = payload.get("enabled", False)
+    if not isinstance(enabled, bool):
+        raise ValueError(f"Invalid ingestion config JSON: {path}")
+    defaults = StageHistoryIngestionConfig()
+    config = StageHistoryIngestionConfig(
+        enabled=enabled,
+        authorization_reference=str(payload.get("authorization_reference") or "").strip(),
+        authorized_actor=str(payload.get("authorized_actor") or "").strip(),
+        authorization_expires_at=_optional_datetime(
+            payload.get("authorization_expires_at"), path=path
+        ),
+        owner_artifact_id=str(payload.get("owner_artifact_id") or "").strip(),
+        owner_manifest_hmac=str(payload.get("owner_manifest_hmac") or "").strip(),
+        stage_artifact_id=str(payload.get("stage_artifact_id") or "").strip(),
+        stage_manifest_hmac=str(payload.get("stage_manifest_hmac") or "").strip(),
+        qualification_evidence_digest=str(
+            payload.get("qualification_evidence_digest") or ""
+        ).strip(),
+        accepted_configuration_digest=str(
+            payload.get("accepted_configuration_digest") or ""
+        ).strip(),
+        source_contract_uuid=str(payload.get("source_contract_uuid") or "").strip(),
+        entity_type_id=_int(payload.get("entity_type_id"), defaults.entity_type_id, path=path),
+        max_calls=_int(payload.get("max_calls"), defaults.max_calls, path=path),
+        max_rows=_int(payload.get("max_rows"), defaults.max_rows, path=path),
+        max_spool_bytes=_int(payload.get("max_spool_bytes"), defaults.max_spool_bytes, path=path),
+        max_runtime_seconds=_float(
+            payload.get("max_runtime_seconds"), defaults.max_runtime_seconds, path=path
+        ),
+        retention_days=_int(payload.get("retention_days"), defaults.retention_days, path=path),
+        retry_max_attempts=_int(
+            payload.get("retry_max_attempts"), defaults.retry_max_attempts, path=path
+        ),
+        retry_backoff_seconds=_int(
+            payload.get("retry_backoff_seconds"), defaults.retry_backoff_seconds, path=path
+        ),
+        review_lease_seconds=_int(
+            payload.get("review_lease_seconds"), defaults.review_lease_seconds, path=path
+        ),
+    )
+    positive_values = (
+        config.max_calls,
+        config.max_rows,
+        config.max_spool_bytes,
+        config.max_runtime_seconds,
+        config.retention_days,
+        config.retry_max_attempts,
+        config.retry_backoff_seconds,
+        config.review_lease_seconds,
+    )
+    if (
+        any(value <= 0 for value in positive_values)
+        or not math.isfinite(config.max_runtime_seconds)
+        or config.max_rows < 50
+    ):
+        raise ValueError(f"Invalid ingestion config JSON: {path}")
+    if enabled:
+        for key in (
+            "authorization_reference",
+            "authorized_actor",
+            "owner_artifact_id",
+            "owner_manifest_hmac",
+            "stage_artifact_id",
+            "stage_manifest_hmac",
+            "qualification_evidence_digest",
+            "accepted_configuration_digest",
+            "source_contract_uuid",
+        ):
+            _required_text(payload, key, path=path)
+        if config.authorization_expires_at is None or config.entity_type_id < 1:
+            raise ValueError(f"Invalid ingestion config JSON: {path}")
+    return config
+
+
 def load_ingestion_config(path_value: str) -> IngestionConfig:
     """Load the consolidated ingestion config.
 
@@ -277,7 +418,13 @@ def load_ingestion_config(path_value: str) -> IngestionConfig:
     if not isinstance(raw, dict):
         raise ValueError(f"Invalid ingestion config JSON: {path}")
     payload = cast(dict[str, JsonValue], raw)
-    if not {"exclusions", "llm", "bitrix_openlines", "scheduled_ingestion"}.intersection(payload):
+    if not {
+        "exclusions",
+        "llm",
+        "bitrix_openlines",
+        "scheduled_ingestion",
+        "stage_history_ingestion",
+    }.intersection(payload):
         # Old format: the whole object is the exclusions block.
         return IngestionConfig(exclusions=_exclusion_file(payload, path=path), llm=LlmConfig())
     return IngestionConfig(
@@ -286,6 +433,9 @@ def load_ingestion_config(path_value: str) -> IngestionConfig:
         bitrix_openlines=_bitrix_openlines_config(payload.get("bitrix_openlines"), path=path),
         scheduled_ingestion=_scheduled_ingestion_config(
             payload.get("scheduled_ingestion"), path=path
+        ),
+        stage_history_ingestion=_stage_history_ingestion_config(
+            payload.get("stage_history_ingestion"), path=path
         ),
     )
 
