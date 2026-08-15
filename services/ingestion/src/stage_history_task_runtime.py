@@ -69,22 +69,25 @@ def execute_artifact_task(
     ) as lock:
         lock.assert_owned()
         store = stage_history_store_from_settings(settings)
-        manifest = store.verify(artifact_id)
-        expected_kind = "stage-ingestion-failed" if failed_capture else "stage-ingestion"
-        if manifest.artifact_kind != expected_kind:
-            raise ValueError("stage-history artifact kind does not match the requested task")
-        artifact = read_stage_ingestion_artifact(
-            store,
-            artifact_id=artifact_id,
-            authorization=_replay_authorization(
-                artifact_id,
-                authorization_reference,
-                manifest,
-                config,
-                repository_sha=settings.stage_history_repository_sha,
-                image_digest=settings.stage_history_image_digest,
-            ),
-        )
+        try:
+            manifest = store.verify(artifact_id)
+            expected_kind = "stage-ingestion-failed" if failed_capture else "stage-ingestion"
+            if manifest.artifact_kind != expected_kind:
+                raise ValueError("stage-history artifact kind does not match the requested task")
+            artifact = read_stage_ingestion_artifact(
+                store,
+                artifact_id=artifact_id,
+                authorization=_replay_authorization(
+                    artifact_id,
+                    authorization_reference,
+                    manifest,
+                    config,
+                    repository_sha=settings.stage_history_repository_sha,
+                    image_digest=settings.stage_history_image_digest,
+                ),
+            )
+        finally:
+            store.close()
         lock.assert_owned()
         client = Neo4jClient(settings)
         try:
