@@ -31,6 +31,68 @@ def test_replay_task_rejects_default_off_before_artifact_or_graph_access(
         stage_history_tasks.replay_stage_history_artifact_task.run("artifact-1", "approval-1")
 
 
+
+def test_replay_worker_closes_store_when_artifact_verification_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from collections.abc import Iterator
+    from contextlib import contextmanager
+    from datetime import UTC, datetime
+    from typing import cast
+
+    from celery import Task
+
+    config = StageHistoryIngestionConfig(
+        enabled=True,
+        authorization_reference="approval-1",
+        authorization_expires_at=datetime(2027, 1, 1, tzinfo=UTC),
+    )
+    monkeypatch.setattr(
+        stage_history_task_runtime,
+        "get_ingestion_config",
+        lambda: SimpleNamespace(stage_history_ingestion=config),
+    )
+    monkeypatch.setattr(
+        stage_history_task_runtime,
+        "get_settings",
+        lambda: SimpleNamespace(celery_broker_url="redis://broker"),
+    )
+    events: list[str] = []
+
+    class Lock:
+        def assert_owned(self) -> None:
+            events.append("lock")
+
+    @contextmanager
+    def task_lock(*_args: object, **_kwargs: object) -> Iterator[Lock]:
+        yield Lock()
+
+    class Store:
+        def verify(self, _artifact_id: str) -> object:
+            events.append("verify")
+            raise RuntimeError("verification failed")
+
+        def close(self) -> None:
+            events.append("close")
+
+    monkeypatch.setattr(stage_history_task_runtime, "stage_history_task_lock", task_lock)
+    monkeypatch.setattr(
+        stage_history_task_runtime,
+        "stage_history_store_from_settings",
+        lambda _settings: Store(),
+    )
+    task = cast(Task, SimpleNamespace(request=SimpleNamespace(id="task-1")))
+
+    with pytest.raises(RuntimeError, match="verification failed"):
+        stage_history_task_runtime.execute_artifact_task(
+            task,
+            artifact_id="artifact-1",
+            authorization_reference="approval-1",
+            failed_capture=False,
+        )
+
+    assert events == ["lock", "verify", "close"]
+
 def test_stage_tasks_are_manual_only_and_not_scheduled() -> None:
     schedule = stage_history_tasks.celery_app.conf.beat_schedule
 
