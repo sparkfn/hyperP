@@ -256,6 +256,11 @@ def test_current_projections_are_fenced_without_rewriting_source_unit_history() 
     assert "target.association_state = $association_state" in (PROJECT_STAGE_HISTORY_REVIEW_OUTCOME)
 
 
+def test_authority_head_query_uses_neo4j_not_in_predicate_syntax() -> None:
+    assert "WHEN NOT head.authority_state IN" in GET_STAGE_HISTORY_AUTHORITY_HEAD
+    assert "head.authority_state NOT IN" not in GET_STAGE_HISTORY_AUTHORITY_HEAD
+
+
 def test_authority_replay_is_attempt_independent_and_head_cas_is_exact() -> None:
     query = APPEND_STAGE_HISTORY_AUTHORITY_TRANSITION
 

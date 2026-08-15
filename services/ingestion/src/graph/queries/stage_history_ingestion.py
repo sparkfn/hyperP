@@ -144,7 +144,7 @@ RETURN coalesce(head.head_version, 0) AS head_version,
        decision.logical_parent_source_system AS logical_parent_source_system,
        decision.logical_parent_source_record_id AS logical_parent_source_record_id,
        CASE
-         WHEN head.authority_state NOT IN ['effective', 'corrected'] THEN true
+         WHEN NOT head.authority_state IN ['effective', 'corrected'] THEN true
          ELSE association IS NOT NULL
            AND association.decision_id = head.association_decision_id
            AND association.association_state = 'selected_active'
