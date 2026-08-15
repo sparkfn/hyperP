@@ -102,6 +102,78 @@ def test_dispatch_smoke_verifies_artifact_kind_before_task_publication(
         )
 
 
+
+def test_verified_artifact_closes_store_before_return(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+    store = SimpleNamespace(
+        verify=lambda _artifact_id: events.append("verify")
+        or SimpleNamespace(artifact_kind="stage-ingestion"),
+        close=lambda: events.append("close"),
+    )
+    monkeypatch.setattr(
+        stage_history_control,
+        "get_settings",
+        lambda: SimpleNamespace(
+            stage_history_repository_sha="a" * 40,
+            stage_history_image_digest=f"sha256:{'b' * 64}",
+        ),
+    )
+    monkeypatch.setattr(
+        stage_history_control,
+        "stage_history_store_from_settings",
+        lambda _settings: store,
+    )
+    monkeypatch.setattr(
+        stage_history_control,
+        "_replay_authorization",
+        lambda *_args, **_kwargs: SimpleNamespace(),
+    )
+    expected = SimpleNamespace(manifest=SimpleNamespace(artifact_kind="stage-ingestion"))
+
+    def read(*_args: object, **_kwargs: object) -> object:
+        events.append("read")
+        return expected
+
+    monkeypatch.setattr(stage_history_control, "read_stage_ingestion_artifact", read)
+
+    result = stage_history_control._verified_artifact(
+        "artifact-1",
+        "approval-1",
+        StageHistoryIngestionConfig(),
+    )
+
+    assert result is expected
+    assert events == ["verify", "read", "close"]
+
+
+def test_verified_artifact_closes_store_when_verification_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+
+    def fail(_artifact_id: str) -> object:
+        events.append("verify")
+        raise RuntimeError("verification failed")
+
+    store = SimpleNamespace(verify=fail, close=lambda: events.append("close"))
+    monkeypatch.setattr(stage_history_control, "get_settings", lambda: SimpleNamespace())
+    monkeypatch.setattr(
+        stage_history_control,
+        "stage_history_store_from_settings",
+        lambda _settings: store,
+    )
+
+    with pytest.raises(RuntimeError, match="verification failed"):
+        stage_history_control._verified_artifact(
+            "artifact-1",
+            "approval-1",
+            StageHistoryIngestionConfig(),
+        )
+
+    assert events == ["verify", "close"]
+
 def test_parser_exposes_only_bounded_manual_commands() -> None:
     parser = stage_history_control.build_parser()
 

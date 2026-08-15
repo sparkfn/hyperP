@@ -334,19 +334,22 @@ def _verified_artifact(
 ) -> VerifiedStageIngestionArtifact:
     settings = get_settings()
     store = stage_history_store_from_settings(settings)
-    manifest = store.verify(artifact_id)
-    return read_stage_ingestion_artifact(
-        store,
-        artifact_id=artifact_id,
-        authorization=_replay_authorization(
-            artifact_id,
-            authorization_reference,
-            manifest,
-            config,
-            repository_sha=settings.stage_history_repository_sha,
-            image_digest=settings.stage_history_image_digest,
-        ),
-    )
+    try:
+        manifest = store.verify(artifact_id)
+        return read_stage_ingestion_artifact(
+            store,
+            artifact_id=artifact_id,
+            authorization=_replay_authorization(
+                artifact_id,
+                authorization_reference,
+                manifest,
+                config,
+                repository_sha=settings.stage_history_repository_sha,
+                image_digest=settings.stage_history_image_digest,
+            ),
+        )
+    finally:
+        store.close()
 
 
 def _print(payload: Mapping[str, object]) -> None:
