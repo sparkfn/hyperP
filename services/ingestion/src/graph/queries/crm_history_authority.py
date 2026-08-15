@@ -115,7 +115,7 @@ CALL (logical, attempt, existing, correction_target, correction_group, known_var
          existing.head_version AS head_version,
          coalesce(existing.authority_token, existing.fence_token) AS authority_token,
          true AS replayed,
-         semantic_match AS semantic_match
+         semantic_match AS returned_semantic_match
   UNION
   WITH logical, attempt, existing, correction_target, correction_group, known_variant,
        association, association_parents, association_parent, semantic_match
@@ -227,9 +227,10 @@ CALL (logical, attempt, existing, correction_target, correction_group, known_var
          decision.head_version AS head_version,
          decision.authority_token AS authority_token,
          false AS replayed,
-         true AS semantic_match
+         true AS returned_semantic_match
 }
-RETURN decision_id, head_version, authority_token, replayed, semantic_match
+RETURN decision_id, head_version, authority_token, replayed,
+       returned_semantic_match AS semantic_match
 """
 
 GET_CRM_HISTORY_AUTHORITY_HEAD = """
