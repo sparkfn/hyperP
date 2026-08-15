@@ -261,6 +261,23 @@ def test_authority_head_query_uses_neo4j_not_in_predicate_syntax() -> None:
     assert "head.authority_state NOT IN" not in GET_STAGE_HISTORY_AUTHORITY_HEAD
 
 
+def test_accounting_query_uses_neo4j_not_in_predicate_syntax() -> None:
+    assert "AND NOT occurrence.terminal_disposition IN" in (UPSERT_STAGE_HISTORY_UNIT_ACCOUNTING)
+    assert "occurrence.terminal_disposition NOT IN" not in (UPSERT_STAGE_HISTORY_UNIT_ACCOUNTING)
+
+
+def test_checkpoint_commit_filters_subquery_aggregates_through_with() -> None:
+    query = COMMIT_STAGE_HISTORY_UNIT_AND_ADVANCE_CHECKPOINT
+    aggregate_return = query.index("RETURN count(occurrence) AS occurrence_count")
+    aggregate_filter = query.index("WHERE occurrence_count = unit.fetched_count")
+    with_clause = query.index(
+        "WITH checkpoint, logical, unit, accounting, occurrence_count,",
+        aggregate_return,
+    )
+
+    assert aggregate_return < with_clause < aggregate_filter
+
+
 def test_authority_replay_is_attempt_independent_and_head_cas_is_exact() -> None:
     query = APPEND_STAGE_HISTORY_AUTHORITY_TRANSITION
 

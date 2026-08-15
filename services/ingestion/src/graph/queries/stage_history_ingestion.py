@@ -1054,7 +1054,7 @@ WITH unit,
               THEN 1 ELSE 0 END) AS nonterminal_count,
      sum(CASE
           WHEN occurrence IS NOT NULL
-            AND occurrence.terminal_disposition NOT IN [
+            AND NOT occurrence.terminal_disposition IN [
               'malformed_excluded',
               'capture_rejected_valid',
               'excluded_out_of_scope',
@@ -1302,6 +1302,8 @@ CALL (unit) {
          count(CASE WHEN occurrence.terminal_disposition IS NOT NULL THEN 1 END)
            AS terminal_count
 }
+WITH checkpoint, logical, unit, accounting, occurrence_count,
+     distinct_occurrence_count, terminal_count
 WHERE occurrence_count = unit.fetched_count
   AND distinct_occurrence_count = unit.fetched_count
   AND terminal_count = unit.fetched_count
