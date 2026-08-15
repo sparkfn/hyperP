@@ -407,6 +407,12 @@ def test_review_commands_are_durable_fenced_and_lease_owned() -> None:
     assert "result_authority_decision_id" in COMPLETE_STAGE_HISTORY_REVIEW_COMMAND
 
 
+def test_status_reads_the_terminal_attempt_after_active_ownership_is_released() -> None:
+    assert "(logical)-[:HAS_ATTEMPT]->(attempt:IngestRun)" in GET_STAGE_HISTORY_STATUS
+    assert "attempt.generation = logical.active_generation" in GET_STAGE_HISTORY_STATUS
+    assert "(logical)-[:ACTIVE_ATTEMPT]->(attempt:IngestRun)" not in (GET_STAGE_HISTORY_STATUS)
+
+
 def test_operator_reads_fail_closed_to_stage_history_run_types() -> None:
     for query in (GET_STAGE_HISTORY_STATUS, GET_STAGE_HISTORY_RECONCILIATION):
         assert "logical.source_key = 'bitrix_chat'" in query

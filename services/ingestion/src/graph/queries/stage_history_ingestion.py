@@ -1348,7 +1348,8 @@ WHERE logical.source_key = 'bitrix_chat'
     'bounded_smoke_replay', 'capture_failure_accounting',
     'parent_reconcile', 'conflict_review', 'correction_review'
   ]
-OPTIONAL MATCH (logical)-[:ACTIVE_ATTEMPT]->(attempt:IngestRun)
+OPTIONAL MATCH (logical)-[:HAS_ATTEMPT]->(attempt:IngestRun)
+WHERE attempt.generation = logical.active_generation
 OPTIONAL MATCH (stream:BitrixIngestionStream {
   source_key: logical.source_key,
   stream_key: 'crm_stage_history',
