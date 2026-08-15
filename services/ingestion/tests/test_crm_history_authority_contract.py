@@ -117,7 +117,15 @@ def test_authority_ledger_requires_active_run_generation_and_head_cas() -> None:
     assert "datetime($available_at) >= current_decision.available_at" in (
         APPEND_CRM_HISTORY_AUTHORITY_DECISION
     )
-    assert "semantic_match AS semantic_match" in APPEND_CRM_HISTORY_AUTHORITY_DECISION
+    assert "semantic_match AS returned_semantic_match" in (
+        APPEND_CRM_HISTORY_AUTHORITY_DECISION
+    )
+    assert "returned_semantic_match AS semantic_match" in (
+        APPEND_CRM_HISTORY_AUTHORITY_DECISION
+    )
+    assert "\n         semantic_match AS semantic_match\n" not in (
+        APPEND_CRM_HISTORY_AUTHORITY_DECISION
+    )
     assert "true AS replayed" in APPEND_CRM_HISTORY_AUTHORITY_DECISION
     assert "coalesce(existing.authority_token, existing.fence_token)" in (
         APPEND_CRM_HISTORY_AUTHORITY_DECISION
