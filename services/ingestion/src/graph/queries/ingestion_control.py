@@ -111,37 +111,41 @@ WITH stream, logical, attempt,
      stream.logical_run_id = $logical_run_id
        AND stream.ingest_run_id = $ingest_run_id
        AND stream.attempt_generation = $attempt_generation AS same_attempt,
+     stream.status IN ['completed', 'terminated', 'superseded'] AS terminal_stream,
      stream.stream_generation AS current_stream_generation,
      stream.fencing_token AS current_fencing_token
-WHERE created OR same_attempt OR $replace_active
+WHERE created OR same_attempt OR terminal_stream OR $replace_active
+WITH stream, logical, attempt, created, same_attempt,
+     terminal_stream OR $replace_active AS replace_existing,
+     current_stream_generation, current_fencing_token
 SET stream.logical_run_id = CASE
       WHEN created OR same_attempt THEN stream.logical_run_id
-      WHEN $replace_active THEN $logical_run_id
+      WHEN replace_existing THEN $logical_run_id
       ELSE stream.logical_run_id
     END,
     stream.ingest_run_id = CASE
       WHEN created OR same_attempt THEN stream.ingest_run_id
-      WHEN $replace_active THEN $ingest_run_id
+      WHEN replace_existing THEN $ingest_run_id
       ELSE stream.ingest_run_id
     END,
     stream.attempt_generation = CASE
       WHEN created OR same_attempt THEN stream.attempt_generation
-      WHEN $replace_active THEN $attempt_generation
+      WHEN replace_existing THEN $attempt_generation
       ELSE stream.attempt_generation
     END,
     stream.worker_task_id = CASE
       WHEN created OR same_attempt THEN stream.worker_task_id
-      WHEN $replace_active THEN $worker_task_id
+      WHEN replace_existing THEN $worker_task_id
       ELSE stream.worker_task_id
     END,
     stream.stream_generation = CASE
       WHEN created OR same_attempt THEN current_stream_generation
-      WHEN $replace_active THEN current_stream_generation + 1
+      WHEN replace_existing THEN current_stream_generation + 1
       ELSE current_stream_generation
     END,
     stream.fencing_token = CASE
       WHEN created OR same_attempt THEN current_fencing_token
-      WHEN $replace_active THEN current_fencing_token + 1
+      WHEN replace_existing THEN current_fencing_token + 1
       ELSE current_fencing_token
     END,
     stream.status = 'active',
@@ -149,7 +153,7 @@ SET stream.logical_run_id = CASE
 RETURN CASE
          WHEN created THEN 'admitted'
          WHEN same_attempt THEN 'coalesced'
-         WHEN $replace_active THEN 'replaced'
+         WHEN replace_existing THEN 'replaced'
          ELSE 'coalesced'
        END AS admission_outcome,
        stream.source_key AS source_key,

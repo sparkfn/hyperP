@@ -143,11 +143,20 @@ def test_stream_control_schema_and_query_atomically_coalesce_or_replace() -> Non
     assert "(stream.source_key, stream.stream_key) IS UNIQUE" in schema
     assert "MERGE (stream:BitrixIngestionStream" in ADMIT_OR_COALESCE_BITRIX_STREAM
     assert "same_attempt" in ADMIT_OR_COALESCE_BITRIX_STREAM
-    assert "WHERE created OR same_attempt OR $replace_active" in (ADMIT_OR_COALESCE_BITRIX_STREAM)
-    assert "WHEN $replace_active THEN current_stream_generation + 1" in (
+    assert "stream.status IN ['completed', 'terminated', 'superseded']" in (
         ADMIT_OR_COALESCE_BITRIX_STREAM
     )
-    assert "WHEN $replace_active THEN current_fencing_token + 1" in (
+    assert "WHERE created OR same_attempt OR terminal_stream OR $replace_active" in (
         ADMIT_OR_COALESCE_BITRIX_STREAM
     )
+    assert "terminal_stream OR $replace_active AS replace_existing" in (
+        ADMIT_OR_COALESCE_BITRIX_STREAM
+    )
+    assert "WHEN replace_existing THEN current_stream_generation + 1" in (
+        ADMIT_OR_COALESCE_BITRIX_STREAM
+    )
+    assert "WHEN replace_existing THEN current_fencing_token + 1" in (
+        ADMIT_OR_COALESCE_BITRIX_STREAM
+    )
+    assert "WHEN replace_existing THEN 'replaced'" in ADMIT_OR_COALESCE_BITRIX_STREAM
     assert "ELSE 'coalesced'" in ADMIT_OR_COALESCE_BITRIX_STREAM
