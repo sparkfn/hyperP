@@ -841,7 +841,7 @@ def _persist_accounting(
         **_fence_params(fence, unit.run_type),
         unit_id=unit.unit_id,
         run_kind=(
-            "artifact_replay" if unit.run_type == "bounded_smoke_replay" else "failed_capture"
+            "artifact_replay" if unit.run_type != "capture_failure_accounting" else "failed_capture"
         ),
         fetched_count=terminal.fetched,
         malformed_excluded_count=terminal.malformed_excluded,

@@ -91,7 +91,12 @@ class StageHistoryStatusRepository:
             return None
         run_type = _string(row, "run_type")
         reconciliation = None
-        if run_type in {"bounded_smoke_replay", "capture_failure_accounting"}:
+        if run_type in {
+            "bounded_smoke_replay",
+            "authoritative_backfill_replay",
+            "authoritative_catch_up_replay",
+            "capture_failure_accounting",
+        }:
 
             def _reconcile_read(tx: ManagedTransaction) -> Record | None:
                 return tx.run(

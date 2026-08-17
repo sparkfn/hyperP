@@ -1345,7 +1345,8 @@ GET_STAGE_HISTORY_STATUS = """
 MATCH (logical:IngestionLogicalRun {logical_run_id: $logical_run_id})
 WHERE logical.source_key = 'bitrix_chat'
   AND logical.mode IN [
-    'bounded_smoke_replay', 'capture_failure_accounting',
+    'bounded_smoke_replay', 'authoritative_backfill_replay',
+    'authoritative_catch_up_replay', 'capture_failure_accounting',
     'parent_reconcile', 'conflict_review', 'correction_review'
   ]
 OPTIONAL MATCH (logical)-[:HAS_ATTEMPT]->(attempt:IngestRun)
@@ -1383,7 +1384,10 @@ RETURN logical.logical_run_id AS logical_run_id,
 GET_STAGE_HISTORY_RECONCILIATION = """
 MATCH (logical:IngestionLogicalRun {logical_run_id: $logical_run_id})
 WHERE logical.source_key = 'bitrix_chat'
-  AND logical.mode IN ['bounded_smoke_replay', 'capture_failure_accounting']
+  AND logical.mode IN [
+    'bounded_smoke_replay', 'authoritative_backfill_replay',
+    'authoritative_catch_up_replay', 'capture_failure_accounting'
+  ]
 CALL (logical) {
   OPTIONAL MATCH (logical)-[:HAS_STAGE_HISTORY_UNIT]->(unit:StageHistoryUnit)
   OPTIONAL MATCH (unit)-[:CONTAINS_STAGE_HISTORY_OCCURRENCE]->(
