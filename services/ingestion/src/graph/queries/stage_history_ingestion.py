@@ -1905,6 +1905,7 @@ RETURN logical.logical_run_id AS logical_run_id,
        invalid_current_retry_projection_count,
        invalid_empty_retry_projection_count,
        checkpoint_source_window_json,
+       committed_unit_ids,
        committed_unit_digests,
        checkpoint_committed_count =
          total_canonical_effective_count + total_canonical_pending_parent_count +
