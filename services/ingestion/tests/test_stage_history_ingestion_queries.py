@@ -464,3 +464,12 @@ def test_stage_query_primitives_are_reexported_on_compatibility_surface() -> Non
     assert queries.COMMIT_STAGE_HISTORY_UNIT_AND_ADVANCE_CHECKPOINT == (
         COMMIT_STAGE_HISTORY_UNIT_AND_ADVANCE_CHECKPOINT
     )
+
+
+def test_stage_history_reconciliation_projects_committed_unit_ids_for_resume() -> None:
+    """A nonzero checkpoint must be able to rebuild its exact ledger tail."""
+    final_projection = GET_STAGE_HISTORY_RECONCILIATION.rsplit(
+        "RETURN logical.logical_run_id AS logical_run_id,", maxsplit=1
+    )[1]
+    assert "committed_unit_ids," in final_projection
+    assert "committed_unit_digests," in final_projection
