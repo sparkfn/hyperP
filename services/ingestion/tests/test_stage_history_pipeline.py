@@ -113,6 +113,43 @@ def test_successful_replay_persists_once_per_page_and_classifies_only_in_scope(
     assert len(result.units) == 2
 
 
+def test_legacy_artifact_without_capture_mode_defaults_to_bounded_smoke(
+    tmp_path: Path,
+) -> None:
+    artifact = _successful_artifact(tmp_path)
+
+    checkpoint = initial_replay_checkpoint(artifact)
+
+    assert checkpoint.run_type == "bounded_smoke_replay"
+
+
+@pytest.mark.parametrize(
+    ("mode", "expected_run_type"),
+    [
+        ("collect-smoke", "bounded_smoke_replay"),
+        ("collect-backfill", "authoritative_backfill_replay"),
+        ("collect-catch-up", "authoritative_catch_up_replay"),
+    ],
+)
+def test_capture_mode_selects_replay_run_type(
+    tmp_path: Path,
+    mode: str,
+    expected_run_type: str,
+) -> None:
+    artifact = _with_capture_mode(_successful_artifact(tmp_path), mode)
+
+    checkpoint = initial_replay_checkpoint(artifact)
+
+    assert checkpoint.run_type == expected_run_type
+
+
+def test_nonempty_unknown_capture_mode_fails_closed(tmp_path: Path) -> None:
+    artifact = _with_capture_mode(_successful_artifact(tmp_path), "collect-unknown")
+
+    with pytest.raises(RuntimeError, match="unknown capture mode"):
+        initial_replay_checkpoint(artifact)
+
+
 def test_failure_accounting_has_only_failure_dispositions_and_no_lifecycle_calls(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -231,6 +268,19 @@ def _successful_artifact(tmp_path: Path) -> VerifiedStageIngestionArtifact:
         rows=(StageArtifactReplayRow(_valid_observation("in-scope-2", "501", 2, 3), True),),
     )
     return VerifiedStageIngestionArtifact(manifest, owner, stage, (first, second))
+
+
+def _with_capture_mode(
+    artifact: VerifiedStageIngestionArtifact,
+    mode: str,
+) -> VerifiedStageIngestionArtifact:
+    metadata = dict(artifact.manifest.metadata)
+    metadata["mode"] = mode
+    manifest = replace(
+        artifact.manifest,
+        metadata_json=canonical_metadata_json(metadata),
+    )
+    return replace(artifact, manifest=manifest)
 
 
 def _failure_artifact(tmp_path: Path) -> VerifiedStageIngestionArtifact:

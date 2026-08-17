@@ -416,9 +416,13 @@ def test_status_reads_the_terminal_attempt_after_active_ownership_is_released() 
 def test_operator_reads_fail_closed_to_stage_history_run_types() -> None:
     for query in (GET_STAGE_HISTORY_STATUS, GET_STAGE_HISTORY_RECONCILIATION):
         assert "logical.source_key = 'bitrix_chat'" in query
-    assert "'bounded_smoke_replay', 'capture_failure_accounting'" in (
-        GET_STAGE_HISTORY_RECONCILIATION
-    )
+    for run_type in (
+        "bounded_smoke_replay",
+        "authoritative_backfill_replay",
+        "authoritative_catch_up_replay",
+        "capture_failure_accounting",
+    ):
+        assert f"'{run_type}'" in GET_STAGE_HISTORY_RECONCILIATION
     assert "logical.mode AS run_type" in GET_STAGE_HISTORY_RECONCILIATION
     assert "'parent_reconcile', 'conflict_review', 'correction_review'" in (
         GET_STAGE_HISTORY_STATUS

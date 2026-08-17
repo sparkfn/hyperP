@@ -195,12 +195,12 @@ def record_stage_history_capture_failure(
 
 def _artifact_run_type(artifact: VerifiedStageIngestionArtifact) -> StageHistoryReplayRunType:
     mode = artifact.manifest.metadata.get("mode")
+    if mode in (None, "", "collect-smoke"):
+        return "bounded_smoke_replay"
     if mode == "collect-backfill":
         return "authoritative_backfill_replay"
     if mode == "collect-catch-up":
         return "authoritative_catch_up_replay"
-    if mode == "collect-smoke":
-        return "bounded_smoke_replay"
     raise RuntimeError("sealed stage ingestion artifact has an unknown capture mode")
 
 
