@@ -10,7 +10,7 @@ from contextlib import closing
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import cast
+from typing import Literal, cast
 
 from src.connectors.bitrix_stage_history.artifact_manifest import (
     ArtifactManifest,
@@ -59,6 +59,7 @@ class StageSmokePlan:
     upper_history_id: int
     expected_rows: tuple[StageExpectedRow, ...]
     maximum_calls: int
+    capture_mode: Literal["smoke", "backfill", "catch_up"] = "smoke"
 
     def __post_init__(self) -> None:
         if self.lower_history_id >= self.upper_history_id:
@@ -154,7 +155,41 @@ def derive_smoke_plan(
     lower = selected[0].history_id - 1
     upper = selected[-1].history_id
     required_calls = (len(selected) + _BITRIX_PAGE_SIZE - 1) // _BITRIX_PAGE_SIZE
-    return StageSmokePlan(lower, upper, selected, required_calls)
+    return StageSmokePlan(lower, upper, selected, required_calls, "smoke")
+
+
+def derive_backfill_plan(
+    evidence: StageQualificationEvidence,
+    *,
+    max_calls: int,
+    max_rows: int,
+) -> StageSmokePlan:
+    """Select the complete accepted boundary under explicit finite limits."""
+    if not evidence.expected_rows:
+        raise RuntimeError("accepted stage artifact contains no backfill rows")
+    required_calls = (len(evidence.expected_rows) + _BITRIX_PAGE_SIZE - 1) // _BITRIX_PAGE_SIZE
+    if required_calls > max_calls or len(evidence.expected_rows) > max_rows:
+        raise ValueError("backfill limits do not cover the complete accepted boundary")
+    first = evidence.expected_rows[0].history_id
+    last = evidence.expected_rows[-1].history_id
+    return StageSmokePlan(first - 1, last, evidence.expected_rows, required_calls, "backfill")
+
+
+def derive_catch_up_plan(
+    evidence: StageQualificationEvidence,
+    *,
+    max_calls: int,
+    max_rows: int,
+) -> StageSmokePlan:
+    """Select a deterministic overlap suffix for convergence verification."""
+    smoke = derive_smoke_plan(evidence, max_calls=max_calls, max_rows=max_rows)
+    return StageSmokePlan(
+        smoke.lower_history_id,
+        smoke.upper_history_id,
+        smoke.expected_rows,
+        smoke.maximum_calls,
+        "catch_up",
+    )
 
 
 def _validate_accepted_manifests(

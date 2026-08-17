@@ -15,6 +15,8 @@ from typing import Literal, Protocol
 from src.connectors.bitrix_stage_history.artifact_connector import (
     StageQualificationEvidence,
     StageSmokePlan,
+    derive_backfill_plan,
+    derive_catch_up_plan,
     derive_smoke_plan,
     load_qualification_evidence,
 )
@@ -269,6 +271,7 @@ def collect_stage_history_smoke(
                     expected_limits_digest,
                     state,
                     failure,
+                    plan.capture_mode,
                 ),
                 provenance=ArtifactProvenanceInput.create(
                     source_contract_uuid=evidence.stage_manifest.provenance.source_contract_uuid,
@@ -468,11 +471,18 @@ def _validate_capture_inputs(
 ) -> None:
     if plan.maximum_calls > limits.max_calls or len(plan.expected_rows) > limits.max_rows:
         raise ValueError("derived smoke plan exceeds capture limits")
-    canonical_plan = derive_smoke_plan(
-        evidence,
-        max_calls=limits.max_calls,
-        max_rows=limits.max_rows,
-    )
+    if plan.capture_mode == "backfill":
+        canonical_plan = derive_backfill_plan(
+            evidence, max_calls=limits.max_calls, max_rows=limits.max_rows
+        )
+    elif plan.capture_mode == "catch_up":
+        canonical_plan = derive_catch_up_plan(
+            evidence, max_calls=limits.max_calls, max_rows=limits.max_rows
+        )
+    else:
+        canonical_plan = derive_smoke_plan(
+            evidence, max_calls=limits.max_calls, max_rows=limits.max_rows
+        )
     if plan != canonical_plan:
         raise ValueError("capture plan was not deterministically derived from qualification")
     if evidence.stage_manifest.provenance.configuration_digest != configuration_digest:
@@ -492,9 +502,10 @@ def _metadata(
     limits_digest: str,
     state: _CaptureState,
     failure: CaptureFailureReason | None,
+    capture_mode: Literal["smoke", "backfill", "catch_up"],
 ) -> dict[str, JsonValue]:
     return {
-        "mode": "collect-smoke",
+        "mode": f"collect-{capture_mode.replace('_', '-')}",
         "status": "qualified" if failure is None else "failed",
         "failure_reason": failure,
         "ingestion_spool_file": _INGESTION_DB_FILE,

@@ -16,6 +16,8 @@ from src.config import Settings, get_settings
 from src.connectors.bitrix_openlines.client import BitrixOpenLinesClient
 from src.connectors.bitrix_stage_history.artifact_connector import (
     VerifiedStageIngestionArtifact,
+    derive_backfill_plan,
+    derive_catch_up_plan,
     derive_smoke_plan,
     load_qualification_evidence,
     read_stage_ingestion_artifact,
@@ -43,6 +45,8 @@ from src.stage_history_tasks import (
 
 _STAGE_HISTORY_RUN_TYPES = {
     "bounded_smoke_replay",
+    "authoritative_backfill_replay",
+    "authoritative_catch_up_replay",
     "capture_failure_accounting",
     "parent_reconcile",
     "conflict_review",
@@ -245,6 +249,26 @@ def run(arguments: list[str] | None = None) -> int:
 
 
 def _collect_smoke(config: StageHistoryIngestionConfig) -> dict[str, JsonValue]:
+    return _collect_capture(config, capture_mode="smoke")
+
+
+def collect_authoritative_backfill(
+    config: StageHistoryIngestionConfig,
+) -> dict[str, JsonValue]:
+    return _collect_capture(config, capture_mode="backfill")
+
+
+def collect_authoritative_catch_up(
+    config: StageHistoryIngestionConfig,
+) -> dict[str, JsonValue]:
+    return _collect_capture(config, capture_mode="catch_up")
+
+
+def _collect_capture(
+    config: StageHistoryIngestionConfig,
+    *,
+    capture_mode: str,
+) -> dict[str, JsonValue]:
     now = datetime.now(UTC)
     config.assert_dispatch_enabled(now=now)
     settings = get_settings()
@@ -253,7 +277,9 @@ def _collect_smoke(config: StageHistoryIngestionConfig) -> dict[str, JsonValue]:
         owner=f"collect:{uuid.uuid4().hex}",
     ) as lock:
         lock.assert_owned()
-        return _collect_smoke_locked(config, settings=settings, lock=lock)
+        return _collect_smoke_locked(
+            config, settings=settings, lock=lock, capture_mode=capture_mode
+        )
 
 
 def _collect_smoke_locked(
@@ -261,6 +287,7 @@ def _collect_smoke_locked(
     *,
     settings: Settings,
     lock: StageHistoryTaskLock,
+    capture_mode: str = "smoke",
 ) -> dict[str, JsonValue]:
     store = stage_history_store_from_settings(settings)
     evidence = load_qualification_evidence(
@@ -300,11 +327,19 @@ def _collect_smoke_locked(
         max_attempts=settings.bitrix_openlines_api_max_attempts,
         request_delay_seconds=settings.bitrix_openlines_api_request_delay_seconds,
     )
+    if capture_mode == "backfill":
+        plan = derive_backfill_plan(evidence, max_calls=limits.max_calls, max_rows=limits.max_rows)
+    elif capture_mode == "catch_up":
+        plan = derive_catch_up_plan(evidence, max_calls=limits.max_calls, max_rows=limits.max_rows)
+    elif capture_mode == "smoke":
+        plan = derive_smoke_plan(evidence, max_calls=limits.max_calls, max_rows=limits.max_rows)
+    else:
+        raise ValueError("unsupported stage-history capture mode")
     result = collect_stage_history_smoke(
         client,
         store,
         evidence=evidence,
-        plan=derive_smoke_plan(evidence, max_calls=limits.max_calls, max_rows=limits.max_rows),
+        plan=plan,
         authorization=authorization,
         limits=limits,
         repository_sha=settings.stage_history_repository_sha,

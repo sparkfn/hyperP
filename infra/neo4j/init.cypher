@@ -247,3 +247,16 @@ CREATE FULLTEXT INDEX person_name_search IF NOT EXISTS
 
 CREATE FULLTEXT INDEX address_full_search IF NOT EXISTS
   FOR (addr:Address) ON EACH [addr.normalized_full];
+
+// Authoritative CRM stage timeline projection and release gate (#148)
+CREATE CONSTRAINT crm_stage_timeline_projection_unique IF NOT EXISTS
+  FOR (projection:CrmStageTimelineProjection)
+  REQUIRE (projection.mapping_version, projection.event_identity) IS UNIQUE;
+
+CREATE INDEX crm_stage_timeline_parent IF NOT EXISTS
+  FOR (projection:CrmStageTimelineProjection)
+  ON (projection.parent_source_system, projection.parent_source_record_id, projection.active);
+
+CREATE CONSTRAINT crm_stage_analytical_release_unique IF NOT EXISTS
+  FOR (release:CrmStageAnalyticalRelease)
+  REQUIRE release.release_key IS UNIQUE;

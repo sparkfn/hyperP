@@ -13,6 +13,7 @@ from src.connectors.bitrix_stage_history.artifact_connector import (
     VerifiedStageIngestionArtifact,
 )
 from src.stage_history_ingestion_models import (
+    SUCCESSFUL_STAGE_HISTORY_RUN_TYPES,
     StageHistoryAccounting,
     StageHistoryAssociationAccounting,
     StageHistoryAuthorityAccounting,
@@ -56,7 +57,7 @@ def initial_replay_checkpoint(
 ) -> StageHistoryCheckpointSnapshot:
     manifest = artifact.manifest
     return StageHistoryCheckpointSnapshot(
-        run_type="bounded_smoke_replay",
+        run_type=_artifact_run_type(artifact),
         source_window=StageHistoryReplaySourceWindow(
             stage_ingestion_artifact_id=manifest.artifact_id,
             artifact_manifest_hmac=manifest.manifest_hmac,
@@ -116,7 +117,9 @@ def replay_stage_history_artifact(
     """Replay every immutable successful page, one fenced transaction per page."""
     if artifact.manifest.artifact_kind != "stage-ingestion":
         raise ValueError("successful replay requires a stage-ingestion artifact")
-    _validate_checkpoint_artifact(checkpoint, artifact, "bounded_smoke_replay")
+    if checkpoint.run_type not in SUCCESSFUL_STAGE_HISTORY_RUN_TYPES:
+        raise ValueError("successful replay requires a successful run type")
+    _validate_checkpoint_artifact(checkpoint, artifact, checkpoint.run_type)
     current = checkpoint
     results: list[StageHistoryUnitResult] = []
     for page in artifact.pages:
@@ -145,7 +148,7 @@ def replay_stage_history_artifact(
                     )
                 )
         unit = _unit(
-            run_type="bounded_smoke_replay",
+            run_type=checkpoint.run_type,
             artifact_id=artifact.manifest.artifact_id,
             page_sequence=page.page_sequence,
             page_digest=page.page_digest,
@@ -188,6 +191,17 @@ def record_stage_history_capture_failure(
         current = result.checkpoint_after
         results.append(result)
     return StageHistoryPipelineResult(current, tuple(results))
+
+
+def _artifact_run_type(artifact: VerifiedStageIngestionArtifact) -> StageHistoryReplayRunType:
+    mode = artifact.manifest.metadata.get("mode")
+    if mode == "collect-backfill":
+        return "authoritative_backfill_replay"
+    if mode == "collect-catch-up":
+        return "authoritative_catch_up_replay"
+    if mode == "collect-smoke":
+        return "bounded_smoke_replay"
+    raise RuntimeError("sealed stage ingestion artifact has an unknown capture mode")
 
 
 def _failure_occurrence(
@@ -259,7 +273,7 @@ def _validate_checkpoint_artifact(
         raise ValueError("stage-history checkpoint artifact changed")
     expected_window = (
         initial_replay_checkpoint(artifact).source_window
-        if expected_run_type == "bounded_smoke_replay"
+        if expected_run_type in SUCCESSFUL_STAGE_HISTORY_RUN_TYPES
         else initial_failure_checkpoint(artifact).source_window
     )
     if source_window != expected_window:

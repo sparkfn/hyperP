@@ -10,7 +10,17 @@ from typing import Literal, TypeGuard
 
 from src.connectors.bitrix_stage_history.models import StageHistoryItem
 
-StageHistoryReplayRunType = Literal["bounded_smoke_replay", "capture_failure_accounting"]
+StageHistoryReplayRunType = Literal[
+    "bounded_smoke_replay",
+    "authoritative_backfill_replay",
+    "authoritative_catch_up_replay",
+    "capture_failure_accounting",
+]
+SUCCESSFUL_STAGE_HISTORY_RUN_TYPES = {
+    "bounded_smoke_replay",
+    "authoritative_backfill_replay",
+    "authoritative_catch_up_replay",
+}
 StageHistoryTerminalDisposition = Literal[
     "malformed_excluded",
     "capture_rejected_valid",
@@ -547,7 +557,7 @@ class StageHistoryReplayUnit:
             raise ValueError("every occurrence must belong to the replay unit")
         allowed = (
             REPLAY_TERMINAL_DISPOSITIONS
-            if self.run_type == "bounded_smoke_replay"
+            if self.run_type in SUCCESSFUL_STAGE_HISTORY_RUN_TYPES
             else FAILURE_TERMINAL_DISPOSITIONS
         )
         if any(item.disposition not in allowed for item in self.occurrences):
@@ -824,7 +834,7 @@ class StageHistoryCheckpointSnapshot:
     def __post_init__(self) -> None:
         _require_non_negative(self.revision, "revision")
         _require_non_negative(self.committed_unit_count, "committed_unit_count")
-        if self.run_type == "bounded_smoke_replay" and not isinstance(
+        if self.run_type in SUCCESSFUL_STAGE_HISTORY_RUN_TYPES and not isinstance(
             self.source_window, StageHistoryReplaySourceWindow
         ):
             raise ValueError("replay checkpoints require the replay source window")
@@ -859,17 +869,19 @@ class StageHistoryCheckpointSnapshot:
 
     @property
     def phase(self) -> str:
-        return (
-            "crm_stage_history_artifact_replay_v1"
-            if self.run_type == "bounded_smoke_replay"
-            else "crm_stage_history_failed_artifact_v1"
-        )
+        if self.run_type == "bounded_smoke_replay":
+            return "crm_stage_history_artifact_replay_v1"
+        if self.run_type == "authoritative_backfill_replay":
+            return "crm_stage_history_authoritative_backfill_v1"
+        if self.run_type == "authoritative_catch_up_replay":
+            return "crm_stage_history_authoritative_catch_up_v1"
+        return "crm_stage_history_failed_artifact_v1"
 
     @property
     def connector_version(self) -> str:
         return (
             "bitrix-crm-stagehistory-artifact-v1"
-            if self.run_type == "bounded_smoke_replay"
+            if self.run_type in SUCCESSFUL_STAGE_HISTORY_RUN_TYPES
             else "bitrix-crm-stagehistory-failed-artifact-v1"
         )
 
