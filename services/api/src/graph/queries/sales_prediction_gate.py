@@ -36,13 +36,14 @@ RETURN coalesce(release.enabled, false) AS enabled,
        toString(max_available_at) AS max_available_at
 """
 
-GATE_STAGE_EVENTS = """
+GATE_STAGE_EVENTS_PAGE = """
 MATCH (release:CrmStageAnalyticalRelease {release_key: 'crm_stage_timeline', enabled: true})
 MATCH (projection:CrmStageTimelineProjection {
   active: true,
   mapping_version: release.mapping_version,
   policy_version: release.policy_version
 })
+WHERE $after_event_identity IS NULL OR projection.event_identity > $after_event_identity
 RETURN projection.event_identity AS event_identity,
        projection.parent_source_system AS parent_source_system,
        projection.parent_source_record_id AS parent_source_record_id,
@@ -50,26 +51,19 @@ RETURN projection.event_identity AS event_identity,
        toString(projection.event_at) AS event_at,
        toString(projection.available_at) AS available_at,
        projection.authority_head_version AS authority_head_version
-ORDER BY parent_source_system, parent_source_record_id, event_at,
-         authority_head_version, event_identity
+ORDER BY event_identity
+LIMIT $limit
 """
 
-GATE_DEAL_VERSIONS = """
-MATCH (release:CrmStageAnalyticalRelease {release_key: 'crm_stage_timeline', enabled: true})
-MATCH (projection:CrmStageTimelineProjection {
-  active: true,
-  mapping_version: release.mapping_version,
-  policy_version: release.policy_version
-})
-WITH DISTINCT projection.parent_source_system AS parent_source_system,
-              projection.parent_source_record_id AS parent_source_record_id
+GATE_DEAL_VERSIONS_FOR_PARENTS = """
+UNWIND $parents AS parent
 MATCH (deal:SourceRecord {
   record_type: 'crm_deal',
-  source_record_id: parent_source_record_id
-})-[:FROM_SOURCE]->(:SourceSystem {source_key: parent_source_system})
+  source_record_id: parent.source_record_id
+})-[:FROM_SOURCE]->(:SourceSystem {source_key: parent.source_system})
 OPTIONAL MATCH (deal)-[link:LINKED_TO]->(person:Person)
-RETURN parent_source_system,
-       parent_source_record_id,
+RETURN parent.source_system AS parent_source_system,
+       parent.source_record_id AS parent_source_record_id,
        elementId(deal) AS version_key,
        toInteger(coalesce(deal.source_record_version, '1')) AS source_record_version,
        deal.entity_key AS entity_key,

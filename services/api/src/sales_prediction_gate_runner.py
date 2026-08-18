@@ -10,9 +10,9 @@ from pathlib import Path
 from src.graph.client import get_session
 from src.graph.converters import GraphValue
 from src.graph.queries.sales_prediction_gate import (
-    GATE_DEAL_VERSIONS,
+    GATE_DEAL_VERSIONS_FOR_PARENTS,
     GATE_RELEASE,
-    GATE_STAGE_EVENTS,
+    GATE_STAGE_EVENTS_PAGE,
 )
 from src.repositories.neo4j._utils import record_to_dict
 from src.sales_prediction_gate_labels import (
@@ -26,6 +26,9 @@ from src.sales_prediction_gate_report import build_gate_report, report_as_dict
 
 type GateScalar = str | int | float | bool | None
 type GateRow = dict[str, GateScalar]
+type GateParameter = str | int | list[dict[str, str]] | None
+
+_PAGE_SIZE = 2_000
 
 
 async def run_gate(
@@ -41,8 +44,7 @@ async def run_gate(
     release = _parse_gate_release(
         await _query_rows(GATE_RELEASE), expected_mapping_version, expected_policy_version
     )
-    stage_rows = await _query_rows(GATE_STAGE_EVENTS)
-    deal_rows = await _query_rows(GATE_DEAL_VERSIONS)
+    stage_rows, deal_rows = await _paged_evidence()
     final_release = _parse_gate_release(
         await _query_rows(GATE_RELEASE), expected_mapping_version, expected_policy_version
     )
@@ -65,14 +67,65 @@ async def run_gate(
     )
 
 
-async def _query_rows(query: str) -> list[GateRow]:
+async def _query_rows(
+    query: str, parameters: dict[str, GateParameter] | None = None
+) -> list[GateRow]:
     async with get_session() as session:
-        result = await session.run(query)
+        result = await session.run(query, parameters or {})
         rows: list[GateRow] = []
         async for record in result:
             graph_row = record_to_dict(record.keys(), list(record.values()))
             rows.append({key: _to_scalar(value) for key, value in graph_row.items()})
         return rows
+
+
+async def _paged_evidence() -> tuple[list[GateRow], list[GateRow]]:
+    stage_rows: list[GateRow] = []
+    deal_rows_by_version: dict[str, GateRow] = {}
+    after_event_identity: str | None = None
+    while True:
+        page = await _query_rows(
+            GATE_STAGE_EVENTS_PAGE,
+            {"after_event_identity": after_event_identity, "limit": _PAGE_SIZE},
+        )
+        if not page:
+            break
+        stage_rows.extend(page)
+        parents = _page_parents(page)
+        for row in await _query_rows(GATE_DEAL_VERSIONS_FOR_PARENTS, {"parents": parents}):
+            version_key = _required_text(row, "version_key")
+            previous = deal_rows_by_version.get(version_key)
+            if previous is not None and previous != row:
+                raise ValueError("Gate 1 deal version changed during paginated reads")
+            deal_rows_by_version[version_key] = row
+        next_cursor = _required_text(page[-1], "event_identity")
+        if after_event_identity is not None and next_cursor <= after_event_identity:
+            raise ValueError("Gate 1 stage pagination did not advance")
+        after_event_identity = next_cursor
+        if len(page) < _PAGE_SIZE:
+            break
+    return stage_rows, list(deal_rows_by_version.values())
+
+
+def _page_parents(page: list[GateRow]) -> list[dict[str, str]]:
+    parents = {
+        (
+            _required_text(row, "parent_source_system"),
+            _required_text(row, "parent_source_record_id"),
+        )
+        for row in page
+    }
+    return [
+        {"source_system": source_system, "source_record_id": source_record_id}
+        for source_system, source_record_id in sorted(parents)
+    ]
+
+
+def _required_text(row: GateRow, key: str) -> str:
+    value = row.get(key)
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"Gate 1 query row has invalid {key}")
+    return value
 
 
 def _to_scalar(value: GraphValue) -> GateScalar:
