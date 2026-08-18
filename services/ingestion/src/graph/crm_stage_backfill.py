@@ -19,6 +19,7 @@ from src.crm_stage_reconciliation import (
     CrmStageRebuildResult,
     CrmStageReconciliationReport,
     CrmStageReleaseStatus,
+    CrmStageRetryRetentionResult,
 )
 from src.graph.client import Neo4jClient
 from src.graph.queries.crm_stage_backfill import (
@@ -30,6 +31,7 @@ from src.graph.queries.crm_stage_backfill import (
     GET_CRM_STAGE_RECONCILIATION,
     PUBLISH_CRM_STAGE_INVALIDATIONS,
     REHEARSE_CRM_STAGE_PROJECTION_ROLLBACK,
+    RETAIN_REVIEWED_PENDING_PARENT_RETRIES,
     RETIRE_STALE_CRM_STAGE_TIMELINE_PROJECTIONS,
     UPSERT_CRM_STAGE_TIMELINE_PROJECTIONS,
 )
@@ -76,6 +78,43 @@ class CrmStageBackfillRepository:
             "unpublished_invalidation_count",
         )
         return CrmStageReconciliationReport.create(**{key: _non_negative(row, key) for key in keys})
+
+    def retain_pending_parent_retries(
+        self,
+        *,
+        expected_count: int,
+        accepted_by: str,
+        reason: str,
+        decision_id: str,
+    ) -> CrmStageRetryRetentionResult:
+        if isinstance(expected_count, bool) or expected_count < 1:
+            raise ValueError("expected retry count must be positive")
+        for value, field_name in (
+            (accepted_by, "accepted actor"),
+            (reason, "retention reason"),
+            (decision_id, "retention decision ID"),
+        ):
+            if not value.strip():
+                raise ValueError(f"{field_name} must be non-empty")
+
+        def write(tx: ManagedTransaction) -> Record | None:
+            return tx.run(
+                RETAIN_REVIEWED_PENDING_PARENT_RETRIES,
+                expected_count=expected_count,
+                accepted_by=accepted_by,
+                reason=reason,
+                decision_id=decision_id,
+            ).single()
+
+        row = self._client.execute_write(write)
+        if row is None:
+            raise RuntimeError("pending parent retries changed or do not match the reviewed cohort")
+        return CrmStageRetryRetentionResult(
+            expected_count=expected_count,
+            retained_count=_non_negative(row, "retained_count"),
+            remaining_unresolved_count=_non_negative(row, "remaining_unresolved_count"),
+            quarantined_retry_count=_non_negative(row, "quarantined_retry_count"),
+        )
 
     def invalidation_status(self) -> CrmStageInvalidationStatus:
         def read(tx: ManagedTransaction) -> Record | None:

@@ -41,6 +41,10 @@ def build_parser() -> argparse.ArgumentParser:
     mapping = commands.add_parser("map-report")
     mapping.add_argument("--mapping-file", type=Path, required=True)
     commands.add_parser("reconcile")
+    retain = commands.add_parser("retain-parent-retries")
+    retain.add_argument("--expected-count", type=int, required=True)
+    retain.add_argument("--accepted-by", required=True)
+    retain.add_argument("--reason", required=True)
     invalidation = commands.add_parser("invalidate-status")
     invalidation.add_argument("--mapping-file", type=Path)
     invalidation.add_argument("--rebuild", action="store_true")
@@ -90,6 +94,17 @@ def run(arguments: list[str] | None = None) -> int:
             report = repository.reconcile()
             _print(asdict(report))
             return 0 if report.complete else 2
+        if args.command == "retain-parent-retries":
+            if args.accepted_by != config.authorized_actor:
+                raise PermissionError("CRM stage retry retention actor changed")
+            retention = repository.retain_pending_parent_retries(
+                expected_count=args.expected_count,
+                accepted_by=args.accepted_by,
+                reason=args.reason,
+                decision_id=uuid.uuid4().hex,
+            )
+            _print(asdict(retention) | {"complete": retention.complete})
+            return 0 if retention.complete else 2
         if args.command == "invalidate-status":
             invalidation_result: dict[str, JsonValue] = {
                 "before": cast(JsonValue, asdict(repository.invalidation_status()))

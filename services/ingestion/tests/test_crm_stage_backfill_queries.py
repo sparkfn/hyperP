@@ -6,6 +6,7 @@ from src.graph.queries.crm_stage_backfill import (
     GET_CRM_STAGE_RECONCILIATION,
     PUBLISH_CRM_STAGE_INVALIDATIONS,
     REHEARSE_CRM_STAGE_PROJECTION_ROLLBACK,
+    RETAIN_REVIEWED_PENDING_PARENT_RETRIES,
     UPSERT_CRM_STAGE_TIMELINE_PROJECTIONS,
 )
 
@@ -15,9 +16,7 @@ def test_stage_backfill_queries_preserve_authority_and_append_projection() -> No
     assert "['effective', 'corrected']" in CRM_STAGE_CURRENT_EFFECTIVE_ROWS
     assert "USES_PARENT_ASSOCIATION" in CRM_STAGE_CURRENT_EFFECTIVE_ROWS
     assert "history_family: 'stage'" in CRM_STAGE_MAPPING_INVENTORY
-    assert "MERGE (projection:CrmStageTimelineProjection" in (
-        UPSERT_CRM_STAGE_TIMELINE_PROJECTIONS
-    )
+    assert "MERGE (projection:CrmStageTimelineProjection" in (UPSERT_CRM_STAGE_TIMELINE_PROJECTIONS)
     assert "DELETE" not in UPSERT_CRM_STAGE_TIMELINE_PROJECTIONS.upper()
 
 
@@ -28,3 +27,18 @@ def test_stage_backfill_release_is_explicit_and_reconciliation_is_fail_closed() 
     assert "intent.status IN ['pending', 'failed']" in PUBLISH_CRM_STAGE_INVALIDATIONS
     assert "REMOVE projection.rollback_probe" in REHEARSE_CRM_STAGE_PROJECTION_ROLLBACK
     assert len(CREATE_CRM_STAGE_BACKFILL_CONSTRAINTS) == 3
+
+
+def test_reviewed_parent_retry_retention_is_guarded_and_auditable() -> None:
+    query = RETAIN_REVIEWED_PENDING_PARENT_RETRIES
+    assert "unresolved_count = $expected_count" in query
+    assert "size(candidates) = $expected_count" in query
+    assert "reason_code = 'canonical_pending_parent'" in query
+    assert "association_state = 'selected_pending_review'" in query
+    assert "authority_state = 'withheld_parent'" in query
+    assert "active_parent_count = 0" in query
+    assert "pending_parent_count = 1" in query
+    assert "retry.status = 'quarantined'" in query
+    assert "retry.retention_reason = $reason" in query
+    assert "retry.retained_by = $accepted_by" in query
+    assert "DELETE" not in query.upper()
