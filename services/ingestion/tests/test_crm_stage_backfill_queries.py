@@ -1,12 +1,16 @@
 from src.graph.queries.crm_stage_backfill import (
+    CLEAR_CRM_STAGE_PROJECTION_ROLLBACK_PROBES,
+    COUNT_CRM_STAGE_PROJECTION_ROLLBACK_PROBE_LEAKS,
     CREATE_CRM_STAGE_BACKFILL_CONSTRAINTS,
     CRM_STAGE_CURRENT_EFFECTIVE_ROWS,
     CRM_STAGE_MAPPING_INVENTORY,
     ENABLE_CRM_STAGE_ANALYTICAL_RELEASE,
+    GET_ACTIVE_CRM_STAGE_PROJECTION_IDENTITIES_PAGE,
     GET_CRM_STAGE_RECONCILIATION,
     PUBLISH_CRM_STAGE_INVALIDATIONS,
-    REHEARSE_CRM_STAGE_PROJECTION_ROLLBACK,
     RETAIN_REVIEWED_PENDING_PARENT_RETRIES,
+    RETIRE_STALE_CRM_STAGE_TIMELINE_PROJECTIONS,
+    SET_CRM_STAGE_PROJECTION_ROLLBACK_PROBES,
     UPSERT_CRM_STAGE_TIMELINE_PROJECTIONS,
 )
 
@@ -25,7 +29,23 @@ def test_stage_backfill_release_is_explicit_and_reconciliation_is_fail_closed() 
     assert "unresolved_retry_count" in GET_CRM_STAGE_RECONCILIATION
     assert "unpublished_invalidation_count" in GET_CRM_STAGE_RECONCILIATION
     assert "intent.status IN ['pending', 'failed']" in PUBLISH_CRM_STAGE_INVALIDATIONS
-    assert "REMOVE projection.rollback_probe" in REHEARSE_CRM_STAGE_PROJECTION_ROLLBACK
+    assert "LIMIT $limit" in CRM_STAGE_CURRENT_EFFECTIVE_ROWS
+    assert "ORDER BY event_identity" in CRM_STAGE_CURRENT_EFFECTIVE_ROWS
+    assert "projection.rebuild_id = $rebuild_id" in UPSERT_CRM_STAGE_TIMELINE_PROJECTIONS
+    assert "coalesce(projection.rebuild_id, '') <> $rebuild_id" in (
+        RETIRE_STALE_CRM_STAGE_TIMELINE_PROJECTIONS
+    )
+    assert "LIMIT $limit" in RETIRE_STALE_CRM_STAGE_TIMELINE_PROJECTIONS
+    assert "last_event_identity" in RETIRE_STALE_CRM_STAGE_TIMELINE_PROJECTIONS
+    assert "LIMIT $limit" in PUBLISH_CRM_STAGE_INVALIDATIONS
+    assert "last_intent_id" in PUBLISH_CRM_STAGE_INVALIDATIONS
+    assert "LIMIT $limit" in GET_ACTIVE_CRM_STAGE_PROJECTION_IDENTITIES_PAGE
+    assert "collect(" not in GET_ACTIVE_CRM_STAGE_PROJECTION_IDENTITIES_PAGE.lower()
+    assert "projection.rollback_probe = $probe_id" in SET_CRM_STAGE_PROJECTION_ROLLBACK_PROBES
+    assert "REMOVE projection.rollback_probe" in CLEAR_CRM_STAGE_PROJECTION_ROLLBACK_PROBES
+    assert "projection.rollback_probe IS NOT NULL" in (
+        COUNT_CRM_STAGE_PROJECTION_ROLLBACK_PROBE_LEAKS
+    )
     assert len(CREATE_CRM_STAGE_BACKFILL_CONSTRAINTS) == 3
 
 

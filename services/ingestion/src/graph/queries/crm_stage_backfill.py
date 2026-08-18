@@ -41,6 +41,10 @@ ORDER BY entity_type_id, category_id, stage_id, source_semantic
 CRM_STAGE_CURRENT_EFFECTIVE_ROWS = """
 MATCH (head:CrmHistoryAuthorityHead)
 WHERE head.authority_state IN ['effective', 'corrected']
+  AND ($after_event_identity IS NULL OR head.event_identity > $after_event_identity)
+WITH head
+ORDER BY head.event_identity
+LIMIT $limit
 MATCH (decision:CrmHistoryAuthorityDecision {decision_id: head.decision_id})
 MATCH (decision)-[:SELECTS_VARIANT]->(variant:CrmHistoryHashVariant)
 MATCH (variant)-[:EVIDENCED_BY]->(record:SourceRecord {
@@ -52,6 +56,9 @@ MATCH (decision)-[:USES_PARENT_ASSOCIATION]->(
 WHERE head.selected_variant_hash = variant.canonical_hash
   AND head.association_decision_id = association.decision_id
   AND association.association_state IN ['selected_active', 'selected_pending_review']
+WITH head, decision, association, variant, record
+ORDER BY record.source_record_id
+WITH head, decision, association, variant, collect(record)[0] AS record
 RETURN head.event_identity AS event_identity,
        head.decision_id AS authority_decision_id,
        head.head_version AS authority_head_version,
@@ -64,8 +71,7 @@ RETURN head.event_identity AS event_identity,
        record.event_stage_id AS stage_id,
        record.event_stage_semantic_id AS source_semantic,
        record.event_at AS event_at
-ORDER BY parent_source_system, parent_source_record_id, event_at,
-         authority_head_version, event_identity
+ORDER BY event_identity
 """
 
 UPSERT_CRM_STAGE_TIMELINE_PROJECTIONS = """
@@ -89,7 +95,9 @@ SET projection.policy_version = $policy_version,
     projection.mapped_state = row.mapped_state,
     projection.mapping_reason = row.mapping_reason,
     projection.event_at = datetime(row.event_at),
+    projection.rebuild_id = $rebuild_id,
     projection.active = true,
+    projection.retired_at = NULL,
     projection.updated_at = datetime(),
     projection.created_at = coalesce(projection.created_at, datetime())
 RETURN count(projection) AS projection_count
@@ -98,22 +106,32 @@ RETURN count(projection) AS projection_count
 RETIRE_STALE_CRM_STAGE_TIMELINE_PROJECTIONS = """
 MATCH (projection:CrmStageTimelineProjection {mapping_version: $mapping_version})
 WHERE projection.active = true
-  AND NOT projection.event_identity IN $active_event_identities
+  AND coalesce(projection.rebuild_id, '') <> $rebuild_id
+  AND ($after_event_identity IS NULL OR projection.event_identity > $after_event_identity)
+WITH projection
+ORDER BY projection.event_identity
+LIMIT $limit
 SET projection.active = false,
     projection.retired_at = datetime(),
     projection.updated_at = datetime()
-RETURN count(projection) AS retired_count
+RETURN count(projection) AS retired_count,
+       max(projection.event_identity) AS last_event_identity
 """
 
 PUBLISH_CRM_STAGE_INVALIDATIONS = """
 MATCH (intent:CrmHistoryInvalidationIntent {target_kind: 'crm_stage_timeline'})
 WHERE intent.status IN ['pending', 'failed']
+  AND ($after_intent_id IS NULL OR intent.intent_id > $after_intent_id)
+WITH intent
+ORDER BY intent.intent_id
+LIMIT $limit
 SET intent.status = 'published',
     intent.published_mapping_version = $mapping_version,
     intent.published_policy_version = $policy_version,
     intent.published_at = datetime(),
     intent.updated_at = datetime()
-RETURN count(intent) AS published_count
+RETURN count(intent) AS published_count,
+       max(intent.intent_id) AS last_intent_id
 """
 
 
@@ -133,19 +151,38 @@ RETURN total, pending, claimed, published, failed, superseded,
        collect(DISTINCT projection.policy_version) AS active_policy_versions
 """
 
-REHEARSE_CRM_STAGE_PROJECTION_ROLLBACK = """
+GET_ACTIVE_CRM_STAGE_PROJECTION_IDENTITIES_PAGE = """
+MATCH (projection:CrmStageTimelineProjection {
+  mapping_version: $mapping_version,
+  active: true
+})
+WHERE $after_event_identity IS NULL
+   OR projection.event_identity > $after_event_identity
+RETURN projection.event_identity AS event_identity
+ORDER BY event_identity
+LIMIT $limit
+"""
+
+SET_CRM_STAGE_PROJECTION_ROLLBACK_PROBES = """
 MATCH (projection:CrmStageTimelineProjection {mapping_version: $mapping_version, active: true})
-WITH collect(projection) AS projections, count(projection) AS candidate_count
-FOREACH (projection IN projections |
-  SET projection.rollback_probe = $probe_id,
-      projection.rollback_probe_at = datetime()
-)
-FOREACH (projection IN projections |
-  REMOVE projection.rollback_probe, projection.rollback_probe_at
-)
-RETURN candidate_count,
-       size([projection IN projections
-             WHERE projection.rollback_probe IS NOT NULL]) AS leaked_probe_count
+WHERE projection.event_identity IN $event_identities
+SET projection.rollback_probe = $probe_id,
+    projection.rollback_probe_at = datetime()
+RETURN count(projection) AS candidate_count
+"""
+
+CLEAR_CRM_STAGE_PROJECTION_ROLLBACK_PROBES = """
+MATCH (projection:CrmStageTimelineProjection {mapping_version: $mapping_version, active: true})
+WHERE projection.event_identity IN $event_identities
+  AND projection.rollback_probe = $probe_id
+REMOVE projection.rollback_probe, projection.rollback_probe_at
+RETURN count(projection) AS cleared_count
+"""
+
+COUNT_CRM_STAGE_PROJECTION_ROLLBACK_PROBE_LEAKS = """
+MATCH (projection:CrmStageTimelineProjection {mapping_version: $mapping_version})
+WHERE projection.rollback_probe IS NOT NULL
+RETURN count(projection) AS leaked_probe_count
 """
 
 
