@@ -24,7 +24,7 @@ jobs:
           REPO_DIR="${{ secrets.STAGING_REPO_DIR }}"
           cd "$REPO_DIR"
 
-          COMPOSE="docker compose -f .docker/staging/docker-compose.yml"
+          COMPOSE="docker compose -p stg-hyperp -f .docker/staging/docker-compose.yml"
           LIFECYCLE_PAUSE_MARKER="$REPO_DIR/.lifecycle-worker-paused"
           LIFECYCLE_PAUSED=false
           if [ -f "$LIFECYCLE_PAUSE_MARKER" ]; then
