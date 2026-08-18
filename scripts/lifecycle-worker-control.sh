@@ -5,10 +5,11 @@ set -euo pipefail
 command_name=${1:-}
 repo_dir=${STAGING_REPO_DIR:-$(pwd)}
 compose_file=${STAGING_COMPOSE_FILE:-.docker/staging/docker-compose.yml}
+compose_project=${STAGING_COMPOSE_PROJECT:-stg-hyperp}
 marker="$repo_dir/.lifecycle-worker-paused"
 
 cd "$repo_dir"
-compose=(docker compose -f "$compose_file")
+compose=(docker compose -p "$compose_project" -f "$compose_file")
 
 consumer_container_id() {
   "${compose[@]}" ps -q lifecycle-worker

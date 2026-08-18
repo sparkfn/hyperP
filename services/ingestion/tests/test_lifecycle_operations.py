@@ -83,8 +83,8 @@ def test_pause_stops_worker_before_persisting_marker_and_uses_repo_directory(
     assert result.returncode == 0
     assert (repo_dir / ".lifecycle-worker-paused").is_file()
     assert (tmp_path / "docker.log").read_text(encoding="utf-8").splitlines() == [
-        f"{repo_dir}|compose -f host/docker-compose.yml stop lifecycle-worker",
-        f"{repo_dir}|compose -f host/docker-compose.yml ps -q lifecycle-worker",
+        f"{repo_dir}|compose -p stg-hyperp -f host/docker-compose.yml stop lifecycle-worker",
+        f"{repo_dir}|compose -p stg-hyperp -f host/docker-compose.yml ps -q lifecycle-worker",
     ]
 
 
@@ -148,6 +148,11 @@ def test_staging_workflow_uses_testable_lifecycle_deploy_guard() -> None:
     assert "lifecycle-worker-deploy-guard.sh" in workflow
     assert 'plan "$LIFECYCLE_PAUSED" $SERVICES' in workflow
     assert "verify-paused .docker/staging/docker-compose.yml" in workflow
+    control = (_ROOT / "scripts/lifecycle-worker-control.sh").read_text(encoding="utf-8")
+    deploy_guard = (_ROOT / "scripts/lifecycle-worker-deploy-guard.sh").read_text(encoding="utf-8")
+    for script in (control, deploy_guard):
+        assert "STAGING_COMPOSE_PROJECT:-stg-hyperp" in script
+        assert 'docker compose -p "$compose_project" -f "$compose_file"' in script
 
 
 def test_paused_deploy_plan_builds_lifecycle_without_recreating_it() -> None:
