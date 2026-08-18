@@ -186,6 +186,72 @@ RETURN occurrence_count, distinct_occurrence_count, nonterminal_occurrence_count
          AS unpublished_invalidation_count
 """
 
+RETAIN_REVIEWED_PENDING_PARENT_RETRIES = """
+MATCH (occurrence:StageHistoryOccurrence)-[:HAS_STAGE_HISTORY_RETRY]->(
+  retry:StageHistoryRetry {status: 'pending'}
+)
+OPTIONAL MATCH (parent:SourceRecord {
+  source_record_id: occurrence.logical_parent_source_record_id,
+  record_type: 'crm_deal'
+})-[:FROM_SOURCE]->(:SourceSystem {
+  source_key: occurrence.logical_parent_source_system
+})
+WHERE parent.lifecycle_status IN ['active', 'pending_review']
+WITH occurrence, retry,
+     count(DISTINCT CASE WHEN parent.lifecycle_status = 'active' THEN parent END)
+       AS active_parent_count,
+     count(DISTINCT CASE WHEN parent.lifecycle_status = 'pending_review' THEN parent END)
+       AS pending_parent_count
+WITH collect({
+  occurrence: occurrence,
+  retry: retry,
+  active_parent_count: active_parent_count,
+  pending_parent_count: pending_parent_count
+}) AS candidates
+MATCH (unresolved:StageHistoryRetry)
+WHERE unresolved.status IN ['pending', 'claimed']
+WITH candidates, count(unresolved) AS unresolved_count
+WHERE unresolved_count = $expected_count
+  AND size(candidates) = $expected_count
+  AND all(item IN candidates WHERE
+    item.retry.reason_code = 'canonical_pending_parent'
+    AND coalesce(item.retry.attempt_count, 0) = 0
+    AND item.occurrence.association_state = 'selected_pending_review'
+    AND item.occurrence.authority_state = 'withheld_parent'
+    AND item.active_parent_count = 0
+    AND item.pending_parent_count = 1
+  )
+UNWIND candidates AS item
+WITH item.retry AS retry, item.occurrence AS occurrence
+SET retry.status = 'quarantined',
+    retry.resolution_decision_id = $decision_id,
+    retry.retention_reason = $reason,
+    retry.retained_by = $accepted_by,
+    retry.retained_at = datetime(),
+    retry.resolved_at = datetime(),
+    retry.updated_at = datetime(),
+    retry.lease_owner = NULL,
+    retry.lease_attempt_id = NULL,
+    retry.lease_attempt_generation = NULL,
+    retry.lease_stream_generation = NULL,
+    retry.lease_fencing_token = NULL,
+    retry.claimed_at = NULL,
+    retry.lease_expires_at = NULL
+SET occurrence.retry_state = retry.status,
+    occurrence.current_retry_sequence = retry.retry_sequence,
+    occurrence.projection_updated_at = datetime()
+WITH count(retry) AS retained_count
+CALL {
+  MATCH (remaining:StageHistoryRetry)
+  WHERE remaining.status IN ['pending', 'claimed']
+  RETURN count(remaining) AS remaining_unresolved_count
+}
+MATCH (quarantined:StageHistoryRetry {status: 'quarantined'})
+RETURN retained_count, remaining_unresolved_count,
+       count(quarantined) AS quarantined_retry_count
+"""
+
+
 GET_CRM_STAGE_ANALYTICAL_RELEASE = """
 OPTIONAL MATCH (release:CrmStageAnalyticalRelease {release_key: 'crm_stage_timeline'})
 RETURN coalesce(release.enabled, false) AS enabled,

@@ -49,6 +49,18 @@ class CrmStageReconciliationReport:
 
 
 @dataclass(frozen=True, slots=True)
+class CrmStageRetryRetentionResult:
+    expected_count: int
+    retained_count: int
+    remaining_unresolved_count: int
+    quarantined_retry_count: int
+
+    @property
+    def complete(self) -> bool:
+        return self.retained_count == self.expected_count and self.remaining_unresolved_count == 0
+
+
+@dataclass(frozen=True, slots=True)
 class CrmStageInvalidationStatus:
     total: int
     pending: int

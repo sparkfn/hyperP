@@ -1,4 +1,7 @@
-from src.crm_stage_reconciliation import CrmStageReconciliationReport
+from src.crm_stage_reconciliation import (
+    CrmStageReconciliationReport,
+    CrmStageRetryRetentionResult,
+)
 
 
 def test_reconciliation_requires_terminal_unique_and_published_state() -> None:
@@ -45,3 +48,20 @@ def test_reconciliation_surfaces_every_release_blocker() -> None:
         "unresolved_retry",
         "unpublished_invalidation",
     }
+
+
+def test_retry_retention_completes_only_for_exact_drained_cohort() -> None:
+    completed = CrmStageRetryRetentionResult(
+        expected_count=5,
+        retained_count=5,
+        remaining_unresolved_count=0,
+        quarantined_retry_count=5,
+    )
+    incomplete = CrmStageRetryRetentionResult(
+        expected_count=5,
+        retained_count=4,
+        remaining_unresolved_count=1,
+        quarantined_retry_count=4,
+    )
+    assert completed.complete is True
+    assert incomplete.complete is False
