@@ -138,6 +138,9 @@ def test_status_does_not_misreport_compose_failure_as_stopped(tmp_path: Path) ->
 def test_staging_workflow_uses_testable_lifecycle_deploy_guard() -> None:
     workflow = (_ROOT / ".github/workflows/deploy-staging.yml").read_text(encoding="utf-8")
 
+    assert (
+        'COMPOSE="docker compose -p stg-hyperp -f .docker/staging/docker-compose.yml"' in workflow
+    )
     assert 'SERVICES="$BUILD_SERVICES"' in workflow
     assert "$COMPOSE build $SERVICES" in workflow
     assert "$COMPOSE up -d --no-deps --force-recreate $RECREATE_SERVICES" in workflow
