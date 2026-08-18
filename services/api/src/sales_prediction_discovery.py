@@ -38,6 +38,7 @@ from src.sales_prediction_discovery_mapping import (
     aggregate_source_coverage,
     capability_rows,
 )
+from src.sales_prediction_gate_runner import render_gate_markdown, run_gate, write_gate_json
 
 _ENTITY_KEY = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 _CONFIGURATION_VERSION = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
@@ -243,12 +244,20 @@ def _markdown_cell(value: DiscoveryScalar) -> str:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--as-of-at", required=True, type=parse_as_of_at)
-    parser.add_argument("--report-cutoff-at", required=True, type=parse_as_of_at)
+    parser.add_argument("--gate", action="store_true")
+    parser.add_argument("--as-of-at", type=parse_as_of_at)
+    parser.add_argument("--report-cutoff-at", type=parse_as_of_at)
     parser.add_argument("--entities", required=True, type=parse_entity_keys)
-    parser.add_argument("--configuration-version", required=True, type=parse_non_empty)
+    parser.add_argument("--configuration-version", type=parse_non_empty)
     parser.add_argument("--late-arrival-hours", type=int, default=72)
     parser.add_argument("--stage-mapping", type=Path)
+    parser.add_argument("--expected-mapping-version", type=parse_non_empty)
+    parser.add_argument("--expected-policy-version", type=parse_non_empty)
+    parser.add_argument("--selector-version", type=parse_non_empty, default="open-episode-entry-v1")
+    parser.add_argument(
+        "--eligibility-version", type=parse_non_empty, default="crm-won-eligibility-v1"
+    )
+    parser.add_argument("--restatement-version", type=parse_non_empty, default="authority-head-v1")
     parser.add_argument("--json-output", type=Path, required=True)
     parser.add_argument("--markdown-output", type=Path, required=True)
     return parser
@@ -354,6 +363,41 @@ def _write_json(path: Path, output: DiscoveryOutput) -> None:
 
 async def _main(arguments: Sequence[str], stdout: TextIO) -> int:
     args = build_parser().parse_args(arguments)
+    if args.json_output.resolve() == args.markdown_output.resolve():
+        raise ValueError("JSON and Markdown output paths must be different")
+    try:
+        if args.gate:
+            if args.expected_mapping_version is None or args.expected_policy_version is None:
+                raise ValueError("gate mode requires expected mapping and policy versions")
+            gate_output = await run_gate(
+                entity_keys=args.entities,
+                expected_mapping_version=args.expected_mapping_version,
+                expected_policy_version=args.expected_policy_version,
+                selector_version=args.selector_version,
+                eligibility_version=args.eligibility_version,
+                restatement_version=args.restatement_version,
+            )
+            write_gate_json(args.json_output, gate_output)
+            args.markdown_output.write_text(render_gate_markdown(gate_output), encoding="utf-8")
+            output_kind = "Gate 1"
+        else:
+            settings = _discovery_settings(args)
+            output = await run_discovery(settings)
+            _write_json(args.json_output, output)
+            args.markdown_output.write_text(render_markdown(output), encoding="utf-8")
+            output_kind = "aggregate discovery"
+    finally:
+        await close_driver()
+    message = f"Wrote {output_kind} output to {args.json_output} and {args.markdown_output}"
+    print(message, file=stdout)
+    return 0
+
+
+def _discovery_settings(args: argparse.Namespace) -> DiscoverySettings:
+    if args.as_of_at is None or args.report_cutoff_at is None:
+        raise ValueError("discovery mode requires --as-of-at and --report-cutoff-at")
+    if args.configuration_version is None:
+        raise ValueError("discovery mode requires --configuration-version")
     if args.late_arrival_hours < 1:
         raise ValueError("--late-arrival-hours must be positive")
     if _datetime_from_utc(args.as_of_at) > datetime.now(UTC):
@@ -362,9 +406,7 @@ async def _main(arguments: Sequence[str], stdout: TextIO) -> int:
         raise ValueError("--report-cutoff-at must not be in the future")
     if _datetime_from_utc(args.report_cutoff_at) < _datetime_from_utc(args.as_of_at):
         raise ValueError("--report-cutoff-at must not precede --as-of-at")
-    if args.json_output.resolve() == args.markdown_output.resolve():
-        raise ValueError("JSON and Markdown output paths must be different")
-    settings = DiscoverySettings(
+    return DiscoverySettings(
         as_of_at=args.as_of_at,
         report_cutoff_at=args.report_cutoff_at,
         entity_keys=args.entities,
@@ -372,15 +414,6 @@ async def _main(arguments: Sequence[str], stdout: TextIO) -> int:
         configuration_version=args.configuration_version,
         stage_mapping=load_stage_mapping(args.stage_mapping) if args.stage_mapping else None,
     )
-    try:
-        output = await run_discovery(settings)
-        _write_json(args.json_output, output)
-        args.markdown_output.write_text(render_markdown(output), encoding="utf-8")
-    finally:
-        await close_driver()
-    message = f"Wrote aggregate discovery output to {args.json_output} and {args.markdown_output}"
-    print(message, file=stdout)
-    return 0
 
 
 def _datetime_from_utc(value: str) -> datetime:

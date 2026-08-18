@@ -146,3 +146,39 @@ mappings may be supplied to measure policy completeness, but they always remain
 `mapping_approval_unverified` and cannot enable labels. Even an externally
 referenced mapping does not enable labels by itself; authoritative transition
 history and verification outside this local artifact are also required.
+
+## Issue #149 accepted-release Gate 1 mode
+
+The follow-on Gate 1 runner consumes only the persisted, enabled
+`CrmStageAnalyticalRelease` and its active `CrmStageTimelineProjection` rows. It
+fails closed when the expected mapping or lifecycle-policy version differs,
+source accounting is incomplete, active identities are duplicated, timestamps
+are invalid, parent selection is ambiguous, or Person linkage is not
+deterministic at the snapshot. It does not call live Bitrix.
+
+The fixed selector creates a candidate snapshot when the authoritative lifecycle
+enters `open` from a non-open state. Snapshot time is when that open event became
+operationally available. The label is the first authoritative WON event in the
+open interval `(S, S+30 days]`; a negative requires a complete accepted horizon.
+Late evidence proving a pre-snapshot non-open state produces
+`censored_retrospective_disqualifier`.
+
+The JSON and Markdown outputs contain aggregate entity/month evidence and every
+Gate 1 threshold result. They intentionally omit raw Person, deal, event, task,
+artifact, logical-run, source-boundary, actor, credential, and restricted digest
+values. Optional interaction coverage is explicitly non-blocking and is reported
+as not evaluated by this CRM-only gate.
+
+```bash
+uv run --package profile-unifier-api python -m src.sales_prediction_discovery \
+  --gate \
+  --entities eko,fundbox,speedzone \
+  --expected-mapping-version crm-stage-map-2026-08-18-v1 \
+  --expected-policy-version crm-stage-lifecycle-policy-2026-08-18-v1 \
+  --json-output /secure/output/issue-149-gate.json \
+  --markdown-output /secure/output/issue-149-gate.md
+```
+
+The deterministic recommendation is evidence for human review, not the final
+decision. Exactly one human decision per candidate population must still be
+recorded in issue #149.
