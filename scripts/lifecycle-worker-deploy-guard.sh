@@ -22,7 +22,8 @@ case "$action" in
     ;;
   verify-paused)
     compose_file=${2:?compose file is required}
-    compose=(docker compose -f "$compose_file")
+    compose_project=${STAGING_COMPOSE_PROJECT:-stg-hyperp}
+    compose=(docker compose -p "$compose_project" -f "$compose_file")
     lifecycle_container_ids=$("${compose[@]}" ps -aq lifecycle-worker)
     lifecycle_container_count=$(
       awk 'NF { count += 1 } END { print count + 0 }' <<< "$lifecycle_container_ids"

@@ -16,6 +16,11 @@ STAGING_REPO_DIR=/path/to/hyperP scripts/lifecycle-worker-control.sh resume
 `.docker/staging/docker-compose.yml`. Relative Compose paths are resolved from
 `STAGING_REPO_DIR`.
 
+All staging Compose operations use the canonical `stg-hyperp` project.
+`STAGING_COMPOSE_PROJECT` may override it for an isolated test checkout, but
+operators and deployment automation must not rely on Compose's directory-derived
+default because that can create duplicate workers.
+
 `pause` stops `lifecycle-worker` successfully before atomically creating the
 non-secret `.lifecycle-worker-paused` marker. `resume` starts the worker
 successfully before removing that marker. `status` reports both marker presence
