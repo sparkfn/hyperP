@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import uuid
 from collections.abc import Mapping
 from datetime import datetime
 from typing import Protocol, cast
@@ -23,16 +24,19 @@ from src.crm_stage_reconciliation import (
 )
 from src.graph.client import Neo4jClient
 from src.graph.queries.crm_stage_backfill import (
+    CLEAR_CRM_STAGE_PROJECTION_ROLLBACK_PROBES,
+    COUNT_CRM_STAGE_PROJECTION_ROLLBACK_PROBE_LEAKS,
     CRM_STAGE_CURRENT_EFFECTIVE_ROWS,
     CRM_STAGE_MAPPING_INVENTORY,
     ENABLE_CRM_STAGE_ANALYTICAL_RELEASE,
+    GET_ACTIVE_CRM_STAGE_PROJECTION_IDENTITIES_PAGE,
     GET_CRM_STAGE_ANALYTICAL_RELEASE,
     GET_CRM_STAGE_INVALIDATION_STATUS,
     GET_CRM_STAGE_RECONCILIATION,
     PUBLISH_CRM_STAGE_INVALIDATIONS,
-    REHEARSE_CRM_STAGE_PROJECTION_ROLLBACK,
     RETAIN_REVIEWED_PENDING_PARENT_RETRIES,
     RETIRE_STALE_CRM_STAGE_TIMELINE_PROJECTIONS,
+    SET_CRM_STAGE_PROJECTION_ROLLBACK_PROBES,
     UPSERT_CRM_STAGE_TIMELINE_PROJECTIONS,
 )
 
@@ -44,11 +48,26 @@ class _Neo4jDateTime(Protocol):
 class CrmStageBackfillRepository:
     """Expose aggregate reads and tightly scoped analytical projection mutations."""
 
-    def __init__(self, client: Neo4jClient, *, entity_type_id: int) -> None:
+    def __init__(
+        self,
+        client: Neo4jClient,
+        *,
+        entity_type_id: int,
+        rebuild_batch_size: int = 1_000,
+        rollback_batch_size: int = 1_000,
+    ) -> None:
         if isinstance(entity_type_id, bool) or entity_type_id < 1:
             raise ValueError("CRM stage entity_type_id must be positive")
+        for value, field_name in (
+            (rebuild_batch_size, "rebuild batch size"),
+            (rollback_batch_size, "rollback batch size"),
+        ):
+            if isinstance(value, bool) or value < 1:
+                raise ValueError(f"{field_name} must be positive")
         self._client = client
         self._entity_type_id = str(entity_type_id)
+        self._rebuild_batch_size = rebuild_batch_size
+        self._rollback_batch_size = rollback_batch_size
 
     def inventory(self) -> tuple[CrmStageInventoryRow, ...]:
         def read(tx: ManagedTransaction) -> list[Record]:
@@ -137,89 +156,191 @@ class CrmStageBackfillRepository:
         )
 
     def rebuild(self, policy: CrmStageMappingPolicy) -> CrmStageRebuildResult:
-        def write(tx: ManagedTransaction) -> CrmStageRebuildResult:
-            source_rows = list(
+        rebuild_id = uuid.uuid4().hex
+        after_event_identity: str | None = None
+        projection_count = 0
+
+        while True:
+            source_rows = self._effective_source_page(after_event_identity)
+            if not source_rows:
+                break
+            projections = [
+                projection
+                for source in source_rows
+                if (projection := _projection_row(source, policy)) is not None
+            ]
+            if projections:
+
+                def upsert(
+                    tx: ManagedTransaction,
+                    rows: list[dict[str, JsonValue]] = projections,
+                ) -> Record | None:
+                    return tx.run(
+                        UPSERT_CRM_STAGE_TIMELINE_PROJECTIONS,
+                        rows=cast(list[Mapping[str, JsonValue]], rows),
+                        mapping_version=policy.mapping_version,
+                        policy_version=policy.policy_version,
+                        mapping_digest=policy.digest,
+                        rebuild_id=rebuild_id,
+                    ).single()
+
+                projection_record = self._client.execute_write(upsert)
+                projection_count += _non_negative_or_zero(projection_record, "projection_count")
+            next_cursor = _string(source_rows[-1], "event_identity")
+            if after_event_identity is not None and next_cursor <= after_event_identity:
+                raise RuntimeError("CRM stage effective-row pagination did not advance")
+            after_event_identity = next_cursor
+
+        retired_count = 0
+        retired_cursor: str | None = None
+        while True:
+            retired_batch_count, next_retired_cursor = self._retire_stale_projection_batch(
+                policy.mapping_version, rebuild_id, retired_cursor
+            )
+            retired_count += retired_batch_count
+            if retired_batch_count == 0:
+                break
+            retired_cursor = _advance_cursor(
+                retired_cursor, next_retired_cursor, "stale projection retirement"
+            )
+            if retired_batch_count < self._rebuild_batch_size:
+                break
+
+        published_invalidation_count = 0
+        publication_cursor: str | None = None
+        while True:
+            published_batch_count, next_publication_cursor = self._publish_invalidation_batch(
+                policy, publication_cursor
+            )
+            published_invalidation_count += published_batch_count
+            if published_batch_count == 0:
+                break
+            publication_cursor = _advance_cursor(
+                publication_cursor, next_publication_cursor, "invalidation publication"
+            )
+            if published_batch_count < self._rebuild_batch_size:
+                break
+
+        return CrmStageRebuildResult(
+            mapping_version=policy.mapping_version,
+            policy_version=policy.policy_version,
+            projection_count=projection_count,
+            retired_count=retired_count,
+            published_invalidation_count=published_invalidation_count,
+        )
+
+    def rehearse_rollback(self, mapping_version: str, probe_id: str) -> tuple[int, int]:
+        after_event_identity: str | None = None
+        candidate_count = 0
+        while True:
+            event_identities = self._active_projection_identity_page(
+                mapping_version, after_event_identity
+            )
+            if not event_identities:
+                break
+
+            def probe_and_clear(
+                tx: ManagedTransaction, identities: list[str] = event_identities
+            ) -> int:
+                candidate = tx.run(
+                    SET_CRM_STAGE_PROJECTION_ROLLBACK_PROBES,
+                    mapping_version=mapping_version,
+                    event_identities=identities,
+                    probe_id=probe_id,
+                ).single()
+                expected_count = _non_negative_or_zero(candidate, "candidate_count")
+                cleared = tx.run(
+                    CLEAR_CRM_STAGE_PROJECTION_ROLLBACK_PROBES,
+                    mapping_version=mapping_version,
+                    event_identities=identities,
+                    probe_id=probe_id,
+                ).single()
+                cleared_count = _non_negative_or_zero(cleared, "cleared_count")
+                if cleared_count != expected_count:
+                    raise RuntimeError("CRM stage rollback probe cleanup count changed")
+                return expected_count
+
+            candidate_count += self._client.execute_write(probe_and_clear)
+            next_cursor = event_identities[-1]
+            if after_event_identity is not None and next_cursor <= after_event_identity:
+                raise RuntimeError("CRM stage rollback pagination did not advance")
+            after_event_identity = next_cursor
+
+        def leaked(tx: ManagedTransaction) -> Record | None:
+            return tx.run(
+                COUNT_CRM_STAGE_PROJECTION_ROLLBACK_PROBE_LEAKS,
+                mapping_version=mapping_version,
+            ).single()
+
+        leaked_record = self._client.execute_read(leaked)
+        return candidate_count, _non_negative_or_zero(leaked_record, "leaked_probe_count")
+
+    def _effective_source_page(self, after_event_identity: str | None) -> list[Record]:
+        def read(tx: ManagedTransaction) -> list[Record]:
+            return list(
                 tx.run(
                     CRM_STAGE_CURRENT_EFFECTIVE_ROWS,
                     entity_type_id=self._entity_type_id,
+                    after_event_identity=after_event_identity,
+                    limit=self._rebuild_batch_size,
                 )
             )
-            projections: list[dict[str, JsonValue]] = []
-            active_ids: list[str] = []
-            for source in source_rows:
-                stage = CrmStageTuple(
-                    entity_type_id=_string(source, "entity_type_id"),
-                    category_id=_optional_string(source.get("category_id")),
-                    stage_id=_optional_string(source.get("stage_id")),
-                    source_semantic=_optional_string(source.get("source_semantic")),
-                )
-                mapping = policy.map_stage(stage)
-                if mapping is None:
-                    raise RuntimeError("effective CRM stage tuple is not mapped")
-                event_identity = _string(source, "event_identity")
-                active_ids.append(event_identity)
-                if mapping.mapped_state in {"unresolved", "excluded"}:
-                    continue
-                projections.append(
-                    {
-                        "event_identity": event_identity,
-                        "authority_decision_id": _string(source, "authority_decision_id"),
-                        "authority_head_version": _non_negative(source, "authority_head_version"),
-                        "authority_token": _non_negative(source, "authority_token"),
-                        "available_at": _datetime(source, "available_at").isoformat(),
-                        "parent_source_system": _string(source, "parent_source_system"),
-                        "parent_source_record_id": _string(source, "parent_source_record_id"),
-                        "entity_type_id": stage.entity_type_id,
-                        "category_id": stage.category_id,
-                        "stage_id": stage.stage_id,
-                        "source_semantic": stage.source_semantic,
-                        "mapped_state": mapping.mapped_state,
-                        "mapping_reason": mapping.reason,
-                        "event_at": _datetime(source, "event_at").isoformat(),
-                    }
-                )
-            projection_record = tx.run(
-                UPSERT_CRM_STAGE_TIMELINE_PROJECTIONS,
-                rows=cast(list[Mapping[str, JsonValue]], projections),
-                mapping_version=policy.mapping_version,
-                policy_version=policy.policy_version,
-                mapping_digest=policy.digest,
-            ).single()
-            retired_record = tx.run(
+
+        return self._client.execute_read(read)
+
+    def _retire_stale_projection_batch(
+        self,
+        mapping_version: str,
+        rebuild_id: str,
+        after_event_identity: str | None,
+    ) -> tuple[int, str | None]:
+        def retire(tx: ManagedTransaction) -> Record | None:
+            return tx.run(
                 RETIRE_STALE_CRM_STAGE_TIMELINE_PROJECTIONS,
-                mapping_version=policy.mapping_version,
-                active_event_identities=active_ids,
+                mapping_version=mapping_version,
+                rebuild_id=rebuild_id,
+                after_event_identity=after_event_identity,
+                limit=self._rebuild_batch_size,
             ).single()
-            published_record = tx.run(
+
+        record = self._client.execute_write(retire)
+        return (
+            _non_negative_or_zero(record, "retired_count"),
+            _optional_record_string(record, "last_event_identity"),
+        )
+
+    def _publish_invalidation_batch(
+        self, policy: CrmStageMappingPolicy, after_intent_id: str | None
+    ) -> tuple[int, str | None]:
+        def publish(tx: ManagedTransaction) -> Record | None:
+            return tx.run(
                 PUBLISH_CRM_STAGE_INVALIDATIONS,
                 mapping_version=policy.mapping_version,
                 policy_version=policy.policy_version,
+                after_intent_id=after_intent_id,
+                limit=self._rebuild_batch_size,
             ).single()
-            return CrmStageRebuildResult(
-                mapping_version=policy.mapping_version,
-                policy_version=policy.policy_version,
-                projection_count=_non_negative_or_zero(projection_record, "projection_count"),
-                retired_count=_non_negative_or_zero(retired_record, "retired_count"),
-                published_invalidation_count=_non_negative_or_zero(
-                    published_record, "published_count"
-                ),
+
+        record = self._client.execute_write(publish)
+        return (
+            _non_negative_or_zero(record, "published_count"),
+            _optional_record_string(record, "last_intent_id"),
+        )
+
+    def _active_projection_identity_page(
+        self, mapping_version: str, after_event_identity: str | None
+    ) -> list[str]:
+        def read(tx: ManagedTransaction) -> list[Record]:
+            return list(
+                tx.run(
+                    GET_ACTIVE_CRM_STAGE_PROJECTION_IDENTITIES_PAGE,
+                    mapping_version=mapping_version,
+                    after_event_identity=after_event_identity,
+                    limit=self._rollback_batch_size,
+                )
             )
 
-        return self._client.execute_write(write)
-
-    def rehearse_rollback(self, mapping_version: str, probe_id: str) -> tuple[int, int]:
-        def write(tx: ManagedTransaction) -> Record | None:
-            return tx.run(
-                REHEARSE_CRM_STAGE_PROJECTION_ROLLBACK,
-                mapping_version=mapping_version,
-                probe_id=probe_id,
-            ).single()
-
-        row = self._client.execute_write(write)
-        return (
-            _non_negative_or_zero(row, "candidate_count"),
-            _non_negative_or_zero(row, "leaked_probe_count"),
-        )
+        return [_string(row, "event_identity") for row in self._client.execute_read(read)]
 
     def release_status(self) -> CrmStageReleaseStatus:
         def read(tx: ManagedTransaction) -> Record | None:
@@ -253,6 +374,46 @@ class CrmStageBackfillRepository:
         if row is None:
             raise RuntimeError("CRM stage analytical release was not persisted")
         return _release_status(row)
+
+
+def _projection_row(source: Record, policy: CrmStageMappingPolicy) -> dict[str, JsonValue] | None:
+    stage = CrmStageTuple(
+        entity_type_id=_string(source, "entity_type_id"),
+        category_id=_optional_string(source.get("category_id")),
+        stage_id=_optional_string(source.get("stage_id")),
+        source_semantic=_optional_string(source.get("source_semantic")),
+    )
+    mapping = policy.map_stage(stage)
+    if mapping is None:
+        raise RuntimeError("effective CRM stage tuple is not mapped")
+    if mapping.mapped_state in {"unresolved", "excluded"}:
+        return None
+    return {
+        "event_identity": _string(source, "event_identity"),
+        "authority_decision_id": _string(source, "authority_decision_id"),
+        "authority_head_version": _non_negative(source, "authority_head_version"),
+        "authority_token": _non_negative(source, "authority_token"),
+        "available_at": _datetime(source, "available_at").isoformat(),
+        "parent_source_system": _string(source, "parent_source_system"),
+        "parent_source_record_id": _string(source, "parent_source_record_id"),
+        "entity_type_id": stage.entity_type_id,
+        "category_id": stage.category_id,
+        "stage_id": stage.stage_id,
+        "source_semantic": stage.source_semantic,
+        "mapped_state": mapping.mapped_state,
+        "mapping_reason": mapping.reason,
+        "event_at": _datetime(source, "event_at").isoformat(),
+    }
+
+
+def _advance_cursor(previous: str | None, current: str | None, operation: str) -> str:
+    if current is None or (previous is not None and current <= previous):
+        raise RuntimeError(f"CRM stage {operation} pagination did not advance")
+    return current
+
+
+def _optional_record_string(row: Record | None, key: str) -> str | None:
+    return None if row is None else _optional_string(row.get(key))
 
 
 def _inventory_row(row: Record) -> CrmStageInventoryRow:
