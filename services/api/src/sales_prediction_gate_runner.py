@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import html
 import json
 from datetime import UTC, datetime
@@ -39,12 +38,16 @@ async def run_gate(
     restatement_version: str,
 ) -> GateReport:
     """Run Gate 1 only against the persisted accepted analytical release."""
-    release_rows, stage_rows, deal_rows = await asyncio.gather(
-        _query_rows(GATE_RELEASE),
-        _query_rows(GATE_STAGE_EVENTS),
-        _query_rows(GATE_DEAL_VERSIONS),
+    release = _parse_gate_release(
+        await _query_rows(GATE_RELEASE), expected_mapping_version, expected_policy_version
     )
-    release = _parse_gate_release(release_rows, expected_mapping_version, expected_policy_version)
+    stage_rows = await _query_rows(GATE_STAGE_EVENTS)
+    deal_rows = await _query_rows(GATE_DEAL_VERSIONS)
+    final_release = _parse_gate_release(
+        await _query_rows(GATE_RELEASE), expected_mapping_version, expected_policy_version
+    )
+    if final_release != release:
+        raise ValueError("accepted CRM stage release changed during Gate 1 execution")
     events, invalid_parents = parse_stage_rows(stage_rows)
     versions = parse_deal_rows(deal_rows)
     labels = build_labels(
