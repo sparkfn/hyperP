@@ -6,7 +6,11 @@ from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import cast
 
-from src.graph.queries.sales_prediction_gate import GATE_RELEASE
+from src.graph.queries.sales_prediction_gate import (
+    GATE_DEAL_VERSIONS_FOR_PARENTS,
+    GATE_RELEASE,
+    GATE_STAGE_EVENTS_PAGE,
+)
 from src.sales_prediction_discovery import build_parser, render_gate_markdown
 from src.sales_prediction_gate_labels import build_labels
 from src.sales_prediction_gate_models import (
@@ -293,6 +297,14 @@ def test_threshold_boundaries_for_go_rules_only_and_insufficient() -> None:
         .recommendation
         == "collect_more_data"
     )
+
+
+def test_gate_queries_page_stage_events_and_bound_deal_parent_batches() -> None:
+    assert "projection.event_identity > $after_event_identity" in GATE_STAGE_EVENTS_PAGE
+    assert "ORDER BY event_identity" in GATE_STAGE_EVENTS_PAGE
+    assert "LIMIT $limit" in GATE_STAGE_EVENTS_PAGE
+    assert "UNWIND $parents AS parent" in GATE_DEAL_VERSIONS_FOR_PARENTS
+    assert "WITH DISTINCT" not in GATE_DEAL_VERSIONS_FOR_PARENTS
 
 
 def test_release_query_binds_persisted_acceptance_without_live_source_reconciliation() -> None:
