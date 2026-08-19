@@ -8,6 +8,7 @@ that this evaluator reproduces training predictions within tolerance.
 from __future__ import annotations
 
 import math
+from typing import cast
 
 from src.sales_prediction.model_artifact import ModelArtifact
 from src.sales_prediction.models import DatasetRow
@@ -67,7 +68,7 @@ def _build_feature_vector(row: DatasetRow, artifact: ModelArtifact) -> list[floa
     onehot: list[float] = []
     for vocab in artifact.vocabularies:
         feature_name = str(vocab["feature_name"])
-        values = list(vocab["values"])  # type: ignore[arg-type]
+        values = cast(list[str], vocab["values"])
         row_value = _get_categorical(row, feature_name)
         for val in values:
             onehot.append(1.0 if row_value == str(val) else 0.0)

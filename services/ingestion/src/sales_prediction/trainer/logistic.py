@@ -15,6 +15,7 @@ The trainer implements:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Any
 
 from src.sales_prediction.models import DatasetRow
 
@@ -176,7 +177,7 @@ class LogisticTrainer:
 
 def _extract_features(
     rows: list[DatasetRow],
-) -> tuple[object, object, object]:
+) -> tuple[Any, Any, Any]:
     """Extract numeric features, categorical features, and labels."""
     try:
         import numpy as np
@@ -217,7 +218,7 @@ def _derive_vocabularies(categorical: list[list[str]]) -> tuple[VocabularyMappin
 
 def _one_hot_encode(
     categorical: list[list[str]], vocabularies: tuple[VocabularyMapping, ...]
-) -> object:
+) -> Any:
     """One-hot encode categorical features using train vocabularies."""
     try:
         import numpy as np
@@ -237,7 +238,7 @@ def _one_hot_encode(
     return encoded
 
 
-def _sigmoid(z: object) -> object:
+def _sigmoid(z: Any) -> Any:
     try:
         import numpy as np
     except ImportError as e:
@@ -245,7 +246,7 @@ def _sigmoid(z: object) -> object:
     return np.where(z >= 0, 1.0 / (1.0 + np.exp(-z)), np.exp(z) / (1.0 + np.exp(z)))
 
 
-def _log_likelihood(y: object, p: object) -> float:
+def _log_likelihood(y: Any, p: Any) -> float:
     try:
         import numpy as np
     except ImportError as e:
@@ -255,7 +256,7 @@ def _log_likelihood(y: object, p: object) -> float:
     return float(np.sum(y * np.log(p) + (1 - y) * np.log(1 - p)))
 
 
-def _platt_calibration(probs: object, labels: object) -> CalibrationParams:
+def _platt_calibration(probs: Any, labels: Any) -> CalibrationParams:
     """Fit Platt scaling: P(y=1|f) = sigmoid(A * f + B)."""
     try:
         import numpy as np
