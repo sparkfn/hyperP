@@ -88,6 +88,11 @@ module = [
     "src.types_reports",
     "src.models",
     "src.profile_analysis_models",
+    # numpy is a training-only dependency (#125.4); its guarded imports
+    # surface as Any under strict mode. The trainer is the only module
+    # that uses numpy; production scoring uses the pure-python evaluator.
+    "numpy",
+    "src.sales_prediction.trainer.logistic",
     "src.connectors.sggov.rental_flats_api_models",
     "src.connectors.fundbox.base",
     "src.connectors.fundbox.builders",
