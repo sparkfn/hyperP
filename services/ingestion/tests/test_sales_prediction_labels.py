@@ -164,11 +164,12 @@ def test_censored_for_missing_parent() -> None:
 def test_ineligible_for_not_open_retrospective() -> None:
     snapshot = datetime(2026, 1, 10, tzinfo=UTC)
     events = [
-        _event("e1", state="won", event_at=datetime(2026, 1, 5, tzinfo=UTC)),
-        _event("e2", state="open", event_at=snapshot),
+        _event("a", state="open", event_at=snapshot),
+        _event("b", state="lost", event_at=snapshot),
     ]
     labels = _labels(events, [_version()])
-    # last known state before snapshot is "won", not "open"
+    # open and lost at same timestamp; lost sorts after open so the
+    # last known state at S is "lost", not "open"
     assert labels[0].status == "ineligible"
     assert labels[0].reason == "not_open_retrospective"
 

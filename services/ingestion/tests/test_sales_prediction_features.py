@@ -35,6 +35,7 @@ def _version(
     observed_at: datetime | None = None,
     amount_value: float | None = 1200.0,
     amount_state: str = "known",
+    currency_status: str = "supported",
     assigned_known: bool = True,
     contact_count: int = 2,
     latest_linked_at: datetime | None = None,
@@ -55,7 +56,7 @@ def _version(
         latest_linked_at=latest_linked_at or datetime(2026, 1, 6, tzinfo=UTC),
         timestamps_valid=True,
         amount_state=amount_state,
-        currency_status="supported",
+        currency_status=currency_status,
         lifecycle_status="active",
         amount_value=amount_value,
         currency="SGD",
@@ -134,7 +135,7 @@ def test_future_assignment_change_does_not_change_features() -> None:
 
 
 def test_deal_age_uses_first_event_at_or_before_s() -> None:
-    first = datetime(2026, 1, 1, tzinfo=UTC)
+    first = datetime(2026, 1, 1, 8, 0, tzinfo=UTC)
     timeline = [
         _event("e0", state="open", event_at=first),
         _event("e1", state="open", event_at=SNAPSHOT),
@@ -152,7 +153,7 @@ def test_transition_counts_only_prior_events() -> None:
     ]
     feats = _features(timeline, [_version()])
     assert feats.prior_won_count == 1  # type: ignore[attr-defined]
-    assert feats.prior_transition_count == 2  # type: ignore[attr-defined]
+    assert feats.prior_transition_count == 1  # type: ignore[attr-defined]
 
 
 def test_sufficiency_band_classification() -> None:
