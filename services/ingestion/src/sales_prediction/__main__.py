@@ -57,6 +57,7 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _build_dataset(args: argparse.Namespace) -> int:
+    from src.config import get_settings
     from src.graph.client import Neo4jClient
     from src.sales_prediction.contracts import (
         DEFAULT_EXPECTED_MAPPING_VERSION,
@@ -69,7 +70,8 @@ def _build_dataset(args: argparse.Namespace) -> int:
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    client = Neo4jClient.from_env()
+    settings = get_settings()
+    client = Neo4jClient(settings)
     repository = Neo4jSalesEvidenceRepository(client)
     evidence = repository.load_evidence(
         expected_mapping_version=DEFAULT_EXPECTED_MAPPING_VERSION,

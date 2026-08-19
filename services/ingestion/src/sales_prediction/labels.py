@@ -158,10 +158,9 @@ def _with(
     det: bool | None = None,
 ) -> LabelEvidence:
     """Return a copy of base with updated label fields."""
-    updates: dict[str, object] = {"status": status, "reason": reason}
     if det is not None:
-        updates["history_determinate"] = det
-    return replace(base, **updates)
+        return replace(base, status=status, reason=reason, history_determinate=det)
+    return replace(base, status=status, reason=reason)
 
 
 def _live_versions(versions: list[DealVersion]) -> list[DealVersion]:
