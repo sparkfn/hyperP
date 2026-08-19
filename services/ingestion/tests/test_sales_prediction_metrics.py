@@ -94,10 +94,17 @@ def test_compute_binary_metrics_complete() -> None:
     assert 0.0 <= m.brier <= 1.0
 
 
+def _precision_only(
+    rows: list[DatasetRow], probabilities: dict[str, float], *, capacity_fraction: float = 0.10
+) -> float:
+    prec, _ = precision_at_capacity(rows, probabilities, capacity_fraction=capacity_fraction)
+    return prec
+
+
 def test_bootstrap_deterministic() -> None:
     rows = [_row(f"r{i}", i % 2) for i in range(20)]
     probs = {f"r{i}": (i % 2) * 0.9 + 0.05 for i in range(20)}
-    b1 = bootstrap_metric(rows, probs, precision_at_capacity, seed=42, resamples=100)
-    b2 = bootstrap_metric(rows, probs, precision_at_capacity, seed=42, resamples=100)
+    b1 = bootstrap_metric(rows, probs, _precision_only, seed=42, resamples=100)
+    b2 = bootstrap_metric(rows, probs, _precision_only, seed=42, resamples=100)
     assert b1 == b2
     assert b1.lower <= b1.point_estimate <= b1.upper or b1.lower <= b1.mean <= b1.upper
