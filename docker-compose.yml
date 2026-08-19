@@ -103,6 +103,12 @@ x-ingestion-env: &ingestion-env
   WHATSAPP_CHAT_DB_NAME: ${WHATSAPP_CHAT_DB_NAME:-whatsapp_api}
   WHATSAPP_CHAT_CHUNK_SIZE: ${WHATSAPP_CHAT_CHUNK_SIZE:-500}
   INGESTION_CONFIG_FILE: ${INGESTION_CONFIG_FILE:-/app/config/ingestion-config.example.json}
+  SALES_PREDICTION_ARTIFACT_PRIMARY_ROOT: /app/restricted/sales-prediction
+  SALES_PREDICTION_ARTIFACT_BACKUP_ROOT: /app/restricted/sales-prediction-backup
+  SALES_PREDICTION_ARTIFACT_SIGNING_KEY_ID: ${SALES_PREDICTION_ARTIFACT_SIGNING_KEY_ID:-}
+  SALES_PREDICTION_ARTIFACT_SIGNING_KEY_SECRET: ${SALES_PREDICTION_ARTIFACT_SIGNING_KEY_SECRET:-}
+  SALES_PREDICTION_REPOSITORY_SHA: ${SALES_PREDICTION_REPOSITORY_SHA:-}
+  SALES_PREDICTION_IMAGE_DIGEST: ${SALES_PREDICTION_IMAGE_DIGEST:-}
   TZ: ${TZ:-UTC}
 
 services:
@@ -231,6 +237,8 @@ services:
     volumes:
       - ./.dumps:/app/dumps:ro
       - ./config:/app/config:ro
+      - ./data/restricted/sales-prediction:/app/restricted/sales-prediction
+      - ./data/restricted/sales-prediction-backup:/app/restricted/sales-prediction-backup
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
@@ -256,6 +264,8 @@ services:
     environment: *ingestion-env
     volumes:
       - ./config:/app/config:ro
+      - ./data/restricted/sales-prediction:/app/restricted/sales-prediction
+      - ./data/restricted/sales-prediction-backup:/app/restricted/sales-prediction-backup
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:

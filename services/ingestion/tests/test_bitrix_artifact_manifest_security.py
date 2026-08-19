@@ -11,7 +11,6 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
-import src.connectors.bitrix_stage_history.artifact_manifest as manifest_module
 from _bitrix_artifact_store_support import KEY_ONE as _KEY_ONE
 from _bitrix_artifact_store_support import KEY_TWO as _KEY_TWO
 from _bitrix_artifact_store_support import close_all_stores
@@ -27,7 +26,10 @@ from src.connectors.bitrix_stage_history.artifact_manifest import (
     parse_manifest_bytes,
 )
 from src.connectors.bitrix_stage_history.artifact_provenance import ArtifactProvenanceInput
-from src.connectors.bitrix_stage_history.artifact_store import ArtifactSigningKey
+from src.connectors.bitrix_stage_history.artifact_store import (
+    ArtifactSigningKey,
+    LocalRestrictedArtifactStore,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -201,19 +203,22 @@ def test_wrong_key_fails_but_retained_rotation_key_verifies(tmp_path: Path) -> N
     assert rotated.verify(manifest.artifact_id) == manifest
 
 
-def test_changed_hmac_domain_fails_verification(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_changed_hmac_domain_fails_verification(tmp_path: Path) -> None:
     store = _store(tmp_path)
     manifest = _seal(store)
-    monkeypatch.setattr(
-        manifest_module,
-        "MANIFEST_HMAC_DOMAIN",
-        b"different-artifact-domain\x00",
-    )
+    store.close()
 
-    with pytest.raises(RuntimeError, match="HMAC verification failed"):
-        store.verify(manifest.artifact_id)
+    different_domain = LocalRestrictedArtifactStore(
+        tmp_path / "primary",
+        tmp_path / "backup",
+        _provider(),
+        hmac_domain=b"different-artifact-domain\x00",
+    )
+    try:
+        with pytest.raises(RuntimeError, match="HMAC verification failed"):
+            different_domain.verify(manifest.artifact_id)
+    finally:
+        different_domain.close()
 
 
 def test_metadata_is_canonical_finite_and_not_shared_with_caller(tmp_path: Path) -> None:

@@ -21,6 +21,7 @@ from src.connectors.bitrix_stage_history.artifact_filesystem import (
     SessionDirectory,
 )
 from src.connectors.bitrix_stage_history.artifact_manifest import (
+    MANIFEST_HMAC_DOMAIN,
     MANIFEST_SCHEMA_VERSION,
     ArtifactFileDigest,
     ArtifactManifest,
@@ -156,6 +157,7 @@ class LocalRestrictedArtifactStore:
         *,
         filesystem: ArtifactFilesystem | None = None,
         limits: ArtifactStorageLimits | None = None,
+        hmac_domain: bytes = MANIFEST_HMAC_DOMAIN,
     ) -> None:
         if filesystem is not None and limits is not None:
             raise ValueError("artifact limits cannot override an injected filesystem")
@@ -164,6 +166,9 @@ class LocalRestrictedArtifactStore:
             raise ValueError("artifact filesystem primary root does not match store configuration")
         if self.filesystem.backup_root != backup_root.absolute():
             raise ValueError("artifact filesystem backup root does not match store configuration")
+        if not hmac_domain:
+            raise ValueError("artifact manifest HMAC domain must be non-empty")
+        self._hmac_domain = hmac_domain
         self._signing_keys = signing_keys
         self._lifecycle_lock = Lock()
         self._closed = False
@@ -327,6 +332,7 @@ class LocalRestrictedArtifactStore:
                 total_bytes=sum(item.byte_count for item in files),
             )
             manifest = _build_manifest(
+                hmac_domain=self._hmac_domain,
                 artifact_id=directory.artifact_id,
                 artifact_kind=artifact_kind,
                 retention_expires_at=expiry,
@@ -443,7 +449,7 @@ class LocalRestrictedArtifactStore:
         signing_key = self._signing_keys.get(manifest.signing_key_id)
         if signing_key is None or signing_key.key_id != manifest.signing_key_id:
             raise RuntimeError("artifact manifest signing key is unavailable")
-        expected = compute_manifest_hmac(manifest, signing_key.secret)
+        expected = compute_manifest_hmac(manifest, signing_key.secret, domain=self._hmac_domain)
         if not hmac.compare_digest(expected, manifest.manifest_hmac):
             raise RuntimeError("artifact manifest HMAC verification failed")
 
@@ -529,6 +535,7 @@ class LocalRestrictedArtifactStore:
 
 def _build_manifest(
     *,
+    hmac_domain: bytes,
     artifact_id: str,
     artifact_kind: str,
     retention_expires_at: datetime,
@@ -552,7 +559,10 @@ def _build_manifest(
         signing_key_id=signing_key.key_id,
         manifest_hmac=_EMPTY_HMAC,
     )
-    return replace(unsigned, manifest_hmac=compute_manifest_hmac(unsigned, signing_key.secret))
+    return replace(
+        unsigned,
+        manifest_hmac=compute_manifest_hmac(unsigned, signing_key.secret, domain=hmac_domain),
+    )
 
 
 def _marker_bytes(manifest: ArtifactManifest) -> bytes:
