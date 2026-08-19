@@ -16,6 +16,7 @@ from src.types import (
     BankruptcyCase,
     ConnectionType,
     ListedPerson,
+    LoyaltySummary,
     MatchDecision,
     Person,
     PersonConnection,
@@ -30,6 +31,7 @@ from src.types import (
     SourceRecord,
     SourceRecordEntityFacet,
     SourceRecordView,
+    VehicleSummary,
 )
 
 router = APIRouter(
@@ -452,6 +454,28 @@ async def get_person_entities(
 ) -> ApiResponse[list[PersonEntitySummary]]:
     """Return entities a person is linked to via source-record provenance."""
     items = await repo.get_entities(person_id)
+    return envelope(items, request)
+
+
+@router.get("/{person_id}/loyalty", response_model=ApiResponse[list[LoyaltySummary]])
+async def get_person_loyalty(
+    person_id: str,
+    request: Request,
+    repo: PersonRepository = Depends(get_person_repo),
+) -> ApiResponse[list[LoyaltySummary]]:
+    """Return loyalty-points balances for a person (lazy-loaded on detail page)."""
+    items = await repo.get_loyalty(person_id)
+    return envelope(items, request)
+
+
+@router.get("/{person_id}/vehicles", response_model=ApiResponse[list[VehicleSummary]])
+async def get_person_vehicles(
+    person_id: str,
+    request: Request,
+    repo: PersonRepository = Depends(get_person_repo),
+) -> ApiResponse[list[VehicleSummary]]:
+    """Return vehicles owned/bought by a person (lazy-loaded on detail page)."""
+    items = await repo.get_vehicles(person_id)
     return envelope(items, request)
 
 

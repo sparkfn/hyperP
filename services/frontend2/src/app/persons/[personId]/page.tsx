@@ -4042,12 +4042,14 @@ export default function PersonDetailPage({ params }: { params: Promise<{ personI
       }
 
       try {
-        const [sourceRecordsRes, salesRes, auditRes, bankruptcyRes, sourceRecordFacetsRes] = await Promise.all([
+        const [sourceRecordsRes, salesRes, auditRes, bankruptcyRes, sourceRecordFacetsRes, loyaltyRes, vehiclesRes] = await Promise.all([
           bffFetchEnvelope<PersonSourceRecord[]>(`/bff/persons/${encodedPersonId}/source-records?limit=20`),
           bffFetchEnvelope<SalesOrder[]>(`/bff/persons/${encodedPersonId}/sales?limit=20`).catch(catchNotFound),
           bffFetchEnvelope<PersonAuditEvent[]>(`/bff/persons/${encodedPersonId}/audit?limit=20`).catch(catchNotFound),
           bffFetchEnvelope<PersonBankruptcyCase[]>(`/bff/persons/${encodedPersonId}/bankruptcy-cases?limit=20`).catch(catchNotFound),
           bffFetchEnvelope<SourceRecordEntityFacet[]>(`/bff/persons/${encodedPersonId}/source-record-entities`).catch(catchNotFound),
+          bffFetchEnvelope<LoyaltySummary[]>(`/bff/persons/${encodedPersonId}/loyalty`).catch(catchNotFound),
+          bffFetchEnvelope<VehicleSummary[]>(`/bff/persons/${encodedPersonId}/vehicles`).catch(catchNotFound),
         ]);
 
         if (cancelled) return;
@@ -4059,6 +4061,15 @@ export default function PersonDetailPage({ params }: { params: Promise<{ personI
           bankruptcyCases: bankruptcyRes?.data ?? [],
           sourceRecordFacets: sourceRecordFacetsRes?.data ?? [],
         }));
+        setPerson((prev) =>
+          prev
+            ? {
+                ...prev,
+                loyalty: loyaltyRes?.data ?? null,
+                vehicles: vehiclesRes?.data ?? null,
+              }
+            : prev,
+        );
       } catch (err) {
         if (cancelled) return;
         setLoadError(err instanceof Error ? err.message : "Failed to load person detail.");
