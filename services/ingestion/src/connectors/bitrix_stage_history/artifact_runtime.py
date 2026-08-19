@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from src.connectors.bitrix_stage_history.artifact_manifest import MANIFEST_HMAC_DOMAIN
 from src.connectors.bitrix_stage_history.artifact_signing import (
     StaticArtifactSigningKeyProvider,
 )
@@ -30,6 +31,7 @@ class ArtifactStoreConfiguration:
         default_factory=dict,
         repr=False,
     )
+    hmac_domain: bytes = MANIFEST_HMAC_DOMAIN
 
     def __post_init__(self) -> None:
         if self.primary_root == self.backup_root:
@@ -43,6 +45,8 @@ class ArtifactStoreConfiguration:
         for key_id, secret in self.retained_verification_keys.items():
             if not key_id.strip() or len(secret) < 32:
                 raise ValueError("retained artifact verification keys are invalid")
+        if not self.hmac_domain:
+            raise ValueError("artifact manifest HMAC domain must be non-empty")
 
     def open(self) -> LocalRestrictedArtifactStore:
         keys = dict(self.retained_verification_keys)
@@ -52,6 +56,7 @@ class ArtifactStoreConfiguration:
             self.primary_root,
             self.backup_root,
             provider,
+            hmac_domain=self.hmac_domain,
         )
 
 

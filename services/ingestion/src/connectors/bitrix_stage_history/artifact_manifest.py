@@ -147,11 +147,21 @@ def canonical_metadata_json(value: Mapping[str, JsonValue]) -> str:
     return canonical_json_bytes(value).decode("utf-8")
 
 
-def compute_manifest_hmac(manifest: ArtifactManifest, key: bytes) -> str:
+def compute_manifest_hmac(
+    manifest: ArtifactManifest, key: bytes, *, domain: bytes = MANIFEST_HMAC_DOMAIN
+) -> str:
+    """HMAC the manifest under a caller-scoped domain separator.
+
+    The default preserves the Bitrix stage-history contract byte-for-byte;
+    other restricted-artifact consumers (e.g. sales prediction) pass their own
+    domain so a manifest sealed by one consumer cannot be replayed as another.
+    """
     if len(key) < 32:
         raise ValueError("artifact signing keys must contain at least 32 bytes")
+    if not domain:
+        raise ValueError("artifact manifest HMAC domain must be non-empty")
     digest = hmac.new(key, digestmod=hashlib.sha256)
-    digest.update(MANIFEST_HMAC_DOMAIN)
+    digest.update(domain)
     digest.update(canonical_json_bytes(manifest.unsigned_dict()))
     return digest.hexdigest()
 

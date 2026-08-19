@@ -160,6 +160,17 @@ class Settings(BaseSettings):
     stage_history_repository_sha: str = ""
     stage_history_image_digest: str = ""
 
+    # Restricted sales-prediction artifacts (issue #125 datasets/evaluation and
+    # issue #126 model artifacts). Same trust model as stage history: persistent
+    # restricted mounts, separate HMAC domain, secret only in worker/operator
+    # runtime env — never in task payloads.
+    sales_prediction_artifact_primary_root: str = "/app/restricted/sales-prediction"
+    sales_prediction_artifact_backup_root: str = "/app/restricted/sales-prediction-backup"
+    sales_prediction_artifact_signing_key_id: str = ""
+    sales_prediction_artifact_signing_key_secret: SecretStr = SecretStr("")
+    sales_prediction_repository_sha: str = ""
+    sales_prediction_image_digest: str = ""
+
     # WhatsApp chat database (PostgreSQL) ------------------------------------
     # Set WHATSAPP_CHAT_SSH_HOST to enable SSH tunnelling.
     whatsapp_chat_ssh_host: str = ""
