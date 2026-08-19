@@ -39,7 +39,7 @@ steps:
       # only has lint/type tools, so `uv run pytest` can't import runtime code.
       - uv run --package profile-unifier-api pytest services/api/tests/test_persons_list_queries.py::test_person_list_preferred_address_hydration_does_not_expand_provenance_edges
       - uv run --package profile-unifier-api pytest services/api/tests
-      - uv sync --frozen --package profile-unifier-ingestion --group training
+      - uv sync --frozen --group training
       - uv run --package profile-unifier-ingestion pytest services/ingestion/tests
       # Production runtime install (no dev group) — verifies the lockfile resolves for
       # the exact install the api/ingestion Dockerfiles run.
