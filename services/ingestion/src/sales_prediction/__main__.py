@@ -95,7 +95,7 @@ def _build_dataset(args: argparse.Namespace) -> int:
             digest = write_dataset(output_dir / f"{entity_key}_dataset.sqlite3", meta, rows)
             result = summarize_build(entity_key, rows, digest)
         else:
-            from src.config import Settings
+            from src.config import get_settings
             from src.connectors.bitrix_stage_history.artifact_provenance import (
                 ArtifactProvenanceInput,
             )
@@ -103,7 +103,7 @@ def _build_dataset(args: argparse.Namespace) -> int:
                 sales_prediction_store_from_settings,
             )
 
-            settings = Settings()
+            settings = get_settings()
             store = sales_prediction_store_from_settings(settings)
             provenance = ArtifactProvenanceInput.create(
                 source_contract_uuid="00000000-0000-0000-0000-000000000000",
