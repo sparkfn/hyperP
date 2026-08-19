@@ -32,6 +32,16 @@ RUN groupadd --gid 1000 appuser \
     && useradd --uid 1000 --gid 1000 --no-create-home appuser
 USER appuser
 
+
+# --- Training target: adds numpy for model training (#125.4) ---------------
+# Default target (base) does NOT include the training group. This target is
+# used only for one-off training runs, not for the production worker image.
+FROM base AS training
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --frozen --no-dev --package profile-unifier-ingestion --group training
+ENV OPENBLAS_NUM_THREADS=1 \
+    OMP_NUM_THREADS=1
+
 WORKDIR /app/services/ingestion
 
 CMD ["python", "-m", "src.main", "--source-key", "fundbox", "--mode", "batch"]

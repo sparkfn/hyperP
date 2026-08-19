@@ -35,6 +35,7 @@ steps:
       # ingestion `src` packages from colliding (both use a top-level `src`).
       - uv run --package profile-unifier-api pytest services/api/tests/test_persons_list_queries.py::test_person_list_preferred_address_hydration_does_not_expand_provenance_edges
       - uv run --package profile-unifier-api pytest services/api/tests
+      - uv sync --frozen --package profile-unifier-ingestion --group training
       - uv run --package profile-unifier-ingestion pytest services/ingestion/tests
 
   # Frontend (services/frontend2 — active app): tsc --noEmit + eslint errors-only.
