@@ -20,12 +20,13 @@ RETURN count(p) AS all_profiles_count,
 
 _SOURCE_RECORD_COUNT = """
 CALL (p) {
-  OPTIONAL MATCH (sr:SourceRecord)-[link:LINKED_TO]->(p)
-  WHERE coalesce(link.is_active, true) = true
-    AND (sr.history_family IS NULL OR sr.history_family = 'activity')
-    AND (sr.lifecycle_status = 'active'
-      OR (sr.lifecycle_status IS NULL AND sr.is_latest = true))
-  RETURN count(sr) AS source_record_count
+  RETURN count {
+    (sr:SourceRecord)-[link:LINKED_TO]->(p)
+    WHERE coalesce(link.is_active, true) = true
+      AND (sr.history_family IS NULL OR sr.history_family = 'activity')
+      AND (sr.lifecycle_status = 'active'
+        OR (sr.lifecycle_status IS NULL AND sr.is_latest = true))
+  } AS source_record_count
 }
 """
 
@@ -110,9 +111,10 @@ CALL (p) {
 
 _IDENTIFIER_COUNT = """
 CALL (p) {
-  OPTIONAL MATCH (p)-[id_count:IDENTIFIED_BY]->(idc:Identifier)
-  WHERE coalesce(id_count.is_active, true) = true
-  RETURN count(idc) AS identifier_count
+  RETURN count {
+    (p)-[id_count:IDENTIFIED_BY]->(idc:Identifier)
+    WHERE coalesce(id_count.is_active, true) = true
+  } AS identifier_count
 }
 """
 
@@ -148,9 +150,10 @@ CALL (p) {
 
 _BANKRUPTCY_CASE_COUNT = """
 CALL (p) {
-  OPTIONAL MATCH (p)-[bankruptcy_rel:HAS_BANKRUPTCY_CASE]->(:BankruptcyCase)
-  WHERE coalesce(bankruptcy_rel.is_active, true) = true
-  RETURN count(bankruptcy_rel) AS bankruptcy_case_count
+  RETURN count {
+    (p)-[bankruptcy_rel:HAS_BANKRUPTCY_CASE]->(:BankruptcyCase)
+    WHERE coalesce(bankruptcy_rel.is_active, true) = true
+  } AS bankruptcy_case_count
 }
 """
 

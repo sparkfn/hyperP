@@ -769,6 +769,58 @@ paths:
                 $ref: '#/components/schemas/MatchDecisionListResponseEnvelope'
         '404':
           $ref: '#/components/responses/PersonNotFound'
+  /v1/persons/{person_id}/loyalty:
+    get:
+      tags: [Persons]
+      summary: Get loyalty-points balances for a person
+      operationId: getPersonLoyalty
+      description: |
+        Returns per-source loyalty-points balances for a person. This data is
+        lazy-loaded on the person detail page (not included in the initial
+        GET /persons/{person_id} response).
+      parameters:
+        - $ref: '#/components/parameters/PersonId'
+        - $ref: '#/components/parameters/RequestId'
+      responses:
+        '200':
+          description: Loyalty-points balances
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/LoyaltySummary'
+        '404':
+          $ref: '#/components/responses/PersonNotFound'
+  /v1/persons/{person_id}/vehicles:
+    get:
+      tags: [Persons]
+      summary: Get vehicles owned or bought by a person
+      operationId: getPersonVehicles
+      description: |
+        Returns vehicles owned or bought by a person. This data is lazy-loaded
+        on the person detail page (not included in the initial
+        GET /persons/{person_id} response).
+      parameters:
+        - $ref: '#/components/parameters/PersonId'
+        - $ref: '#/components/parameters/RequestId'
+      responses:
+        '200':
+          description: Vehicles for the person
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/VehicleSummary'
+        '404':
+          $ref: '#/components/responses/PersonNotFound'
   # ── OAuth client credentials ────────────────────────────────────────────────
   /v1/oauth/token:
     post:
@@ -1984,6 +2036,65 @@ components:
         - identifier_counts
         - created_at
         - updated_at
+      additionalProperties: false
+    LoyaltySummary:
+      type: object
+      properties:
+        source_system:
+          type: string
+        points:
+          type: integer
+          nullable: true
+        disable_loyalty:
+          type: boolean
+          nullable: true
+        current_spend_for_points:
+          type: number
+          nullable: true
+        current_sales_for_discount:
+          type: number
+          nullable: true
+        observed_at:
+          type: string
+          nullable: true
+      required: [source_system]
+      additionalProperties: false
+    VehicleSummary:
+      type: object
+      properties:
+        vehicle_id:
+          type: string
+        product:
+          type: string
+          nullable: true
+        product_sku:
+          type: string
+          nullable: true
+        manufacturer:
+          type: string
+          nullable: true
+        model:
+          type: string
+          nullable: true
+        lta_tag:
+          type: string
+          nullable: true
+        serial_number:
+          type: string
+          nullable: true
+        relationship:
+          type: string
+          enum: [OWNS, BOUGHT]
+        is_active:
+          type: boolean
+          nullable: true
+        conflict_flag:
+          type: boolean
+          nullable: true
+        observed_at:
+          type: string
+          nullable: true
+      required: [vehicle_id, relationship]
       additionalProperties: false
     PersonListSummary:
       type: object

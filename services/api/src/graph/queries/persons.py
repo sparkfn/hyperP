@@ -54,12 +54,13 @@ MATCH (p:Person {person_id: $person_id})
 OPTIONAL MATCH (p)-[:MERGED_INTO]->(canonical:Person)
 WITH coalesce(canonical, p) AS person
 OPTIONAL MATCH (addr:Address {address_id: person.preferred_address_id})
-OPTIONAL MATCH (sr:SourceRecord)-[link:LINKED_TO]->(person)
-WHERE coalesce(link.is_active, true) = true
-  AND (sr.history_family IS NULL OR sr.history_family = 'activity')
-  AND (sr.lifecycle_status = 'active'
-    OR (sr.lifecycle_status IS NULL AND sr.is_latest = true))
-WITH person, addr, count(sr) AS source_record_count
+WITH person, addr, count {
+  (sr:SourceRecord)-[link:LINKED_TO]->(person)
+  WHERE coalesce(link.is_active, true) = true
+    AND (sr.history_family IS NULL OR sr.history_family = 'activity')
+    AND (sr.lifecycle_status = 'active'
+      OR (sr.lifecycle_status IS NULL AND sr.is_latest = true))
+} AS source_record_count
 CALL {
   WITH person
   OPTIONAL MATCH (person)-[person_identifier:IDENTIFIED_BY]->(:Identifier)
@@ -84,36 +85,6 @@ CALL {
   OPTIONAL MATCH (person)-[:PURCHASED]->(o:Order)
   RETURN sum(o.total_amount) AS lifetime_value
 }
-CALL {
-  WITH person
-  MATCH (sr:SourceRecord {record_type: 'identity'})-[:LINKED_TO]->(person)
-  WHERE (sr.lifecycle_status = 'active'
-    OR (sr.lifecycle_status IS NULL AND sr.is_latest = true))
-  MATCH (sr)-[:FROM_SOURCE]->(ss:SourceSystem)
-  RETURN collect({
-    source_system: ss.source_key,
-    observed_at: sr.observed_at,
-    source_record_pk: sr.source_record_pk,
-    raw_payload: sr.raw_payload
-  }) AS loyalty_rows
-}
-CALL {
-  WITH person
-  OPTIONAL MATCH (person)-[rel:OWNS_VEHICLE|BOUGHT_VEHICLE]->(v:Vehicle)
-  RETURN collect(CASE WHEN v IS NULL THEN NULL ELSE {
-    vehicle_id: v.vehicle_id,
-    product: v.product,
-    product_sku: v.product_sku,
-    manufacturer: v.manufacturer,
-    model: v.model,
-    lta_tag: v.lta_tag,
-    serial_number: v.serial_number,
-    rel_type: type(rel),
-    is_active: rel.is_active,
-    conflict_flag: coalesce(v.conflict_flag, false),
-    observed_at: rel.observed_at
-  } END) AS vehicles
-}
 RETURN person {
   .person_id, .status, .is_high_value, .is_high_risk,
   .preferred_full_name, .preferred_phone, .preferred_email, .preferred_dob, .preferred_nric,
@@ -127,9 +98,43 @@ addr {
 } AS preferred_address,
 source_record_count,
 connection_count,
-lifetime_value,
-loyalty_rows,
-vehicles
+lifetime_value
+"""
+
+GET_PERSON_LOYALTY = """
+MATCH (p:Person {person_id: $person_id})
+OPTIONAL MATCH (p)-[:MERGED_INTO]->(canonical:Person)
+WITH coalesce(canonical, p) AS person
+MATCH (sr:SourceRecord {record_type: 'identity'})-[:LINKED_TO]->(person)
+WHERE (sr.lifecycle_status = 'active'
+  OR (sr.lifecycle_status IS NULL AND sr.is_latest = true))
+MATCH (sr)-[:FROM_SOURCE]->(ss:SourceSystem)
+RETURN collect({
+  source_system: ss.source_key,
+  observed_at: sr.observed_at,
+  source_record_pk: sr.source_record_pk,
+  raw_payload: sr.raw_payload
+}) AS loyalty_rows
+"""
+
+GET_PERSON_VEHICLES = """
+MATCH (p:Person {person_id: $person_id})
+OPTIONAL MATCH (p)-[:MERGED_INTO]->(canonical:Person)
+WITH coalesce(canonical, p) AS person
+OPTIONAL MATCH (person)-[rel:OWNS_VEHICLE|BOUGHT_VEHICLE]->(v:Vehicle)
+RETURN collect(CASE WHEN v IS NULL THEN NULL ELSE {
+  vehicle_id: v.vehicle_id,
+  product: v.product,
+  product_sku: v.product_sku,
+  manufacturer: v.manufacturer,
+  model: v.model,
+  lta_tag: v.lta_tag,
+  serial_number: v.serial_number,
+  rel_type: type(rel),
+  is_active: rel.is_active,
+  conflict_flag: coalesce(v.conflict_flag, false),
+  observed_at: rel.observed_at
+} END) AS vehicles
 """
 
 GET_PERSON_SOURCE_RECORDS = """
@@ -492,56 +497,79 @@ WITH id,
      rel.last_confirmed_at AS last_confirmed_at,
      rel.source_system_key AS source_system_key,
      collect(DISTINCT rel.source_record_pk) AS source_record_pks
+ORDER BY is_active DESC, id.identifier_type, id.normalized_value
+SKIP $skip LIMIT $limit
+WITH collect({
+  identifier: id,
+  is_active: is_active,
+  is_verified: is_verified,
+  last_confirmed_at: last_confirmed_at,
+  source_system_key: source_system_key,
+  source_record_pks: source_record_pks
+}) AS page
 CALL {
-  WITH source_record_pks
-  OPTIONAL MATCH (sr:SourceRecord)-[:FROM_SOURCE]->(ss:SourceSystem)
-  WHERE sr.source_record_pk IN source_record_pks
+  WITH page
+  UNWIND page AS item
+  UNWIND item.source_record_pks AS source_record_pk
+  OPTIONAL MATCH (sr:SourceRecord {source_record_pk: source_record_pk})
+  OPTIONAL MATCH (sr)-[:FROM_SOURCE]->(ss:SourceSystem)
   OPTIONAL MATCH (sr)-[:OWNED_BY]->(record_entity:Entity)
   OPTIONAL MATCH (ss)-[:OPERATED_BY]->(source_entity:Entity)
-  WITH sr, ss, coalesce(record_entity, source_entity) AS e
-  RETURN [record IN collect(DISTINCT CASE WHEN sr IS NULL THEN null ELSE {
-    source_record: sr {
-      .source_record_pk, .source_record_id, .source_record_version,
-      .record_type, .extraction_confidence, .extraction_method,
-      .link_status, .lifecycle_status, .observed_at, .ingested_at,
-      .parent_source_system, .parent_source_record_id, .parent_record_type,
-      .conversation_ref,
-      .raw_payload, .normalized_payload
-    },
-    source_system: ss.source_key,
-    linked_person_id: $person_id,
-    entity_key: e.entity_key,
-    entity_display_name: e.display_name
-  } END) WHERE record IS NOT NULL] AS source_records,
-  [source_record_id IN collect(DISTINCT sr.source_record_id) WHERE source_record_id IS NOT NULL] AS source_record_ids
+  WITH item,
+       sr,
+       ss,
+       coalesce(record_entity, source_entity) AS e
+  WITH item,
+       [record IN collect(DISTINCT CASE WHEN sr IS NULL THEN null ELSE {
+         source_record: sr {
+           .source_record_pk, .source_record_id, .source_record_version,
+           .record_type, .extraction_confidence, .extraction_method,
+           .link_status, .lifecycle_status, .observed_at, .ingested_at,
+           .parent_source_system, .parent_source_record_id, .parent_record_type,
+           .conversation_ref,
+           .raw_payload, .normalized_payload
+         },
+         source_system: ss.source_key,
+         linked_person_id: $person_id,
+         entity_key: e.entity_key,
+         entity_display_name: e.display_name
+       } END) WHERE record IS NOT NULL] AS source_records,
+       [source_record_id IN collect(DISTINCT CASE WHEN sr IS NULL THEN null ELSE sr.source_record_id END) WHERE source_record_id IS NOT NULL] AS source_record_ids,
+       collect(DISTINCT CASE WHEN sr IS NOT NULL AND e IS NOT NULL THEN {
+         item: item,
+         e: e,
+         sr: sr
+       } END) AS sr_entity_pairs
+  CALL {
+    WITH item, source_records, source_record_ids, sr_entity_pairs
+    UNWIND CASE WHEN size(sr_entity_pairs) = 0
+      THEN [{item: item, e: null, sr: null}]
+      ELSE sr_entity_pairs
+    END AS pair
+    WITH pair.item AS item, pair.e AS e, pair.sr AS sr
+    WITH item, e, count(DISTINCT sr) AS source_record_count
+    WITH item,
+         [entity IN collect(CASE WHEN e IS NULL THEN null ELSE e {
+           .entity_key, .display_name, .entity_type, .country_code, .is_active,
+           source_record_count: source_record_count
+         } END) WHERE entity IS NOT NULL] AS entities
+    RETURN item, source_records, source_record_ids, entities
+  }
 }
-CALL {
-  WITH source_record_pks
-  OPTIONAL MATCH (sr:SourceRecord)-[:FROM_SOURCE]->(ss:SourceSystem)
-  WHERE sr.source_record_pk IN source_record_pks
-  OPTIONAL MATCH (sr)-[:OWNED_BY]->(record_entity:Entity)
-  OPTIONAL MATCH (ss)-[:OPERATED_BY]->(source_entity:Entity)
-  WITH sr, coalesce(record_entity, source_entity) AS e
-  WITH e, count(DISTINCT sr) AS source_record_count
-  RETURN [entity IN collect(CASE WHEN e IS NULL THEN null ELSE e {
-    .entity_key, .display_name, .entity_type, .country_code, .is_active,
-    source_record_count: source_record_count
-  } END) WHERE entity IS NOT NULL] AS entities
-}
-RETURN id.identifier_type AS identifier_type,
-       id.normalized_value AS normalized_value,
-       is_active AS is_active,
-       is_verified AS is_verified,
-       last_confirmed_at AS last_confirmed_at,
-       source_system_key AS source_system_key,
-       source_record_pks AS source_record_pks,
+RETURN item.identifier.identifier_type AS identifier_type,
+       item.identifier.normalized_value AS normalized_value,
+       item.is_active AS is_active,
+       item.is_verified AS is_verified,
+       item.last_confirmed_at AS last_confirmed_at,
+       item.source_system_key AS source_system_key,
+       item.source_record_pks AS source_record_pks,
        source_record_ids AS source_record_ids,
        entities AS entities,
        source_records AS source_records
-ORDER BY is_active DESC, id.identifier_type, id.normalized_value
-SKIP $skip LIMIT $limit
+ORDER BY item.is_active DESC,
+         item.identifier.identifier_type,
+         item.identifier.normalized_value
 """
-
 GET_PERSON_SHARED_IDENTIFIERS = """
 MATCH (p:Person {person_id: $person_id})-[p_identifier:IDENTIFIED_BY]->(id:Identifier)
   <-[other_identifier:IDENTIFIED_BY]-(other:Person)

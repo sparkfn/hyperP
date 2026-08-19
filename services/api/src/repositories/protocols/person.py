@@ -9,6 +9,7 @@ from src.types import (
     BankruptcyCase,
     ConnectionType,
     ListedPerson,
+    LoyaltySummary,
     MatchDecision,
     Person,
     PersonConnection,
@@ -21,6 +22,7 @@ from src.types import (
     PossibleMatchDetail,
     SourceRecord,
     SourceRecordEntityFacet,
+    VehicleSummary,
 )
 from src.types_profile_analysis import (
     PersonProfileAnalyses,
@@ -159,6 +161,10 @@ class PersonRepository(Protocol):
     ) -> PossibleMatchDetail | None: ...
 
     async def get_entities(self, person_id: str) -> list[PersonEntitySummary]: ...
+
+    async def get_loyalty(self, person_id: str) -> list[LoyaltySummary]: ...
+
+    async def get_vehicles(self, person_id: str) -> list[VehicleSummary]: ...
 
     async def get_graph(self, person_id: str, max_hops: int) -> PersonGraph | None: ...
 

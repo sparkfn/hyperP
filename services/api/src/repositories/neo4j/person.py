@@ -12,6 +12,8 @@ from src.display_format import format_display_datetime
 from src.graph.client import get_session
 from src.graph.converters import GraphRecord, to_int, to_iso_or_none, to_str
 from src.graph.mappers import (
+    _map_loyalty,
+    _map_vehicles,
     map_audit_event,
     map_bankruptcy_case,
     map_connection,
@@ -55,6 +57,7 @@ from src.graph.queries import (
     GET_PERSON_ENTITIES,
     GET_PERSON_IDENTIFIERS,
     GET_PERSON_LIST_SUMMARY,
+    GET_PERSON_LOYALTY,
     GET_PERSON_MATCHES,
     GET_PERSON_POSSIBLE_MATCH_DETAIL,
     GET_PERSON_PROFILE_ANALYSES,
@@ -64,6 +67,7 @@ from src.graph.queries import (
     GET_PERSON_SOURCE_RECORDS,
     GET_PERSON_TIMELINE,
     GET_PERSON_TIMELINE_TARGET,
+    GET_PERSON_VEHICLES,
     REQUEUE_FAILED_PROFILE_ANALYSIS_REQUEST,
     SEARCH_PERSONS,
     build_count_persons_query,
@@ -77,6 +81,7 @@ from src.types import (
     BankruptcyCase,
     ConnectionType,
     ListedPerson,
+    LoyaltySummary,
     MatchDecision,
     Person,
     PersonConnection,
@@ -89,6 +94,7 @@ from src.types import (
     PossibleMatchDetail,
     SourceRecord,
     SourceRecordEntityFacet,
+    VehicleSummary,
 )
 from src.types_profile_analysis import (
     PROFILE_ANALYSIS_USER_RETRY_LIMIT,
@@ -433,24 +439,31 @@ class Neo4jPersonRepository:
         entity_key: str | None = None,
         record_type: str | None = None,
     ) -> tuple[list[SourceRecord], int]:
-        async with get_session() as session:
-            result = await session.run(
-                GET_PERSON_SOURCE_RECORDS,
-                person_id=person_id,
-                skip=skip,
-                limit=limit + 1,
-                entity_key=entity_key,
-                record_type=record_type,
-            )
-            records = [record_to_dict(r.keys(), list(r.values())) async for r in result]
-            count_result = await session.run(
-                COUNT_PERSON_SOURCE_RECORDS,
-                person_id=person_id,
-                entity_key=entity_key,
-                record_type=record_type,
-            )
-            count_record = await count_result.single()
-        return [map_source_record(rec) for rec in records[:limit]], to_total(count_record)
+        async def _run_data() -> list[GraphRecord]:
+            async with get_session() as session:
+                result = await session.run(
+                    GET_PERSON_SOURCE_RECORDS,
+                    person_id=person_id,
+                    skip=skip,
+                    limit=limit + 1,
+                    entity_key=entity_key,
+                    record_type=record_type,
+                )
+                return [record_to_dict(r.keys(), list(r.values())) async for r in result]
+
+        async def _run_count() -> int:
+            async with get_session() as session:
+                result = await session.run(
+                    COUNT_PERSON_SOURCE_RECORDS,
+                    person_id=person_id,
+                    entity_key=entity_key,
+                    record_type=record_type,
+                )
+                record = await result.single()
+                return to_total(record)
+
+        records, total = await asyncio.gather(_run_data(), _run_count())
+        return [map_source_record(rec) for rec in records[:limit]], total
 
     async def get_source_record_entity_facets(
         self, person_id: str
@@ -463,26 +476,46 @@ class Neo4jPersonRepository:
     async def get_bankruptcy_cases(
         self, person_id: str, skip: int, limit: int
     ) -> tuple[list[BankruptcyCase], int]:
-        async with get_session() as session:
-            result = await session.run(
-                GET_PERSON_BANKRUPTCY_CASES, person_id=person_id, skip=skip, limit=limit + 1
-            )
-            records = [record_to_dict(r.keys(), list(r.values())) async for r in result]
-            count_result = await session.run(COUNT_PERSON_BANKRUPTCY_CASES, person_id=person_id)
-            count_record = await count_result.single()
-        return [map_bankruptcy_case(rec) for rec in records[:limit]], to_total(count_record)
+        async def _run_data() -> list[GraphRecord]:
+            async with get_session() as session:
+                result = await session.run(
+                    GET_PERSON_BANKRUPTCY_CASES,
+                    person_id=person_id,
+                    skip=skip,
+                    limit=limit + 1,
+                )
+                return [record_to_dict(r.keys(), list(r.values())) async for r in result]
+
+        async def _run_count() -> int:
+            async with get_session() as session:
+                result = await session.run(COUNT_PERSON_BANKRUPTCY_CASES, person_id=person_id)
+                record = await result.single()
+                return to_total(record)
+
+        records, total = await asyncio.gather(_run_data(), _run_count())
+        return [map_bankruptcy_case(rec) for rec in records[:limit]], total
 
     async def get_identifiers(
         self, person_id: str, skip: int, limit: int
     ) -> tuple[list[PersonIdentifier], int]:
-        async with get_session() as session:
-            result = await session.run(
-                GET_PERSON_IDENTIFIERS, person_id=person_id, skip=skip, limit=limit + 1
-            )
-            records = [record_to_dict(r.keys(), list(r.values())) async for r in result]
-            count_result = await session.run(COUNT_PERSON_IDENTIFIERS, person_id=person_id)
-            count_record = await count_result.single()
-        return [map_person_identifier(rec) for rec in records[:limit]], to_total(count_record)
+        async def _run_data() -> list[GraphRecord]:
+            async with get_session() as session:
+                result = await session.run(
+                    GET_PERSON_IDENTIFIERS,
+                    person_id=person_id,
+                    skip=skip,
+                    limit=limit + 1,
+                )
+                return [record_to_dict(r.keys(), list(r.values())) async for r in result]
+
+        async def _run_count() -> int:
+            async with get_session() as session:
+                result = await session.run(COUNT_PERSON_IDENTIFIERS, person_id=person_id)
+                record = await result.single()
+                return to_total(record)
+
+        records, total = await asyncio.gather(_run_data(), _run_count())
+        return [map_person_identifier(rec) for rec in records[:limit]], total
 
     async def get_connections(
         self,
@@ -494,36 +527,51 @@ class Neo4jPersonRepository:
     ) -> tuple[list[PersonConnection], int]:
         query = _connection_query(connection_type)
         count_query = _connection_count_query(connection_type)
-        async with get_session() as session:
-            result = await session.run(
-                query,
-                person_id=person_id,
-                identifier_type=identifier_type,
-                skip=skip,
-                limit=limit + 1,
-            )
-            records = [record_to_dict(r.keys(), list(r.values())) async for r in result]
-            count_result = await session.run(
-                count_query, person_id=person_id, identifier_type=identifier_type
-            )
-            count_record = await count_result.single()
-        return [map_connection(rec) for rec in records[:limit]], to_total(count_record)
+
+        async def _run_data() -> list[GraphRecord]:
+            async with get_session() as session:
+                result = await session.run(
+                    query,
+                    person_id=person_id,
+                    identifier_type=identifier_type,
+                    skip=skip,
+                    limit=limit + 1,
+                )
+                return [record_to_dict(r.keys(), list(r.values())) async for r in result]
+
+        async def _run_count() -> int:
+            async with get_session() as session:
+                result = await session.run(
+                    count_query, person_id=person_id, identifier_type=identifier_type
+                )
+                record = await result.single()
+                return to_total(record)
+
+        records, total = await asyncio.gather(_run_data(), _run_count())
+        return [map_connection(rec) for rec in records[:limit]], total
 
     async def get_shared_identifier_candidates(
         self, person_id: str, skip: int, limit: int
     ) -> tuple[list[PersonSharedIdentifierCandidate], int]:
-        async with get_session() as session:
-            result = await session.run(
-                GET_PERSON_SHARED_IDENTIFIERS,
-                person_id=person_id,
-                skip=skip,
-                limit=limit + 1,
-            )
-            records = [record_to_dict(r.keys(), list(r.values())) async for r in result]
-            count_result = await session.run(COUNT_PERSON_SHARED_IDENTIFIERS, person_id=person_id)
-            count_record = await count_result.single()
+        async def _run_data() -> list[GraphRecord]:
+            async with get_session() as session:
+                result = await session.run(
+                    GET_PERSON_SHARED_IDENTIFIERS,
+                    person_id=person_id,
+                    skip=skip,
+                    limit=limit + 1,
+                )
+                return [record_to_dict(r.keys(), list(r.values())) async for r in result]
+
+        async def _run_count() -> int:
+            async with get_session() as session:
+                result = await session.run(COUNT_PERSON_SHARED_IDENTIFIERS, person_id=person_id)
+                record = await result.single()
+                return to_total(record)
+
+        records, total = await asyncio.gather(_run_data(), _run_count())
         candidates = [map_shared_identifier_candidate(rec) for rec in records[:limit]]
-        return candidates, to_total(count_record)
+        return candidates, total
 
     async def get_possible_match_detail(
         self, person_id: str, candidate_person_id: str
@@ -544,6 +592,24 @@ class Neo4jPersonRepository:
             result = await session.run(GET_PERSON_ENTITIES, person_id=person_id)
             records = [record_to_dict(r.keys(), list(r.values())) async for r in result]
         return [map_person_entity(rec) for rec in records]
+
+    async def get_loyalty(self, person_id: str) -> list[LoyaltySummary]:
+        async with get_session() as session:
+            result = await session.run(GET_PERSON_LOYALTY, person_id=person_id)
+            record = await result.single()
+        if record is None:
+            return []
+        mapped = record_to_dict(record.keys(), list(record.values()))
+        return _map_loyalty(mapped.get("loyalty_rows"))
+
+    async def get_vehicles(self, person_id: str) -> list[VehicleSummary]:
+        async with get_session() as session:
+            result = await session.run(GET_PERSON_VEHICLES, person_id=person_id)
+            record = await result.single()
+        if record is None:
+            return []
+        mapped = record_to_dict(record.keys(), list(record.values()))
+        return _map_vehicles(mapped.get("vehicles"))
 
     async def get_graph(self, person_id: str, max_hops: int) -> PersonGraph | None:
         query = get_graph_query(max_hops)
@@ -566,38 +632,68 @@ class Neo4jPersonRepository:
     async def get_audit(
         self, person_id: str, skip: int, limit: int
     ) -> tuple[list[AuditEvent], int]:
-        async with get_session() as session:
-            result = await session.run(
-                GET_PERSON_AUDIT, person_id=person_id, skip=skip, limit=limit + 1
-            )
-            records = [record_to_dict(r.keys(), list(r.values())) async for r in result]
-            count_result = await session.run(COUNT_PERSON_AUDIT, person_id=person_id)
-            count_record = await count_result.single()
-        return [map_audit_event(rec) for rec in records[:limit]], to_total(count_record)
+        async def _run_data() -> list[GraphRecord]:
+            async with get_session() as session:
+                result = await session.run(
+                    GET_PERSON_AUDIT,
+                    person_id=person_id,
+                    skip=skip,
+                    limit=limit + 1,
+                )
+                return [record_to_dict(r.keys(), list(r.values())) async for r in result]
+
+        async def _run_count() -> int:
+            async with get_session() as session:
+                result = await session.run(COUNT_PERSON_AUDIT, person_id=person_id)
+                record = await result.single()
+                return to_total(record)
+
+        records, total = await asyncio.gather(_run_data(), _run_count())
+        return [map_audit_event(rec) for rec in records[:limit]], total
 
     async def get_matches(
         self, person_id: str, skip: int, limit: int
     ) -> tuple[list[MatchDecision], int]:
-        async with get_session() as session:
-            result = await session.run(
-                GET_PERSON_MATCHES, person_id=person_id, skip=skip, limit=limit
-            )
-            records = [record_to_dict(r.keys(), list(r.values())) async for r in result]
-            count_result = await session.run(COUNT_PERSON_MATCHES, person_id=person_id)
-            count_record = await count_result.single()
-        return [map_match_decision(rec) for rec in records], to_total(count_record)
+        async def _run_data() -> list[GraphRecord]:
+            async with get_session() as session:
+                result = await session.run(
+                    GET_PERSON_MATCHES,
+                    person_id=person_id,
+                    skip=skip,
+                    limit=limit,
+                )
+                return [record_to_dict(r.keys(), list(r.values())) async for r in result]
+
+        async def _run_count() -> int:
+            async with get_session() as session:
+                result = await session.run(COUNT_PERSON_MATCHES, person_id=person_id)
+                record = await result.single()
+                return to_total(record)
+
+        records, total = await asyncio.gather(_run_data(), _run_count())
+        return [map_match_decision(rec) for rec in records], total
 
     async def get_timeline(
         self, person_id: str, skip: int, limit: int
     ) -> tuple[list[PersonTimelineGroup], int]:
-        async with get_session() as session:
-            result = await session.run(
-                GET_PERSON_TIMELINE, person_id=person_id, skip=skip, limit=limit + 1
-            )
-            records = [record_to_dict(r.keys(), list(r.values())) async for r in result]
-            count_result = await session.run(COUNT_PERSON_TIMELINE, person_id=person_id)
-            count_record = await count_result.single()
-        return [map_timeline_group(rec) for rec in records[:limit]], to_total(count_record)
+        async def _run_data() -> list[GraphRecord]:
+            async with get_session() as session:
+                result = await session.run(
+                    GET_PERSON_TIMELINE,
+                    person_id=person_id,
+                    skip=skip,
+                    limit=limit + 1,
+                )
+                return [record_to_dict(r.keys(), list(r.values())) async for r in result]
+
+        async def _run_count() -> int:
+            async with get_session() as session:
+                result = await session.run(COUNT_PERSON_TIMELINE, person_id=person_id)
+                record = await result.single()
+                return to_total(record)
+
+        records, total = await asyncio.gather(_run_data(), _run_count())
+        return [map_timeline_group(rec) for rec in records[:limit]], total
 
     async def get_timeline_target(
         self, person_id: str, source_record_pk: str
