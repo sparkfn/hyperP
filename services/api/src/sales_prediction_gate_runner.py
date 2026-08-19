@@ -16,15 +16,18 @@ from src.graph.queries.sales_prediction_gate import (
 )
 from src.repositories.neo4j._utils import record_to_dict
 from src.sales_prediction_gate_labels import (
+    SELECTOR_RETROSPECTIVE,
     build_labels,
     parse_deal_rows,
     parse_stage_rows,
     parse_timestamp,
+    validate_selector_version,
 )
 from src.sales_prediction_gate_models import GateRelease, GateReport
 from src.sales_prediction_gate_report import build_gate_report, report_as_dict
+from src.sales_prediction_gate_retrospective import build_retrospective_labels
 
-type GateScalar = str | int | float | bool | None
+type GateScalar = str | int | float | bool | tuple[str, ...] | None
 type GateRow = dict[str, GateScalar]
 type GateParameter = str | int | list[dict[str, str]] | None
 
@@ -41,6 +44,7 @@ async def run_gate(
     restatement_version: str,
 ) -> GateReport:
     """Run Gate 1 only against the persisted accepted analytical release."""
+    validate_selector_version(selector_version)
     release = _parse_gate_release(
         await _query_rows(GATE_RELEASE), expected_mapping_version, expected_policy_version
     )
@@ -52,9 +56,14 @@ async def run_gate(
         raise ValueError("accepted CRM stage release changed during Gate 1 execution")
     events, invalid_parents = parse_stage_rows(stage_rows)
     versions = parse_deal_rows(deal_rows)
-    labels = build_labels(
-        release, events, versions, entity_keys, invalid_event_parents=invalid_parents
-    )
+    if selector_version == SELECTOR_RETROSPECTIVE:
+        labels = build_retrospective_labels(
+            release, events, versions, entity_keys, invalid_event_parents=invalid_parents
+        )
+    else:
+        labels = build_labels(
+            release, events, versions, entity_keys, invalid_event_parents=invalid_parents
+        )
     generated_at = datetime.now(UTC).isoformat().replace("+00:00", "Z")
     return build_gate_report(
         labels,
@@ -131,6 +140,8 @@ def _required_text(row: GateRow, key: str) -> str:
 def _to_scalar(value: GraphValue) -> GateScalar:
     if value is None or isinstance(value, str | int | float | bool):
         return value
+    if isinstance(value, list) and all(isinstance(item, str) for item in value):
+        return tuple(str(item) for item in value)
     raise ValueError(f"Gate 1 query returned a non-scalar value: {type(value).__name__}")
 
 
@@ -191,6 +202,7 @@ def render_gate_markdown(report: GateReport) -> str:
         f"Report schema: {_cell(report.metadata.report_schema_version)}",
         f"Generated: {report.generated_at}",
         f"Selector: {_cell(report.metadata.selector_version)}",
+        f"Availability semantics: {_cell(report.metadata.availability_semantics)}",
         f"Mapping: {_cell(report.metadata.mapping_version)}",
         f"Policy: {_cell(report.metadata.policy_version)}",
         f"Eligibility: {_cell(report.metadata.eligibility_version)}",
@@ -219,6 +231,7 @@ def render_gate_markdown(report: GateReport) -> str:
                 "unknown_censored_rate": f"{metrics.data_quality_unknown_censored_rate:.2%}",
                 "amount_known_rate": f"{metrics.amount_known_rate:.2%}",
                 "amount_zero_rate": f"{metrics.amount_zero_rate:.2%}",
+                "amount_reconstructable_rate": f"{metrics.amount_reconstructable_rate:.2%}",
                 "amount_revision_availability": metrics.amount_revision_availability,
                 "optional_interactions": metrics.optional_interaction_coverage,
             }
