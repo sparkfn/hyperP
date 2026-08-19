@@ -23,7 +23,7 @@ from src.sales_prediction.evaluation.rules import (
     random_baseline_probabilities,
     rules_v1_probabilities,
 )
-from src.sales_prediction.models import DatasetRow
+from src.sales_prediction.models import DatasetRow, TemporalFold
 
 if TYPE_CHECKING:
     from src.connectors.bitrix_stage_history.artifact_provenance import ArtifactProvenanceInput
@@ -172,7 +172,7 @@ def _candidate_probabilities(
 
 def _aggregate_metrics(
     all_test_rows: list[DatasetRow],
-    folds: list[object],
+    folds: list[TemporalFold],
     all_rows: list[DatasetRow],
     capacity_fraction: float,
 ) -> list[AggregateMetrics]:
@@ -209,7 +209,7 @@ def _aggregate_metrics(
 
 def _sufficiency_breakdown(
     all_test_rows: list[DatasetRow],
-    folds: list[object],
+    folds: list[TemporalFold],
     all_rows: list[DatasetRow],
     capacity_fraction: float,
 ) -> list[SufficiencyBreakdown]:

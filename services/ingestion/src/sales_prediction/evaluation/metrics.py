@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import math
 import random
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from src.sales_prediction.models import DatasetRow
@@ -171,7 +172,7 @@ def compute_binary_metrics(
 def bootstrap_metric(
     rows: list[DatasetRow],
     probabilities: dict[str, float],
-    metric_fn: object,
+    metric_fn: Callable[..., float],
     *,
     seed: int = 42,
     resamples: int = _BOOTSTRAP_RESAMPLES,
