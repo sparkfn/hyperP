@@ -59,12 +59,20 @@ def ingest_crm_history_record(
             assert_active_bitrix_fence(tx, active_fence)
         owner_scope = _owner_scope_or_retry(tx, envelope, execution_context)
         if owner_scope is None:
-            return IngestResult(
+            result = IngestResult(
                 source_record_id=envelope.source_record_id,
                 dropped=True,
-                retry_pending=True,
                 ingest_run_id=ingest_run_id,
             )
+            _record_activity_unit(
+                tx,
+                execution_context,
+                envelope,
+                result,
+                disposition="quarantined_owner_unresolved",
+                scope_state="indeterminate",
+            )
+            return result
         if owner_scope == "out_of_scope":
             result = IngestResult(
                 source_record_id=envelope.source_record_id,
@@ -168,8 +176,6 @@ def ingest_crm_history_record(
 
     with client.session() as session:
         result = session.execute_write(_work)
-    if result.retry_pending:
-        raise UnresolvedActivityOwnerError("activity owner requires reviewed resolution")
     return result
 
 
@@ -197,12 +203,20 @@ def ingest_call_record(
             assert_active_bitrix_fence(tx, active_fence)
         owner_scope = _owner_scope_or_retry(tx, envelope, execution_context)
         if owner_scope is None:
-            return IngestResult(
+            result = IngestResult(
                 source_record_id=envelope.source_record_id,
                 dropped=True,
-                retry_pending=True,
                 ingest_run_id=ingest_run_id,
             )
+            _record_activity_unit(
+                tx,
+                execution_context,
+                envelope,
+                result,
+                disposition="quarantined_owner_unresolved",
+                scope_state="indeterminate",
+            )
+            return result
         if owner_scope == "out_of_scope":
             result = IngestResult(
                 source_record_id=envelope.source_record_id,
@@ -296,8 +310,6 @@ def ingest_call_record(
 
     with client.session() as session:
         result = session.execute_write(_work)
-    if result.retry_pending:
-        raise UnresolvedActivityOwnerError("activity owner requires reviewed resolution")
     return result
 
 
@@ -392,7 +404,11 @@ def _record_activity_unit(
             source_identity=envelope.source_record_id,
             source_boundary=f"{generation.boundary_digest}:{context.checkpoint.phase}",
             resolution=(
-                "reviewed_excluded" if scope_state == "out_of_scope" else "resolved_in_scope"
+                "quarantined_owner_unresolved"
+                if disposition == "quarantined_owner_unresolved"
+                else "reviewed_excluded"
+                if scope_state == "out_of_scope"
+                else "resolved_in_scope"
             ),
         ).consume()
     if (
@@ -403,9 +419,11 @@ def _record_activity_unit(
         # If the worker dies between the two writes, the unchanged activity
         # cursor causes the history to replay idempotently before the call.
         return
-    resolved = "excluded_out_of_scope" if scope_state == "out_of_scope" else disposition
-    if scope_state == "out_of_scope" and not result.dropped:
-        raise RuntimeError("out-of-scope activity attempted to persist")
+    resolved = disposition
+    if scope_state == "out_of_scope":
+        resolved = "excluded_out_of_scope"
+        if not result.dropped:
+            raise RuntimeError("out-of-scope activity attempted to persist")
     record_terminal_unit(
         tx,
         context=context,
