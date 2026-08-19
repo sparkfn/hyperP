@@ -39,7 +39,7 @@ USER appuser
 FROM base AS training
 USER root
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --frozen --no-dev --package profile-unifier-ingestion --group training
+    uv sync --frozen --no-dev --group training
 USER appuser
 ENV OPENBLAS_NUM_THREADS=1 \
     OMP_NUM_THREADS=1
