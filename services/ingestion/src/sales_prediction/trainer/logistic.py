@@ -112,8 +112,8 @@ class LogisticTrainer:
         vocabularies = _derive_vocabularies(x_categorical)
         x_onehot = _one_hot_encode(x_categorical, vocabularies)
 
-        means = tuple(float(np.mean(x_numeric, axis=0)))
-        stds = tuple(float(np.std(x_numeric, axis=0)) + 1e-8 for _ in range(x_numeric.shape[1]))
+        means = tuple(float(m) for m in np.mean(x_numeric, axis=0))
+        stds = tuple(float(s) + 1e-8 for s in np.std(x_numeric, axis=0))
         stats = StandardizationStats(means=means, stds=stds)
 
         x_std = (x_numeric - np.array(means)) / np.array(stds)
