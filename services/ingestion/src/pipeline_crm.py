@@ -59,12 +59,20 @@ def ingest_crm_history_record(
             assert_active_bitrix_fence(tx, active_fence)
         owner_scope = _owner_scope_or_retry(tx, envelope, execution_context)
         if owner_scope is None:
-            return IngestResult(
+            result = IngestResult(
                 source_record_id=envelope.source_record_id,
                 dropped=True,
-                retry_pending=True,
                 ingest_run_id=ingest_run_id,
             )
+            _record_activity_unit(
+                tx,
+                execution_context,
+                envelope,
+                result,
+                disposition="quarantined_owner_unresolved",
+                scope_state="indeterminate",
+            )
+            return result
         if owner_scope == "out_of_scope":
             result = IngestResult(
                 source_record_id=envelope.source_record_id,
@@ -167,10 +175,7 @@ def ingest_crm_history_record(
         return result
 
     with client.session() as session:
-        result = session.execute_write(_work)
-    if result.retry_pending:
-        raise UnresolvedActivityOwnerError("activity owner requires reviewed resolution")
-    return result
+        return session.execute_write(_work)
 
 
 def ingest_call_record(
@@ -197,12 +202,20 @@ def ingest_call_record(
             assert_active_bitrix_fence(tx, active_fence)
         owner_scope = _owner_scope_or_retry(tx, envelope, execution_context)
         if owner_scope is None:
-            return IngestResult(
+            result = IngestResult(
                 source_record_id=envelope.source_record_id,
                 dropped=True,
-                retry_pending=True,
                 ingest_run_id=ingest_run_id,
             )
+            _record_activity_unit(
+                tx,
+                execution_context,
+                envelope,
+                result,
+                disposition="quarantined_owner_unresolved",
+                scope_state="indeterminate",
+            )
+            return result
         if owner_scope == "out_of_scope":
             result = IngestResult(
                 source_record_id=envelope.source_record_id,
@@ -295,10 +308,7 @@ def ingest_call_record(
         return result
 
     with client.session() as session:
-        result = session.execute_write(_work)
-    if result.retry_pending:
-        raise UnresolvedActivityOwnerError("activity owner requires reviewed resolution")
-    return result
+        return session.execute_write(_work)
 
 
 def _validate_existing_hash(existing: Record, incoming_hash: str) -> None:
@@ -311,9 +321,7 @@ def _require_activity_owner_scope(
     tx: ManagedTransaction,
     envelope: SourceRecordEnvelope,
 ) -> str:
-    if envelope.parent_ref is None:
-        raise ValueError("Bitrix activity requires a parent deal")
-    deal_id = envelope.parent_ref.parent_source_record_id.rsplit("-", maxsplit=1)[-1]
+    deal_id = _activity_owner_deal_id(envelope)
     record = tx.run(
         GET_CURRENT_DEAL_SCOPE_BATCH,
         source_key="bitrix_chat",
@@ -344,9 +352,7 @@ def _owner_scope_or_retry(
         generation = context.generation_context
         if generation is None:
             raise
-        if envelope.parent_ref is None:
-            raise
-        owner_deal_id = envelope.parent_ref.parent_source_record_id.rsplit("-", maxsplit=1)[-1]
+        owner_deal_id = _activity_owner_deal_id(envelope)
         record = tx.run(
             RECORD_BITRIX_ACTIVITY_OWNER_RETRY,
             generation_id=generation.generation_id,
@@ -373,6 +379,17 @@ def _reviewed_owner_scope(status: object) -> str | None:
     return None
 
 
+def _activity_owner_deal_id(envelope: SourceRecordEnvelope) -> str:
+    if envelope.record_type == RecordType.CALL:
+        raw_owner_id = envelope.raw_payload.get("owner_id")
+        if not isinstance(raw_owner_id, str) or not raw_owner_id.strip():
+            raise ValueError("Bitrix call requires raw_payload.owner_id")
+        return raw_owner_id.strip()
+    if envelope.parent_ref is None:
+        raise ValueError("Bitrix activity requires a parent deal")
+    return envelope.parent_ref.parent_source_record_id.rsplit("-", maxsplit=1)[-1]
+
+
 def _record_activity_unit(
     tx: ManagedTransaction,
     context: ExecutionContext | None,
@@ -392,7 +409,11 @@ def _record_activity_unit(
             source_identity=envelope.source_record_id,
             source_boundary=f"{generation.boundary_digest}:{context.checkpoint.phase}",
             resolution=(
-                "reviewed_excluded" if scope_state == "out_of_scope" else "resolved_in_scope"
+                "quarantined_owner_unresolved"
+                if disposition == "quarantined_owner_unresolved"
+                else "reviewed_excluded"
+                if scope_state == "out_of_scope"
+                else "resolved_in_scope"
             ),
         ).consume()
     if (
@@ -403,9 +424,11 @@ def _record_activity_unit(
         # If the worker dies between the two writes, the unchanged activity
         # cursor causes the history to replay idempotently before the call.
         return
-    resolved = "excluded_out_of_scope" if scope_state == "out_of_scope" else disposition
-    if scope_state == "out_of_scope" and not result.dropped:
-        raise RuntimeError("out-of-scope activity attempted to persist")
+    resolved = disposition
+    if scope_state == "out_of_scope":
+        resolved = "excluded_out_of_scope"
+        if not result.dropped:
+            raise RuntimeError("out-of-scope activity attempted to persist")
     record_terminal_unit(
         tx,
         context=context,
