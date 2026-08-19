@@ -51,6 +51,9 @@ class DealVersion:
     timestamps_valid: bool
     amount_state: str
     currency_status: str
+    lifecycle_status: str = "active"
+    linked_person_ids: tuple[str, ...] = ()
+    active_person_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,6 +70,7 @@ class LabelEvidence:
     history_determinate: bool
     amount_state: str
     currency_status: str
+    amount_reconstructable: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -91,8 +95,9 @@ class PopulationMetrics:
     data_quality_unknown_censored_rate: float
     amount_known_rate: float
     amount_zero_rate: float
-    amount_revision_availability: str
-    optional_interaction_coverage: str
+    amount_reconstructable_rate: float = 0.0
+    amount_revision_availability: str = "snapshot_versioned"
+    optional_interaction_coverage: str = "not_evaluated_non_blocking"
 
 
 @dataclass(frozen=True, slots=True)
@@ -122,6 +127,7 @@ class GateMetadata:
     accepted_source_boundary_status: str
     restatement_version: str
     restatement_status: str
+    availability_semantics: str = "operational_as_known"
 
 
 @dataclass(frozen=True, slots=True)

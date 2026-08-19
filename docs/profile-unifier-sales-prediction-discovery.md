@@ -163,6 +163,39 @@ open interval `(S, S+30 days]`; a negative requires a complete accepted horizon.
 Late evidence proving a pre-snapshot non-open state produces
 `censored_retrospective_disqualifier`.
 
+### Retrospective source availability selector
+
+`--selector-version retrospective-source-availability-v1` reconstructs the same
+open-episode entries at source-native stage history time (`S = event_at`) for
+releases whose operational availability is a one-time historical capture. On such
+a release every `available_at` is the capture month, so the operational selector
+collapses eight years of source history into capture-month snapshots, no horizon
+is ever mature, and historical winners can never fall inside their own horizon.
+
+The retrospective selector changes only the snapshot clock and which facts may
+qualify or censor a label:
+
+- Snapshot time is the open entry's `event_at`; labels and maturity follow the
+  accepted release evidence cutoff as usual.
+- Eligibility and labels use only historically reconstructable facts: the
+  authoritative stage history (state at `S`, first WON in `(S, S+30 days]`) and
+  the parent's unique live-version entity key. A non-open authoritative state at
+  `S` is `ineligible/not_open_retrospective`, not a censoring event.
+- Amount and currency are reconstructed only from a non-rejected deal version
+  observed at or before `S` (latest by observation time). Without such a version
+  they are reported `not_reconstructable` and never censor or exclude the label.
+- Current-state Person linkage is excluded from label determination. It is
+  reported as a current-state population metric
+  (`deterministic_person_linkage_rate`) and cannot censor a snapshot.
+- Censoring remains reserved for data-quality failures: incomplete source
+  accounting, invalid stage timestamps, a parent without live versions
+  (`missing_parent_at_snapshot`), or an ambiguous live entity
+  (`selected_parent_ambiguity`).
+
+The report schema records which semantics produced it via
+`metadata.availability_semantics` (`operational_as_known` or
+`retrospective_source_native`) and reports `amount_reconstructable_rate`.
+
 The JSON and Markdown outputs contain aggregate entity/month evidence and every
 Gate 1 threshold result. They intentionally omit raw Person, deal, event, task,
 artifact, logical-run, source-boundary, actor, credential, and restricted digest
@@ -177,6 +210,21 @@ uv run --package profile-unifier-api python -m src.sales_prediction_discovery \
   --expected-policy-version crm-stage-lifecycle-policy-2026-08-18-v1 \
   --json-output /secure/output/issue-149-gate.json \
   --markdown-output /secure/output/issue-149-gate.md
+```
+
+For a one-time captured historical release, run the same command with the
+retrospective selector so history is not collapsed into the capture month:
+
+```bash
+uv run --package profile-unifier-api python -m src.sales_prediction_discovery \
+  --gate \
+  --entities eko,fundbox,speedzone \
+  --expected-mapping-version crm-stage-map-2026-08-18-v1 \
+  --expected-policy-version crm-stage-lifecycle-policy-2026-08-18-v1 \
+  --selector-version retrospective-source-availability-v1 \
+  --eligibility-version crm-won-retrospective-eligibility-v1 \
+  --json-output /secure/output/issue-149-gate-retrospective.json \
+  --markdown-output /secure/output/issue-149-gate-retrospective.md
 ```
 
 The deterministic recommendation is evidence for human review, not the final

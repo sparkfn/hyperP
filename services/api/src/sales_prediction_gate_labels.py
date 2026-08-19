@@ -20,6 +20,10 @@ from src.sales_prediction_gate_models import (
 _HORIZON = timedelta(days=30)
 _SUPPORTED_CURRENCIES = frozenset({"SGD", "USD", "MYR"})
 
+SELECTOR_OPERATIONAL = "open-episode-entry-v1"
+SELECTOR_RETROSPECTIVE = "retrospective-source-availability-v1"
+SUPPORTED_SELECTOR_VERSIONS = frozenset({SELECTOR_OPERATIONAL, SELECTOR_RETROSPECTIVE})
+
 
 class _LabelBase(TypedDict):
     private_parent_key: tuple[str, str]
@@ -32,6 +36,7 @@ class _LabelBase(TypedDict):
     history_determinate: bool
     amount_state: str
     currency_status: str
+    amount_reconstructable: bool
 
 
 def parse_timestamp(value: object) -> datetime | None:
@@ -112,6 +117,7 @@ def parse_deal_rows(rows: Sequence[Mapping[str, object]]) -> list[DealVersion]:
             row.get(field) in {None, ""} or parse_timestamp(row.get(field)) is not None
             for field in timestamp_fields
         )
+        lifecycle = row.get("lifecycle_status")
         versions.append(
             DealVersion(
                 parent_key=parent,
@@ -130,9 +136,40 @@ def parse_deal_rows(rows: Sequence[Mapping[str, object]]) -> list[DealVersion]:
                 timestamps_valid=timestamps_valid,
                 amount_state=amount_state,
                 currency_status=currency_status,
+                lifecycle_status=(
+                    lifecycle if isinstance(lifecycle, str) and lifecycle else "unknown"
+                ),
+                linked_person_ids=_text_tuple(row.get("linked_person_ids")),
+                active_person_ids=_text_tuple(row.get("active_person_ids")),
             )
         )
     return versions
+
+
+def validate_selector_version(selector_version: str) -> None:
+    """Reject selector versions the gate cannot label deterministically."""
+    if selector_version not in SUPPORTED_SELECTOR_VERSIONS:
+        raise ValueError(f"unsupported Gate 1 selector version: {selector_version}")
+
+
+def iterate_open_entries(
+    events: list[StageEvent],
+) -> list[tuple[tuple[str, str], StageEvent, list[StageEvent]]]:
+    """Return every deterministic open-episode entry with its parent timeline."""
+    events_by_parent: defaultdict[tuple[str, str], list[StageEvent]] = defaultdict(list)
+    for event in events:
+        events_by_parent[event.parent_key].append(event)
+    entries: list[tuple[tuple[str, str], StageEvent, list[StageEvent]]] = []
+    for parent, timeline in sorted(events_by_parent.items()):
+        ordered = sorted(timeline, key=_event_order)
+        previous_state: str | None = None
+        for event in ordered:
+            is_entry = event.mapped_state == "open" and previous_state != "open"
+            previous_state = event.mapped_state
+            if not is_entry:
+                continue
+            entries.append((parent, event, ordered))
+    return entries
 
 
 def build_labels(
@@ -143,34 +180,23 @@ def build_labels(
     *,
     invalid_event_parents: frozenset[tuple[str, str]] = frozenset(),
 ) -> list[LabelEvidence]:
-    """Build one label for every deterministic open-episode entry."""
-    events_by_parent: defaultdict[tuple[str, str], list[StageEvent]] = defaultdict(list)
+    """Build one operational-as-known label for every deterministic open-episode entry."""
     versions_by_parent: defaultdict[tuple[str, str], list[DealVersion]] = defaultdict(list)
-    for event in events:
-        events_by_parent[event.parent_key].append(event)
     for version in versions:
         versions_by_parent[version.parent_key].append(version)
-
     output: list[LabelEvidence] = []
-    for parent, timeline in sorted(events_by_parent.items()):
-        ordered = sorted(timeline, key=_event_order)
-        previous_state: str | None = None
-        for event in ordered:
-            is_entry = event.mapped_state == "open" and previous_state != "open"
-            previous_state = event.mapped_state
-            if not is_entry:
-                continue
-            output.append(
-                _label_open_entry(
-                    release,
-                    parent,
-                    event,
-                    ordered,
-                    versions_by_parent.get(parent, []),
-                    entity_keys,
-                    invalid_event=parent in invalid_event_parents,
-                )
+    for parent, event, ordered in iterate_open_entries(events):
+        output.append(
+            _label_open_entry(
+                release,
+                parent,
+                event,
+                ordered,
+                versions_by_parent.get(parent, []),
+                entity_keys,
+                invalid_event=parent in invalid_event_parents,
             )
+        )
     return sorted(output, key=lambda item: (item.entity_key, item.snapshot_at, item.reason))
 
 
@@ -199,6 +225,7 @@ def _label_open_entry(
         "history_determinate": release.analytical_release_consistent and not invalid_event,
         "amount_state": selected.amount_state if selected is not None else "unavailable",
         "currency_status": selected.currency_status if selected is not None else "unavailable",
+        "amount_reconstructable": selected is not None,
     }
     if not release.enabled or not release.source_accounting_complete:
         return LabelEvidence(status="censored", reason="source_authority_incomplete", **base)
@@ -291,6 +318,12 @@ def _parent_key(row: Mapping[str, object]) -> tuple[str, str] | None:
 
 def _optional_text(value: object) -> str | None:
     return value if isinstance(value, str) and value else None
+
+
+def _text_tuple(value: object) -> tuple[str, ...]:
+    if isinstance(value, tuple | list):
+        return tuple(item for item in value if isinstance(item, str) and item)
+    return ()
 
 
 def _non_negative(value: object) -> int:

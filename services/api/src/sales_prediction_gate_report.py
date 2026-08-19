@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections import defaultdict
 from dataclasses import asdict
 
+from src.sales_prediction_gate_labels import SELECTOR_RETROSPECTIVE
 from src.sales_prediction_gate_models import (
     GateDecision,
     GateMetadata,
@@ -27,14 +28,17 @@ def build_gate_report(
     eligibility_version: str,
     restatement_version: str,
 ) -> GateReport:
+    retrospective = selector_version == SELECTOR_RETROSPECTIVE
     populations = tuple(
-        _population(entity, [item for item in labels if item.entity_key == entity], release)
+        _population(
+            entity, [item for item in labels if item.entity_key == entity], release, retrospective
+        )
         for entity in sorted(entity_keys)
     )
     return GateReport(
         generated_at=generated_at,
         metadata=GateMetadata(
-            report_schema_version="issue-149-crm-won-gate-v1",
+            report_schema_version="issue-149-crm-won-gate-v2",
             selector_version=selector_version,
             mapping_version=release.mapping_version,
             policy_version=release.policy_version,
@@ -47,6 +51,9 @@ def build_gate_report(
             restatement_status=(
                 "present_and_applied" if release.restated_event_count else "none_observed"
             ),
+            availability_semantics=(
+                "retrospective_source_native" if retrospective else "operational_as_known"
+            ),
         ),
         populations=populations,
         monthly_counts=tuple(_monthly(labels, entity_keys)),
@@ -54,7 +61,10 @@ def build_gate_report(
 
 
 def _population(
-    entity: str, labels: list[LabelEvidence], release: GateRelease
+    entity: str,
+    labels: list[LabelEvidence],
+    release: GateRelease,
+    retrospective: bool = False,
 ) -> PopulationDecision:
     by_deal: defaultdict[tuple[str, str], list[LabelEvidence]] = defaultdict(list)
     for item in labels:
@@ -75,6 +85,7 @@ def _population(
     data_quality_censored = sum(item.status == "censored" for item in labels)
     known_amount = sum(item.amount_state in {"known", "zero"} for item in labels)
     zero_amount = sum(item.amount_state == "zero" for item in labels)
+    reconstructable = sum(item.amount_reconstructable for item in labels)
     matured_count = len(matured_deals)
     metrics = PopulationMetrics(
         entity_key=entity,
@@ -101,7 +112,10 @@ def _population(
         data_quality_unknown_censored_rate=_rate(data_quality_censored, len(labels)),
         amount_known_rate=_rate(known_amount, len(labels)),
         amount_zero_rate=_rate(zero_amount, len(labels)),
-        amount_revision_availability="snapshot_versioned",
+        amount_reconstructable_rate=_rate(reconstructable, len(labels)),
+        amount_revision_availability=(
+            "retrospective_observed_at_versioned" if retrospective else "snapshot_versioned"
+        ),
         optional_interaction_coverage="not_evaluated_non_blocking",
     )
     quality = _quality_thresholds(metrics, release)

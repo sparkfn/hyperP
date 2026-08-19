@@ -74,6 +74,10 @@ RETURN parent.source_system AS parent_source_system,
        toString(deal.rejected_at) AS rejected_at,
        toString(deal.link_failed_at) AS link_failed_at,
        deal.raw_payload AS raw_payload,
+       deal.lifecycle_status AS lifecycle_status,
+       collect(DISTINCT elementId(person)) AS linked_person_ids,
+       collect(DISTINCT CASE WHEN coalesce(person.status, 'active') = 'active'
+         THEN elementId(person) END) AS active_person_ids,
        count(DISTINCT person) AS linked_person_count,
        count(DISTINCT CASE WHEN coalesce(person.status, 'active') = 'active' THEN person END)
          AS active_person_count,
