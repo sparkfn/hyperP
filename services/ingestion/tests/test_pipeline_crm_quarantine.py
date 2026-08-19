@@ -21,12 +21,12 @@ from src.bitrix_ingestion_models import (
     FenceContext,
 )
 from src.graph.client import Neo4jClient
-from src.models import RecordType, SourceRecordEnvelope, SourceRecordParentRef, IngestResult
-from src.pipeline_crm import ingest_crm_history_record, ingest_call_record
+from src.models import IngestResult, RecordType, SourceRecordEnvelope, SourceRecordParentRef
+from src.pipeline_crm import ingest_call_record, ingest_crm_history_record
 from src.resumable import CheckpointDescriptor
 
-
 # -- helpers -----------------------------------------------------------------
+
 
 class _Result:
     def __init__(self, row: dict[str, object] | None) -> None:
@@ -149,6 +149,7 @@ def _call_envelope() -> SourceRecordEnvelope:
 
 
 # -- tests -------------------------------------------------------------------
+
 
 def test_unresolved_owner_quarantines_crm_history_not_raises(
     monkeypatch: MonkeyPatch,
@@ -290,7 +291,7 @@ def test_record_activity_unit_resolves_retry_as_quarantined(
         cast(ManagedTransaction, _CaptureTx()),
         context,
         envelope,
-        IngestResult(source_record_id='bitrix-crm-call-900', dropped=True),
+        IngestResult(source_record_id="bitrix-crm-call-900", dropped=True),
         disposition="quarantined_owner_unresolved",
         scope_state="indeterminate",
     )
@@ -327,7 +328,7 @@ def test_record_activity_unit_resolves_retry_as_reviewed_excluded_for_out_of_sco
         cast(ManagedTransaction, _CaptureTx()),
         context,
         envelope,
-        IngestResult(source_record_id='bitrix-crm-call-900', dropped=True),
+        IngestResult(source_record_id="bitrix-crm-call-900", dropped=True),
         disposition="excluded_out_of_scope",
         scope_state="out_of_scope",
     )
@@ -364,7 +365,7 @@ def test_record_activity_unit_resolves_retry_as_resolved_in_scope_for_normal(
         cast(ManagedTransaction, _CaptureTx()),
         context,
         envelope,
-        IngestResult(source_record_id='bitrix-crm-call-900', source_record_pk='pk-1'),
+        IngestResult(source_record_id="bitrix-crm-call-900", source_record_pk="pk-1"),
         disposition="created",
         scope_state="in_scope",
     )

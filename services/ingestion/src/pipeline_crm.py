@@ -175,8 +175,7 @@ def ingest_crm_history_record(
         return result
 
     with client.session() as session:
-        result = session.execute_write(_work)
-    return result
+        return session.execute_write(_work)
 
 
 def ingest_call_record(
@@ -309,8 +308,7 @@ def ingest_call_record(
         return result
 
     with client.session() as session:
-        result = session.execute_write(_work)
-    return result
+        return session.execute_write(_work)
 
 
 def _validate_existing_hash(existing: Record, incoming_hash: str) -> None:
