@@ -147,7 +147,7 @@ def seal_evaluation(
 
     report_json = report_to_json(report)
     with store.begin(artifact_kind="sales-evaluation") as session:
-        session.write_text(f"{entity_key}_evaluation.json", report_json)
+        session.write_bytes(f"{entity_key}_evaluation.json", report_json.encode("utf-8"))
         manifest = session.seal(
             metadata={
                 "evaluation_schema_version": EVALUATION_SCHEMA_VERSION,
@@ -170,6 +170,17 @@ def _candidate_probabilities(
     ]
 
 
+def _precision_float(
+    rows: list[DatasetRow],
+    probabilities: dict[str, float],
+    *,
+    capacity_fraction: float = _DEFAULT_CAPACITY_FRACTION,
+) -> float:
+    """Wrapper returning only the precision from precision_at_capacity."""
+    prec, _ = precision_at_capacity(rows, probabilities, capacity_fraction=capacity_fraction)
+    return prec
+
+
 def _aggregate_metrics(
     all_test_rows: list[DatasetRow],
     folds: list[TemporalFold],
@@ -180,14 +191,14 @@ def _aggregate_metrics(
     if not all_test_rows or not folds:
         return []
     # Use the last fold's train set for base rate (most recent)
-    train_rows = [r for r in all_rows if r.row_id in folds[-1].train_row_ids]  # type: ignore[attr-defined]
+    train_rows = [r for r in all_rows if r.row_id in folds[-1].train_row_ids]
     results: list[AggregateMetrics] = []
     for candidate_name, probs in _candidate_probabilities(train_rows, all_test_rows):
         metrics = compute_binary_metrics(all_test_rows, probs, capacity_fraction=capacity_fraction)
         boot = bootstrap_metric(
             all_test_rows,
             probs,
-            precision_at_capacity,
+            _precision_float,
             capacity_fraction=capacity_fraction,
         )
         results.append(
@@ -216,7 +227,7 @@ def _sufficiency_breakdown(
     """Compute per-sufficiency-band precision for the rules_v1 candidate."""
     if not all_test_rows or not folds:
         return []
-    train_rows = [r for r in all_rows if r.row_id in folds[-1].train_row_ids]  # type: ignore[attr-defined]
+    train_rows = [r for r in all_rows if r.row_id in folds[-1].train_row_ids]
     _, rules_probs = _candidate_probabilities(train_rows, all_test_rows)[1]
     bands = ["sufficient", "limited", "insufficient"]
     results: list[SufficiencyBreakdown] = []

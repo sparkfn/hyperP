@@ -9,8 +9,8 @@ from __future__ import annotations
 
 import math
 import random
-from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Protocol
 
 from src.sales_prediction.models import DatasetRow
 
@@ -169,10 +169,22 @@ def compute_binary_metrics(
     )
 
 
+class MetricFunction(Protocol):
+    """Callable that computes a float metric from rows and probabilities."""
+
+    def __call__(
+        self,
+        rows: list[DatasetRow],
+        probabilities: dict[str, float],
+        *,
+        capacity_fraction: float = _DEFAULT_CAPACITY_FRACTION,
+    ) -> float: ...
+
+
 def bootstrap_metric(
     rows: list[DatasetRow],
     probabilities: dict[str, float],
-    metric_fn: Callable[..., float],
+    metric_fn: MetricFunction,
     *,
     seed: int = 42,
     resamples: int = _BOOTSTRAP_RESAMPLES,
