@@ -37,8 +37,10 @@ USER appuser
 # Default target (base) does NOT include the training group. This target is
 # used only for one-off training runs, not for the production worker image.
 FROM base AS training
+USER root
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-dev --package profile-unifier-ingestion --group training
+USER appuser
 ENV OPENBLAS_NUM_THREADS=1 \
     OMP_NUM_THREADS=1
 
