@@ -198,7 +198,7 @@ def bootstrap_metric(
     for r in rows:
         rows_by_month[r.month].append(r)
 
-    point = float(metric_fn(rows, probabilities, capacity_fraction=capacity_fraction))  # type: ignore[call-arg]
+    point = float(metric_fn(rows, probabilities, capacity_fraction=capacity_fraction))
     rng = random.Random(seed)
     values: list[float] = []
     for _ in range(resamples):
@@ -206,7 +206,7 @@ def bootstrap_metric(
         for _ in range(len(months)):
             m = months[rng.randrange(len(months))]
             sample.extend(rows_by_month[m])
-        val = float(metric_fn(sample, probabilities, capacity_fraction=capacity_fraction))  # type: ignore[call-arg]
+        val = float(metric_fn(sample, probabilities, capacity_fraction=capacity_fraction))
         values.append(val)
     values.sort()
     mean = sum(values) / len(values)
