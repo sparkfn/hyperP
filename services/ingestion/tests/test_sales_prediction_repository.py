@@ -186,11 +186,12 @@ def test_load_evidence_rejects_release_change_during_read() -> None:
 
 
 def test_load_evidence_rejects_deal_version_change_during_read() -> None:
+    # First page must be full (PAGE_SIZE rows) so pagination continues to a
+    # second page where the same parent reappears with a changed deal version.
+    page_one = [_stage_row(f"evt-{i:05d}", "deal-1") for i in range(_PAGE_SIZE)]
+    page_two = [_stage_row("evt-Z", "deal-1", "won")]
     responses = _happy_responses()
-    responses[SALES_PREDICTION_STAGE_EVENTS_PAGE] = [
-        [_stage_row("evt-1", "deal-1")],
-        [_stage_row("evt-2", "deal-1", "won")],
-    ]
+    responses[SALES_PREDICTION_STAGE_EVENTS_PAGE] = [page_one, page_two]
     responses[SALES_PREDICTION_DEAL_VERSIONS_FOR_PARENTS] = [
         [_deal_row("deal-1")],
         # deal-1 reappears on the second page; its version row changed content.

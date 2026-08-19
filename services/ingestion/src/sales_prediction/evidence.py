@@ -84,7 +84,8 @@ def parse_stage_rows(
                 source_semantic=_optional_text(row.get("source_semantic")),
             )
         )
-    return events, frozenset(invalid)
+    censored = [event for event in events if event.parent_key not in invalid]
+    return censored, frozenset(invalid)
 
 
 def parse_deal_rows(rows: Sequence[Mapping[str, object]]) -> list[DealVersion]:
