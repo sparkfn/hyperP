@@ -133,7 +133,7 @@ def test_retrospective_snapshot_uses_source_native_event_time() -> None:
 def test_retrospective_labels_from_stage_history_only() -> None:
     positive = _one([_event("open", -100), _event("won", -80)])
     negative = _one([_event("open", -100)])
-    immature = _one([_event("open", -100)], cutoff_days=110)
+    immature = _one([_event("open", 100)], cutoff_days=110)
 
     assert (positive.status, positive.reason) == ("positive", "first_won_in_horizon")
     assert (negative.status, negative.reason) == ("negative", "mature_no_first_won")
@@ -200,7 +200,10 @@ def test_retrospective_amount_uses_latest_observed_version() -> None:
 def test_retrospective_amount_ignores_rejected_versions() -> None:
     label = _one(
         [_event("open", -100)],
-        [_version(observed_day=-150, lifecycle="rejected", amount_state="invalid")],
+        [
+            _version(observed_day=200, version=1),
+            _version(observed_day=-150, lifecycle="rejected", amount_state="invalid", version=2),
+        ],
     )
 
     assert label.amount_reconstructable is False
@@ -253,7 +256,7 @@ def test_retrospective_deterministic_rerun_and_ordering() -> None:
 def test_retrospective_report_semantics_and_amount_metrics() -> None:
     labels = [
         replace(
-            _one([_event("open", -100)]),
+            _one([_event("open", -100)], [_version(observed_day=-150)]),
             private_parent_key=("private", "deal-known"),
         ),
         replace(
