@@ -18,6 +18,15 @@ from pathlib import Path
 
 from src.sales_prediction.models import DatasetDigest, DatasetRow
 
+__all__ = [
+    "DatasetDigest",
+    "DatasetRow",
+    "write_dataset",
+    "read_dataset_rows",
+    "read_dataset_metadata",
+    "content_digest",
+]
+
 _PAGE_SIZE = 4096
 
 _META_TABLE = """
