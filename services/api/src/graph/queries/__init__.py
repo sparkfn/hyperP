@@ -20,6 +20,7 @@ from src.graph.queries.admin import (
     LIST_SOURCE_SYSTEMS,
     UPDATE_FIELD_TRUST,
 )
+from src.graph.queries.crm import GET_PERSON_CRM_METRICS
 from src.graph.queries.entities import (
     LIST_ENTITIES,
     LIST_FILTER_SOURCE_SYSTEMS,
@@ -243,6 +244,7 @@ __all__ = [
     "GET_PERSON_CONNECTIONS_ALL",
     "GET_PERSON_CONNECTIONS_IDENTIFIER",
     "GET_PERSON_CONNECTIONS_KNOWS",
+    "GET_PERSON_CRM_METRICS",
     "GET_PERSON_ENTITIES",
     "GET_PERSON_FACTS",
     "GET_PERSON_IDENTIFIERS",

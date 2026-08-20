@@ -223,6 +223,44 @@ export interface SalesOrder {
   non_vehicle_lines: NonVehicleLine[];
 }
 
+export interface CrmActivityKindCount {
+  history_kind: string;
+  count: number;
+  last_event_at: string | null;
+  last_event_at_display: string | null;
+}
+
+export interface CrmDealStageCount {
+  stage_id: string | null;
+  count: number;
+}
+
+export interface CrmEntityBreakdown {
+  entity_key: string;
+  entity_display_name: string | null;
+  deal_count: number;
+  activity_count: number;
+  conversation_count: number;
+}
+
+export interface PersonCrmMetrics {
+  deal_count: number;
+  deal_stage_breakdown: CrmDealStageCount[];
+  first_deal_at: string | null;
+  first_deal_at_display: string | null;
+  last_deal_at: string | null;
+  last_deal_at_display: string | null;
+  activity_count: number;
+  call_count: number;
+  conversation_count: number;
+  activity_kind_breakdown: CrmActivityKindCount[];
+  first_activity_at: string | null;
+  first_activity_at_display: string | null;
+  last_activity_at: string | null;
+  last_activity_at_display: string | null;
+  entity_breakdown: CrmEntityBreakdown[];
+}
+
 export interface EntitySummary {
   entity_key: string;
   display_name: string | null;

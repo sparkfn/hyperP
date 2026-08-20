@@ -183,6 +183,7 @@ CREATE (sr:SourceRecord {
     record_hash:           $record_hash,
     raw_payload:           $raw_payload,
     normalized_payload:    $normalized_payload,
+    crm_deal_stage_id:     $crm_deal_stage_id,
     // Compatibility only: lifecycle_status is authoritative. Staged identity
     // records pass false so legacy readers cannot mistake them for active.
     is_latest:             $is_latest,

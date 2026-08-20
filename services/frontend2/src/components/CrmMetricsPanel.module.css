@@ -1,0 +1,138 @@
+.panel {
+  display: grid;
+  gap: 14px;
+}
+
+.metricGrid,
+.breakdownGrid {
+  display: grid;
+  gap: 12px;
+}
+
+.metricGrid {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.breakdownGrid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.metricCard,
+.breakdownCard,
+.entityCard {
+  min-width: 0;
+  padding: 14px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 10px;
+  background: var(--bg-card);
+}
+
+.metricCard {
+  display: grid;
+  gap: 6px;
+}
+
+.metricLabel,
+.breakdownMeta,
+.dateRange {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.metricValue {
+  color: var(--text-primary);
+  font-size: 24px;
+  font-weight: 700;
+}
+
+.breakdownTitle {
+  margin: 0 0 10px;
+  color: var(--text-primary);
+  font-size: 13px;
+}
+
+.breakdownList {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.breakdownRow {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: baseline;
+  color: var(--text-primary);
+  font-size: 13px;
+}
+
+.breakdownCount {
+  color: var(--text-primary);
+  font-weight: 650;
+}
+
+.breakdownEmpty,
+.emptyState,
+.loadingState {
+  margin: 0;
+  padding: 18px 12px;
+  border: 1px dashed var(--border-subtle);
+  border-radius: 10px;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+.errorState {
+  margin: 0;
+  padding: 18px 12px;
+  border: 1px solid var(--bad-soft);
+  border-radius: 10px;
+  background: var(--bad-soft);
+  color: var(--bad);
+  font-size: 13px;
+}
+
+.dateRange {
+  margin: 0;
+}
+
+.entityTable {
+  width: 100%;
+  border-collapse: collapse;
+  color: var(--text-primary);
+  font-size: 13px;
+  text-align: left;
+}
+
+.entityTable th,
+.entityTable td {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.entityTable th {
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 650;
+  text-transform: uppercase;
+}
+
+.entityTable tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.entityTable td:not(:first-child) {
+  text-align: right;
+}
+
+@media (max-width: 860px) {
+  .metricGrid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .breakdownGrid {
+    grid-template-columns: 1fr;
+  }
+}

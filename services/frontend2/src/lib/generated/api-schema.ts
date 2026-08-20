@@ -147,6 +147,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/persons/{person_id}/crm/metrics": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get CRM engagement metrics for a person
+         * @description Returns read-only aggregate counts and date ranges computed from effective-active CRM deals, CRM activities, calls, and conversations from the bitrix_chat source that are linked to the person's merge survivor. The graph reader admits only legacy-null or activity-family CRM history records, uses active person-record links, and excludes superseded or rejected records.
+         */
+        get: operations["getPersonCrmMetrics"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/persons/{person_id}/profile-analyses": {
         parameters: {
             query?: never;
@@ -958,6 +978,49 @@ export interface components {
         };
         PersonListSummaryEnvelope: {
             data: components["schemas"]["PersonListSummary"];
+            meta: components["schemas"]["Meta"];
+        };
+        CrmActivityKindCount: {
+            history_kind: string;
+            count: number;
+            /** Format: date-time */
+            last_event_at: string | null;
+            last_event_at_display: string | null;
+        };
+        CrmDealStageCount: {
+            stage_id: string | null;
+            count: number;
+        };
+        CrmEntityBreakdown: {
+            entity_key: string;
+            entity_display_name: string | null;
+            deal_count: number;
+            activity_count: number;
+            conversation_count: number;
+        };
+        PersonCrmMetrics: {
+            deal_count: number;
+            deal_stage_breakdown: components["schemas"]["CrmDealStageCount"][];
+            /** Format: date-time */
+            first_deal_at: string | null;
+            first_deal_at_display: string | null;
+            /** Format: date-time */
+            last_deal_at: string | null;
+            last_deal_at_display: string | null;
+            activity_count: number;
+            call_count: number;
+            conversation_count: number;
+            activity_kind_breakdown: components["schemas"]["CrmActivityKindCount"][];
+            /** Format: date-time */
+            first_activity_at: string | null;
+            first_activity_at_display: string | null;
+            /** Format: date-time */
+            last_activity_at: string | null;
+            last_activity_at_display: string | null;
+            entity_breakdown: components["schemas"]["CrmEntityBreakdown"][];
+        };
+        PersonCrmMetricsEnvelope: {
+            data: components["schemas"]["PersonCrmMetrics"];
             meta: components["schemas"]["Meta"];
         };
         AddressSummary: {
@@ -2286,6 +2349,33 @@ export interface operations {
                     "application/json": components["schemas"]["SourceRecordListResponseEnvelope"];
                 };
             };
+            404: components["responses"]["PersonNotFound"];
+        };
+    };
+    getPersonCrmMetrics: {
+        parameters: {
+            query?: never;
+            header?: {
+                "X-Request-Id"?: components["parameters"]["RequestId"];
+            };
+            path: {
+                person_id: components["parameters"]["PersonId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Aggregate CRM engagement metrics */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PersonCrmMetricsEnvelope"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
             404: components["responses"]["PersonNotFound"];
         };
     };

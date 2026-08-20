@@ -7,6 +7,7 @@ All injected types are the Protocol interfaces, so route code never imports Neo4
 from __future__ import annotations
 
 from src.repositories.neo4j.admin import Neo4jAdminRepository
+from src.repositories.neo4j.crm import Neo4jCrmMetricsRepository
 from src.repositories.neo4j.entity import Neo4jEntityRepository
 from src.repositories.neo4j.event import Neo4jEventRepository
 from src.repositories.neo4j.ingest import Neo4jIngestRepository
@@ -17,6 +18,7 @@ from src.repositories.neo4j.review import Neo4jReviewRepository
 from src.repositories.neo4j.sales import Neo4jSalesRepository
 from src.repositories.neo4j.survivorship import Neo4jSurvivorshipRepository
 from src.repositories.protocols.admin import AdminRepository
+from src.repositories.protocols.crm import CrmMetricsRepository
 from src.repositories.protocols.entity import EntityRepository
 from src.repositories.protocols.event import EventRepository
 from src.repositories.protocols.ingest import IngestRepository
@@ -37,6 +39,7 @@ _report_repo: ReportRepository = Neo4jReportRepository()
 _event_repo: EventRepository = Neo4jEventRepository()
 _admin_repo: AdminRepository = Neo4jAdminRepository()
 _ingest_repo: IngestRepository = Neo4jIngestRepository()
+_crm_metrics_repo: CrmMetricsRepository = Neo4jCrmMetricsRepository()
 
 
 def get_person_repo() -> PersonRepository:
@@ -77,3 +80,7 @@ def get_admin_repo() -> AdminRepository:
 
 def get_ingest_repo() -> IngestRepository:
     return _ingest_repo
+
+
+def get_crm_metrics_repo() -> CrmMetricsRepository:
+    return _crm_metrics_repo

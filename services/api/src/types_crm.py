@@ -1,0 +1,51 @@
+"""CRM metrics domain models."""
+
+from __future__ import annotations
+
+from pydantic import BaseModel, Field
+
+
+class CrmActivityKindCount(BaseModel):
+    """Count of CRM activities grouped by normalized history kind."""
+
+    history_kind: str
+    count: int
+    last_event_at: str | None = None
+    last_event_at_display: str | None = None
+
+
+class CrmDealStageCount(BaseModel):
+    """Count of CRM deals grouped by current stage identifier."""
+
+    stage_id: str | None = None
+    count: int
+
+
+class CrmEntityBreakdown(BaseModel):
+    """Per-entity CRM record counts for a person."""
+
+    entity_key: str
+    entity_display_name: str | None = None
+    deal_count: int = 0
+    activity_count: int = 0
+    conversation_count: int = 0
+
+
+class PersonCrmMetrics(BaseModel):
+    """Aggregate CRM engagement metrics for one person."""
+
+    deal_count: int = 0
+    deal_stage_breakdown: list[CrmDealStageCount] = Field(default_factory=list)
+    first_deal_at: str | None = None
+    first_deal_at_display: str | None = None
+    last_deal_at: str | None = None
+    last_deal_at_display: str | None = None
+    activity_count: int = 0
+    call_count: int = 0
+    conversation_count: int = 0
+    activity_kind_breakdown: list[CrmActivityKindCount] = Field(default_factory=list)
+    first_activity_at: str | None = None
+    first_activity_at_display: str | None = None
+    last_activity_at: str | None = None
+    last_activity_at_display: str | None = None
+    entity_breakdown: list[CrmEntityBreakdown] = Field(default_factory=list)

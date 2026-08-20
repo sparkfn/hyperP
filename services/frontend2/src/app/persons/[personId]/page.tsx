@@ -34,6 +34,7 @@ import { APP_TZ, avatarColor, completenessColor, formatDob } from "@/lib/display
 import { useSetLoading } from "@/lib/LoadingContext";
 import { personDisplayName, sourceRecordReference } from "@/lib/ui-display";
 import ActionToast from "@/components/ActionToast";
+import CrmMetricsPanel from "@/components/CrmMetricsPanel";
 import MergeOverlay from "@/components/MergeOverlay";
 import PersonFocusedGraph from "@/components/PersonFocusedGraph";
 import PersonGraphDialog from "@/components/PersonGraphDialog";
@@ -43,7 +44,7 @@ import { ReviewCaseDetailModal } from "@/app/review/[reviewCaseId]/ReviewCaseDet
 import type { ReviewCaseDetail, ReviewCaseSummary } from "@/lib/api-types-ops";
 import styles from "./person.module.css";
 
-type Tab = "sales" | "connections" | "identifiers" | "decision-history" | "source-records" | "matches" | "timeline" | "graph";
+type Tab = "sales" | "crm" | "connections" | "identifiers" | "decision-history" | "source-records" | "matches" | "timeline" | "graph";
 
 type DetailData = {
   identifiers: PersonIdentifier[];
@@ -3787,6 +3788,7 @@ function PersonDetailSkeleton(): ReactElement {
     "Matches",
     "Source records",
     "Sales",
+    "CRM",
     "Connections",
     "Identifiers",
     "Decision History",
@@ -4401,6 +4403,7 @@ export default function PersonDetailPage({ params }: { params: Promise<{ personI
   const onDecisionHistoryTotal = useCallback((n: number) => { setTabTotals((p) => ({ ...p, "decision-history": n })); }, []);
   const onConnectionsTotal = useCallback((n: number) => { setTabTotals((p) => ({ ...p, connections: n })); }, []);
   const onSalesTotal       = useCallback((n: number) => { setTabTotals((p) => ({ ...p, sales:       n })); }, []);
+  const onCrmTotal         = useCallback((n: number) => { setTabTotals((p) => ({ ...p, crm:         n })); }, []);
   const onSourceRecordsTotal = useCallback((n: number) => { setTabTotals((p) => ({ ...p, "source-records": n })); }, []);
   const handleSectionJump = useCallback((id: string): void => {
     setHighlightedSectionId(id);
@@ -4413,6 +4416,7 @@ export default function PersonDetailPage({ params }: { params: Promise<{ personI
     { id: "section-matches",        label: "Matches",        count: tabTotals.matches },
     { id: "section-source-records", label: "Source records", count: tabTotals["source-records"] ?? (detailData.sourceRecordFacets.reduce((sum, f) => sum + f.count, 0) || undefined) },
     { id: "section-sales",          label: "Sales",          count: tabTotals.sales          ?? detailData.sales.length },
+    { id: "section-crm",            label: "CRM",            count: tabTotals.crm },
     { id: "section-connections",    label: "Connections",    count: tabTotals.connections    ?? (person?.connection_count ?? 0) },
     { id: "section-identifiers",    label: "Identifiers",    count: detailData.identifiers.length || undefined },
     { id: "section-decision-history", label: "Decision History", count: tabTotals["decision-history"] },
@@ -4445,6 +4449,9 @@ export default function PersonDetailPage({ params }: { params: Promise<{ personI
                   break;
                 case "section-sales":
                   content = <SalesTab personId={personId} onTotalLoaded={onSalesTotal} />;
+                  break;
+                case "section-crm":
+                  content = <CrmMetricsPanel personId={personId} onTotalLoaded={onCrmTotal} />;
                   break;
                 case "section-connections":
                   content = <ConnectionsTab personId={personId} onTotalLoaded={onConnectionsTotal} />;

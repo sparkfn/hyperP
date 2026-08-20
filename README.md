@@ -32,6 +32,7 @@ is sales. Built on Neo4j for native graph traversal.
 - [Sales Prediction Approach and PRD](./docs/profile-unifier-sales-prediction-prd.md)
 - [Sales Prediction Feasibility Discovery](./docs/profile-unifier-sales-prediction-discovery.md)
 - [CRM History Authority Contract](./docs/profile-unifier-crm-history-authority.md)
+- [Person CRM Metrics Design](./docs/profile-unifier-person-crm-metrics.md)
 
 ## Recommended Reading Order
 
@@ -52,6 +53,7 @@ is sales. Built on Neo4j for native graph traversal.
 15. Sales Prediction Approach and PRD
 16. Sales Prediction Feasibility Discovery
 17. CRM History Authority Contract
+18. Person CRM Metrics Design
 
 ## Current Scope
 
