@@ -103,6 +103,14 @@ def _metrics_record() -> _Record:
             _entity("fundbox", "Fundbox", 6, 22, 3),
             _entity("eko", "Eko", 0, 10, 0),
         ],
+        "recent_30d_deal_count": 2,
+        "recent_30d_activity_count": 8,
+        "recent_30d_call_count": 3,
+        "recent_30d_conversation_count": 1,
+        "last_crm_touch_at": "2026-08-14T10:00:00+08:00",
+        "days_since_last_crm_touch": 5,
+        "days_since_last_deal": 5,
+        "days_since_last_activity": 5,
     }
     return _Record(values)
 
@@ -110,6 +118,10 @@ def _metrics_record() -> _Record:
 def test_crm_metrics_query_uses_isolated_record_subqueries() -> None:
     assert "MATCH (p:Person {person_id: $person_id})" in GET_PERSON_CRM_METRICS
     assert GET_PERSON_CRM_METRICS.count("OPTIONAL MATCH (sr:SourceRecord") == 7
+    assert "datetime($as_of_at) AS as_of_at" in GET_PERSON_CRM_METRICS
+    assert GET_PERSON_CRM_METRICS.count("CALL (person, as_of_at) {") == 4
+    assert "duration('P30D')" in GET_PERSON_CRM_METRICS
+    assert "sr_timestamp <= as_of_at" in GET_PERSON_CRM_METRICS
     assert "sr.record_type IN ['crm_deal', 'crm_history', 'conversation']" in (
         GET_PERSON_CRM_METRICS
     )
@@ -161,6 +173,7 @@ async def test_repository_maps_all_crm_metrics_fields(
 ) -> None:
     session = _Session(_metrics_record())
     _install_session(monkeypatch, session)
+    monkeypatch.setattr(crm_module, "_utc_now", lambda: datetime(2026, 8, 20, tzinfo=UTC))
 
     metrics = await Neo4jCrmMetricsRepository().get_person_crm_metrics("person-1")
 
@@ -211,8 +224,22 @@ async def test_repository_maps_all_crm_metrics_fields(
                 conversation_count=0,
             ),
         ],
+        recent_30d_deal_count=2,
+        recent_30d_activity_count=8,
+        recent_30d_call_count=3,
+        recent_30d_conversation_count=1,
+        last_crm_touch_at="2026-08-14T10:00:00+08:00",
+        last_crm_touch_at_display="14 Aug 2026, 02:00 AM",
+        days_since_last_crm_touch=5,
+        days_since_last_deal=5,
+        days_since_last_activity=5,
     )
-    assert session.calls == [(GET_PERSON_CRM_METRICS, {"person_id": "person-1"})]
+    assert session.calls == [
+        (
+            GET_PERSON_CRM_METRICS,
+            {"person_id": "person-1", "as_of_at": "2026-08-20T00:00:00+00:00"},
+        )
+    ]
 
 
 @pytest.mark.anyio

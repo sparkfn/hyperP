@@ -3,12 +3,15 @@ import type { components } from "./api-schema";
 type CreateIngestRunRequest = components["schemas"]["CreateIngestRunRequest"];
 type EntityFilterOption = components["schemas"]["EntityFilterOption"];
 type ListedPerson = components["schemas"]["ListedPerson"];
+type PersonCrmMetrics = components["schemas"]["PersonCrmMetrics"];
 type IsRequired<T, K extends keyof T> = Record<never, never> extends Pick<T, K>
   ? false
   : true;
 type Assert<T extends true> = T;
 
 export type GeneratedResponseDefaultsStayRequired = [
+  Assert<IsRequired<PersonCrmMetrics, "recent_30d_deal_count">>,
+  Assert<IsRequired<PersonCrmMetrics, "last_crm_touch_at">>,
   Assert<IsRequired<components["schemas"]["PersonComparisonEntity"], "entity_kind">>,
   Assert<IsRequired<components["schemas"]["SalesVehicleSummary"], "conflict_flag">>,
 ];

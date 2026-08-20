@@ -323,6 +323,8 @@ def test_oauth2_persons_list_passes_filters() -> None:
             "is_high_value": "true",
             "has_phone": "true",
             "has_dob": "true",
+            "crm_deal_count_min": "0",
+            "crm_deal_count_max": "0",
             "addr_city": "Singapore",
             "dob_from": "1980-01-01",
             "dob_month": "6",
@@ -345,6 +347,8 @@ def test_oauth2_persons_list_passes_filters() -> None:
     assert captured_filters["is_high_value"] is True
     assert captured_filters["has_phone"] is True
     assert captured_filters["has_dob"] is True
+    assert captured_filters["crm_deal_count_min"] == 0
+    assert captured_filters["crm_deal_count_max"] == 0
     assert captured_filters["addr_city"] == "Singapore"
     assert captured_filters["dob_from"] == "1980-01-01"
     assert captured_filters["dob_month"] == "06"
@@ -366,3 +370,33 @@ def test_oauth2_does_not_expose_person_subresources() -> None:
     assert client.get("/persons/p1/source-records").status_code == 404
     assert client.get("/persons/p1/connections").status_code == 404
     assert client.get("/persons/p1/identifiers").status_code == 404
+
+
+def test_oauth2_persons_list_rejects_inverted_crm_deal_range() -> None:
+    app = build_oauth2_app()
+    app.dependency_overrides[get_current_user_or_oauth_client] = _override_oauth_persons_reader
+    app.dependency_overrides[get_person_repo] = _override_person_repo
+    client = TestClient(app)
+
+    response = client.get(
+        "/persons",
+        params={"crm_deal_count_min": "2", "crm_deal_count_max": "1"},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "invalid_request"
+
+
+def test_oauth2_persons_list_uses_typed_sort_validation() -> None:
+    app = build_oauth2_app()
+    app.dependency_overrides[get_current_user_or_oauth_client] = _override_oauth_persons_reader
+    app.dependency_overrides[get_person_repo] = _override_person_repo
+    client = TestClient(app)
+
+    invalid_sort = client.get("/persons", params={"sort_by": "bogus"})
+    negative_bound = client.get("/persons", params={"crm_deal_count_min": "-1"})
+
+    assert invalid_sort.status_code == 400
+    assert invalid_sort.json()["error"]["code"] == "invalid_request"
+    assert negative_bound.status_code == 400
+    assert negative_bound.json()["error"]["code"] == "invalid_request"

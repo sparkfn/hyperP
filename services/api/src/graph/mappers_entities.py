@@ -98,6 +98,7 @@ def map_listed_person(record: GraphRecord) -> ListedPerson:
         possible_match_count=to_int(record.get("possible_match_count")),
         system_match_count=to_int(record.get("system_match_count")),
         order_count=to_int(record.get("order_count")),
+        crm_deal_count=to_int(record.get("crm_deal_count")),
         bankruptcy_case_count=to_int(record.get("bankruptcy_case_count")),
         preferred_dob_display=dob_display,
         preferred_dob_invalid=dob_invalid,

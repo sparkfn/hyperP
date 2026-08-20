@@ -222,12 +222,14 @@ def test_map_listed_person_includes_possible_match_count() -> None:
             "identifier_count": 3,
             "possible_match_count": 4,
             "order_count": 5,
+            "crm_deal_count": 6,
             "bankruptcy_case_count": 0,
         }
     )
 
     assert listed.identifier_count == 3
     assert listed.possible_match_count == 4
+    assert listed.crm_deal_count == 6
 
 
 def test_display_item_helpers_format_popover_text() -> None:

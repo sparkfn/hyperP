@@ -520,8 +520,25 @@ clients. Exact counting remains enabled by default. Latency-sensitive callers,
 including the browser BFF, send `include_total=false`; then `meta.total_count` is
 `null` and `meta.next_cursor` is the authoritative continuation signal.
 
+Every returned `ListedPerson` includes `crm_deal_count`, defaulting to zero.
 Key query parameters include repeatable `entity_key` and `source_key` filters,
-`q`, sorting, `cursor`, `limit`, and `include_total` (boolean, default `true`).
+`q`, sorting, `cursor`, `limit`, and `include_total` (boolean, default `true`). CRM
+deal controls are evaluated server-side against distinct effective-active
+`crm_deal` records from `bitrix_chat` through active `LINKED_TO` relationships:
+
+- `crm_deal_count_min`: optional non-negative inclusive lower bound;
+- `crm_deal_count_max`: optional non-negative inclusive upper bound;
+- `sort_by=crm_deal_count`: deal-count sorting with the standard deterministic
+  `person_id` tie-breaker.
+
+A negative bound, or a minimum greater than the maximum, returns HTTP 400 with
+the standard `invalid_request` envelope. Deal-count filtering and sorting occur
+before pagination and affect exact `total_count` when requested.
+
+### Authorization
+
+- active authenticated frontend or MCP caller
+- OAuth clients require `persons:read`
 
 ## GET /v1/entities/filter-options
 
@@ -662,7 +679,11 @@ This exclusion is significant for conversations: WhatsApp conversations use the
 same `conversation` record type but a different source system and are not CRM
 Open Lines engagement. In line with the CRM History Authority Contract, every
 CRM record type admits only legacy-null or `activity` history families;
-stage-history records remain excluded until their analytical release.
+stage-history records remain excluded until their analytical release. A single
+UTC request timestamp is captured and supplied to the graph query, so all
+30-day-window counts and elapsed-day values use the same inclusive cutoff. Missing
+last-touch timestamps and elapsed values are returned as `null`; display strings
+are produced by API display helpers.
 
 ### Authorization
 
@@ -698,6 +719,15 @@ stage-history records remain excluded until their analytical release.
     "first_activity_at_display": "05 Jan 2026",
     "last_activity_at": "2026-08-14T02:00:00+00:00",
     "last_activity_at_display": "14 Aug 2026",
+    "recent_30d_deal_count": 2,
+    "recent_30d_activity_count": 8,
+    "recent_30d_call_count": 3,
+    "recent_30d_conversation_count": 1,
+    "last_crm_touch_at": "2026-08-14T02:00:00+00:00",
+    "last_crm_touch_at_display": "14 Aug 2026, 02:00 AM",
+    "days_since_last_crm_touch": 6,
+    "days_since_last_deal": 6,
+    "days_since_last_activity": 6,
     "entity_breakdown": [
       {
         "entity_key": "fundbox",

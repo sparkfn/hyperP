@@ -67,9 +67,12 @@ export interface paths {
         };
         /**
          * List canonical persons
-         * @description Paginated person list used by the authenticated UI. `meta.next_cursor`
-         *     is the authoritative continuation signal. Exact counting is enabled by
-         *     default for compatibility but callers may disable it for faster reads.
+         * @description Paginated generalized person list used by the authenticated UI. Filters
+         *     are combined with AND semantics; repeated entity/source keys use their
+         *     corresponding mode. CRM deal bounds count distinct active Bitrix CRM
+         *     deal source records and are inclusive. `meta.next_cursor` is the
+         *     authoritative continuation signal. Exact counting is enabled by default
+         *     but callers may disable it for faster reads.
          */
         get: operations["listPersons"];
         put?: never;
@@ -107,25 +110,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /**
-         * List / search canonical persons
-         * @description Returns a paginated list of canonical persons with cursor-based pagination.
-         *     All filters are applied as AND conditions. Results are sorted by
-         *     `created_at DESC` unless `sort_by` is specified.
-         *
-         *     **MCP tool call example:**
-         *
-         *     ```python
-         *     result = await client.tools.call("hyperP_search_persons", {
-         *       "limit": 20,
-         *       "status": "active",
-         *       "q": "Tan Wei Ming",
-         *       "sort_by": "preferred_full_name",
-         *       "sort_order": "asc"
-         *     })
-         *     # Returns: { data: [ListedPerson], meta: { total_count: N, next_cursor: "MTA=" } }
-         *     ```
-         */
+        /** Search canonical persons for operational workflows */
         get: operations["searchPersons"];
         put?: never;
         post?: never;
@@ -550,10 +535,7 @@ export interface paths {
         };
         /**
          * List canonical persons (machine surface)
-         * @description Paginated canonical person list for machine callers, with the same
-         *     filters and sorting as the authenticated person list. Requires a HyperP
-         *     OAuth2 client-credentials token with the `persons:read` scope; human
-         *     Google ID tokens are rejected.
+         * @description Paginated generalized person list. Filters are combined with AND semantics; repeated entity/source keys use their corresponding mode. CRM deal bounds count distinct active Bitrix CRM deal source records and are inclusive.
          */
         get: operations["listPersonsMachine"];
         put?: never;
@@ -1061,6 +1043,16 @@ export interface components {
             last_activity_at: string | null;
             last_activity_at_display: string | null;
             entity_breakdown: components["schemas"]["CrmEntityBreakdown"][];
+            recent_30d_deal_count: number;
+            recent_30d_activity_count: number;
+            recent_30d_call_count: number;
+            recent_30d_conversation_count: number;
+            /** Format: date-time */
+            last_crm_touch_at: string | null;
+            last_crm_touch_at_display: string | null;
+            days_since_last_crm_touch: number | null;
+            days_since_last_deal: number | null;
+            days_since_last_activity: number | null;
         };
         PersonCrmMetricsEnvelope: {
             data: components["schemas"]["PersonCrmMetrics"];
@@ -1488,17 +1480,7 @@ export interface components {
             data: components["schemas"]["IngestRunData"];
             meta: components["schemas"]["Meta"];
         };
-        PersonEntitySummary: {
-            entity_key: string;
-            display_name?: string | null;
-            entity_type?: string | null;
-            country_code?: string | null;
-            /** @default true */
-            is_active: boolean;
-            /** @default 0 */
-            source_record_count: number;
-        };
-        ListedPerson: {
+        Person: {
             person_id: string;
             status: components["schemas"]["PersonStatus"];
             /** @default false */
@@ -1527,6 +1509,18 @@ export interface components {
             created_at: string;
             /** @default  */
             updated_at: string;
+        };
+        PersonEntitySummary: {
+            entity_key: string;
+            display_name?: string | null;
+            entity_type?: string | null;
+            country_code?: string | null;
+            /** @default true */
+            is_active: boolean;
+            /** @default 0 */
+            source_record_count: number;
+        };
+        ListedPerson: components["schemas"]["Person"] & {
             phone_confidence?: number | null;
             entities?: components["schemas"]["PersonEntitySummary"][];
             /** @default 0 */
@@ -1540,13 +1534,15 @@ export interface components {
             /** @default 0 */
             order_count: number;
             /** @default 0 */
+            crm_deal_count: number;
+            /** @default 0 */
             bankruptcy_case_count: number;
             /** @default ? */
             preferred_dob_display: string;
             /** @default false */
             preferred_dob_invalid: boolean;
         };
-        PersonListResponseEnvelope: {
+        ListedPersonListResponseEnvelope: {
             data: components["schemas"]["ListedPerson"][];
             meta: components["schemas"]["Meta"];
             display_items?: {
@@ -1565,7 +1561,7 @@ export interface components {
             }[] | null;
         };
         PersonSearchResponseEnvelope: {
-            data: components["schemas"]["PersonSummary"][];
+            data: components["schemas"]["Person"][];
             meta: components["schemas"]["Meta"];
         };
         PersonDetail: components["schemas"]["PersonSummary"] & {
@@ -2269,9 +2265,9 @@ export interface operations {
         parameters: {
             query?: {
                 entity_key?: string[];
-                entity_key_mode?: string;
+                entity_key_mode?: "or" | "and";
                 source_key?: string[];
-                source_key_mode?: string;
+                source_key_mode?: "or" | "and";
                 source_record_type?: string;
                 is_high_value?: boolean;
                 is_high_risk?: boolean;
@@ -2283,6 +2279,8 @@ export interface operations {
                 has_any_match?: boolean;
                 has_possible_match?: boolean;
                 has_system_match?: boolean;
+                crm_deal_count_min?: number;
+                crm_deal_count_max?: number;
                 addr_street?: string;
                 addr_unit?: string;
                 addr_city?: string;
@@ -2297,8 +2295,8 @@ export interface operations {
                 dob_month?: string;
                 dob_day?: string;
                 q?: string;
-                sort_by?: string;
-                sort_order?: string;
+                sort_by?: "preferred_full_name" | "preferred_phone" | "preferred_email" | "preferred_dob" | "preferred_nric" | "source_record_count" | "connection_count" | "entity_count" | "possible_match_count" | "system_match_count" | "order_count" | "crm_deal_count" | "bankruptcy_case_count" | "phone_confidence" | "updated_at" | "profile_completeness_score" | "relevance";
+                sort_order?: "asc" | "desc";
                 cursor?: string;
                 limit?: number;
                 /** @description Whether to execute the exact count query. Defaults to true. When false, `meta.total_count` is null and `meta.next_cursor` determines whether another page is available. */
@@ -2318,7 +2316,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["PersonListResponseEnvelope"];
+                    "application/json": components["schemas"]["ListedPersonListResponseEnvelope"];
                 };
             };
             400: components["responses"]["BadRequest"];
@@ -2353,76 +2351,11 @@ export interface operations {
     searchPersons: {
         parameters: {
             query?: {
-                /**
-                 * @description Filter by identifier type. When combined with `value`, resolves to a
-                 *     specific person with that exact identifier.
-                 * @example phone
-                 */
                 identifier_type?: components["schemas"]["IdentifierType"];
-                /**
-                 * @description Filter by exact identifier value. Requires `identifier_type`.
-                 *     Case-insensitive exact match on the normalized identifier value.
-                 * @example +65 9123 4567
-                 */
                 value?: string;
-                /**
-                 * @description Full-text search across `preferred_full_name`, `preferred_nric`,
-                 *     `preferred_email`, and `preferred_phone`. Minimum 3 characters.
-                 *     Matches are returned regardless of position in string.
-                 * @example Tan Wei
-                 */
                 q?: string;
-                /**
-                 * @description Filter to persons with at least one source record from this source.
-                 * @example fundbox-pos
-                 */
-                source_system?: string;
-                /** @description How to combine multiple `entity_key` values. `or` means any match; `and` means the person must be associated with all supplied entities. */
-                entity_key_mode?: "or" | "and";
-                /**
-                 * @description Filter to persons with source records from any of these source systems.
-                 * @example [
-                 *       "fundbox-pos"
-                 *     ]
-                 */
-                source_key?: string[];
-                /** @description How to combine multiple `source_key` values. `or` means any match; `and` means the person must have source records from all supplied systems. */
-                source_key_mode?: "or" | "and";
-                /** @description Filter by source record type. */
-                source_record_type?: "identity" | "bankruptcy" | "relationship" | "rental_flat" | "conversation" | "sales" | "crm_deal" | "crm_history" | "call";
-                /** @description Filter by high-value flag. */
-                is_high_value?: boolean;
-                /**
-                 * @description Inclusive lower bound on date of birth (YYYY-MM-DD).
-                 * @example 1980-01-01
-                 */
-                dob_from?: string;
-                /**
-                 * @description Inclusive upper bound on date of birth (YYYY-MM-DD).
-                 * @example 1999-12-31
-                 */
-                dob_to?: string;
-                /**
-                 * @description Sort column. Supported values: `preferred_full_name`, `created_at`,
-                 *     `updated_at`, `identifier_count`, `order_count`.
-                 */
-                sort_by?: "preferred_full_name" | "created_at" | "updated_at" | "identifier_count" | "order_count";
-                /**
-                 * @description Sort direction. Defaults to `desc`.
-                 * @example asc
-                 */
-                sort_order?: "asc" | "desc";
-                /**
-                 * @description Opaque pagination cursor returned in `meta.next_cursor` of the
-                 *     previous response. Omit for the first page.
-                 * @example MTA=
-                 */
+                status?: components["schemas"]["PersonStatus"];
                 cursor?: string;
-                /**
-                 * @description Number of results per page (1–100). Defaults to 20.
-                 *     Request one extra row to detect `has_more`.
-                 * @example 20
-                 */
                 limit?: number;
             };
             header?: never;
@@ -2431,45 +2364,12 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Paginated list of persons matching the query. */
+            /** @description Operational person-search results. */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    /**
-                     * @example {
-                     *       "data": [
-                     *         {
-                     *           "id": "c9f2e8d1-4b3a-4f5e-8c7d-2a6b9e4f8c1a",
-                     *           "display_name": "Tan Wei Ming",
-                     *           "preferred_full_name": "Tan Wei Ming",
-                     *           "preferred_email": "tan.weiming@example.com",
-                     *           "preferred_phone": "+65 9123 4567",
-                     *           "preferred_nric": null,
-                     *           "status": "active",
-                     *           "entity_count": 1,
-                     *           "identifier_count": 2,
-                     *           "order_count": 0,
-                     *           "entities": [
-                     *             {
-                     *               "entity_key": "fundbox-sg",
-                     *               "display_name": "Fundbox Singapore",
-                     *               "entity_type": "pos",
-                     *               "country_code": "SG",
-                     *               "is_active": true,
-                     *               "source_record_count": 14
-                     *             }
-                     *           ]
-                     *         }
-                     *       ],
-                     *       "meta": {
-                     *         "request_id": "req_abc123",
-                     *         "total_count": 47,
-                     *         "next_cursor": "MTA="
-                     *       }
-                     *     }
-                     */
                     "application/json": components["schemas"]["PersonSearchResponseEnvelope"];
                 };
             };
@@ -3212,18 +3112,10 @@ export interface operations {
     listPersonsMachine: {
         parameters: {
             query?: {
-                /**
-                 * @description Free-text search (min 3 chars) across `preferred_full_name`,
-                 *     `preferred_nric`, `preferred_email`, and `preferred_phone`.
-                 * @example Tan Wei Ming
-                 */
                 q?: string;
-                /** @description Opaque pagination cursor. */
                 cursor?: string;
-                /** @description Page size. */
                 limit?: number;
                 /**
-                 * @description Filter to persons associated with this entity key. Repeatable.
                  * @example [
                  *       "fundbox-sg"
                  *     ]
@@ -3232,7 +3124,6 @@ export interface operations {
                 /** @description Combine repeated entity keys with `or` or `and`. */
                 entity_key_mode?: "or" | "and";
                 /**
-                 * @description Filter to persons with at least one source record from this source. Repeatable.
                  * @example [
                  *       "fundbox"
                  *     ]
@@ -3240,57 +3131,33 @@ export interface operations {
                 source_key?: string[];
                 /** @description Combine repeated source keys with `or` or `and`. */
                 source_key_mode?: "or" | "and";
-                /** @description Filter by linked source-record subtype. */
                 source_record_type?: string;
-                /** @description Filter by high-value flag. */
                 is_high_value?: boolean;
-                /** @description Filter by high-risk flag. */
                 is_high_risk?: boolean;
-                /** @description Filter by presence of a phone identifier. */
                 has_phone?: boolean;
-                /** @description Filter by presence of an email identifier. */
                 has_email?: boolean;
-                /** @description Filter by presence of any contact identifier (phone or email). */
                 has_any_contact?: boolean;
-                /** @description Filter by presence of a linked address. */
                 has_address?: boolean;
-                /** @description Filter by presence of a bankruptcy case. */
                 has_bankruptcy_case?: boolean;
-                /** @description Filter by presence of any candidate match (identifier overlap or active system review case). */
                 has_any_match?: boolean;
-                /** @description Filter by presence of a shared-identifier candidate person. */
                 has_possible_match?: boolean;
-                /** @description Filter by presence of an active system (auto) match review case. */
                 has_system_match?: boolean;
-                /** @description Filter by normalized street address (case-insensitive substring). */
+                crm_deal_count_min?: number;
+                crm_deal_count_max?: number;
                 addr_street?: string;
-                /** @description Filter by unit/floor. */
                 addr_unit?: string;
-                /** @description Filter by city. */
                 addr_city?: string;
-                /** @description Filter by postal code. */
                 addr_postal?: string;
-                /** @description Filter by country code. */
                 addr_country?: string;
-                /** @description Inclusive lower bound on person `updated_at` (ISO-8601). */
                 updated_after?: string;
-                /** @description Inclusive upper bound on person `updated_at` (ISO-8601). */
                 updated_before?: string;
-                /** @description Filter by presence of a date of birth. */
                 has_dob?: boolean;
-                /** @description Inclusive lower bound on date of birth (YYYY-MM-DD). */
                 dob_from?: string;
-                /** @description Inclusive upper bound on date of birth (YYYY-MM-DD). */
                 dob_to?: string;
-                /** @description Exact year of birth. */
-                dob_year?: number;
-                /** @description Exact month of birth (1-12). */
-                dob_month?: number;
-                /** @description Exact day of birth (1-31). */
-                dob_day?: number;
-                /** @description Sort column. */
-                sort_by?: "preferred_full_name" | "preferred_phone" | "preferred_email" | "preferred_dob" | "preferred_nric" | "source_record_count" | "connection_count" | "entity_count" | "possible_match_count" | "system_match_count" | "order_count" | "bankruptcy_case_count" | "phone_confidence" | "updated_at" | "profile_completeness_score" | "relevance";
-                /** @description Sort direction. Defaults to `desc`. */
+                dob_year?: string;
+                dob_month?: string;
+                dob_day?: string;
+                sort_by?: "preferred_full_name" | "preferred_phone" | "preferred_email" | "preferred_dob" | "preferred_nric" | "source_record_count" | "connection_count" | "entity_count" | "possible_match_count" | "system_match_count" | "order_count" | "crm_deal_count" | "bankruptcy_case_count" | "phone_confidence" | "updated_at" | "profile_completeness_score" | "relevance";
                 sort_order?: "asc" | "desc";
                 /** @description Whether to execute the exact count query. Defaults to true. When false, `meta.total_count` is null; use `meta.next_cursor` to continue. */
                 include_total?: boolean;
@@ -3309,7 +3176,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["PersonListResponseEnvelope"];
+                    "application/json": components["schemas"]["ListedPersonListResponseEnvelope"];
                 };
             };
             400: components["responses"]["BadRequest"];

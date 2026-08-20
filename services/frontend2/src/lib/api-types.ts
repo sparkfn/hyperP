@@ -259,6 +259,15 @@ export interface PersonCrmMetrics {
   last_activity_at: string | null;
   last_activity_at_display: string | null;
   entity_breakdown: CrmEntityBreakdown[];
+  recent_30d_deal_count: number;
+  recent_30d_activity_count: number;
+  recent_30d_call_count: number;
+  recent_30d_conversation_count: number;
+  last_crm_touch_at: string | null;
+  last_crm_touch_at_display: string | null;
+  days_since_last_crm_touch: number | null;
+  days_since_last_deal: number | null;
+  days_since_last_activity: number | null;
 }
 
 export interface EntitySummary {
@@ -315,6 +324,8 @@ export interface ListedPerson extends EntityPerson {
   possible_match_count: number;
   system_match_count: number;
   order_count: number;
+  crm_deal_count: number;
+  bankruptcy_case_count: number;
   // Server-computed DOB presentation — render verbatim, no client-side parsing.
   preferred_dob_display: string;
   preferred_dob_invalid: boolean;

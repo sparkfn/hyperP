@@ -572,3 +572,69 @@ def test_source_and_mode_requires_every_key() -> None:
     assert "ALL(sk IN $source_keys WHERE EXISTS" in query
     assert "AND ss.source_key = sk" in query
     assert "ss.source_key IN $source_keys" not in query
+
+
+def test_default_list_calculates_crm_deal_count_only_after_pagination() -> None:
+    query = build_list_persons_query("profile_completeness_score", "desc", has_q=False)
+
+    page_pos = query.index("SKIP $skip LIMIT $limit")
+    assert "AS crm_deal_count" not in query[:page_pos]
+    assert "AS crm_deal_count" in query[page_pos:]
+    assert "count(DISTINCT sr) AS crm_deal_count" in query
+
+
+def test_crm_deal_count_sort_calculates_before_pagination_once() -> None:
+    query = build_list_persons_query("crm_deal_count", "desc", has_q=False)
+
+    page_pos = query.index("SKIP $skip LIMIT $limit")
+    assert query[:page_pos].count("AS crm_deal_count") == 1
+    assert "AS crm_deal_count" not in query[page_pos:]
+    assert "ORDER BY crm_deal_count DESC, p.person_id ASC" in query
+    assert "ORDER BY crm_deal_count DESC, person.person_id ASC" in query
+
+
+def test_crm_deal_count_filter_calculates_before_pagination_and_preserves_metric() -> None:
+    query = build_list_persons_query(
+        "preferred_full_name",
+        "asc",
+        has_q=False,
+        active_filters=frozenset({"crm_deal_count_min", "crm_deal_count_max"}),
+    )
+
+    page_pos = query.index("SKIP $skip LIMIT $limit")
+    before_page = query[:page_pos]
+    after_page = query[page_pos:]
+    assert "crm_deal_count >= $crm_deal_count_min" in before_page
+    assert "crm_deal_count <= $crm_deal_count_max" in before_page
+    assert before_page.count("AS crm_deal_count") == 1
+    assert "AS crm_deal_count" not in after_page
+
+
+def test_crm_deal_count_filter_combines_with_other_computed_sort_without_recalculation() -> None:
+    query = build_list_persons_query(
+        "connection_count",
+        "desc",
+        has_q=False,
+        active_filters=frozenset({"crm_deal_count_max"}),
+    )
+
+    page_pos = query.index("SKIP $skip LIMIT $limit")
+    before_page = query[:page_pos]
+    after_page = query[page_pos:]
+    assert "crm_deal_count <= $crm_deal_count_max" in before_page
+    assert before_page.count("AS crm_deal_count") == 1
+    assert before_page.count("AS connection_count") == 1
+    assert "AS crm_deal_count" not in after_page
+    assert "AS connection_count" not in after_page
+
+
+def test_count_query_only_calculates_crm_deal_count_when_a_bound_is_active() -> None:
+    default_query = build_count_persons_query(has_q=False)
+    zero_max_query = build_count_persons_query(
+        has_q=False,
+        active_filters=frozenset({"crm_deal_count_max"}),
+    )
+
+    assert "crm_deal_count" not in default_query
+    assert "count(DISTINCT sr) AS crm_deal_count" in zero_max_query
+    assert "crm_deal_count <= $crm_deal_count_max" in zero_max_query

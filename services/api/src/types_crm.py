@@ -49,3 +49,12 @@ class PersonCrmMetrics(BaseModel):
     last_activity_at: str | None = None
     last_activity_at_display: str | None = None
     entity_breakdown: list[CrmEntityBreakdown] = Field(default_factory=list)
+    recent_30d_deal_count: int = 0
+    recent_30d_activity_count: int = 0
+    recent_30d_call_count: int = 0
+    recent_30d_conversation_count: int = 0
+    last_crm_touch_at: str | None = None
+    last_crm_touch_at_display: str | None = None
+    days_since_last_crm_touch: int | None = None
+    days_since_last_deal: int | None = None
+    days_since_last_activity: int | None = None
