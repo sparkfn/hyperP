@@ -8,7 +8,13 @@ from src.auth.deps import require_scope
 from src.http_utils import envelope, next_cursor, page_window
 from src.repositories.deps import get_entity_repo
 from src.repositories.protocols.entity import EntityRepository
-from src.types import ApiResponse, EntityPerson, EntitySummary, SourceSystemSummary
+from src.types import (
+    ApiResponse,
+    EntityFilterOption,
+    EntityPerson,
+    EntitySummary,
+    SourceSystemSummary,
+)
 
 router = APIRouter(prefix="/v1/entities", tags=["Entities"])
 
@@ -25,6 +31,20 @@ async def list_entities(
     """Return all entities with person counts."""
     entities = await repo.get_all()
     return envelope(entities, request)
+
+
+@router.get(
+    "/filter-options",
+    response_model=ApiResponse[list[EntityFilterOption]],
+    dependencies=[Depends(require_scope("persons:read"))],
+    operation_id="list_entity_filter_options",
+)
+async def list_entity_filter_options(
+    request: Request,
+    repo: EntityRepository = Depends(get_entity_repo),
+) -> ApiResponse[list[EntityFilterOption]]:
+    """Return lightweight entity metadata for person-list filters."""
+    return envelope(await repo.get_filter_options(), request)
 
 
 @router.get(

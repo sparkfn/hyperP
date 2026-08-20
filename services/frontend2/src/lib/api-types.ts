@@ -273,6 +273,11 @@ export interface EntitySummary {
   active_review_cases: number;
 }
 
+export interface EntityFilterOption {
+  entity_key: string;
+  display_name: string | null;
+}
+
 export interface PersonListSummary {
   all_profiles_count: number;
   high_risk_count: number;

@@ -9,7 +9,7 @@ from src.auth.deps import get_current_user_or_oauth_client, require_active_user
 from src.auth.models import AuthUser
 from src.repositories.deps import get_entity_repo
 from src.repositories.protocols.entity import EntityRepository
-from src.types import EntityPerson, EntitySummary, SourceSystemSummary
+from src.types import EntityFilterOption, EntityPerson, EntitySummary, SourceSystemSummary
 from starlette.routing import Mount
 
 
@@ -32,6 +32,9 @@ class _EntityRepo:
                 person_count=2,
             )
         ]
+
+    async def get_filter_options(self) -> list[EntityFilterOption]:
+        return [EntityFilterOption(entity_key="eko", display_name="Eko")]
 
     async def get_source_systems(self) -> list[SourceSystemSummary]:
         return []
@@ -120,6 +123,20 @@ def test_frontend_app_allows_authenticated_frontend_route() -> None:
             "active_review_cases": 0,
         }
     ]
+
+
+def test_frontend_app_mount_exposes_entity_filter_options() -> None:
+    app = build_app()
+    frontend_app = mounted_frontend_app(app)
+    frontend_app.dependency_overrides[require_active_user] = _active_user
+    frontend_app.dependency_overrides[get_current_user_or_oauth_client] = _active_user
+    frontend_app.dependency_overrides[get_entity_repo] = _entity_repo
+    client = TestClient(app)
+
+    response = client.get("/app/v2/entities/filter-options")
+
+    assert response.status_code == 200
+    assert response.json()["data"] == [{"entity_key": "eko", "display_name": "Eko"}]
 
 
 def test_frontend_app_excludes_public_and_oauth_token_routes() -> None:

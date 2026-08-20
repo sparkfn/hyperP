@@ -4,11 +4,13 @@ from __future__ import annotations
 
 from typing import Protocol
 
-from src.types import EntityPerson, EntitySummary, SourceSystemSummary
+from src.types import EntityFilterOption, EntityPerson, EntitySummary, SourceSystemSummary
 
 
 class EntityRepository(Protocol):
     async def get_all(self) -> list[EntitySummary]: ...
+
+    async def get_filter_options(self) -> list[EntityFilterOption]: ...
 
     async def get_source_systems(self) -> list[SourceSystemSummary]: ...
 

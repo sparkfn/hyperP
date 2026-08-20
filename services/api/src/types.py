@@ -613,6 +613,13 @@ class EntitySummary(BaseModel):
     active_review_cases: int = 0
 
 
+class EntityFilterOption(BaseModel):
+    """Minimal entity metadata used by the person-list filter."""
+
+    entity_key: str
+    display_name: str | None = None
+
+
 class SourceSystemSummary(BaseModel):
     source_key: str
     display_name: str | None = None

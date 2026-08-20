@@ -11,12 +11,11 @@ from src.auth.models import AuthUser
 from src.auth.oauth_client_models import OAuthClient, OAuthClientSecret
 from src.oauth2_app import build_oauth2_app
 from src.repositories.deps import get_person_repo
-from src.repositories.protocols.person import PersonListFilters, PersonRepository
+from src.repositories.protocols.person import PersonListFilters, PersonPage, PersonRepository
 from src.types import (
     AuditEvent,
     BankruptcyCase,
     ConnectionType,
-    ListedPerson,
     MatchDecision,
     Person,
     PersonConnection,
@@ -55,10 +54,15 @@ def _client() -> OAuthClient:
 
 class _PersonRepo:
     async def get_page(
-        self, filters: PersonListFilters, skip: int, limit: int
-    ) -> tuple[list[ListedPerson], int]:
+        self,
+        filters: PersonListFilters,
+        skip: int,
+        limit: int,
+        *,
+        include_total: bool,
+    ) -> PersonPage:
         _ = filters, skip, limit
-        return [], 0
+        return PersonPage([], False, 0 if include_total else None)
 
     async def get_by_id(self, person_id: str) -> Person | None:
         _ = person_id
@@ -201,16 +205,23 @@ def test_oauth2_persons_list_passes_filters() -> None:
     captured_filters: PersonListFilters = {}
     captured_skip: int | None = None
     captured_limit: int | None = None
+    captured_include_total: bool | None = None
 
     class _RecordingPersonRepo(PersonRepository):
         async def get_page(
-            self, filters: PersonListFilters, skip: int, limit: int
-        ) -> tuple[list[ListedPerson], int]:
-            nonlocal captured_filters, captured_skip, captured_limit
+            self,
+            filters: PersonListFilters,
+            skip: int,
+            limit: int,
+            *,
+            include_total: bool,
+        ) -> PersonPage:
+            nonlocal captured_filters, captured_skip, captured_limit, captured_include_total
             captured_filters = filters
             captured_skip = skip
             captured_limit = limit
-            return [], 0
+            captured_include_total = include_total
+            return PersonPage([], False, 0 if include_total else None)
 
         async def search_by_identifier(self, identifier_type: str, value: str) -> list[Person]:
             raise NotImplementedError
@@ -342,6 +353,7 @@ def test_oauth2_persons_list_passes_filters() -> None:
     assert captured_filters["sort_order"] == "asc"
     assert captured_skip == 0
     assert captured_limit == 10
+    assert captured_include_total is True
 
 
 def test_oauth2_does_not_expose_person_subresources() -> None:

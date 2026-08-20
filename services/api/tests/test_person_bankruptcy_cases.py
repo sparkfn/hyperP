@@ -11,6 +11,7 @@ from src.auth.models import AuthUser
 from src.graph.mappers import map_bankruptcy_case
 from src.graph.mappers_entities import map_listed_person
 from src.repositories.deps import get_person_repo
+from src.repositories.protocols.person import PersonPage
 from src.routes.persons import router
 from src.types import (
     AuditEvent,
@@ -96,9 +97,14 @@ def test_map_listed_person_includes_bankruptcy_case_count() -> None:
 
 class FakeBankruptcyRepo:
     async def get_page(
-        self, filters: dict[str, object], skip: int, limit: int
-    ) -> tuple[list[ListedPerson], int]:
-        return [], 0
+        self,
+        filters: dict[str, object],
+        skip: int,
+        limit: int,
+        *,
+        include_total: bool,
+    ) -> PersonPage:
+        return PersonPage([], False, 0 if include_total else None)
 
     async def search_by_identifier(self, identifier_type: str, value: str) -> list[Person]:
         return []

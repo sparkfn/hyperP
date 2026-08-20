@@ -177,6 +177,7 @@ async def list_persons(
     sort_order: str | None = Query(default=None),
     cursor: str | None = Query(default=None),
     limit: int | None = Query(default=None),
+    include_total: bool = Query(default=True),
     repo: PersonRepository = Depends(get_person_repo),
 ) -> ApiResponse[list[ListedPerson]]:
     """Generalized person listing with multi-filter + single-column sort."""
@@ -227,9 +228,13 @@ async def list_persons(
         "sort_by": sort_by,
         "sort_order": sort_order,
     }
-    items, total = await repo.get_page(filters, skip, page_limit)
-    has_more = skip + page_limit < total
-    return envelope(items, request, next_cursor(skip, page_limit, has_more), total_count=total)
+    page = await repo.get_page(filters, skip, page_limit, include_total=include_total)
+    return envelope(
+        page.items,
+        request,
+        next_cursor(skip, page_limit, page.has_more),
+        total_count=page.total_count,
+    )
 
 
 @router.get("/summary", response_model=ApiResponse[PersonListSummary])

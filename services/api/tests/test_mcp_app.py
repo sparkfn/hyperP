@@ -14,7 +14,7 @@ from src.auth.models import AuthUser
 from src.mcp_app import build_mcp_server, build_mcp_source_app
 from src.repositories.deps import get_entity_repo
 from src.repositories.protocols.entity import EntityRepository
-from src.types import EntityPerson, EntitySummary, SourceSystemSummary
+from src.types import EntityFilterOption, EntityPerson, EntitySummary, SourceSystemSummary
 
 
 async def _active_user() -> AuthUser:
@@ -36,6 +36,9 @@ class _EntityRepo:
                 person_count=2,
             )
         ]
+
+    async def get_filter_options(self) -> list[EntityFilterOption]:
+        return [EntityFilterOption(entity_key="eko", display_name="Eko")]
 
     async def get_source_systems(self) -> list[SourceSystemSummary]:
         return []

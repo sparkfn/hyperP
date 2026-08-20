@@ -513,6 +513,23 @@ Update run status after completion or failure.
 
 ## Search and Person Read APIs
 
+## GET /v1/persons
+
+Paginated canonical-person listing for the authenticated application and OAuth2
+clients. Exact counting remains enabled by default. Latency-sensitive callers,
+including the browser BFF, send `include_total=false`; then `meta.total_count` is
+`null` and `meta.next_cursor` is the authoritative continuation signal.
+
+Key query parameters include repeatable `entity_key` and `source_key` filters,
+`q`, sorting, `cursor`, `limit`, and `include_total` (boolean, default `true`).
+
+## GET /v1/entities/filter-options
+
+Returns lightweight entity choices for the person-list filter. Each item contains
+only `entity_key` and nullable `display_name`. Unlike `GET /v1/entities`, this
+endpoint does not aggregate Person or SourceRecord counts and requires
+`persons:read`.
+
 ## GET /v1/persons/search
 
 Operational search for canonical persons.
