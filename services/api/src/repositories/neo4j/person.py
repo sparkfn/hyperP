@@ -244,7 +244,7 @@ class Neo4jPersonRepository:
         records, total = await asyncio.gather(_run_list(), _run_count())
         return PersonPage(
             items=[map_listed_person(record) for record in records[:limit]],
-            has_more=len(records) > limit,
+            has_more=skip + limit < total,
             total_count=total,
         )
 

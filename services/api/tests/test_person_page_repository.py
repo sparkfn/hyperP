@@ -38,14 +38,15 @@ class _Result:
 
 
 class _Session:
-    def __init__(self, records: list[_Record]) -> None:
+    def __init__(self, records: list[_Record], total: int = 7) -> None:
         self.records = records
+        self.total = total
         self.calls: list[tuple[str, dict[str, object]]] = []
 
     async def run(self, query: str, params: dict[str, object]) -> _Result:
         self.calls.append((query, params))
         if query == "COUNT":
-            return _Result([], total=7)
+            return _Result([], total=self.total)
         return _Result(self.records)
 
 
@@ -132,3 +133,35 @@ async def test_exact_total_page_executes_list_and_count_queries(
     assert session_count == 2
     assert ("LIST", {"is_high_risk": True, "skip": 4, "limit": 3}) in session.calls
     assert ("COUNT", {"is_high_risk": True}) in session.calls
+
+
+@pytest.mark.anyio
+async def test_exact_total_controls_continuation_when_list_snapshot_disagrees(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = _Session(
+        [_Record("person-1"), _Record("person-2"), _Record("list-only-extra")],
+        total=2,
+    )
+
+    @asynccontextmanager
+    async def fake_get_session() -> AsyncIterator[_Session]:
+        yield session
+
+    monkeypatch.setattr(person_module, "get_session", fake_get_session)
+    monkeypatch.setattr(person_module, "build_list_persons_query", lambda *args, **kwargs: "LIST")
+    monkeypatch.setattr(person_module, "build_count_persons_query", lambda **kwargs: "COUNT")
+    monkeypatch.setattr(
+        person_module,
+        "map_listed_person",
+        lambda record: ListedPerson(
+            person_id=str(record["person"]["person_id"]),
+            status="active",
+        ),
+    )
+
+    page = await Neo4jPersonRepository().get_page({}, 0, 2, include_total=True)
+
+    assert len(page.items) == 2
+    assert page.total_count == 2
+    assert page.has_more is False
