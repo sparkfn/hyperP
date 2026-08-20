@@ -219,7 +219,7 @@ def _record_out_of_scope(
             "source_record_id": f"bitrix-crm-deal-{deal.id}",
             "record_type": "crm_deal",
             "ingest_type": "api_incremental",
-            "observed_at": deal.observed_at,
+            "observed_at": (deal.observed_at.isoformat() if deal.observed_at is not None else None),
             "record_hash": record_hash,
             "raw_payload": payload,
         }
