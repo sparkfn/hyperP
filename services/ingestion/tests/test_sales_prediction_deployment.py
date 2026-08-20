@@ -8,6 +8,7 @@ from src.config import Settings
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 _COMPOSE_PATH = _REPO_ROOT / "docker-compose.yml"
+_INGESTION_DOCKERFILE = _REPO_ROOT / "services" / "ingestion" / "Dockerfile"
 
 
 def _compose() -> str:
@@ -45,3 +46,22 @@ def test_settings_defaults_match_compose_container_paths() -> None:
     assert (
         settings.sales_prediction_artifact_backup_root == "/app/restricted/sales-prediction-backup"
     )
+
+
+def test_ingestion_dockerfile_defaults_to_production_not_training() -> None:
+    dockerfile = _INGESTION_DOCKERFILE.read_text(encoding="utf-8")
+    stages = [
+        line.split(" AS ", maxsplit=1)[1].strip()
+        for line in dockerfile.splitlines()
+        if line.startswith("FROM ") and " AS " in line
+    ]
+
+    assert "training" in stages
+    assert stages[-1] == "production"
+
+
+def test_training_target_resolves_the_root_dependency_group() -> None:
+    dockerfile = _INGESTION_DOCKERFILE.read_text(encoding="utf-8")
+
+    assert "uv sync --project /app --frozen --no-dev --group training" in dockerfile
+    assert "--package profile-unifier-ingestion" in dockerfile

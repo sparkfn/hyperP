@@ -43,7 +43,13 @@ CMD ["python", "-m", "src.main", "--source-key", "fundbox", "--mode", "batch"]
 FROM base AS training
 USER root
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --frozen --no-dev --group training
+    uv sync --project /app --frozen --no-dev --group training \
+        --package profile-unifier-ingestion
 USER appuser
 ENV OPENBLAS_NUM_THREADS=1 \
     OMP_NUM_THREADS=1
+
+# Keep the normal worker image as the Dockerfile default. Without this final
+# stage, Docker builds the preceding training stage when Compose omits target,
+# pulling training-only dependencies into every worker and beat image.
+FROM base AS production
