@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import UTC, datetime
-from typing import cast
+from collections.abc import Callable, Collection
+from dataclasses import dataclass, replace
+from datetime import UTC, datetime, timedelta, timezone
+from typing import TypeVar, cast
+from unittest.mock import Mock
 
 import pytest
+from neo4j import ManagedTransaction
 from pytest import MonkeyPatch
 from src import bitrix_deal_scope_reconciliation as reconciliation
 from src.bitrix_backfill_models import KnownOwnerMembershipSet
@@ -18,7 +21,7 @@ from src.bitrix_ingestion_models import DealScopeState, ExecutionContext, FenceC
 from src.connectors.bitrix_openlines.models import CrmDeal
 from src.graph.bitrix_deal_scope import CurrentDealScope
 from src.graph.client import Neo4jClient
-from src.models import SourceRecordEnvelope
+from src.models import RecordType, SourceRecordEnvelope
 from src.resumable import CheckpointDescriptor
 
 
@@ -136,6 +139,36 @@ class _Pipeline:
         self.ingested.append(envelope.source_record_id)
 
 
+T = TypeVar("T")
+
+
+class _WriteThroughGraph:
+    def execute_write(self, work: Callable[[ManagedTransaction], T]) -> T:
+        return work(cast(ManagedTransaction, object()))
+
+
+@dataclass
+class _OutOfScopeClient:
+    deal: CrmDeal
+    closed: bool = False
+    calls: int = 0
+
+    @property
+    def request_count(self) -> int:
+        return self.calls
+
+    def get_deals_or_none(self, deal_ids: Collection[int]) -> dict[int, CrmDeal | None]:
+        assert tuple(deal_ids) == (7,)
+        self.calls += 1
+        return {7: self.deal}
+
+    def get_deal_or_none(self, deal_id: int) -> CrmDeal | None:
+        raise AssertionError(f"healthy batched owner {deal_id} must not be fetched directly")
+
+    def close(self) -> None:
+        self.closed = True
+
+
 def _deal(deal_id: int) -> CrmDeal:
     raw = {
         "ID": str(deal_id),
@@ -155,6 +188,83 @@ def _deal(deal_id: int) -> CrmDeal:
         has_ambiguous_contacts=False,
         raw_payload=raw,
     )
+
+
+@pytest.mark.parametrize(
+    ("observed_at", "expected_observed_at"),
+    [
+        (
+            datetime(2026, 8, 20, 2, 30, tzinfo=timezone(timedelta(hours=8))),
+            "2026-08-20T02:30:00+08:00",
+        ),
+        (None, None),
+    ],
+)
+def test_known_owner_refresh_serializes_out_of_scope_observed_at(
+    monkeypatch: MonkeyPatch,
+    observed_at: datetime | None,
+    expected_observed_at: str | None,
+) -> None:
+    deal = replace(
+        _deal(7),
+        category_id="99",
+        stage_id="C99:NEW",
+        observed_at=observed_at,
+        raw_payload={"ID": "7", "CATEGORY_ID": "99", "STAGE_ID": "C99:NEW"},
+    )
+    client = _OutOfScopeClient(deal)
+    scope_recorder = Mock(return_value={})
+    terminal_recorder = Mock()
+
+    _Pipeline.ingested.clear()
+    monkeypatch.setattr(reconciliation, "IngestPipeline", _Pipeline)
+    monkeypatch.setattr(reconciliation, "record_scope_batch_in_transaction", scope_recorder)
+    monkeypatch.setattr(reconciliation, "record_terminal_unit", terminal_recorder)
+
+    context = _context()
+    summary = refresh_known_owner_set(
+        client,
+        cast(Neo4jClient, _WriteThroughGraph()),
+        membership=KnownOwnerMembershipSet(
+            generation_id="generation-1",
+            membership_set_id="owners-1",
+            digest="sha256:owners",
+            deal_ids=("7",),
+        ),
+        context=context,
+        included_category_ids=["2"],
+        entity_by_category_id={"2": "eko"},
+    )
+
+    scope_recorder.assert_called_once()
+    scope_call = scope_recorder.call_args
+    observation = scope_call.args[1][0]
+    assert (observation.deal_id, observation.scope_state, observation.category_id) == (
+        "7",
+        "out_of_scope",
+        "99",
+    )
+    assert scope_call.kwargs == {"fence_context": context.fence_context}
+
+    terminal_recorder.assert_called_once()
+    terminal_call = terminal_recorder.call_args
+    envelope = terminal_call.kwargs["envelope"]
+    result = terminal_call.kwargs["result"]
+    assert envelope.observed_at == expected_observed_at
+    assert envelope.source_record_id == "bitrix-crm-deal-7"
+    assert envelope.record_type == RecordType.CRM_DEAL
+    assert result.dropped is True
+    assert terminal_call.kwargs["context"] == context
+    assert terminal_call.kwargs["disposition"] == "excluded_out_of_scope"
+    assert terminal_call.kwargs["scope_state"] == "out_of_scope"
+
+    assert summary.refreshed == 0
+    assert summary.moved_out_of_scope == 1
+    assert summary.missing_candidates == 0
+    assert summary.unresolved == 0
+    assert summary.http_request_count == 1
+    assert _Pipeline.ingested == []
+    assert client.closed is True
 
 
 def test_known_owner_refresh_batches_frozen_membership_in_source_order(
