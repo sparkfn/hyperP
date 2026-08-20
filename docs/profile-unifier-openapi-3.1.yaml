@@ -787,12 +787,7 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  data:
-                    type: array
-                    items:
-                      $ref: '#/components/schemas/LoyaltySummary'
+                $ref: '#/components/schemas/LoyaltySummaryListResponseEnvelope'
         '404':
           $ref: '#/components/responses/PersonNotFound'
   /v1/persons/{person_id}/vehicles:
@@ -813,12 +808,7 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  data:
-                    type: array
-                    items:
-                      $ref: '#/components/schemas/VehicleSummary'
+                $ref: '#/components/schemas/VehicleSummaryListResponseEnvelope'
         '404':
           $ref: '#/components/responses/PersonNotFound'
   # ── OAuth client credentials ────────────────────────────────────────────────
@@ -3561,6 +3551,28 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/SourceRecordView'
+        meta:
+          $ref: '#/components/schemas/Meta'
+      required: [data, meta]
+      additionalProperties: false
+    LoyaltySummaryListResponseEnvelope:
+      type: object
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/LoyaltySummary'
+        meta:
+          $ref: '#/components/schemas/Meta'
+      required: [data, meta]
+      additionalProperties: false
+    VehicleSummaryListResponseEnvelope:
+      type: object
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/VehicleSummary'
         meta:
           $ref: '#/components/schemas/Meta'
       required: [data, meta]

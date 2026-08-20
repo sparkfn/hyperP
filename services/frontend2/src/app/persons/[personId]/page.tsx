@@ -4369,7 +4369,15 @@ export default function PersonDetailPage({ params }: { params: Promise<{ personI
         bffFetch<Person>(`/bff/persons/${encodeURIComponent(personId)}`).catch(() => null),
         bffFetchEnvelope<PersonFieldOptions>(`/bff/persons/${encodeURIComponent(personId)}/field-options`).catch(() => null),
       ]);
-      if (refreshed) setPerson(refreshed);
+      if (refreshed) {
+        setPerson((prev) => ({
+          ...refreshed,
+          // The base person response no longer carries lazy sidebar data.
+          // Preserve the loaded loyalty/vehicles sections across a refresh.
+          loyalty: prev?.loyalty ?? refreshed.loyalty ?? null,
+          vehicles: prev?.vehicles ?? refreshed.vehicles ?? null,
+        }));
+      }
       if (refreshedOptions) {
         fieldOptionsRef.current = refreshedOptions.data;
         setFieldOptions(refreshedOptions.data);

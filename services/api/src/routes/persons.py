@@ -465,6 +465,8 @@ async def get_person_loyalty(
 ) -> ApiResponse[list[LoyaltySummary]]:
     """Return loyalty-points balances for a person (lazy-loaded on detail page)."""
     items = await repo.get_loyalty(person_id)
+    if items is None:
+        raise http_error(404, "person_not_found", "Person not found.", request)
     return envelope(items, request)
 
 
@@ -476,6 +478,8 @@ async def get_person_vehicles(
 ) -> ApiResponse[list[VehicleSummary]]:
     """Return vehicles owned/bought by a person (lazy-loaded on detail page)."""
     items = await repo.get_vehicles(person_id)
+    if items is None:
+        raise http_error(404, "person_not_found", "Person not found.", request)
     return envelope(items, request)
 
 

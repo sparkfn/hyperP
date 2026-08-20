@@ -106,7 +106,7 @@ def test_identifiers_query_batches_source_record_lookups() -> None:
     """GET_PERSON_IDENTIFIERS batches source-record lookups across the page."""
     assert "WITH collect({" in GET_PERSON_IDENTIFIERS
     assert "UNWIND page AS item" in GET_PERSON_IDENTIFIERS
-    assert "UNWIND item.source_record_pks AS source_record_pk" in GET_PERSON_IDENTIFIERS
+    assert "ELSE item.source_record_pks" in GET_PERSON_IDENTIFIERS
     assert (
         "OPTIONAL MATCH (sr:SourceRecord {source_record_pk: source_record_pk})"
         in GET_PERSON_IDENTIFIERS
@@ -130,3 +130,16 @@ def test_identifiers_query_paginates_before_call_block() -> None:
     return_idx = GET_PERSON_IDENTIFIERS.index("RETURN item.identifier.identifier_type")
     final_order_idx = GET_PERSON_IDENTIFIERS.index("ORDER BY item.is_active DESC", return_idx)
     assert final_order_idx > return_idx
+
+
+def test_identifiers_query_preserves_empty_provenance_items() -> None:
+    """Identifiers with no source-record provenance are retained."""
+    assert "THEN [null]" in GET_PERSON_IDENTIFIERS
+    assert "UNWIND CASE WHEN size(item.source_record_pks) = 0" in GET_PERSON_IDENTIFIERS
+
+
+def test_lazy_endpoint_queries_return_person_marker() -> None:
+    """Loyalty/vehicle queries return a canonical person marker for 404 handling."""
+    assert "person.person_id AS person_id" in GET_PERSON_LOYALTY
+    assert "person.person_id AS person_id" in GET_PERSON_VEHICLES
+    assert "OPTIONAL MATCH" in GET_PERSON_LOYALTY
