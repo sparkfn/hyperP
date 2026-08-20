@@ -33,7 +33,8 @@ export function formatPaginationShowing({
 }: PaginationShowingOptions): string {
   const start = rowCount === 0 ? 0 : pageIndex * pageSize + 1;
   const end = rowCount === 0 ? 0 : pageIndex * pageSize + rowCount;
-  const displayTotal = exactTotal ?? (hasEffectiveFilters ? null : unfilteredSummaryTotal);
+  const candidateTotal = exactTotal ?? (hasEffectiveFilters ? null : unfilteredSummaryTotal);
+  const displayTotal = candidateTotal !== null && candidateTotal >= end ? candidateTotal : null;
   const denominator = displayTotal == null ? "" : ` of ${displayTotal.toLocaleString()}`;
   return `Showing ${start}\u2013${end}${denominator} profiles`;
 }

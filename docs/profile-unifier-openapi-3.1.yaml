@@ -29,6 +29,7 @@ security:
 tags:
   - name: Ingestion
   - name: Persons
+  - name: Entities
   - name: Review
   - name: Merge
   - name: Locks
@@ -268,7 +269,7 @@ paths:
           $ref: '#/components/responses/Forbidden'
   /v1/entities/filter-options:
     get:
-      tags: [Persons]
+      tags: [Entities]
       summary: List lightweight entity filter options
       operationId: list_entity_filter_options
       description: >-
