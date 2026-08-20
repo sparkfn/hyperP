@@ -137,6 +137,7 @@ warn_return_any = false
 [[tool.mypy.overrides]]
 module = [
     "src.types",
+    "src.types_crm",
     "src.types_sales",
     "src.types_requests",
     "src.types_profile_analysis",

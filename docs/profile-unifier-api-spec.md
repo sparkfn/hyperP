@@ -632,6 +632,89 @@ domain-link progress.
 - `reviewer`
 - `admin`
 
+## GET /v1/persons/{person_id}/crm/metrics
+
+Return aggregate CRM engagement metrics computed on demand from already-ingested
+Bitrix CRM source records. This is a read-only presentation query: it creates no
+new graph nodes, links, caches, or analytical model state.
+
+The reader follows the person's merge survivor and considers only effective-active
+records (`lifecycle_status = active`, or null lifecycle with `is_latest = true`)
+from the `bitrix_chat` source system through active `LINKED_TO` relationships.
+This exclusion is significant for conversations: WhatsApp conversations use the
+same `conversation` record type but a different source system and are not CRM
+Open Lines engagement. In line with the CRM History Authority Contract, every
+CRM record type admits only legacy-null or `activity` history families;
+stage-history records remain excluded until their analytical release.
+
+### Authorization
+
+- active authenticated frontend or MCP caller
+- OAuth clients require `persons:read`
+
+### Response
+
+```json
+{
+  "data": {
+    "deal_count": 6,
+    "deal_stage_breakdown": [
+      { "stage_id": "won", "count": 4 },
+      { "stage_id": "new", "count": 2 }
+    ],
+    "first_deal_at": "2026-01-02T00:00:00+00:00",
+    "first_deal_at_display": "02 Jan 2026",
+    "last_deal_at": "2026-08-14T01:30:00+00:00",
+    "last_deal_at_display": "14 Aug 2026",
+    "activity_count": 47,
+    "call_count": 18,
+    "conversation_count": 5,
+    "activity_kind_breakdown": [
+      {
+        "history_kind": "call",
+        "count": 18,
+        "last_event_at": "2026-08-14T02:00:00+00:00",
+        "last_event_at_display": "14 Aug 2026"
+      }
+    ],
+    "first_activity_at": "2026-01-05T00:00:00+00:00",
+    "first_activity_at_display": "05 Jan 2026",
+    "last_activity_at": "2026-08-14T02:00:00+00:00",
+    "last_activity_at_display": "14 Aug 2026",
+    "entity_breakdown": [
+      {
+        "entity_key": "fundbox",
+        "entity_display_name": "Fundbox",
+        "deal_count": 6,
+        "activity_count": 22,
+        "conversation_count": 3
+      }
+    ]
+  },
+  "meta": { "request_id": "...", "next_cursor": null, "total_count": null }
+}
+```
+
+### Metric semantics
+
+- `deal_count`: effective-active `bitrix_chat` `crm_deal` records linked to the
+  survivor.
+- `deal_stage_breakdown`: distribution of current `raw_payload.stage_id` values;
+  deals without a stage are counted in `deal_count` but omitted from this list.
+- Deal date ranges use `observed_at`.
+- Every raw ISO timestamp has a matching `*_display` field formatted by the API
+  in `DD MMM YYYY`; clients render that string verbatim.
+- `activity_count`: effective-active `bitrix_chat` `crm_history` activity records.
+- Activity kind rows group by normalized `history_kind`, defaulting to `unknown`
+  when a record has no kind, and use `event_at` with `observed_at` as fallback.
+- `call_count` and `conversation_count` count their companion record types
+  separately. Calls are not repeated in the per-entity breakdown because CRM
+  calls are represented by `crm_history` activities.
+- Entity rows use the record's `OWNED_BY` entity when present, otherwise the
+  `FROM_SOURCE` system's `OPERATED_BY` entity.
+
+Unknown person IDs return the standard `person_not_found` error.
+
 ## GET /v1/persons/{person_id}/profile-analyses
 
 Return the current independently published sales and contact-tracing analyses

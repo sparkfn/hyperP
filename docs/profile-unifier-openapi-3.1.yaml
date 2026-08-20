@@ -374,6 +374,36 @@ paths:
                 $ref: '#/components/schemas/SourceRecordListResponseEnvelope'
         '404':
           $ref: '#/components/responses/PersonNotFound'
+  /v1/persons/{person_id}/crm/metrics:
+    get:
+      tags: [Persons]
+      summary: Get CRM engagement metrics for a person
+      operationId: getPersonCrmMetrics
+      description: >-
+        Returns read-only aggregate counts and date ranges computed from
+        effective-active CRM deals, CRM activities, calls, and conversations
+        from the bitrix_chat source that are linked to the person's merge
+        survivor. The graph reader admits only legacy-null or activity-family
+        CRM history records, uses active person-record links, and excludes
+        superseded or rejected records.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/PersonId'
+        - $ref: '#/components/parameters/RequestId'
+      responses:
+        '200':
+          description: Aggregate CRM engagement metrics
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PersonCrmMetricsEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/PersonNotFound'
   /v1/persons/{person_id}/profile-analyses:
     get:
       tags: [Persons]
@@ -2108,6 +2138,151 @@ components:
       properties:
         data:
           $ref: '#/components/schemas/PersonListSummary'
+        meta:
+          $ref: '#/components/schemas/Meta'
+      required: [data, meta]
+      additionalProperties: false
+    CrmActivityKindCount:
+      type: object
+      properties:
+        history_kind:
+          type: string
+        count:
+          type: integer
+          minimum: 0
+        last_event_at:
+          type:
+            - string
+            - 'null'
+          format: date-time
+        last_event_at_display:
+          type:
+            - string
+            - 'null'
+      required: [history_kind, count, last_event_at, last_event_at_display]
+      additionalProperties: false
+    CrmDealStageCount:
+      type: object
+      properties:
+        stage_id:
+          type:
+            - string
+            - 'null'
+        count:
+          type: integer
+          minimum: 0
+      required: [stage_id, count]
+      additionalProperties: false
+    CrmEntityBreakdown:
+      type: object
+      properties:
+        entity_key:
+          type: string
+        entity_display_name:
+          type:
+            - string
+            - 'null'
+        deal_count:
+          type: integer
+          minimum: 0
+        activity_count:
+          type: integer
+          minimum: 0
+        conversation_count:
+          type: integer
+          minimum: 0
+      required:
+        - entity_key
+        - entity_display_name
+        - deal_count
+        - activity_count
+        - conversation_count
+      additionalProperties: false
+    PersonCrmMetrics:
+      type: object
+      properties:
+        deal_count:
+          type: integer
+          minimum: 0
+        deal_stage_breakdown:
+          type: array
+          items:
+            $ref: '#/components/schemas/CrmDealStageCount'
+        first_deal_at:
+          type:
+            - string
+            - 'null'
+          format: date-time
+        first_deal_at_display:
+          type:
+            - string
+            - 'null'
+        last_deal_at:
+          type:
+            - string
+            - 'null'
+          format: date-time
+        last_deal_at_display:
+          type:
+            - string
+            - 'null'
+        activity_count:
+          type: integer
+          minimum: 0
+        call_count:
+          type: integer
+          minimum: 0
+        conversation_count:
+          type: integer
+          minimum: 0
+        activity_kind_breakdown:
+          type: array
+          items:
+            $ref: '#/components/schemas/CrmActivityKindCount'
+        first_activity_at:
+          type:
+            - string
+            - 'null'
+          format: date-time
+        first_activity_at_display:
+          type:
+            - string
+            - 'null'
+        last_activity_at:
+          type:
+            - string
+            - 'null'
+          format: date-time
+        last_activity_at_display:
+          type:
+            - string
+            - 'null'
+        entity_breakdown:
+          type: array
+          items:
+            $ref: '#/components/schemas/CrmEntityBreakdown'
+      required:
+        - deal_count
+        - deal_stage_breakdown
+        - first_deal_at
+        - first_deal_at_display
+        - last_deal_at
+        - last_deal_at_display
+        - activity_count
+        - call_count
+        - conversation_count
+        - activity_kind_breakdown
+        - first_activity_at
+        - first_activity_at_display
+        - last_activity_at
+        - last_activity_at_display
+        - entity_breakdown
+      additionalProperties: false
+    PersonCrmMetricsEnvelope:
+      type: object
+      properties:
+        data:
+          $ref: '#/components/schemas/PersonCrmMetrics'
         meta:
           $ref: '#/components/schemas/Meta'
       required: [data, meta]
