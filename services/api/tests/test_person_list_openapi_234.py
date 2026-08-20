@@ -35,7 +35,6 @@ def test_operational_search_openapi_keeps_only_search_parameters() -> None:
     }
 
 
-
 def test_static_openapi_preserves_the_person_endpoint_matrix() -> None:
     schema = yaml.safe_load(_STATIC_OPENAPI.read_text(encoding="utf-8"))
     list_operation = schema["paths"]["/v1/persons"]["get"]
@@ -54,6 +53,19 @@ def test_static_openapi_preserves_the_person_endpoint_matrix() -> None:
     assert search_operation["responses"]["200"]["content"]["application/json"]["schema"] == {
         "$ref": "#/components/schemas/PersonSearchResponseEnvelope"
     }
+
+    list_parameter_keys = [
+        (parameter["in"], parameter["name"])
+        for parameter in list_operation["parameters"]
+        if "name" in parameter
+    ]
+    machine_parameter_keys = [
+        (parameter["in"], parameter["name"])
+        for parameter in machine_operation["parameters"]
+        if "name" in parameter
+    ]
+    assert len(list_parameter_keys) == len(set(list_parameter_keys))
+    assert len(machine_parameter_keys) == len(set(machine_parameter_keys))
 
     list_parameters = {
         parameter["name"]: parameter
@@ -77,6 +89,6 @@ def test_static_openapi_preserves_the_person_endpoint_matrix() -> None:
         "cursor",
         "limit",
     }
-    assert schema["components"]["schemas"]["PersonSearchResponseEnvelope"]["properties"][
-        "data"
-    ]["items"] == {"$ref": "#/components/schemas/Person"}
+    assert schema["components"]["schemas"]["PersonSearchResponseEnvelope"]["properties"]["data"][
+        "items"
+    ] == {"$ref": "#/components/schemas/Person"}

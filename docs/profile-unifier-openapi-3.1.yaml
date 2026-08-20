@@ -281,8 +281,12 @@ paths:
             type: string
         - name: q
           in: query
+          description: |
+            Free-text search (min 3 chars) across `preferred_full_name`,
+            `preferred_nric`, `preferred_email`, and `preferred_phone`.
           schema:
             type: string
+          example: "Tan Wei Ming"
         - name: sort_by
           in: query
           schema:
@@ -295,10 +299,12 @@ paths:
             enum: [asc, desc]
         - name: cursor
           in: query
+          description: Opaque pagination cursor.
           schema:
             type: string
         - name: limit
           in: query
+          description: Page size.
           schema:
             type: integer
             minimum: 1
@@ -1244,10 +1250,6 @@ paths:
           in: query
           schema:
             type: string
-        - name: q
-          in: query
-          schema:
-            type: string
         - name: sort_by
           in: query
           schema:
@@ -1258,16 +1260,6 @@ paths:
           schema:
             type: string
             enum: [asc, desc]
-        - name: cursor
-          in: query
-          schema:
-            type: string
-        - name: limit
-          in: query
-          schema:
-            type: integer
-            minimum: 1
-            maximum: 200
         - name: include_total
           in: query
           description: >-
