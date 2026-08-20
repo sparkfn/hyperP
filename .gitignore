@@ -53,3 +53,7 @@ services/frontend2/*.md
 
 # Dump files
 .dumps/
+
+# Local AI and presentation artifacts
+/.aionrs/
+/.slides/
