@@ -30,8 +30,12 @@ def neo4j_driver() -> Iterator[_TestGraph]:
     if uri is None:
         pytest.skip("disposable CRM metrics Neo4j test database is not configured")
     host = urlparse(uri).hostname
-    if host not in {"localhost", "127.0.0.1", "::1"}:
-        pytest.fail("CRM metrics integration tests only accept a localhost Neo4j URI")
+    service_host = os.getenv("HYPERP_NEO4J_CRM_METRICS_TEST_SERVICE_HOST")
+    allowed_hosts = {"localhost", "127.0.0.1", "::1"}
+    if service_host is not None:
+        allowed_hosts.add(service_host)
+    if host not in allowed_hosts:
+        pytest.fail("CRM metrics integration tests only accept an explicitly configured Neo4j host")
     password = os.getenv("HYPERP_NEO4J_CRM_METRICS_TEST_PASSWORD")
     if password is None:
         pytest.fail("HYPERP_NEO4J_CRM_METRICS_TEST_PASSWORD is required")

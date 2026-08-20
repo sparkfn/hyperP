@@ -173,6 +173,7 @@ async def test_repository_maps_all_crm_metrics_fields(
 ) -> None:
     session = _Session(_metrics_record())
     _install_session(monkeypatch, session)
+    monkeypatch.setenv("TZ", "UTC")
     monkeypatch.setattr(crm_module, "_utc_now", lambda: datetime(2026, 8, 20, tzinfo=UTC))
 
     metrics = await Neo4jCrmMetricsRepository().get_person_crm_metrics("person-1")
