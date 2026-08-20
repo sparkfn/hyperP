@@ -11,6 +11,7 @@ Verifies:
 from __future__ import annotations
 
 from src.graph.queries.persons import (
+    COUNT_PERSON_IDENTIFIERS,
     GET_PERSON_BY_ID,
     GET_PERSON_IDENTIFIERS,
     GET_PERSON_LOYALTY,
@@ -136,6 +137,33 @@ def test_identifiers_query_preserves_empty_provenance_items() -> None:
     """Identifiers with no source-record provenance are retained."""
     assert "THEN [null]" in GET_PERSON_IDENTIFIERS
     assert "UNWIND CASE WHEN size(item.source_record_pks) = 0" in GET_PERSON_IDENTIFIERS
+
+
+def test_identifiers_entity_subquery_only_returns_entities() -> None:
+    """The entity aggregate cannot drop provenance fields owned by the outer scope."""
+    _, _, nested_call = GET_PERSON_IDENTIFIERS.rpartition("  CALL {")
+    entity_subquery, _, _ = nested_call.partition(
+        "  }\n  RETURN item, source_records, source_record_ids, entities"
+    )
+
+    assert "WITH sr_entity_pairs" in entity_subquery
+    assert "WITH item, source_records, source_record_ids, sr_entity_pairs" not in entity_subquery
+    assert "RETURN [entity IN collect" in entity_subquery
+    assert "RETURN item, source_records, source_record_ids, entities" not in entity_subquery
+    assert "RETURN item, source_records, source_record_ids, entities" in GET_PERSON_IDENTIFIERS
+
+
+def test_identifiers_count_query_matches_data_row_grouping() -> None:
+    """The total must count identifier rows, not raw provenance relationships."""
+    assert "MATCH (p:Person {person_id: $person_id})-[rel:IDENTIFIED_BY]->(id:Identifier)" in (
+        COUNT_PERSON_IDENTIFIERS
+    )
+    assert "WITH DISTINCT id," in COUNT_PERSON_IDENTIFIERS
+    assert "rel.is_active AS is_active" in COUNT_PERSON_IDENTIFIERS
+    assert "rel.is_verified AS is_verified" in COUNT_PERSON_IDENTIFIERS
+    assert "rel.last_confirmed_at AS last_confirmed_at" in COUNT_PERSON_IDENTIFIERS
+    assert "rel.source_system_key AS source_system_key" in COUNT_PERSON_IDENTIFIERS
+    assert "RETURN count(*) AS total" in COUNT_PERSON_IDENTIFIERS
 
 
 def test_lazy_endpoint_queries_return_person_marker() -> None:
