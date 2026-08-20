@@ -157,6 +157,20 @@ CALL (p) {
 }
 """
 
+_CRM_DEAL_COUNT = """
+CALL (p) {
+  OPTIONAL MATCH (sr:SourceRecord {record_type: 'crm_deal'})-[link:LINKED_TO]->(p)
+  WHERE coalesce(link.is_active, true) = true
+    AND (sr.history_family IS NULL OR sr.history_family = 'activity')
+    AND (sr.lifecycle_status = 'active'
+      OR (sr.lifecycle_status IS NULL AND sr.is_latest = true))
+    AND EXISTS {
+      MATCH (sr)-[:FROM_SOURCE]->(:SourceSystem {source_key: 'bitrix_chat'})
+    }
+  RETURN count(DISTINCT sr) AS crm_deal_count
+}
+"""
+
 _METRIC_CALLS: dict[str, str] = {
     "source_record_count": _SOURCE_RECORD_COUNT,
     "connection_count": _CONNECTION_COUNT,
@@ -165,6 +179,7 @@ _METRIC_CALLS: dict[str, str] = {
     "possible_match_count": _POSSIBLE_MATCH_COUNT,
     "system_match_count": _SYSTEM_MATCH_COUNT,
     "order_count": _ORDER_COUNT,
+    "crm_deal_count": _CRM_DEAL_COUNT,
     "bankruptcy_case_count": _BANKRUPTCY_CASE_COUNT,
 }
 
@@ -180,6 +195,7 @@ _SORT_COLUMNS: dict[str, str] = {
     "possible_match_count": "possible_match_count",
     "system_match_count": "system_match_count",
     "order_count": "order_count",
+    "crm_deal_count": "crm_deal_count",
     "bankruptcy_case_count": "bankruptcy_case_count",
     "phone_confidence": "phone_confidence",
     "updated_at": "person.updated_at",
@@ -230,16 +246,27 @@ def _entity_enrichment(*, include_count: bool) -> str:
     return _ENTITY_ENRICHMENT.replace("{entity_count_return}", suffix)
 
 
-def _page_enrichment(excluded_metric: str | None = None) -> str:
+def _page_enrichment(excluded_metrics: frozenset[str] = frozenset()) -> str:
     calls: list[str] = []
-    if excluded_metric == "entity_count":
+    if "entity_count" in excluded_metrics:
         calls.append(_entity_enrichment(include_count=False))
     else:
         calls.append(_entity_enrichment(include_count=True))
     for metric, call in _METRIC_CALLS.items():
-        if metric != excluded_metric:
+        if metric not in excluded_metrics:
             calls.append(call)
     return "".join(calls)
+
+
+def _crm_deal_count_filter_clause(active_filters: frozenset[str]) -> str:
+    conditions: list[str] = []
+    if "crm_deal_count_min" in active_filters:
+        conditions.append("crm_deal_count >= $crm_deal_count_min")
+    if "crm_deal_count_max" in active_filters:
+        conditions.append("crm_deal_count <= $crm_deal_count_max")
+    if not conditions:
+        return ""
+    return "WHERE " + " AND ".join(conditions) + "\n"
 
 
 def _return_clause() -> str:
@@ -256,7 +283,7 @@ addr {
 } AS preferred_address,
 source_record_count, connection_count, phone_confidence, entities,
 entity_count, identifier_count, possible_match_count, system_match_count, order_count,
-bankruptcy_case_count, score
+bankruptcy_case_count, crm_deal_count, score
 """
 
 
@@ -279,28 +306,52 @@ def build_list_persons_query(
     )
     common_clause = build_common_filter_clause(active_filters)
     head = _head(has_q=has_q, skip_address=not bool(active_filters & ADDRESS_FILTERS))
+    crm_filter_active = bool(active_filters & {"crm_deal_count_min", "crm_deal_count_max"})
+    crm_required_before_page = crm_filter_active or key == "crm_deal_count"
     pre_col = _PRE_ENRICH_SORT_MAP.get(key)
+    pre_metrics: set[str] = set()
+    before_page = ""
+
+    if crm_required_before_page:
+        before_page += _CRM_DEAL_COUNT
+        pre_metrics.add("crm_deal_count")
+        before_page += "WITH p, addr, score, crm_deal_count\n"
+        before_page += _crm_deal_count_filter_clause(active_filters)
+
     if pre_col is not None:
+        page_projection = "WITH p, addr, score"
+        if "crm_deal_count" in pre_metrics:
+            page_projection += ", crm_deal_count"
+        page_projection += f"\nORDER BY {pre_col} {direction}, p.person_id ASC\n"
         return (
             head
             + common_clause
             + entity_clause
-            + f"WITH p, addr, score\nORDER BY {pre_col} {direction}, p.person_id ASC\n"
+            + before_page
+            + page_projection
             + "SKIP $skip LIMIT $limit\n"
-            + _page_enrichment()
+            + _page_enrichment(frozenset(pre_metrics))
             + _return_clause()
             + f"ORDER BY {_FINAL_SORT_MAP[key]} {direction}, person.person_id ASC\n"
         )
 
-    pre_metric = _ENTITY_COUNT if key == "entity_count" else _METRIC_CALLS[key]
+    if key != "crm_deal_count":
+        pre_metric = _ENTITY_COUNT if key == "entity_count" else _METRIC_CALLS[key]
+        before_page += pre_metric
+        pre_metrics.add(key)
+
+    metric_projection = "WITH p, addr, score"
+    for metric in sorted(pre_metrics):
+        metric_projection += f", {metric}"
+    metric_projection += f"\nORDER BY {key} {direction}, p.person_id ASC\n"
     return (
         head
         + common_clause
         + entity_clause
-        + pre_metric
-        + f"WITH p, addr, score, {key}\nORDER BY {key} {direction}, p.person_id ASC\n"
+        + before_page
+        + metric_projection
         + "SKIP $skip LIMIT $limit\n"
-        + _page_enrichment(excluded_metric=key)
+        + _page_enrichment(frozenset(pre_metrics))
         + _return_clause()
         + f"ORDER BY {key} {direction}, person.person_id ASC\n"
     )
@@ -314,7 +365,7 @@ def build_count_persons_query(
     source_mode: str = "or",
 ) -> str:
     """Build the total-count query with the same active filters as the list."""
-    return (
+    query = (
         _head(has_q=has_q, skip_address=not bool(active_filters & ADDRESS_FILTERS))
         + build_common_filter_clause(active_filters)
         + build_entity_filter_clause(
@@ -323,8 +374,12 @@ def build_count_persons_query(
             active_filters,
             include_preferred_address=False,
         )
-        + "RETURN count(p) AS total\n"
     )
+    if active_filters & {"crm_deal_count_min", "crm_deal_count_max"}:
+        query += _CRM_DEAL_COUNT
+        query += "WITH p, score, crm_deal_count\n"
+        query += _crm_deal_count_filter_clause(active_filters)
+    return query + "RETURN count(p) AS total\n"
 
 
 def _head(*, has_q: bool, skip_address: bool = False) -> str:

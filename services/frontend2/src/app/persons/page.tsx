@@ -21,26 +21,20 @@ import { normalizePaginatedPage } from "@/lib/paginated-page";
 import PersonGraphDialog from "@/components/PersonGraphDialog";
 import { formatPaginationShowing, hasEffectivePersonListFilters } from "./person-list-view";
 import { useLazyFilterOptions } from "./use-lazy-filter-options";
+import { CrmDealCount } from "./CrmDealCount";
+import {
+  PERSON_LIST_COLUMNS as COLS,
+  PERSON_LIST_DEFAULT_WIDTHS as DEFAULT_WIDTHS,
+  PERSON_LIST_TABLE_COLUMN_COUNT,
+} from "./person-list-columns";
+import {
+  applyCrmDealRange,
+  crmDealPreset,
+  crmDealRangeLabel,
+  parseCrmDealRange,
+  type CrmDealRange,
+} from "./person-list-crm-controls";
 import styles from "./persons.module.css";
-
-interface ColDef { key: string; minWidth: number; resizable: boolean }
-const COLS: ColDef[] = [
-  { key: "check",   minWidth: 36,  resizable: false },
-  { key: "name",    minWidth: 360, resizable: true  },
-  { key: "nric",    minWidth: 80,  resizable: true  },
-  { key: "phone",   minWidth: 112, resizable: true  },
-  { key: "dob",     minWidth: 90,  resizable: true  },
-  { key: "email",   minWidth: 100, resizable: true  },
-  { key: "address", minWidth: 96, resizable: true  },
-  { key: "entity",  minWidth: 80,  resizable: true  },
-  { key: "relations", minWidth: 96, resizable: true },
-  { key: "orders", minWidth: 84, resizable: true },
-  { key: "matches", minWidth: 88, resizable: true },
-  { key: "decisionHistory", minWidth: 112, resizable: true },
-  { key: "quality", minWidth: 108, resizable: true  },
-  { key: "graph",   minWidth: 48,  resizable: false },
-];
-const DEFAULT_WIDTHS = [36, 480, 110, 132, 110, 160, 140, 120, 112, 84, 88, 112, 124, 54];
 const NAME_COL_OVERHEAD = 74; // left-pad(14) + avatar(36) + gap(10) + right-pad(14)
 const NAME_COL_MIN = 360;
 const NAME_COL_MAX = 500;
@@ -463,6 +457,9 @@ function PersonRow({
         )}
       </td>
       <td className={`${styles.td} ${styles.tdMetric}`}>
+        <CrmDealCount count={p.crm_deal_count} />
+      </td>
+      <td className={`${styles.td} ${styles.tdMetric}`}>
         {p.system_match_count > 0 ? (
           <Link
             href={`/persons/${p.person_id}?tab=matches`}
@@ -568,10 +565,11 @@ function PersonCardMobile({
           </div>
           <span className={styles.mobileCardQualityPct}>{pct}%</span>
         </div>
-        {(p.connection_count > 0 || p.order_count > 0) && (
+        {(p.connection_count > 0 || p.order_count > 0 || p.crm_deal_count > 0) && (
           <div className={styles.mobileCardCounts}>
             {p.connection_count > 0 && <span className={styles.mobileCardCount}>{p.connection_count} linked</span>}
             {p.order_count > 0 && <span className={styles.mobileCardCount}>{p.order_count} orders</span>}
+            {p.crm_deal_count > 0 && <span className={styles.mobileCardCount}>{p.crm_deal_count} deals</span>}
           </div>
         )}
       </div>
@@ -622,10 +620,10 @@ function SkeletonRow({ index, colWidths }: { index: number; colWidths: number[] 
           </div>
         </div>
       </td>
-      {/* nric, phone, dob, email, address, entity, relations, orders, matches, decision history */}
-      {([1, 2, 3, 4, 5, 6, 7, 8, 9, 10] as const).map((wi) => (
-        <td key={wi} className={styles.td}>
-          <span className={styles.skeletonLine} style={{ width: w(wi) }} />
+      {/* All non-name, non-sticky data cells through decision history. */}
+      {COLS.slice(2, -2).map((column, index) => (
+        <td key={column.key} className={styles.td}>
+          <span className={styles.skeletonLine} style={{ width: w(index + 1) }} />
         </td>
       ))}
       {/* completeness — bar + number */}
@@ -695,10 +693,10 @@ function parseDobMode(value: string | null): DobMode {
   return value === "range" || value === "parts" ? value : "single";
 }
 
-type SortKey = "name" | "dob" | "entity" | "relations" | "matches" | "decisionHistory" | "orders" | "quality";
+type SortKey = "name" | "dob" | "entity" | "relations" | "matches" | "decisionHistory" | "orders" | "deals" | "quality";
 type SortDir = "asc" | "desc";
 type FlagFilter = "any" | "high_value" | "high_risk" | "no_contact";
-type FilterKey = "entity" | "source" | "identity" | "matches" | "dob" | "address" | "flags" | "bankruptcy" | "updated";
+type FilterKey = "entity" | "source" | "identity" | "matches" | "crmDeals" | "dob" | "address" | "flags" | "bankruptcy" | "updated";
 
 type MatchPresenceFilter = "any" | "has" | "none";
 
@@ -710,6 +708,7 @@ const SORT_PARAM_BY_KEY: Record<SortKey, string> = {
   matches: "system_match_count",
   decisionHistory: "system_match_count",
   orders: "order_count",
+  deals: "crm_deal_count",
   quality: "profile_completeness_score",
 };
 
@@ -857,6 +856,9 @@ function PersonsInner(): ReactElement {
     const value = searchParams.get("matches");
     return value === "has" || value === "has_any" || value === "possible" ? "has" : value === "none" ? "none" : "any";
   });
+  const [crmDealRange, setCrmDealRange] = useState<CrmDealRange>(() =>
+    parseCrmDealRange(searchParams),
+  );
 
   const [openFilter, setOpenFilter] = useState<FilterKey | null>(null);
   const [sortKey, setSortKey] = useState<SortKey | null>(() => parseSortKey(searchParams.get("sort_by")));
@@ -906,7 +908,7 @@ function PersonsInner(): ReactElement {
   }, [searchParams]);
   const [canScrollRight, setCanScrollRight] = useState(false);
   const [canScrollLeft, setCanScrollLeft] = useState(false);
-  const [colWidths, setColWidths] = useState<number[]>(DEFAULT_WIDTHS);
+  const [colWidths, setColWidths] = useState<number[]>(() => [...DEFAULT_WIDTHS]);
   const [relationPopover, setRelationPopover] = useState<RelationPopoverState | null>(null);
   const [ordersPopover, setOrdersPopover] = useState<OrdersPopoverState | null>(null);
   const [popoverConnections, setPopoverConnections] = useState<PersonConnection[]>([]);
@@ -1070,6 +1072,7 @@ function PersonsInner(): ReactElement {
     addrPostal !== "",
     addrCountry !== "",
     matchPresence !== "any",
+    crmDealRange.min !== "" || crmDealRange.max !== "",
   ].filter(Boolean).length + entityFilter.length + sourceFilter.length + identityFilter.length;
 
   function clearAllFilters(): void {
@@ -1098,6 +1101,7 @@ function PersonsInner(): ReactElement {
     setAddrPostal("");
     setAddrCountry("");
     setMatchPresence("any");
+    setCrmDealRange({ min: "", max: "" });
   }
 
   function clearDobFilter(): void {
@@ -1170,6 +1174,7 @@ function PersonsInner(): ReactElement {
     } else if (dobFilter === "none") {
       params.set("has_dob", "false");
     }
+    applyCrmDealRange(params, crmDealRange);
     if (sortKey) {
       params.set("sort_by", SORT_PARAM_BY_KEY[sortKey]);
       params.set("sort_order", sortDir);
@@ -1190,7 +1195,7 @@ function PersonsInner(): ReactElement {
     if (addrCountry) params.set("addr_country", addrCountry);
     params.set("limit", String(pageSize));
     return params.toString();
-  }, [search, entityFilter, entityFilterMode, sourceFilter, sourceFilterMode, hasConversationSource, identityFilter, identityFilterMode, addressFilter, dobFilter, dobMode, dobSingleDate, dobStartDate, dobEndDate, dobYear, dobMonth, dobDay, flagFilter, hasBankruptcy, matchPresence, updatedAfter, updatedBefore, addrCity, addrPostal, addrCountry, sortKey, sortDir, pageSize]);
+  }, [search, entityFilter, entityFilterMode, sourceFilter, sourceFilterMode, hasConversationSource, identityFilter, identityFilterMode, addressFilter, dobFilter, dobMode, dobSingleDate, dobStartDate, dobEndDate, dobYear, dobMonth, dobDay, flagFilter, hasBankruptcy, matchPresence, crmDealRange, updatedAfter, updatedBefore, addrCity, addrPostal, addrCountry, sortKey, sortDir, pageSize]);
 
   const urlQuery = useMemo(() => {
     const params = new URLSearchParams(apiQuery);
@@ -1761,6 +1766,71 @@ function PersonsInner(): ReactElement {
           </FilterPill>
 
           <FilterPill
+            label="CRM Deals"
+            isActive={crmDealRange.min !== "" || crmDealRange.max !== ""}
+            activeLabel={crmDealRangeLabel(crmDealRange)}
+            onClear={() => setCrmDealRange({ min: "", max: "" })}
+            open={openFilter === "crmDeals"}
+            onToggle={() => toggleFilter("crmDeals")}
+          >
+            <div className={styles.fpInner}>
+              <div className={styles.fpSectionLabel}>Distinct active Bitrix CRM deals</div>
+              <div className={styles.fpSegmented}>
+                <button
+                  type="button"
+                  className={`${styles.fpSegmentedBtn} ${crmDealPreset(crmDealRange) === "any" ? styles.fpSegmentedBtnActive : ""}`}
+                  onClick={() => setCrmDealRange({ min: "", max: "" })}
+                >
+                  Any
+                </button>
+                <button
+                  type="button"
+                  className={`${styles.fpSegmentedBtn} ${crmDealPreset(crmDealRange) === "has" ? styles.fpSegmentedBtnActive : ""}`}
+                  onClick={() => setCrmDealRange({ min: "1", max: "" })}
+                >
+                  Has deals
+                </button>
+                <button
+                  type="button"
+                  className={`${styles.fpSegmentedBtn} ${crmDealPreset(crmDealRange) === "none" ? styles.fpSegmentedBtnActive : ""}`}
+                  onClick={() => setCrmDealRange({ min: "0", max: "0" })}
+                >
+                  No deals
+                </button>
+              </div>
+              <hr className={styles.fpSep} />
+              <div className={styles.dateFieldsRow}>
+                <div className={`${styles.dateFieldGroup} ${styles.compactFieldGroup}`}>
+                  <label className={styles.dateFieldLabel}>Minimum</label>
+                  <div className={styles.dateInputWrap}>
+                    <input
+                      aria-label="Minimum CRM deals"
+                      className={styles.dateInput}
+                      inputMode="numeric"
+                      value={crmDealRange.min}
+                      onChange={(event) => setCrmDealRange((range) => ({ ...range, min: event.target.value }))}
+                      placeholder="0"
+                    />
+                  </div>
+                </div>
+                <div className={`${styles.dateFieldGroup} ${styles.compactFieldGroup}`}>
+                  <label className={styles.dateFieldLabel}>Maximum</label>
+                  <div className={styles.dateInputWrap}>
+                    <input
+                      aria-label="Maximum CRM deals"
+                      className={styles.dateInput}
+                      inputMode="numeric"
+                      value={crmDealRange.max}
+                      onChange={(event) => setCrmDealRange((range) => ({ ...range, max: event.target.value }))}
+                      placeholder="No maximum"
+                    />
+                  </div>
+                </div>
+              </div>
+            </div>
+          </FilterPill>
+
+          <FilterPill
             label="Date of Birth"
             isActive={dobFilter !== "any"}
             activeLabel={dobActiveLabel()}
@@ -2118,8 +2188,8 @@ function PersonsInner(): ReactElement {
                 <th className={`${styles.th} ${styles.thCheck}`}>
                   <input type="checkbox" ref={checkAllRef} checked={allChecked} onChange={toggleAll} className={styles.checkbox} />
                 </th>
-                {(["Name", "NRIC", "Phone", "Date of Birth", "Email", "Address", "Entity", "Relations", "Orders", "Matches", "Decision History"] as const).map((h, i) => {
-                  const sk: SortKey | null = h === "Name" ? "name" : h === "Date of Birth" ? "dob" : h === "Entity" ? "entity" : h === "Relations" ? "relations" : h === "Matches" ? "matches" : h === "Decision History" ? "decisionHistory" : h === "Orders" ? "orders" : null;
+                {(["Name", "NRIC", "Phone", "Date of Birth", "Email", "Address", "Entity", "Relations", "Orders", "CRM Deals", "Matches", "Decision History"] as const).map((h, i) => {
+                  const sk: SortKey | null = h === "Name" ? "name" : h === "Date of Birth" ? "dob" : h === "Entity" ? "entity" : h === "Relations" ? "relations" : h === "Matches" ? "matches" : h === "Decision History" ? "decisionHistory" : h === "Orders" ? "orders" : h === "CRM Deals" ? "deals" : null;
                   return (
                     <th key={h} className={styles.th}>
                       {sk ? (
@@ -2137,7 +2207,7 @@ function PersonsInner(): ReactElement {
                     Completeness
                     <SortIcon active={sortKey === "quality"} dir={sortDir} />
                   </button>
-                  <div className={styles.resizeHandle} onMouseDown={(e) => startColResize(12, e)} />
+                  <div className={styles.resizeHandle} onMouseDown={(e) => startColResize(13, e)} />
                 </th>
                 <th className={`${styles.th} ${styles.thSticky} ${styles.stickyGraph}`}>Graph</th>
               </tr>
@@ -2148,10 +2218,10 @@ function PersonsInner(): ReactElement {
                   <SkeletonRow key={i} index={i} colWidths={colWidths} />
                 ))
               ) : fetchError ? (
-                <tr><td colSpan={12} className={styles.empty} style={{ color: "var(--bad)" }}>{fetchError}</td></tr>
+                <tr><td colSpan={PERSON_LIST_TABLE_COLUMN_COUNT} className={styles.empty} style={{ color: "var(--bad)" }}>{fetchError}</td></tr>
               ) : pageRows.length === 0 ? (
                 <tr>
-                  <td colSpan={12} className={styles.empty}>No persons match your filters.</td>
+                  <td colSpan={PERSON_LIST_TABLE_COLUMN_COUNT} className={styles.empty}>No persons match your filters.</td>
                 </tr>
               ) : (
                 pageRows.map((p) => (

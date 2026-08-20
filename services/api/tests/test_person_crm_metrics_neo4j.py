@@ -72,17 +72,45 @@ def test_metrics_query_uses_projected_stage_with_persisted_json_payload(
             })
             CREATE (deal:SourceRecord {
               record_type: 'crm_deal', lifecycle_status: 'active', is_latest: true,
-              observed_at: datetime('2026-08-20T00:00:00Z'),
+              observed_at: datetime('2026-07-21T00:00:00Z'),
               raw_payload: $raw_payload, crm_deal_stage_id: 'C2:WON',
               _crm_metrics_test_run: $test_run_id
             })
+            CREATE (activity:SourceRecord {
+              record_type: 'crm_history', lifecycle_status: 'active', is_latest: true,
+              history_kind: 'email',
+              event_at: datetime('2026-08-19T00:01:00Z'),
+              observed_at: datetime('2026-08-19T00:00:00Z'),
+              _crm_metrics_test_run: $test_run_id
+            })
             CREATE (deal)-[:FROM_SOURCE]->(source)
+            CREATE (activity)-[:FROM_SOURCE]->(source)
             CREATE (deal)-[:LINKED_TO {is_active: true}]->(person)
+            CREATE (deal)-[:LINKED_TO {is_active: true}]->(person)
+            CREATE (activity)-[:LINKED_TO {is_active: true}]->(person)
+            CREATE (activity)-[:LINKED_TO {is_active: true}]->(person)
             """,
             raw_payload=raw_payload,
             test_run_id=neo4j_driver.run_id,
         ).consume()
-        row = session.run(GET_PERSON_CRM_METRICS, person_id="person-1").single(strict=True)
+        row = session.run(
+            GET_PERSON_CRM_METRICS,
+            person_id="person-1",
+            as_of_at="2026-08-20T00:00:00+00:00",
+        ).single(strict=True)
 
     assert row["deal_count"] == 1
+    assert row["activity_count"] == 1
+    assert row["recent_30d_deal_count"] == 1
+    assert row["recent_30d_activity_count"] == 1
     assert row["deal_stage_breakdown"] == [{"stage_id": "C2:WON", "count": 1}]
+    assert row["activity_kind_breakdown"] == [
+        {
+            "history_kind": "email",
+            "count": 1,
+            "last_event_at": row["last_activity_at"],
+        }
+    ]
+    assert row["days_since_last_crm_touch"] == 0
+    assert row["days_since_last_deal"] == 30
+    assert row["days_since_last_activity"] == 0

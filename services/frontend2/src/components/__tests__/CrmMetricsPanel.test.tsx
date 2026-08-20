@@ -42,6 +42,15 @@ const metrics: PersonCrmMetrics = {
       conversation_count: 3,
     },
   ],
+  recent_30d_deal_count: 2,
+  recent_30d_activity_count: 8,
+  recent_30d_call_count: 3,
+  recent_30d_conversation_count: 1,
+  last_crm_touch_at: "2026-08-14T10:00:00+08:00",
+  last_crm_touch_at_display: "14 Aug 2026, 02:00 AM",
+  days_since_last_crm_touch: 5,
+  days_since_last_deal: 5,
+  days_since_last_activity: 5,
 };
 
 function metricsResponse(data: PersonCrmMetrics): Response {
@@ -78,16 +87,30 @@ describe("CrmMetricsPanel", () => {
     render(renderPanel(onTotalLoaded));
 
     expect(await screen.findByText("won")).toBeTruthy();
-    expect(screen.getAllByText("Deals")).toHaveLength(2);
-    expect(screen.getAllByText("Activities")).toHaveLength(2);
-    expect(screen.getAllByText("Calls")).toHaveLength(1);
-    expect(screen.getAllByText("Chats")).toHaveLength(2);
+    expect(screen.getAllByText("Deals")).toHaveLength(3);
+    expect(screen.getAllByText("Activities")).toHaveLength(3);
+    expect(screen.getAllByText("Calls")).toHaveLength(2);
+    expect(screen.getAllByText("Chats")).toHaveLength(3);
     expect(screen.getByText("won")).toBeTruthy();
     expect(screen.getByText("new")).toBeTruthy();
     expect(screen.getByText("Call")).toBeTruthy();
     expect(screen.getByText(/18 · Last /)).toBeTruthy();
     expect(screen.getByText("Fundbox")).toBeTruthy();
-    expect(screen.getByText(/First deal /).textContent).toContain("02 Jan 2026");
+    const entityHeader = screen.getByRole("columnheader", { name: "Entity" });
+    const dealsHeader = screen.getByRole("columnheader", { name: "Deals" });
+    expect(entityHeader.className).toContain("entityNameColumn");
+    expect(screen.getByText("Fundbox").className).toContain("entityNameColumn");
+    expect(dealsHeader.className).toContain("entityNumericColumn");
+    expect(screen.getByText("22").className).toContain("entityNumericColumn");
+    expect(screen.getByRole("heading", { name: "CRM overview" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Recency" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Breakdowns" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Engagement span" })).toBeTruthy();
+    expect(screen.getByText("Last 30 days")).toBeTruthy();
+    expect(screen.getAllByText("5 days ago")).toHaveLength(3);
+    expect(screen.getByText("First deal").nextElementSibling?.textContent).toBe(
+      "02 Jan 2026",
+    );
     expect(screen.getByText(/18 · Last /).textContent).toContain("14 Aug 2026");
     await waitFor(() => expect(onTotalLoaded).toHaveBeenCalledWith(76));
   });
@@ -134,6 +157,15 @@ describe("CrmMetricsPanel", () => {
       last_activity_at: null,
       last_activity_at_display: null,
       entity_breakdown: [],
+      recent_30d_deal_count: 0,
+      recent_30d_activity_count: 0,
+      recent_30d_call_count: 0,
+      recent_30d_conversation_count: 0,
+      last_crm_touch_at: null,
+      last_crm_touch_at_display: null,
+      days_since_last_crm_touch: null,
+      days_since_last_deal: null,
+      days_since_last_activity: null,
     })));
 
     render(renderPanel(onTotalLoaded));

@@ -137,9 +137,12 @@ paths:
       summary: List canonical persons
       operationId: listPersons
       description: |
-        Paginated person list used by the authenticated UI. `meta.next_cursor`
-        is the authoritative continuation signal. Exact counting is enabled by
-        default for compatibility but callers may disable it for faster reads.
+        Paginated generalized person list used by the authenticated UI. Filters
+        are combined with AND semantics; repeated entity/source keys use their
+        corresponding mode. CRM deal bounds count distinct active Bitrix CRM
+        deal source records and are inclusive. `meta.next_cursor` is the
+        authoritative continuation signal. Exact counting is enabled by default
+        but callers may disable it for faster reads.
       security:
         - bearerAuth: []
       parameters:
@@ -148,105 +151,154 @@ paths:
           in: query
           schema:
             type: array
-            items: { type: string }
+            items:
+              type: string
         - name: entity_key_mode
           in: query
-          schema: { type: string }
+          schema:
+            type: string
+            enum: [or, and]
         - name: source_key
           in: query
           schema:
             type: array
-            items: { type: string }
+            items:
+              type: string
         - name: source_key_mode
           in: query
-          schema: { type: string }
+          schema:
+            type: string
+            enum: [or, and]
         - name: source_record_type
           in: query
-          schema: { type: string }
+          schema:
+            type: string
         - name: is_high_value
           in: query
-          schema: { type: boolean }
+          schema:
+            type: boolean
         - name: is_high_risk
           in: query
-          schema: { type: boolean }
+          schema:
+            type: boolean
         - name: has_phone
           in: query
-          schema: { type: boolean }
+          schema:
+            type: boolean
         - name: has_email
           in: query
-          schema: { type: boolean }
+          schema:
+            type: boolean
         - name: has_any_contact
           in: query
-          schema: { type: boolean }
+          schema:
+            type: boolean
         - name: has_address
           in: query
-          schema: { type: boolean }
+          schema:
+            type: boolean
         - name: has_bankruptcy_case
           in: query
-          schema: { type: boolean }
+          schema:
+            type: boolean
         - name: has_any_match
           in: query
-          schema: { type: boolean }
+          schema:
+            type: boolean
         - name: has_possible_match
           in: query
-          schema: { type: boolean }
+          schema:
+            type: boolean
         - name: has_system_match
           in: query
-          schema: { type: boolean }
+          schema:
+            type: boolean
+        - name: crm_deal_count_min
+          in: query
+          schema:
+            type: integer
+            minimum: 0
+        - name: crm_deal_count_max
+          in: query
+          schema:
+            type: integer
+            minimum: 0
         - name: addr_street
           in: query
-          schema: { type: string }
+          schema:
+            type: string
         - name: addr_unit
           in: query
-          schema: { type: string }
+          schema:
+            type: string
         - name: addr_city
           in: query
-          schema: { type: string }
+          schema:
+            type: string
         - name: addr_postal
           in: query
-          schema: { type: string }
+          schema:
+            type: string
         - name: addr_country
           in: query
-          schema: { type: string }
+          schema:
+            type: string
         - name: updated_after
           in: query
-          schema: { type: string }
+          schema:
+            type: string
         - name: updated_before
           in: query
-          schema: { type: string }
+          schema:
+            type: string
         - name: has_dob
           in: query
-          schema: { type: boolean }
+          schema:
+            type: boolean
         - name: dob_from
           in: query
-          schema: { type: string }
+          schema:
+            type: string
         - name: dob_to
           in: query
-          schema: { type: string }
+          schema:
+            type: string
         - name: dob_year
           in: query
-          schema: { type: string }
+          schema:
+            type: string
         - name: dob_month
           in: query
-          schema: { type: string }
+          schema:
+            type: string
         - name: dob_day
           in: query
-          schema: { type: string }
+          schema:
+            type: string
         - name: q
           in: query
-          schema: { type: string }
+          schema:
+            type: string
         - name: sort_by
           in: query
-          schema: { type: string }
+          schema:
+            type: string
+            enum: [preferred_full_name, preferred_phone, preferred_email, preferred_dob, preferred_nric, source_record_count, connection_count, entity_count, possible_match_count, system_match_count, order_count, crm_deal_count, bankruptcy_case_count, phone_confidence, updated_at, profile_completeness_score, relevance]
         - name: sort_order
           in: query
-          schema: { type: string }
+          schema:
+            type: string
+            enum: [asc, desc]
         - name: cursor
           in: query
-          schema: { type: string }
+          schema:
+            type: string
         - name: limit
           in: query
-          schema: { type: integer, minimum: 1, maximum: 200 }
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
         - name: include_total
           in: query
           description: >-
@@ -260,7 +312,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/PersonListResponseEnvelope'
+                $ref: '#/components/schemas/ListedPersonListResponseEnvelope'
         '400':
           $ref: '#/components/responses/BadRequest'
         '401':
@@ -293,174 +345,45 @@ paths:
   /v1/persons/search:
     get:
       tags: [Persons]
-      summary: List / search canonical persons
+      summary: Search canonical persons for operational workflows
       operationId: searchPersons
-      description: |
-        Returns a paginated list of canonical persons with cursor-based pagination.
-        All filters are applied as AND conditions. Results are sorted by
-        `created_at DESC` unless `sort_by` is specified.
-
-        **MCP tool call example:**
-
-        ```python
-        result = await client.tools.call("hyperP_search_persons", {
-          "limit": 20,
-          "status": "active",
-          "q": "Tan Wei Ming",
-          "sort_by": "preferred_full_name",
-          "sort_order": "asc"
-        })
-        # Returns: { data: [ListedPerson], meta: { total_count: N, next_cursor: "MTA=" } }
-        ```
       security:
         - bearerAuth: []
       parameters:
         - name: identifier_type
           in: query
-          description: |
-            Filter by identifier type. When combined with `value`, resolves to a
-            specific person with that exact identifier.
           schema:
             $ref: '#/components/schemas/IdentifierType'
-          example: phone
         - name: value
           in: query
-          description: |
-            Filter by exact identifier value. Requires `identifier_type`.
-            Case-insensitive exact match on the normalized identifier value.
           schema:
             type: string
-          example: "+65 9123 4567"
         - name: q
           in: query
-          description: |
-            Full-text search across `preferred_full_name`, `preferred_nric`,
-            `preferred_email`, and `preferred_phone`. Minimum 3 characters.
-            Matches are returned regardless of position in string.
           schema:
             type: string
-          example: "Tan Wei"
-        - name: source_system
+            minLength: 3
+        - name: status
           in: query
-          description: Filter to persons with at least one source record from this source.
           schema:
-            type: string
-          example: "fundbox-pos"
-        - name: entity_key_mode
-          in: query
-          description: >-
-            How to combine multiple `entity_key` values. `or` means any match;
-            `and` means the person must be associated with all supplied entities.
-          schema:
-            type: string
-            enum: [or, and]
-            default: or
-        - name: source_key
-          in: query
-          description: Filter to persons with source records from any of these source systems.
-          schema:
-            type: array
-            items:
-              type: string
-          example: ["fundbox-pos"]
-        - name: source_key_mode
-          in: query
-          description: >-
-            How to combine multiple `source_key` values. `or` means any match;
-            `and` means the person must have source records from all supplied systems.
-          schema:
-            type: string
-            enum: [or, and]
-            default: or
-        - name: source_record_type
-          in: query
-          description: Filter by source record type.
-          schema:
-            type: string
-            enum: [identity, bankruptcy, relationship, rental_flat, conversation, sales, crm_deal, crm_history, call]
-        - name: is_high_value
-          in: query
-          description: Filter by high-value flag.
-          schema:
-            type: boolean
-        - name: dob_from
-          in: query
-          description: Inclusive lower bound on date of birth (YYYY-MM-DD).
-          schema:
-            type: string
-            format: date
-          example: "1980-01-01"
-        - name: dob_to
-          in: query
-          description: Inclusive upper bound on date of birth (YYYY-MM-DD).
-          schema:
-            type: string
-            format: date
-          example: "1999-12-31"
-        - name: sort_by
-          in: query
-          description: |
-            Sort column. Supported values: `preferred_full_name`, `created_at`,
-            `updated_at`, `identifier_count`, `order_count`.
-          schema:
-            type: string
-            enum: [preferred_full_name, created_at, updated_at, identifier_count, order_count]
-        - name: sort_order
-          in: query
-          description: Sort direction. Defaults to `desc`.
-          schema:
-            type: string
-            enum: [asc, desc]
-          example: asc
+            $ref: '#/components/schemas/PersonStatus'
         - name: cursor
           in: query
-          description: |
-            Opaque pagination cursor returned in `meta.next_cursor` of the
-            previous response. Omit for the first page.
           schema:
             type: string
-          example: "MTA="
         - name: limit
           in: query
-          description: |
-            Number of results per page (1–100). Defaults to 20.
-            Request one extra row to detect `has_more`.
           schema:
             type: integer
             minimum: 1
             maximum: 100
-            default: 20
-          example: 20
       responses:
         '200':
-          description: Paginated list of persons matching the query.
+          description: Operational person-search results.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/PersonSearchResponseEnvelope'
-              example:
-                data:
-                  - id: "c9f2e8d1-4b3a-4f5e-8c7d-2a6b9e4f8c1a"
-                    display_name: "Tan Wei Ming"
-                    preferred_full_name: "Tan Wei Ming"
-                    preferred_email: "tan.weiming@example.com"
-                    preferred_phone: "+65 9123 4567"
-                    preferred_nric: null
-                    status: "active"
-                    entity_count: 1
-                    identifier_count: 2
-                    order_count: 0
-                    entities:
-                      - entity_key: "fundbox-sg"
-                        display_name: "Fundbox Singapore"
-                        entity_type: "pos"
-                        country_code: "SG"
-                        is_active: true
-                        source_record_count: 14
-                meta:
-                  request_id: "req_abc123"
-                  total_count: 47
-                  next_cursor: "MTA="
         '400':
           $ref: '#/components/responses/BadRequest'
         '401':
@@ -1162,11 +1085,10 @@ paths:
       tags: [OAuth2 Machine API]
       summary: List canonical persons (machine surface)
       operationId: listPersonsMachine
-      description: |
-        Paginated canonical person list for machine callers, with the same
-        filters and sorting as the authenticated person list. Requires a HyperP
-        OAuth2 client-credentials token with the `persons:read` scope; human
-        Google ID tokens are rejected.
+      description: >-
+        Paginated generalized person list. Filters are combined with AND semantics;
+        repeated entity/source keys use their corresponding mode. CRM deal bounds
+        count distinct active Bitrix CRM deal source records and are inclusive.
       security:
         - bearerAuth: []
       parameters:
@@ -1193,7 +1115,6 @@ paths:
             maximum: 200
         - name: entity_key
           in: query
-          description: Filter to persons associated with this entity key. Repeatable.
           schema:
             type: array
             items:
@@ -1205,7 +1126,6 @@ paths:
           schema: { type: string, enum: [or, and] }
         - name: source_key
           in: query
-          description: Filter to persons with at least one source record from this source. Repeatable.
           schema:
             type: array
             items:
@@ -1217,162 +1137,134 @@ paths:
           schema: { type: string, enum: [or, and] }
         - name: source_record_type
           in: query
-          description: Filter by linked source-record subtype.
           schema:
             type: string
         - name: is_high_value
           in: query
-          description: Filter by high-value flag.
           schema:
             type: boolean
         - name: is_high_risk
           in: query
-          description: Filter by high-risk flag.
           schema:
             type: boolean
         - name: has_phone
           in: query
-          description: Filter by presence of a phone identifier.
           schema:
             type: boolean
         - name: has_email
           in: query
-          description: Filter by presence of an email identifier.
           schema:
             type: boolean
         - name: has_any_contact
           in: query
-          description: Filter by presence of any contact identifier (phone or email).
           schema:
             type: boolean
         - name: has_address
           in: query
-          description: Filter by presence of a linked address.
           schema:
             type: boolean
         - name: has_bankruptcy_case
           in: query
-          description: Filter by presence of a bankruptcy case.
           schema:
             type: boolean
         - name: has_any_match
           in: query
-          description: Filter by presence of any candidate match (identifier overlap or active system review case).
           schema:
             type: boolean
         - name: has_possible_match
           in: query
-          description: Filter by presence of a shared-identifier candidate person.
           schema:
             type: boolean
         - name: has_system_match
           in: query
-          description: Filter by presence of an active system (auto) match review case.
           schema:
             type: boolean
+        - name: crm_deal_count_min
+          in: query
+          schema:
+            type: integer
+            minimum: 0
+        - name: crm_deal_count_max
+          in: query
+          schema:
+            type: integer
+            minimum: 0
         - name: addr_street
           in: query
-          description: Filter by normalized street address (case-insensitive substring).
           schema:
             type: string
         - name: addr_unit
           in: query
-          description: Filter by unit/floor.
           schema:
             type: string
         - name: addr_city
           in: query
-          description: Filter by city.
           schema:
             type: string
         - name: addr_postal
           in: query
-          description: Filter by postal code.
           schema:
             type: string
         - name: addr_country
           in: query
-          description: Filter by country code.
           schema:
             type: string
         - name: updated_after
           in: query
-          description: Inclusive lower bound on person `updated_at` (ISO-8601).
           schema:
             type: string
-            format: date-time
         - name: updated_before
           in: query
-          description: Inclusive upper bound on person `updated_at` (ISO-8601).
           schema:
             type: string
-            format: date-time
         - name: has_dob
           in: query
-          description: Filter by presence of a date of birth.
           schema:
             type: boolean
         - name: dob_from
           in: query
-          description: Inclusive lower bound on date of birth (YYYY-MM-DD).
           schema:
             type: string
-            format: date
         - name: dob_to
           in: query
-          description: Inclusive upper bound on date of birth (YYYY-MM-DD).
           schema:
             type: string
-            format: date
         - name: dob_year
           in: query
-          description: Exact year of birth.
-          schema:
-            type: integer
-        - name: dob_month
-          in: query
-          description: Exact month of birth (1-12).
-          schema:
-            type: integer
-            minimum: 1
-            maximum: 12
-        - name: dob_day
-          in: query
-          description: Exact day of birth (1-31).
-          schema:
-            type: integer
-            minimum: 1
-            maximum: 31
-        - name: sort_by
-          in: query
-          description: Sort column.
           schema:
             type: string
-            enum:
-              [
-                preferred_full_name,
-                preferred_phone,
-                preferred_email,
-                preferred_dob,
-                preferred_nric,
-                source_record_count,
-                connection_count,
-                entity_count,
-                possible_match_count,
-                system_match_count,
-                order_count,
-                bankruptcy_case_count,
-                phone_confidence,
-                updated_at,
-                profile_completeness_score,
-                relevance,
-              ]
+        - name: dob_month
+          in: query
+          schema:
+            type: string
+        - name: dob_day
+          in: query
+          schema:
+            type: string
+        - name: q
+          in: query
+          schema:
+            type: string
+        - name: sort_by
+          in: query
+          schema:
+            type: string
+            enum: [preferred_full_name, preferred_phone, preferred_email, preferred_dob, preferred_nric, source_record_count, connection_count, entity_count, possible_match_count, system_match_count, order_count, crm_deal_count, bankruptcy_case_count, phone_confidence, updated_at, profile_completeness_score, relevance]
         - name: sort_order
           in: query
-          description: Sort direction. Defaults to `desc`.
           schema:
             type: string
             enum: [asc, desc]
+        - name: cursor
+          in: query
+          schema:
+            type: string
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
         - name: include_total
           in: query
           description: >-
@@ -1387,7 +1279,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/PersonListResponseEnvelope'
+                $ref: '#/components/schemas/ListedPersonListResponseEnvelope'
         '400':
           $ref: '#/components/responses/BadRequest'
         '401':
@@ -2440,6 +2332,32 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/CrmEntityBreakdown'
+        recent_30d_deal_count:
+          type: integer
+          minimum: 0
+        recent_30d_activity_count:
+          type: integer
+          minimum: 0
+        recent_30d_call_count:
+          type: integer
+          minimum: 0
+        recent_30d_conversation_count:
+          type: integer
+          minimum: 0
+        last_crm_touch_at:
+          type: [string, 'null']
+          format: date-time
+        last_crm_touch_at_display:
+          type: [string, 'null']
+        days_since_last_crm_touch:
+          type: [integer, 'null']
+          minimum: 0
+        days_since_last_deal:
+          type: [integer, 'null']
+          minimum: 0
+        days_since_last_activity:
+          type: [integer, 'null']
+          minimum: 0
       required:
         - deal_count
         - deal_stage_breakdown
@@ -2456,6 +2374,15 @@ components:
         - last_activity_at
         - last_activity_at_display
         - entity_breakdown
+        - recent_30d_deal_count
+        - recent_30d_activity_count
+        - recent_30d_call_count
+        - recent_30d_conversation_count
+        - last_crm_touch_at
+        - last_crm_touch_at_display
+        - days_since_last_crm_touch
+        - days_since_last_deal
+        - days_since_last_activity
       additionalProperties: false
     PersonCrmMetricsEnvelope:
       type: object
@@ -3399,67 +3326,71 @@ components:
           $ref: '#/components/schemas/Meta'
       required: [data, meta]
       additionalProperties: false
-    PersonEntitySummary:
+    Person:
       type: object
       properties:
-        entity_key: { type: string }
-        display_name: { type: [string, 'null'] }
-        entity_type: { type: [string, 'null'] }
-        country_code: { type: [string, 'null'] }
-        is_active: { type: boolean, default: true }
-        source_record_count: { type: integer, default: 0 }
-      required: [entity_key]
-      additionalProperties: false
-    ListedPerson:
-      type: object
-      properties:
-        person_id: { type: string }
-        status: { $ref: '#/components/schemas/PersonStatus' }
-        is_high_value: { type: boolean, default: false }
-        is_high_risk: { type: boolean, default: false }
-        preferred_full_name: { type: [string, 'null'] }
-        preferred_phone: { type: [string, 'null'] }
-        preferred_email: { type: [string, 'null'] }
-        preferred_dob: { type: [string, 'null'] }
+        person_id: {type: string}
+        status: {$ref: '#/components/schemas/PersonStatus'}
+        is_high_value: {type: boolean, default: false}
+        is_high_risk: {type: boolean, default: false}
+        preferred_full_name: {type: [string, 'null']}
+        preferred_phone: {type: [string, 'null']}
+        preferred_email: {type: [string, 'null']}
+        preferred_dob: {type: [string, 'null']}
         preferred_address:
           oneOf:
             - $ref: '#/components/schemas/AddressSummary'
             - type: 'null'
-        preferred_nric: { type: [string, 'null'] }
-        preferred_race_ethnicity: { type: [string, 'null'] }
-        profile_completeness_score: { type: number, default: 0 }
-        golden_profile_computed_at: { type: [string, 'null'] }
-        golden_profile_version: { type: [string, 'null'] }
-        source_record_count: { type: integer, default: 0 }
-        connection_count: { type: integer, default: 0 }
-        lifetime_value: { type: [number, 'null'] }
+        preferred_nric: {type: [string, 'null']}
+        preferred_race_ethnicity: {type: [string, 'null']}
+        profile_completeness_score: {type: number, default: 0}
+        golden_profile_computed_at: {type: [string, 'null']}
+        golden_profile_version: {type: [string, 'null']}
+        source_record_count: {type: integer, default: 0}
+        connection_count: {type: integer, default: 0}
+        lifetime_value: {type: [number, 'null']}
         loyalty:
           oneOf:
             - type: array
-              items: { $ref: '#/components/schemas/LoyaltySummary' }
+              items: {$ref: '#/components/schemas/LoyaltySummary'}
             - type: 'null'
         vehicles:
           oneOf:
             - type: array
-              items: { $ref: '#/components/schemas/VehicleSummary' }
+              items: {$ref: '#/components/schemas/VehicleSummary'}
             - type: 'null'
-        created_at: { type: string, default: '' }
-        updated_at: { type: string, default: '' }
-        phone_confidence: { type: [number, 'null'] }
-        entities:
-          type: array
-          items: { $ref: '#/components/schemas/PersonEntitySummary' }
-        entity_count: { type: integer, default: 0 }
-        identifier_count: { type: integer, default: 0 }
-        possible_match_count: { type: integer, default: 0 }
-        system_match_count: { type: integer, default: 0 }
-        order_count: { type: integer, default: 0 }
-        bankruptcy_case_count: { type: integer, default: 0 }
-        preferred_dob_display: { type: string, default: '?' }
-        preferred_dob_invalid: { type: boolean, default: false }
+        created_at: {type: string, default: ''}
+        updated_at: {type: string, default: ''}
       required: [person_id, status]
-      additionalProperties: false
-    PersonListResponseEnvelope:
+    PersonEntitySummary:
+      type: object
+      properties:
+        entity_key: {type: string}
+        display_name: {type: [string, 'null']}
+        entity_type: {type: [string, 'null']}
+        country_code: {type: [string, 'null']}
+        is_active: {type: boolean, default: true}
+        source_record_count: {type: integer, default: 0}
+      required: [entity_key]
+    ListedPerson:
+      allOf:
+        - $ref: '#/components/schemas/Person'
+        - type: object
+          properties:
+            phone_confidence: {type: [number, 'null']}
+            entities:
+              type: array
+              items: {$ref: '#/components/schemas/PersonEntitySummary'}
+            entity_count: {type: integer, default: 0}
+            identifier_count: {type: integer, default: 0}
+            possible_match_count: {type: integer, default: 0}
+            system_match_count: {type: integer, default: 0}
+            order_count: {type: integer, default: 0}
+            crm_deal_count: {type: integer, default: 0}
+            bankruptcy_case_count: {type: integer, default: 0}
+            preferred_dob_display: {type: string, default: '?'}
+            preferred_dob_invalid: {type: boolean, default: false}
+    ListedPersonListResponseEnvelope:
       type: object
       properties:
         data:
@@ -3500,7 +3431,7 @@ components:
         data:
           type: array
           items:
-            $ref: '#/components/schemas/PersonSummary'
+            $ref: '#/components/schemas/Person'
         meta:
           $ref: '#/components/schemas/Meta'
       required: [data, meta]

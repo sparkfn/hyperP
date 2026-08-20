@@ -2294,3 +2294,21 @@
 @media (max-width: 768px) {
   .page { margin-bottom: 40px; }
 }
+.crmDealValue {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.crmDealCount {
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+
+.crmDealLabel,
+.crmDealCountZero {
+  color: var(--text-muted);
+  font-size: 11px;
+}

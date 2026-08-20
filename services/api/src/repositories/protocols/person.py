@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Protocol, TypedDict
+from typing import Literal, Protocol, TypedDict
 
 from src.types import (
     AuditEvent,
@@ -34,6 +34,26 @@ from src.types_profile_analysis import (
     ProfileAnalysisType,
 )
 
+PersonListSortKey = Literal[
+    "preferred_full_name",
+    "preferred_phone",
+    "preferred_email",
+    "preferred_dob",
+    "preferred_nric",
+    "source_record_count",
+    "connection_count",
+    "entity_count",
+    "possible_match_count",
+    "system_match_count",
+    "order_count",
+    "crm_deal_count",
+    "bankruptcy_case_count",
+    "phone_confidence",
+    "updated_at",
+    "profile_completeness_score",
+    "relevance",
+]
+
 
 class PersonListFilters(TypedDict, total=False):
     q: str | None
@@ -50,6 +70,8 @@ class PersonListFilters(TypedDict, total=False):
     has_any_match: bool | None
     has_possible_match: bool | None
     has_system_match: bool | None
+    crm_deal_count_min: int | None
+    crm_deal_count_max: int | None
     addr_street: str | None
     addr_unit: str | None
     addr_city: str | None
@@ -65,7 +87,7 @@ class PersonListFilters(TypedDict, total=False):
     dob_day: str | None
     entity_key_mode: str | None
     source_key_mode: str | None
-    sort_by: str | None
+    sort_by: PersonListSortKey | None
     sort_order: str | None
 
 

@@ -9,7 +9,7 @@ from src.chat_transcript import parse_chat_transcript
 from src.display_format import format_confidence_pct, format_display_datetime
 from src.http_utils import envelope, http_error, next_cursor, page_window
 from src.repositories.deps import get_person_repo
-from src.repositories.protocols.person import PersonListFilters, PersonRepository
+from src.repositories.protocols.person import PersonListFilters, PersonListSortKey, PersonRepository
 from src.types import (
     ApiResponse,
     AuditEvent,
@@ -38,27 +38,6 @@ router = APIRouter(
     prefix="/v1/persons",
     tags=["Persons"],
     dependencies=[Depends(require_scope("persons:read"))],
-)
-
-_ALLOWED_SORT: frozenset[str] = frozenset(
-    {
-        "preferred_full_name",
-        "preferred_phone",
-        "preferred_email",
-        "preferred_dob",
-        "preferred_nric",
-        "source_record_count",
-        "connection_count",
-        "entity_count",
-        "possible_match_count",
-        "system_match_count",
-        "order_count",
-        "bankruptcy_case_count",
-        "phone_confidence",
-        "updated_at",
-        "profile_completeness_score",
-        "relevance",
-    }
 )
 
 
@@ -159,6 +138,8 @@ async def list_persons(
     has_any_match: bool | None = Query(default=None),
     has_possible_match: bool | None = Query(default=None),
     has_system_match: bool | None = Query(default=None),
+    crm_deal_count_min: int | None = Query(default=None, ge=0),
+    crm_deal_count_max: int | None = Query(default=None, ge=0),
     addr_street: str | None = Query(default=None),
     addr_unit: str | None = Query(default=None),
     addr_city: str | None = Query(default=None),
@@ -173,7 +154,7 @@ async def list_persons(
     dob_month: str | None = Query(default=None),
     dob_day: str | None = Query(default=None),
     q: str | None = Query(default=None),
-    sort_by: str | None = Query(default=None),
+    sort_by: PersonListSortKey | None = Query(default=None),
     sort_order: str | None = Query(default=None),
     cursor: str | None = Query(default=None),
     limit: int | None = Query(default=None),
@@ -189,8 +170,17 @@ async def list_persons(
             "Search query q requires at least 3 characters (matches name, NRIC, email, phone).",
             request,
         )
-    if sort_by is not None and sort_by not in _ALLOWED_SORT:
-        raise http_error(400, "invalid_request", f"Unknown sort_by: {sort_by}", request)
+    if (
+        crm_deal_count_min is not None
+        and crm_deal_count_max is not None
+        and crm_deal_count_min > crm_deal_count_max
+    ):
+        raise http_error(
+            400,
+            "invalid_request",
+            "crm_deal_count_min must be less than or equal to crm_deal_count_max.",
+            request,
+        )
 
     skip, page_limit = page_window(cursor, limit)
     dob_month_padded = _pad_dob_part(dob_month)
@@ -212,6 +202,8 @@ async def list_persons(
         "has_any_match": has_any_match,
         "has_possible_match": has_possible_match,
         "has_system_match": has_system_match,
+        "crm_deal_count_min": crm_deal_count_min,
+        "crm_deal_count_max": crm_deal_count_max,
         "addr_street": addr_street,
         "addr_unit": addr_unit,
         "addr_city": addr_city,
