@@ -1,8 +1,12 @@
 from pathlib import Path
 
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+_COMPOSE_PATH = _REPO_ROOT / "docker-compose.yml"
+_STAGING_WORKFLOW_PATH = _REPO_ROOT / ".github" / "workflows" / "deploy-staging.yml"
+
 
 def test_compose_forwards_fundbox_api_configuration() -> None:
-    compose = Path("docker-compose.yml").read_text()
+    compose = _COMPOSE_PATH.read_text(encoding="utf-8")
 
     for variable in (
         "FUNDBOX_API_BASE_URL",
@@ -17,7 +21,7 @@ def test_compose_forwards_fundbox_api_configuration() -> None:
 
 
 def test_staging_deploy_checks_fundbox_env_keys_without_values() -> None:
-    workflow = Path(".github/workflows/deploy-staging.yml").read_text()
+    workflow = _STAGING_WORKFLOW_PATH.read_text(encoding="utf-8")
 
     for variable in (
         "FUNDBOX_API_BASE_URL",
