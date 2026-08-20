@@ -2306,10 +2306,17 @@ export interface operations {
                 dob_year?: string;
                 dob_month?: string;
                 dob_day?: string;
+                /**
+                 * @description Free-text search (min 3 chars) across `preferred_full_name`,
+                 *     `preferred_nric`, `preferred_email`, and `preferred_phone`.
+                 * @example Tan Wei Ming
+                 */
                 q?: string;
                 sort_by?: "preferred_full_name" | "preferred_phone" | "preferred_email" | "preferred_dob" | "preferred_nric" | "source_record_count" | "connection_count" | "entity_count" | "possible_match_count" | "system_match_count" | "order_count" | "crm_deal_count" | "bankruptcy_case_count" | "phone_confidence" | "updated_at" | "profile_completeness_score" | "relevance";
                 sort_order?: "asc" | "desc";
+                /** @description Opaque pagination cursor. */
                 cursor?: string;
+                /** @description Page size. */
                 limit?: number;
                 /** @description Whether to execute the exact count query. Defaults to true. When false, `meta.total_count` is null; use `meta.next_cursor` to continue. */
                 include_total?: boolean;
@@ -3124,8 +3131,15 @@ export interface operations {
     listPersonsMachine: {
         parameters: {
             query?: {
+                /**
+                 * @description Free-text search (min 3 chars) across `preferred_full_name`,
+                 *     `preferred_nric`, `preferred_email`, and `preferred_phone`.
+                 * @example Tan Wei Ming
+                 */
                 q?: string;
+                /** @description Opaque pagination cursor. */
                 cursor?: string;
+                /** @description Page size. */
                 limit?: number;
                 /**
                  * @example [
