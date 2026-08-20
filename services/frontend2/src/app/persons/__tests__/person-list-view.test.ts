@@ -55,6 +55,17 @@ describe("formatPaginationShowing", () => {
     })).toBe("Showing 26\u201350 of 52 profiles");
   });
 
+  it("suppresses a stale total that is below the current page end", () => {
+    expect(formatPaginationShowing({
+      rowCount: 25,
+      pageIndex: 1,
+      pageSize: 25,
+      exactTotal: null,
+      unfilteredSummaryTotal: 25,
+      hasEffectiveFilters: false,
+    })).toBe("Showing 26\u201350 profiles");
+  });
+
   it("shows a zero range for an empty page", () => {
     expect(formatPaginationShowing({
       rowCount: 0,

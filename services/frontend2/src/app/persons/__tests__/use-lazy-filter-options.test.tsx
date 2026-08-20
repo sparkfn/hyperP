@@ -32,7 +32,7 @@ beforeEach(() => {
 });
 
 describe("useLazyFilterOptions", () => {
-  it("does not request options before being enabled and started", () => {
+  it("does not request options while disabled", () => {
     const { result } = renderHook(() => useLazyFilterOptions<Option>({
       enabled: false,
       initialEnabled: false,
@@ -41,6 +41,25 @@ describe("useLazyFilterOptions", () => {
 
     expect(result.current.status).toBe("idle");
     expect(bffFetch).not.toHaveBeenCalled();
+  });
+
+  it("requests options when an idle loader becomes enabled", async () => {
+    bffFetch.mockResolvedValue([{ key: "automatic" }]);
+    const { result, rerender } = renderHook(
+      ({ enabled }) => useLazyFilterOptions<Option>({
+        enabled,
+        initialEnabled: false,
+        path: "/bff/options",
+      }),
+      { initialProps: { enabled: false } },
+    );
+
+    rerender({ enabled: true });
+
+    expect(result.current.status).toBe("loading");
+    await waitFor(() => expect(result.current.status).toBe("loaded"));
+    expect(result.current.items).toEqual([{ key: "automatic" }]);
+    expect(bffFetch).toHaveBeenCalledTimes(1);
   });
 
   it("aborts on close and requests again when reopened", async () => {

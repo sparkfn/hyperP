@@ -30,7 +30,7 @@ export function useLazyFilterOptions<T>({
   );
 
   useEffect(() => {
-    if (!enabled || status !== "loading") return;
+    if (!enabled || (status !== "idle" && status !== "loading")) return;
     const controller = new AbortController();
     void bffFetch<T[]>(path, { cache: "no-store", signal: controller.signal })
       .then((nextItems) => {
@@ -45,13 +45,14 @@ export function useLazyFilterOptions<T>({
   }, [enabled, path, status]);
 
   const start = useCallback((): void => {
-    if (status === "idle") setStatus("loading");
-  }, [status]);
+    if (!enabled && status === "idle") setStatus("loading");
+  }, [enabled, status]);
 
   const retry = useCallback((): void => {
     setItems([]);
     setStatus("loading");
   }, []);
 
-  return { items, status, start, retry };
+  const effectiveStatus = enabled && status === "idle" ? "loading" : status;
+  return { items, status: effectiveStatus, start, retry };
 }
