@@ -6,9 +6,12 @@ from pathlib import Path
 
 from src.config import Settings
 
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+_COMPOSE_PATH = _REPO_ROOT / "docker-compose.yml"
+
 
 def _compose() -> str:
-    return Path("docker-compose.yml").read_text(encoding="utf-8")
+    return _COMPOSE_PATH.read_text(encoding="utf-8")
 
 
 def _service_block(compose: str, service: str) -> str:

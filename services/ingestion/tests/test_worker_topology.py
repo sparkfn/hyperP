@@ -7,6 +7,9 @@ from pathlib import Path
 from src.celery_app import celery_app
 from src.tasks import materialize_knows_task
 
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+_COMPOSE_PATH = _REPO_ROOT / "docker-compose.yml"
+
 
 def test_worker_concurrency_and_task_routes_are_fixed_in_code() -> None:
     assert celery_app.conf.worker_concurrency == 2
@@ -25,7 +28,7 @@ def test_worker_concurrency_and_task_routes_are_fixed_in_code() -> None:
 
 
 def test_compose_workers_are_exclusive_and_use_code_concurrency() -> None:
-    compose = Path("docker-compose.yml").read_text(encoding="utf-8")
+    compose = _COMPOSE_PATH.read_text(encoding="utf-8")
     ingestion_worker = compose.split("  ingestion-worker:", 1)[1].split("  lifecycle-worker:", 1)[0]
     lifecycle_worker = compose.split("  lifecycle-worker:", 1)[1].split("  beat:", 1)[0]
 
