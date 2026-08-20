@@ -105,16 +105,17 @@ GET_PERSON_LOYALTY = """
 MATCH (p:Person {person_id: $person_id})
 OPTIONAL MATCH (p)-[:MERGED_INTO]->(canonical:Person)
 WITH coalesce(canonical, p) AS person
-MATCH (sr:SourceRecord {record_type: 'identity'})-[:LINKED_TO]->(person)
+OPTIONAL MATCH (sr:SourceRecord {record_type: 'identity'})-[:LINKED_TO]->(person)
 WHERE (sr.lifecycle_status = 'active'
   OR (sr.lifecycle_status IS NULL AND sr.is_latest = true))
-MATCH (sr)-[:FROM_SOURCE]->(ss:SourceSystem)
-RETURN collect({
-  source_system: ss.source_key,
-  observed_at: sr.observed_at,
-  source_record_pk: sr.source_record_pk,
-  raw_payload: sr.raw_payload
-}) AS loyalty_rows
+OPTIONAL MATCH (sr)-[:FROM_SOURCE]->(ss:SourceSystem)
+RETURN person.person_id AS person_id,
+       collect(CASE WHEN sr IS NULL OR ss IS NULL THEN null ELSE {
+         source_system: ss.source_key,
+         observed_at: sr.observed_at,
+         source_record_pk: sr.source_record_pk,
+         raw_payload: sr.raw_payload
+       } END) AS loyalty_rows
 """
 
 GET_PERSON_VEHICLES = """
@@ -122,19 +123,20 @@ MATCH (p:Person {person_id: $person_id})
 OPTIONAL MATCH (p)-[:MERGED_INTO]->(canonical:Person)
 WITH coalesce(canonical, p) AS person
 OPTIONAL MATCH (person)-[rel:OWNS_VEHICLE|BOUGHT_VEHICLE]->(v:Vehicle)
-RETURN collect(CASE WHEN v IS NULL THEN NULL ELSE {
-  vehicle_id: v.vehicle_id,
-  product: v.product,
-  product_sku: v.product_sku,
-  manufacturer: v.manufacturer,
-  model: v.model,
-  lta_tag: v.lta_tag,
-  serial_number: v.serial_number,
-  rel_type: type(rel),
-  is_active: rel.is_active,
-  conflict_flag: coalesce(v.conflict_flag, false),
-  observed_at: rel.observed_at
-} END) AS vehicles
+RETURN person.person_id AS person_id,
+       collect(CASE WHEN v IS NULL THEN NULL ELSE {
+         vehicle_id: v.vehicle_id,
+         product: v.product,
+         product_sku: v.product_sku,
+         manufacturer: v.manufacturer,
+         model: v.model,
+         lta_tag: v.lta_tag,
+         serial_number: v.serial_number,
+         rel_type: type(rel),
+         is_active: rel.is_active,
+         conflict_flag: coalesce(v.conflict_flag, false),
+         observed_at: rel.observed_at
+       } END) AS vehicles
 """
 
 GET_PERSON_SOURCE_RECORDS = """
@@ -510,7 +512,13 @@ WITH collect({
 CALL {
   WITH page
   UNWIND page AS item
-  UNWIND item.source_record_pks AS source_record_pk
+  // Legacy projections can carry IDENTIFIED_BY edges without a source-record
+  // provenance key. Preserve those identifiers by unwinding a one-null
+  // sentinel instead of dropping the item entirely.
+  UNWIND CASE WHEN size(item.source_record_pks) = 0
+    THEN [null]
+    ELSE item.source_record_pks
+  END AS source_record_pk
   OPTIONAL MATCH (sr:SourceRecord {source_record_pk: source_record_pk})
   OPTIONAL MATCH (sr)-[:FROM_SOURCE]->(ss:SourceSystem)
   OPTIONAL MATCH (sr)-[:OWNED_BY]->(record_entity:Entity)

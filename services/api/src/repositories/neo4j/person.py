@@ -593,21 +593,21 @@ class Neo4jPersonRepository:
             records = [record_to_dict(r.keys(), list(r.values())) async for r in result]
         return [map_person_entity(rec) for rec in records]
 
-    async def get_loyalty(self, person_id: str) -> list[LoyaltySummary]:
+    async def get_loyalty(self, person_id: str) -> list[LoyaltySummary] | None:
         async with get_session() as session:
             result = await session.run(GET_PERSON_LOYALTY, person_id=person_id)
             record = await result.single()
         if record is None:
-            return []
+            return None
         mapped = record_to_dict(record.keys(), list(record.values()))
         return _map_loyalty(mapped.get("loyalty_rows"))
 
-    async def get_vehicles(self, person_id: str) -> list[VehicleSummary]:
+    async def get_vehicles(self, person_id: str) -> list[VehicleSummary] | None:
         async with get_session() as session:
             result = await session.run(GET_PERSON_VEHICLES, person_id=person_id)
             record = await result.single()
         if record is None:
-            return []
+            return None
         mapped = record_to_dict(record.keys(), list(record.values()))
         return _map_vehicles(mapped.get("vehicles"))
 
