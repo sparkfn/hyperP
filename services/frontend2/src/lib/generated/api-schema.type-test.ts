@@ -41,6 +41,7 @@ const listedPersonWithListFields: ListedPerson = {
   possible_match_count: 0,
   system_match_count: 0,
   order_count: 0,
+  crm_deal_count: 0,
   bankruptcy_case_count: 0,
   preferred_dob_display: "?",
   preferred_dob_invalid: false,

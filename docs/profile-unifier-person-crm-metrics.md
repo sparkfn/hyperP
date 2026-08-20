@@ -51,8 +51,12 @@ first-class graph properties.
 - `GET /v1/persons/{person_id}/crm/metrics` — aggregate CRM metrics for one
   person.
 - BFF route handler proxying that endpoint.
-- A **CRM** bento section on `persons/[personId]` with metric cards and
-  breakdown tables.
+- A **CRM** bento section on `persons/[personId]` with overview, recency,
+  breakdown, engagement-span, and by-entity presentation.
+- `crm_deal_count` enrichment, inclusive minimum/maximum filtering, and
+  deterministic server-side sorting on the generalized person list.
+- Matching authenticated and OAuth person-list contracts, URL-backed frontend
+  controls, OpenAPI schemas, and generated TypeScript types.
 - Typed Pydantic response models and TypeScript mirrors.
 - Cypher query constants, repository protocol + Neo4j implementation, `deps.py`
   wiring, route catalog registration.
@@ -72,7 +76,8 @@ first-class graph properties.
 - No CRM WON 30-day prediction, scoring, or labels — that is the separate
   [Sales Prediction Discovery](profile-unifier-sales-prediction-discovery.md)
   track (`collect_more_data`).
-- No aggregate/list-level CRM metrics across all persons.
+- No cross-person CRM summary endpoint, dashboard aggregate, or materialized
+  aggregate node. The per-person `crm_deal_count` list enrichment is in scope.
 - No write-back, caching, or materialized projections.
 
 ### Analytical boundary compliance
@@ -205,6 +210,17 @@ class PersonCrmMetrics(BaseModel):
     last_activity_at: str | None = None
     last_activity_at_display: str | None = None
 
+    # Recency and elapsed-time metrics
+    recent_30d_deal_count: int = 0
+    recent_30d_activity_count: int = 0
+    recent_30d_call_count: int = 0
+    recent_30d_conversation_count: int = 0
+    last_crm_touch_at: str | None = None
+    last_crm_touch_at_display: str | None = None
+    days_since_last_crm_touch: int | None = None
+    days_since_last_deal: int | None = None
+    days_since_last_activity: int | None = None
+
     # Per-entity breakdown
     entity_breakdown: list[CrmEntityBreakdown] = Field(default_factory=list)
 ```
@@ -221,6 +237,9 @@ class PersonCrmMetrics(BaseModel):
 | `conversation_count` | Active Bitrix Open Lines `conversation` records | `record_type = 'conversation'` + source filter |
 | `activity_kind_breakdown` | Count and last-event-time per `history_kind` | Grouped by `history_kind` |
 | `first_activity_at` / `last_activity_at` | Min/max `event_at` (fallback `observed_at`) | `event_at` / `observed_at` |
+| `recent_30d_*_count` | Distinct records whose effective event/observed timestamp is inclusively within 30 days of the captured request cutoff and is not in the future | One request-scoped `as_of_at` |
+| `last_crm_touch_at` | Latest deal, activity, call, or conversation timestamp | Max across type-specific latest timestamps |
+| `days_since_last_crm_touch` / `days_since_last_deal` / `days_since_last_activity` | Whole elapsed 24-hour periods from the selected timestamp to `as_of_at`; future timestamps clamp to zero and missing timestamps remain `null` | `duration.inSeconds` |
 | `entity_breakdown` | Per-entity deal/activity/conversation counts | `OWNED_BY` / `FROM_SOURCE`→`OPERATED_BY` |
 
 Note: `call` records are excluded from `entity_breakdown` — they are a
@@ -235,6 +254,11 @@ companion to `crm_history` and already counted in top-level `call_count`.
 - **Merge chain resolution**: the query resolves
   `coalesce(canonical, p)` on `MERGED_INTO` (one hop; path-compressed) before
   traversing `LINKED_TO`. Metrics follow the survivor automatically.
+- **Request-time consistency**: the repository captures one timezone-aware UTC
+  `as_of_at` value and passes it into the Cypher query. Every rolling-window and
+  elapsed-day result in that response uses that same cutoff.
+- **Missing/future timestamps**: unavailable elapsed values are `null`; future
+  timestamps are excluded from recent counts and produce zero elapsed days.
 
 ---
 
@@ -285,13 +309,23 @@ class PersonCrmMetrics(BaseModel):
     first_activity_at_display: str | None = None
     last_activity_at: str | None = None
     last_activity_at_display: str | None = None
+    recent_30d_deal_count: int = 0
+    recent_30d_activity_count: int = 0
+    recent_30d_call_count: int = 0
+    recent_30d_conversation_count: int = 0
+    last_crm_touch_at: str | None = None
+    last_crm_touch_at_display: str | None = None
+    days_since_last_crm_touch: int | None = None
+    days_since_last_deal: int | None = None
+    days_since_last_activity: int | None = None
     entity_breakdown: list[CrmEntityBreakdown] = Field(default_factory=list)
 ```
 
 ### 5.2 `services/api/src/graph/queries/crm.py`
 
-The query uses seven `CALL (person) { ... }` correlated subqueries (Neo4j 5.x
-syntax, matching `persons_list.py`). Each subquery uses `OPTIONAL MATCH` and
+The query uses seven correlated subqueries (Neo4j 5.x syntax, matching
+`persons_list.py`). Timestamp-sensitive deal, activity, call, and conversation
+subqueries import the request-scoped cutoff with `CALL (person, as_of_at)`. Each subquery uses `OPTIONAL MATCH` and
 returns **exactly one row** via aggregation (`count`, `min`, `max`) or
 `collect(CASE WHEN ... IS NOT NULL THEN ... END)`. This prevents row fan-out
 and ensures the outer query always produces one row when the person exists,
@@ -613,6 +647,27 @@ from src.graph.queries.crm import GET_PERSON_CRM_METRICS
 
 ---
 
+### 5.9 Person-list CRM deal contract
+
+`ListedPerson.crm_deal_count` is always returned and defaults to zero. The
+generalized authenticated and OAuth person-list endpoints accept inclusive,
+non-negative `crm_deal_count_min` and `crm_deal_count_max` bounds and the
+`crm_deal_count` sort key. An inverted range returns the standard HTTP 400
+`invalid_request` envelope.
+
+The query builder calculates the distinct effective-active Bitrix deal count:
+
+- after pagination for ordinary list requests;
+- before pagination when sorting or filtering by CRM deal count;
+- before `count(p)` whenever a bound is active, preserving `total_count` parity.
+
+The list and count queries use the same active-link, lifecycle, history-family,
+source, distinct-record, and deterministic `person_id` tie-breaking rules as
+the detail metrics. The frontend exposes Any, Has deals, No deals, and custom
+minimum/maximum states through URL-backed server requests.
+
+---
+
 ## 6. Frontend design (frontend2)
 
 ### 6.1 TypeScript types in `services/frontend2/src/lib/api-types.ts`
@@ -655,6 +710,15 @@ export interface PersonCrmMetrics {
   first_activity_at_display: string | null;
   last_activity_at: string | null;
   last_activity_at_display: string | null;
+  recent_30d_deal_count: number;
+  recent_30d_activity_count: number;
+  recent_30d_call_count: number;
+  recent_30d_conversation_count: number;
+  last_crm_touch_at: string | null;
+  last_crm_touch_at_display: string | null;
+  days_since_last_crm_touch: number | null;
+  days_since_last_deal: number | null;
+  days_since_last_activity: number | null;
   entity_breakdown: CrmEntityBreakdown[];
 }
 ```
@@ -689,8 +753,8 @@ export async function GET(
 The implemented component is a default-export `"use client"` component. It owns
 one isolated React Query request (`useQuery`) through `bffFetch`, propagates the
 aggregate section count through the required `onTotalLoaded` callback, and
-renders metric cards, stage and activity breakdowns, date bounds, and an entity
-table. Loading, empty, upstream-error, and 404 states remain local to the panel
+renders overview cards, last-30-day counts, last-touch/elapsed cards, stage and
+activity breakdowns, a labeled engagement span, and an aligned entity table. Loading, empty, upstream-error, and 404 states remain local to the panel
 so they cannot destabilize the person page.
 
 Implementation shape:
@@ -698,9 +762,11 @@ Implementation shape:
 - `CrmMetricsPanel` is the sole exported component and stays well below the
   150-line component budget.
 - `CrmMetricCards`, `CrmBreakdowns`, `CrmStageBreakdown`,
-  `CrmActivityBreakdown`, `CrmDateRange`, and `CrmEntityTable` are private
+  `CrmActivityBreakdown`, `CrmRecency`, `CrmEngagementSpan`, and
+  `CrmEntityTable` are private
   cohesive sub-components; the complete module remains below 300 lines.
-- Dates use the existing shared `formatDate` helper from `lib/display`.
+- Dates and datetimes render API-provided `*_display` strings verbatim; the
+  browser performs no date parsing or locale formatting.
 - Activity labels use a local `titleCase` helper because no shared title-case
   utility exists; the helper is four lines and scoped to this module.
 - Stage IDs render verbatim. A human stage-label catalog remains gated by #145.
@@ -933,8 +999,8 @@ sequenceDiagram
 1. **Stage display names**: Map Bitrix `stage_id` to human labels via the
    stage catalog (gated by #145).
 
-2. **List-level CRM summary**: `has_crm_deals` / `crm_activity_count`
-   filters and a CRM count card in `PersonListSummary`.
+2. **Additional list-level activity controls**: Activity/call/chat recency
+   filters beyond the implemented CRM deal count range and sort controls.
 
 3. **CRM activity timeline**: A dedicated chronological view of CRM
    activities with direction, outcome, and duration.

@@ -153,8 +153,10 @@ paths:
             type: array
             items:
               type: string
+          example: ["fundbox-sg"]
         - name: entity_key_mode
           in: query
+          description: Combine repeated entity keys with `or` or `and`.
           schema:
             type: string
             enum: [or, and]
@@ -164,8 +166,10 @@ paths:
             type: array
             items:
               type: string
+          example: ["fundbox"]
         - name: source_key_mode
           in: query
+          description: Combine repeated source keys with `or` or `and`.
           schema:
             type: string
             enum: [or, and]
@@ -303,8 +307,7 @@ paths:
           in: query
           description: >-
             Whether to execute the exact count query. Defaults to true. When
-            false, `meta.total_count` is null and `meta.next_cursor` determines
-            whether another page is available.
+            false, `meta.total_count` is null; use `meta.next_cursor` to continue.
           schema: { type: boolean, default: true }
       responses:
         '200':

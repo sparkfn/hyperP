@@ -2264,9 +2264,21 @@ export interface operations {
     listPersons: {
         parameters: {
             query?: {
+                /**
+                 * @example [
+                 *       "fundbox-sg"
+                 *     ]
+                 */
                 entity_key?: string[];
+                /** @description Combine repeated entity keys with `or` or `and`. */
                 entity_key_mode?: "or" | "and";
+                /**
+                 * @example [
+                 *       "fundbox"
+                 *     ]
+                 */
                 source_key?: string[];
+                /** @description Combine repeated source keys with `or` or `and`. */
                 source_key_mode?: "or" | "and";
                 source_record_type?: string;
                 is_high_value?: boolean;
@@ -2299,7 +2311,7 @@ export interface operations {
                 sort_order?: "asc" | "desc";
                 cursor?: string;
                 limit?: number;
-                /** @description Whether to execute the exact count query. Defaults to true. When false, `meta.total_count` is null and `meta.next_cursor` determines whether another page is available. */
+                /** @description Whether to execute the exact count query. Defaults to true. When false, `meta.total_count` is null; use `meta.next_cursor` to continue. */
                 include_total?: boolean;
             };
             header?: {

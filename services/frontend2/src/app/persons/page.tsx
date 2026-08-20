@@ -565,13 +565,11 @@ function PersonCardMobile({
           </div>
           <span className={styles.mobileCardQualityPct}>{pct}%</span>
         </div>
-        {(p.connection_count > 0 || p.order_count > 0 || p.crm_deal_count > 0) && (
-          <div className={styles.mobileCardCounts}>
-            {p.connection_count > 0 && <span className={styles.mobileCardCount}>{p.connection_count} linked</span>}
-            {p.order_count > 0 && <span className={styles.mobileCardCount}>{p.order_count} orders</span>}
-            {p.crm_deal_count > 0 && <span className={styles.mobileCardCount}>{p.crm_deal_count} deals</span>}
-          </div>
-        )}
+        <div className={styles.mobileCardCounts}>
+          {p.connection_count > 0 && <span className={styles.mobileCardCount}>{p.connection_count} linked</span>}
+          {p.order_count > 0 && <span className={styles.mobileCardCount}>{p.order_count} orders</span>}
+          <CrmDealCount count={p.crm_deal_count} />
+        </div>
       </div>
 
       <button
