@@ -16,11 +16,22 @@
 # unprivileged PR/MAIN validation boundary forbids. They are tracked separately.
 #
 # Executor: local Woodpecker (docker backend, untrusted repo — no host volumes/socket).
+# A disposable Neo4j 5.26 service supplies the same real-query gate as PR CI.
 when:
   event:
     - push
   branch:
     - main
+
+services:
+  - name: neo4j
+    image: neo4j:5.26-community
+    environment:
+      NEO4J_AUTH: neo4j/ci-person-identifiers
+      NEO4J_PLUGINS: "[]"
+      NEO4J_server_memory_heap_initial__size: 256m
+      NEO4J_server_memory_heap_max__size: 512m
+      NEO4J_server_memory_pagecache_size: 256m
 
 steps:
   # Re-run the PR python suite on the merged main commit to catch merge breakage,
@@ -45,6 +56,18 @@ steps:
       # the exact install the api/ingestion Dockerfiles run.
       - uv sync --frozen --no-dev --package profile-unifier-api
       - uv sync --frozen --no-dev --package profile-unifier-ingestion
+
+  # Keep the real Neo4j compilation/execution gate aligned with PR validation.
+  - name: neo4j-query-checks
+    image: ghcr.io/astral-sh/uv:python3.12-bookworm
+    environment:
+      HYPERP_NEO4J_PERSON_IDENTIFIERS_TEST_URI: bolt://neo4j:7687
+      HYPERP_NEO4J_PERSON_IDENTIFIERS_TEST_USER: neo4j
+      HYPERP_NEO4J_PERSON_IDENTIFIERS_TEST_PASSWORD: ci-person-identifiers
+      HYPERP_NEO4J_PERSON_IDENTIFIERS_TEST_SERVICE_HOST: neo4j
+    commands:
+      - uv sync --frozen
+      - uv run --package profile-unifier-api pytest services/api/tests/test_person_identifiers_neo4j.py -q
 
   # Real Next.js production build. `next build` runs TypeScript type-checking itself,
   # so this is strictly stronger than the PR `npm run typecheck` step.

@@ -5,8 +5,8 @@
 # Inspect via:  wpci home pipeline last sparkfn/hyperP --branch <pr-branch>
 #
 # Executor: local Woodpecker (docker backend, untrusted repo — no host volumes/socket).
-# Tests are mock/fake-based (see services/api/tests/conftest.py, services/ingestion/tests/conftest.py)
-# so the full pytest suite runs without Neo4j/Redis service containers.
+# Most tests are mock/fake-based. A disposable Neo4j 5.26 service provides the
+# always-executed query compilation gate for database-specific Cypher coverage.
 #
 # SYNC NOTE: the python-checks step below is deliberately duplicated in .woodpecker/main.yaml
 # (Woodpecker has no cross-file includes). When changing a command here, apply the same
@@ -14,6 +14,16 @@
 when:
   event:
     - pull_request
+
+services:
+  - name: neo4j
+    image: neo4j:5.26-community
+    environment:
+      NEO4J_AUTH: neo4j/ci-person-identifiers
+      NEO4J_PLUGINS: "[]"
+      NEO4J_server_memory_heap_initial__size: 256m
+      NEO4J_server_memory_heap_max__size: 512m
+      NEO4J_server_memory_pagecache_size: 256m
 
 steps:
   # Python: lint + format check + strict typecheck + unit tests, all against the
@@ -37,6 +47,20 @@ steps:
       - uv run --package profile-unifier-api pytest services/api/tests
       - uv sync --frozen --group training
       - uv run --package profile-unifier-ingestion pytest services/ingestion/tests
+
+  # Compile and execute the optimized identifier query against the production
+  # Neo4j major/minor. This is a service container on the untrusted workflow
+  # network; it does not require a Docker socket, host volume, or repository secret.
+  - name: neo4j-query-checks
+    image: ghcr.io/astral-sh/uv:python3.12-bookworm
+    environment:
+      HYPERP_NEO4J_PERSON_IDENTIFIERS_TEST_URI: bolt://neo4j:7687
+      HYPERP_NEO4J_PERSON_IDENTIFIERS_TEST_USER: neo4j
+      HYPERP_NEO4J_PERSON_IDENTIFIERS_TEST_PASSWORD: ci-person-identifiers
+      HYPERP_NEO4J_PERSON_IDENTIFIERS_TEST_SERVICE_HOST: neo4j
+    commands:
+      - uv sync --frozen
+      - uv run --package profile-unifier-api pytest services/api/tests/test_person_identifiers_neo4j.py -q
 
   # Frontend (services/frontend2 — active app): tsc --noEmit + eslint errors-only.
   # NOTE: `npm run lint` uses `--max-warnings 9` but the clean tree already carries
