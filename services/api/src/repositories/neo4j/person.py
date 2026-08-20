@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+from time import monotonic
 from typing import Literal, cast
 from uuid import uuid4
 
 from neo4j import AsyncManagedTransaction
 
+from src.config import config
 from src.display_format import format_display_datetime
 from src.graph.client import get_session
 from src.graph.converters import GraphRecord, to_int, to_iso_or_none, to_str
@@ -75,12 +77,11 @@ from src.graph.queries import (
     get_graph_query,
     get_node_graph_query,
 )
-from src.repositories.protocols.person import PersonListFilters
+from src.repositories.protocols.person import PersonListFilters, PersonPage
 from src.types import (
     AuditEvent,
     BankruptcyCase,
     ConnectionType,
-    ListedPerson,
     LoyaltySummary,
     MatchDecision,
     Person,
@@ -172,9 +173,24 @@ async def _retry_failed_profile_analysis_tx(
 
 
 class Neo4jPersonRepository:
+    def __init__(self) -> None:
+        self._summary_cache: PersonListSummary | None = None
+        self._summary_cache_expires_at = 0.0
+        self._summary_cache_lock = asyncio.Lock()
+
+    def _cached_summary(self) -> PersonListSummary | None:
+        if self._summary_cache is None or monotonic() >= self._summary_cache_expires_at:
+            return None
+        return PersonListSummary.model_validate(self._summary_cache.model_dump())
+
     async def get_page(
-        self, filters: PersonListFilters, skip: int, limit: int
-    ) -> tuple[list[ListedPerson], int]:
+        self,
+        filters: PersonListFilters,
+        skip: int,
+        limit: int,
+        *,
+        include_total: bool,
+    ) -> PersonPage:
         sort_by = filters.get("sort_by")
         sort_order = filters.get("sort_order")
         has_q = filters.get("q") is not None
@@ -189,37 +205,50 @@ class Neo4jPersonRepository:
             entity_mode=entity_mode,
             source_mode=source_mode,
         )
+        # sort_by/sort_order/entity_key_mode/source_key_mode are used to build
+        # the query string, not as Cypher params.
+        cypher_params: dict[str, str | int | bool | list[str] | None] = {
+            k: v  # type: ignore[misc]  # TypedDict values are known-safe filter keys
+            for k, v in filters.items()
+            if k not in ("sort_by", "sort_order", "entity_key_mode", "source_key_mode")
+        }
+
+        async def _run_list() -> list[GraphRecord]:
+            async with get_session() as session:
+                result = await session.run(
+                    list_query,
+                    {**cypher_params, "skip": skip, "limit": limit + 1},
+                )
+                return [record_to_dict(r.keys(), list(r.values())) async for r in result]
+
+        if not include_total:
+            records = await _run_list()
+            return PersonPage(
+                items=[map_listed_person(record) for record in records[:limit]],
+                has_more=len(records) > limit,
+                total_count=None,
+            )
+
         count_query = build_count_persons_query(
             has_q=has_q,
             active_filters=active_filters,
             entity_mode=entity_mode,
             source_mode=source_mode,
         )
-        # sort_by/sort_order/entity_key_mode/source_key_mode are used to build
-        # the query string, not as Cypher params
-        cypher_params: dict[str, str | int | bool | list[str] | None] = {
-            k: v  # type: ignore[misc]  # TypedDict values are object; known-safe filter keys
-            for k, v in filters.items()
-            if k not in ("sort_by", "sort_order", "entity_key_mode", "source_key_mode")
-        }
-        list_params = {**cypher_params, "skip": skip, "limit": limit + 1}
-        count_params = cypher_params
-
-        async def _run_list() -> list[GraphRecord]:
-            async with get_session() as session:
-                result = await session.run(list_query, list_params)
-                return [record_to_dict(r.keys(), list(r.values())) async for r in result]
 
         async def _run_count() -> int:
             async with get_session() as session:
-                result = await session.run(count_query, count_params)
-                record = await result.single()
-                return to_total(record)
+                result = await session.run(count_query, cypher_params)
+                return to_total(await result.single())
 
         records, total = await asyncio.gather(_run_list(), _run_count())
-        return [map_listed_person(rec) for rec in records[:limit]], total
+        return PersonPage(
+            items=[map_listed_person(record) for record in records[:limit]],
+            has_more=len(records) > limit,
+            total_count=total,
+        )
 
-    async def get_list_summary(self) -> PersonListSummary:
+    async def _load_list_summary(self) -> PersonListSummary:
         async with get_session() as session:
             result = await session.run(GET_PERSON_LIST_SUMMARY)
             record = await result.single()
@@ -232,6 +261,24 @@ class Neo4jPersonRepository:
             high_value_count=to_int(values.get("high_value_count")),
             no_contact_count=to_int(values.get("no_contact_count")),
         )
+
+    async def get_list_summary(self) -> PersonListSummary:
+        ttl = config.person_list_summary_cache_ttl_seconds
+        if ttl <= 0:
+            return await self._load_list_summary()
+
+        cached = self._cached_summary()
+        if cached is not None:
+            return cached
+
+        async with self._summary_cache_lock:
+            cached = self._cached_summary()
+            if cached is not None:
+                return cached
+            summary = await self._load_list_summary()
+            self._summary_cache = summary
+            self._summary_cache_expires_at = monotonic() + ttl
+            return PersonListSummary.model_validate(summary.model_dump())
 
     async def search_by_identifier(self, identifier_type: str, value: str) -> list[Person]:
         async with get_session() as session:

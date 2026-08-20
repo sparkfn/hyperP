@@ -130,6 +130,165 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '404':
           $ref: '#/components/responses/NotFound'
+  /v1/persons:
+    get:
+      tags: [Persons]
+      summary: List canonical persons
+      operationId: listPersons
+      description: |
+        Paginated person list used by the authenticated UI. `meta.next_cursor`
+        is the authoritative continuation signal. Exact counting is enabled by
+        default for compatibility but callers may disable it for faster reads.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+        - name: entity_key
+          in: query
+          schema:
+            type: array
+            items: { type: string }
+        - name: entity_key_mode
+          in: query
+          schema: { type: string }
+        - name: source_key
+          in: query
+          schema:
+            type: array
+            items: { type: string }
+        - name: source_key_mode
+          in: query
+          schema: { type: string }
+        - name: source_record_type
+          in: query
+          schema: { type: string }
+        - name: is_high_value
+          in: query
+          schema: { type: boolean }
+        - name: is_high_risk
+          in: query
+          schema: { type: boolean }
+        - name: has_phone
+          in: query
+          schema: { type: boolean }
+        - name: has_email
+          in: query
+          schema: { type: boolean }
+        - name: has_any_contact
+          in: query
+          schema: { type: boolean }
+        - name: has_address
+          in: query
+          schema: { type: boolean }
+        - name: has_bankruptcy_case
+          in: query
+          schema: { type: boolean }
+        - name: has_any_match
+          in: query
+          schema: { type: boolean }
+        - name: has_possible_match
+          in: query
+          schema: { type: boolean }
+        - name: has_system_match
+          in: query
+          schema: { type: boolean }
+        - name: addr_street
+          in: query
+          schema: { type: string }
+        - name: addr_unit
+          in: query
+          schema: { type: string }
+        - name: addr_city
+          in: query
+          schema: { type: string }
+        - name: addr_postal
+          in: query
+          schema: { type: string }
+        - name: addr_country
+          in: query
+          schema: { type: string }
+        - name: updated_after
+          in: query
+          schema: { type: string }
+        - name: updated_before
+          in: query
+          schema: { type: string }
+        - name: has_dob
+          in: query
+          schema: { type: boolean }
+        - name: dob_from
+          in: query
+          schema: { type: string }
+        - name: dob_to
+          in: query
+          schema: { type: string }
+        - name: dob_year
+          in: query
+          schema: { type: string }
+        - name: dob_month
+          in: query
+          schema: { type: string }
+        - name: dob_day
+          in: query
+          schema: { type: string }
+        - name: q
+          in: query
+          schema: { type: string }
+        - name: sort_by
+          in: query
+          schema: { type: string }
+        - name: sort_order
+          in: query
+          schema: { type: string }
+        - name: cursor
+          in: query
+          schema: { type: string }
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 200 }
+        - name: include_total
+          in: query
+          description: >-
+            Whether to execute the exact count query. Defaults to true. When
+            false, `meta.total_count` is null and `meta.next_cursor` determines
+            whether another page is available.
+          schema: { type: boolean, default: true }
+      responses:
+        '200':
+          description: Paginated person list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PersonListResponseEnvelope'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /v1/entities/filter-options:
+    get:
+      tags: [Persons]
+      summary: List lightweight entity filter options
+      operationId: list_entity_filter_options
+      description: >-
+        Returns only entity keys and display names for person-list filters; it
+        intentionally avoids person and source-record aggregation.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+      responses:
+        '200':
+          description: Entity filter options
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EntityFilterOptionsEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
   /v1/persons/search:
     get:
       tags: [Persons]
@@ -1030,7 +1189,7 @@ paths:
           schema:
             type: integer
             minimum: 1
-            maximum: 100
+            maximum: 200
         - name: entity_key
           in: query
           description: Filter to persons associated with this entity key. Repeatable.
@@ -1039,6 +1198,10 @@ paths:
             items:
               type: string
           example: ["fundbox-sg"]
+        - name: entity_key_mode
+          in: query
+          description: Combine repeated entity keys with `or` or `and`.
+          schema: { type: string, enum: [or, and] }
         - name: source_key
           in: query
           description: Filter to persons with at least one source record from this source. Repeatable.
@@ -1047,6 +1210,10 @@ paths:
             items:
               type: string
           example: ["fundbox"]
+        - name: source_key_mode
+          in: query
+          description: Combine repeated source keys with `or` or `and`.
+          schema: { type: string, enum: [or, and] }
         - name: source_record_type
           in: query
           description: Filter by linked source-record subtype.
@@ -1205,13 +1372,21 @@ paths:
           schema:
             type: string
             enum: [asc, desc]
+        - name: include_total
+          in: query
+          description: >-
+            Whether to execute the exact count query. Defaults to true. When
+            false, `meta.total_count` is null; use `meta.next_cursor` to continue.
+          schema:
+            type: boolean
+            default: true
       responses:
         '200':
           description: Paginated person list
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/PersonSearchResponseEnvelope'
+                $ref: '#/components/schemas/PersonListResponseEnvelope'
         '400':
           $ref: '#/components/responses/BadRequest'
         '401':
@@ -1974,6 +2149,9 @@ components:
           type:
             - integer
             - 'null'
+          description: >-
+            Exact matching total when requested; null when exact counting is
+            disabled or the endpoint does not provide a total.
       required: [request_id]
       additionalProperties: false
     ErrorObject:
@@ -3218,6 +3396,101 @@ components:
           $ref: '#/components/schemas/IngestRunData'
         meta:
           $ref: '#/components/schemas/Meta'
+      required: [data, meta]
+      additionalProperties: false
+    PersonEntitySummary:
+      type: object
+      properties:
+        entity_key: { type: string }
+        display_name: { type: [string, 'null'] }
+        entity_type: { type: [string, 'null'] }
+        country_code: { type: [string, 'null'] }
+        is_active: { type: boolean, default: true }
+        source_record_count: { type: integer, default: 0 }
+      required: [entity_key]
+      additionalProperties: false
+    ListedPerson:
+      type: object
+      properties:
+        person_id: { type: string }
+        status: { $ref: '#/components/schemas/PersonStatus' }
+        is_high_value: { type: boolean, default: false }
+        is_high_risk: { type: boolean, default: false }
+        preferred_full_name: { type: [string, 'null'] }
+        preferred_phone: { type: [string, 'null'] }
+        preferred_email: { type: [string, 'null'] }
+        preferred_dob: { type: [string, 'null'] }
+        preferred_address:
+          oneOf:
+            - $ref: '#/components/schemas/AddressSummary'
+            - type: 'null'
+        preferred_nric: { type: [string, 'null'] }
+        preferred_race_ethnicity: { type: [string, 'null'] }
+        profile_completeness_score: { type: number, default: 0 }
+        golden_profile_computed_at: { type: [string, 'null'] }
+        golden_profile_version: { type: [string, 'null'] }
+        source_record_count: { type: integer, default: 0 }
+        connection_count: { type: integer, default: 0 }
+        lifetime_value: { type: [number, 'null'] }
+        loyalty:
+          oneOf:
+            - type: array
+              items: { $ref: '#/components/schemas/LoyaltySummary' }
+            - type: 'null'
+        vehicles:
+          oneOf:
+            - type: array
+              items: { $ref: '#/components/schemas/VehicleSummary' }
+            - type: 'null'
+        created_at: { type: string, default: '' }
+        updated_at: { type: string, default: '' }
+        phone_confidence: { type: [number, 'null'] }
+        entities:
+          type: array
+          items: { $ref: '#/components/schemas/PersonEntitySummary' }
+        entity_count: { type: integer, default: 0 }
+        identifier_count: { type: integer, default: 0 }
+        possible_match_count: { type: integer, default: 0 }
+        system_match_count: { type: integer, default: 0 }
+        order_count: { type: integer, default: 0 }
+        bankruptcy_case_count: { type: integer, default: 0 }
+        preferred_dob_display: { type: string, default: '?' }
+        preferred_dob_invalid: { type: boolean, default: false }
+      required: [person_id, status]
+      additionalProperties: false
+    PersonListResponseEnvelope:
+      type: object
+      properties:
+        data:
+          type: array
+          items: { $ref: '#/components/schemas/ListedPerson' }
+        meta: { $ref: '#/components/schemas/Meta' }
+        display_items:
+          type: [array, 'null']
+          items: { type: object, additionalProperties: true }
+      required: [data, meta]
+      additionalProperties: false
+    EntityFilterOption:
+      type: object
+      properties:
+        entity_key:
+          type: string
+        display_name:
+          type: [string, 'null']
+      required: [entity_key, display_name]
+      additionalProperties: false
+    EntityFilterOptionsEnvelope:
+      type: object
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/EntityFilterOption'
+        meta:
+          $ref: '#/components/schemas/Meta'
+        display_items:
+          type: [array, 'null']
+          items: { type: object, additionalProperties: true }
       required: [data, meta]
       additionalProperties: false
     PersonSearchResponseEnvelope:

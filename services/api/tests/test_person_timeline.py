@@ -11,11 +11,11 @@ from src.auth.deps import get_current_user_or_oauth_client, require_active_user
 from src.auth.models import AuthUser
 from src.graph.mappers import map_audit_event, map_timeline_group
 from src.repositories.deps import get_person_repo
+from src.repositories.protocols.person import PersonPage
 from src.routes.persons import router
 from src.types import (
     AuditEvent,
     ConnectionType,
-    ListedPerson,
     MatchDecision,
     Person,
     PersonConnection,
@@ -157,10 +157,15 @@ def test_map_audit_event_reads_json_metadata() -> None:
 
 class FakeTimelineRepo:
     async def get_page(
-        self, filters: dict[str, object], skip: int, limit: int
-    ) -> tuple[list[ListedPerson], int]:
+        self,
+        filters: dict[str, object],
+        skip: int,
+        limit: int,
+        *,
+        include_total: bool,
+    ) -> PersonPage:
         _ = filters, skip, limit
-        return [], 0
+        return PersonPage([], False, 0 if include_total else None)
 
     async def search_by_identifier(self, identifier_type: str, value: str) -> list[Person]:
         _ = identifier_type, value

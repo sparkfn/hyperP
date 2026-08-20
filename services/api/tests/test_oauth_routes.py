@@ -41,16 +41,16 @@ from src.repositories.protocols.ingest import (
     IngestRunDetailResponse,
     IngestRunResponse,
 )
-from src.repositories.protocols.person import PersonListFilters, PersonRepository
+from src.repositories.protocols.person import PersonListFilters, PersonPage, PersonRepository
 from src.repositories.protocols.report import ReportRepository
 from src.repositories.protocols.review import ReviewListFilters, ReviewRepository
 from src.types import (
     AuditEvent,
     ConnectionType,
     DownstreamEvent,
+    EntityFilterOption,
     EntityPerson,
     EntitySummary,
-    ListedPerson,
     MatchDecision,
     Person,
     PersonConnection,
@@ -60,6 +60,7 @@ from src.types import (
     ReviewCaseDetail,
     ReviewCaseSummary,
     SourceRecord,
+    SourceSystemSummary,
     TrustTier,
 )
 from src.types_reports import ReportDetail, ReportResult, ReportSummary
@@ -229,10 +230,15 @@ async def _override_oauth_admin_client() -> OAuthClientUser:
 
 class _PersonRouteRepo:
     async def get_page(
-        self, filters: PersonListFilters, skip: int, limit: int
-    ) -> tuple[list[ListedPerson], int]:
+        self,
+        filters: PersonListFilters,
+        skip: int,
+        limit: int,
+        *,
+        include_total: bool,
+    ) -> PersonPage:
         _ = filters, skip, limit
-        return [], 0
+        return PersonPage([], False, 0 if include_total else None)
 
     async def search_by_identifier(self, identifier_type: str, value: str) -> list[Person]:
         _ = identifier_type, value
@@ -349,10 +355,18 @@ class _ReportRouteRepo:
 class _EntityRouteRepo:
     def __init__(self) -> None:
         self.get_all_calls = 0
+        self.get_filter_options_calls = 0
 
     async def get_all(self) -> list[EntitySummary]:
         self.get_all_calls += 1
         return [EntitySummary(entity_key="fundbox", display_name="Fundbox")]
+
+    async def get_filter_options(self) -> list[EntityFilterOption]:
+        self.get_filter_options_calls += 1
+        return [EntityFilterOption(entity_key="fundbox", display_name="Fundbox")]
+
+    async def get_source_systems(self) -> list[SourceSystemSummary]:
+        return []
 
     async def list_persons(
         self,
@@ -799,6 +813,35 @@ def test_entities_route_allows_oauth_client_with_persons_read_scope() -> None:
         }
     ]
     assert _ENTITY_REPO.get_all_calls == 1
+
+
+def test_entity_filter_options_route_allows_persons_reader() -> None:
+    app = build_frontend_app()
+    app.dependency_overrides[require_active_user] = _override_oauth_persons_reader
+    app.dependency_overrides[get_current_user_or_oauth_client] = _override_oauth_persons_reader
+    app.dependency_overrides[get_entity_repo] = _override_entity_repo
+    _ENTITY_REPO.get_filter_options_calls = 0
+    client = TestClient(app)
+
+    res = client.get("/entities/filter-options")
+
+    assert res.status_code == 200
+    assert res.json()["data"] == [{"entity_key": "fundbox", "display_name": "Fundbox"}]
+    assert _ENTITY_REPO.get_filter_options_calls == 1
+
+
+def test_entity_filter_options_route_checks_scope_before_repo_call() -> None:
+    app = build_frontend_app()
+    app.dependency_overrides[require_active_user] = _override_oauth_ingest_writer
+    app.dependency_overrides[get_current_user_or_oauth_client] = _override_oauth_ingest_writer
+    app.dependency_overrides[get_entity_repo] = _override_entity_repo
+    _ENTITY_REPO.get_filter_options_calls = 0
+    client = TestClient(app)
+
+    res = client.get("/entities/filter-options")
+
+    assert res.status_code == 403
+    assert _ENTITY_REPO.get_filter_options_calls == 0
 
 
 def test_persons_read_route_allows_human_user_with_mocked_repo() -> None:

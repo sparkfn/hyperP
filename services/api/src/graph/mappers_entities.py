@@ -14,6 +14,7 @@ from src.graph.converters import (
 )
 from src.graph.mappers import _as_dict, map_person, map_person_entity_dict
 from src.types import (
+    EntityFilterOption,
     EntityPerson,
     EntitySummary,
     ListedPerson,
@@ -35,6 +36,14 @@ def map_entity_summary(record: GraphRecord) -> EntitySummary:
         source_record_count=to_int(record.get("source_record_count")),
         last_ingested_at=to_iso_or_none(record.get("last_ingested_at")),
         active_review_cases=to_int(record.get("active_review_cases")),
+    )
+
+
+def map_entity_filter_option(record: GraphRecord) -> EntityFilterOption:
+    """Map the narrow entity-filter projection."""
+    return EntityFilterOption(
+        entity_key=to_str(record.get("entity_key")),
+        display_name=to_optional_str(record.get("display_name")),
     )
 
 

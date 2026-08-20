@@ -23,6 +23,7 @@ from src.graph.queries.admin import (
 from src.graph.queries.crm import GET_PERSON_CRM_METRICS
 from src.graph.queries.entities import (
     LIST_ENTITIES,
+    LIST_ENTITY_FILTER_OPTIONS,
     LIST_FILTER_SOURCE_SYSTEMS,
     get_entity_persons_query,
 )
@@ -280,6 +281,7 @@ __all__ = [
     "GET_REVIEW_SALES_RECORD",
     "GET_UNMERGE_TARGET",
     "LIST_ENTITIES",
+    "LIST_ENTITY_FILTER_OPTIONS",
     "LIST_EVENTS",
     "LIST_FILTER_SOURCE_SYSTEMS",
     "LIST_REPORTS",

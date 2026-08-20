@@ -5,7 +5,7 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense } from "react";
 import type {
-  EntitySummary,
+  EntityFilterOption,
   ListedPerson,
   PersonConnection,
   PersonListSummary,
@@ -19,6 +19,8 @@ import { usePopoverClose } from "@/lib/usePopoverClose";
 import { personDisplayName } from "@/lib/ui-display";
 import { normalizePaginatedPage } from "@/lib/paginated-page";
 import PersonGraphDialog from "@/components/PersonGraphDialog";
+import { formatPaginationShowing, hasEffectivePersonListFilters } from "./person-list-view";
+import { useLazyFilterOptions } from "./use-lazy-filter-options";
 import styles from "./persons.module.css";
 
 interface ColDef { key: string; minWidth: number; resizable: boolean }
@@ -866,13 +868,12 @@ function PersonsInner(): ReactElement {
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [cursorStack, setCursorStack] = useState<(string | null)[]>([]);
   const [currentCursor, setCurrentCursor] = useState<string | null>(null);
-  const [entities, setEntities] = useState<EntitySummary[]>([]);
-  const [sourceSystems, setSourceSystems] = useState<SourceSystemInfo[]>([]);
   const [allProfilesCount, setAllProfilesCount] = useState<number | null>(null);
   const [highRiskCount, setHighRiskCount] = useState<number | null>(null);
   const [highValueCount, setHighValueCount] = useState<number | null>(null);
   const [noContactCount, setNoContactCount] = useState<number | null>(null);
   const [statsLoading, setStatsLoading] = useState(true);
+  const [initialListSettled, setInitialListSettled] = useState(false);
 
   const [graphDialog, setGraphDialog] = useState<{ open: boolean; personId: string; title: string }>({
     open: false,
@@ -920,6 +921,7 @@ function PersonsInner(): ReactElement {
   const colEls = useRef<(HTMLTableColElement | null)[]>([]);
   const dragRef = useRef<{ idx: number; startX: number; startW: number } | null>(null);
   const suppressRowClickRef = useRef(false);
+  const initialListSettledRef = useRef(false);
 
   function startColResize(idx: number, e: React.MouseEvent): void {
     e.preventDefault();
@@ -1002,30 +1004,39 @@ function PersonsInner(): ReactElement {
     if (q) setSearch(q);
   }, [searchParams]);
 
+  const shouldLoadEntityOptions = openFilter === "entity" || entityFilter.length > 0;
+  const shouldLoadSourceSystems = openFilter === "source" || sourceFilter.length > 0;
+  const entityOptions = useLazyFilterOptions<EntityFilterOption>({
+    enabled: shouldLoadEntityOptions,
+    initialEnabled: entityFilter.length > 0,
+    path: "/bff/entities/filter-options",
+  });
+  const sourceOptions = useLazyFilterOptions<SourceSystemInfo>({
+    enabled: shouldLoadSourceSystems,
+    initialEnabled: sourceFilter.length > 0,
+    path: "/bff/source-systems",
+  });
+  const entities = entityOptions.items;
+  const sourceSystems = sourceOptions.items;
+
   useEffect(() => {
+    if (!initialListSettled) return;
     const controller = new AbortController();
-    const { signal } = controller;
-    void (async () => {
-      try {
-        const [ents, srcs, summary] = await Promise.all([
-          bffFetch<EntitySummary[]>("/bff/entities", { cache: "no-store", signal }),
-          bffFetch<SourceSystemInfo[]>("/bff/source-systems", { cache: "no-store", signal }),
-          bffFetch<PersonListSummary>("/bff/persons/summary", { cache: "no-store", signal }),
-        ]);
-        setEntities(ents);
-        setSourceSystems(srcs);
+    void bffFetch<PersonListSummary>("/bff/persons/summary", {
+      cache: "no-store",
+      signal: controller.signal,
+    })
+      .then((summary) => {
+        if (controller.signal.aborted) return;
         setAllProfilesCount(summary.all_profiles_count);
         setHighRiskCount(summary.high_risk_count);
         setHighValueCount(summary.high_value_count);
         setNoContactCount(summary.no_contact_count);
-      } catch {
-        // silently fail — filter options and stat cards fall back gracefully
-      } finally {
-        if (!signal.aborted) setStatsLoading(false);
-      }
-    })();
+      })
+      .catch(() => undefined)
+      .finally(() => { if (!controller.signal.aborted) setStatsLoading(false); });
     return () => controller.abort();
-  }, []);
+  }, [initialListSettled]);
 
   useEffect(() => {
     function handleOutsideClick(e: MouseEvent): void {
@@ -1038,7 +1049,10 @@ function PersonsInner(): ReactElement {
   }, []);
 
   function toggleFilter(key: FilterKey): void {
-    setOpenFilter((prev) => (prev === key ? null : key));
+    const next = openFilter === key ? null : key;
+    if (next === "entity") entityOptions.start();
+    if (next === "source") sourceOptions.start();
+    setOpenFilter(next);
   }
 
   const activeFilterCount = [
@@ -1055,6 +1069,7 @@ function PersonsInner(): ReactElement {
     addrCity !== "",
     addrPostal !== "",
     addrCountry !== "",
+    matchPresence !== "any",
   ].filter(Boolean).length + entityFilter.length + sourceFilter.length + identityFilter.length;
 
   function clearAllFilters(): void {
@@ -1193,6 +1208,20 @@ function PersonsInner(): ReactElement {
     return params.toString();
   }, [apiQuery, dobFilter, dobMode, matchPresence, search]);
 
+  const hasEffectiveFilters = useMemo(
+    () => hasEffectivePersonListFilters(apiQuery),
+    [apiQuery],
+  );
+
+  const paginationShowing = formatPaginationShowing({
+    rowCount: apiRows.length,
+    pageIndex: cursorStack.length,
+    pageSize,
+    exactTotal: total,
+    unfilteredSummaryTotal: allProfilesCount,
+    hasEffectiveFilters,
+  });
+
   useEffect(() => {
     const current = searchParams.toString();
     if (current === urlQuery) return;
@@ -1237,7 +1266,14 @@ function PersonsInner(): ReactElement {
           setApiRows([]);
         }
       } finally {
-        if (!signal.aborted) { setFetchLoading(false); setGlobalLoading(listLoadId, false); }
+        if (!signal.aborted) {
+          setFetchLoading(false);
+          setGlobalLoading(listLoadId, false);
+          if (!initialListSettledRef.current) {
+            initialListSettledRef.current = true;
+            setInitialListSettled(true);
+          }
+        }
       }
     };
     void run();
@@ -1502,7 +1538,7 @@ function PersonsInner(): ReactElement {
             isActive={entityFilter.length > 0}
             activeLabel={
               entityFilter.length === 1
-                ? (entities.find((e) => e.entity_key === entityFilter[0])?.display_name ?? "Entity")
+                ? (entities.find((e) => e.entity_key === entityFilter[0])?.display_name ?? entityFilter[0] ?? "Entity")
                 : `${entityFilter.length} entities`
             }
             count={entityFilter.length > 1 ? entityFilter.length : undefined}
@@ -1529,6 +1565,15 @@ function PersonsInner(): ReactElement {
                 <div className={styles.filterModeHint}>Select 2+ entities to use "AND"</div>
               )}
               <div className={styles.filterOptions}>
+                {entityOptions.status === "loading" && <span className={styles.filterModeHint}>Loading entities...</span>}
+                {entityOptions.status === "error" && (
+                  <button type="button" className={styles.filterChip} onClick={entityOptions.retry}>
+                    Retry entities
+                  </button>
+                )}
+                {entityOptions.status === "loaded" && entities.length === 0 && (
+                  <span className={styles.filterModeHint}>No entities available</span>
+                )}
                 {entities.map((entity) => (
                   <button
                     key={entity.entity_key}
@@ -1556,7 +1601,7 @@ function PersonsInner(): ReactElement {
               hasConversationSource && sourceFilter.length === 0
                 ? "Chat records"
                 : sourceFilter.length === 1
-                  ? (sourceSystems.find((s) => s.source_key === sourceFilter[0])?.display_name ?? "Source")
+                  ? (sourceSystems.find((s) => s.source_key === sourceFilter[0])?.display_name ?? sourceFilter[0] ?? "Source")
                   : `${sourceFilter.length} sources`
             }
             count={sourceFilter.length > 1 ? sourceFilter.length : undefined}
@@ -1606,6 +1651,15 @@ function PersonsInner(): ReactElement {
                 />
               </div>
               <div className={`${styles.filterOptions} ${styles.filterOptionsScrollable} ${styles.filterOptionsStack}`}>
+                {sourceOptions.status === "loading" && <span className={styles.filterModeHint}>Loading sources...</span>}
+                {sourceOptions.status === "error" && (
+                  <button type="button" className={styles.filterChip} onClick={sourceOptions.retry}>
+                    Retry sources
+                  </button>
+                )}
+                {sourceOptions.status === "loaded" && sourceSystems.length === 0 && (
+                  <span className={styles.filterModeHint}>No source systems available</span>
+                )}
                 {filteredSourceSystems.map((source) => {
                   const checked = sourceFilter.includes(source.source_key);
                   return (
@@ -2032,7 +2086,7 @@ function PersonsInner(): ReactElement {
         {/* ── Count bar + Table ─────────────────────────────────── */}
         <div className={styles.tableSection}>
           <PaginationBar
-            showing={`Showing ${apiRows.length === 0 ? 0 : cursorStack.length * pageSize + 1}–${cursorStack.length * pageSize + apiRows.length} of ${total != null ? total.toLocaleString() : "…"} profiles`}
+            showing={paginationShowing}
             hasPrev={cursorStack.length > 0} hasNext={nextCursor !== null}
             pageSize={pageSize} selectedCount={selected.size}
             onPrev={goPrev} onNext={goNext}
@@ -2176,7 +2230,7 @@ function PersonsInner(): ReactElement {
           </div>
 
           <PaginationBar
-            showing={`Showing ${apiRows.length === 0 ? 0 : cursorStack.length * pageSize + 1}–${cursorStack.length * pageSize + apiRows.length} of ${total != null ? total.toLocaleString() : "…"} profiles`}
+            showing={paginationShowing}
             hasPrev={cursorStack.length > 0} hasNext={nextCursor !== null}
             pageSize={pageSize} selectedCount={selected.size}
             onPrev={goPrev} onNext={goNext}

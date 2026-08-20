@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Protocol, TypedDict
 
 from src.types import (
@@ -68,11 +69,25 @@ class PersonListFilters(TypedDict, total=False):
     sort_order: str | None
 
 
+@dataclass(frozen=True)
+class PersonPage:
+    """A person-list page with an optional exact total."""
+
+    items: list[ListedPerson]
+    has_more: bool
+    total_count: int | None
+
+
 class PersonRepository(Protocol):
     async def get_page(
-        self, filters: PersonListFilters, skip: int, limit: int
-    ) -> tuple[list[ListedPerson], int]:
-        """Return a page of persons matching filters, plus the total count."""
+        self,
+        filters: PersonListFilters,
+        skip: int,
+        limit: int,
+        *,
+        include_total: bool,
+    ) -> PersonPage:
+        """Return a page of persons and, optionally, its exact total."""
         ...
 
     async def get_list_summary(self) -> PersonListSummary:

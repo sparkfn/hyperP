@@ -40,6 +40,12 @@ class AppConfig(BaseSettings):
     google_oauth_client_secret: str | None = Field(default=None, alias="AUTH_GOOGLE_SECRET")
     google_oauth_hosted_domain: str | None = Field(default=None, alias="AUTH_GOOGLE_HOSTED_DOMAIN")
     redis_url: str = Field(default="redis://redis:6379", alias="REDIS_URL")
+    person_list_summary_cache_ttl_seconds: int = Field(
+        default=30,
+        ge=0,
+        le=300,
+        alias="PERSON_LIST_SUMMARY_CACHE_TTL_SECONDS",
+    )
     # Minutes before a Google access token is considered expired for revocation purposes.
     # Google issues tokens with a 1-hour expiry; set this to match or slightly above.
     access_token_expiry_minutes: int = Field(default=60, alias="ACCESS_TOKEN_EXPIRY_MINUTES")

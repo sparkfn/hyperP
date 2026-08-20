@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
@@ -89,6 +90,156 @@ async def test_repository_defaults_missing_summary_record_to_zero(
     _install_session(monkeypatch, session)
 
     assert await Neo4jPersonRepository().get_list_summary() == PersonListSummary()
+
+
+@pytest.mark.anyio
+async def test_summary_cache_reuses_value_and_returns_copies(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = _Session(
+        _Record(
+            {
+                "all_profiles_count": 42,
+                "high_risk_count": 7,
+                "high_value_count": 5,
+                "no_contact_count": 3,
+            }
+        )
+    )
+    _install_session(monkeypatch, session)
+    monkeypatch.setattr(person_module.config, "person_list_summary_cache_ttl_seconds", 30)
+    repo = Neo4jPersonRepository()
+
+    first = await repo.get_list_summary()
+    first.all_profiles_count = 999
+    second = await repo.get_list_summary()
+
+    assert second.all_profiles_count == 42
+    assert session.calls == [GET_PERSON_LIST_SUMMARY]
+
+
+@pytest.mark.anyio
+async def test_summary_cache_refreshes_after_ttl(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = _Session(_Record({"all_profiles_count": 1}))
+    _install_session(monkeypatch, session)
+    monkeypatch.setattr(person_module.config, "person_list_summary_cache_ttl_seconds", 30)
+    now = [100.0]
+    monkeypatch.setattr(person_module, "monotonic", lambda: now[0])
+    repo = Neo4jPersonRepository()
+
+    assert (await repo.get_list_summary()).all_profiles_count == 1
+    now[0] = 131.0
+    session.record = _Record({"all_profiles_count": 2})
+    assert (await repo.get_list_summary()).all_profiles_count == 2
+
+    assert session.calls == [GET_PERSON_LIST_SUMMARY, GET_PERSON_LIST_SUMMARY]
+
+
+@pytest.mark.anyio
+async def test_zero_ttl_disables_summary_cache(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = _Session(_Record({"all_profiles_count": 1}))
+    _install_session(monkeypatch, session)
+    monkeypatch.setattr(person_module.config, "person_list_summary_cache_ttl_seconds", 0)
+    repo = Neo4jPersonRepository()
+
+    await repo.get_list_summary()
+    session.record = _Record({"all_profiles_count": 2})
+    assert (await repo.get_list_summary()).all_profiles_count == 2
+
+    assert session.calls == [GET_PERSON_LIST_SUMMARY, GET_PERSON_LIST_SUMMARY]
+
+
+@pytest.mark.anyio
+async def test_concurrent_summary_cache_misses_are_coalesced(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(person_module.config, "person_list_summary_cache_ttl_seconds", 30)
+
+    class _BlockingRepo(Neo4jPersonRepository):
+        def __init__(self) -> None:
+            super().__init__()
+            self.calls = 0
+            self.started = asyncio.Event()
+            self.release = asyncio.Event()
+
+        async def _load_list_summary(self) -> PersonListSummary:
+            self.calls += 1
+            self.started.set()
+            await self.release.wait()
+            return PersonListSummary(all_profiles_count=42)
+
+    repo = _BlockingRepo()
+    first = asyncio.create_task(repo.get_list_summary())
+    await repo.started.wait()
+    second = asyncio.create_task(repo.get_list_summary())
+    await asyncio.sleep(0)
+    repo.release.set()
+
+    assert await asyncio.gather(first, second) == [
+        PersonListSummary(all_profiles_count=42),
+        PersonListSummary(all_profiles_count=42),
+    ]
+    assert repo.calls == 1
+
+
+@pytest.mark.anyio
+async def test_summary_loader_exceptions_are_not_cached(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(person_module.config, "person_list_summary_cache_ttl_seconds", 30)
+
+    class _FlakyRepo(Neo4jPersonRepository):
+        def __init__(self) -> None:
+            super().__init__()
+            self.calls = 0
+
+        async def _load_list_summary(self) -> PersonListSummary:
+            self.calls += 1
+            if self.calls == 1:
+                raise RuntimeError("temporary failure")
+            return PersonListSummary(all_profiles_count=42)
+
+    repo = _FlakyRepo()
+    with pytest.raises(RuntimeError, match="temporary failure"):
+        await repo.get_list_summary()
+
+    assert (await repo.get_list_summary()).all_profiles_count == 42
+    assert repo.calls == 2
+
+
+@pytest.mark.anyio
+async def test_cancelled_summary_refresh_releases_cache_lock(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(person_module.config, "person_list_summary_cache_ttl_seconds", 30)
+
+    class _CancellableRepo(Neo4jPersonRepository):
+        def __init__(self) -> None:
+            super().__init__()
+            self.calls = 0
+            self.first_started = asyncio.Event()
+
+        async def _load_list_summary(self) -> PersonListSummary:
+            self.calls += 1
+            if self.calls == 1:
+                self.first_started.set()
+                await asyncio.Event().wait()
+            return PersonListSummary(all_profiles_count=42)
+
+    repo = _CancellableRepo()
+    first = asyncio.create_task(repo.get_list_summary())
+    await repo.first_started.wait()
+    second = asyncio.create_task(repo.get_list_summary())
+    first.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await first
+
+    assert (await asyncio.wait_for(second, timeout=1)).all_profiles_count == 42
+    assert repo.calls == 2
 
 
 class _SummaryRepo:

@@ -37,6 +37,13 @@ person_count, source_record_count, last_ingested_at, 0 AS active_review_cases
 ORDER BY e.display_name
 """
 
+LIST_ENTITY_FILTER_OPTIONS = """
+MATCH (e:Entity)
+RETURN e.entity_key AS entity_key,
+       e.display_name AS display_name
+ORDER BY coalesce(e.display_name, e.entity_key), e.entity_key
+"""
+
 LIST_FILTER_SOURCE_SYSTEMS = """
 MATCH (ss:SourceSystem)
 CALL {

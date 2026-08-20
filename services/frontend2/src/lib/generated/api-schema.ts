@@ -58,6 +58,48 @@ export interface paths {
         patch: operations["updateIngestRun"];
         trace?: never;
     };
+    "/v1/persons": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List canonical persons
+         * @description Paginated person list used by the authenticated UI. `meta.next_cursor`
+         *     is the authoritative continuation signal. Exact counting is enabled by
+         *     default for compatibility but callers may disable it for faster reads.
+         */
+        get: operations["listPersons"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/entities/filter-options": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List lightweight entity filter options
+         * @description Returns only entity keys and display names for person-list filters; it intentionally avoids person and source-record aggregation.
+         */
+        get: operations["list_entity_filter_options"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/persons/search": {
         parameters: {
             query?: never;
@@ -909,6 +951,7 @@ export interface components {
         Meta: {
             request_id: string;
             next_cursor?: string | null;
+            /** @description Exact matching total when requested; null when exact counting is disabled or the endpoint does not provide a total. */
             total_count?: number | null;
         };
         ErrorObject: {
@@ -1444,6 +1487,82 @@ export interface components {
         IngestRunResponseEnvelope: {
             data: components["schemas"]["IngestRunData"];
             meta: components["schemas"]["Meta"];
+        };
+        PersonEntitySummary: {
+            entity_key: string;
+            display_name?: string | null;
+            entity_type?: string | null;
+            country_code?: string | null;
+            /** @default true */
+            is_active: boolean;
+            /** @default 0 */
+            source_record_count: number;
+        };
+        ListedPerson: {
+            person_id: string;
+            status: components["schemas"]["PersonStatus"];
+            /** @default false */
+            is_high_value: boolean;
+            /** @default false */
+            is_high_risk: boolean;
+            preferred_full_name?: string | null;
+            preferred_phone?: string | null;
+            preferred_email?: string | null;
+            preferred_dob?: string | null;
+            preferred_address?: components["schemas"]["AddressSummary"] | null;
+            preferred_nric?: string | null;
+            preferred_race_ethnicity?: string | null;
+            /** @default 0 */
+            profile_completeness_score: number;
+            golden_profile_computed_at?: string | null;
+            golden_profile_version?: string | null;
+            /** @default 0 */
+            source_record_count: number;
+            /** @default 0 */
+            connection_count: number;
+            lifetime_value?: number | null;
+            loyalty?: components["schemas"]["LoyaltySummary"][] | null;
+            vehicles?: components["schemas"]["VehicleSummary"][] | null;
+            /** @default  */
+            created_at: string;
+            /** @default  */
+            updated_at: string;
+            phone_confidence?: number | null;
+            entities?: components["schemas"]["PersonEntitySummary"][];
+            /** @default 0 */
+            entity_count: number;
+            /** @default 0 */
+            identifier_count: number;
+            /** @default 0 */
+            possible_match_count: number;
+            /** @default 0 */
+            system_match_count: number;
+            /** @default 0 */
+            order_count: number;
+            /** @default 0 */
+            bankruptcy_case_count: number;
+            /** @default ? */
+            preferred_dob_display: string;
+            /** @default false */
+            preferred_dob_invalid: boolean;
+        };
+        PersonListResponseEnvelope: {
+            data: components["schemas"]["ListedPerson"][];
+            meta: components["schemas"]["Meta"];
+            display_items?: {
+                [key: string]: unknown;
+            }[] | null;
+        };
+        EntityFilterOption: {
+            entity_key: string;
+            display_name: string | null;
+        };
+        EntityFilterOptionsEnvelope: {
+            data: components["schemas"]["EntityFilterOption"][];
+            meta: components["schemas"]["Meta"];
+            display_items?: {
+                [key: string]: unknown;
+            }[] | null;
         };
         PersonSearchResponseEnvelope: {
             data: components["schemas"]["PersonSummary"][];
@@ -2144,6 +2263,91 @@ export interface operations {
             };
             400: components["responses"]["BadRequest"];
             404: components["responses"]["NotFound"];
+        };
+    };
+    listPersons: {
+        parameters: {
+            query?: {
+                entity_key?: string[];
+                entity_key_mode?: string;
+                source_key?: string[];
+                source_key_mode?: string;
+                source_record_type?: string;
+                is_high_value?: boolean;
+                is_high_risk?: boolean;
+                has_phone?: boolean;
+                has_email?: boolean;
+                has_any_contact?: boolean;
+                has_address?: boolean;
+                has_bankruptcy_case?: boolean;
+                has_any_match?: boolean;
+                has_possible_match?: boolean;
+                has_system_match?: boolean;
+                addr_street?: string;
+                addr_unit?: string;
+                addr_city?: string;
+                addr_postal?: string;
+                addr_country?: string;
+                updated_after?: string;
+                updated_before?: string;
+                has_dob?: boolean;
+                dob_from?: string;
+                dob_to?: string;
+                dob_year?: string;
+                dob_month?: string;
+                dob_day?: string;
+                q?: string;
+                sort_by?: string;
+                sort_order?: string;
+                cursor?: string;
+                limit?: number;
+                /** @description Whether to execute the exact count query. Defaults to true. When false, `meta.total_count` is null and `meta.next_cursor` determines whether another page is available. */
+                include_total?: boolean;
+            };
+            header?: {
+                "X-Request-Id"?: components["parameters"]["RequestId"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Paginated person list */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PersonListResponseEnvelope"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+        };
+    };
+    list_entity_filter_options: {
+        parameters: {
+            query?: never;
+            header?: {
+                "X-Request-Id"?: components["parameters"]["RequestId"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Entity filter options */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EntityFilterOptionsEnvelope"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
         };
     };
     searchPersons: {
@@ -3025,6 +3229,8 @@ export interface operations {
                  *     ]
                  */
                 entity_key?: string[];
+                /** @description Combine repeated entity keys with `or` or `and`. */
+                entity_key_mode?: "or" | "and";
                 /**
                  * @description Filter to persons with at least one source record from this source. Repeatable.
                  * @example [
@@ -3032,6 +3238,8 @@ export interface operations {
                  *     ]
                  */
                 source_key?: string[];
+                /** @description Combine repeated source keys with `or` or `and`. */
+                source_key_mode?: "or" | "and";
                 /** @description Filter by linked source-record subtype. */
                 source_record_type?: string;
                 /** @description Filter by high-value flag. */
@@ -3084,6 +3292,8 @@ export interface operations {
                 sort_by?: "preferred_full_name" | "preferred_phone" | "preferred_email" | "preferred_dob" | "preferred_nric" | "source_record_count" | "connection_count" | "entity_count" | "possible_match_count" | "system_match_count" | "order_count" | "bankruptcy_case_count" | "phone_confidence" | "updated_at" | "profile_completeness_score" | "relevance";
                 /** @description Sort direction. Defaults to `desc`. */
                 sort_order?: "asc" | "desc";
+                /** @description Whether to execute the exact count query. Defaults to true. When false, `meta.total_count` is null; use `meta.next_cursor` to continue. */
+                include_total?: boolean;
             };
             header?: {
                 "X-Request-Id"?: components["parameters"]["RequestId"];
@@ -3099,7 +3309,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["PersonSearchResponseEnvelope"];
+                    "application/json": components["schemas"]["PersonListResponseEnvelope"];
                 };
             };
             400: components["responses"]["BadRequest"];
