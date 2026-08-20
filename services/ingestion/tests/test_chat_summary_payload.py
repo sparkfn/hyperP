@@ -154,3 +154,39 @@ def test_persist_source_record_drops_invalid_chat_classifications() -> None:
     assert "tone" not in payload
     assert "purpose" not in payload
     assert "difficulty" not in payload
+
+
+def test_persist_source_record_projects_crm_deal_stage_from_json_payload() -> None:
+    tx = _Tx()
+    envelope = SourceRecordEnvelope(
+        source_system="bitrix_chat",
+        source_record_id="bitrix-crm-deal-1",
+        source_record_version="1",
+        record_type=RecordType.CRM_DEAL,
+        observed_at="2026-05-06T00:00:00Z",
+        record_hash="hash-deal-1",
+        raw_payload={"stage_id": "C2:WON"},
+    )
+    match_result = MatchResult(
+        decision=MatchDecision.NO_MATCH,
+        confidence=0.0,
+        reasons=[],
+        engine_type=EngineType.HEURISTIC,
+    )
+
+    persist_source_record(
+        cast(ManagedTransaction, tx),
+        envelope=envelope,
+        identifiers=[],
+        addresses=[],
+        attributes=[],
+        match_result=match_result,
+        is_new_person=False,
+        ingest_run_id=None,
+        lifecycle_status=SourceRecordLifecycleStatus.PENDING_REVIEW,
+        expected_active_source_record_pk=None,
+    )
+
+    assert tx.params is not None
+    assert tx.params["raw_payload"] == '{"stage_id": "C2:WON"}'
+    assert tx.params["crm_deal_stage_id"] == "C2:WON"

@@ -249,8 +249,9 @@ CREATE (sr:SourceRecord {
   observed_at: datetime(),
   ingested_at: datetime(),
   record_hash: 'sha256:abc123',
-  raw_payload: {},                 // native map, not a JSON string
-  normalized_payload: {},
+  raw_payload: '{}',               // JSON string; Neo4j node properties cannot store nested maps
+  normalized_payload: '{}',
+  crm_deal_stage_id: null,         // immutable projection for record_type='crm_deal'
   metadata: {},
   extraction_confidence: null,     // 0.0–1.0; required when record_type='conversation', null otherwise
   extraction_method: null,         // e.g. 'llm_extractor_v1', 'regex_v2'; null for non-conversation

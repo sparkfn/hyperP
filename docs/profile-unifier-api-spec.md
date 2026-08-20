@@ -699,7 +699,7 @@ stage-history records remain excluded until their analytical release.
 
 - `deal_count`: effective-active `bitrix_chat` `crm_deal` records linked to the
   survivor.
-- `deal_stage_breakdown`: distribution of current `raw_payload.stage_id` values;
+- `deal_stage_breakdown`: distribution of current `crm_deal_stage_id` projection values;
   deals without a stage are counted in `deal_count` but omitted from this list.
 - Deal date ranges use `observed_at`.
 - Every raw ISO timestamp has a matching `*_display` field formatted by the API

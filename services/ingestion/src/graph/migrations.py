@@ -51,6 +51,37 @@ RETURN migration.completed_at AS completed_at
 """
 
 
+START_CRM_DEAL_STAGE_PROJECTION_MIGRATION = """
+MERGE (migration:DataMigration {migration_key: 'crm_deal_stage_projection_v1'})
+ON CREATE SET migration.created_at = datetime()
+RETURN migration.completed_at AS completed_at
+"""
+
+
+LIST_CRM_DEALS_MISSING_STAGE_PROJECTION = """
+MATCH (record:SourceRecord {record_type: 'crm_deal'})
+      -[:FROM_SOURCE]->(:SourceSystem {source_key: 'bitrix_chat'})
+WHERE record.crm_deal_stage_id IS NULL
+RETURN record.source_record_pk AS source_record_pk,
+       record.raw_payload AS raw_payload
+"""
+
+
+SET_CRM_DEAL_STAGE_PROJECTION = """
+MATCH (record:SourceRecord {source_record_pk: $source_record_pk})
+SET record.crm_deal_stage_id = $crm_deal_stage_id
+RETURN record.source_record_pk AS source_record_pk
+"""
+
+
+COMPLETE_CRM_DEAL_STAGE_PROJECTION_MIGRATION = """
+MATCH (migration:DataMigration {migration_key: 'crm_deal_stage_projection_v1'})
+WHERE migration.completed_at IS NULL
+SET migration.completed_at = datetime()
+RETURN migration.completed_at AS completed_at
+"""
+
+
 COMPLETE_BITRIX_CHAT_SOURCE_MIGRATION = """
 MATCH (migration:DataMigration {migration_key: 'bitrix_chat_source_v1'})
 WHERE migration.completed_at IS NULL
@@ -668,6 +699,51 @@ def migrate_bitrix_chat_source(client: Neo4jClient) -> int:
     return linked
 
 
+def _crm_deal_stage_id_from_raw_payload(raw_payload: object) -> str | None:
+    payload = decode_raw_payload(raw_payload)
+    if payload is None:
+        return None
+    stage_id = payload.get("stage_id")
+    if not isinstance(stage_id, str):
+        stage_id = payload.get("STAGE_ID")
+    return stage_id if isinstance(stage_id, str) and stage_id else None
+
+
+def migrate_crm_deal_stage_projection(client: Neo4jClient) -> int:
+    """Backfill the stage projection used by CRM metric aggregation."""
+
+    def _work(tx: ManagedTransaction) -> int:
+        marker = tx.run(START_CRM_DEAL_STAGE_PROJECTION_MIGRATION).single()
+        if marker is None:
+            raise RuntimeError("CRM deal stage projection marker could not be created")
+        if marker["completed_at"] is not None:
+            return 0
+        updated = 0
+        for row in tx.run(LIST_CRM_DEALS_MISSING_STAGE_PROJECTION):
+            source_record_pk = row["source_record_pk"]
+            if not isinstance(source_record_pk, str) or not source_record_pk:
+                raise RuntimeError("CRM deal source record is missing source_record_pk")
+            stage_id = _crm_deal_stage_id_from_raw_payload(row["raw_payload"])
+            if stage_id is None:
+                continue
+            result = tx.run(
+                SET_CRM_DEAL_STAGE_PROJECTION,
+                source_record_pk=source_record_pk,
+                crm_deal_stage_id=stage_id,
+            ).single()
+            if result is None:
+                raise RuntimeError("CRM deal stage projection could not be persisted")
+            updated += 1
+        if tx.run(COMPLETE_CRM_DEAL_STAGE_PROJECTION_MIGRATION).single() is None:
+            raise RuntimeError("CRM deal stage projection migration could not be marked complete")
+        return updated
+
+    updated = client.execute_write(_work)
+    if updated:
+        logger.info("Projected stage IDs on %d existing CRM deal records", updated)
+    return updated
+
+
 def apply_data_migrations(
     client: Neo4jClient,
     *,
@@ -682,6 +758,7 @@ def apply_data_migrations(
     """
     backfill_record_type_subtypes(client)
     migrate_bitrix_chat_source(client)
+    migrate_crm_deal_stage_projection(client)
     migrate_bitrix_crm_entities(
         client,
         bitrix_crm_category_entities or {},

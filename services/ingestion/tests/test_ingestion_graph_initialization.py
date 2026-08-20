@@ -157,6 +157,7 @@ def test_data_migrations_exclude_recurring_lifecycle_reconciliation(
     for name in (
         "backfill_record_type_subtypes",
         "migrate_bitrix_chat_source",
+        "migrate_crm_deal_stage_projection",
         "migrate_fundbox_source_keys",
         "migrate_source_record_lifecycle",
         "migrate_projection_relationship_lifecycle",
@@ -196,6 +197,7 @@ def test_data_migrations_exclude_recurring_lifecycle_reconciliation(
     assert calls == [
         "backfill_record_type_subtypes",
         "migrate_bitrix_chat_source",
+        "migrate_crm_deal_stage_projection",
         "migrate_bitrix_crm_entities",
         "migrate_fundbox_source_keys",
         "migrate_source_record_lifecycle",

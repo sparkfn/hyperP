@@ -71,6 +71,7 @@ def test_create_source_record_stores_authoritative_lifecycle_identity() -> None:
     assert "lifecycle_status:     $lifecycle_status" in query
     assert "source_version_key:   $source_version_key" in query
     assert "expected_active_source_record_pk: $expected_active_source_record_pk" in query
+    assert "crm_deal_stage_id:     $crm_deal_stage_id" in query
     assert "is_latest:             $is_latest" in query
     assert "Entity {entity_key: $entity_key}" in query
     assert "WITH ss, entity, $entity_key AS requested_entity_key" in query

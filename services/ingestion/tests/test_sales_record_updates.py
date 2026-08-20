@@ -341,6 +341,7 @@ def test_sales_source_record_creation_supplies_owner_entity_key(
         params for query, params in tx.calls if query == queries.CREATE_SOURCE_RECORD
     )
     assert create_params["entity_key"] == entity_key
+    assert create_params["crm_deal_stage_id"] is None
 
 
 @pytest.mark.parametrize(

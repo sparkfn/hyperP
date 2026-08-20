@@ -115,6 +115,11 @@ def test_crm_metrics_query_uses_isolated_record_subqueries() -> None:
     )
 
 
+def test_crm_metrics_query_uses_the_deal_stage_projection_not_raw_payload() -> None:
+    assert "sr.crm_deal_stage_id" in GET_PERSON_CRM_METRICS
+    assert "sr.raw_payload.stage_id" not in GET_PERSON_CRM_METRICS
+
+
 def test_crm_metrics_query_enforces_reader_authority_boundaries() -> None:
     assert GET_PERSON_CRM_METRICS.count("coalesce(link.is_active, true) = true") == 7
     assert (

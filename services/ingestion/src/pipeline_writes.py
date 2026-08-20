@@ -25,6 +25,7 @@ from src.models import (
     MatchResult,
     NormalizedAttribute,
     NormalizedIdentifier,
+    RecordType,
     SourceRecordEnvelope,
     SourceRecordLifecycleStatus,
 )
@@ -296,6 +297,7 @@ def persist_source_record(
         record_hash=envelope.record_hash,
         raw_payload=json.dumps(envelope.raw_payload, default=str),
         normalized_payload=json.dumps(normalized, default=str),
+        crm_deal_stage_id=_crm_deal_stage_id(envelope),
     )
     sr_record = sr_result.single()
     assert sr_record is not None, "CREATE_SOURCE_RECORD must return a row"
@@ -303,6 +305,21 @@ def persist_source_record(
     if ingest_run_id is not None:
         tx.run(queries.LINK_SOURCE_RECORD_TO_RUN, source_record_pk=pk, ingest_run_id=ingest_run_id)
     return pk
+
+
+def _crm_deal_stage_id(envelope: SourceRecordEnvelope) -> str | None:
+    """Return the canonical stage ID projected from a CRM-deal payload.
+
+    ``raw_payload`` is intentionally JSON-serialized before it reaches Neo4j,
+    so readers cannot safely dereference it as a Cypher map. Keep this narrow,
+    immutable projection alongside the persisted payload for CRM metrics.
+    """
+    if envelope.record_type is not RecordType.CRM_DEAL:
+        return None
+    stage_id = envelope.raw_payload.get("stage_id")
+    if not isinstance(stage_id, str):
+        stage_id = envelope.raw_payload.get("STAGE_ID")
+    return stage_id if isinstance(stage_id, str) and stage_id else None
 
 
 def persist_match_decision(

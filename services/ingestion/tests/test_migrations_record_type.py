@@ -74,6 +74,7 @@ def test_apply_data_migrations_runs_in_dependency_order(
     functions = (
         ("backfill", "backfill_record_type_subtypes"),
         ("bitrix_migration", "migrate_bitrix_chat_source"),
+        ("crm_stage_projection", "migrate_crm_deal_stage_projection"),
         ("bitrix_crm_entity_migration", "migrate_bitrix_crm_entities"),
         ("fundbox_migration", "migrate_fundbox_source_keys"),
         ("source_migration", "migrate_source_record_lifecycle"),
@@ -91,6 +92,7 @@ def test_apply_data_migrations_runs_in_dependency_order(
     assert calls == [
         "backfill",
         "bitrix_migration",
+        "crm_stage_projection",
         "bitrix_crm_entity_migration",
         "fundbox_migration",
         "source_migration",

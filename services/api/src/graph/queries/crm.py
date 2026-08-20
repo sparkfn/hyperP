@@ -40,9 +40,8 @@ CALL (person) {{
     AND {_BITRIX_SOURCE}
   WITH CASE
          WHEN sr IS NOT NULL
-          AND sr.raw_payload IS NOT NULL
-          AND sr.raw_payload.stage_id IS NOT NULL
-         THEN sr.raw_payload.stage_id
+          AND sr.crm_deal_stage_id IS NOT NULL
+         THEN sr.crm_deal_stage_id
        END AS stage_id
   WITH stage_id, count(*) AS cnt
   ORDER BY stage_id

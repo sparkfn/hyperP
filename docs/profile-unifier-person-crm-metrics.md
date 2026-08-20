@@ -2,11 +2,11 @@
 
 ## Status
 
-Implementation-ready design v3 (2026-08-19). Scope: calculate and display CRM engagement
+Implementation-ready design v4 (2026-08-20). Scope: calculate and display CRM engagement
 metrics for a person from already-ingested Bitrix CRM source records, surfaced
 in the active frontend2 person detail page. This is a read-only presentation
-layer over existing graph data — no new ingestion, no new graph schema, no
-analytical model.
+layer over existing graph data, with one immutable deal-stage projection written
+at ingestion so metrics never need to parse stored JSON payloads.
 
 Reading order: builds on
 [`profile-unifier-graph-schema.md`](profile-unifier-graph-schema.md),
@@ -39,8 +39,8 @@ There is no consolidated, computed view answering:
 - *How does CRM engagement break down by entity (Fundbox / SpeedZone / Eko)?*
 
 This design adds a dedicated **CRM** section to the person detail page that
-computes these metrics on demand from existing `SourceRecord` nodes and
-their `raw_payload` maps.
+computes these metrics on demand from existing `SourceRecord` nodes and their
+first-class graph properties.
 
 ---
 
@@ -62,11 +62,12 @@ their `raw_payload` maps.
 
 ### Out of scope
 
-- No new ingestion, graph schema changes, or node labels.
+- No new node labels or analytical model. CRM-deal ingestion writes the narrow
+  immutable `crm_deal_stage_id` projection required for stage aggregation.
 - No `history_family = 'stage'` records — the [CRM History Authority
   Contract](profile-unifier-crm-history-authority.md) restricts analytical
   consumption to legacy-null or exactly `'activity'`. This design reads only
-  the deal's current `stage_id` from `raw_payload`, not stage-transition
+  the deal's current projected `crm_deal_stage_id`, not stage-transition
   history. Stage-history analytical release remains gated behind #148.
 - No CRM WON 30-day prediction, scoring, or labels — that is the separate
   [Sales Prediction Discovery](profile-unifier-sales-prediction-discovery.md)
@@ -108,15 +109,17 @@ chats from `whatsapp_chat`, which are outside CRM Open Lines engagement.
 
 `SourceRecord` nodes linked to persons via `LINKED_TO`, to entities via
 `OWNED_BY`, and to source systems via `FROM_SOURCE`. The deal envelope
-(`_deal_envelope` in the Bitrix connector) populates `raw_payload` (a native
-Neo4j map, not a JSON string) with:
+(`_deal_envelope` in the Bitrix connector) is serialized into the immutable
+`raw_payload` JSON string. Its current stage is also projected to the
+first-class `crm_deal_stage_id` property, so Cypher does not need unsupported
+JSON-map parsing:
 
 | Key | Type |
 |---|---|
 | `crm_deal_id` | string |
 | `title` | string |
 | `category_id` | string \| null |
-| `stage_id` | string \| null |
+| `crm_deal_stage_id` (node property) | string \| null |
 | `primary_contact_id` | string \| null |
 | `primary_contact_kind` | `"contact"` \| `"lead"` \| null |
 | `contact_count` | int |
@@ -137,17 +140,17 @@ First-class properties on the `SourceRecord` node:
 | `event_at` | Deterministic activity event timestamp (from `start_at` or `observed_at`) |
 | `parent_source_system` / `parent_source_record_id` | Parent deal ref |
 
-`raw_payload` map contains `crm_activity_id`, `history_kind`, `subject`,
+The decoded `raw_payload` JSON object contains `crm_activity_id`, `history_kind`, `subject`,
 `direction`, `outcome`, `duration_seconds`, `start_at`, `end_at`, `activity`.
 
 ### 3.3 Call records (`record_type = 'call'`)
 
-Companion to call activities. Same `raw_payload` shape, parent ref points to
+Companion to call activities. Same decoded `raw_payload` shape, parent ref points to
 the `crm_history` record.
 
 ### 3.4 Open Lines conversations (`record_type = 'conversation'`)
 
-Chat transcripts with `conversation_ref` (channel, thread) and `raw_payload`
+Chat transcripts with `conversation_ref` (channel, thread) and a `raw_payload` JSON object
 of messages. Already surfaced through Timeline and Source records tabs; the
 CRM metrics view counts them but does not re-parse transcripts.
 
@@ -167,7 +170,7 @@ class CrmActivityKindCount(BaseModel):
 
 
 class CrmDealStageCount(BaseModel):
-    """Count of CRM deals grouped by current stage_id from raw_payload."""
+    """Count of CRM deals grouped by the projected current stage ID."""
     stage_id: str | None = None
     count: int
 
@@ -211,7 +214,7 @@ class PersonCrmMetrics(BaseModel):
 | Metric | Definition | Source |
 |---|---|---|
 | `deal_count` | Active `bitrix_chat` `crm_deal` records linked to the person | `LINKED_TO` + `FROM_SOURCE` + `record_type = 'crm_deal'` |
-| `deal_stage_breakdown` | Distribution of deals by `raw_payload.stage_id` | Grouped count |
+| `deal_stage_breakdown` | Distribution of deals by `crm_deal_stage_id` | Grouped count |
 | `first_deal_at` / `last_deal_at` | Min/max `observed_at` among deals | `observed_at` |
 | `activity_count` | Active `bitrix_chat` `crm_history` records (activity family only) | `record_type = 'crm_history'` + family/source filters |
 | `call_count` | Active `bitrix_chat` `call` records | `record_type = 'call'` + source filter |
@@ -341,15 +344,10 @@ CALL (person) {{
     AND {_LIFECYCLE}
     AND {_ACTIVITY_FAMILY}
     AND {_BITRIX_SOURCE}
-  WITH sr
-  // Guard each level: sr → raw_payload → stage_id. Neo4j property access on
-  // null returns null (does not error), so the CASE safely yields null when
-  // any level is absent.
   WITH CASE
          WHEN sr IS NOT NULL
-          AND sr.raw_payload IS NOT NULL
-          AND sr.raw_payload.stage_id IS NOT NULL
-       THEN sr.raw_payload.stage_id
+          AND sr.crm_deal_stage_id IS NOT NULL
+       THEN sr.crm_deal_stage_id
        END AS stage_id
   WITH stage_id, count(*) AS cnt
   ORDER BY stage_id
@@ -487,11 +485,11 @@ RETURN deal_count,
    the CRM History Authority Contract, which says all readers (including
    call and conversation) should admit only legacy-null or `'activity'`.
 
-6. **`raw_payload.stage_id` access**: `raw_payload` is a native Neo4j map
-   (per the graph schema: `raw_payload: {}` — "native map, not a JSON
-   string"). Cypher dot-notation `sr.raw_payload.stage_id` navigates the map.
-   When `sr` or `raw_payload` is null, property access returns null (does not
-   error). The `CASE` guard checks each level before using the value.
+6. **Deal-stage projection**: `raw_payload` is persisted as a JSON string.
+   `persist_source_record` therefore writes its canonical `stage_id` (or its
+   source-form `STAGE_ID` fallback) to the immutable `crm_deal_stage_id` node
+   property for `crm_deal` records. The query reads only that property; it does
+   not depend on APOC or attempt to dereference a JSON string as a Cypher map.
 
 7. **`count(sr)` not `count(*)`**: `count(sr)` counts non-null values of
    `sr`, returning 0 when `OPTIONAL MATCH` finds nothing. `count(*)` would
