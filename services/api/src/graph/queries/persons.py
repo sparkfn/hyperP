@@ -544,25 +544,23 @@ CALL {
        } END) WHERE record IS NOT NULL] AS source_records,
        [source_record_id IN collect(DISTINCT CASE WHEN sr IS NULL THEN null ELSE sr.source_record_id END) WHERE source_record_id IS NOT NULL] AS source_record_ids,
        collect(DISTINCT CASE WHEN sr IS NOT NULL AND e IS NOT NULL THEN {
-         item: item,
          e: e,
          sr: sr
        } END) AS sr_entity_pairs
   CALL {
-    WITH item, source_records, source_record_ids, sr_entity_pairs
+    WITH sr_entity_pairs
     UNWIND CASE WHEN size(sr_entity_pairs) = 0
-      THEN [{item: item, e: null, sr: null}]
+      THEN [{e: null, sr: null}]
       ELSE sr_entity_pairs
     END AS pair
-    WITH pair.item AS item, pair.e AS e, pair.sr AS sr
-    WITH item, e, count(DISTINCT sr) AS source_record_count
-    WITH item,
-         [entity IN collect(CASE WHEN e IS NULL THEN null ELSE e {
+    WITH pair.e AS e, pair.sr AS sr
+    WITH e, count(DISTINCT sr) AS source_record_count
+    RETURN [entity IN collect(CASE WHEN e IS NULL THEN null ELSE e {
            .entity_key, .display_name, .entity_type, .country_code, .is_active,
            source_record_count: source_record_count
          } END) WHERE entity IS NOT NULL] AS entities
-    RETURN item, source_records, source_record_ids, entities
   }
+  RETURN item, source_records, source_record_ids, entities
 }
 RETURN item.identifier.identifier_type AS identifier_type,
        item.identifier.normalized_value AS normalized_value,
@@ -617,8 +615,13 @@ RETURN count(sr) AS total
 """
 
 COUNT_PERSON_IDENTIFIERS = """
-MATCH (p:Person {person_id: $person_id})-[:IDENTIFIED_BY]->(id:Identifier)
-RETURN count(id) AS total
+MATCH (p:Person {person_id: $person_id})-[rel:IDENTIFIED_BY]->(id:Identifier)
+WITH DISTINCT id,
+     rel.is_active AS is_active,
+     rel.is_verified AS is_verified,
+     rel.last_confirmed_at AS last_confirmed_at,
+     rel.source_system_key AS source_system_key
+RETURN count(*) AS total
 """
 
 COUNT_PERSON_SHARED_IDENTIFIERS = """
