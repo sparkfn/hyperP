@@ -10,11 +10,13 @@ from __future__ import annotations
 import os
 from collections.abc import Iterator
 from dataclasses import dataclass
+from time import monotonic, sleep
 from urllib.parse import urlparse
 from uuid import uuid4
 
 import pytest
 from neo4j import Driver, GraphDatabase
+from neo4j.exceptions import ServiceUnavailable
 from src.graph.mappers import map_person_identifier
 from src.graph.queries.persons import COUNT_PERSON_IDENTIFIERS, GET_PERSON_IDENTIFIERS
 from src.repositories.neo4j._utils import record_to_dict
@@ -26,13 +28,29 @@ class _TestGraph:
     run_id: str
 
 
+def _verify_connectivity(driver: Driver) -> None:
+    deadline = monotonic() + 60
+    while True:
+        try:
+            driver.verify_connectivity()
+            return
+        except ServiceUnavailable:
+            if monotonic() >= deadline:
+                raise
+            sleep(1)
+
+
 @pytest.fixture
 def neo4j_driver() -> Iterator[_TestGraph]:
     uri = os.getenv("HYPERP_NEO4J_PERSON_IDENTIFIERS_TEST_URI")
     if uri is None:
         pytest.skip("disposable person identifiers Neo4j test database is not configured")
     host = urlparse(uri).hostname
-    if host not in {"localhost", "127.0.0.1", "::1"}:
+    allowed_hosts = {"localhost", "127.0.0.1", "::1"}
+    service_host = os.getenv("HYPERP_NEO4J_PERSON_IDENTIFIERS_TEST_SERVICE_HOST")
+    if service_host is not None:
+        allowed_hosts.add(service_host)
+    if host not in allowed_hosts:
         pytest.fail("person identifiers integration tests only accept a localhost Neo4j URI")
     password = os.getenv("HYPERP_NEO4J_PERSON_IDENTIFIERS_TEST_PASSWORD")
     if password is None:
@@ -41,8 +59,9 @@ def neo4j_driver() -> Iterator[_TestGraph]:
     driver = GraphDatabase.driver(
         uri,
         auth=(os.getenv("HYPERP_NEO4J_PERSON_IDENTIFIERS_TEST_USER", "neo4j"), password),
+        connection_timeout=5,
     )
-    driver.verify_connectivity()
+    _verify_connectivity(driver)
     test_graph = _TestGraph(driver=driver, run_id=uuid4().hex)
     try:
         yield test_graph
