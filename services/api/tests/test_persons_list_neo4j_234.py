@@ -200,6 +200,7 @@ CREATE (address:Address {
 })
 CREATE (entity:Entity {entity_key: 'entity-a', _person_list_test_run: $test_run_id})
 CREATE (source:SourceSystem {source_key: 'source-a', _person_list_test_run: $test_run_id})
+WITH address, entity, source
 UNWIND [
   {person_id: 'matched-scored', profile_completeness_score: 0.8},
   {person_id: 'matched-missing'},
@@ -207,7 +208,7 @@ UNWIND [
 ] AS row
 CREATE (person:Person {status: 'active', _person_list_test_run: $test_run_id})
 SET person += row
-WITH address, entity, source
+WITH DISTINCT address, entity, source
 MATCH (matched:Person {person_id: 'matched-scored'})
 WHERE matched._person_list_test_run = $test_run_id
 MATCH (missing:Person {person_id: 'matched-missing'})

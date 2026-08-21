@@ -198,7 +198,7 @@ def parse_plan_nodes(raw_plan: object) -> list[_PlanNode]:
         details = arguments.get("Details", arguments.get("details", ""))
         if not isinstance(details, str):
             raise ValueError("Neo4j plan Details argument must be a string")
-        raw_children = raw_node.get("children")
+        raw_children = raw_node.get("children", ())
         if not isinstance(raw_children, (list, tuple)):
             raise ValueError("Neo4j plan children must be a sequence")
         pending.extend(_as_string_mapping(child, field="child") for child in raw_children)
@@ -325,7 +325,6 @@ def test_plan_parser_uses_exact_identifiers_and_nested_children() -> None:
                 "operatorType": "NodeIndexScan@neo4j",
                 "args": {"Details": "RANGE INDEX p:Person(profile_completeness_score)"},
                 "identifiers": ["p"],
-                "children": [],
             },
         ],
     }
