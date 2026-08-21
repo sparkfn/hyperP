@@ -175,6 +175,15 @@ def test_review_activation_returns_link_only_owner_of_superseded_crm_deal(
             vehicle_mentions=[],
             knows_relationships=[],
         ).single(strict=True)
+        session.run(
+            """
+            MATCH (lock:SourceRecordIdentityLock {
+              source_system: 'bitrix_chat', source_record_id: 'deal-1'
+            })
+            SET lock._crm_metrics_test_run = $test_run_id
+            """,
+            test_run_id=neo4j_driver.run_id,
+        ).consume()
 
     assert set(row["affected_person_ids"]) == {"approved", "old-owner"}
     assert row["old_source_record_pks"] == ["old-deal"]
