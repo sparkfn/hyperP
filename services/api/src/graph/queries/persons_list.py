@@ -207,6 +207,7 @@ _DEFAULT_SORT_WITH_Q = "relevance"
 _DEFAULT_SORT_WITHOUT_Q = "profile_completeness_score"
 _DEFAULT_ORDER_WITH_Q = "DESC"
 _DEFAULT_ORDER_WITHOUT_Q = "DESC"
+_COMPLETENESS_SCORE_PREDICATE = "p.profile_completeness_score IS NOT NULL"
 
 _PRE_ENRICH_SORT_MAP: dict[str, str] = {
     "preferred_full_name": "p.preferred_full_name",
@@ -308,16 +309,13 @@ def build_list_persons_query(
         active_filters,
         include_preferred_address=True,
     )
-    extra_person_predicates = (
-        ("p.profile_completeness_score IS NOT NULL",)
-        if _requires_completeness_score(sort_key=key, has_q=has_q)
-        else ()
+    requires_completeness_score = _requires_completeness_score(sort_key=key, has_q=has_q)
+    common_clause = build_common_filter_clause(active_filters)
+    head = _head(
+        has_q=has_q,
+        skip_address=not bool(active_filters & ADDRESS_FILTERS),
+        requires_completeness_score=requires_completeness_score,
     )
-    common_clause = build_common_filter_clause(
-        active_filters,
-        extra_predicates=extra_person_predicates,
-    )
-    head = _head(has_q=has_q, skip_address=not bool(active_filters & ADDRESS_FILTERS))
     crm_filter_active = bool(active_filters & {"crm_deal_count_min", "crm_deal_count_max"})
     crm_required_before_page = crm_filter_active or key == "crm_deal_count"
     pre_col = _PRE_ENRICH_SORT_MAP.get(key)
@@ -380,17 +378,14 @@ def build_count_persons_query(
 ) -> str:
     """Build the exact-count query over the same row set as the resolved list sort."""
     key, _direction = _resolve_sort(sort_by, sort_order, has_q=has_q)
-    extra_person_predicates = (
-        ("p.profile_completeness_score IS NOT NULL",)
-        if _requires_completeness_score(sort_key=key, has_q=has_q)
-        else ()
-    )
+    requires_completeness_score = _requires_completeness_score(sort_key=key, has_q=has_q)
     query = (
-        _head(has_q=has_q, skip_address=not bool(active_filters & ADDRESS_FILTERS))
-        + build_common_filter_clause(
-            active_filters,
-            extra_predicates=extra_person_predicates,
+        _head(
+            has_q=has_q,
+            skip_address=not bool(active_filters & ADDRESS_FILTERS),
+            requires_completeness_score=requires_completeness_score,
         )
+        + build_common_filter_clause(active_filters)
         + build_entity_filter_clause(
             entity_mode,
             source_mode,
@@ -405,7 +400,14 @@ def build_count_persons_query(
     return query + "RETURN count(p) AS total\n"
 
 
-def _head(*, has_q: bool, skip_address: bool = False) -> str:
+def _head(
+    *,
+    has_q: bool,
+    skip_address: bool = False,
+    requires_completeness_score: bool = False,
+) -> str:
+    if has_q and requires_completeness_score:
+        raise ValueError("Full-text person lists must not require a completeness score.")
     if has_q:
         if skip_address:
             return (
@@ -418,11 +420,15 @@ def _head(*, has_q: bool, skip_address: bool = False) -> str:
             "WHERE coalesce(addr_link.is_active, true) = true\n"
             "WITH p, addr, score\n"
         )
+    completeness_predicate = (
+        f"WHERE {_COMPLETENESS_SCORE_PREDICATE}\n" if requires_completeness_score else ""
+    )
     if skip_address:
-        return "MATCH (p:Person)\nWITH p, null AS addr, null AS score\n"
+        return f"MATCH (p:Person)\n{completeness_predicate}WITH p, null AS addr, null AS score\n"
     return (
         "MATCH (p:Person)\n"
-        "OPTIONAL MATCH (p)-[addr_link:LIVES_AT]->(addr:Address)\n"
+        + completeness_predicate
+        + "OPTIONAL MATCH (p)-[addr_link:LIVES_AT]->(addr:Address)\n"
         "WHERE coalesce(addr_link.is_active, true) = true\n"
         "WITH p, addr, null AS score\n"
     )

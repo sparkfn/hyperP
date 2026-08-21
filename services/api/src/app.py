@@ -15,6 +15,7 @@ from src.config import config
 from src.error_handlers import register_error_handlers
 from src.frontend_app import build_frontend_app
 from src.graph.client import close_driver, get_session
+from src.graph.queries.indexes import PERSON_INDEXES
 from src.graph.queries.users import CREATE_USER_CONSTRAINT
 from src.llm.service import close_llm_service
 from src.mcp_app import mount_mcp, shutdown_mcp
@@ -54,20 +55,11 @@ async def _ensure_oauth_client_constraints() -> None:
     await ensure_oauth_client_constraints()
 
 
-_PERSON_INDEXES = [
-    "CREATE INDEX idx_person_completeness IF NOT EXISTS "
-    "FOR (p:Person) ON (p.profile_completeness_score)",
-    "CREATE INDEX idx_person_high_value IF NOT EXISTS FOR (p:Person) ON (p.is_high_value)",
-    "CREATE INDEX idx_person_high_risk IF NOT EXISTS FOR (p:Person) ON (p.is_high_risk)",
-    "CREATE INDEX idx_person_updated_at IF NOT EXISTS FOR (p:Person) ON (p.updated_at)",
-]
-
-
 async def _ensure_person_indexes() -> None:
     """Create person indexes if they do not exist."""
     try:
         async with get_session(write=True) as session:
-            for cypher in _PERSON_INDEXES:
+            for cypher in PERSON_INDEXES:
                 await session.run(cypher)
     except Exception:  # noqa: BLE001 — index setup is best-effort at startup
         logger.exception("Failed to create Person indexes")
