@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import json
 
+import pytest
 from src.graph.mappers import map_person
 from src.graph.mappers_sales import map_sales_order
 from src.types import LoyaltySummary, Person, PersonStatus, VehicleSummary
 from src.types_sales import SalesOrder
-
 
 # --- types -------------------------------------------------------------------
 
@@ -251,3 +251,34 @@ def test_map_sales_order_points_none() -> None:
     o = map_sales_order(rec)
     assert o.points_used is None
     assert o.points_gained is None
+
+
+def test_map_sales_order_normalizes_points_independently_and_warns_safely(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    raw_order_id = "private-order-mapper-241"
+    rec = {
+        "order_no": "INV1",
+        "source_order_id": raw_order_id,
+        "order_date": None,
+        "release_date": None,
+        "total_amount": 10.0,
+        "currency": "SGD",
+        "source_system": "eko_phppos:sales",
+        "entity_name": "Eko",
+        "line_items": [],
+        "points_used": "malformed-secret-value",
+        "points_gained": "14000.0000000000",
+    }
+
+    first = map_sales_order(rec)
+    second = map_sales_order(rec)
+
+    assert first.points_used is None
+    assert first.points_gained == 14000
+    assert second.points_used is None
+    messages = [record.getMessage() for record in caplog.records]
+    matching = [message for message in messages if "loyalty_points_conversion_failed" in message]
+    assert len(matching) == 1
+    assert "malformed-secret-value" not in matching[0]
+    assert raw_order_id not in matching[0]

@@ -22,6 +22,7 @@ from src.connectors.fundbox.builders import (
     serialize_row,
     to_iso,
 )
+from src.loyalty_points import normalize_loyalty_field
 from src.models import JsonValue
 
 if TYPE_CHECKING:
@@ -332,6 +333,7 @@ def _build_envelope(
                 sales_cols,
                 line_rows,
                 total,
+                source_system_key,
             ),
             "line_items": line_items_payload,
             "customer_link": {
@@ -407,6 +409,7 @@ def _build_order_payload(
     sales_cols: set[str],
     line_rows: list[RowMapping],
     total: Decimal,
+    source_system_key: str = "unknown",
 ) -> dict[str, JsonValue]:
     """Build the ``order`` section of a phppos sales envelope."""
     status_value: str | None = None
@@ -439,8 +442,18 @@ def _build_order_payload(
             "comment": _col_or_none(sale, "comment", sales_cols),
         },
         "loyalty": {
-            "points_used": _col_or_none(sale, "points_used", sales_cols),
-            "points_gained": _col_or_none(sale, "points_gained", sales_cols),
+            "points_used": normalize_loyalty_field(
+                _col_or_none(sale, "points_used", sales_cols),
+                source=source_system_key,
+                source_order_id=source_order_id,
+                field="points_used",
+            ),
+            "points_gained": normalize_loyalty_field(
+                _col_or_none(sale, "points_gained", sales_cols),
+                source=source_system_key,
+                source_order_id=source_order_id,
+                field="points_gained",
+            ),
             "did_redeem_discount": _col_or_none(sale, "did_redeem_discount", sales_cols),
             "is_purchase_points": _col_or_none(sale, "is_purchase_points", sales_cols),
         },

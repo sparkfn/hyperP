@@ -1,0 +1,219 @@
+[
+  {
+    "name": "none",
+    "kind": "none",
+    "input": null,
+    "value": null,
+    "error": null
+  },
+  {
+    "name": "true",
+    "kind": "bool",
+    "input": true,
+    "value": null,
+    "error": "boolean"
+  },
+  {
+    "name": "false",
+    "kind": "bool",
+    "input": false,
+    "value": null,
+    "error": "boolean"
+  },
+  {
+    "name": "zero",
+    "kind": "int",
+    "input": "0",
+    "value": "0",
+    "error": null
+  },
+  {
+    "name": "negative_zero",
+    "kind": "str",
+    "input": "-0",
+    "value": "0",
+    "error": null
+  },
+  {
+    "name": "negative_integer",
+    "kind": "int",
+    "input": "-20",
+    "value": "-20",
+    "error": null
+  },
+  {
+    "name": "max_int64",
+    "kind": "int",
+    "input": "9223372036854775807",
+    "value": "9223372036854775807",
+    "error": null
+  },
+  {
+    "name": "min_int64",
+    "kind": "int",
+    "input": "-9223372036854775808",
+    "value": "-9223372036854775808",
+    "error": null
+  },
+  {
+    "name": "above_max_int64",
+    "kind": "int",
+    "input": "9223372036854775808",
+    "value": null,
+    "error": "out_of_range"
+  },
+  {
+    "name": "below_min_int64",
+    "kind": "int",
+    "input": "-9223372036854775809",
+    "value": null,
+    "error": "out_of_range"
+  },
+  {
+    "name": "decimal_integral",
+    "kind": "decimal",
+    "input": "14000.0000000000",
+    "value": "14000",
+    "error": null
+  },
+  {
+    "name": "decimal_fraction",
+    "kind": "decimal",
+    "input": "20.5",
+    "value": null,
+    "error": "non_integral"
+  },
+  {
+    "name": "decimal_nan",
+    "kind": "decimal",
+    "input": "NaN",
+    "value": null,
+    "error": "non_finite"
+  },
+  {
+    "name": "decimal_positive_infinity",
+    "kind": "decimal",
+    "input": "Infinity",
+    "value": null,
+    "error": "non_finite"
+  },
+  {
+    "name": "decimal_negative_infinity",
+    "kind": "decimal",
+    "input": "-Infinity",
+    "value": null,
+    "error": "non_finite"
+  },
+  {
+    "name": "trimmed_string",
+    "kind": "str",
+    "input": " 20.000 ",
+    "value": "20",
+    "error": null
+  },
+  {
+    "name": "blank_string",
+    "kind": "str",
+    "input": "   ",
+    "value": null,
+    "error": "malformed"
+  },
+  {
+    "name": "malformed_string",
+    "kind": "str",
+    "input": "not-a-number",
+    "value": null,
+    "error": "malformed"
+  },
+  {
+    "name": "string_exponent",
+    "kind": "str",
+    "input": "1e3",
+    "value": "1000",
+    "error": null
+  },
+  {
+    "name": "enormous_exponent",
+    "kind": "str",
+    "input": "1e999999999",
+    "value": null,
+    "error": "out_of_range"
+  },
+  {
+    "name": "integral_float",
+    "kind": "float",
+    "input": "20.0",
+    "value": "20",
+    "error": null
+  },
+  {
+    "name": "fractional_float",
+    "kind": "float",
+    "input": "20.5",
+    "value": null,
+    "error": "non_integral"
+  },
+  {
+    "name": "float_nan",
+    "kind": "float",
+    "input": "nan",
+    "value": null,
+    "error": "non_finite"
+  },
+  {
+    "name": "float_positive_infinity",
+    "kind": "float",
+    "input": "inf",
+    "value": null,
+    "error": "non_finite"
+  },
+  {
+    "name": "float_negative_infinity",
+    "kind": "float",
+    "input": "-inf",
+    "value": null,
+    "error": "non_finite"
+  },
+  {
+    "name": "safe_float_boundary",
+    "kind": "float",
+    "input": "9007199254740991",
+    "value": "9007199254740991",
+    "error": null
+  },
+  {
+    "name": "unsafe_float",
+    "kind": "float",
+    "input": "9007199254740992",
+    "value": null,
+    "error": "unsafe_float"
+  },
+  {
+    "name": "string_length_128",
+    "kind": "str",
+    "input": "00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+    "value": "0",
+    "error": null
+  },
+  {
+    "name": "string_length_129",
+    "kind": "str",
+    "input": "000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+    "value": null,
+    "error": "string_too_long"
+  },
+  {
+    "name": "unsupported_list",
+    "kind": "list",
+    "input": [],
+    "value": null,
+    "error": "unsupported_type"
+  },
+  {
+    "name": "unsupported_object",
+    "kind": "object",
+    "input": {},
+    "value": null,
+    "error": "unsupported_type"
+  }
+]

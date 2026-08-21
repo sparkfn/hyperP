@@ -36,7 +36,7 @@ from src.graph.queries import (
 )
 from src.repositories.neo4j import review as review_module
 from src.repositories.neo4j.review import _action_tx
-from src.repositories.neo4j.sales_staging import canonical_staging_hash
+from src.repositories.neo4j.sales_staging import canonical_staging_hash, validate_sales_stage
 from src.repositories.protocols.merge import GoldenProfileSelection
 from src.types import ApiReviewActionType
 
@@ -58,7 +58,12 @@ def _stage_hash(value: object) -> str:
 
 
 def _valid_stage_precheck() -> dict[str, object]:
-    order: dict[str, object] = {"source_order_id": "order-1", "entity_key": "entity-1"}
+    order: dict[str, object] = {
+        "source_order_id": "order-1",
+        "entity_key": "entity-1",
+        "points_used": "20.000",
+        "points_gained": "malformed-points",
+    }
     line: dict[str, object] = {
         "line_index": 0,
         "source_line_item_id": "line-1",
@@ -76,6 +81,7 @@ def _valid_stage_precheck() -> dict[str, object]:
     lines = [line]
     observations = [observation]
     return {
+        "source_system_key": "eko_phppos:sales",
         "source_lock_version": 7,
         "lock_version": 4,
         "order": order,
@@ -86,6 +92,22 @@ def _valid_stage_precheck() -> dict[str, object]:
         "expected_observation_count": 1,
         "stage_hash": _stage_hash({"order": order, "lines": lines, "observations": observations}),
     }
+
+
+def test_validate_sales_stage_preserves_hashed_raw_values_and_normalizes_points() -> None:
+    precheck = _valid_stage_precheck()
+    original_order_hash = precheck["order_hash"]
+    original_stage_hash = precheck["stage_hash"]
+
+    validated = validate_sales_stage(precheck)
+
+    assert validated.points_used == 20
+    assert validated.points_gained is None
+    assert precheck["order_hash"] == original_order_hash
+    assert precheck["stage_hash"] == original_stage_hash
+    order = cast(dict[str, object], precheck["order"])
+    assert order["points_used"] == "20.000"
+    assert order["points_gained"] == "malformed-points"
 
 
 class _AsyncResult:
@@ -492,6 +514,10 @@ async def test_merge_pending_sales_promotes_complete_staging_before_close() -> N
     assert promote_call.params["stage_lock_version"] == 4
     assert promote_call.params["source_lock_version"] == 7
     assert promote_call.params["stage_hash"] == _valid_stage_precheck()["stage_hash"]
+    assert promote_call.params["points_used"] == 20
+    assert promote_call.params["points_gained"] is None
+    assert "stage.points_used" not in PROMOTE_STAGED_REVIEW_SALE
+    assert "stage.points_gained" not in PROMOTE_STAGED_REVIEW_SALE
     assert "properties(stage)" not in PROMOTE_STAGED_REVIEW_SALE
     assert "stage.injected_property" not in PROMOTE_STAGED_REVIEW_SALE
     assert "MATCH (entity:Entity {entity_key: stage.entity_key})" in PROMOTE_STAGED_REVIEW_SALE

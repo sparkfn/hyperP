@@ -568,6 +568,33 @@ def test_merge_order_receives_non_vehicle_lines_param() -> None:
     assert json.loads(param) == non_vehicle
 
 
+def test_merge_order_normalizes_loyalty_params_independently() -> None:
+    tx = _OrderTx()
+    order: dict[str, object] = {
+        "source_order_id": "private-order-persistence-241",
+        "order_no": "ORD-1",
+        "currency": "SGD",
+        "metadata": {},
+        "loyalty": {
+            "points_used": "14000.0000000000",
+            "points_gained": "bad-points",
+            "did_redeem_discount": 1,
+            "is_purchase_points": 0,
+        },
+    }
+    _merge_order(
+        cast(ManagedTransaction, tx),
+        source_system_key="eko_phppos",
+        order=cast("_OrderPayload", order),
+        non_vehicle_lines=[],
+    )
+    params = next(kwargs for query, kwargs in tx.calls if query == _queries.MERGE_ORDER)
+    assert params["points_used"] == 14000
+    assert params["points_gained"] is None
+    assert params["did_redeem_discount"] == 1
+    assert params["is_purchase_points"] == 0
+
+
 def test_merge_order_receives_empty_non_vehicle_lines_as_empty_json_string() -> None:
     """Empty non_vehicle_lines → ``non_vehicle_lines`` param is the string ``"[]"``."""
 

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
 from src.graph.converters import (
     GraphRecord,
     GraphValue,
@@ -10,6 +12,7 @@ from src.graph.converters import (
     to_optional_int,
     to_optional_str,
 )
+from src.graph.loyalty_points import convert_integral, warn_invalid_loyalty_once
 from src.types_sales import SalesLineItem, SalesOrder, SalesProduct
 
 
@@ -17,6 +20,22 @@ def _as_dict(value: GraphValue) -> GraphRecord:
     if isinstance(value, dict):
         return value
     return {}
+
+
+def _loyalty_points_value(
+    record: GraphRecord, field: Literal["points_used", "points_gained"]
+) -> int | None:
+    raw = record.get(field)
+    conversion = convert_integral(raw)
+    if conversion.error_code is not None:
+        warn_invalid_loyalty_once(
+            source=to_optional_str(record.get("source_system")),
+            source_order_id=to_optional_str(record.get("source_order_id")),
+            field=field,
+            conversion=conversion,
+            raw_value=raw,
+        )
+    return conversion.value
 
 
 def map_sales_order(record: GraphRecord) -> SalesOrder:
@@ -48,7 +67,7 @@ def map_sales_order(record: GraphRecord) -> SalesOrder:
         currency=to_optional_str(record.get("currency")),
         source_system=to_optional_str(record.get("source_system")),
         entity_name=to_optional_str(record.get("entity_name")),
-        points_used=to_optional_int(record.get("points_used")),
-        points_gained=to_optional_int(record.get("points_gained")),
+        points_used=_loyalty_points_value(record, "points_used"),
+        points_gained=_loyalty_points_value(record, "points_gained"),
         line_items=line_items,
     )

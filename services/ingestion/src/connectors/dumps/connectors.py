@@ -70,6 +70,7 @@ from src.connectors.whatsapp.connector import (
 from src.connectors.whatsapp.connector import (
     _ChatBundle as WhatsAppChatBundle,
 )
+from src.loyalty_points import normalize_loyalty_field
 from src.models import JsonValue
 
 TableSpec = Mapping[str, Sequence[str] | None]
@@ -1211,8 +1212,18 @@ def _build_phppos_sales_envelope(
                 "currency": "SGD",
                 "total_amount": sum(_json_float(item, "line_total") for item in line_items),
                 "loyalty": {
-                    "points_used": _int_or_none(sale.get("points_used")),
-                    "points_gained": _int_or_none(sale.get("points_gained")),
+                    "points_used": normalize_loyalty_field(
+                        sale.get("points_used"),
+                        source=source_system_key,
+                        source_order_id=source_order_id,
+                        field="points_used",
+                    ),
+                    "points_gained": normalize_loyalty_field(
+                        sale.get("points_gained"),
+                        source=source_system_key,
+                        source_order_id=source_order_id,
+                        field="points_gained",
+                    ),
                     "did_redeem_discount": _int_or_none(sale.get("did_redeem_discount")),
                     "is_purchase_points": _int_or_none(sale.get("is_purchase_points")),
                 },

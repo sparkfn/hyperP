@@ -7,6 +7,8 @@ import json
 from collections.abc import Mapping
 from dataclasses import dataclass
 
+from src.graph.loyalty_points import convert_integral, warn_invalid_loyalty_once
+
 
 class InvalidSalesStageError(ValueError):
     """Raised when staged scalar data does not match its canonical hashes."""
@@ -19,6 +21,8 @@ class ValidatedSalesStage:
     line_count: int
     observation_count: int
     stage_hash: str
+    points_used: int | None
+    points_gained: int | None
 
 
 def canonical_staging_hash(value: object) -> str:
@@ -94,10 +98,32 @@ def validate_sales_stage(record: Mapping[str, object]) -> ValidatedSalesStage:
     expected_observations = record.get("expected_observation_count")
     if expected_lines != len(lines) or expected_observations != len(observations):
         raise InvalidSalesStageError("stage count mismatch")
+    points_used = convert_integral(order.get("points_used"))
+    points_gained = convert_integral(order.get("points_gained"))
+    source = record.get("source_system_key")
+    source_order_id = order.get("source_order_id")
+    normalized_source = source if isinstance(source, str) else None
+    normalized_order_id = source_order_id if isinstance(source_order_id, str) else None
+    warn_invalid_loyalty_once(
+        source=normalized_source,
+        source_order_id=normalized_order_id,
+        field="points_used",
+        conversion=points_used,
+        raw_value=order.get("points_used"),
+    )
+    warn_invalid_loyalty_once(
+        source=normalized_source,
+        source_order_id=normalized_order_id,
+        field="points_gained",
+        conversion=points_gained,
+        raw_value=order.get("points_gained"),
+    )
     return ValidatedSalesStage(
         source_lock_version=source_lock_version,
         lock_version=lock_version,
         line_count=len(lines),
         observation_count=len(observations),
         stage_hash=stage_hash,
+        points_used=points_used.value,
+        points_gained=points_gained.value,
     )
