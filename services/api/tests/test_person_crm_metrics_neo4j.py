@@ -16,6 +16,7 @@ from uuid import uuid4
 import pytest
 from neo4j import Driver, GraphDatabase
 from src.graph.queries.crm import GET_PERSON_CRM_METRICS
+from src.graph.queries.review import ACTIVATE_PENDING_REVIEW_RECORD
 
 
 @dataclass(frozen=True)
@@ -118,3 +119,62 @@ def test_metrics_query_uses_projected_stage_with_persisted_json_payload(
     assert row["days_since_last_crm_touch"] == 0
     assert row["days_since_last_deal"] == 30
     assert row["days_since_last_activity"] == 0
+
+
+def test_review_activation_returns_link_only_owner_of_superseded_crm_deal(
+    neo4j_driver: _TestGraph,
+) -> None:
+    with neo4j_driver.driver.session() as session:
+        session.run(
+            """
+            CREATE (source:SourceSystem {
+              source_key: 'bitrix_chat', _crm_metrics_test_run: $test_run_id
+            })
+            CREATE (old_owner:Person {
+              person_id: 'old-owner', status: 'active', _crm_metrics_test_run: $test_run_id
+            })
+            CREATE (approved:Person {
+              person_id: 'approved', status: 'active', _crm_metrics_test_run: $test_run_id
+            })
+            CREATE (old:SourceRecord {
+              source_record_pk: 'old-deal', source_record_id: 'deal-1',
+              record_type: 'crm_deal', lifecycle_status: 'active', is_latest: true,
+              _crm_metrics_test_run: $test_run_id
+            })-[:FROM_SOURCE]->(source)
+            CREATE (pending:SourceRecord {
+              source_record_pk: 'pending-deal', source_record_id: 'deal-1',
+              record_type: 'crm_deal', lifecycle_status: 'pending_review',
+              expected_active_source_record_pk: 'old-deal', is_latest: false,
+              _crm_metrics_test_run: $test_run_id
+            })-[:FROM_SOURCE]->(source)
+            CREATE (old)-[:LINKED_TO]->(old_owner)
+            CREATE (decision:MatchDecision {
+              match_decision_id: 'decision-1', _crm_metrics_test_run: $test_run_id
+            })
+            CREATE (review:ReviewCase {
+              review_case_id: 'review-1', _crm_metrics_test_run: $test_run_id
+            })-[:FOR_DECISION]->(decision)
+            CREATE (decision)-[:ABOUT_LEFT]->(pending)
+            CREATE (decision)-[:ABOUT_RIGHT]->(approved)
+            """,
+            test_run_id=neo4j_driver.run_id,
+        ).consume()
+
+        row = session.run(
+            ACTIVATE_PENDING_REVIEW_RECORD,
+            review_case_id="review-1",
+            pending_source_record_pk="pending-deal",
+            source_system_key="bitrix_chat",
+            expected_active_source_record_pk="old-deal",
+            approved_person_id="approved",
+            observed_at="2026-08-21T00:00:00Z",
+            identifiers=[],
+            addresses=[],
+            attributes=[],
+            bankruptcy_cases=[],
+            vehicle_mentions=[],
+            knows_relationships=[],
+        ).single(strict=True)
+
+    assert set(row["affected_person_ids"]) == {"approved", "old-owner"}
+    assert row["old_source_record_pks"] == ["old-deal"]
