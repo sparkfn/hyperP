@@ -84,12 +84,12 @@ def _seed(driver: Driver) -> None:
         session.run(
             """
             UNWIND [
-              {source: 'eko_phppos', id: '1', used: '14000.0000000000', gained: '5'},
-              {source: 'eko_phppos', id: '2', used: '20.5', gained: 7},
-              {source: 'speedzone_phppos', id: '3', used: true, gained: 'bad'},
-              {source: 'speedzone_phppos', id: '4', used: 20.0, gained: null},
+              {source: 'eko_phppos:sales', id: '1', used: '14000.0000000000', gained: '5'},
+              {source: 'eko_phppos:sales', id: '2', used: '20.5', gained: 7},
+              {source: 'speedzone_phppos:sales', id: '3', used: true, gained: 'bad'},
+              {source: 'speedzone_phppos:sales', id: '4', used: 20.0, gained: null},
               {source: 'fundbox', id: '5', used: '99.000', gained: 'bad'},
-              {source: 'eko_phppos', id: '6', used: 9, gained: null}
+              {source: 'eko_phppos:sales', id: '6', used: 9, gained: null}
             ] AS row
             CREATE (o:Order {source_system_key: row.source, source_order_id: row.id})
             SET o.order_id = randomUUID(), o.points_used = row.used, o.points_gained = row.gained

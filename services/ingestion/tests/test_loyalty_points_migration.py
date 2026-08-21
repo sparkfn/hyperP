@@ -6,6 +6,8 @@ import json
 
 import pytest
 from src import loyalty_points_control as control
+from src.connectors.eko.sales import EkoSalesConnector
+from src.connectors.speedzone.sales import SpeedZoneSalesConnector
 from src.graph.loyalty_points_migration import LoyaltyPointsInvalidCounts
 from src.graph.queries.loyalty_points_migration import (
     APPLY_LOYALTY_POINTS_MIGRATION_BATCH,
@@ -16,7 +18,12 @@ from src.graph.queries.loyalty_points_migration import (
 
 
 def test_queries_target_only_phppos_orders_and_verify_integer_or_null() -> None:
-    assert TARGET_LOYALTY_ORDER_SOURCES == ("eko_phppos", "speedzone_phppos")
+    connector_source_keys = (
+        EkoSalesConnector().get_source_key(),
+        SpeedZoneSalesConnector().get_source_key(),
+    )
+    assert TARGET_LOYALTY_ORDER_SOURCES == connector_source_keys
+    assert connector_source_keys == ("eko_phppos:sales", "speedzone_phppos:sales")
     for query in (COUNT_INVALID_LOYALTY_POINTS, FETCH_LOYALTY_POINTS_MIGRATION_BATCH):
         assert "o.source_system_key IN $source_system_keys" in query
         assert "valueType(o.points_used)" in query
