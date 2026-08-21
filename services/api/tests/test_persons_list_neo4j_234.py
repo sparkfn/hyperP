@@ -166,7 +166,19 @@ def test_completeness_list_keeps_suppressed_and_zero_scores_with_stable_pages(
         query = build_list_persons_query("profile_completeness_score", "desc", has_q=False)
         first_window = list(session.run(query, skip=0, limit=3))
         second_window = list(session.run(query, skip=2, limit=3))
+        completeness_total = session.run(
+            build_count_persons_query(
+                "profile_completeness_score",
+                "desc",
+                has_q=False,
+            )
+        ).single(strict=True)["total"]
+        name_total = session.run(
+            build_count_persons_query("preferred_full_name", "asc", has_q=False)
+        ).single(strict=True)["total"]
 
+    assert completeness_total == 4
+    assert name_total == 5
     assert [record["person"]["person_id"] for record in first_window[:2]] == [
         "score-90-a",
         "score-90-z",

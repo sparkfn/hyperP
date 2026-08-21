@@ -241,6 +241,10 @@ def _resolve_sort(sort_by: str | None, sort_order: str | None, *, has_q: bool) -
     return key, direction
 
 
+def _requires_completeness_score(*, sort_key: str, has_q: bool) -> bool:
+    return sort_key == "profile_completeness_score" and not has_q
+
+
 def _entity_enrichment(*, include_count: bool) -> str:
     suffix = ", size(entities) AS entity_count" if include_count else ""
     return _ENTITY_ENRICHMENT.replace("{entity_count_return}", suffix)
@@ -306,7 +310,7 @@ def build_list_persons_query(
     )
     extra_person_predicates = (
         ("p.profile_completeness_score IS NOT NULL",)
-        if key == "profile_completeness_score" and not has_q
+        if _requires_completeness_score(sort_key=key, has_q=has_q)
         else ()
     )
     common_clause = build_common_filter_clause(
@@ -366,16 +370,27 @@ def build_list_persons_query(
 
 
 def build_count_persons_query(
+    sort_by: str | None = None,
+    sort_order: str | None = None,
     *,
     has_q: bool,
     active_filters: frozenset[str] = frozenset(),
     entity_mode: str = "or",
     source_mode: str = "or",
 ) -> str:
-    """Build the total-count query with the same active filters as the list."""
+    """Build the exact-count query over the same row set as the resolved list sort."""
+    key, _direction = _resolve_sort(sort_by, sort_order, has_q=has_q)
+    extra_person_predicates = (
+        ("p.profile_completeness_score IS NOT NULL",)
+        if _requires_completeness_score(sort_key=key, has_q=has_q)
+        else ()
+    )
     query = (
         _head(has_q=has_q, skip_address=not bool(active_filters & ADDRESS_FILTERS))
-        + build_common_filter_clause(active_filters)
+        + build_common_filter_clause(
+            active_filters,
+            extra_predicates=extra_person_predicates,
+        )
         + build_entity_filter_clause(
             entity_mode,
             source_mode,

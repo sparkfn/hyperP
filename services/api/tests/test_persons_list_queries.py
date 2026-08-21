@@ -658,16 +658,33 @@ def test_explicit_completeness_sort_uses_numeric_score_predicate_in_both_directi
     assert "ORDER BY p.profile_completeness_score ASC, p.person_id ASC" in ascending
 
 
+def test_completeness_sorted_list_and_exact_count_share_the_same_row_predicate() -> None:
+    list_query = build_list_persons_query(None, None, has_q=False)
+    count_query = build_count_persons_query(None, None, has_q=False)
+
+    predicate = "p.profile_completeness_score IS NOT NULL"
+    assert list_query.count(predicate) == 1
+    assert count_query.count(predicate) == 1
+
+
 def test_completeness_score_predicate_is_limited_to_non_search_completeness_sorts() -> None:
     fulltext = build_list_persons_query("profile_completeness_score", "desc", has_q=True)
     stored = build_list_persons_query("preferred_full_name", "asc", has_q=False)
     computed = build_list_persons_query("connection_count", "desc", has_q=False)
-    count = build_count_persons_query(has_q=False)
+    default_count = build_count_persons_query(has_q=False)
+    stored_count = build_count_persons_query("preferred_full_name", "asc", has_q=False)
+    fulltext_count = build_count_persons_query(
+        "profile_completeness_score",
+        "desc",
+        has_q=True,
+    )
 
     assert "p.profile_completeness_score IS NOT NULL" not in fulltext
     assert "p.profile_completeness_score IS NOT NULL" not in stored
     assert "p.profile_completeness_score IS NOT NULL" not in computed
-    assert "p.profile_completeness_score IS NOT NULL" not in count
+    assert "p.profile_completeness_score IS NOT NULL" in default_count
+    assert "p.profile_completeness_score IS NOT NULL" not in stored_count
+    assert "p.profile_completeness_score IS NOT NULL" not in fulltext_count
 
 
 def test_completeness_score_predicate_composes_with_scalar_and_entity_filters() -> None:
