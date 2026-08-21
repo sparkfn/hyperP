@@ -142,3 +142,40 @@ def test_crm_deal_list_queries_execute_with_distinct_counts_and_zero_filter(
             crm_deal_count_max=0,
         ).single(strict=True)
     assert count_record["total"] == 1
+
+
+def test_completeness_list_keeps_suppressed_and_zero_scores_with_stable_pages(
+    neo4j_driver: _TestGraph,
+) -> None:
+    with neo4j_driver.driver.session() as session:
+        session.run(
+            """
+            UNWIND [
+              {person_id: 'score-90-z', status: 'active', profile_completeness_score: 0.9},
+              {person_id: 'score-90-a', status: 'suppressed', profile_completeness_score: 0.9},
+              {person_id: 'score-40', status: 'active', profile_completeness_score: 0.4},
+              {person_id: 'score-00', status: 'active', profile_completeness_score: 0.0},
+              {person_id: 'missing-score', status: 'active'},
+              {person_id: 'merged-score', status: 'merged', profile_completeness_score: 1.0}
+            ] AS row
+            CREATE (person:Person)
+            SET person += row, person._person_list_test_run = $test_run_id
+            """,
+            test_run_id=neo4j_driver.run_id,
+        ).consume()
+        query = build_list_persons_query("profile_completeness_score", "desc", has_q=False)
+        first_window = list(session.run(query, skip=0, limit=3))
+        second_window = list(session.run(query, skip=2, limit=3))
+
+    assert [record["person"]["person_id"] for record in first_window[:2]] == [
+        "score-90-a",
+        "score-90-z",
+    ]
+    assert first_window[2]["person"]["person_id"] == "score-40"
+    assert [record["person"]["person_id"] for record in second_window] == [
+        "score-40",
+        "score-00",
+    ]
+    assert all(
+        record["person"]["person_id"] != "missing-score" for record in first_window + second_window
+    )

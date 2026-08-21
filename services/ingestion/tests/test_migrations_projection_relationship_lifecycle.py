@@ -160,6 +160,9 @@ def test_projection_migration_runs_after_source_record_lifecycle(
 ) -> None:
     calls: list[str] = []
     monkeypatch.setattr(migrations, "backfill_record_type_subtypes", lambda _client: 0)
+    monkeypatch.setattr(
+        migrations, "backfill_missing_person_completeness_scores", lambda _client: 0
+    )
     monkeypatch.setattr(migrations, "migrate_bitrix_chat_source", lambda _client: 0)
     monkeypatch.setattr(migrations, "migrate_crm_deal_stage_projection", lambda _client: 0)
     monkeypatch.setattr(

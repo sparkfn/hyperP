@@ -142,8 +142,16 @@ def test_staging_workflow_uses_testable_lifecycle_deploy_guard() -> None:
         'COMPOSE="docker compose -p stg-hyperp -f .docker/staging/docker-compose.yml"' in workflow
     )
     assert 'SERVICES="$BUILD_SERVICES"' in workflow
-    assert "$COMPOSE build $SERVICES" in workflow
-    assert "$COMPOSE up -d --no-deps --force-recreate $RECREATE_SERVICES" in workflow
+    build = workflow.index("$COMPOSE build $SERVICES")
+    preflight = workflow.index("$COMPOSE run --rm --no-deps ingestion-worker", build)
+    recreate = workflow.index(
+        "$COMPOSE up -d --no-deps --force-recreate $RECREATE_SERVICES",
+        preflight,
+    )
+    postflight = workflow.index("$COMPOSE run --rm --no-deps ingestion-worker", recreate)
+    assert build < preflight < recreate < postflight
+    assert workflow.count("python -m src.person_completeness_control check") == 2
+    assert "python -m src.person_completeness_control backfill" not in workflow
     assert "$COMPOSE stop lifecycle-worker" in workflow
     assert "lifecycle-worker-deploy-guard.sh" in workflow
     assert 'plan "$LIFECYCLE_PAUSED" $SERVICES' in workflow

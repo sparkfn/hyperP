@@ -73,6 +73,7 @@ def test_apply_data_migrations_runs_in_dependency_order(
     client = cast(Neo4jClient, object())
     functions = (
         ("backfill", "backfill_record_type_subtypes"),
+        ("person_completeness", "backfill_missing_person_completeness_scores"),
         ("bitrix_migration", "migrate_bitrix_chat_source"),
         ("crm_stage_projection", "migrate_crm_deal_stage_projection"),
         ("bitrix_crm_entity_migration", "migrate_bitrix_crm_entities"),
@@ -91,6 +92,7 @@ def test_apply_data_migrations_runs_in_dependency_order(
 
     assert calls == [
         "backfill",
+        "person_completeness",
         "bitrix_migration",
         "crm_stage_projection",
         "bitrix_crm_entity_migration",

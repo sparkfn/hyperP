@@ -168,9 +168,19 @@ jobs:
             echo "Rebuilding services: $BUILD_SERVICES"
             SERVICES="$BUILD_SERVICES"
             $COMPOSE build $SERVICES
+            if [[ " $RECREATE_SERVICES " == *" api "* ]]; then
+              echo "Checking Person completeness invariant before API recreation..."
+              $COMPOSE run --rm --no-deps ingestion-worker \
+                python -m src.person_completeness_control check
+            fi
             if [ -n "${RECREATE_SERVICES// }" ]; then
               echo "Recreating services: $RECREATE_SERVICES"
               $COMPOSE up -d --no-deps --force-recreate $RECREATE_SERVICES
+              if [[ " $RECREATE_SERVICES " == *" api "* ]]; then
+                echo "Checking Person completeness invariant after API recreation..."
+                $COMPOSE run --rm --no-deps ingestion-worker \
+                  python -m src.person_completeness_control check
+              fi
             else
               echo "No services will be recreated while lifecycle consumption is paused."
             fi
