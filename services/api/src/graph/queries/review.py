@@ -895,6 +895,11 @@ CALL (pending, approved, source) {
 WITH pending, approved, source, old_versions, prior_person_ids
 CALL (old_versions) {
   UNWIND old_versions AS old
+  OPTIONAL MATCH (old)-[:LINKED_TO]->(old_direct_owner:Person)
+  RETURN collect(DISTINCT old_direct_owner.person_id) AS old_direct_owners
+}
+CALL (old_versions) {
+  UNWIND old_versions AS old
   OPTIONAL MATCH (owner:Person)-[rel:IDENTIFIED_BY|LIVES_AT]->()
   WHERE rel.source_record_pk = old.source_record_pk
   SET rel.is_active = false, rel.updated_at = datetime()
@@ -933,7 +938,7 @@ CALL (old_versions) {
   RETURN count(old_knows) AS retired_knows_count
 }
 WITH pending, approved, source, old_versions, prior_person_ids,
-     old_edge_owners + old_fact_owners AS retired_owners
+     old_direct_owners + old_edge_owners + old_fact_owners AS retired_owners
 CALL (pending, approved, source) {
   UNWIND $identifiers AS ident
   MERGE (id:Identifier {identifier_type: ident.identifier_type,

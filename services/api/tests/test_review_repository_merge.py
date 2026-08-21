@@ -804,6 +804,12 @@ def test_pending_review_queries_guard_lifecycle_and_source_identity() -> None:
     assert "PREVIOUS_VERSION_OF" in ACTIVATE_PENDING_REVIEW_RECORD
     assert "old.is_latest = false" in ACTIVATE_PENDING_REVIEW_RECORD
     assert "pending.is_latest = true" in ACTIVATE_PENDING_REVIEW_RECORD
+    assert "OPTIONAL MATCH (old)-[:LINKED_TO]->(old_direct_owner:Person)" in (
+        ACTIVATE_PENDING_REVIEW_RECORD
+    )
+    assert "old_direct_owners + old_edge_owners + old_fact_owners" in (
+        ACTIVATE_PENDING_REVIEW_RECORD
+    )
     assert "lifecycle_status: 'pending_review'" in REJECT_PENDING_REVIEW_RECORD
     assert "rejection_reason" in REJECT_PENDING_REVIEW_RECORD
     assert "pending.is_latest = false" in REJECT_PENDING_REVIEW_RECORD
