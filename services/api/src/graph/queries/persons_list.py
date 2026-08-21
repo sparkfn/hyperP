@@ -304,7 +304,15 @@ def build_list_persons_query(
         active_filters,
         include_preferred_address=True,
     )
-    common_clause = build_common_filter_clause(active_filters)
+    extra_person_predicates = (
+        ("p.profile_completeness_score IS NOT NULL",)
+        if key == "profile_completeness_score" and not has_q
+        else ()
+    )
+    common_clause = build_common_filter_clause(
+        active_filters,
+        extra_predicates=extra_person_predicates,
+    )
     head = _head(has_q=has_q, skip_address=not bool(active_filters & ADDRESS_FILTERS))
     crm_filter_active = bool(active_filters & {"crm_deal_count_min", "crm_deal_count_max"})
     crm_required_before_page = crm_filter_active or key == "crm_deal_count"

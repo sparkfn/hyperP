@@ -43,6 +43,8 @@ SOURCE_RECORD_LIFECYCLE_MIGRATION_KEY = "source_record_lifecycle_v1"
 SOURCE_RECORD_LIFECYCLE_BATCH_SIZE = 500
 SOURCE_RECORD_LIFECYCLE_LEASE_SECONDS = 5 * 60
 SOURCE_RECORD_LIFECYCLE_LOCK_POLL_SECONDS = 1.0
+PERSON_COMPLETENESS_MIGRATION_KEY = "person_completeness_score_v1"
+PERSON_COMPLETENESS_MIGRATION_BATCH_SIZE = 500
 
 START_BITRIX_CHAT_SOURCE_MIGRATION = """
 MERGE (migration:DataMigration {migration_key: 'bitrix_chat_source_v1'})
@@ -385,6 +387,67 @@ def backfill_record_type_subtypes(client: Neo4jClient) -> int:
     if updated:
         logger.info("Backfilled record_type on %d legacy 'system' source records", updated)
     return updated
+
+
+def count_missing_person_completeness_scores(client: Neo4jClient) -> int:
+    """Return list-visible Persons that lack the required numeric completeness score."""
+
+    def _work(tx: ManagedTransaction) -> int:
+        record = tx.run(queries.COUNT_MISSING_PERSON_COMPLETENESS_SCORES).single()
+        return int(record["missing_count"]) if record is not None else 0
+
+    return client.execute_read(_work)
+
+
+def backfill_missing_person_completeness_scores(
+    client: Neo4jClient,
+    *,
+    skip_if_completed: bool = True,
+) -> int:
+    """Repair invalid list-visible completeness scores in restart-safe batches."""
+
+    def _start(tx: ManagedTransaction) -> bool:
+        record = tx.run(
+            queries.START_PERSON_COMPLETENESS_MIGRATION,
+            migration_key=PERSON_COMPLETENESS_MIGRATION_KEY,
+            force=not skip_if_completed,
+        ).single()
+        return bool(record["completed"]) if record is not None else False
+
+    if client.execute_write(_start) and skip_if_completed:
+        return 0
+
+    updated_total = 0
+    while True:
+
+        def _batch(tx: ManagedTransaction) -> int:
+            record = tx.run(
+                queries.BACKFILL_MISSING_PERSON_COMPLETENESS_SCORES_BATCH,
+                migration_key=PERSON_COMPLETENESS_MIGRATION_KEY,
+                batch_size=PERSON_COMPLETENESS_MIGRATION_BATCH_SIZE,
+            ).single()
+            return int(record["updated"]) if record is not None else 0
+
+        updated = client.execute_write(_batch)
+        updated_total += updated
+        if updated == 0:
+            break
+
+    def _complete(tx: ManagedTransaction) -> tuple[int, bool]:
+        record = tx.run(
+            queries.COMPLETE_PERSON_COMPLETENESS_MIGRATION,
+            migration_key=PERSON_COMPLETENESS_MIGRATION_KEY,
+        ).single()
+        if record is None:
+            return 0, False
+        return int(record["missing_count"]), bool(record["completed"])
+
+    missing_count, completed = client.execute_write(_complete)
+    if missing_count != 0 or not completed:
+        raise RuntimeError("Person completeness migration did not reach a valid completed state")
+    if updated_total:
+        logger.info("Backfilled completeness scores on %d non-merged Persons", updated_total)
+    return updated_total
 
 
 def _run_migration_query(
@@ -757,6 +820,7 @@ def apply_data_migrations(
     lifecycle worker after graph initialization has released its global lock.
     """
     backfill_record_type_subtypes(client)
+    backfill_missing_person_completeness_scores(client)
     migrate_bitrix_chat_source(client)
     migrate_crm_deal_stage_projection(client)
     migrate_bitrix_crm_entities(

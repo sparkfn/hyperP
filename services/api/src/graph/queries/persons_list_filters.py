@@ -7,7 +7,11 @@ ADDRESS_FILTERS = frozenset(
 )
 
 
-def build_common_filter_clause(active_filters: frozenset[str]) -> str:
+def build_common_filter_clause(
+    active_filters: frozenset[str],
+    *,
+    extra_predicates: tuple[str, ...] = (),
+) -> str:
     """Build only predicates whose values are present on this request.
 
     A static query containing null-guarded graph ``EXISTS`` predicates still
@@ -15,7 +19,7 @@ def build_common_filter_clause(active_filters: frozenset[str]) -> str:
     repository provides the set of non-null filters so the default listing
     emits only its invariant ``Person`` predicate.
     """
-    clauses = ["p.status <> 'merged'"]
+    clauses = ["p.status <> 'merged'", *extra_predicates]
     simple_filters = {
         "is_high_value": "p.is_high_value = $is_high_value",
         "is_high_risk": "p.is_high_risk = $is_high_risk",

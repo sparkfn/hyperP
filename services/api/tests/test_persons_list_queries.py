@@ -638,3 +638,53 @@ def test_count_query_only_calculates_crm_deal_count_when_a_bound_is_active() -> 
     assert "crm_deal_count" not in default_query
     assert "count(DISTINCT sr) AS crm_deal_count" in zero_max_query
     assert "crm_deal_count <= $crm_deal_count_max" in zero_max_query
+
+
+def test_non_search_completeness_sort_requires_a_numeric_score_before_pagination() -> None:
+    query = build_list_persons_query(None, None, has_q=False)
+
+    predicate_pos = query.index("p.profile_completeness_score IS NOT NULL")
+    order_pos = query.index("ORDER BY p.profile_completeness_score DESC, p.person_id ASC")
+    page_pos = query.index("SKIP $skip LIMIT $limit")
+    assert predicate_pos < order_pos < page_pos
+
+
+def test_explicit_completeness_sort_uses_numeric_score_predicate_in_both_directions() -> None:
+    descending = build_list_persons_query("profile_completeness_score", "desc", has_q=False)
+    ascending = build_list_persons_query("profile_completeness_score", "asc", has_q=False)
+
+    assert "p.profile_completeness_score IS NOT NULL" in descending
+    assert "p.profile_completeness_score IS NOT NULL" in ascending
+    assert "ORDER BY p.profile_completeness_score ASC, p.person_id ASC" in ascending
+
+
+def test_completeness_score_predicate_is_limited_to_non_search_completeness_sorts() -> None:
+    fulltext = build_list_persons_query("profile_completeness_score", "desc", has_q=True)
+    stored = build_list_persons_query("preferred_full_name", "asc", has_q=False)
+    computed = build_list_persons_query("connection_count", "desc", has_q=False)
+    count = build_count_persons_query(has_q=False)
+
+    assert "p.profile_completeness_score IS NOT NULL" not in fulltext
+    assert "p.profile_completeness_score IS NOT NULL" not in stored
+    assert "p.profile_completeness_score IS NOT NULL" not in computed
+    assert "p.profile_completeness_score IS NOT NULL" not in count
+
+
+def test_completeness_score_predicate_composes_with_scalar_and_entity_filters() -> None:
+    scalar = build_list_persons_query(
+        "profile_completeness_score",
+        "desc",
+        has_q=False,
+        active_filters=frozenset({"is_high_value"}),
+    )
+    entity = build_list_persons_query(
+        "profile_completeness_score",
+        "desc",
+        has_q=False,
+        active_filters=frozenset({"entity_keys"}),
+    )
+
+    assert "p.profile_completeness_score IS NOT NULL" in scalar
+    assert "p.is_high_value = $is_high_value" in scalar
+    assert "p.profile_completeness_score IS NOT NULL" in entity
+    assert "e.entity_key IN $entity_keys" in entity
