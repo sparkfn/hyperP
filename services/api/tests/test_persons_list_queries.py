@@ -640,35 +640,103 @@ def test_count_query_only_calculates_crm_deal_count_when_a_bound_is_active() -> 
     assert "crm_deal_count <= $crm_deal_count_max" in zero_max_query
 
 
-def test_non_search_completeness_sort_requires_a_numeric_score_before_pagination() -> None:
-    query = build_list_persons_query(None, None, has_q=False)
-
-    predicate_pos = query.index("p.profile_completeness_score IS NOT NULL")
-    order_pos = query.index("ORDER BY p.profile_completeness_score DESC, p.person_id ASC")
-    page_pos = query.index("SKIP $skip LIMIT $limit")
-    assert predicate_pos < order_pos < page_pos
+_COMPLETENESS_SCORE_PREDICATE = "p.profile_completeness_score IS NOT NULL"
 
 
-def test_explicit_completeness_sort_uses_numeric_score_predicate_in_both_directions() -> None:
+def _assert_completeness_predicate_is_in_query_head(
+    query: str, *, has_address_filter: bool
+) -> None:
+    assert query.count(_COMPLETENESS_SCORE_PREDICATE) == 1
+    normalized = "\n".join(line.strip() for line in query.splitlines())
+    if has_address_filter:
+        expected_prefix = "\n".join(
+            (
+                "MATCH (p:Person)",
+                f"WHERE {_COMPLETENESS_SCORE_PREDICATE}",
+                "OPTIONAL MATCH (p)-[addr_link:LIVES_AT]->(addr:Address)",
+                "WHERE coalesce(addr_link.is_active, true) = true",
+                "WITH p, addr, null AS score",
+            )
+        )
+    else:
+        expected_prefix = "\n".join(
+            (
+                "MATCH (p:Person)",
+                f"WHERE {_COMPLETENESS_SCORE_PREDICATE}",
+                "WITH p, null AS addr, null AS score",
+            )
+        )
+    assert normalized.startswith(expected_prefix)
+    assert normalized.index("p.status <> 'merged'") > len(expected_prefix)
+
+
+def _assert_fulltext_query_head(query: str, *, has_address_filter: bool) -> None:
+    normalized = "\n".join(line.strip() for line in query.splitlines())
+    call = "CALL db.index.fulltext.queryNodes('person_name_search', $q) YIELD node AS p, score"
+    if has_address_filter:
+        expected_prefix = "\n".join(
+            (
+                call,
+                "OPTIONAL MATCH (p)-[addr_link:LIVES_AT]->(addr:Address)",
+                "WHERE coalesce(addr_link.is_active, true) = true",
+                "WITH p, addr, score",
+            )
+        )
+    else:
+        expected_prefix = "\n".join((call, "WITH p, null AS addr, score"))
+    assert normalized.startswith(expected_prefix)
+    assert normalized.index("p.status <> 'merged'") > len(expected_prefix)
+
+
+def test_non_search_completeness_sort_requires_a_numeric_score_before_the_first_projection() -> (
+    None
+):
+    default_query = build_list_persons_query(None, None, has_q=False)
     descending = build_list_persons_query("profile_completeness_score", "desc", has_q=False)
     ascending = build_list_persons_query("profile_completeness_score", "asc", has_q=False)
 
-    assert "p.profile_completeness_score IS NOT NULL" in descending
-    assert "p.profile_completeness_score IS NOT NULL" in ascending
+    for query in (default_query, descending, ascending):
+        _assert_completeness_predicate_is_in_query_head(query, has_address_filter=False)
     assert "ORDER BY p.profile_completeness_score ASC, p.person_id ASC" in ascending
 
 
-def test_completeness_sorted_list_and_exact_count_share_the_same_row_predicate() -> None:
-    list_query = build_list_persons_query(None, None, has_q=False)
-    count_query = build_count_persons_query(None, None, has_q=False)
+def test_completeness_count_places_the_row_predicate_before_its_first_projection() -> None:
+    default_count = build_count_persons_query(None, None, has_q=False)
+    explicit_count = build_count_persons_query("profile_completeness_score", "asc", has_q=False)
 
-    predicate = "p.profile_completeness_score IS NOT NULL"
-    assert list_query.count(predicate) == 1
-    assert count_query.count(predicate) == 1
+    _assert_completeness_predicate_is_in_query_head(default_count, has_address_filter=False)
+    _assert_completeness_predicate_is_in_query_head(explicit_count, has_address_filter=False)
+
+
+def test_completeness_query_heads_keep_address_predicates_after_address_binding() -> None:
+    filters = frozenset({"addr_city"})
+    list_query = build_list_persons_query(
+        "profile_completeness_score",
+        "desc",
+        has_q=False,
+        active_filters=filters,
+    )
+    count_query = build_count_persons_query(
+        "profile_completeness_score",
+        "desc",
+        has_q=False,
+        active_filters=filters,
+    )
+
+    _assert_completeness_predicate_is_in_query_head(list_query, has_address_filter=True)
+    _assert_completeness_predicate_is_in_query_head(count_query, has_address_filter=True)
+    assert "toLower(addr.city) CONTAINS toLower($addr_city)" in list_query
+    assert "toLower(addr.city) CONTAINS toLower($addr_city)" in count_query
 
 
 def test_completeness_score_predicate_is_limited_to_non_search_completeness_sorts() -> None:
     fulltext = build_list_persons_query("profile_completeness_score", "desc", has_q=True)
+    fulltext_address = build_list_persons_query(
+        "profile_completeness_score",
+        "desc",
+        has_q=True,
+        active_filters=frozenset({"addr_city"}),
+    )
     stored = build_list_persons_query("preferred_full_name", "asc", has_q=False)
     computed = build_list_persons_query("connection_count", "desc", has_q=False)
     default_count = build_count_persons_query(has_q=False)
@@ -678,13 +746,31 @@ def test_completeness_score_predicate_is_limited_to_non_search_completeness_sort
         "desc",
         has_q=True,
     )
+    fulltext_address_count = build_count_persons_query(
+        "profile_completeness_score",
+        "desc",
+        has_q=True,
+        active_filters=frozenset({"addr_city"}),
+    )
 
-    assert "p.profile_completeness_score IS NOT NULL" not in fulltext
-    assert "p.profile_completeness_score IS NOT NULL" not in stored
-    assert "p.profile_completeness_score IS NOT NULL" not in computed
-    assert "p.profile_completeness_score IS NOT NULL" in default_count
-    assert "p.profile_completeness_score IS NOT NULL" not in stored_count
-    assert "p.profile_completeness_score IS NOT NULL" not in fulltext_count
+    _assert_fulltext_query_head(fulltext, has_address_filter=False)
+    _assert_fulltext_query_head(fulltext_address, has_address_filter=True)
+    _assert_fulltext_query_head(fulltext_count, has_address_filter=False)
+    _assert_fulltext_query_head(fulltext_address_count, has_address_filter=True)
+    assert _COMPLETENESS_SCORE_PREDICATE not in fulltext
+    assert _COMPLETENESS_SCORE_PREDICATE not in fulltext_address
+    assert _COMPLETENESS_SCORE_PREDICATE not in stored
+    assert _COMPLETENESS_SCORE_PREDICATE not in computed
+    assert _COMPLETENESS_SCORE_PREDICATE in default_count
+    assert _COMPLETENESS_SCORE_PREDICATE not in stored_count
+    assert _COMPLETENESS_SCORE_PREDICATE not in fulltext_count
+    assert _COMPLETENESS_SCORE_PREDICATE not in fulltext_address_count
+    address_filter_pos = fulltext_address_count.index(
+        "toLower(addr.city) CONTAINS toLower($addr_city)"
+    )
+    distinct_pos = fulltext_address_count.index("WITH DISTINCT p, score")
+    count_pos = fulltext_address_count.index("RETURN count(p) AS total")
+    assert address_filter_pos < distinct_pos < count_pos
 
 
 def test_completeness_score_predicate_composes_with_scalar_and_entity_filters() -> None:
@@ -700,8 +786,16 @@ def test_completeness_score_predicate_composes_with_scalar_and_entity_filters() 
         has_q=False,
         active_filters=frozenset({"entity_keys"}),
     )
+    source_count = build_count_persons_query(
+        "profile_completeness_score",
+        "desc",
+        has_q=False,
+        active_filters=frozenset({"source_keys"}),
+    )
 
-    assert "p.profile_completeness_score IS NOT NULL" in scalar
+    _assert_completeness_predicate_is_in_query_head(scalar, has_address_filter=False)
+    _assert_completeness_predicate_is_in_query_head(entity, has_address_filter=False)
+    _assert_completeness_predicate_is_in_query_head(source_count, has_address_filter=False)
     assert "p.is_high_value = $is_high_value" in scalar
-    assert "p.profile_completeness_score IS NOT NULL" in entity
     assert "e.entity_key IN $entity_keys" in entity
+    assert "ss.source_key IN $source_keys" in source_count

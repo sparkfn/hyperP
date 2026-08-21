@@ -1,4 +1,4 @@
-"""Disposable Neo4j execution coverage for CRM deal person-list queries."""
+"""Disposable Neo4j execution and planner coverage for person-list queries."""
 
 from __future__ import annotations
 
@@ -153,6 +153,7 @@ def test_completeness_list_keeps_suppressed_and_zero_scores_with_stable_pages(
             UNWIND [
               {person_id: 'score-90-z', status: 'active', profile_completeness_score: 0.9},
               {person_id: 'score-90-a', status: 'suppressed', profile_completeness_score: 0.9},
+              {person_id: 'score-90-m', status: 'active', profile_completeness_score: 0.9},
               {person_id: 'score-40', status: 'active', profile_completeness_score: 0.4},
               {person_id: 'score-00', status: 'active', profile_completeness_score: 0.0},
               {person_id: 'missing-score', status: 'active'},
@@ -164,8 +165,9 @@ def test_completeness_list_keeps_suppressed_and_zero_scores_with_stable_pages(
             test_run_id=neo4j_driver.run_id,
         ).consume()
         query = build_list_persons_query("profile_completeness_score", "desc", has_q=False)
-        first_window = list(session.run(query, skip=0, limit=3))
-        second_window = list(session.run(query, skip=2, limit=3))
+        first_window = list(session.run(query, skip=0, limit=2))
+        second_window = list(session.run(query, skip=2, limit=2))
+        third_window = list(session.run(query, skip=4, limit=2))
         completeness_total = session.run(
             build_count_persons_query(
                 "profile_completeness_score",
@@ -177,17 +179,118 @@ def test_completeness_list_keeps_suppressed_and_zero_scores_with_stable_pages(
             build_count_persons_query("preferred_full_name", "asc", has_q=False)
         ).single(strict=True)["total"]
 
-    assert completeness_total == 4
-    assert name_total == 5
-    assert [record["person"]["person_id"] for record in first_window[:2]] == [
+    assert completeness_total == 5
+    assert name_total == 6
+    pages = first_window + second_window + third_window
+    page_ids = [record["person"]["person_id"] for record in pages]
+    assert page_ids == [
         "score-90-a",
+        "score-90-m",
         "score-90-z",
-    ]
-    assert first_window[2]["person"]["person_id"] == "score-40"
-    assert [record["person"]["person_id"] for record in second_window] == [
         "score-40",
         "score-00",
     ]
-    assert all(
-        record["person"]["person_id"] != "missing-score" for record in first_window + second_window
+    assert len(page_ids) == len(set(page_ids))
+    assert all(record["person"]["person_id"] != "missing-score" for record in pages)
+
+
+_FILTERED_PARITY_FIXTURE = """
+CREATE (address:Address {
+  address_id: 'address-sg', city: 'Singapore', _person_list_test_run: $test_run_id
+})
+CREATE (entity:Entity {entity_key: 'entity-a', _person_list_test_run: $test_run_id})
+CREATE (source:SourceSystem {source_key: 'source-a', _person_list_test_run: $test_run_id})
+UNWIND [
+  {person_id: 'matched-scored', profile_completeness_score: 0.8},
+  {person_id: 'matched-missing'},
+  {person_id: 'other-city', profile_completeness_score: 0.6}
+] AS row
+CREATE (person:Person {status: 'active', _person_list_test_run: $test_run_id})
+SET person += row
+WITH address, entity, source
+MATCH (matched:Person {person_id: 'matched-scored'})
+WHERE matched._person_list_test_run = $test_run_id
+MATCH (missing:Person {person_id: 'matched-missing'})
+WHERE missing._person_list_test_run = $test_run_id
+MATCH (other:Person {person_id: 'other-city'})
+WHERE other._person_list_test_run = $test_run_id
+CREATE (matched)-[:LIVES_AT {is_active: true}]->(address)
+CREATE (matched)-[:LIVES_AT {is_active: true}]->(address)
+CREATE (missing)-[:LIVES_AT {is_active: true}]->(address)
+CREATE (other_address:Address {
+  address_id: 'address-my', city: 'Kuala Lumpur', _person_list_test_run: $test_run_id
+})
+CREATE (other)-[:LIVES_AT {is_active: true}]->(other_address)
+CREATE (matched_record:SourceRecord {
+  source_record_pk: 'matched-record', lifecycle_status: 'active', is_latest: true,
+  _person_list_test_run: $test_run_id
+})
+CREATE (missing_record:SourceRecord {
+  source_record_pk: 'missing-record', lifecycle_status: 'active', is_latest: true,
+  _person_list_test_run: $test_run_id
+})
+CREATE (matched_record)-[:LINKED_TO {is_active: true}]->(matched)
+CREATE (matched_record)-[:OWNED_BY]->(entity)
+CREATE (matched_record)-[:FROM_SOURCE]->(source)
+CREATE (missing_record)-[:LINKED_TO {is_active: true}]->(missing)
+CREATE (missing_record)-[:OWNED_BY]->(entity)
+CREATE (missing_record)-[:FROM_SOURCE]->(source)
+"""
+
+
+def _filtered_person_ids(
+    test_graph: _TestGraph,
+    *,
+    sort_by: str,
+    active_filters: frozenset[str],
+    parameters: dict[str, object],
+) -> tuple[list[str], int]:
+    with test_graph.driver.session() as session:
+        rows = session.run(
+            build_list_persons_query(sort_by, "desc", has_q=False, active_filters=active_filters),
+            skip=0,
+            limit=10,
+            **parameters,
+        )
+        person_ids = [record["person"]["person_id"] for record in rows]
+        total = session.run(
+            build_count_persons_query(
+                sort_by,
+                "desc",
+                has_q=False,
+                active_filters=active_filters,
+            ),
+            **parameters,
+        ).single(strict=True)["total"]
+    return person_ids, total
+
+
+def test_completeness_list_and_count_keep_filtered_row_sets_aligned(
+    neo4j_driver: _TestGraph,
+) -> None:
+    with neo4j_driver.driver.session() as session:
+        session.run(_FILTERED_PARITY_FIXTURE, test_run_id=neo4j_driver.run_id).consume()
+    cases = (
+        (
+            frozenset({"addr_city", "entity_keys"}),
+            {"addr_city": "Singapore", "entity_keys": ["entity-a"]},
+        ),
+        (frozenset({"source_keys"}), {"source_keys": ["source-a"]}),
     )
+    for filters, parameters in cases:
+        completeness_ids, completeness_total = _filtered_person_ids(
+            neo4j_driver,
+            sort_by="profile_completeness_score",
+            active_filters=filters,
+            parameters=parameters,
+        )
+        name_ids, name_total = _filtered_person_ids(
+            neo4j_driver,
+            sort_by="preferred_full_name",
+            active_filters=filters,
+            parameters=parameters,
+        )
+        assert completeness_ids == ["matched-scored"]
+        assert completeness_total == 1
+        assert set(name_ids) == {"matched-missing", "matched-scored"}
+        assert name_total == 2
