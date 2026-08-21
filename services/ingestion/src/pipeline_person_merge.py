@@ -8,6 +8,7 @@ from neo4j import ManagedTransaction
 
 from src.golden_profile import compute_golden_profile
 from src.graph import queries
+from src.graph.crm_deal_count import recompute_person_crm_deal_counts
 from src.profile_analysis_dirty import mark_profile_analysis_dirty
 
 
@@ -163,6 +164,7 @@ def merge_person_pair(
             survivor_id=survivor_id,
             merge_event_id=merge_event_id,
         )
+    recompute_person_crm_deal_counts(tx, [absorbed_id, survivor_id])
     compute_golden_profile(tx, survivor_id)
     mark_profile_analysis_dirty(tx, person_ids=affected_person_ids)
     return merge_event_id

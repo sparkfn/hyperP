@@ -14,6 +14,7 @@ from enum import StrEnum
 from neo4j import ManagedTransaction
 
 from src.graph import queries
+from src.graph.crm_deal_count import recompute_person_crm_deal_counts
 from src.models import (
     CandidateResult,
     ChatDifficulty,
@@ -562,6 +563,8 @@ def link_record_to_graph(
         source_record_pk=source_record_pk,
         person_id=person_id,
     )
+    if envelope.record_type is RecordType.CRM_DEAL:
+        recompute_person_crm_deal_counts(tx, [person_id])
     if not attach_evidence:
         return
     _link_identifiers(tx, identifiers, person_id, envelope.source_system, source_record_pk)

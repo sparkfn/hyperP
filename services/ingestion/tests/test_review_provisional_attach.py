@@ -7,7 +7,10 @@ addresses / facts onto the candidate person until a human approves the merge.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+
 from _txmock import _RecordingTx
+from src.graph import queries
 from src.models import (
     NormalizedAddress,
     NormalizedAttribute,
@@ -22,6 +25,9 @@ from src.pipeline_writes import link_record_to_graph
 class _Result:
     def single(self) -> dict[str, object] | None:
         return None
+
+    def __iter__(self) -> Iterator[dict[str, object]]:
+        return iter(())
 
 
 class _Tx(_RecordingTx):
@@ -41,11 +47,11 @@ class _Tx(_RecordingTx):
         return _Result()
 
 
-def _envelope() -> SourceRecordEnvelope:
+def _envelope(record_type: RecordType = RecordType.IDENTITY) -> SourceRecordEnvelope:
     return SourceRecordEnvelope(
         source_system="bitrix_chat",
         source_record_id="rec-1",
-        record_type=RecordType.IDENTITY,
+        record_type=record_type,
         observed_at="2026-01-01T00:00:00Z",
         record_hash="hash-1",
     )
@@ -122,3 +128,29 @@ def test_confirmed_attach_wires_full_evidence() -> None:
     assert "MERGE (p)-[rel:IDENTIFIED_BY {" in joined
     assert "MERGE (p)-[rel:LIVES_AT {" in joined
     assert "CREATE (p)-[:HAS_FACT" in joined
+
+
+def test_crm_deal_attach_recomputes_projection_but_identity_attach_does_not() -> None:
+    crm_tx = _Tx()
+    link_record_to_graph(
+        crm_tx,  # type: ignore[arg-type]
+        envelope=_envelope(RecordType.CRM_DEAL),
+        identifiers=[],
+        addresses=[],
+        attributes=[],
+        person_id="person-1",
+        source_record_pk="deal-1",
+    )
+    identity_tx = _Tx()
+    link_record_to_graph(
+        identity_tx,  # type: ignore[arg-type]
+        envelope=_envelope(),
+        identifiers=[],
+        addresses=[],
+        attributes=[],
+        person_id="person-1",
+        source_record_pk="identity-1",
+    )
+
+    assert queries.RECOMPUTE_PERSON_CRM_DEAL_COUNTS in crm_tx.queries
+    assert queries.RECOMPUTE_PERSON_CRM_DEAL_COUNTS not in identity_tx.queries

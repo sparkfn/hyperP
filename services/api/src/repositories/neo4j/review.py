@@ -14,6 +14,7 @@ from neo4j import AsyncManagedTransaction, AsyncSession
 from src.celery_client import enqueue_match_recalculation
 from src.graph.client import get_session
 from src.graph.converters import GraphRecord, to_int, to_optional_str, to_str
+from src.graph.crm_deal_count import recompute_person_crm_deal_counts
 from src.graph.golden_profile import recompute_golden_profile_tx
 from src.graph.mappers import (
     map_possible_match_detail,
@@ -653,7 +654,9 @@ async def _pending_record_merge_tx(
         raise _ReviewResolutionAbortError("pending activation lost after review claim")
     affected = activated.get("affected_person_ids", [])
     if isinstance(affected, list):
-        for person_id in sorted({value for value in affected if isinstance(value, str)}):
+        affected_person_ids = sorted({value for value in affected if isinstance(value, str)})
+        await recompute_person_crm_deal_counts(tx, affected_person_ids)
+        for person_id in affected_person_ids:
             await recompute_golden_profile_tx(tx, person_id, False)
     action_result = await tx.run(
         build_claimed_review_action_cypher(resolution, follow_up_at),
@@ -859,6 +862,7 @@ async def _action_tx(
         if merge_record is None:
             raise _ReviewResolutionAbortError("person merge lost after review close")
         merge_event_id = to_str(merge_record["merge_event_id"])
+        await recompute_person_crm_deal_counts(tx, [absorbed_id, survivor_id])
         redirected_ids = await apply_merge_review_side_effects(
             tx, merge_event_id, absorbed_id, survivor_id
         )

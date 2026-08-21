@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from neo4j import ManagedTransaction, Record
 
 from src.graph import queries
+from src.graph.crm_deal_count import recompute_source_person_crm_deal_counts
 from src.models import SourceLifecycleState, SourceRecordLifecycleStatus, SourceVersionState
 
 
@@ -226,3 +227,7 @@ def activate_staged_version(
         )
     if result.single() is None:
         raise SourceLifecycleConflict(f"source record {new_source_record_pk} was not activated")
+    source_record_pks = [new_source_record_pk]
+    if old_source_record_pk is not None:
+        source_record_pks.append(old_source_record_pk)
+    recompute_source_person_crm_deal_counts(tx, source_record_pks)

@@ -7,6 +7,7 @@ from neo4j import ManagedTransaction
 from src.bitrix_ingestion_models import FenceContext
 from src.graph import queries
 from src.graph.client import Neo4jClient
+from src.graph.crm_deal_count import recompute_source_person_crm_deal_counts
 from src.graph.ingestion_control import assert_active_bitrix_fence
 
 
@@ -29,6 +30,13 @@ def retire_source_evidence(
             retired_at=retired_at,
             reconciliation_snapshot_at=reconciliation_snapshot_at,
         ).single()
-        return int(record["retired_count"]) if record is not None else 0
+        if record is None:
+            return 0
+        source_record_pks = record.get("source_record_pks", [])
+        if isinstance(source_record_pks, list):
+            recompute_source_person_crm_deal_counts(
+                tx, [value for value in source_record_pks if isinstance(value, str)]
+            )
+        return int(record["retired_count"])
 
     return client.execute_write(_work)

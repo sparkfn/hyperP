@@ -17,6 +17,7 @@ from src.graph.queries import (
     EXECUTE_MANUAL_MERGE,
     FLAG_AFFECTED_RECORDS_FOR_REVIEW,
     GET_UNMERGE_TARGET,
+    RECOMPUTE_PERSON_CRM_DEAL_COUNTS,
     REDIRECT_PERSON_PAIR_CASES_ABSORBED_LEFT,
     REDIRECT_PERSON_PAIR_CASES_ABSORBED_RIGHT,
     REDIRECT_RECORD_PERSON_CASES_FOR_ABSORBED,
@@ -131,6 +132,7 @@ async def test_manual_merge_success_returns_merge_event_id() -> None:
             {"is_locked": False},
             {"absorbed": "person-a", "survivor": "person-b"},
             {"merge_event_id": "merge-1"},
+            {"person_id": "person-a"},
         ]
     )
 
@@ -149,6 +151,7 @@ async def test_manual_merge_success_returns_merge_event_id() -> None:
         CHECK_NO_MATCH_LOCK,
         CHECK_BOTH_PERSONS_ACTIVE,
         EXECUTE_MANUAL_MERGE,
+        RECOMPUTE_PERSON_CRM_DEAL_COUNTS,
         CLOSE_PERSON_PAIR_CASES_FOR_ABSORBED,
         REDIRECT_PERSON_PAIR_CASES_ABSORBED_LEFT,
         REDIRECT_PERSON_PAIR_CASES_ABSORBED_RIGHT,
@@ -162,8 +165,9 @@ async def test_manual_merge_success_returns_merge_event_id() -> None:
         "reason": "same customer",
         "actor_id": "admin@example.com",
     }
+    assert tx.calls[3].params == {"person_ids": ["person-a", "person-b"]}
     # Side-effects target the absorbed person and survivor, stamped with the event.
-    assert tx.calls[4].params == {
+    assert tx.calls[5].params == {
         "absorbed_id": "person-a",
         "survivor_id": "person-b",
         "merge_event_id": "merge-1",
@@ -314,6 +318,7 @@ async def test_unmerge_reactivates_absorbed_flags_records_and_audits() -> None:
         [
             {"absorbed_id": "person-a", "survivor_id": "person-b"},
             {"removed_count": 1, "current_survivor_id": "person-b"},
+            {"person_id": "person-a"},
             None,
             None,
         ]
@@ -334,6 +339,7 @@ async def test_unmerge_reactivates_absorbed_flags_records_and_audits() -> None:
     assert [call.query for call in tx.calls] == [
         GET_UNMERGE_TARGET,
         REVERT_MERGE,
+        RECOMPUTE_PERSON_CRM_DEAL_COUNTS,
         CREATE_UNMERGE_AUDIT,
         FLAG_AFFECTED_RECORDS_FOR_REVIEW,
         REVERT_RECORD_PERSON_CASE_REDIRECTS,
@@ -346,7 +352,8 @@ async def test_unmerge_reactivates_absorbed_flags_records_and_audits() -> None:
         "survivor_id": "person-b",
         "merge_event_id": "merge-1",
     }
-    assert tx.calls[3].params == {"merge_event_id": "merge-1"}
+    assert tx.calls[2].params == {"person_ids": ["person-a", "person-b"]}
+    assert tx.calls[4].params == {"merge_event_id": "merge-1"}
 
 
 @pytest.mark.asyncio
@@ -355,6 +362,7 @@ async def test_unmerge_returns_actual_current_survivor_for_recompute() -> None:
         [
             {"absorbed_id": "person-a", "survivor_id": "person-b"},
             {"removed_count": 1, "current_survivor_id": "person-c"},
+            {"person_id": "person-a"},
             None,
             None,
         ]
