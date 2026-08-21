@@ -18,13 +18,20 @@ from src.graph.queries.indexes import (
     PERSON_COMPLETENESS_INDEX_LABEL,
     PERSON_COMPLETENESS_INDEX_NAME,
     PERSON_COMPLETENESS_INDEX_PROPERTY,
+    PERSON_CRM_DEAL_COUNT_INDEX_CYPHER,
+    PERSON_CRM_DEAL_COUNT_INDEX_NAME,
+    PERSON_CRM_DEAL_COUNT_INDEX_PROPERTY,
     PERSON_INDEXES,
     build_person_completeness_index_cypher,
+    build_person_crm_deal_count_index_cypher,
 )
-from src.graph.queries.persons_list import build_list_persons_query
+from src.graph.queries.persons_list import build_count_persons_query, build_list_persons_query
 
 _SCHEMA_MUTATION_OPT_IN = "HYPERP_NEO4J_PERSON_LIST_TEST_ALLOW_SCHEMA_MUTATION"
-_TEST_INDEX_PREFIX = "person_list_test_completeness_"
+_TEST_INDEX_PREFIXES = {
+    "completeness": "person_list_test_completeness_",
+    "crm_deal_count": "person_list_test_crm_deal_count_",
+}
 _INDEX_ACCESS_OPERATORS = frozenset(
     {"NodeIndexScan", "PartitionedNodeIndexScan", "NodeIndexSeek", "NodeIndexSeekByRange"}
 )
@@ -36,7 +43,9 @@ _OUTER_PERSON_BINDING = re.compile(r"(?<![A-Za-z0-9_`])`?p`?\s*:\s*`?Person`?(?!
 class _PlannerGraph:
     driver: Driver
     run_id: str
-    index_name: str
+
+    def index_name(self, kind: str) -> str:
+        return _safe_index_name(self.run_id, kind=kind)
 
 
 @dataclass(frozen=True)
@@ -86,9 +95,12 @@ def _validate_planner_target(uri: str) -> None:
         pytest.fail("Planner regression test URI must not select a database or include options")
 
 
-def _safe_index_name(run_id: str) -> str:
-    name = f"{_TEST_INDEX_PREFIX}{run_id}"
-    if re.fullmatch(r"person_list_test_completeness_[0-9a-f]+", name) is None:
+def _safe_index_name(run_id: str, *, kind: str) -> str:
+    prefix = _TEST_INDEX_PREFIXES.get(kind)
+    if prefix is None:
+        raise ValueError("Planner test index kind is not allowed")
+    name = f"{prefix}{run_id}"
+    if re.fullmatch(r"person_list_test_(?:completeness|crm_deal_count)_[0-9a-f]+", name) is None:
         raise ValueError("Planner test generated an unsafe schema identifier")
     return name
 
@@ -112,7 +124,7 @@ def planner_graph() -> Iterator[_PlannerGraph]:
     try:
         _verify_connectivity(driver)
         run_id = uuid4().hex
-        graph = _PlannerGraph(driver=driver, run_id=run_id, index_name=_safe_index_name(run_id))
+        graph = _PlannerGraph(driver=driver, run_id=run_id)
         try:
             yield graph
         finally:
@@ -140,7 +152,9 @@ def _cleanup_planner_graph(graph: _PlannerGraph) -> None:
 
 def _drop_owned_index(graph: _PlannerGraph) -> None:
     with graph.driver.session() as session:
-        session.run(f"DROP INDEX `{graph.index_name}` IF EXISTS").consume()
+        for kind in _TEST_INDEX_PREFIXES:
+            index_name = graph.index_name(kind)
+            session.run(f"DROP INDEX `{index_name}` IF EXISTS").consume()
 
 
 def _delete_owned_nodes(graph: _PlannerGraph) -> None:
@@ -153,7 +167,8 @@ def _delete_owned_nodes(graph: _PlannerGraph) -> None:
 
 def _assert_owned_index_removed(graph: _PlannerGraph) -> None:
     with graph.driver.session() as session:
-        assert _get_index_metadata(session, graph.index_name) is None
+        for kind in _TEST_INDEX_PREFIXES:
+            assert _get_index_metadata(session, graph.index_name(kind)) is None
 
 
 def _assert_owned_nodes_removed(graph: _PlannerGraph) -> None:
@@ -264,6 +279,7 @@ def _seed_planner_population(session: Session, run_id: str) -> None:
           person_id: 'plan-person-' + right('00000' + toString(i), 5),
           status: CASE WHEN i = 0 THEN 'suppressed' ELSE 'active' END,
           profile_completeness_score: [0.0, 0.2, 0.4, 0.6, 0.8, 1.0][i % 6],
+          crm_deal_count: CASE WHEN i % 10 = 0 THEN 1 + (i % 4) ELSE 0 END,
           _person_list_test_run: $run_id
         })
         """,
@@ -297,13 +313,18 @@ def _wait_for_index_online(session: Session, index_name: str) -> _IndexMetadata:
     pytest.fail(f"Timed out waiting for test-owned index {index_name!r} to become ONLINE")
 
 
-def _assert_expected_index(metadata: _IndexMetadata, *, index_name: str) -> None:
+def _assert_expected_index(
+    metadata: _IndexMetadata,
+    *,
+    index_name: str,
+    property_name: str,
+) -> None:
     assert metadata == _IndexMetadata(
         name=index_name,
         index_type="RANGE",
         entity_type="NODE",
         labels_or_types=(PERSON_COMPLETENESS_INDEX_LABEL,),
-        properties=(PERSON_COMPLETENESS_INDEX_PROPERTY,),
+        properties=(property_name,),
         state="ONLINE",
         failure_message="",
     )
@@ -362,13 +383,31 @@ def test_completeness_index_builder_rejects_unsafe_names() -> None:
         build_person_completeness_index_cypher("unsafe index")
 
 
+def test_crm_deal_count_index_definition_is_stable() -> None:
+    assert PERSON_CRM_DEAL_COUNT_INDEX_NAME == "idx_person_crm_deal_count"
+    assert PERSON_CRM_DEAL_COUNT_INDEX_CYPHER == (
+        "CREATE INDEX idx_person_crm_deal_count IF NOT EXISTS FOR (p:Person) ON (p.crm_deal_count)"
+    )
+    assert PERSON_INDEXES.count(PERSON_CRM_DEAL_COUNT_INDEX_CYPHER) == 1
+
+
+def test_crm_deal_count_index_builder_rejects_unsafe_names() -> None:
+    with pytest.raises(ValueError):
+        build_person_crm_deal_count_index_cypher("unsafe index")
+
+
 def test_default_list_plan_uses_completeness_index(planner_graph: _PlannerGraph) -> None:
     with planner_graph.driver.session() as session:
         _assert_pristine_database(session)
         _seed_planner_population(session, planner_graph.run_id)
-        session.run(build_person_completeness_index_cypher(planner_graph.index_name)).consume()
-        metadata = _wait_for_index_online(session, planner_graph.index_name)
-        _assert_expected_index(metadata, index_name=planner_graph.index_name)
+        index_name = planner_graph.index_name("completeness")
+        session.run(build_person_completeness_index_cypher(index_name)).consume()
+        metadata = _wait_for_index_online(session, index_name)
+        _assert_expected_index(
+            metadata,
+            index_name=index_name,
+            property_name=PERSON_COMPLETENESS_INDEX_PROPERTY,
+        )
         raw_plan = (
             session.run(
                 "EXPLAIN\n" + build_list_persons_query(None, None, has_q=False),
@@ -393,3 +432,151 @@ def test_default_list_plan_uses_completeness_index(planner_graph: _PlannerGraph)
     ]
     assert index_accesses, f"Expected outer p index access; plan={nodes!r}, index={metadata!r}"
     assert not label_scans, f"Unexpected outer p label scan; plan={nodes!r}"
+
+
+@dataclass(frozen=True)
+class _CrmPlanCase:
+    name: str
+    query: str
+    parameters: dict[str, int]
+    expected_operators: frozenset[str]
+
+
+def _crm_plan_cases() -> tuple[_CrmPlanCase, ...]:
+    equality = frozenset({"NodeIndexSeek", "NodeIndexSeekByRange"})
+    range_seek = frozenset({"NodeIndexSeekByRange"})
+    ordered_scan = _INDEX_ACCESS_OPERATORS
+    zero_filters = frozenset({"crm_deal_count_min", "crm_deal_count_max"})
+    has_deals = frozenset({"crm_deal_count_min"})
+    closed_range = frozenset({"crm_deal_count_min", "crm_deal_count_max"})
+    return (
+        _CrmPlanCase(
+            "sort-asc-list",
+            build_list_persons_query("crm_deal_count", "asc", has_q=False),
+            {"skip": 0, "limit": 26},
+            ordered_scan,
+        ),
+        _CrmPlanCase(
+            "sort-asc-count",
+            build_count_persons_query("crm_deal_count", "asc", has_q=False),
+            {},
+            ordered_scan,
+        ),
+        _CrmPlanCase(
+            "sort-desc-list",
+            build_list_persons_query("crm_deal_count", "desc", has_q=False),
+            {"skip": 0, "limit": 26},
+            ordered_scan,
+        ),
+        _CrmPlanCase(
+            "sort-desc-count",
+            build_count_persons_query("crm_deal_count", "desc", has_q=False),
+            {},
+            ordered_scan,
+        ),
+        _CrmPlanCase(
+            "zero-list",
+            build_list_persons_query(
+                "preferred_full_name", "asc", has_q=False, active_filters=zero_filters
+            ),
+            {"skip": 0, "limit": 26, "crm_deal_count_min": 0, "crm_deal_count_max": 0},
+            equality,
+        ),
+        _CrmPlanCase(
+            "zero-count",
+            build_count_persons_query(
+                "preferred_full_name", "asc", has_q=False, active_filters=zero_filters
+            ),
+            {"crm_deal_count_min": 0, "crm_deal_count_max": 0},
+            equality,
+        ),
+        _CrmPlanCase(
+            "has-deals-list",
+            build_list_persons_query(
+                "preferred_full_name", "asc", has_q=False, active_filters=has_deals
+            ),
+            {"skip": 0, "limit": 26, "crm_deal_count_min": 1},
+            range_seek,
+        ),
+        _CrmPlanCase(
+            "has-deals-count",
+            build_count_persons_query(
+                "preferred_full_name", "asc", has_q=False, active_filters=has_deals
+            ),
+            {"crm_deal_count_min": 1},
+            range_seek,
+        ),
+        _CrmPlanCase(
+            "closed-range-list",
+            build_list_persons_query(
+                "preferred_full_name", "asc", has_q=False, active_filters=closed_range
+            ),
+            {"skip": 0, "limit": 26, "crm_deal_count_min": 1, "crm_deal_count_max": 2},
+            range_seek,
+        ),
+        _CrmPlanCase(
+            "closed-range-count",
+            build_count_persons_query(
+                "preferred_full_name", "asc", has_q=False, active_filters=closed_range
+            ),
+            {"crm_deal_count_min": 1, "crm_deal_count_max": 2},
+            range_seek,
+        ),
+    )
+
+
+def _assert_crm_plan(case: _CrmPlanCase, raw_plan: object) -> None:
+    nodes = parse_plan_nodes(raw_plan)
+    index_accesses = [
+        node
+        for node in nodes
+        if node.operator_type in case.expected_operators
+        and _is_outer_person_access(node)
+        and PERSON_CRM_DEAL_COUNT_INDEX_PROPERTY in node.details
+    ]
+    label_scans = [
+        node
+        for node in nodes
+        if node.operator_type in _LABEL_SCAN_OPERATORS and _is_outer_person_access(node)
+    ]
+    plan_details = "\n".join(node.details.lower() for node in nodes)
+    assert index_accesses, f"{case.name}: expected CRM count index access; plan={nodes!r}"
+    assert not label_scans, f"{case.name}: unexpected outer p label scan; plan={nodes!r}"
+    assert re.search(r"\bcrm_deal\b", plan_details) is None
+    assert "bitrix_chat" not in plan_details
+
+
+def test_plan_parser_detects_outer_person_label_scan() -> None:
+    raw_plan = {
+        "operatorType": "NodeByLabelScan",
+        "args": {"Details": "p:Person"},
+        "identifiers": ["p"],
+        "children": [],
+    }
+    nodes = parse_plan_nodes(raw_plan)
+    assert len(nodes) == 1
+    assert _is_outer_person_access(nodes[0]) is True
+
+
+def test_crm_deal_count_list_and_count_plans_use_range_index(
+    planner_graph: _PlannerGraph,
+) -> None:
+    cases = _crm_plan_cases()
+    with planner_graph.driver.session() as session:
+        _assert_pristine_database(session)
+        _seed_planner_population(session, planner_graph.run_id)
+        index_name = planner_graph.index_name("crm_deal_count")
+        session.run(build_person_crm_deal_count_index_cypher(index_name)).consume()
+        metadata = _wait_for_index_online(session, index_name)
+        _assert_expected_index(
+            metadata,
+            index_name=index_name,
+            property_name=PERSON_CRM_DEAL_COUNT_INDEX_PROPERTY,
+        )
+        raw_plans = [
+            session.run("EXPLAIN\n" + case.query, **case.parameters).consume().plan
+            for case in cases
+        ]
+
+    for case, raw_plan in zip(cases, raw_plans, strict=True):
+        _assert_crm_plan(case, raw_plan)

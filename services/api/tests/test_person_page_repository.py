@@ -108,8 +108,16 @@ async def test_exact_total_page_executes_list_and_count_queries(
         session_count += 1
         yield session
 
+    list_builder_args: tuple[object, ...] | None = None
+    list_builder_kwargs: dict[str, object] | None = None
     count_builder_args: tuple[object, ...] | None = None
     count_builder_kwargs: dict[str, object] | None = None
+
+    def build_list(*args: object, **kwargs: object) -> str:
+        nonlocal list_builder_args, list_builder_kwargs
+        list_builder_args = args
+        list_builder_kwargs = kwargs
+        return "LIST"
 
     def build_count(*args: object, **kwargs: object) -> str:
         nonlocal count_builder_args, count_builder_kwargs
@@ -118,7 +126,7 @@ async def test_exact_total_page_executes_list_and_count_queries(
         return "COUNT"
 
     monkeypatch.setattr(person_module, "get_session", fake_get_session)
-    monkeypatch.setattr(person_module, "build_list_persons_query", lambda *args, **kwargs: "LIST")
+    monkeypatch.setattr(person_module, "build_list_persons_query", build_list)
     monkeypatch.setattr(person_module, "build_count_persons_query", build_count)
     monkeypatch.setattr(
         person_module,
@@ -129,26 +137,43 @@ async def test_exact_total_page_executes_list_and_count_queries(
         ),
     )
 
-    page = await Neo4jPersonRepository().get_page(
-        {"is_high_risk": True},
-        4,
-        2,
-        include_total=True,
-    )
+    filters = {
+        "crm_deal_count_min": 0,
+        "crm_deal_count_max": 0,
+        "sort_by": "crm_deal_count",
+        "sort_order": "asc",
+        "entity_key_mode": "and",
+        "source_key_mode": "and",
+    }
+    page = await Neo4jPersonRepository().get_page(filters, 4, 2, include_total=True)
 
     assert [item.person_id for item in page.items] == ["person-1", "person-2"]
     assert page.has_more is True
     assert page.total_count == 7
     assert session_count == 2
-    assert ("LIST", {"is_high_risk": True, "skip": 4, "limit": 3}) in session.calls
-    assert ("COUNT", {"is_high_risk": True}) in session.calls
-    assert count_builder_args == (None, None)
-    assert count_builder_kwargs == {
-        "has_q": False,
-        "active_filters": frozenset({"is_high_risk"}),
-        "entity_mode": "or",
-        "source_mode": "or",
-    }
+    expected_params = {"crm_deal_count_min": 0, "crm_deal_count_max": 0}
+    assert ("LIST", {**expected_params, "skip": 4, "limit": 3}) in session.calls
+    assert ("COUNT", expected_params) in session.calls
+    assert list_builder_args == count_builder_args == ("crm_deal_count", "asc")
+    assert (
+        list_builder_kwargs
+        == count_builder_kwargs
+        == {
+            "has_q": False,
+            "active_filters": frozenset(
+                {
+                    "crm_deal_count_min",
+                    "crm_deal_count_max",
+                    "sort_by",
+                    "sort_order",
+                    "entity_key_mode",
+                    "source_key_mode",
+                }
+            ),
+            "entity_mode": "and",
+            "source_mode": "and",
+        }
+    )
 
 
 @pytest.mark.anyio
