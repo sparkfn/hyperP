@@ -11,6 +11,7 @@ from neo4j import AsyncManagedTransaction
 from src.celery_client import enqueue_match_recalculation
 from src.graph.client import get_session
 from src.graph.converters import to_str
+from src.graph.crm_deal_count import recompute_person_crm_deal_counts
 from src.graph.golden_profile import recompute_golden_profile_tx
 from src.graph.queries import (
     CHECK_BOTH_PERSONS_ACTIVE,
@@ -126,6 +127,7 @@ async def _manual_merge_tx(
     if record is None:
         return MergeOutcome(not_found=True)
     merge_event_id = to_str(record["merge_event_id"])
+    await recompute_person_crm_deal_counts(tx, [from_id, to_id])
     redirected_ids = await apply_merge_review_side_effects(tx, merge_event_id, from_id, to_id)
     return MergeOutcome(merge_event_id=merge_event_id, redirected_review_case_ids=redirected_ids)
 
@@ -246,6 +248,7 @@ async def _unmerge_tx(
     if revert_record is None or int(revert_record["removed_count"]) == 0:
         return None
     current_survivor_id = to_str(revert_record["current_survivor_id"])
+    await recompute_person_crm_deal_counts(tx, [absorbed_id, current_survivor_id])
     await tx.run(
         CREATE_UNMERGE_AUDIT,
         absorbed_id=absorbed_id,

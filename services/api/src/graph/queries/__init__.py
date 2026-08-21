@@ -21,6 +21,7 @@ from src.graph.queries.admin import (
     UPDATE_FIELD_TRUST,
 )
 from src.graph.queries.crm import GET_PERSON_CRM_METRICS
+from src.graph.queries.crm_deal_count import RECOMPUTE_PERSON_CRM_DEAL_COUNTS
 from src.graph.queries.entities import (
     LIST_ENTITIES,
     LIST_ENTITY_FILTER_OPTIONS,
@@ -311,4 +312,5 @@ __all__ = [
     "get_entity_persons_query",
     "get_graph_query",
     "get_node_graph_query",
+    "RECOMPUTE_PERSON_CRM_DEAL_COUNTS",
 ]

@@ -26,6 +26,7 @@ from src.graph.queries import (
     MARK_REVIEW_SALES_RECORD_UNRESOLVED,
     PRECHECK_STAGED_REVIEW_SALE,
     PROMOTE_STAGED_REVIEW_SALE,
+    RECOMPUTE_PERSON_CRM_DEAL_COUNTS,
     REDIRECT_PERSON_PAIR_CASES_ABSORBED_LEFT,
     REDIRECT_PERSON_PAIR_CASES_ABSORBED_RIGHT,
     REDIRECT_RECORD_PERSON_CASES_FOR_ABSORBED,
@@ -1008,6 +1009,16 @@ class _StateResult:
     async def single(self) -> Mapping[str, object] | None:
         return self.row
 
+    def __aiter__(self) -> _StateResult:
+        self._iter_done = self.row is None
+        return self
+
+    async def __anext__(self) -> Mapping[str, object]:
+        if self._iter_done or self.row is None:
+            raise StopAsyncIteration
+        self._iter_done = True
+        return self.row
+
 
 class _LifecycleTx:
     def __init__(
@@ -1072,6 +1083,11 @@ class _LifecycleTx:
                     "affected_person_ids": self.affected,
                 }
             )
+        if query == RECOMPUTE_PERSON_CRM_DEAL_COUNTS:
+            person_ids = params["person_ids"]
+            assert isinstance(person_ids, list)
+            self.events.append(f"crm_recompute:{','.join(person_ids)}")
+            return _StateResult(None if not person_ids else {"person_id": person_ids[0]})
         if query == CLAIM_PENDING_REVIEW_RESOLUTION:
             self.events.append("claim")
             return _StateResult(
@@ -1161,7 +1177,13 @@ async def test_pending_replacement_activates_payload_recomputes_once_then_closes
     params = _activation_call(tx)
     assert params["expected_active_source_record_pk"] == "active-v1"
     assert params["identifiers"] == payload["identifiers"]
-    assert tx.events == ["claim", "activate", "recompute:person-a", "close"]
+    assert tx.events == [
+        "claim",
+        "activate",
+        "crm_recompute:person-a",
+        "recompute:person-a",
+        "close",
+    ]
 
 
 @pytest.mark.asyncio
@@ -1185,7 +1207,14 @@ async def test_pending_reassignment_recomputes_distinct_people_in_sorted_order(
     await _submit_lifecycle(tx, ApiReviewActionType.MERGE)
 
     assert _activation_call(tx)["approved_person_id"] == "person-a"
-    assert tx.events == ["claim", "activate", "recompute:person-a", "recompute:person-z", "close"]
+    assert tx.events == [
+        "claim",
+        "activate",
+        "crm_recompute:person-a,person-z",
+        "recompute:person-a",
+        "recompute:person-z",
+        "close",
+    ]
 
 
 @pytest.mark.asyncio

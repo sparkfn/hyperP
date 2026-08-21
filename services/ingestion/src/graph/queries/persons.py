@@ -79,6 +79,7 @@ CREATE (p:Person {
     is_high_value: false,
     is_high_risk:  false,
     profile_completeness_score: 0.0,
+    crm_deal_count: 0,
     created_at: datetime(),
     updated_at: datetime()
 })

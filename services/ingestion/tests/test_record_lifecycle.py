@@ -587,7 +587,12 @@ def test_reject_replaced_pending_uses_reason_and_requires_transition() -> None:
 
 
 def test_activate_staged_version_selects_first_version_query() -> None:
-    tx = _FakeTx([_FakeResult([{"source_record_pk": "new-pk"}])])
+    tx = _FakeTx(
+        [
+            _FakeResult([{"source_record_pk": "new-pk"}]),
+            _FakeResult([{"person_id": "person-1"}]),
+        ]
+    )
 
     activate_staged_version(
         cast(ManagedTransaction, tx),
@@ -605,7 +610,11 @@ def test_activate_staged_version_selects_first_version_query() -> None:
                 "source_system": "pos",
                 "source_record_id": "customer-1",
             },
-        )
+        ),
+        (
+            queries.RECOMPUTE_SOURCE_PERSON_CRM_DEAL_COUNTS,
+            {"source_record_pks": ["new-pk"]},
+        ),
     ]
 
 
@@ -626,4 +635,32 @@ def test_activate_staged_version_selects_replacement_query_and_detects_conflict(
             queries.ACTIVATE_SOURCE_RECORD_VERSION,
             {"old_source_record_pk": "old-pk", "new_source_record_pk": "new-pk"},
         )
+    ]
+
+
+def test_activate_staged_replacement_recomputes_old_and_new_linked_people() -> None:
+    tx = _FakeTx(
+        [
+            _FakeResult([{"source_record_pk": "new-pk"}]),
+            _FakeResult([{"person_id": "person-a"}, {"person_id": "person-b"}]),
+        ]
+    )
+
+    activate_staged_version(
+        cast(ManagedTransaction, tx),
+        source_system="bitrix_chat",
+        source_record_id="deal-1",
+        old_source_record_pk="old-pk",
+        new_source_record_pk="new-pk",
+    )
+
+    assert tx.calls == [
+        (
+            queries.ACTIVATE_SOURCE_RECORD_VERSION,
+            {"old_source_record_pk": "old-pk", "new_source_record_pk": "new-pk"},
+        ),
+        (
+            queries.RECOMPUTE_SOURCE_PERSON_CRM_DEAL_COUNTS,
+            {"source_record_pks": ["new-pk", "old-pk"]},
+        ),
     ]

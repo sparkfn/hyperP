@@ -172,6 +172,9 @@ jobs:
               echo "Checking Person completeness invariant before API recreation..."
               $COMPOSE run --rm --no-deps ingestion-worker \
                 python -m src.person_completeness_control check
+              echo "Checking Person CRM deal-count invariant before API recreation..."
+              $COMPOSE run --rm --no-deps ingestion-worker \
+                python -m src.crm_deal_count_control check
             fi
             if [ -n "${RECREATE_SERVICES// }" ]; then
               echo "Recreating services: $RECREATE_SERVICES"
@@ -180,6 +183,9 @@ jobs:
                 echo "Checking Person completeness invariant after API recreation..."
                 $COMPOSE run --rm --no-deps ingestion-worker \
                   python -m src.person_completeness_control check
+                echo "Checking Person CRM deal-count invariant after API recreation..."
+                $COMPOSE run --rm --no-deps ingestion-worker \
+                  python -m src.crm_deal_count_control check
               fi
             else
               echo "No services will be recreated while lifecycle consumption is paused."

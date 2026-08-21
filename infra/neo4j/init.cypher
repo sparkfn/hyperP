@@ -181,6 +181,9 @@ CREATE INDEX idx_person_status IF NOT EXISTS
 CREATE INDEX idx_person_completeness IF NOT EXISTS
   FOR (p:Person) ON (p.profile_completeness_score);
 
+CREATE INDEX idx_person_crm_deal_count IF NOT EXISTS
+  FOR (p:Person) ON (p.crm_deal_count);
+
 CREATE INDEX idx_person_high_value IF NOT EXISTS
   FOR (p:Person) ON (p.is_high_value);
 

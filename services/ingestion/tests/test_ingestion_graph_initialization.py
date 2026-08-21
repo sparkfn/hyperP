@@ -56,6 +56,7 @@ def test_canonical_schema_contains_person_and_knows_performance_indexes() -> Non
 
     for name in (
         "idx_person_completeness",
+        "idx_person_crm_deal_count",
         "idx_person_high_value",
         "idx_person_high_risk",
         "idx_person_updated_at",

@@ -139,5 +139,5 @@ CALL (affected_person_ids) {
       person.analysis_dirty_at = datetime()
   RETURN count(person) AS dirtied_count
 }
-RETURN size(source_record_pks) AS retired_count, dirtied_count
+RETURN size(source_record_pks) AS retired_count, dirtied_count, source_record_pks
 """

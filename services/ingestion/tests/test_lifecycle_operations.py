@@ -151,7 +151,9 @@ def test_staging_workflow_uses_testable_lifecycle_deploy_guard() -> None:
     postflight = workflow.index("$COMPOSE run --rm --no-deps ingestion-worker", recreate)
     assert build < preflight < recreate < postflight
     assert workflow.count("python -m src.person_completeness_control check") == 2
+    assert workflow.count("python -m src.crm_deal_count_control check") == 2
     assert "python -m src.person_completeness_control backfill" not in workflow
+    assert "python -m src.crm_deal_count_control backfill" not in workflow
     assert "$COMPOSE stop lifecycle-worker" in workflow
     assert "lifecycle-worker-deploy-guard.sh" in workflow
     assert 'plan "$LIFECYCLE_PAUSED" $SERVICES' in workflow
