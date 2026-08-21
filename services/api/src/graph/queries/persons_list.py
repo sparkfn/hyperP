@@ -157,20 +157,6 @@ CALL (p) {
 }
 """
 
-_CRM_DEAL_COUNT = """
-CALL (p) {
-  OPTIONAL MATCH (sr:SourceRecord {record_type: 'crm_deal'})-[link:LINKED_TO]->(p)
-  WHERE coalesce(link.is_active, true) = true
-    AND (sr.history_family IS NULL OR sr.history_family = 'activity')
-    AND (sr.lifecycle_status = 'active'
-      OR (sr.lifecycle_status IS NULL AND sr.is_latest = true))
-    AND EXISTS {
-      MATCH (sr)-[:FROM_SOURCE]->(:SourceSystem {source_key: 'bitrix_chat'})
-    }
-  RETURN count(DISTINCT sr) AS crm_deal_count
-}
-"""
-
 _METRIC_CALLS: dict[str, str] = {
     "source_record_count": _SOURCE_RECORD_COUNT,
     "connection_count": _CONNECTION_COUNT,
@@ -179,7 +165,6 @@ _METRIC_CALLS: dict[str, str] = {
     "possible_match_count": _POSSIBLE_MATCH_COUNT,
     "system_match_count": _SYSTEM_MATCH_COUNT,
     "order_count": _ORDER_COUNT,
-    "crm_deal_count": _CRM_DEAL_COUNT,
     "bankruptcy_case_count": _BANKRUPTCY_CASE_COUNT,
 }
 
@@ -217,6 +202,7 @@ _PRE_ENRICH_SORT_MAP: dict[str, str] = {
     "preferred_nric": "p.preferred_nric",
     "updated_at": "p.updated_at",
     "profile_completeness_score": "p.profile_completeness_score",
+    "crm_deal_count": "p.crm_deal_count",
     "relevance": "score",
 }
 
@@ -228,6 +214,7 @@ _FINAL_SORT_MAP: dict[str, str] = {
     "preferred_nric": "person.preferred_nric",
     "updated_at": "person.updated_at",
     "profile_completeness_score": "person.profile_completeness_score",
+    "crm_deal_count": "crm_deal_count",
     "relevance": "score",
 }
 
@@ -263,15 +250,26 @@ def _page_enrichment(excluded_metrics: frozenset[str] = frozenset()) -> str:
     return "".join(calls)
 
 
-def _crm_deal_count_filter_clause(active_filters: frozenset[str]) -> str:
+def _crm_deal_count_predicates(
+    active_filters: frozenset[str],
+    *,
+    include_non_null: bool,
+) -> tuple[str, ...]:
     conditions: list[str] = []
+    if include_non_null:
+        conditions.append("p.crm_deal_count IS NOT NULL")
     if "crm_deal_count_min" in active_filters:
-        conditions.append("crm_deal_count >= $crm_deal_count_min")
+        conditions.append("p.crm_deal_count >= $crm_deal_count_min")
     if "crm_deal_count_max" in active_filters:
-        conditions.append("crm_deal_count <= $crm_deal_count_max")
-    if not conditions:
+        conditions.append("p.crm_deal_count <= $crm_deal_count_max")
+    return tuple(conditions)
+
+
+def _crm_deal_count_post_bind_clause(active_filters: frozenset[str]) -> str:
+    predicates = _crm_deal_count_predicates(active_filters, include_non_null=False)
+    if not predicates:
         return ""
-    return "WHERE " + " AND ".join(conditions) + "\n"
+    return "WHERE " + " AND ".join(predicates) + "\nWITH p, addr, score\n"
 
 
 def _return_clause() -> str:
@@ -288,7 +286,7 @@ addr {
 } AS preferred_address,
 source_record_count, connection_count, phone_confidence, entities,
 entity_count, identifier_count, possible_match_count, system_match_count, order_count,
-bankruptcy_case_count, crm_deal_count, score
+bankruptcy_case_count, p.crm_deal_count AS crm_deal_count, score
 """
 
 
@@ -310,52 +308,46 @@ def build_list_persons_query(
         include_preferred_address=True,
     )
     requires_completeness_score = _requires_completeness_score(sort_key=key, has_q=has_q)
+    crm_predicates = _crm_deal_count_predicates(
+        active_filters,
+        include_non_null=key == "crm_deal_count" and not has_q,
+    )
     common_clause = build_common_filter_clause(active_filters)
     head = _head(
         has_q=has_q,
         skip_address=not bool(active_filters & ADDRESS_FILTERS),
         requires_completeness_score=requires_completeness_score,
+        person_predicates=crm_predicates,
     )
-    crm_filter_active = bool(active_filters & {"crm_deal_count_min", "crm_deal_count_max"})
-    crm_required_before_page = crm_filter_active or key == "crm_deal_count"
+    post_bind_clause = _crm_deal_count_post_bind_clause(active_filters) if has_q else ""
     pre_col = _PRE_ENRICH_SORT_MAP.get(key)
     pre_metrics: set[str] = set()
     before_page = ""
 
-    if crm_required_before_page:
-        before_page += _CRM_DEAL_COUNT
-        pre_metrics.add("crm_deal_count")
-        before_page += "WITH p, addr, score, crm_deal_count\n"
-        before_page += _crm_deal_count_filter_clause(active_filters)
-
     if pre_col is not None:
-        page_projection = "WITH p, addr, score"
-        if "crm_deal_count" in pre_metrics:
-            page_projection += ", crm_deal_count"
-        page_projection += f"\nORDER BY {pre_col} {direction}, p.person_id ASC\n"
+        page_projection = f"WITH p, addr, score\nORDER BY {pre_col} {direction}, p.person_id ASC\n"
         return (
             head
+            + post_bind_clause
             + common_clause
             + entity_clause
-            + before_page
             + page_projection
             + "SKIP $skip LIMIT $limit\n"
-            + _page_enrichment(frozenset(pre_metrics))
+            + _page_enrichment()
             + _return_clause()
             + f"ORDER BY {_FINAL_SORT_MAP[key]} {direction}, person.person_id ASC\n"
         )
 
-    if key != "crm_deal_count":
-        pre_metric = _ENTITY_COUNT if key == "entity_count" else _METRIC_CALLS[key]
-        before_page += pre_metric
-        pre_metrics.add(key)
-
+    pre_metric = _ENTITY_COUNT if key == "entity_count" else _METRIC_CALLS[key]
+    before_page += pre_metric
+    pre_metrics.add(key)
     metric_projection = "WITH p, addr, score"
     for metric in sorted(pre_metrics):
         metric_projection += f", {metric}"
     metric_projection += f"\nORDER BY {key} {direction}, p.person_id ASC\n"
     return (
         head
+        + post_bind_clause
         + common_clause
         + entity_clause
         + before_page
@@ -379,12 +371,18 @@ def build_count_persons_query(
     """Build the exact-count query over the same row set as the resolved list sort."""
     key, _direction = _resolve_sort(sort_by, sort_order, has_q=has_q)
     requires_completeness_score = _requires_completeness_score(sort_key=key, has_q=has_q)
-    query = (
+    crm_predicates = _crm_deal_count_predicates(
+        active_filters,
+        include_non_null=key == "crm_deal_count" and not has_q,
+    )
+    return (
         _head(
             has_q=has_q,
             skip_address=not bool(active_filters & ADDRESS_FILTERS),
             requires_completeness_score=requires_completeness_score,
+            person_predicates=crm_predicates,
         )
+        + (_crm_deal_count_post_bind_clause(active_filters) if has_q else "")
         + build_common_filter_clause(active_filters)
         + build_entity_filter_clause(
             entity_mode,
@@ -392,12 +390,8 @@ def build_count_persons_query(
             active_filters,
             include_preferred_address=False,
         )
+        + "RETURN count(p) AS total\n"
     )
-    if active_filters & {"crm_deal_count_min", "crm_deal_count_max"}:
-        query += _CRM_DEAL_COUNT
-        query += "WITH p, score, crm_deal_count\n"
-        query += _crm_deal_count_filter_clause(active_filters)
-    return query + "RETURN count(p) AS total\n"
 
 
 def _head(
@@ -405,6 +399,7 @@ def _head(
     has_q: bool,
     skip_address: bool = False,
     requires_completeness_score: bool = False,
+    person_predicates: tuple[str, ...] = (),
 ) -> str:
     if has_q and requires_completeness_score:
         raise ValueError("Full-text person lists must not require a completeness score.")
@@ -420,14 +415,15 @@ def _head(
             "WHERE coalesce(addr_link.is_active, true) = true\n"
             "WITH p, addr, score\n"
         )
-    completeness_predicate = (
-        f"WHERE {_COMPLETENESS_SCORE_PREDICATE}\n" if requires_completeness_score else ""
-    )
+    predicates = list(person_predicates)
+    if requires_completeness_score:
+        predicates.insert(0, _COMPLETENESS_SCORE_PREDICATE)
+    person_predicate = "WHERE " + " AND ".join(predicates) + "\n" if predicates else ""
     if skip_address:
-        return f"MATCH (p:Person)\n{completeness_predicate}WITH p, null AS addr, null AS score\n"
+        return f"MATCH (p:Person)\n{person_predicate}WITH p, null AS addr, null AS score\n"
     return (
         "MATCH (p:Person)\n"
-        + completeness_predicate
+        + person_predicate
         + "OPTIONAL MATCH (p)-[addr_link:LIVES_AT]->(addr:Address)\n"
         "WHERE coalesce(addr_link.is_active, true) = true\n"
         "WITH p, addr, null AS score\n"

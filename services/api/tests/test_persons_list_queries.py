@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+
 from src.graph.queries import persons as person_queries
 from src.graph.queries.entities import (
     LIST_ENTITIES,
@@ -574,26 +576,41 @@ def test_source_and_mode_requires_every_key() -> None:
     assert "ss.source_key IN $source_keys" not in query
 
 
-def test_default_list_calculates_crm_deal_count_only_after_pagination() -> None:
+def _assert_no_crm_deal_aggregation(query: str) -> None:
+    normalized = " ".join(query.lower().split())
+    assert re.search(r"\bcrm_deal\b", normalized) is None
+    assert "bitrix_chat" not in normalized
+    assert re.search(r"count\s*\([^)]*\)\s+as\s+crm_deal_count", normalized) is None
+    assert re.search(r"count\s*\{[^}]*crm_deal", normalized) is None
+    for forbidden in (
+        "coalesce(p.crm_deal_count",
+        "valuetype(p.crm_deal_count)",
+        "tointeger(p.crm_deal_count)",
+        "tofloat(p.crm_deal_count)",
+    ):
+        assert forbidden not in normalized
+
+
+def test_default_list_projects_stored_crm_deal_count_only_after_pagination() -> None:
     query = build_list_persons_query("profile_completeness_score", "desc", has_q=False)
 
     page_pos = query.index("SKIP $skip LIMIT $limit")
-    assert "AS crm_deal_count" not in query[:page_pos]
-    assert "AS crm_deal_count" in query[page_pos:]
-    assert "count(DISTINCT sr) AS crm_deal_count" in query
+    assert "p.crm_deal_count" not in query[:page_pos]
+    assert "p.crm_deal_count AS crm_deal_count" in query[page_pos:]
+    _assert_no_crm_deal_aggregation(query)
 
 
-def test_crm_deal_count_sort_calculates_before_pagination_once() -> None:
+def test_crm_deal_count_sort_uses_stored_property_and_stable_tiebreaker() -> None:
     query = build_list_persons_query("crm_deal_count", "desc", has_q=False)
-
     page_pos = query.index("SKIP $skip LIMIT $limit")
-    assert query[:page_pos].count("AS crm_deal_count") == 1
-    assert "AS crm_deal_count" not in query[page_pos:]
-    assert "ORDER BY crm_deal_count DESC, p.person_id ASC" in query
-    assert "ORDER BY crm_deal_count DESC, person.person_id ASC" in query
+
+    assert "WHERE p.crm_deal_count IS NOT NULL" in query[:page_pos]
+    assert "ORDER BY p.crm_deal_count DESC, p.person_id ASC" in query[:page_pos]
+    assert "ORDER BY crm_deal_count DESC, person.person_id ASC" in query[page_pos:]
+    _assert_no_crm_deal_aggregation(query)
 
 
-def test_crm_deal_count_filter_calculates_before_pagination_and_preserves_metric() -> None:
+def test_crm_deal_count_bounds_use_stored_property_before_pagination() -> None:
     query = build_list_persons_query(
         "preferred_full_name",
         "asc",
@@ -603,14 +620,13 @@ def test_crm_deal_count_filter_calculates_before_pagination_and_preserves_metric
 
     page_pos = query.index("SKIP $skip LIMIT $limit")
     before_page = query[:page_pos]
-    after_page = query[page_pos:]
-    assert "crm_deal_count >= $crm_deal_count_min" in before_page
-    assert "crm_deal_count <= $crm_deal_count_max" in before_page
-    assert before_page.count("AS crm_deal_count") == 1
-    assert "AS crm_deal_count" not in after_page
+    assert "p.crm_deal_count >= $crm_deal_count_min" in before_page
+    assert "p.crm_deal_count <= $crm_deal_count_max" in before_page
+    assert before_page.index("p.crm_deal_count >=") < before_page.index("WITH p, null")
+    _assert_no_crm_deal_aggregation(query)
 
 
-def test_crm_deal_count_filter_combines_with_other_computed_sort_without_recalculation() -> None:
+def test_crm_deal_count_filter_composes_with_computed_sort_without_recalculation() -> None:
     query = build_list_persons_query(
         "connection_count",
         "desc",
@@ -621,23 +637,51 @@ def test_crm_deal_count_filter_combines_with_other_computed_sort_without_recalcu
     page_pos = query.index("SKIP $skip LIMIT $limit")
     before_page = query[:page_pos]
     after_page = query[page_pos:]
-    assert "crm_deal_count <= $crm_deal_count_max" in before_page
-    assert before_page.count("AS crm_deal_count") == 1
+    assert "p.crm_deal_count <= $crm_deal_count_max" in before_page
     assert before_page.count("AS connection_count") == 1
-    assert "AS crm_deal_count" not in after_page
     assert "AS connection_count" not in after_page
+    _assert_no_crm_deal_aggregation(query)
 
 
-def test_count_query_only_calculates_crm_deal_count_when_a_bound_is_active() -> None:
-    default_query = build_count_persons_query(has_q=False)
-    zero_max_query = build_count_persons_query(
+def test_count_query_uses_same_stored_crm_predicates_as_list() -> None:
+    filters = frozenset({"crm_deal_count_min", "crm_deal_count_max"})
+    list_query = build_list_persons_query(
+        "crm_deal_count",
+        "asc",
         has_q=False,
-        active_filters=frozenset({"crm_deal_count_max"}),
+        active_filters=filters,
+    )
+    count_query = build_count_persons_query(
+        "crm_deal_count",
+        "asc",
+        has_q=False,
+        active_filters=filters,
     )
 
-    assert "crm_deal_count" not in default_query
-    assert "count(DISTINCT sr) AS crm_deal_count" in zero_max_query
-    assert "crm_deal_count <= $crm_deal_count_max" in zero_max_query
+    for predicate in (
+        "p.crm_deal_count IS NOT NULL",
+        "p.crm_deal_count >= $crm_deal_count_min",
+        "p.crm_deal_count <= $crm_deal_count_max",
+    ):
+        assert predicate in list_query
+        assert predicate in count_query
+    _assert_no_crm_deal_aggregation(list_query)
+    _assert_no_crm_deal_aggregation(count_query)
+
+
+def test_fulltext_crm_deal_count_filter_applies_after_person_binding() -> None:
+    query = build_list_persons_query(
+        "crm_deal_count",
+        "desc",
+        has_q=True,
+        active_filters=frozenset({"crm_deal_count_min"}),
+    )
+
+    binding = "WITH p, null AS addr, score"
+    predicate = "p.crm_deal_count >= $crm_deal_count_min"
+    assert query.index(binding) < query.index(predicate)
+    assert "p.crm_deal_count IS NOT NULL" not in query
+    _assert_no_crm_deal_aggregation(query)
 
 
 _COMPLETENESS_SCORE_PREDICATE = "p.profile_completeness_score IS NOT NULL"

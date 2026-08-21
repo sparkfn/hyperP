@@ -62,14 +62,24 @@ def _seed_graph(test_graph: _TestGraph) -> None:
             CREATE (source:SourceSystem {
               source_key: 'bitrix_chat', _person_list_test_run: $test_run_id
             })
-            CREATE (with_deals:Person {
-              person_id: 'with-deals', status: 'active', profile_completeness_score: 0.4,
+            UNWIND [
+              {person_id: 'count-0', status: 'active', score: 0.9, count: 0},
+              {person_id: 'count-1', status: 'active', score: 0.8, count: 1},
+              {person_id: 'count-2-a', status: 'active', score: 0.7, count: 2},
+              {person_id: 'count-2-b', status: 'active', score: 0.6, count: 2},
+              {person_id: 'count-3', status: 'suppressed', score: 0.5, count: 3},
+              {person_id: 'count-4-merged', status: 'merged', score: 1.0, count: 4}
+            ] AS row
+            CREATE (person:Person {
+              person_id: row.person_id, status: row.status,
+              profile_completeness_score: row.score, crm_deal_count: row.count,
               _person_list_test_run: $test_run_id
             })
-            CREATE (without_deals:Person {
-              person_id: 'without-deals', status: 'active', profile_completeness_score: 0.9,
-              _person_list_test_run: $test_run_id
-            })
+            WITH source
+            MATCH (count_one:Person {person_id: 'count-1'})
+            MATCH (count_two_a:Person {person_id: 'count-2-a'})
+            MATCH (count_two_b:Person {person_id: 'count-2-b'})
+            MATCH (count_three:Person {person_id: 'count-3'})
             CREATE (deal_one:SourceRecord {
               source_record_pk: 'deal-one', record_type: 'crm_deal',
               lifecycle_status: 'active', is_latest: true,
@@ -82,66 +92,147 @@ def _seed_graph(test_graph: _TestGraph) -> None:
             })
             CREATE (deal_one)-[:FROM_SOURCE]->(source)
             CREATE (deal_two)-[:FROM_SOURCE]->(source)
-            CREATE (deal_one)-[:LINKED_TO {is_active: true}]->(with_deals)
-            CREATE (deal_one)-[:LINKED_TO {is_active: true}]->(with_deals)
-            CREATE (deal_two)-[:LINKED_TO {is_active: true}]->(with_deals)
+            CREATE (deal_one)-[:LINKED_TO {is_active: true}]->(count_one)
+            CREATE (deal_two)-[:LINKED_TO {is_active: true}]->(count_one)
+            CREATE (count_one)-[:KNOWS {is_active: true}]->(count_two_a)
+            CREATE (count_one)-[:KNOWS {is_active: true}]->(count_two_b)
+            CREATE (count_two_a)-[:KNOWS {is_active: true}]->(count_three)
             """,
             test_run_id=test_graph.run_id,
         ).consume()
 
 
-def _list_rows(test_graph: _TestGraph, query: str, **parameters: int) -> list[dict[str, object]]:
+def _list_rows(
+    test_graph: _TestGraph,
+    query: str,
+    *,
+    skip: int = 0,
+    limit: int = 10,
+    **parameters: int,
+) -> list[dict[str, object]]:
     with test_graph.driver.session() as session:
-        result = session.run(query, skip=0, limit=10, **parameters)
+        result = session.run(query, skip=skip, limit=limit, **parameters)
         return [dict(record) for record in result]
 
 
-def test_crm_deal_list_queries_execute_with_distinct_counts_and_zero_filter(
+def _count_rows(test_graph: _TestGraph, query: str, **parameters: int) -> int:
+    with test_graph.driver.session() as session:
+        record = session.run(query, **parameters).single(strict=True)
+    return int(record["total"])
+
+
+def _person_ids(rows: list[dict[str, object]]) -> list[str]:
+    return [str(row["person"]["person_id"]) for row in rows]  # type: ignore[index]
+
+
+def test_crm_deal_list_queries_read_stored_counts_and_keep_parity(
     neo4j_driver: _TestGraph,
 ) -> None:
     _seed_graph(neo4j_driver)
-
-    default_rows = _list_rows(
+    ascending = _list_rows(
         neo4j_driver,
-        build_list_persons_query("profile_completeness_score", "desc", has_q=False),
+        build_list_persons_query("crm_deal_count", "asc", has_q=False),
     )
-    assert [(row["person"]["person_id"], row["crm_deal_count"]) for row in default_rows] == [
-        ("without-deals", 0),
-        ("with-deals", 2),
-    ]
-
-    sorted_rows = _list_rows(
+    descending = _list_rows(
         neo4j_driver,
         build_list_persons_query("crm_deal_count", "desc", has_q=False),
     )
-    assert [(row["person"]["person_id"], row["crm_deal_count"]) for row in sorted_rows] == [
-        ("with-deals", 2),
-        ("without-deals", 0),
+    assert [(row["person"]["person_id"], row["crm_deal_count"]) for row in ascending] == [
+        ("count-0", 0),
+        ("count-1", 1),
+        ("count-2-a", 2),
+        ("count-2-b", 2),
+        ("count-3", 3),
     ]
+    assert _person_ids(descending) == [
+        "count-3",
+        "count-2-a",
+        "count-2-b",
+        "count-1",
+        "count-0",
+    ]
+    assert (
+        next(row for row in ascending if row["person"]["person_id"] == "count-1")["crm_deal_count"]
+        == 1
+    )
 
-    no_deal_filters = frozenset({"crm_deal_count_min", "crm_deal_count_max"})
-    no_deal_rows = _list_rows(
-        neo4j_driver,
-        build_list_persons_query(
-            "preferred_full_name",
+    cases = (
+        (
+            frozenset({"crm_deal_count_min", "crm_deal_count_max"}),
+            {"crm_deal_count_min": 0, "crm_deal_count_max": 0},
+            ["count-0"],
+        ),
+        (
+            frozenset({"crm_deal_count_min"}),
+            {"crm_deal_count_min": 1},
+            ["count-1", "count-2-a", "count-2-b", "count-3"],
+        ),
+        (
+            frozenset({"crm_deal_count_min", "crm_deal_count_max"}),
+            {"crm_deal_count_min": 1, "crm_deal_count_max": 2},
+            ["count-1", "count-2-a", "count-2-b"],
+        ),
+    )
+    for active_filters, parameters, expected_ids in cases:
+        list_query = build_list_persons_query(
+            "crm_deal_count",
             "asc",
             has_q=False,
-            active_filters=no_deal_filters,
-        ),
-        crm_deal_count_min=0,
-        crm_deal_count_max=0,
-    )
-    assert [(row["person"]["person_id"], row["crm_deal_count"]) for row in no_deal_rows] == [
-        ("without-deals", 0)
-    ]
+            active_filters=active_filters,
+        )
+        count_query = build_count_persons_query(
+            "crm_deal_count",
+            "asc",
+            has_q=False,
+            active_filters=active_filters,
+        )
+        rows = _list_rows(neo4j_driver, list_query, **parameters)
+        assert _person_ids(rows) == expected_ids
+        assert _count_rows(neo4j_driver, count_query, **parameters) == len(rows)
 
-    with neo4j_driver.driver.session() as session:
-        count_record = session.run(
-            build_count_persons_query(has_q=False, active_filters=no_deal_filters),
-            crm_deal_count_min=0,
-            crm_deal_count_max=0,
-        ).single(strict=True)
-    assert count_record["total"] == 1
+
+def test_crm_deal_count_sort_keeps_page_boundaries_stable(
+    neo4j_driver: _TestGraph,
+) -> None:
+    _seed_graph(neo4j_driver)
+    for direction, expected in (
+        ("asc", ["count-0", "count-1", "count-2-a", "count-2-b", "count-3"]),
+        ("desc", ["count-3", "count-2-a", "count-2-b", "count-1", "count-0"]),
+    ):
+        query = build_list_persons_query("crm_deal_count", direction, has_q=False)
+        pages = [_list_rows(neo4j_driver, query, skip=skip, limit=2) for skip in range(0, 6, 2)]
+        assert [person_id for page in pages for person_id in _person_ids(page)] == expected
+
+
+def test_crm_deal_count_filter_composes_with_computed_sort(
+    neo4j_driver: _TestGraph,
+) -> None:
+    _seed_graph(neo4j_driver)
+    active_filters = frozenset({"crm_deal_count_min", "crm_deal_count_max"})
+    parameters = {"crm_deal_count_min": 1, "crm_deal_count_max": 2}
+    rows = _list_rows(
+        neo4j_driver,
+        build_list_persons_query(
+            "connection_count",
+            "desc",
+            has_q=False,
+            active_filters=active_filters,
+        ),
+        **parameters,
+    )
+    assert set(_person_ids(rows)) == {"count-1", "count-2-a", "count-2-b"}
+    assert all(1 <= int(row["crm_deal_count"]) <= 2 for row in rows)
+    total = _count_rows(
+        neo4j_driver,
+        build_count_persons_query(
+            "connection_count",
+            "desc",
+            has_q=False,
+            active_filters=active_filters,
+        ),
+        **parameters,
+    )
+    assert total == len(rows)
 
 
 def test_completeness_list_keeps_suppressed_and_zero_scores_with_stable_pages(
