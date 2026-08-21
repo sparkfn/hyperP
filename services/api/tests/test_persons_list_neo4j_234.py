@@ -62,6 +62,7 @@ def _seed_graph(test_graph: _TestGraph) -> None:
             CREATE (source:SourceSystem {
               source_key: 'bitrix_chat', _person_list_test_run: $test_run_id
             })
+            WITH source
             UNWIND [
               {person_id: 'count-0', status: 'active', score: 0.9, count: 0},
               {person_id: 'count-1', status: 'active', score: 0.8, count: 1},
@@ -75,7 +76,7 @@ def _seed_graph(test_graph: _TestGraph) -> None:
               profile_completeness_score: row.score, crm_deal_count: row.count,
               _person_list_test_run: $test_run_id
             })
-            WITH source
+            WITH DISTINCT source
             MATCH (count_one:Person {person_id: 'count-1'})
             MATCH (count_two_a:Person {person_id: 'count-2-a'})
             MATCH (count_two_b:Person {person_id: 'count-2-b'})
