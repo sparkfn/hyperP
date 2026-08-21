@@ -108,9 +108,18 @@ async def test_exact_total_page_executes_list_and_count_queries(
         session_count += 1
         yield session
 
+    count_builder_args: tuple[object, ...] | None = None
+    count_builder_kwargs: dict[str, object] | None = None
+
+    def build_count(*args: object, **kwargs: object) -> str:
+        nonlocal count_builder_args, count_builder_kwargs
+        count_builder_args = args
+        count_builder_kwargs = kwargs
+        return "COUNT"
+
     monkeypatch.setattr(person_module, "get_session", fake_get_session)
     monkeypatch.setattr(person_module, "build_list_persons_query", lambda *args, **kwargs: "LIST")
-    monkeypatch.setattr(person_module, "build_count_persons_query", lambda **kwargs: "COUNT")
+    monkeypatch.setattr(person_module, "build_count_persons_query", build_count)
     monkeypatch.setattr(
         person_module,
         "map_listed_person",
@@ -133,6 +142,13 @@ async def test_exact_total_page_executes_list_and_count_queries(
     assert session_count == 2
     assert ("LIST", {"is_high_risk": True, "skip": 4, "limit": 3}) in session.calls
     assert ("COUNT", {"is_high_risk": True}) in session.calls
+    assert count_builder_args == (None, None)
+    assert count_builder_kwargs == {
+        "has_q": False,
+        "active_filters": frozenset({"is_high_risk"}),
+        "entity_mode": "or",
+        "source_mode": "or",
+    }
 
 
 @pytest.mark.anyio
@@ -150,7 +166,7 @@ async def test_exact_total_controls_continuation_when_list_snapshot_disagrees(
 
     monkeypatch.setattr(person_module, "get_session", fake_get_session)
     monkeypatch.setattr(person_module, "build_list_persons_query", lambda *args, **kwargs: "LIST")
-    monkeypatch.setattr(person_module, "build_count_persons_query", lambda **kwargs: "COUNT")
+    monkeypatch.setattr(person_module, "build_count_persons_query", lambda *args, **kwargs: "COUNT")
     monkeypatch.setattr(
         person_module,
         "map_listed_person",

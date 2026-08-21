@@ -230,6 +230,8 @@ class Neo4jPersonRepository:
             )
 
         count_query = build_count_persons_query(
+            sort_by,
+            sort_order,
             has_q=has_q,
             active_filters=active_filters,
             entity_mode=entity_mode,
