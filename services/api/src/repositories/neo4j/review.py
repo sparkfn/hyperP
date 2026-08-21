@@ -341,6 +341,8 @@ async def _sales_link_merge_tx(
             stage_hash=validated_stage.stage_hash,
             expected_line_count=validated_stage.line_count,
             expected_observation_count=validated_stage.observation_count,
+            points_used=validated_stage.points_used,
+            points_gained=validated_stage.points_gained,
             **claim,
         )
         promoted_record = await promoted.single()

@@ -19,6 +19,7 @@ from src.exclusions import ExclusionContext, is_excluded_vehicle_observation
 from src.graph import queries
 from src.graph.bootstrap import SOURCE_KEY_TO_ENTITY
 from src.graph.client import Neo4jClient
+from src.loyalty_points import normalize_loyalty_field
 from src.matching.vehicle_heuristic import (
     VehicleCandidate,
     build_vehicle_match_result,
@@ -519,8 +520,18 @@ def _stage_sales_review_projections(
             _build_non_vehicle_lines(source_system_key, cast(list[JsonValue], typed_lines)),
             default=str,
         ),
-        "points_used": loyalty.get("points_used"),
-        "points_gained": loyalty.get("points_gained"),
+        "points_used": normalize_loyalty_field(
+            loyalty.get("points_used"),
+            source=source_system_key,
+            source_order_id=source_order_id,
+            field="points_used",
+        ),
+        "points_gained": normalize_loyalty_field(
+            loyalty.get("points_gained"),
+            source=source_system_key,
+            source_order_id=source_order_id,
+            field="points_gained",
+        ),
         "did_redeem_discount": loyalty.get("did_redeem_discount"),
         "is_purchase_points": loyalty.get("is_purchase_points"),
     }
@@ -628,10 +639,11 @@ def _merge_order(
     non_vehicle_lines: list[dict[str, JsonValue]],
 ) -> None:
     loyalty = order.get("loyalty") or {}
+    source_order_id = str(order.get("source_order_id", ""))
     tx.run(
         queries.MERGE_ORDER,
         source_system_key=source_system_key,
-        source_order_id=str(order.get("source_order_id", "")),
+        source_order_id=source_order_id,
         order_no=order.get("order_no"),
         ordered_at=order.get("ordered_at"),
         release_date=order.get("release_date"),
@@ -643,8 +655,18 @@ def _merge_order(
         # Neo4j cannot store LIST<MAP> node properties; store as JSON string.
         # The API mapper (Task 9) json.loads() this back to a list.
         non_vehicle_lines=json.dumps(non_vehicle_lines, default=str),
-        points_used=loyalty.get("points_used"),
-        points_gained=loyalty.get("points_gained"),
+        points_used=normalize_loyalty_field(
+            loyalty.get("points_used"),
+            source=source_system_key,
+            source_order_id=source_order_id,
+            field="points_used",
+        ),
+        points_gained=normalize_loyalty_field(
+            loyalty.get("points_gained"),
+            source=source_system_key,
+            source_order_id=source_order_id,
+            field="points_gained",
+        ),
         did_redeem_discount=loyalty.get("did_redeem_discount"),
         is_purchase_points=loyalty.get("is_purchase_points"),
     )

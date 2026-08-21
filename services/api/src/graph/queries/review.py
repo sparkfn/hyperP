@@ -590,7 +590,7 @@ SET order.order_no = stage.order_no, order.ordered_at = stage.ordered_at,
     order.release_date = stage.release_date, order.status = stage.status,
     order.total_amount = stage.total_amount, order.currency = stage.currency,
     order.item_count = stage.item_count, order.metadata = stage.metadata,
-    order.points_used = stage.points_used, order.points_gained = stage.points_gained,
+    order.points_used = $points_used, order.points_gained = $points_gained,
     order.did_redeem_discount = stage.did_redeem_discount,
     order.is_purchase_points = stage.is_purchase_points,
     order.non_vehicle_lines = stage.non_vehicle_lines, order.updated_at = datetime()

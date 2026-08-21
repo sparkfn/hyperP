@@ -86,3 +86,50 @@ def test_dump_sales_envelope_loyalty_block_coerces_strings() -> None:
         "did_redeem_discount": 1,
         "is_purchase_points": 0,
     }
+
+
+def test_live_order_payload_normalizes_point_fields_independently_without_mutating_raw() -> None:
+    sale = _sale(points_used="20.000", points_gained="not-points")
+    payload = _build_order_payload(
+        sale=sale, source_order_id="1", ordered_at="2026-01-01",
+        release_date=None, sales_cols=set(sale.keys()), line_rows=[],
+        total=Decimal("10.00"), source_system_key="eko_phppos:sales",
+    )
+    loyalty = payload["loyalty"]
+    assert isinstance(loyalty, dict)
+    assert loyalty == {
+        "points_used": 20,
+        "points_gained": None,
+        "did_redeem_discount": 1,
+        "is_purchase_points": 0,
+    }
+    raw = payload["raw"]
+    assert isinstance(raw, dict)
+    assert raw["points_used"] == "20.000"
+    assert raw["points_gained"] == "not-points"
+
+
+def test_dump_order_payload_normalizes_point_fields_independently_without_mutating_raw() -> None:
+    sale = DumpRow(_mapping={  # type: ignore[arg-type]
+        "sale_id": "1", "sale_time": "2026-01-01 00:00:00", "customer_id": "5",
+        "invoice_number": "INV1", "sale_status": None, "suspended": "0",
+        "points_used": "20.000", "points_gained": "20.5",
+        "did_redeem_discount": "1", "is_purchase_points": "0",
+    })
+    env = _build_phppos_sales_envelope(
+        sale=sale, line_rows=[], items_by_id={}, source_system_key="eko_phppos:sales",
+    )
+    raw_payload = env.get("raw_payload")
+    assert isinstance(raw_payload, dict)
+    order = raw_payload.get("order")
+    assert isinstance(order, dict)
+    assert order.get("loyalty") == {
+        "points_used": 20,
+        "points_gained": None,
+        "did_redeem_discount": 1,
+        "is_purchase_points": 0,
+    }
+    raw = order.get("raw")
+    assert isinstance(raw, dict)
+    assert raw["points_used"] == "20.000"
+    assert raw["points_gained"] == "20.5"
