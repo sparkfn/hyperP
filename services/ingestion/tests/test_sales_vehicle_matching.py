@@ -8,8 +8,10 @@ from unittest.mock import patch
 import pytest
 from _txmock import _RecordingTx
 from neo4j import ManagedTransaction
+from src.connectors.eko.sales import EkoSalesConnector
 from src.exclusions import ExclusionContext
 from src.graph import queries as _queries
+from src.graph.queries.loyalty_points_migration import TARGET_LOYALTY_ORDER_SOURCES
 from src.matching.vehicle_heuristic import VEHICLE_MATCH_AUTO, VEHICLE_MATCH_REVIEW
 from src.models import JsonValue
 from src.pipeline_sales import (
@@ -570,6 +572,7 @@ def test_merge_order_receives_non_vehicle_lines_param() -> None:
 
 def test_merge_order_normalizes_loyalty_params_independently() -> None:
     tx = _OrderTx()
+    sales_source_key = EkoSalesConnector().get_source_key()
     order: dict[str, object] = {
         "source_order_id": "private-order-persistence-241",
         "order_no": "ORD-1",
@@ -584,11 +587,13 @@ def test_merge_order_normalizes_loyalty_params_independently() -> None:
     }
     _merge_order(
         cast(ManagedTransaction, tx),
-        source_system_key="eko_phppos",
+        source_system_key=sales_source_key,
         order=cast("_OrderPayload", order),
         non_vehicle_lines=[],
     )
     params = next(kwargs for query, kwargs in tx.calls if query == _queries.MERGE_ORDER)
+    assert params["source_system_key"] == "eko_phppos:sales"
+    assert sales_source_key in TARGET_LOYALTY_ORDER_SOURCES
     assert params["points_used"] == 14000
     assert params["points_gained"] is None
     assert params["did_redeem_discount"] == 1

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-TARGET_LOYALTY_ORDER_SOURCES: tuple[str, ...] = ("eko_phppos", "speedzone_phppos")
+TARGET_LOYALTY_ORDER_SOURCES: tuple[str, ...] = ("eko_phppos:sales", "speedzone_phppos:sales")
 
 _INVALID_POINTS_USED = """o.points_used IS NOT NULL
   AND NOT (valueType(o.points_used) STARTS WITH 'INTEGER')"""
