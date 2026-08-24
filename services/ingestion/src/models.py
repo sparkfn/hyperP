@@ -408,7 +408,7 @@ class MatchResult(BaseModel):
     engine_version: str = "v0.1.0"
     matched_person_id: str | None = None
     proposed_person_id: str | None = None
-    # When an incoming record independently matches (MERGE band) more than one
+    # When an incoming non-CRM-deal record independently matches (MERGE band) more than one
     # distinct active person, the record and its extracted evidence are linked to
     # ALL of them — ``matched_person_id`` (the primary) plus every id here — but
     # the persons are NOT merged (they may legitimately share an identifier).
