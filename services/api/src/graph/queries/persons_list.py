@@ -121,11 +121,14 @@ CALL (p) {
 _POSSIBLE_MATCH_COUNT = """
 CALL (p) {
   OPTIONAL MATCH (p)-[p_shared_id:IDENTIFIED_BY]->(shared_id:Identifier)
-    <-[other_shared_id:IDENTIFIED_BY]-(other:Person)
-    WHERE coalesce(p_shared_id.is_active, true) = true
-      AND coalesce(other_shared_id.is_active, true) = true
-      AND other.person_id <> p.person_id AND other.status <> 'merged'
-  RETURN count(DISTINCT other) AS possible_match_count
+  WHERE coalesce(p_shared_id.is_active, true) = true
+  WITH DISTINCT p, shared_id
+  OPTIONAL MATCH (shared_id)<-[other_shared_id:IDENTIFIED_BY]-(other:Person)
+  WHERE shared_id IS NOT NULL
+    AND coalesce(other_shared_id.is_active, true) = true
+    AND other.person_id <> p.person_id AND other.status <> 'merged'
+  WITH DISTINCT other
+  RETURN count(other) AS possible_match_count
 }
 """
 
