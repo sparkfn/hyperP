@@ -152,7 +152,7 @@ async def test_exact_total_page_executes_list_and_count_queries(
     assert page.total_count == 7
     assert session_count == 2
     expected_params = {"crm_deal_count_min": 0, "crm_deal_count_max": 0}
-    assert ("LIST", {**expected_params, "skip": 4, "limit": 3}) in session.calls
+    assert ("LIST", {**expected_params, "skip": 4, "limit": 2}) in session.calls
     assert ("COUNT", expected_params) in session.calls
     assert list_builder_args == count_builder_args == ("crm_deal_count", "asc")
     assert (

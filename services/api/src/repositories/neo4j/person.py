@@ -213,11 +213,13 @@ class Neo4jPersonRepository:
             if k not in ("sort_by", "sort_order", "entity_key_mode", "source_key_mode")
         }
 
+        list_limit = limit if include_total else limit + 1
+
         async def _run_list() -> list[GraphRecord]:
             async with get_session() as session:
                 result = await session.run(
                     list_query,
-                    {**cypher_params, "skip": skip, "limit": limit + 1},
+                    {**cypher_params, "skip": skip, "limit": list_limit},
                 )
                 return [record_to_dict(r.keys(), list(r.values())) async for r in result]
 
