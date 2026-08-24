@@ -50,6 +50,12 @@ from src.models import (
     NormalizedAddress as NormalizedAddressModel,
 )
 from src.pipeline_bankruptcy import bankruptcy_case_blueprint, materialize_bankruptcy_case
+from src.pipeline_crm_identity import (
+    apply_crm_deal_match_policy,
+    deterministic_crm_owner_result,
+    projected_identifiers,
+    resolve_canonical_crm_contact,
+)
 from src.pipeline_knows import activate_knows_projection, knows_projection_blueprints
 from src.pipeline_normalization import (
     normalize_envelope_addresses,
@@ -106,8 +112,11 @@ _CRM_DEAL_CONTINUITY_RAW_KEYS = (
     "primary_contact_kind",
     "contact_count",
     "crm_contact_groups",
+    "crm_contact_raw_groups",
     "crm_contact_ids",
     "crm_contact_resolution_required",
+    "crm_deal_identity_policy_version",
+    "crm_contact_identity_metadata",
 )
 
 
@@ -289,9 +298,10 @@ class IngestPipeline:
             envelope,
             active_exclusion_context,
         )
+        person_identifiers = projected_identifiers(envelope, identifiers)
         continuity_fast_path = self._has_unchanged_crm_identity(
             envelope=envelope,
-            identifiers=identifiers,
+            identifiers=person_identifiers,
             addresses=addresses,
             attributes=attributes,
             activation_blueprint=activation_blueprint,
@@ -309,6 +319,16 @@ class IngestPipeline:
         else:
             candidates = find_candidates(tx, identifiers, addresses)
             multi_contact_person_id = self._resolve_ambiguous_crm_deal_contacts(tx, envelope)
+            canonical_contact_result = resolve_canonical_crm_contact(
+                tx,
+                envelope,
+                identifiers,
+                continuity_person_id=(
+                    lifecycle_plan.prior_person_ids[0]
+                    if len(lifecycle_plan.prior_person_ids) == 1
+                    else None
+                ),
+            )
             if (
                 self._requires_ambiguous_crm_contact_resolution(envelope)
                 and multi_contact_person_id is None
@@ -322,16 +342,23 @@ class IngestPipeline:
                     ingest_run_id=ingest_run_id,
                     dropped=True,
                 )
-            if multi_contact_person_id is not None:
-                match_result = MatchResult(
-                    decision=MatchDecision.MERGE,
-                    confidence=1.0,
-                    reasons=["All non-primary CRM contacts resolve to the same existing person"],
-                    engine_type=EngineType.DETERMINISTIC,
-                    matched_person_id=multi_contact_person_id,
-                )
-            elif len(lifecycle_plan.prior_person_ids) > 1:
+            if len(lifecycle_plan.prior_person_ids) > 1:
                 match_result = ambiguous_prior_owners_result(lifecycle_plan.prior_person_ids)
+            elif multi_contact_person_id is not None:
+                match_result = deterministic_crm_owner_result(
+                    multi_contact_person_id,
+                    continuity_person_id=(
+                        lifecycle_plan.prior_person_ids[0]
+                        if lifecycle_plan.prior_person_ids
+                        else None
+                    ),
+                    merge_reason=(
+                        "All non-primary CRM contacts resolve to the same existing person"
+                    ),
+                    continuity_review_reason=("changed_multi_contact_crm_owner_requires_review"),
+                )
+            elif canonical_contact_result is not None:
+                match_result = canonical_contact_result
             else:
                 match_result = self._match_engine.evaluate(
                     tx,
@@ -346,6 +373,7 @@ class IngestPipeline:
                         else None
                     ),
                 )
+            match_result = apply_crm_deal_match_policy(envelope, match_result)
         if _is_match_only_record(
             envelope.source_system, envelope.record_type
         ) and not self._has_usable_match(match_result, candidates):
@@ -361,12 +389,12 @@ class IngestPipeline:
                 dropped=True,
             )
         if not continuity_fast_path:
-            upsert_nodes(tx, identifiers, addresses)
+            upsert_nodes(tx, person_identifiers, addresses)
         person_id, is_new_person = self._resolve_person(tx, match_result, candidates)
         source_record_pk = persist_source_record(
             tx,
             envelope=envelope,
-            identifiers=identifiers,
+            identifiers=person_identifiers,
             addresses=addresses,
             attributes=attributes,
             match_result=match_result,
@@ -389,7 +417,7 @@ class IngestPipeline:
         link_record_to_graph(
             tx,
             envelope=envelope,
-            identifiers=identifiers,
+            identifiers=person_identifiers,
             addresses=addresses,
             attributes=attributes,
             person_id=person_id,
@@ -436,6 +464,11 @@ class IngestPipeline:
                 replaced_source_record_pk=lifecycle_plan.active_source_record_pk,
             )
             affected_person_ids.add(person_id)
+        if (
+            envelope.record_type is RecordType.CRM_DEAL
+            and match_result.additional_linked_person_ids
+        ):
+            raise AssertionError("CRM deals must not link to additional merge candidates")
         # Multi-match: the record reached the merge band against more than one
         # distinct person. Link the record + its extracted evidence to every
         # other matched person too — WITHOUT merging the persons, which may
@@ -446,7 +479,7 @@ class IngestPipeline:
             link_record_to_graph(
                 tx,
                 envelope=envelope,
-                identifiers=identifiers,
+                identifiers=person_identifiers,
                 addresses=addresses,
                 attributes=attributes,
                 person_id=other_person_id,
@@ -473,7 +506,7 @@ class IngestPipeline:
             if not continuity_fast_path:
                 for affected_person_id in sorted(affected_person_ids):
                     compute_golden_profile(tx, affected_person_id)
-                audit_person_pairs(tx, identifiers, envelope.record_type)
+                audit_person_pairs(tx, person_identifiers, envelope.record_type)
             mark_profile_analysis_dirty(
                 tx,
                 source_record_pks=(
@@ -698,11 +731,14 @@ class IngestPipeline:
             group_envelope = envelope.model_copy(
                 update={"identifiers": raw_identifiers, "addresses": [], "attributes": {}}
             )
-            group_candidates = find_candidates(
-                tx,
-                normalize_envelope_identifiers(group_envelope),
-                [],
-            )
+            canonical_identifiers = [
+                identifier
+                for identifier in normalize_envelope_identifiers(group_envelope)
+                if identifier.identifier_type == "crm_contact_id"
+            ]
+            if not canonical_identifiers:
+                return None
+            group_candidates = find_candidates(tx, canonical_identifiers, [])
             person_ids = {candidate.person_id for candidate in group_candidates}
             if len(person_ids) != 1:
                 return None

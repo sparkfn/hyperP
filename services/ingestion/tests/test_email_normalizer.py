@@ -42,3 +42,11 @@ def test_placeholder_still_rejected() -> None:
 
 def test_invalid_format_still_rejected() -> None:
     assert normalize_email("not-an-email") == (None, QualityFlag.INVALID_FORMAT)
+
+
+def test_whatsapp_group_id_is_not_a_person_email() -> None:
+    assert normalize_email("120363349430463692@g.us") == (None, QualityFlag.INVALID_FORMAT)
+
+
+def test_uppercase_whatsapp_group_domain_is_not_a_person_email() -> None:
+    assert normalize_email("  120363349430463692@G.US  ") == (None, QualityFlag.INVALID_FORMAT)

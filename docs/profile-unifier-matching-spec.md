@@ -166,11 +166,15 @@ Resolution:
   person-to-person rewiring
 
 The extra person ids are carried on `MatchResult.additional_linked_person_ids`.
-This applies to both deterministic (confidence 1.0) and heuristic (≥ 0.40) merge
-matches. Hard NO_MATCH rules still drop a conflicting candidate before it can
-become a merge target. Whether the shared evidence means the persons should
-ultimately be merged is left to human review / later analysis, not decided
-automatically here.
+This applies to both deterministic (confidence 1.0) and heuristic merge matches
+**except CRM deals**. A Bitrix CRM deal must have at most one authoritative active
+Person link: an existing canonical `crm_contact_id` owner wins before generic
+matching; duplicate canonical owners and generic multi-MERGE results become review
+cases. CRM-deal phone/email values are bounded, unverified match-only hints and are
+never projected as Person identity evidence. Hard NO_MATCH rules still drop a
+conflicting candidate before it can become a merge target. Whether the shared
+evidence means the persons should ultimately be merged is left to human review /
+later analysis, not decided automatically here.
 
 ## Person-Pair Auditing (Shared-Identifier Bridges)
 

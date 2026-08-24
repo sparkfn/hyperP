@@ -75,6 +75,21 @@ Typical trust:
 - DOB: `tier_4`
 - address: `tier_4`
 
+### CRM Deal Identity Guardrail
+
+Bitrix CRM **deals** use a stricter policy than standalone CRM contact facts:
+
+- `crm_contact_id` is the canonical deal-to-person key after one safe association;
+- deal-origin phone and email values are unverified, bounded matching hints only;
+  they never become `Person` identity projections, facts, or pair-audit bridges;
+- a contact with more than five distinct phones or more than five distinct emails
+  contributes no channel hints to automatic matching; its canonical CRM key and
+  immutable raw payload remain available for review;
+- identifiers with the WhatsApp group domain `g.us` are invalid person emails;
+  and
+- a CRM deal with multiple merge-band people is routed to review instead of using
+  the generic link-to-all behavior.
+
 ### Third-Party Operational App
 
 Examples:

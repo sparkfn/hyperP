@@ -25,6 +25,10 @@ from src.connectors.bitrix_openlines.crm_deal_filter import (
     CrmDealPage,
     normalize_crm_category_ids,
 )
+from src.connectors.bitrix_openlines.crm_identity_policy import (
+    CRM_DEAL_IDENTITY_POLICY_VERSION,
+    crm_contact_identity_evidence,
+)
 from src.connectors.bitrix_openlines.dialog_cache import DialogConfigCache
 from src.connectors.bitrix_openlines.discovery import stream_chats
 from src.connectors.bitrix_openlines.models import (
@@ -640,24 +644,17 @@ def _deal_envelope(deal: CrmDeal, entity_key: str) -> dict[str, JsonValue]:
     attributes: dict[str, JsonValue] = {}
     identity_contacts = (contact,) if contact is not None else deal.contacts
     for candidate in identity_contacts:
-        identifiers.append(
-            {
-                "type": "crm_contact_id" if candidate.kind == "contact" else "external_customer_id",
-                "value": candidate.id,
-                "is_verified": True,
-            }
-        )
-        identifiers.extend(
-            {"type": "phone", "value": value, "is_verified": True} for value in candidate.phones
-        )
-        identifiers.extend(
-            {"type": "email", "value": value, "is_verified": True} for value in candidate.emails
-        )
+        identifiers.extend(crm_contact_identity_evidence(candidate).identifiers)
     if contact is not None and contact.full_name is not None:
         attributes["full_name"] = contact.full_name
     contact_groups: list[JsonValue] = []
+    raw_contact_groups: list[JsonValue] = []
+    contact_identity_metadata: list[JsonValue] = []
     for deal_contact in deal.contacts:
-        contact_groups.append(_contact_identifier_group(deal_contact))
+        evidence = crm_contact_identity_evidence(deal_contact)
+        contact_groups.append(list(evidence.identifiers))
+        raw_contact_groups.append(_raw_contact_identifier_group(deal_contact))
+        contact_identity_metadata.append(evidence.metadata)
     raw_payload: dict[str, JsonValue] = {
         "crm_deal_id": deal.id,
         "title": deal.title,
@@ -667,8 +664,11 @@ def _deal_envelope(deal: CrmDeal, entity_key: str) -> dict[str, JsonValue]:
         "primary_contact_kind": contact.kind if contact is not None else None,
         "contact_count": deal.contact_count,
         "crm_contact_groups": contact_groups,
+        "crm_contact_raw_groups": raw_contact_groups,
         "crm_contact_ids": [item.id for item in deal.contacts],
         "crm_contact_resolution_required": deal.has_ambiguous_contacts,
+        "crm_deal_identity_policy_version": CRM_DEAL_IDENTITY_POLICY_VERSION,
+        "crm_contact_identity_metadata": contact_identity_metadata,
         "deal": deal.raw_payload,
     }
     return {
@@ -713,6 +713,11 @@ def _validate_included_crm_category_mappings(config: BitrixOpenLinesConfig) -> t
 
 
 def _contact_identifier_group(contact: CrmContact) -> list[JsonValue]:
+    return list(crm_contact_identity_evidence(contact).identifiers)
+
+
+def _raw_contact_identifier_group(contact: CrmContact) -> list[JsonValue]:
+    """Retain complete upstream channels for immutable audit and replay hashing."""
     identifiers: list[JsonValue] = [
         {
             "type": "crm_contact_id" if contact.kind == "contact" else "external_customer_id",
@@ -721,10 +726,10 @@ def _contact_identifier_group(contact: CrmContact) -> list[JsonValue]:
         }
     ]
     identifiers.extend(
-        {"type": "phone", "value": value, "is_verified": True} for value in contact.phones
+        {"type": "phone", "value": value, "is_verified": False} for value in contact.phones
     )
     identifiers.extend(
-        {"type": "email", "value": value, "is_verified": True} for value in contact.emails
+        {"type": "email", "value": value, "is_verified": False} for value in contact.emails
     )
     return identifiers
 

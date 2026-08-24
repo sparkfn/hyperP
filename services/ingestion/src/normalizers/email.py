@@ -59,5 +59,7 @@ def normalize_email(raw: str) -> tuple[str | None, QualityFlag]:
         return None, QualityFlag.INVALID_FORMAT
 
     local, _, domain = stripped.rpartition("@")
+    if domain == "g.us":
+        return None, QualityFlag.INVALID_FORMAT
     local, domain = _canonicalize_gmail(local, domain)
     return f"{local}@{domain}", QualityFlag.VALID
