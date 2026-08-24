@@ -265,10 +265,34 @@ def test_person_listing_connection_count_excludes_identifier_only_connections() 
 
 def test_person_listing_includes_and_sorts_by_possible_match_count() -> None:
     query = build_list_persons_query("possible_match_count", "desc", has_q=False)
+    possible_match_block = next(
+        block for block in query.split("CALL (p) {") if "AS possible_match_count" in block
+    )
 
     assert "possible_match_count" in query
-    assert "count(DISTINCT other) AS possible_match_count" in query
-    assert "ORDER BY possible_match_count DESC" in query
+    assert "coalesce(p_shared_id.is_active, true) = true" in possible_match_block
+    assert "coalesce(other_shared_id.is_active, true) = true" in possible_match_block
+    assert "WITH DISTINCT p, shared_id" in possible_match_block
+    assert "WITH DISTINCT other" in possible_match_block
+    assert "shared_id IS NOT NULL" in possible_match_block
+    assert "other.person_id <> p.person_id" in possible_match_block
+    assert "other.status <> 'merged'" in possible_match_block
+    assert "count(DISTINCT other) AS possible_match_count" not in possible_match_block
+    assert "RETURN count(other) AS possible_match_count" in possible_match_block
+    assert possible_match_block.index("WITH DISTINCT p, shared_id") < possible_match_block.index(
+        "OPTIONAL MATCH (shared_id)<-"
+    )
+    assert possible_match_block.index("WITH DISTINCT other") < possible_match_block.index(
+        "RETURN count(other)"
+    )
+    assert "ORDER BY possible_match_count DESC, p.person_id ASC" in query
+    assert "ORDER BY possible_match_count DESC, person.person_id ASC" in query
+
+
+def test_crm_desc_paginates_before_possible_match_enrichment() -> None:
+    query = build_list_persons_query("crm_deal_count", "desc", has_q=False)
+
+    assert query.index("SKIP $skip LIMIT $limit") < query.index("AS possible_match_count")
 
 
 def test_stored_sort_paginates_before_enrichment() -> None:
