@@ -205,6 +205,70 @@ def test_crm_deal_count_sort_keeps_page_boundaries_stable(
         assert [person_id for page in pages for person_id in _person_ids(page)] == expected
 
 
+def test_connection_count_deduplicates_high_cardinality_paths(
+    neo4j_driver: _TestGraph,
+) -> None:
+    with neo4j_driver.driver.session() as session:
+        session.run(
+            """
+            CREATE (target:Person {
+              person_id: 'connections-target', status: 'active', crm_deal_count: 10,
+              _person_list_test_run: $test_run_id
+            })
+            CREATE (address_a:Address {
+              address_id: 'connections-a', _person_list_test_run: $test_run_id
+            })
+            CREATE (address_b:Address {
+              address_id: 'connections-b', _person_list_test_run: $test_run_id
+            })
+            CREATE (address_only:Person {
+              person_id: 'address-only', status: 'active', crm_deal_count: 4,
+              _person_list_test_run: $test_run_id
+            })
+            CREATE (overlap:Person {
+              person_id: 'address-and-knows', status: 'active', crm_deal_count: 3,
+              _person_list_test_run: $test_run_id
+            })
+            CREATE (knows_only:Person {
+              person_id: 'knows-only', status: 'active', crm_deal_count: 2,
+              _person_list_test_run: $test_run_id
+            })
+            CREATE (inactive_only:Person {
+              person_id: 'inactive-only', status: 'active', crm_deal_count: 1,
+              _person_list_test_run: $test_run_id
+            })
+            CREATE (merged:Person {
+              person_id: 'merged-connection', status: 'merged', crm_deal_count: 99,
+              _person_list_test_run: $test_run_id
+            })
+            WITH target, address_a, address_b, address_only, overlap, knows_only,
+                 inactive_only, merged
+            UNWIND range(1, 20) AS duplicate
+            CREATE (target)-[:LIVES_AT {is_active: true, duplicate: duplicate}]->(address_a)
+            CREATE (address_only)-[:LIVES_AT {is_active: true, duplicate: duplicate}]->(address_a)
+            CREATE (overlap)-[:LIVES_AT {is_active: true, duplicate: duplicate}]->(address_a)
+            CREATE (target)-[:LIVES_AT {is_active: true, duplicate: duplicate}]->(address_b)
+            CREATE (overlap)-[:LIVES_AT {is_active: true, duplicate: duplicate}]->(address_b)
+            CREATE (target)-[:KNOWS {is_active: true, duplicate: duplicate}]->(overlap)
+            CREATE (target)-[:KNOWS {is_active: true, duplicate: duplicate}]->(knows_only)
+            CREATE (target)-[:KNOWS {is_active: false, duplicate: duplicate}]->(inactive_only)
+            CREATE (target)-[:KNOWS {is_active: true, duplicate: duplicate}]->(merged)
+            """,
+            test_run_id=neo4j_driver.run_id,
+        ).consume()
+
+    query = build_list_persons_query("crm_deal_count", "desc", has_q=False)
+    first_page = _list_rows(neo4j_driver, query, skip=0, limit=3)
+    second_page = _list_rows(neo4j_driver, query, skip=3, limit=3)
+    repeated_first_page = _list_rows(neo4j_driver, query, skip=0, limit=3)
+
+    assert _person_ids(first_page) == ["connections-target", "address-only", "address-and-knows"]
+    assert _person_ids(second_page) == ["knows-only", "inactive-only"]
+    assert _person_ids(repeated_first_page) == _person_ids(first_page)
+    target = first_page[0]
+    assert target["connection_count"] == 3
+
+
 def test_crm_deal_count_filter_composes_with_computed_sort(
     neo4j_driver: _TestGraph,
 ) -> None:

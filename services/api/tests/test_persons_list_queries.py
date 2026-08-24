@@ -261,6 +261,12 @@ def test_person_listing_connection_count_excludes_identifier_only_connections() 
     assert "LIVES_AT" in conn_block
     assert "KNOWS" in conn_block
     assert "{is_active: true}" not in conn_block
+    assert "WITH p, collect(DISTINCT ca) AS address_conn" in conn_block
+    assert "WITH address_conn, collect(DISTINCT ck) AS knows_conn" in conn_block
+    assert "WITH address_conn + knows_conn AS all_conn" in conn_block
+    assert "collect(DISTINCT ca) + collect(DISTINCT ck)" not in conn_block
+    assert conn_block.index("AS address_conn") < conn_block.index("[p_knows:KNOWS]")
+    assert conn_block.index("AS knows_conn") < conn_block.index("address_conn + knows_conn")
 
 
 def test_person_listing_includes_and_sorts_by_possible_match_count() -> None:

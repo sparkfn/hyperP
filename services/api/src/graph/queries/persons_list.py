@@ -78,10 +78,12 @@ CALL (p) {
     WHERE coalesce(p_addr.is_active, true) = true
       AND coalesce(ca_addr.is_active, true) = true
       AND ca.person_id <> p.person_id AND ca.status <> 'merged'
+  WITH p, collect(DISTINCT ca) AS address_conn
   OPTIONAL MATCH (p)-[p_knows:KNOWS]-(ck:Person)
     WHERE coalesce(p_knows.is_active, true) = true
       AND ck.person_id <> p.person_id AND ck.status <> 'merged'
-  WITH collect(DISTINCT ca) + collect(DISTINCT ck) AS all_conn
+  WITH address_conn, collect(DISTINCT ck) AS knows_conn
+  WITH address_conn + knows_conn AS all_conn
   UNWIND all_conn AS c
   RETURN count(DISTINCT c) AS connection_count
 }
