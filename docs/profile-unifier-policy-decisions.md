@@ -90,6 +90,22 @@ Bitrix CRM **deals** use a stricter policy than standalone CRM contact facts:
 - a CRM deal with multiple merge-band people is routed to review instead of using
   the generic link-to-all behavior.
 
+### Standalone Bitrix CRM Identity Boundary
+
+The deal-specific policy `crm_deal_identity_v2` does not define the identity
+contract for independent Bitrix records. Standalone records must use separately
+versioned policies: `crm_contact_identity_v1`, `crm_lead_identity_v1`, and
+`crm_company_reference_v1`.
+
+- contacts, leads, and companies use distinct portal-scoped identifier types:
+  `crm_contact_id`, `crm_lead_id`, and `crm_company_id`;
+- new Bitrix lead records must not use the generic `external_customer_id`
+  identifier type; existing occurrences remain legacy-readable evidence only;
+- a contact or lead may have versioned, many-to-many tenant associations and
+  must not inherit an arbitrary deal's category; and
+- a company is a non-Person source organization/reference. It must not create,
+  merge, or become a canonical tenant entity automatically.
+
 ### Third-Party Operational App
 
 Examples:
