@@ -628,6 +628,16 @@ def get_connector(
     if mode == "backfill":
         raise ValueError(f"Backfill mode is not supported for source {source_key!r}")
     if mode == "api":
+        if source_key == "bitrix_crm_identity":
+            identity_config = get_ingestion_config().bitrix_openlines
+            if not identity_config.standalone_crm_identity_enabled:
+                raise PermissionError("standalone Bitrix CRM identity ingestion is disabled")
+            if incremental:
+                raise ValueError(
+                    "standalone Bitrix CRM identity requires incremental=False until "
+                    "checkpointed traversal is implemented"
+                )
+            return create_bitrix_crm_identity_connector()
         if source_key == "sgbankruptcy":
             return create_sgbankruptcy_api_connector()
         if source_key == "sgrentalflats":

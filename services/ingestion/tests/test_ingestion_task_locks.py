@@ -91,6 +91,7 @@ def test_source_lock_keys_are_scoped_by_source_and_whatsadmin_entity() -> None:
     )
     assert tasks._source_lock_keys("bitrix_chat", "api", None) == expected_bitrix
     assert tasks._source_lock_keys("bitrix_chat", "dump", None) == expected_bitrix
+    assert tasks._source_lock_keys("bitrix_crm_identity", "api", None) == expected_bitrix
 
 
 def test_source_scopes_conflict_with_legacy_mode_locks_during_rolling_upgrade(

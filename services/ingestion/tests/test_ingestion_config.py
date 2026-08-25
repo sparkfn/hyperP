@@ -200,6 +200,7 @@ def test_bitrix_openlines_config_parses_channel_and_entity_overrides(tmp_path: P
             {
                 "bitrix_openlines": {
                     "source_instance_id": "bitrix-primary",
+                    "standalone_crm_identity_enabled": True,
                     "included_channel_types": ["facebook_direct"],
                     "included_config_ids": [46],
                     "excluded_config_ids": [54],
@@ -215,6 +216,7 @@ def test_bitrix_openlines_config_parses_channel_and_entity_overrides(tmp_path: P
     )
     assert load_ingestion_config(str(path)).bitrix_openlines == BitrixOpenLinesConfig(
         source_instance_id="bitrix-primary",
+        standalone_crm_identity_enabled=True,
         included_channel_types=["facebook_direct"],
         included_config_ids=["46"],
         excluded_config_ids=["54"],
@@ -224,6 +226,27 @@ def test_bitrix_openlines_config_parses_channel_and_entity_overrides(tmp_path: P
         incremental_overlap_seconds=120,
         recent_page_size=25,
     )
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"standalone_crm_identity_enabled": True},
+        {
+            "source_instance_id": "bitrix-primary",
+            "standalone_crm_identity_enabled": "true",
+        },
+    ],
+)
+def test_enabled_standalone_crm_identity_requires_registered_boolean_config(
+    tmp_path: Path,
+    payload: dict[str, object],
+) -> None:
+    path = tmp_path / "bad.json"
+    path.write_text(json.dumps({"bitrix_openlines": payload}), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="Invalid ingestion config JSON"):
+        load_ingestion_config(str(path))
 
 
 @pytest.mark.parametrize(
@@ -254,6 +277,16 @@ def test_bitrix_configuration_digest_preserves_legacy_evidence_without_registrat
     assert bitrix_configuration_digest(
         BitrixOpenLinesConfig(source_instance_id="bitrix-primary"), categories
     ) != legacy_digest
+
+
+def test_standalone_identity_enablement_does_not_change_existing_stream_digest() -> None:
+    categories = ("2", "7", "8")
+    base = BitrixOpenLinesConfig(source_instance_id="bitrix-primary")
+    enabled = replace(base, standalone_crm_identity_enabled=True)
+
+    assert bitrix_configuration_digest(enabled, categories) == bitrix_configuration_digest(
+        base, categories
+    )
 
 
 def test_bitrix_openlines_config_deduplicates_crm_category_allowlist(tmp_path: Path) -> None:
