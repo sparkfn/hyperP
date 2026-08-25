@@ -123,7 +123,8 @@ RETURN rc {
 } AS review_case,
 md {
   .match_decision_id, .engine_type, .engine_version, .policy_version,
-  .decision, .confidence, .reasons, .blocking_conflicts, .created_at
+  .decision, .confidence, .reasons, .blocking_conflicts,
+  .review_candidate_person_ids, .created_at
 } AS match_decision,
 left_display.person_id AS left_person_id,
 left_display.preferred_full_name AS left_person_name,
@@ -223,7 +224,8 @@ RETURN rc {
 } AS review_case,
 md {
   .match_decision_id, .engine_type, .engine_version, .policy_version,
-  .decision, .confidence, .reasons, .blocking_conflicts, .created_at
+  .decision, .confidence, .reasons, .blocking_conflicts,
+  .review_candidate_person_ids, .created_at
 } AS match_decision,
 CASE WHEN left:Person THEN 'person'
      WHEN left:SourceRecord THEN 'source_record'
@@ -803,7 +805,8 @@ RETURN pending.source_record_pk AS pending_source_record_pk,
        pending.expected_active_source_record_pk AS expected_active_source_record_pk,
        toString(pending.observed_at) AS observed_at,
        collect(DISTINCT prior.person_id) AS prior_person_ids,
-       proposed.person_id AS proposed_person_id
+       proposed.person_id AS proposed_person_id,
+       coalesce(md.review_candidate_person_ids, []) AS review_candidate_person_ids
 """
 
 CLAIM_PENDING_REVIEW_RESOLUTION = (
@@ -833,7 +836,9 @@ MATCH (rc:ReviewCase {review_case_id: $review_case_id})-[:FOR_DECISION]->(md:Mat
 MATCH (md)-[:ABOUT_LEFT]->(pending:SourceRecord {
   source_record_pk: $pending_source_record_pk, lifecycle_status: 'pending_review'
 })-[:FROM_SOURCE]->(source:SourceSystem {source_key: $source_system_key})
-MATCH (md)-[:ABOUT_RIGHT]->(approved:Person {person_id: $approved_person_id, status: 'active'})
+MATCH (approved:Person {person_id: $approved_person_id, status: 'active'})
+WHERE approved.person_id IN coalesce(md.review_candidate_person_ids, [])
+   OR EXISTS { MATCH (md)-[:ABOUT_RIGHT]->(approved) }
 MERGE (identity_lock:SourceRecordIdentityLock {
   source_system: $source_system_key, source_record_id: pending.source_record_id
 })

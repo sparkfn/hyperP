@@ -792,7 +792,14 @@ def test_pending_review_queries_guard_lifecycle_and_source_identity() -> None:
     assert "lifecycle_status: 'pending_review'" in GET_PENDING_REVIEW_RECORD
     assert "FROM_SOURCE" in GET_PENDING_REVIEW_RECORD
     assert "proposed_person_id" in GET_PENDING_REVIEW_RECORD
+    assert "review_candidate_person_ids" in GET_PENDING_REVIEW_RECORD
     assert "pending.record_type <> 'sales'" in GET_PENDING_REVIEW_RECORD
+    assert "approved.person_id IN coalesce(md.review_candidate_person_ids, [])" in (
+        ACTIVATE_PENDING_REVIEW_RECORD
+    )
+    assert "EXISTS { MATCH (md)-[:ABOUT_RIGHT]->(approved) }" in (
+        ACTIVATE_PENDING_REVIEW_RECORD
+    )
     assert "old.lifecycle_status = 'active'" in ACTIVATE_PENDING_REVIEW_RECORD
     assert "old.lifecycle_status IS NULL" in ACTIVATE_PENDING_REVIEW_RECORD
     assert "old.is_latest" in ACTIVATE_PENDING_REVIEW_RECORD
@@ -1033,6 +1040,7 @@ class _LifecycleTx:
         expected_old: str | None,
         active_old: str | None,
         proposed: str = "person-a",
+        review_candidates: list[str] | None = None,
         prior: str = "person-a",
         payload: str | Mapping[str, object] | None = None,
         affected: list[str] | None = None,
@@ -1045,6 +1053,7 @@ class _LifecycleTx:
         self.expected_old = expected_old
         self.active_old = active_old
         self.proposed = proposed
+        self.review_candidates = review_candidates or []
         self.prior = prior
         self.payload = payload or {
             "identifiers": [],
@@ -1074,6 +1083,7 @@ class _LifecycleTx:
                     "normalized_payload": self.payload,
                     "observed_at": "2026-07-13T00:00:00Z",
                     "proposed_person_id": self.proposed,
+                    "review_candidate_person_ids": self.review_candidates,
                     "expected_active_source_record_pk": self.expected_old,
                 }
             )
@@ -1126,6 +1136,39 @@ class _LifecycleTx:
                 }
             )
         raise AssertionError("unexpected query")
+
+
+@pytest.mark.asyncio
+async def test_pending_record_review_can_select_any_persisted_crm_candidate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tx = _LifecycleTx(
+        expected_old=None,
+        active_old=None,
+        proposed="person-a",
+        review_candidates=["person-a", "person-b"],
+    )
+
+    async def recompute(_tx: object, _person_id: str, _invalidate: bool) -> None:
+        return None
+
+    monkeypatch.setattr(review_module, "recompute_golden_profile_tx", recompute)
+
+    result = await _action_tx(
+        cast(AsyncManagedTransaction, tx),
+        "case-1",
+        ApiReviewActionType.MERGE.value,
+        "resolved",
+        "merge",
+        None,
+        None,
+        "reviewer@example.com",
+        "person-b",
+        [],
+    )
+
+    assert result is not None
+    assert _activation_call(tx)["approved_person_id"] == "person-b"
 
 
 def _activation_call(tx: _LifecycleTx) -> Mapping[str, object]:

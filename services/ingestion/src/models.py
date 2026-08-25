@@ -414,6 +414,9 @@ class MatchResult(BaseModel):
     # the persons are NOT merged (they may legitimately share an identifier).
     # Empty in the common single-match case.
     additional_linked_person_ids: list[str] = Field(default_factory=list)
+    # CRM ambiguity reviews expose every supported destination through one
+    # selectable review case instead of silently choosing one candidate.
+    review_candidate_person_ids: list[str] = Field(default_factory=list)
     is_new_person: bool = False
     feature_snapshot: dict[str, JsonValue] = Field(default_factory=dict)
 

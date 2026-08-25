@@ -2695,6 +2695,10 @@ components:
           type: array
           items:
             type: string
+        review_candidate_person_ids:
+          type: array
+          items:
+            type: string
       required:
         - match_decision_id
         - engine_type
@@ -2703,6 +2707,7 @@ components:
         - decision
         - reasons
         - blocking_conflicts
+        - review_candidate_person_ids
       additionalProperties: false
     ReviewCaseSummary:
       type: object

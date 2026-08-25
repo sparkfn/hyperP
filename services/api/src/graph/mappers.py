@@ -680,6 +680,7 @@ def map_match_decision(record: GraphRecord) -> MatchDecision:
         confidence=to_float(md.get("confidence")),
         reasons=to_str_list(md.get("reasons")),
         blocking_conflicts=to_str_list(md.get("blocking_conflicts")),
+        review_candidate_person_ids=to_str_list(md.get("review_candidate_person_ids")),
         created_at=to_iso_or_empty(md.get("created_at")),
         left_person_id=to_optional_str(record.get("left_person_id")),
         right_person_id=to_optional_str(record.get("right_person_id")),

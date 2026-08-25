@@ -247,6 +247,7 @@ export interface ReviewMatchDecision {
   confidence: number;
   reasons: string[];
   blocking_conflicts: string[];
+  review_candidate_person_ids: string[];
   created_at: string;
   left_person_id: string | null;
   right_person_id: string | null;

@@ -429,6 +429,7 @@ class MatchDecision(BaseModel):
     confidence: float
     reasons: list[str] = Field(default_factory=list)
     blocking_conflicts: list[str] = Field(default_factory=list)
+    review_candidate_person_ids: list[str] = Field(default_factory=list)
     created_at: str = ""
     left_person_id: str | None = None
     right_person_id: str | None = None
