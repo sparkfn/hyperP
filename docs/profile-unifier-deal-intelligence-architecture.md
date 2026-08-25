@@ -137,8 +137,10 @@ crm_company_id
 
 `crm_company_id` is a source-reference identifier, not Person identity
 evidence. It is never projected as a Person `Identifier` and never enters Person
-candidate generation. Contact and lead identifiers may participate only under
-their separately versioned HyperP policies.
+candidate generation. Company source records use the `crm_company` provenance
+class and a reference-only write path, so they are activated without invoking
+Person matching or Person creation. Contact and lead identifiers may participate
+only under their separately versioned HyperP policies.
 
 Existing CRM deal records that use `external_customer_id` are legacy evidence.
 They remain readable but must not be reinterpreted or emitted by a new lead

@@ -136,6 +136,7 @@ class RecordType(StrEnum):
     SALES = "sales"
     CRM_DEAL = "crm_deal"
     CRM_HISTORY = "crm_history"
+    CRM_COMPANY = "crm_company"
     CALL = "call"
 
 
@@ -341,6 +342,8 @@ class SourceRecordEnvelope(BaseModel):
                     "extraction_confidence / extraction_method / conversation_ref "
                     "are only valid on record_type='conversation'"
                 )
+        if self.record_type == RecordType.CRM_COMPANY:
+            self._check_crm_company_reference()
         expected_parent_type = {
             RecordType.CRM_HISTORY: RecordType.CRM_DEAL,
             RecordType.CONVERSATION: RecordType.CRM_HISTORY,
@@ -382,6 +385,32 @@ class SourceRecordEnvelope(BaseModel):
             ):
                 raise ValueError("crm_history typed activity projection is incomplete or invalid")
         return self
+
+    def _check_crm_company_reference(self) -> None:
+        """Keep company records out of Person identity at the input boundary."""
+        if self.source_instance_id is None:
+            raise ValueError("crm_company source records require source_instance_id")
+        if self.identifiers or self.addresses:
+            raise ValueError("crm_company source records cannot carry Person evidence")
+        reference = self.raw_payload.get("company_reference")
+        metadata = self.raw_payload.get("reference_metadata")
+        reference_value = reference.get("value") if isinstance(reference, dict) else None
+        policy_version = (
+            metadata.get("identity_policy_version") if isinstance(metadata, dict) else None
+        )
+        if (
+            not isinstance(reference, dict)
+            or reference.get("type") != "crm_company_id"
+            or not isinstance(reference_value, str)
+            or not reference_value
+            or not isinstance(metadata, dict)
+            or metadata.get("person_matching_prohibited") is not True
+            or metadata.get("source_instance_id") != self.source_instance_id
+            or metadata.get("crm_company_id") != reference_value
+            or not isinstance(policy_version, str)
+            or not policy_version
+        ):
+            raise ValueError("crm_company source records require a prohibited company reference")
 
 
 # ---------------------------------------------------------------------------

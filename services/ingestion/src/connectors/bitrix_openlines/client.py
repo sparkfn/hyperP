@@ -920,6 +920,41 @@ class BitrixOpenLinesClient:
                     contact_ids.append(contact_id)
         return tuple(dict.fromkeys(contact_ids)) or fallback
 
+    def iter_crm_contacts(self) -> Iterator[CrmContact]:
+        """Yield current contacts independently of CRM deals."""
+        yield from self._iter_crm_people("crm.contact.list", kind="contact")
+
+    def iter_crm_leads(self) -> Iterator[CrmContact]:
+        """Yield current leads independently of CRM deals."""
+        yield from self._iter_crm_people("crm.lead.list", kind="lead")
+
+    def iter_crm_companies(self) -> Iterator[CrmCompany]:
+        """Yield current companies as non-Person source references."""
+        start = 0
+        seen_ids: set[str] = set()
+        while True:
+            payload = self._request(
+                "crm.company.list",
+                {
+                    "select": ["ID", "TITLE", "DATE_MODIFY", "DATE_CREATE"],
+                    "order": {"ID": "ASC"},
+                    "start": start,
+                },
+            )
+            result = payload.get("result")
+            if not isinstance(result, list):
+                raise RuntimeError("Bitrix CRM company list returned an invalid result")
+            for item in result:
+                company = _crm_company(item)
+                if company.id in seen_ids:
+                    continue
+                seen_ids.add(company.id)
+                yield company
+            next_page = next_start(payload, start)
+            if next_page is None:
+                return
+            start = next_page
+
     def get_contact(self, contact_id: str) -> CrmContact:
         result = self._call("crm.contact.get", {"id": contact_id})
         return _crm_contact(result, kind="contact")
@@ -1068,6 +1103,41 @@ class BitrixOpenLinesClient:
                     activity = _crm_activity(item)
                     if activity is not None:
                         yield activity
+            next_page = next_start(payload, start)
+            if next_page is None:
+                return
+            start = next_page
+
+    def _iter_crm_people(self, method: str, *, kind: str) -> Iterator[CrmContact]:
+        start = 0
+        seen_ids: set[str] = set()
+        while True:
+            payload = self._request(
+                method,
+                {
+                    "select": [
+                        "ID",
+                        "NAME",
+                        "SECOND_NAME",
+                        "LAST_NAME",
+                        "PHONE",
+                        "EMAIL",
+                        "DATE_MODIFY",
+                        "DATE_CREATE",
+                    ],
+                    "order": {"ID": "ASC"},
+                    "start": start,
+                },
+            )
+            result = payload.get("result")
+            if not isinstance(result, list):
+                raise RuntimeError(f"Bitrix CRM {kind} list returned an invalid result")
+            for item in result:
+                contact = _crm_contact(item, kind=kind)
+                if contact.id in seen_ids:
+                    continue
+                seen_ids.add(contact.id)
+                yield contact
             next_page = next_start(payload, start)
             if next_page is None:
                 return
@@ -1267,6 +1337,7 @@ def _crm_contact(result: JsonValue, *, kind: str) -> CrmContact:
         phones=_multi_value_field(payload.get("PHONE")),
         emails=_multi_value_field(payload.get("EMAIL")),
         kind=kind,
+        observed_at=_first_datetime(payload, "DATE_MODIFY", "DATE_CREATE"),
     )
 
 
@@ -1276,7 +1347,11 @@ def _crm_company(result: JsonValue) -> CrmCompany:
     company_id = _positive_id_string(result.get("ID"))
     if company_id is None:
         raise RuntimeError("Bitrix company omitted its ID")
-    return CrmCompany(id=company_id, title=_string(result.get("TITLE")))
+    return CrmCompany(
+        id=company_id,
+        title=_string(result.get("TITLE")),
+        observed_at=_first_datetime(result, "DATE_MODIFY", "DATE_CREATE"),
+    )
 
 
 def _multi_value_field(value: object) -> tuple[str, ...]:
