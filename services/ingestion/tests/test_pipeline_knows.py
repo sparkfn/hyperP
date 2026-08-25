@@ -100,7 +100,8 @@ def test_knows_resolution_and_projection_are_active_version_scoped() -> None:
     assert "coalesce(sr.is_latest, true)" not in queries.RESOLVE_PERSON_FROM_SOURCE_RECORD_ID
     assert "source_key: $source_system_key" in queries.RESOLVE_PERSON_FROM_SOURCE_RECORD_ID
     assert "(sr)-[:FROM_SOURCE]->(:SourceSystem" in queries.RESOLVE_PERSON_FROM_SOURCE_RECORD_ID
-    assert "(sr)-[:LINKED_TO]->(p:Person" in queries.RESOLVE_PERSON_FROM_SOURCE_RECORD_ID
+    assert "(sr)-[link:LINKED_TO]->(p:Person" in queries.RESOLVE_PERSON_FROM_SOURCE_RECORD_ID
+    assert "coalesce(link.is_active, true) = true" in (queries.RESOLVE_PERSON_FROM_SOURCE_RECORD_ID)
     assert (
         "SourceSystem {source_key: $source_system_key})\n      -[:LINKED_TO]"
         not in queries.RESOLVE_PERSON_FROM_SOURCE_RECORD_ID
