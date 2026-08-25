@@ -49,7 +49,6 @@ def resolve_canonical_crm_contact(
     if not eligible_person_ids:
         return blocked_crm_owner_result(
             person_ids,
-            continuity_person_id=continuity_person_id,
             reason="canonical_crm_contact_owner_blocked_by_no_match_lock",
             snapshot_key="blocked_canonical_crm_contact_candidate_ids",
         )
@@ -86,7 +85,6 @@ def resolve_canonical_crm_contact(
 def blocked_crm_owner_result(
     person_ids: list[str],
     *,
-    continuity_person_id: str | None,
     reason: str,
     snapshot_key: str,
 ) -> MatchResult:
@@ -98,11 +96,6 @@ def blocked_crm_owner_result(
         confidence=1.0,
         reasons=[reason],
         engine_type=EngineType.DETERMINISTIC,
-        matched_person_id=(
-            continuity_person_id if continuity_person_id in candidates else candidates[0]
-        ),
-        proposed_person_id=candidates[0],
-        review_candidate_person_ids=candidates,
         feature_snapshot={
             _CRM_QUARANTINE_KEY: True,
             snapshot_key: candidate_values,
