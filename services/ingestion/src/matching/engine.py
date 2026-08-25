@@ -20,6 +20,7 @@ from src.matching.heuristic import evaluate_heuristic
 from src.models import (
     CandidateResult,
     EngineType,
+    JsonValue,
     MatchDecision,
     MatchResult,
     NormalizedAddress,
@@ -165,6 +166,20 @@ class MatchEngine:
         proposed_person_id: str | None,
         continuity_confidence: float,
     ) -> MatchResult:
+        merge_candidate_person_ids = sorted(
+            {
+                person_id
+                for person_id in [
+                    destination.matched_person_id,
+                    *destination.additional_linked_person_ids,
+                ]
+                if person_id is not None
+            }
+        )
+        feature_snapshot = dict(destination.feature_snapshot)
+        merge_candidate_values: list[JsonValue] = list(merge_candidate_person_ids)
+        if len(merge_candidate_person_ids) > 1:
+            feature_snapshot["merge_candidate_person_ids"] = merge_candidate_values
         return MatchResult(
             decision=MatchDecision.REVIEW,
             confidence=destination.confidence,
@@ -176,7 +191,7 @@ class MatchEngine:
             matched_person_id=continuity_person_id,
             proposed_person_id=proposed_person_id,
             feature_snapshot={
-                **destination.feature_snapshot,
+                **feature_snapshot,
                 "continuity_person_id": continuity_person_id,
                 "continuity_confidence": continuity_confidence,
                 "proposed_person_id": proposed_person_id,

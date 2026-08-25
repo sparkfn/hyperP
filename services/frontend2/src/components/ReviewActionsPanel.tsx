@@ -28,6 +28,7 @@ interface ReviewActionsPanelProps {
   leftPersonStatus?: string | null;
   rightPersonStatus?: string | null;
   defaultSurvivorPersonId?: string | null;
+  reviewCandidatePersonIds?: readonly string[];
   leftLabel?: string;
   rightLabel?: string;
   onChanged: () => Promise<void>;
@@ -107,6 +108,7 @@ export default function ReviewActionsPanel({
   leftPersonStatus,
   rightPersonStatus,
   defaultSurvivorPersonId,
+  reviewCandidatePersonIds = [],
   leftLabel,
   rightLabel,
   onChanged,
@@ -130,16 +132,24 @@ export default function ReviewActionsPanel({
   >({});
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
+  const initialReviewCandidatePersonId =
+    defaultSurvivorPersonId ?? rightPersonId ?? reviewCandidatePersonIds[0] ?? "";
+  const [selectedReviewCandidatePersonId, setSelectedReviewCandidatePersonId] =
+    useState<string>(initialReviewCandidatePersonId);
 
   const resolved = queueState === "resolved" || queueState === "cancelled";
   const canLoadMergeChoices = leftPersonId !== null && rightPersonId !== null;
+  const isPendingRecordReview =
+    leftPersonId === null && selectedReviewCandidatePersonId.length > 0;
+  const canSubmitMerge = canLoadMergeChoices || isPendingRecordReview;
   const mergeRequiresUnmerge = actionType === "merge" && (
     (leftPersonStatus !== undefined && leftPersonStatus !== null && leftPersonStatus !== "active") ||
     (rightPersonStatus !== undefined && rightPersonStatus !== null && rightPersonStatus !== "active")
   );
-  const mergeSurvivorPersonId =
-    defaultSurvivorPersonId != null &&
-    (defaultSurvivorPersonId === leftPersonId || defaultSurvivorPersonId === rightPersonId)
+  const mergeSurvivorPersonId = reviewCandidatePersonIds.length > 0
+    ? selectedReviewCandidatePersonId
+    : defaultSurvivorPersonId != null
+      && (defaultSurvivorPersonId === leftPersonId || defaultSurvivorPersonId === rightPersonId)
       ? defaultSurvivorPersonId
       : (rightPersonId ?? leftPersonId ?? "");
 
@@ -271,6 +281,23 @@ export default function ReviewActionsPanel({
           )}
         </div>
 
+        {actionType === "merge" && reviewCandidatePersonIds.length > 1 ? (
+          <label className={styles.fieldGroup}>
+            <span className={styles.fieldLabel}>CRM owner candidate</span>
+            <select
+              className={styles.select}
+              value={selectedReviewCandidatePersonId}
+              onChange={(event) => setSelectedReviewCandidatePersonId(event.target.value)}
+              disabled={resolved || actionBusy}
+            >
+              {reviewCandidatePersonIds.map((personId) => (
+                <option key={personId} value={personId}>{personId}</option>
+              ))}
+            </select>
+          </label>
+        ) : null}
+
+
         {actionType === "merge" && canLoadMergeChoices ? (
           mergeRequiresUnmerge ? (
             <div className={styles.infoBanner}>This historical case includes a non-active person. You can view the comparison, but recreate/unmerge before submitting a new merge action.</div>
@@ -328,7 +355,7 @@ export default function ReviewActionsPanel({
           type="button"
           className={styles.primaryBtn}
           onClick={() => void onSubmitAction()}
-          disabled={actionBusy || resolved || !reasonValid || (actionType === "merge" && (!canLoadMergeChoices || mergeRequiresUnmerge))}
+          disabled={actionBusy || resolved || !reasonValid || (actionType === "merge" && (!canSubmitMerge || mergeRequiresUnmerge))}
         >
           {actionBusy ? "Submitting…" : "Submit action"}
         </button>

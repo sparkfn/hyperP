@@ -291,6 +291,7 @@ export const MOCK_REVIEW_DETAIL: ReviewCaseDetail = {
     confidence: 0.74,
     reasons: ["phone_match_normalized", "name_similarity_high", "address_partial_match"],
     blocking_conflicts: [],
+    review_candidate_person_ids: [],
     created_at: "2026-05-06T08:00:00Z",
     left_person_id: "p-001",
     right_person_id: "p-002",

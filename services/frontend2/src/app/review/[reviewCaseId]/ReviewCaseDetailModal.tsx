@@ -305,6 +305,7 @@ export function ReviewCaseDetailContent({
       assignedTo={detail.assigned_to}
       leftPersonId={leftPersonId}
       rightPersonId={rightPersonId}
+      reviewCandidatePersonIds={detail.match_decision.review_candidate_person_ids}
       leftPersonStatus={detail.comparison_left?.status ?? null}
       rightPersonStatus={detail.comparison_right?.status ?? null}
       leftLabel={compact ? "Current profile" : undefined}

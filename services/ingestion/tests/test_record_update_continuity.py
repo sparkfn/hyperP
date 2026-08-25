@@ -148,10 +148,13 @@ def test_review_decision_links_proposed_person_as_right_side() -> None:
         decision=MatchDecision.REVIEW,
         matched_person_id="prior",
         proposed_person_id="destination",
+        review_candidate_person_ids=["destination", "alternative"],
     )
 
     persist_match_decision(cast(ManagedTransaction, tx), result, "source-1")
 
+    create_call = next(call for call in tx.calls if call[0] == queries.CREATE_MATCH_DECISION)
+    assert create_call[1]["review_candidate_person_ids"] == ["destination", "alternative"]
     right_calls = [call for call in tx.calls if call[0] == queries.LINK_MATCH_DECISION_RIGHT_PERSON]
     assert right_calls[0][1]["person_id"] == "destination"
 

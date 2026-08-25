@@ -337,6 +337,7 @@ def persist_match_decision(
         confidence=match_result.confidence,
         reasons=list(match_result.reasons),
         blocking_conflicts=[],
+        review_candidate_person_ids=match_result.review_candidate_person_ids,
         feature_snapshot=json.dumps(match_result.feature_snapshot, default=str),
         policy_version="v0.1.0",
     )

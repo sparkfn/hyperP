@@ -31,6 +31,7 @@ from src.models import (
 from src.pipeline import IngestPipeline
 from src.pipeline_crm_identity import (
     apply_crm_deal_match_policy,
+    crm_deal_requires_quarantine,
     projected_identifiers,
     resolve_canonical_crm_contact,
 )
@@ -49,10 +50,26 @@ class _Rows:
 
 
 class _Tx:
-    def __init__(self, person_ids: list[str]) -> None:
+    def __init__(
+        self,
+        person_ids: list[str],
+        *,
+        blocked_owners: dict[str, str] | None = None,
+    ) -> None:
         self._person_ids = person_ids
+        self._blocked_owners = blocked_owners or {}
 
-    def run(self, _query: str, **_kwargs: object) -> _Rows:
+    def run(self, query: str, **_kwargs: object) -> _Rows:
+        if "candidate_person_id" in query and "NO_MATCH_LOCK" in query:
+            return _Rows(
+                [
+                    {
+                        "candidate_person_id": person_id,
+                        "owner_person_id": owner_person_id,
+                    }
+                    for person_id, owner_person_id in self._blocked_owners.items()
+                ]
+            )
         return _Rows(
             [
                 {
@@ -204,10 +221,68 @@ def test_duplicate_canonical_contact_owner_requires_review() -> None:
     assert result is not None
     assert result.decision is MatchDecision.REVIEW
     assert result.matched_person_id == "person-a"
+    assert result.review_candidate_person_ids == ["person-a", "person-b"]
     assert result.feature_snapshot["canonical_crm_contact_candidate_ids"] == [
         "person-a",
         "person-b",
     ]
+
+
+def test_duplicate_canonical_contact_review_excludes_locked_candidate() -> None:
+    result = resolve_canonical_crm_contact(
+        cast(
+            ManagedTransaction,
+            _Tx(
+                ["person-b", "person-a"],
+                blocked_owners={"person-b": "person-channel-owner"},
+            ),
+        ),
+        _deal_envelope(),
+        _contact_identifier(),
+    )
+
+    assert result is not None
+    assert result.decision is MatchDecision.REVIEW
+    assert result.matched_person_id == "person-a"
+    assert result.review_candidate_person_ids == ["person-a"]
+    assert result.feature_snapshot["blocked_canonical_crm_contact_candidate_ids"] == [
+        "person-b"
+    ]
+
+
+def test_canonical_contact_owner_respects_active_no_match_lock() -> None:
+    result = resolve_canonical_crm_contact(
+        cast(
+            ManagedTransaction,
+            _Tx(
+                ["person-canonical"],
+                blocked_owners={"person-canonical": "person-channel-owner"},
+            ),
+        ),
+        _deal_envelope(),
+        _contact_identifier(),
+    )
+
+    assert result is not None
+    assert crm_deal_requires_quarantine(result) is True
+    assert result.reasons == ["canonical_crm_contact_owner_blocked_by_no_match_lock"]
+
+
+def test_generic_crm_owner_change_always_requires_review() -> None:
+    result = apply_crm_deal_match_policy(
+        _deal_envelope(),
+        MatchResult(
+            decision=MatchDecision.MERGE,
+            confidence=0.95,
+            matched_person_id="person-new",
+        ),
+        continuity_person_id="person-old",
+    )
+
+    assert result.decision is MatchDecision.REVIEW
+    assert result.matched_person_id == "person-old"
+    assert result.proposed_person_id == "person-new"
+    assert "generic_crm_owner_change_requires_review" in result.reasons
 
 
 def test_crm_multi_merge_becomes_review_without_extra_person_links() -> None:
@@ -224,6 +299,11 @@ def test_crm_multi_merge_becomes_review_without_extra_person_links() -> None:
     assert result.decision is MatchDecision.REVIEW
     assert result.matched_person_id == "person-a"
     assert result.additional_linked_person_ids == []
+    assert result.review_candidate_person_ids == [
+        "person-a",
+        "person-b",
+        "person-c",
+    ]
     assert result.feature_snapshot["crm_deal_merge_candidate_ids"] == [
         "person-a",
         "person-b",

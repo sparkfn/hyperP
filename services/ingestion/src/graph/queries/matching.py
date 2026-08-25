@@ -97,6 +97,7 @@ CREATE (md:MatchDecision {
     confidence: $confidence,
     reasons: $reasons,
     blocking_conflicts: $blocking_conflicts,
+    review_candidate_person_ids: $review_candidate_person_ids,
     feature_snapshot: $feature_snapshot,
     policy_version: $policy_version,
     created_at: datetime(),

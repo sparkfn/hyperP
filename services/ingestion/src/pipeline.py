@@ -52,6 +52,7 @@ from src.models import (
 from src.pipeline_bankruptcy import bankruptcy_case_blueprint, materialize_bankruptcy_case
 from src.pipeline_crm_identity import (
     apply_crm_deal_match_policy,
+    crm_deal_requires_quarantine,
     deterministic_crm_owner_result,
     projected_identifiers,
     resolve_canonical_crm_contact,
@@ -319,15 +320,16 @@ class IngestPipeline:
         else:
             candidates = find_candidates(tx, identifiers, addresses)
             multi_contact_person_id = self._resolve_ambiguous_crm_deal_contacts(tx, envelope)
+            continuity_person_id = (
+                lifecycle_plan.prior_person_ids[0]
+                if len(lifecycle_plan.prior_person_ids) == 1
+                else None
+            )
             canonical_contact_result = resolve_canonical_crm_contact(
                 tx,
                 envelope,
                 identifiers,
-                continuity_person_id=(
-                    lifecycle_plan.prior_person_ids[0]
-                    if len(lifecycle_plan.prior_person_ids) == 1
-                    else None
-                ),
+                continuity_person_id=continuity_person_id,
             )
             if (
                 self._requires_ambiguous_crm_contact_resolution(envelope)
@@ -373,7 +375,22 @@ class IngestPipeline:
                         else None
                     ),
                 )
-            match_result = apply_crm_deal_match_policy(envelope, match_result)
+            match_result = apply_crm_deal_match_policy(
+                envelope,
+                match_result,
+                continuity_person_id=continuity_person_id,
+            )
+            if crm_deal_requires_quarantine(match_result):
+                logger.info(
+                    "Quarantining CRM deal %s: %s",
+                    envelope.source_record_id,
+                    match_result.reasons,
+                )
+                return IngestResult(
+                    source_record_id=envelope.source_record_id,
+                    ingest_run_id=ingest_run_id,
+                    dropped=True,
+                )
         if _is_match_only_record(
             envelope.source_system, envelope.record_type
         ) and not self._has_usable_match(match_result, candidates):

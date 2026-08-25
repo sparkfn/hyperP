@@ -1199,6 +1199,7 @@ export interface components {
             confidence?: number | null;
             reasons: string[];
             blocking_conflicts: string[];
+            review_candidate_person_ids: string[];
         };
         ReviewCaseSummary: {
             /** Format: uuid */

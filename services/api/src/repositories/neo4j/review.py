@@ -589,6 +589,13 @@ def _optional_str_value(record: Mapping[str, object], key: str) -> str | None:
     return value
 
 
+def _str_list_value(record: Mapping[str, object], key: str) -> list[str]:
+    value = record.get(key, [])
+    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+        raise ValueError(f"pending review record has invalid {key}")
+    return list(value)
+
+
 async def _pending_record_merge_tx(
     tx: AsyncManagedTransaction,
     review_case_id: str,
@@ -602,6 +609,7 @@ async def _pending_record_merge_tx(
 ) -> ActionResult | None:
     try:
         proposed_person_id = _required_str(pending_record, "proposed_person_id")
+        review_candidate_person_ids = _str_list_value(pending_record, "review_candidate_person_ids")
         pending_source_record_pk = _required_str(pending_record, "pending_source_record_pk")
         source_system_key = _required_str(pending_record, "source_system_key")
         source_record_id = _required_str(pending_record, "source_record_id")
@@ -629,7 +637,12 @@ async def _pending_record_merge_tx(
             pending_record.get("pending_source_record_pk"),
         )
         return ActionResult(merge_not_applicable=True)
-    if survivor_person_id is not None and survivor_person_id != proposed_person_id:
+    if review_candidate_person_ids:
+        selected_person_id = survivor_person_id or proposed_person_id
+        if selected_person_id not in review_candidate_person_ids:
+            return ActionResult(merge_not_applicable=True)
+        proposed_person_id = selected_person_id
+    elif survivor_person_id is not None and survivor_person_id != proposed_person_id:
         return ActionResult(merge_not_applicable=True)
     claim = await _claim_review_action(tx, review_case_id, actor_id)
     if claim is None:
