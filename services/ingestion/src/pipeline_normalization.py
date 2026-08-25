@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 
+from src.identifier_scopes import source_instance_for_identifier
 from src.models import (
     NormalizedAddress as NormalizedAddressModel,
 )
@@ -101,21 +102,26 @@ def _normalize_phone_with_hint(
 def normalize_envelope_identifiers(
     envelope: SourceRecordEnvelope,
 ) -> list[NormalizedIdentifier]:
-    results: dict[tuple[str, str], NormalizedIdentifier] = {}
+    results: dict[tuple[str, str | None, str], NormalizedIdentifier] = {}
     for raw_id in envelope.identifiers:
         id_type = raw_id.type.lower().strip()
+        source_instance_id = source_instance_for_identifier(
+            id_type,
+            envelope.source_instance_id,
+        )
         if id_type == "phone":
             normalized, flag = _normalize_phone_with_hint(raw_id.value, raw_id.region_hint)
         else:
             normalizer = _IDENTIFIER_NORMALIZERS.get(id_type, _passthrough_normalize)
             normalized, flag = normalizer(raw_id.value)
         if normalized:
-            key = (id_type, normalized)
+            key = (id_type, source_instance_id, normalized)
             existing = results.get(key)
             if existing is None:
                 results[key] = NormalizedIdentifier(
                     identifier_type=id_type,
                     normalized_value=normalized,
+                    source_instance_id=source_instance_id,
                     is_verified=raw_id.is_verified,
                     quality_flag=flag,
                 )

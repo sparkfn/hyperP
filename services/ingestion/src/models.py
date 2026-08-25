@@ -390,10 +390,15 @@ class SourceRecordEnvelope(BaseModel):
 
 
 class NormalizedIdentifier(BaseModel):
-    """An identifier after normalization."""
+    """An identifier after normalization.
+
+    CRM canonical identifiers carry their source-instance namespace separately
+    from the normalized value; globally matchable identifiers remain unscoped.
+    """
 
     identifier_type: str
     normalized_value: str
+    source_instance_id: str | None = None
     is_verified: bool = False
     quality_flag: QualityFlag = QualityFlag.VALID
 
