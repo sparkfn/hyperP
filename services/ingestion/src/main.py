@@ -80,7 +80,11 @@ from src.graph.bootstrap import bootstrap_entities_and_sources
 from src.graph.client import Neo4jClient
 from src.graph.incremental_checkpoints import Neo4jCheckpointRedis
 from src.graph.migrations import apply_data_migrations
-from src.graph.schema_init import apply_deferred_source_record_constraints, apply_schema
+from src.graph.schema_init import (
+    apply_deferred_identifier_scope_constraints,
+    apply_deferred_source_record_constraints,
+    apply_schema,
+)
 from src.ingestion_config import get_ingestion_config
 from src.llm import validate_ingestion_llm_readiness
 from src.models import IngestResult, JsonValue, RecordType, SourceRecordEnvelope
@@ -1014,6 +1018,7 @@ def initialize_ingestion_graph() -> None:
             ),
         )
         apply_deferred_source_record_constraints(client)
+        apply_deferred_identifier_scope_constraints(client)
     finally:
         client.close()
 

@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from neo4j import ManagedTransaction
 
 from src.graph import queries
+from src.identifier_scopes import GLOBAL_IDENTIFIER_SCOPE
 from src.matching.identifier_similarity import email_near_match, phone_near_match
 from src.matching.names import (
     NAME_PARTIAL_THRESHOLD,
@@ -214,6 +215,7 @@ def _score_identifiers(
                 fanout_rec = tx.run(
                     queries.CHECK_IDENTIFIER_FANOUT,
                     identifier_type="phone",
+                    identifier_scope=GLOBAL_IDENTIFIER_SCOPE,
                     normalized_value=ident.normalized_value,
                 ).single()
                 fanout = int(fanout_rec["fanout"]) if fanout_rec else 0

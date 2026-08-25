@@ -79,6 +79,8 @@ def test_apply_data_migrations_runs_in_dependency_order(
         ("bitrix_crm_entity_migration", "migrate_bitrix_crm_entities"),
         ("fundbox_migration", "migrate_fundbox_source_keys"),
         ("source_migration", "migrate_source_record_lifecycle"),
+        ("source_instance_migration", "migrate_source_record_source_instances"),
+        ("identifier_scope_migration", "migrate_identifier_scopes"),
         ("projection_migration", "migrate_projection_relationship_lifecycle"),
     )
     for label, name in functions:
@@ -98,5 +100,7 @@ def test_apply_data_migrations_runs_in_dependency_order(
         "bitrix_crm_entity_migration",
         "fundbox_migration",
         "source_migration",
+        "source_instance_migration",
+        "identifier_scope_migration",
         "projection_migration",
     ]

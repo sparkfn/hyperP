@@ -21,6 +21,7 @@ from typing import Literal
 from neo4j import ManagedTransaction
 
 from src.graph import queries
+from src.identifier_scopes import identifier_scope
 from src.matching.pair_score import score_person_pair
 from src.matching.thresholds import classify_confidence, has_hard_conflict, thresholds_for
 from src.models import JsonValue, MatchDecision, NormalizedIdentifier, RecordType
@@ -64,6 +65,7 @@ def audit_person_pairs(
         {
             "input_index": index,
             "identifier_type": ident.identifier_type,
+            "identifier_scope": identifier_scope(ident.identifier_type, ident.source_instance_id),
             "normalized_value": ident.normalized_value,
         }
         for index, ident in enumerate(usable_identifiers)

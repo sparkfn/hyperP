@@ -5,11 +5,15 @@ from __future__ import annotations
 UPSERT_IDENTIFIER = """
 MERGE (id:Identifier {
     identifier_type: $identifier_type,
+    identifier_scope: $identifier_scope,
     normalized_value: $normalized_value
 })
 ON CREATE SET
     id.identifier_id = randomUUID(),
+    id.source_instance_id = $source_instance_id,
     id.created_at = datetime()
+ON MATCH SET
+    id.source_instance_id = $source_instance_id
 RETURN id.identifier_id AS identifier_id
 """
 
@@ -17,11 +21,15 @@ UPSERT_IDENTIFIERS_BATCH = """
 UNWIND $identifiers AS input
 MERGE (id:Identifier {
     identifier_type: input.identifier_type,
+    identifier_scope: input.identifier_scope,
     normalized_value: input.normalized_value
 })
 ON CREATE SET
     id.identifier_id = randomUUID(),
+    id.source_instance_id = input.source_instance_id,
     id.created_at = datetime()
+ON MATCH SET
+    id.source_instance_id = input.source_instance_id
 RETURN count(id) AS upserted_count
 """
 
@@ -88,7 +96,11 @@ RETURN p.person_id AS person_id
 
 LINK_PERSON_TO_IDENTIFIER = """
 MATCH (p:Person {person_id: $person_id})
-MATCH (id:Identifier {identifier_type: $identifier_type, normalized_value: $normalized_value})
+MATCH (id:Identifier {
+    identifier_type: $identifier_type,
+    identifier_scope: $identifier_scope,
+    normalized_value: $normalized_value
+})
 MERGE (p)-[rel:IDENTIFIED_BY {
     source_system_key: $source_system_key,
     source_record_pk: $source_record_pk

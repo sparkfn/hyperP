@@ -15,6 +15,10 @@ from neo4j import ManagedTransaction
 
 from src.graph import queries
 from src.graph.crm_deal_count import recompute_person_crm_deal_counts
+from src.identifier_scopes import (
+    identifier_scope,
+    source_instance_for_identifier,
+)
 from src.models import (
     CandidateResult,
     ChatDifficulty,
@@ -59,6 +63,10 @@ def upsert_nodes(
     identifier_rows = [
         {
             "identifier_type": ident.identifier_type,
+            "identifier_scope": identifier_scope(ident.identifier_type, ident.source_instance_id),
+            "source_instance_id": source_instance_for_identifier(
+                ident.identifier_type, ident.source_instance_id
+            ),
             "normalized_value": ident.normalized_value,
         }
         for ident in identifiers
@@ -114,6 +122,7 @@ def find_candidates(
         {
             "input_index": index,
             "identifier_type": ident.identifier_type,
+            "identifier_scope": identifier_scope(ident.identifier_type, ident.source_instance_id),
             "normalized_value": ident.normalized_value,
         }
         for index, ident in enumerate(usable_identifiers)
@@ -171,6 +180,7 @@ def exceeds_fanout_cap(
     fanout_result = tx.run(
         queries.CHECK_IDENTIFIER_FANOUT,
         identifier_type=ident.identifier_type,
+        identifier_scope=identifier_scope(ident.identifier_type, ident.source_instance_id),
         normalized_value=ident.normalized_value,
     )
     fanout_rec = fanout_result.single()
@@ -504,6 +514,7 @@ def _link_identifiers(
             queries.LINK_PERSON_TO_IDENTIFIER,
             person_id=person_id,
             identifier_type=ident.identifier_type,
+            identifier_scope=identifier_scope(ident.identifier_type, ident.source_instance_id),
             normalized_value=ident.normalized_value,
             is_verified=ident.is_verified,
             verification_method=None,
