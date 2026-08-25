@@ -334,6 +334,10 @@ def test_shared_multi_contact_owner_respects_active_no_match_lock() -> None:
     assert result is not None
     assert crm_deal_requires_quarantine(result) is True
     assert result.reasons == ["multi_contact_crm_owner_blocked_by_no_match_lock"]
+    assert result.matched_person_id is None
+    assert result.proposed_person_id is None
+    assert result.review_candidate_person_ids == []
+    assert result.feature_snapshot["blocked_multi_contact_crm_candidate_ids"] == ["person-a"]
     blockers.assert_called_once_with(tx, ["person-a"], identifiers)
 
 
@@ -400,6 +404,12 @@ def test_canonical_contact_owner_respects_active_no_match_lock() -> None:
     assert result is not None
     assert crm_deal_requires_quarantine(result) is True
     assert result.reasons == ["canonical_crm_contact_owner_blocked_by_no_match_lock"]
+    assert result.matched_person_id is None
+    assert result.proposed_person_id is None
+    assert result.review_candidate_person_ids == []
+    assert result.feature_snapshot["blocked_canonical_crm_contact_candidate_ids"] == [
+        "person-canonical"
+    ]
 
 
 def test_generic_crm_owner_change_always_requires_review() -> None:
@@ -574,10 +584,10 @@ def test_blocked_canonical_owner_persists_durable_pending_review() -> None:
         decision=MatchDecision.REVIEW,
         confidence=1.0,
         reasons=["canonical_crm_contact_owner_blocked_by_no_match_lock"],
-        matched_person_id="person-a",
-        proposed_person_id="person-a",
-        review_candidate_person_ids=["person-a"],
-        feature_snapshot={"crm_deal_quarantine": True},
+        feature_snapshot={
+            "crm_deal_quarantine": True,
+            "blocked_canonical_crm_contact_candidate_ids": ["person-a"],
+        },
     )
     tx = cast(ManagedTransaction, MagicMock())
 
@@ -605,7 +615,7 @@ def test_blocked_canonical_owner_persists_durable_pending_review() -> None:
     assert result.match_decision_id == "decision-1"
     assert result.review_case_id == "review-1"
     assert result.person_id is None
-    assert result.candidate_count == 1
+    assert result.candidate_count == 0
     upsert.assert_not_called()
     link.assert_not_called()
     assert persist.call_args.kwargs["lifecycle_status"].value == "pending_review"

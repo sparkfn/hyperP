@@ -772,7 +772,6 @@ class IngestPipeline:
         if not eligible_person_ids:
             return blocked_crm_owner_result(
                 shared_person_ids,
-                continuity_person_id=continuity_person_id,
                 reason="multi_contact_crm_owner_blocked_by_no_match_lock",
                 snapshot_key="blocked_multi_contact_crm_candidate_ids",
             )
