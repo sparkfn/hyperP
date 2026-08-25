@@ -114,9 +114,11 @@ LIMIT $batch_size
 RESOLVE_PERSON_FROM_SOURCE_RECORD_ID = """
 MATCH (sr:SourceRecord {source_record_id: $source_record_id})
 MATCH (sr)-[:FROM_SOURCE]->(:SourceSystem {source_key: $source_system_key})
-MATCH (sr)-[:LINKED_TO]->(p:Person {status: 'active'})
-WHERE sr.lifecycle_status = 'active'
+MATCH (sr)-[link:LINKED_TO]->(p:Person {status: 'active'})
+WHERE coalesce(link.is_active, true) = true
+  AND (sr.lifecycle_status = 'active'
    OR (sr.lifecycle_status IS NULL AND sr.is_latest = true)
+  )
 RETURN p.person_id AS person_id
 LIMIT 1
 """
@@ -124,8 +126,9 @@ LIMIT 1
 #: Resolve the Person attached to a SourceRecord by its graph-local pk.
 RESOLVE_PERSON_FROM_SOURCE_RECORD_PK = """
 MATCH (sr:SourceRecord {source_record_pk: $source_record_pk})
-      -[:LINKED_TO]->(p:Person {status: 'active'})
+      -[link:LINKED_TO]->(p:Person {status: 'active'})
 WHERE sr.lifecycle_status = 'active'
+  AND coalesce(link.is_active, true) = true
 RETURN p.person_id AS person_id
 LIMIT 1
 """
