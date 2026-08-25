@@ -108,6 +108,7 @@ def test_data_migrations_precede_source_version_uniqueness(
         "get_ingestion_config",
         lambda: IngestionConfig(
             bitrix_openlines=BitrixOpenLinesConfig(
+                source_instance_id="bitrix-primary",
                 included_crm_category_ids=["2"],
                 entity_by_crm_category_id={"2": "speedzone"},
             )
@@ -150,6 +151,7 @@ def test_data_migrations_precede_source_version_uniqueness(
     ]
     assert migration_options == [
         {
+            "bitrix_source_instance_id": "bitrix-primary",
             "bitrix_crm_category_entities": {"2": "speedzone"},
             "included_bitrix_crm_category_ids": ["2"],
         },
@@ -176,7 +178,7 @@ def test_data_migrations_exclude_recurring_lifecycle_reconciliation(
         monkeypatch.setattr(
             migrations,
             name,
-            lambda _client, migration=name: calls.append(migration),
+            lambda _client, *args, migration=name, **kwargs: calls.append(migration),
         )
 
     monkeypatch.setattr(
@@ -201,6 +203,7 @@ def test_data_migrations_exclude_recurring_lifecycle_reconciliation(
 
     migrations.apply_data_migrations(
         client,
+        bitrix_source_instance_id="bitrix-primary",
         bitrix_crm_category_entities={"2": "speedzone"},
         included_bitrix_crm_category_ids=["2"],
     )

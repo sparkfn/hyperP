@@ -19,6 +19,7 @@
     "chat_extraction_retry_attempts": 3
   },
   "bitrix_openlines": {
+    "source_instance_id": null,
     "included_channel_types": [
       "whatsapp_business_api",
       "facebook_direct",

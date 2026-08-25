@@ -51,7 +51,10 @@ from src.identifier_scopes import (
     GLOBAL_IDENTIFIER_SCOPE,
 )
 from src.raw_payload import decode_raw_payload
-from src.source_instances import LEGACY_DEFAULT_SOURCE_INSTANCE_ID
+from src.source_instances import (
+    LEGACY_DEFAULT_SOURCE_INSTANCE_ID,
+    canonical_source_instance_id,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -746,13 +749,24 @@ def migrate_source_record_source_instances(client: Neo4jClient) -> int:
     return updated
 
 
-def migrate_identifier_scopes(client: Neo4jClient) -> int:
+def migrate_identifier_scopes(
+    client: Neo4jClient,
+    *,
+    bitrix_source_instance_id: str | None = None,
+) -> int:
     """Split CRM canonical IDs by portal while retaining global generic IDs."""
 
+    registered_bitrix_instance = (
+        canonical_source_instance_id(bitrix_source_instance_id)
+        if bitrix_source_instance_id is not None
+        else None
+    )
     params: dict[str, object] = {
         "migration_key": IDENTIFIER_SCOPE_MIGRATION_KEY,
         "crm_identifier_types": sorted(CRM_CANONICAL_IDENTIFIER_TYPES),
         "legacy_source_instance_id": LEGACY_DEFAULT_SOURCE_INSTANCE_ID,
+        "bitrix_source_instance_id": registered_bitrix_instance,
+        "bitrix_source_system_key": "bitrix_chat",
         "global_identifier_scope": GLOBAL_IDENTIFIER_SCOPE,
         "batch_size": IDENTIFIER_SCOPE_MIGRATION_BATCH_SIZE,
     }
@@ -927,6 +941,7 @@ def migrate_crm_deal_stage_projection(client: Neo4jClient) -> int:
 def apply_data_migrations(
     client: Neo4jClient,
     *,
+    bitrix_source_instance_id: str | None = None,
     bitrix_crm_category_entities: Mapping[str, str] | None = None,
     included_bitrix_crm_category_ids: Collection[str] | None = None,
 ) -> None:
@@ -948,5 +963,8 @@ def apply_data_migrations(
     migrate_fundbox_source_keys(client)
     migrate_source_record_lifecycle(client)
     migrate_source_record_source_instances(client)
-    migrate_identifier_scopes(client)
+    migrate_identifier_scopes(
+        client,
+        bitrix_source_instance_id=bitrix_source_instance_id,
+    )
     migrate_projection_relationship_lifecycle(client)

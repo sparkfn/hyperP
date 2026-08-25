@@ -87,7 +87,7 @@ def test_apply_data_migrations_runs_in_dependency_order(
         monkeypatch.setattr(
             migrations,
             name,
-            lambda _client, *args, label=label: calls.append(label),
+            lambda _client, *args, label=label, **kwargs: calls.append(label),
         )
 
     migrations.apply_data_migrations(client)

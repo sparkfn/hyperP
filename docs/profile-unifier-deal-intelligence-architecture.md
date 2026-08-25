@@ -170,7 +170,10 @@ The existing Bitrix portal receives one explicit configured instance ID before
 standalone records are emitted. Normalization obtains it from the registered
 source context, not from the credential-bearing webhook URL. Existing CRM
 identifier evidence is migrated idempotently to that instance scope before the
-new recurring stream is enabled. A second Bitrix portal is rejected until its
+new recurring stream is enabled. Historical SourceRecord lifecycle identity remains
+in the deterministic legacy namespace; only its Bitrix CRM identifier evidence is
+remapped to the registered portal scope, avoiding a second collision-sensitive record
+rekey. A second Bitrix portal is rejected until its
 distinct source instance is registered and the instance-scoped constraints and
 parent-resolution queries are online. A numeric ID from one Bitrix portal must
 never resolve a record or link from another portal.
