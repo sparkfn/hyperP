@@ -12,8 +12,11 @@ from src.models import JsonValue
 
 
 class _RepairRuntimeSettings(Protocol):
-    deployment_environment: str
-    crm_deal_identity_repair_enabled: bool
+    @property
+    def deployment_environment(self) -> str: ...
+
+    @property
+    def crm_deal_identity_repair_enabled(self) -> bool: ...
 
 
 def main(argv: Sequence[str] | None = None) -> int:

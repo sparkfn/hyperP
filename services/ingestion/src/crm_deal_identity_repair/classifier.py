@@ -55,7 +55,7 @@ def inventory_conditions(item: RepairInventoryItem) -> tuple[bool, bool]:
             projection_cleanup = True
             continue
         owner_person_id = projection.get("owner_person_id")
-        if owner_person_id != sole_owner_id:
+        if not isinstance(owner_person_id, str) or owner_person_id != sole_owner_id:
             projection_cleanup = True
             continue
         source_record_pk = projection.get("source_record_pk")
