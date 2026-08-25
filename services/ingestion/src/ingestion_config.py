@@ -73,6 +73,7 @@ class BitrixOpenLinesConfig:
     incremental_overlap_seconds: int = 300
     recent_page_size: int = 50
     source_instance_id: str | None = None
+    standalone_crm_identity_enabled: bool = False
 
 
 @dataclass
@@ -278,6 +279,9 @@ def _bitrix_openlines_config(raw: JsonValue, *, path: Path) -> BitrixOpenLinesCo
     page_size = _int(raw.get("recent_page_size"), defaults.recent_page_size, path=path)
     if overlap < 0 or page_size < 1 or page_size > 50:
         raise ValueError(f"Invalid ingestion config JSON: {path}")
+    standalone_crm_identity_enabled = raw.get("standalone_crm_identity_enabled", False)
+    if not isinstance(standalone_crm_identity_enabled, bool):
+        raise ValueError(f"Invalid ingestion config JSON: {path}")
     raw_source_instance_id = raw.get("source_instance_id")
     if raw_source_instance_id is None:
         source_instance_id = None
@@ -288,6 +292,8 @@ def _bitrix_openlines_config(raw: JsonValue, *, path: Path) -> BitrixOpenLinesCo
             source_instance_id = canonical_source_instance_id(raw_source_instance_id)
         except ValueError as exc:
             raise ValueError(f"Invalid ingestion config JSON: {path}") from exc
+    if standalone_crm_identity_enabled and source_instance_id is None:
+        raise ValueError(f"Invalid ingestion config JSON: {path}")
     return BitrixOpenLinesConfig(
         source_instance_id=source_instance_id,
         included_channel_types=included_types,
@@ -298,6 +304,7 @@ def _bitrix_openlines_config(raw: JsonValue, *, path: Path) -> BitrixOpenLinesCo
         entity_by_crm_category_id=crm_category_entity_map,
         incremental_overlap_seconds=overlap,
         recent_page_size=page_size,
+        standalone_crm_identity_enabled=standalone_crm_identity_enabled,
     )
 
 
@@ -463,6 +470,9 @@ def bitrix_configuration_digest(
         # Preserve accepted evidence created before portal registration was
         # added while including every explicit registration in new evidence.
         config_payload.pop("source_instance_id")
+    # The standalone identity writer is a separate deployment gate, not part of
+    # the deal/activity source-selection contract represented by this digest.
+    config_payload.pop("standalone_crm_identity_enabled")
     encoded = json.dumps(
         {
             "categories": included_category_ids,
@@ -482,6 +492,7 @@ def bitrix_legacy_explicit_category_digest(
     legacy_config = replace(
         config,
         source_instance_id=None,
+        standalone_crm_identity_enabled=False,
         included_crm_category_ids=[],
         entity_by_crm_category_id={},
     )

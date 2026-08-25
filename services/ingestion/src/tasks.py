@@ -760,9 +760,13 @@ def _source_lock_keys(
     entity_key: str | None,
 ) -> tuple[str, ...]:
     """Return source scopes, including legacy mode keys for rolling upgrades."""
+    lock_source_key = "bitrix_chat" if source_key == "bitrix_crm_identity" else source_key
     legacy_modes = tuple(sorted({*_LEGACY_SOURCE_LOCK_MODES, mode}))
-    if source_key != "whatsapp_chat":
-        return (source_key, *(f"{source_key}:{legacy_mode}" for legacy_mode in legacy_modes))
+    if lock_source_key != "whatsapp_chat":
+        return (
+            lock_source_key,
+            *(f"{lock_source_key}:{legacy_mode}" for legacy_mode in legacy_modes),
+        )
     entities = (entity_key,) if mode == "api" and entity_key is not None else WHATSADMIN_ENTITIES
     return tuple(
         lock_key
