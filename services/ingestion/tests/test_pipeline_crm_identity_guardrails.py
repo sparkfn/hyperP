@@ -250,6 +250,43 @@ def test_duplicate_canonical_contact_review_excludes_locked_candidate() -> None:
     ]
 
 
+def test_multi_contact_duplicate_owners_create_actionable_review() -> None:
+    pipeline = IngestPipeline(cast(object, MagicMock()))
+    envelope = _deal_envelope().model_copy(
+        update={
+            "raw_payload": {
+                "primary_contact_id": None,
+                "crm_contact_resolution_required": True,
+                "crm_contact_groups": [
+                    [{"type": "crm_contact_id", "value": "contact-1", "is_verified": True}],
+                    [{"type": "crm_contact_id", "value": "contact-2", "is_verified": True}],
+                ],
+            }
+        }
+    )
+
+    def candidates(
+        _tx: ManagedTransaction,
+        identifiers: list[NormalizedIdentifier],
+        _addresses: list[object],
+    ) -> list[CandidateResult]:
+        contact_id = identifiers[0].normalized_value
+        assert contact_id in {"contact-1", "contact-2"}
+        return [CandidateResult(person_id=person_id) for person_id in ["person-a", "person-b"]]
+
+    with patch("src.pipeline.find_candidates", side_effect=candidates):
+        result = pipeline._resolve_ambiguous_crm_deal_contacts(
+            cast(ManagedTransaction, MagicMock()),
+            envelope,
+            continuity_person_id=None,
+        )
+
+    assert result is not None
+    assert result.decision is MatchDecision.REVIEW
+    assert result.review_candidate_person_ids == ["person-a", "person-b"]
+    assert result.reasons == ["ambiguous_multi_contact_crm_owners"]
+
+
 def test_canonical_contact_owner_respects_active_no_match_lock() -> None:
     result = resolve_canonical_crm_contact(
         cast(
@@ -431,6 +468,52 @@ def test_oversized_raw_channel_change_changes_deal_hash() -> None:
         == [{"type": "crm_contact_id", "value": "123", "is_verified": True}]
     )
     assert first["record_hash"] != second["record_hash"]
+
+
+def test_blocked_canonical_owner_persists_durable_pending_review() -> None:
+    pipeline = IngestPipeline(cast(object, MagicMock()))
+    envelope = _deal_envelope().model_copy(update={"source_record_version": "1"})
+    quarantine = MatchResult(
+        decision=MatchDecision.REVIEW,
+        confidence=1.0,
+        reasons=["canonical_crm_contact_owner_blocked_by_no_match_lock"],
+        matched_person_id="person-a",
+        proposed_person_id="person-a",
+        review_candidate_person_ids=["person-a"],
+        feature_snapshot={"crm_deal_quarantine": True},
+    )
+    tx = cast(ManagedTransaction, MagicMock())
+
+    with ExitStack() as stack:
+        stack.enter_context(patch("src.pipeline.find_candidates", return_value=[]))
+        stack.enter_context(
+            patch("src.pipeline.resolve_canonical_crm_contact", return_value=quarantine)
+        )
+        upsert = stack.enter_context(patch("src.pipeline.upsert_nodes"))
+        persist = stack.enter_context(
+            patch("src.pipeline.persist_source_record", return_value="deal-sr")
+        )
+        persist_decision = stack.enter_context(
+            patch("src.pipeline.persist_match_decision", return_value="decision-1")
+        )
+        create_review = stack.enter_context(
+            patch("src.pipeline.create_review_case_if_needed", return_value="review-1")
+        )
+        link = stack.enter_context(patch("src.pipeline.link_record_to_graph"))
+
+        result = pipeline._execute_ingest(tx, envelope, _contact_identifier(), [], [])
+
+    assert result.dropped is False
+    assert result.source_record_pk == "deal-sr"
+    assert result.match_decision_id == "decision-1"
+    assert result.review_case_id == "review-1"
+    assert result.person_id is None
+    assert result.candidate_count == 1
+    upsert.assert_not_called()
+    link.assert_not_called()
+    assert persist.call_args.kwargs["lifecycle_status"].value == "pending_review"
+    persist_decision.assert_called_once_with(tx, quarantine, "deal-sr")
+    create_review.assert_called_once_with(tx, quarantine, "decision-1")
 
 
 def test_crm_multi_merge_persists_provisional_link_without_identity_evidence() -> None:

@@ -319,11 +319,15 @@ class IngestPipeline:
             )
         else:
             candidates = find_candidates(tx, identifiers, addresses)
-            multi_contact_person_id = self._resolve_ambiguous_crm_deal_contacts(tx, envelope)
             continuity_person_id = (
                 lifecycle_plan.prior_person_ids[0]
                 if len(lifecycle_plan.prior_person_ids) == 1
                 else None
+            )
+            multi_contact_result = self._resolve_ambiguous_crm_deal_contacts(
+                tx,
+                envelope,
+                continuity_person_id=continuity_person_id,
             )
             canonical_contact_result = resolve_canonical_crm_contact(
                 tx,
@@ -333,7 +337,8 @@ class IngestPipeline:
             )
             if (
                 self._requires_ambiguous_crm_contact_resolution(envelope)
-                and multi_contact_person_id is None
+                and multi_contact_result is None
+                and canonical_contact_result is None
             ):
                 logger.info(
                     "Dropping CRM deal %s: contacts do not resolve to one existing person",
@@ -346,19 +351,8 @@ class IngestPipeline:
                 )
             if len(lifecycle_plan.prior_person_ids) > 1:
                 match_result = ambiguous_prior_owners_result(lifecycle_plan.prior_person_ids)
-            elif multi_contact_person_id is not None:
-                match_result = deterministic_crm_owner_result(
-                    multi_contact_person_id,
-                    continuity_person_id=(
-                        lifecycle_plan.prior_person_ids[0]
-                        if lifecycle_plan.prior_person_ids
-                        else None
-                    ),
-                    merge_reason=(
-                        "All non-primary CRM contacts resolve to the same existing person"
-                    ),
-                    continuity_review_reason=("changed_multi_contact_crm_owner_requires_review"),
-                )
+            elif multi_contact_result is not None:
+                match_result = multi_contact_result
             elif canonical_contact_result is not None:
                 match_result = canonical_contact_result
             else:
@@ -380,20 +374,10 @@ class IngestPipeline:
                 match_result,
                 continuity_person_id=continuity_person_id,
             )
-            if crm_deal_requires_quarantine(match_result):
-                logger.info(
-                    "Quarantining CRM deal %s: %s",
-                    envelope.source_record_id,
-                    match_result.reasons,
-                )
-                return IngestResult(
-                    source_record_id=envelope.source_record_id,
-                    ingest_run_id=ingest_run_id,
-                    dropped=True,
-                )
+        durable_quarantine = crm_deal_requires_quarantine(match_result)
         if _is_match_only_record(
             envelope.source_system, envelope.record_type
-        ) and not self._has_usable_match(match_result, candidates):
+        ) and not durable_quarantine and not self._has_usable_match(match_result, candidates):
             logger.info(
                 "Dropping unmatched match-only record %s (source=%s, decision=%s)",
                 envelope.source_record_id,
@@ -404,6 +388,23 @@ class IngestPipeline:
                 source_record_id=envelope.source_record_id,
                 ingest_run_id=ingest_run_id,
                 dropped=True,
+            )
+        if durable_quarantine:
+            logger.info(
+                "Persisting quarantined CRM deal %s for review: %s",
+                envelope.source_record_id,
+                match_result.reasons,
+            )
+            return self._persist_unlinked_review(
+                tx,
+                envelope=envelope,
+                identifiers=person_identifiers,
+                addresses=addresses,
+                attributes=attributes,
+                match_result=match_result,
+                ingest_run_id=ingest_run_id,
+                lifecycle_plan=lifecycle_plan,
+                activation_blueprint=activation_blueprint,
             )
         if not continuity_fast_path:
             upsert_nodes(tx, person_identifiers, addresses)
@@ -725,45 +726,115 @@ class IngestPipeline:
     def _resolve_ambiguous_crm_deal_contacts(
         tx: ManagedTransaction,
         envelope: SourceRecordEnvelope,
-    ) -> str | None:
-        """Resolve every non-primary contact to one already-existing Person.
-
-        This deliberately runs before generic deal matching. A multi-contact
-        deal without an explicit primary must never synthesize a Person or
-        attach to only one of several unrelated contact candidates.
-        """
+        *,
+        continuity_person_id: str | None,
+    ) -> MatchResult | None:
+        """Resolve multi-contact ownership or preserve duplicate-owner ambiguity."""
         if not IngestPipeline._requires_ambiguous_crm_contact_resolution(envelope):
             return None
         raw_groups = envelope.raw_payload.get("crm_contact_groups")
         if not isinstance(raw_groups, list) or len(raw_groups) < 2:
             return None
-        resolved_person_id: str | None = None
+        candidate_groups: list[set[str]] = []
         for raw_group in raw_groups:
-            if not isinstance(raw_group, list):
+            person_ids = IngestPipeline._crm_contact_group_person_ids(tx, envelope, raw_group)
+            if not person_ids:
                 return None
-            try:
-                raw_identifiers = [RawIdentifier.model_validate(item) for item in raw_group]
-            except ValueError:
-                return None
-            group_envelope = envelope.model_copy(
-                update={"identifiers": raw_identifiers, "addresses": [], "attributes": {}}
+            candidate_groups.append(person_ids)
+        shared_person_ids = set.intersection(*candidate_groups)
+        if len(shared_person_ids) == 1:
+            return deterministic_crm_owner_result(
+                next(iter(shared_person_ids)),
+                continuity_person_id=continuity_person_id,
+                merge_reason="All non-primary CRM contacts resolve to the same existing person",
+                continuity_review_reason="changed_multi_contact_crm_owner_requires_review",
             )
-            canonical_identifiers = [
-                identifier
-                for identifier in normalize_envelope_identifiers(group_envelope)
-                if identifier.identifier_type == "crm_contact_id"
-            ]
-            if not canonical_identifiers:
-                return None
-            group_candidates = find_candidates(tx, canonical_identifiers, [])
-            person_ids = {candidate.person_id for candidate in group_candidates}
-            if len(person_ids) != 1:
-                return None
-            person_id = next(iter(person_ids))
-            if resolved_person_id is not None and person_id != resolved_person_id:
-                return None
-            resolved_person_id = person_id
-        return resolved_person_id
+        has_duplicate_owner = any(len(person_ids) > 1 for person_ids in candidate_groups)
+        if not has_duplicate_owner:
+            return None
+        candidates = sorted(shared_person_ids or set.union(*candidate_groups))
+        review_person_id = (
+            continuity_person_id if continuity_person_id in candidates else candidates[0]
+        )
+        candidate_values: list[JsonValue] = list(candidates)
+        return MatchResult(
+            decision=MatchDecision.REVIEW,
+            confidence=1.0,
+            reasons=["ambiguous_multi_contact_crm_owners"],
+            engine_type=EngineType.DETERMINISTIC,
+            matched_person_id=review_person_id,
+            proposed_person_id=candidates[0],
+            review_candidate_person_ids=candidates,
+            feature_snapshot={
+                "multi_contact_crm_candidate_ids": candidate_values,
+                "continuity_person_id": continuity_person_id,
+            },
+        )
+
+    @staticmethod
+    def _crm_contact_group_person_ids(
+        tx: ManagedTransaction,
+        envelope: SourceRecordEnvelope,
+        raw_group: object,
+    ) -> set[str]:
+        if not isinstance(raw_group, list):
+            return set()
+        try:
+            raw_identifiers = [RawIdentifier.model_validate(item) for item in raw_group]
+        except ValueError:
+            return set()
+        group_envelope = envelope.model_copy(
+            update={"identifiers": raw_identifiers, "addresses": [], "attributes": {}}
+        )
+        canonical_identifiers = [
+            identifier
+            for identifier in normalize_envelope_identifiers(group_envelope)
+            if identifier.identifier_type == "crm_contact_id"
+        ]
+        if not canonical_identifiers:
+            return set()
+        return {
+            candidate.person_id
+            for candidate in find_candidates(tx, canonical_identifiers, [])
+        }
+
+    @staticmethod
+    def _persist_unlinked_review(
+        tx: ManagedTransaction,
+        *,
+        envelope: SourceRecordEnvelope,
+        identifiers: list[NormalizedIdentifier],
+        addresses: list[NormalizedAddressModel],
+        attributes: list[NormalizedAttribute],
+        match_result: MatchResult,
+        ingest_run_id: str | None,
+        lifecycle_plan: PlannedVersion,
+        activation_blueprint: dict[str, JsonValue],
+    ) -> IngestResult:
+        source_record_pk = persist_source_record(
+            tx,
+            envelope=envelope,
+            identifiers=identifiers,
+            addresses=addresses,
+            attributes=attributes,
+            match_result=match_result,
+            is_new_person=False,
+            ingest_run_id=ingest_run_id,
+            lifecycle_status=SourceRecordLifecycleStatus.PENDING_REVIEW,
+            expected_active_source_record_pk=lifecycle_plan.active_source_record_pk,
+            activation_blueprint=activation_blueprint,
+        )
+        match_decision_id = persist_match_decision(tx, match_result, source_record_pk)
+        review_case_id = create_review_case_if_needed(tx, match_result, match_decision_id)
+        return IngestResult(
+            source_record_id=envelope.source_record_id,
+            source_record_pk=source_record_pk,
+            candidate_count=len(match_result.review_candidate_person_ids),
+            match_decision=match_result.decision,
+            ingest_run_id=ingest_run_id,
+            match_decision_id=match_decision_id,
+            review_case_id=review_case_id,
+        )
 
     @staticmethod
     def _resolve_person(

@@ -1,9 +1,11 @@
 "use client";
 
 import { useEffect, useState, type ReactElement } from "react";
+import Link from "next/link";
 
 import GoldenProfilePicker from "@/components/GoldenProfilePicker";
 import { BffError, bffFetch } from "@/lib/api-client";
+import type { Person } from "@/lib/api-types";
 import {
   REVIEW_ACTION_TYPES,
   type ReviewActionRequestBody,
@@ -17,6 +19,8 @@ import {
   type GoldenProfileChoice,
   type GoldenProfileFieldName,
 } from "@/lib/golden-profile-choices";
+import { formatDob } from "@/lib/display";
+import { toBasePath } from "@/lib/route-paths";
 import styles from "@/app/review/review.module.css";
 
 interface ReviewActionsPanelProps {
@@ -132,19 +136,30 @@ export default function ReviewActionsPanel({
   >({});
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
+  const [candidateProfiles, setCandidateProfiles] = useState<Record<string, Person>>({});
+  const [candidateProfilesLoading, setCandidateProfilesLoading] = useState<boolean>(false);
+  const [candidateProfilesError, setCandidateProfilesError] = useState<string | null>(null);
   const initialReviewCandidatePersonId =
     defaultSurvivorPersonId ?? rightPersonId ?? reviewCandidatePersonIds[0] ?? "";
   const [selectedReviewCandidatePersonId, setSelectedReviewCandidatePersonId] =
     useState<string>(initialReviewCandidatePersonId);
 
+  const reviewCandidateKey = reviewCandidatePersonIds.join("\u001f");
+  const selectedCandidateProfile = candidateProfiles[selectedReviewCandidatePersonId] ?? null;
+  const candidateSelectionReady = reviewCandidatePersonIds.length === 0 || (
+    !candidateProfilesLoading && selectedCandidateProfile !== null
+  );
   const resolved = queueState === "resolved" || queueState === "cancelled";
   const canLoadMergeChoices = leftPersonId !== null && rightPersonId !== null;
   const isPendingRecordReview =
     leftPersonId === null && selectedReviewCandidatePersonId.length > 0;
-  const canSubmitMerge = canLoadMergeChoices || isPendingRecordReview;
+  const canSubmitMerge = (canLoadMergeChoices || isPendingRecordReview) && candidateSelectionReady;
+  const selectedRightStatus = reviewCandidatePersonIds.length > 0
+    ? selectedCandidateProfile?.status
+    : rightPersonStatus;
   const mergeRequiresUnmerge = actionType === "merge" && (
     (leftPersonStatus !== undefined && leftPersonStatus !== null && leftPersonStatus !== "active") ||
-    (rightPersonStatus !== undefined && rightPersonStatus !== null && rightPersonStatus !== "active")
+    (selectedRightStatus !== undefined && selectedRightStatus !== null && selectedRightStatus !== "active")
   );
   const mergeSurvivorPersonId = reviewCandidatePersonIds.length > 0
     ? selectedReviewCandidatePersonId
@@ -152,6 +167,51 @@ export default function ReviewActionsPanel({
       && (defaultSurvivorPersonId === leftPersonId || defaultSurvivorPersonId === rightPersonId)
       ? defaultSurvivorPersonId
       : (rightPersonId ?? leftPersonId ?? "");
+
+  useEffect(() => {
+    let cancelled = false;
+    const candidateIds = reviewCandidateKey === "" ? [] : reviewCandidateKey.split("\u001f");
+    if (candidateIds.length === 0) {
+      queueMicrotask(() => {
+        setCandidateProfiles({});
+        setCandidateProfilesError(null);
+        setCandidateProfilesLoading(false);
+      });
+      return () => {
+        cancelled = true;
+      };
+    }
+    const loadCandidateProfiles = async (): Promise<void> => {
+      setCandidateProfilesLoading(true);
+      setCandidateProfilesError(null);
+      try {
+        const profiles = await Promise.all(
+          candidateIds.map((personId) =>
+            bffFetch<Person>(`/bff/persons/${encodeURIComponent(personId)}`),
+          ),
+        );
+        if (cancelled) return;
+        setCandidateProfiles(
+          Object.fromEntries(profiles.map((profile) => [profile.person_id, profile])),
+        );
+        setSelectedReviewCandidatePersonId((current) =>
+          candidateIds.includes(current) ? current : (candidateIds[0] ?? ""),
+        );
+      } catch (err: unknown) {
+        if (cancelled) return;
+        setCandidateProfiles({});
+        setCandidateProfilesError(
+          err instanceof BffError ? err.message : "Could not load CRM owner candidates.",
+        );
+      } finally {
+        if (!cancelled) setCandidateProfilesLoading(false);
+      }
+    };
+    void loadCandidateProfiles();
+    return () => {
+      cancelled = true;
+    };
+  }, [reviewCandidateKey]);
 
   useEffect(() => {
     if (actionType !== "merge" || !canLoadMergeChoices || mergeRequiresUnmerge || mergeSurvivorPersonId.length === 0) {
@@ -290,13 +350,40 @@ export default function ReviewActionsPanel({
               onChange={(event) => setSelectedReviewCandidatePersonId(event.target.value)}
               disabled={resolved || actionBusy}
             >
-              {reviewCandidatePersonIds.map((personId) => (
-                <option key={personId} value={personId}>{personId}</option>
-              ))}
+              {reviewCandidatePersonIds.map((personId) => {
+                const profile = candidateProfiles[personId];
+                const label = profile?.preferred_full_name?.trim() || personId;
+                return <option key={personId} value={personId}>{label} - {personId}</option>;
+              })}
             </select>
           </label>
         ) : null}
 
+        {actionType === "merge" && reviewCandidatePersonIds.length > 0 ? (
+          candidateProfilesLoading ? (
+            <div className={styles.infoBanner}>Loading CRM owner profiles...</div>
+          ) : candidateProfilesError !== null ? (
+            <div className={styles.errorBanner}>{candidateProfilesError}</div>
+          ) : selectedCandidateProfile !== null ? (
+            <div className={styles.infoBanner}>
+              <strong>{selectedCandidateProfile.preferred_full_name ?? "Unnamed person"}</strong>
+              <div>Person ID: {selectedCandidateProfile.person_id}</div>
+              <div>Status: {selectedCandidateProfile.status}</div>
+              <div>Phone: {selectedCandidateProfile.preferred_phone ?? "-"}</div>
+              <div>Email: {selectedCandidateProfile.preferred_email ?? "-"}</div>
+              <div>DOB: {formatDob(selectedCandidateProfile.preferred_dob)}</div>
+              <div>Address: {selectedCandidateProfile.preferred_address?.normalized_full ?? "-"}</div>
+              <div>Source records: {selectedCandidateProfile.source_record_count}</div>
+              <Link
+                className={styles.profileLinkButton}
+                href={toBasePath(`/persons/${encodeURIComponent(selectedCandidateProfile.person_id)}`)}
+                target="_blank"
+              >
+                Inspect selected profile
+              </Link>
+            </div>
+          ) : null
+        ) : null}
 
         {actionType === "merge" && canLoadMergeChoices ? (
           mergeRequiresUnmerge ? (

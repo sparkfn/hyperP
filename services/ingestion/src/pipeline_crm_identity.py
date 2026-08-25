@@ -53,6 +53,11 @@ def resolve_canonical_crm_contact(
             confidence=1.0,
             reasons=["canonical_crm_contact_owner_blocked_by_no_match_lock"],
             engine_type=EngineType.DETERMINISTIC,
+            matched_person_id=(
+                continuity_person_id if continuity_person_id in person_ids else person_ids[0]
+            ),
+            proposed_person_id=person_ids[0],
+            review_candidate_person_ids=person_ids,
             feature_snapshot={
                 _CRM_QUARANTINE_KEY: True,
                 "blocked_canonical_crm_contact_candidate_ids": blocked_values,
