@@ -47,21 +47,11 @@ def resolve_canonical_crm_contact(
     blocked_owners = prefetch_no_match_lock_owners(tx, person_ids, identifiers)
     eligible_person_ids = [person_id for person_id in person_ids if person_id not in blocked_owners]
     if not eligible_person_ids:
-        blocked_values: list[JsonValue] = list(person_ids)
-        return MatchResult(
-            decision=MatchDecision.REVIEW,
-            confidence=1.0,
-            reasons=["canonical_crm_contact_owner_blocked_by_no_match_lock"],
-            engine_type=EngineType.DETERMINISTIC,
-            matched_person_id=(
-                continuity_person_id if continuity_person_id in person_ids else person_ids[0]
-            ),
-            proposed_person_id=person_ids[0],
-            review_candidate_person_ids=person_ids,
-            feature_snapshot={
-                _CRM_QUARANTINE_KEY: True,
-                "blocked_canonical_crm_contact_candidate_ids": blocked_values,
-            },
+        return blocked_crm_owner_result(
+            person_ids,
+            continuity_person_id=continuity_person_id,
+            reason="canonical_crm_contact_owner_blocked_by_no_match_lock",
+            snapshot_key="blocked_canonical_crm_contact_candidate_ids",
         )
     if len(person_ids) == 1:
         return deterministic_crm_owner_result(
@@ -89,6 +79,33 @@ def resolve_canonical_crm_contact(
             "canonical_crm_contact_candidate_ids": candidate_values,
             "blocked_canonical_crm_contact_candidate_ids": blocked_candidate_values,
             "continuity_person_id": continuity_person_id,
+        },
+    )
+
+
+def blocked_crm_owner_result(
+    person_ids: list[str],
+    *,
+    continuity_person_id: str | None,
+    reason: str,
+    snapshot_key: str,
+) -> MatchResult:
+    """Build a durable review for CRM owners excluded by hard blockers."""
+    candidates = sorted(set(person_ids))
+    candidate_values: list[JsonValue] = list(candidates)
+    return MatchResult(
+        decision=MatchDecision.REVIEW,
+        confidence=1.0,
+        reasons=[reason],
+        engine_type=EngineType.DETERMINISTIC,
+        matched_person_id=(
+            continuity_person_id if continuity_person_id in candidates else candidates[0]
+        ),
+        proposed_person_id=candidates[0],
+        review_candidate_person_ids=candidates,
+        feature_snapshot={
+            _CRM_QUARANTINE_KEY: True,
+            snapshot_key: candidate_values,
         },
     )
 

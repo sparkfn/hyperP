@@ -29,6 +29,7 @@ from src.graph.bitrix_deal_scope import DealScopeObservation, record_scope_batch
 from src.graph.bootstrap import MATCH_ONLY_SOURCE_KEYS
 from src.graph.client import Neo4jClient
 from src.graph.ingestion_control import assert_active_bitrix_fence
+from src.matching.deterministic import prefetch_no_match_lock_owners
 from src.matching.engine import MatchEngine, ambiguous_prior_owners_result
 from src.models import (
     MATCH_ONLY_RECORD_TYPES,
@@ -52,6 +53,7 @@ from src.models import (
 from src.pipeline_bankruptcy import bankruptcy_case_blueprint, materialize_bankruptcy_case
 from src.pipeline_crm_identity import (
     apply_crm_deal_match_policy,
+    blocked_crm_owner_result,
     crm_deal_requires_quarantine,
     deterministic_crm_owner_result,
     projected_identifiers,
@@ -327,6 +329,7 @@ class IngestPipeline:
             multi_contact_result = self._resolve_ambiguous_crm_deal_contacts(
                 tx,
                 envelope,
+                identifiers,
                 continuity_person_id=continuity_person_id,
             )
             canonical_contact_result = resolve_canonical_crm_contact(
@@ -728,10 +731,11 @@ class IngestPipeline:
     def _resolve_ambiguous_crm_deal_contacts(
         tx: ManagedTransaction,
         envelope: SourceRecordEnvelope,
+        identifiers: list[NormalizedIdentifier],
         *,
         continuity_person_id: str | None,
     ) -> MatchResult | None:
-        """Resolve multi-contact ownership or preserve duplicate-owner ambiguity."""
+        """Resolve only owners shared by every contact and enforce hard blockers."""
         if not IngestPipeline._requires_ambiguous_crm_contact_resolution(envelope):
             return None
         raw_groups = envelope.raw_payload.get("crm_contact_groups")
@@ -743,32 +747,61 @@ class IngestPipeline:
             if not person_ids:
                 return None
             candidate_groups.append(person_ids)
-        shared_person_ids = set.intersection(*candidate_groups)
+        shared_person_ids = sorted(set.intersection(*candidate_groups))
+        if not shared_person_ids:
+            group_values: list[JsonValue] = []
+            for group in candidate_groups:
+                person_values: list[JsonValue] = []
+                person_values.extend(sorted(group))
+                group_values.append(person_values)
+            return MatchResult(
+                decision=MatchDecision.REVIEW,
+                confidence=1.0,
+                reasons=["disjoint_multi_contact_crm_owners_require_primary"],
+                engine_type=EngineType.DETERMINISTIC,
+                feature_snapshot={
+                    "crm_deal_quarantine": True,
+                    "multi_contact_crm_candidate_groups": group_values,
+                    "continuity_person_id": continuity_person_id,
+                },
+            )
+        blocked_owners = prefetch_no_match_lock_owners(tx, shared_person_ids, identifiers)
+        eligible_person_ids = [
+            person_id for person_id in shared_person_ids if person_id not in blocked_owners
+        ]
+        if not eligible_person_ids:
+            return blocked_crm_owner_result(
+                shared_person_ids,
+                continuity_person_id=continuity_person_id,
+                reason="multi_contact_crm_owner_blocked_by_no_match_lock",
+                snapshot_key="blocked_multi_contact_crm_candidate_ids",
+            )
         if len(shared_person_ids) == 1:
             return deterministic_crm_owner_result(
-                next(iter(shared_person_ids)),
+                eligible_person_ids[0],
                 continuity_person_id=continuity_person_id,
                 merge_reason="All non-primary CRM contacts resolve to the same existing person",
                 continuity_review_reason="changed_multi_contact_crm_owner_requires_review",
             )
-        has_duplicate_owner = any(len(person_ids) > 1 for person_ids in candidate_groups)
-        if not has_duplicate_owner:
-            return None
-        candidates = sorted(shared_person_ids or set.union(*candidate_groups))
         review_person_id = (
-            continuity_person_id if continuity_person_id in candidates else candidates[0]
+            continuity_person_id
+            if continuity_person_id in eligible_person_ids
+            else eligible_person_ids[0]
         )
-        candidate_values: list[JsonValue] = list(candidates)
+        candidate_values: list[JsonValue] = list(eligible_person_ids)
+        blocked_values: list[JsonValue] = []
+        blocked_values.extend(sorted(blocked_owners))
         return MatchResult(
             decision=MatchDecision.REVIEW,
             confidence=1.0,
             reasons=["ambiguous_multi_contact_crm_owners"],
             engine_type=EngineType.DETERMINISTIC,
             matched_person_id=review_person_id,
-            proposed_person_id=candidates[0],
-            review_candidate_person_ids=candidates,
+            proposed_person_id=eligible_person_ids[0],
+            review_candidate_person_ids=eligible_person_ids,
             feature_snapshot={
                 "multi_contact_crm_candidate_ids": candidate_values,
+                "blocked_multi_contact_crm_candidate_ids": blocked_values,
                 "continuity_person_id": continuity_person_id,
             },
         )

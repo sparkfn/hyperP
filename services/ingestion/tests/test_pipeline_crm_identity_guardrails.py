@@ -245,9 +245,7 @@ def test_duplicate_canonical_contact_review_excludes_locked_candidate() -> None:
     assert result.decision is MatchDecision.REVIEW
     assert result.matched_person_id == "person-a"
     assert result.review_candidate_person_ids == ["person-a"]
-    assert result.feature_snapshot["blocked_canonical_crm_contact_candidate_ids"] == [
-        "person-b"
-    ]
+    assert result.feature_snapshot["blocked_canonical_crm_contact_candidate_ids"] == ["person-b"]
 
 
 def test_multi_contact_duplicate_owners_create_actionable_review() -> None:
@@ -278,6 +276,7 @@ def test_multi_contact_duplicate_owners_create_actionable_review() -> None:
         result = pipeline._resolve_ambiguous_crm_deal_contacts(
             cast(ManagedTransaction, MagicMock()),
             envelope,
+            _contact_identifier(),
             continuity_person_id=None,
         )
 
@@ -285,6 +284,104 @@ def test_multi_contact_duplicate_owners_create_actionable_review() -> None:
     assert result.decision is MatchDecision.REVIEW
     assert result.review_candidate_person_ids == ["person-a", "person-b"]
     assert result.reasons == ["ambiguous_multi_contact_crm_owners"]
+
+
+def test_shared_multi_contact_owner_respects_active_no_match_lock() -> None:
+    pipeline = IngestPipeline(cast(object, MagicMock()))
+    envelope = _deal_envelope().model_copy(
+        update={
+            "raw_payload": {
+                "primary_contact_id": None,
+                "crm_contact_resolution_required": True,
+                "crm_contact_groups": [
+                    [{"type": "crm_contact_id", "value": "contact-1", "is_verified": True}],
+                    [{"type": "crm_contact_id", "value": "contact-2", "is_verified": True}],
+                ],
+            }
+        }
+    )
+    identifiers = [
+        *_contact_identifier(),
+        NormalizedIdentifier(
+            identifier_type="phone",
+            normalized_value="+6591234567",
+            quality_flag=QualityFlag.VALID,
+        ),
+    ]
+
+    def candidates(
+        _tx: ManagedTransaction,
+        _identifiers: list[NormalizedIdentifier],
+        _addresses: list[object],
+    ) -> list[CandidateResult]:
+        return [CandidateResult(person_id="person-a")]
+
+    tx = cast(ManagedTransaction, MagicMock())
+    with (
+        patch("src.pipeline.find_candidates", side_effect=candidates),
+        patch(
+            "src.pipeline.prefetch_no_match_lock_owners",
+            return_value={"person-a": "person-b"},
+        ) as blockers,
+    ):
+        result = pipeline._resolve_ambiguous_crm_deal_contacts(
+            tx,
+            envelope,
+            identifiers,
+            continuity_person_id=None,
+        )
+
+    assert result is not None
+    assert crm_deal_requires_quarantine(result) is True
+    assert result.reasons == ["multi_contact_crm_owner_blocked_by_no_match_lock"]
+    blockers.assert_called_once_with(tx, ["person-a"], identifiers)
+
+
+def test_disjoint_multi_contact_owners_are_not_selectable() -> None:
+    pipeline = IngestPipeline(cast(object, MagicMock()))
+    envelope = _deal_envelope().model_copy(
+        update={
+            "raw_payload": {
+                "primary_contact_id": None,
+                "crm_contact_resolution_required": True,
+                "crm_contact_groups": [
+                    [{"type": "crm_contact_id", "value": "contact-1", "is_verified": True}],
+                    [{"type": "crm_contact_id", "value": "contact-2", "is_verified": True}],
+                ],
+            }
+        }
+    )
+
+    def candidates(
+        _tx: ManagedTransaction,
+        identifiers: list[NormalizedIdentifier],
+        _addresses: list[object],
+    ) -> list[CandidateResult]:
+        person_ids = (
+            ["person-a", "person-b"]
+            if identifiers[0].normalized_value == "contact-1"
+            else ["person-c"]
+        )
+        return [CandidateResult(person_id=person_id) for person_id in person_ids]
+
+    with patch("src.pipeline.find_candidates", side_effect=candidates):
+        result = pipeline._resolve_ambiguous_crm_deal_contacts(
+            cast(ManagedTransaction, MagicMock()),
+            envelope,
+            _contact_identifier(),
+            continuity_person_id=None,
+        )
+
+    assert result is not None
+    assert crm_deal_requires_quarantine(result) is True
+    assert result.review_candidate_person_ids == []
+    assert result.matched_person_id is None
+    assert result.proposed_person_id is None
+    assert result.reasons == ["disjoint_multi_contact_crm_owners_require_primary"]
+    assert result.feature_snapshot["multi_contact_crm_candidate_groups"] == [
+        ["person-a", "person-b"],
+        ["person-c"],
+    ]
 
 
 def test_canonical_contact_owner_respects_active_no_match_lock() -> None:
