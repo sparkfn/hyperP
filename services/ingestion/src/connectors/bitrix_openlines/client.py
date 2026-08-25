@@ -27,6 +27,7 @@ from src.connectors.bitrix_openlines.models import (
     ChatReference,
     CrmActivity,
     CrmActivityCapabilityPage,
+    CrmCompany,
     CrmContact,
     CrmDeal,
     CrmDealCapabilityPage,
@@ -927,6 +928,11 @@ class BitrixOpenLinesClient:
         result = self._call("crm.lead.get", {"id": lead_id})
         return _crm_contact(result, kind="lead")
 
+    def get_company(self, company_id: str) -> CrmCompany:
+        """Read one company as a non-Person source reference."""
+        result = self._call("crm.company.get", {"id": company_id})
+        return _crm_company(result)
+
     def list_deal_activities(self, deal_id: int) -> list[CrmActivity]:
         """Return all current activities for a deal; callers make them immutable."""
         return list(
@@ -1262,6 +1268,15 @@ def _crm_contact(result: JsonValue, *, kind: str) -> CrmContact:
         emails=_multi_value_field(payload.get("EMAIL")),
         kind=kind,
     )
+
+
+def _crm_company(result: JsonValue) -> CrmCompany:
+    if not isinstance(result, dict):
+        raise RuntimeError("Bitrix company returned an invalid result")
+    company_id = _positive_id_string(result.get("ID"))
+    if company_id is None:
+        raise RuntimeError("Bitrix company omitted its ID")
+    return CrmCompany(id=company_id, title=_string(result.get("TITLE")))
 
 
 def _multi_value_field(value: object) -> tuple[str, ...]:

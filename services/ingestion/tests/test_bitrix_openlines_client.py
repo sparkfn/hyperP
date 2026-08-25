@@ -1870,3 +1870,19 @@ def test_client_rejects_a_response_that_finishes_after_the_runtime_deadline(
         client.get_deal(1)
 
     assert client.request_count == 1
+
+
+def test_client_reads_company_as_non_person_reference() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path.endswith("/crm.company.get")
+        assert json.loads(request.content) == {"id": "42"}
+        return httpx.Response(200, json={"result": {"ID": "42", "TITLE": "Analytical Engines"}})
+
+    client = BitrixOpenLinesClient(
+        base_url="https://bitrix.test/rest/hook",
+        timeout_seconds=5,
+        max_attempts=1,
+        http=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+
+    assert client.get_company("42").title == "Analytical Engines"
