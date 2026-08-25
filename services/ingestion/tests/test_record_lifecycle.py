@@ -234,8 +234,11 @@ def test_reject_replaced_pending_cancels_its_open_review_cases_atomically() -> N
 def test_lifecycle_schema_constraints_are_idempotent_and_unique() -> None:
     schema = "\n".join(LIFECYCLE_CONSTRAINTS)
 
-    assert "CREATE CONSTRAINT source_record_identity_lock_unique IF NOT EXISTS" in schema
-    assert "REQUIRE (lock.source_system, lock.source_record_id) IS UNIQUE" in schema
+    assert "CREATE CONSTRAINT source_record_identity_lock_triple_unique IF NOT EXISTS" in schema
+    assert (
+        "REQUIRE (lock.source_system, lock.source_instance_id, lock.source_record_id) IS UNIQUE"
+        in schema
+    )
     assert "CREATE CONSTRAINT source_record_version_key_unique IF NOT EXISTS" in schema
     assert "REQUIRE sr.source_version_key IS UNIQUE" in schema
 
@@ -321,7 +324,11 @@ def test_load_locked_source_state_parses_typed_rows_and_next_version() -> None:
     assert tx.calls == [
         (
             queries.LOCK_AND_GET_SOURCE_STATE,
-            {"source_system": "pos", "source_record_id": "customer-1"},
+            {
+                "source_system": "pos",
+                "source_instance_id": "legacy-default",
+                "source_record_id": "customer-1",
+            },
         )
     ]
 
@@ -608,6 +615,7 @@ def test_activate_staged_version_selects_first_version_query() -> None:
             {
                 "source_record_pk": "new-pk",
                 "source_system": "pos",
+                "source_instance_id": "legacy-default",
                 "source_record_id": "customer-1",
             },
         ),

@@ -154,6 +154,7 @@ def activate_knows_projection(
         return True
     declarer = tx.run(
         queries.RESOLVE_PERSON_FROM_SOURCE_RECORD_ID,
+        context_source_record_pk=source_record_pk,
         source_record_id=blueprint["declarer_source_record_id"],
         source_system_key=blueprint["declarer_source_system_key"],
     ).single()
@@ -185,6 +186,7 @@ def _resolve_both_persons(
     """Resolve declarer and contact person IDs. Returns None if either is missing or same."""
     declarer = tx.run(
         queries.RESOLVE_PERSON_FROM_SOURCE_RECORD_ID,
+        context_source_record_pk=contact_pk,
         source_record_id=declarer_sr_id,
         source_system_key=declarer_source_system_key,
     ).single()

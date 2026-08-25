@@ -87,6 +87,7 @@ from src.record_lifecycle import (
     plan_incoming_version,
     reject_replaced_pending,
 )
+from src.source_instances import effective_source_instance_id
 from src.vehicle_extraction import observations_from_chat_inquiries
 from src.vehicles import (
     normalize_lta_tag,
@@ -164,7 +165,12 @@ class IngestPipeline:
         def _work(tx: ManagedTransaction) -> IngestResult:
             if self._fence_context is not None:
                 assert_active_bitrix_fence(tx, self._fence_context)
-            state = load_locked_source_state(tx, envelope.source_system, envelope.source_record_id)
+            state = load_locked_source_state(
+                tx,
+                envelope.source_system,
+                envelope.source_record_id,
+                envelope.source_instance_id,
+            )
             plan = plan_incoming_version(state, envelope.record_hash)
             if isinstance(plan, DuplicateVersion):
                 result = IngestResult(
@@ -234,6 +240,7 @@ class IngestPipeline:
                     queries.LINK_CONVERSATION_TO_CRM_HISTORY,
                     conversation_source_record_pk=result.source_record_pk,
                     source_system=envelope.source_system,
+                    source_instance_id=effective_source_instance_id(envelope.source_instance_id),
                     crm_activity_ids=[
                         value for value in activity_ids if isinstance(value, str) and value
                     ],
@@ -256,6 +263,7 @@ class IngestPipeline:
             result = tx.run(
                 queries.GET_LATEST_SOURCE_RECORD,
                 source_system=envelope.source_system,
+                source_instance_id=effective_source_instance_id(envelope.source_instance_id),
                 source_record_id=envelope.source_record_id,
             )
             record = result.single()
@@ -521,6 +529,7 @@ class IngestPipeline:
                 tx,
                 source_system=envelope.source_system,
                 source_record_id=envelope.source_record_id,
+                source_instance_id=envelope.source_instance_id,
                 old_source_record_pk=lifecycle_plan.active_source_record_pk,
                 new_source_record_pk=source_record_pk,
             )

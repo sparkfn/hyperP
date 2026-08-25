@@ -11,6 +11,7 @@ from src.graph.client import Neo4jClient
 from src.graph.queries.stage_history_ingestion import (
     CLASSIFY_STAGE_HISTORY_OBSERVATION,
 )
+from src.source_instances import LEGACY_DEFAULT_SOURCE_INSTANCE_ID
 from src.stage_history_ingestion_models import (
     StageHistoryAssociationState,
     StageHistoryAuthorityState,
@@ -52,6 +53,7 @@ class Neo4jStageHistoryLifecycleReader:
                 event_identity=observation.event_identity,
                 canonical_hash=observation.canonical_hash,
                 logical_parent_source_system=observation.logical_parent_source_system,
+                logical_parent_source_instance_id=LEGACY_DEFAULT_SOURCE_INSTANCE_ID,
                 logical_parent_source_record_id=(observation.logical_parent_source_record_id),
             ).single()
             if record is None:

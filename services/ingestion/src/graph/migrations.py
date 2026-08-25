@@ -35,11 +35,19 @@ from src.graph.queries.lifecycle_migrations import (
     PREPARE_SOURCE_RECORD_LIFECYCLE_BATCH,
     RELEASE_SOURCE_RECORD_LIFECYCLE_MIGRATION,
 )
+from src.graph.queries.source_instance_migrations import (
+    COMPLETE_SOURCE_RECORD_SOURCE_INSTANCE_MIGRATION,
+    MIGRATE_SOURCE_RECORD_IDENTITY_LOCKS,
+    MIGRATE_SOURCE_RECORD_SOURCE_INSTANCES_BATCH,
+)
 from src.raw_payload import decode_raw_payload
+from src.source_instances import LEGACY_DEFAULT_SOURCE_INSTANCE_ID
 
 logger = logging.getLogger(__name__)
 
 SOURCE_RECORD_LIFECYCLE_MIGRATION_KEY = "source_record_lifecycle_v1"
+SOURCE_RECORD_SOURCE_INSTANCE_MIGRATION_KEY = "source_record_source_instance_v1"
+SOURCE_RECORD_SOURCE_INSTANCE_BATCH_SIZE = 500
 SOURCE_RECORD_LIFECYCLE_BATCH_SIZE = 500
 SOURCE_RECORD_LIFECYCLE_LEASE_SECONDS = 5 * 60
 SOURCE_RECORD_LIFECYCLE_LOCK_POLL_SECONDS = 1.0
@@ -668,6 +676,64 @@ def migrate_source_record_lifecycle(client: Neo4jClient) -> int:
         raise
 
 
+def migrate_source_record_source_instances(client: Neo4jClient) -> int:
+    """Assign the deterministic legacy instance and safely re-key to ``sv2``.
+
+    This runs after the lifecycle migration so every row has stable lifecycle
+    identity material.  Each new key includes its stable graph PK as a
+    discriminator, which makes the re-key collision-safe even for malformed
+    historical duplicate versions.
+    """
+
+    def _migrate_locks(tx: ManagedTransaction) -> int:
+        record = tx.run(
+            MIGRATE_SOURCE_RECORD_IDENTITY_LOCKS,
+            legacy_source_instance_id=LEGACY_DEFAULT_SOURCE_INSTANCE_ID,
+            batch_size=SOURCE_RECORD_SOURCE_INSTANCE_BATCH_SIZE,
+        ).single()
+        return int(record["updated"]) if record is not None else 0
+
+    def _migrate_batch(tx: ManagedTransaction) -> int:
+        record = tx.run(
+            MIGRATE_SOURCE_RECORD_SOURCE_INSTANCES_BATCH,
+            legacy_source_instance_id=LEGACY_DEFAULT_SOURCE_INSTANCE_ID,
+            migration_key=SOURCE_RECORD_SOURCE_INSTANCE_MIGRATION_KEY,
+            batch_size=SOURCE_RECORD_SOURCE_INSTANCE_BATCH_SIZE,
+        ).single()
+        return int(record["updated"]) if record is not None else 0
+
+    updated = 0
+    while True:
+        migrated_locks = client.execute_write(_migrate_locks)
+        updated += migrated_locks
+        if migrated_locks == 0:
+            break
+    while True:
+        batch_updated = client.execute_write(_migrate_batch)
+        updated += batch_updated
+        if batch_updated == 0:
+            break
+
+    def _complete(tx: ManagedTransaction) -> None:
+        tx.run(
+            COMPLETE_SOURCE_RECORD_SOURCE_INSTANCE_MIGRATION,
+            migration_key=SOURCE_RECORD_SOURCE_INSTANCE_MIGRATION_KEY,
+        ).consume()
+
+    client.execute_write(_complete)
+
+    # Older deployments used this constraint name for a pair-key constraint.
+    # New deployments install the differently named triple constraint in
+    # ``apply_schema``; removing the retired one here unlocks distinct portals
+    # after every historical lock has a deterministic default instance.
+    with client.session() as session:
+        session.run("DROP CONSTRAINT source_record_identity_lock_unique IF EXISTS").consume()
+
+    if updated:
+        logger.info("Migrated source-instance identity on %d graph rows", updated)
+    return updated
+
+
 def migrate_projection_relationship_lifecycle(client: Neo4jClient) -> int:
     """Backfill active state on legacy projection relationships."""
 
@@ -830,4 +896,5 @@ def apply_data_migrations(
     )
     migrate_fundbox_source_keys(client)
     migrate_source_record_lifecycle(client)
+    migrate_source_record_source_instances(client)
     migrate_projection_relationship_lifecycle(client)

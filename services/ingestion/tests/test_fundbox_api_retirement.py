@@ -47,12 +47,14 @@ def test_retirement_deactivates_only_source_scoped_evidence_and_keeps_entities()
     assert retired == 1
     assert "SourceSystem {source_key: $source_system}" in transaction.query
     assert "SourceRecordIdentityLock" in transaction.query
+    assert "source_instance_id: $source_instance_id" in transaction.query
     assert "reconciliation_snapshot_at" in transaction.query
     assert "rel.source_record_pk IN source_record_pks" in transaction.query
     assert "rel.is_active = false" in transaction.query
     assert "DELETE" not in transaction.query
     assert transaction.params == {
         "source_system": "fundbox:sales",
+        "source_instance_id": "legacy-default",
         "source_record_id": "fundbox-order-9",
         "retired_at": "2026-07-17T00:00:00+00:00",
         "reconciliation_snapshot_at": "2026-07-17T00:00:00+00:00",

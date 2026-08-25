@@ -104,6 +104,7 @@ def test_conversation_links_every_unique_string_activity_id() -> None:
             {
                 "conversation_source_record_pk": "conversation-pk",
                 "source_system": "bitrix_chat",
+                "source_instance_id": "legacy-default",
                 "crm_activity_ids": ["900", "901"],
             },
         )
@@ -126,6 +127,7 @@ def test_history_links_to_existing_chat_by_provider_chat_id() -> None:
             {
                 "history_source_record_pk": "history-pk",
                 "source_system": "bitrix_chat",
+                "source_instance_id": "legacy-default",
                 "bitrix_chat_id": 77,
                 "crm_activity_id": "900",
             },

@@ -296,6 +296,9 @@ def test_sales_customer_link_only_targets_effective_active_identity_versions() -
         assert "identity_sr.is_latest = true" in query
         assert "coalesce(identity_sr.is_latest, true)" not in query
         assert "size(identity_records) = 1" in query
+    assert "source_instance_id: sales_sr.source_instance_id" in (
+        queries.LINK_SALES_TO_IDENTITY_RECORD
+    )
 
     link_query = queries.LINK_SALES_TO_IDENTITY_RECORD
     assert "OPTIONAL MATCH (sales_sr)-[stale:FOR_CUSTOMER_RECORD]" in link_query

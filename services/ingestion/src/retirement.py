@@ -9,6 +9,7 @@ from src.graph import queries
 from src.graph.client import Neo4jClient
 from src.graph.crm_deal_count import recompute_source_person_crm_deal_counts
 from src.graph.ingestion_control import assert_active_bitrix_fence
+from src.source_instances import effective_source_instance_id
 
 
 def retire_source_evidence(
@@ -18,6 +19,7 @@ def retire_source_evidence(
     retired_at: str,
     reconciliation_snapshot_at: str,
     *,
+    source_instance_id: str | None = None,
     fence_context: FenceContext | None = None,
 ) -> int:
     def _work(tx: ManagedTransaction) -> int:
@@ -26,6 +28,7 @@ def retire_source_evidence(
         record = tx.run(
             queries.RETIRE_SOURCE_EVIDENCE,
             source_system=source_system,
+            source_instance_id=effective_source_instance_id(source_instance_id),
             source_record_id=source_record_id,
             retired_at=retired_at,
             reconciliation_snapshot_at=reconciliation_snapshot_at,

@@ -39,7 +39,9 @@ def ingest_address_record(
     """Persist a source record and attach it to a shared Address node."""
 
     def _tx(tx: ManagedTransaction) -> IngestResult:
-        state = load_locked_source_state(tx, envelope.source_system, envelope.source_record_id)
+        state = load_locked_source_state(
+            tx, envelope.source_system, envelope.source_record_id, envelope.source_instance_id
+        )
         plan = plan_incoming_version(state, envelope.record_hash)
         if isinstance(plan, DuplicateVersion):
             return IngestResult(
@@ -79,6 +81,7 @@ def ingest_address_record(
             tx,
             source_system=envelope.source_system,
             source_record_id=envelope.source_record_id,
+            source_instance_id=envelope.source_instance_id,
             old_source_record_pk=plan.active_source_record_pk,
             new_source_record_pk=source_record_pk,
         )

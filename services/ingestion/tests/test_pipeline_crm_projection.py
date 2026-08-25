@@ -122,6 +122,7 @@ def test_same_hash_legacy_activity_rematerializes_as_v2(monkeypatch: MonkeyPatch
         queries.FIND_ANY_SOURCE_RECORD,
         {
             "source_system": "bitrix_chat",
+            "source_instance_id": "legacy-default",
             "source_record_id": "bitrix-crm-history-900",
         },
     )

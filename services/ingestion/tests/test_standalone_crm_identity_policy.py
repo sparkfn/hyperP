@@ -117,8 +117,8 @@ def test_standalone_policy_rejects_the_wrong_record_kind() -> None:
 def test_standalone_evidence_requires_an_explicit_source_instance() -> None:
     contact = CrmContact(id="123", full_name=None)
 
-    with pytest.raises(ValueError, match="canonical source_instance_id"):
+    with pytest.raises(ValueError, match="canonical non-secret slug"):
         crm_standalone_contact_identity_evidence(contact, source_instance_id="  ")
 
-    with pytest.raises(ValueError, match="canonical source_instance_id"):
+    with pytest.raises(ValueError, match="canonical non-secret slug"):
         crm_company_reference_evidence(CrmCompany(id="789", title=None), source_instance_id="")

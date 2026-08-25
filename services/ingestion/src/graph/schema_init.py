@@ -31,9 +31,9 @@ BASE_LIFECYCLE_CONSTRAINTS: tuple[str, ...] = (
     """CREATE CONSTRAINT ingest_run_worker_task_id_unique IF NOT EXISTS
 FOR (run:IngestRun)
 REQUIRE run.worker_task_id IS UNIQUE""",
-    """CREATE CONSTRAINT source_record_identity_lock_unique IF NOT EXISTS
+    """CREATE CONSTRAINT source_record_identity_lock_triple_unique IF NOT EXISTS
 FOR (lock:SourceRecordIdentityLock)
-REQUIRE (lock.source_system, lock.source_record_id) IS UNIQUE""",
+REQUIRE (lock.source_system, lock.source_instance_id, lock.source_record_id) IS UNIQUE""",
     """CREATE CONSTRAINT data_migration_key_unique IF NOT EXISTS
 FOR (migration:DataMigration)
 REQUIRE migration.migration_key IS UNIQUE""",

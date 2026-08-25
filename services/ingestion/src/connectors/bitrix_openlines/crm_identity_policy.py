@@ -11,6 +11,7 @@ from dataclasses import dataclass
 
 from src.connectors.bitrix_openlines.models import CrmCompany, CrmContact
 from src.models import JsonValue
+from src.source_instances import canonical_source_instance_id
 
 CRM_DEAL_IDENTITY_POLICY_VERSION = "crm_deal_identity_v2"
 CRM_CONTACT_IDENTITY_POLICY_VERSION = "crm_contact_identity_v1"
@@ -134,7 +135,7 @@ def crm_company_reference_evidence(
     source_instance_id: str,
 ) -> CrmCompanyReferenceEvidence:
     """Build a portal-scoped reference that cannot become Person identity evidence."""
-    normalized_instance_id = _source_instance_id(source_instance_id)
+    normalized_instance_id = canonical_source_instance_id(source_instance_id)
     return CrmCompanyReferenceEvidence(
         source_instance_id=normalized_instance_id,
         reference={"type": "crm_company_id", "value": company.id},
@@ -155,7 +156,7 @@ def _standalone_identity_evidence(
     record_id_metadata_key: str,
     policy_version: str,
 ) -> CrmStandaloneIdentityEvidence:
-    normalized_instance_id = _source_instance_id(source_instance_id)
+    normalized_instance_id = canonical_source_instance_id(source_instance_id)
     phone_count = len(contact.phones)
     email_count = len(contact.emails)
     oversized_phone = phone_count > MAX_CRM_CONTACT_PHONES
@@ -193,9 +194,3 @@ def _standalone_identity_evidence(
             "channel_hint_suppression_reasons": reasons,
         },
     )
-
-
-def _source_instance_id(value: str) -> str:
-    if not value or value != value.strip():
-        raise ValueError("Standalone CRM evidence requires a canonical source_instance_id")
-    return value

@@ -241,8 +241,10 @@ RETURN p.person_id AS person_id
 #: the FROM_SOURCE edge to SourceSystem, so we traverse it explicitly.
 LINK_SALES_TO_IDENTITY_RECORD = """
 MATCH (sales_sr:SourceRecord {source_record_pk: $sales_source_record_pk})
-MATCH (identity_sr:SourceRecord {source_record_id: $identity_source_record_id})
-      -[:FROM_SOURCE]->(:SourceSystem {source_key: $source_system_key})
+MATCH (identity_sr:SourceRecord {
+    source_instance_id: sales_sr.source_instance_id,
+    source_record_id: $identity_source_record_id
+})-[:FROM_SOURCE]->(:SourceSystem {source_key: $source_system_key})
 WHERE identity_sr.lifecycle_status = 'active'
    OR (
        identity_sr.lifecycle_status IS NULL
@@ -337,6 +339,7 @@ WHERE sr.lifecycle_status = 'pending_review'
   AND sr.source_record_pk > $cursor
 RETURN sr.source_record_pk AS source_record_pk,
        sr.source_record_id AS source_record_id,
+       sr.source_instance_id AS source_instance_id,
        sr.expected_active_source_record_pk AS expected_active_source_record_pk,
        ss.source_key       AS source_system_key,
        sr.raw_payload      AS raw_payload
