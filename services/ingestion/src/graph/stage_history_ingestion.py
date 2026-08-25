@@ -40,6 +40,7 @@ from src.graph.queries.stage_history_ingestion import (
     UPSERT_STAGE_HISTORY_VARIANT_SOURCE_RECORD,
 )
 from src.models import JsonValue
+from src.source_instances import LEGACY_DEFAULT_SOURCE_INSTANCE_ID
 from src.stage_history_ingestion_models import (
     StageHistoryAssociationDecision,
     StageHistoryAssociationState,
@@ -419,7 +420,10 @@ def _persist_variant(
             "stage-source-record", observation.event_identity, observation.canonical_hash
         ),
         source_version_key=_stable_id(
-            "stage-source-version", observation.event_identity, observation.canonical_hash
+            "stage-source-version",
+            LEGACY_DEFAULT_SOURCE_INSTANCE_ID,
+            observation.event_identity,
+            observation.canonical_hash,
         ),
         history_kind=properties.history_kind,
         history_source=properties.history_source,
@@ -464,6 +468,7 @@ def _persist_parent_decision(
         unit_id=unit.unit_id,
         occurrence_id=observation.occurrence_id,
         logical_parent_source_system=observation.logical_parent_source_system,
+        logical_parent_source_instance_id=LEGACY_DEFAULT_SOURCE_INSTANCE_ID,
         logical_parent_source_record_id=observation.logical_parent_source_record_id,
     ).single()
     row = _require_record(resolved, "stage-history parent resolution failed")
@@ -484,6 +489,7 @@ def _persist_parent_decision(
         occurrence_id=observation.occurrence_id,
         event_identity=observation.event_identity,
         logical_parent_source_system=observation.logical_parent_source_system,
+        logical_parent_source_instance_id=LEGACY_DEFAULT_SOURCE_INSTANCE_ID,
         logical_parent_source_record_id=observation.logical_parent_source_record_id,
         association_state=state,
         selected_parent_source_record_pk=selected_pk,

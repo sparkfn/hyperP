@@ -86,11 +86,15 @@ RETURN [person_id IN collect(DISTINCT neighbor.person_id)
 RETIRE_SOURCE_EVIDENCE = """
 MERGE (lock:SourceRecordIdentityLock {
     source_system: $source_system,
+    source_instance_id: $source_instance_id,
     source_record_id: $source_record_id
 })
 SET lock.locked_at = datetime()
 WITH lock
-MATCH (sr:SourceRecord {source_record_id: $source_record_id})
+MATCH (sr:SourceRecord {
+    source_instance_id: $source_instance_id,
+    source_record_id: $source_record_id
+})
       -[:FROM_SOURCE]->(:SourceSystem {source_key: $source_system})
 WHERE sr.lifecycle_status IN ['active', 'pending_review']
    OR (sr.lifecycle_status IS NULL AND sr.is_latest = true)

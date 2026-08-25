@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from src.source_instances import canonical_source_instance_id
+
 
 def _component(value: str) -> str:
     return f"{len(value)}:{value}"
@@ -12,16 +14,34 @@ def encode_source_version_key(
     source_record_id: str,
     source_record_version: str,
     *,
+    source_instance_id: str | None = None,
     duplicate_discriminator: str | None = None,
 ) -> str:
-    """Encode source identity, version, and optional legacy duplicate injectively."""
+    """Encode a legacy or instance-scoped source identity and immutable version.
+
+    The legacy ``sv1`` shape is retained byte-for-byte until the graph lifecycle
+    migration assigns every existing record its explicit default source instance.
+    ``sv2`` is reserved for the new triple-keyed identity and must not be emitted
+    by a recurring source until that migration and its graph constraints are live.
+    """
     discriminator = duplicate_discriminator or ""
-    return "sv1:" + "".join(
-        _component(value)
-        for value in (
+    components: tuple[str, ...]
+    if source_instance_id is None:
+        components = (
             source_system,
             source_record_id,
             source_record_version,
             discriminator,
         )
-    )
+        prefix = "sv1:"
+    else:
+        canonical_source_instance_id(source_instance_id)
+        components = (
+            source_system,
+            source_instance_id,
+            source_record_id,
+            source_record_version,
+            discriminator,
+        )
+        prefix = "sv2:"
+    return prefix + "".join(_component(value) for value in components)

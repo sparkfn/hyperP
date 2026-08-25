@@ -9,6 +9,7 @@ from neo4j import ManagedTransaction, Record
 from src.graph import queries
 from src.graph.crm_deal_count import recompute_source_person_crm_deal_counts
 from src.models import SourceLifecycleState, SourceRecordLifecycleStatus, SourceVersionState
+from src.source_instances import effective_source_instance_id
 
 
 @dataclass(frozen=True)
@@ -152,12 +153,16 @@ def _parse_version_state(row: Record) -> SourceVersionState | None:
 
 
 def load_locked_source_state(
-    tx: ManagedTransaction, source_system: str, source_record_id: str
+    tx: ManagedTransaction,
+    source_system: str,
+    source_record_id: str,
+    source_instance_id: str | None = None,
 ) -> SourceLifecycleState:
     """Lock one source identity and parse its open versions."""
     result = tx.run(
         queries.LOCK_AND_GET_SOURCE_STATE,
         source_system=source_system,
+        source_instance_id=effective_source_instance_id(source_instance_id),
         source_record_id=source_record_id,
     )
     active: SourceVersionState | None = None
@@ -209,6 +214,7 @@ def activate_staged_version(
     source_system: str,
     source_record_id: str,
     old_source_record_pk: str | None,
+    source_instance_id: str | None = None,
     new_source_record_pk: str,
 ) -> None:
     """Activate a staged first or replacement version using guarded queries."""
@@ -217,6 +223,7 @@ def activate_staged_version(
             queries.ACTIVATE_FIRST_SOURCE_RECORD_VERSION,
             source_record_pk=new_source_record_pk,
             source_system=source_system,
+            source_instance_id=effective_source_instance_id(source_instance_id),
             source_record_id=source_record_id,
         )
     else:

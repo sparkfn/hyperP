@@ -44,6 +44,7 @@ from src.record_lifecycle import (
     plan_incoming_version,
     reject_replaced_pending,
 )
+from src.source_instances import effective_source_instance_id
 from src.source_version_keys import encode_source_version_key
 from src.vehicle_categories import base_source_key, category_is_vehicle
 from src.vehicle_extraction import observations_from_sales_lines
@@ -127,7 +128,9 @@ def ingest_sales_record(
     )
 
     def _work(tx: ManagedTransaction) -> IngestResult:
-        state = load_locked_source_state(tx, envelope.source_system, envelope.source_record_id)
+        state = load_locked_source_state(
+            tx, envelope.source_system, envelope.source_record_id, envelope.source_instance_id
+        )
         plan = plan_incoming_version(state, envelope.record_hash)
         if isinstance(plan, DuplicateVersion):
             return IngestResult(
@@ -281,6 +284,7 @@ def _execute(
         person_id=person_id,
         source_system_key=source_system_key,
         source_record_id=envelope.source_record_id,
+        source_instance_id=envelope.source_instance_id,
         raw_payload=envelope.raw_payload,
         observed_at=envelope.observed_at,
         exclusion_context=exclusion_context,
@@ -319,6 +323,7 @@ def _create_sales_source_record(
     rec = tx.run(
         queries.CREATE_SOURCE_RECORD,
         source_system=envelope.source_system,
+        source_instance_id=effective_source_instance_id(envelope.source_instance_id),
         entity_key=_entity_key_for(envelope.source_system),
         source_record_id=envelope.source_record_id,
         source_record_version=source_record_version,
@@ -326,6 +331,7 @@ def _create_sales_source_record(
             envelope.source_system,
             envelope.source_record_id,
             source_record_version,
+            source_instance_id=effective_source_instance_id(envelope.source_instance_id),
         ),
         lifecycle_status="pending_review",
         is_latest=False,
@@ -335,6 +341,7 @@ def _create_sales_source_record(
         extraction_method=None,
         conversation_ref=None,
         parent_source_system=None,
+        parent_source_instance_id=None,
         parent_source_record_id=None,
         parent_record_type=None,
         link_status=link_status,
@@ -818,6 +825,7 @@ def _drain_one_pending_sale(
     exclusion_context: ExclusionContext,
     expected_active_source_record_pk: str | None = None,
     source_record_id: str | None = None,
+    source_instance_id: str | None = None,
 ) -> bool:
     """Resolve and link one pending-customer sales record to its customer Person.
 
@@ -866,6 +874,7 @@ def _drain_one_pending_sale(
         person_id=person_id,
         source_system_key=source_system_key,
         source_record_id=source_record_id,
+        source_instance_id=source_instance_id,
         raw_payload=raw_payload,
         observed_at=(str(raw_payload["observed_at"]) if raw_payload.get("observed_at") else None),
         exclusion_context=exclusion_context,
@@ -880,6 +889,7 @@ def _finalize_accepted_sale(
     person_id: str,
     source_system_key: str,
     source_record_id: str | None,
+    source_instance_id: str | None = None,
     raw_payload: dict[str, JsonValue],
     observed_at: str | None,
     exclusion_context: ExclusionContext,
@@ -956,6 +966,7 @@ def _finalize_accepted_sale(
             tx,
             source_system=source_system_key,
             source_record_id=source_record_id,
+            source_instance_id=source_instance_id,
             old_source_record_pk=expected_active_source_record_pk,
             new_source_record_pk=sales_pk,
         )
@@ -1002,11 +1013,12 @@ def drain_pending_customer_sales(
                     _skip_sale_permanent(tx, pk=pk, reason="raw_payload undecodable")
                     continue
                 source_record_id = str_or_none(row.get("source_record_id"))
+                source_instance_id = str_or_none(row.get("source_instance_id"))
                 expected_active_pk = str_or_none(row.get("expected_active_source_record_pk"))
                 if source_record_id is None:
                     _skip_sale_permanent(tx, pk=pk, reason="source_record_id missing")
                     continue
-                state = load_locked_source_state(tx, ssk, source_record_id)
+                state = load_locked_source_state(tx, ssk, source_record_id, source_instance_id)
                 if state.pending is None or state.pending.source_record_pk != pk:
                     continue
                 if _drain_one_pending_sale(
@@ -1017,6 +1029,7 @@ def drain_pending_customer_sales(
                     active_exclusion_context,
                     expected_active_source_record_pk=expected_active_pk,
                     source_record_id=source_record_id,
+                    source_instance_id=source_instance_id,
                 ):
                     newly_linked += 1
             return newly_linked, str(rows[-1]["source_record_pk"])
@@ -1043,6 +1056,7 @@ def _propose_one_pending_sale(
     customer_emails: list[str],
     customer_phones: list[str],
     source_record_id: str | None = None,
+    source_instance_id: str | None = None,
     expected_active_source_record_pk: str | None = None,
     raw_payload: dict[str, JsonValue] | None = None,
     exclusion_context: ExclusionContext | None = None,
@@ -1165,6 +1179,7 @@ def _propose_one_pending_sale(
         person_id=best.person_id,
         source_system_key=source_system_key,
         source_record_id=source_record_id,
+        source_instance_id=source_instance_id,
         raw_payload=raw_payload,
         observed_at=None,
         exclusion_context=(
@@ -1191,7 +1206,7 @@ def propose_vehicle_matches_for_pending_sales(
         tx: ManagedTransaction,
         cursor: str,
     ) -> tuple[
-        list[tuple[str, str, str | None, str | None, dict[str, JsonValue]]],
+        list[tuple[str, str, str | None, str | None, str | None, dict[str, JsonValue]]],
         str | None,
     ]:
         rows = list(
@@ -1201,7 +1216,7 @@ def propose_vehicle_matches_for_pending_sales(
                 limit=batch_size,
             )
         )
-        out: list[tuple[str, str, str | None, str | None, dict[str, JsonValue]]] = []
+        out: list[tuple[str, str, str | None, str | None, str | None, dict[str, JsonValue]]] = []
         for row in rows:
             # Drain runs first and marks permanent skips link_failed, so those
             # rows are excluded from FIND_PENDING here. Defensive skip (no
@@ -1219,13 +1234,14 @@ def propose_vehicle_matches_for_pending_sales(
                     pk,
                     ssk,
                     source_record_id,
+                    str_or_none(row.get("source_instance_id")),
                     str_or_none(row.get("expected_active_source_record_pk")),
                     raw_payload,
                 )
             )
         return out, (str(rows[-1]["source_record_pk"]) if rows else None)
 
-    pending: list[tuple[str, str, str | None, str | None, dict[str, JsonValue]]] = []
+    pending: list[tuple[str, str, str | None, str | None, str | None, dict[str, JsonValue]]] = []
     cursor = ""
     while True:
         current_cursor = cursor
@@ -1234,7 +1250,7 @@ def propose_vehicle_matches_for_pending_sales(
             tx: ManagedTransaction,
             _cursor: str = current_cursor,
         ) -> tuple[
-            list[tuple[str, str, str | None, str | None, dict[str, JsonValue]]],
+            list[tuple[str, str, str | None, str | None, str | None, dict[str, JsonValue]]],
             str | None,
         ]:
             return _get_pending(tx, _cursor)
@@ -1247,7 +1263,14 @@ def propose_vehicle_matches_for_pending_sales(
         cursor = next_cursor
 
     proposed = 0
-    for pk, source_system_key, source_record_id, expected_active_pk, raw_payload in pending:
+    for (
+        pk,
+        source_system_key,
+        source_record_id,
+        source_instance_id,
+        expected_active_pk,
+        raw_payload,
+    ) in pending:
         order = raw_payload.get("order")
         if not isinstance(order, dict):
             logger.warning("Skipping pending sale %s: raw_payload.order missing", pk)
@@ -1269,13 +1292,14 @@ def propose_vehicle_matches_for_pending_sales(
             _emails: list[str] = customer_emails,
             _phones: list[str] = customer_phones,
             _source_record_id: str | None = source_record_id,
+            _source_instance_id: str | None = source_instance_id,
             _expected_active_pk: str | None = expected_active_pk,
             _raw_payload: dict[str, JsonValue] = raw_payload,
         ) -> bool:
             if _source_record_id is None:
                 logger.warning("Skipping pending sale %s: source_record_id missing", _pk)
                 return False
-            state = load_locked_source_state(tx, _ssk, _source_record_id)
+            state = load_locked_source_state(tx, _ssk, _source_record_id, _source_instance_id)
             if state.pending is None or state.pending.source_record_pk != _pk:
                 return False
             return _propose_one_pending_sale(
@@ -1287,6 +1311,7 @@ def propose_vehicle_matches_for_pending_sales(
                 customer_emails=_emails,
                 customer_phones=_phones,
                 source_record_id=_source_record_id,
+                source_instance_id=_source_instance_id,
                 expected_active_source_record_pk=_expected_active_pk,
                 raw_payload=_raw_payload,
             )

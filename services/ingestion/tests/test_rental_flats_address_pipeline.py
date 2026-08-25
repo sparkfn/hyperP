@@ -306,8 +306,18 @@ def test_address_versions_lock_duplicate_replace_and_preserve_unique_version_key
     creates = [call for call in client.tx.calls if call[0] == queries.CREATE_SOURCE_RECORD]
     assert [call[1]["source_record_version"] for call in creates] == ["1", "2"]
     assert [call[1]["source_version_key"] for call in creates] == [
-        encode_source_version_key("sgrentalflats", "rental_flat:33", "1"),
-        encode_source_version_key("sgrentalflats", "rental_flat:33", "2"),
+        encode_source_version_key(
+            "sgrentalflats",
+            "rental_flat:33",
+            "1",
+            source_instance_id="legacy-default",
+        ),
+        encode_source_version_key(
+            "sgrentalflats",
+            "rental_flat:33",
+            "2",
+            source_instance_id="legacy-default",
+        ),
     ]
     retires = [call for call in client.tx.calls if call[0] == queries.RETIRE_ADDRESS_PROJECTION]
     assert retires == [(queries.RETIRE_ADDRESS_PROJECTION, {"source_record_pk": "sr-1"})]

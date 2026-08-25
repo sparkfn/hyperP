@@ -34,6 +34,7 @@ from src.models import (
     NormalizedAddress as NormalizedAddressModel,
 )
 from src.pipeline_normalization import fanout_cap_for, is_usable
+from src.source_instances import effective_source_instance_id
 from src.source_version_keys import encode_source_version_key
 
 logger = logging.getLogger(__name__)
@@ -267,6 +268,7 @@ def persist_source_record(
     sr_result = tx.run(
         queries.CREATE_SOURCE_RECORD,
         source_system=envelope.source_system,
+        source_instance_id=effective_source_instance_id(envelope.source_instance_id),
         source_record_id=envelope.source_record_id,
         entity_key=envelope.entity_key,
         source_record_version=source_record_version,
@@ -274,6 +276,7 @@ def persist_source_record(
             envelope.source_system,
             envelope.source_record_id,
             source_record_version,
+            source_instance_id=effective_source_instance_id(envelope.source_instance_id),
         ),
         expected_active_source_record_pk=expected_active_source_record_pk,
         lifecycle_status=lifecycle_status.value,
@@ -284,6 +287,11 @@ def persist_source_record(
         conversation_ref=conv_ref,
         parent_source_system=(
             envelope.parent_ref.parent_source_system if envelope.parent_ref is not None else None
+        ),
+        parent_source_instance_id=(
+            effective_source_instance_id(envelope.parent_ref.parent_source_instance_id)
+            if envelope.parent_ref is not None
+            else None
         ),
         parent_source_record_id=(
             envelope.parent_ref.parent_source_record_id if envelope.parent_ref is not None else None

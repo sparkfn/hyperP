@@ -112,7 +112,11 @@ LIMIT $batch_size
 #: source_record_id (e.g. "fundbox-user-12345"). Used by the
 #: KNOWS materializer to resolve the declarer side of a contact link.
 RESOLVE_PERSON_FROM_SOURCE_RECORD_ID = """
-MATCH (sr:SourceRecord {source_record_id: $source_record_id})
+MATCH (context:SourceRecord {source_record_pk: $context_source_record_pk})
+MATCH (sr:SourceRecord {
+  source_instance_id: context.source_instance_id,
+  source_record_id: $source_record_id
+})
 MATCH (sr)-[:FROM_SOURCE]->(:SourceSystem {source_key: $source_system_key})
 MATCH (sr)-[link:LINKED_TO]->(p:Person {status: 'active'})
 WHERE coalesce(link.is_active, true) = true

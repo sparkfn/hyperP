@@ -5,15 +5,22 @@ from __future__ import annotations
 LOCK_AND_GET_SOURCE_STATE = """
 MERGE (lock:SourceRecordIdentityLock {
     source_system: $source_system,
+    source_instance_id: $source_instance_id,
     source_record_id: $source_record_id
 })
 SET lock.locked_at = datetime()
 WITH lock
 MATCH (ss:SourceSystem {source_key: $source_system})
-OPTIONAL MATCH (history:SourceRecord {source_record_id: $source_record_id})-[:FROM_SOURCE]->(ss)
+OPTIONAL MATCH (history:SourceRecord {
+    source_instance_id: $source_instance_id,
+    source_record_id: $source_record_id
+})-[:FROM_SOURCE]->(ss)
 WITH lock, ss,
      max(toInteger(history.source_record_version)) AS max_source_record_version
-OPTIONAL MATCH (sr:SourceRecord {source_record_id: $source_record_id})-[:FROM_SOURCE]->(ss)
+OPTIONAL MATCH (sr:SourceRecord {
+    source_instance_id: $source_instance_id,
+    source_record_id: $source_record_id
+})-[:FROM_SOURCE]->(ss)
 // Rollout compatibility: remove the NULL/is_latest branch only after the
 // lifecycle backfill is guaranteed complete in every deployed graph.
 WHERE sr.lifecycle_status IN ['active', 'pending_review']
@@ -42,7 +49,8 @@ MATCH (new:SourceRecord {
     source_record_pk: $new_source_record_pk,
     lifecycle_status: 'pending_review'
 })-[:FROM_SOURCE]->(source)
-WHERE old.source_record_id = new.source_record_id
+WHERE old.source_instance_id = new.source_instance_id
+  AND old.source_record_id = new.source_record_id
   AND new.expected_active_source_record_pk = old.source_record_pk
   AND (
       old.lifecycle_status = 'active'
@@ -65,10 +73,14 @@ MATCH (pending:SourceRecord {
     source_record_pk: $source_record_pk,
     lifecycle_status: 'pending_review'
 })-[:FROM_SOURCE]->(ss:SourceSystem {source_key: $source_system})
-WHERE pending.source_record_id = $source_record_id
+WHERE pending.source_instance_id = $source_instance_id
+  AND pending.source_record_id = $source_record_id
   AND pending.expected_active_source_record_pk IS NULL
   AND NOT EXISTS {
-      MATCH (active:SourceRecord {source_record_id: $source_record_id})-[:FROM_SOURCE]->(ss)
+      MATCH (active:SourceRecord {
+          source_instance_id: $source_instance_id,
+          source_record_id: $source_record_id
+      })-[:FROM_SOURCE]->(ss)
       WHERE active.lifecycle_status = 'active'
          OR (active.lifecycle_status IS NULL AND active.is_latest = true)
   }
@@ -116,6 +128,7 @@ RETURN sr.source_record_pk AS source_record_pk
 
 CHECK_SOURCE_RECORD_EXISTS = """
 MATCH (sr:SourceRecord {
+    source_instance_id: $source_instance_id,
     source_record_id: $source_record_id
 })
 WHERE sr.record_hash = $record_hash
@@ -126,7 +139,10 @@ LIMIT 1
 """
 
 GET_LATEST_SOURCE_RECORD = """
-MATCH (sr:SourceRecord {source_record_id: $source_record_id})-[:FROM_SOURCE]->(:SourceSystem {source_key: $source_system})
+MATCH (sr:SourceRecord {
+    source_instance_id: $source_instance_id,
+    source_record_id: $source_record_id
+})-[:FROM_SOURCE]->(:SourceSystem {source_key: $source_system})
 WHERE sr.is_latest = true
 RETURN sr.source_record_pk AS source_record_pk,
        sr.record_hash AS record_hash,
@@ -166,6 +182,7 @@ WHERE requested_entity_key IS NULL OR entity IS NOT NULL
 CREATE (sr:SourceRecord {
     source_record_pk:      randomUUID(),
     source_record_id:      $source_record_id,
+    source_instance_id:    $source_instance_id,
     source_record_version: $source_record_version,
     source_version_key:   $source_version_key,
     entity_key:           $entity_key,
@@ -176,6 +193,7 @@ CREATE (sr:SourceRecord {
     extraction_method:     $extraction_method,
     conversation_ref:      $conversation_ref,
     parent_source_system:  $parent_source_system,
+    parent_source_instance_id: $parent_source_instance_id,
     parent_source_record_id: $parent_source_record_id,
     parent_record_type:    $parent_record_type,
     link_status:           $link_status,

@@ -395,6 +395,7 @@ WITH unit, occurrence, source, identity_lock, known_variant, known_record,
      count(DISTINCT different_variant) AS prior_different_variant_count
 OPTIONAL MATCH (prior:SourceRecord {
   source_system: $source_key,
+  source_instance_id: $source_instance_id,
   source_record_id: $event_identity,
   record_type: 'crm_history',
   history_family: 'stage'
@@ -409,6 +410,7 @@ CALL (unit, occurrence, source, known_variant, known_record, next_version) {
     AND known_variant.hash_version = $hash_version
     AND known_record.source_record_pk = $source_record_pk
     AND known_record.source_system = $source_key
+    AND known_record.source_instance_id = $source_instance_id
     AND known_record.source_record_id = $event_identity
     AND known_record.source_version_key = $source_version_key
     AND known_record.record_type = 'crm_history'
@@ -436,6 +438,7 @@ CALL (unit, occurrence, source, known_variant, known_record, next_version) {
   CREATE (record:SourceRecord {
     source_record_pk: $source_record_pk,
     source_system: $source_key,
+    source_instance_id: $source_instance_id,
     source_record_id: $event_identity,
     source_record_version: toString(next_version),
     source_version_key: $source_version_key,
@@ -491,11 +494,13 @@ MATCH (unit:StageHistoryUnit {
 )
 MERGE (parent_identity_lock:SourceRecordIdentityLock {
   source_system: $logical_parent_source_system,
+  source_instance_id: $logical_parent_source_instance_id,
   source_record_id: $logical_parent_source_record_id
 })
 SET parent_identity_lock.locked_at = datetime()
 WITH occurrence, parent_identity_lock
 OPTIONAL MATCH (parent:SourceRecord {
+  source_instance_id: $logical_parent_source_instance_id,
   source_record_id: $logical_parent_source_record_id,
   record_type: 'crm_deal'
 })-[:FROM_SOURCE]->(:SourceSystem {source_key: $logical_parent_source_system})
@@ -534,11 +539,13 @@ WHERE occurrence.event_identity = $event_identity
       $logical_parent_source_record_id
 MERGE (parent_identity_lock:SourceRecordIdentityLock {
   source_system: $logical_parent_source_system,
+  source_instance_id: $logical_parent_source_instance_id,
   source_record_id: $logical_parent_source_record_id
 })
 SET parent_identity_lock.locked_at = datetime()
 WITH occurrence, parent_identity_lock
 OPTIONAL MATCH (parent:SourceRecord {
+  source_instance_id: $logical_parent_source_instance_id,
   source_record_id: $logical_parent_source_record_id,
   record_type: 'crm_deal'
 })-[:FROM_SOURCE]->(:SourceSystem {source_key: $logical_parent_source_system})
@@ -1960,6 +1967,7 @@ MATCH (association:CrmHistoryParentAssociationDecision {
 WHERE association.association_state IN ['selected_active', 'selected_pending_review']
 MERGE (parent_identity_lock:SourceRecordIdentityLock {
   source_system: association.logical_parent_source_system,
+  source_instance_id: $logical_parent_source_instance_id,
   source_record_id: association.logical_parent_source_record_id
 })
 SET parent_identity_lock.locked_at = datetime()
@@ -1970,6 +1978,7 @@ WITH association, selected_parents, selected_parents[0] AS selected_parent
 WHERE size(selected_parents) = 1
   AND selected_parent.source_record_pk =
       association.selected_parent_source_record_pk
+  AND selected_parent.source_instance_id = $logical_parent_source_instance_id
   AND selected_parent.source_record_id =
       association.logical_parent_source_record_id
   AND selected_parent.record_type = 'crm_deal'
@@ -2055,11 +2064,13 @@ MATCH (occurrence:StageHistoryOccurrence {
 })
 MERGE (parent_identity_lock:SourceRecordIdentityLock {
   source_system: occurrence.logical_parent_source_system,
+  source_instance_id: $logical_parent_source_instance_id,
   source_record_id: occurrence.logical_parent_source_record_id
 })
 SET parent_identity_lock.locked_at = datetime()
 WITH occurrence, parent_identity_lock
 OPTIONAL MATCH (parent:SourceRecord {
+  source_instance_id: $logical_parent_source_instance_id,
   source_record_id: occurrence.logical_parent_source_record_id,
   record_type: 'crm_deal'
 })-[:FROM_SOURCE]->(:SourceSystem {
@@ -2252,6 +2263,7 @@ CLASSIFY_STAGE_HISTORY_OBSERVATION = """
 OPTIONAL MATCH (variant:CrmHistoryHashVariant {event_identity: $event_identity})
 WITH collect(DISTINCT variant) AS variants
 OPTIONAL MATCH (parent:SourceRecord {
+  source_instance_id: $logical_parent_source_instance_id,
   source_record_id: $logical_parent_source_record_id,
   record_type: 'crm_deal'
 })-[:FROM_SOURCE]->(:SourceSystem {source_key: $logical_parent_source_system})

@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 FIND_ANY_SOURCE_RECORD = """
-MATCH (sr:SourceRecord {source_record_id: $source_record_id})
+MATCH (sr:SourceRecord {
+    source_instance_id: $source_instance_id,
+    source_record_id: $source_record_id
+})
       -[:FROM_SOURCE]->(:SourceSystem {source_key: $source_system})
 RETURN sr.source_record_pk AS source_record_pk
       ,sr.record_hash AS record_hash
@@ -60,6 +63,7 @@ RETURN history.source_record_pk AS source_record_pk
 CREATE_CRM_HISTORY = """
 MATCH (ss:SourceSystem {source_key: $source_system})
 MATCH (parent:SourceRecord {
+    source_instance_id: $parent_source_instance_id,
     source_record_id: $parent_source_record_id,
     record_type: 'crm_deal'
 })-[:FROM_SOURCE]->(:SourceSystem {source_key: $parent_source_system})
@@ -73,6 +77,7 @@ LIMIT 1
 CREATE (history:SourceRecord {
     source_record_pk: randomUUID(),
     source_record_id: $source_record_id,
+    source_instance_id: $source_instance_id,
     source_record_version: '1',
     source_version_key: $source_version_key,
     entity_key: parent.entity_key,
@@ -83,6 +88,7 @@ CREATE (history:SourceRecord {
     extraction_method: null,
     conversation_ref: null,
     parent_source_system: $parent_source_system,
+    parent_source_instance_id: $parent_source_instance_id,
     parent_source_record_id: $parent_source_record_id,
     parent_record_type: 'crm_deal',
     link_status: 'linked',
@@ -117,6 +123,7 @@ RETURN history.source_record_pk AS source_record_pk
 CREATE_CALL_FROM_HISTORY = """
 MATCH (ss:SourceSystem {source_key: $source_system})
 MATCH (history:SourceRecord {
+    source_instance_id: $parent_source_instance_id,
     source_record_id: $parent_source_record_id,
     record_type: 'crm_history'
 })-[:FROM_SOURCE]->(:SourceSystem {source_key: $parent_source_system})
@@ -125,6 +132,7 @@ WHERE (history.history_family IS NULL OR history.history_family = 'activity'
 MATCH (history)-[:CHILD_OF]->(origin_deal:SourceRecord {record_type: 'crm_deal'})
       -[:FROM_SOURCE]->(deal_source:SourceSystem)
 MATCH (deal:SourceRecord {
+    source_instance_id: origin_deal.source_instance_id,
     source_record_id: origin_deal.source_record_id,
     record_type: 'crm_deal'
 })-[:FROM_SOURCE]->(deal_source)
@@ -141,6 +149,7 @@ WITH ss, history, deal, entity, collect(DISTINCT person) AS people
 CREATE (call:SourceRecord {
     source_record_pk: randomUUID(),
     source_record_id: $source_record_id,
+    source_instance_id: $source_instance_id,
     source_record_version: '1',
     source_version_key: $source_version_key,
     entity_key: deal.entity_key,
@@ -154,6 +163,7 @@ CREATE (call:SourceRecord {
     extraction_method: null,
     conversation_ref: null,
     parent_source_system: $parent_source_system,
+    parent_source_instance_id: $parent_source_instance_id,
     parent_source_record_id: $parent_source_record_id,
     parent_record_type: 'crm_history',
     link_status: CASE deal.lifecycle_status
@@ -189,7 +199,8 @@ MATCH (history:SourceRecord {
     source_record_id: 'bitrix-crm-history-' + crm_activity_id,
     record_type: 'crm_history'
 })-[:FROM_SOURCE]->(:SourceSystem {source_key: $source_system})
-WHERE (history.history_family IS NULL OR history.history_family = 'activity'
+WHERE history.source_instance_id = $source_instance_id
+  AND (history.history_family IS NULL OR history.history_family = 'activity'
    OR history.history_family = 'crm_activity')
 MERGE (history)-[:LINKED_TO]->(conversation)
 MERGE (conversation)-[:REPRESENTS_HISTORY_ITEM {
@@ -207,7 +218,8 @@ MATCH (conversation:SourceRecord {
     record_type: 'conversation',
     is_latest: true
 })-[:FROM_SOURCE]->(:SourceSystem {source_key: $source_system})
-WHERE conversation.source_record_id STARTS WITH
+WHERE conversation.source_instance_id = $source_instance_id
+  AND conversation.source_record_id STARTS WITH
       'bitrix-openlines-chat-' + toString($bitrix_chat_id) + '-'
 MERGE (history)-[:LINKED_TO]->(conversation)
 MERGE (conversation)-[:REPRESENTS_HISTORY_ITEM {
@@ -230,7 +242,8 @@ OPTIONAL MATCH (call:SourceRecord {record_type: 'call', lifecycle_status: 'pendi
       -[:CHILD_OF]->(history:SourceRecord {record_type: 'crm_history'})
       -[:CHILD_OF]->(logical_deal:SourceRecord {record_type: 'crm_deal'})
       -[:FROM_SOURCE]->(source)
-WHERE logical_deal.source_record_id = deal.source_record_id
+WHERE logical_deal.source_instance_id = deal.source_instance_id
+  AND logical_deal.source_record_id = deal.source_record_id
   AND (history.history_family IS NULL OR history.history_family = 'activity'
        OR history.history_family = 'crm_activity')
 WITH people, collect(DISTINCT call) AS calls

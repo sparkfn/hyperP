@@ -10,7 +10,7 @@ from src.graph.queries.crm_history import (
     LINK_CONVERSATION_TO_CRM_HISTORY,
     LINK_CRM_HISTORY_TO_EXISTING_CONVERSATIONS,
 )
-from src.models import RecordType, SourceRecordEnvelope
+from src.models import RecordType, SourceRecordEnvelope, SourceRecordParentRef
 from src.pipeline import _is_match_only_record
 
 
@@ -87,3 +87,66 @@ def test_history_links_to_existing_current_bitrix_chat_conversations() -> None:
         LINK_CRM_HISTORY_TO_EXISTING_CONVERSATIONS
     )
     assert "link_method: 'crm_activity_id'" in LINK_CRM_HISTORY_TO_EXISTING_CONVERSATIONS
+
+
+def test_source_record_envelope_preserves_instance_provenance_outside_raw_payload() -> None:
+    payload = _base_payload("crm_history")
+    payload["source_instance_id"] = "bitrix-primary"
+    payload["parent_ref"] = {
+        "parent_source_system": "bitrix_chat",
+        "parent_source_instance_id": "bitrix-primary",
+        "parent_source_record_id": "bitrix-crm-deal-1",
+        "parent_record_type": "crm_deal",
+    }
+
+    envelope = SourceRecordEnvelope.model_validate(payload)
+
+    assert envelope.source_instance_id == "bitrix-primary"
+    assert envelope.parent_ref is not None
+    assert envelope.parent_ref.parent_source_instance_id == "bitrix-primary"
+    assert "source_instance_id" not in envelope.raw_payload
+
+
+def test_source_record_envelope_rejects_ambiguous_instance_ids() -> None:
+    payload = _base_payload("identity")
+    payload["source_instance_id"] = " bitrix-primary "
+
+    with pytest.raises(ValueError, match="canonical non-secret slug"):
+        SourceRecordEnvelope.model_validate(payload)
+
+
+def test_parent_ref_rejects_an_ambiguous_instance_id_independently() -> None:
+    with pytest.raises(ValueError, match="canonical non-secret slug"):
+        SourceRecordParentRef(
+            parent_source_system="bitrix_chat",
+            parent_source_instance_id=" bitrix-primary ",
+            parent_source_record_id="bitrix-crm-deal-1",
+            parent_record_type=RecordType.CRM_DEAL,
+        )
+
+
+def test_instance_aware_child_requires_an_instance_aware_parent() -> None:
+    payload = _base_payload("crm_history")
+    payload["source_instance_id"] = "bitrix-primary"
+    payload["parent_ref"] = {
+        "parent_source_system": "bitrix_chat",
+        "parent_source_record_id": "bitrix-crm-deal-1",
+        "parent_record_type": "crm_deal",
+    }
+
+    with pytest.raises(ValueError, match="require parent_source_instance_id"):
+        SourceRecordEnvelope.model_validate(payload)
+
+
+def test_instance_aware_same_source_child_cannot_cross_portals() -> None:
+    payload = _base_payload("crm_history")
+    payload["source_instance_id"] = "bitrix-primary"
+    payload["parent_ref"] = {
+        "parent_source_system": "bitrix_chat",
+        "parent_source_instance_id": "bitrix-secondary",
+        "parent_source_record_id": "bitrix-crm-deal-1",
+        "parent_record_type": "crm_deal",
+    }
+
+    with pytest.raises(ValueError, match="same-source parent references"):
+        SourceRecordEnvelope.model_validate(payload)

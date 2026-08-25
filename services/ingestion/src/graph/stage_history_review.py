@@ -38,6 +38,7 @@ from src.graph.queries.stage_history_ingestion import (
     RESOLVE_STAGE_HISTORY_RETRY_BY_REVIEW,
     RESOLVE_STAGE_HISTORY_REVIEW_PARENT_CANDIDATES,
 )
+from src.source_instances import LEGACY_DEFAULT_SOURCE_INSTANCE_ID
 from src.stage_history_ingestion_models import (
     StageHistoryAssociationState,
     StageHistoryAuthorityState,
@@ -532,6 +533,7 @@ def _resolve_association(
             **_fence(fence, command),
             occurrence_id=occurrence_id,
             event_identity=command.event_identity,
+            logical_parent_source_instance_id=LEGACY_DEFAULT_SOURCE_INSTANCE_ID,
         ).single(),
         "review parent candidates are unavailable",
     )
@@ -558,6 +560,7 @@ def _resolve_association(
         occurrence_id=occurrence_id,
         event_identity=command.event_identity,
         logical_parent_source_system=parent_system,
+        logical_parent_source_instance_id=LEGACY_DEFAULT_SOURCE_INSTANCE_ID,
         logical_parent_source_record_id=parent_record_id,
         association_state=state,
         selected_parent_source_record_pk=selected_pk,

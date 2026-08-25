@@ -41,10 +41,9 @@ class _Tx:
 
     def run(self, query: str, **params: Any) -> _Result:
         if query == queries.RESOLVE_PERSON_FROM_SOURCE_RECORD_ID:
-            assert params == {
-                "source_record_id": "bitrix-chat-1-person-1",
-                "source_system_key": self.declarer_source_system_key,
-            }
+            assert params["context_source_record_pk"] in {"pk-bob", "contact-v2"}
+            assert params["source_record_id"] == "bitrix-chat-1-person-1"
+            assert params["source_system_key"] == self.declarer_source_system_key
             return _Result(_Row(person_id="person-alice"))
         if query == queries.RESOLVE_PERSON_FROM_SOURCE_RECORD_PK:
             assert params == {"source_record_pk": "pk-bob"}
@@ -99,6 +98,9 @@ def test_knows_resolution_and_projection_are_active_version_scoped() -> None:
     assert "sr.is_latest = true" in queries.RESOLVE_PERSON_FROM_SOURCE_RECORD_ID
     assert "coalesce(sr.is_latest, true)" not in queries.RESOLVE_PERSON_FROM_SOURCE_RECORD_ID
     assert "source_key: $source_system_key" in queries.RESOLVE_PERSON_FROM_SOURCE_RECORD_ID
+    assert "source_instance_id: context.source_instance_id" in (
+        queries.RESOLVE_PERSON_FROM_SOURCE_RECORD_ID
+    )
     assert "(sr)-[:FROM_SOURCE]->(:SourceSystem" in queries.RESOLVE_PERSON_FROM_SOURCE_RECORD_ID
     assert "(sr)-[link:LINKED_TO]->(p:Person" in queries.RESOLVE_PERSON_FROM_SOURCE_RECORD_ID
     assert "coalesce(link.is_active, true) = true" in (queries.RESOLVE_PERSON_FROM_SOURCE_RECORD_ID)

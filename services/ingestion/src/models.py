@@ -8,6 +8,8 @@ from enum import StrEnum
 from pydantic import BaseModel, Field, model_validator
 from pydantic.types import JsonValue
 
+from src.source_instances import canonical_source_instance_id
+
 # Re-export pydantic's recursive ``JsonValue`` (str | int | float | bool |
 # None | list[JsonValue] | dict[str, JsonValue]) so the rest of the codebase
 # can import it from one place. Using pydantic's alias rather than rolling
@@ -230,12 +232,23 @@ class SourceRecordParentRef(BaseModel):
 
     Parent references use source identity rather than a version-specific graph
     PK. This keeps a child attached to the logical CRM deal even after a later
-    version of that deal is ingested.
+    version of that deal is ingested. ``parent_source_instance_id`` is absent
+    only for legacy pair-keyed source identities.
     """
 
     parent_source_system: str
+    parent_source_instance_id: str | None = None
     parent_source_record_id: str
     parent_record_type: RecordType
+
+    @model_validator(mode="after")
+    def _check_parent_source_instance_id(self) -> SourceRecordParentRef:
+        if self.parent_source_instance_id is not None:
+            canonical_source_instance_id(
+                self.parent_source_instance_id,
+                field_name="parent_source_instance_id",
+            )
+        return self
 
 
 class SourceRecordEnvelope(BaseModel):
@@ -246,6 +259,10 @@ class SourceRecordEnvelope(BaseModel):
     """
 
     source_system: str
+    # ``None`` preserves the legacy pair-keyed identity until the source-instance
+    # lifecycle migration is online. New multi-portal streams must provide a
+    # canonical non-secret instance ID before they are enabled.
+    source_instance_id: str | None = None
     source_record_id: str
     entity_key: str | None = None
     source_record_version: str | None = None
@@ -275,6 +292,24 @@ class SourceRecordEnvelope(BaseModel):
     event_at: str | None = None
     projection_version: int | None = None
     projection_source: str | None = None
+
+    @model_validator(mode="after")
+    def _check_source_instance_invariants(self) -> SourceRecordEnvelope:
+        """Reject ambiguous source-instance values at the envelope boundary."""
+        if self.source_instance_id is not None:
+            canonical_source_instance_id(self.source_instance_id)
+            if self.parent_ref is not None:
+                parent_instance_id = self.parent_ref.parent_source_instance_id
+                if parent_instance_id is None:
+                    raise ValueError(
+                        "instance-aware source records require parent_source_instance_id"
+                    )
+                if (
+                    self.parent_ref.parent_source_system == self.source_system
+                    and parent_instance_id != self.source_instance_id
+                ):
+                    raise ValueError("same-source parent references must retain source_instance_id")
+        return self
 
     @model_validator(mode="after")
     def _check_record_type_invariants(self) -> SourceRecordEnvelope:

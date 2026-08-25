@@ -20,6 +20,7 @@ from src.graph.queries.bitrix_backfill import (
 from src.graph.queries.bitrix_deal_scope import GET_CURRENT_DEAL_SCOPE_BATCH
 from src.models import IngestResult, RecordType, SourceRecordEnvelope
 from src.record_lifecycle import load_locked_source_state
+from src.source_instances import effective_source_instance_id
 from src.source_version_keys import encode_source_version_key
 
 _LEGACY_CRM_ACTIVITY_FAMILY = "crm_activity"
@@ -88,10 +89,13 @@ def ingest_crm_history_record(
                 scope_state=owner_scope,
             )
             return result
-        load_locked_source_state(tx, envelope.source_system, envelope.source_record_id)
+        load_locked_source_state(
+            tx, envelope.source_system, envelope.source_record_id, envelope.source_instance_id
+        )
         existing = tx.run(
             queries.FIND_ANY_SOURCE_RECORD,
             source_system=envelope.source_system,
+            source_instance_id=effective_source_instance_id(envelope.source_instance_id),
             source_record_id=envelope.source_record_id,
         ).single()
         if existing is not None:
@@ -115,11 +119,18 @@ def ingest_crm_history_record(
         created = tx.run(
             queries.CREATE_CRM_HISTORY,
             source_system=envelope.source_system,
+            source_instance_id=effective_source_instance_id(envelope.source_instance_id),
             source_record_id=envelope.source_record_id,
             source_version_key=encode_source_version_key(
-                envelope.source_system, envelope.source_record_id, "1"
+                envelope.source_system,
+                envelope.source_record_id,
+                "1",
+                source_instance_id=effective_source_instance_id(envelope.source_instance_id),
             ),
             parent_source_system=parent_ref.parent_source_system,
+            parent_source_instance_id=effective_source_instance_id(
+                parent_ref.parent_source_instance_id
+            ),
             parent_source_record_id=parent_ref.parent_source_record_id,
             observed_at=envelope.observed_at,
             record_hash=envelope.record_hash,
@@ -231,10 +242,13 @@ def ingest_call_record(
                 scope_state=owner_scope,
             )
             return result
-        load_locked_source_state(tx, envelope.source_system, envelope.source_record_id)
+        load_locked_source_state(
+            tx, envelope.source_system, envelope.source_record_id, envelope.source_instance_id
+        )
         existing = tx.run(
             queries.FIND_ANY_SOURCE_RECORD,
             source_system=envelope.source_system,
+            source_instance_id=effective_source_instance_id(envelope.source_instance_id),
             source_record_id=envelope.source_record_id,
         ).single()
         if existing is not None:
@@ -257,11 +271,18 @@ def ingest_call_record(
         created = tx.run(
             queries.CREATE_CALL_FROM_HISTORY,
             source_system=envelope.source_system,
+            source_instance_id=effective_source_instance_id(envelope.source_instance_id),
             source_record_id=envelope.source_record_id,
             source_version_key=encode_source_version_key(
-                envelope.source_system, envelope.source_record_id, "1"
+                envelope.source_system,
+                envelope.source_record_id,
+                "1",
+                source_instance_id=effective_source_instance_id(envelope.source_instance_id),
             ),
             parent_source_system=parent_ref.parent_source_system,
+            parent_source_instance_id=effective_source_instance_id(
+                parent_ref.parent_source_instance_id
+            ),
             parent_source_record_id=parent_ref.parent_source_record_id,
             observed_at=envelope.observed_at,
             record_hash=envelope.record_hash,
@@ -451,6 +472,7 @@ def _link_history_to_conversations_in_transaction(
         queries.LINK_CRM_HISTORY_TO_EXISTING_CONVERSATIONS,
         history_source_record_pk=history_source_record_pk,
         source_system=envelope.source_system,
+        source_instance_id=effective_source_instance_id(envelope.source_instance_id),
         bitrix_chat_id_numeric=chat_id,
     ).consume()
 
@@ -531,6 +553,7 @@ def link_conversation_to_crm_history(
             queries.LINK_CONVERSATION_TO_CRM_HISTORY,
             conversation_source_record_pk=source_record_pk,
             source_system=envelope.source_system,
+            source_instance_id=effective_source_instance_id(envelope.source_instance_id),
             crm_activity_ids=activity_ids,
         ).single()
         return row is not None and int(row["linked_history_count"]) > 0
@@ -561,6 +584,7 @@ def link_crm_history_to_existing_conversations(
             queries.LINK_CRM_HISTORY_TO_EXISTING_CONVERSATIONS,
             history_source_record_pk=history_source_record_pk,
             source_system=envelope.source_system,
+            source_instance_id=effective_source_instance_id(envelope.source_instance_id),
             bitrix_chat_id=chat_id,
             crm_activity_id=activity_id,
         ).single()
