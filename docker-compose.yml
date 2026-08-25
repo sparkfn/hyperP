@@ -109,6 +109,14 @@ x-ingestion-env: &ingestion-env
   SALES_PREDICTION_ARTIFACT_SIGNING_KEY_SECRET: ${SALES_PREDICTION_ARTIFACT_SIGNING_KEY_SECRET:-}
   SALES_PREDICTION_REPOSITORY_SHA: ${SALES_PREDICTION_REPOSITORY_SHA:-}
   SALES_PREDICTION_IMAGE_DIGEST: ${SALES_PREDICTION_IMAGE_DIGEST:-}
+  DEPLOYMENT_ENVIRONMENT: ${DEPLOYMENT_ENVIRONMENT:-development}
+  CRM_DEAL_IDENTITY_REPAIR_ENABLED: ${CRM_DEAL_IDENTITY_REPAIR_ENABLED:-false}
+  CRM_DEAL_IDENTITY_REPAIR_ARTIFACT_PRIMARY_ROOT: /app/restricted/crm-deal-identity-repair
+  CRM_DEAL_IDENTITY_REPAIR_ARTIFACT_BACKUP_ROOT: /app/restricted/crm-deal-identity-repair-backup
+  CRM_DEAL_IDENTITY_REPAIR_ARTIFACT_SIGNING_KEY_ID: ${CRM_DEAL_IDENTITY_REPAIR_ARTIFACT_SIGNING_KEY_ID:-}
+  CRM_DEAL_IDENTITY_REPAIR_ARTIFACT_SIGNING_KEY_SECRET: ${CRM_DEAL_IDENTITY_REPAIR_ARTIFACT_SIGNING_KEY_SECRET:-}
+  CRM_DEAL_IDENTITY_REPAIR_REPOSITORY_SHA: ${CRM_DEAL_IDENTITY_REPAIR_REPOSITORY_SHA:-}
+  CRM_DEAL_IDENTITY_REPAIR_IMAGE_DIGEST: ${CRM_DEAL_IDENTITY_REPAIR_IMAGE_DIGEST:-}
   TZ: ${TZ:-UTC}
 
 services:
@@ -239,6 +247,8 @@ services:
       - ./config:/app/config:ro
       - ./data/restricted/sales-prediction:/app/restricted/sales-prediction
       - ./data/restricted/sales-prediction-backup:/app/restricted/sales-prediction-backup
+      - ./data/restricted/crm-deal-identity-repair:/app/restricted/crm-deal-identity-repair
+      - ./data/restricted/crm-deal-identity-repair-backup:/app/restricted/crm-deal-identity-repair-backup
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
@@ -266,6 +276,8 @@ services:
       - ./config:/app/config:ro
       - ./data/restricted/sales-prediction:/app/restricted/sales-prediction
       - ./data/restricted/sales-prediction-backup:/app/restricted/sales-prediction-backup
+      - ./data/restricted/crm-deal-identity-repair:/app/restricted/crm-deal-identity-repair
+      - ./data/restricted/crm-deal-identity-repair-backup:/app/restricted/crm-deal-identity-repair-backup
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:

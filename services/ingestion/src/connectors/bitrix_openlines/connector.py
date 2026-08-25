@@ -240,7 +240,7 @@ class BitrixOpenLinesConnector(SourceConnector):
                         continue
                     deal_entities[deal.id] = entity_key
                     self._emitted_crm_deal_ids.add(deal_source_record_id)
-                    yield _deal_envelope(deal, entity_key)
+                    yield build_crm_deal_envelope(deal, entity_key)
                     self._counters.records_emitted += 1
             for activity in client.iter_crm_activities():
                 self._counters.crm_activities_scanned += 1
@@ -638,7 +638,13 @@ def _add_crm_activity_references(
     record["record_hash"] = compute_hash(hash_payload)
 
 
-def _deal_envelope(deal: CrmDeal, entity_key: str) -> dict[str, JsonValue]:
+def build_crm_deal_envelope(deal: CrmDeal, entity_key: str) -> dict[str, JsonValue]:
+    """Build the immutable v2 identity envelope for one hydrated CRM deal.
+
+    Repair inventory uses this exact builder to freeze the proposed replacement
+    version. Keeping the builder at the connector boundary prevents repair code
+    from reproducing the policy-sensitive payload and record-hash contract.
+    """
     contact = deal.primary_contact
     identifiers: list[JsonValue] = []
     attributes: dict[str, JsonValue] = {}
@@ -682,6 +688,11 @@ def _deal_envelope(deal: CrmDeal, entity_key: str) -> dict[str, JsonValue]:
         "attributes": attributes,
         "raw_payload": raw_payload,
     }
+
+
+# Compatibility for extensions and historical tests that imported the former
+# private helper. New code must use ``build_crm_deal_envelope``.
+_deal_envelope = build_crm_deal_envelope
 
 
 def _crm_deal_entity_key(deal: CrmDeal, category_entities: dict[str, str]) -> str:

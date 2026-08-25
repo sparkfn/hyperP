@@ -9,7 +9,7 @@ from typing import cast
 from unittest.mock import MagicMock, patch
 
 from neo4j import ManagedTransaction
-from src.connectors.bitrix_openlines.connector import _deal_envelope as build_deal_envelope
+from src.connectors.bitrix_openlines.connector import build_crm_deal_envelope
 from src.connectors.bitrix_openlines.crm_identity_policy import (
     CRM_DEAL_IDENTITY_POLICY_VERSION,
     MAX_CRM_CONTACT_EMAILS,
@@ -502,7 +502,7 @@ def test_deal_envelope_hashes_policy_and_cannot_match_whatsapp_group_emails() ->
         phones=("+6591234567",),
         emails=("120363349430463692@g.us",),
     )
-    record = build_deal_envelope(
+    record = build_crm_deal_envelope(
         CrmDeal(
             id="456",
             title="Safe deal",
@@ -550,7 +550,7 @@ def test_oversized_raw_channel_change_changes_deal_hash() -> None:
                 for index in range(MAX_CRM_CONTACT_EMAILS + 1)
             ),
         )
-        return build_deal_envelope(
+        return build_crm_deal_envelope(
             CrmDeal(
                 id="456",
                 title="Oversized contact deal",
@@ -714,3 +714,133 @@ def test_crm_channel_match_with_strong_name_mismatch_never_auto_merges() -> None
     assert result.decision is not MatchDecision.MERGE
     assert result.additional_linked_person_ids == []
     assert result.is_new_person is True
+
+
+def test_repair_plan_requires_independent_provenance_for_automatic_retention() -> None:
+    from src.pipeline_crm_identity import plan_crm_deal_identity
+
+    plan = plan_crm_deal_identity(
+        _deal_envelope(),
+        _contact_identifier(),
+        MatchResult(
+            decision=MatchDecision.MERGE,
+            confidence=1.0,
+            matched_person_id="person-a",
+            reasons=["canonical_crm_contact_id"],
+        ),
+        current_owner_ids=("person-a",),
+        owner_provenance=(),
+        repair_source_record_pk="deal-source-pk",
+    )
+
+    assert plan.classification == "historical_owner_requires_review"
+    assert plan.selected_person_id is None
+    assert plan.provisional_person_id == "person-a"
+    assert plan.projected_identifiers == tuple(_contact_identifier())
+
+
+def test_repair_plan_keeps_current_independently_trusted_owner() -> None:
+    from src.pipeline_crm_identity import CrmOwnerProvenance, plan_crm_deal_identity
+
+    plan = plan_crm_deal_identity(
+        _deal_envelope(),
+        _contact_identifier(),
+        MatchResult(
+            decision=MatchDecision.MERGE,
+            confidence=1.0,
+            matched_person_id="person-a",
+            reasons=["canonical_crm_contact_id"],
+        ),
+        current_owner_ids=("person-a", "person-b"),
+        owner_provenance=(
+            CrmOwnerProvenance(
+                person_id="person-a",
+                provenance_class="independent_trusted",
+                supporting_source_record_pks=("contact-source-pk",),
+            ),
+        ),
+        repair_source_record_pk="deal-source-pk",
+    )
+
+    assert plan.classification == "same_owner_clean_reversion"
+    assert plan.selected_person_id == "person-a"
+    assert plan.provisional_person_id is None
+
+
+def test_repair_plan_does_not_choose_ambiguous_provisional_owner_by_sort_order() -> None:
+    from src.pipeline_crm_identity import plan_crm_deal_identity
+
+    plan = plan_crm_deal_identity(
+        _deal_envelope(),
+        _contact_identifier(),
+        MatchResult(
+            decision=MatchDecision.REVIEW,
+            confidence=1.0,
+            matched_person_id="person-a",
+            review_candidate_person_ids=["person-a", "person-b"],
+            reasons=["ambiguous_canonical_crm_contact_id"],
+        ),
+        current_owner_ids=("person-a", "person-b"),
+        owner_provenance=(),
+        repair_source_record_pk="deal-source-pk",
+    )
+
+    assert plan.classification == "ambiguous_owner_requires_review"
+    assert plan.selected_person_id is None
+    assert plan.provisional_person_id is None
+
+
+def test_repair_plan_conflicting_provenance_overrides_trusted_claim() -> None:
+    from src.pipeline_crm_identity import CrmOwnerProvenance, plan_crm_deal_identity
+
+    plan = plan_crm_deal_identity(
+        _deal_envelope(),
+        _contact_identifier(),
+        MatchResult(
+            decision=MatchDecision.MERGE,
+            confidence=1.0,
+            matched_person_id="person-a",
+        ),
+        current_owner_ids=("person-a",),
+        owner_provenance=(
+            CrmOwnerProvenance(
+                person_id="person-a",
+                provenance_class="independent_trusted",
+                supporting_source_record_pks=("independent-pk",),
+            ),
+            CrmOwnerProvenance(
+                person_id="person-a",
+                provenance_class="blocked_or_conflicting",
+                supporting_source_record_pks=("conflict-pk",),
+            ),
+        ),
+        repair_source_record_pk="deal-source-pk",
+    )
+
+    assert plan.classification == "historical_owner_requires_review"
+    assert plan.selected_person_id is None
+
+
+def test_repair_plan_rejects_self_supporting_trusted_claim() -> None:
+    from src.pipeline_crm_identity import CrmOwnerProvenance, plan_crm_deal_identity
+
+    plan = plan_crm_deal_identity(
+        _deal_envelope(),
+        _contact_identifier(),
+        MatchResult(
+            decision=MatchDecision.MERGE,
+            confidence=1.0,
+            matched_person_id="person-a",
+        ),
+        current_owner_ids=("person-a",),
+        owner_provenance=(
+            CrmOwnerProvenance(
+                person_id="person-a",
+                provenance_class="independent_trusted",
+                supporting_source_record_pks=("deal-source-pk",),
+            ),
+        ),
+        repair_source_record_pk="deal-source-pk",
+    )
+
+    assert plan.classification == "historical_owner_requires_review"

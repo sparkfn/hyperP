@@ -133,7 +133,8 @@ WITH ss, history, deal
 ORDER BY CASE deal.lifecycle_status WHEN 'active' THEN 0 ELSE 1 END,
          toInteger(deal.source_record_version) DESC
 LIMIT 1
-MATCH (deal)-[:LINKED_TO]->(person:Person)
+MATCH (deal)-[deal_link:LINKED_TO]->(person:Person)
+WHERE coalesce(deal_link.is_active, true) = true
 MATCH (deal)-[:OWNED_BY]->(entity:Entity)
 WHERE entity.entity_key = deal.entity_key
 WITH ss, history, deal, entity, collect(DISTINCT person) AS people
@@ -222,7 +223,8 @@ MATCH (deal:SourceRecord {
     record_type: 'crm_deal',
     lifecycle_status: 'active'
 })-[:FROM_SOURCE]->(source:SourceSystem)
-MATCH (deal)-[:LINKED_TO]->(person:Person)
+MATCH (deal)-[deal_link:LINKED_TO]->(person:Person)
+WHERE coalesce(deal_link.is_active, true) = true
 WITH deal, source, collect(DISTINCT person) AS people
 OPTIONAL MATCH (call:SourceRecord {record_type: 'call', lifecycle_status: 'pending_review'})
       -[:CHILD_OF]->(history:SourceRecord {record_type: 'crm_history'})

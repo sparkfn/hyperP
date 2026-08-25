@@ -9,6 +9,7 @@ RETURN p.person_id AS person_id
 
 GET_PERSON_FACTS = """
 MATCH (p:Person {person_id: $person_id})-[f:HAS_FACT]->(sr:SourceRecord)
+WHERE coalesce(f.is_active, true) = true
 MATCH (sr)-[:FROM_SOURCE]->(ss:SourceSystem)
 RETURN f.attribute_name AS attribute_name,
        f.attribute_value AS attribute_value,
@@ -87,17 +88,20 @@ RETURN p.person_id AS person_id, p.survivorship_overrides AS overrides
 """
 
 CHECK_SOURCE_RECORD_LINKED = """
-MATCH (sr:SourceRecord {source_record_pk: $source_record_pk})-[:LINKED_TO]->(p:Person {person_id: $person_id})
+MATCH (sr:SourceRecord {source_record_pk: $source_record_pk})-[link:LINKED_TO]->(p:Person {person_id: $person_id})
+WHERE coalesce(link.is_active, true) = true
 RETURN sr.source_record_pk AS pk
 """
 
 GET_FACT_VALUE = """
 MATCH (p:Person {person_id: $person_id})-[f:HAS_FACT {attribute_name: $attribute_name}]->(sr:SourceRecord {source_record_pk: $source_record_pk})
+WHERE coalesce(f.is_active, true) = true
 RETURN f.attribute_value AS value
 """
 
 GET_IDENTIFIER_VALUE_FOR_SR = """
 MATCH (p:Person {person_id: $person_id})-[rel:IDENTIFIED_BY {source_record_pk: $source_record_pk}]->(id:Identifier {identifier_type: $identifier_type})
+WHERE coalesce(rel.is_active, true) = true
 RETURN id.normalized_value AS value
 LIMIT 1
 """
@@ -110,6 +114,7 @@ LIMIT 1
 
 GET_ADDRESS_FOR_SR = """
 MATCH (p:Person {person_id: $person_id})-[la:LIVES_AT {source_record_pk: $source_record_pk}]->(a:Address)
+WHERE coalesce(la.is_active, true) = true
 RETURN a.address_id AS address_id, a.normalized_full AS normalized_full
 LIMIT 1
 """
@@ -130,6 +135,7 @@ CALL {
   WITH p
   MATCH (p)-[f:HAS_FACT]->(sr:SourceRecord)
   WHERE f.attribute_name IN ['full_name', 'dob', 'race_ethnicity']
+    AND coalesce(f.is_active, true) = true
     AND coalesce(f.quality_flag, 'valid') <> 'invalid_format'
     AND coalesce(f.quality_flag, 'valid') <> 'placeholder_value'
   MATCH (sr)-[:FROM_SOURCE]->(ss:SourceSystem)

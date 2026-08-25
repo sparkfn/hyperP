@@ -18,7 +18,8 @@ OPTIONAL MATCH (sr:SourceRecord {source_record_id: $source_record_id})-[:FROM_SO
 // lifecycle backfill is guaranteed complete in every deployed graph.
 WHERE sr.lifecycle_status IN ['active', 'pending_review']
    OR (sr.lifecycle_status IS NULL AND sr.is_latest = true)
-OPTIONAL MATCH (sr)-[:LINKED_TO]->(person:Person)
+OPTIONAL MATCH (sr)-[link:LINKED_TO]->(person:Person)
+WHERE coalesce(link.is_active, true) = true
 RETURN sr.source_record_pk AS source_record_pk,
        toInteger(sr.source_record_version) AS source_record_version,
        sr.record_hash AS record_hash,

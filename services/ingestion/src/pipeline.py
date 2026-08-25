@@ -52,10 +52,10 @@ from src.models import (
 )
 from src.pipeline_bankruptcy import bankruptcy_case_blueprint, materialize_bankruptcy_case
 from src.pipeline_crm_identity import (
-    apply_crm_deal_match_policy,
     blocked_crm_owner_result,
     crm_deal_requires_quarantine,
     deterministic_crm_owner_result,
+    plan_crm_deal_identity,
     projected_identifiers,
     resolve_canonical_crm_contact,
 )
@@ -302,6 +302,11 @@ class IngestPipeline:
             active_exclusion_context,
         )
         person_identifiers = projected_identifiers(envelope, identifiers)
+        continuity_person_id = (
+            lifecycle_plan.prior_person_ids[0]
+            if len(lifecycle_plan.prior_person_ids) == 1
+            else None
+        )
         continuity_fast_path = self._has_unchanged_crm_identity(
             envelope=envelope,
             identifiers=person_identifiers,
@@ -321,11 +326,6 @@ class IngestPipeline:
             )
         else:
             candidates = find_candidates(tx, identifiers, addresses)
-            continuity_person_id = (
-                lifecycle_plan.prior_person_ids[0]
-                if len(lifecycle_plan.prior_person_ids) == 1
-                else None
-            )
             multi_contact_result = self._resolve_ambiguous_crm_deal_contacts(
                 tx,
                 envelope,
@@ -372,11 +372,14 @@ class IngestPipeline:
                         else None
                     ),
                 )
-            match_result = apply_crm_deal_match_policy(
-                envelope,
-                match_result,
-                continuity_person_id=continuity_person_id,
-            )
+        crm_identity_plan = plan_crm_deal_identity(
+            envelope,
+            identifiers,
+            match_result,
+            continuity_person_id=continuity_person_id,
+        )
+        match_result = crm_identity_plan.match_result
+        person_identifiers = list(crm_identity_plan.projected_identifiers)
         durable_quarantine = crm_deal_requires_quarantine(match_result)
         if (
             _is_match_only_record(envelope.source_system, envelope.record_type)

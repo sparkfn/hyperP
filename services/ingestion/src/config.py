@@ -160,6 +160,20 @@ class Settings(BaseSettings):
     stage_history_repository_sha: str = ""
     stage_history_image_digest: str = ""
 
+    # Historical Bitrix CRM-deal repair inventory is read-only and staging-only.
+    # Mutation remains disabled unless a separately approved #255 operation
+    # explicitly enables it in a staging runtime.
+    deployment_environment: Literal["development", "staging", "production"] = "development"
+    crm_deal_identity_repair_enabled: bool = False
+    crm_deal_identity_repair_artifact_primary_root: str = "/app/restricted/crm-deal-identity-repair"
+    crm_deal_identity_repair_artifact_backup_root: str = (
+        "/app/restricted/crm-deal-identity-repair-backup"
+    )
+    crm_deal_identity_repair_artifact_signing_key_id: str = ""
+    crm_deal_identity_repair_artifact_signing_key_secret: SecretStr = SecretStr("")
+    crm_deal_identity_repair_repository_sha: str = ""
+    crm_deal_identity_repair_image_digest: str = ""
+
     # Restricted sales-prediction artifacts (issue #125 datasets/evaluation and
     # issue #126 model artifacts). Same trust model as stage history: persistent
     # restricted mounts, separate HMAC domain, secret only in worker/operator
