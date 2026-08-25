@@ -375,9 +375,11 @@ class IngestPipeline:
                 continuity_person_id=continuity_person_id,
             )
         durable_quarantine = crm_deal_requires_quarantine(match_result)
-        if _is_match_only_record(
-            envelope.source_system, envelope.record_type
-        ) and not durable_quarantine and not self._has_usable_match(match_result, candidates):
+        if (
+            _is_match_only_record(envelope.source_system, envelope.record_type)
+            and not durable_quarantine
+            and not self._has_usable_match(match_result, candidates)
+        ):
             logger.info(
                 "Dropping unmatched match-only record %s (source=%s, decision=%s)",
                 envelope.source_record_id,
@@ -793,10 +795,7 @@ class IngestPipeline:
         ]
         if not canonical_identifiers:
             return set()
-        return {
-            candidate.person_id
-            for candidate in find_candidates(tx, canonical_identifiers, [])
-        }
+        return {candidate.person_id for candidate in find_candidates(tx, canonical_identifiers, [])}
 
     @staticmethod
     def _persist_unlinked_review(
