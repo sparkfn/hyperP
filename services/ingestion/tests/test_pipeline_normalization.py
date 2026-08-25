@@ -61,3 +61,29 @@ def test_duplicate_normalized_identifiers_collapse_to_strongest_evidence() -> No
     assert results[0].normalized_value == "+6596542555"
     assert results[0].is_verified is True
     assert results[0].quality_flag == QualityFlag.VALID
+
+
+def test_crm_canonical_identifier_uses_envelope_source_instance() -> None:
+    envelope = _envelope(RawIdentifier(type="crm_contact_id", value="contact-123"))
+    envelope.source_instance_id = "bitrix-primary"
+
+    results = normalize_envelope_identifiers(envelope)
+
+    assert results[0].source_instance_id == "bitrix-primary"
+
+
+def test_generic_identifier_remains_globally_matchable() -> None:
+    envelope = _envelope(RawIdentifier(type="email", value="Ada@Example.com"))
+    envelope.source_instance_id = "bitrix-primary"
+
+    results = normalize_envelope_identifiers(envelope)
+
+    assert results[0].source_instance_id is None
+
+
+def test_legacy_crm_identifier_uses_stable_legacy_instance() -> None:
+    envelope = _envelope(RawIdentifier(type="crm_lead_id", value="lead-123"))
+
+    results = normalize_envelope_identifiers(envelope)
+
+    assert results[0].source_instance_id == "legacy-default"
