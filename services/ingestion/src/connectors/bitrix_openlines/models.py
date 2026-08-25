@@ -67,6 +67,14 @@ class CrmContact:
 
 
 @dataclass(frozen=True)
+class CrmCompany:
+    """Non-Person organization reference returned by the Bitrix CRM API."""
+
+    id: str
+    title: str | None
+
+
+@dataclass(frozen=True)
 class CrmDeal:
     """Minimal deal representation needed for person resolution and timeline."""
 
