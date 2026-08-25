@@ -61,12 +61,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         finally:
             client.close()
         snapshots = tuple(_source_snapshot(item.to_dict()) for item in inventory.items)
-        proposed_versions = tuple(
-            _unhydrated_proposal(item.to_dict()) for item in inventory.items
-        )
-        rollback_template = tuple(
-            _rollback_template(item.to_dict()) for item in inventory.items
-        )
+        proposed_versions = tuple(_unhydrated_proposal(item.to_dict()) for item in inventory.items)
+        rollback_template = tuple(_rollback_template(item.to_dict()) for item in inventory.items)
         population_counts = inventory.population_counts.to_dict()
         manifest = seal_inventory_artifact(
             store,

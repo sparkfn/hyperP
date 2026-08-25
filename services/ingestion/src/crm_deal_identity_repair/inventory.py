@@ -150,9 +150,7 @@ def collect_repair_inventory(
             multi_linked_deal_count=len({item.source_record_id for item in ownership}),
             maximum_links_per_deal=max(active_link_counts, default=0),
             maximum_distinct_owners_per_deal=max(active_owner_counts, default=0),
-            projection_cleanup_deal_count=len(
-                {item.source_record_id for item in cleanup}
-            ),
+            projection_cleanup_deal_count=len({item.source_record_id for item in cleanup}),
             clean_deal_count=len({item.source_record_id for item in clean}),
         ),
     )
@@ -168,9 +166,7 @@ def _item_from_record(
     normalized_payload = _json_value(_value(record, "normalized_payload"))
     links = _sorted_json_objects(_value(record, "linked_people"), "linked_people")
     projections = _sorted_json_objects(projection_rows, "projections")
-    logical_versions = _sorted_json_objects(
-        _value(record, "logical_versions"), "logical_versions"
-    )
+    logical_versions = _sorted_json_objects(_value(record, "logical_versions"), "logical_versions")
     version_evidence = _logical_version_evidence(
         logical_versions,
         current_source_record_pk=source_record_pk,
@@ -210,10 +206,7 @@ def _active_link_count(item: RepairInventoryItem) -> int:
     value = item.payload.get("linked_people")
     if not isinstance(value, list):
         raise ValueError("repair inventory linked_people must be a list")
-    return sum(
-        isinstance(link, dict) and link.get("is_active") is not False
-        for link in value
-    )
+    return sum(isinstance(link, dict) and link.get("is_active") is not False for link in value)
 
 
 def _active_owner_count(item: RepairInventoryItem) -> int:
@@ -241,9 +234,7 @@ def _logical_version_evidence(
 ) -> dict[str, JsonValue]:
     objects = [cast(dict[str, JsonValue], item) for item in versions]
     anomaly_codes: set[str] = set()
-    authoritative_versions = [
-        version for version in objects if _is_authoritative_version(version)
-    ]
+    authoritative_versions = [version for version in objects if _is_authoritative_version(version)]
     if len(authoritative_versions) != 1:
         anomaly_codes.add("multiple_authoritative_versions")
     version_numbers: list[int] = []
@@ -304,8 +295,7 @@ def _sorted_json_objects(value: object, label: str) -> list[JsonValue]:
     if not isinstance(converted, list) or any(not isinstance(item, dict) for item in converted):
         raise ValueError(f"repair inventory {label} must contain objects")
     objects = [
-        cast(dict[str, JsonValue], _canonicalize_inventory_value(item))
-        for item in converted
+        cast(dict[str, JsonValue], _canonicalize_inventory_value(item)) for item in converted
     ]
     return sorted(objects, key=_canonical_json_sort_key)
 

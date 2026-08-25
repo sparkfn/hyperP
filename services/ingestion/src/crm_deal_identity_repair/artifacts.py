@@ -288,13 +288,12 @@ def _validate_population_counts(population_counts: Mapping[str, int]) -> None:
     clean = population_counts["clean_deal_count"]
     if max(multi_linked, cleanup) + clean > active_deals:
         raise ValueError("repair population classifications exceed logical deal count")
-    if population_counts["active_distinct_owner_count"] > population_counts[
-        "active_link_count"
-    ]:
+    if population_counts["active_distinct_owner_count"] > population_counts["active_link_count"]:
         raise ValueError("repair distinct owner count cannot exceed active link count")
-    if population_counts["maximum_distinct_owners_per_deal"] > population_counts[
-        "maximum_links_per_deal"
-    ]:
+    if (
+        population_counts["maximum_distinct_owners_per_deal"]
+        > population_counts["maximum_links_per_deal"]
+    ):
         raise ValueError("repair maximum distinct owners cannot exceed maximum links")
 
 
@@ -304,9 +303,7 @@ def _validate_condition_counts(
 ) -> None:
     if condition_counts["ownership_repair"] != population_counts["multi_linked_deal_count"]:
         raise ValueError("repair ownership rows do not match population counts")
-    if condition_counts["projection_cleanup"] != population_counts[
-        "projection_cleanup_deal_count"
-    ]:
+    if condition_counts["projection_cleanup"] != population_counts["projection_cleanup_deal_count"]:
         raise ValueError("repair cleanup rows do not match population counts")
     if condition_counts["negative_control"] > population_counts["clean_deal_count"]:
         raise ValueError("repair negative-control sample exceeds clean population")

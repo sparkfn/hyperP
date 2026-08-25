@@ -73,8 +73,7 @@ class RepairInventoryItem:
         ):
             raise ValueError("repair inventory conditions must be non-empty and unique")
         if any(
-            condition
-            not in {"ownership_repair", "projection_cleanup", "negative_control"}
+            condition not in {"ownership_repair", "projection_cleanup", "negative_control"}
             for condition in self.repair_conditions
         ):
             raise ValueError("repair inventory condition is invalid")
