@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 FIND_PERSONS_SHARING_IDENTIFIER = """
-MATCH (id:Identifier {identifier_type: $identifier_type, normalized_value: $normalized_value})
+MATCH (id:Identifier {
+    identifier_type: $identifier_type,
+    identifier_scope: $identifier_scope,
+    normalized_value: $normalized_value
+})
       <-[rel:IDENTIFIED_BY]-(p:Person {status: 'active'})
 WHERE rel.is_active = true
   AND rel.quality_flag IN ['valid', 'partial_parse']
@@ -14,6 +18,7 @@ FIND_PERSONS_SHARING_IDENTIFIERS_BATCH = """
 UNWIND $identifiers AS input
 OPTIONAL MATCH (id:Identifier {
     identifier_type: input.identifier_type,
+    identifier_scope: input.identifier_scope,
     normalized_value: input.normalized_value
 })
 CALL (id) {

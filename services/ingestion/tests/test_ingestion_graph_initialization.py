@@ -132,6 +132,12 @@ def test_data_migrations_precede_source_version_uniqueness(
         lambda _client: calls.append("source_version_constraint"),
         raising=False,
     )
+    monkeypatch.setattr(
+        main,
+        "apply_deferred_identifier_scope_constraints",
+        lambda _client: calls.append("identifier_scope_constraint"),
+        raising=False,
+    )
 
     main.initialize_ingestion_graph()
 
@@ -140,6 +146,7 @@ def test_data_migrations_precede_source_version_uniqueness(
         "bootstrap",
         "data_migrations",
         "source_version_constraint",
+        "identifier_scope_constraint",
     ]
     assert migration_options == [
         {
@@ -162,6 +169,8 @@ def test_data_migrations_exclude_recurring_lifecycle_reconciliation(
         "migrate_crm_deal_stage_projection",
         "migrate_fundbox_source_keys",
         "migrate_source_record_lifecycle",
+        "migrate_source_record_source_instances",
+        "migrate_identifier_scopes",
         "migrate_projection_relationship_lifecycle",
     ):
         monkeypatch.setattr(
@@ -204,5 +213,7 @@ def test_data_migrations_exclude_recurring_lifecycle_reconciliation(
         "migrate_bitrix_crm_entities",
         "migrate_fundbox_source_keys",
         "migrate_source_record_lifecycle",
+        "migrate_source_record_source_instances",
+        "migrate_identifier_scopes",
         "migrate_projection_relationship_lifecycle",
     ]

@@ -21,6 +21,12 @@ from src.graph import queries
 from src.graph.bitrix_crm_entity_migration import migrate_bitrix_crm_entities
 from src.graph.client import Neo4jClient
 from src.graph.fundbox_source_migration import migrate_fundbox_source_keys
+from src.graph.queries.identifier_scope_migrations import (
+    BACKFILL_IDENTIFIER_SCOPES_BATCH,
+    CONSOLIDATE_SCOPED_IDENTIFIER_DUPLICATES_BATCH,
+    DELETE_EMPTY_UNSCOPED_CRM_IDENTIFIERS_BATCH,
+    MIGRATE_CRM_IDENTIFIER_RELATIONSHIPS_BATCH,
+)
 from src.graph.queries.lifecycle_migrations import (
     ACQUIRE_SOURCE_RECORD_LIFECYCLE_MIGRATION,
     ADVANCE_SOURCE_RECORD_LIFECYCLE_MIGRATION,
@@ -40,6 +46,10 @@ from src.graph.queries.source_instance_migrations import (
     MIGRATE_SOURCE_RECORD_IDENTITY_LOCKS,
     MIGRATE_SOURCE_RECORD_SOURCE_INSTANCES_BATCH,
 )
+from src.identifier_scopes import (
+    CRM_CANONICAL_IDENTIFIER_TYPES,
+    GLOBAL_IDENTIFIER_SCOPE,
+)
 from src.raw_payload import decode_raw_payload
 from src.source_instances import LEGACY_DEFAULT_SOURCE_INSTANCE_ID
 
@@ -47,7 +57,9 @@ logger = logging.getLogger(__name__)
 
 SOURCE_RECORD_LIFECYCLE_MIGRATION_KEY = "source_record_lifecycle_v1"
 SOURCE_RECORD_SOURCE_INSTANCE_MIGRATION_KEY = "source_record_source_instance_v1"
+IDENTIFIER_SCOPE_MIGRATION_KEY = "identifier_scope_v1"
 SOURCE_RECORD_SOURCE_INSTANCE_BATCH_SIZE = 500
+IDENTIFIER_SCOPE_MIGRATION_BATCH_SIZE = 500
 SOURCE_RECORD_LIFECYCLE_BATCH_SIZE = 500
 SOURCE_RECORD_LIFECYCLE_LEASE_SECONDS = 5 * 60
 SOURCE_RECORD_LIFECYCLE_LOCK_POLL_SECONDS = 1.0
@@ -734,6 +746,45 @@ def migrate_source_record_source_instances(client: Neo4jClient) -> int:
     return updated
 
 
+def migrate_identifier_scopes(client: Neo4jClient) -> int:
+    """Split CRM canonical IDs by portal while retaining global generic IDs."""
+
+    params: dict[str, object] = {
+        "migration_key": IDENTIFIER_SCOPE_MIGRATION_KEY,
+        "crm_identifier_types": sorted(CRM_CANONICAL_IDENTIFIER_TYPES),
+        "legacy_source_instance_id": LEGACY_DEFAULT_SOURCE_INSTANCE_ID,
+        "global_identifier_scope": GLOBAL_IDENTIFIER_SCOPE,
+        "batch_size": IDENTIFIER_SCOPE_MIGRATION_BATCH_SIZE,
+    }
+
+    def _drain(query: str, result_key: str) -> int:
+        total = 0
+        while True:
+            def _work(tx: ManagedTransaction) -> int:
+                record = tx.run(query, **params).single()  # type: ignore[arg-type]
+                return int(record[result_key]) if record is not None else 0
+
+            updated = client.execute_write(_work)
+            total += updated
+            if updated == 0:
+                return total
+
+    rewired = _drain(MIGRATE_CRM_IDENTIFIER_RELATIONSHIPS_BATCH, "updated")
+    deleted = _drain(DELETE_EMPTY_UNSCOPED_CRM_IDENTIFIERS_BATCH, "deleted")
+    backfilled = _drain(BACKFILL_IDENTIFIER_SCOPES_BATCH, "updated")
+    consolidated = _drain(CONSOLIDATE_SCOPED_IDENTIFIER_DUPLICATES_BATCH, "consolidated")
+    total = rewired + deleted + backfilled + consolidated
+    if total:
+        logger.info(
+            "Migrated identifier scopes (rewired=%d deleted=%d backfilled=%d consolidated=%d)",
+            rewired,
+            deleted,
+            backfilled,
+            consolidated,
+        )
+    return total
+
+
 def migrate_projection_relationship_lifecycle(client: Neo4jClient) -> int:
     """Backfill active state on legacy projection relationships."""
 
@@ -897,4 +948,5 @@ def apply_data_migrations(
     migrate_fundbox_source_keys(client)
     migrate_source_record_lifecycle(client)
     migrate_source_record_source_instances(client)
+    migrate_identifier_scopes(client)
     migrate_projection_relationship_lifecycle(client)

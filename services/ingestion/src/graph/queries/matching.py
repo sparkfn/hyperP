@@ -7,6 +7,7 @@ from __future__ import annotations
 FIND_CANDIDATES_BY_IDENTIFIER = """
 MATCH (id:Identifier {
     identifier_type: $identifier_type,
+    identifier_scope: $identifier_scope,
     normalized_value: $normalized_value
 })
 <-[rel:IDENTIFIED_BY]-(candidate:Person {status: 'active'})
@@ -19,6 +20,7 @@ FIND_CANDIDATES_BY_IDENTIFIERS_BATCH = """
 UNWIND $identifiers AS input
 OPTIONAL MATCH (id:Identifier {
     identifier_type: input.identifier_type,
+    identifier_scope: input.identifier_scope,
     normalized_value: input.normalized_value
 })
 CALL (id) {
@@ -72,7 +74,11 @@ ORDER BY input_index
 """
 
 CHECK_IDENTIFIER_FANOUT = """
-MATCH (id:Identifier {identifier_type: $identifier_type, normalized_value: $normalized_value})
+MATCH (id:Identifier {
+    identifier_type: $identifier_type,
+    identifier_scope: $identifier_scope,
+    normalized_value: $normalized_value
+})
       <-[rel:IDENTIFIED_BY]-(p:Person {status: 'active'})
 WHERE rel.is_active = true
 RETURN count(DISTINCT p) AS fanout

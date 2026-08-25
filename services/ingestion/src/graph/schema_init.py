@@ -62,6 +62,12 @@ FOR (sr:SourceRecord)
 REQUIRE sr.source_version_key IS UNIQUE""",
 )
 
+DEFERRED_IDENTIFIER_SCOPE_CONSTRAINTS: tuple[str, ...] = (
+    """CREATE CONSTRAINT identifier_identity_scope_unique IF NOT EXISTS
+FOR (id:Identifier)
+REQUIRE (id.identifier_type, id.identifier_scope, id.normalized_value) IS UNIQUE""",
+)
+
 LIFECYCLE_CONSTRAINTS = BASE_LIFECYCLE_CONSTRAINTS + DEFERRED_SOURCE_RECORD_CONSTRAINTS
 
 
@@ -140,3 +146,11 @@ def apply_deferred_source_record_constraints(client: Neo4jClient) -> int:
         for statement in DEFERRED_SOURCE_RECORD_CONSTRAINTS:
             session.run(statement).consume()
     return len(DEFERRED_SOURCE_RECORD_CONSTRAINTS)
+
+
+def apply_deferred_identifier_scope_constraints(client: Neo4jClient) -> int:
+    """Install scoped identifier uniqueness after the data migration completes."""
+    with client.session() as session:
+        for statement in DEFERRED_IDENTIFIER_SCOPE_CONSTRAINTS:
+            session.run(statement).consume()
+    return len(DEFERRED_IDENTIFIER_SCOPE_CONSTRAINTS)

@@ -104,6 +104,10 @@ CREATE CONSTRAINT stage_history_unit_accounting_identity_unique IF NOT EXISTS
 CREATE INDEX idx_identifier_type_norm IF NOT EXISTS
   FOR (id:Identifier) ON (id.identifier_type, id.normalized_value);
 
+// The legacy index stays in place while identifier-scope migration rolls out.
+CREATE INDEX idx_identifier_type_scope_norm IF NOT EXISTS
+  FOR (id:Identifier) ON (id.identifier_type, id.identifier_scope, id.normalized_value);
+
 CREATE INDEX idx_identifier_type_hash IF NOT EXISTS
   FOR (id:Identifier) ON (id.identifier_type, id.hashed_value);
 
