@@ -17,6 +17,7 @@ from src.exclusion_config import (
     _vehicle_identifier_list,
 )
 from src.models import JsonValue
+from src.source_instances import canonical_source_instance_id
 
 
 @dataclass
@@ -71,6 +72,7 @@ class BitrixOpenLinesConfig:
     entity_by_crm_category_id: dict[str, str] = field(default_factory=dict)
     incremental_overlap_seconds: int = 300
     recent_page_size: int = 50
+    source_instance_id: str | None = None
 
 
 @dataclass
@@ -276,7 +278,18 @@ def _bitrix_openlines_config(raw: JsonValue, *, path: Path) -> BitrixOpenLinesCo
     page_size = _int(raw.get("recent_page_size"), defaults.recent_page_size, path=path)
     if overlap < 0 or page_size < 1 or page_size > 50:
         raise ValueError(f"Invalid ingestion config JSON: {path}")
+    raw_source_instance_id = raw.get("source_instance_id")
+    if raw_source_instance_id is None:
+        source_instance_id = None
+    elif not isinstance(raw_source_instance_id, str):
+        raise ValueError(f"Invalid ingestion config JSON: {path}")
+    else:
+        try:
+            source_instance_id = canonical_source_instance_id(raw_source_instance_id)
+        except ValueError as exc:
+            raise ValueError(f"Invalid ingestion config JSON: {path}") from exc
     return BitrixOpenLinesConfig(
+        source_instance_id=source_instance_id,
         included_channel_types=included_types,
         included_config_ids=_config_ids(raw.get("included_config_ids"), path=path),
         excluded_config_ids=_config_ids(raw.get("excluded_config_ids"), path=path),
@@ -445,10 +458,15 @@ def bitrix_configuration_digest(
     included_category_ids: tuple[str, ...],
 ) -> str:
     """Hash the effective non-secret Bitrix runtime selection configuration."""
+    config_payload = asdict(config)
+    if config.source_instance_id is None:
+        # Preserve accepted evidence created before portal registration was
+        # added while including every explicit registration in new evidence.
+        config_payload.pop("source_instance_id")
     encoded = json.dumps(
         {
             "categories": included_category_ids,
-            "config": asdict(config),
+            "config": config_payload,
         },
         sort_keys=True,
         separators=(",", ":"),
@@ -463,6 +481,7 @@ def bitrix_legacy_explicit_category_digest(
     """Reconstruct v1 evidence where CRM scope came only from CLI categories."""
     legacy_config = replace(
         config,
+        source_instance_id=None,
         included_crm_category_ids=[],
         entity_by_crm_category_id={},
     )

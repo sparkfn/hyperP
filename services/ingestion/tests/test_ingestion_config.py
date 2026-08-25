@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -53,6 +54,9 @@ def test_legacy_explicit_category_digest_reconstructs_accepted_gate_evidence() -
         "sha256:a449c56111af4eff4d8d3182355d037bee51760c45fc77c1451b4cac5bb4e75a"
     )
     assert runtime_digest != accepted_digest
+    assert bitrix_legacy_explicit_category_digest(
+        replace(runtime_config, source_instance_id="bitrix-primary"), categories
+    ) == accepted_digest
 
 
 def test_scheduled_ingestion_is_disabled_by_default() -> None:
@@ -195,6 +199,7 @@ def test_bitrix_openlines_config_parses_channel_and_entity_overrides(tmp_path: P
         json.dumps(
             {
                 "bitrix_openlines": {
+                    "source_instance_id": "bitrix-primary",
                     "included_channel_types": ["facebook_direct"],
                     "included_config_ids": [46],
                     "excluded_config_ids": [54],
@@ -209,6 +214,7 @@ def test_bitrix_openlines_config_parses_channel_and_entity_overrides(tmp_path: P
         encoding="utf-8",
     )
     assert load_ingestion_config(str(path)).bitrix_openlines == BitrixOpenLinesConfig(
+        source_instance_id="bitrix-primary",
         included_channel_types=["facebook_direct"],
         included_config_ids=["46"],
         excluded_config_ids=["54"],
@@ -218,6 +224,36 @@ def test_bitrix_openlines_config_parses_channel_and_entity_overrides(tmp_path: P
         incremental_overlap_seconds=120,
         recent_page_size=25,
     )
+
+
+@pytest.mark.parametrize(
+    "source_instance_id",
+    ["", " bitrix-primary ", "https://portal.test", 123],
+)
+def test_bitrix_openlines_config_rejects_invalid_source_instance_ids(
+    tmp_path: Path,
+    source_instance_id: object,
+) -> None:
+    path = tmp_path / "bad.json"
+    path.write_text(
+        json.dumps({"bitrix_openlines": {"source_instance_id": source_instance_id}}),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="Invalid ingestion config JSON"):
+        load_ingestion_config(str(path))
+
+
+def test_bitrix_configuration_digest_preserves_legacy_evidence_without_registration() -> None:
+    categories = ("2", "7", "8")
+    legacy_digest = bitrix_configuration_digest(BitrixOpenLinesConfig(), categories)
+
+    assert legacy_digest == (
+        "sha256:24ad8341df1613f75207dd5b9fab8c739e6ac162e12f64e1713c8114a565fd04"
+    )
+    assert bitrix_configuration_digest(
+        BitrixOpenLinesConfig(source_instance_id="bitrix-primary"), categories
+    ) != legacy_digest
 
 
 def test_bitrix_openlines_config_deduplicates_crm_category_allowlist(tmp_path: Path) -> None:

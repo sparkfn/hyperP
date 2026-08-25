@@ -54,16 +54,30 @@ MIGRATE_CRM_IDENTIFIER_RELATIONSHIPS_BATCH = _migration_lock(
     f"""
 CALL {{
   MATCH (legacy:Identifier)<-[legacy_rel:IDENTIFIED_BY]-(person:Person)
+  WHERE legacy.identifier_type IN $crm_identifier_types
+    AND (legacy.identifier_scope IS NULL
+      OR legacy.identifier_scope = $legacy_source_instance_id)
+  OPTIONAL MATCH (source:SourceRecord {{source_record_pk: legacy_rel.source_record_pk}})
+  OPTIONAL MATCH (source)-[:FROM_SOURCE]->(source_system:SourceSystem)
+  WITH legacy, legacy_rel, person, source,
+       [key IN collect(DISTINCT source_system.source_key) WHERE key IS NOT NULL]
+         AS source_system_keys
+  WITH legacy, legacy_rel, person,
+       CASE
+         WHEN size(source_system_keys) = 1
+           AND head(source_system_keys) = $bitrix_source_system_key
+           AND coalesce(source.source_instance_id, $legacy_source_instance_id)
+             = $legacy_source_instance_id
+           AND $bitrix_source_instance_id IS NOT NULL
+         THEN $bitrix_source_instance_id
+         ELSE coalesce(source.source_instance_id, $legacy_source_instance_id)
+       END AS identifier_scope
   WHERE legacy.identifier_scope IS NULL
-    AND legacy.identifier_type IN $crm_identifier_types
-  WITH legacy, legacy_rel, person
+    OR legacy.identifier_scope <> identifier_scope
   ORDER BY elementId(legacy_rel)
   LIMIT $batch_size
-  RETURN legacy, legacy_rel, person
+  RETURN legacy, legacy_rel, person, identifier_scope
 }}
-OPTIONAL MATCH (source:SourceRecord {{source_record_pk: legacy_rel.source_record_pk}})
-WITH legacy, legacy_rel, person,
-     coalesce(source.source_instance_id, $legacy_source_instance_id) AS identifier_scope
 MERGE (scoped:Identifier {{
   identifier_type: legacy.identifier_type,
   identifier_scope: identifier_scope,
@@ -100,7 +114,8 @@ DELETE_EMPTY_UNSCOPED_CRM_IDENTIFIERS_BATCH = _migration_lock(
     """
 CALL {
   MATCH (legacy:Identifier)
-  WHERE legacy.identifier_scope IS NULL
+  WHERE (legacy.identifier_scope IS NULL
+      OR legacy.identifier_scope = $legacy_source_instance_id)
     AND legacy.identifier_type IN $crm_identifier_types
     AND NOT (legacy)--()
   WITH legacy

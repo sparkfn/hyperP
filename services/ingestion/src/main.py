@@ -1010,6 +1010,7 @@ def initialize_ingestion_graph() -> None:
         bootstrap_entities_and_sources(client)
         apply_data_migrations(
             client,
+            bitrix_source_instance_id=ingestion_config.bitrix_openlines.source_instance_id,
             bitrix_crm_category_entities=(
                 ingestion_config.bitrix_openlines.entity_by_crm_category_id
             ),
