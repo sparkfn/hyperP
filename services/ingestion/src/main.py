@@ -21,6 +21,7 @@ from src.connectors.base import SourceConnector
 from src.connectors.bitrix import BitrixChatConnector
 from src.connectors.bitrix_crm.activity_connector import BitrixCrmActivityConnector
 from src.connectors.bitrix_crm.deal_connector import BitrixCrmDealConnector
+from src.connectors.bitrix_crm.identity_connector import BitrixCrmIdentityConnector
 from src.connectors.bitrix_openlines.client import BitrixOpenLinesClient
 from src.connectors.bitrix_openlines.connector import BitrixOpenLinesConnector
 from src.connectors.bitrix_openlines.dialog_cache import RedisDialogConfigCache
@@ -96,6 +97,7 @@ from src.pipeline_crm import (
     link_conversation_to_crm_history,
     link_crm_history_to_existing_conversations,
 )
+from src.pipeline_references import ingest_reference_record
 from src.pipeline_sales import (
     drain_pending_customer_sales,
     ingest_sales_record,
@@ -447,6 +449,19 @@ def create_bitrix_crm_deal_connector(
         upper_deal_id=upper_deal_id,
         last_deal_id=last_deal_id,
     )
+
+
+def create_bitrix_crm_identity_connector() -> BitrixCrmIdentityConnector:
+    """Create the default-off standalone CRM identity connector."""
+    settings = get_settings()
+    ingestion_config = get_ingestion_config()
+    client = BitrixOpenLinesClient(
+        base_url=settings.bitrix_openlines_api_base_url.get_secret_value(),
+        timeout_seconds=settings.bitrix_openlines_api_timeout_seconds,
+        max_attempts=settings.bitrix_openlines_api_max_attempts,
+        request_delay_seconds=settings.bitrix_openlines_api_request_delay_seconds,
+    )
+    return BitrixCrmIdentityConnector(client, ingestion_config.bitrix_openlines)
 
 
 def create_bitrix_crm_activity_connector(
@@ -832,6 +847,8 @@ def _process_record(
             ingest_run_id=ingest_run_id,
             exclusion_context=exclusion_context,
         )
+    if envelope.record_type == RecordType.CRM_COMPANY:
+        return ingest_reference_record(client, envelope, ingest_run_id=ingest_run_id)
     if _is_address_only_source(envelope.source_system):
         return ingest_address_record(client, envelope, ingest_run_id=ingest_run_id)
     result = pipeline.ingest(

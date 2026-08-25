@@ -10,6 +10,7 @@ import json
 import logging
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
+from typing import Literal
 
 from neo4j import ManagedTransaction
 
@@ -258,6 +259,7 @@ def persist_source_record(
     lifecycle_status: SourceRecordLifecycleStatus,
     expected_active_source_record_pk: str | None,
     activation_blueprint: dict[str, JsonValue] | None = None,
+    link_status: Literal["not_applicable"] | None = None,
 ) -> str:
     """Step 7 + 7b: persist SourceRecord and link to IngestRun."""
     normalized = build_normalized_source_payload(
@@ -267,7 +269,13 @@ def persist_source_record(
         attributes=attributes,
         activation_blueprint=activation_blueprint,
     )
-    is_linked = match_result.decision == MatchDecision.MERGE or is_new_person
+    resolved_link_status = (
+        link_status
+        if link_status is not None
+        else "linked"
+        if match_result.decision == MatchDecision.MERGE or is_new_person
+        else "pending_review"
+    )
     conv_ref = (
         json.dumps(envelope.conversation_ref, default=str)
         if envelope.conversation_ref is not None
@@ -311,7 +319,7 @@ def persist_source_record(
             if envelope.parent_ref is not None
             else None
         ),
-        link_status="linked" if is_linked else "pending_review",
+        link_status=resolved_link_status,
         observed_at=envelope.observed_at,
         record_hash=envelope.record_hash,
         raw_payload=json.dumps(envelope.raw_payload, default=str),

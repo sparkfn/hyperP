@@ -24,6 +24,112 @@ def _base_payload(record_type: str) -> dict[str, object]:
     }
 
 
+def _company_payload() -> dict[str, object]:
+    payload = _base_payload("crm_company")
+    payload["source_instance_id"] = "bitrix-primary"
+    payload["raw_payload"] = {
+        "company_reference": {"type": "crm_company_id", "value": "303"},
+        "reference_metadata": {
+            "identity_policy_version": "crm_company_reference_v1",
+            "source_instance_id": "bitrix-primary",
+            "crm_company_id": "303",
+            "person_matching_prohibited": True,
+        },
+    }
+    return payload
+
+
+def test_crm_company_requires_a_non_person_reference_contract() -> None:
+    envelope = SourceRecordEnvelope.model_validate(_company_payload())
+
+    assert envelope.record_type == RecordType.CRM_COMPANY
+    assert envelope.source_instance_id == "bitrix-primary"
+
+
+def test_crm_company_requires_a_source_instance() -> None:
+    payload = _company_payload()
+    payload.pop("source_instance_id")
+
+    with pytest.raises(ValueError, match="require source_instance_id"):
+        SourceRecordEnvelope.model_validate(payload)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("identifiers", [{"type": "crm_company_id", "value": "303"}]),
+        ("addresses", [{"raw": "303 Example Street"}]),
+    ],
+)
+def test_crm_company_rejects_person_evidence(field: str, value: object) -> None:
+    payload = _company_payload()
+    payload[field] = value
+
+    with pytest.raises(ValueError, match="cannot carry Person evidence"):
+        SourceRecordEnvelope.model_validate(payload)
+
+
+@pytest.mark.parametrize(
+    "raw_payload",
+    [
+        {},
+        {
+            "company_reference": {"type": "crm_company_id", "value": "303"},
+            "reference_metadata": {
+                "identity_policy_version": "crm_company_reference_v1",
+                "source_instance_id": "bitrix-primary",
+                "crm_company_id": "303",
+                "person_matching_prohibited": False,
+            },
+        },
+        {
+            "company_reference": {"type": "contact_id", "value": "303"},
+            "reference_metadata": {
+                "identity_policy_version": "crm_company_reference_v1",
+                "source_instance_id": "bitrix-primary",
+                "crm_company_id": "303",
+                "person_matching_prohibited": True,
+            },
+        },
+        {
+            "company_reference": {"type": "crm_company_id", "value": ""},
+            "reference_metadata": {
+                "identity_policy_version": "crm_company_reference_v1",
+                "source_instance_id": "bitrix-primary",
+                "crm_company_id": "",
+                "person_matching_prohibited": True,
+            },
+        },
+        {
+            "company_reference": {"type": "crm_company_id", "value": "303"},
+            "reference_metadata": {
+                "identity_policy_version": "crm_company_reference_v1",
+                "source_instance_id": "bitrix-secondary",
+                "crm_company_id": "303",
+                "person_matching_prohibited": True,
+            },
+        },
+        {
+            "company_reference": {"type": "crm_company_id", "value": "303"},
+            "reference_metadata": {
+                "identity_policy_version": "crm_company_reference_v1",
+                "source_instance_id": "bitrix-primary",
+                "crm_company_id": "404",
+                "person_matching_prohibited": True,
+            },
+        },
+    ],
+)
+def test_crm_company_rejects_an_invalid_reference_contract(
+    raw_payload: dict[str, object],
+) -> None:
+    payload = _company_payload()
+    payload["raw_payload"] = raw_payload
+
+    with pytest.raises(ValueError, match="require a prohibited company reference"):
+        SourceRecordEnvelope.model_validate(payload)
+
+
 def test_crm_history_requires_a_logical_deal_parent() -> None:
     with pytest.raises(ValueError, match="require parent_ref"):
         SourceRecordEnvelope.model_validate(_base_payload("crm_history"))

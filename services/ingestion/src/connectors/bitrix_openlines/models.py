@@ -64,6 +64,7 @@ class CrmContact:
     phones: tuple[str, ...] = ()
     emails: tuple[str, ...] = ()
     kind: str = "contact"
+    observed_at: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -72,6 +73,7 @@ class CrmCompany:
 
     id: str
     title: str | None
+    observed_at: datetime | None = None
 
 
 @dataclass(frozen=True)
