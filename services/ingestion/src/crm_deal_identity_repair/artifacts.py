@@ -186,11 +186,11 @@ def _impact_summary(
                 raise ValueError("repair inventory closure evidence is invalid")
             impact_counts[output] += len(value)
     condition_equations: dict[str, JsonValue] = {}
-    for condition, equation in equations.items():
+    for condition_name, equation in equations.items():
         equation_json: dict[str, JsonValue] = {}
         for key, value in equation.items():
             equation_json[key] = value
-        condition_equations[condition] = equation_json
+        condition_equations[condition_name] = equation_json
     lifecycle_counts: dict[str, JsonValue] = {}
     for classification, count in lifecycle.items():
         lifecycle_counts[classification] = count
