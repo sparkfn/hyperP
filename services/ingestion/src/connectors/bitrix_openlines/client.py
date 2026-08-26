@@ -28,11 +28,13 @@ from src.connectors.bitrix_openlines.models import (
     CrmActivity,
     CrmActivityCapabilityPage,
     CrmCompany,
+    CrmCompanyBindingPayload,
     CrmContact,
     CrmDeal,
     CrmDealCapabilityPage,
     CrmDealStageCatalogPage,
     CrmDiscoveryPage,
+    CrmIdentityKeysetPage,
     DialogMetadata,
     OpenLineConfig,
     OpenLineMessage,
@@ -920,40 +922,155 @@ class BitrixOpenLinesClient:
                     contact_ids.append(contact_id)
         return tuple(dict.fromkeys(contact_ids)) or fallback
 
-    def iter_crm_contacts(self) -> Iterator[CrmContact]:
-        """Yield current contacts independently of CRM deals."""
-        yield from self._iter_crm_people("crm.contact.list", kind="contact")
+    def probe_crm_contact_upper_id(self) -> int:
+        """Return the current maximum contact ID without traversing the source."""
+        return self._probe_crm_identity_upper_id("crm.contact.list")
 
-    def iter_crm_leads(self) -> Iterator[CrmContact]:
-        """Yield current leads independently of CRM deals."""
-        yield from self._iter_crm_people("crm.lead.list", kind="lead")
+    def probe_crm_lead_upper_id(self) -> int:
+        """Return the current maximum lead ID without traversing the source."""
+        return self._probe_crm_identity_upper_id("crm.lead.list")
 
-    def iter_crm_companies(self) -> Iterator[CrmCompany]:
-        """Yield current companies as non-Person source references."""
-        start = 0
-        seen_ids: set[str] = set()
-        while True:
-            payload = self._request(
-                "crm.company.list",
-                {
-                    "select": ["ID", "TITLE", "DATE_MODIFY", "DATE_CREATE"],
-                    "order": {"ID": "ASC"},
-                    "start": start,
-                },
+    def probe_crm_company_upper_id(self) -> int:
+        """Return the current maximum company ID without traversing the source."""
+        return self._probe_crm_identity_upper_id("crm.company.list")
+
+    def list_crm_contacts_keyset(
+        self, *, greater_than_id: int | None, less_than_or_equal_to_id: int
+    ) -> CrmIdentityKeysetPage:
+        """Fetch one strict bounded contact page ordered by numeric ID."""
+        records = self._list_crm_identity_keyset(
+            method="crm.contact.list",
+            kind="contact",
+            greater_than_id=greater_than_id,
+            less_than_or_equal_to_id=less_than_or_equal_to_id,
+        )
+        return CrmIdentityKeysetPage(records=tuple(records), upper_id=less_than_or_equal_to_id)
+
+    def list_crm_leads_keyset(
+        self, *, greater_than_id: int | None, less_than_or_equal_to_id: int
+    ) -> CrmIdentityKeysetPage:
+        """Fetch one strict bounded lead page ordered by numeric ID."""
+        records = self._list_crm_identity_keyset(
+            method="crm.lead.list",
+            kind="lead",
+            greater_than_id=greater_than_id,
+            less_than_or_equal_to_id=less_than_or_equal_to_id,
+        )
+        return CrmIdentityKeysetPage(records=tuple(records), upper_id=less_than_or_equal_to_id)
+
+    def list_crm_companies_keyset(
+        self, *, greater_than_id: int | None, less_than_or_equal_to_id: int
+    ) -> CrmIdentityKeysetPage:
+        """Fetch one strict bounded company page ordered by numeric ID."""
+        records = self._list_crm_identity_keyset(
+            method="crm.company.list",
+            kind="company",
+            greater_than_id=greater_than_id,
+            less_than_or_equal_to_id=less_than_or_equal_to_id,
+        )
+        return CrmIdentityKeysetPage(records=tuple(records), upper_id=less_than_or_equal_to_id)
+
+    def get_contact_company_bindings(self, contact_id: str) -> tuple[CrmCompanyBindingPayload, ...]:
+        """Read the complete current company binding set for one contact.
+
+        A transport or source-shape error is deliberately not converted to an
+        empty tuple: callers must preserve the prior membership head instead.
+        """
+        canonical_contact_id = _positive_numeric_id_string(contact_id)
+        if canonical_contact_id is None:
+            raise ValueError("contact_id must be a positive numeric ID")
+        result = self._call("crm.contact.company.items.get", {"id": int(canonical_contact_id)})
+        if not isinstance(result, list):
+            raise RuntimeError("Bitrix contact company bindings returned an invalid result")
+        bindings: list[CrmCompanyBindingPayload] = []
+        for item in result:
+            if not isinstance(item, dict):
+                raise RuntimeError("Bitrix contact company bindings contained an invalid item")
+            if not {"COMPANY_ID", "IS_PRIMARY"}.issubset(item):
+                raise RuntimeError("Bitrix contact company bindings omitted required fields")
+            bindings.append(
+                CrmCompanyBindingPayload(
+                    company_id=item["COMPANY_ID"],
+                    sort=item.get("SORT"),
+                    role_id=item.get("ROLE_ID"),
+                    is_primary=item["IS_PRIMARY"],
+                )
             )
-            result = payload.get("result")
-            if not isinstance(result, list):
-                raise RuntimeError("Bitrix CRM company list returned an invalid result")
-            for item in result:
-                company = _crm_company(item)
-                if company.id in seen_ids:
-                    continue
-                seen_ids.add(company.id)
-                yield company
-            next_page = next_start(payload, start)
-            if next_page is None:
-                return
-            start = next_page
+        return tuple(bindings)
+
+    def _probe_crm_identity_upper_id(self, method: str) -> int:
+        payload = self._request(
+            method,
+            {
+                "select": ["ID"],
+                "order": {"ID": "DESC"},
+                "start": -1,
+            },
+        )
+        result = payload.get("result")
+        if not isinstance(result, list):
+            raise RuntimeError("Bitrix CRM identity upper-bound probe returned an invalid result")
+        if not result:
+            return 0
+        first = result[0]
+        if not isinstance(first, dict):
+            raise RuntimeError("Bitrix CRM identity upper-bound probe contained an invalid item")
+        raw_id = _positive_numeric_id_string(first.get("ID"))
+        if raw_id is None:
+            raise RuntimeError("Bitrix CRM identity upper-bound probe omitted a numeric ID")
+        return int(raw_id)
+
+    def _list_crm_identity_keyset(
+        self,
+        *,
+        method: str,
+        kind: str,
+        greater_than_id: int | None,
+        less_than_or_equal_to_id: int,
+    ) -> list[CrmContact | CrmCompany]:
+        if isinstance(less_than_or_equal_to_id, bool) or less_than_or_equal_to_id < 1:
+            raise ValueError("Bitrix CRM identity upper ID must be positive")
+        filters: dict[str, JsonValue] = {"<=ID": less_than_or_equal_to_id}
+        if greater_than_id is not None:
+            if isinstance(greater_than_id, bool) or greater_than_id < 1:
+                raise ValueError("Bitrix CRM identity lower ID must be positive")
+            if greater_than_id >= less_than_or_equal_to_id:
+                raise ValueError("Bitrix CRM identity keyset bounds must increase")
+            filters[">ID"] = greater_than_id
+        select: list[JsonValue] = ["ID", "DATE_MODIFY", "DATE_CREATE"]
+        if kind in {"contact", "lead"}:
+            select.extend(["NAME", "SECOND_NAME", "LAST_NAME", "PHONE", "EMAIL"])
+            if kind == "lead":
+                select.append("COMPANY_ID")
+        else:
+            select.append("TITLE")
+        payload = self._request(
+            method,
+            {"filter": filters, "select": select, "order": {"ID": "ASC"}, "start": -1},
+        )
+        raw_items = payload.get("result")
+        if not isinstance(raw_items, list):
+            raise RuntimeError(f"Bitrix CRM {kind} keyset returned an invalid result")
+        if len(raw_items) > 50:
+            raise RuntimeError(f"Bitrix CRM {kind} keyset exceeded the fixed page size")
+        records: list[CrmContact | CrmCompany] = []
+        previous_id = greater_than_id
+        for raw in raw_items:
+            if not isinstance(raw, dict):
+                raise RuntimeError(f"Bitrix CRM {kind} keyset contained an invalid item")
+            record = (
+                _crm_company(raw, require_numeric_id=True)
+                if kind == "company"
+                else _crm_contact(raw, kind=kind, require_numeric_id=True)
+            )
+            numeric_id = int(record.id)
+            if numeric_id > less_than_or_equal_to_id or (
+                previous_id is not None and numeric_id <= previous_id
+            ):
+                raise RuntimeError(f"Bitrix CRM {kind} keyset was not strictly increasing")
+            previous_id = numeric_id
+            records.append(record)
+        return records
 
     def get_contact(self, contact_id: str) -> CrmContact:
         result = self._call("crm.contact.get", {"id": contact_id})
@@ -1103,41 +1220,6 @@ class BitrixOpenLinesClient:
                     activity = _crm_activity(item)
                     if activity is not None:
                         yield activity
-            next_page = next_start(payload, start)
-            if next_page is None:
-                return
-            start = next_page
-
-    def _iter_crm_people(self, method: str, *, kind: str) -> Iterator[CrmContact]:
-        start = 0
-        seen_ids: set[str] = set()
-        while True:
-            payload = self._request(
-                method,
-                {
-                    "select": [
-                        "ID",
-                        "NAME",
-                        "SECOND_NAME",
-                        "LAST_NAME",
-                        "PHONE",
-                        "EMAIL",
-                        "DATE_MODIFY",
-                        "DATE_CREATE",
-                    ],
-                    "order": {"ID": "ASC"},
-                    "start": start,
-                },
-            )
-            result = payload.get("result")
-            if not isinstance(result, list):
-                raise RuntimeError(f"Bitrix CRM {kind} list returned an invalid result")
-            for item in result:
-                contact = _crm_contact(item, kind=kind)
-                if contact.id in seen_ids:
-                    continue
-                seen_ids.add(contact.id)
-                yield contact
             next_page = next_start(payload, start)
             if next_page is None:
                 return
@@ -1314,6 +1396,14 @@ def _positive_id_string(value: object) -> str | None:
         return parsed
 
 
+def _positive_numeric_id_string(value: object) -> str | None:
+    parsed = _string(value)
+    if parsed is None or not parsed.isdigit():
+        return None
+    numeric = int(parsed)
+    return str(numeric) if numeric > 0 else None
+
+
 def _first_datetime(payload: Mapping[str, JsonValue], *keys: str) -> datetime | None:
     for key in keys:
         value = optional_datetime(payload.get(key))
@@ -1322,11 +1412,44 @@ def _first_datetime(payload: Mapping[str, JsonValue], *keys: str) -> datetime | 
     return None
 
 
-def _crm_contact(result: JsonValue, *, kind: str) -> CrmContact:
+def _lead_company_id(value: object, *, require_numeric: bool) -> str | None:
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return None
+    if isinstance(value, bool) or isinstance(value, float):
+        if require_numeric:
+            raise RuntimeError("Bitrix lead returned an invalid COMPANY_ID")
+        return None
+    if isinstance(value, int):
+        parsed = str(value)
+    elif isinstance(value, str):
+        parsed = value.strip()
+        if not parsed:
+            return None
+    else:
+        if require_numeric:
+            raise RuntimeError("Bitrix lead returned an invalid COMPANY_ID")
+        return None
+    if parsed == "0":
+        return None
+    if not require_numeric:
+        return _positive_id_string(parsed)
+    numeric = _positive_numeric_id_string(parsed)
+    if numeric is None:
+        raise RuntimeError("Bitrix lead returned an invalid COMPANY_ID")
+    return numeric
+
+
+def _crm_contact(
+    result: JsonValue,
+    *,
+    kind: str,
+    require_numeric_id: bool = False,
+) -> CrmContact:
     if not isinstance(result, dict):
         raise RuntimeError(f"Bitrix {kind} returned an invalid result")
     payload = result
-    contact_id = _positive_id_string(payload.get("ID"))
+    id_parser = _positive_numeric_id_string if require_numeric_id else _positive_id_string
+    contact_id = id_parser(payload.get("ID"))
     if contact_id is None:
         raise RuntimeError(f"Bitrix {kind} omitted its ID")
     name_parts = [_string(payload.get(key)) for key in ("NAME", "SECOND_NAME", "LAST_NAME")]
@@ -1338,13 +1461,23 @@ def _crm_contact(result: JsonValue, *, kind: str) -> CrmContact:
         emails=_multi_value_field(payload.get("EMAIL")),
         kind=kind,
         observed_at=_first_datetime(payload, "DATE_MODIFY", "DATE_CREATE"),
+        company_id=(
+            _lead_company_id(payload.get("COMPANY_ID"), require_numeric=require_numeric_id)
+            if kind == "lead"
+            else None
+        ),
     )
 
 
-def _crm_company(result: JsonValue) -> CrmCompany:
+def _crm_company(
+    result: JsonValue,
+    *,
+    require_numeric_id: bool = False,
+) -> CrmCompany:
     if not isinstance(result, dict):
         raise RuntimeError("Bitrix company returned an invalid result")
-    company_id = _positive_id_string(result.get("ID"))
+    id_parser = _positive_numeric_id_string if require_numeric_id else _positive_id_string
+    company_id = id_parser(result.get("ID"))
     if company_id is None:
         raise RuntimeError("Bitrix company omitted its ID")
     return CrmCompany(

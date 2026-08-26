@@ -54,9 +54,12 @@ def test_legacy_explicit_category_digest_reconstructs_accepted_gate_evidence() -
         "sha256:a449c56111af4eff4d8d3182355d037bee51760c45fc77c1451b4cac5bb4e75a"
     )
     assert runtime_digest != accepted_digest
-    assert bitrix_legacy_explicit_category_digest(
-        replace(runtime_config, source_instance_id="bitrix-primary"), categories
-    ) == accepted_digest
+    assert (
+        bitrix_legacy_explicit_category_digest(
+            replace(runtime_config, source_instance_id="bitrix-primary"), categories
+        )
+        == accepted_digest
+    )
 
 
 def test_scheduled_ingestion_is_disabled_by_default() -> None:
@@ -274,9 +277,12 @@ def test_bitrix_configuration_digest_preserves_legacy_evidence_without_registrat
     assert legacy_digest == (
         "sha256:24ad8341df1613f75207dd5b9fab8c739e6ac162e12f64e1713c8114a565fd04"
     )
-    assert bitrix_configuration_digest(
-        BitrixOpenLinesConfig(source_instance_id="bitrix-primary"), categories
-    ) != legacy_digest
+    assert (
+        bitrix_configuration_digest(
+            BitrixOpenLinesConfig(source_instance_id="bitrix-primary"), categories
+        )
+        != legacy_digest
+    )
 
 
 def test_standalone_identity_enablement_does_not_change_existing_stream_digest() -> None:
@@ -421,5 +427,116 @@ def test_invalid_llm_block_rejected(tmp_path: Path) -> None:
     path.write_text(
         json.dumps({"exclusions": {}, "llm": {"max_retries": "lots"}}), encoding="utf-8"
     )
+    with pytest.raises(ValueError, match="Invalid ingestion config JSON"):
+        load_ingestion_config(str(path))
+
+
+def test_standalone_identity_schedule_and_budgets_are_validated_and_excluded_from_deal_digest(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "ingestion.json"
+    path.write_text(
+        json.dumps(
+            {
+                "bitrix_openlines": {
+                    "source_instance_id": "bitrix-primary",
+                    "standalone_crm_identity_enabled": True,
+                    "standalone_crm_identity_schedule_enabled": True,
+                    "standalone_crm_identity_kinds": ["lead", "contact"],
+                    "standalone_crm_identity_max_calls_per_attempt": 23,
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    config = load_ingestion_config(str(path)).bitrix_openlines
+    assert config.standalone_crm_identity_schedule_enabled is True
+    assert config.standalone_crm_identity_kinds == ["lead", "contact"]
+    assert config.standalone_crm_identity_max_calls_per_attempt == 23
+
+    changed = replace(config, standalone_crm_identity_max_calls_per_attempt=24)
+    assert bitrix_configuration_digest(config, ()) == bitrix_configuration_digest(changed, ())
+
+
+@pytest.mark.parametrize(
+    "contract_version",
+    ["", "crm-company-membership-snapshot-v2", 1, True],
+)
+def test_standalone_identity_rejects_unsupported_association_contract_version(
+    tmp_path: Path,
+    contract_version: object,
+) -> None:
+    path = tmp_path / "bad.json"
+    path.write_text(
+        json.dumps(
+            {"bitrix_openlines": {"crm_identity_association_contract_version": contract_version}}
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="Invalid ingestion config JSON"):
+        load_ingestion_config(str(path))
+
+
+@pytest.mark.parametrize(
+    "limits",
+    [
+        {
+            "standalone_crm_identity_max_rows_per_attempt": 11,
+            "standalone_crm_identity_max_rows_per_occurrence": 10,
+        },
+        {
+            "standalone_crm_identity_max_calls_per_attempt": 11,
+            "standalone_crm_identity_max_calls_per_occurrence": 10,
+        },
+        {
+            "standalone_crm_identity_max_runtime_seconds_per_attempt": 11.0,
+            "standalone_crm_identity_max_wall_clock_seconds_per_occurrence": 10.0,
+        },
+    ],
+)
+def test_standalone_identity_attempt_limits_cannot_exceed_occurrence_limits(
+    tmp_path: Path,
+    limits: dict[str, object],
+) -> None:
+    path = tmp_path / "bad.json"
+    path.write_text(json.dumps({"bitrix_openlines": limits}), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="Invalid ingestion config JSON"):
+        load_ingestion_config(str(path))
+
+
+def test_standalone_identity_schedule_requires_global_identity_enablement(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "bad.json"
+    path.write_text(
+        json.dumps(
+            {
+                "bitrix_openlines": {
+                    "source_instance_id": "bitrix-primary",
+                    "standalone_crm_identity_schedule_enabled": True,
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="Invalid ingestion config JSON"):
+        load_ingestion_config(str(path))
+
+
+@pytest.mark.parametrize("kind_value", [1, True, {"kind": "contact"}, ["contact"]])
+def test_standalone_identity_kinds_reject_non_string_elements(
+    tmp_path: Path,
+    kind_value: object,
+) -> None:
+    path = tmp_path / "bad-kinds.json"
+    path.write_text(
+        json.dumps({"bitrix_openlines": {"standalone_crm_identity_kinds": [kind_value]}}),
+        encoding="utf-8",
+    )
+
     with pytest.raises(ValueError, match="Invalid ingestion config JSON"):
         load_ingestion_config(str(path))
