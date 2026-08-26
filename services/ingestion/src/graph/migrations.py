@@ -774,6 +774,7 @@ def migrate_identifier_scopes(
     def _drain(query: str, result_key: str) -> int:
         total = 0
         while True:
+
             def _work(tx: ManagedTransaction) -> int:
                 record = tx.run(query, **params).single()  # type: ignore[arg-type]
                 return int(record[result_key]) if record is not None else 0
