@@ -137,14 +137,22 @@ def test_review_activation_returns_link_only_owner_of_superseded_crm_deal(
               person_id: 'approved', status: 'active', _crm_metrics_test_run: $test_run_id
             })
             CREATE (old:SourceRecord {
-              source_record_pk: 'old-deal', source_record_id: 'deal-1',
+              source_record_pk: 'old-deal', source_instance_id: 'bitrix-primary',
+              source_record_id: 'deal-1',
               record_type: 'crm_deal', lifecycle_status: 'active', is_latest: true,
               _crm_metrics_test_run: $test_run_id
             })-[:FROM_SOURCE]->(source)
             CREATE (pending:SourceRecord {
-              source_record_pk: 'pending-deal', source_record_id: 'deal-1',
+              source_record_pk: 'pending-deal', source_instance_id: 'bitrix-primary',
+              source_record_id: 'deal-1',
               record_type: 'crm_deal', lifecycle_status: 'pending_review',
               expected_active_source_record_pk: 'old-deal', is_latest: false,
+              _crm_metrics_test_run: $test_run_id
+            })-[:FROM_SOURCE]->(source)
+            CREATE (foreign:SourceRecord {
+              source_record_pk: 'foreign-deal', source_instance_id: 'bitrix-secondary',
+              source_record_id: 'deal-1',
+              record_type: 'crm_deal', lifecycle_status: 'active', is_latest: true,
               _crm_metrics_test_run: $test_run_id
             })-[:FROM_SOURCE]->(source)
             CREATE (old)-[:LINKED_TO]->(old_owner)
@@ -178,12 +186,21 @@ def test_review_activation_returns_link_only_owner_of_superseded_crm_deal(
         session.run(
             """
             MATCH (lock:SourceRecordIdentityLock {
-              source_system: 'bitrix_chat', source_record_id: 'deal-1'
+              source_system: 'bitrix_chat', source_instance_id: 'bitrix-primary',
+              source_record_id: 'deal-1'
             })
             SET lock._crm_metrics_test_run = $test_run_id
             """,
             test_run_id=neo4j_driver.run_id,
         ).consume()
+        foreign = session.run(
+            """
+            MATCH (record:SourceRecord {source_record_pk: 'foreign-deal'})
+            RETURN record.lifecycle_status AS lifecycle_status,
+                   record.is_latest AS is_latest
+            """
+        ).single(strict=True)
 
     assert set(row["affected_person_ids"]) == {"approved", "old-owner"}
     assert row["old_source_record_pks"] == ["old-deal"]
+    assert foreign == {"lifecycle_status": "active", "is_latest": True}

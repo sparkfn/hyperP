@@ -171,11 +171,12 @@ identifier_type + source_instance_id + normalized_value
 The existing Bitrix portal receives one explicit configured instance ID before
 standalone records are emitted. Normalization obtains it from the registered
 source context, not from the credential-bearing webhook URL. Existing CRM
-identifier evidence is migrated idempotently to that instance scope before the
-new recurring stream is enabled. The standalone connector is currently available only
-through the explicitly enabled `bitrix_crm_identity` API-mode source as a
-non-incremental full snapshot. It is not added to Celery Beat until its checkpointed
-bounded traversal is implemented.
+identifier evidence is migrated idempotently to that instance scope before any
+standalone records are emitted. The bounded standalone CRM identity reader is
+internal foundation only: `get_connector()`, `run_ingestion()`, and Celery task
+dispatch reject `bitrix_crm_identity` until the durable census authority and
+checkpointed child payload path are implemented. It is not available as an API-mode
+full snapshot and is not added to Celery Beat.
 Historical SourceRecord lifecycle identity remains in the deterministic legacy namespace;
 only its Bitrix CRM identifier evidence is remapped to the registered portal scope,
 avoiding a second collision-sensitive record rekey. A second Bitrix portal is rejected until its

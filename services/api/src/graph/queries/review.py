@@ -565,7 +565,10 @@ WITH sr, source, person, stage, staged_lines,
      [item IN collect(observation) WHERE item IS NOT NULL] AS observations
 WHERE size(staged_lines) = stage.expected_line_count
   AND size(observations) = stage.expected_observation_count
-OPTIONAL MATCH (old:SourceRecord {source_record_id: sr.source_record_id})-[:FROM_SOURCE]->(source)
+OPTIONAL MATCH (old:SourceRecord {
+  source_instance_id: sr.source_instance_id,
+  source_record_id: sr.source_record_id
+})-[:FROM_SOURCE]->(source)
 WHERE old <> sr AND (old.lifecycle_status = 'active'
   OR (old.lifecycle_status IS NULL AND old.is_latest = true))
 WITH sr, source, person, stage, staged_lines, observations, collect(old) AS old_versions
@@ -726,7 +729,10 @@ MATCH (stage:StagedSalesOrder {stage_order_key: sr.source_record_pk,
                                stage_hash: $stage_hash})
 WHERE stage.expected_line_count = $promoted_line_count
   AND stage.expected_observation_count = $promoted_observation_count
-OPTIONAL MATCH (old:SourceRecord {source_record_id: sr.source_record_id})-[:FROM_SOURCE]->(source)
+OPTIONAL MATCH (old:SourceRecord {
+  source_instance_id: sr.source_instance_id,
+  source_record_id: sr.source_record_id
+})-[:FROM_SOURCE]->(source)
 WHERE old <> sr AND (old.lifecycle_status = 'active'
   OR (old.lifecycle_status IS NULL AND old.is_latest = true))
 WITH sr, stage, collect(old) AS old_versions
@@ -840,11 +846,16 @@ MATCH (approved:Person {person_id: $approved_person_id, status: 'active'})
 WHERE approved.person_id IN coalesce(md.review_candidate_person_ids, [])
    OR EXISTS { MATCH (md)-[:ABOUT_RIGHT]->(approved) }
 MERGE (identity_lock:SourceRecordIdentityLock {
-  source_system: $source_system_key, source_record_id: pending.source_record_id
+  source_system: $source_system_key,
+  source_instance_id: pending.source_instance_id,
+  source_record_id: pending.source_record_id
 })
 SET identity_lock.locked_at = datetime()
 WITH rc, md, pending, source, approved, identity_lock
-OPTIONAL MATCH (old:SourceRecord {source_record_id: pending.source_record_id})-[:FROM_SOURCE]->(source)
+OPTIONAL MATCH (old:SourceRecord {
+  source_instance_id: pending.source_instance_id,
+  source_record_id: pending.source_record_id
+})-[:FROM_SOURCE]->(source)
 WHERE old <> pending AND (
   old.lifecycle_status = 'active'
   OR (old.lifecycle_status IS NULL AND old.is_latest = true)
@@ -881,6 +892,7 @@ CALL (pending, approved, source) {
         -[:CHILD_OF]->(logical_deal:SourceRecord {record_type: 'crm_deal'})
         -[:FROM_SOURCE]->(source)
   WHERE pending.record_type = 'crm_deal'
+    AND logical_deal.source_instance_id = pending.source_instance_id
     AND logical_deal.source_record_id = pending.source_record_id
     AND (history.history_family IS NULL OR history.history_family = 'activity')
   WITH approved, collect(DISTINCT call) AS calls

@@ -41,13 +41,15 @@ SET version.source_instance_id = target_source_instance_id,
     version.parent_source_instance_id = CASE
       WHEN version.parent_source_system IS NULL THEN version.parent_source_instance_id
       ELSE coalesce(version.parent_source_instance_id, $legacy_source_instance_id) END,
-    version.source_version_key =
-      'sv2:' +
-      toString(size(source_system)) + ':' + source_system +
-      toString(size(target_source_instance_id)) + ':' + target_source_instance_id +
-      toString(size(source_record_id)) + ':' + source_record_id +
-      toString(size(source_record_version)) + ':' + source_record_version +
-      toString(size(stable_pk)) + ':' + stable_pk,
+    version.source_version_key = CASE
+      WHEN version.source_version_key STARTS WITH 'sv1:' THEN
+        'sv2:' +
+        toString(size(source_system)) + ':' + source_system +
+        toString(size(target_source_instance_id)) + ':' + target_source_instance_id +
+        toString(size(source_record_id)) + ':' + source_record_id +
+        toString(size(source_record_version)) + ':' + source_record_version +
+        toString(size(stable_pk)) + ':' + stable_pk
+      ELSE version.source_version_key END,
     version.source_instance_migration_key = $migration_key,
     version.updated_at = datetime()
 RETURN count(version) AS updated
