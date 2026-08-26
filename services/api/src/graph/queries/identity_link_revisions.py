@@ -115,9 +115,14 @@ WHERE head.source_system = 'bitrix_chat'
   AND head.source_entity_id = record.source_entity_id
   AND head.identity_policy_version = record.identity_policy_version
 MATCH (revision:IdentityLinkRevision {event_id: head.latest_event_id})
+WHERE ($operation = 'merge'
+       AND revision.link_status = 'resolved'
+       AND revision.hyperp_person_id = $absorbed_person_id)
+   OR ($operation = 'unmerge'
+       AND revision.cause_key = $merge_cause_prefix + head.link_key)
 RETURN DISTINCT head.source_system AS source_system, head.source_instance_id AS source_instance_id,
   head.source_entity_type AS source_entity_type, head.source_entity_id AS source_entity_id,
-  head.identity_policy_version AS identity_policy_version,
+  head.identity_policy_version AS identity_policy_version, head.link_key AS link_key,
   revision.match_decision_id AS match_decision_id, revision.review_case_id AS review_case_id
 ORDER BY source_system, source_instance_id, source_entity_type, source_entity_id
 """

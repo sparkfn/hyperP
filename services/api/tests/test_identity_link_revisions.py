@@ -3,11 +3,13 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from datetime import datetime
 from pathlib import Path
+from typing import cast
 from unittest.mock import patch
 
 import pytest
 import yaml
 from fastapi.testclient import TestClient
+from neo4j import AsyncManagedTransaction
 from src.auth.deps import OAuthClientUser, get_current_user_or_oauth_client
 from src.graph.queries.identity_link_revisions import (
     APPEND_IDENTITY_LINK_REVISIONS,
@@ -20,8 +22,15 @@ from src.identity_link_cursors import (
     decode_identity_link_cursor,
     encode_identity_link_cursor,
 )
-from src.identity_link_revisions import append_identity_link_revisions
-from src.identity_link_types import IdentityLinkDesiredRevision, IdentityLinkRevision
+from src.identity_link_revisions import (
+    append_identity_link_revisions,
+    append_merge_affected_revisions,
+)
+from src.identity_link_types import (
+    IdentityLinkDesiredRevision,
+    IdentityLinkRevision,
+    identity_link_key,
+)
 from src.oauth2_app import build_oauth2_app
 from src.repositories.deps import get_identity_link_revision_repo
 from src.repositories.neo4j.identity_link_revision import (
@@ -123,6 +132,19 @@ def test_cursor_is_versioned_kind_specific_and_non_advancing_is_rejected() -> No
         )
 
 
+def test_cursor_is_authenticated_opaque_and_tamper_evident() -> None:
+    cursor = encode_identity_link_cursor(
+        IdentityLinkCursor(
+            kind="snapshot", snapshot_revision=8, after_link_key="ilk1:private-link-key"
+        )
+    )
+    assert "ilk1" not in cursor
+    assert "private-link-key" not in cursor
+    tampered = cursor[:-1] + ("A" if cursor[-1] != "A" else "B")
+    with pytest.raises(ValueError):
+        decode_identity_link_cursor(tampered, "snapshot")
+
+
 @pytest.mark.asyncio
 async def test_event_and_snapshot_pages_return_fixed_bounds() -> None:
     repo = _Repo([_revision(global_revision=1, resolution_revision=1)], revision=7)
@@ -206,6 +228,88 @@ async def test_snapshot_corruption_is_not_silently_omitted() -> None:
             await Neo4jIdentityLinkRevisionRepository().snapshot_page(7, "", 50)
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("later_status", ["pending_review", "rejected", "retired"])
+async def test_merge_excludes_non_resolved_or_later_lifecycle_heads(later_status: str) -> None:
+    """The Cypher filter uses the current head revision, not source provenance alone."""
+    transaction = _AffectedHeadTransaction([])
+    assert (
+        await append_merge_affected_revisions(
+            cast(AsyncManagedTransaction, transaction),
+            merge_event_id="merge-1",
+            absorbed_person_id="absorbed-person",
+            survivor_person_id="survivor-person",
+            resolution_kind="person_merge",
+            cause_prefix="person-merge:merge-1",
+            effective_at="2026-08-26T00:00:00+00:00",
+        )
+        == []
+    )
+    assert [query for query, _ in transaction.calls] == [GET_AFFECTED_IDENTITY_LINK_HEADS]
+    assert later_status != "resolved"
+
+
+@pytest.mark.asyncio
+async def test_unmerge_excludes_head_retired_after_original_merge() -> None:
+    transaction = _AffectedHeadTransaction([])
+    assert (
+        await append_merge_affected_revisions(
+            cast(AsyncManagedTransaction, transaction),
+            merge_event_id="merge-1",
+            absorbed_person_id="absorbed-person",
+            survivor_person_id=None,
+            resolution_kind="person_unmerge",
+            cause_prefix="person-unmerge:unmerge-audit-1",
+            effective_at="2026-08-26T00:00:00+00:00",
+        )
+        == []
+    )
+    assert [query for query, _ in transaction.calls] == [GET_AFFECTED_IDENTITY_LINK_HEADS]
+
+
+@pytest.mark.asyncio
+async def test_merge_append_uses_one_contiguous_batch_for_eligible_heads() -> None:
+    policy = "crm_contact_identity_v1"
+    link_key = identity_link_key("bitrix_chat", "portal-1", "contact", "contact-1", policy)
+    transaction = _AffectedHeadTransaction(
+        [
+            {
+                "source_system": "bitrix_chat",
+                "source_instance_id": "portal-1",
+                "source_entity_type": "contact",
+                "source_entity_id": "contact-1",
+                "identity_policy_version": policy,
+                "link_key": link_key,
+                "match_decision_id": None,
+                "review_case_id": None,
+            }
+        ]
+    )
+    await append_merge_affected_revisions(
+        cast(AsyncManagedTransaction, transaction),
+        merge_event_id="merge-1",
+        absorbed_person_id="absorbed-person",
+        survivor_person_id="survivor-person",
+        resolution_kind="person_merge",
+        cause_prefix="person-merge:merge-1",
+        effective_at="2026-08-26T00:00:00+00:00",
+    )
+    assert len(transaction.calls) == 2
+    query, params = transaction.calls[0]
+    assert query == GET_AFFECTED_IDENTITY_LINK_HEADS
+    assert params == {
+        "merge_event_id": "merge-1",
+        "absorbed_person_id": "absorbed-person",
+        "operation": "merge",
+        "merge_cause_prefix": "person-merge:merge-1:",
+    }
+    append_query, append_params = transaction.calls[1]
+    assert append_query == APPEND_IDENTITY_LINK_REVISIONS
+    rows = append_params["rows"]
+    assert isinstance(rows, list) and len(rows) == 1
+    assert rows[0]["cause_key"] == f"person-merge:merge-1:{link_key}"
+
+
 def test_append_and_merge_queries_preserve_atomic_stream_invariants() -> None:
     assert "$skip_existing_heads" in APPEND_IDENTITY_LINK_REVISIONS
     lock_at = APPEND_IDENTITY_LINK_REVISIONS.index("SET counter.updated_at = datetime()")
@@ -219,10 +323,29 @@ def test_append_and_merge_queries_preserve_atomic_stream_invariants() -> None:
     assert "UNWIND CASE WHEN size(rows) = 0" in APPEND_IDENTITY_LINK_REVISIONS
     assert "supersedes_event_id: previous_head.latest_event_id" in APPEND_IDENTITY_LINK_REVISIONS
     assert "AFFECTED_RECORD" in GET_AFFECTED_IDENTITY_LINK_HEADS
+    assert "revision.link_status = 'resolved'" in GET_AFFECTED_IDENTITY_LINK_HEADS
+    assert "revision.hyperp_person_id = $absorbed_person_id" in GET_AFFECTED_IDENTITY_LINK_HEADS
+    assert (
+        "revision.cause_key = $merge_cause_prefix + head.link_key"
+        in GET_AFFECTED_IDENTITY_LINK_HEADS
+    )
     assert (
         "OPTIONAL MATCH (revision:IdentityLinkRevision {link_key: head.link_key})"
         in LIST_IDENTITY_LINK_SNAPSHOT
     )
+
+
+class _AffectedHeadTransaction:
+    def __init__(self, affected_rows: list[dict[str, object]]) -> None:
+        self.affected_rows = affected_rows
+        self.calls: list[tuple[str, dict[str, object]]] = []
+
+    async def run(self, query: str, **params: object) -> _AsyncResult:
+        self.calls.append((query, params))
+        if query == GET_AFFECTED_IDENTITY_LINK_HEADS:
+            return _AsyncResult(self.affected_rows)
+        assert query == APPEND_IDENTITY_LINK_REVISIONS
+        return _AsyncResult([])
 
 
 class _AppendTransaction:
@@ -253,11 +376,13 @@ def _desired(cause_key: str) -> IdentityLinkDesiredRevision:
 @pytest.mark.asyncio
 async def test_append_deduplicates_causes_and_does_not_run_for_empty_batches() -> None:
     transaction = _AppendTransaction()
-    assert await append_identity_link_revisions(transaction, []) == []  # type: ignore[arg-type]
+    assert (
+        await append_identity_link_revisions(cast(AsyncManagedTransaction, transaction), []) == []
+    )
     assert transaction.calls == []
     assert (
-        await append_identity_link_revisions(  # type: ignore[arg-type]
-            transaction, [_desired("cause-1"), _desired("cause-1")]
+        await append_identity_link_revisions(
+            cast(AsyncManagedTransaction, transaction), [_desired("cause-1"), _desired("cause-1")]
         )
         == []
     )
@@ -419,3 +544,60 @@ def test_oauth_stream_readiness_cursor_conflict_and_wrong_kind_are_errors() -> N
     assert (
         client.get("/identity-links/snapshot", params={"cursor": events_cursor}).status_code == 400
     )
+
+
+def test_oauth_cursor_pages_revalidate_bounds_readiness_and_fixed_snapshot() -> None:
+    class _TrackingRepo(_AuthorizedRepo):
+        def __init__(self) -> None:
+            super().__init__([_revision(global_revision=5, resolution_revision=1)], revision=8)
+            self.snapshot_calls: list[tuple[int, str, int]] = []
+
+        async def snapshot_page(
+            self, revision: int, after: str, limit: int
+        ) -> tuple[list[IdentityLinkRevision], str | None]:
+            self.snapshot_calls.append((revision, after, limit))
+            return self.items, None
+
+    app = build_oauth2_app()
+    repo = _TrackingRepo()
+    app.dependency_overrides[get_current_user_or_oauth_client] = _oauth_reader
+    app.dependency_overrides[get_identity_link_revision_repo] = lambda: repo
+    client = TestClient(app)
+
+    forged_event_bound = encode_identity_link_cursor(
+        IdentityLinkCursor(kind="events", after_revision=1, through_revision=9)
+    )
+    event_response = client.get("/identity-links/events", params={"cursor": forged_event_bound})
+    assert event_response.status_code == 400
+    assert event_response.json()["error"]["code"] == "invalid_cursor"
+
+    future_snapshot_bound = encode_identity_link_cursor(
+        IdentityLinkCursor(kind="snapshot", snapshot_revision=9, after_link_key="ilk1:private")
+    )
+    future_response = client.get(
+        "/identity-links/snapshot", params={"cursor": future_snapshot_bound}
+    )
+    assert future_response.status_code == 400
+    assert future_response.json()["error"]["code"] == "invalid_cursor"
+
+    fixed_cursor = encode_identity_link_cursor(
+        IdentityLinkCursor(kind="snapshot", snapshot_revision=5, after_link_key="ilk1:private")
+    )
+    fixed_response = client.get("/identity-links/snapshot", params={"cursor": fixed_cursor})
+    assert fixed_response.status_code == 200
+    assert fixed_response.json()["snapshot_revision"] == 5
+    assert repo.snapshot_calls == [(5, "ilk1:private", 50)]
+
+
+def test_oauth_snapshot_cursor_rechecks_readiness() -> None:
+    app = build_oauth2_app()
+    app.dependency_overrides[get_current_user_or_oauth_client] = _oauth_reader
+    app.dependency_overrides[get_identity_link_revision_repo] = lambda: _AuthorizedRepo(
+        [], 8, ready=False
+    )
+    cursor = encode_identity_link_cursor(
+        IdentityLinkCursor(kind="snapshot", snapshot_revision=5, after_link_key="ilk1:private")
+    )
+    response = TestClient(app).get("/identity-links/snapshot", params={"cursor": cursor})
+    assert response.status_code == 503
+    assert response.json()["error"]["code"] == "identity_link_snapshot_not_ready"

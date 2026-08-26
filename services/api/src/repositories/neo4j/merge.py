@@ -133,6 +133,7 @@ async def _manual_merge_tx(
     await append_merge_affected_revisions(
         tx,
         merge_event_id=merge_event_id,
+        absorbed_person_id=from_id,
         survivor_person_id=to_id,
         resolution_kind="person_merge",
         cause_prefix=f"person-merge:{merge_event_id}",
@@ -273,6 +274,7 @@ async def _unmerge_tx(
     await append_merge_affected_revisions(
         tx,
         merge_event_id=merge_event_id,
+        absorbed_person_id=absorbed_id,
         survivor_person_id=None,
         resolution_kind="person_unmerge",
         cause_prefix=f"person-unmerge:{to_str(audit_record['merge_event_id'])}",

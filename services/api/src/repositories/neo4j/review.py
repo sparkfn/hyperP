@@ -1004,6 +1004,7 @@ async def _action_tx(
         await append_merge_affected_revisions(
             tx,
             merge_event_id=merge_event_id,
+            absorbed_person_id=absorbed_id,
             survivor_person_id=survivor_id,
             resolution_kind="person_merge",
             cause_prefix=f"person-merge:{merge_event_id}",

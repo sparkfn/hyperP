@@ -84,6 +84,7 @@ async def append_merge_affected_revisions(
     tx: AsyncManagedTransaction,
     *,
     merge_event_id: str,
+    absorbed_person_id: str,
     survivor_person_id: str | None,
     resolution_kind: Literal["person_merge", "person_unmerge"],
     cause_prefix: str,
@@ -92,7 +93,14 @@ async def append_merge_affected_revisions(
     """Append one state per exported head affected by a merge lifecycle event."""
     if resolution_kind not in {"person_merge", "person_unmerge"}:
         raise ValueError("invalid merge identity-link resolution kind")
-    result = await tx.run(GET_AFFECTED_IDENTITY_LINK_HEADS, merge_event_id=merge_event_id)
+    operation = "merge" if resolution_kind == "person_merge" else "unmerge"
+    result = await tx.run(
+        GET_AFFECTED_IDENTITY_LINK_HEADS,
+        merge_event_id=merge_event_id,
+        absorbed_person_id=absorbed_person_id,
+        operation=operation,
+        merge_cause_prefix=f"person-merge:{merge_event_id}:",
+    )
     rows: list[IdentityLinkDesiredRevision] = []
     async for record in result:
         source_system = str(record["source_system"])
@@ -100,6 +108,15 @@ async def append_merge_affected_revisions(
         source_entity_type = str(record["source_entity_type"])
         source_entity_id = str(record["source_entity_id"])
         policy = str(record["identity_policy_version"])
+        link_key = identity_link_key(
+            source_system,
+            source_instance_id,
+            source_entity_type,
+            source_entity_id,
+            policy,
+        )
+        if record["link_key"] != link_key:
+            raise RuntimeError("identity-link affected-head key mismatch")
         status: Literal["resolved", "pending_review"] = (
             "resolved" if resolution_kind == "person_merge" else "pending_review"
         )
@@ -114,7 +131,7 @@ async def append_merge_affected_revisions(
                 hyperp_person_id=survivor_person_id if status == "resolved" else None,
                 resolution_kind=resolution_kind,
                 effective_at=effective_at,
-                cause_key=(f"{cause_prefix}:{source_entity_type}:{source_entity_id}:{policy}"),
+                cause_key=f"{cause_prefix}:{link_key}",
                 match_decision_id=(
                     str(record["match_decision_id"])
                     if record["match_decision_id"] is not None

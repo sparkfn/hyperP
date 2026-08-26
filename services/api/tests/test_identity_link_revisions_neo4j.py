@@ -13,6 +13,7 @@ import pytest
 from neo4j import GraphDatabase
 from src.graph.queries.identity_link_revisions import (
     APPEND_IDENTITY_LINK_REVISIONS,
+    GET_AFFECTED_IDENTITY_LINK_HEADS,
     LIST_IDENTITY_LINK_EVENTS,
     LIST_IDENTITY_LINK_SNAPSHOT,
 )
@@ -63,6 +64,13 @@ def test_identity_link_queries_explain_on_disposable_ci_neo4j() -> None:
                     }
                 ],
                 skip_existing_heads=False,
+            ).consume()
+            session.run(
+                "EXPLAIN\n" + GET_AFFECTED_IDENTITY_LINK_HEADS,
+                merge_event_id="merge-1",
+                absorbed_person_id="person-absorbed",
+                operation="merge",
+                merge_cause_prefix="person-merge:merge-1:",
             ).consume()
             session.run(
                 "EXPLAIN\n" + LIST_IDENTITY_LINK_EVENTS,

@@ -88,7 +88,7 @@ steps:
       HYPERP_NEO4J_CRM_DEAL_COUNT_TEST_SERVICE_HOST: neo4j
     commands:
       - uv sync --frozen
-      - uv run --package profile-unifier-api pytest services/api/tests/test_person_identifiers_neo4j.py services/api/tests/test_person_crm_metrics_neo4j.py services/api/tests/test_persons_list_neo4j_234.py services/api/tests/test_persons_list_possible_match_neo4j.py services/api/tests/test_persons_list_plan_neo4j.py -q
+      - uv run --package profile-unifier-api pytest services/api/tests/test_person_identifiers_neo4j.py services/api/tests/test_person_crm_metrics_neo4j.py services/api/tests/test_persons_list_neo4j_234.py services/api/tests/test_persons_list_possible_match_neo4j.py services/api/tests/test_persons_list_plan_neo4j.py services/api/tests/test_identity_link_revisions_neo4j.py -q
       - uv run --package profile-unifier-ingestion pytest services/ingestion/tests/test_person_completeness_migration_neo4j.py services/ingestion/tests/test_loyalty_points_migration_neo4j.py services/ingestion/tests/test_crm_deal_count_migration_neo4j.py -q
 
   # Real Next.js production build. `next build` runs TypeScript type-checking itself,
