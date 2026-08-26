@@ -212,6 +212,22 @@ class RawIdentifier(BaseModel):
     value: str
     is_verified: bool = False
     region_hint: str | None = None
+    source_instance_id: str | None = None
+
+    @model_validator(mode="after")
+    def _check_source_instance_id(self) -> RawIdentifier:
+        if self.source_instance_id is not None:
+            canonical_source_instance_id(
+                self.source_instance_id,
+                field_name="identifier.source_instance_id",
+            )
+            if self.type.lower().strip() not in {
+                "crm_contact_id",
+                "crm_lead_id",
+                "crm_company_id",
+            }:
+                raise ValueError("only canonical CRM identifiers may declare source_instance_id")
+        return self
 
 
 class RawAddress(BaseModel):
@@ -299,6 +315,14 @@ class SourceRecordEnvelope(BaseModel):
         """Reject ambiguous source-instance values at the envelope boundary."""
         if self.source_instance_id is not None:
             canonical_source_instance_id(self.source_instance_id)
+            for identifier in self.identifiers:
+                if (
+                    identifier.source_instance_id is not None
+                    and identifier.source_instance_id != self.source_instance_id
+                ):
+                    raise ValueError(
+                        "identifier source_instance_id must match the source record instance"
+                    )
             if self.parent_ref is not None:
                 parent_instance_id = self.parent_ref.parent_source_instance_id
                 if parent_instance_id is None:

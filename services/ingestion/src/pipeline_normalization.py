@@ -107,7 +107,7 @@ def normalize_envelope_identifiers(
         id_type = raw_id.type.lower().strip()
         source_instance_id = source_instance_for_identifier(
             id_type,
-            envelope.source_instance_id,
+            raw_id.source_instance_id or envelope.source_instance_id,
         )
         if id_type == "phone":
             normalized, flag = _normalize_phone_with_hint(raw_id.value, raw_id.region_hint)
