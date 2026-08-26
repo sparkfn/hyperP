@@ -47,9 +47,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "source_system": arguments.source_system,
             "inventory_mode": "graph_only_read_only",
             "artifact_scope": "graph_discovery_only",
-            "execution_ready": False,
-            "observation_fenced": False,
-            "source_hydration": "required_before_execution",
+            "execution_allowed": False,
         },
         retention_expires_at=datetime.now(UTC) + timedelta(days=arguments.retention_days),
     )
@@ -63,18 +61,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
         finally:
             client.close()
-        snapshots = tuple(_source_snapshot(item.to_dict()) for item in inventory.items)
-        proposed_versions = tuple(_unhydrated_proposal(item.to_dict()) for item in inventory.items)
-        rollback_template = tuple(_rollback_template(item.to_dict()) for item in inventory.items)
         population_counts = inventory.population_counts.to_dict()
         manifest = seal_inventory_artifact(
             store,
             context=context,
             items=inventory.items,
-            source_snapshots=snapshots,
-            proposed_versions=proposed_versions,
-            rollback_template=rollback_template,
             population_counts=population_counts,
+            stale_run_evidence=inventory.stale_run_evidence,
         )
     summary_population_counts: dict[str, JsonValue] = dict(population_counts)
     summary: dict[str, JsonValue] = {
@@ -85,8 +78,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         "negative_control_count": len(inventory.negative_controls),
         "population_counts": summary_population_counts,
         "artifact_scope": "graph_discovery_only",
-        "execution_ready": False,
-        "execution_blocker": "Bitrix source hydration and separate #255 approval are required",
+        "execution_allowed": False,
+        "execution_blocker": "separate #255 execution scope is required",
+        "stale_run_state": inventory.stale_run_evidence["state"],
     }
     print(json.dumps(summary, sort_keys=True))
     return 0
@@ -99,39 +93,3 @@ def _validate_runtime_gate(settings: _RepairRuntimeSettings) -> None:
         raise RuntimeError(
             "CRM-deal repair inventory requires CRM_DEAL_IDENTITY_REPAIR_ENABLED=true"
         )
-
-
-def _source_snapshot(item: dict[str, JsonValue]) -> dict[str, JsonValue]:
-    return {
-        "source_system": item["source_system"],
-        "source_record_id": item["source_record_id"],
-        "source_record_pk": item["source_record_pk"],
-        "status": "requires_live_bitrix_hydration",
-        "live_source_fingerprint": None,
-        "stored_payload_fingerprint": item["stored_payload_fingerprint"],
-        "execution_allowed": False,
-    }
-
-
-def _unhydrated_proposal(item: dict[str, JsonValue]) -> dict[str, JsonValue]:
-    return {
-        "source_system": item["source_system"],
-        "source_record_id": item["source_record_id"],
-        "source_record_pk": item["source_record_pk"],
-        "status": "requires_bitrix_source_hydration",
-        "execution_allowed": False,
-    }
-
-
-def _rollback_template(item: dict[str, JsonValue]) -> dict[str, JsonValue]:
-    return {
-        "source_system": item["source_system"],
-        "source_record_id": item["source_record_id"],
-        "source_record_pk": item["source_record_pk"],
-        "graph_fingerprint": item["graph_fingerprint"],
-        "captured_relationships": item["payload"],
-    }
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

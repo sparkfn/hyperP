@@ -34,6 +34,7 @@ is sales. Built on Neo4j for native graph traversal.
 - [CRM History Authority Contract](./docs/profile-unifier-crm-history-authority.md)
 - [Person CRM Metrics Design](./docs/profile-unifier-person-crm-metrics.md)
 - [Deal Intelligence Architecture](./docs/profile-unifier-deal-intelligence-architecture.md)
+- [CRM-deal Identity Remediation Inventory](./docs/profile-unifier-crm-deal-identity-remediation.md)
 
 ## Recommended Reading Order
 
@@ -56,6 +57,7 @@ is sales. Built on Neo4j for native graph traversal.
 17. CRM History Authority Contract
 18. Person CRM Metrics Design
 19. Deal Intelligence Architecture
+20. CRM-deal Identity Remediation Inventory
 
 ## Current Scope
 

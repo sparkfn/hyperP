@@ -18,6 +18,7 @@ from src.graph.client import Neo4jClient
 from src.graph.queries.crm_deal_identity_repair import (
     INVENTORY_ACTIVE_CRM_DEALS,
     INVENTORY_CRM_DEAL_PROJECTIONS,
+    INVENTORY_STALE_RUN_CONTROL_PLANE,
 )
 from src.models import JsonValue
 
@@ -60,6 +61,7 @@ class RepairInventory:
     projection_cleanups: tuple[RepairInventoryItem, ...]
     negative_controls: tuple[RepairInventoryItem, ...]
     population_counts: RepairPopulationCounts
+    stale_run_evidence: dict[str, JsonValue]
 
     @property
     def items(self) -> tuple[RepairInventoryItem, ...]:
@@ -80,13 +82,15 @@ def collect_repair_inventory(
     source_system: str = "bitrix_chat",
     negative_control_limit: int = _DEFAULT_NEGATIVE_CONTROL_LIMIT,
 ) -> RepairInventory:
-    """Discover and partition active CRM deals without issuing graph mutation."""
+    """Read all stored CRM-deal versions and partition graph evidence without mutation."""
     if source_system != "bitrix_chat":
         raise ValueError("CRM-deal repair inventory only supports source_system='bitrix_chat'")
     if negative_control_limit < 1:
         raise ValueError("repair negative control limit must be positive")
 
-    def _work(tx: ManagedTransaction) -> tuple[RepairInventoryItem, ...]:
+    def _work(
+        tx: ManagedTransaction,
+    ) -> tuple[tuple[RepairInventoryItem, ...], dict[str, JsonValue]]:
         projections_by_pk: dict[str, list[JsonValue]] = {}
         for projection_record in tx.run(
             INVENTORY_CRM_DEAL_PROJECTIONS,
@@ -95,15 +99,23 @@ def collect_repair_inventory(
             source_record_pk = _required_string(projection_record, "source_record_pk")
             projection = _json_value(_value(projection_record, "projection"))
             projections_by_pk.setdefault(source_record_pk, []).append(projection)
-        return tuple(
+        items = tuple(
             _item_from_record(
                 record,
                 projections_by_pk.get(_required_string(record, "source_record_pk"), []),
             )
             for record in tx.run(INVENTORY_ACTIVE_CRM_DEALS, source_system=source_system)
         )
+        stale_record = tx.run(
+            INVENTORY_STALE_RUN_CONTROL_PLANE,
+            source_system=source_system,
+            stale_run_id="e5deb1d6-7333-4660-be4f-c44fcf5af686",
+        ).single(strict=True)
+        if stale_record is None:
+            raise ValueError("repair stale-run graph evidence is unavailable")
+        return items, _stale_run_evidence(stale_record)
 
-    observed = client.execute_read(_work)
+    observed, stale_run_evidence = client.execute_read(_work)
     ownership: list[RepairInventoryItem] = []
     cleanup: list[RepairInventoryItem] = []
     clean: list[RepairInventoryItem] = []
@@ -136,23 +148,31 @@ def collect_repair_inventory(
             cleanup.append(partitioned)
         if not ownership_condition and not cleanup_condition:
             clean.append(partitioned)
-    active_link_counts = tuple(_active_link_count(item) for item in observed)
-    active_owner_counts = tuple(_active_owner_count(item) for item in observed)
+    authoritative = tuple(item for item in observed if _is_authoritative_item(item))
+    active_link_counts = tuple(_active_link_count(item) for item in authoritative)
+    active_owner_counts = tuple(_active_owner_count(item) for item in authoritative)
+    active_source_ids = {item.source_record_id for item in authoritative}
+    cleanup_source_ids = {item.source_record_id for item in cleanup if _is_authoritative_item(item)}
+    clean_source_ids = {item.source_record_id for item in clean if _is_authoritative_item(item)}
+    multi_linked_source_ids = {
+        item.source_record_id for item in authoritative if _active_owner_count(item) > 1
+    }
     return RepairInventory(
         ownership_repairs=tuple(ownership),
         projection_cleanups=tuple(cleanup),
         negative_controls=tuple(clean[:negative_control_limit]),
         population_counts=RepairPopulationCounts(
-            active_deal_count=len({item.source_record_id for item in observed}),
-            authoritative_version_count=len(observed),
+            active_deal_count=len(active_source_ids),
+            authoritative_version_count=len(authoritative),
             active_link_count=sum(active_link_counts),
             active_distinct_owner_count=sum(active_owner_counts),
-            multi_linked_deal_count=len({item.source_record_id for item in ownership}),
+            multi_linked_deal_count=len(multi_linked_source_ids),
             maximum_links_per_deal=max(active_link_counts, default=0),
             maximum_distinct_owners_per_deal=max(active_owner_counts, default=0),
-            projection_cleanup_deal_count=len({item.source_record_id for item in cleanup}),
-            clean_deal_count=len({item.source_record_id for item in clean}),
+            projection_cleanup_deal_count=len(cleanup_source_ids),
+            clean_deal_count=len(clean_source_ids),
         ),
+        stale_run_evidence=stale_run_evidence,
     )
 
 
@@ -167,6 +187,11 @@ def _item_from_record(
     links = _sorted_json_objects(_value(record, "linked_people"), "linked_people")
     projections = _sorted_json_objects(projection_rows, "projections")
     logical_versions = _sorted_json_objects(_value(record, "logical_versions"), "logical_versions")
+    descendants = _sorted_json_objects(_value(record, "descendants"), "descendants")
+    decisions_and_reviews = _sorted_json_objects(
+        _value(record, "decisions_and_reviews"), "decisions_and_reviews"
+    )
+    owner_impacts = _sorted_json_objects(_value(record, "owner_impacts"), "owner_impacts")
     version_evidence = _logical_version_evidence(
         logical_versions,
         current_source_record_pk=source_record_pk,
@@ -182,6 +207,10 @@ def _item_from_record(
         "linked_people": links,
         "projections": projections,
         "logical_version_evidence": version_evidence,
+        "lifecycle_policy_evidence": _lifecycle_policy_evidence(raw_payload, normalized_payload),
+        "descendants": descendants,
+        "decisions_and_reviews": decisions_and_reviews,
+        "owner_impacts": owner_impacts,
     }
     return RepairInventoryItem(
         source_system="bitrix_chat",
@@ -200,6 +229,81 @@ def _item_from_record(
         ),
         payload=payload,
     )
+
+
+def _stale_run_evidence(record: Record) -> dict[str, JsonValue]:
+    state = _required_string(record, "stale_run_state")
+    if state != "unknown":
+        raise ValueError("repair stale-run state is invalid")
+    return {
+        "stale_run_id": _required_string(record, "stale_run_id"),
+        "state": state,
+        "disposition": "investigate",
+        "run_status": _optional_string(record, "run_status"),
+        "associated_source_system": _optional_string(record, "associated_source_system"),
+        "logical_run_association_count": _non_negative_int(record, "logical_run_association_count"),
+        "checkpoint_association_count": _non_negative_int(record, "checkpoint_association_count"),
+        "execution_allowed": False,
+    }
+
+
+def _lifecycle_policy_evidence(
+    raw_payload: JsonValue,
+    normalized_payload: JsonValue,
+) -> dict[str, JsonValue]:
+    raw_policy = _payload_policy(raw_payload)
+    normalized_policy = _payload_policy(normalized_payload)
+    if raw_policy == "legacy" and normalized_policy in {None, "legacy"}:
+        classification = "pre_policy"
+        disposition = "preserve"
+    elif raw_policy == "crm_deal_identity_v2" and normalized_policy in {
+        None,
+        "crm_deal_identity_v2",
+    }:
+        classification = "policy_v2"
+        disposition = "review"
+    elif raw_policy is None:
+        classification = "missing_policy_provenance"
+        disposition = "investigate"
+    else:
+        classification = "conflicting_or_invalid_policy"
+        disposition = "investigate"
+    return {
+        "raw_policy": raw_policy,
+        "normalized_policy": normalized_policy,
+        "classification": classification,
+        "disposition": disposition,
+    }
+
+
+def _payload_policy(value: JsonValue) -> str | None:
+    if isinstance(value, str):
+        try:
+            decoded = json.loads(value)
+        except json.JSONDecodeError:
+            return "malformed"
+        value = _json_value(decoded)
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        return "malformed"
+    policy = value.get("crm_deal_identity_policy_version")
+    if policy is None:
+        return None
+    return policy if isinstance(policy, str) else "malformed"
+
+
+def _non_negative_int(record: Record, key: str) -> int:
+    value = _value(record, key)
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ValueError(f"repair inventory {key} must be a non-negative integer")
+    return value
+
+
+def _is_authoritative_item(item: RepairInventoryItem) -> bool:
+    lifecycle_status = item.payload.get("lifecycle_status")
+    is_latest = item.payload.get("is_latest")
+    return lifecycle_status == "active" or (lifecycle_status is None and is_latest is True)
 
 
 def _active_link_count(item: RepairInventoryItem) -> int:

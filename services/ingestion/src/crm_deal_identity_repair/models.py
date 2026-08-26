@@ -107,6 +107,7 @@ class RepairInventoryItem:
             "graph_fingerprint": self.graph_fingerprint,
             "stored_payload_fingerprint": self.stored_payload_fingerprint,
             "payload": self.payload,
+            "execution_allowed": False,
         }
 
 
