@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator
+from collections.abc import Callable
 from typing import TypeVar, cast
 
 from neo4j import ManagedTransaction
@@ -126,7 +126,15 @@ def test_inventory_query_is_read_only_and_captures_closure_families() -> None:
     assert all(token not in query.upper() for query in catalog for token in forbidden)
     assert "logical_versions" in INVENTORY_ACTIVE_CRM_DEALS
     assert "descendants" in INVENTORY_ACTIVE_CRM_DEALS
-    assert "decisions_and_reviews" in INVENTORY_ACTIVE_CRM_DEALS
+    assert "record_decisions_and_reviews" in INVENTORY_ACTIVE_CRM_DEALS
+    assert "pair_decisions_and_reviews" in INVENTORY_ACTIVE_CRM_DEALS
+    assert "pair_decision.engine_type = 'pair_audit'" in INVENTORY_ACTIVE_CRM_DEALS
+    assert "owner_about.entity_type = 'person'" in INVENTORY_ACTIVE_CRM_DEALS
+    assert "counterpart_about.entity_type = 'person'" in INVENTORY_ACTIVE_CRM_DEALS
+    assert "review_queue_state: review.queue_state" in INVENTORY_ACTIVE_CRM_DEALS
+    assert "review_queue_state: pair_review.queue_state" in INVENTORY_ACTIVE_CRM_DEALS
+    assert "outgoing_owner_merges" in INVENTORY_ACTIVE_CRM_DEALS
+    assert "incoming_owner_merges" in INVENTORY_ACTIVE_CRM_DEALS
     assert "owner_impacts" in INVENTORY_ACTIVE_CRM_DEALS
     assert "DESCRIBES_ADDRESS" in INVENTORY_CRM_DEAL_PROJECTIONS
     assert "'unknown' AS stale_run_state" in INVENTORY_STALE_RUN_CONTROL_PLANE
@@ -233,3 +241,19 @@ def test_malformed_persisted_policy_is_explicit_investigate_evidence() -> None:
 
 def test_inventory_query_projects_match_decision_engine_type() -> None:
     assert "engine_type: decision.engine_type" in INVENTORY_ACTIVE_CRM_DEALS
+
+
+def test_inventory_preserves_all_clean_stored_versions() -> None:
+    inventory = _inventory(
+        *(
+            _row(
+                source_record_pk=f"deal-pk-{index}",
+                source_record_id=f"bitrix-crm-deal-{index}",
+                links=[_link(f"person-{index}")],
+            )
+            for index in range(101)
+        )
+    )
+
+    assert len(inventory.negative_controls) == 101
+    assert len(inventory.items) == 101

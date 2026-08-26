@@ -21,22 +21,23 @@ def test_inventory_command_requires_separate_artifact_identity() -> None:
     )
 
     assert arguments.source_system == "bitrix_chat"
-    assert arguments.negative_control_limit == 100
+    assert arguments.representative_replay_limit == 100
 
 
-def test_inventory_command_rejects_a_zero_negative_control_limit() -> None:
-    with pytest.raises(SystemExit):
-        parse_arguments(
-            (
-                "inventory",
-                "--repair-id",
-                "issue251-staging-v1",
-                "--source-contract-uuid",
-                "12345678-1234-5678-9234-567812345678",
-                "--negative-control-limit",
-                "0",
-            )
+def test_inventory_command_supports_legacy_replay_limit_alias() -> None:
+    arguments = parse_arguments(
+        (
+            "inventory",
+            "--repair-id",
+            "issue251-staging-v1",
+            "--source-contract-uuid",
+            "12345678-1234-5678-9234-567812345678",
+            "--negative-control-limit",
+            "7",
         )
+    )
+
+    assert arguments.representative_replay_limit == 7
 
 
 def test_inventory_command_rejects_a_zero_retention_period() -> None:
