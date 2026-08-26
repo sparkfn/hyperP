@@ -1,7 +1,8 @@
-"""Sealed restricted artifacts for read-only CRM-deal repair inventory."""
+"""Sealed, read-only graph-discovery artifacts for CRM-deal repair inventory."""
 
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
@@ -28,6 +29,7 @@ if TYPE_CHECKING:
 
 CRM_DEAL_IDENTITY_REPAIR_MANIFEST_HMAC_DOMAIN = b"crm-deal-identity-repair-manifest-v1\x00"
 _ARTIFACT_KIND = "crm-deal-identity-repair-graph-discovery"
+_MAX_REPLAY_IDS = 100
 _REQUIRED_POPULATION_COUNTS = {
     "active_deal_count",
     "authoritative_version_count",
@@ -39,10 +41,16 @@ _REQUIRED_POPULATION_COUNTS = {
     "projection_cleanup_deal_count",
     "clean_deal_count",
 }
+_PRIOR_246_BASELINE: dict[str, int] = {
+    "active_deal_count": 133_146,
+    "active_link_count": 134_975,
+    "multi_linked_deal_count": 1_255,
+    "maximum_distinct_owners_per_deal": 5,
+}
 
 
 def repair_inventory_configuration_digest(settings: Settings) -> str:
-    """Digest the non-secret runtime settings that shape read-only inventory."""
+    """Digest the non-secret settings that shape graph-only inventory."""
     payload: dict[str, JsonValue] = {
         "deployment_environment": settings.deployment_environment,
         "artifact_primary_root": settings.crm_deal_identity_repair_artifact_primary_root,
@@ -50,17 +58,12 @@ def repair_inventory_configuration_digest(settings: Settings) -> str:
         "artifact_signing_key_id": settings.crm_deal_identity_repair_artifact_signing_key_id,
         "repository_sha": settings.crm_deal_identity_repair_repository_sha,
         "image_digest": settings.crm_deal_identity_repair_image_digest,
-        "identity_policy_version": "crm_deal_identity_v2",
+        "inventory_contract": "crm-deal-graph-discovery-v2",
     }
     return sha256_digest(canonical_json_bytes(payload))
 
 
 def repair_artifact_store_from_settings(settings: Settings) -> LocalRestrictedArtifactStore:
-    """Open the repair store without exposing its signing secret to callers.
-
-    The object boundary avoids importing ``Settings`` at runtime and keeps this
-    module usable in narrowly configured operator tests.
-    """
     secret = decode_signing_secret(
         settings.crm_deal_identity_repair_artifact_signing_key_secret.get_secret_value()
     )
@@ -75,8 +78,6 @@ def repair_artifact_store_from_settings(settings: Settings) -> LocalRestrictedAr
 
 @dataclass(frozen=True)
 class RepairArtifactContext:
-    """Immutable operator/build boundary authenticated with repair inventory."""
-
     repair_id: str
     environment: str
     source_contract_uuid: str
@@ -108,60 +109,34 @@ def seal_inventory_artifact(
     *,
     context: RepairArtifactContext,
     items: tuple[RepairInventoryItem, ...],
-    source_snapshots: tuple[dict[str, JsonValue], ...],
-    proposed_versions: tuple[dict[str, JsonValue], ...],
-    rollback_template: tuple[dict[str, JsonValue], ...],
     population_counts: Mapping[str, int],
+    stale_run_evidence: Mapping[str, JsonValue],
 ) -> ArtifactManifest:
-    """Seal non-executable graph discovery without creating any graph state."""
+    """Seal graph evidence and descriptive #255 handoff guidance only."""
     if not items:
         raise ValueError("repair inventory cannot be empty")
     _validate_population_counts(population_counts)
     digest = inventory_digest(items)
-    expected_items = {item.inventory_key: item for item in items}
-    ordered_snapshots = _validated_auxiliary_rows(
-        "source snapshots", source_snapshots, expected_items
-    )
-    ordered_proposals = _validated_auxiliary_rows(
-        "proposed version placeholders", proposed_versions, expected_items
-    )
-    ordered_rollback = _validated_auxiliary_rows(
-        "rollback discovery rows", rollback_template, expected_items
-    )
-    counts = _partition_counts(items)
-    _validate_condition_counts(counts, population_counts)
-    condition_counts: dict[str, JsonValue] = dict(counts)
-    verification_plan: dict[str, JsonValue] = {
-        "inventory_digest": digest,
-        "repair_condition_counts": condition_counts,
-        "artifact_scope": "graph_discovery_only",
-        "execution_ready": False,
-        "required_invariants": [
-            "inventory_digest_reproduces",
-            "read_only_inventory_writes_zero_neo4j_records",
-            "negative_controls_remain_unchanged",
-            "bitrix_hydration_required_before_execution_artifact",
-        ],
-    }
+    impact = _impact_summary(items, population_counts)
+    replay = _representative_replay(items)
+    compensation = _compensation_guidance(items)
+    clean_boundary = _clean_boundary(impact, replay, stale_run_evidence)
     with store.begin(artifact_kind=_ARTIFACT_KIND) as artifact:
         artifact.write_bytes("inventory.jsonl", inventory_jsonl(items))
-        artifact.write_bytes("graph-source-snapshots.jsonl", _jsonl(ordered_snapshots))
-        artifact.write_bytes("unhydrated-v2-placeholders.jsonl", _jsonl(ordered_proposals))
-        artifact.write_bytes("graph-rollback-discovery.jsonl", _jsonl(ordered_rollback))
-        artifact.write_json("verification-plan.json", verification_plan)
+        artifact.write_json("impact-summary.json", impact)
+        artifact.write_json("representative-replay-plan.json", replay)
+        artifact.write_json("compensation-guidance.json", compensation)
+        artifact.write_json("stale-run-evidence.json", dict(stale_run_evidence))
+        artifact.write_json("clean-boundary-plan.json", clean_boundary)
         return artifact.seal(
             metadata={
                 "repair_id": context.repair_id,
                 "environment": context.environment,
                 "artifact_scope": "graph_discovery_only",
-                "execution_ready": False,
-                "execution_blocker": "Bitrix hydration and executable rollback are absent",
+                "execution_allowed": False,
                 "inventory_digest": digest,
-                "repair_condition_counts": condition_counts,
                 "population_counts": dict(population_counts),
-                "graph_snapshot_count": len(ordered_snapshots),
-                "unhydrated_placeholder_count": len(ordered_proposals),
-                "graph_rollback_discovery_count": len(ordered_rollback),
+                "stale_run_state": stale_run_evidence.get("state"),
             },
             provenance=ArtifactProvenanceInput.create(
                 source_contract_uuid=context.source_contract_uuid,
@@ -169,109 +144,137 @@ def seal_inventory_artifact(
                 image_digest=context.image_digest,
                 configuration_digest=context.configuration_digest,
                 restricted_boundaries=dict(context.boundary),
-                counts={
-                    "inventory_rows": len(items),
-                    **counts,
-                    **population_counts,
-                },
+                counts={"inventory_rows": len(items), **dict(population_counts)},
             ),
             retention_expires_at=context.retention_expires_at,
         )
 
 
-def _partition_counts(items: tuple[RepairInventoryItem, ...]) -> dict[str, int]:
-    identities: dict[str, set[str]] = {
-        "ownership_repair": set(),
-        "projection_cleanup": set(),
-        "negative_control": set(),
-    }
+def _impact_summary(
+    items: tuple[RepairInventoryItem, ...],
+    population_counts: Mapping[str, int],
+) -> dict[str, JsonValue]:
+    equations: dict[str, dict[str, int]] = {}
+    lifecycle: dict[str, int] = {}
+    impact_counts = {"descendants": 0, "reviews_decisions": 0, "owner_impacts": 0}
     for item in items:
         for condition in item.repair_conditions:
-            identities[condition].add(item.source_record_id)
-    return {condition: len(source_ids) for condition, source_ids in identities.items()}
-
-
-def _validated_auxiliary_rows(
-    label: str,
-    rows: tuple[dict[str, JsonValue], ...],
-    expected_items: Mapping[str, RepairInventoryItem],
-) -> tuple[dict[str, JsonValue], ...]:
-    by_identity: dict[str, dict[str, JsonValue]] = {}
-    for row in rows:
-        identity = _auxiliary_identity(row, label)
-        expected_item = expected_items.get(identity)
-        if expected_item is None:
-            raise ValueError(f"repair {label} contain an extra identity: {identity}")
-        _validate_auxiliary_schema(label, row, expected_item)
-        if identity in by_identity:
-            raise ValueError(f"repair {label} contain duplicate identity: {identity}")
-        by_identity[identity] = row
-    if set(by_identity) != set(expected_items):
-        raise ValueError(f"repair {label} identities must exactly match repair inventory")
-    return tuple(by_identity[identity] for identity in sorted(expected_items))
-
-
-def _auxiliary_identity(row: dict[str, JsonValue], label: str) -> str:
-    values: list[str] = []
-    for key in ("source_system", "source_record_id", "source_record_pk"):
-        value = row.get(key)
-        if not isinstance(value, str) or not value:
-            raise ValueError(f"repair {label} {key} must be a non-empty string")
-        values.append(value)
-    return "|".join(values)
-
-
-def _validate_auxiliary_schema(
-    label: str,
-    row: dict[str, JsonValue],
-    expected_item: RepairInventoryItem,
-) -> None:
-    identity_fields = {"source_system", "source_record_id", "source_record_pk"}
-    if label == "source snapshots":
-        expected_fields = identity_fields | {
-            "status",
-            "live_source_fingerprint",
-            "stored_payload_fingerprint",
-            "execution_allowed",
-        }
-        if set(row) != expected_fields:
-            raise ValueError("repair source snapshot fields are invalid")
-        if (
-            row.get("status") != "requires_live_bitrix_hydration"
-            or row.get("live_source_fingerprint") is not None
-            or row.get("execution_allowed") is not False
+            equation = equations.setdefault(
+                condition,
+                {
+                    "total": 0,
+                    "ownership_repair": 0,
+                    "projection_cleanup": 0,
+                    "negative_control": 0,
+                },
+            )
+            equation["total"] += 1
+            equation[condition] += 1
+        payload = item.payload
+        policy = payload.get("lifecycle_policy_evidence")
+        if isinstance(policy, dict):
+            classification = policy.get("classification")
+            if isinstance(classification, str):
+                lifecycle[classification] = lifecycle.get(classification, 0) + 1
+        for key, output in (
+            ("descendants", "descendants"),
+            ("decisions_and_reviews", "reviews_decisions"),
+            ("owner_impacts", "owner_impacts"),
         ):
-            raise ValueError("repair source snapshots must be non-executable hydration plans")
-        _validate_digest(row.get("stored_payload_fingerprint"), "stored payload")
-        if row.get("stored_payload_fingerprint") != expected_item.stored_payload_fingerprint:
-            raise ValueError("repair source snapshot fingerprint does not match inventory")
-        return
-    if label == "proposed version placeholders":
-        expected_fields = identity_fields | {"status", "execution_allowed"}
-        if set(row) != expected_fields:
-            raise ValueError("repair proposed version placeholder fields are invalid")
-        if (
-            row.get("status") != "requires_bitrix_source_hydration"
-            or row.get("execution_allowed") is not False
-        ):
-            raise ValueError("repair proposed versions must be unhydrated placeholders")
-        return
-    if label == "rollback discovery rows":
-        expected_fields = identity_fields | {
-            "graph_fingerprint",
-            "captured_relationships",
-        }
-        if set(row) != expected_fields:
-            raise ValueError("repair rollback discovery fields are invalid")
-        _validate_digest(row.get("graph_fingerprint"), "graph")
-        if row.get("graph_fingerprint") != expected_item.graph_fingerprint:
-            raise ValueError("repair rollback fingerprint does not match inventory")
-        if not isinstance(row.get("captured_relationships"), dict):
-            raise ValueError("repair rollback discovery must contain captured relationships")
-        if row.get("captured_relationships") != expected_item.payload:
-            raise ValueError("repair rollback discovery payload does not match inventory")
-        return
-    raise ValueError(f"unsupported repair auxiliary row label: {label}")
+            value = payload.get(key)
+            if not isinstance(value, list):
+                raise ValueError("repair inventory closure evidence is invalid")
+            impact_counts[output] += len(value)
+    current_baseline_counts = {key: population_counts.get(key, 0) for key in _PRIOR_246_BASELINE}
+    prior_evidence = {
+        "source": "issue_246_prior_evidence",
+        "is_current_truth": False,
+        "counts": _PRIOR_246_BASELINE,
+        "fresh_authoritative_counts": current_baseline_counts,
+        "deltas": {
+            key: current_baseline_counts[key] - prior for key, prior in _PRIOR_246_BASELINE.items()
+        },
+    }
+    return {
+        "schema_version": 1,
+        "execution_allowed": False,
+        "inventory_digest": inventory_digest(items),
+        "population_counts": dict(population_counts),
+        "condition_equations": equations,
+        "lifecycle_counts": lifecycle,
+        "closure_counts": impact_counts,
+        "prior_246_evidence": prior_evidence,
+    }
+
+
+def _representative_replay(items: tuple[RepairInventoryItem, ...]) -> dict[str, JsonValue]:
+    ordered = sorted(items, key=lambda item: item.inventory_key)
+    selected: dict[str, str] = {}
+    for item in ordered:
+        for condition in item.repair_conditions:
+            selected.setdefault("condition:" + condition, item.inventory_key)
+        policy = item.payload.get("lifecycle_policy_evidence")
+        if isinstance(policy, dict):
+            classification = policy.get("classification")
+            if isinstance(classification, str):
+                selected.setdefault("lifecycle:" + classification, item.inventory_key)
+    keys = list(selected.values())
+    for item in ordered:
+        if len(keys) >= _MAX_REPLAY_IDS:
+            break
+        if item.inventory_key not in keys:
+            keys.append(item.inventory_key)
+    rows: list[JsonValue] = [
+        {"inventory_key": key, "execution_allowed": False} for key in sorted(set(keys))
+    ]
+    return {"schema_version": 1, "execution_allowed": False, "inventory_keys": rows}
+
+
+def _compensation_guidance(items: tuple[RepairInventoryItem, ...]) -> dict[str, JsonValue]:
+    rows: list[JsonValue] = []
+    for item in sorted(items, key=lambda value: value.inventory_key):
+        links = item.payload.get("linked_people")
+        if not isinstance(links, list):
+            raise ValueError("repair inventory direct-link evidence is invalid")
+        active = sum(
+            isinstance(link, dict) and link.get("is_active") is not False for link in links
+        )
+        rows.append(
+            {
+                "inventory_key": item.inventory_key,
+                "expected_before_active_link_multiplicity": active,
+                "planned_after_active_link_multiplicity": None,
+                "guidance": "review_before_separate_execution_issue",
+                "rollback_prerequisites": ["fresh_graph_inventory", "approved_execution_scope"],
+                "execution_allowed": False,
+            }
+        )
+    return {"schema_version": 1, "execution_allowed": False, "rows": rows}
+
+
+def _clean_boundary(
+    impact: Mapping[str, JsonValue],
+    replay: Mapping[str, JsonValue],
+    stale_run_evidence: Mapping[str, JsonValue],
+) -> dict[str, JsonValue]:
+    digest = hashlib.sha256(canonical_json_bytes(dict(impact))).hexdigest()
+    replay_ids = replay.get("inventory_keys")
+    if not isinstance(replay_ids, list):
+        raise ValueError("repair representative replay keys must be a list")
+    return {
+        "schema_version": 1,
+        "execution_allowed": False,
+        "inventory_digest": impact["inventory_digest"],
+        "impact_digest": "sha256:" + digest,
+        "replay_id_count": len(replay_ids),
+        "stale_run_state": stale_run_evidence.get("state"),
+        "checklist": [
+            "re-run read-only graph inventory immediately before #255",
+            "resolve every review or investigate condition in #255 scope",
+            "re-check stale-run control evidence before any terminal action",
+            "derive executable mutations only in the separate #255 issue",
+        ],
+    }
 
 
 def _validate_population_counts(population_counts: Mapping[str, int]) -> None:
@@ -295,32 +298,3 @@ def _validate_population_counts(population_counts: Mapping[str, int]) -> None:
         > population_counts["maximum_links_per_deal"]
     ):
         raise ValueError("repair maximum distinct owners cannot exceed maximum links")
-
-
-def _validate_condition_counts(
-    condition_counts: Mapping[str, int],
-    population_counts: Mapping[str, int],
-) -> None:
-    if condition_counts["ownership_repair"] != population_counts["multi_linked_deal_count"]:
-        raise ValueError("repair ownership rows do not match population counts")
-    if condition_counts["projection_cleanup"] != population_counts["projection_cleanup_deal_count"]:
-        raise ValueError("repair cleanup rows do not match population counts")
-    if condition_counts["negative_control"] > population_counts["clean_deal_count"]:
-        raise ValueError("repair negative-control sample exceeds clean population")
-
-
-def _validate_digest(value: JsonValue | None, label: str) -> None:
-    if not isinstance(value, str):
-        raise ValueError(f"repair {label} fingerprint must be a sha256 digest")
-    prefix, separator, hexadecimal = value.partition(":")
-    if (
-        prefix != "sha256"
-        or separator != ":"
-        or len(hexadecimal) != 64
-        or any(character not in "0123456789abcdef" for character in hexadecimal)
-    ):
-        raise ValueError(f"repair {label} fingerprint must be a sha256 digest")
-
-
-def _jsonl(rows: tuple[dict[str, JsonValue], ...]) -> bytes:
-    return b"".join(canonical_json_bytes(row) for row in rows)

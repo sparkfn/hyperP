@@ -33,6 +33,7 @@ def inventory_conditions(item: RepairInventoryItem) -> tuple[bool, bool]:
             active_owner_ids.add(person_id)
     ownership_repair = len(active_owner_ids) > 1
     projection_cleanup = bool(_logical_version_anomalies(item))
+    projection_cleanup = projection_cleanup or _requires_evidence_review(item)
     projection_cleanup = projection_cleanup or malformed_owner
     projection_cleanup = projection_cleanup or len(active_owner_ids) != 1
     projection_cleanup = projection_cleanup or len(active_links) != 1
@@ -67,6 +68,19 @@ def inventory_conditions(item: RepairInventoryItem) -> tuple[bool, bool]:
             projection_cleanup = True
         active_projection_keys.add(projection_key)
     return ownership_repair, projection_cleanup
+
+
+def _requires_evidence_review(item: RepairInventoryItem) -> bool:
+    policy = item.payload.get("lifecycle_policy_evidence")
+    if not isinstance(policy, dict) or policy.get("disposition") not in {"preserve", "review"}:
+        return True
+    for key in ("descendants", "decisions_and_reviews", "owner_impacts"):
+        value = item.payload.get(key)
+        if not isinstance(value, list):
+            return True
+        if any(not isinstance(row, dict) for row in value):
+            return True
+    return False
 
 
 def _logical_version_anomalies(item: RepairInventoryItem) -> tuple[str, ...]:
