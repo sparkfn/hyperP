@@ -27,6 +27,17 @@ from src.graph.queries.identifier_scope_migrations import (
     DELETE_EMPTY_UNSCOPED_CRM_IDENTIFIERS_BATCH,
     MIGRATE_CRM_IDENTIFIER_RELATIONSHIPS_BATCH,
 )
+from src.graph.queries.identity_link_revision_migrations import (
+    ACQUIRE_IDENTITY_LINK_BASELINE_LEASE,
+    ADVANCE_IDENTITY_LINK_BASELINE,
+    ADVANCE_IDENTITY_LINK_PROVENANCE_BACKFILL,
+    BASELINE_MIGRATION_KEY,
+    COMPLETE_IDENTITY_LINK_BASELINE,
+    COMPLETE_IDENTITY_LINK_PROVENANCE_BACKFILL,
+    LIST_IDENTITY_LINK_BASELINE_BATCH,
+    LIST_IDENTITY_LINK_PROVENANCE_BACKFILL_BATCH,
+    RELEASE_IDENTITY_LINK_BASELINE_LEASE,
+)
 from src.graph.queries.lifecycle_migrations import (
     ACQUIRE_SOURCE_RECORD_LIFECYCLE_MIGRATION,
     ADVANCE_SOURCE_RECORD_LIFECYCLE_MIGRATION,
@@ -49,6 +60,11 @@ from src.graph.queries.source_instance_migrations import (
 from src.identifier_scopes import (
     CRM_CANONICAL_IDENTIFIER_TYPES,
     GLOBAL_IDENTIFIER_SCOPE,
+)
+from src.identity_link_revisions import (
+    IdentityLinkDesiredRevision,
+    IdentityLinkStatus,
+    append_identity_link_revisions,
 )
 from src.raw_payload import decode_raw_payload
 from src.source_instances import (
@@ -939,6 +955,212 @@ def migrate_crm_deal_stage_projection(client: Neo4jClient) -> int:
     return updated
 
 
+IDENTITY_LINK_BASELINE_BATCH_SIZE = 200
+IDENTITY_LINK_PROVENANCE_BACKFILL_BATCH_SIZE = 200
+
+
+def _baseline_status(record: Mapping[str, object]) -> tuple[str, str | None]:
+    """Classify only durable source lifecycle fields; never inspect raw evidence."""
+    lifecycle = record.get("lifecycle_status")
+    link_status = record.get("link_status")
+    record_type = record.get("record_type")
+    person_ids = record.get("person_ids")
+    if lifecycle == "rejected":
+        return "rejected", None
+    if lifecycle == "retired" or record.get("retired_at") is not None:
+        return "retired", None
+    if lifecycle == "pending_review":
+        return ("blocked" if link_status == "blocked" else "pending_review"), None
+    if record_type == "crm_deal" or record.get("source_entity_type") == "deal":
+        return "unresolved", None
+    if record.get("source_entity_type") == "company":
+        return "unresolved", None
+    if link_status == "blocked":
+        return "blocked", None
+    if isinstance(person_ids, list) and len(person_ids) == 1 and isinstance(person_ids[0], str):
+        return "resolved", person_ids[0]
+    return "unresolved", None
+
+
+def migrate_identity_link_revision_baseline(client: Neo4jClient) -> int:
+    """Create a leased, keyset-resumable baseline for full snapshot recovery."""
+    owner_id = uuid.uuid4().hex
+
+    def _acquire(tx: ManagedTransaction) -> tuple[bool, bool, str, str]:
+        record = tx.run(
+            ACQUIRE_IDENTITY_LINK_BASELINE_LEASE,
+            migration_key=BASELINE_MIGRATION_KEY,
+            owner_id=owner_id,
+            lease_seconds=SOURCE_RECORD_LIFECYCLE_LEASE_SECONDS,
+        ).single()
+        if record is None:
+            raise RuntimeError("identity-link baseline lease unavailable")
+        cursor = record.get("after_link_key")
+        provenance_cursor = record.get("after_source_record_pk")
+        return (
+            bool(record.get("completed")),
+            bool(record.get("acquired")),
+            cursor if isinstance(cursor, str) else "",
+            provenance_cursor if isinstance(provenance_cursor, str) else "",
+        )
+
+    completed, acquired, cursor, provenance_cursor = client.execute_write(_acquire)
+    if completed or not acquired:
+        return 0
+    total = 0
+    try:
+        # Backfill only the durable source-record contract before deriving the
+        # baseline. No raw payload, identifiers, evidence, or legacy Person
+        # topology participates; historical deals therefore remain unresolved.
+        while True:
+
+            def _backfill_batch(
+                tx: ManagedTransaction, _cursor: str = provenance_cursor
+            ) -> tuple[int, str | None]:
+                rows = list(
+                    tx.run(
+                        LIST_IDENTITY_LINK_PROVENANCE_BACKFILL_BATCH,
+                        after_source_record_pk=_cursor,
+                        batch_size=IDENTITY_LINK_PROVENANCE_BACKFILL_BATCH_SIZE,
+                    )
+                )
+                if not rows:
+                    return 0, None
+                last_key = rows[-1].get("source_record_pk")
+                if not isinstance(last_key, str) or not last_key:
+                    raise RuntimeError("identity-link provenance cursor invalid")
+                advanced = tx.run(
+                    ADVANCE_IDENTITY_LINK_PROVENANCE_BACKFILL,
+                    migration_key=BASELINE_MIGRATION_KEY,
+                    owner_id=owner_id,
+                    after_source_record_pk=last_key,
+                    processed_count=len(rows),
+                    lease_seconds=SOURCE_RECORD_LIFECYCLE_LEASE_SECONDS,
+                ).single()
+                if advanced is None:
+                    raise RuntimeError("identity-link baseline lease was lost")
+                return len(rows), last_key
+
+            processed, next_provenance_cursor = client.execute_write(_backfill_batch)
+            if processed == 0:
+                break
+            total += processed
+            if next_provenance_cursor is None:
+                raise RuntimeError("identity-link provenance cursor did not advance")
+            provenance_cursor = next_provenance_cursor
+
+        def _complete_provenance(tx: ManagedTransaction) -> None:
+            result = tx.run(
+                COMPLETE_IDENTITY_LINK_PROVENANCE_BACKFILL,
+                migration_key=BASELINE_MIGRATION_KEY,
+                owner_id=owner_id,
+                lease_seconds=SOURCE_RECORD_LIFECYCLE_LEASE_SECONDS,
+            ).single()
+            if result is None:
+                raise RuntimeError("identity-link provenance backfill could not be completed")
+
+        client.execute_write(_complete_provenance)
+        while True:
+
+            def _batch(tx: ManagedTransaction, _cursor: str = cursor) -> tuple[int, str | None]:
+                rows = list(
+                    tx.run(
+                        LIST_IDENTITY_LINK_BASELINE_BATCH,
+                        after_link_key=_cursor,
+                        batch_size=IDENTITY_LINK_BASELINE_BATCH_SIZE,
+                    )
+                )
+                if not rows:
+                    return 0, None
+                desired: list[IdentityLinkDesiredRevision] = []
+                for record in rows:
+                    status, person_id = _baseline_status(record)
+                    source_instance_id = record.get("source_instance_id")
+                    source_entity_type = record.get("source_entity_type")
+                    source_entity_id = record.get("source_entity_id")
+                    policy = record.get("identity_policy_version")
+                    effective_at = record.get("effective_at")
+                    link_key = record.get("link_key")
+                    if not all(
+                        isinstance(value, str) and value
+                        for value in (
+                            source_instance_id,
+                            source_entity_type,
+                            source_entity_id,
+                            policy,
+                            effective_at,
+                            link_key,
+                        )
+                    ):
+                        continue
+                    assert isinstance(source_instance_id, str)
+                    assert isinstance(source_entity_type, str)
+                    assert isinstance(source_entity_id, str)
+                    assert isinstance(policy, str)
+                    assert isinstance(effective_at, str)
+                    assert isinstance(link_key, str)
+                    desired.append(
+                        IdentityLinkDesiredRevision(
+                            source_system="bitrix_chat",
+                            source_instance_id=source_instance_id,
+                            source_entity_type=source_entity_type,
+                            source_entity_id=source_entity_id,
+                            identity_policy_version=policy,
+                            link_status=cast(IdentityLinkStatus, status),
+                            hyperp_person_id=person_id,
+                            resolution_kind="baseline",
+                            effective_at=effective_at,
+                            cause_key=f"baseline:v1:{link_key}",
+                        )
+                    )
+                append_identity_link_revisions(tx, desired, skip_existing_heads=True)
+                last_key = rows[-1].get("link_key")
+                if not isinstance(last_key, str):
+                    raise RuntimeError("identity-link baseline cursor invalid")
+                advanced = tx.run(
+                    ADVANCE_IDENTITY_LINK_BASELINE,
+                    migration_key=BASELINE_MIGRATION_KEY,
+                    owner_id=owner_id,
+                    after_link_key=last_key,
+                    processed_count=len(rows),
+                    lease_seconds=SOURCE_RECORD_LIFECYCLE_LEASE_SECONDS,
+                ).single()
+                if advanced is None:
+                    raise RuntimeError("identity-link baseline lease was lost")
+                return len(rows), last_key
+
+            processed, next_cursor = client.execute_write(_batch)
+            if processed == 0:
+                break
+            total += processed
+            if next_cursor is None:
+                raise RuntimeError("identity-link baseline cursor did not advance")
+            cursor = next_cursor
+
+        def _complete(tx: ManagedTransaction) -> None:
+            result = tx.run(
+                COMPLETE_IDENTITY_LINK_BASELINE,
+                migration_key=BASELINE_MIGRATION_KEY,
+                owner_id=owner_id,
+            )
+            if result.single() is None:
+                raise RuntimeError("identity-link baseline could not be completed")
+
+        client.execute_write(_complete)
+        return total
+    except Exception:
+
+        def _release(tx: ManagedTransaction) -> None:
+            tx.run(
+                RELEASE_IDENTITY_LINK_BASELINE_LEASE,
+                migration_key=BASELINE_MIGRATION_KEY,
+                owner_id=owner_id,
+            ).consume()
+
+        client.execute_write(_release)
+        raise
+
+
 def apply_data_migrations(
     client: Neo4jClient,
     *,
@@ -969,3 +1191,4 @@ def apply_data_migrations(
         bitrix_source_instance_id=bitrix_source_instance_id,
     )
     migrate_projection_relationship_lifecycle(client)
+    migrate_identity_link_revision_baseline(client)

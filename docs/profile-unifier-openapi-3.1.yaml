@@ -13,7 +13,7 @@ info:
     Serving topology: the root app exposes only `/api/health`, the OAuth2 token
     flow (`/api/v1/oauth/{token,jwks}`), and the unauthenticated public pages
     (`/api/v1/public/...`). Every authenticated `/v1/...` path below is the
-    canonical contract served through mounted sub-apps — the frontend mount is
+    canonical contract served through mounted sub-apps â€” the frontend mount is
     `/api/app/v2` (with `/v1` stripped, e.g. `/v1/persons` is served at
     `/api/app/v2/persons`) and, for the machine subset, `/api/oauth2/v1`.
     Person profile-analysis paths are an authenticated human frontend surface
@@ -933,7 +933,7 @@ paths:
                 $ref: '#/components/schemas/VehicleSummaryListResponseEnvelope'
         '404':
           $ref: '#/components/responses/PersonNotFound'
-  # ── OAuth client credentials ────────────────────────────────────────────────
+  # â”€â”€ OAuth client credentials â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   /v1/oauth/token:
     post:
       tags: [OAuth]
@@ -1025,7 +1025,7 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/JsonWebKeySet'
-  # ── Machine OAuth2 API surface (mounted at /oauth2/v1) ──────────────────────
+  # â”€â”€ Machine OAuth2 API surface (mounted at /oauth2/v1) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   # Dedicated server-to-server mount, served externally at /api/oauth2/v1. The
   # token/JWKS endpoints mirror the root /v1/oauth flow without the redundant
   # /oauth path segment; the person endpoints are OAuth2-client-only (human
@@ -1307,7 +1307,79 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/PersonNotFound'
-  # ── OAuth client management (admin only) ────────────────────────────────────
+  # â”€â”€ OAuth client management (admin only) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  /oauth2/v1/identity-links/events:
+    get:
+      tags: [OAuth2 Machine API]
+      summary: Read an ordered immutable identity-link event window
+      operationId: list_identity_link_events_machine
+      description: >-
+        OAuth-client-only synchronization feed. The first page freezes
+        through_revision; cursor pages retain that bound and revisions are
+        strictly contiguous. A detected gap requires snapshot recovery.
+      security:
+        - bearerAuth: [identity-links:read]
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+        - name: after_revision
+          in: query
+          description: Exclusive global revision lower bound; cannot be combined with cursor.
+          schema: {type: integer, minimum: 0}
+        - name: cursor
+          in: query
+          description: Opaque events cursor containing the frozen upper bound.
+          schema: {type: string}
+        - name: limit
+          in: query
+          schema: {type: integer, minimum: 1, maximum: 200, default: 50}
+      responses:
+        '200':
+          description: Contiguous frozen event page.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/IdentityLinkEventsResponse'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '503':
+          description: "identity_link_revision_gap when the immutable stream is non-contiguous."
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorResponseEnvelope'}
+  /oauth2/v1/identity-links/snapshot:
+    get:
+      tags: [OAuth2 Machine API]
+      summary: Read a fixed-revision identity-link snapshot
+      operationId: list_identity_link_snapshot_machine
+      description: >-
+        OAuth-client-only full-state recovery feed. The first page freezes
+        snapshot_revision; all cursor pages resolve each link at that same
+        revision. Consumers recover by completing the snapshot and tailing events.
+      security:
+        - bearerAuth: [identity-links:read]
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+        - name: cursor
+          in: query
+          description: Opaque snapshot cursor containing the frozen revision and private keyset.
+          schema: {type: string}
+        - name: limit
+          in: query
+          schema: {type: integer, minimum: 1, maximum: 200, default: 50}
+      responses:
+        '200':
+          description: Fixed-revision snapshot page.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/IdentityLinkSnapshotResponse'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '503':
+          description: "identity_link_snapshot_not_ready or identity_link_stream_unavailable."
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorResponseEnvelope'}
   /v1/admin/oauth-clients:
     get:
       tags: [Admin]
@@ -2024,6 +2096,46 @@ components:
           schema:
             $ref: '#/components/schemas/ErrorResponseEnvelope'
   schemas:
+    IdentityLinkRevision:
+      type: object
+      description: >-
+        Privacy-safe immutable identity-link state. Raw source payloads,
+        identifiers, candidate IDs, scores, reasons, lock topology, and internal
+        stream/cause keys are deliberately excluded.
+      properties:
+        event_id: {type: string}
+        global_revision: {type: integer, minimum: 1}
+        source_system: {type: string}
+        source_instance_id: {type: string}
+        source_entity_type: {type: string, enum: [deal, contact, lead, company]}
+        source_entity_id: {type: string}
+        identity_policy_version: {type: string}
+        link_status: {type: string, enum: [resolved, unresolved, pending_review, blocked, rejected, retired]}
+        hyperp_person_id: {type: [string, 'null']}
+        resolution_kind: {type: string, enum: [baseline, automatic_activation, reviewed_activation, review_rejection, manual_no_match, source_supersession, person_merge, person_unmerge, person_retirement, source_retirement]}
+        resolution_revision: {type: integer, minimum: 1}
+        effective_at: {type: string, format: date-time}
+        match_decision_id: {type: [string, 'null']}
+        review_case_id: {type: [string, 'null']}
+        supersedes_event_id: {type: [string, 'null']}
+      required: [event_id, global_revision, source_system, source_instance_id, source_entity_type, source_entity_id, identity_policy_version, link_status, hyperp_person_id, resolution_kind, resolution_revision, effective_at, match_decision_id, review_case_id, supersedes_event_id]
+      additionalProperties: false
+    IdentityLinkEventsResponse:
+      type: object
+      properties:
+        data: {type: array, items: {$ref: '#/components/schemas/IdentityLinkRevision'}}
+        meta: {$ref: '#/components/schemas/Meta'}
+        through_revision: {type: integer, minimum: 0}
+      required: [data, meta, through_revision]
+      additionalProperties: false
+    IdentityLinkSnapshotResponse:
+      type: object
+      properties:
+        data: {type: array, items: {$ref: '#/components/schemas/IdentityLinkRevision'}}
+        meta: {$ref: '#/components/schemas/Meta'}
+        snapshot_revision: {type: integer, minimum: 0}
+      required: [data, meta, snapshot_revision]
+      additionalProperties: false
     Meta:
       type: object
       properties:
@@ -2076,7 +2188,7 @@ components:
         - custom
     PersonStatus:
       type: string
-      enum: [active, merged, suppressed]
+      enum: [active, merged, suppressed, retired]
     ReviewQueueState:
       type: string
       enum: [open, assigned, deferred, resolved, cancelled]
@@ -4128,6 +4240,7 @@ components:
         - persons:read
         - persons:write
         - ingest:write
+        - identity-links:read
         - admin
     OAuthTokenRequest:
       type: object

@@ -7,6 +7,7 @@ import logging
 from neo4j import ManagedTransaction
 
 from src.graph.client import Neo4jClient
+from src.identity_link_revisions import IdentityLinkDesiredRevision, append_identity_link_revisions
 from src.models import (
     IngestResult,
     MatchDecision,
@@ -24,6 +25,7 @@ from src.record_lifecycle import (
     plan_incoming_version,
     reject_replaced_pending,
 )
+from src.source_instances import effective_source_instance_id
 
 logger = logging.getLogger(__name__)
 
@@ -77,6 +79,30 @@ def ingest_reference_record(
             old_source_record_pk=plan.active_source_record_pk,
             new_source_record_pk=source_record_pk,
         )
+        if envelope.source_entity_id is not None and envelope.identity_policy_version is not None:
+            append_identity_link_revisions(
+                tx,
+                [
+                    IdentityLinkDesiredRevision(
+                        source_system=envelope.source_system,
+                        source_instance_id=effective_source_instance_id(
+                            envelope.source_instance_id
+                        ),
+                        source_entity_type="company",
+                        source_entity_id=envelope.source_entity_id,
+                        identity_policy_version=envelope.identity_policy_version,
+                        link_status="unresolved",
+                        hyperp_person_id=None,
+                        resolution_kind=(
+                            "source_supersession"
+                            if plan.active_source_record_pk
+                            else "automatic_activation"
+                        ),
+                        effective_at=(envelope.observed_at or "1970-01-01T00:00:00+00:00"),
+                        cause_key=f"activation:{source_record_pk}",
+                    )
+                ],
+            )
         logger.info("Ingested non-Person reference %s", envelope.source_record_id)
         return IngestResult(
             source_record_id=envelope.source_record_id,

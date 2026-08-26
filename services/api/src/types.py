@@ -20,6 +20,7 @@ SourceRecordTypeLiteral = Literal[
     "sales",
     "crm_deal",
     "crm_history",
+    "crm_company",
     "call",
 ]
 SourceRecordLifecycleStatus = Literal[
@@ -33,6 +34,7 @@ class PersonStatus(StrEnum):
     ACTIVE = "active"
     MERGED = "merged"
     SUPPRESSED = "suppressed"
+    RETIRED = "retired"
 
 
 class QualityFlag(StrEnum):

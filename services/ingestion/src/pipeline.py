@@ -1,11 +1,11 @@
-"""Ingestion pipeline — full ingest flow in a single explicit Neo4j transaction.
+"""Ingestion pipeline â€” full ingest flow in a single explicit Neo4j transaction.
 
 The pipeline orchestrates the per-record steps from the architecture doc.
 Heavy lifting lives in two sibling modules:
 
-- :mod:`src.pipeline_normalization` — identifier / address / attribute
+- :mod:`src.pipeline_normalization` â€” identifier / address / attribute
   normalization, registries, and fanout caps.
-- :mod:`src.pipeline_writes` — Cypher writes (upserts, candidate generation,
+- :mod:`src.pipeline_writes` â€” Cypher writes (upserts, candidate generation,
   source-record persistence, match-decision persistence, review-case
   creation, person-subgraph linking, auto-merge bookkeeping).
 
@@ -17,6 +17,8 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import UTC, datetime
+from typing import Literal
 
 from neo4j import ManagedTransaction
 
@@ -29,6 +31,7 @@ from src.graph.bitrix_deal_scope import DealScopeObservation, record_scope_batch
 from src.graph.bootstrap import MATCH_ONLY_SOURCE_KEYS
 from src.graph.client import Neo4jClient
 from src.graph.ingestion_control import assert_active_bitrix_fence
+from src.identity_link_revisions import IdentityLinkDesiredRevision, append_identity_link_revisions
 from src.matching.deterministic import prefetch_no_match_lock_owners
 from src.matching.engine import MatchEngine, ambiguous_prior_owners_result
 from src.models import (
@@ -292,7 +295,7 @@ class IngestPipeline:
         lifecycle_plan: PlannedVersion | None = None,
         exclusion_context: ExclusionContext | None = None,
     ) -> IngestResult:
-        """Orchestrate steps 3–13 of the ingest flow inside one write tx."""
+        """Orchestrate steps 3â€“13 of the ingest flow inside one write tx."""
         active_exclusion_context = (
             exclusion_context if exclusion_context is not None else ExclusionContext()
         )
@@ -440,10 +443,35 @@ class IngestPipeline:
         )
         match_decision_id = persist_match_decision(tx, match_result, source_record_pk)
         review_case_id = create_review_case_if_needed(tx, match_result, match_decision_id)
+        if (
+            match_result.decision == MatchDecision.REVIEW
+            and envelope.source_entity_type is not None
+        ):
+            append_identity_link_revisions(
+                tx,
+                [
+                    IdentityLinkDesiredRevision(
+                        source_system=envelope.source_system,
+                        source_instance_id=effective_source_instance_id(
+                            envelope.source_instance_id
+                        ),
+                        source_entity_type=envelope.source_entity_type,
+                        source_entity_id=envelope.source_entity_id or "",
+                        identity_policy_version=envelope.identity_policy_version or "",
+                        link_status="pending_review",
+                        hyperp_person_id=None,
+                        resolution_kind="automatic_activation",
+                        effective_at=envelope.observed_at or datetime.now(UTC).isoformat(),
+                        cause_key=f"pending-review:{source_record_pk}",
+                        match_decision_id=match_decision_id,
+                        review_case_id=review_case_id,
+                    )
+                ],
+            )
         # A REVIEW-band match against an *existing* candidate is provisional: the
         # record is linked so the reviewer can compare it, but its identifiers /
-        # addresses / facts must NOT be wired onto the candidate person — nor the
-        # golden profile recomputed — until a human approves the merge. Otherwise
+        # addresses / facts must NOT be wired onto the candidate person â€” nor the
+        # golden profile recomputed â€” until a human approves the merge. Otherwise
         # an unconfirmed record silently commingles into the candidate and cannot
         # be cleanly split off on reject. (Reviewer-workflow Side-Effect Matrix:
         # a record only becomes "linked" on a merge action.)
@@ -505,8 +533,8 @@ class IngestPipeline:
             raise AssertionError("CRM deals must not link to additional merge candidates")
         # Multi-match: the record reached the merge band against more than one
         # distinct person. Link the record + its extracted evidence to every
-        # other matched person too — WITHOUT merging the persons, which may
-        # legitimately share an identifier — and recompute each golden profile.
+        # other matched person too â€” WITHOUT merging the persons, which may
+        # legitimately share an identifier â€” and recompute each golden profile.
         for other_person_id in match_result.additional_linked_person_ids if accepted else []:
             if other_person_id == person_id:
                 continue
@@ -521,9 +549,9 @@ class IngestPipeline:
                 attach_evidence=True,
             )
             affected_person_ids.add(other_person_id)
-        # Person↔person audit: any usable identifier this record carries that now
+        # Personâ†”person audit: any usable identifier this record carries that now
         # links 2+ active persons opens a pairwise review case (deduped, fanout-
-        # capped). Audit-only — never merges or links persons.
+        # capped). Audit-only â€” never merges or links persons.
         if accepted:
             activate_staged_version(
                 tx,
@@ -537,6 +565,35 @@ class IngestPipeline:
                 tx.run(
                     queries.ACTIVATE_PENDING_CALLS_FOR_DEAL,
                     deal_source_record_pk=source_record_pk,
+                )
+            if envelope.source_entity_type is not None:
+                link_status: Literal["resolved", "unresolved"] = (
+                    "resolved"
+                    if person_id and envelope.source_entity_type != "company"
+                    else "unresolved"
+                )
+                append_identity_link_revisions(
+                    tx,
+                    [
+                        IdentityLinkDesiredRevision(
+                            source_system=envelope.source_system,
+                            source_instance_id=effective_source_instance_id(
+                                envelope.source_instance_id
+                            ),
+                            source_entity_type=envelope.source_entity_type,
+                            source_entity_id=envelope.source_entity_id or "",
+                            identity_policy_version=envelope.identity_policy_version or "",
+                            link_status=link_status,
+                            hyperp_person_id=person_id if link_status == "resolved" else None,
+                            resolution_kind="source_supersession"
+                            if lifecycle_plan.active_source_record_pk
+                            else "automatic_activation",
+                            effective_at=envelope.observed_at or datetime.now(UTC).isoformat(),
+                            cause_key=f"activation:{source_record_pk}",
+                            match_decision_id=match_decision_id,
+                            review_case_id=review_case_id,
+                        )
+                    ],
                 )
             if not continuity_fast_path:
                 for affected_person_id in sorted(affected_person_ids):
@@ -719,11 +776,11 @@ class IngestPipeline:
         """True when the match result resolves to an existing person.
 
         MERGE resolves to an existing person only when the engine emits a
-        ``matched_person_id`` — a MERGE with no matched person would otherwise
+        ``matched_person_id`` â€” a MERGE with no matched person would otherwise
         fall through to ``_resolve_person``'s create-person fallback, violating
         the match-only-sources-never-create-persons invariant. REVIEW resolves
         to an existing person only when the engine or the top candidate provides
-        one — a REVIEW with no ``matched_person_id`` and no candidates has
+        one â€” a REVIEW with no ``matched_person_id`` and no candidates has
         nothing to attach to.
         """
         if match_result.decision == MatchDecision.MERGE:
@@ -866,9 +923,32 @@ class IngestPipeline:
             lifecycle_status=SourceRecordLifecycleStatus.PENDING_REVIEW,
             expected_active_source_record_pk=lifecycle_plan.active_source_record_pk,
             activation_blueprint=activation_blueprint,
+            link_status="blocked",
         )
         match_decision_id = persist_match_decision(tx, match_result, source_record_pk)
         review_case_id = create_review_case_if_needed(tx, match_result, match_decision_id)
+        if envelope.source_entity_type is not None:
+            append_identity_link_revisions(
+                tx,
+                [
+                    IdentityLinkDesiredRevision(
+                        source_system=envelope.source_system,
+                        source_instance_id=effective_source_instance_id(
+                            envelope.source_instance_id
+                        ),
+                        source_entity_type=envelope.source_entity_type,
+                        source_entity_id=envelope.source_entity_id or "",
+                        identity_policy_version=envelope.identity_policy_version or "",
+                        link_status="blocked",
+                        hyperp_person_id=None,
+                        resolution_kind="automatic_activation",
+                        effective_at=envelope.observed_at or datetime.now(UTC).isoformat(),
+                        cause_key=f"blocked:{source_record_pk}",
+                        match_decision_id=match_decision_id,
+                        review_case_id=review_case_id,
+                    )
+                ],
+            )
         return IngestResult(
             source_record_id=envelope.source_record_id,
             source_record_pk=source_record_pk,

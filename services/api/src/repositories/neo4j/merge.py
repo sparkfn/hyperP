@@ -27,6 +27,7 @@ from src.graph.queries import (
     REVERT_MERGE,
     UPDATE_GOLDEN_FIELDS,
 )
+from src.identity_link_revisions import append_merge_affected_revisions
 from src.repositories.neo4j._merge_side_effects import (
     apply_merge_review_side_effects,
     revert_merge_review_side_effects,
@@ -129,6 +130,14 @@ async def _manual_merge_tx(
     merge_event_id = to_str(record["merge_event_id"])
     await recompute_person_crm_deal_counts(tx, [from_id, to_id])
     redirected_ids = await apply_merge_review_side_effects(tx, merge_event_id, from_id, to_id)
+    await append_merge_affected_revisions(
+        tx,
+        merge_event_id=merge_event_id,
+        survivor_person_id=to_id,
+        resolution_kind="person_merge",
+        cause_prefix=f"person-merge:{merge_event_id}",
+        effective_at=str(record["created_at"]),
+    )
     return MergeOutcome(merge_event_id=merge_event_id, redirected_review_case_ids=redirected_ids)
 
 
@@ -249,7 +258,7 @@ async def _unmerge_tx(
         return None
     current_survivor_id = to_str(revert_record["current_survivor_id"])
     await recompute_person_crm_deal_counts(tx, [absorbed_id, current_survivor_id])
-    await tx.run(
+    audit_result = await tx.run(
         CREATE_UNMERGE_AUDIT,
         absorbed_id=absorbed_id,
         survivor_id=survivor_id,
@@ -257,7 +266,18 @@ async def _unmerge_tx(
         metadata=json.dumps({"original_merge_event_id": merge_event_id}),
         actor_id=actor_id,
     )
+    audit_record = await audit_result.single()
+    if audit_record is None:
+        raise RuntimeError("unmerge audit was not created")
     await tx.run(FLAG_AFFECTED_RECORDS_FOR_REVIEW, merge_event_id=merge_event_id)
+    await append_merge_affected_revisions(
+        tx,
+        merge_event_id=merge_event_id,
+        survivor_person_id=None,
+        resolution_kind="person_unmerge",
+        cause_prefix=f"person-unmerge:{to_str(audit_record['merge_event_id'])}",
+        effective_at=to_str(audit_record["created_at"]),
+    )
     reverted_ids = await revert_merge_review_side_effects(tx, merge_event_id)
     return _UnmergeResult(
         absorbed_id=absorbed_id,

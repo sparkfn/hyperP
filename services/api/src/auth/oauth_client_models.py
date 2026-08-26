@@ -19,6 +19,7 @@ class OAuthClientScope:
     PERSONS_WRITE = "persons:write"
     INGEST_WRITE = "ingest:write"
     ADMIN = "admin"
+    IDENTITY_LINKS_READ = "identity-links:read"
 
 
 ALLOWED_OAUTH_CLIENT_SCOPES = frozenset(
@@ -27,6 +28,7 @@ ALLOWED_OAUTH_CLIENT_SCOPES = frozenset(
         OAuthClientScope.PERSONS_WRITE,
         OAuthClientScope.INGEST_WRITE,
         OAuthClientScope.ADMIN,
+        OAuthClientScope.IDENTITY_LINKS_READ,
     }
 )
 

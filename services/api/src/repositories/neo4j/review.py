@@ -9,7 +9,7 @@ from collections.abc import Mapping
 from datetime import UTC, datetime
 from typing import TypedDict
 
-from neo4j import AsyncManagedTransaction, AsyncSession
+from neo4j import AsyncManagedTransaction, AsyncSession, Record
 
 from src.celery_client import enqueue_match_recalculation
 from src.graph.client import get_session
@@ -45,10 +45,20 @@ from src.graph.queries import (
     RECREATE_REVIEW_CASE,
     REJECT_PENDING_REVIEW_RECORD,
     REJECT_STAGED_REVIEW_SALE,
+    RESOLVE_PENDING_REVIEW_RECORD_NO_MATCH,
     build_claimed_review_action_cypher,
     build_count_review_cases_query,
     build_list_review_cases_query,
     build_review_action_cypher,
+)
+from src.identity_link_revisions import (
+    append_identity_link_revisions,
+    append_merge_affected_revisions,
+)
+from src.identity_link_types import (
+    IdentityLinkDesiredRevision,
+    IdentityLinkResolutionKind,
+    IdentityLinkStatus,
 )
 from src.repositories.neo4j._merge_side_effects import apply_merge_review_side_effects
 from src.repositories.neo4j.merge import (
@@ -596,6 +606,58 @@ def _str_list_value(record: Mapping[str, object], key: str) -> list[str]:
     return list(value)
 
 
+def _pending_link_revision(
+    pending: Mapping[str, object],
+    *,
+    link_status: IdentityLinkStatus,
+    resolution_kind: IdentityLinkResolutionKind,
+    cause_key: str,
+    match_decision_id: str | None = None,
+    review_case_id: str | None = None,
+    person_id: str | None = None,
+) -> IdentityLinkDesiredRevision | None:
+    source_system = pending.get("source_system_key")
+    source_instance_id = pending.get("source_instance_id")
+    source_entity_type = pending.get("source_entity_type")
+    source_entity_id = pending.get("source_entity_id")
+    identity_policy_version = pending.get("identity_policy_version")
+    effective_at = pending.get("observed_at")
+    values = (
+        source_system,
+        source_instance_id,
+        source_entity_type,
+        source_entity_id,
+        identity_policy_version,
+        effective_at,
+    )
+    if not all(isinstance(value, str) and value for value in values):
+        return None
+    assert isinstance(source_system, str)
+    assert isinstance(source_instance_id, str)
+    assert isinstance(source_entity_type, str)
+    assert isinstance(source_entity_id, str)
+    assert isinstance(identity_policy_version, str)
+    assert isinstance(effective_at, str)
+    if link_status != "resolved":
+        person_id = None
+    if link_status == "resolved" and person_id is None:
+        return None
+    return IdentityLinkDesiredRevision(
+        source_system=source_system,
+        source_instance_id=source_instance_id,
+        source_entity_type=source_entity_type,
+        source_entity_id=source_entity_id,
+        identity_policy_version=identity_policy_version,
+        link_status=link_status,
+        hyperp_person_id=person_id,
+        resolution_kind=resolution_kind,
+        effective_at=effective_at,
+        cause_key=cause_key,
+        match_decision_id=match_decision_id,
+        review_case_id=review_case_id,
+    )
+
+
 async def _pending_record_merge_tx(
     tx: AsyncManagedTransaction,
     review_case_id: str,
@@ -671,6 +733,17 @@ async def _pending_record_merge_tx(
         await recompute_person_crm_deal_counts(tx, affected_person_ids)
         for person_id in affected_person_ids:
             await recompute_golden_profile_tx(tx, person_id, False)
+    revision = _pending_link_revision(
+        pending_record,
+        link_status="resolved",
+        resolution_kind="reviewed_activation",
+        cause_key=f"reviewed-activation:{review_case_id}:{pending_source_record_pk}",
+        match_decision_id=_optional_str_value(pending_record, "match_decision_id"),
+        review_case_id=review_case_id,
+        person_id=proposed_person_id,
+    )
+    if revision is not None:
+        await append_identity_link_revisions(tx, [revision])
     action_result = await tx.run(
         build_claimed_review_action_cypher(resolution, follow_up_at),
         review_case_id=review_case_id,
@@ -709,6 +782,40 @@ async def _action_tx(
     survivor_id: str | None = None
     lifecycle_mutated = False
     claim: _ReviewClaim | None = None
+    preloaded_action_record: Record | None = None
+    record: Record | GraphRecord | None
+
+    if action_type == ApiReviewActionType.MANUAL_NO_MATCH.value:
+        pending_result = await tx.run(GET_PENDING_REVIEW_RECORD, review_case_id=review_case_id)
+        pending_record = await pending_result.single()
+        if pending_record is not None and isinstance(
+            pending_record.get("pending_source_record_pk"), str
+        ):
+            claim = await _claim_review_action(tx, review_case_id, actor_id)
+            if claim is None:
+                return ActionResult(merge_not_applicable=True)
+            no_match_result = await tx.run(
+                RESOLVE_PENDING_REVIEW_RECORD_NO_MATCH,
+                review_case_id=review_case_id,
+            )
+            no_match_record = await no_match_result.single()
+            if no_match_record is None:
+                raise _ReviewResolutionAbortError("pending source no-match lost after review claim")
+            revision = _pending_link_revision(
+                pending_record,
+                link_status="unresolved",
+                resolution_kind="manual_no_match",
+                cause_key=(
+                    f"manual-no-match:{review_case_id}:"
+                    f"{no_match_record['pending_source_record_pk']}"
+                ),
+                review_case_id=review_case_id,
+            )
+            if revision is not None:
+                await append_identity_link_revisions(tx, [revision])
+            lifecycle_mutated = True
+        elif pending_record is not None and isinstance(pending_record.get("review_case"), Mapping):
+            preloaded_action_record = pending_record
 
     if action_type == ApiReviewActionType.REJECT.value:
         pending_result = await tx.run(GET_PENDING_REVIEW_RECORD, review_case_id=review_case_id)
@@ -724,6 +831,15 @@ async def _action_tx(
             )
             if await rejected_result.single() is None:
                 raise _ReviewResolutionAbortError("pending rejection lost after review claim")
+            revision = _pending_link_revision(
+                pending_record,
+                link_status="rejected",
+                resolution_kind="review_rejection",
+                cause_key=f"review-rejection:{review_case_id}",
+                review_case_id=review_case_id,
+            )
+            if revision is not None:
+                await append_identity_link_revisions(tx, [revision])
             lifecycle_mutated = True
         else:
             sales_result = await tx.run(GET_REVIEW_SALES_RECORD, review_case_id=review_case_id)
@@ -815,7 +931,9 @@ async def _action_tx(
         if lifecycle_mutated
         else build_review_action_cypher(resolution, follow_up_at)
     )
-    if lifecycle_mutated:
+    if preloaded_action_record is not None:
+        record = preloaded_action_record
+    elif lifecycle_mutated:
         if claim is None:
             raise _ReviewResolutionAbortError("missing review action claim")
         result = await tx.run(
@@ -830,6 +948,7 @@ async def _action_tx(
             claim_version=claim["claim_version"],
             claim_status=claim["claim_status"],
         )
+        record = await result.single()
     else:
         result = await tx.run(
             cypher,
@@ -839,13 +958,16 @@ async def _action_tx(
             follow_up_at=follow_up_at,
             action_json=_action_entry_json(action_type, "reviewer", actor_id, notes),
         )
-    record = await result.single()
+        record = await result.single()
     if record is None:
         if lifecycle_mutated:
             raise _ReviewResolutionAbortError("review close lost after lifecycle rejection")
         return None
 
-    rc = dict(record["review_case"])
+    raw_review_case = record["review_case"]
+    if not isinstance(raw_review_case, Mapping):
+        raise _ReviewResolutionAbortError("review close returned invalid review case")
+    rc = dict(raw_review_case)
     out = ActionResult(
         review_case_id=to_str(rc.get("review_case_id")),
         queue_state=to_str(rc.get("queue_state")),
@@ -853,7 +975,7 @@ async def _action_tx(
         redirected_review_case_ids=[],
     )
 
-    if action_type == ApiReviewActionType.MANUAL_NO_MATCH.value:
+    if action_type == ApiReviewActionType.MANUAL_NO_MATCH.value and not lifecycle_mutated:
         await tx.run(
             CREATE_NO_MATCH_LOCK_FROM_REVIEW,
             review_case_id=review_case_id,
@@ -878,6 +1000,14 @@ async def _action_tx(
         await recompute_person_crm_deal_counts(tx, [absorbed_id, survivor_id])
         redirected_ids = await apply_merge_review_side_effects(
             tx, merge_event_id, absorbed_id, survivor_id
+        )
+        await append_merge_affected_revisions(
+            tx,
+            merge_event_id=merge_event_id,
+            survivor_person_id=survivor_id,
+            resolution_kind="person_merge",
+            cause_prefix=f"person-merge:{merge_event_id}",
+            effective_at=to_str(merge_record["created_at"]),
         )
         out["redirected_review_case_ids"] = redirected_ids
         await recompute_golden_profile_tx(tx, survivor_id, False)

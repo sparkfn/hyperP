@@ -417,3 +417,32 @@ def require_oauth_client_scope(
         return user
 
     return _dep
+
+
+def require_unscoped_oauth_client_scope(
+    required: str,
+) -> Callable[[Request, AuthUser | OAuthClientUser], Awaitable[OAuthClientUser]]:
+    """Require a machine client with a global (non-entity-scoped) stream scope."""
+
+    async def _dep(
+        request: Request,
+        user: AuthUser | OAuthClientUser = Depends(get_current_user_or_oauth_client),
+    ) -> OAuthClientUser:
+        if not isinstance(user, OAuthClientUser):
+            raise http_error(
+                403, "forbidden", "This endpoint requires OAuth2 client credentials.", request
+            )
+        if user.entity_key is not None:
+            raise http_error(
+                403,
+                "forbidden_entity_scope",
+                "Identity-link synchronization requires an unscoped OAuth client.",
+                request,
+            )
+        if not check_scope(user.key_scopes, required):
+            raise http_error(
+                403, "forbidden", f"OAuth client lacks required scope: {required}", request
+            )
+        return user
+
+    return _dep

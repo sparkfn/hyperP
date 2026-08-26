@@ -166,8 +166,10 @@ async def test_unmerge_reverts_review_side_effects() -> None:
         [
             {"absorbed_id": "person-a", "survivor_id": "person-b"},  # GET_UNMERGE_TARGET
             {"removed_count": 1, "current_survivor_id": "person-b"},  # REVERT_MERGE
-            None,  # CREATE_UNMERGE_AUDIT
+            None,  # RECOMPUTE_PERSON_CRM_DEAL_COUNTS
+            {"merge_event_id": "unmerge-1", "created_at": "2026-08-26T00:00:00+00:00"},
             None,  # FLAG_AFFECTED_RECORDS_FOR_REVIEW
+            None,  # GET_AFFECTED_IDENTITY_LINK_HEADS
             None,  # REVERT_RECORD_PERSON_CASE_REDIRECTS
             None,  # REVERT_PERSON_PAIR_REDIRECTS_LEFT
             None,  # REVERT_PERSON_PAIR_REDIRECTS_RIGHT

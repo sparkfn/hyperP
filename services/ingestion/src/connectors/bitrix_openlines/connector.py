@@ -696,6 +696,10 @@ def build_crm_deal_envelope(
     }
     return {
         "source_record_id": f"bitrix-crm-deal-{deal.id}",
+        "source_entity_type": "deal",
+        "source_entity_id": deal.id,
+        "identity_policy_version": CRM_DEAL_IDENTITY_POLICY_VERSION,
+        "identity_link_key": f"bitrix:{source_instance_id or 'legacy'}:deal:{deal.id}",
         "entity_key": entity_key,
         "record_type": "crm_deal",
         "ingest_type": "api_incremental",

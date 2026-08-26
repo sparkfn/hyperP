@@ -10,6 +10,7 @@ from src.repositories.neo4j.admin import Neo4jAdminRepository
 from src.repositories.neo4j.crm import Neo4jCrmMetricsRepository
 from src.repositories.neo4j.entity import Neo4jEntityRepository
 from src.repositories.neo4j.event import Neo4jEventRepository
+from src.repositories.neo4j.identity_link_revision import Neo4jIdentityLinkRevisionRepository
 from src.repositories.neo4j.ingest import Neo4jIngestRepository
 from src.repositories.neo4j.merge import Neo4jMergeRepository
 from src.repositories.neo4j.person import Neo4jPersonRepository
@@ -21,6 +22,7 @@ from src.repositories.protocols.admin import AdminRepository
 from src.repositories.protocols.crm import CrmMetricsRepository
 from src.repositories.protocols.entity import EntityRepository
 from src.repositories.protocols.event import EventRepository
+from src.repositories.protocols.identity_link_revision import IdentityLinkRevisionRepository
 from src.repositories.protocols.ingest import IngestRepository
 from src.repositories.protocols.merge import MergeRepository
 from src.repositories.protocols.person import PersonRepository
@@ -40,6 +42,7 @@ _event_repo: EventRepository = Neo4jEventRepository()
 _admin_repo: AdminRepository = Neo4jAdminRepository()
 _ingest_repo: IngestRepository = Neo4jIngestRepository()
 _crm_metrics_repo: CrmMetricsRepository = Neo4jCrmMetricsRepository()
+_identity_link_revision_repo: IdentityLinkRevisionRepository = Neo4jIdentityLinkRevisionRepository()
 
 
 def get_person_repo() -> PersonRepository:
@@ -84,3 +87,7 @@ def get_ingest_repo() -> IngestRepository:
 
 def get_crm_metrics_repo() -> CrmMetricsRepository:
     return _crm_metrics_repo
+
+
+def get_identity_link_revision_repo() -> IdentityLinkRevisionRepository:
+    return _identity_link_revision_repo

@@ -12,8 +12,10 @@ from src.app import build_app
 from src.auth.deps import get_current_user_or_oauth_client, require_active_user
 from src.auth.models import AuthUser
 from src.mcp_app import build_mcp_server, build_mcp_source_app
+from src.oauth2_app import build_oauth2_app
 from src.repositories.deps import get_entity_repo
 from src.repositories.protocols.entity import EntityRepository
+from src.route_catalog import MCP_OPERATION_EXCLUSIONS
 from src.types import EntityFilterOption, EntityPerson, EntitySummary, SourceSystemSummary
 
 
@@ -192,3 +194,20 @@ def test_mcp_transport_accepts_an_authenticated_initialize_request() -> None:
     assert response.status_code == 200
     assert response.headers["mcp-session-id"]
     assert response.json()["result"]["serverInfo"]["name"] == "HyperP MCP"
+
+
+def test_identity_link_oauth_operations_have_complete_mcp_exclusion_ledger() -> None:
+    oauth_operation_ids = _source_operation_ids(build_oauth2_app())
+    mcp_operation_ids = _source_operation_ids(build_mcp_source_app())
+    required = {
+        "list_identity_link_events_machine",
+        "list_identity_link_snapshot_machine",
+    }
+    assert required <= oauth_operation_ids
+    assert required.isdisjoint(mcp_operation_ids)
+
+    ledger = [item for item in MCP_OPERATION_EXCLUSIONS if item.surface == "oauth2"]
+    assert {item.operation_id for item in ledger} == required
+    assert all(item.reason.strip() for item in ledger)
+    assert len(ledger) == len({item.operation_id for item in ledger})
+    assert {item.operation_id for item in MCP_OPERATION_EXCLUSIONS} <= oauth_operation_ids

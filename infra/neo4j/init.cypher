@@ -267,3 +267,20 @@ CREATE INDEX crm_stage_timeline_parent IF NOT EXISTS
 CREATE CONSTRAINT crm_stage_analytical_release_unique IF NOT EXISTS
   FOR (release:CrmStageAnalyticalRelease)
   REQUIRE release.release_key IS UNIQUE;
+
+CREATE CONSTRAINT identity_link_revision_counter_stream_key_unique IF NOT EXISTS
+FOR (counter:IdentityLinkRevisionCounter) REQUIRE counter.stream_key IS UNIQUE;
+CREATE CONSTRAINT identity_link_head_link_key_unique IF NOT EXISTS
+FOR (head:IdentityLinkHead) REQUIRE head.link_key IS UNIQUE;
+CREATE CONSTRAINT identity_link_revision_event_id_unique IF NOT EXISTS
+FOR (revision:IdentityLinkRevision) REQUIRE revision.event_id IS UNIQUE;
+CREATE CONSTRAINT identity_link_revision_cause_key_unique IF NOT EXISTS
+FOR (revision:IdentityLinkRevision) REQUIRE revision.cause_key IS UNIQUE;
+CREATE CONSTRAINT identity_link_revision_global_revision_unique IF NOT EXISTS
+FOR (revision:IdentityLinkRevision) REQUIRE revision.global_revision IS UNIQUE;
+CREATE INDEX identity_link_revision_global_revision IF NOT EXISTS
+FOR (revision:IdentityLinkRevision) ON (revision.global_revision);
+CREATE INDEX identity_link_revision_link_global_revision IF NOT EXISTS
+FOR (revision:IdentityLinkRevision) ON (revision.link_key, revision.global_revision);
+CREATE INDEX identity_link_head_link_key IF NOT EXISTS
+FOR (head:IdentityLinkHead) ON (head.link_key);

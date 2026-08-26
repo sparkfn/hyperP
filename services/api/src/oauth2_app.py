@@ -15,7 +15,7 @@ from src.auth.deps import require_oauth_client_scope
 from src.auth.oauth_client_models import OAuthClientScope
 from src.error_handlers import register_error_handlers
 from src.router_copy import copy_router_routes
-from src.routes import oauth, persons
+from src.routes import identity_link_revisions, oauth, persons
 
 # Only the person list (GET /v1/persons) and canonical detail
 # (GET /v1/persons/{person_id}) are exposed on this machine surface.
@@ -54,6 +54,8 @@ def build_oauth2_app() -> FastAPI:
     # Token issuance + JWKS: unauthenticated. Exposed as /token and /jwks
     # (the /oauth2/v1 mount already conveys "oauth").
     copy_router_routes(app, oauth.router, dependencies=[], path_transform=_strip_oauth_prefix)
+
+    app.include_router(identity_link_revisions.router)
 
     # Person list + canonical detail: OAuth2 client credentials with persons:read only.
     person_dependencies: list[DependsMarker] = [
