@@ -57,7 +57,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             inventory = collect_repair_inventory(
                 client,
                 source_system=arguments.source_system,
-                negative_control_limit=arguments.negative_control_limit,
             )
         finally:
             client.close()
@@ -68,6 +67,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             items=inventory.items,
             population_counts=population_counts,
             stale_run_evidence=inventory.stale_run_evidence,
+            representative_replay_limit=arguments.representative_replay_limit,
         )
     summary_population_counts: dict[str, JsonValue] = dict(population_counts)
     summary: dict[str, JsonValue] = {

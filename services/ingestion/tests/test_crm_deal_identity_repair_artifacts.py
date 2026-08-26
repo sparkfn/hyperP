@@ -10,6 +10,7 @@ from src.connectors.bitrix_stage_history.artifact_runtime import ArtifactStoreCo
 from src.crm_deal_identity_repair.artifacts import (
     CRM_DEAL_IDENTITY_REPAIR_MANIFEST_HMAC_DOMAIN,
     RepairArtifactContext,
+    _representative_replay,
     seal_inventory_artifact,
 )
 from src.crm_deal_identity_repair.models import RepairInventoryItem, RepairPartition
@@ -169,3 +170,18 @@ def test_impact_equations_include_negative_control_partition(tmp_path: Path) -> 
         encoding="utf-8"
     )
     assert '"negative_control":1' in impact
+
+
+def test_representative_replay_limit_bounds_seed_strata() -> None:
+    replay = _representative_replay(
+        (
+            _item("bitrix-crm-deal-1", policy="pre_policy"),
+            _item("bitrix-crm-deal-2", policy="policy_v2"),
+            _item("bitrix-crm-deal-3", policy="missing_policy_provenance"),
+        ),
+        limit=1,
+    )
+
+    inventory_keys = replay["inventory_keys"]
+    assert isinstance(inventory_keys, list)
+    assert len(inventory_keys) == 1

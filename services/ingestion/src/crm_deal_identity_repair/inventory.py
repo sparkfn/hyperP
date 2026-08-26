@@ -22,8 +22,6 @@ from src.graph.queries.crm_deal_identity_repair import (
 )
 from src.models import JsonValue
 
-_DEFAULT_NEGATIVE_CONTROL_LIMIT = 100
-
 
 @dataclass(frozen=True)
 class RepairPopulationCounts:
@@ -80,13 +78,10 @@ def collect_repair_inventory(
     client: Neo4jClient,
     *,
     source_system: str = "bitrix_chat",
-    negative_control_limit: int = _DEFAULT_NEGATIVE_CONTROL_LIMIT,
 ) -> RepairInventory:
     """Read all stored CRM-deal versions and partition graph evidence without mutation."""
     if source_system != "bitrix_chat":
         raise ValueError("CRM-deal repair inventory only supports source_system='bitrix_chat'")
-    if negative_control_limit < 1:
-        raise ValueError("repair negative control limit must be positive")
 
     def _work(
         tx: ManagedTransaction,
@@ -160,7 +155,7 @@ def collect_repair_inventory(
     return RepairInventory(
         ownership_repairs=tuple(ownership),
         projection_cleanups=tuple(cleanup),
-        negative_controls=tuple(clean[:negative_control_limit]),
+        negative_controls=tuple(clean),
         population_counts=RepairPopulationCounts(
             active_deal_count=len(active_source_ids),
             authoritative_version_count=len(authoritative),

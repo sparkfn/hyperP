@@ -52,14 +52,43 @@ CALL {
     OPTIONAL MATCH (review:ReviewCase)-[:FOR_DECISION]->(decision)
     WITH decision, review
     WHERE decision IS NOT NULL OR review IS NOT NULL
-    RETURN collect({
+    RETURN collect(DISTINCT {
+        evidence_type: 'record_to_person',
         match_decision_id: decision.match_decision_id,
         decision: decision.decision,
         policy_version: decision.policy_version,
         engine_type: decision.engine_type,
         review_case_id: review.review_case_id,
-        review_resolution: review.resolution
-    }) AS decisions_and_reviews
+        review_resolution: review.resolution,
+        review_queue_state: review.queue_state
+    }) AS record_decisions_and_reviews
+}
+CALL {
+    WITH deal
+    OPTIONAL MATCH (deal)-[:LINKED_TO]->(owner:Person)
+    OPTIONAL MATCH (pair_decision:MatchDecision)-[owner_about:ABOUT_LEFT|ABOUT_RIGHT]->(owner)
+    OPTIONAL MATCH (pair_decision)-[counterpart_about:ABOUT_LEFT|ABOUT_RIGHT]->(counterpart:Person)
+    OPTIONAL MATCH (pair_review:ReviewCase)-[:FOR_DECISION]->(pair_decision)
+    WITH owner, pair_decision, owner_about, counterpart, counterpart_about, pair_review
+    WHERE pair_decision IS NOT NULL
+      AND pair_decision.engine_type = 'pair_audit'
+      AND owner_about.entity_type = 'person'
+      AND counterpart_about.entity_type = 'person'
+      AND counterpart <> owner
+    RETURN collect(DISTINCT {
+        evidence_type: 'pair_audit',
+        owner_person_id: owner.person_id,
+        counterpart_person_id: counterpart.person_id,
+        owner_about_relationship_type: type(owner_about),
+        counterpart_about_relationship_type: type(counterpart_about),
+        match_decision_id: pair_decision.match_decision_id,
+        decision: pair_decision.decision,
+        policy_version: pair_decision.policy_version,
+        engine_type: pair_decision.engine_type,
+        review_case_id: pair_review.review_case_id,
+        review_resolution: pair_review.resolution,
+        review_queue_state: pair_review.queue_state
+    }) AS pair_decisions_and_reviews
 }
 CALL {
     WITH deal
@@ -90,15 +119,32 @@ CALL {
 CALL {
     WITH deal
     OPTIONAL MATCH (deal)-[:LINKED_TO]->(owner:Person)
-    OPTIONAL MATCH (owner)-[merge_rel:MERGED_INTO]->(survivor:Person)
-    WITH owner, merge_rel, survivor
-    WHERE merge_rel IS NOT NULL
-    RETURN collect({
+    OPTIONAL MATCH (owner)-[outgoing_rel:MERGED_INTO]->(survivor:Person)
+    WITH owner, outgoing_rel, survivor
+    WHERE outgoing_rel IS NOT NULL
+    RETURN collect(DISTINCT {
         evidence_type: 'merge_lineage',
+        direction: 'outgoing',
         owner_person_id: owner.person_id,
-        merge_event_id: merge_rel.merge_event_id,
-        merge_survivor_person_id: survivor.person_id
-    }) AS owner_merges
+        merge_event_id: outgoing_rel.merge_event_id,
+        absorbed_person_id: owner.person_id,
+        survivor_person_id: survivor.person_id
+    }) AS outgoing_owner_merges
+}
+CALL {
+    WITH deal
+    OPTIONAL MATCH (deal)-[:LINKED_TO]->(owner:Person)
+    OPTIONAL MATCH (absorbed:Person)-[incoming_rel:MERGED_INTO]->(owner)
+    WITH owner, incoming_rel, absorbed
+    WHERE incoming_rel IS NOT NULL
+    RETURN collect(DISTINCT {
+        evidence_type: 'merge_lineage',
+        direction: 'incoming',
+        owner_person_id: owner.person_id,
+        merge_event_id: incoming_rel.merge_event_id,
+        absorbed_person_id: absorbed.person_id,
+        survivor_person_id: owner.person_id
+    }) AS incoming_owner_merges
 }
 RETURN deal.source_record_pk AS source_record_pk,
        deal.source_record_id AS source_record_id,
@@ -109,8 +155,9 @@ RETURN deal.source_record_pk AS source_record_pk,
        toString(deal.observed_at) AS observed_at,
        deal.raw_payload AS raw_payload,
        deal.normalized_payload AS normalized_payload,
-       linked_people, logical_versions, descendants, decisions_and_reviews,
-       owner_profiles + owner_locks + owner_merges AS owner_impacts
+       linked_people, logical_versions, descendants,
+       record_decisions_and_reviews + pair_decisions_and_reviews AS decisions_and_reviews,
+       owner_profiles + owner_locks + outgoing_owner_merges + incoming_owner_merges AS owner_impacts
 ORDER BY deal.source_record_id, deal.source_record_pk
 """
 

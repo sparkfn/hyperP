@@ -111,14 +111,17 @@ def seal_inventory_artifact(
     items: tuple[RepairInventoryItem, ...],
     population_counts: Mapping[str, int],
     stale_run_evidence: Mapping[str, JsonValue],
+    representative_replay_limit: int = _MAX_REPLAY_IDS,
 ) -> ArtifactManifest:
     """Seal graph evidence and descriptive #255 handoff guidance only."""
     if not items:
         raise ValueError("repair inventory cannot be empty")
     _validate_population_counts(population_counts)
+    if representative_replay_limit < 1:
+        raise ValueError("repair representative replay limit must be positive")
     digest = inventory_digest(items)
     impact = _impact_summary(items, population_counts)
-    replay = _representative_replay(items)
+    replay = _representative_replay(items, limit=representative_replay_limit)
     compensation = _compensation_guidance(items)
     clean_boundary = _clean_boundary(impact, replay, stale_run_evidence)
     with store.begin(artifact_kind=_ARTIFACT_KIND) as artifact:
@@ -224,7 +227,11 @@ def _impact_summary(
     }
 
 
-def _representative_replay(items: tuple[RepairInventoryItem, ...]) -> dict[str, JsonValue]:
+def _representative_replay(
+    items: tuple[RepairInventoryItem, ...],
+    *,
+    limit: int,
+) -> dict[str, JsonValue]:
     ordered = sorted(items, key=lambda item: item.inventory_key)
     selected: dict[str, str] = {}
     for item in ordered:
@@ -235,15 +242,15 @@ def _representative_replay(items: tuple[RepairInventoryItem, ...]) -> dict[str, 
             classification = policy.get("classification")
             if isinstance(classification, str):
                 selected.setdefault("lifecycle:" + classification, item.inventory_key)
-    keys = list(selected.values())
+    keys = list(sorted(set(selected.values()))[:limit])
+    selected_keys = set(keys)
     for item in ordered:
-        if len(keys) >= _MAX_REPLAY_IDS:
+        if len(keys) >= limit:
             break
-        if item.inventory_key not in keys:
+        if item.inventory_key not in selected_keys:
             keys.append(item.inventory_key)
-    rows: list[JsonValue] = [
-        {"inventory_key": key, "execution_allowed": False} for key in sorted(set(keys))
-    ]
+            selected_keys.add(item.inventory_key)
+    rows: list[JsonValue] = [{"inventory_key": key, "execution_allowed": False} for key in keys]
     return {"schema_version": 1, "execution_allowed": False, "inventory_keys": rows}
 
 
