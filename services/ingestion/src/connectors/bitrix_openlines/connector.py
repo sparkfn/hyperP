@@ -240,7 +240,11 @@ class BitrixOpenLinesConnector(SourceConnector):
                         continue
                     deal_entities[deal.id] = entity_key
                     self._emitted_crm_deal_ids.add(deal_source_record_id)
-                    yield build_crm_deal_envelope(deal, entity_key)
+                    yield build_crm_deal_envelope(
+                        deal,
+                        entity_key,
+                        source_instance_id=self._config.source_instance_id,
+                    )
                     self._counters.records_emitted += 1
             for activity in client.iter_crm_activities():
                 self._counters.crm_activities_scanned += 1
@@ -638,7 +642,12 @@ def _add_crm_activity_references(
     record["record_hash"] = compute_hash(hash_payload)
 
 
-def build_crm_deal_envelope(deal: CrmDeal, entity_key: str) -> dict[str, JsonValue]:
+def build_crm_deal_envelope(
+    deal: CrmDeal,
+    entity_key: str,
+    *,
+    source_instance_id: str | None,
+) -> dict[str, JsonValue]:
     """Build the immutable v2 identity envelope for one hydrated CRM deal.
 
     Repair inventory uses this exact builder to freeze the proposed replacement
@@ -650,7 +659,10 @@ def build_crm_deal_envelope(deal: CrmDeal, entity_key: str) -> dict[str, JsonVal
     attributes: dict[str, JsonValue] = {}
     identity_contacts = (contact,) if contact is not None else deal.contacts
     for candidate in identity_contacts:
-        identifiers.extend(crm_contact_identity_evidence(candidate).identifiers)
+        evidence = crm_contact_identity_evidence(candidate)
+        identifiers.extend(
+            _scope_crm_identifiers(evidence.identifiers, source_instance_id=source_instance_id)
+        )
     if contact is not None and contact.full_name is not None:
         attributes["full_name"] = contact.full_name
     contact_groups: list[JsonValue] = []
@@ -688,6 +700,21 @@ def build_crm_deal_envelope(deal: CrmDeal, entity_key: str) -> dict[str, JsonVal
         "attributes": attributes,
         "raw_payload": raw_payload,
     }
+
+
+def _scope_crm_identifiers(
+    identifiers: tuple[dict[str, JsonValue], ...],
+    *,
+    source_instance_id: str | None,
+) -> list[dict[str, JsonValue]]:
+    if source_instance_id is None:
+        return [dict(identifier) for identifier in identifiers]
+    return [
+        {**identifier, "source_instance_id": source_instance_id}
+        if identifier.get("type") == "crm_contact_id"
+        else dict(identifier)
+        for identifier in identifiers
+    ]
 
 
 # Compatibility for extensions and historical tests that imported the former

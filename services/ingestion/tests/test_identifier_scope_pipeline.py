@@ -5,10 +5,12 @@ from __future__ import annotations
 from collections.abc import Iterator
 from typing import cast
 
+import pytest
 from neo4j import ManagedTransaction
 from src.graph import queries
 from src.identifier_scopes import identifier_scope
-from src.models import NormalizedIdentifier, QualityFlag
+from src.models import NormalizedIdentifier, QualityFlag, SourceRecordEnvelope
+from src.pipeline_normalization import normalize_envelope_identifiers
 from src.pipeline_writes import find_candidates, upsert_nodes
 
 
@@ -128,3 +130,66 @@ def test_upsert_strips_accidental_instance_from_generic_identifier() -> None:
             "normalized_value": "ada@example.com",
         }
     ]
+
+
+def test_raw_crm_identifier_scope_overrides_legacy_source_record_scope() -> None:
+    envelope = SourceRecordEnvelope(
+        source_system="bitrix_chat",
+        source_record_id="bitrix-crm-deal-456",
+        record_type="crm_deal",
+        observed_at="2026-08-24T00:00:00Z",
+        record_hash="hash",
+        identifiers=[
+            {
+                "type": "crm_contact_id",
+                "value": "123",
+                "is_verified": True,
+                "source_instance_id": "bitrix-primary",
+            }
+        ],
+    )
+
+    normalized = normalize_envelope_identifiers(envelope)
+
+    assert normalized == [
+        NormalizedIdentifier(
+            identifier_type="crm_contact_id",
+            normalized_value="123",
+            source_instance_id="bitrix-primary",
+            is_verified=True,
+            quality_flag=QualityFlag.VALID,
+        )
+    ]
+
+
+def test_explicit_identifier_scope_rejects_ambiguous_or_non_crm_use() -> None:
+    common = {
+        "source_system": "bitrix_chat",
+        "source_record_id": "bitrix-crm-deal-456",
+        "record_type": "crm_deal",
+        "observed_at": "2026-08-24T00:00:00Z",
+        "record_hash": "hash",
+    }
+    with pytest.raises(ValueError, match="only canonical CRM identifiers"):
+        SourceRecordEnvelope(
+            **common,
+            identifiers=[
+                {
+                    "type": "email",
+                    "value": "ada@example.com",
+                    "source_instance_id": "bitrix-primary",
+                }
+            ],
+        )
+    with pytest.raises(ValueError, match="must match the source record instance"):
+        SourceRecordEnvelope(
+            **common,
+            source_instance_id="bitrix-secondary",
+            identifiers=[
+                {
+                    "type": "crm_contact_id",
+                    "value": "123",
+                    "source_instance_id": "bitrix-primary",
+                }
+            ],
+        )

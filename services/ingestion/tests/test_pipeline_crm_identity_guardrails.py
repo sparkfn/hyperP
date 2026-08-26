@@ -516,6 +516,7 @@ def test_deal_envelope_hashes_policy_and_cannot_match_whatsapp_group_emails() ->
             raw_payload={"ID": "456"},
         ),
         "eko",
+        source_instance_id=None,
     )
     envelope = SourceRecordEnvelope(source_system="bitrix_chat", **record)
 
@@ -564,6 +565,7 @@ def test_oversized_raw_channel_change_changes_deal_hash() -> None:
                 raw_payload={"ID": "456"},
             ),
             "eko",
+            source_instance_id=None,
         )
 
     first = build("first")
@@ -575,6 +577,43 @@ def test_oversized_raw_channel_change_changes_deal_hash() -> None:
         == [{"type": "crm_contact_id", "value": "123", "is_verified": True}]
     )
     assert first["record_hash"] != second["record_hash"]
+
+
+def test_migrated_crm_contact_scope_survives_exact_deal_builder_replay() -> None:
+    contact = CrmContact(
+        id="123",
+        full_name="Ada Lovelace",
+        phones=("+6591234567",),
+        emails=(),
+    )
+    record = build_crm_deal_envelope(
+        CrmDeal(
+            id="456",
+            title="Portal-scoped deal",
+            category_id="2",
+            stage_id="NEW",
+            observed_at=datetime(2026, 8, 24, tzinfo=UTC),
+            primary_contact=contact,
+            contacts=(contact,),
+            contact_count=1,
+            has_ambiguous_contacts=False,
+            raw_payload={"ID": "456"},
+        ),
+        "eko",
+        source_instance_id="bitrix-primary",
+    )
+
+    envelope = SourceRecordEnvelope(source_system="bitrix_chat", **record)
+    normalized = normalize_envelope_identifiers(envelope)
+
+    assert envelope.source_instance_id is None
+    assert [
+        (item.identifier_type, item.source_instance_id, item.normalized_value)
+        for item in normalized
+    ] == [
+        ("crm_contact_id", "bitrix-primary", "123"),
+        ("phone", None, "+6591234567"),
+    ]
 
 
 def test_blocked_canonical_owner_persists_durable_pending_review() -> None:

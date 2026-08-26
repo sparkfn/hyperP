@@ -832,6 +832,7 @@ def test_incremental_api_emits_deal_history_call_and_chat_activity_references(
             entity_by_config_id={"46": "speedzone"},
             included_crm_category_ids=["2"],
             entity_by_crm_category_id={"2": "speedzone"},
+            source_instance_id="bitrix-primary",
         ),
         mode="api",
         incremental=True,
@@ -846,6 +847,7 @@ def test_incremental_api_emits_deal_history_call_and_chat_activity_references(
         "call",
         "conversation",
     ]
+    assert records[0]["identifiers"][0]["source_instance_id"] == "bitrix-primary"
     assert records[2]["raw_payload"]["crm_activity_id"] == "901"
     assert records[1]["raw_payload"]["bitrix_chat_id_numeric"] == 77
     assert records[3]["raw_payload"]["duration_seconds"] == 300
