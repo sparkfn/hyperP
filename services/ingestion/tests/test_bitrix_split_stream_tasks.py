@@ -551,11 +551,13 @@ def test_failed_refresh_phase_resumes_with_durable_connector_and_cursor(
     class Config:
         included_crm_category_ids = ("1",)
         entity_by_crm_category_id = {"1": "entity-1"}
+        source_instance_id = "bitrix-primary"
 
     class IngestionConfig:
         bitrix_openlines = Config()
 
     def refresh(*_args: object, **parameters: object) -> KnownOwnerRefreshSummary:
+        assert parameters["source_instance_id"] == "bitrix-primary"
         context = cast(ExecutionContext, parameters["context"])
         refresh_cursor.update(context.checkpoint.cursor)
         return KnownOwnerRefreshSummary(
