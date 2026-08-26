@@ -8,9 +8,7 @@ from src.source_instances import effective_source_instance_id
 GLOBAL_IDENTIFIER_SCOPE = "global"
 
 # CRM primary keys are only meaningful within one configured CRM portal.
-CRM_CANONICAL_IDENTIFIER_TYPES = frozenset(
-    {"crm_contact_id", "crm_lead_id", "crm_company_id"}
-)
+CRM_CANONICAL_IDENTIFIER_TYPES = frozenset({"crm_contact_id", "crm_lead_id", "crm_company_id"})
 
 
 def source_instance_for_identifier(
