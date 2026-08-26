@@ -21,7 +21,6 @@ from src.connectors.base import SourceConnector
 from src.connectors.bitrix import BitrixChatConnector
 from src.connectors.bitrix_crm.activity_connector import BitrixCrmActivityConnector
 from src.connectors.bitrix_crm.deal_connector import BitrixCrmDealConnector
-from src.connectors.bitrix_crm.identity_connector import BitrixCrmIdentityConnector
 from src.connectors.bitrix_openlines.client import BitrixOpenLinesClient
 from src.connectors.bitrix_openlines.connector import BitrixOpenLinesConnector
 from src.connectors.bitrix_openlines.dialog_cache import RedisDialogConfigCache
@@ -451,17 +450,8 @@ def create_bitrix_crm_deal_connector(
     )
 
 
-def create_bitrix_crm_identity_connector() -> BitrixCrmIdentityConnector:
-    """Create the default-off standalone CRM identity connector."""
-    settings = get_settings()
-    ingestion_config = get_ingestion_config()
-    client = BitrixOpenLinesClient(
-        base_url=settings.bitrix_openlines_api_base_url.get_secret_value(),
-        timeout_seconds=settings.bitrix_openlines_api_timeout_seconds,
-        max_attempts=settings.bitrix_openlines_api_max_attempts,
-        request_delay_seconds=settings.bitrix_openlines_api_request_delay_seconds,
-    )
-    return BitrixCrmIdentityConnector(client, ingestion_config.bitrix_openlines)
+class StandaloneCrmCensusContextRequiredError(ValueError):
+    """Raised before standalone identity code can bypass bounded census dispatch."""
 
 
 def create_bitrix_crm_activity_connector(
@@ -565,6 +555,10 @@ def get_connector(
     bitrix_deadline_monotonic: float | None = None,
 ) -> SourceConnector:
     """Return the appropriate connector for the given source key."""
+    if source_key == "bitrix_crm_identity":
+        raise StandaloneCrmCensusContextRequiredError(
+            "standalone Bitrix CRM identity must be dispatched by a frozen census child"
+        )
     if entity_key is not None and (source_key != "whatsapp_chat" or mode != "api"):
         raise ValueError("entity_key is only valid for whatsapp_chat API ingestion")
     if dump_path is not None:
@@ -628,16 +622,6 @@ def get_connector(
     if mode == "backfill":
         raise ValueError(f"Backfill mode is not supported for source {source_key!r}")
     if mode == "api":
-        if source_key == "bitrix_crm_identity":
-            identity_config = get_ingestion_config().bitrix_openlines
-            if not identity_config.standalone_crm_identity_enabled:
-                raise PermissionError("standalone Bitrix CRM identity ingestion is disabled")
-            if incremental:
-                raise ValueError(
-                    "standalone Bitrix CRM identity requires incremental=False until "
-                    "checkpointed traversal is implemented"
-                )
-            return create_bitrix_crm_identity_connector()
         if source_key == "sgbankruptcy":
             return create_sgbankruptcy_api_connector()
         if source_key == "sgrentalflats":
@@ -1065,6 +1049,10 @@ def run_ingestion(
     execution_context: ExecutionContext | None = None,
 ) -> IngestionSummary:
     """Execute one ingestion run end-to-end."""
+    if source_key == "bitrix_crm_identity":
+        raise StandaloneCrmCensusContextRequiredError(
+            "standalone Bitrix CRM identity must be dispatched by a frozen census child"
+        )
     split_stream = bitrix_execution_stream not in {None, "legacy"}
     if split_stream and execution_context is None:
         raise ValueError("split Bitrix execution requires a claimed execution context")

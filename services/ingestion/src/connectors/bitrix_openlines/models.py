@@ -65,6 +65,25 @@ class CrmContact:
     emails: tuple[str, ...] = ()
     kind: str = "contact"
     observed_at: datetime | None = None
+    company_id: str | None = None
+
+
+@dataclass(frozen=True)
+class CrmCompanyBindingPayload:
+    """Transport DTO returned by ``crm.contact.company.items.get`` only."""
+
+    company_id: object
+    sort: object
+    role_id: object
+    is_primary: object
+
+
+@dataclass(frozen=True)
+class CrmIdentityKeysetPage:
+    """One strict-ID keyset page for a standalone CRM kind."""
+
+    records: tuple[CrmContact | CrmCompany, ...]
+    upper_id: int
 
 
 @dataclass(frozen=True)

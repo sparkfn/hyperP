@@ -67,6 +67,7 @@ from src.lifecycle_reconciliation_queue import (
 )
 from src.main import (
     IngestionSummary,
+    StandaloneCrmCensusContextRequiredError,
     create_bitrix_known_owner_client,
     finalize_ingest_run,
     initialize_ingestion_graph,
@@ -1374,6 +1375,10 @@ def run_ingestion_task(
     scheduled_dispatch: bool = False,
 ) -> IngestionSummary:
     """Run a single ingestion under the cluster-wide concurrency cap."""
+    if source_key == "bitrix_crm_identity":
+        raise StandaloneCrmCensusContextRequiredError(
+            "standalone Bitrix CRM identity must be dispatched by a frozen census child"
+        )
     task_id = str(self.request.id) if self.request.id is not None else None
     legacy_live_delivery = (
         source_key == "bitrix_chat"

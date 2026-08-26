@@ -41,6 +41,8 @@ class LlmConfig:
     chat_extraction_retry_attempts: int = 3  # retries after the initial batch response
 
 
+StandaloneCrmIdentityKind = Literal["contact", "lead", "company"]
+
 BitrixOpenLinesChannelType = Literal[
     "whatsapp_business_api",
     "whatsapp_device",
@@ -74,6 +76,18 @@ class BitrixOpenLinesConfig:
     recent_page_size: int = 50
     source_instance_id: str | None = None
     standalone_crm_identity_enabled: bool = False
+    standalone_crm_identity_schedule_enabled: bool = False
+    standalone_crm_identity_kinds: list[StandaloneCrmIdentityKind] = field(
+        default_factory=lambda: ["contact", "lead", "company"]
+    )
+    standalone_crm_identity_max_rows_per_attempt: int = 500
+    standalone_crm_identity_max_calls_per_attempt: int = 1_000
+    standalone_crm_identity_max_runtime_seconds_per_attempt: float = 900.0
+    standalone_crm_identity_max_rows_per_occurrence: int = 100_000
+    standalone_crm_identity_max_calls_per_occurrence: int = 100_000
+    standalone_crm_identity_max_attempts_per_occurrence: int = 100
+    standalone_crm_identity_max_wall_clock_seconds_per_occurrence: float = 86_400.0
+    crm_identity_association_contract_version: str = "crm-company-membership-snapshot-v1"
 
 
 @dataclass
@@ -242,6 +256,68 @@ def _entity_by_numeric_id(raw: JsonValue, *, path: Path) -> dict[str, str]:
     return entity_map
 
 
+def _standalone_identity_kinds(raw: JsonValue, *, path: Path) -> list[StandaloneCrmIdentityKind]:
+    defaults: list[StandaloneCrmIdentityKind] = ["contact", "lead", "company"]
+    if raw is None:
+        return defaults
+    if not isinstance(raw, list) or not raw:
+        raise ValueError(f"Invalid ingestion config JSON: {path}")
+    result: list[StandaloneCrmIdentityKind] = []
+    for value in raw:
+        if not isinstance(value, str) or value not in {"contact", "lead", "company"}:
+            raise ValueError(f"Invalid ingestion config JSON: {path}")
+        typed = cast(StandaloneCrmIdentityKind, value)
+        if typed not in result:
+            result.append(typed)
+    return result
+
+
+def _association_contract_version(
+    raw: JsonValue,
+    *,
+    default: str,
+    path: Path,
+) -> str:
+    if raw is None:
+        return default
+    if not isinstance(raw, str) or raw != default:
+        raise ValueError(f"Invalid ingestion config JSON: {path}")
+    return raw
+
+
+def _positive_finite_identity_limits(
+    config: BitrixOpenLinesConfig,
+    *,
+    path: Path,
+) -> None:
+    integer_values = (
+        config.standalone_crm_identity_max_rows_per_attempt,
+        config.standalone_crm_identity_max_calls_per_attempt,
+        config.standalone_crm_identity_max_rows_per_occurrence,
+        config.standalone_crm_identity_max_calls_per_occurrence,
+        config.standalone_crm_identity_max_attempts_per_occurrence,
+    )
+    float_values = (
+        config.standalone_crm_identity_max_runtime_seconds_per_attempt,
+        config.standalone_crm_identity_max_wall_clock_seconds_per_occurrence,
+    )
+    if any(value < 1 for value in integer_values) or any(
+        value <= 0 or not math.isfinite(value) for value in float_values
+    ):
+        raise ValueError(f"Invalid ingestion config JSON: {path}")
+    if not config.crm_identity_association_contract_version.strip():
+        raise ValueError(f"Invalid ingestion config JSON: {path}")
+    if (
+        config.standalone_crm_identity_max_rows_per_attempt
+        > config.standalone_crm_identity_max_rows_per_occurrence
+        or config.standalone_crm_identity_max_calls_per_attempt
+        > config.standalone_crm_identity_max_calls_per_occurrence
+        or config.standalone_crm_identity_max_runtime_seconds_per_attempt
+        > config.standalone_crm_identity_max_wall_clock_seconds_per_occurrence
+    ):
+        raise ValueError(f"Invalid ingestion config JSON: {path}")
+
+
 def _bitrix_openlines_config(raw: JsonValue, *, path: Path) -> BitrixOpenLinesConfig:
     if raw is None:
         return BitrixOpenLinesConfig()
@@ -294,7 +370,12 @@ def _bitrix_openlines_config(raw: JsonValue, *, path: Path) -> BitrixOpenLinesCo
             raise ValueError(f"Invalid ingestion config JSON: {path}") from exc
     if standalone_crm_identity_enabled and source_instance_id is None:
         raise ValueError(f"Invalid ingestion config JSON: {path}")
-    return BitrixOpenLinesConfig(
+    standalone_schedule_enabled = raw.get("standalone_crm_identity_schedule_enabled", False)
+    if not isinstance(standalone_schedule_enabled, bool):
+        raise ValueError(f"Invalid ingestion config JSON: {path}")
+    if standalone_schedule_enabled and not standalone_crm_identity_enabled:
+        raise ValueError(f"Invalid ingestion config JSON: {path}")
+    identity_config = BitrixOpenLinesConfig(
         source_instance_id=source_instance_id,
         included_channel_types=included_types,
         included_config_ids=_config_ids(raw.get("included_config_ids"), path=path),
@@ -305,7 +386,53 @@ def _bitrix_openlines_config(raw: JsonValue, *, path: Path) -> BitrixOpenLinesCo
         incremental_overlap_seconds=overlap,
         recent_page_size=page_size,
         standalone_crm_identity_enabled=standalone_crm_identity_enabled,
+        standalone_crm_identity_schedule_enabled=standalone_schedule_enabled,
+        standalone_crm_identity_kinds=_standalone_identity_kinds(
+            raw.get("standalone_crm_identity_kinds"), path=path
+        ),
+        standalone_crm_identity_max_rows_per_attempt=_int(
+            raw.get("standalone_crm_identity_max_rows_per_attempt"),
+            defaults.standalone_crm_identity_max_rows_per_attempt,
+            path=path,
+        ),
+        standalone_crm_identity_max_calls_per_attempt=_int(
+            raw.get("standalone_crm_identity_max_calls_per_attempt"),
+            defaults.standalone_crm_identity_max_calls_per_attempt,
+            path=path,
+        ),
+        standalone_crm_identity_max_runtime_seconds_per_attempt=_float(
+            raw.get("standalone_crm_identity_max_runtime_seconds_per_attempt"),
+            defaults.standalone_crm_identity_max_runtime_seconds_per_attempt,
+            path=path,
+        ),
+        standalone_crm_identity_max_rows_per_occurrence=_int(
+            raw.get("standalone_crm_identity_max_rows_per_occurrence"),
+            defaults.standalone_crm_identity_max_rows_per_occurrence,
+            path=path,
+        ),
+        standalone_crm_identity_max_calls_per_occurrence=_int(
+            raw.get("standalone_crm_identity_max_calls_per_occurrence"),
+            defaults.standalone_crm_identity_max_calls_per_occurrence,
+            path=path,
+        ),
+        standalone_crm_identity_max_attempts_per_occurrence=_int(
+            raw.get("standalone_crm_identity_max_attempts_per_occurrence"),
+            defaults.standalone_crm_identity_max_attempts_per_occurrence,
+            path=path,
+        ),
+        standalone_crm_identity_max_wall_clock_seconds_per_occurrence=_float(
+            raw.get("standalone_crm_identity_max_wall_clock_seconds_per_occurrence"),
+            defaults.standalone_crm_identity_max_wall_clock_seconds_per_occurrence,
+            path=path,
+        ),
+        crm_identity_association_contract_version=_association_contract_version(
+            raw.get("crm_identity_association_contract_version"),
+            default=defaults.crm_identity_association_contract_version,
+            path=path,
+        ),
     )
+    _positive_finite_identity_limits(identity_config, path=path)
+    return identity_config
 
 
 def _scheduled_ingestion_config(raw: JsonValue, *, path: Path) -> ScheduledIngestionConfig:
@@ -472,7 +599,20 @@ def bitrix_configuration_digest(
         config_payload.pop("source_instance_id")
     # The standalone identity writer is a separate deployment gate, not part of
     # the deal/activity source-selection contract represented by this digest.
-    config_payload.pop("standalone_crm_identity_enabled")
+    for standalone_key in (
+        "standalone_crm_identity_enabled",
+        "standalone_crm_identity_schedule_enabled",
+        "standalone_crm_identity_kinds",
+        "standalone_crm_identity_max_rows_per_attempt",
+        "standalone_crm_identity_max_calls_per_attempt",
+        "standalone_crm_identity_max_runtime_seconds_per_attempt",
+        "standalone_crm_identity_max_rows_per_occurrence",
+        "standalone_crm_identity_max_calls_per_occurrence",
+        "standalone_crm_identity_max_attempts_per_occurrence",
+        "standalone_crm_identity_max_wall_clock_seconds_per_occurrence",
+        "crm_identity_association_contract_version",
+    ):
+        config_payload.pop(standalone_key)
     encoded = json.dumps(
         {
             "categories": included_category_ids,

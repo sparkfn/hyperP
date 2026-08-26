@@ -31,7 +31,18 @@
     "included_crm_category_ids": [],
     "entity_by_crm_category_id": {},
     "incremental_overlap_seconds": 300,
-    "recent_page_size": 50
+    "recent_page_size": 50,
+    "standalone_crm_identity_enabled": false,
+    "standalone_crm_identity_schedule_enabled": false,
+    "standalone_crm_identity_kinds": ["contact", "lead", "company"],
+    "standalone_crm_identity_max_rows_per_attempt": 500,
+    "standalone_crm_identity_max_calls_per_attempt": 1000,
+    "standalone_crm_identity_max_runtime_seconds_per_attempt": 900.0,
+    "standalone_crm_identity_max_rows_per_occurrence": 100000,
+    "standalone_crm_identity_max_calls_per_occurrence": 100000,
+    "standalone_crm_identity_max_attempts_per_occurrence": 100,
+    "standalone_crm_identity_max_wall_clock_seconds_per_occurrence": 86400.0,
+    "crm_identity_association_contract_version": "crm-company-membership-snapshot-v1"
   },
   "scheduled_ingestion": {
     "enabled": false
