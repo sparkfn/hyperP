@@ -607,6 +607,21 @@ def test_migrated_crm_contact_scope_survives_exact_deal_builder_replay() -> None
     normalized = normalize_envelope_identifiers(envelope)
 
     assert envelope.source_instance_id is None
+    assert record["raw_payload"]["crm_contact_groups"] == [
+        [
+            {
+                "type": "crm_contact_id",
+                "value": "123",
+                "is_verified": True,
+                "source_instance_id": "bitrix-primary",
+            },
+            {
+                "type": "phone",
+                "value": "+6591234567",
+                "is_verified": False,
+            },
+        ]
+    ]
     assert [
         (item.identifier_type, item.source_instance_id, item.normalized_value)
         for item in normalized

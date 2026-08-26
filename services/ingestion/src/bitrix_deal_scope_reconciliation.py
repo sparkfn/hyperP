@@ -64,6 +64,7 @@ def refresh_known_owner_set(
     context: ExecutionContext,
     included_category_ids: Collection[str],
     entity_by_category_id: dict[str, str],
+    source_instance_id: str | None,
 ) -> KnownOwnerRefreshSummary:
     """Refresh only frozen known owners; never enumerate or materialize global outsiders."""
     included = frozenset(included_category_ids)
@@ -114,7 +115,14 @@ def refresh_known_owner_set(
                     if entity_key is None:
                         raise RuntimeError("known owner refresh category has no entity mapping")
                     envelope = SourceRecordEnvelope.model_validate(
-                        {"source_system": "bitrix_chat", **_deal_envelope(deal, entity_key)}
+                        {
+                            "source_system": "bitrix_chat",
+                            **_deal_envelope(
+                                deal,
+                                entity_key,
+                                source_instance_id=source_instance_id,
+                            ),
+                        }
                     )
                     pipeline.ingest(envelope, ingest_run_id=context.fence_context.ingest_run_id)
                     refreshed += 1

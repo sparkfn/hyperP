@@ -89,7 +89,11 @@ class BitrixCrmDealConnector(SourceConnector):
                     raise _CrmEntityMappingError(
                         f"Bitrix CRM deal {deal.id} category {category_id!r} has no entity mapping"
                     )
-                yield _deal_envelope(deal, entity_key)
+                yield _deal_envelope(
+                    deal,
+                    entity_key,
+                    source_instance_id=self._config.source_instance_id,
+                )
             if len(page.items) < 50:
                 return
             if not ids:

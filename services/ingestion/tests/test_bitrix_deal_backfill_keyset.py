@@ -10,6 +10,7 @@ from src.connectors.bitrix_crm.deal_connector import BitrixCrmDealConnector
 from src.connectors.bitrix_openlines.models import (
     CrmActivity,
     CrmActivityCapabilityPage,
+    CrmContact,
     CrmDeal,
     CrmDealCapabilityItem,
     CrmDealCapabilityPage,
@@ -49,9 +50,21 @@ class _DealClient:
                 category_id="2",
                 stage_id="C2:NEW",
                 observed_at=datetime(2026, 8, 8, tzinfo=UTC),
-                primary_contact=None,
-                contacts=(),
-                contact_count=0,
+                primary_contact=CrmContact(
+                    id="123",
+                    full_name="Ada Lovelace",
+                    phones=(),
+                    emails=(),
+                ),
+                contacts=(
+                    CrmContact(
+                        id="123",
+                        full_name="Ada Lovelace",
+                        phones=(),
+                        emails=(),
+                    ),
+                ),
+                contact_count=1,
                 has_ambiguous_contacts=False,
                 raw_payload={
                     "ID": str(deal_id),
@@ -107,6 +120,7 @@ def test_deal_connector_resumes_exclusive_keyset_cursor() -> None:
     config = BitrixOpenLinesConfig(
         included_crm_category_ids=["2"],
         entity_by_crm_category_id={"2": "eko"},
+        source_instance_id="bitrix-primary",
     )
     connector = BitrixCrmDealConnector(
         client,
@@ -119,6 +133,7 @@ def test_deal_connector_resumes_exclusive_keyset_cursor() -> None:
 
     assert client.lower_bounds == [8]
     assert records[0]["source_record_id"] == "bitrix-crm-deal-9"
+    assert records[0]["identifiers"][0]["source_instance_id"] == "bitrix-primary"
     raw_payload = records[0]["raw_payload"]
     assert isinstance(raw_payload, dict)
     assert raw_payload["category_id"] == "2"

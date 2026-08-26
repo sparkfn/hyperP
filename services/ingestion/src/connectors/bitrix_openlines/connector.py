@@ -670,7 +670,12 @@ def build_crm_deal_envelope(
     contact_identity_metadata: list[JsonValue] = []
     for deal_contact in deal.contacts:
         evidence = crm_contact_identity_evidence(deal_contact)
-        contact_groups.append(list(evidence.identifiers))
+        contact_groups.append(
+            _scope_crm_identifiers(
+                evidence.identifiers,
+                source_instance_id=source_instance_id,
+            )
+        )
         raw_contact_groups.append(_raw_contact_identifier_group(deal_contact))
         contact_identity_metadata.append(evidence.metadata)
     raw_payload: dict[str, JsonValue] = {
@@ -706,15 +711,14 @@ def _scope_crm_identifiers(
     identifiers: tuple[dict[str, JsonValue], ...],
     *,
     source_instance_id: str | None,
-) -> list[dict[str, JsonValue]]:
-    if source_instance_id is None:
-        return [dict(identifier) for identifier in identifiers]
-    return [
-        {**identifier, "source_instance_id": source_instance_id}
-        if identifier.get("type") == "crm_contact_id"
-        else dict(identifier)
-        for identifier in identifiers
-    ]
+) -> list[JsonValue]:
+    scoped: list[JsonValue] = []
+    for identifier in identifiers:
+        item = dict(identifier)
+        if source_instance_id is not None and item.get("type") == "crm_contact_id":
+            item["source_instance_id"] = source_instance_id
+        scoped.append(item)
+    return scoped
 
 
 # Compatibility for extensions and historical tests that imported the former

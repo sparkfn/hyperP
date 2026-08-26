@@ -572,6 +572,7 @@ def _run_split_bitrix_ingestion(
                     context=refresh_context,
                     included_category_ids=ingestion_config.included_crm_category_ids,
                     entity_by_category_id=ingestion_config.entity_by_crm_category_id,
+                    source_instance_id=ingestion_config.source_instance_id,
                 )
                 refresh_record_count = refresh.refreshed + refresh.moved_out_of_scope
                 summary["succeeded"] += refresh_record_count

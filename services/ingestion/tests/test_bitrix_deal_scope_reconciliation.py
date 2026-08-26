@@ -234,6 +234,7 @@ def test_known_owner_refresh_serializes_out_of_scope_observed_at(
         context=context,
         included_category_ids=["2"],
         entity_by_category_id={"2": "eko"},
+        source_instance_id=None,
     )
 
     scope_recorder.assert_called_once()
@@ -272,7 +273,27 @@ def test_known_owner_refresh_batches_frozen_membership_in_source_order(
 ) -> None:
     client = _BatchClient(chunks=[])
     _Pipeline.ingested.clear()
+    observed_scopes: list[str | None] = []
+    exact_builder = reconciliation._deal_envelope
+
+    def scoped_builder(
+        deal: CrmDeal,
+        entity_key: str,
+        *,
+        source_instance_id: str | None,
+    ) -> dict[str, object]:
+        observed_scopes.append(source_instance_id)
+        return cast(
+            "dict[str, object]",
+            exact_builder(
+                deal,
+                entity_key,
+                source_instance_id=source_instance_id,
+            ),
+        )
+
     monkeypatch.setattr(reconciliation, "IngestPipeline", _Pipeline)
+    monkeypatch.setattr(reconciliation, "_deal_envelope", scoped_builder)
     monkeypatch.setattr(reconciliation, "BitrixDealScopeRepository", lambda _graph: object())
     membership = KnownOwnerMembershipSet(
         generation_id="generation-1",
@@ -288,9 +309,11 @@ def test_known_owner_refresh_batches_frozen_membership_in_source_order(
         context=_context(),
         included_category_ids=["2"],
         entity_by_category_id={"2": "eko"},
+        source_instance_id="bitrix-primary",
     )
 
     assert [len(chunk) for chunk in client.chunks] == [50, 50, 20]
+    assert observed_scopes == ["bitrix-primary"] * 120
     assert client.chunks[0][0] == 1
     assert client.chunks[-1][-1] == 120
     assert len(_Pipeline.ingested) == 120
@@ -335,6 +358,7 @@ def test_known_owner_refresh_resume_skips_checkpointed_members(
         context=context,
         included_category_ids=["2"],
         entity_by_category_id={"2": "eko"},
+        source_instance_id=None,
     )
 
     assert client.chunks == [tuple(range(76, 121))]
@@ -370,6 +394,7 @@ def test_known_owner_refresh_rejects_oversized_membership_before_source_calls(
             context=context,
             included_category_ids=["2"],
             entity_by_category_id={"2": "eko"},
+            source_instance_id=None,
         )
 
     assert client.chunks == []
@@ -406,6 +431,7 @@ def test_known_owner_refresh_rechecks_runtime_after_batch_before_writes(
             context=context,
             included_category_ids=["2"],
             entity_by_category_id={"2": "eko"},
+            source_instance_id=None,
         )
 
     assert client.chunks == [(1,)]
