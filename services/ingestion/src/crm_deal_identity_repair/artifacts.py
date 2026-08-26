@@ -185,24 +185,41 @@ def _impact_summary(
             if not isinstance(value, list):
                 raise ValueError("repair inventory closure evidence is invalid")
             impact_counts[output] += len(value)
-    current_baseline_counts = {key: population_counts.get(key, 0) for key in _PRIOR_246_BASELINE}
-    prior_evidence = {
+    condition_equations: dict[str, JsonValue] = {}
+    for condition, equation in equations.items():
+        equation_json: dict[str, JsonValue] = {}
+        for key, value in equation.items():
+            equation_json[key] = value
+        condition_equations[condition] = equation_json
+    lifecycle_counts: dict[str, JsonValue] = {}
+    for classification, count in lifecycle.items():
+        lifecycle_counts[classification] = count
+    closure_counts: dict[str, JsonValue] = {}
+    for key, value in impact_counts.items():
+        closure_counts[key] = value
+    prior_counts: dict[str, JsonValue] = {}
+    current_baseline_counts: dict[str, JsonValue] = {}
+    baseline_deltas: dict[str, JsonValue] = {}
+    for key, prior in _PRIOR_246_BASELINE.items():
+        current = population_counts[key]
+        prior_counts[key] = prior
+        current_baseline_counts[key] = current
+        baseline_deltas[key] = current - prior
+    prior_evidence: dict[str, JsonValue] = {
         "source": "issue_246_prior_evidence",
         "is_current_truth": False,
-        "counts": _PRIOR_246_BASELINE,
+        "counts": prior_counts,
         "fresh_authoritative_counts": current_baseline_counts,
-        "deltas": {
-            key: current_baseline_counts[key] - prior for key, prior in _PRIOR_246_BASELINE.items()
-        },
+        "deltas": baseline_deltas,
     }
     return {
         "schema_version": 1,
         "execution_allowed": False,
         "inventory_digest": inventory_digest(items),
         "population_counts": dict(population_counts),
-        "condition_equations": equations,
-        "lifecycle_counts": lifecycle,
-        "closure_counts": impact_counts,
+        "condition_equations": condition_equations,
+        "lifecycle_counts": lifecycle_counts,
+        "closure_counts": closure_counts,
         "prior_246_evidence": prior_evidence,
     }
 
