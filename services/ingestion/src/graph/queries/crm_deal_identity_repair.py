@@ -90,13 +90,13 @@ CALL {
 CALL {
     WITH deal
     OPTIONAL MATCH (deal)-[:LINKED_TO]->(owner:Person)
-    OPTIONAL MATCH (owner)-[merge:MERGED_INTO]->(survivor:Person)
-    WITH owner, merge, survivor
-    WHERE merge IS NOT NULL
+    OPTIONAL MATCH (owner)-[merge_rel:MERGED_INTO]->(survivor:Person)
+    WITH owner, merge_rel, survivor
+    WHERE merge_rel IS NOT NULL
     RETURN collect({
         evidence_type: 'merge_lineage',
         owner_person_id: owner.person_id,
-        merge_event_id: merge.merge_event_id,
+        merge_event_id: merge_rel.merge_event_id,
         merge_survivor_person_id: survivor.person_id
     }) AS owner_merges
 }
