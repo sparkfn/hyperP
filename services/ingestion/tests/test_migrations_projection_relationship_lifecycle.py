@@ -178,12 +178,22 @@ def test_projection_migration_runs_after_source_record_lifecycle(
     )
     monkeypatch.setattr(
         migrations,
+        "migrate_source_record_source_instances",
+        lambda _client: calls.append("source_instances"),
+    )
+    monkeypatch.setattr(
+        migrations,
+        "migrate_identifier_scopes",
+        lambda _client, *, bitrix_source_instance_id=None: calls.append("identifier_scopes"),
+    )
+    monkeypatch.setattr(
+        migrations,
         "migrate_projection_relationship_lifecycle",
         lambda _client: calls.append("projection"),
     )
     migrations.apply_data_migrations(cast(Neo4jClient, object()))
 
-    assert calls == ["source", "projection"]
+    assert calls == ["source", "source_instances", "identifier_scopes", "projection"]
 
 
 def test_completed_marker_is_followed_by_late_relationship_reconciliation() -> None:

@@ -181,12 +181,14 @@ def test_apply_data_migrations_runs_completeness_repair_after_record_type_backfi
         "migrate_bitrix_crm_entities",
         "migrate_fundbox_source_keys",
         "migrate_source_record_lifecycle",
+        "migrate_source_record_source_instances",
+        "migrate_identifier_scopes",
         "migrate_projection_relationship_lifecycle",
     ):
         monkeypatch.setattr(
             migrations,
             name,
-            lambda _client, *args, migration=name: calls.append(migration),
+            lambda _client, *args, migration=name, **kwargs: calls.append(migration),
         )
     monkeypatch.setattr(
         migrations,
