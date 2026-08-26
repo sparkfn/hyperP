@@ -203,6 +203,10 @@ CREATE (sr:SourceRecord {
     raw_payload:           $raw_payload,
     normalized_payload:    $normalized_payload,
     crm_deal_stage_id:     $crm_deal_stage_id,
+    source_entity_type: $source_entity_type,
+    source_entity_id: $source_entity_id,
+    identity_policy_version: $identity_policy_version,
+    identity_link_key: $identity_link_key,
     // Compatibility only: lifecycle_status is authoritative. Staged identity
     // records pass false so legacy readers cannot mistake them for active.
     is_latest:             $is_latest,

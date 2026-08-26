@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from fastapi import APIRouter
 
 from src.routes import (
@@ -56,4 +58,33 @@ ROOT_ROUTERS: tuple[APIRouter, ...] = (
     health.router,
     oauth_routes.router,
     public_router,
+)
+
+
+@dataclass(frozen=True)
+class McpOperationExclusion:
+    """A schema operation intentionally absent from MCP for transport reasons."""
+
+    operation_id: str
+    surface: str
+    reason: str
+
+
+MCP_OPERATION_EXCLUSIONS: tuple[McpOperationExclusion, ...] = (
+    McpOperationExclusion(
+        operation_id="list_identity_link_events_machine",
+        surface="oauth2",
+        reason=(
+            "Transport-specific globally ordered synchronization interface requiring durable "
+            "cursor and checkpoint semantics; intentionally unavailable as an MCP tool."
+        ),
+    ),
+    McpOperationExclusion(
+        operation_id="list_identity_link_snapshot_machine",
+        surface="oauth2",
+        reason=(
+            "Transport-specific globally ordered synchronization interface requiring durable "
+            "cursor and checkpoint semantics; intentionally unavailable as an MCP tool."
+        ),
+    ),
 )

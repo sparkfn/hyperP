@@ -222,6 +222,10 @@ def _person_envelope(
         attributes["full_name"] = record.full_name
     return {
         "source_record_id": f"bitrix-crm-{entity_type}-{record.id}",
+        "source_entity_type": entity_type,
+        "source_entity_id": record.id,
+        "identity_policy_version": f"crm_{entity_type}_identity_v1",
+        "identity_link_key": f"bitrix:{source_instance_id}:{entity_type}:{record.id}",
         "source_instance_id": source_instance_id,
         "record_type": "identity",
         "ingest_type": "api_incremental",
@@ -249,6 +253,10 @@ def _company_envelope(company: CrmCompany, *, source_instance_id: str) -> dict[s
         attributes["company_title"] = company.title
     return {
         "source_record_id": f"bitrix-crm-company-{company.id}",
+        "source_entity_type": "company",
+        "source_entity_id": company.id,
+        "identity_policy_version": "crm_company_reference_v1",
+        "identity_link_key": f"bitrix:{source_instance_id}:company:{company.id}",
         "source_instance_id": source_instance_id,
         "record_type": "crm_company",
         "ingest_type": "api_incremental",

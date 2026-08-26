@@ -806,6 +806,10 @@ OPTIONAL MATCH (md)-[:ABOUT_RIGHT]->(proposed:Person {status: 'active'})
 OPTIONAL MATCH (pending)-[:LINKED_TO]->(prior:Person)
 RETURN pending.source_record_pk AS pending_source_record_pk,
        pending.source_record_id AS source_record_id,
+       pending.source_instance_id AS source_instance_id,
+       pending.source_entity_type AS source_entity_type,
+       pending.source_entity_id AS source_entity_id,
+       pending.identity_policy_version AS identity_policy_version,
        source.source_key AS source_system_key,
        pending.normalized_payload AS normalized_payload,
        pending.expected_active_source_record_pk AS expected_active_source_record_pk,
@@ -1097,6 +1101,55 @@ RETURN pending.source_record_pk AS pending_source_record_pk,
        [old IN old_versions | old.source_record_pk] AS old_source_record_pks,
        approved.person_id AS approved_person_id,
        direct_person_ids + changed_relationship_person_ids AS affected_person_ids
+"""
+
+
+RESOLVE_PENDING_REVIEW_RECORD_NO_MATCH = """
+MATCH (rc:ReviewCase {review_case_id: $review_case_id})-[:FOR_DECISION]->(md:MatchDecision)
+MATCH (md)-[:ABOUT_LEFT]->(pending:SourceRecord {lifecycle_status: 'pending_review'})
+      -[:FROM_SOURCE]->(source:SourceSystem)
+WHERE pending.record_type <> 'sales'
+MERGE (identity_lock:SourceRecordIdentityLock {
+  source_system: source.source_key,
+  source_instance_id: pending.source_instance_id,
+  source_record_id: pending.source_record_id
+})
+SET identity_lock.locked_at = datetime()
+WITH pending, source
+OPTIONAL MATCH (old:SourceRecord {
+  source_instance_id: pending.source_instance_id,
+  source_record_id: pending.source_record_id
+})-[:FROM_SOURCE]->(source)
+WHERE old <> pending AND old.lifecycle_status = 'active'
+WITH pending, collect(old) AS old_versions
+WHERE (pending.expected_active_source_record_pk IS NULL AND size(old_versions) = 0)
+   OR (pending.expected_active_source_record_pk IS NOT NULL AND size(old_versions) = 1
+       AND old_versions[0].source_record_pk = pending.expected_active_source_record_pk)
+CALL (old_versions) {
+  UNWIND old_versions AS old
+  OPTIONAL MATCH (old)-[old_link:LINKED_TO]->(:Person)
+  DELETE old_link
+  OPTIONAL MATCH (:Person)-[projection:IDENTIFIED_BY|LIVES_AT|HAS_FACT]->()
+  WHERE projection.source_record_pk = old.source_record_pk
+  SET projection.is_active = false, projection.retired_at = datetime(), projection.updated_at = datetime()
+  OPTIONAL MATCH (old)-[description:DESCRIBES_ADDRESS|MENTIONS_VEHICLE]->()
+  SET description.is_active = false, description.retired_at = datetime(), description.updated_at = datetime()
+  OPTIONAL MATCH ()-[knows:KNOWS]->()
+  WHERE knows.source_record_pk = old.source_record_pk
+  SET knows.is_active = false, knows.retired_at = datetime(), knows.updated_at = datetime()
+  RETURN count(old) AS retired_versions
+}
+WITH pending, old_versions
+OPTIONAL MATCH (pending)-[provisional:LINKED_TO]->(:Person)
+DELETE provisional
+FOREACH (old IN old_versions |
+  SET old.lifecycle_status = 'superseded', old.is_latest = false,
+      old.superseded_at = datetime(), old.updated_at = datetime()
+  MERGE (old)-[:PREVIOUS_VERSION_OF]->(pending)
+)
+SET pending.lifecycle_status = 'active', pending.is_latest = true,
+    pending.link_status = 'unresolved', pending.activated_at = datetime(), pending.updated_at = datetime()
+RETURN pending.source_record_pk AS pending_source_record_pk
 """
 
 REJECT_PENDING_REVIEW_RECORD = """

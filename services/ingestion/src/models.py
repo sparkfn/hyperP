@@ -309,6 +309,11 @@ class SourceRecordEnvelope(BaseModel):
     event_at: str | None = None
     projection_version: int | None = None
     projection_source: str | None = None
+    # First-class, immutable identity-link export provenance. Never inferred from raw payload.
+    source_entity_type: str | None = None
+    source_entity_id: str | None = None
+    identity_policy_version: str | None = None
+    identity_link_key: str | None = None
 
     @model_validator(mode="after")
     def _check_source_instance_invariants(self) -> SourceRecordEnvelope:
@@ -366,6 +371,29 @@ class SourceRecordEnvelope(BaseModel):
                     "extraction_confidence / extraction_method / conversation_ref "
                     "are only valid on record_type='conversation'"
                 )
+        provenance = (
+            self.source_entity_type,
+            self.source_entity_id,
+            self.identity_policy_version,
+            self.identity_link_key,
+        )
+        if any(value is not None for value in provenance) and any(
+            not isinstance(value, str) or not value.strip() for value in provenance
+        ):
+            raise ValueError("identity-link provenance must be all-or-none nonblank strings")
+        if self.source_entity_type is not None:
+            if self.source_system != "bitrix_chat" or self.source_entity_type not in {
+                "deal",
+                "contact",
+                "lead",
+                "company",
+            }:
+                raise ValueError(
+                    "identity-link provenance is only valid for allowlisted Bitrix CRM identities"
+                )
+            expected_prefix = f"bitrix-crm-{self.source_entity_type}-"
+            if not self.source_record_id.startswith(expected_prefix):
+                raise ValueError("identity-link source record ID does not match source entity type")
         if self.record_type == RecordType.CRM_COMPANY:
             self._check_crm_company_reference()
         expected_parent_type = {

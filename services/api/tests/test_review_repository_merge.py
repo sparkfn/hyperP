@@ -31,10 +31,12 @@ from src.graph.queries import (
     REDIRECT_PERSON_PAIR_CASES_ABSORBED_RIGHT,
     REDIRECT_RECORD_PERSON_CASES_FOR_ABSORBED,
     REJECT_PENDING_REVIEW_RECORD,
+    RESOLVE_PENDING_REVIEW_RECORD_NO_MATCH,
     build_count_review_cases_query,
     build_list_review_cases_query,
     build_review_action_cypher,
 )
+from src.graph.queries.identity_link_revisions import APPEND_IDENTITY_LINK_REVISIONS
 from src.repositories.neo4j import review as review_module
 from src.repositories.neo4j.review import _action_tx
 from src.repositories.neo4j.sales_staging import canonical_staging_hash, validate_sales_stage
@@ -162,7 +164,7 @@ async def test_review_merge_uses_requested_survivor_person() -> None:
                     "resolution": "merge",
                 }
             },
-            {"merge_event_id": "merge-1"},
+            {"merge_event_id": "merge-1", "created_at": "2026-08-26T00:00:00+00:00"},
         ]
     )
 
@@ -280,7 +282,7 @@ async def test_review_merge_returns_survivor_and_golden_profile_selections() -> 
                     "resolution": "merge",
                 }
             },
-            {"merge_event_id": "merge-1"},
+            {"merge_event_id": "merge-1", "created_at": "2026-08-26T00:00:00+00:00"},
         ]
     )
 
@@ -354,6 +356,60 @@ async def test_review_merge_rejects_survivor_outside_review_pair() -> None:
 
     assert result == {"merge_not_applicable": True}
     assert [call.query for call in tx.calls] == [GET_PERSONS_FOR_REVIEW_MERGE]
+
+
+@pytest.mark.asyncio
+async def test_pending_source_manual_no_match_appends_unresolved_in_claimed_transaction() -> None:
+    tx = _Tx(
+        [
+            {
+                "pending_source_record_pk": "sr-1",
+                "source_system_key": "bitrix_chat",
+                "source_instance_id": "portal-1",
+                "source_entity_type": "contact",
+                "source_entity_id": "contact-1",
+                "identity_policy_version": "crm_contact_identity_v1",
+                "observed_at": "2026-08-26T00:00:00+00:00",
+            },
+            {
+                "claim_token": "claim-1",
+                "claim_version": 1,
+                "claim_status": "open",
+                "claimed_by": "reviewer@example.com",
+            },
+            {"pending_source_record_pk": "sr-1"},
+            None,
+            {
+                "review_case": {
+                    "review_case_id": "case-1",
+                    "queue_state": "resolved",
+                    "resolution": "manual_no_match",
+                }
+            },
+        ]
+    )
+
+    result = await _action_tx(
+        cast(AsyncManagedTransaction, tx),
+        "case-1",
+        ApiReviewActionType.MANUAL_NO_MATCH.value,
+        "resolved",
+        "manual_no_match",
+        "not the same person",
+        None,
+        "reviewer@example.com",
+        None,
+        [],
+    )
+
+    assert result is not None
+    queries = [call.query for call in tx.calls]
+    assert RESOLVE_PENDING_REVIEW_RECORD_NO_MATCH in queries
+    assert APPEND_IDENTITY_LINK_REVISIONS in queries
+    assert CREATE_NO_MATCH_LOCK_FROM_REVIEW not in queries
+    append_call = tx.calls[queries.index(APPEND_IDENTITY_LINK_REVISIONS)]
+    assert append_call.params["rows"][0]["link_status"] == "unresolved"
+    assert append_call.params["skip_existing_heads"] is False
 
 
 @pytest.mark.asyncio

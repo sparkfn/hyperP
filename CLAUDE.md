@@ -457,3 +457,8 @@ The person/relationship graph uses `react-force-graph-2d` (dynamically imported,
 - **Module split**: types, colors, icon paths, and canvas callbacks live in `graph-utils.ts` (~300 lines); the viewer component and legend stay in `PersonGraphViewer.tsx`; the detail panel is in `GraphDetailPanel.tsx`.
 - **Canvas icons**: Node icons use `Path2D(svgPathString)` constructed from MUI icon SVG path data (24×24 viewBox). Icons are drawn in world coordinates inside `paintNode()` — they scale with the graph zoom, not in screen pixels. The legend uses actual MUI icon React components in `Chip` elements.
 - **Detail panel**: Person nodes show a rich profile card (name, status chips, key fields grid, "More" link to person page). Non-Person nodes show generic key-value properties. Both panels include an "Expand in graph" link.
+
+
+### Identity-link machine synchronization (#256)
+
+The OAuth-only `/oauth2/v1/identity-links/{events,snapshot}` routes are a separate privacy-safe ordered synchronization contract, not a replacement for `/v1/events`. They require an unscoped OAuth client with `identity-links:read` or `admin`; they are deliberately absent from MCP because MCP cannot provide the durable cursor and checkpoint semantics. Event pages freeze `through_revision`; snapshot pages freeze `snapshot_revision` and recovery is snapshot plus event tail. Snapshot reads remain unavailable until the leased, keyset-resumable baseline marks both migration and stream counter ready. Lifecycle writers must append through the existing Neo4j transaction; no second session, post-commit event, or exported raw evidence is allowed.

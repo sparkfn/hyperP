@@ -295,7 +295,7 @@ FOREACH (merge_neighbor IN merge_neighbors |
 SET survivor.analysis_input_revision = coalesce(survivor.analysis_input_revision, 0) + 1,
     survivor.analysis_dirty_at = datetime(),
     survivor.updated_at = datetime()
-RETURN me.merge_event_id AS merge_event_id
+RETURN me.merge_event_id AS merge_event_id, toString(me.created_at) AS created_at
 """
 
 GET_UNMERGE_TARGET = """
@@ -627,6 +627,7 @@ CREATE (ume:MergeEvent {
 })
 CREATE (ume)-[:ABSORBED]->(absorbed)
 CREATE (ume)-[:SURVIVOR]->(survivor)
+RETURN ume.merge_event_id AS merge_event_id, toString(ume.created_at) AS created_at
 """
 
 FLAG_AFFECTED_RECORDS_FOR_REVIEW = """

@@ -1655,3 +1655,42 @@ Implement read and workflow APIs first:
 These endpoints unlock review operations, sales lookup, and downstream
 consumption without forcing all ingestion or admin surfaces to be
 production-complete on day one.
+
+
+## OAuth identity-link revision stream
+
+`GET /v1/events` remains the existing generic administrative event feed. It is not
+replaced by the synchronization stream. Machine clients use only the OAuth mount:
+`GET /oauth2/v1/identity-links/events` and `GET /oauth2/v1/identity-links/snapshot`
+(served as `/api/oauth2/v1/...`). Both require an OAuth client-credentials token
+with `identity-links:read` (or `admin`) and `entity_key = null`; human principals
+and entity-scoped clients are rejected. These transport-specific durable-cursor
+operations are intentionally excluded from MCP.
+
+Every item has exactly the privacy-safe fields `event_id`, `global_revision`, the
+Bitrix source tuple and policy, `link_status`, `hyperp_person_id`,
+`resolution_kind`, `resolution_revision`, `effective_at`, optional opaque
+`match_decision_id`/`review_case_id`, and `supersedes_event_id`. Statuses are
+`resolved`, `unresolved`, `pending_review`, `blocked`, `rejected`, and `retired`;
+only `resolved` contains a Person ID. Raw payloads, identifiers, candidate IDs,
+scores, reasons, feature snapshots, lock topology, absorbed Person IDs, and internal
+stream/cause keys are never exported.
+
+The first events page fixes `through_revision`; cursor pages are strictly ascending
+and cannot exceed that bound. A missing revision is `503 identity_link_revision_gap`.
+The first snapshot page fixes `snapshot_revision`, is unavailable with
+`503 identity_link_snapshot_not_ready` until the resumable baseline is complete,
+and all its pages read state at that same revision. Recovery is snapshot plus tail:
+consume the entire snapshot at revision R, replace local link state, checkpoint R,
+then consume events with `after_revision=R`. Consumers deduplicate `event_id`,
+ignore lower/equal per-link `resolution_revision`, and reload a snapshot after a
+persistent gap.
+
+Authoritative writes append immutable revisions in their existing Neo4j transaction
+for activation/supersession, review activation/rejection, source-record manual
+no-match, Person merge/unmerge, Person retirement, and source retirement.
+Source-record manual no-match finalizes that exported source link as unresolved.
+Person-pair and direct-lock manual-no-match operations, plus sales manual no-match,
+are intentional no-event paths because they do not mutate an exportable source link.
+Person retirement is a trusted internal repository/service command only; there is no
+public retirement mutation endpoint.

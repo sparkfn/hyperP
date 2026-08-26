@@ -10,7 +10,6 @@ import json
 import logging
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
-from typing import Literal
 
 from neo4j import ManagedTransaction
 
@@ -20,6 +19,7 @@ from src.identifier_scopes import (
     identifier_scope,
     source_instance_for_identifier,
 )
+from src.identity_link_revisions import identity_link_key
 from src.models import (
     CandidateResult,
     ChatDifficulty,
@@ -259,7 +259,7 @@ def persist_source_record(
     lifecycle_status: SourceRecordLifecycleStatus,
     expected_active_source_record_pk: str | None,
     activation_blueprint: dict[str, JsonValue] | None = None,
-    link_status: Literal["not_applicable"] | None = None,
+    link_status: str | None = None,
 ) -> str:
     """Step 7 + 7b: persist SourceRecord and link to IngestRun."""
     normalized = build_normalized_source_payload(
@@ -325,6 +325,22 @@ def persist_source_record(
         raw_payload=json.dumps(envelope.raw_payload, default=str),
         normalized_payload=json.dumps(normalized, default=str),
         crm_deal_stage_id=_crm_deal_stage_id(envelope),
+        source_entity_type=envelope.source_entity_type,
+        source_entity_id=envelope.source_entity_id,
+        identity_policy_version=envelope.identity_policy_version,
+        identity_link_key=(
+            identity_link_key(
+                envelope.source_system,
+                effective_source_instance_id(envelope.source_instance_id),
+                envelope.source_entity_type,
+                envelope.source_entity_id,
+                envelope.identity_policy_version,
+            )
+            if envelope.source_entity_type is not None
+            and envelope.source_entity_id is not None
+            and envelope.identity_policy_version is not None
+            else None
+        ),
     )
     sr_record = sr_result.single()
     assert sr_record is not None, "CREATE_SOURCE_RECORD must return a row"

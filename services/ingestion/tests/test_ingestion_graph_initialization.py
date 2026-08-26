@@ -174,6 +174,7 @@ def test_data_migrations_exclude_recurring_lifecycle_reconciliation(
         "migrate_source_record_source_instances",
         "migrate_identifier_scopes",
         "migrate_projection_relationship_lifecycle",
+        "migrate_identity_link_revision_baseline",
     ):
         monkeypatch.setattr(
             migrations,
@@ -219,4 +220,5 @@ def test_data_migrations_exclude_recurring_lifecycle_reconciliation(
         "migrate_source_record_source_instances",
         "migrate_identifier_scopes",
         "migrate_projection_relationship_lifecycle",
+        "migrate_identity_link_revision_baseline",
     ]

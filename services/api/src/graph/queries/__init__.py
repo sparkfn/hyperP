@@ -36,6 +36,14 @@ from src.graph.queries.graph import (
     get_graph_query,
     get_node_graph_query,
 )
+from src.graph.queries.identity_link_revisions import (
+    APPEND_IDENTITY_LINK_REVISIONS,
+    GET_AFFECTED_IDENTITY_LINK_HEADS,
+    GET_IDENTITY_LINK_COUNTER,
+    GET_RESOLVED_IDENTITY_LINK_HEADS_FOR_PERSON,
+    LIST_IDENTITY_LINK_EVENTS,
+    LIST_IDENTITY_LINK_SNAPSHOT,
+)
 from src.graph.queries.ingestion import (
     CHECK_SOURCE_SYSTEM,
     CREATE_INGEST_RUN,
@@ -139,6 +147,7 @@ from src.graph.queries.review import (
     RECREATE_REVIEW_CASE,
     REJECT_PENDING_REVIEW_RECORD,
     REJECT_STAGED_REVIEW_SALE,
+    RESOLVE_PENDING_REVIEW_RECORD_NO_MATCH,
     REVIEW_SORT_KEYS,
     build_claimed_review_action_cypher,
     build_count_review_cases_query,
@@ -197,6 +206,12 @@ __all__ = [
     "COUNT_PERSON_SHARED_IDENTIFIERS",
     "COUNT_PERSON_SOURCE_RECORDS",
     "COUNT_PERSON_TIMELINE",
+    "APPEND_IDENTITY_LINK_REVISIONS",
+    "GET_AFFECTED_IDENTITY_LINK_HEADS",
+    "GET_IDENTITY_LINK_COUNTER",
+    "GET_RESOLVED_IDENTITY_LINK_HEADS_FOR_PERSON",
+    "LIST_IDENTITY_LINK_EVENTS",
+    "LIST_IDENTITY_LINK_SNAPSHOT",
     "CHECK_BOTH_PERSONS_ACTIVE",
     "CHECK_EXISTING_LOCK",
     "CHECK_NO_MATCH_LOCK",
@@ -291,6 +306,7 @@ __all__ = [
     "MIN_HOPS",
     "RECREATE_REVIEW_CASE",
     "REJECT_PENDING_REVIEW_RECORD",
+    "RESOLVE_PENDING_REVIEW_RECORD_NO_MATCH",
     "REVIEW_SORT_KEYS",
     "REVERT_MERGE",
     "SEARCH_PERSONS",
@@ -314,3 +330,9 @@ __all__ = [
     "get_node_graph_query",
     "RECOMPUTE_PERSON_CRM_DEAL_COUNTS",
 ]
+
+# Identity-link stream schema is created by both services because API lifecycle
+# writes and ingestion lifecycle writes can be the first writer after deploy.
+from src.graph.queries.identity_link_revisions import (
+    CREATE_IDENTITY_LINK_SCHEMA as CREATE_IDENTITY_LINK_SCHEMA,
+)

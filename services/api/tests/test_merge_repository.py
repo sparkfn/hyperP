@@ -16,6 +16,7 @@ from src.graph.queries import (
     DELETE_LOCK,
     EXECUTE_MANUAL_MERGE,
     FLAG_AFFECTED_RECORDS_FOR_REVIEW,
+    GET_AFFECTED_IDENTITY_LINK_HEADS,
     GET_UNMERGE_TARGET,
     RECOMPUTE_PERSON_CRM_DEAL_COUNTS,
     REDIRECT_PERSON_PAIR_CASES_ABSORBED_LEFT,
@@ -131,7 +132,7 @@ async def test_manual_merge_success_returns_merge_event_id() -> None:
         [
             {"is_locked": False},
             {"absorbed": "person-a", "survivor": "person-b"},
-            {"merge_event_id": "merge-1"},
+            {"merge_event_id": "merge-1", "created_at": "2026-08-26T00:00:00+00:00"},
             {"person_id": "person-a"},
         ]
     )
@@ -156,6 +157,7 @@ async def test_manual_merge_success_returns_merge_event_id() -> None:
         REDIRECT_PERSON_PAIR_CASES_ABSORBED_LEFT,
         REDIRECT_PERSON_PAIR_CASES_ABSORBED_RIGHT,
         REDIRECT_RECORD_PERSON_CASES_FOR_ABSORBED,
+        GET_AFFECTED_IDENTITY_LINK_HEADS,
     ]
     assert tx.calls[2].params == {
         "from_id": "person-a",
@@ -319,6 +321,7 @@ async def test_unmerge_reactivates_absorbed_flags_records_and_audits() -> None:
             {"absorbed_id": "person-a", "survivor_id": "person-b"},
             {"removed_count": 1, "current_survivor_id": "person-b"},
             {"person_id": "person-a"},
+            {"merge_event_id": "unmerge-1", "created_at": "2026-08-26T00:00:00+00:00"},
             None,
             None,
         ]
@@ -342,6 +345,7 @@ async def test_unmerge_reactivates_absorbed_flags_records_and_audits() -> None:
         RECOMPUTE_PERSON_CRM_DEAL_COUNTS,
         CREATE_UNMERGE_AUDIT,
         FLAG_AFFECTED_RECORDS_FOR_REVIEW,
+        GET_AFFECTED_IDENTITY_LINK_HEADS,
         REVERT_RECORD_PERSON_CASE_REDIRECTS,
         REVERT_PERSON_PAIR_REDIRECTS_LEFT,
         REVERT_PERSON_PAIR_REDIRECTS_RIGHT,
@@ -363,6 +367,7 @@ async def test_unmerge_returns_actual_current_survivor_for_recompute() -> None:
             {"absorbed_id": "person-a", "survivor_id": "person-b"},
             {"removed_count": 1, "current_survivor_id": "person-c"},
             {"person_id": "person-a"},
+            {"merge_event_id": "unmerge-1", "created_at": "2026-08-26T00:00:00+00:00"},
             None,
             None,
         ]
