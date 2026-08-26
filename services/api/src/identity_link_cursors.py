@@ -3,9 +3,14 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 from dataclasses import dataclass
 from typing import Literal
+
+from cryptography.fernet import Fernet, InvalidToken
+
+from src.config import config
 
 
 @dataclass(frozen=True)
@@ -21,6 +26,17 @@ def _integer(value: object, name: str, *, minimum: int = 0) -> int:
     if not isinstance(value, int) or isinstance(value, bool) or value < minimum:
         raise ValueError(f"invalid cursor {name}")
     return value
+
+
+def _cursor_cipher() -> Fernet:
+    """Build the stable authenticated cipher used only for private cursors."""
+    secret = config.oauth_secret_hash_key
+    if not secret:
+        raise ValueError("identity-link cursor secret is unavailable")
+    key = base64.urlsafe_b64encode(
+        hashlib.sha256(b"identity-link-cursor:v1\x00" + secret.encode("utf-8")).digest()
+    )
+    return Fernet(key)
 
 
 def encode_identity_link_cursor(cursor: IdentityLinkCursor) -> str:
@@ -43,7 +59,7 @@ def encode_identity_link_cursor(cursor: IdentityLinkCursor) -> str:
             after_link_key=cursor.after_link_key,
         )
     encoded = json.dumps(payload, separators=(",", ":")).encode()
-    return base64.urlsafe_b64encode(encoded).decode().rstrip("=")
+    return _cursor_cipher().encrypt(encoded).decode()
 
 
 def decode_identity_link_cursor(
@@ -51,9 +67,9 @@ def decode_identity_link_cursor(
 ) -> IdentityLinkCursor:
     """Decode and strictly validate a private transport cursor."""
     try:
-        raw = base64.urlsafe_b64decode(value + "=" * (-len(value) % 4))
+        raw = _cursor_cipher().decrypt(value.encode())
         payload = json.loads(raw)
-    except (ValueError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+    except (InvalidToken, ValueError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise ValueError("invalid cursor") from exc
     if (
         not isinstance(payload, dict)

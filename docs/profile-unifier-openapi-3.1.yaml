@@ -1315,8 +1315,9 @@ paths:
       operationId: list_identity_link_events_machine
       description: >-
         OAuth-client-only synchronization feed. The first page freezes
-        through_revision; cursor pages retain that bound and revisions are
-        strictly contiguous. A detected gap requires snapshot recovery.
+        through_revision; authenticated opaque cursor pages retain that bound,
+        recheck it against the current stream, and revisions are strictly
+        contiguous. A detected gap requires snapshot recovery.
       security:
         - bearerAuth: [identity-links:read]
       parameters:
@@ -1327,7 +1328,7 @@ paths:
           schema: {type: integer, minimum: 0}
         - name: cursor
           in: query
-          description: Opaque events cursor containing the frozen upper bound.
+          description: Authenticated opaque events cursor; clients must not construct it.
           schema: {type: string}
         - name: limit
           in: query
@@ -1353,15 +1354,16 @@ paths:
       operationId: list_identity_link_snapshot_machine
       description: >-
         OAuth-client-only full-state recovery feed. The first page freezes
-        snapshot_revision; all cursor pages resolve each link at that same
-        revision. Consumers recover by completing the snapshot and tailing events.
+        snapshot_revision; authenticated opaque cursor pages recheck readiness and
+        resolve each link at that same revision. Consumers recover by completing the
+        snapshot and tailing events.
       security:
         - bearerAuth: [identity-links:read]
       parameters:
         - $ref: '#/components/parameters/RequestId'
         - name: cursor
           in: query
-          description: Opaque snapshot cursor containing the frozen revision and private keyset.
+          description: Authenticated opaque snapshot cursor; clients must not construct it.
           schema: {type: string}
         - name: limit
           in: query

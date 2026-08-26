@@ -1676,11 +1676,14 @@ only `resolved` contains a Person ID. Raw payloads, identifiers, candidate IDs,
 scores, reasons, feature snapshots, lock topology, absorbed Person IDs, and internal
 stream/cause keys are never exported.
 
-The first events page fixes `through_revision`; cursor pages are strictly ascending
-and cannot exceed that bound. A missing revision is `503 identity_link_revision_gap`.
-The first snapshot page fixes `snapshot_revision`, is unavailable with
-`503 identity_link_snapshot_not_ready` until the resumable baseline is complete,
-and all its pages read state at that same revision. Recovery is snapshot plus tail:
+The first events page fixes `through_revision`; cursor pages are authenticated,
+opaque server tokens and are strictly ascending. Every cursor page rechecks that its
+fixed bound is not ahead of the current stream. A missing revision is
+`503 identity_link_revision_gap`. The first snapshot page fixes `snapshot_revision`,
+is unavailable with `503 identity_link_snapshot_not_ready` until the resumable baseline
+is complete, and all its pages recheck readiness and read state at that same revision.
+A cursor whose snapshot bound is ahead of the current stream is rejected. Recovery is
+snapshot plus tail:
 consume the entire snapshot at revision R, replace local link state, checkpoint R,
 then consume events with `after_revision=R`. Consumers deduplicate `event_id`,
 ignore lower/equal per-link `resolution_revision`, and reload a snapshot after a

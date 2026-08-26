@@ -74,6 +74,9 @@ async def list_identity_link_events(
             state = decode_identity_link_cursor(cursor, "events")
             assert state.after_revision is not None and state.through_revision is not None
             after, through = state.after_revision, state.through_revision
+            current_revision, _ = await repo.current_revision_and_ready()
+            if through > current_revision:
+                raise ValueError("event cursor exceeds current stream revision")
         else:
             after = after_revision or 0
             through, _ = await repo.current_revision_and_ready()
@@ -122,14 +125,17 @@ async def list_identity_link_snapshot(
     except ValueError as exc:
         raise http_error(400, "invalid_request", str(exc), request) from exc
     try:
+        current_revision, ready = await repo.current_revision_and_ready()
+        if not ready:
+            raise RuntimeError("not ready")
         if cursor:
             state = decode_identity_link_cursor(cursor, "snapshot")
             assert state.snapshot_revision is not None and state.after_link_key is not None
             revision, after_key = state.snapshot_revision, state.after_link_key
+            if revision > current_revision:
+                raise ValueError("snapshot cursor exceeds current stream revision")
         else:
-            revision, ready = await repo.current_revision_and_ready()
-            if not ready:
-                raise RuntimeError("not ready")
+            revision = current_revision
             after_key = ""
         items, next_key = await repo.snapshot_page(revision, after_key, page_limit)
     except ValueError as exc:

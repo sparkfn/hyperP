@@ -168,6 +168,12 @@ async def test_manual_merge_success_returns_merge_event_id() -> None:
         "actor_id": "admin@example.com",
     }
     assert tx.calls[3].params == {"person_ids": ["person-a", "person-b"]}
+    assert tx.calls[-1].params == {
+        "merge_event_id": "merge-1",
+        "absorbed_person_id": "person-a",
+        "operation": "merge",
+        "merge_cause_prefix": "person-merge:merge-1:",
+    }
     # Side-effects target the absorbed person and survivor, stamped with the event.
     assert tx.calls[5].params == {
         "absorbed_id": "person-a",
@@ -358,6 +364,12 @@ async def test_unmerge_reactivates_absorbed_flags_records_and_audits() -> None:
     }
     assert tx.calls[2].params == {"person_ids": ["person-a", "person-b"]}
     assert tx.calls[4].params == {"merge_event_id": "merge-1"}
+    assert tx.calls[5].params == {
+        "merge_event_id": "merge-1",
+        "absorbed_person_id": "person-a",
+        "operation": "unmerge",
+        "merge_cause_prefix": "person-merge:merge-1:",
+    }
 
 
 @pytest.mark.asyncio

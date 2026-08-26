@@ -19,6 +19,7 @@ from src.graph.queries import (
     FINALIZE_STAGED_REVIEW_SALE,
     GET_PENDING_REVIEW_RECORD,
     GET_PERSONS_FOR_REVIEW_MERGE,
+    GET_AFFECTED_IDENTITY_LINK_HEADS,
     GET_REVIEW_SALES_RECORD,
     LINK_REVIEW_SALES_BOUGHT_VEHICLE,
     LINK_REVIEW_SALES_PURCHASED_ORDER,
@@ -202,6 +203,15 @@ async def test_review_merge_uses_requested_survivor_person() -> None:
         "right": "person-b",
         "reason": "same person",
         "actor_id": "reviewer@example.com",
+    }
+    affected_heads_call = next(
+        call for call in tx.calls if call.query == GET_AFFECTED_IDENTITY_LINK_HEADS
+    )
+    assert affected_heads_call.params == {
+        "merge_event_id": "merge-1",
+        "absorbed_person_id": "person-a",
+        "operation": "merge",
+        "merge_cause_prefix": "person-merge:merge-1:",
     }
     # Merge side-effects run after the merge, scoped to the merge event.
     redirect_calls = [
