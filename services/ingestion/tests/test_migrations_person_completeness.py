@@ -184,6 +184,7 @@ def test_apply_data_migrations_runs_completeness_repair_after_record_type_backfi
         "migrate_source_record_source_instances",
         "migrate_identifier_scopes",
         "migrate_projection_relationship_lifecycle",
+        "migrate_identity_link_revision_baseline",
     ):
         monkeypatch.setattr(
             migrations,
