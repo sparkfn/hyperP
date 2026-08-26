@@ -797,9 +797,7 @@ def test_pending_review_queries_guard_lifecycle_and_source_identity() -> None:
     assert "approved.person_id IN coalesce(md.review_candidate_person_ids, [])" in (
         ACTIVATE_PENDING_REVIEW_RECORD
     )
-    assert "EXISTS { MATCH (md)-[:ABOUT_RIGHT]->(approved) }" in (
-        ACTIVATE_PENDING_REVIEW_RECORD
-    )
+    assert "EXISTS { MATCH (md)-[:ABOUT_RIGHT]->(approved) }" in (ACTIVATE_PENDING_REVIEW_RECORD)
     assert "old.lifecycle_status = 'active'" in ACTIVATE_PENDING_REVIEW_RECORD
     assert "old.lifecycle_status IS NULL" in ACTIVATE_PENDING_REVIEW_RECORD
     assert "old.is_latest" in ACTIVATE_PENDING_REVIEW_RECORD
@@ -840,7 +838,13 @@ def test_pending_review_vehicle_resolution_supports_safe_serial_fallback() -> No
     assert "WHERE size(vehicles) = 1" in ACTIVATE_PENDING_REVIEW_RECORD
     assert "SourceRecordIdentityLock" in ACTIVATE_PENDING_REVIEW_RECORD
     assert "source_system: $source_system_key" in ACTIVATE_PENDING_REVIEW_RECORD
+    assert "source_instance_id: pending.source_instance_id" in ACTIVATE_PENDING_REVIEW_RECORD
     assert "source_record_id: pending.source_record_id" in ACTIVATE_PENDING_REVIEW_RECORD
+    assert "logical_deal.source_instance_id = pending.source_instance_id" in (
+        ACTIVATE_PENDING_REVIEW_RECORD
+    )
+    for query in (PROMOTE_STAGED_REVIEW_SALE, FINALIZE_STAGED_REVIEW_SALE):
+        assert "source_instance_id: sr.source_instance_id" in query
     assert "observation.normalized_serial_number" in PROMOTE_STAGED_REVIEW_SALE
     assert "serial_match.normalized_serial_number" in PROMOTE_STAGED_REVIEW_SALE
 

@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
-from src.source_instances import canonical_source_instance_id
+from src.source_instances import (
+    LEGACY_DEFAULT_SOURCE_INSTANCE_ID,
+    canonical_source_instance_id,
+)
 
 
 def _component(value: str) -> str:
@@ -35,7 +38,10 @@ def encode_source_version_key(
         )
         prefix = "sv1:"
     else:
-        canonical_source_instance_id(source_instance_id)
+        canonical_source_instance_id(
+            source_instance_id,
+            allow_legacy_default=(source_instance_id == LEGACY_DEFAULT_SOURCE_INSTANCE_ID),
+        )
         components = (
             source_system,
             source_instance_id,

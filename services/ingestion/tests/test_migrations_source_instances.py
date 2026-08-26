@@ -23,6 +23,8 @@ def test_source_instance_migration_assigns_default_provenance_and_sv2_keys() -> 
     assert "version.source_instance_id = target_source_instance_id" in query
     assert "version.parent_source_instance_id" in query
     assert "'sv2:'" in query
+    assert "WHEN version.source_version_key STARTS WITH 'sv1:'" in query
+    assert "ELSE version.source_version_key END" in query
     assert "stable_pk" in query
     assert "coalesce(version.legacy_repair_id, randomUUID())" in query
     assert "RETURN count(version) AS updated" in query
