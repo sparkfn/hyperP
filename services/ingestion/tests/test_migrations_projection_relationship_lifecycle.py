@@ -191,9 +191,20 @@ def test_projection_migration_runs_after_source_record_lifecycle(
         "migrate_projection_relationship_lifecycle",
         lambda _client: calls.append("projection"),
     )
+    monkeypatch.setattr(
+        migrations,
+        "migrate_identity_link_revision_baseline",
+        lambda _client: calls.append("identity_link_baseline"),
+    )
     migrations.apply_data_migrations(cast(Neo4jClient, object()))
 
-    assert calls == ["source", "source_instances", "identifier_scopes", "projection"]
+    assert calls == [
+        "source",
+        "source_instances",
+        "identifier_scopes",
+        "projection",
+        "identity_link_baseline",
+    ]
 
 
 def test_completed_marker_is_followed_by_late_relationship_reconciliation() -> None:

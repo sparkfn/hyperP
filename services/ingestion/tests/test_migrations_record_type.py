@@ -82,6 +82,7 @@ def test_apply_data_migrations_runs_in_dependency_order(
         ("source_instance_migration", "migrate_source_record_source_instances"),
         ("identifier_scope_migration", "migrate_identifier_scopes"),
         ("projection_migration", "migrate_projection_relationship_lifecycle"),
+        ("identity_link_baseline", "migrate_identity_link_revision_baseline"),
     )
     for label, name in functions:
         monkeypatch.setattr(
@@ -103,4 +104,5 @@ def test_apply_data_migrations_runs_in_dependency_order(
         "source_instance_migration",
         "identifier_scope_migration",
         "projection_migration",
+        "identity_link_baseline",
     ]
