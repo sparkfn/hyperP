@@ -14,7 +14,11 @@ from urllib.parse import urlparse
 
 import pytest
 from neo4j import Driver, GraphDatabase, ManagedTransaction, Session
-from src.graph.bitrix_source_instances import BitrixSourceInstanceRepository
+from src.graph.bitrix_source_instances import (
+    BitrixControlAdmissionError,
+    BitrixSourceInstanceConflictError,
+    BitrixSourceInstanceRepository,
+)
 from src.graph.bootstrap import bootstrap_legacy_bitrix_source_instance
 from src.graph.client import Neo4jClient
 from src.graph.ingestion_control_instance_migration import (
@@ -112,6 +116,7 @@ _SUITE_CONSTRAINT_NAMES = (
     *(spec[0] for spec in LEGACY_CONSTRAINT_SPECS),
     *(spec[0] for spec in NEW_CONSTRAINT_SPECS),
     "unexpected_control_identity",
+    "unexpected_legacy_ingest_run_identity",
     "identifier_identity_scope_unique",
 )
 
@@ -689,3 +694,163 @@ def test_upgrade_blocks_mismatched_historical_checkpoint_producer(neo4j_driver: 
     with neo4j_driver.session() as session:
         marker = session.run(_BLOCKED_MARKER).single(strict=True)
     assert marker["blocked"] is True
+
+
+def test_disable_portal_registration_rejects_legacy_control_execution(neo4j_driver: Driver) -> None:
+    _seed(neo4j_driver)
+    client = _migrate(neo4j_driver)
+    repository = BitrixSourceInstanceRepository(cast(Neo4jClient, client))
+    repository.register("bitrix_chat", "portal-a")
+    repository.admit(control_instance_id="legacy-default", source_instance_id="portal-a")
+    with neo4j_driver.session() as session:
+        session.run(
+            "CREATE (:IngestRun {ingest_run_id: 'portal-a-running', "
+            "source_key: 'bitrix_chat', control_instance_id: 'legacy-default', "
+            "status: 'running'})"
+        ).consume()
+    with pytest.raises(BitrixSourceInstanceConflictError):
+        repository.disable("bitrix_chat", "portal-a", "operator", "retire")
+    with neo4j_driver.session() as session:
+        status = session.run(
+            "MATCH (instance:BitrixSourceInstance {source_key: 'bitrix_chat', "
+            "source_instance_id: 'portal-a'}) RETURN instance.status AS status"
+        ).single(strict=True)
+    assert status["status"] == "active"
+
+
+def test_aliased_retired_constraint_blocks_dispatch_before_inventory_failure(
+    neo4j_driver: Driver,
+) -> None:
+    _seed(neo4j_driver)
+    with neo4j_driver.session() as session:
+        session.run(
+            "CREATE CONSTRAINT unexpected_legacy_ingest_run_identity IF NOT EXISTS "
+            "FOR (run:IngestRun) REQUIRE (run.source_key, run.idempotency_key) IS UNIQUE"
+        ).consume()
+    with pytest.raises(RuntimeError, match="unrecognized constraint"):
+        _migrate(neo4j_driver)
+    with neo4j_driver.session() as session:
+        marker = session.run(_BLOCKED_MARKER).single(strict=True)
+        dispatch = session.run(
+            "MATCH (control:BitrixDispatchControl {source_key: 'bitrix_chat'}) "
+            "RETURN control.blocked AS blocked"
+        ).single(strict=True)
+    assert marker["blocked"] is True
+    assert dispatch["blocked"] is True
+
+
+@pytest.mark.parametrize(
+    "seed_statement",
+    (
+        "CREATE (instance:BitrixSourceInstance {source_key: 'bitrix_chat', "
+        "source_instance_id: 'portal-disabled', status: 'disabled'}) "
+        "MATCH (source:SourceSystem {source_key: 'bitrix_chat'}) "
+        "CREATE (instance)-[:INSTANCE_OF]->(source)",
+        "CREATE (:BitrixSourceInstance {source_key: 'bitrix_chat', "
+        "source_instance_id: 'portal-unlinked', status: 'active'})",
+        "CREATE (other:SourceSystem {source_key: 'other', is_active: true}) "
+        "CREATE (instance:BitrixSourceInstance {source_key: 'bitrix_chat', "
+        "source_instance_id: 'portal-multi', status: 'active'}) "
+        "MATCH (source:SourceSystem {source_key: 'bitrix_chat'}) "
+        "CREATE (instance)-[:INSTANCE_OF]->(source) "
+        "CREATE (instance)-[:INSTANCE_OF]->(other)",
+    ),
+)
+def test_invalid_existing_registration_is_not_mutated_before_rejection(
+    neo4j_driver: Driver, seed_statement: str
+) -> None:
+    with neo4j_driver.session() as session:
+        session.run(_REGISTRY_CONSTRAINT).consume()
+        session.run(seed_statement).consume()
+        before = session.run(
+            "MATCH (instance:BitrixSourceInstance) "
+            "OPTIONAL MATCH (instance)-[relationship:INSTANCE_OF]->() "
+            "RETURN count(instance) AS instances, count(relationship) AS relationships"
+        ).single(strict=True)
+    repository = BitrixSourceInstanceRepository(cast(Neo4jClient, _Client(neo4j_driver)))
+    suffix = (
+        "portal-disabled"
+        if "portal-disabled" in seed_statement
+        else "portal-unlinked"
+        if "portal-unlinked" in seed_statement
+        else "portal-multi"
+    )
+    with pytest.raises(BitrixSourceInstanceConflictError):
+        repository.register("bitrix_chat", suffix)
+    with neo4j_driver.session() as session:
+        after = session.run(
+            "MATCH (instance:BitrixSourceInstance) "
+            "OPTIONAL MATCH (instance)-[relationship:INSTANCE_OF]->() "
+            "RETURN count(instance) AS instances, count(relationship) AS relationships"
+        ).single(strict=True)
+    assert dict(after) == dict(before)
+
+
+def test_conflicting_control_binding_admission_leaves_graph_unchanged(
+    neo4j_driver: Driver,
+) -> None:
+    _seed(neo4j_driver)
+    client = _migrate(neo4j_driver)
+    repository = BitrixSourceInstanceRepository(cast(Neo4jClient, client))
+    repository.register("bitrix_chat", "portal-a")
+    repository.register("bitrix_chat", "portal-b")
+    repository.admit(control_instance_id="legacy-default", source_instance_id="portal-a")
+
+    with neo4j_driver.session() as session:
+        before = session.run(
+            "MATCH (binding:BitrixExecutionSourceBinding {source_key: 'bitrix_chat', "
+            "control_instance_id: 'legacy-default'}) "
+            "OPTIONAL MATCH (owner:BitrixSourceInstance)-[:OWNS_BITRIX_CONTROL]->(binding) "
+            "RETURN count(DISTINCT binding) AS binding_count, "
+            "collect(DISTINCT binding.source_instance_id) AS bound_sources, "
+            "collect(DISTINCT owner.source_instance_id) AS owners"
+        ).single(strict=True)
+
+    with pytest.raises(BitrixControlAdmissionError):
+        repository.admit(control_instance_id="legacy-default", source_instance_id="portal-b")
+
+    with neo4j_driver.session() as session:
+        after = session.run(
+            "MATCH (binding:BitrixExecutionSourceBinding {source_key: 'bitrix_chat', "
+            "control_instance_id: 'legacy-default'}) "
+            "OPTIONAL MATCH (owner:BitrixSourceInstance)-[:OWNS_BITRIX_CONTROL]->(binding) "
+            "RETURN count(DISTINCT binding) AS binding_count, "
+            "collect(DISTINCT binding.source_instance_id) AS bound_sources, "
+            "collect(DISTINCT owner.source_instance_id) AS owners"
+        ).single(strict=True)
+        portal_b_bindings = session.run(
+            "MATCH (portal:BitrixSourceInstance {source_key: 'bitrix_chat', "
+            "source_instance_id: 'portal-b'}) "
+            "OPTIONAL MATCH (portal)-[:OWNS_BITRIX_CONTROL]->(binding) "
+            "RETURN count(binding) AS binding_count"
+        ).single(strict=True)
+
+    assert dict(after) == dict(before)
+    assert dict(after) == {
+        "binding_count": 1,
+        "bound_sources": ["portal-a"],
+        "owners": ["portal-a"],
+    }
+    assert portal_b_bindings["binding_count"] == 0
+
+
+def test_disable_ignores_work_bound_to_a_different_registered_portal(neo4j_driver: Driver) -> None:
+    _seed(neo4j_driver)
+    client = _migrate(neo4j_driver)
+    repository = BitrixSourceInstanceRepository(cast(Neo4jClient, client))
+    repository.register("bitrix_chat", "portal-a")
+    repository.register("bitrix_chat", "portal-b")
+    repository.admit(control_instance_id="legacy-default", source_instance_id="portal-a")
+    repository.admit(control_instance_id="portal-b", source_instance_id="portal-b")
+    with neo4j_driver.session() as session:
+        session.run(
+            "CREATE (:IngestRun {ingest_run_id: 'portal-b-running', "
+            "source_key: 'bitrix_chat', control_instance_id: 'portal-b', status: 'running'})"
+        ).consume()
+    repository.disable("bitrix_chat", "portal-a", "operator", "retire")
+    with neo4j_driver.session() as session:
+        status = session.run(
+            "MATCH (instance:BitrixSourceInstance {source_key: 'bitrix_chat', "
+            "source_instance_id: 'portal-a'}) RETURN instance.status AS status"
+        ).single(strict=True)
+    assert status["status"] == "disabled"

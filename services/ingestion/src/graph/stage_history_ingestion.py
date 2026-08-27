@@ -41,6 +41,7 @@ from src.graph.queries.stage_history_ingestion import (
 )
 from src.models import JsonValue
 from src.source_instances import LEGACY_DEFAULT_SOURCE_INSTANCE_ID
+from src.stage_history_identities import scope_stage_history_identity
 from src.stage_history_ingestion_models import (
     StageHistoryAssociationDecision,
     StageHistoryAssociationState,
@@ -525,7 +526,10 @@ def _persist_retry_if_required(
 ) -> StageHistoryRetry | None:
     if occurrence.retry_state != "pending":
         return None
-    retry_id = _stable_id("stage-retry", observation.occurrence_id, "1")
+    retry_id = scope_stage_history_identity(
+        _stable_id("stage-retry", observation.occurrence_id, "1"),
+        fence.control_instance_id,
+    )
     record = tx.run(
         UPSERT_STAGE_HISTORY_RETRY,
         **_fence_params(fence, required_run_type),

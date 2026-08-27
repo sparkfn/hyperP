@@ -41,6 +41,17 @@ def test_retired_global_incremental_checkpoint_constraint_is_not_recreated() -> 
     assert "ingestion_checkpoint_key_unique" not in schema
 
 
+def test_control_binding_schema_is_available_in_runtime_and_canonical_initialization() -> None:
+    canonical_schema = _find_init_cypher().read_text(encoding="utf-8")
+    runtime_schema = "\n".join(BASE_LIFECYCLE_CONSTRAINTS)
+    identity = "(binding.source_key, binding.control_instance_id)"
+
+    assert "bitrix_execution_source_binding_control_unique" in canonical_schema
+    assert identity in canonical_schema
+    assert "bitrix_execution_source_binding_control_unique" in runtime_schema
+    assert identity in runtime_schema
+
+
 def test_profile_analysis_schema_statements_are_idempotent() -> None:
     statements = _split_statements(_find_init_cypher().read_text(encoding="utf-8"))
     profile_analysis_statements = [

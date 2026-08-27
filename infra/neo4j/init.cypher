@@ -85,8 +85,13 @@ CREATE CONSTRAINT stage_history_retry_identity_unique IF NOT EXISTS
   FOR (retry:StageHistoryRetry)
   REQUIRE (retry.occurrence_id, retry.retry_sequence) IS UNIQUE;
 
-CREATE CONSTRAINT stage_history_review_command_id_unique IF NOT EXISTS
-  FOR (command:StageHistoryReviewCommand) REQUIRE command.command_id IS UNIQUE;
+CREATE CONSTRAINT stage_history_review_command_control_id_unique IF NOT EXISTS
+  FOR (command:StageHistoryReviewCommand)
+  REQUIRE (command.control_instance_id, command.command_id) IS UNIQUE;
+
+CREATE CONSTRAINT bitrix_execution_source_binding_control_unique IF NOT EXISTS
+  FOR (binding:BitrixExecutionSourceBinding)
+  REQUIRE (binding.source_key, binding.control_instance_id) IS UNIQUE;
 
 CREATE CONSTRAINT stage_history_invalidation_intent_id_unique IF NOT EXISTS
   FOR (intent:CrmHistoryInvalidationIntent) REQUIRE intent.intent_id IS UNIQUE;

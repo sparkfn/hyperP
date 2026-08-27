@@ -57,7 +57,7 @@ def test_stage_history_schema_covers_immutable_and_claim_identities() -> None:
         "stage_history_identity_lock_unique",
         "stage_history_parent_decision_id_unique",
         "stage_history_retry_identity_unique",
-        "stage_history_review_command_id_unique",
+        "stage_history_review_command_control_id_unique",
         "stage_history_invalidation_intent_id_unique",
         "stage_history_unit_accounting_identity_unique",
     ):
@@ -75,6 +75,7 @@ def test_stage_history_schema_covers_immutable_and_claim_identities() -> None:
     ):
         assert index_name in schema
     assert "REQUIRE (retry.occurrence_id, retry.retry_sequence) IS UNIQUE" in schema
+    assert "REQUIRE (command.control_instance_id, command.command_id) IS UNIQUE" in schema
     assert "REQUIRE intent.intent_id IS UNIQUE" in schema
     assert "REQUIRE unit.status IS UNIQUE" not in schema
     assert "REQUIRE retry.status IS UNIQUE" not in schema
