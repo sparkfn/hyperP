@@ -212,7 +212,7 @@ def test_child_fence_redelivery_checkpoint_and_stale_tokens(census_neo4j: Census
     checkpoint = StandaloneCrmCheckpoint(
         census.admission.census_id,
         "contact",
-        1,
+        2,
         1,
         1,
         1,
@@ -240,7 +240,7 @@ def test_child_fence_redelivery_checkpoint_and_stale_tokens(census_neo4j: Census
             StandaloneCrmCheckpoint(
                 census.admission.census_id,
                 "contact",
-                2,
+                1,
                 1,
                 1,
                 1,

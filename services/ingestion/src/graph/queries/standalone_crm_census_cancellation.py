@@ -64,8 +64,6 @@ OPTIONAL MATCH (fence:StandaloneCrmUnitFence {census_id: census.census_id, state
 FOREACH (_ IN CASE WHEN NOT pre_window AND first_request THEN [1] ELSE [] END |
   SET fence.cancel_requested_at = coalesce(fence.cancel_requested_at, datetime()), fence.updated_at = datetime())
 WITH census, pre_window, fatal_stale, directly_cancelled, retired_units, retired_publications, count(fence) AS active_fences
-MATCH (scope:StandaloneCrmCensusScopeLock {active_census_id: census.census_id})
-FOREACH (_ IN CASE WHEN pre_window AND NOT fatal_stale THEN [1] ELSE [] END | REMOVE scope.active_census_id)
 RETURN directly_cancelled + retired_units AS child_count, retired_publications, active_fences,
   pre_window AND NOT fatal_stale AS freeze_failed
 """
@@ -81,6 +79,20 @@ MATCH (census:StandaloneCrmCensus {census_id: $census_id, fingerprint: $fingerpr
 WHERE census.terminal_state IS NULL
 SET census.state = 'authority_stale_pending', census.fatal_reason = 'authority_stale',
   census.updated_at = datetime()
+RETURN census.census_id AS census_id
+"""
+)
+
+
+RELEASE_PRE_WINDOW_SCOPE = (
+    _SETTLEMENT
+    + """
+MATCH (census:StandaloneCrmCensus {census_id: $census_id, authority_digest: $authority_digest,
+  source_instance_id: $source_instance_id, control_instance_id: $control_instance_id,
+  terminal_state: 'freeze_failed'})
+WHERE census.source_window_json IS NULL AND coalesce(census.no_source_window, false) = false
+MATCH (scope:StandaloneCrmCensusScopeLock {active_census_id: census.census_id})
+REMOVE scope.active_census_id
 RETURN census.census_id AS census_id
 """
 )

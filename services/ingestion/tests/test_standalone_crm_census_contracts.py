@@ -414,6 +414,7 @@ def test_settlement_query_contract_is_fenced_monotonic_and_atomic() -> None:
     assert "census.cancel_requested_at IS NOT NULL" in queries.VALIDATE_SETTLE_UNIT
     assert "$terminal_state = 'cancelled'" in queries.VALIDATE_SETTLE_UNIT
     assert "publication.status = 'retired'" in queries.REQUEST_CANCELLATION
+    assert "REMOVE scope.active_census_id" in queries.RELEASE_PRE_WINDOW_SCOPE
 
 
 def test_repair_revalidates_authority_before_any_broker_work() -> None:

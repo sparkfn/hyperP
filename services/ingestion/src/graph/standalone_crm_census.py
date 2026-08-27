@@ -113,12 +113,19 @@ class StandaloneCrmCensusRepository(
     def request_cancel(
         self, admission: StandaloneCrmCensusAdmission, *, actor: str, reason: str
     ) -> int:
-        record = self._require_mutation(
-            queries.REQUEST_CANCELLATION,
-            _guard(admission) | {"actor": actor[:200], "reason": reason[:1000]},
-            "cancellation rejected",
-        )
-        return _non_negative(record, "child_count")
+        params = _guard(admission) | {"actor": actor[:200], "reason": reason[:1000]}
+
+        def work(tx: ManagedTransaction) -> int:
+            record = tx.run(queries.REQUEST_CANCELLATION, **params).single()  # type: ignore[arg-type]
+            if record is None:
+                raise StandaloneCrmCensusStaleError("cancellation rejected")
+            if record["freeze_failed"] is True:
+                released = tx.run(queries.RELEASE_PRE_WINDOW_SCOPE, **params).single()  # type: ignore[arg-type]
+                if released is None:
+                    raise StandaloneCrmCensusStaleError("pre-window scope release rejected")
+            return _non_negative(record, "child_count")
+
+        return self._client.execute_write(work)
 
     def pause(
         self, admission: StandaloneCrmCensusAdmission, attempt: StandaloneCrmAttempt, *, reason: str

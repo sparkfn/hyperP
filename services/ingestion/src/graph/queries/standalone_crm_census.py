@@ -13,6 +13,7 @@ from src.graph.queries.standalone_crm_census_admission import (
 )
 from src.graph.queries.standalone_crm_census_cancellation import (
     MARK_CENSUS_AUTHORITY_STALE,
+    RELEASE_PRE_WINDOW_SCOPE,
     REQUEST_CANCELLATION,
 )
 from src.graph.queries.standalone_crm_census_publication_terminal import (
@@ -77,6 +78,7 @@ __all__ = (
     "RENEW_UNIT_FENCE",
     "RELEASE_UNIT_FENCE",
     "REQUEST_CANCELLATION",
+    "RELEASE_PRE_WINDOW_SCOPE",
     "PAUSE_ATTEMPT",
     "CONTINUE_ATTEMPT",
     "FAIL_EXHAUSTED_CENSUS",
