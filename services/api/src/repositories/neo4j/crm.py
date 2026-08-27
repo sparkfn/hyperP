@@ -76,6 +76,22 @@ def _display_datetime_or_none(value: str | None) -> str | None:
     return format_display_datetime(value) or None
 
 
+def _to_daily_counts(row: GraphRecord, key: str) -> list[int]:
+    """Coerce a Neo4j list-of-int to a length-30 list, padding with zeros.
+
+    Some buckets may be missing or the list may be shorter than 30 if a query
+    returns a partial window; we always return 30 values so the UI can render
+    a fixed-size sparkline.
+    """
+    raw = row.get(key)
+    if not isinstance(raw, list):
+        return [0] * 30
+    counts = [to_int(item) for item in raw]
+    if len(counts) >= 30:
+        return counts[:30]
+    return counts + [0] * (30 - len(counts))
+
+
 def _to_metrics(row: GraphRecord) -> PersonCrmMetrics:
     first_deal_at = to_iso_or_none(row.get("first_deal_at"))
     last_deal_at = to_iso_or_none(row.get("last_deal_at"))
@@ -113,6 +129,14 @@ def _to_metrics(row: GraphRecord) -> PersonCrmMetrics:
         days_since_last_crm_touch=to_optional_int(row.get("days_since_last_crm_touch")),
         days_since_last_deal=to_optional_int(row.get("days_since_last_deal")),
         days_since_last_activity=to_optional_int(row.get("days_since_last_activity")),
+        recent_30d_daily_deal_counts=_to_daily_counts(row, "deal_daily_counts"),
+        recent_30d_daily_activity_counts=_to_daily_counts(row, "activity_daily_counts"),
+        recent_30d_daily_call_counts=_to_daily_counts(row, "call_daily_counts"),
+        recent_30d_daily_conversation_counts=_to_daily_counts(row, "conversation_daily_counts"),
+        recent_30d_deal_change_pct=to_optional_int(row.get("deal_change_pct")),
+        recent_30d_activity_change_pct=to_optional_int(row.get("activity_change_pct")),
+        recent_30d_call_change_pct=to_optional_int(row.get("call_change_pct")),
+        recent_30d_conversation_change_pct=to_optional_int(row.get("conversation_change_pct")),
     )
 
 

@@ -58,3 +58,15 @@ class PersonCrmMetrics(BaseModel):
     days_since_last_crm_touch: int | None = None
     days_since_last_deal: int | None = None
     days_since_last_activity: int | None = None
+    # 30-day daily trend series (oldest → newest, UTC midnight buckets). Each
+    # list always has length 30; days with no events are 0.
+    recent_30d_daily_deal_counts: list[int] = Field(default_factory=lambda: [0] * 30)
+    recent_30d_daily_activity_counts: list[int] = Field(default_factory=lambda: [0] * 30)
+    recent_30d_daily_call_counts: list[int] = Field(default_factory=lambda: [0] * 30)
+    recent_30d_daily_conversation_counts: list[int] = Field(default_factory=lambda: [0] * 30)
+    # Percentage change vs the prior 30-day window, rounded to int. None when
+    # the prior window has no events (division-by-zero guard for the UI).
+    recent_30d_deal_change_pct: int | None = None
+    recent_30d_activity_change_pct: int | None = None
+    recent_30d_call_change_pct: int | None = None
+    recent_30d_conversation_change_pct: int | None = None

@@ -111,16 +111,36 @@ def _metrics_record() -> _Record:
         "days_since_last_crm_touch": 5,
         "days_since_last_deal": 5,
         "days_since_last_activity": 5,
+        "deal_daily_counts": [0, 1, 0, 0, 2] + [0] * 25,
+        "deal_recent_total": 2,
+        "deal_prior_total": 4,
+        "activity_daily_counts": [1, 0, 1, 1, 0, 2, 0, 1, 1, 0, 1] + [0] * 19,
+        "activity_recent_total": 8,
+        "activity_prior_total": 10,
+        "call_daily_counts": [0, 0, 1, 0, 1, 0, 1] + [0] * 23,
+        "call_recent_total": 3,
+        "call_prior_total": 2,
+        "conversation_daily_counts": [1] + [0] * 29,
+        "conversation_recent_total": 1,
+        "conversation_prior_total": 0,
+        "deal_change_pct": -50,
+        "activity_change_pct": -20,
+        "call_change_pct": 50,
+        "conversation_change_pct": None,
     }
     return _Record(values)
 
 
 def test_crm_metrics_query_uses_isolated_record_subqueries() -> None:
     assert "MATCH (p:Person {person_id: $person_id})" in GET_PERSON_CRM_METRICS
-    assert GET_PERSON_CRM_METRICS.count("OPTIONAL MATCH (sr:SourceRecord") == 7
+    # 4 historical blocks (deals, deal-stages, activities, activity-kinds, calls,
+    # conversations, entity-breakdown) + 4 trend blocks (one per record_type) = 11.
+    assert GET_PERSON_CRM_METRICS.count("OPTIONAL MATCH (sr:SourceRecord") == 11
     assert "datetime($as_of_at) AS as_of_at" in GET_PERSON_CRM_METRICS
-    assert GET_PERSON_CRM_METRICS.count("CALL (person, as_of_at) {") == 4
+    # 4 historical (as_of_at) + 4 trend (as_of_at) = 8
+    assert GET_PERSON_CRM_METRICS.count("CALL (person, as_of_at) {") == 8
     assert "duration('P30D')" in GET_PERSON_CRM_METRICS
+    assert "duration('P60D')" in GET_PERSON_CRM_METRICS
     assert "sr_timestamp <= as_of_at" in GET_PERSON_CRM_METRICS
     assert "sr.record_type IN ['crm_deal', 'crm_history', 'conversation']" in (
         GET_PERSON_CRM_METRICS
@@ -133,25 +153,27 @@ def test_crm_metrics_query_uses_the_deal_stage_projection_not_raw_payload() -> N
 
 
 def test_crm_metrics_query_enforces_reader_authority_boundaries() -> None:
-    assert GET_PERSON_CRM_METRICS.count("coalesce(link.is_active, true) = true") == 7
+    # Each historical block (4) + each trend block (4) repeats the authority
+    # predicates once → 8 total per predicate.
+    assert GET_PERSON_CRM_METRICS.count("coalesce(link.is_active, true) = true") == 8
     assert (
         GET_PERSON_CRM_METRICS.count(
             "(sr.history_family IS NULL OR sr.history_family = 'activity')"
         )
-        == 7
+        == 8
     )
     assert (
         GET_PERSON_CRM_METRICS.count(
             "(sr.lifecycle_status = 'active' "
             "OR (sr.lifecycle_status IS NULL AND sr.is_latest = true))"
         )
-        == 7
+        == 8
     )
     assert (
         GET_PERSON_CRM_METRICS.count(
             "MATCH (sr)-[:FROM_SOURCE]->(:SourceSystem {source_key: 'bitrix_chat'})"
         )
-        == 7
+        == 8
     )
 
 
@@ -165,6 +187,22 @@ def test_crm_metrics_query_limits_conversations_to_bitrix_open_lines() -> None:
 def test_crm_metrics_query_follows_merged_survivor() -> None:
     assert "OPTIONAL MATCH (p)-[:MERGED_INTO]->(canonical:Person)" in (GET_PERSON_CRM_METRICS)
     assert "WITH coalesce(canonical, p) AS person" in GET_PERSON_CRM_METRICS
+
+
+def test_crm_metrics_query_emits_trend_and_delta_columns() -> None:
+    # One *_daily_counts, *_recent_total, *_prior_total triple per metric type
+    # so the outer RETURN can wire them into the PersonCrmMetrics fields.
+    for prefix in ("deal", "activity", "call", "conversation"):
+        assert f"{prefix}_daily_counts AS {prefix}_daily_counts" in GET_PERSON_CRM_METRICS
+        assert f"{prefix}_recent_total AS {prefix}_recent_total" in GET_PERSON_CRM_METRICS
+        assert f"{prefix}_prior_total AS {prefix}_prior_total" in GET_PERSON_CRM_METRICS
+        # Delta % uses the same {prefix}_prior_total guard as the percent change
+        # computation; null when prior window is empty (no division by zero).
+        assert f"{prefix}_change_pct" in GET_PERSON_CRM_METRICS
+    # The trend sub-queries bucket by day from range(0, 29) and align to UTC
+    # midnight via the as_of_at anchor.
+    assert GET_PERSON_CRM_METRICS.count("range(0, 29)") == 4
+    assert GET_PERSON_CRM_METRICS.count("duration('P1D')") == 4
 
 
 @pytest.mark.anyio
@@ -234,6 +272,14 @@ async def test_repository_maps_all_crm_metrics_fields(
         days_since_last_crm_touch=5,
         days_since_last_deal=5,
         days_since_last_activity=5,
+        recent_30d_daily_deal_counts=[0, 1, 0, 0, 2] + [0] * 25,
+        recent_30d_daily_activity_counts=[1, 0, 1, 1, 0, 2, 0, 1, 1, 0, 1] + [0] * 19,
+        recent_30d_daily_call_counts=[0, 0, 1, 0, 1, 0, 1] + [0] * 23,
+        recent_30d_daily_conversation_counts=[1] + [0] * 29,
+        recent_30d_deal_change_pct=-50,
+        recent_30d_activity_change_pct=-20,
+        recent_30d_call_change_pct=50,
+        recent_30d_conversation_change_pct=None,
     )
     assert session.calls == [
         (
@@ -369,3 +415,83 @@ async def test_repository_converts_temporal_bounds_to_iso_strings(
     assert metrics.last_activity_at_display == "14 Aug 2026"
     assert metrics.activity_kind_breakdown[0].last_event_at == ("2026-08-14T10:00:00+00:00")
     assert metrics.activity_kind_breakdown[0].last_event_at_display == "14 Aug 2026"
+
+
+@pytest.mark.anyio
+async def test_repository_pads_short_daily_arrays_to_30(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    values: GraphRecord = {
+        "deal_count": 0,
+        "deal_stage_breakdown": [],
+        "first_deal_at": None,
+        "last_deal_at": None,
+        "activity_count": 0,
+        "call_count": 0,
+        "conversation_count": 0,
+        "activity_kind_breakdown": [],
+        "first_activity_at": None,
+        "last_activity_at": None,
+        "entity_breakdown": [],
+        "deal_daily_counts": [1, 2, 3],
+        "activity_daily_counts": None,
+        "call_daily_counts": [],
+        "conversation_daily_counts": list(range(40)),
+        "deal_change_pct": None,
+        "activity_change_pct": None,
+        "call_change_pct": None,
+        "conversation_change_pct": None,
+    }
+    session = _Session(_Record(values))
+    _install_session(monkeypatch, session)
+
+    metrics = await Neo4jCrmMetricsRepository().get_person_crm_metrics("person-1")
+
+    assert metrics is not None
+    assert metrics.recent_30d_daily_deal_counts == [1, 2, 3] + [0] * 27
+    assert metrics.recent_30d_daily_activity_counts == [0] * 30
+    assert metrics.recent_30d_daily_call_counts == [0] * 30
+    # Cypher side already enforces length 30 via the bucket loop, but the mapper
+    # must defensively cap any longer list returned by a custom query.
+    assert len(metrics.recent_30d_daily_conversation_counts) == 30
+    assert metrics.recent_30d_daily_conversation_counts == list(range(30))
+
+
+@pytest.mark.anyio
+async def test_repository_maps_null_change_pct_when_prior_window_is_empty(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    values: GraphRecord = {
+        "deal_count": 0,
+        "deal_stage_breakdown": [],
+        "first_deal_at": None,
+        "last_deal_at": None,
+        "activity_count": 0,
+        "call_count": 0,
+        "conversation_count": 0,
+        "activity_kind_breakdown": [],
+        "first_activity_at": None,
+        "last_activity_at": None,
+        "entity_breakdown": [],
+        "deal_daily_counts": [0] * 30,
+        "activity_daily_counts": [0] * 30,
+        "call_daily_counts": [0] * 30,
+        "conversation_daily_counts": [0] * 30,
+        # Cypher emits null when the prior 30d window is empty (no division
+        # by zero in the percent change calculation). The mapper must preserve
+        # that null so the UI can render a neutral "—" indicator.
+        "deal_change_pct": None,
+        "activity_change_pct": None,
+        "call_change_pct": None,
+        "conversation_change_pct": None,
+    }
+    session = _Session(_Record(values))
+    _install_session(monkeypatch, session)
+
+    metrics = await Neo4jCrmMetricsRepository().get_person_crm_metrics("person-1")
+
+    assert metrics is not None
+    assert metrics.recent_30d_deal_change_pct is None
+    assert metrics.recent_30d_activity_change_pct is None
+    assert metrics.recent_30d_call_change_pct is None
+    assert metrics.recent_30d_conversation_change_pct is None
