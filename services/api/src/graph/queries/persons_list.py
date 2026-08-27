@@ -9,13 +9,32 @@ from src.graph.queries.persons_list_filters import (
 )
 
 GET_PERSON_LIST_SUMMARY = """
-MATCH (p:Person)
-WHERE p.status <> 'merged'
-RETURN count(p) AS all_profiles_count,
-       sum(CASE WHEN p.is_high_risk = true THEN 1 ELSE 0 END) AS high_risk_count,
-       sum(CASE WHEN p.is_high_value = true THEN 1 ELSE 0 END) AS high_value_count,
-       sum(CASE WHEN p.preferred_phone IS NULL AND p.preferred_email IS NULL THEN 1 ELSE 0 END)
-         AS no_contact_count
+CALL {
+  MATCH (p:Person)
+  WHERE p.status <> 'merged'
+  RETURN count(p) AS all_profiles_count,
+         sum(CASE WHEN p.is_high_risk = true THEN 1 ELSE 0 END) AS high_risk_count,
+         sum(CASE WHEN p.is_high_value = true THEN 1 ELSE 0 END) AS high_value_count,
+         sum(CASE WHEN p.preferred_phone IS NULL AND p.preferred_email IS NULL THEN 1 ELSE 0 END)
+           AS no_contact_count
+}
+CALL {
+  MATCH (deal:SourceRecord {record_type: 'crm_deal'})-[deal_link:LINKED_TO]->(p:Person)
+  WHERE p.status <> 'merged'
+    AND coalesce(deal_link.is_active, true) = true
+    AND (deal.lifecycle_status = 'active'
+      OR (deal.lifecycle_status IS NULL AND deal.is_latest = true))
+  RETURN count(DISTINCT CASE
+           WHEN deal.observed_at >= datetime.truncate('month', datetime()) THEN deal
+         END) AS deals_this_month_count,
+         count(DISTINCT deal) AS all_deals_count
+}
+RETURN all_profiles_count,
+       high_risk_count,
+       high_value_count,
+       no_contact_count,
+       deals_this_month_count,
+       all_deals_count
 """
 
 _SOURCE_RECORD_COUNT = """

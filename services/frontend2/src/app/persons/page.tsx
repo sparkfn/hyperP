@@ -872,6 +872,8 @@ function PersonsInner(): ReactElement {
   const [highRiskCount, setHighRiskCount] = useState<number | null>(null);
   const [highValueCount, setHighValueCount] = useState<number | null>(null);
   const [noContactCount, setNoContactCount] = useState<number | null>(null);
+  const [dealsThisMonthCount, setDealsThisMonthCount] = useState<number | null>(null);
+  const [allDealsCount, setAllDealsCount] = useState<number | null>(null);
   const [statsLoading, setStatsLoading] = useState(true);
   const [initialListSettled, setInitialListSettled] = useState(false);
 
@@ -1032,6 +1034,8 @@ function PersonsInner(): ReactElement {
         setHighRiskCount(summary.high_risk_count);
         setHighValueCount(summary.high_value_count);
         setNoContactCount(summary.no_contact_count);
+        setDealsThisMonthCount(summary.deals_this_month_count);
+        setAllDealsCount(summary.all_deals_count);
       })
       .catch(() => undefined)
       .finally(() => { if (!controller.signal.aborted) setStatsLoading(false); });
@@ -1100,6 +1104,11 @@ function PersonsInner(): ReactElement {
     setAddrCountry("");
     setMatchPresence("any");
     setCrmDealRange({ min: "", max: "" });
+  }
+
+  function selectStatFlag(next: FlagFilter): void {
+    setCrmDealRange({ min: "", max: "" });
+    setFlagFilter(next);
   }
 
   function clearDobFilter(): void {
@@ -1450,8 +1459,8 @@ function PersonsInner(): ReactElement {
       <div className={styles.statsRow}>
         <button
           type="button"
-          className={`${styles.statCard} ${styles.statCardClickable} ${flagFilter === "any" ? styles.statCardActive : ""}`}
-          onClick={() => setFlagFilter("any")}
+          className={`${styles.statCard} ${styles.statCardClickable} ${flagFilter === "any" && crmDealRange.min === "" && crmDealRange.max === "" ? styles.statCardActive : ""}`}
+          onClick={() => selectStatFlag("any")}
           title="Show all profiles"
           disabled={statsLoading}
         >
@@ -1466,8 +1475,8 @@ function PersonsInner(): ReactElement {
 
         <button
           type="button"
-          className={`${styles.statCard} ${styles.statCardClickable} ${flagFilter === "high_risk" ? styles.statCardActive : ""}`}
-          onClick={() => setFlagFilter((f) => f === "high_risk" ? "any" : "high_risk")}
+          className={`${styles.statCard} ${styles.statCardClickable} ${flagFilter === "high_risk" && crmDealRange.min === "" && crmDealRange.max === "" ? styles.statCardActive : ""}`}
+          onClick={() => selectStatFlag(flagFilter === "high_risk" ? "any" : "high_risk")}
           title="Filter by high risk"
           disabled={statsLoading}
         >
@@ -1482,8 +1491,8 @@ function PersonsInner(): ReactElement {
 
         <button
           type="button"
-          className={`${styles.statCard} ${styles.statCardClickable} ${flagFilter === "high_value" ? styles.statCardActive : ""}`}
-          onClick={() => setFlagFilter((f) => f === "high_value" ? "any" : "high_value")}
+          className={`${styles.statCard} ${styles.statCardClickable} ${flagFilter === "high_value" && crmDealRange.min === "" && crmDealRange.max === "" ? styles.statCardActive : ""}`}
+          onClick={() => selectStatFlag(flagFilter === "high_value" ? "any" : "high_value")}
           title="Filter by high value"
           disabled={statsLoading}
         >
@@ -1498,8 +1507,8 @@ function PersonsInner(): ReactElement {
 
         <button
           type="button"
-          className={`${styles.statCard} ${styles.statCardClickable} ${flagFilter === "no_contact" ? styles.statCardActive : ""}`}
-          onClick={() => setFlagFilter((f) => f === "no_contact" ? "any" : "no_contact")}
+          className={`${styles.statCard} ${styles.statCardClickable} ${flagFilter === "no_contact" && crmDealRange.min === "" && crmDealRange.max === "" ? styles.statCardActive : ""}`}
+          onClick={() => selectStatFlag(flagFilter === "no_contact" ? "any" : "no_contact")}
           title="Filter by no contact info"
           disabled={statsLoading}
         >
@@ -1510,6 +1519,34 @@ function PersonsInner(): ReactElement {
             <div className={styles.statValue} style={{ color: "var(--warn-text)" }}>{noContactCount != null ? noContactCount.toLocaleString() : "—"}</div>
           )}
           {statsLoading ? <span className={styles.skeletonLine} style={{ width: 76, height: 10, marginTop: 2 }} /> : <div className={styles.statSub}>can't be reached</div>}
+        </button>
+
+        <button
+          type="button"
+          className={`${styles.statCard} ${styles.statCardClickable} ${crmDealRange.min === "1" && crmDealRange.max === "" ? styles.statCardActive : ""}`}
+          onClick={() => {
+            const active = crmDealRange.min === "1" && crmDealRange.max === "";
+            setFlagFilter("any");
+            setCrmDealRange(active ? { min: "", max: "" } : { min: "1", max: "" });
+          }}
+          title="Filter profiles with CRM deals"
+          disabled={statsLoading}
+        >
+          <div className={styles.statLabel}>Deals this month</div>
+          {statsLoading ? (
+            <span className={styles.skeletonLine} style={{ width: 48, height: 26, display: "block", marginTop: 2 }} />
+          ) : (
+            <div className={styles.statValue} style={{ color: "var(--accent)" }}>
+              {dealsThisMonthCount != null ? dealsThisMonthCount.toLocaleString() : "—"}
+            </div>
+          )}
+          {statsLoading ? (
+            <span className={styles.skeletonLine} style={{ width: 90, height: 10, marginTop: 2 }} />
+          ) : (
+            <div className={styles.statSub}>
+              {allDealsCount != null ? `${allDealsCount.toLocaleString()} all time` : "— all time"}
+            </div>
+          )}
         </button>
       </div>
 
