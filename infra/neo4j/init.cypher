@@ -283,3 +283,35 @@ CREATE INDEX identity_link_revision_link_global_revision IF NOT EXISTS
 FOR (revision:IdentityLinkRevision) ON (revision.link_key, revision.global_revision);
 CREATE INDEX identity_link_head_link_key IF NOT EXISTS
 FOR (head:IdentityLinkHead) ON (head.link_key);
+
+// Standalone CRM census control plane (#273); no source/domain facts are created here.
+CREATE CONSTRAINT standalone_crm_census_id_unique IF NOT EXISTS
+  FOR (node:StandaloneCrmCensus) REQUIRE (node.census_id) IS UNIQUE;
+CREATE CONSTRAINT standalone_crm_census_occurrence_unique IF NOT EXISTS
+  FOR (node:StandaloneCrmCensus)
+  REQUIRE (node.source_key, node.source_instance_id, node.control_instance_id,
+           node.census_kind, node.occurrence_key) IS UNIQUE;
+CREATE CONSTRAINT standalone_crm_census_scope_lock_unique IF NOT EXISTS
+  FOR (node:StandaloneCrmCensusScopeLock)
+  REQUIRE (node.source_key, node.source_instance_id, node.control_instance_id, node.census_kind) IS UNIQUE;
+CREATE CONSTRAINT standalone_crm_census_attempt_unique IF NOT EXISTS
+  FOR (node:StandaloneCrmCensusAttempt) REQUIRE (node.census_id, node.generation) IS UNIQUE;
+CREATE CONSTRAINT standalone_crm_census_unit_unique IF NOT EXISTS
+  FOR (node:StandaloneCrmCensusUnit) REQUIRE (node.census_id, node.unit_kind) IS UNIQUE;
+CREATE CONSTRAINT standalone_crm_census_checkpoint_unique IF NOT EXISTS
+  FOR (node:StandaloneCrmCensusCheckpoint) REQUIRE (node.census_id, node.unit_kind) IS UNIQUE;
+CREATE CONSTRAINT standalone_crm_census_publication_unique IF NOT EXISTS
+  FOR (node:StandaloneCrmChildPublication)
+  REQUIRE (node.census_id, node.generation, node.unit_kind, node.sequence) IS UNIQUE;
+CREATE CONSTRAINT standalone_crm_census_call_intent_unique IF NOT EXISTS
+  FOR (node:StandaloneCrmHttpCallReservation) REQUIRE (node.intent_id) IS UNIQUE;
+CREATE CONSTRAINT standalone_crm_census_fence_unique IF NOT EXISTS
+  FOR (node:StandaloneCrmUnitFence) REQUIRE (node.census_id, node.generation, node.unit_kind) IS UNIQUE;
+CREATE INDEX standalone_crm_census_recovery_scan IF NOT EXISTS
+  FOR (node:StandaloneCrmCensusAttempt) ON (node.state, node.lease_until);
+CREATE INDEX standalone_crm_census_publication_scan IF NOT EXISTS
+  FOR (node:StandaloneCrmChildPublication) ON (node.status, node.updated_at);
+CREATE INDEX standalone_crm_census_call_scan IF NOT EXISTS
+  FOR (node:StandaloneCrmHttpCallReservation) ON (node.census_id, node.generation, node.outcome);
+CREATE INDEX standalone_crm_census_fence_scan IF NOT EXISTS
+  FOR (node:StandaloneCrmUnitFence) ON (node.state, node.lease_until);

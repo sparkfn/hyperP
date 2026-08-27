@@ -5,9 +5,9 @@ from __future__ import annotations
 import logging
 import math
 import time
-from collections.abc import Collection, Iterator, Mapping
+from collections.abc import Callable, Collection, Iterator, Mapping
 from datetime import datetime
-from typing import cast
+from typing import Literal, cast
 from urllib.parse import urlencode
 
 import httpx
@@ -62,6 +62,11 @@ from src.connectors.bitrix_stage_history.models import (
     parse_stage_history_raw_page,
 )
 from src.models import JsonValue
+from src.standalone_crm_http_calls import (
+    BitrixHttpAttempt,
+    BitrixHttpCallContext,
+    BitrixHttpReservationHook,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -95,6 +100,7 @@ class BitrixOpenLinesClient:
         request_delay_seconds: float = 0.0,
         max_request_count: int | None = None,
         deadline_monotonic: float | None = None,
+        reservation_hook: BitrixHttpReservationHook | None = None,
         http: httpx.Client | None = None,
     ) -> None:
         if not base_url.strip():
@@ -122,6 +128,7 @@ class BitrixOpenLinesClient:
         self._last_request_at = 0.0
         self._request_count = 0
         self._activities_scanned = 0
+        self._reservation_hook = reservation_hook
         self._http = http or httpx.Client(timeout=timeout_seconds)
 
     @property
@@ -979,7 +986,15 @@ class BitrixOpenLinesClient:
         canonical_contact_id = _positive_numeric_id_string(contact_id)
         if canonical_contact_id is None:
             raise ValueError("contact_id must be a positive numeric ID")
-        result = self._call("crm.contact.company.items.get", {"id": int(canonical_contact_id)})
+        result = self._call(
+            "crm.contact.company.items.get",
+            {"id": int(canonical_contact_id)},
+            census_context=BitrixHttpCallContext(
+                call_kind="company_binding",
+                unit_kind="contact",
+                subject_id=canonical_contact_id,
+            ),
+        )
         if not isinstance(result, list):
             raise RuntimeError("Bitrix contact company bindings returned an invalid result")
         bindings: list[CrmCompanyBindingPayload] = []
@@ -999,6 +1014,15 @@ class BitrixOpenLinesClient:
         return tuple(bindings)
 
     def _probe_crm_identity_upper_id(self, method: str) -> int:
+        unit_kind: Literal["contact", "lead", "company"]
+        if method == "crm.contact.list":
+            unit_kind = "contact"
+        elif method == "crm.lead.list":
+            unit_kind = "lead"
+        elif method == "crm.company.list":
+            unit_kind = "company"
+        else:
+            raise ValueError("unsupported standalone CRM probe method")
         payload = self._request(
             method,
             {
@@ -1006,7 +1030,24 @@ class BitrixOpenLinesClient:
                 "order": {"ID": "DESC"},
                 "start": -1,
             },
+            census_context=BitrixHttpCallContext(call_kind="probe", unit_kind=unit_kind),
+            numeric_result=lambda response: self._probe_result(response),
         )
+        result = payload.get("result")
+        if not isinstance(result, list):
+            raise RuntimeError("Bitrix CRM identity upper-bound probe returned an invalid result")
+        if not result:
+            return 0
+        first = result[0]
+        if not isinstance(first, dict):
+            raise RuntimeError("Bitrix CRM identity upper-bound probe contained an invalid item")
+        raw_id = _positive_numeric_id_string(first.get("ID"))
+        if raw_id is None:
+            raise RuntimeError("Bitrix CRM identity upper-bound probe omitted a numeric ID")
+        return int(raw_id)
+
+    @staticmethod
+    def _probe_result(payload: dict[str, JsonValue]) -> int:
         result = payload.get("result")
         if not isinstance(result, list):
             raise RuntimeError("Bitrix CRM identity upper-bound probe returned an invalid result")
@@ -1047,6 +1088,12 @@ class BitrixOpenLinesClient:
         payload = self._request(
             method,
             {"filter": filters, "select": select, "order": {"ID": "ASC"}, "start": -1},
+            census_context=BitrixHttpCallContext(
+                call_kind="page",
+                unit_kind=cast(Literal["contact", "lead", "company"], kind),
+                cursor_id=greater_than_id,
+                upper_id=less_than_or_equal_to_id,
+            ),
         )
         raw_items = payload.get("result")
         if not isinstance(raw_items, list):
@@ -1251,8 +1298,14 @@ class BitrixOpenLinesClient:
     def close(self) -> None:
         self._http.close()
 
-    def _call(self, method: str, params: Mapping[str, JsonValue]) -> JsonValue:
-        return self._request(method, params)["result"]
+    def _call(
+        self,
+        method: str,
+        params: Mapping[str, JsonValue],
+        *,
+        census_context: BitrixHttpCallContext | None = None,
+    ) -> JsonValue:
+        return self._request(method, params, census_context=census_context)["result"]
 
     def _sleep_with_deadline(self, delay_seconds: float) -> None:
         if delay_seconds <= 0:
@@ -1269,7 +1322,14 @@ class BitrixOpenLinesClient:
             raise RuntimeError("Bitrix request runtime ceiling reached before the next request")
 
     def _assert_request_budget(self) -> None:
-        if self._max_request_count is not None and self._request_count >= self._max_request_count:
+        # A census hook has already durably reserved this physical I/O against its
+        # immutable attempt/occurrence ceilings. Keep the local count as diagnostic
+        # telemetry in that mode; legacy callers retain their existing local cap.
+        if (
+            self._reservation_hook is None
+            and self._max_request_count is not None
+            and self._request_count >= self._max_request_count
+        ):
             raise RuntimeError("Bitrix API-call ceiling reached before the next request")
         self._assert_runtime_budget()
 
@@ -1287,8 +1347,14 @@ class BitrixOpenLinesClient:
         params: Mapping[str, JsonValue],
         *,
         allowed_errors: frozenset[str] = frozenset(),
+        census_context: BitrixHttpCallContext | None = None,
+        numeric_result: Callable[[dict[str, JsonValue]], int] | None = None,
     ) -> dict[str, JsonValue]:
         for attempt in range(1, self._max_attempts + 1):
+            call = BitrixHttpAttempt(
+                method=method, retry_ordinal=attempt - 1, context=census_context
+            )
+            reserved = False
             try:
                 self._assert_request_budget()
                 elapsed = time.monotonic() - self._last_request_at
@@ -1296,6 +1362,12 @@ class BitrixOpenLinesClient:
                     self._sleep_with_deadline(self._request_delay_seconds - elapsed)
                 self._assert_request_budget()
                 request_timeout = self._request_timeout()
+                if self._reservation_hook is not None:
+                    if not self._reservation_hook.reserve(call):
+                        raise RuntimeError("Bitrix request reservation was rejected before I/O")
+                    reserved = True
+                if self._reservation_hook is not None:
+                    self._assert_runtime_budget()
                 self._request_count += 1
                 response = self._http.post(
                     f"{self._base_url}/{method}",
@@ -1303,27 +1375,48 @@ class BitrixOpenLinesClient:
                     timeout=request_timeout,
                 )
                 self._last_request_at = time.monotonic()
-                self._assert_runtime_budget()
+                if self._reservation_hook is None:
+                    self._assert_runtime_budget()
                 response.raise_for_status()
-                payload = cast(object, response.json())
+                try:
+                    payload = cast(object, response.json())
+                except ValueError:
+                    self._record_reserved_outcome(call, reserved, "failed")
+                    raise RuntimeError(f"Bitrix method {method} returned invalid JSON") from None
                 if not isinstance(payload, dict):
+                    self._record_reserved_outcome(call, reserved, "failed")
                     raise RuntimeError(f"Bitrix method {method} returned an invalid envelope")
                 typed_payload = cast(dict[str, JsonValue], payload)
                 error = typed_payload.get("error")
                 if isinstance(error, str):
                     if error in allowed_errors:
+                        self._record_reserved_outcome(call, reserved, "succeeded")
                         return typed_payload
                     if error not in RETRYABLE_ERRORS:
+                        self._record_reserved_outcome(call, reserved, "failed")
                         raise RuntimeError(f"Bitrix method {method} failed with {error}")
                     if attempt == self._max_attempts:
+                        self._record_reserved_outcome(call, reserved, "failed")
                         raise RuntimeError(f"Bitrix method {method} failed with {error}")
+                    self._record_reserved_outcome(call, reserved, "failed")
                     self._sleep_with_deadline(envelope_retry_delay(typed_payload, attempt))
                     continue
                 if "result" not in typed_payload:
+                    self._record_reserved_outcome(call, reserved, "failed")
                     raise RuntimeError(f"Bitrix method {method} returned an invalid envelope")
+                try:
+                    result = numeric_result(typed_payload) if numeric_result is not None else None
+                except (RuntimeError, ValueError):
+                    self._record_reserved_outcome(call, reserved, "failed")
+                    raise
+                self._record_reserved_outcome(
+                    call,
+                    reserved,
+                    "succeeded",
+                    numeric_result=result,
+                )
                 return typed_payload
             except httpx.HTTPStatusError as exc:
-                self._assert_runtime_budget()
                 error_payload: object = None
                 try:
                     error_payload = exc.response.json()
@@ -1332,21 +1425,37 @@ class BitrixOpenLinesClient:
                 if isinstance(error_payload, dict):
                     typed_error_payload = cast(dict[str, JsonValue], error_payload)
                     if _is_allowed_error_payload(typed_error_payload, allowed_errors):
+                        self._record_reserved_outcome(call, reserved, "succeeded")
                         return typed_error_payload
                 if exc.response.status_code != 429 and exc.response.status_code < 500:
+                    self._record_reserved_outcome(call, reserved, "failed")
                     raise RuntimeError(
                         f"Bitrix method {method} failed with HTTP {exc.response.status_code}"
                     ) from None
                 if attempt == self._max_attempts:
+                    self._record_reserved_outcome(call, reserved, "failed")
                     raise RuntimeError(f"Bitrix method {method} request failed") from None
-                delay = retry_delay(exc.response, attempt)
-                self._sleep_with_deadline(delay)
+                self._record_reserved_outcome(call, reserved, "failed")
+                self._sleep_with_deadline(retry_delay(exc.response, attempt))
             except httpx.TransportError:
-                self._assert_runtime_budget()
                 if attempt == self._max_attempts:
+                    self._record_reserved_outcome(call, reserved, "failed")
                     raise RuntimeError(f"Bitrix method {method} request failed") from None
+                self._record_reserved_outcome(call, reserved, "failed")
                 self._sleep_with_deadline(min(2 ** (attempt - 1), 8))
         raise AssertionError("unreachable")
+
+    def _record_reserved_outcome(
+        self,
+        attempt: BitrixHttpAttempt,
+        reserved: bool,
+        outcome: Literal["succeeded", "failed"],
+        *,
+        numeric_result: int | None = None,
+    ) -> None:
+        if not reserved or self._reservation_hook is None:
+            return
+        self._reservation_hook.record_outcome(attempt, outcome, numeric_result=numeric_result)
 
 
 def _string(value: object) -> str | None:

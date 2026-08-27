@@ -587,6 +587,32 @@ def load_ingestion_config(path_value: str) -> IngestionConfig:
     )
 
 
+def standalone_crm_census_configuration_digest(config: BitrixOpenLinesConfig) -> str:
+    """Hash only #273 standalone control inputs without altering legacy Bitrix digests."""
+    payload = {
+        "contract": "standalone-crm-census-config-v1",
+        "source_instance_id": config.source_instance_id,
+        "enabled": config.standalone_crm_identity_enabled,
+        "kinds": tuple(config.standalone_crm_identity_kinds),
+        "max_rows_per_attempt": config.standalone_crm_identity_max_rows_per_attempt,
+        "max_calls_per_attempt": config.standalone_crm_identity_max_calls_per_attempt,
+        "max_runtime_seconds_per_attempt": (
+            config.standalone_crm_identity_max_runtime_seconds_per_attempt
+        ),
+        "max_rows_per_occurrence": config.standalone_crm_identity_max_rows_per_occurrence,
+        "max_calls_per_occurrence": config.standalone_crm_identity_max_calls_per_occurrence,
+        "max_attempts_per_occurrence": config.standalone_crm_identity_max_attempts_per_occurrence,
+        "max_wall_clock_seconds_per_occurrence": (
+            config.standalone_crm_identity_max_wall_clock_seconds_per_occurrence
+        ),
+        "association_contract_version": config.crm_identity_association_contract_version,
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), allow_nan=False).encode(
+        "utf-8"
+    )
+    return "sha256:" + hashlib.sha256(b"standalone-crm-census-config-v1\x00" + encoded).hexdigest()
+
+
 def bitrix_configuration_digest(
     config: BitrixOpenLinesConfig,
     included_category_ids: tuple[str, ...],

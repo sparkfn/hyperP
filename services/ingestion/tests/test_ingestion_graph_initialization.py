@@ -12,6 +12,7 @@ from src.graph.client import Neo4jClient
 from src.graph.queries.stage_history_ingestion import (
     CREATE_STAGE_HISTORY_INGESTION_CONSTRAINTS,
 )
+from src.graph.queries.standalone_crm_census import CENSUS_CONSTRAINT_SPECS
 from src.graph.schema_init import (
     BASE_LIFECYCLE_CONSTRAINTS,
     DEFERRED_SOURCE_RECORD_CONSTRAINTS,
@@ -50,6 +51,25 @@ def test_control_binding_schema_is_available_in_runtime_and_canonical_initializa
     assert identity in canonical_schema
     assert "bitrix_execution_source_binding_control_unique" in runtime_schema
     assert identity in runtime_schema
+
+
+def test_census_fence_constraint_is_identical_in_runtime_and_fresh_schema() -> None:
+    canonical_schema = _find_init_cypher().read_text(encoding="utf-8")
+    runtime_schema = "\n".join(BASE_LIFECYCLE_CONSTRAINTS)
+    expected = (
+        "standalone_crm_census_fence_unique",
+        "StandaloneCrmUnitFence",
+        ("census_id", "generation", "unit_kind"),
+    )
+    assert expected in CENSUS_CONSTRAINT_SPECS
+    statement = (
+        "FOR (node:StandaloneCrmUnitFence) REQUIRE "
+        "(node.census_id, node.generation, node.unit_kind) IS UNIQUE"
+    )
+    assert "standalone_crm_census_fence_unique" in canonical_schema
+    assert statement in canonical_schema
+    assert "standalone_crm_census_fence_unique" in runtime_schema
+    assert statement in runtime_schema
 
 
 def test_profile_analysis_schema_statements_are_idempotent() -> None:
@@ -151,6 +171,12 @@ def test_data_migrations_precede_source_version_uniqueness(
         "assert_ingestion_control_ready",
         lambda _client: calls.append("control_instance_ready"),
     )
+
+    def _migrate_census(_client: object) -> None:
+        calls.append("census_migration")
+        calls.append("census_ready")
+
+    monkeypatch.setattr(main, "migrate_standalone_crm_census_control", _migrate_census)
     monkeypatch.setattr(
         main,
         "apply_data_migrations",
@@ -180,6 +206,8 @@ def test_data_migrations_precede_source_version_uniqueness(
         "control_instance_migration",
         "legacy_registry",
         "control_instance_ready",
+        "census_migration",
+        "census_ready",
         "data_migrations",
         "source_version_constraint",
         "identifier_scope_constraint",
@@ -282,12 +310,40 @@ def test_legacy_registry_bootstrap_is_owned_by_migration_callback_after_dispatch
 
     monkeypatch.setattr(main, "migrate_ingestion_control_instances", _migration)
     monkeypatch.setattr(
-        main, "assert_ingestion_control_ready", lambda _client: calls.append("ready")
+        main, "assert_ingestion_control_ready", lambda _client: calls.append("control_ready")
     )
-    monkeypatch.setattr(main, "apply_data_migrations", lambda _client, **_kwargs: None)
-    monkeypatch.setattr(main, "apply_deferred_source_record_constraints", lambda _client: 0)
-    monkeypatch.setattr(main, "apply_deferred_identifier_scope_constraints", lambda _client: 0)
+
+    def _migrate_census(_client: object) -> None:
+        calls.append("census_migration")
+        calls.append("census_ready")
+
+    monkeypatch.setattr(main, "migrate_standalone_crm_census_control", _migrate_census)
+    monkeypatch.setattr(
+        main, "apply_data_migrations", lambda _client, **_kwargs: calls.append("data")
+    )
+    monkeypatch.setattr(
+        main,
+        "apply_deferred_source_record_constraints",
+        lambda _client: calls.append("source_constraints"),
+    )
+    monkeypatch.setattr(
+        main,
+        "apply_deferred_identifier_scope_constraints",
+        lambda _client: calls.append("identifier_constraints"),
+    )
 
     main.initialize_ingestion_graph()
 
-    assert calls[:5] == ["schema", "sources", "dispatch_blocked", "registry", "migration_complete"]
+    assert calls == [
+        "schema",
+        "sources",
+        "dispatch_blocked",
+        "registry",
+        "migration_complete",
+        "control_ready",
+        "census_migration",
+        "census_ready",
+        "data",
+        "source_constraints",
+        "identifier_constraints",
+    ]
