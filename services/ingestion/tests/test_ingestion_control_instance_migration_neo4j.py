@@ -742,18 +742,18 @@ def test_aliased_retired_constraint_blocks_dispatch_before_inventory_failure(
 @pytest.mark.parametrize(
     "seed_statement",
     (
-        "CREATE (instance:BitrixSourceInstance {source_key: 'bitrix_chat', "
-        "source_instance_id: 'portal-disabled', status: 'disabled'}) "
         "MATCH (source:SourceSystem {source_key: 'bitrix_chat'}) "
-        "CREATE (instance)-[:INSTANCE_OF]->(source)",
+        "CREATE (instance:BitrixSourceInstance {source_key: 'bitrix_chat', "
+        "source_instance_id: 'portal-disabled', status: 'disabled'})"
+        "-[:INSTANCE_OF]->(source)",
         "CREATE (:BitrixSourceInstance {source_key: 'bitrix_chat', "
         "source_instance_id: 'portal-unlinked', status: 'active'})",
-        "CREATE (other:SourceSystem {source_key: 'other', is_active: true}) "
-        "CREATE (instance:BitrixSourceInstance {source_key: 'bitrix_chat', "
-        "source_instance_id: 'portal-multi', status: 'active'}) "
         "MATCH (source:SourceSystem {source_key: 'bitrix_chat'}) "
-        "CREATE (instance)-[:INSTANCE_OF]->(source) "
-        "CREATE (instance)-[:INSTANCE_OF]->(other)",
+        "CREATE (other:SourceSystem {source_key: 'other', is_active: true}), "
+        "(instance:BitrixSourceInstance {source_key: 'bitrix_chat', "
+        "source_instance_id: 'portal-multi', status: 'active'}), "
+        "(instance)-[:INSTANCE_OF]->(source), "
+        "(instance)-[:INSTANCE_OF]->(other)",
     ),
 )
 def test_invalid_existing_registration_is_not_mutated_before_rejection(
