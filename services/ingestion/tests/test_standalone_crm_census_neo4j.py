@@ -504,6 +504,7 @@ def test_continuation_rejects_cancelled_and_stale_admission(census_neo4j: Census
     repository.request_cancel(census.admission, actor="operator", reason="stop")
     with pytest.raises(StandaloneCrmCensusStaleError):
         repository.continue_attempt(census.admission, census.request, task_id="next-parent")
+    assert repository.reconcile_terminal(census.admission, census.attempt)[0] == "freeze_failed"
     stale_census = _claim_source(census_neo4j, "continuation-stale")
     repository.pause(stale_census.admission, stale_census.attempt, reason="paused")
     stale = StandaloneCrmCensusAdmission(

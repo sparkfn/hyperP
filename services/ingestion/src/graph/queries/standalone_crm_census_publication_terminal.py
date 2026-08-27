@@ -45,10 +45,10 @@ OPTIONAL MATCH (by_id:StandaloneCrmChildPublication {publication_id: $publicatio
 WITH census, unit, attempt, existing_rows, collect(by_id) AS id_rows
 WHERE size(existing_rows) <= 1 AND size(id_rows) <= 1
 WITH census, unit, attempt, existing_rows, id_rows,
-  size(id_rows) = 1 AND (size(existing_rows) = 0 OR elementId(id_rows[0]) <> elementId(existing_rows[0])) AS identity_conflict
+  size(id_rows) = 1 AND (size(existing_rows) = 0 OR elementId(id_rows[0]) <> elementId(existing_rows[0])) AS has_identity_conflict
 CALL {
-  WITH census, unit, existing_rows, identity_conflict
-  UNWIND CASE WHEN identity_conflict = false
+  WITH census, unit, existing_rows, has_identity_conflict
+  UNWIND CASE WHEN has_identity_conflict = false
     AND (size(existing_rows) = 1 OR unit.state IN ['pending_publication','paused'])
     THEN [1] ELSE [] END AS reserve
   MERGE (publication:StandaloneCrmChildPublication {census_id: census.census_id, generation: $generation,
@@ -59,8 +59,8 @@ CALL {
     publication.created_at = datetime(), publication.updated_at = datetime()
   RETURN publication, false AS identity_conflict
   UNION
-  WITH identity_conflict
-  UNWIND CASE WHEN identity_conflict THEN [1] ELSE [] END AS conflict
+  WITH has_identity_conflict
+  UNWIND CASE WHEN has_identity_conflict THEN [1] ELSE [] END AS conflict
   RETURN NULL AS publication, true AS identity_conflict
 }
 WITH census, unit, publication, identity_conflict,

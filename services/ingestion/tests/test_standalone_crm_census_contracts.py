@@ -270,7 +270,7 @@ def test_census_tasks_are_routed_but_never_scheduled_by_beat() -> None:
 def test_cypher_branch_guards_are_neo4j_5_valid_and_reservation_locks_are_nonmutating() -> None:
     for query in (queries.CLAIM_ATTEMPT, queries.CONTINUE_ATTEMPT, queries.RESERVE_PUBLICATION):
         assert "WITH census, redelivery\n  WHERE" not in query
-        assert "WITH census, unit, existing_rows, identity_conflict\n  WHERE" not in query
+        assert "WITH census, unit, existing_rows, has_identity_conflict\n  WHERE" not in query
         assert "UNWIND CASE WHEN" in query
     for query in (queries.RESERVE_HTTP_CALL, queries.RESERVE_PUBLICATION):
         assert "SET census.updated_at = census.updated_at" in query
