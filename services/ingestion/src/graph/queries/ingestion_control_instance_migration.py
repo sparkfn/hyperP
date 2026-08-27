@@ -255,11 +255,18 @@ def backfill_label_query(label: str) -> str:
     return f"""
 MATCH (migration:DataMigration {{migration_key: $migration_key, lease_owner: $owner_id}})
 WHERE migration.lease_until >= datetime() AND migration.phase = $phase
-MATCH (node:{label})
-WHERE elementId(node) > $cursor AND node.control_instance_id IS NULL
-WITH migration, node ORDER BY elementId(node) LIMIT $batch_size
-SET node.control_instance_id = 'legacy-default', node.updated_at = datetime()
-WITH migration, collect(elementId(node)) AS ids
+CALL {{
+  WITH migration
+  OPTIONAL MATCH (node:{label})
+  WHERE elementId(node) > $cursor AND node.control_instance_id IS NULL
+  WITH node ORDER BY elementId(node) LIMIT $batch_size
+  WITH [candidate IN collect(node) WHERE candidate IS NOT NULL] AS nodes
+  FOREACH (node IN nodes |
+    SET node.control_instance_id = 'legacy-default', node.updated_at = datetime()
+  )
+  RETURN nodes
+}}
+WITH migration, [node IN nodes | elementId(node)] AS ids
 WITH migration, ids, CASE WHEN size(ids) = 0 THEN '' ELSE ids[-1] END AS next_cursor
 SET migration.cursor = next_cursor, migration.progress_count = coalesce(migration.progress_count, 0) + size(ids),
     migration.updated_at = datetime()
