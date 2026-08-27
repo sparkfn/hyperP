@@ -268,6 +268,18 @@ export interface PersonCrmMetrics {
   days_since_last_crm_touch: number | null;
   days_since_last_deal: number | null;
   days_since_last_activity: number | null;
+  // 30-day daily trend series (oldest → newest, UTC midnight buckets).
+  // Always length 30; days with no events are 0.
+  recent_30d_daily_deal_counts: number[];
+  recent_30d_daily_activity_counts: number[];
+  recent_30d_daily_call_counts: number[];
+  recent_30d_daily_conversation_counts: number[];
+  // Percentage change vs the prior 30-day window, rounded to int.
+  // null when the prior window is empty (no division by zero in the UI).
+  recent_30d_deal_change_pct: number | null;
+  recent_30d_activity_change_pct: number | null;
+  recent_30d_call_change_pct: number | null;
+  recent_30d_conversation_change_pct: number | null;
 }
 
 export interface EntitySummary {

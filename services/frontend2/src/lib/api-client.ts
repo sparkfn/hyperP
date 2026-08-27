@@ -46,7 +46,17 @@ export async function bffFetch<T>(path: string, init?: RequestInit): Promise<T> 
 
 export async function bffFetchEnvelope<T>(path: string, init?: RequestInit): Promise<ApiResponse<T>> {
   const response: Response = await fetch(withBasePath(path), init);
-  const json: unknown = await response.json();
+  const text: string = await response.text();
+  let json: unknown = null;
+  try {
+    json = text.length > 0 ? JSON.parse(text) : null;
+  } catch {
+    throw new BffError(
+      response.status,
+      "invalid_response",
+      response.ok ? "The server returned an invalid response." : "The CRM service is temporarily unavailable.",
+    );
+  }
 
   if (!response.ok) {
     if (response.status === 401) {

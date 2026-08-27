@@ -1030,8 +1030,8 @@ function TimelineActivity({ person, detailData }: { person: Person; detailData: 
               </button>
               {!isCollapsed && (
                 <div className={styles.tlEventsList}>
-                  {evts.map((e) => (
-                    <div key={e.id} className={styles.tlEventItem}>
+                  {evts.map((e, index) => (
+                    <div key={`${e.kind}-${e.id}-${index}`} className={styles.tlEventItem}>
                       <div className={styles.tlEventTop}>
                         <span className={styles.tlTitle}>{e.title}</span>
                         <span className={styles.tlTime}>{fmtTime(e.timestamp)}</span>
@@ -1443,8 +1443,8 @@ function CandidateSourceRecords({ title, records, group }: { title: string; reco
       <span className={styles.matchSourceMeta}>{group.normalized_value}</span>
       {records.length === 0 ? (
         <span className={styles.matchSourceEmpty}>No source record shown</span>
-      ) : records.map((record) => (
-        <span key={record.source_record_pk} className={styles.matchSourceSub}>
+      ) : records.map((record, index) => (
+        <span key={`${record.source_record_pk ?? record.source_record_id ?? "record"}-${index}`} className={styles.matchSourceSub}>
           {sourceRecordMeta(record)} · {sourceRecordEvidence(record, group)} · observed {fmtDate(record.observed_at)}
         </span>
       ))}
@@ -3363,8 +3363,8 @@ function SourceRecordsList({ basePath }: { basePath: string }): ReactElement {
   return (
     <>
       <div className={styles.idList}>
-        {records.map((record) => (
-          <SourceRecordRow key={record.source_record_pk} record={record} />
+        {records.map((record, index) => (
+          <SourceRecordRow key={`${record.source_record_pk ?? record.source_record_id ?? "record"}-${index}`} record={record} />
         ))}
       </div>
       {(hasPrev || hasNext) && <TabPagination from={from} to={to} total={total} hasPrev={hasPrev} hasNext={hasNext} onPrev={goPrev} onNext={goNext} />}
@@ -3561,14 +3561,14 @@ function IdentifiersTab({ identifiers }: { identifiers: PersonIdentifier[] }): R
                       <div className={styles.idDetailSection}>
                         <div className={styles.idDetailSectionTitle}>Source records ({id.source_records.length})</div>
                         <div className={styles.idSrcRecordList}>
-                          {id.source_records.map((sr) => {
+                          {id.source_records.map((sr, index) => {
                             const payload = sr.normalized_payload;
                             const identifiers = payload?.identifiers ?? [];
                             const address = payload?.address ?? null;
                             const attributes = payload?.attributes ?? [];
                             const hasPayload = identifiers.length > 0 || address !== null || attributes.length > 0;
                             return (
-                              <div key={sr.source_record_pk} className={styles.idSrcRecordCard}>
+                              <div key={`${sr.source_record_pk ?? sr.source_record_id ?? "record"}-${index}`} className={styles.idSrcRecordCard}>
                                 <div className={styles.idSrcRecordHeader}>
                                   <span className={`${styles.idSrcRecordId} ${styles.mono}`}>
                                     {sourceRecordReference(sr.source_record_id, sr.source_system)}

@@ -14,6 +14,56 @@ _BITRIX_SOURCE = (
 )
 _RECENT = "sr_timestamp >= as_of_at - duration('P30D') AND sr_timestamp <= as_of_at"
 
+
+def _daily_buckets(record_type: str, timestamp_expr: str, alias: str) -> str:
+    """Build a CALL sub-query that returns 30 daily counts (oldest → newest),
+    the recent_30d total, and the prior_30d total for a given record_type.
+
+    `timestamp_expr` is a Cypher expression for the record's event timestamp
+    (e.g. ``sr.observed_at`` for deals, ``coalesce(sr.event_at, sr.observed_at)``
+    for activities). Bucket alignment is UTC midnight, with bucket 29 (the
+    newest) ending at as_of_at and bucket 0 (the oldest) ending 30 days before
+    as_of_at. The prior_30d window covers days 60..30 before as_of_at.
+
+    `alias` is suffixed to the returned column names (``{alias}_daily_counts``,
+    ``{alias}_recent_total``, ``{alias}_prior_total``) so that multiple sub-
+    queries can coexist in the outer WITH clause without column-name clashes.
+    """
+    return f"""
+CALL (person, as_of_at) {{
+  OPTIONAL MATCH (sr:SourceRecord {{record_type: '{record_type}'}})-[link:LINKED_TO]->(person)
+  WHERE {_LINK_ACTIVE}
+    AND {_LIFECYCLE}
+    AND {_ACTIVITY_FAMILY}
+    AND {_BITRIX_SOURCE}
+  WITH sr, {timestamp_expr} AS sr_timestamp
+  WITH sr_timestamp,
+       CASE
+         WHEN sr_timestamp >= as_of_at - duration('P30D') THEN 1
+         ELSE 0
+       END AS in_recent,
+       CASE
+         WHEN sr_timestamp >= as_of_at - duration('P60D')
+          AND sr_timestamp <  as_of_at - duration('P30D') THEN 1
+         ELSE 0
+       END AS in_prior
+  WITH collect({{ts: sr_timestamp, recent: in_recent, prior: in_prior}}) AS events
+  WITH [i IN range(0, 29) |
+         as_of_at - duration({{days: 30 - i}})
+       ] AS bucket_starts,
+       events
+  RETURN [bucket_start IN bucket_starts |
+           size([e IN events
+                 WHERE e.ts >= bucket_start
+                   AND e.ts <  bucket_start + duration('P1D')
+                   AND e.recent = 1])
+         ] AS {alias}_daily_counts,
+         size([e IN events WHERE e.recent = 1]) AS {alias}_recent_total,
+         size([e IN events WHERE e.prior = 1]) AS {alias}_prior_total
+}}
+"""
+
+
 GET_PERSON_CRM_METRICS = f"""
 MATCH (p:Person {{person_id: $person_id}})
 OPTIONAL MATCH (p)-[:MERGED_INTO]->(canonical:Person)
@@ -101,6 +151,14 @@ CALL (person, as_of_at) {{
          count(DISTINCT CASE WHEN {_RECENT} THEN sr END) AS recent_30d_conversation_count
 }}
 
+{_daily_buckets('crm_deal', 'sr.observed_at', 'deal')}
+
+{_daily_buckets('crm_history', 'coalesce(sr.event_at, sr.observed_at)', 'activity')}
+
+{_daily_buckets('call', 'sr.observed_at', 'call')}
+
+{_daily_buckets('conversation', 'sr.observed_at', 'conversation')}
+
 CALL (person) {{
   OPTIONAL MATCH (sr:SourceRecord)-[link:LINKED_TO]->(person)
   WHERE {_LINK_ACTIVE}
@@ -147,6 +205,18 @@ WITH deal_count,
      recent_30d_call_count,
      recent_30d_conversation_count,
      entity_breakdown,
+     deal_daily_counts,
+     deal_recent_total,
+     deal_prior_total,
+     activity_daily_counts,
+     activity_recent_total,
+     activity_prior_total,
+     call_daily_counts,
+     call_recent_total,
+     call_prior_total,
+     conversation_daily_counts,
+     conversation_recent_total,
+     conversation_prior_total,
      as_of_at,
      [timestamp IN [last_deal_at, last_activity_at, last_call_at, last_conversation_at]
       WHERE timestamp IS NOT NULL] AS touch_timestamps
@@ -165,6 +235,18 @@ WITH deal_count,
      recent_30d_call_count,
      recent_30d_conversation_count,
      entity_breakdown,
+     deal_daily_counts,
+     deal_recent_total,
+     deal_prior_total,
+     activity_daily_counts,
+     activity_recent_total,
+     activity_prior_total,
+     call_daily_counts,
+     call_recent_total,
+     call_prior_total,
+     conversation_daily_counts,
+     conversation_recent_total,
+     conversation_prior_total,
      as_of_at,
      reduce(latest = null, timestamp IN touch_timestamps |
        CASE WHEN latest IS NULL OR timestamp > latest THEN timestamp ELSE latest END
@@ -184,6 +266,30 @@ RETURN deal_count,
        recent_30d_call_count,
        recent_30d_conversation_count,
        entity_breakdown,
+       deal_daily_counts,
+       deal_recent_total,
+       deal_prior_total,
+       CASE WHEN deal_prior_total = 0 THEN null
+            ELSE toInteger(round((toFloat(deal_recent_total) - deal_prior_total) * 100.0 / deal_prior_total))
+       END AS deal_change_pct,
+       activity_daily_counts,
+       activity_recent_total,
+       activity_prior_total,
+       CASE WHEN activity_prior_total = 0 THEN null
+            ELSE toInteger(round((toFloat(activity_recent_total) - activity_prior_total) * 100.0 / activity_prior_total))
+       END AS activity_change_pct,
+       call_daily_counts,
+       call_recent_total,
+       call_prior_total,
+       CASE WHEN call_prior_total = 0 THEN null
+            ELSE toInteger(round((toFloat(call_recent_total) - call_prior_total) * 100.0 / call_prior_total))
+       END AS call_change_pct,
+       conversation_daily_counts,
+       conversation_recent_total,
+       conversation_prior_total,
+       CASE WHEN conversation_prior_total = 0 THEN null
+            ELSE toInteger(round((toFloat(conversation_recent_total) - conversation_prior_total) * 100.0 / conversation_prior_total))
+       END AS conversation_change_pct,
        last_crm_touch_at,
        CASE WHEN last_crm_touch_at IS NULL THEN null
             WHEN last_crm_touch_at >= as_of_at THEN 0
@@ -198,3 +304,4 @@ RETURN deal_count,
             ELSE toInteger(floor(duration.inSeconds(last_activity_at, as_of_at).seconds / 86400.0))
        END AS days_since_last_activity
 """
+
