@@ -141,7 +141,10 @@ def test_stage_history_graph_merges_include_control_namespace_for_shared_artifac
     assert "occurrence_id: $occurrence_id, control_instance_id: $control_instance_id" in (
         UPSERT_STAGE_HISTORY_OCCURRENCE
     )
-    assert (
-        "control_instance_id: $control_instance_id,\n  occurrence_id: $occurrence_id"
-        in UPSERT_STAGE_HISTORY_RETRY
+    retry_merge = (
+        "MERGE (retry:StageHistoryRetry {\n"
+        "  occurrence_id: $occurrence_id,\n"
+        "  retry_sequence: $retry_sequence"
     )
+    assert retry_merge in UPSERT_STAGE_HISTORY_RETRY
+    assert "retry.control_instance_id = $control_instance_id" in UPSERT_STAGE_HISTORY_RETRY

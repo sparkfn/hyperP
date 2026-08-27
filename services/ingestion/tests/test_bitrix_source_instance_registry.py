@@ -72,6 +72,16 @@ def test_registry_admission_and_disable_cover_control_state() -> None:
     assert "is_active: true" in ADMIT_BITRIX_CONTROL_INSTANCE
     assert "size(controls) = 1" in ADMIT_BITRIX_CONTROL_INSTANCE
     assert "size(sources) = 1" in ADMIT_BITRIX_CONTROL_INSTANCE
+    assert "count(control_relationship) AS control_relationship_count" in (
+        ADMIT_BITRIX_CONTROL_INSTANCE
+    )
+    assert "count(source_relationship) AS source_relationship_count" in (
+        ADMIT_BITRIX_CONTROL_INSTANCE
+    )
+    assert "control_relationship_count = 1" in ADMIT_BITRIX_CONTROL_INSTANCE
+    assert "source_relationship_count = 1" in ADMIT_BITRIX_CONTROL_INSTANCE
+    assert "[(controls[0])-[:INSTANCE_OF]" not in ADMIT_BITRIX_CONTROL_INSTANCE
+    assert "[(sources[0])-[:INSTANCE_OF]" not in ADMIT_BITRIX_CONTROL_INSTANCE
     assert "size(dispatches) <= 1" in ADMIT_BITRIX_CONTROL_INSTANCE
     assert "dispatch.active_generation_id IS NOT NULL" in DISABLE_BITRIX_SOURCE_INSTANCE
     assert "IngestionLogicalRun {source_key: $source_key}" in DISABLE_BITRIX_SOURCE_INSTANCE

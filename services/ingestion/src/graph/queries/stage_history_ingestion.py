@@ -848,7 +848,6 @@ MATCH (occurrence:StageHistoryOccurrence {
 })
 WHERE occurrence.logical_run_id = $logical_run_id
 MERGE (retry:StageHistoryRetry {
-  control_instance_id: $control_instance_id,
   occurrence_id: $occurrence_id,
   retry_sequence: $retry_sequence
 })

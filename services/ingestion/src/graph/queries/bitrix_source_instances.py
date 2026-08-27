@@ -175,11 +175,16 @@ WITH collect(DISTINCT control) AS controls,
      collect(DISTINCT dispatch) AS dispatches
 WHERE size(controls) = 1
   AND size(sources) = 1
-  AND size([(controls[0])-[:INSTANCE_OF]->(:SourceSystem) | 1]) = 1
-  AND size([(sources[0])-[:INSTANCE_OF]->(:SourceSystem) | 1]) = 1
   AND size(dispatches) <= 1
   AND coalesce(dispatches[0].blocked, false) = false
 WITH controls[0] AS control, sources[0] AS source
+OPTIONAL MATCH (control)-[control_relationship:INSTANCE_OF]->(:SourceSystem)
+WITH control, source, count(control_relationship) AS control_relationship_count
+OPTIONAL MATCH (source)-[source_relationship:INSTANCE_OF]->(:SourceSystem)
+WITH control, source, control_relationship_count,
+     count(source_relationship) AS source_relationship_count
+WHERE control_relationship_count = 1
+  AND source_relationship_count = 1
 OPTIONAL MATCH (existing:BitrixExecutionSourceBinding {
   source_key: 'bitrix_chat', control_instance_id: control.source_instance_id
 })
