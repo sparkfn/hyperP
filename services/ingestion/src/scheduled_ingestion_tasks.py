@@ -17,11 +17,13 @@ from pydantic import TypeAdapter
 
 from src.celery_app import INGESTION_QUEUE, celery_app
 from src.config import get_settings
+from src.graph.bitrix_source_instances import admit_configured_bitrix_control
 from src.graph.client import Neo4jClient
 from src.graph.queries.bitrix_backfill import GET_ACTIVE_BITRIX_SUCCESSOR_SCHEDULE
 from src.ingestion_config import get_ingestion_config
 from src.models import JsonValue
 from src.scheduled_ingestion_groups import scheduled_ingestion_group
+from src.source_instances import LEGACY_DEFAULT_CONTROL_INSTANCE_ID
 
 logger = logging.getLogger(__name__)
 
@@ -115,14 +117,18 @@ def _dispatch_active_bitrix_successor(occurrence: str) -> str | None:
     graph = Neo4jClient(get_settings())
     try:
 
-        def _read(tx: ManagedTransaction) -> tuple[str, str, str] | None:
-            record = tx.run(GET_ACTIVE_BITRIX_SUCCESSOR_SCHEDULE).single()
+        def _read(tx: ManagedTransaction) -> tuple[str, str, str, str] | None:
+            record = tx.run(
+                GET_ACTIVE_BITRIX_SUCCESSOR_SCHEDULE,
+                control_instance_id=LEGACY_DEFAULT_CONTROL_INSTANCE_ID,
+            ).single()
             if record is None:
                 return None
             return (
                 str(record["generation_id"]),
                 str(record["configuration_digest"]),
                 str(record["manifest_json"]),
+                str(record["control_instance_id"]),
             )
 
         active = graph.execute_read(_read)
@@ -130,7 +136,8 @@ def _dispatch_active_bitrix_successor(occurrence: str) -> str | None:
         graph.close()
     if active is None:
         return None
-    generation_id, configuration_digest, manifest_json = active
+    generation_id, configuration_digest, manifest_json, control_instance_id = active
+    admit_configured_bitrix_control(get_settings(), control_instance_id)
     payload = TypeAdapter(dict[str, JsonValue]).validate_json(manifest_json)
     manifest = _manifest_from_payload(payload)
     categories = tuple(get_ingestion_config().bitrix_openlines.included_crm_category_ids)
@@ -182,6 +189,7 @@ def _dispatch_active_bitrix_successor(occurrence: str) -> str | None:
         task_kind="live",
         occurrence=occurrence,
         scheduled_dispatch=True,
+        control_instance_id=control_instance_id,
     )
 
 
@@ -226,6 +234,11 @@ def dispatch_ingestion_group_task(
             else None
         )
         if split_workflow_id is None:
+            if group.key == "bitrix_chat":
+                admit_configured_bitrix_control(
+                    get_settings(),
+                    LEGACY_DEFAULT_CONTROL_INSTANCE_ID,
+                )
             workflow = chain(
                 *(
                     _signature(

@@ -2,19 +2,79 @@
 
 from __future__ import annotations
 
-CREATE_INGEST_RUN_IDEMPOTENCY_CONSTRAINT = """CREATE CONSTRAINT ingest_run_source_idempotency_unique IF NOT EXISTS
-FOR (ir:IngestRun)
-REQUIRE (ir.source_key, ir.idempotency_key) IS UNIQUE"""
-
 CHECK_SOURCE_SYSTEM = """
 MATCH (ss:SourceSystem {source_key: $source_key, is_active: true})
+OPTIONAL MATCH (migration:DataMigration {migration_key: 'bitrix_control_instance_v1'})
+WITH ss, collect(DISTINCT migration) AS migrations
+OPTIONAL MATCH (instance:BitrixSourceInstance {
+  source_key: 'bitrix_chat', source_instance_id: 'legacy-default', status: 'active'
+})
+WITH ss, migrations, collect(DISTINCT instance) AS instances
+WITH ss, migrations, instances,
+     [instance IN instances |
+       size([(instance)-[:INSTANCE_OF]->(:SourceSystem) | 1])
+     ] AS relationship_counts,
+     [instance IN instances |
+       size([(instance)-[:INSTANCE_OF]->(:SourceSystem {
+         source_key: 'bitrix_chat', is_active: true
+       }) | 1])
+     ] AS canonical_relationship_counts
+OPTIONAL MATCH (dispatch:BitrixDispatchControl {
+  source_key: 'bitrix_chat', control_instance_id: 'legacy-default'
+})
+WITH ss, migrations, instances, relationship_counts, canonical_relationship_counts,
+     collect(DISTINCT dispatch) AS dispatches
+WHERE $source_key <> 'bitrix_chat'
+   OR (
+     size(migrations) = 1
+     AND migrations[0].completed_at IS NOT NULL
+     AND size(instances) = 1
+     AND relationship_counts = [1]
+     AND canonical_relationship_counts = [1]
+     AND size(dispatches) <= 1
+     AND coalesce(dispatches[0].blocked, false) = false
+   )
 RETURN ss.source_system_id AS id
 """
+
+
+CHECK_BITRIX_API_ADMISSION = """
+OPTIONAL MATCH (migration:DataMigration {migration_key: 'bitrix_control_instance_v1'})
+WITH collect(DISTINCT migration) AS migrations
+OPTIONAL MATCH (instance:BitrixSourceInstance {
+  source_key: 'bitrix_chat', source_instance_id: 'legacy-default', status: 'active'
+})
+WITH migrations, collect(DISTINCT instance) AS instances
+WITH migrations, instances,
+     [instance IN instances |
+       size([(instance)-[:INSTANCE_OF]->(:SourceSystem) | 1])
+     ] AS relationship_counts,
+     [instance IN instances |
+       size([(instance)-[:INSTANCE_OF]->(:SourceSystem {
+         source_key: 'bitrix_chat', is_active: true
+       }) | 1])
+     ] AS canonical_relationship_counts
+OPTIONAL MATCH (dispatch:BitrixDispatchControl {
+  source_key: 'bitrix_chat', control_instance_id: 'legacy-default'
+})
+WITH migrations, instances, relationship_counts, canonical_relationship_counts,
+     collect(DISTINCT dispatch) AS dispatches
+WHERE size(migrations) = 1
+  AND migrations[0].completed_at IS NOT NULL
+  AND size(instances) = 1
+  AND relationship_counts = [1]
+  AND canonical_relationship_counts = [1]
+  AND size(dispatches) <= 1
+  AND coalesce(dispatches[0].blocked, false) = false
+RETURN instances[0].source_instance_id AS control_instance_id
+"""
+
 
 CREATE_INGEST_RUN_INLINE = """
 MATCH (ss:SourceSystem {source_key: $source_key})
 CREATE (ir:IngestRun {
   ingest_run_id: randomUUID(),
+  control_instance_id: 'legacy-default',
   run_type: $ingest_type,
   status: 'started',
   started_at: datetime(),
@@ -28,7 +88,9 @@ RETURN ir.ingest_run_id AS ingest_run_id
 
 CREATE_SOURCE_RECORD = """
 MATCH (ss:SourceSystem {source_key: $source_key})
-MATCH (ir:IngestRun {ingest_run_id: $ingest_run_id})
+MATCH (ir:IngestRun {
+  ingest_run_id: $ingest_run_id, control_instance_id: 'legacy-default'
+})
 OPTIONAL MATCH (entity:Entity {entity_key: $entity_key})
 WITH ss, ir, entity
 WHERE $entity_key IS NULL OR entity IS NOT NULL
@@ -59,15 +121,48 @@ RETURN sr.source_record_pk AS source_record_pk
 """
 
 UPDATE_INGEST_RUN_COUNTERS = """
-MATCH (ir:IngestRun {ingest_run_id: $ingest_run_id})
+MATCH (ir:IngestRun {
+  ingest_run_id: $ingest_run_id, control_instance_id: 'legacy-default'
+})
 SET ir.record_count = ir.record_count + $accepted,
     ir.rejected_count = ir.rejected_count + $rejected
 """
 
 CREATE_INGEST_RUN = """
 MATCH (ss:SourceSystem {source_key: $source_key, is_active: true})
+OPTIONAL MATCH (migration:DataMigration {migration_key: 'bitrix_control_instance_v1'})
+WITH ss, collect(DISTINCT migration) AS migrations
+OPTIONAL MATCH (instance:BitrixSourceInstance {
+  source_key: 'bitrix_chat', source_instance_id: 'legacy-default', status: 'active'
+})
+WITH ss, migrations, collect(DISTINCT instance) AS instances
+WITH ss, migrations, instances,
+     [instance IN instances |
+       size([(instance)-[:INSTANCE_OF]->(:SourceSystem) | 1])
+     ] AS relationship_counts,
+     [instance IN instances |
+       size([(instance)-[:INSTANCE_OF]->(:SourceSystem {
+         source_key: 'bitrix_chat', is_active: true
+       }) | 1])
+     ] AS canonical_relationship_counts
+OPTIONAL MATCH (dispatch:BitrixDispatchControl {
+  source_key: 'bitrix_chat', control_instance_id: 'legacy-default'
+})
+WITH ss, migrations, instances, relationship_counts, canonical_relationship_counts,
+     collect(DISTINCT dispatch) AS dispatches
+WHERE $source_key <> 'bitrix_chat'
+   OR (
+     size(migrations) = 1
+     AND migrations[0].completed_at IS NOT NULL
+     AND size(instances) = 1
+     AND relationship_counts = [1]
+     AND canonical_relationship_counts = [1]
+     AND size(dispatches) <= 1
+     AND coalesce(dispatches[0].blocked, false) = false
+   )
 MERGE (ir:IngestRun {
   source_key: $source_key,
+  control_instance_id: 'legacy-default',
   idempotency_key: $idempotency_key
 })
 ON CREATE SET
@@ -93,8 +188,11 @@ RETURN ir.ingest_run_id AS ingest_run_id,
        created AS created
 """
 
+
 UPDATE_INGEST_RUN = """
-MATCH (ir:IngestRun {ingest_run_id: $ingest_run_id})-[:FROM_SOURCE]->(ss:SourceSystem {source_key: $source_key})
+MATCH (ir:IngestRun {
+  ingest_run_id: $ingest_run_id, control_instance_id: 'legacy-default'
+})-[:FROM_SOURCE]->(ss:SourceSystem {source_key: $source_key})
 SET ir.status = $status,
     ir.finished_at = CASE WHEN $finished_at IS NOT NULL THEN datetime($finished_at) ELSE ir.finished_at END,
     ir.metadata = CASE WHEN $metadata IS NOT NULL THEN $metadata ELSE ir.metadata END
@@ -106,7 +204,9 @@ RETURN ir.ingest_run_id AS ingest_run_id,
 """
 
 GET_INGEST_RUN = """
-MATCH (ir:IngestRun {ingest_run_id: $ingest_run_id})
+MATCH (ir:IngestRun {
+  ingest_run_id: $ingest_run_id, control_instance_id: 'legacy-default'
+})
 OPTIONAL MATCH (ir)-[:FROM_SOURCE]->(ss:SourceSystem)
 RETURN ir {
   .ingest_run_id, .run_type, .mode, .dump_path, .status,

@@ -30,6 +30,7 @@ from src.connectors.bitrix_stage_history.artifact_runtime import (
 from src.connectors.bitrix_stage_history.artifact_store import ArtifactStore
 from src.connectors.bitrix_stage_history.replay import qualify_artifacts
 from src.graph.bitrix_backfill import BitrixBackfillRepository
+from src.graph.bitrix_source_instances import admit_configured_bitrix_control
 from src.graph.client import Neo4jClient
 from src.graph.ingestion_control import LogicalRunControl
 from src.ingestion_config import (
@@ -39,6 +40,7 @@ from src.ingestion_config import (
     get_ingestion_config,
 )
 from src.models import JsonValue
+from src.source_instances import LEGACY_DEFAULT_CONTROL_INSTANCE_ID, effective_control_instance_id
 
 _JSON_OBJECT = TypeAdapter(dict[str, JsonValue])
 _TERMINAL_CHILD_STATUSES = frozenset({"completed", "completed_with_errors"})
@@ -148,9 +150,14 @@ def _qualification_from_payload(payload: dict[str, JsonValue]) -> QualificationR
 
 
 class BitrixBackfillControl:
-    def __init__(self, client: Neo4jClient) -> None:
+    def __init__(
+        self,
+        client: Neo4jClient,
+        control_instance_id: str = LEGACY_DEFAULT_CONTROL_INSTANCE_ID,
+    ) -> None:
         self._client = client
-        self._repository = BitrixBackfillRepository(client)
+        self._control_instance_id = effective_control_instance_id(control_instance_id)
+        self._repository = BitrixBackfillRepository(client, self._control_instance_id)
 
     def allocate(
         self,
@@ -196,16 +203,18 @@ class BitrixBackfillControl:
             )
         elif state.status != "backfilling":
             raise RuntimeError("start requires an allocated or backfilling corrective generation")
+        admit_configured_bitrix_control(get_settings(), state.control_instance_id)
         return dispatch_generation_canvas(
             generation_id=generation_id,
             boundary_digest=state.boundary_digest,
             configuration_digest=state.configuration_digest,
             entries=manifest.executable_entries,
+            control_instance_id=state.control_instance_id,
         )
 
     def request_stop(self, generation_id: str, *, actor: str, reason: str) -> int:
         runs = self._repository.list_child_runs(generation_id)
-        control = LogicalRunControl(self._client)
+        control = LogicalRunControl(self._client, self._control_instance_id)
         requested = 0
         for run in runs:
             if run.logical_status in _TERMINAL_CHILD_STATUSES:
@@ -251,6 +260,7 @@ class BitrixBackfillControl:
             )
             + 1
         )
+        admit_configured_bitrix_control(get_settings(), state.control_instance_id)
         return dispatch_generation_canvas(
             generation_id=generation_id,
             boundary_digest=state.boundary_digest,
@@ -259,6 +269,7 @@ class BitrixBackfillControl:
             resume_generation=resume_generation,
             task_kind="live" if successor_resume else "corrective",
             occurrence=occurrence,
+            control_instance_id=state.control_instance_id,
         )
 
     def reconcile(self, generation_id: str, *, actor: str) -> str:
@@ -452,6 +463,7 @@ class BitrixBackfillControl:
                 )
             raise
         successor = self._repository.get_generation(successor_generation_id)
+        admit_configured_bitrix_control(get_settings(), successor.control_instance_id)
         canvas_id = dispatch_generation_canvas(
             generation_id=successor_generation_id,
             boundary_digest=successor.boundary_digest,
@@ -459,6 +471,7 @@ class BitrixBackfillControl:
             entries=manifest.executable_entries,
             task_kind="live",
             occurrence=occurrence,
+            control_instance_id=successor.control_instance_id,
         )
         try:
             self._repository.confirm_successor_publication(

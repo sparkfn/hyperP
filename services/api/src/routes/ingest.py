@@ -13,6 +13,7 @@ from src.celery_client import enqueue_ingestion_run
 from src.http_utils import envelope, http_error
 from src.repositories.deps import get_ingest_repo
 from src.repositories.protocols.ingest import (
+    BitrixApiAdmissionError,
     IngestRecordsResponse,
     IngestRepository,
     IngestRunDetailResponse,
@@ -67,9 +68,17 @@ async def ingest_records(
             request,
         )
 
-    outcome = await repo.ingest_records(
-        source_key, body.ingest_type, body.ingest_run_id, body.records
-    )
+    try:
+        outcome = await repo.ingest_records(
+            source_key, body.ingest_type, body.ingest_run_id, body.records
+        )
+    except BitrixApiAdmissionError:
+        raise http_error(
+            409,
+            "control_not_ready",
+            "Bitrix ingestion control is not ready for publication.",
+            request,
+        ) from None
     if outcome is None:
         raise http_error(
             404, "not_found", f"Source system '{source_key}' not found or inactive.", request
@@ -102,14 +111,22 @@ async def create_ingest_run(
             "Backfill mode is only supported for bitrix_chat.",
             request,
         )
-    creation = await repo.create_run(
-        source_key,
-        body.run_type,
-        body.mode,
-        body.dump_path,
-        body.metadata,
-        idempotency_key,
-    )
+    try:
+        creation = await repo.create_run(
+            source_key,
+            body.run_type,
+            body.mode,
+            body.dump_path,
+            body.metadata,
+            idempotency_key,
+        )
+    except BitrixApiAdmissionError:
+        raise http_error(
+            409,
+            "control_not_ready",
+            "Bitrix ingestion control is not ready for publication.",
+            request,
+        ) from None
     if creation is None:
         raise http_error(
             404, "not_found", f"Source system '{source_key}' not found or inactive.", request

@@ -10,6 +10,7 @@ from typing import Literal
 from src.bitrix_ingestion_models import BitrixStreamKey
 from src.models import JsonValue
 from src.resumable import CheckpointDescriptor
+from src.source_instances import LEGACY_DEFAULT_CONTROL_INSTANCE_ID, effective_control_instance_id
 
 KNOWN_OWNER_REFRESH_CONNECTOR_VERSION = "bitrix-crm-known-owner-refresh-v1"
 
@@ -67,10 +68,16 @@ class GenerationRunContext:
     generation_id: str
     boundary_digest: str
     configuration_digest: str
+    control_instance_id: str = LEGACY_DEFAULT_CONTROL_INSTANCE_ID
 
     def __post_init__(self) -> None:
         if not all(value.strip() for value in vars(self).values()):
             raise ValueError("generation run identity values must be non-empty")
+        object.__setattr__(
+            self,
+            "control_instance_id",
+            effective_control_instance_id(self.control_instance_id),
+        )
 
 
 @dataclass(frozen=True)
@@ -79,6 +86,14 @@ class KnownOwnerMembershipSet:
     membership_set_id: str
     digest: str
     deal_ids: tuple[str, ...]
+    control_instance_id: str = LEGACY_DEFAULT_CONTROL_INSTANCE_ID
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "control_instance_id",
+            effective_control_instance_id(self.control_instance_id),
+        )
 
 
 @dataclass(frozen=True)
@@ -426,6 +441,14 @@ class GenerationState:
     configuration_digest: str
     boundary_digest: str
     source_contract_uuid: str
+    control_instance_id: str = LEGACY_DEFAULT_CONTROL_INSTANCE_ID
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "control_instance_id",
+            effective_control_instance_id(self.control_instance_id),
+        )
 
 
 @dataclass(frozen=True)
@@ -498,3 +521,11 @@ class GenerationChildRun:
     logical_status: str
     attempt_generation: int
     stream_status: str | None
+    control_instance_id: str = LEGACY_DEFAULT_CONTROL_INSTANCE_ID
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "control_instance_id",
+            effective_control_instance_id(self.control_instance_id),
+        )

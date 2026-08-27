@@ -20,12 +20,14 @@ def replay_stage_history_artifact_task(
     self: Task,
     artifact_id: str,
     authorization_reference: str,
+    control_instance_id: str = "legacy-default",
 ) -> StageHistoryTaskSummary:
     return execute_artifact_task(
         self,
         artifact_id=artifact_id,
         authorization_reference=authorization_reference,
         failed_capture=False,
+        control_instance_id=control_instance_id,
     )
 
 
@@ -37,12 +39,14 @@ def record_stage_history_capture_failure_task(
     self: Task,
     artifact_id: str,
     authorization_reference: str,
+    control_instance_id: str = "legacy-default",
 ) -> StageHistoryTaskSummary:
     return execute_artifact_task(
         self,
         artifact_id=artifact_id,
         authorization_reference=authorization_reference,
         failed_capture=True,
+        control_instance_id=control_instance_id,
     )
 
 
@@ -54,9 +58,11 @@ def execute_stage_history_review_task(
     self: Task,
     command_id: str,
     authorization_reference: str,
+    control_instance_id: str = "legacy-default",
 ) -> StageHistoryReviewTaskSummary:
     return execute_review_task(
         self,
         command_id=command_id,
         authorization_reference=authorization_reference,
+        control_instance_id=control_instance_id,
     )

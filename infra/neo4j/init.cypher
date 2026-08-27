@@ -50,12 +50,6 @@ CREATE CONSTRAINT merge_event_id_unique IF NOT EXISTS
 CREATE CONSTRAINT ingest_run_id_unique IF NOT EXISTS
   FOR (ir:IngestRun) REQUIRE ir.ingest_run_id IS UNIQUE;
 
-CREATE CONSTRAINT ingestion_checkpoint_key_unique IF NOT EXISTS
-  FOR (checkpoint:IngestionCheckpoint) REQUIRE checkpoint.checkpoint_key IS UNIQUE;
-
-CREATE CONSTRAINT ingest_run_source_idempotency_unique IF NOT EXISTS
-  FOR (ir:IngestRun) REQUIRE (ir.source_key, ir.idempotency_key) IS UNIQUE;
-
 CREATE CONSTRAINT profile_analysis_id_unique IF NOT EXISTS
   FOR (pa:ProfileAnalysis) REQUIRE pa.analysis_id IS UNIQUE;
 

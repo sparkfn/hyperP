@@ -2,9 +2,17 @@
 
 from __future__ import annotations
 
+from unittest.mock import Mock
+
+import pytest
 from celery.canvas import Signature, _chain
 from src.bitrix_backfill_models import BackfillInventoryEntry
-from src.bitrix_backfill_tasks import build_generation_canvas, corrective_task_id, live_task_id
+from src.bitrix_backfill_tasks import (
+    build_generation_canvas,
+    corrective_task_id,
+    dispatch_generation_canvas,
+    live_task_id,
+)
 from src.bitrix_ingestion_models import BitrixStreamKey
 from src.models import JsonValue
 
@@ -128,3 +136,67 @@ def test_scheduled_live_canvas_marks_every_delayed_step_as_cancellable() -> None
     )
 
     assert all(task.kwargs["scheduled_dispatch"] is True for task in canvas.tasks)
+
+
+def test_nondefault_canvas_scopes_only_new_task_identity_and_payload() -> None:
+    canvas = build_generation_canvas(
+        generation_id="same-generation",
+        boundary_digest="sha256:boundary",
+        configuration_digest="sha256:config",
+        entries=(_entry("crm_deals"),),
+        control_instance_id="portal-two",
+    )
+    task = canvas.tasks[0]
+    assert task.options["task_id"] == corrective_task_id(
+        "same-generation",
+        "crm_deals",
+        "sha256:boundary",
+        "sha256:config",
+        control_instance_id="portal-two",
+    )
+    assert task.kwargs["idempotency_key"] == corrective_task_id(
+        "same-generation",
+        "crm_deals",
+        "sha256:boundary",
+        "sha256:config",
+        control_instance_id="portal-two",
+    )
+    assert task.kwargs["control_instance_id"] == "portal-two"
+
+
+def test_legacy_canvas_payload_does_not_add_control_instance_id() -> None:
+    canvas = build_generation_canvas(
+        generation_id="corrective-1",
+        boundary_digest="sha256:boundary",
+        configuration_digest="sha256:config",
+        entries=(_entry("crm_deals"),),
+    )
+    assert "control_instance_id" not in canvas.tasks[0].kwargs
+
+
+def test_generation_publication_admission_precedes_canvas_apply(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _Canvas:
+        def apply_async(self) -> object:
+            raise AssertionError("canvas must not publish after rejected admission")
+
+    admission = Mock(side_effect=RuntimeError("blocked"))
+    monkeypatch.setattr(
+        "src.graph.bitrix_source_instances.admit_configured_bitrix_control",
+        admission,
+    )
+    monkeypatch.setattr("src.config.get_settings", lambda: object())
+    monkeypatch.setattr(
+        "src.bitrix_backfill_tasks.build_generation_canvas", lambda **_kwargs: _Canvas()
+    )
+
+    with pytest.raises(RuntimeError, match="blocked"):
+        dispatch_generation_canvas(
+            generation_id="corrective-1",
+            boundary_digest="sha256:boundary",
+            configuration_digest="sha256:config",
+            entries=(_entry("crm_deals"),),
+        )
+
+    admission.assert_called_once()

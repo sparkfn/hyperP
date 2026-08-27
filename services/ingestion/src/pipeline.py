@@ -90,7 +90,11 @@ from src.record_lifecycle import (
     plan_incoming_version,
     reject_replaced_pending,
 )
-from src.source_instances import effective_source_instance_id
+from src.source_instances import (
+    LEGACY_DEFAULT_CONTROL_INSTANCE_ID,
+    effective_control_instance_id,
+    effective_source_instance_id,
+)
 from src.vehicle_extraction import observations_from_chat_inquiries
 from src.vehicles import (
     normalize_lta_tag,
@@ -140,6 +144,7 @@ class IngestPipeline:
         *,
         fence_context: FenceContext | None = None,
         execution_context: ExecutionContext | None = None,
+        control_instance_id: str = LEGACY_DEFAULT_CONTROL_INSTANCE_ID,
     ) -> None:
         if execution_context is not None and fence_context is not None:
             raise ValueError("supply execution_context or fence_context, not both")
@@ -148,6 +153,11 @@ class IngestPipeline:
         self._execution_context = execution_context
         self._fence_context = (
             execution_context.fence_context if execution_context is not None else fence_context
+        )
+        self._control_instance_id = effective_control_instance_id(
+            self._fence_context.control_instance_id
+            if self._fence_context is not None
+            else control_instance_id
         )
 
     def ingest(
@@ -440,6 +450,7 @@ class IngestPipeline:
             lifecycle_status=SourceRecordLifecycleStatus.PENDING_REVIEW,
             expected_active_source_record_pk=lifecycle_plan.active_source_record_pk,
             activation_blueprint=activation_blueprint,
+            control_instance_id=self._control_instance_id,
         )
         match_decision_id = persist_match_decision(tx, match_result, source_record_pk)
         review_case_id = create_review_case_if_needed(tx, match_result, match_decision_id)
@@ -898,8 +909,8 @@ class IngestPipeline:
             return set()
         return {candidate.person_id for candidate in find_candidates(tx, canonical_identifiers, [])}
 
-    @staticmethod
     def _persist_unlinked_review(
+        self,
         tx: ManagedTransaction,
         *,
         envelope: SourceRecordEnvelope,
@@ -924,6 +935,7 @@ class IngestPipeline:
             expected_active_source_record_pk=lifecycle_plan.active_source_record_pk,
             activation_blueprint=activation_blueprint,
             link_status="blocked",
+            control_instance_id=self._control_instance_id,
         )
         match_decision_id = persist_match_decision(tx, match_result, source_record_pk)
         review_case_id = create_review_case_if_needed(tx, match_result, match_decision_id)

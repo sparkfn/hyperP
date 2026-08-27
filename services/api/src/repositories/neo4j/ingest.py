@@ -9,6 +9,7 @@ from neo4j import AsyncManagedTransaction
 from src.graph.client import get_session
 from src.graph.converters import to_str
 from src.graph.queries import (
+    CHECK_BITRIX_API_ADMISSION,
     CHECK_SOURCE_SYSTEM,
     CREATE_INGEST_RUN,
     CREATE_INGEST_RUN_INLINE,
@@ -17,7 +18,9 @@ from src.graph.queries import (
     UPDATE_INGEST_RUN,
     UPDATE_INGEST_RUN_COUNTERS,
 )
+from src.repositories.neo4j.ingestion_control_schema import assert_bitrix_control_schema_ready
 from src.repositories.protocols.ingest import (
+    BitrixApiAdmissionError,
     IngestRecordResult,
     IngestRecordsResponse,
     IngestRunCreationResult,
@@ -104,6 +107,11 @@ async def _ingest_records_tx(
     ingest_run_id: str | None,
     records: list[IngestRecord],
 ) -> IngestRecordsResponse | None:
+    if source_key == "bitrix_chat":
+        await assert_bitrix_control_schema_ready(tx)
+        admission = await tx.run(CHECK_BITRIX_API_ADMISSION)
+        if await admission.single() is None:
+            raise BitrixApiAdmissionError("Bitrix control admission is not ready")
     ss_check = await tx.run(CHECK_SOURCE_SYSTEM, source_key=source_key)
     if await ss_check.single() is None:
         return None
@@ -183,6 +191,11 @@ async def _create_run_tx(
     metadata: dict[str, str],
     idempotency_key: str,
 ) -> IngestRunCreationResult | None:
+    if source_key == "bitrix_chat":
+        await assert_bitrix_control_schema_ready(tx)
+        admission = await tx.run(CHECK_BITRIX_API_ADMISSION)
+        if await admission.single() is None:
+            raise BitrixApiAdmissionError("Bitrix control admission is not ready")
     result = await tx.run(
         CREATE_INGEST_RUN,
         source_key=source_key,

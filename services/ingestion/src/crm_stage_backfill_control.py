@@ -218,6 +218,9 @@ def _dispatch(
         uuid.NAMESPACE_URL,
         f"hyperp:{command}:{artifact_id}:{authorization_reference}",
     ).hex
+    from src.graph.bitrix_source_instances import admit_configured_bitrix_control
+
+    admit_configured_bitrix_control(get_settings())
     replay_stage_history_artifact_task.apply_async(
         args=(artifact_id, authorization_reference),
         task_id=task_id,

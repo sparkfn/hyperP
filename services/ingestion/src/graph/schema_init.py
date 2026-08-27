@@ -15,13 +15,10 @@ from pathlib import Path
 from src.graph.client import Neo4jClient
 from src.graph.queries.bitrix_backfill import CREATE_BITRIX_BACKFILL_CONSTRAINTS
 from src.graph.queries.bitrix_deal_scope import CREATE_BITRIX_DEAL_SCOPE_CONSTRAINTS
+from src.graph.queries.bitrix_source_instances import CREATE_BITRIX_SOURCE_INSTANCE_CONSTRAINTS
 from src.graph.queries.crm_history_authority import CREATE_CRM_HISTORY_AUTHORITY_CONSTRAINTS
 from src.graph.queries.crm_stage_backfill import CREATE_CRM_STAGE_BACKFILL_CONSTRAINTS
 from src.graph.queries.identity_link_revisions import CREATE_IDENTITY_LINK_SCHEMA
-from src.graph.queries.ingestion_control import (
-    CREATE_BITRIX_INGESTION_STREAM_CONSTRAINTS,
-    CREATE_LOGICAL_RUN_CONSTRAINTS,
-)
 from src.graph.queries.stage_history_ingestion import (
     CREATE_STAGE_HISTORY_INGESTION_CONSTRAINTS,
 )
@@ -29,9 +26,6 @@ from src.graph.queries.stage_history_ingestion import (
 logger = logging.getLogger(__name__)
 
 BASE_LIFECYCLE_CONSTRAINTS: tuple[str, ...] = (
-    """CREATE CONSTRAINT ingest_run_worker_task_id_unique IF NOT EXISTS
-FOR (run:IngestRun)
-REQUIRE run.worker_task_id IS UNIQUE""",
     """CREATE CONSTRAINT source_record_identity_lock_triple_unique IF NOT EXISTS
 FOR (lock:SourceRecordIdentityLock)
 REQUIRE (lock.source_system, lock.source_instance_id, lock.source_record_id) IS UNIQUE""",
@@ -48,8 +42,8 @@ ON (sr.migration_identity_key, sr.migration_source_record_version,
     """CREATE INDEX source_record_lifecycle_existing_version_key IF NOT EXISTS
 FOR (sr:SourceRecord)
 ON (sr.source_version_key)""",
-    *CREATE_LOGICAL_RUN_CONSTRAINTS,
-    *CREATE_BITRIX_INGESTION_STREAM_CONSTRAINTS,
+    # #272 installs control identities only after its data backfill.
+    *CREATE_BITRIX_SOURCE_INSTANCE_CONSTRAINTS,
     *CREATE_BITRIX_DEAL_SCOPE_CONSTRAINTS,
     *CREATE_BITRIX_BACKFILL_CONSTRAINTS,
     *CREATE_CRM_HISTORY_AUTHORITY_CONSTRAINTS,

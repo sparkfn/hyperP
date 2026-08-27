@@ -15,6 +15,7 @@ from neo4j import ManagedTransaction, Record
 
 from src.graph.client import Neo4jClient
 from src.graph.queries.crm_history_authority import APPEND_CRM_HISTORY_AUTHORITY_DECISION
+from src.source_instances import LEGACY_DEFAULT_CONTROL_INSTANCE_ID, effective_control_instance_id
 
 AuthorityDecisionKind = Literal["accepted", "variant", "parent", "correction"]
 AuthorityDecisionState = Literal[
@@ -52,6 +53,7 @@ class AuthorityWriteContext:
     logical_run_id: str
     ingest_run_id: str
     generation: int
+    control_instance_id: str
     expected_head_version: int
     expected_authority_token: int
     next_authority_token: int
@@ -65,6 +67,7 @@ class AuthorityWriteContext:
         expected_authority_token: int | None = None,
         next_authority_token: int | None = None,
         *,
+        control_instance_id: str = LEGACY_DEFAULT_CONTROL_INSTANCE_ID,
         expected_fence_token: int | None = None,
         next_fence_token: int | None = None,
     ) -> None:
@@ -72,6 +75,11 @@ class AuthorityWriteContext:
         object.__setattr__(self, "logical_run_id", logical_run_id)
         object.__setattr__(self, "ingest_run_id", ingest_run_id)
         object.__setattr__(self, "generation", generation)
+        object.__setattr__(
+            self,
+            "control_instance_id",
+            effective_control_instance_id(control_instance_id),
+        )
         object.__setattr__(self, "expected_head_version", expected_head_version)
         object.__setattr__(
             self,
@@ -258,6 +266,7 @@ def append_authority_decision_in_transaction(
         logical_run_id=context.logical_run_id,
         ingest_run_id=context.ingest_run_id,
         generation=context.generation,
+        control_instance_id=context.control_instance_id,
         expected_head_version=context.expected_head_version,
         expected_authority_token=context.expected_authority_token,
         next_authority_token=context.next_authority_token,

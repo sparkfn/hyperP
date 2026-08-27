@@ -12,11 +12,13 @@ from typing import cast
 from pydantic.types import JsonValue
 
 from src.config import Settings, get_settings
+from src.graph.bitrix_source_instances import admit_configured_bitrix_control
 from src.graph.client import Neo4jClient
 from src.graph.ingestion_control import BitrixStreamControl, LogicalRunControl
 from src.graph.stage_history_review import StageHistoryReviewRepository
 from src.ingestion_config import StageHistoryIngestionConfig
 from src.resumable import CheckpointDescriptor
+from src.source_instances import LEGACY_DEFAULT_CONTROL_INSTANCE_ID
 from src.stage_history_ingestion_models import (
     StageHistoryAuthorityState,
     StageHistoryReviewCommand,
@@ -35,6 +37,7 @@ class _PreparedReview:
     review_kind: StageHistoryReviewKind
     authorization_reference: str
     fence: object | None
+    control_instance_id: str = LEGACY_DEFAULT_CONTROL_INSTANCE_ID
 
 
 def _queue_review(
@@ -105,9 +108,11 @@ def _queue_review(
         retry_backoff_seconds=config.retry_backoff_seconds,
     )
     settings = get_settings()
+    admit_configured_bitrix_control(settings, LEGACY_DEFAULT_CONTROL_INSTANCE_ID)
     with stage_history_task_lock(
         settings.celery_broker_url,
         owner=f"review-queue:{task_id}",
+        control_instance_id=LEGACY_DEFAULT_CONTROL_INSTANCE_ID,
     ) as lock:
         lock.assert_owned()
         prepared = _queue_review_locked(
@@ -146,7 +151,7 @@ def _fail_claimed_attempt(
     error: Exception,
 ) -> None:
     logical_run_id, ingest_run_id, generation = claimed_attempt
-    LogicalRunControl(client).fail(
+    LogicalRunControl(client, LEGACY_DEFAULT_CONTROL_INSTANCE_ID).fail(
         logical_run_id=logical_run_id,
         ingest_run_id=ingest_run_id,
         generation=generation,
@@ -171,10 +176,11 @@ def _queue_review_locked(
     fence = None
     claimed_attempt: tuple[str, str, int] | None = None
     try:
-        logical = LogicalRunControl(client)
+        logical = LogicalRunControl(client, LEGACY_DEFAULT_CONTROL_INSTANCE_ID)
         lock.assert_owned()
         attempt = logical.create_or_reuse(
             source_key="bitrix_chat",
+            control_instance_id=LEGACY_DEFAULT_CONTROL_INSTANCE_ID,
             mode=run_type,
             dump_path=None,
             entity_key=None,
@@ -206,10 +212,14 @@ def _queue_review_locked(
             ingest_run_id=attempt.ingest_run_id,
             attempt_generation=attempt.generation,
             worker_task_id=task_id,
+            control_instance_id=LEGACY_DEFAULT_CONTROL_INSTANCE_ID,
         )
         fence = admission.fence_context
         lock.assert_owned()
-        StageHistoryReviewRepository(client).record_command(
+        StageHistoryReviewRepository(
+            client,
+            control_instance_id=LEGACY_DEFAULT_CONTROL_INSTANCE_ID,
+        ).record_command(
             command,
             occurrence_id=occurrence_id,
             authorization_reference=authorization_reference,
@@ -226,7 +236,7 @@ def _queue_review_locked(
     except Exception as exc:
         if fence is not None:
             lock.assert_owned()
-            LogicalRunControl(client).fail_fenced(
+            LogicalRunControl(client, fence.control_instance_id).fail_fenced(
                 context=fence,
                 failure_category="stage_history_review_publication_failed",
                 safe_failure_message=type(exc).__name__,
@@ -245,8 +255,13 @@ def _publish_review(
     settings: Settings,
 ) -> dict[str, JsonValue]:
     try:
+        admit_configured_bitrix_control(settings, prepared.control_instance_id)
+        kwargs: dict[str, str] = {}
+        if prepared.control_instance_id != LEGACY_DEFAULT_CONTROL_INSTANCE_ID:
+            kwargs["control_instance_id"] = prepared.control_instance_id
         execute_stage_history_review_task.apply_async(
             args=(prepared.command_id, prepared.authorization_reference),
+            kwargs=kwargs,
             task_id=prepared.task_id,
             queue="ingestion",
         )
@@ -286,11 +301,12 @@ def _fail_review_publication(
     with stage_history_task_lock(
         settings.celery_broker_url,
         owner=f"review-publish-failure:{task_id}",
+        control_instance_id=fence.control_instance_id,
     ) as lock:
         lock.assert_owned()
         client = Neo4jClient(settings)
         try:
-            LogicalRunControl(client).fail_fenced(
+            LogicalRunControl(client, fence.control_instance_id).fail_fenced(
                 context=fence,
                 failure_category="stage_history_review_publication_failed",
                 safe_failure_message=type(error).__name__,
@@ -308,15 +324,20 @@ def _resume_review(
         raise PermissionError("stage-history review authorization changed")
     task_id = uuid.uuid4().hex
     settings = get_settings()
+    admit_configured_bitrix_control(settings, LEGACY_DEFAULT_CONTROL_INSTANCE_ID)
     with stage_history_task_lock(
         settings.celery_broker_url,
         owner=f"review-resume:{task_id}",
+        control_instance_id=LEGACY_DEFAULT_CONTROL_INSTANCE_ID,
     ) as lock:
         client = Neo4jClient(settings)
         fence = None
         claimed_attempt: tuple[str, str, int] | None = None
         try:
-            repository = StageHistoryReviewRepository(client)
+            repository = StageHistoryReviewRepository(
+                client,
+                control_instance_id=LEGACY_DEFAULT_CONTROL_INSTANCE_ID,
+            )
             context = repository.load_resume_context(command_id)
             if context is None:
                 raise ValueError("stage-history review command was not found")
@@ -339,7 +360,7 @@ def _resume_review(
                     "logical_run_id": context.logical_run_id,
                     "command_id": command_id,
                 }
-            logical = LogicalRunControl(client)
+            logical = LogicalRunControl(client, LEGACY_DEFAULT_CONTROL_INSTANCE_ID)
             if context.logical_status in {"failed", "paused_with_checkpoint"}:
                 attempt = logical.resume(
                     logical_run_id=context.logical_run_id,
@@ -368,6 +389,7 @@ def _resume_review(
                     ingest_run_id=attempt.ingest_run_id,
                     attempt_generation=attempt.generation,
                     worker_task_id=task_id,
+                    control_instance_id=LEGACY_DEFAULT_CONTROL_INSTANCE_ID,
                     replace_active=True,
                 )
                 fence = admission.fence_context
@@ -388,7 +410,7 @@ def _resume_review(
         except Exception as exc:
             if fence is not None:
                 lock.assert_owned()
-                LogicalRunControl(client).fail_fenced(
+                LogicalRunControl(client, LEGACY_DEFAULT_CONTROL_INSTANCE_ID).fail_fenced(
                     context=fence,
                     failure_category="stage_history_review_publication_failed",
                     safe_failure_message=type(exc).__name__,

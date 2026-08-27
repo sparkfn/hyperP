@@ -20,7 +20,11 @@ from src.graph.queries.bitrix_backfill import (
 from src.graph.queries.bitrix_deal_scope import GET_CURRENT_DEAL_SCOPE_BATCH
 from src.models import IngestResult, RecordType, SourceRecordEnvelope
 from src.record_lifecycle import load_locked_source_state
-from src.source_instances import effective_source_instance_id
+from src.source_instances import (
+    LEGACY_DEFAULT_CONTROL_INSTANCE_ID,
+    effective_control_instance_id,
+    effective_source_instance_id,
+)
 from src.source_version_keys import encode_source_version_key
 
 _LEGACY_CRM_ACTIVITY_FAMILY = "crm_activity"
@@ -39,6 +43,7 @@ def ingest_crm_history_record(
     ingest_run_id: str,
     fence_context: FenceContext | None = None,
     execution_context: ExecutionContext | None = None,
+    control_instance_id: str = LEGACY_DEFAULT_CONTROL_INSTANCE_ID,
 ) -> IngestResult:
     """Create a first-observed CRM activity, never a replacement version."""
     if envelope.record_type != RecordType.CRM_HISTORY or envelope.parent_ref is None:
@@ -53,6 +58,9 @@ def ingest_crm_history_record(
     projection_source = envelope.projection_source or history.history_projection_source
     active_fence = (
         execution_context.fence_context if execution_context is not None else fence_context
+    )
+    resolved_control_instance_id = effective_control_instance_id(
+        active_fence.control_instance_id if active_fence is not None else control_instance_id
     )
 
     def _work(tx: ManagedTransaction) -> IngestResult:
@@ -168,6 +176,7 @@ def ingest_crm_history_record(
                 queries.LINK_SOURCE_RECORD_TO_RUN,
                 source_record_pk=source_record_pk,
                 ingest_run_id=ingest_run_id,
+                control_instance_id=resolved_control_instance_id,
             )
         result = IngestResult(
             source_record_id=envelope.source_record_id,
@@ -196,6 +205,7 @@ def ingest_call_record(
     ingest_run_id: str,
     fence_context: FenceContext | None = None,
     execution_context: ExecutionContext | None = None,
+    control_instance_id: str = LEGACY_DEFAULT_CONTROL_INSTANCE_ID,
 ) -> IngestResult:
     """Create a call only when its immutable history parent has person context."""
     if envelope.record_type != RecordType.CALL or envelope.parent_ref is None:
@@ -206,6 +216,9 @@ def ingest_call_record(
         raise ValueError("call source records require raw_payload.crm_activity_id")
     active_fence = (
         execution_context.fence_context if execution_context is not None else fence_context
+    )
+    resolved_control_instance_id = effective_control_instance_id(
+        active_fence.control_instance_id if active_fence is not None else control_instance_id
     )
 
     def _work(tx: ManagedTransaction) -> IngestResult:
@@ -311,6 +324,7 @@ def ingest_call_record(
                 queries.LINK_SOURCE_RECORD_TO_RUN,
                 source_record_pk=source_record_pk,
                 ingest_run_id=ingest_run_id,
+                control_instance_id=resolved_control_instance_id,
             )
         result = IngestResult(
             source_record_id=envelope.source_record_id,
@@ -376,6 +390,7 @@ def _owner_scope_or_retry(
         owner_deal_id = _activity_owner_deal_id(envelope)
         record = tx.run(
             RECORD_BITRIX_ACTIVITY_OWNER_RETRY,
+            control_instance_id=context.fence_context.control_instance_id,
             generation_id=generation.generation_id,
             logical_run_id=context.fence_context.logical_run_id,
             ingest_run_id=context.fence_context.ingest_run_id,
@@ -426,6 +441,7 @@ def _record_activity_unit(
     if generation is not None:
         tx.run(
             RESOLVE_BITRIX_ACTIVITY_OWNER_RETRY,
+            control_instance_id=context.fence_context.control_instance_id,
             generation_id=generation.generation_id,
             source_identity=envelope.source_record_id,
             source_boundary=f"{generation.boundary_digest}:{context.checkpoint.phase}",

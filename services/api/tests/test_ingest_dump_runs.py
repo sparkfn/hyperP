@@ -30,9 +30,10 @@ def test_ingest_run_create_accepts_backfill_without_dump_path() -> None:
     assert body.dump_path is None
 
 
-def test_create_ingest_run_merges_by_source_and_idempotency_key() -> None:
+def test_create_ingest_run_merges_by_source_control_and_idempotency_key() -> None:
     assert "MERGE (ir:IngestRun" in CREATE_INGEST_RUN
     assert "source_key: $source_key" in CREATE_INGEST_RUN
+    assert "control_instance_id: 'legacy-default'" in CREATE_INGEST_RUN
     assert "idempotency_key: $idempotency_key" in CREATE_INGEST_RUN
     assert "created AS created" in CREATE_INGEST_RUN
 

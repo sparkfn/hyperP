@@ -26,24 +26,24 @@ REQUIRE (unit.logical_run_id, unit.page_sequence) IS UNIQUE""",
     """CREATE CONSTRAINT stage_history_occurrence_identity_unique IF NOT EXISTS
 FOR (occurrence:StageHistoryOccurrence)
 REQUIRE occurrence.occurrence_id IS UNIQUE""",
-    """CREATE CONSTRAINT stage_history_identity_lock_unique IF NOT EXISTS
-FOR (lock:StageHistoryIdentityLock)
-REQUIRE lock.event_identity IS UNIQUE""",
-    """CREATE CONSTRAINT stage_history_parent_decision_id_unique IF NOT EXISTS
-FOR (decision:CrmHistoryParentAssociationDecision)
-REQUIRE decision.decision_id IS UNIQUE""",
     """CREATE CONSTRAINT stage_history_retry_identity_unique IF NOT EXISTS
 FOR (retry:StageHistoryRetry)
 REQUIRE (retry.occurrence_id, retry.retry_sequence) IS UNIQUE""",
     """CREATE CONSTRAINT stage_history_review_command_id_unique IF NOT EXISTS
 FOR (command:StageHistoryReviewCommand)
 REQUIRE command.command_id IS UNIQUE""",
-    """CREATE CONSTRAINT stage_history_invalidation_intent_id_unique IF NOT EXISTS
-FOR (intent:CrmHistoryInvalidationIntent)
-REQUIRE intent.intent_id IS UNIQUE""",
     """CREATE CONSTRAINT stage_history_unit_accounting_identity_unique IF NOT EXISTS
 FOR (accounting:StageHistoryUnitAccounting)
 REQUIRE accounting.unit_id IS UNIQUE""",
+    """CREATE CONSTRAINT stage_history_identity_lock_unique IF NOT EXISTS
+FOR (lock:StageHistoryIdentityLock)
+REQUIRE lock.event_identity IS UNIQUE""",
+    """CREATE CONSTRAINT stage_history_parent_decision_id_unique IF NOT EXISTS
+FOR (decision:CrmHistoryParentAssociationDecision)
+REQUIRE decision.decision_id IS UNIQUE""",
+    """CREATE CONSTRAINT stage_history_invalidation_intent_id_unique IF NOT EXISTS
+FOR (intent:CrmHistoryInvalidationIntent)
+REQUIRE intent.intent_id IS UNIQUE""",
     """CREATE INDEX stage_history_unit_run_sequence IF NOT EXISTS
 FOR (unit:StageHistoryUnit)
 ON (unit.logical_run_id, unit.page_sequence)""",
@@ -76,6 +76,7 @@ ON (record.record_type, record.history_family)""",
 _ACTIVE_STAGE_FENCE = """
 MATCH (stream:BitrixIngestionStream {
   source_key: $source_key,
+  control_instance_id: $control_instance_id,
   stream_key: 'crm_stage_history',
   logical_run_id: $logical_run_id,
   ingest_run_id: $ingest_run_id,
@@ -84,8 +85,13 @@ MATCH (stream:BitrixIngestionStream {
   fencing_token: $fencing_token,
   status: 'active'
 })
-MATCH (logical:IngestionLogicalRun {logical_run_id: $logical_run_id})
-      -[:ACTIVE_ATTEMPT]->(attempt:IngestRun {ingest_run_id: $ingest_run_id})
+MATCH (logical:IngestionLogicalRun {
+  control_instance_id: $control_instance_id,
+  logical_run_id: $logical_run_id
+})-[:ACTIVE_ATTEMPT]->(attempt:IngestRun {
+  control_instance_id: $control_instance_id,
+  ingest_run_id: $ingest_run_id
+})
 WHERE logical.active_generation = $attempt_generation
   AND attempt.generation = $attempt_generation
   AND logical.mode = $required_run_type
@@ -107,6 +113,7 @@ GET_STAGE_HISTORY_COMMITTED_UNIT = (
     _ACTIVE_STAGE_FENCE
     + """
 MATCH (unit:StageHistoryUnit {
+  control_instance_id: $control_instance_id,
   logical_run_id: $logical_run_id,
   page_sequence: $page_sequence
 })
@@ -173,6 +180,7 @@ CREATE_STAGE_HISTORY_UNIT = (
     _ACTIVE_STAGE_FENCE
     + """
 MATCH (checkpoint:IngestionCheckpoint {
+  control_instance_id: $control_instance_id,
   logical_run_id: $logical_run_id,
   phase: $phase,
   generation: $attempt_generation,
@@ -194,7 +202,8 @@ WHERE checkpoint.connector_version = $connector_version
 OPTIONAL MATCH (existing:StageHistoryUnit {unit_id: $unit_id})
 WITH stream, logical, attempt, checkpoint, existing
 WHERE existing IS NULL OR (
-  existing.logical_run_id = $logical_run_id
+  existing.control_instance_id = $control_instance_id
+  AND existing.logical_run_id = $logical_run_id
   AND existing.artifact_id = $artifact_id
   AND existing.page_sequence = $page_sequence
   AND existing.unit_digest = $unit_digest
@@ -206,7 +215,8 @@ WHERE existing IS NULL OR (
   AND existing.replay_boundary = $replay_boundary
 )
 MERGE (unit:StageHistoryUnit {unit_id: $unit_id})
-ON CREATE SET unit.logical_run_id = $logical_run_id,
+ON CREATE SET unit.control_instance_id = $control_instance_id,
+              unit.logical_run_id = $logical_run_id,
               unit.artifact_id = $artifact_id,
               unit.page_sequence = $page_sequence,
               unit.unit_digest = $unit_digest,
@@ -231,6 +241,7 @@ UPSERT_STAGE_HISTORY_OCCURRENCE = (
     + """
 MATCH (unit:StageHistoryUnit {
   unit_id: $unit_id,
+  control_instance_id: $control_instance_id,
   logical_run_id: $logical_run_id,
   status: 'persisting'
 })
@@ -267,7 +278,8 @@ WHERE unit.unit_digest = $unit_digest
       ])
   )
 MERGE (occurrence:StageHistoryOccurrence {occurrence_id: $occurrence_id})
-ON CREATE SET occurrence.logical_run_id = $logical_run_id,
+ON CREATE SET occurrence.control_instance_id = $control_instance_id,
+              occurrence.logical_run_id = $logical_run_id,
               occurrence.unit_id = $unit_id,
               occurrence.artifact_id = $artifact_id,
               occurrence.artifact_row_sequence = $artifact_row_sequence,
@@ -287,7 +299,8 @@ ON CREATE SET occurrence.logical_run_id = $logical_run_id,
               occurrence.terminal_disposition = $terminal_disposition,
               occurrence.created_at = datetime()
 WITH unit, occurrence
-WHERE occurrence.logical_run_id = $logical_run_id
+WHERE occurrence.control_instance_id = $control_instance_id
+  AND occurrence.logical_run_id = $logical_run_id
   AND occurrence.unit_id = $unit_id
   AND occurrence.artifact_id = $artifact_id
   AND occurrence.artifact_row_sequence = $artifact_row_sequence
@@ -318,6 +331,7 @@ UPSERT_STAGE_HISTORY_FAILED_OCCURRENCE = (
     + """
 MATCH (unit:StageHistoryUnit {
   unit_id: $unit_id,
+  control_instance_id: $control_instance_id,
   logical_run_id: $logical_run_id,
   status: 'persisting'
 })
@@ -328,7 +342,8 @@ WHERE unit.unit_digest = $unit_digest
       AND $parse_scope IN ['in_scope', 'out_of_scope']))
   AND $retry_state = 'none'
 MERGE (occurrence:StageHistoryOccurrence {occurrence_id: $occurrence_id})
-ON CREATE SET occurrence.logical_run_id = $logical_run_id,
+ON CREATE SET occurrence.control_instance_id = $control_instance_id,
+              occurrence.logical_run_id = $logical_run_id,
               occurrence.unit_id = $unit_id,
               occurrence.artifact_id = $artifact_id,
               occurrence.artifact_row_sequence = $artifact_row_sequence,
@@ -340,7 +355,8 @@ ON CREATE SET occurrence.logical_run_id = $logical_run_id,
               occurrence.terminal_disposition = $terminal_disposition,
               occurrence.created_at = datetime()
 WITH unit, occurrence
-WHERE occurrence.logical_run_id = $logical_run_id
+WHERE occurrence.control_instance_id = $control_instance_id
+  AND occurrence.logical_run_id = $logical_run_id
   AND occurrence.unit_id = $unit_id
   AND occurrence.artifact_id = $artifact_id
   AND occurrence.artifact_row_sequence = $artifact_row_sequence
@@ -365,10 +381,13 @@ UPSERT_STAGE_HISTORY_VARIANT_SOURCE_RECORD = (
     + """
 MATCH (unit:StageHistoryUnit {
   unit_id: $unit_id,
+  control_instance_id: $control_instance_id,
   logical_run_id: $logical_run_id,
   status: 'persisting'
 })-[:CONTAINS_STAGE_HISTORY_OCCURRENCE]->(
-  occurrence:StageHistoryOccurrence {occurrence_id: $occurrence_id}
+  occurrence:StageHistoryOccurrence {
+  occurrence_id: $occurrence_id, control_instance_id: $control_instance_id
+}
 )
 MATCH (source:SourceSystem {source_key: $source_key})
 WHERE unit.unit_digest = $unit_digest
@@ -487,10 +506,13 @@ RESOLVE_STAGE_HISTORY_PARENT_CANDIDATES = (
     + """
 MATCH (unit:StageHistoryUnit {
   unit_id: $unit_id,
+  control_instance_id: $control_instance_id,
   logical_run_id: $logical_run_id,
   status: 'persisting'
 })-[:CONTAINS_STAGE_HISTORY_OCCURRENCE]->(
-  occurrence:StageHistoryOccurrence {occurrence_id: $occurrence_id}
+  occurrence:StageHistoryOccurrence {
+  occurrence_id: $occurrence_id, control_instance_id: $control_instance_id
+}
 )
 MERGE (parent_identity_lock:SourceRecordIdentityLock {
   source_system: $logical_parent_source_system,
@@ -532,7 +554,10 @@ RETURN occurrence.occurrence_id AS occurrence_id,
 APPEND_STAGE_HISTORY_PARENT_DECISION = (
     _ACTIVE_STAGE_FENCE
     + """
-MATCH (occurrence:StageHistoryOccurrence {occurrence_id: $occurrence_id})
+MATCH (occurrence:StageHistoryOccurrence {
+  occurrence_id: $occurrence_id,
+  control_instance_id: $control_instance_id
+})
 WHERE occurrence.event_identity = $event_identity
   AND occurrence.logical_parent_source_system = $logical_parent_source_system
   AND occurrence.logical_parent_source_record_id =
@@ -635,7 +660,10 @@ PERSIST_STAGE_HISTORY_REVIEW_COMMAND = (
   AND $review_kind IN [
   'resolve_parent', 'reject_parent', 'resolve_conflict', 'apply_correction'
 ]
-MERGE (command:StageHistoryReviewCommand {command_id: $command_id})
+MERGE (command:StageHistoryReviewCommand {
+  command_id: $command_id,
+  control_instance_id: $control_instance_id
+})
 ON CREATE SET command.review_kind = $review_kind,
               command.target_event_identity = $target_event_identity,
               command.target_occurrence_id = $target_occurrence_id,
@@ -687,7 +715,10 @@ RETURN command.command_id AS command_id,
 CLAIM_STAGE_HISTORY_REVIEW_COMMAND = (
     _ACTIVE_STAGE_FENCE
     + """
-MATCH (command:StageHistoryReviewCommand {command_id: $command_id})
+MATCH (command:StageHistoryReviewCommand {
+  command_id: $command_id,
+  control_instance_id: $control_instance_id
+})
 WHERE command.review_kind = $review_kind
   AND command.target_event_identity = $target_event_identity
   AND coalesce(command.target_occurrence_id, '') = coalesce($target_occurrence_id, '')
@@ -730,6 +761,7 @@ LOCK_STAGE_HISTORY_REVIEW_EVENT = (
     + """
 MATCH (command:StageHistoryReviewCommand {
   command_id: $command_id,
+  control_instance_id: $control_instance_id,
   target_event_identity: $event_identity,
   status: 'claimed'
 })
@@ -750,7 +782,10 @@ RETURN identity_lock.lock_version AS lock_version
 COMPLETE_STAGE_HISTORY_REVIEW_COMMAND = (
     _ACTIVE_STAGE_FENCE
     + """
-MATCH (command:StageHistoryReviewCommand {command_id: $command_id})
+MATCH (command:StageHistoryReviewCommand {
+  command_id: $command_id,
+  control_instance_id: $control_instance_id
+})
 WHERE $completion_status IN ['completed', 'failed', 'superseded']
   AND (
     (command.status = 'claimed'
@@ -799,7 +834,10 @@ RETURN command.command_id AS command_id,
 UPSERT_STAGE_HISTORY_RETRY = (
     _ACTIVE_STAGE_FENCE
     + """
-MATCH (occurrence:StageHistoryOccurrence {occurrence_id: $occurrence_id})
+MATCH (occurrence:StageHistoryOccurrence {
+  occurrence_id: $occurrence_id,
+  control_instance_id: $control_instance_id
+})
 WHERE occurrence.logical_run_id = $logical_run_id
 MERGE (retry:StageHistoryRetry {
   occurrence_id: $occurrence_id,
@@ -807,6 +845,7 @@ MERGE (retry:StageHistoryRetry {
 })
 ON CREATE SET retry.status = 'pending',
               retry.retry_id = $retry_id,
+              retry.control_instance_id = $control_instance_id,
               retry.reason_code = $reason_code,
               retry.max_attempts = $max_attempts,
               retry.review_command_id = $review_command_id,
@@ -817,6 +856,7 @@ ON CREATE SET retry.status = 'pending',
               retry.updated_at = datetime()
 WITH occurrence, retry
 WHERE retry.status IN ['pending', 'claimed', 'resolved', 'rejected', 'quarantined']
+  AND retry.control_instance_id = $control_instance_id
   AND retry.retry_id = $retry_id
   AND retry.reason_code = $reason_code
   AND retry.max_attempts = $max_attempts
@@ -835,8 +875,12 @@ RETURN retry.retry_sequence AS retry_sequence,
 CLAIM_STAGE_HISTORY_RETRY = (
     _ACTIVE_STAGE_FENCE
     + """
-MATCH (occurrence:StageHistoryOccurrence {occurrence_id: $occurrence_id})
+MATCH (occurrence:StageHistoryOccurrence {
+  occurrence_id: $occurrence_id,
+  control_instance_id: $control_instance_id
+})
 MATCH (retry:StageHistoryRetry {
+  control_instance_id: $control_instance_id,
   occurrence_id: $occurrence_id,
   retry_sequence: $retry_sequence
 })
@@ -867,8 +911,12 @@ RETURN retry.retry_sequence AS retry_sequence,
 RESOLVE_STAGE_HISTORY_RETRY = (
     _ACTIVE_STAGE_FENCE
     + """
-MATCH (occurrence:StageHistoryOccurrence {occurrence_id: $occurrence_id})
+MATCH (occurrence:StageHistoryOccurrence {
+  occurrence_id: $occurrence_id,
+  control_instance_id: $control_instance_id
+})
 MATCH (retry:StageHistoryRetry {
+  control_instance_id: $control_instance_id,
   occurrence_id: $occurrence_id,
   retry_sequence: $retry_sequence,
   status: 'claimed',
@@ -921,7 +969,9 @@ MATCH (decision:CrmHistoryAuthorityDecision {
   authority_token: $authority_token,
   authority_state: $authority_state
 })-[:DECIDES_FOR]->(:CrmHistoryConflictGroup {event_identity: $event_identity})
-MATCH (occurrence:StageHistoryOccurrence {event_identity: $event_identity})
+MATCH (logical)-[:HAS_STAGE_HISTORY_UNIT]->(:StageHistoryUnit)-[:CONTAINS_STAGE_HISTORY_OCCURRENCE]->(
+  occurrence:StageHistoryOccurrence {event_identity: $event_identity, control_instance_id: $control_instance_id}
+)
 WHERE occurrence.parse_scope = 'in_scope'
   AND $authority_state IN [
     'effective', 'withheld_parent', 'withheld_conflict', 'rejected', 'corrected'
@@ -992,6 +1042,7 @@ UPSERT_STAGE_HISTORY_UNIT_ACCOUNTING = (
     + """
 MATCH (unit:StageHistoryUnit {
   unit_id: $unit_id,
+  control_instance_id: $control_instance_id,
   logical_run_id: $logical_run_id,
   status: 'persisting'
 })
@@ -1163,7 +1214,10 @@ WHERE $run_kind IN ['artifact_replay', 'failed_capture']
       AND $existing_same_hash_count = $same_hash_replay_count
       AND $new_conflict_variant_count = $differing_hash_conflict_count)
   )
-MERGE (accounting:StageHistoryUnitAccounting {unit_id: $unit_id})
+MERGE (accounting:StageHistoryUnitAccounting {
+  unit_id: $unit_id,
+  control_instance_id: $control_instance_id
+})
 ON CREATE SET accounting.logical_run_id = $logical_run_id,
               accounting.run_kind = $run_kind,
               accounting.fetched_count = $fetched_count,
@@ -1199,7 +1253,8 @@ ON CREATE SET accounting.logical_run_id = $logical_run_id,
               accounting.retry_quarantined_count = $retry_quarantined_count,
               accounting.created_at = datetime()
 WITH unit, accounting
-WHERE accounting.logical_run_id = $logical_run_id
+WHERE accounting.control_instance_id = $control_instance_id
+  AND accounting.logical_run_id = $logical_run_id
   AND accounting.run_kind = $run_kind
   AND accounting.fetched_count = $fetched_count
   AND accounting.malformed_excluded_count = $malformed_excluded_count
@@ -1243,6 +1298,7 @@ COMMIT_STAGE_HISTORY_UNIT_AND_ADVANCE_CHECKPOINT = (
     _ACTIVE_STAGE_FENCE
     + """
 MATCH (checkpoint:IngestionCheckpoint {
+  control_instance_id: $control_instance_id,
   logical_run_id: $logical_run_id,
   phase: $phase,
   generation: $attempt_generation,
@@ -1250,10 +1306,14 @@ MATCH (checkpoint:IngestionCheckpoint {
 })
 MATCH (unit:StageHistoryUnit {
   unit_id: $unit_id,
+  control_instance_id: $control_instance_id,
   logical_run_id: $logical_run_id,
   status: 'persisting'
 })-[:HAS_STAGE_HISTORY_ACCOUNTING]->(
-  accounting:StageHistoryUnitAccounting {unit_id: $unit_id}
+  accounting:StageHistoryUnitAccounting {
+  unit_id: $unit_id,
+  control_instance_id: $control_instance_id
+}
 )
 WHERE unit.unit_digest = $unit_digest
   AND unit.page_sequence = $page_sequence
@@ -1349,27 +1409,34 @@ RETURN unit.unit_id AS unit_id,
 
 
 GET_STAGE_HISTORY_STATUS = """
-MATCH (logical:IngestionLogicalRun {logical_run_id: $logical_run_id})
+MATCH (logical:IngestionLogicalRun {
+  control_instance_id: $control_instance_id,
+  logical_run_id: $logical_run_id
+})
 WHERE logical.source_key = 'bitrix_chat'
   AND logical.mode IN [
     'bounded_smoke_replay', 'authoritative_backfill_replay',
     'authoritative_catch_up_replay', 'capture_failure_accounting',
     'parent_reconcile', 'conflict_review', 'correction_review'
   ]
-OPTIONAL MATCH (logical)-[:HAS_ATTEMPT]->(attempt:IngestRun)
+OPTIONAL MATCH (logical)-[:HAS_ATTEMPT]->(attempt:IngestRun {
+  control_instance_id: $control_instance_id
+})
 WHERE attempt.generation = logical.active_generation
 OPTIONAL MATCH (stream:BitrixIngestionStream {
   source_key: logical.source_key,
+  control_instance_id: $control_instance_id,
   stream_key: 'crm_stage_history',
   logical_run_id: logical.logical_run_id
 })
 OPTIONAL MATCH (checkpoint:IngestionCheckpoint {
+  control_instance_id: $control_instance_id,
   logical_run_id: logical.logical_run_id,
   phase: logical.current_phase
 })
-OPTIONAL MATCH (logical)-[:HAS_STAGE_HISTORY_UNIT]->(unit:StageHistoryUnit)
+OPTIONAL MATCH (logical)-[:HAS_STAGE_HISTORY_UNIT]->(unit:StageHistoryUnit {control_instance_id: $control_instance_id})
 OPTIONAL MATCH (unit)-[:HAS_STAGE_HISTORY_ACCOUNTING]->(
-  accounting:StageHistoryUnitAccounting
+  accounting:StageHistoryUnitAccounting {control_instance_id: $control_instance_id}
 )
 RETURN logical.logical_run_id AS logical_run_id,
        logical.mode AS run_type,
@@ -1389,19 +1456,22 @@ RETURN logical.logical_run_id AS logical_run_id,
 
 
 GET_STAGE_HISTORY_RECONCILIATION = """
-MATCH (logical:IngestionLogicalRun {logical_run_id: $logical_run_id})
+MATCH (logical:IngestionLogicalRun {
+  control_instance_id: $control_instance_id,
+  logical_run_id: $logical_run_id
+})
 WHERE logical.source_key = 'bitrix_chat'
   AND logical.mode IN [
     'bounded_smoke_replay', 'authoritative_backfill_replay',
     'authoritative_catch_up_replay', 'capture_failure_accounting'
   ]
 CALL (logical) {
-  OPTIONAL MATCH (logical)-[:HAS_STAGE_HISTORY_UNIT]->(unit:StageHistoryUnit)
+  OPTIONAL MATCH (logical)-[:HAS_STAGE_HISTORY_UNIT]->(unit:StageHistoryUnit {control_instance_id: $control_instance_id})
   OPTIONAL MATCH (unit)-[:CONTAINS_STAGE_HISTORY_OCCURRENCE]->(
-    occurrence:StageHistoryOccurrence
+    occurrence:StageHistoryOccurrence {control_instance_id: $control_instance_id}
   )
   OPTIONAL MATCH (unit)-[:HAS_STAGE_HISTORY_ACCOUNTING]->(
-    accounting:StageHistoryUnitAccounting
+    accounting:StageHistoryUnitAccounting {control_instance_id: $control_instance_id}
   )
   WITH unit, accounting,
        count(DISTINCT occurrence) AS occurrence_count,
@@ -1488,8 +1558,8 @@ CALL (logical) {
   } END) WHERE item IS NOT NULL] AS units
 }
 CALL (logical) {
-  OPTIONAL MATCH (logical)-[:HAS_STAGE_HISTORY_UNIT]->(:StageHistoryUnit)
-        -[:CONTAINS_STAGE_HISTORY_OCCURRENCE]->(:StageHistoryOccurrence)
+  OPTIONAL MATCH (logical)-[:HAS_STAGE_HISTORY_UNIT]->(:StageHistoryUnit {control_instance_id: $control_instance_id})
+        -[:CONTAINS_STAGE_HISTORY_OCCURRENCE]->(:StageHistoryOccurrence {control_instance_id: $control_instance_id})
         -[:OBSERVED_STAGE_HISTORY_VARIANT]->(variant:CrmHistoryHashVariant)
   OPTIONAL MATCH (variant)-[:EVIDENCED_BY]->(
     record:SourceRecord {record_type: 'crm_history', history_family: 'stage'}
@@ -1501,8 +1571,8 @@ CALL (logical) {
            AS invalid_variant_evidence_count
 }
 CALL (logical) {
-  OPTIONAL MATCH (logical)-[:HAS_STAGE_HISTORY_UNIT]->(:StageHistoryUnit)
-        -[:CONTAINS_STAGE_HISTORY_OCCURRENCE]->(:StageHistoryOccurrence)
+  OPTIONAL MATCH (logical)-[:HAS_STAGE_HISTORY_UNIT]->(:StageHistoryUnit {control_instance_id: $control_instance_id})
+        -[:CONTAINS_STAGE_HISTORY_OCCURRENCE]->(:StageHistoryOccurrence {control_instance_id: $control_instance_id})
         -[:OBSERVED_STAGE_HISTORY_VARIANT]->(variant:CrmHistoryHashVariant)
   OPTIONAL MATCH (variant)-[:EVIDENCED_BY]->(record:SourceRecord)
   WITH record, count(DISTINCT variant) AS variant_evidence_count
@@ -1510,8 +1580,8 @@ CALL (logical) {
     AS shared_variant_evidence_count
 }
 CALL (logical) {
-  OPTIONAL MATCH (logical)-[:HAS_STAGE_HISTORY_UNIT]->(:StageHistoryUnit)
-        -[:CONTAINS_STAGE_HISTORY_OCCURRENCE]->(occurrence:StageHistoryOccurrence)
+  OPTIONAL MATCH (logical)-[:HAS_STAGE_HISTORY_UNIT]->(:StageHistoryUnit {control_instance_id: $control_instance_id})
+        -[:CONTAINS_STAGE_HISTORY_OCCURRENCE]->(occurrence:StageHistoryOccurrence {control_instance_id: $control_instance_id})
   OPTIONAL MATCH (occurrence)-[:OBSERVED_STAGE_HISTORY_VARIANT]->(
     variant:CrmHistoryHashVariant
   )
@@ -1529,8 +1599,8 @@ CALL (logical) {
       AS invalid_empty_occurrence_variant_link_count
 }
 CALL (logical) {
-  OPTIONAL MATCH (logical)-[:HAS_STAGE_HISTORY_UNIT]->(:StageHistoryUnit)
-        -[:CONTAINS_STAGE_HISTORY_OCCURRENCE]->(occurrence:StageHistoryOccurrence)
+  OPTIONAL MATCH (logical)-[:HAS_STAGE_HISTORY_UNIT]->(:StageHistoryUnit {control_instance_id: $control_instance_id})
+        -[:CONTAINS_STAGE_HISTORY_OCCURRENCE]->(occurrence:StageHistoryOccurrence {control_instance_id: $control_instance_id})
   OPTIONAL MATCH (decision:CrmHistoryParentAssociationDecision)
         -[:ASSOCIATION_FOR]->(occurrence)
   OPTIONAL MATCH (decision)-[:SELECTS_STAGE_HISTORY_PARENT]->(parent:SourceRecord)
@@ -1550,8 +1620,8 @@ CALL (logical) {
     AS invalid_parent_association_count
 }
 CALL (logical) {
-  OPTIONAL MATCH (logical)-[:HAS_STAGE_HISTORY_UNIT]->(:StageHistoryUnit)
-        -[:CONTAINS_STAGE_HISTORY_OCCURRENCE]->(occurrence:StageHistoryOccurrence)
+  OPTIONAL MATCH (logical)-[:HAS_STAGE_HISTORY_UNIT]->(:StageHistoryUnit {control_instance_id: $control_instance_id})
+        -[:CONTAINS_STAGE_HISTORY_OCCURRENCE]->(occurrence:StageHistoryOccurrence {control_instance_id: $control_instance_id})
   WITH collect(DISTINCT occurrence.event_identity) AS event_identities
   OPTIONAL MATCH (head:CrmHistoryAuthorityHead)
   WHERE head.event_identity IN event_identities
@@ -1621,8 +1691,8 @@ CALL (logical) {
                     THEN 1 END) AS invalid_effective_head_count
 }
 CALL (logical) {
-  OPTIONAL MATCH (logical)-[:HAS_STAGE_HISTORY_UNIT]->(:StageHistoryUnit)
-        -[:CONTAINS_STAGE_HISTORY_OCCURRENCE]->(occurrence:StageHistoryOccurrence)
+  OPTIONAL MATCH (logical)-[:HAS_STAGE_HISTORY_UNIT]->(:StageHistoryUnit {control_instance_id: $control_instance_id})
+        -[:CONTAINS_STAGE_HISTORY_OCCURRENCE]->(occurrence:StageHistoryOccurrence {control_instance_id: $control_instance_id})
   WITH collect(DISTINCT occurrence.event_identity) AS event_identities
   OPTIONAL MATCH (group:CrmHistoryConflictGroup)<-[:DECIDES_FOR]-(
     decision:CrmHistoryAuthorityDecision
@@ -1645,7 +1715,7 @@ CALL (logical) {
 }
 CALL (logical) {
   OPTIONAL MATCH (logical)-[:HAS_STAGE_HISTORY_UNIT]->(committed:StageHistoryUnit {
-    status: 'committed'
+    control_instance_id: $control_instance_id, status: 'committed'
   })
   WITH committed
   ORDER BY committed.page_sequence
@@ -1657,9 +1727,9 @@ CALL (logical) {
       unit.unit_digest] AS committed_unit_digests
 }
 CALL (logical) {
-  OPTIONAL MATCH (logical)-[:HAS_STAGE_HISTORY_UNIT]->(unit:StageHistoryUnit)
+  OPTIONAL MATCH (logical)-[:HAS_STAGE_HISTORY_UNIT]->(unit:StageHistoryUnit {control_instance_id: $control_instance_id})
   OPTIONAL MATCH (unit)-[:HAS_STAGE_HISTORY_ACCOUNTING]->(
-    accounting:StageHistoryUnitAccounting
+    accounting:StageHistoryUnitAccounting {control_instance_id: $control_instance_id}
   )
   RETURN count(DISTINCT CASE WHEN unit.status <> 'committed' THEN unit END)
            AS nonterminal_unit_count,
@@ -1689,13 +1759,13 @@ CALL (logical) {
            AS total_new_conflict_variant_count
 }
 CALL (logical) {
-  OPTIONAL MATCH (logical)-[:HAS_STAGE_HISTORY_UNIT]->(:StageHistoryUnit)
-        -[:CONTAINS_STAGE_HISTORY_OCCURRENCE]->(occurrence:StageHistoryOccurrence)
+  OPTIONAL MATCH (logical)-[:HAS_STAGE_HISTORY_UNIT]->(:StageHistoryUnit {control_instance_id: $control_instance_id})
+        -[:CONTAINS_STAGE_HISTORY_OCCURRENCE]->(occurrence:StageHistoryOccurrence {control_instance_id: $control_instance_id})
   OPTIONAL MATCH (association:CrmHistoryParentAssociationDecision {
     decision_id: occurrence.current_association_decision_id
   })-[:ASSOCIATION_FOR]->(occurrence)
   OPTIONAL MATCH (head:CrmHistoryAuthorityHead {event_identity: occurrence.event_identity})
-  OPTIONAL MATCH (occurrence)-[:HAS_STAGE_HISTORY_RETRY]->(retry:StageHistoryRetry)
+  OPTIONAL MATCH (occurrence)-[:HAS_STAGE_HISTORY_RETRY]->(retry:StageHistoryRetry {control_instance_id: $control_instance_id})
   WHERE retry.retry_sequence = occurrence.current_retry_sequence
   RETURN count(CASE WHEN occurrence.association_state = 'selected_active' THEN 1 END)
            AS total_selected_active_count,
@@ -1756,6 +1826,7 @@ CALL (logical) {
 }
 CALL (logical) {
   OPTIONAL MATCH (checkpoint:IngestionCheckpoint {
+    control_instance_id: $control_instance_id,
     logical_run_id: logical.logical_run_id,
     phase: logical.current_phase
   })
@@ -1772,7 +1843,7 @@ CALL (logical) {
 }
 CALL (logical) {
   OPTIONAL MATCH (logical)-[:HAS_STAGE_HISTORY_REVIEW_COMMAND]->(
-    command:StageHistoryReviewCommand
+    command:StageHistoryReviewCommand {control_instance_id: $control_instance_id}
   )
   RETURN count(DISTINCT command) AS review_command_count,
          count(DISTINCT CASE WHEN command.status = 'claimed'
@@ -1962,6 +2033,7 @@ MATCH (association:CrmHistoryParentAssociationDecision {
   event_identity: $event_identity
 })-[:ASSOCIATION_FOR]->(occurrence:StageHistoryOccurrence {
   occurrence_id: $occurrence_id,
+  control_instance_id: $control_instance_id,
   event_identity: $event_identity
 })
 WHERE association.association_state IN ['selected_active', 'selected_pending_review']
@@ -1999,7 +2071,11 @@ RETURN association.decision_id AS decision_id,
 GET_COMPLETED_STAGE_HISTORY_REVIEW_COMMAND = (
     _ACTIVE_STAGE_FENCE
     + """
-MATCH (command:StageHistoryReviewCommand {command_id: $command_id, status: 'completed'})
+MATCH (command:StageHistoryReviewCommand {
+  command_id: $command_id,
+  control_instance_id: $control_instance_id,
+  status: 'completed'
+})
 WHERE command.review_kind = $review_kind
   AND command.target_event_identity = $target_event_identity
   AND coalesce(command.target_occurrence_id, '') = coalesce($target_occurrence_id, '')
@@ -2042,6 +2118,7 @@ GET_STAGE_HISTORY_REVIEW_OCCURRENCE = (
     + """
 MATCH (occurrence:StageHistoryOccurrence {
   occurrence_id: $occurrence_id,
+  control_instance_id: $control_instance_id,
   event_identity: $event_identity
 })
 RETURN occurrence.occurrence_id AS occurrence_id,
@@ -2060,6 +2137,7 @@ RESOLVE_STAGE_HISTORY_REVIEW_PARENT_CANDIDATES = (
     + """
 MATCH (occurrence:StageHistoryOccurrence {
   occurrence_id: $occurrence_id,
+  control_instance_id: $control_instance_id,
   event_identity: $event_identity
 })
 MERGE (parent_identity_lock:SourceRecordIdentityLock {
@@ -2104,8 +2182,12 @@ RETURN occurrence.logical_parent_source_system AS logical_parent_source_system,
 RESOLVE_STAGE_HISTORY_RETRY_BY_REVIEW = (
     _ACTIVE_STAGE_FENCE
     + """
-MATCH (occurrence:StageHistoryOccurrence {occurrence_id: $occurrence_id})
+MATCH (occurrence:StageHistoryOccurrence {
+  occurrence_id: $occurrence_id,
+  control_instance_id: $control_instance_id
+})
 MATCH (retry:StageHistoryRetry {
+  control_instance_id: $control_instance_id,
   occurrence_id: $occurrence_id,
   retry_sequence: $retry_sequence,
   status: 'claimed',
@@ -2146,12 +2228,14 @@ PROJECT_STAGE_HISTORY_REVIEW_OUTCOME = (
     + """
 MATCH (command:StageHistoryReviewCommand {
   command_id: $command_id,
+  control_instance_id: $control_instance_id,
   target_event_identity: $event_identity,
   target_occurrence_id: $occurrence_id,
   status: 'claimed'
 })
 MATCH (target:StageHistoryOccurrence {
   occurrence_id: $occurrence_id,
+  control_instance_id: $control_instance_id,
   event_identity: $event_identity
 })
 MATCH (head:CrmHistoryAuthorityHead {
@@ -2190,7 +2274,11 @@ SET target.association_state = $association_state,
     target.retry_state = coalesce($retry_state, target.retry_state),
     target.projection_updated_at = datetime()
 WITH target, head
-MATCH (event_occurrence:StageHistoryOccurrence {event_identity: $event_identity})
+MATCH (logical)-[:HAS_STAGE_HISTORY_UNIT]->(:StageHistoryUnit)-[:CONTAINS_STAGE_HISTORY_OCCURRENCE]->(
+  event_occurrence:StageHistoryOccurrence {
+    event_identity: $event_identity, control_instance_id: $control_instance_id
+  }
+)
 WHERE event_occurrence.parse_scope = 'in_scope'
 SET event_occurrence.authority_state = head.authority_state,
     event_occurrence.current_authority_decision_id = head.decision_id,
@@ -2208,14 +2296,19 @@ CLAIM_STAGE_HISTORY_RETRY_BY_REVIEW = (
     + """
 MATCH (command:StageHistoryReviewCommand {
   command_id: $review_command_id,
+  control_instance_id: $control_instance_id,
   target_occurrence_id: $occurrence_id,
   status: 'claimed'
 })
 MATCH (retry:StageHistoryRetry {
+  control_instance_id: $control_instance_id,
   occurrence_id: $occurrence_id,
   retry_sequence: $retry_sequence
 })
-MATCH (occurrence:StageHistoryOccurrence {occurrence_id: $occurrence_id})
+MATCH (occurrence:StageHistoryOccurrence {
+  occurrence_id: $occurrence_id,
+  control_instance_id: $control_instance_id
+})
 WHERE command.lease_owner = $lease_owner
   AND command.lease_attempt_id = $ingest_run_id
   AND command.lease_attempt_generation = $attempt_generation
@@ -2290,16 +2383,22 @@ RETURN exact_count,
 """
 
 GET_STAGE_HISTORY_REVIEW_COMMAND_CONTEXT = """
-MATCH (logical:IngestionLogicalRun)-[:HAS_STAGE_HISTORY_REVIEW_COMMAND]->(
-  command:StageHistoryReviewCommand {command_id: $command_id}
+MATCH (logical:IngestionLogicalRun {control_instance_id: $control_instance_id})-[:HAS_STAGE_HISTORY_REVIEW_COMMAND]->(
+  command:StageHistoryReviewCommand {
+    command_id: $command_id,
+    control_instance_id: $control_instance_id
+  }
 )
 WHERE logical.source_key = 'bitrix_chat'
   AND logical.mode IN [
     'parent_reconcile', 'conflict_review', 'correction_review'
   ]
-MATCH (logical)-[:ACTIVE_ATTEMPT]->(attempt:IngestRun)
+MATCH (logical)-[:ACTIVE_ATTEMPT]->(attempt:IngestRun {
+  control_instance_id: $control_instance_id
+})
 MATCH (stream:BitrixIngestionStream {
   source_key: 'bitrix_chat',
+  control_instance_id: $control_instance_id,
   stream_key: 'crm_stage_history',
   logical_run_id: logical.logical_run_id,
   ingest_run_id: attempt.ingest_run_id,
@@ -2337,14 +2436,19 @@ RETURN logical.logical_run_id AS logical_run_id,
 
 
 GET_STAGE_HISTORY_REVIEW_RESUME_CONTEXT = """
-MATCH (logical:IngestionLogicalRun)-[:HAS_STAGE_HISTORY_REVIEW_COMMAND]->(
-  command:StageHistoryReviewCommand {command_id: $command_id}
+MATCH (logical:IngestionLogicalRun {control_instance_id: $control_instance_id})-[:HAS_STAGE_HISTORY_REVIEW_COMMAND]->(
+  command:StageHistoryReviewCommand {
+    command_id: $command_id,
+    control_instance_id: $control_instance_id
+  }
 )
 WHERE logical.source_key = 'bitrix_chat'
   AND logical.mode IN [
     'parent_reconcile', 'conflict_review', 'correction_review'
   ]
-OPTIONAL MATCH (logical)-[:ACTIVE_ATTEMPT]->(attempt:IngestRun)
+OPTIONAL MATCH (logical)-[:ACTIVE_ATTEMPT]->(attempt:IngestRun {
+  control_instance_id: $control_instance_id
+})
 RETURN logical.logical_run_id AS logical_run_id,
        logical.mode AS run_type,
        logical.status AS logical_status,

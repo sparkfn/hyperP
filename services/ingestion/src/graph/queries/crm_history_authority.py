@@ -22,8 +22,11 @@ REQUIRE head.event_identity IS UNIQUE""",
 # for provenance.  Existing semantic decisions replay across attempts without
 # advancing the head; same-ID/different-semantics rows are returned as conflicts.
 APPEND_CRM_HISTORY_AUTHORITY_DECISION = """
-MATCH (logical:IngestionLogicalRun {logical_run_id: $logical_run_id})
-      -[:ACTIVE_ATTEMPT]->(attempt:IngestRun {ingest_run_id: $ingest_run_id})
+MATCH (logical:IngestionLogicalRun {
+  logical_run_id: $logical_run_id, control_instance_id: $control_instance_id
+})-[:ACTIVE_ATTEMPT]->(attempt:IngestRun {
+  ingest_run_id: $ingest_run_id, control_instance_id: $control_instance_id
+})
 WHERE logical.active_generation = $generation
   AND attempt.generation = $generation
   AND logical.status IN ['running', 'stop_requested']

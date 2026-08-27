@@ -57,6 +57,7 @@ from src.graph.queries.bitrix_backfill import (
     UPSERT_KNOWN_OWNER_MEMBERS,
     VERIFY_BITRIX_SUCCESSOR_TAIL,
 )
+from src.source_instances import LEGACY_DEFAULT_CONTROL_INSTANCE_ID, effective_control_instance_id
 
 
 @dataclass(frozen=True)
@@ -76,6 +77,7 @@ class FrozenOwnerExport:
     boundary_digest: str
     owner_set_digest: str
     rows: tuple[FrozenOwnerRow, ...]
+    control_instance_id: str = LEGACY_DEFAULT_CONTROL_INSTANCE_ID
 
 
 _KNOWN_OWNER_BATCH_SIZE = 1000
@@ -84,8 +86,17 @@ _KNOWN_OWNER_BATCH_SIZE = 1000
 class BitrixBackfillRepository:
     """Read frozen coverage and later manage corrective-generation state."""
 
-    def __init__(self, client: Neo4jClient) -> None:
+    def __init__(
+        self,
+        client: Neo4jClient,
+        control_instance_id: str = LEGACY_DEFAULT_CONTROL_INSTANCE_ID,
+    ) -> None:
         self._client = client
+        self._control_instance_id = effective_control_instance_id(control_instance_id)
+
+    def _require_fence_control(self, fence_context: FenceContext) -> None:
+        if fence_context.control_instance_id != self._control_instance_id:
+            raise ValueError("fence control_instance_id does not match the backfill repository")
 
     def allocate_generation(
         self,
@@ -99,6 +110,7 @@ class BitrixBackfillRepository:
         def _work(tx: ManagedTransaction) -> bool:
             record = tx.run(
                 ALLOCATE_BITRIX_BACKFILL_GENERATION,
+                control_instance_id=self._control_instance_id,
                 generation_id=generation_id,
                 repository_sha=provenance.repository_sha,
                 image_digest=provenance.image_digest,
@@ -121,6 +133,7 @@ class BitrixBackfillRepository:
         def _work(tx: ManagedTransaction) -> None:
             record = tx.run(
                 REGISTER_BITRIX_BACKFILL_INVENTORY,
+                control_instance_id=self._control_instance_id,
                 generation_id=generation_id,
                 inventory_digest=manifest.digest,
                 manifest_json=manifest.canonical_json,
@@ -139,6 +152,7 @@ class BitrixBackfillRepository:
         def _read(tx: ManagedTransaction) -> GenerationState:
             record = tx.run(
                 GET_BITRIX_BACKFILL_GENERATION,
+                control_instance_id=self._control_instance_id,
                 generation_id=generation_id,
             ).single()
             if record is None:
@@ -175,6 +189,7 @@ class BitrixBackfillRepository:
                 source_contract_uuid=_required_str(
                     record["source_contract_uuid"], "source_contract_uuid"
                 ),
+                control_instance_id=self._control_instance_id,
             )
 
         return self._client.execute_read(_read)
@@ -183,6 +198,7 @@ class BitrixBackfillRepository:
         def _read(tx: ManagedTransaction) -> tuple[str, str]:
             record = tx.run(
                 GET_BITRIX_BACKFILL_INVENTORY,
+                control_instance_id=self._control_instance_id,
                 generation_id=generation_id,
             ).single()
             if record is None:
@@ -198,6 +214,7 @@ class BitrixBackfillRepository:
         def _read(tx: ManagedTransaction) -> int:
             record = tx.run(
                 GET_MAX_BITRIX_RESUME_WORKER_GENERATION,
+                control_instance_id=self._control_instance_id,
                 generation_id=generation_id,
             ).single()
             if record is None:
@@ -211,6 +228,7 @@ class BitrixBackfillRepository:
             result: list[GenerationChildRun] = []
             for record in tx.run(
                 LIST_BITRIX_GENERATION_LOGICAL_RUNS,
+                control_instance_id=self._control_instance_id,
                 generation_id=generation_id,
             ):
                 stream = record["stream_key"]
@@ -225,6 +243,7 @@ class BitrixBackfillRepository:
                         logical_status=_required_str(record["logical_status"], "logical_status"),
                         attempt_generation=_non_negative_int(record, "attempt_generation"),
                         stream_status=_optional_str(record["stream_status"]),
+                        control_instance_id=self._control_instance_id,
                     )
                 )
             return tuple(result)
@@ -245,6 +264,7 @@ class BitrixBackfillRepository:
         def _work(tx: ManagedTransaction) -> None:
             record = tx.run(
                 CAS_BITRIX_BACKFILL_GENERATION_STATUS,
+                control_instance_id=self._control_instance_id,
                 generation_id=generation_id,
                 expected_statuses=list(expected_statuses),
                 next_status=next_status,
@@ -268,6 +288,7 @@ class BitrixBackfillRepository:
             seen: set[str] = set()
             for record in tx.run(
                 FREEZE_BITRIX_BACKFILL_GENERATION,
+                control_instance_id=self._control_instance_id,
                 generation_id=generation_id,
                 repository_sha=state.repository_sha,
                 image_digest=state.image_digest,
@@ -294,6 +315,7 @@ class BitrixBackfillRepository:
             owner_digest = _owner_set_digest(rows)
             completed = tx.run(
                 COMPLETE_BITRIX_BACKFILL_FREEZE,
+                control_instance_id=self._control_instance_id,
                 generation_id=generation_id,
                 owner_count=len(rows),
                 owner_set_digest=owner_digest,
@@ -317,6 +339,7 @@ class BitrixBackfillRepository:
         def _work(tx: ManagedTransaction) -> None:
             record = tx.run(
                 RECORD_BITRIX_BACKFILL_RECONCILIATION,
+                control_instance_id=self._control_instance_id,
                 generation_id=generation_id,
                 stream_keys=list(stream_keys),
                 reconciliation_digest=reconciliation_digest,
@@ -337,6 +360,7 @@ class BitrixBackfillRepository:
         def _work(tx: ManagedTransaction) -> None:
             record = tx.run(
                 RECORD_BITRIX_QUALIFICATION,
+                control_instance_id=self._control_instance_id,
                 generation_id=generation_id,
                 repository_sha=state.repository_sha,
                 image_digest=state.image_digest,
@@ -364,6 +388,7 @@ class BitrixBackfillRepository:
         def _work(tx: ManagedTransaction) -> None:
             record = tx.run(
                 REJECT_BITRIX_BACKFILL_GENERATION,
+                control_instance_id=self._control_instance_id,
                 generation_id=generation_id,
                 actor=actor,
                 reason=reason,
@@ -381,6 +406,7 @@ class BitrixBackfillRepository:
         def _read(tx: ManagedTransaction) -> dict[str, str]:
             records = tx.run(
                 GET_BITRIX_GENERATION_CATEGORY_MAPPING,
+                control_instance_id=self._control_instance_id,
                 generation_id=generation_id,
             )
             mapping: dict[str, str] = {}
@@ -415,6 +441,7 @@ class BitrixBackfillRepository:
         def _work(tx: ManagedTransaction) -> bool:
             record = tx.run(
                 ALLOCATE_BITRIX_SUCCESSOR_GENERATION,
+                control_instance_id=self._control_instance_id,
                 corrective_generation_id=corrective_generation_id,
                 successor_generation_id=successor_generation_id,
                 successor_boundary_digest=successor_boundary_digest,
@@ -438,6 +465,7 @@ class BitrixBackfillRepository:
         def _work(tx: ManagedTransaction) -> None:
             record = tx.run(
                 ACTIVATE_BITRIX_SUCCESSOR_GENERATION,
+                control_instance_id=self._control_instance_id,
                 corrective_generation_id=corrective_generation_id,
                 successor_generation_id=successor_generation_id,
                 actor=actor,
@@ -461,6 +489,7 @@ class BitrixBackfillRepository:
         def _work(tx: ManagedTransaction) -> None:
             record = tx.run(
                 CONFIRM_BITRIX_SUCCESSOR_PUBLICATION,
+                control_instance_id=self._control_instance_id,
                 corrective_generation_id=corrective_generation_id,
                 successor_generation_id=successor_generation_id,
                 actor=actor,
@@ -483,6 +512,7 @@ class BitrixBackfillRepository:
         def _read(tx: ManagedTransaction) -> str:
             record = tx.run(
                 GET_CONFIRMED_BITRIX_SUCCESSOR_PUBLICATION,
+                control_instance_id=self._control_instance_id,
                 corrective_generation_id=corrective_generation_id,
                 successor_generation_id=successor_generation_id,
                 evidence_digest=evidence_digest,
@@ -498,6 +528,7 @@ class BitrixBackfillRepository:
         def _read(tx: ManagedTransaction) -> str:
             record = tx.run(
                 GET_BITRIX_SUCCESSOR_PUBLICATION_OCCURRENCE,
+                control_instance_id=self._control_instance_id,
                 successor_generation_id=successor_generation_id,
             ).single()
             if record is None:
@@ -519,6 +550,7 @@ class BitrixBackfillRepository:
         def _work(tx: ManagedTransaction) -> None:
             record = tx.run(
                 SUPERSEDE_ZERO_WRITE_BITRIX_SUCCESSOR,
+                control_instance_id=self._control_instance_id,
                 corrective_generation_id=corrective_generation_id,
                 successor_generation_id=successor_generation_id,
                 replacement_successor_generation_id=replacement_successor_generation_id,
@@ -540,6 +572,7 @@ class BitrixBackfillRepository:
         def _read(tx: ManagedTransaction) -> TailVerification:
             record = tx.run(
                 VERIFY_BITRIX_SUCCESSOR_TAIL,
+                control_instance_id=self._control_instance_id,
                 corrective_generation_id=corrective_generation_id,
                 successor_generation_id=successor_generation_id,
             ).single()
@@ -569,10 +602,13 @@ class BitrixBackfillRepository:
         boundary_digest: str,
         configuration_digest: str,
     ) -> None:
+        self._require_fence_control(fence_context)
+
         def _work(tx: ManagedTransaction) -> None:
             assert_active_bitrix_fence(tx, fence_context)
             record = tx.run(
                 ATTACH_BACKFILL_LOGICAL_RUN,
+                control_instance_id=self._control_instance_id,
                 generation_id=generation_id,
                 stream_key=stream_key,
                 logical_run_id=logical_run_id,
@@ -593,6 +629,7 @@ class BitrixBackfillRepository:
     ) -> KnownOwnerMembershipSet:
         if not generation_id.strip() or not membership_set_id.strip():
             raise ValueError("generation and membership set IDs must be non-empty")
+        self._require_fence_control(fence_context)
 
         def _read(tx: ManagedTransaction) -> tuple[str, ...]:
             deal_ids: list[str] = []
@@ -607,6 +644,7 @@ class BitrixBackfillRepository:
             assert_active_bitrix_fence(tx, fence_context)
             record = tx.run(
                 PREPARE_KNOWN_OWNER_SET,
+                control_instance_id=self._control_instance_id,
                 generation_id=generation_id,
                 membership_set_id=membership_set_id,
                 digest=digest,
@@ -634,6 +672,7 @@ class BitrixBackfillRepository:
                     assert_active_bitrix_fence(tx, fence_context)
                     record = tx.run(
                         UPSERT_KNOWN_OWNER_MEMBERS,
+                        control_instance_id=self._control_instance_id,
                         generation_id=generation_id,
                         membership_set_id=membership_set_id,
                         digest=digest,
@@ -648,6 +687,7 @@ class BitrixBackfillRepository:
                 assert_active_bitrix_fence(tx, fence_context)
                 record = tx.run(
                     SEAL_KNOWN_OWNER_SET,
+                    control_instance_id=self._control_instance_id,
                     generation_id=generation_id,
                     membership_set_id=membership_set_id,
                     digest=digest,
@@ -667,6 +707,7 @@ class BitrixBackfillRepository:
             membership_set_id=membership_set_id,
             digest=digest,
             deal_ids=deal_ids,
+            control_instance_id=self._control_instance_id,
         )
 
     def find_known_owner_set(
@@ -678,6 +719,7 @@ class BitrixBackfillRepository:
         def _read_metadata(tx: ManagedTransaction) -> tuple[str, int, str] | None:
             record = tx.run(
                 GET_KNOWN_OWNER_SET,
+                control_instance_id=self._control_instance_id,
                 generation_id=generation_id,
                 membership_set_id=membership_set_id,
             ).single()
@@ -708,6 +750,7 @@ class BitrixBackfillRepository:
                 rows: list[tuple[int, str]] = []
                 for record in tx.run(
                     LIST_KNOWN_OWNER_MEMBERS_PAGE,
+                    control_instance_id=self._control_instance_id,
                     generation_id=generation_id,
                     membership_set_id=membership_set_id,
                     after_ordinal=_after_ordinal,
@@ -739,6 +782,7 @@ class BitrixBackfillRepository:
             membership_set_id=membership_set_id,
             digest=digest,
             deal_ids=frozen_ids,
+            control_instance_id=self._control_instance_id,
         )
 
     def get_known_owner_set(
@@ -764,6 +808,7 @@ class BitrixBackfillRepository:
         def _read(tx: ManagedTransaction) -> CoverageReconciliation:
             record = tx.run(
                 GET_BITRIX_COVERAGE_RECONCILIATION,
+                control_instance_id=self._control_instance_id,
                 generation_id=generation_id,
                 stream_key=stream_key,
             ).single()
@@ -801,6 +846,7 @@ class BitrixBackfillRepository:
         assert_active_bitrix_fence(tx, fence_context)
         record = tx.run(
             UPSERT_BITRIX_BACKFILL_COVERAGE,
+            control_instance_id=fence_context.control_instance_id,
             generation_id=generation_id,
             stream_key=stream_key,
             logical_run_id=fence_context.logical_run_id,
@@ -832,7 +878,11 @@ class BitrixBackfillRepository:
 
         def _work(tx: ManagedTransaction) -> FrozenOwnerExport:
             records: list[Record] = list(
-                tx.run(EXPORT_FROZEN_OWNER_COVERAGE, generation_id=generation_id)
+                tx.run(
+                    EXPORT_FROZEN_OWNER_COVERAGE,
+                    control_instance_id=self._control_instance_id,
+                    generation_id=generation_id,
+                )
             )
             if not records:
                 raise RuntimeError("frozen corrective generation has no in-scope owner coverage")
@@ -875,13 +925,14 @@ class BitrixBackfillRepository:
             if actual_digest != expected_digest:
                 raise RuntimeError("frozen owner coverage digest does not reconcile")
             return FrozenOwnerExport(
-                generation_id,
-                source_contract_uuid,
-                configuration_digest,
-                image_digest,
-                boundary,
-                actual_digest,
-                tuple(rows),
+                generation_id=generation_id,
+                source_contract_uuid=source_contract_uuid,
+                configuration_digest=configuration_digest,
+                image_digest=image_digest,
+                boundary_digest=boundary,
+                owner_set_digest=actual_digest,
+                rows=tuple(rows),
+                control_instance_id=self._control_instance_id,
             )
 
         return self._client.execute_read(_work)

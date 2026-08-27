@@ -8,10 +8,12 @@ from typing import TypedDict
 from celery import Task
 
 from src.config import Settings, get_settings
+from src.graph.bitrix_source_instances import admit_configured_bitrix_control
 from src.graph.client import Neo4jClient
 from src.graph.ingestion_control import LogicalRunControl
 from src.graph.stage_history_review import StageHistoryReviewRepository
 from src.ingestion_config import StageHistoryIngestionConfig, get_ingestion_config
+from src.source_instances import LEGACY_DEFAULT_CONTROL_INSTANCE_ID, effective_control_instance_id
 from src.stage_history_ingestion_models import (
     stage_history_review_configuration_fingerprint,
 )
@@ -31,7 +33,9 @@ def execute_review_task(
     *,
     command_id: str,
     authorization_reference: str,
+    control_instance_id: str = LEGACY_DEFAULT_CONTROL_INSTANCE_ID,
 ) -> StageHistoryReviewTaskSummary:
+    control_instance_id = effective_control_instance_id(control_instance_id)
     config = get_ingestion_config().stage_history_ingestion
     config.assert_dispatch_enabled(now=datetime.now(UTC))
     if not command_id.strip() or authorization_reference != config.authorization_reference:
@@ -40,9 +44,11 @@ def execute_review_task(
     if not task_id:
         raise RuntimeError("stage-history review requires a stable Celery task ID")
     settings = get_settings()
+    admit_configured_bitrix_control(settings, control_instance_id)
     with stage_history_task_lock(
         settings.celery_broker_url,
         owner=f"review:{task_id}",
+        control_instance_id=control_instance_id,
     ) as lock:
         lock.assert_owned()
         return _run_review_task(
@@ -52,6 +58,7 @@ def execute_review_task(
             command_id=command_id,
             authorization_reference=authorization_reference,
             config=config,
+            control_instance_id=control_instance_id,
         )
 
 
@@ -63,12 +70,13 @@ def _run_review_task(
     command_id: str,
     authorization_reference: str,
     config: StageHistoryIngestionConfig,
+    control_instance_id: str = LEGACY_DEFAULT_CONTROL_INSTANCE_ID,
 ) -> StageHistoryReviewTaskSummary:
     client = Neo4jClient(settings)
     execution = None
     domain_committed = False
     try:
-        repository = StageHistoryReviewRepository(client)
+        repository = StageHistoryReviewRepository(client, control_instance_id=control_instance_id)
         loaded_execution = repository.load_execution(command_id)
         if loaded_execution is None:
             raise ValueError("stage-history review command was not found")
@@ -99,7 +107,7 @@ def _run_review_task(
         )
         domain_committed = True
         lock.assert_owned()
-        LogicalRunControl(client).finalize_fenced(
+        LogicalRunControl(client, control_instance_id).finalize_fenced(
             context=execution.fence,
             phase="crm_stage_history_review_v1",
             status="completed",
@@ -120,7 +128,7 @@ def _run_review_task(
     except Exception as exc:
         if execution is not None and not domain_committed:
             lock.assert_owned()
-            LogicalRunControl(client).fail_fenced(
+            LogicalRunControl(client, control_instance_id).fail_fenced(
                 context=execution.fence,
                 failure_category="stage_history_review_failed",
                 safe_failure_message=type(exc).__name__,

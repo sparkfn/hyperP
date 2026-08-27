@@ -6,23 +6,24 @@ CREATE_LOGICAL_RUN_CONSTRAINTS: tuple[str, ...] = (
     """CREATE CONSTRAINT ingestion_logical_run_id_unique IF NOT EXISTS
 FOR (run:IngestionLogicalRun)
 REQUIRE run.logical_run_id IS UNIQUE""",
-    """CREATE CONSTRAINT ingestion_checkpoint_identity_unique IF NOT EXISTS
+    """CREATE CONSTRAINT ingestion_checkpoint_control_logical_phase_unique IF NOT EXISTS
 FOR (checkpoint:IngestionCheckpoint)
-REQUIRE (checkpoint.logical_run_id, checkpoint.phase) IS UNIQUE""",
-    """CREATE CONSTRAINT ingestion_logical_run_source_idempotency_unique IF NOT EXISTS
+REQUIRE (checkpoint.control_instance_id, checkpoint.logical_run_id, checkpoint.phase) IS UNIQUE""",
+    """CREATE CONSTRAINT ingestion_logical_run_source_control_idempotency_unique IF NOT EXISTS
 FOR (run:IngestionLogicalRun)
-REQUIRE (run.source_key, run.idempotency_key) IS UNIQUE""",
+REQUIRE (run.source_key, run.control_instance_id, run.idempotency_key) IS UNIQUE""",
 )
 
 CREATE_BITRIX_INGESTION_STREAM_CONSTRAINTS: tuple[str, ...] = (
-    """CREATE CONSTRAINT bitrix_ingestion_stream_identity_unique IF NOT EXISTS
+    """CREATE CONSTRAINT bitrix_ingestion_stream_control_identity_unique IF NOT EXISTS
 FOR (stream:BitrixIngestionStream)
-REQUIRE (stream.source_key, stream.stream_key) IS UNIQUE""",
+REQUIRE (stream.source_key, stream.control_instance_id, stream.stream_key) IS UNIQUE""",
 )
 
 LOCK_AND_ASSERT_ACTIVE_BITRIX_FENCE = """
 MATCH (stream:BitrixIngestionStream {
   source_key: $source_key,
+  control_instance_id: $control_instance_id,
   stream_key: $stream_key
 })
 SET stream.fence_lock_version = coalesce(stream.fence_lock_version, 0) + 1
@@ -39,6 +40,7 @@ RETURN stream.fence_lock_version AS fence_lock_version
 PROBE_REJECTED_BITRIX_FENCE_ROLLBACK = """
 MATCH (stream:BitrixIngestionStream {
   source_key: $source_key,
+  control_instance_id: $control_instance_id,
   stream_key: $stream_key
 })
 SET stream.fence_lock_version = coalesce(stream.fence_lock_version, 0) + 1,
@@ -53,13 +55,19 @@ RETURN stream.logical_run_id = $logical_run_id
 """
 
 FIND_BITRIX_FENCE_ROLLBACK_PROBE = """
-MATCH (stream:BitrixIngestionStream {rollback_probe_token: $probe_token})
+MATCH (stream:BitrixIngestionStream {
+  source_key: $source_key,
+  control_instance_id: $control_instance_id,
+  stream_key: $stream_key,
+  rollback_probe_token: $probe_token
+})
 RETURN count(stream) AS persisted_probe_count
 """
 
 SET_FENCED_BITRIX_STREAM_STATUS = """
 MATCH (stream:BitrixIngestionStream {
   source_key: $source_key,
+  control_instance_id: $control_instance_id,
   stream_key: $stream_key,
   logical_run_id: $logical_run_id,
   ingest_run_id: $ingest_run_id,
@@ -81,19 +89,24 @@ RETURN stream.status AS status
 # Admission establishes the identity consumed by same-transaction mutation fences.
 ADMIT_OR_COALESCE_BITRIX_STREAM = """
 MATCH (source:SourceSystem {source_key: $source_key, is_active: true})
-MATCH (logical:IngestionLogicalRun {logical_run_id: $logical_run_id})
-      -[:FOR_SOURCE]->(source)
-MATCH (logical)-[:ACTIVE_ATTEMPT]->(attempt:IngestRun {ingest_run_id: $ingest_run_id})
+MATCH (logical:IngestionLogicalRun {
+  logical_run_id: $logical_run_id, control_instance_id: $control_instance_id
+})-[:FOR_SOURCE]->(source)
+MATCH (logical)-[:ACTIVE_ATTEMPT]->(attempt:IngestRun {
+  ingest_run_id: $ingest_run_id, control_instance_id: $control_instance_id
+})
 WHERE logical.active_generation = $attempt_generation
   AND attempt.generation = $attempt_generation
   AND logical.status IN ['queued', 'running', 'stop_requested']
   AND attempt.status IN ['queued', 'started']
 MERGE (stream:BitrixIngestionStream {
   source_key: $source_key,
+  control_instance_id: $control_instance_id,
   stream_key: $stream_key
 })
 ON CREATE SET
   stream.logical_run_id = $logical_run_id,
+  stream.control_instance_id = $control_instance_id,
   stream.ingest_run_id = $ingest_run_id,
   stream.attempt_generation = $attempt_generation,
   stream.worker_task_id = $worker_task_id,
@@ -109,6 +122,7 @@ REMOVE stream.creation_token
 WITH stream, logical, attempt,
      created,
      stream.logical_run_id = $logical_run_id
+  AND stream.control_instance_id = $control_instance_id
        AND stream.ingest_run_id = $ingest_run_id
        AND stream.attempt_generation = $attempt_generation AS same_attempt,
      stream.status IN ['completed', 'terminated', 'superseded'] AS terminal_stream,
@@ -157,6 +171,7 @@ RETURN CASE
          ELSE 'coalesced'
        END AS admission_outcome,
        stream.source_key AS source_key,
+       stream.control_instance_id AS control_instance_id,
        stream.stream_key AS stream_key,
        stream.logical_run_id AS logical_run_id,
        stream.ingest_run_id AS ingest_run_id,
@@ -168,9 +183,12 @@ RETURN CASE
 
 CREATE_LOGICAL_RUN_AND_ATTEMPT = """
 MATCH (source:SourceSystem {source_key: $source_key, is_active: true})
-OPTIONAL MATCH (dispatch:BitrixDispatchControl {source_key: $source_key})
+OPTIONAL MATCH (dispatch:BitrixDispatchControl {
+  source_key: $source_key, control_instance_id: $control_instance_id
+})
 OPTIONAL MATCH (existing:IngestionLogicalRun {
   source_key: $source_key,
+  control_instance_id: $control_instance_id,
   idempotency_key: $idempotency_key
 })
 WITH source, dispatch, existing
@@ -181,10 +199,12 @@ WHERE coalesce(dispatch.blocked, false) = false
    )
 MERGE (logical:IngestionLogicalRun {
   source_key: $source_key,
+  control_instance_id: $control_instance_id,
   idempotency_key: $idempotency_key
 })
 ON CREATE SET
   logical.logical_run_id = randomUUID(),
+  logical.control_instance_id = $control_instance_id,
   logical.mode = $mode,
   logical.dump_path = $dump_path,
   logical.entity_key = $entity_key,
@@ -212,6 +232,7 @@ WHERE created OR (
 FOREACH (_ IN CASE WHEN created THEN [1] ELSE [] END |
   CREATE (attempt:IngestRun {
     ingest_run_id: randomUUID(),
+    control_instance_id: $control_instance_id,
     logical_run_id: logical.logical_run_id,
     generation: logical.active_generation,
     worker_task_id: $worker_task_id,
@@ -229,6 +250,7 @@ FOREACH (_ IN CASE WHEN created THEN [1] ELSE [] END |
   CREATE (logical)-[:HAS_ATTEMPT]->(attempt)
   CREATE (logical)-[:ACTIVE_ATTEMPT]->(attempt)
   CREATE (checkpoint:IngestionCheckpoint {
+    control_instance_id: $control_instance_id,
     logical_run_id: logical.logical_run_id,
     phase: $initial_phase,
     status: 'active',
@@ -249,13 +271,18 @@ FOREACH (_ IN CASE WHEN created THEN [1] ELSE [] END |
   CREATE (checkpoint)-[:PRODUCED_BY]->(attempt)
 )
 WITH logical, created
-OPTIONAL MATCH (logical)-[:ACTIVE_ATTEMPT]->(active_attempt:IngestRun)
-OPTIONAL MATCH (logical)-[:HAS_ATTEMPT]->(historical_attempt:IngestRun)
+OPTIONAL MATCH (logical)-[:ACTIVE_ATTEMPT]->(active_attempt:IngestRun {
+  control_instance_id: $control_instance_id
+})
+OPTIONAL MATCH (logical)-[:HAS_ATTEMPT]->(historical_attempt:IngestRun {
+  control_instance_id: $control_instance_id
+})
 WITH logical, created, active_attempt, historical_attempt
 ORDER BY historical_attempt.queued_at DESC
 WITH logical, created, active_attempt, collect(historical_attempt)[0] AS latest_attempt
 WITH logical, created, coalesce(active_attempt, latest_attempt) AS attempt
 RETURN logical.logical_run_id AS logical_run_id,
+       logical.control_instance_id AS control_instance_id,
        logical.status AS logical_status,
        logical.active_generation AS generation,
        attempt.ingest_run_id AS ingest_run_id,
@@ -264,8 +291,11 @@ RETURN logical.logical_run_id AS logical_run_id,
 """
 
 CLAIM_QUEUED_ATTEMPT = """
-MATCH (logical:IngestionLogicalRun {logical_run_id: $logical_run_id})
-      -[:ACTIVE_ATTEMPT]->(attempt:IngestRun {ingest_run_id: $ingest_run_id})
+MATCH (logical:IngestionLogicalRun {
+  logical_run_id: $logical_run_id, control_instance_id: $control_instance_id
+})-[:ACTIVE_ATTEMPT]->(attempt:IngestRun {
+  ingest_run_id: $ingest_run_id, control_instance_id: $control_instance_id
+})
 WHERE logical.active_generation = $generation
   AND attempt.generation = $generation
   AND attempt.worker_task_id = $worker_task_id
@@ -281,7 +311,9 @@ RETURN logical.status AS logical_status,
 """
 
 REQUEST_LOGICAL_RUN_STOP = """
-MATCH (logical:IngestionLogicalRun {logical_run_id: $logical_run_id})
+MATCH (logical:IngestionLogicalRun {
+  logical_run_id: $logical_run_id, control_instance_id: $control_instance_id
+})
 WHERE logical.status IN ['queued', 'running', 'stop_requested']
 SET logical.status = 'stop_requested',
     logical.stop_requested_at = coalesce(logical.stop_requested_at, datetime()),
@@ -294,20 +326,29 @@ RETURN logical.logical_run_id AS logical_run_id,
 """
 
 GET_ACTIVE_LOGICAL_RUN = """
-MATCH (logical:IngestionLogicalRun {logical_run_id: $logical_run_id})
-OPTIONAL MATCH (logical)-[:ACTIVE_ATTEMPT]->(active_attempt:IngestRun)
-OPTIONAL MATCH (logical)-[:HAS_ATTEMPT]->(historical_attempt:IngestRun)
+MATCH (logical:IngestionLogicalRun {
+  logical_run_id: $logical_run_id, control_instance_id: $control_instance_id
+})
+OPTIONAL MATCH (logical)-[:ACTIVE_ATTEMPT]->(active_attempt:IngestRun {
+  control_instance_id: $control_instance_id
+})
+OPTIONAL MATCH (logical)-[:HAS_ATTEMPT]->(historical_attempt:IngestRun {
+  control_instance_id: $control_instance_id
+})
 WITH logical, active_attempt, historical_attempt
 ORDER BY historical_attempt.queued_at DESC
 WITH logical, active_attempt, collect(historical_attempt)[0] AS latest_attempt
 WITH logical, coalesce(active_attempt, latest_attempt) AS attempt
-OPTIONAL MATCH (checkpoint:IngestionCheckpoint {logical_run_id: logical.logical_run_id})
+OPTIONAL MATCH (checkpoint:IngestionCheckpoint {
+  control_instance_id: $control_instance_id, logical_run_id: logical.logical_run_id
+})
 WHERE checkpoint.generation = logical.active_generation
   AND checkpoint.phase = logical.current_phase
 RETURN logical.logical_run_id AS logical_run_id,
        logical.status AS status,
        logical.active_generation AS generation,
        logical.source_key AS source_key,
+       logical.control_instance_id AS control_instance_id,
        logical.mode AS mode,
        logical.dump_path AS dump_path,
        logical.entity_key AS entity_key,
@@ -326,9 +367,13 @@ LIMIT 1
 """
 
 ADVANCE_LOGICAL_CHECKPOINT = """
-MATCH (logical:IngestionLogicalRun {logical_run_id: $logical_run_id})
-      -[:ACTIVE_ATTEMPT]->(attempt:IngestRun {ingest_run_id: $ingest_run_id})
+MATCH (logical:IngestionLogicalRun {
+  logical_run_id: $logical_run_id, control_instance_id: $control_instance_id
+})-[:ACTIVE_ATTEMPT]->(attempt:IngestRun {
+  ingest_run_id: $ingest_run_id, control_instance_id: $control_instance_id
+})
 MATCH (checkpoint:IngestionCheckpoint {
+  control_instance_id: $control_instance_id,
   logical_run_id: $logical_run_id,
   phase: $phase
 })
@@ -359,6 +404,7 @@ RETURN logical.stop_requested_at IS NOT NULL AS stop_requested
 ADVANCE_BITRIX_UNIT_CHECKPOINT = """
 MATCH (stream:BitrixIngestionStream {
   source_key: $source_key,
+  control_instance_id: $control_instance_id,
   stream_key: $stream_key,
   logical_run_id: $logical_run_id,
   ingest_run_id: $ingest_run_id,
@@ -367,9 +413,13 @@ MATCH (stream:BitrixIngestionStream {
   fencing_token: $fencing_token,
   status: 'active'
 })
-MATCH (logical:IngestionLogicalRun {logical_run_id: $logical_run_id})
-      -[:ACTIVE_ATTEMPT]->(attempt:IngestRun {ingest_run_id: $ingest_run_id})
+MATCH (logical:IngestionLogicalRun {
+  logical_run_id: $logical_run_id, control_instance_id: $control_instance_id
+})-[:ACTIVE_ATTEMPT]->(attempt:IngestRun {
+  ingest_run_id: $ingest_run_id, control_instance_id: $control_instance_id
+})
 MATCH (checkpoint:IngestionCheckpoint {
+  control_instance_id: $control_instance_id,
   logical_run_id: $logical_run_id,
   phase: $phase
 })
@@ -398,9 +448,13 @@ RETURN logical.stop_requested_at IS NOT NULL AS stop_requested
 """
 
 PAUSE_LOGICAL_RUN = """
-MATCH (logical:IngestionLogicalRun {logical_run_id: $logical_run_id})
-      -[:ACTIVE_ATTEMPT]->(attempt:IngestRun {ingest_run_id: $ingest_run_id})
+MATCH (logical:IngestionLogicalRun {
+  logical_run_id: $logical_run_id, control_instance_id: $control_instance_id
+})-[:ACTIVE_ATTEMPT]->(attempt:IngestRun {
+  ingest_run_id: $ingest_run_id, control_instance_id: $control_instance_id
+})
 MATCH (checkpoint:IngestionCheckpoint {
+  control_instance_id: $control_instance_id,
   logical_run_id: $logical_run_id,
   phase: $phase
 })
@@ -421,17 +475,25 @@ RETURN logical.logical_run_id AS logical_run_id,
 """
 
 CREATE_RESUME_ATTEMPT = """
-MATCH (logical:IngestionLogicalRun {logical_run_id: $logical_run_id})
+MATCH (logical:IngestionLogicalRun {
+  logical_run_id: $logical_run_id, control_instance_id: $control_instance_id
+})
 MATCH (logical)-[:FOR_SOURCE]->(source:SourceSystem)
-OPTIONAL MATCH (logical)-[active_relation:ACTIVE_ATTEMPT]->(active_prior:IngestRun)
-OPTIONAL MATCH (logical)-[:HAS_ATTEMPT]->(historical_prior:IngestRun)
+OPTIONAL MATCH (logical)-[active_relation:ACTIVE_ATTEMPT]->(active_prior:IngestRun {
+  control_instance_id: $control_instance_id
+})
+OPTIONAL MATCH (logical)-[:HAS_ATTEMPT]->(historical_prior:IngestRun {
+  control_instance_id: $control_instance_id
+})
 WITH logical, source, active_relation, active_prior, historical_prior
 ORDER BY historical_prior.queued_at DESC
 WITH logical, source, active_relation, active_prior,
      collect(historical_prior)[0] AS latest_prior
 WITH logical, source, active_relation,
      coalesce(active_prior, latest_prior) AS prior
-MATCH (checkpoint:IngestionCheckpoint {logical_run_id: $logical_run_id})
+MATCH (checkpoint:IngestionCheckpoint {
+  control_instance_id: $control_instance_id, logical_run_id: $logical_run_id
+})
 WHERE prior IS NOT NULL
   AND logical.status IN ['paused_with_checkpoint', 'failed']
   AND checkpoint.status IN ['paused', 'active']
@@ -458,6 +520,7 @@ SET logical.active_generation = generation,
     checkpoint.updated_at = datetime()
 CREATE (attempt:IngestRun {
   ingest_run_id: randomUUID(),
+  control_instance_id: $control_instance_id,
   logical_run_id: logical.logical_run_id,
   generation: generation,
   worker_task_id: $worker_task_id,
@@ -480,16 +543,20 @@ FOREACH (relation IN CASE WHEN active_relation IS NULL THEN [] ELSE [active_rela
 CREATE (logical)-[:ACTIVE_ATTEMPT]->(attempt)
 MERGE (checkpoint)-[:PRODUCED_BY]->(attempt)
 RETURN logical.logical_run_id AS logical_run_id,
+       logical.control_instance_id AS control_instance_id,
        attempt.ingest_run_id AS ingest_run_id,
        generation AS generation,
        attempt.worker_task_id AS worker_task_id
 """
 
 FINALIZE_LOGICAL_RUN = """
-MATCH (logical:IngestionLogicalRun {logical_run_id: $logical_run_id})
-      -[active_relation:ACTIVE_ATTEMPT]->
-      (attempt:IngestRun {ingest_run_id: $ingest_run_id})
+MATCH (logical:IngestionLogicalRun {
+  logical_run_id: $logical_run_id, control_instance_id: $control_instance_id
+})-[active_relation:ACTIVE_ATTEMPT]->(attempt:IngestRun {
+  ingest_run_id: $ingest_run_id, control_instance_id: $control_instance_id
+})
 MATCH (checkpoint:IngestionCheckpoint {
+  control_instance_id: $control_instance_id,
   logical_run_id: $logical_run_id,
   phase: $phase
 })
@@ -519,9 +586,13 @@ RETURN logical.logical_run_id AS logical_run_id,
 """
 
 TRANSITION_LOGICAL_PHASE = """
-MATCH (logical:IngestionLogicalRun {logical_run_id: $logical_run_id})
-      -[:ACTIVE_ATTEMPT]->(attempt:IngestRun {ingest_run_id: $ingest_run_id})
+MATCH (logical:IngestionLogicalRun {
+  logical_run_id: $logical_run_id, control_instance_id: $control_instance_id
+})-[:ACTIVE_ATTEMPT]->(attempt:IngestRun {
+  ingest_run_id: $ingest_run_id, control_instance_id: $control_instance_id
+})
 MATCH (current:IngestionCheckpoint {
+  control_instance_id: $control_instance_id,
   logical_run_id: $logical_run_id,
   phase: $current_phase
 })
@@ -533,6 +604,7 @@ WHERE logical.active_generation = $generation
   AND current.schema_version = logical.checkpoint_schema_version
   AND logical.status IN ['running', 'stop_requested']
 OPTIONAL MATCH (existing_next:IngestionCheckpoint {
+  control_instance_id: $control_instance_id,
   logical_run_id: $logical_run_id,
   phase: $next_phase
 })
@@ -545,6 +617,7 @@ WHERE existing_next IS NULL OR (
 SET current.status = 'completed',
     current.updated_at = datetime()
 MERGE (next:IngestionCheckpoint {
+  control_instance_id: $control_instance_id,
   logical_run_id: $logical_run_id,
   phase: $next_phase
 })
@@ -573,9 +646,11 @@ RETURN logical.stop_requested_at IS NOT NULL AS stop_requested
 """
 
 FAIL_LOGICAL_RUN = """
-MATCH (logical:IngestionLogicalRun {logical_run_id: $logical_run_id})
-      -[active_relation:ACTIVE_ATTEMPT]->
-      (attempt:IngestRun {ingest_run_id: $ingest_run_id})
+MATCH (logical:IngestionLogicalRun {
+  logical_run_id: $logical_run_id, control_instance_id: $control_instance_id
+})-[active_relation:ACTIVE_ATTEMPT]->(attempt:IngestRun {
+  ingest_run_id: $ingest_run_id, control_instance_id: $control_instance_id
+})
 WHERE logical.active_generation = $generation
   AND attempt.generation = $generation
   AND logical.status IN ['queued', 'running', 'stop_requested']

@@ -23,6 +23,10 @@ def test_control_plane_defines_logical_run_and_checkpoint_constraints() -> None:
     assert "IngestionLogicalRun" in schema
     assert "IngestionCheckpoint" in schema
     assert "logical_run_id" in schema
+    assert "ingestion_checkpoint_control_logical_phase_unique" in schema
+    assert "ingestion_logical_run_source_control_idempotency_unique" in schema
+    assert "ingestion_checkpoint_identity_unique" not in schema
+    assert "ingestion_logical_run_source_idempotency_unique" not in schema
 
 
 def test_checkpoint_writes_are_fenced_by_attempt_and_generation() -> None:
@@ -61,9 +65,10 @@ def test_resume_increments_generation_and_supersedes_stale_attempt() -> None:
     assert "'superseded'" in CREATE_RESUME_ATTEMPT
     assert "resumed_from_run_id" in CREATE_RESUME_ATTEMPT
     assert "OPTIONAL MATCH (logical)-[active_relation:ACTIVE_ATTEMPT]" in CREATE_RESUME_ATTEMPT
-    assert "OPTIONAL MATCH (logical)-[:HAS_ATTEMPT]->(historical_prior:IngestRun)" in (
+    assert "OPTIONAL MATCH (logical)-[:HAS_ATTEMPT]->(historical_prior:IngestRun {" in (
         CREATE_RESUME_ATTEMPT
     )
+    assert "control_instance_id: $control_instance_id" in CREATE_RESUME_ATTEMPT
     assert "coalesce(active_prior, latest_prior) AS prior" in CREATE_RESUME_ATTEMPT
     assert "CASE WHEN active_relation IS NULL THEN [] ELSE [active_relation] END" in (
         CREATE_RESUME_ATTEMPT

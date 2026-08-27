@@ -58,6 +58,7 @@ def record_terminal_unit(
     record = tx.run(
         ADVANCE_BITRIX_UNIT_CHECKPOINT,
         source_key=context.fence_context.source_key,
+        control_instance_id=context.fence_context.control_instance_id,
         stream_key=context.fence_context.stream_key,
         logical_run_id=context.fence_context.logical_run_id,
         ingest_run_id=context.fence_context.ingest_run_id,

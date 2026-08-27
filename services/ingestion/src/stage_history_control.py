@@ -31,10 +31,12 @@ from src.connectors.bitrix_stage_history.connector import (
     collect_stage_history_smoke,
     stage_capture_limits_digest,
 )
+from src.graph.bitrix_source_instances import admit_configured_bitrix_control
 from src.graph.client import Neo4jClient
 from src.graph.ingestion_control import LogicalRunControl
 from src.graph.stage_history_status import StageHistoryStatusRepository
 from src.ingestion_config import StageHistoryIngestionConfig, get_ingestion_config
+from src.source_instances import LEGACY_DEFAULT_CONTROL_INSTANCE_ID
 from src.stage_history_review_control import _queue_review, _resume_review
 from src.stage_history_task_lock import StageHistoryTaskLock, stage_history_task_lock
 from src.stage_history_task_runtime import _replay_authorization
@@ -133,6 +135,7 @@ def run(arguments: list[str] | None = None) -> int:
             uuid.NAMESPACE_URL,
             f"hyperp:{args.command}:{args.artifact_id}:{args.authorization_reference}",
         ).hex
+        _admit_stage_history_publication(get_settings())
         task.apply_async(
             args=(args.artifact_id, args.authorization_reference),
             task_id=task_id,
@@ -169,6 +172,7 @@ def run(arguments: list[str] | None = None) -> int:
             else replay_stage_history_artifact_task
         )
         task_id = uuid.uuid4().hex
+        _admit_stage_history_publication(get_settings())
         task.apply_async(
             args=(args.artifact_id, args.authorization_reference),
             task_id=task_id,
@@ -272,9 +276,11 @@ def _collect_capture(
     now = datetime.now(UTC)
     config.assert_dispatch_enabled(now=now)
     settings = get_settings()
+    admit_configured_bitrix_control(settings, LEGACY_DEFAULT_CONTROL_INSTANCE_ID)
     with stage_history_task_lock(
         settings.celery_broker_url,
         owner=f"collect:{uuid.uuid4().hex}",
+        control_instance_id=LEGACY_DEFAULT_CONTROL_INSTANCE_ID,
     ) as lock:
         lock.assert_owned()
         return _collect_smoke_locked(
@@ -389,6 +395,10 @@ def _verified_artifact(
 
 def _print(payload: Mapping[str, object]) -> None:
     print(json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str))
+
+
+def _admit_stage_history_publication(settings: Settings) -> None:
+    admit_configured_bitrix_control(settings, LEGACY_DEFAULT_CONTROL_INSTANCE_ID)
 
 
 def main() -> None:

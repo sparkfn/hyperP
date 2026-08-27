@@ -37,6 +37,7 @@ from src.graph.queries.ingestion_control import (
     TRANSITION_LOGICAL_PHASE,
 )
 from src.resumable import AttemptStatus, CheckpointDescriptor
+from src.source_instances import LEGACY_DEFAULT_CONTROL_INSTANCE_ID, effective_control_instance_id
 
 
 def assert_active_bitrix_fence(tx: ManagedTransaction, context: FenceContext) -> None:
@@ -44,6 +45,7 @@ def assert_active_bitrix_fence(tx: ManagedTransaction, context: FenceContext) ->
     record = tx.run(
         LOCK_AND_ASSERT_ACTIVE_BITRIX_FENCE,
         source_key=context.source_key,
+        control_instance_id=context.control_instance_id,
         stream_key=context.stream_key,
         logical_run_id=context.logical_run_id,
         ingest_run_id=context.ingest_run_id,
@@ -72,6 +74,7 @@ def verify_rejected_bitrix_fence_rollback(
         record = tx.run(
             PROBE_REJECTED_BITRIX_FENCE_ROLLBACK,
             source_key=context.source_key,
+            control_instance_id=context.control_instance_id,
             stream_key=context.stream_key,
             logical_run_id=context.logical_run_id,
             ingest_run_id=context.ingest_run_id,
@@ -93,6 +96,9 @@ def verify_rejected_bitrix_fence_rollback(
     def _verify(tx: ManagedTransaction) -> bool:
         record = tx.run(
             FIND_BITRIX_FENCE_ROLLBACK_PROBE,
+            source_key=context.source_key,
+            control_instance_id=context.control_instance_id,
+            stream_key=context.stream_key,
             probe_token=probe_token,
         ).single()
         return record is not None and int(record["persisted_probe_count"]) == 0
@@ -103,13 +109,19 @@ def verify_rejected_bitrix_fence_rollback(
 class LogicalRunControl:
     """Serialize logical-run ownership and checkpoints in Neo4j."""
 
-    def __init__(self, client: Neo4jClient) -> None:
+    def __init__(
+        self,
+        client: Neo4jClient,
+        control_instance_id: str = LEGACY_DEFAULT_CONTROL_INSTANCE_ID,
+    ) -> None:
         self._client = client
+        self._control_instance_id = effective_control_instance_id(control_instance_id)
 
     def create_or_reuse(
         self,
         *,
         source_key: str,
+        control_instance_id: str | None = None,
         mode: str,
         dump_path: str | None,
         entity_key: str | None,
@@ -120,6 +132,15 @@ class LogicalRunControl:
         checkpoint_schema_version: int,
         initial_checkpoint: CheckpointDescriptor,
     ) -> LogicalRunAttempt:
+        requested_control_instance_id = (
+            self._control_instance_id
+            if control_instance_id is None
+            else effective_control_instance_id(control_instance_id)
+        )
+        if requested_control_instance_id != self._control_instance_id:
+            raise ValueError(
+                "LogicalRunControl control instance does not match repository identity"
+            )
         if initial_checkpoint.connector_version != connector_version:
             raise ValueError("Initial checkpoint connector version is incompatible")
         if initial_checkpoint.schema_version != checkpoint_schema_version:
@@ -130,6 +151,7 @@ class LogicalRunControl:
             record = tx.run(
                 CREATE_LOGICAL_RUN_AND_ATTEMPT,
                 source_key=source_key,
+                control_instance_id=self._control_instance_id,
                 mode=mode,
                 dump_path=dump_path,
                 entity_key=entity_key,
@@ -162,6 +184,7 @@ class LogicalRunControl:
         def _work(tx: ManagedTransaction) -> bool:
             record = tx.run(
                 CLAIM_QUEUED_ATTEMPT,
+                control_instance_id=self._control_instance_id,
                 logical_run_id=logical_run_id,
                 ingest_run_id=ingest_run_id,
                 generation=generation,
@@ -183,6 +206,7 @@ class LogicalRunControl:
         def _work(tx: ManagedTransaction) -> bool:
             result = tx.run(
                 REQUEST_LOGICAL_RUN_STOP,
+                control_instance_id=self._control_instance_id,
                 logical_run_id=logical_run_id,
                 requested_by=requested_by,
                 reason=reason,
@@ -195,7 +219,11 @@ class LogicalRunControl:
 
     def get(self, logical_run_id: str) -> LogicalRunState | None:
         def _work(tx: ManagedTransaction) -> LogicalRunState | None:
-            record = tx.run(GET_ACTIVE_LOGICAL_RUN, logical_run_id=logical_run_id).single()
+            record = tx.run(
+                GET_ACTIVE_LOGICAL_RUN,
+                logical_run_id=logical_run_id,
+                control_instance_id=self._control_instance_id,
+            ).single()
             if record is None:
                 return None
             return logical_state(record)
@@ -220,6 +248,7 @@ class LogicalRunControl:
         def _work(tx: ManagedTransaction) -> bool | None:
             record = tx.run(
                 ADVANCE_LOGICAL_CHECKPOINT,
+                control_instance_id=self._control_instance_id,
                 logical_run_id=logical_run_id,
                 ingest_run_id=ingest_run_id,
                 generation=generation,
@@ -258,6 +287,7 @@ class LogicalRunControl:
             record = tx.run(
                 ADVANCE_LOGICAL_CHECKPOINT,
                 logical_run_id=context.logical_run_id,
+                control_instance_id=context.control_instance_id,
                 ingest_run_id=context.ingest_run_id,
                 generation=context.attempt_generation,
                 phase=checkpoint.phase,
@@ -288,6 +318,7 @@ class LogicalRunControl:
         def _work(tx: ManagedTransaction) -> bool:
             record = tx.run(
                 PAUSE_LOGICAL_RUN,
+                control_instance_id=self._control_instance_id,
                 logical_run_id=logical_run_id,
                 ingest_run_id=ingest_run_id,
                 generation=generation,
@@ -305,6 +336,7 @@ class LogicalRunControl:
             paused = tx.run(
                 PAUSE_LOGICAL_RUN,
                 logical_run_id=context.logical_run_id,
+                control_instance_id=context.control_instance_id,
                 ingest_run_id=context.ingest_run_id,
                 generation=context.attempt_generation,
                 phase=phase,
@@ -316,6 +348,7 @@ class LogicalRunControl:
                 source_key=context.source_key,
                 stream_key=context.stream_key,
                 logical_run_id=context.logical_run_id,
+                control_instance_id=context.control_instance_id,
                 ingest_run_id=context.ingest_run_id,
                 attempt_generation=context.attempt_generation,
                 stream_generation=context.stream_generation,
@@ -350,6 +383,7 @@ class LogicalRunControl:
         def _work(tx: ManagedTransaction) -> bool | None:
             record = tx.run(
                 TRANSITION_LOGICAL_PHASE,
+                control_instance_id=self._control_instance_id,
                 logical_run_id=logical_run_id,
                 ingest_run_id=ingest_run_id,
                 generation=generation,
@@ -392,6 +426,7 @@ class LogicalRunControl:
             record = tx.run(
                 TRANSITION_LOGICAL_PHASE,
                 logical_run_id=context.logical_run_id,
+                control_instance_id=context.control_instance_id,
                 ingest_run_id=context.ingest_run_id,
                 generation=context.attempt_generation,
                 current_phase=current_phase,
@@ -425,6 +460,7 @@ class LogicalRunControl:
         def _work(tx: ManagedTransaction) -> LogicalRunAttempt | None:
             record = tx.run(
                 CREATE_RESUME_ATTEMPT,
+                control_instance_id=self._control_instance_id,
                 logical_run_id=logical_run_id,
                 worker_task_id=worker_task_id,
                 configuration_fingerprint=configuration_fingerprint,
@@ -467,6 +503,7 @@ class LogicalRunControl:
         def _work(tx: ManagedTransaction) -> bool:
             record = tx.run(
                 FINALIZE_LOGICAL_RUN,
+                control_instance_id=self._control_instance_id,
                 logical_run_id=logical_run_id,
                 ingest_run_id=ingest_run_id,
                 generation=generation,
@@ -513,6 +550,7 @@ class LogicalRunControl:
             finalized = tx.run(
                 FINALIZE_LOGICAL_RUN,
                 logical_run_id=context.logical_run_id,
+                control_instance_id=context.control_instance_id,
                 ingest_run_id=context.ingest_run_id,
                 generation=context.attempt_generation,
                 phase=phase,
@@ -531,6 +569,7 @@ class LogicalRunControl:
                 source_key=context.source_key,
                 stream_key=context.stream_key,
                 logical_run_id=context.logical_run_id,
+                control_instance_id=context.control_instance_id,
                 ingest_run_id=context.ingest_run_id,
                 attempt_generation=context.attempt_generation,
                 stream_generation=context.stream_generation,
@@ -558,6 +597,7 @@ class LogicalRunControl:
         def _work(tx: ManagedTransaction) -> bool:
             record = tx.run(
                 FAIL_LOGICAL_RUN,
+                control_instance_id=self._control_instance_id,
                 logical_run_id=logical_run_id,
                 ingest_run_id=ingest_run_id,
                 generation=generation,
@@ -584,6 +624,7 @@ class LogicalRunControl:
             failed = tx.run(
                 FAIL_LOGICAL_RUN,
                 logical_run_id=context.logical_run_id,
+                control_instance_id=context.control_instance_id,
                 ingest_run_id=context.ingest_run_id,
                 generation=context.attempt_generation,
                 failure_category=failure_category,
@@ -596,6 +637,7 @@ class LogicalRunControl:
                 source_key=context.source_key,
                 stream_key=context.stream_key,
                 logical_run_id=context.logical_run_id,
+                control_instance_id=context.control_instance_id,
                 ingest_run_id=context.ingest_run_id,
                 attempt_generation=context.attempt_generation,
                 stream_generation=context.stream_generation,
@@ -622,6 +664,7 @@ class BitrixStreamControl:
         ingest_run_id: str,
         attempt_generation: int,
         worker_task_id: str,
+        control_instance_id: str = LEGACY_DEFAULT_CONTROL_INSTANCE_ID,
         replace_active: bool = False,
     ) -> BitrixStreamAdmission:
         """Admit a stream, coalesce a duplicate, or atomically replace it.
@@ -630,6 +673,7 @@ class BitrixStreamControl:
         fails closed unless ``replace_active`` is explicit; replacement advances
         both the stream generation and its fencing token in the same transaction.
         """
+        control_instance_id = effective_control_instance_id(control_instance_id)
         _validate_bitrix_stream_admission(
             stream_key=stream_key,
             logical_run_id=logical_run_id,
@@ -644,6 +688,7 @@ class BitrixStreamControl:
             record = tx.run(
                 ADMIT_OR_COALESCE_BITRIX_STREAM,
                 source_key="bitrix_chat",
+                control_instance_id=control_instance_id,
                 stream_key=stream_key,
                 logical_run_id=logical_run_id,
                 ingest_run_id=ingest_run_id,

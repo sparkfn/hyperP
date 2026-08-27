@@ -59,6 +59,7 @@ def _record(
         {
             "admission_outcome": outcome,
             "source_key": "bitrix_chat",
+            "control_instance_id": "legacy-default",
             "stream_key": stream_key,
             "logical_run_id": "logical-1",
             "ingest_run_id": "ingest-1",
@@ -140,8 +141,13 @@ def test_stream_control_schema_and_query_atomically_coalesce_or_replace() -> Non
     schema = "\n".join(CREATE_BITRIX_INGESTION_STREAM_CONSTRAINTS)
 
     assert "BitrixIngestionStream" in schema
-    assert "(stream.source_key, stream.stream_key) IS UNIQUE" in schema
+    assert "(stream.source_key, stream.control_instance_id, stream.stream_key) IS UNIQUE" in schema
     assert "MERGE (stream:BitrixIngestionStream" in ADMIT_OR_COALESCE_BITRIX_STREAM
+    assert "stream.logical_run_id = $logical_run_id," in ADMIT_OR_COALESCE_BITRIX_STREAM
+    assert (
+        "logical_run_id: $logical_run_id, control_instance_id: $control_instance_id"
+        in ADMIT_OR_COALESCE_BITRIX_STREAM
+    )
     assert "same_attempt" in ADMIT_OR_COALESCE_BITRIX_STREAM
     assert "stream.status IN ['completed', 'terminated', 'superseded']" in (
         ADMIT_OR_COALESCE_BITRIX_STREAM

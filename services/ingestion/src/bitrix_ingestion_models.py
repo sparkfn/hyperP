@@ -11,6 +11,8 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Literal
 
+from src.source_instances import LEGACY_DEFAULT_CONTROL_INSTANCE_ID
+
 if TYPE_CHECKING:
     from src.bitrix_backfill_models import GenerationRunContext
     from src.resumable import CheckpointDescriptor
@@ -50,6 +52,7 @@ class FenceContext:
     stream_generation: int
     fencing_token: int
     attempt_generation: int
+    control_instance_id: str = LEGACY_DEFAULT_CONTROL_INSTANCE_ID
 
     def __post_init__(self) -> None:
         if self.source_key != "bitrix_chat":
@@ -58,7 +61,13 @@ class FenceContext:
             raise ValueError("Fence stream_key must be a supported Bitrix stream")
         if not all(
             value.strip()
-            for value in (self.logical_run_id, self.ingest_run_id, self.source_key, self.stream_key)
+            for value in (
+                self.logical_run_id,
+                self.ingest_run_id,
+                self.source_key,
+                self.control_instance_id,
+                self.stream_key,
+            )
         ):
             raise ValueError("Fence identity values must be non-empty")
         if any(

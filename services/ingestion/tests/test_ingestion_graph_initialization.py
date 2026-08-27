@@ -36,6 +36,11 @@ def test_version_key_constraint_is_deferred_from_base_schema() -> None:
     assert "source_record_version_key_unique" in deferred
 
 
+def test_retired_global_incremental_checkpoint_constraint_is_not_recreated() -> None:
+    schema = _find_init_cypher().read_text(encoding="utf-8")
+    assert "ingestion_checkpoint_key_unique" not in schema
+
+
 def test_profile_analysis_schema_statements_are_idempotent() -> None:
     statements = _split_statements(_find_init_cypher().read_text(encoding="utf-8"))
     profile_analysis_statements = [
@@ -121,6 +126,22 @@ def test_data_migrations_precede_source_version_uniqueness(
     )
     monkeypatch.setattr(
         main,
+        "bootstrap_legacy_bitrix_source_instance",
+        lambda _client: calls.append("legacy_registry"),
+    )
+
+    def _migrate(_client: object, *, ensure_legacy_registration: object) -> None:
+        calls.append("control_instance_migration")
+        ensure_legacy_registration()
+
+    monkeypatch.setattr(main, "migrate_ingestion_control_instances", _migrate)
+    monkeypatch.setattr(
+        main,
+        "assert_ingestion_control_ready",
+        lambda _client: calls.append("control_instance_ready"),
+    )
+    monkeypatch.setattr(
+        main,
         "apply_data_migrations",
         lambda _client, **kwargs: (
             calls.append("data_migrations"),
@@ -145,6 +166,9 @@ def test_data_migrations_precede_source_version_uniqueness(
     assert calls == [
         "base_schema",
         "bootstrap",
+        "control_instance_migration",
+        "legacy_registry",
+        "control_instance_ready",
         "data_migrations",
         "source_version_constraint",
         "identifier_scope_constraint",
@@ -222,3 +246,37 @@ def test_data_migrations_exclude_recurring_lifecycle_reconciliation(
         "migrate_projection_relationship_lifecycle",
         "migrate_identity_link_revision_baseline",
     ]
+
+
+def test_legacy_registry_bootstrap_is_owned_by_migration_callback_after_dispatch_block(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+    client = _Client()
+    monkeypatch.setattr(main, "get_settings", lambda: cast(Settings, object()))
+    monkeypatch.setattr(main, "get_ingestion_config", lambda: IngestionConfig())
+    monkeypatch.setattr(main, "Neo4jClient", lambda _settings: client)
+    monkeypatch.setattr(main, "apply_schema", lambda _client: calls.append("schema"))
+    monkeypatch.setattr(
+        main, "bootstrap_entities_and_sources", lambda _client: calls.append("sources")
+    )
+    monkeypatch.setattr(
+        main, "bootstrap_legacy_bitrix_source_instance", lambda _client: calls.append("registry")
+    )
+
+    def _migration(_client: object, *, ensure_legacy_registration: object) -> None:
+        calls.append("dispatch_blocked")
+        ensure_legacy_registration()
+        calls.append("migration_complete")
+
+    monkeypatch.setattr(main, "migrate_ingestion_control_instances", _migration)
+    monkeypatch.setattr(
+        main, "assert_ingestion_control_ready", lambda _client: calls.append("ready")
+    )
+    monkeypatch.setattr(main, "apply_data_migrations", lambda _client, **_kwargs: None)
+    monkeypatch.setattr(main, "apply_deferred_source_record_constraints", lambda _client: 0)
+    monkeypatch.setattr(main, "apply_deferred_identifier_scope_constraints", lambda _client: 0)
+
+    main.initialize_ingestion_graph()
+
+    assert calls[:5] == ["schema", "sources", "dispatch_blocked", "registry", "migration_complete"]

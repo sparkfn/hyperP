@@ -8,6 +8,10 @@ from typing import Protocol
 from src.types_requests import IngestRecord, IngestRunUpdateRequest
 
 
+class BitrixApiAdmissionError(RuntimeError):
+    """The #272 Bitrix control plane is not ready for API publication."""
+
+
 @dataclass
 class IngestRecordResult:
     source_record_id: str

@@ -76,9 +76,17 @@ from src.exclusions import (
     is_excluded_source_id,
 )
 from src.graph import queries
-from src.graph.bootstrap import bootstrap_entities_and_sources
+from src.graph.bitrix_source_instances import BitrixSourceInstanceRepository
+from src.graph.bootstrap import (
+    bootstrap_entities_and_sources,
+    bootstrap_legacy_bitrix_source_instance,
+)
 from src.graph.client import Neo4jClient
 from src.graph.incremental_checkpoints import Neo4jCheckpointRedis
+from src.graph.ingestion_control_instance_migration import (
+    assert_ingestion_control_ready,
+    migrate_ingestion_control_instances,
+)
 from src.graph.migrations import apply_data_migrations
 from src.graph.schema_init import (
     apply_deferred_identifier_scope_constraints,
@@ -103,6 +111,11 @@ from src.pipeline_sales import (
     propose_vehicle_matches_for_pending_sales,
 )
 from src.retirement import retire_source_evidence
+from src.source_instances import (
+    LEGACY_DEFAULT_CONTROL_INSTANCE_ID,
+    effective_control_instance_id,
+    effective_source_instance_id,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -256,6 +269,8 @@ def _mark_run_failed(
     record_count: int,
     rejected_count: int,
     summary: FailureSummary,
+    *,
+    control_instance_id: str = LEGACY_DEFAULT_CONTROL_INSTANCE_ID,
 ) -> None:
     """Best-effort finaliser that records a structured terminal failure.
 
@@ -268,6 +283,7 @@ def _mark_run_failed(
             tx.run(
                 queries.MARK_INGEST_RUN_FAILED,
                 ingest_run_id=ingest_run_id,
+                control_instance_id=control_instance_id,
                 record_count=record_count,
                 rejected_count=rejected_count,
                 failure_category=summary["category"],
@@ -717,13 +733,20 @@ class IngestionSummary(TypedDict):
     http_request_count: NotRequired[int]
 
 
-def _create_ingest_run(client: Neo4jClient, source_key: str, mode: str) -> str:
+def _create_ingest_run(
+    client: Neo4jClient,
+    source_key: str,
+    mode: str,
+    *,
+    control_instance_id: str = LEGACY_DEFAULT_CONTROL_INSTANCE_ID,
+) -> str:
     """Create an IngestRun node and return its ID."""
 
     def _tx(tx: ManagedTransaction) -> str:
         result = tx.run(
             queries.CREATE_INGEST_RUN,
             source_key=source_key,
+            control_instance_id=control_instance_id,
             run_type=mode,
             mode=mode,
         )
@@ -742,6 +765,8 @@ def _create_or_reuse_worker_ingest_run(
     source_key: str,
     mode: str,
     task_id: str,
+    *,
+    control_instance_id: str = LEGACY_DEFAULT_CONTROL_INSTANCE_ID,
 ) -> tuple[str, str, bool]:
     """Return the durable run for one logical Celery task delivery."""
 
@@ -749,6 +774,7 @@ def _create_or_reuse_worker_ingest_run(
         record = tx.run(
             queries.CREATE_OR_REUSE_WORKER_INGEST_RUN,
             source_key=source_key,
+            control_instance_id=control_instance_id,
             run_type=mode,
             mode=mode,
             worker_task_id=task_id,
@@ -780,6 +806,8 @@ def finalize_ingest_run(
     record_count: int,
     rejected_count: int,
     checkpoint_store: Neo4jCheckpointRedis | None = None,
+    *,
+    control_instance_id: str = LEGACY_DEFAULT_CONTROL_INSTANCE_ID,
 ) -> None:
     """Update the IngestRun with final status and counts."""
 
@@ -787,6 +815,7 @@ def finalize_ingest_run(
         tx.run(
             queries.UPDATE_INGEST_RUN,
             ingest_run_id=ingest_run_id,
+            control_instance_id=control_instance_id,
             status=status,
             record_count=record_count,
             rejected_count=rejected_count,
@@ -807,6 +836,7 @@ def _process_record(
     ingest_run_id: str,
     exclusion_context: ExclusionContext,
     execution_context: ExecutionContext | None = None,
+    control_instance_id: str = LEGACY_DEFAULT_CONTROL_INSTANCE_ID,
 ) -> IngestResult:
     """Route a single envelope to the correct ingestion pipeline."""
     fence_context = execution_context.fence_context if execution_context is not None else None
@@ -816,6 +846,7 @@ def _process_record(
             envelope,
             ingest_run_id=ingest_run_id,
             execution_context=execution_context,
+            control_instance_id=control_instance_id,
         )
         if execution_context is None and result.source_record_pk is not None and not result.dropped:
             link_crm_history_to_existing_conversations(
@@ -833,6 +864,7 @@ def _process_record(
             envelope,
             ingest_run_id=ingest_run_id,
             execution_context=execution_context,
+            control_instance_id=control_instance_id,
         )
     if envelope.record_type == RecordType.SALES:
         return ingest_sales_record(
@@ -906,6 +938,7 @@ def _ingest_all_records(
     ingest_run_id: str,
     exclusion_context: ExclusionContext | None = None,
     execution_context: ExecutionContext | None = None,
+    control_instance_id: str = LEGACY_DEFAULT_CONTROL_INSTANCE_ID,
 ) -> tuple[int, int, int]:
     """Process all connector records; the run owner releases connector resources."""
     return _ingest_all_records_open(
@@ -915,6 +948,7 @@ def _ingest_all_records(
         ingest_run_id,
         exclusion_context,
         execution_context,
+        control_instance_id,
     )
 
 
@@ -925,6 +959,7 @@ def _ingest_all_records_open(
     ingest_run_id: str,
     exclusion_context: ExclusionContext | None = None,
     execution_context: ExecutionContext | None = None,
+    control_instance_id: str = LEGACY_DEFAULT_CONTROL_INSTANCE_ID,
 ) -> tuple[int, int, int]:
     """Process every record from the connector. Returns (success, errors, skipped)."""
     success = errors = skipped = 0
@@ -977,6 +1012,7 @@ def _ingest_all_records_open(
             ingest_run_id,
             active_exclusion_context,
             execution_context,
+            control_instance_id,
         )
         if result.skipped_duplicate:
             skipped += 1
@@ -1019,6 +1055,11 @@ def initialize_ingestion_graph() -> None:
         client.verify_connectivity()
         apply_schema(client)
         bootstrap_entities_and_sources(client)
+        migrate_ingestion_control_instances(
+            client,
+            ensure_legacy_registration=lambda: bootstrap_legacy_bitrix_source_instance(client),
+        )
+        assert_ingestion_control_ready(client)
         apply_data_migrations(
             client,
             bitrix_source_instance_id=ingestion_config.bitrix_openlines.source_instance_id,
@@ -1047,6 +1088,7 @@ def run_ingestion(
     incremental: bool = True,
     bitrix_execution_stream: BitrixExecutionStream | None = None,
     execution_context: ExecutionContext | None = None,
+    control_instance_id: str = LEGACY_DEFAULT_CONTROL_INSTANCE_ID,
 ) -> IngestionSummary:
     """Execute one ingestion run end-to-end."""
     if source_key == "bitrix_crm_identity":
@@ -1061,6 +1103,11 @@ def run_ingestion(
             raise ValueError("execution context is only valid for split Bitrix streams")
         if execution_context.fence_context.stream_key != bitrix_execution_stream:
             raise ValueError("execution context stream does not match the requested stream")
+    control_instance_id = effective_control_instance_id(
+        execution_context.fence_context.control_instance_id
+        if execution_context is not None
+        else control_instance_id
+    )
     settings = get_settings()
     if mode == "dump" and dump_path is None:
         raise ValueError("dump_path is required when mode='dump'")
@@ -1086,11 +1133,19 @@ def run_ingestion(
     try:
         if not initialize_graph:
             client.verify_connectivity()
+        if source_key == "bitrix_chat":
+            configured_instance = effective_source_instance_id(
+                get_ingestion_config().bitrix_openlines.source_instance_id
+            )
+            BitrixSourceInstanceRepository(client).admit(
+                control_instance_id=control_instance_id,
+                source_instance_id=configured_instance,
+            )
 
         pipeline = (
             IngestPipeline(client, execution_context=execution_context)
             if execution_context is not None
-            else IngestPipeline(client)
+            else IngestPipeline(client, control_instance_id=control_instance_id)
         )
         # Create the IngestRun before building the connector so a
         # connector-construction failure (e.g. a source dispatched before its
@@ -1111,9 +1166,12 @@ def run_ingestion(
                 source_key,
                 mode,
                 task_id,
+                control_instance_id=control_instance_id,
             )
         else:
-            ingest_run_id = _create_ingest_run(client, source_key, mode)
+            ingest_run_id = _create_ingest_run(
+                client, source_key, mode, control_instance_id=control_instance_id
+            )
             existing_status = None
             worker_run_created = True
         logger.info(
@@ -1174,6 +1232,7 @@ def run_ingestion(
                     fence_context=(
                         execution_context.fence_context if execution_context is not None else None
                     ),
+                    control_instance_id=control_instance_id,
                     defer_terminal_updates=execution_context is None,
                 )
             connector = get_connector(
@@ -1210,6 +1269,7 @@ def run_ingestion(
                 ingest_run_id,
                 exclusion_context,
                 execution_context,
+                control_instance_id,
             )
             if isinstance(connector, _ConnectorErrorReporter):
                 errors += connector.connector_error_count()
@@ -1245,6 +1305,7 @@ def run_ingestion(
                     success + errors + skipped,
                     errors,
                     summary,
+                    control_instance_id=control_instance_id,
                 )
             raise
 
@@ -1271,6 +1332,7 @@ def run_ingestion(
                 success + errors + skipped,
                 errors,
                 checkpoint_store,
+                control_instance_id=control_instance_id,
             )
         http_request_count = (
             connector.request_count if isinstance(connector, _HttpRequestCounter) else 0
