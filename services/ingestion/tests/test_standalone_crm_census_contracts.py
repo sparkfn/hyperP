@@ -324,6 +324,7 @@ def test_cancellation_and_terminal_derivation_query_contracts() -> None:
 
 def test_checkpoint_contract_is_fenced_monotonic_and_budgeted() -> None:
     assert "current_generation: $generation" in queries.CHECKPOINT_UNIT
+    assert "$upper_id = checkpoint.upper_id" in queries.CHECKPOINT_UNIT
     assert "checkpoint.last_committed_id" in queries.CHECKPOINT_UNIT
     assert "company_binding_after_contact_id" in queries.CHECKPOINT_UNIT
     assert "attempt.deadline_at > datetime()" in queries.CHECKPOINT_UNIT
@@ -556,6 +557,7 @@ def test_stale_authority_is_pending_until_settlement_and_never_counts_as_a_row()
 
 def test_status_projection_preserves_nullable_terminal_state() -> None:
     assert "terminal_state: census.terminal_state" in queries.GET_CENSUS_STATUS
+    assert "deadline_at: toString(attempt.deadline_at)" in queries.GET_CENSUS_STATUS
 
 
 def test_expired_owner_can_only_settle_existing_checkpoint_after_cancel_or_fatal_stale() -> None:

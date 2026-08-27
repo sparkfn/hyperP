@@ -97,6 +97,8 @@ MATCH (attempt:StandaloneCrmCensusAttempt {census_id: $census_id, generation: $g
 MATCH (unit:StandaloneCrmCensusUnit {census_id: $census_id, unit_kind: $unit_kind})
 MATCH (publication:StandaloneCrmChildPublication {publication_id: $publication_id, census_id: $census_id,
   generation: $generation, unit_kind: $unit_kind})
+SET census.updated_at = census.updated_at
+WITH census, attempt, unit, publication
 WHERE census.cancel_requested_at IS NULL AND census.fatal_reason IS NULL
   AND census.state IN ['frozen','publishing','running']
   AND (publication.status = 'published'
@@ -164,6 +166,7 @@ MATCH (checkpoint:StandaloneCrmCensusCheckpoint {census_id: $census_id, unit_kin
 """
 
 _MONOTONIC_ACCOUNTING = """
+  AND $upper_id = checkpoint.upper_id
   AND ($last_committed_id IS NULL OR checkpoint.last_committed_id IS NULL OR $last_committed_id >= checkpoint.last_committed_id)
   AND ($company_binding_after_contact_id IS NULL OR checkpoint.company_binding_after_contact_id IS NULL
        OR $company_binding_after_contact_id >= checkpoint.company_binding_after_contact_id)

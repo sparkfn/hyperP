@@ -179,6 +179,7 @@ def _checkpoint_params(
 ) -> dict[str, object]:
     return _fenced_checkpoint_params(admission, checkpoint) | {
         "expected_version": expected_version,
+        "upper_id": checkpoint.upper_id,
         "last_committed_id": checkpoint.last_committed_id,
         "company_binding_after_contact_id": checkpoint.company_binding_after_contact_id,
         "processed_count": checkpoint.processed_count,
