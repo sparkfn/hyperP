@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 import pytest
 from fastapi import HTTPException, Request
+from neo4j import AsyncManagedTransaction
 from src.repositories.neo4j.ingest import _create_run_tx, _ingest_records_tx
 from src.repositories.protocols.ingest import (
     BitrixApiAdmissionError,
@@ -46,7 +47,10 @@ class _Transaction:
 
 
 def _constraint_inventory() -> list[dict[str, object]]:
-    from src.repositories.neo4j.ingestion_control_schema import _REQUIRED_SPECS
+    from src.repositories.neo4j.ingestion_control_schema import (
+        _REGISTRY_CONSTRAINT_SPEC,
+        _REQUIRED_SPECS,
+    )
 
     return [
         {
@@ -56,7 +60,7 @@ def _constraint_inventory() -> list[dict[str, object]]:
             "labelsOrTypes": [spec.label],
             "properties": list(spec.properties),
         }
-        for spec in _REQUIRED_SPECS
+        for spec in (*_REQUIRED_SPECS, _REGISTRY_CONSTRAINT_SPEC)
     ]
 
 
@@ -223,6 +227,35 @@ async def test_missing_or_malformed_schema_blocks_api_run_before_admission_or_wr
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "constraint_name",
+    (
+        "stage_history_review_command_control_id_unique",
+        "bitrix_execution_source_binding_control_unique",
+    ),
+)
+async def test_missing_new_control_constraint_blocks_api_run_before_admission(
+    constraint_name: str,
+) -> None:
+    inventory = [row for row in _constraint_inventory() if row["name"] != constraint_name]
+    transaction = _Transaction([inventory])
+
+    with pytest.raises(BitrixApiAdmissionError, match="schema is not ready"):
+        await _create_run_tx(
+            cast(AsyncManagedTransaction, transaction),
+            "bitrix_chat",
+            "manual",
+            "batch",
+            None,
+            {},
+            "idem",
+        )
+
+    assert len(transaction.queries) == 1
+    assert transaction.queries[0].startswith("SHOW CONSTRAINTS")
+
+
+@pytest.mark.asyncio
 async def test_missing_schema_blocks_inline_domain_writes() -> None:
     transaction = _Transaction([[]])
     record = IngestRecord(
@@ -241,6 +274,37 @@ async def test_missing_schema_blocks_inline_domain_writes() -> None:
             "manual",
             None,
             [record],
+        )
+
+    assert len(transaction.queries) == 1
+    assert transaction.queries[0].startswith("SHOW CONSTRAINTS")
+
+
+@pytest.mark.asyncio
+async def test_alternate_name_for_required_binding_identity_blocks_api_run_before_admission() -> (
+    None
+):
+    inventory = _constraint_inventory()
+    inventory.append(
+        {
+            "name": "unexpected_control_binding_identity",
+            "type": "UNIQUENESS",
+            "entityType": "NODE",
+            "labelsOrTypes": ["BitrixExecutionSourceBinding"],
+            "properties": ["source_key", "control_instance_id"],
+        }
+    )
+    transaction = _Transaction([inventory])
+
+    with pytest.raises(BitrixApiAdmissionError, match="schema is not ready"):
+        await _create_run_tx(
+            cast(AsyncManagedTransaction, transaction),
+            "bitrix_chat",
+            "manual",
+            "batch",
+            None,
+            {},
+            "idem",
         )
 
     assert len(transaction.queries) == 1
