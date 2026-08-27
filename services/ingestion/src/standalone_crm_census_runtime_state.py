@@ -83,6 +83,8 @@ def frozen_window(census: dict[str, object]) -> FrozenSourceWindow | None:
 
 
 def publication_generation(publication: StandaloneCrmPublication) -> int:
+    if publication.generation is not None:
+        return publication.generation
     return payload_generation(publication.payload_json)
 
 

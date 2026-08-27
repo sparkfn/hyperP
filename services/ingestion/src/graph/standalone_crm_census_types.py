@@ -48,6 +48,7 @@ class StandaloneCrmPublication:
     task_name: str
     queue: str
     status: StandaloneCrmPublicationState
+    generation: int | None = None
 
 
 @dataclass(frozen=True)

@@ -64,9 +64,7 @@ OPTIONAL MATCH (fence:StandaloneCrmUnitFence {census_id: census.census_id, state
 FOREACH (_ IN CASE WHEN NOT pre_window AND first_request THEN [1] ELSE [] END |
   SET fence.cancel_requested_at = coalesce(fence.cancel_requested_at, datetime()), fence.updated_at = datetime())
 WITH census, pre_window, fatal_stale, directly_cancelled, retired_units, retired_publications, count(fence) AS active_fences
-OPTIONAL MATCH (scope:StandaloneCrmCensusScopeLock {source_key: census.source_key,
-  source_instance_id: census.source_instance_id, control_instance_id: census.control_instance_id,
-  census_kind: census.census_kind, active_census_id: census.census_id})
+OPTIONAL MATCH (scope:StandaloneCrmCensusScopeLock {active_census_id: census.census_id})
 FOREACH (_ IN CASE WHEN pre_window AND NOT fatal_stale THEN [1] ELSE [] END | REMOVE scope.active_census_id)
 RETURN directly_cancelled + retired_units AS child_count, retired_publications, active_fences,
   pre_window AND NOT fatal_stale AS freeze_failed

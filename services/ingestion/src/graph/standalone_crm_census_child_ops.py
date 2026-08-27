@@ -265,6 +265,7 @@ def _publication_from_mapping(value: dict[str, object]) -> StandaloneCrmPublicat
         _value_text(value.get("task_name"), "task_name"),
         _value_text(value.get("queue"), "queue"),
         _publication_state(value.get("status")),
+        _value_positive(value.get("generation"), "generation"),
     )
 
 
@@ -295,6 +296,12 @@ def _positive(record: Record, key: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value < 1:
         raise RuntimeError(f"standalone CRM census returned invalid {key}")
     return int(value)
+
+
+def _value_positive(value: object, key: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise RuntimeError(f"standalone CRM census returned invalid {key}")
+    return value
 
 
 def _bool(record: Record, key: str) -> bool:

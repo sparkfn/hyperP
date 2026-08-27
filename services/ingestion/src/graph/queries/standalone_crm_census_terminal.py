@@ -125,6 +125,7 @@ OPTIONAL MATCH (attempt:StandaloneCrmCensusAttempt {census_id: census.census_id}
 OPTIONAL MATCH (unit:StandaloneCrmCensusUnit {census_id: census.census_id})
 OPTIONAL MATCH (publication:StandaloneCrmChildPublication {census_id: census.census_id})
 OPTIONAL MATCH (fence:StandaloneCrmUnitFence {census_id: census.census_id})
-RETURN census {.*} AS census, collect(DISTINCT attempt {.*}) AS attempts, collect(DISTINCT unit {.*}) AS units,
+RETURN census {.*, terminal_state: census.terminal_state} AS census,
+  collect(DISTINCT attempt {.*}) AS attempts, collect(DISTINCT unit {.*}) AS units,
   collect(DISTINCT publication {.*}) AS publications, collect(DISTINCT fence {.*}) AS fences
 """

@@ -169,6 +169,12 @@ _MONOTONIC_ACCOUNTING = """
        OR $company_binding_after_contact_id >= checkpoint.company_binding_after_contact_id)
   AND $processed_count >= checkpoint.processed_count AND $skipped_count >= checkpoint.skipped_count
   AND $failed_count >= checkpoint.failed_count AND $no_work_count >= checkpoint.no_work_count
+  AND (
+    coalesce($last_committed_id, -1) = coalesce(checkpoint.last_committed_id, -1)
+    OR $processed_count + $skipped_count + $failed_count
+       > coalesce(checkpoint.processed_count, 0) + coalesce(checkpoint.skipped_count, 0)
+         + coalesce(checkpoint.failed_count, 0)
+  )
   AND attempt.row_count + (
     ($processed_count + $skipped_count + $failed_count)
     - (coalesce(checkpoint.processed_count, 0) + coalesce(checkpoint.skipped_count, 0)

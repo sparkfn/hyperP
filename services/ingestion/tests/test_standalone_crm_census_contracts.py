@@ -332,6 +332,7 @@ def test_checkpoint_contract_is_fenced_monotonic_and_budgeted() -> None:
     assert "attempt.row_count +" in queries.CHECKPOINT_UNIT
     assert "census.row_count +" in queries.CHECKPOINT_UNIT
     assert "attempt.row_count = attempt.row_count +" in queries.CHECKPOINT_UNIT
+    assert "$processed_count + $skipped_count + $failed_count" in queries.CHECKPOINT_UNIT
 
 
 def test_checkpoint_callback_contract_validates_before_work_and_commits_after_work() -> None:
@@ -551,6 +552,10 @@ def test_stale_authority_is_pending_until_settlement_and_never_counts_as_a_row()
         not in queries.CHECKPOINT_UNIT
     )
     assert "checkpoint.no_work_count = $no_work_count" in queries.CHECKPOINT_UNIT
+
+
+def test_status_projection_preserves_nullable_terminal_state() -> None:
+    assert "terminal_state: census.terminal_state" in queries.GET_CENSUS_STATUS
 
 
 def test_expired_owner_can_only_settle_existing_checkpoint_after_cancel_or_fatal_stale() -> None:
