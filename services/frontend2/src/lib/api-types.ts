@@ -304,6 +304,8 @@ export interface PersonListSummary {
   high_risk_count: number;
   high_value_count: number;
   no_contact_count: number;
+  deals_this_month_count: number;
+  all_deals_count: number;
 }
 
 export interface SourceSystemSummary {

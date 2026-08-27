@@ -650,6 +650,8 @@ class PersonListSummary(BaseModel):
     high_risk_count: int = 0
     high_value_count: int = 0
     no_contact_count: int = 0
+    deals_this_month_count: int = 0
+    all_deals_count: int = 0
 
 
 class EntityPerson(Person):

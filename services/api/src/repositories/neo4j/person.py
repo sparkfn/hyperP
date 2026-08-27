@@ -264,6 +264,8 @@ class Neo4jPersonRepository:
             high_risk_count=to_int(values.get("high_risk_count")),
             high_value_count=to_int(values.get("high_value_count")),
             no_contact_count=to_int(values.get("no_contact_count")),
+            deals_this_month_count=to_int(values.get("deals_this_month_count")),
+            all_deals_count=to_int(values.get("all_deals_count")),
         )
 
     async def get_list_summary(self) -> PersonListSummary:
