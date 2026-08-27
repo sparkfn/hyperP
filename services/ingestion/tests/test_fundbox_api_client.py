@@ -469,13 +469,17 @@ def test_run_ingestion_records_failed_run_when_fundbox_api_not_configured(
 
     monkeypatch.setattr("src.main.get_settings", lambda: settings)
     monkeypatch.setattr("src.main.Neo4jClient", lambda _s: _GraphClient())
-    monkeypatch.setattr("src.main.IngestPipeline", lambda _client: object())
+    monkeypatch.setattr("src.main.IngestPipeline", lambda _client, **_kwargs: object())
     monkeypatch.setattr("src.main.Redis", _NoRedis)
-    monkeypatch.setattr("src.main._create_ingest_run", lambda *_a: "run-1")
+    monkeypatch.setattr(
+        "src.main._create_ingest_run",
+        lambda *_args, **kwargs: (kwargs["control_instance_id"] == "legacy-default") and "run-1",
+    )
 
     failed_runs: list[str] = []
 
-    def _capture_failed_run(_client: object, run_id: str, *_rest: object) -> None:
+    def _capture_failed_run(_client: object, run_id: str, *_rest: object, **kwargs: object) -> None:
+        assert kwargs["control_instance_id"] == "legacy-default"
         failed_runs.append(run_id)
 
     monkeypatch.setattr("src.main._mark_run_failed", _capture_failed_run)

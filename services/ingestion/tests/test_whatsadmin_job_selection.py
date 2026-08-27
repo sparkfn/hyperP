@@ -175,8 +175,10 @@ def test_celery_task_forwards_entity_key(monkeypatch: MonkeyPatch) -> None:
         entity_key: str | None,
         initialize_graph: bool,
         incremental: bool,
+        control_instance_id: str = "legacy-default",
     ) -> dict[str, JsonValue]:
         assert incremental is True
+        assert control_instance_id == "legacy-default"
         calls.append((source_key, mode, dump_path, entity_key, initialize_graph))
         return {
             "source_key": source_key,
@@ -197,13 +199,19 @@ def test_cli_forwards_optional_entity_key(monkeypatch: MonkeyPatch) -> None:
     calls: list[tuple[str, str, str | None, str | None, str | None]] = []
     monkeypatch.setattr(main, "setup_logging", lambda _level: None)
     monkeypatch.setattr(main, "get_settings", lambda: TaskSettings())
-    monkeypatch.setattr(
-        main,
-        "run_ingestion",
-        lambda source_key, mode, dump_path, *, entity_key=None, bitrix_execution_stream=None: (
-            calls.append((source_key, mode, dump_path, entity_key, bitrix_execution_stream))
-        ),
-    )
+
+    def run_ingestion(
+        source_key: str,
+        mode: str,
+        dump_path: str | None,
+        *,
+        entity_key: str | None = None,
+        bitrix_execution_stream: str | None = None,
+        **_kwargs: object,
+    ) -> None:
+        calls.append((source_key, mode, dump_path, entity_key, bitrix_execution_stream))
+
+    monkeypatch.setattr(main, "run_ingestion", run_ingestion)
 
     main.main(
         [

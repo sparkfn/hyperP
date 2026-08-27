@@ -13,6 +13,15 @@ from src import (
 from src.ingestion_config import StageHistoryIngestionConfig
 
 
+@pytest.fixture(autouse=True)
+def _admit_legacy_control(monkeypatch: pytest.MonkeyPatch) -> None:
+    def admit(_settings: object, control_instance_id: str) -> None:
+        assert control_instance_id == "legacy-default"
+
+    monkeypatch.setattr(stage_history_task_runtime, "admit_configured_bitrix_control", admit)
+    monkeypatch.setattr(stage_history_review_task_runtime, "admit_configured_bitrix_control", admit)
+
+
 def test_replay_task_rejects_default_off_before_artifact_or_graph_access(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -29,7 +38,6 @@ def test_replay_task_rejects_default_off_before_artifact_or_graph_access(
 
     with pytest.raises(PermissionError, match="disabled"):
         stage_history_tasks.replay_stage_history_artifact_task.run("artifact-1", "approval-1")
-
 
 
 def test_replay_worker_closes_store_when_artifact_verification_fails(
@@ -92,6 +100,7 @@ def test_replay_worker_closes_store_when_artifact_verification_fails(
         )
 
     assert events == ["lock", "verify", "close"]
+
 
 def test_stage_tasks_are_manual_only_and_not_scheduled() -> None:
     schedule = stage_history_tasks.celery_app.conf.beat_schedule
@@ -281,8 +290,13 @@ def test_review_domain_commit_is_replayed_when_logical_finalization_fails(
             pass
 
     class Repository:
-        def __init__(self, _client: object) -> None:
-            pass
+        def __init__(
+            self,
+            _client: object,
+            control_instance_id: str = "legacy-default",
+            **_kwargs: object,
+        ) -> None:
+            assert control_instance_id == "legacy-default"
 
         def load_execution(self, _command_id: str) -> StageHistoryReviewExecution:
             return execution
@@ -300,8 +314,13 @@ def test_review_domain_commit_is_replayed_when_logical_finalization_fails(
     failed: list[str] = []
 
     class Logical:
-        def __init__(self, _client: object) -> None:
-            pass
+        def __init__(
+            self,
+            _client: object,
+            control_instance_id: str = "legacy-default",
+            **_kwargs: object,
+        ) -> None:
+            assert control_instance_id == "legacy-default"
 
         def finalize_fenced(self, **_kwargs: object) -> None:
             raise RuntimeError("finalization unavailable")
@@ -409,8 +428,13 @@ def test_review_worker_revalidates_the_authorized_actor(
             pass
 
     class Repository:
-        def __init__(self, _client: object) -> None:
-            pass
+        def __init__(
+            self,
+            _client: object,
+            control_instance_id: str = "legacy-default",
+            **_kwargs: object,
+        ) -> None:
+            assert control_instance_id == "legacy-default"
 
         def load_execution(self, _command_id: str) -> StageHistoryReviewExecution:
             return execution
@@ -493,8 +517,13 @@ def test_review_worker_rejects_changed_retry_configuration_before_domain_mutatio
             pass
 
     class Repository:
-        def __init__(self, _client: object) -> None:
-            pass
+        def __init__(
+            self,
+            _client: object,
+            control_instance_id: str = "legacy-default",
+            **_kwargs: object,
+        ) -> None:
+            assert control_instance_id == "legacy-default"
 
         def load_execution(self, _command_id: str) -> StageHistoryReviewExecution:
             return execution
@@ -503,7 +532,13 @@ def test_review_worker_rejects_changed_retry_configuration_before_domain_mutatio
             raise AssertionError("changed retry configuration mutated review state")
 
     class ForbiddenLogical:
-        def __init__(self, _client: object) -> None:
+        def __init__(
+            self,
+            _client: object,
+            control_instance_id: str = "legacy-default",
+            **_kwargs: object,
+        ) -> None:
+            assert control_instance_id == "legacy-default"
             raise AssertionError("untrusted execution failed the logical run")
 
     class Lock:
@@ -559,8 +594,13 @@ def test_replay_admission_failure_releases_the_claimed_logical_attempt(
     failed: list[dict[str, object]] = []
 
     class Logical:
-        def __init__(self, _client: object) -> None:
-            pass
+        def __init__(
+            self,
+            _client: object,
+            control_instance_id: str = "legacy-default",
+            **_kwargs: object,
+        ) -> None:
+            assert control_instance_id == "legacy-default"
 
         def create_or_reuse(self, **_kwargs: object) -> object:
             return attempt
@@ -576,8 +616,13 @@ def test_replay_admission_failure_releases_the_claimed_logical_attempt(
             raise AssertionError("admission failure cannot use an unissued stream fence")
 
     class Stream:
-        def __init__(self, _client: object) -> None:
-            pass
+        def __init__(
+            self,
+            _client: object,
+            control_instance_id: str = "legacy-default",
+            **_kwargs: object,
+        ) -> None:
+            assert control_instance_id == "legacy-default"
 
         def admit_or_coalesce(self, **_kwargs: object) -> object:
             raise RuntimeError("stream admission unavailable")

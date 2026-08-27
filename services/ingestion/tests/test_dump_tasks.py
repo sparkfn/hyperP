@@ -11,6 +11,29 @@ from celery.exceptions import Reject, Retry
 from pytest import MonkeyPatch
 
 
+@pytest.fixture(autouse=True)
+def _admit_legacy_bitrix_control(monkeypatch: MonkeyPatch) -> None:
+    from src import tasks
+
+    class Client:
+        def __init__(self, _settings: object) -> None:
+            pass
+
+        def close(self) -> None:
+            pass
+
+    class Registry:
+        def __init__(self, _client: object) -> None:
+            pass
+
+        def admit(self, *, control_instance_id: str, source_instance_id: str) -> None:
+            assert control_instance_id == "legacy-default"
+            assert source_instance_id
+
+    monkeypatch.setattr(tasks, "Neo4jClient", Client)
+    monkeypatch.setattr(tasks, "BitrixSourceInstanceRepository", Registry)
+
+
 class _IngestionStub(Protocol):
     def __call__(
         self,
@@ -20,6 +43,7 @@ class _IngestionStub(Protocol):
         *,
         initialize_graph: bool = True,
         incremental: bool = True,
+        control_instance_id: str = "legacy-default",
     ) -> dict[str, object]: ...
 
 
@@ -33,8 +57,10 @@ def _successful_ingestion_stub(
         *,
         initialize_graph: bool = True,
         incremental: bool = True,
+        control_instance_id: str = "legacy-default",
     ) -> dict[str, object]:
         assert incremental is True
+        assert control_instance_id == "legacy-default"
         calls.append((source_key, mode, dump_path, initialize_graph))
         return {
             "source_key": source_key,
@@ -141,7 +167,8 @@ def test_run_ingestion_task_reuses_api_created_ingest_run(
     monkeypatch.setattr(tasks.reconcile_lifecycle_task, "apply_async", lambda **_options: None)
     status_checks: list[str] = []
 
-    def existing_status(run_id: str) -> str:
+    def existing_status(run_id: str, control_instance_id: str = "legacy-default") -> str:
+        assert control_instance_id == "legacy-default"
         status_checks.append(run_id)
         return "started"
 
@@ -160,8 +187,10 @@ def test_run_ingestion_task_reuses_api_created_ingest_run(
         initialize_graph: bool = True,
         existing_ingest_run_id: str | None = None,
         incremental: bool = True,
+        control_instance_id: str = "legacy-default",
     ) -> dict[str, object]:
         assert incremental is True
+        assert control_instance_id == "legacy-default"
         calls.append((source_key, mode, dump_path, initialize_graph, existing_ingest_run_id))
         return {
             "ingest_run_id": existing_ingest_run_id or "new-run",
@@ -307,7 +336,9 @@ def test_terminal_dispatched_run_redelivery_is_idempotent_noop(
     monkeypatch.setattr(
         tasks,
         "_get_existing_ingest_run_status",
-        lambda run_id: "completed",
+        lambda run_id, control_instance_id="legacy-default": (
+            (control_instance_id == "legacy-default") and "completed"
+        ),
         raising=False,
     )
     monkeypatch.setattr(
@@ -356,7 +387,13 @@ def test_run_ingestion_task_finalizes_api_created_run_when_setup_fails(
         "_finalize_dispatched_run",
         lambda ingest_run_id, status: finalized.append((ingest_run_id, status)),
     )
-    monkeypatch.setattr(tasks, "_get_existing_ingest_run_status", lambda run_id: None)
+    monkeypatch.setattr(
+        tasks,
+        "_get_existing_ingest_run_status",
+        lambda run_id, control_instance_id="legacy-default": (
+            (control_instance_id == "legacy-default") and None
+        ),
+    )
 
     with pytest.raises(Reject, match="migration failed"):
         tasks.run_ingestion_task.run("bitrix_chat", "api", None, ingest_run_id="run-1")
@@ -370,7 +407,13 @@ def test_rejected_task_does_not_overwrite_structured_terminal_failure(
     from src import tasks
 
     finalized: list[tuple[str, str]] = []
-    monkeypatch.setattr(tasks, "_get_existing_ingest_run_status", lambda run_id: "failed")
+    monkeypatch.setattr(
+        tasks,
+        "_get_existing_ingest_run_status",
+        lambda run_id, control_instance_id="legacy-default": (
+            (control_instance_id == "legacy-default") and "failed"
+        ),
+    )
     monkeypatch.setattr(
         tasks,
         "_finalize_dispatched_run",
