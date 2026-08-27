@@ -1,4 +1,4 @@
-﻿"""Deterministic contract coverage for census transitions without a live graph."""
+"""Deterministic contract coverage for census transitions without a live graph."""
 
 from __future__ import annotations
 
