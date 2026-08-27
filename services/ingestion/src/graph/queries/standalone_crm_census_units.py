@@ -111,32 +111,35 @@ ON CREATE SET fence.parent_fence_token = $parent_fence_token, fence.child_fence_
   fence.state = 'released', fence.created_at = datetime(), fence.updated_at = datetime()
 CALL {
   WITH census, unit, fence
-  WHERE fence.state = 'active' AND fence.parent_fence_token = $parent_fence_token
+  UNWIND CASE WHEN fence.state = 'active' AND fence.parent_fence_token = $parent_fence_token
     AND fence.owner_task_id = $task_id AND fence.lease_until >= datetime()
     AND (fence.cancel_requested_at IS NULL OR census.cancel_requested_at IS NOT NULL)
-  RETURN fence AS claimed
+    THEN [fence] ELSE [] END AS claimed
+  RETURN claimed
   UNION
   WITH census, unit, fence
-  WHERE fence.state = 'released' AND fence.child_fence_token = 0
-  SET fence.parent_fence_token = $parent_fence_token, fence.child_fence_token = 1,
-    fence.state = 'active', fence.owner_task_id = $task_id, fence.claimed_at = datetime(),
-    fence.lease_until = datetime() + duration({seconds: $lease_seconds}),
-    fence.cancel_requested_at = CASE WHEN census.cancel_requested_at IS NULL THEN NULL
-      ELSE datetime() END, fence.updated_at = datetime(), unit.state = 'running',
+  UNWIND CASE WHEN fence.state = 'released' AND fence.child_fence_token = 0
+    THEN [fence] ELSE [] END AS claimable
+  SET claimable.parent_fence_token = $parent_fence_token, claimable.child_fence_token = 1,
+    claimable.state = 'active', claimable.owner_task_id = $task_id, claimable.claimed_at = datetime(),
+    claimable.lease_until = datetime() + duration({seconds: $lease_seconds}),
+    claimable.cancel_requested_at = CASE WHEN census.cancel_requested_at IS NULL THEN NULL
+      ELSE datetime() END, claimable.updated_at = datetime(), unit.state = 'running',
     unit.generation = $generation, unit.parent_fence_token = $parent_fence_token,
-    unit.child_fence_token = fence.child_fence_token, unit.updated_at = datetime()
-  RETURN fence AS claimed
+    unit.child_fence_token = claimable.child_fence_token, unit.updated_at = datetime()
+  RETURN claimable AS claimed
   UNION
   WITH census, unit, fence
-  WHERE fence.state = 'active' AND fence.parent_fence_token = $parent_fence_token
+  UNWIND CASE WHEN fence.state = 'active' AND fence.parent_fence_token = $parent_fence_token
     AND fence.lease_until < datetime() AND $recovery = true
-  SET fence.child_fence_token = fence.child_fence_token + 1, fence.owner_task_id = $task_id,
-    fence.claimed_at = datetime(), fence.lease_until = datetime() + duration({seconds: $lease_seconds}),
-    fence.cancel_requested_at = CASE WHEN census.cancel_requested_at IS NULL THEN NULL
-      ELSE datetime() END, fence.updated_at = datetime(), unit.state = 'running',
+    THEN [fence] ELSE [] END AS recoverable
+  SET recoverable.child_fence_token = recoverable.child_fence_token + 1, recoverable.owner_task_id = $task_id,
+    recoverable.claimed_at = datetime(), recoverable.lease_until = datetime() + duration({seconds: $lease_seconds}),
+    recoverable.cancel_requested_at = CASE WHEN census.cancel_requested_at IS NULL THEN NULL
+      ELSE datetime() END, recoverable.updated_at = datetime(), unit.state = 'running',
     unit.generation = $generation, unit.parent_fence_token = $parent_fence_token,
-    unit.child_fence_token = fence.child_fence_token, unit.updated_at = datetime()
-  RETURN fence AS claimed
+    unit.child_fence_token = recoverable.child_fence_token, unit.updated_at = datetime()
+  RETURN recoverable AS claimed
 }
 RETURN claimed.child_fence_token AS child_fence_token
 """

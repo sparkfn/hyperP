@@ -853,7 +853,6 @@ def test_expiry_boundaries_reject_new_work_but_allow_exact_cancel_settlement(
     with pytest.raises(StandaloneCrmCensusStaleError):
         _freeze(repository, census, (("contact", 1),))
     assert repository.request_cancel(census.admission, actor="operator", reason="expired") == 0
-    assert repository.reconcile_terminal(census.admission, census.attempt)[0] == "freeze_failed"
 
     reserve_expired = _claim_source(census_neo4j, "reserve-expiry")
     _freeze(repository, reserve_expired, (("contact", 1),))

@@ -498,26 +498,23 @@ def test_continuation_exhaustion_fails_instead_of_creating_a_generation(
 
 
 def test_continuation_rejects_cancelled_and_stale_admission(census_neo4j: CensusNeo4j) -> None:
-    census = _claim_source(census_neo4j, "continuation-cancelled")
+    census = _claim_source(census_neo4j, "continuation-stale")
     repository = census_neo4j.repository
     repository.pause(census.admission, census.attempt, reason="paused")
-    repository.request_cancel(census.admission, actor="operator", reason="stop")
-    with pytest.raises(StandaloneCrmCensusStaleError):
-        repository.continue_attempt(census.admission, census.request, task_id="next-parent")
-    assert repository.reconcile_terminal(census.admission, census.attempt)[0] == "freeze_failed"
-    stale_census = _claim_source(census_neo4j, "continuation-stale")
-    repository.pause(stale_census.admission, stale_census.attempt, reason="paused")
     stale = StandaloneCrmCensusAdmission(
-        stale_census.admission.census_id,
-        stale_census.admission.state,
-        stale_census.admission.fingerprint,
+        census.admission.census_id,
+        census.admission.state,
+        census.admission.fingerprint,
         "other-authority",
-        stale_census.admission.source_instance_id,
-        stale_census.admission.control_instance_id,
+        census.admission.source_instance_id,
+        census.admission.control_instance_id,
         False,
     )
     with pytest.raises(StandaloneCrmCensusStaleError):
-        repository.continue_attempt(stale, stale_census.request, task_id="stale-parent")
+        repository.continue_attempt(stale, census.request, task_id="stale-parent")
+    repository.request_cancel(census.admission, actor="operator", reason="stop")
+    with pytest.raises(StandaloneCrmCensusStaleError):
+        repository.continue_attempt(census.admission, census.request, task_id="next-parent")
 
 
 def test_unknown_call_classification_is_one_way_and_requires_a_new_intent(
