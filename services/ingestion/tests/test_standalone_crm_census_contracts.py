@@ -1,4 +1,4 @@
-"""Deterministic contract coverage for census transitions without a live graph."""
+﻿"""Deterministic contract coverage for census transitions without a live graph."""
 
 from __future__ import annotations
 
@@ -303,7 +303,7 @@ def test_cancellation_and_terminal_derivation_query_contracts() -> None:
         "WHEN pre_window THEN 'freeze_failed' ELSE 'cancel_requested'"
         in queries.REQUEST_CANCELLATION
     )
-    assert "REMOVE scope.active_census_id" in queries.REQUEST_CANCELLATION
+    assert "REMOVE scope.active_census_id" in queries.RELEASE_PRE_WINDOW_SCOPE
     assert (
         "WHEN failed > 0 OR any(unit IN units WHERE unit.state = 'failed') THEN 'failed'"
         in queries.TERMINALIZE_CENSUS
