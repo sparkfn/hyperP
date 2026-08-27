@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import uuid
 from dataclasses import asdict, is_dataclass
 from datetime import UTC, datetime
@@ -93,10 +94,13 @@ class StandaloneCrmCensusCoreOperations:
     ) -> StandaloneCrmAttempt:
         if not task_id.strip() or lease_seconds < 1:
             raise ValueError("task_id and lease_seconds must be positive")
+        effective_lease_seconds = max(
+            lease_seconds, math.ceil(request.budget.max_runtime_seconds_per_attempt)
+        )
         params = freshness_guard(admission) | {
             "fingerprint": admission.fingerprint,
             "task_id": task_id,
-            "lease_seconds": lease_seconds,
+            "lease_seconds": effective_lease_seconds,
             "max_attempts": request.budget.max_attempts_per_occurrence,
             "attempt_runtime_seconds": request.budget.max_runtime_seconds_per_attempt,
             "occurrence_runtime_seconds": request.budget.max_wall_clock_seconds_per_occurrence,

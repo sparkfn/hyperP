@@ -170,7 +170,7 @@ class _UnknownCallRepository:
     def classify_current_reserved_call_unknown(
         self, admission: StandaloneCrmCensusAdmission, *, intent_id: str
     ) -> bool:
-        assert self.runtime is not None and self.runtime.revalidations == 1
+        assert self.runtime is not None and self.runtime.revalidations == 0
         assert admission == self.admission
         self.classified.append((admission.census_id, intent_id))
         return True
@@ -186,7 +186,7 @@ class _UnknownCallRuntime:
         self.revalidations += 1
 
 
-def test_control_unknown_call_revalidates_then_derives_fences_from_the_repository() -> None:
+def test_control_unknown_call_classifies_historical_reservation_without_work_revalidation() -> None:
     repository = _UnknownCallRepository()
     runtime = _UnknownCallRuntime()
     repository.runtime = runtime
@@ -195,5 +195,5 @@ def test_control_unknown_call_revalidates_then_derives_fences_from_the_repositor
         cast(StandaloneCrmCensusRuntime, runtime),
     )
     assert control.classify_reserved_call_unknown("census", intent_id="intent")
-    assert runtime.revalidations == 1
+    assert runtime.revalidations == 0
     assert repository.classified == [("census", "intent")]

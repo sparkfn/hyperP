@@ -37,6 +37,11 @@ CENSUS_CONSTRAINT_SPECS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
         ("census_id", "generation", "unit_kind", "sequence"),
     ),
     (
+        "standalone_crm_census_publication_id_unique",
+        "StandaloneCrmChildPublication",
+        ("publication_id",),
+    ),
+    (
         "standalone_crm_census_call_intent_unique",
         "StandaloneCrmHttpCallReservation",
         ("intent_id",),

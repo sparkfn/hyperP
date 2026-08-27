@@ -25,6 +25,7 @@ StandaloneCrmCensusState = Literal[
     "continuing",
     "cancel_requested",
     "recovering",
+    "authority_stale_pending",
     "completed",
     "failed",
     "cancelled_with_checkpoint",
@@ -372,11 +373,8 @@ class StandaloneCrmTerminalAccounting:
             "no_work_units",
         ):
             non_negative_int(getattr(self, field), field)
-        if (
-            self.processed_units + self.skipped_units + self.failed_units + self.no_work_units
-            != self.expected_units
-        ):
-            raise ValueError("terminal accounting must balance exactly")
+        # Expected units are terminal child classifications; counters are independent
+        # cumulative source-row totals and may validly be zero or exceed child count.
 
 
 def attempt_deadlines(

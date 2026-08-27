@@ -89,7 +89,7 @@ def _envelope(
         _unit_kind(unit_kind),
         upper_id,
         revision_id,
-        f"{admitted.census_id}:{unit_kind}:{sequence}",
+        f"{admitted.census_id}:{attempt.generation}:{unit_kind}:{sequence}",
         task_id,
         digest,
         source_instance_id,

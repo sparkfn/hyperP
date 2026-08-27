@@ -72,6 +72,23 @@ def test_census_fence_constraint_is_identical_in_runtime_and_fresh_schema() -> N
     assert statement in runtime_schema
 
 
+def test_census_publication_id_constraint_is_identical_in_runtime_and_fresh_schema() -> None:
+    canonical_schema = _find_init_cypher().read_text(encoding="utf-8")
+    runtime_schema = "\n".join(BASE_LIFECYCLE_CONSTRAINTS)
+    expected = (
+        "standalone_crm_census_publication_id_unique",
+        "StandaloneCrmChildPublication",
+        ("publication_id",),
+    )
+    statement = "FOR (node:StandaloneCrmChildPublication) REQUIRE (node.publication_id) IS UNIQUE"
+
+    assert expected in CENSUS_CONSTRAINT_SPECS
+    assert "standalone_crm_census_publication_id_unique" in canonical_schema
+    assert statement in canonical_schema
+    assert "standalone_crm_census_publication_id_unique" in runtime_schema
+    assert statement in runtime_schema
+
+
 def test_profile_analysis_schema_statements_are_idempotent() -> None:
     statements = _split_statements(_find_init_cypher().read_text(encoding="utf-8"))
     profile_analysis_statements = [

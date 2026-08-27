@@ -117,19 +117,32 @@ class StandaloneCrmCensusRuntime:
         return self._run(admitted, attempt, request, authority)
 
     def cancel(self, census_id: str, *, actor: str, reason: str) -> int:
-        admission, request, authority = self._repository.load_admitted_request(census_id)
-        self._revalidate(request, authority)
+        admission, _request, _authority = self._repository.load_admitted_request(census_id)
         return self._repository.request_cancel(admission, actor=actor, reason=reason)
 
     def repair_publication(self, publication_id: str) -> None:
         try:
-            repair_publication(self._repository, self._publisher, publication_id, self._revalidate)
+            repair_publication(
+                self._repository,
+                self._publisher,
+                publication_id,
+                self._revalidate,
+                self._repository.mark_authority_stale,
+            )
+        except StandaloneCrmAuthorityUnavailableError:
+            raise
         except RuntimeError as exc:
             raise StandaloneCrmAuthorityUnavailableError(str(exc)) from exc
 
     def reconcile(self, census_id: str) -> tuple[str, int]:
         admitted, request, authority = self._repository.load_admitted_request(census_id)
-        self._revalidate(request, authority)
+        try:
+            self._revalidate(request, authority)
+        except StandaloneCrmAuthorityUnavailableError:
+            # Reconciliation is settlement/admin work. Mark the immutable census
+            # as a typed failure, then still allow its already-durable children,
+            # publications, and fences to converge without new external work.
+            self._repository.mark_authority_stale(admitted)
         status = self._repository.status(census_id)
         if status is None or not status.attempts:
             raise StandaloneCrmAuthorityUnavailableError("census has no durable attempt")
@@ -150,25 +163,35 @@ class StandaloneCrmCensusRuntime:
         request: StandaloneCrmCensusRequest,
         authority: SourceSyncAuthoritySnapshot | None,
     ) -> StandaloneCrmRunResult:
-        if isinstance(request, SourceSyncCensusRequest):
-            return self._run_source_sync(admitted, attempt, request, authority)
-        return self._mapping_result(
-            admitted,
-            attempt,
-            run_mapping_only(
-                self._repository, self._publisher, admitted, attempt, request, self._revalidate
-            ),
-        )
+        try:
+            if isinstance(request, SourceSyncCensusRequest):
+                return self._run_source_sync(admitted, attempt, request, authority)
+            return self._mapping_result(
+                admitted,
+                attempt,
+                run_mapping_only(
+                    self._repository, self._publisher, admitted, attempt, request, self._revalidate
+                ),
+            )
+        except StandaloneCrmAuthorityUnavailableError:
+            self._repository.mark_authority_stale(admitted)
+            raise
 
     def _capture_or_validate_authority(
         self, request: StandaloneCrmCensusRequest
     ) -> SourceSyncAuthoritySnapshot | None:
-        if isinstance(request, SourceSyncCensusRequest):
-            return self._authority.source_sync_heads(request)
-        if isinstance(request, MappingPrepareCensusRequest):
-            self._authority.validate_mapping_prepare(request)
-        else:
-            self._authority.validate_mapping_rollback(request)
+        try:
+            if isinstance(request, SourceSyncCensusRequest):
+                return self._authority.source_sync_heads(request)
+            if isinstance(request, MappingPrepareCensusRequest):
+                self._authority.validate_mapping_prepare(request)
+            else:
+                self._authority.validate_mapping_rollback(request)
+        except StandaloneCrmAuthorityUnavailableError:
+            raise
+        except Exception as exc:
+            message = str(exc) or "standalone CRM authority is unavailable"
+            raise StandaloneCrmAuthorityUnavailableError(message) from exc
         return None
 
     def _revalidate(

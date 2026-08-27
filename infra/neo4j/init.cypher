@@ -303,6 +303,8 @@ CREATE CONSTRAINT standalone_crm_census_checkpoint_unique IF NOT EXISTS
 CREATE CONSTRAINT standalone_crm_census_publication_unique IF NOT EXISTS
   FOR (node:StandaloneCrmChildPublication)
   REQUIRE (node.census_id, node.generation, node.unit_kind, node.sequence) IS UNIQUE;
+CREATE CONSTRAINT standalone_crm_census_publication_id_unique IF NOT EXISTS
+  FOR (node:StandaloneCrmChildPublication) REQUIRE (node.publication_id) IS UNIQUE;
 CREATE CONSTRAINT standalone_crm_census_call_intent_unique IF NOT EXISTS
   FOR (node:StandaloneCrmHttpCallReservation) REQUIRE (node.intent_id) IS UNIQUE;
 CREATE CONSTRAINT standalone_crm_census_fence_unique IF NOT EXISTS

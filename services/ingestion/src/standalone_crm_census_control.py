@@ -40,8 +40,10 @@ class StandaloneCrmCensusControl:
 
     def classify_reserved_call_unknown(self, census_id: str, *, intent_id: str) -> bool:
         """Classify a current durable reservation without accepting caller freshness fields."""
-        admission, request, authority = self._repository.load_admitted_request(census_id)
-        self._runtime.revalidate_admitted(request, authority)
+        admission, _request, _authority = self._repository.load_admitted_request(census_id)
+        # This is a one-way settlement classification of an already-consumed
+        # reservation, not new source work; it must remain operable for a
+        # historical generation after source/control authority is disabled.
         return self._repository.classify_current_reserved_call_unknown(
             admission, intent_id=intent_id
         )

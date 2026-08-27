@@ -3,19 +3,26 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from typing import cast
 
 import pytest
 from src.celery_app import _beat_schedule, celery_app
 from src.graph.queries import standalone_crm_census as queries
+from src.graph.queries.bitrix_source_instances import CREATE_BITRIX_SOURCE_INSTANCE_CONSTRAINTS
 from src.graph.queries.standalone_crm_census_schema import CENSUS_CONSTRAINT_SPECS
+from src.graph.standalone_crm_census import StandaloneCrmCensusRepository
 from src.graph.standalone_crm_census_types import (
     StandaloneCrmCensusAdmission,
     StandaloneCrmCensusStatus,
     StandaloneCrmPublication,
 )
-from src.standalone_crm_census_models import StandaloneCrmBudgetSnapshot
+from src.standalone_crm_census_models import (
+    StandaloneCrmBudgetSnapshot,
+    StandaloneCrmTerminalAccounting,
+)
 from src.standalone_crm_census_requests import SourceSyncAuthoritySnapshot, SourceSyncCensusRequest
 from src.standalone_crm_census_runtime import StandaloneCrmCensusRuntime
+from standalone_crm_census_neo4j_support import CONTROL_MIGRATION_BASE_CONSTRAINTS
 
 
 class _Admission:
@@ -68,6 +75,7 @@ class _Repository:
         self.publishing = 0
         self.ambiguous = 0
         self.terminalized = 0
+        self.stale_marked = 0
 
     def publication_recovery(
         self, publication_id: str
@@ -124,6 +132,9 @@ class _Repository:
         assert publication_id == "publication"
         self.publishing += 1
 
+    def authorize_publication_broker(self, *args: object) -> None:
+        del args
+
     def mark_publication_ambiguous(
         self, admission: object, attempt: object, publication_id: str
     ) -> None:
@@ -141,17 +152,23 @@ class _Repository:
         del admission, attempt, publication_id
         self.confirmed += 1
 
-    def reconcile_terminal(self, admission: object, attempt: object) -> object:
+    def mark_authority_stale(self, admission: object) -> None:
+        del admission
+        self.stale_marked += 1
+
+    def reconcile_terminal(
+        self, admission: object, attempt: object
+    ) -> tuple[str, StandaloneCrmTerminalAccounting]:
         del admission, attempt
         self.terminalized += 1
-        raise AssertionError("stale reconciliation must not mutate")
+        return "completed", StandaloneCrmTerminalAccounting(1, 0, 0, 0, 1)
 
 
 def _runtime(repository: _Repository, publisher: _Publisher) -> StandaloneCrmCensusRuntime:
     return StandaloneCrmCensusRuntime(
         repository=repository,  # type: ignore[arg-type]
         admission=_Admission(),
-        authority=_Authority(),  # type: ignore[arg-type]
+        authority=_Authority(),
         publisher=publisher,
         probe_client_factory=lambda _adapter: (_ for _ in ()).throw(AssertionError("no probe")),
     )
@@ -190,12 +207,31 @@ def test_query_contracts_include_fences_recovery_and_authority_guards() -> None:
     assert "StandaloneCrmCensusScopeLock" in queries.ADMIT_CENSUS
     assert "no_source_window: false" in queries.ADMIT_CENSUS
     assert "CONFIRM_OBSERVED_PUBLICATION" not in queries.CONFIRM_OBSERVED_PUBLICATION
+    assert "publication.publication_id = $publication_id" in queries.RESERVE_PUBLICATION
     assert "payload_digest" in queries.RESERVE_PUBLICATION
+    assert "AUTHORIZE_PUBLICATION_BROKER" in queries.__dict__
+    assert "pre_broker_authorized_at" in queries.AUTHORIZE_PUBLICATION_BROKER
     assert "attempt.deadline_at > datetime()" in queries.CHECKPOINT_UNIT
     assert "company_binding_after_contact_id" in queries.CHECKPOINT_UNIT
     assert "RENEW_UNIT_FENCE" not in queries.RENEW_UNIT_FENCE
     assert "ready273:DataMigration" in queries.RELEASE_UNIT_FENCE
     assert "current_generation" in queries.RECORD_HTTP_OUTCOME
+
+
+def test_settlement_queries_do_not_require_live_source_control_authority() -> None:
+    """Stale authority blocks external work but not durable retirement/finalization."""
+    for query in (
+        queries.REQUEST_CANCELLATION,
+        queries.MARK_PUBLICATION_AMBIGUOUS,
+        queries.CONFIRM_OBSERVED_PUBLICATION,
+        queries.SETTLE_UNIT,
+        queries.RELEASE_UNIT_FENCE,
+        queries.TERMINALIZE_CENSUS,
+    ):
+        assert "status: 'active'" not in query
+    assert "status: 'active'" in queries.RESERVE_PUBLICATION
+    assert "status: 'active'" in queries.AUTHORIZE_PUBLICATION_BROKER
+    assert "MARK_CENSUS_AUTHORITY_STALE" in queries.__dict__
 
 
 def test_fence_identity_contract_is_generation_scoped() -> None:
@@ -204,6 +240,22 @@ def test_fence_identity_contract_is_generation_scoped() -> None:
         "StandaloneCrmUnitFence",
         ("census_id", "generation", "unit_kind"),
     ) in CENSUS_CONSTRAINT_SPECS
+
+
+def test_census_neo4j_fixture_installs_only_272_migration_prerequisites() -> None:
+    """Keep #273 readiness coverage independent of test-suite ordering."""
+    assert any(
+        "data_migration_key_unique" in statement for statement in CONTROL_MIGRATION_BASE_CONSTRAINTS
+    )
+    assert all(
+        statement in CONTROL_MIGRATION_BASE_CONSTRAINTS
+        for statement in CREATE_BITRIX_SOURCE_INSTANCE_CONSTRAINTS
+    )
+    census_schema = {
+        *queries.CREATE_STANDALONE_CRM_CENSUS_CONSTRAINTS,
+        *queries.CREATE_STANDALONE_CRM_CENSUS_INDEXES,
+    }
+    assert census_schema.isdisjoint(CONTROL_MIGRATION_BASE_CONSTRAINTS)
 
 
 def test_census_tasks_are_routed_but_never_scheduled_by_beat() -> None:
@@ -244,7 +296,11 @@ def test_cancellation_and_terminal_derivation_query_contracts() -> None:
         "WHEN census.cancel_requested_at IS NOT NULL THEN 'cancelled_with_checkpoint'"
         in queries.TERMINALIZE_CENSUS
     )
-    assert "processed + skipped + failed + no_work = size(units)" in queries.TERMINALIZE_CENSUS
+    assert (
+        "all(unit IN units WHERE unit.state IN ['completed','failed','cancelled','superseded'])"
+        in (queries.TERMINALIZE_CENSUS)
+    )
+    assert "processed + skipped + failed + no_work = size(units)" not in queries.TERMINALIZE_CENSUS
     assert "publication.status = 'published'" in queries.TERMINALIZE_CENSUS
     assert "fence.state IN ['released','superseded']" in queries.TERMINALIZE_CENSUS
     assert "expected_unit_count" in queries.TERMINALIZE_CENSUS
@@ -257,6 +313,9 @@ def test_checkpoint_contract_is_fenced_monotonic_and_budgeted() -> None:
     assert "attempt.deadline_at > datetime()" in queries.CHECKPOINT_UNIT
     assert "$max_rows_per_attempt" in queries.CHECKPOINT_UNIT
     assert "$max_rows_per_occurrence" in queries.CHECKPOINT_UNIT
+    assert "attempt.row_count +" in queries.CHECKPOINT_UNIT
+    assert "census.row_count +" in queries.CHECKPOINT_UNIT
+    assert "attempt.row_count = attempt.row_count +" in queries.CHECKPOINT_UNIT
 
 
 def test_checkpoint_callback_contract_validates_before_work_and_commits_after_work() -> None:
@@ -350,7 +409,7 @@ def test_repair_revalidates_authority_before_any_broker_work() -> None:
     runtime = StandaloneCrmCensusRuntime(
         repository=repository,  # type: ignore[arg-type]
         admission=_Admission(),
-        authority=StaleAuthority(),  # type: ignore[arg-type]
+        authority=StaleAuthority(),
         publisher=publisher,
         probe_client_factory=lambda _adapter: (_ for _ in ()).throw(AssertionError("no probe")),
     )
@@ -371,13 +430,13 @@ def test_reconcile_revalidates_before_terminal_mutation() -> None:
     runtime = StandaloneCrmCensusRuntime(
         repository=repository,  # type: ignore[arg-type]
         admission=_Admission(),
-        authority=StaleAuthority(),  # type: ignore[arg-type]
+        authority=StaleAuthority(),
         publisher=publisher,
         probe_client_factory=lambda _adapter: (_ for _ in ()).throw(AssertionError("no probe")),
     )
-    with pytest.raises(RuntimeError, match="authority changed"):
-        runtime.reconcile("census")
-    assert repository.terminalized == 0
+    assert runtime.reconcile("census") == ("completed", 1)
+    assert repository.terminalized == 1
+    assert repository.stale_marked == 1
 
 
 def test_repair_marks_reserved_publication_ambiguous_when_authority_changes_before_broker_io() -> (
@@ -398,7 +457,7 @@ def test_repair_marks_reserved_publication_ambiguous_when_authority_changes_befo
     runtime = StandaloneCrmCensusRuntime(
         repository=repository,  # type: ignore[arg-type]
         admission=_Admission(),
-        authority=ChangesAfterInitialValidation(),  # type: ignore[arg-type]
+        authority=ChangesAfterInitialValidation(),
         publisher=publisher,
         probe_client_factory=lambda _adapter: (_ for _ in ()).throw(AssertionError("no probe")),
     )
@@ -423,9 +482,15 @@ def test_continuation_and_unknown_call_queries_are_generation_fenced() -> None:
         "old_publication.status IN ['reserved','publishing','ambiguous']"
         in queries.CONTINUE_ATTEMPT
     )
+    assert "StandaloneCrmHttpCallReservation" in queries.CONTINUE_ATTEMPT
+    assert "outcome: 'reserved'" in queries.RECOVER_ATTEMPT
     assert "outcome: 'reserved'" in queries.CLASSIFY_RESERVED_HTTP_CALL_UNKNOWN
-    assert "census.current_generation" in queries.CLASSIFY_CURRENT_RESERVED_HTTP_CALL_UNKNOWN
-    assert "census.fence_token" in queries.CLASSIFY_CURRENT_RESERVED_HTTP_CALL_UNKNOWN
+    assert "census.current_generation" not in queries.CLASSIFY_CURRENT_RESERVED_HTTP_CALL_UNKNOWN
+    assert "outcome: 'reserved'" in queries.CLASSIFY_CURRENT_RESERVED_HTTP_CALL_UNKNOWN
+    assert (
+        "generation: census.current_generation"
+        not in queries.CLASSIFY_CURRENT_RESERVED_HTTP_CALL_UNKNOWN
+    )
     assert "fingerprint: $fingerprint" in queries.CLASSIFY_CURRENT_RESERVED_HTTP_CALL_UNKNOWN
     assert "reservation.outcome = 'unknown'" in queries.CLASSIFY_RESERVED_HTTP_CALL_UNKNOWN
     assert "current_generation: $generation" in queries.CLASSIFY_RESERVED_HTTP_CALL_UNKNOWN
@@ -438,3 +503,82 @@ def test_terminal_query_allows_only_settled_historical_publication_generations()
     assert "fence.generation = publication.generation" in terminal
     assert "publication.status IN ['published','retired']" in terminal
     assert "publication.generation = $generation" not in terminal
+
+
+def test_publication_id_is_globally_unique_and_reservation_conflicts_before_merge() -> None:
+    assert (
+        "standalone_crm_census_publication_id_unique",
+        "StandaloneCrmChildPublication",
+        ("publication_id",),
+    ) in CENSUS_CONSTRAINT_SPECS
+    assert (
+        "OPTIONAL MATCH (by_id:StandaloneCrmChildPublication {publication_id: $publication_id})"
+        in queries.RESERVE_PUBLICATION
+    )
+    assert (
+        "identity_conflict OR NOT immutable_match AS payload_conflict"
+        in queries.RESERVE_PUBLICATION
+    )
+
+
+def test_stale_authority_is_pending_until_settlement_and_never_counts_as_a_row() -> None:
+    assert "census.state = 'authority_stale_pending'" in queries.MARK_CENSUS_AUTHORITY_STALE
+    assert "terminal_state = 'failed'" not in queries.MARK_CENSUS_AUTHORITY_STALE
+    assert "terminal_at" not in queries.MARK_CENSUS_AUTHORITY_STALE
+    assert "WHEN fatal_stale THEN 'authority_stale_pending'" in queries.REQUEST_CANCELLATION
+    assert "pre_window AND NOT fatal_stale" in queries.REQUEST_CANCELLATION
+    assert (
+        "WHEN census.fatal_reason = 'authority_stale' THEN 'failed'" in queries.TERMINALIZE_CENSUS
+    )
+    assert (
+        "$processed_count + $skipped_count + $failed_count + $no_work_count"
+        not in queries.CHECKPOINT_UNIT
+    )
+    assert "checkpoint.no_work_count = $no_work_count" in queries.CHECKPOINT_UNIT
+
+
+def test_expired_owner_can_only_settle_existing_checkpoint_after_cancel_or_fatal_stale() -> None:
+    settle = queries.VALIDATE_SETTLE_UNIT
+    assert "census.fatal_reason = 'authority_stale' AND $terminal_state = 'failed'" in settle
+    assert "$terminal_state = 'cancelled'" in settle
+    assert "$processed_count = checkpoint.processed_count" in settle
+    assert "attempt.deadline_at > datetime()" in queries.CHECKPOINT_UNIT
+    assert "attempt.lease_until = datetime()" in queries.RENEW_UNIT_FENCE
+
+
+def test_observed_repair_uses_settlement_authority_before_live_revalidation() -> None:
+    class StaleAuthority(_Authority):
+        def source_sync_heads(self, request: object) -> SourceSyncAuthoritySnapshot:
+            del request
+            raise RuntimeError("authority changed")
+
+    repository = _Repository(observed="checkpoint_advanced")
+    publisher = _Publisher(False)
+    runtime = StandaloneCrmCensusRuntime(
+        repository=cast(StandaloneCrmCensusRepository, repository),
+        admission=_Admission(),
+        authority=StaleAuthority(),
+        publisher=publisher,
+        probe_client_factory=lambda _adapter: (_ for _ in ()).throw(AssertionError("no probe")),
+    )
+    runtime.repair_publication("publication")
+    assert repository.confirmed == 1
+    assert repository.stale_marked == 0
+    assert publisher.calls == []
+
+
+def test_already_published_observed_repair_is_a_noop_without_revalidation() -> None:
+    repository = _Repository(observed="fence_claim")
+    repository.publication = StandaloneCrmPublication(
+        "publication",
+        "task",
+        '{"generation":1,"unit_kind":"contact"}',
+        "sha256:payload",
+        "child",
+        "ingestion",
+        "published",
+    )
+    publisher = _Publisher(False)
+    _runtime(repository, publisher).repair_publication("publication")
+    assert repository.confirmed == 0
+    assert publisher.calls == []

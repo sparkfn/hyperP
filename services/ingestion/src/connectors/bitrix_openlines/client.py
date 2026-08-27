@@ -1361,13 +1361,15 @@ class BitrixOpenLinesClient:
                 if elapsed < self._request_delay_seconds:
                     self._sleep_with_deadline(self._request_delay_seconds - elapsed)
                 self._assert_request_budget()
-                request_timeout = self._request_timeout()
                 if self._reservation_hook is not None:
                     if not self._reservation_hook.reserve(call):
                         raise RuntimeError("Bitrix request reservation was rejected before I/O")
                     reserved = True
-                if self._reservation_hook is not None:
+                    # Reservation itself may consume the last viable runtime slice.
+                    # Recompute after the durable mutation so this intent reaches no I/O
+                    # when the deadline expires in that interval.
                     self._assert_runtime_budget()
+                request_timeout = self._request_timeout()
                 self._request_count += 1
                 response = self._http.post(
                     f"{self._base_url}/{method}",

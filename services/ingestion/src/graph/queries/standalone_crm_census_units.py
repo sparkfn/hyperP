@@ -15,6 +15,13 @@ MATCH (source)-[:OWNS_BITRIX_CONTROL]->(:BitrixExecutionSourceBinding {
 })
 """
 
+_SETTLEMENT = """
+MATCH (ready273:DataMigration {migration_key: 'standalone_crm_census_control_v1'})
+WHERE ready273.completed_at IS NOT NULL
+MATCH (ready272:DataMigration {migration_key: 'bitrix_control_instance_v1'})
+WHERE ready272.completed_at IS NOT NULL
+"""
+
 FREEZE_SOURCE_WINDOW = (
     _FRESHNESS
     + """
@@ -22,8 +29,12 @@ MATCH (census:StandaloneCrmCensus {census_id: $census_id, fingerprint: $fingerpr
   authority_digest: $authority_digest, source_instance_id: $source_instance_id,
   control_instance_id: $control_instance_id, current_generation: $generation,
   fence_token: $parent_fence_token})
+MATCH (attempt:StandaloneCrmCensusAttempt {census_id: $census_id, generation: $generation,
+  fence_token: $parent_fence_token, state: 'running'})
 WHERE census.census_kind = 'source_sync' AND census.source_window_json IS NULL
-  AND census.cancel_requested_at IS NULL AND $selection_size = size($bounds)
+  AND census.cancel_requested_at IS NULL AND attempt.lease_until >= datetime()
+  AND attempt.deadline_at > datetime() AND attempt.occurrence_deadline_at > datetime()
+  AND $selection_size = size($bounds)
   AND size([kind IN $selected_kinds WHERE size([bound IN $bounds WHERE bound.unit_kind = kind]) = 1]) = size($selected_kinds)
   AND all(bound IN $bounds WHERE bound.upper_id >= 0)
 SET census.source_window_json = $window_json, census.expected_unit_count = $selection_size,
@@ -53,8 +64,12 @@ MATCH (census:StandaloneCrmCensus {census_id: $census_id, fingerprint: $fingerpr
   authority_digest: $authority_digest, source_instance_id: $source_instance_id,
   control_instance_id: $control_instance_id, current_generation: $generation,
   fence_token: $parent_fence_token})
+MATCH (attempt:StandaloneCrmCensusAttempt {census_id: $census_id, generation: $generation,
+  fence_token: $parent_fence_token, state: 'running'})
 WHERE census.census_kind IN ['mapping_prepare','mapping_rollback'] AND census.state IN ['allocated','running']
   AND coalesce(census.no_source_window, false) = false AND census.cancel_requested_at IS NULL
+  AND attempt.lease_until >= datetime() AND attempt.deadline_at > datetime()
+  AND attempt.occurrence_deadline_at > datetime()
 SET census.no_source_window = true, census.expected_unit_count = 1,
     census.state = 'frozen', census.updated_at = datetime()
 WITH census
@@ -81,9 +96,12 @@ MATCH (attempt:StandaloneCrmCensusAttempt {census_id: $census_id, generation: $g
   fence_token: $parent_fence_token, state: 'running'})
 MATCH (unit:StandaloneCrmCensusUnit {census_id: $census_id, unit_kind: $unit_kind})
 MATCH (publication:StandaloneCrmChildPublication {publication_id: $publication_id, census_id: $census_id,
-  generation: $generation, unit_kind: $unit_kind, status: 'published'})
-WHERE (census.cancel_requested_at IS NULL
-       OR (publication.status = 'published' AND unit.state = 'publishing'))
+  generation: $generation, unit_kind: $unit_kind})
+WHERE census.cancel_requested_at IS NULL AND census.fatal_reason IS NULL
+  AND census.state IN ['frozen','publishing','running']
+  AND (publication.status = 'published'
+       OR (publication.status IN ['publishing','ambiguous']
+           AND publication.pre_broker_authorized_at IS NOT NULL))
   AND attempt.lease_until >= datetime() AND attempt.deadline_at > datetime()
   AND attempt.occurrence_deadline_at > datetime()
   AND unit.state IN ['pending_publication','publishing','queued','paused','running']
@@ -147,16 +165,23 @@ _MONOTONIC_ACCOUNTING = """
        OR $company_binding_after_contact_id >= checkpoint.company_binding_after_contact_id)
   AND $processed_count >= checkpoint.processed_count AND $skipped_count >= checkpoint.skipped_count
   AND $failed_count >= checkpoint.failed_count AND $no_work_count >= checkpoint.no_work_count
-  AND $processed_count + $skipped_count + $failed_count + $no_work_count <= $max_rows_per_attempt
-  AND census.row_count - (coalesce(checkpoint.processed_count, 0) + coalesce(checkpoint.skipped_count, 0)
-      + coalesce(checkpoint.failed_count, 0) + coalesce(checkpoint.no_work_count, 0))
-      + ($processed_count + $skipped_count + $failed_count + $no_work_count) <= $max_rows_per_occurrence
+  AND attempt.row_count + (
+    ($processed_count + $skipped_count + $failed_count)
+    - (coalesce(checkpoint.processed_count, 0) + coalesce(checkpoint.skipped_count, 0)
+       + coalesce(checkpoint.failed_count, 0))
+  ) <= $max_rows_per_attempt
+  AND census.row_count + (
+    ($processed_count + $skipped_count + $failed_count)
+    - (coalesce(checkpoint.processed_count, 0) + coalesce(checkpoint.skipped_count, 0)
+       + coalesce(checkpoint.failed_count, 0))
+  ) <= $max_rows_per_occurrence
 """
 
 _CHECKPOINT_GUARD = (
     _CHECKPOINT_MATCH
     + """
-WHERE census.cancel_requested_at IS NULL AND fence.cancel_requested_at IS NULL
+WHERE census.cancel_requested_at IS NULL AND census.fatal_reason IS NULL
+  AND fence.cancel_requested_at IS NULL
   AND fence.lease_until >= datetime() AND attempt.lease_until >= datetime()
   AND attempt.deadline_at > datetime() AND attempt.occurrence_deadline_at > datetime()
 """
@@ -166,23 +191,53 @@ WHERE census.cancel_requested_at IS NULL AND fence.cancel_requested_at IS NULL
 _SETTLE_GUARD = (
     _CHECKPOINT_MATCH
     + """
-WHERE fence.lease_until >= datetime() AND attempt.lease_until >= datetime()
-  AND unit.state = 'running'
+WHERE unit.state = 'running'
   AND (
-    (census.cancel_requested_at IS NULL AND fence.cancel_requested_at IS NULL
+    (
+      census.fatal_reason IS NULL AND census.cancel_requested_at IS NULL
+      AND fence.cancel_requested_at IS NULL
+      AND fence.lease_until >= datetime() AND attempt.lease_until >= datetime()
       AND attempt.deadline_at > datetime() AND attempt.occurrence_deadline_at > datetime()
-      AND $terminal_state IN ['completed','failed'])
-    OR (census.cancel_requested_at IS NOT NULL AND fence.cancel_requested_at IS NOT NULL
-      AND $terminal_state = 'cancelled')
+      AND $terminal_state IN ['completed','failed']
+    )
+    OR (
+      census.fatal_reason = 'authority_stale' AND $terminal_state = 'failed'
+      AND $processed_count = checkpoint.processed_count
+      AND $skipped_count = checkpoint.skipped_count
+      AND $failed_count = checkpoint.failed_count
+      AND $no_work_count = checkpoint.no_work_count
+      AND coalesce($last_committed_id, -1) = coalesce(checkpoint.last_committed_id, -1)
+      AND coalesce($company_binding_after_contact_id, -1)
+          = coalesce(checkpoint.company_binding_after_contact_id, -1)
+    )
+    OR (
+      census.fatal_reason IS NULL AND census.cancel_requested_at IS NOT NULL
+      AND fence.cancel_requested_at IS NOT NULL AND $terminal_state = 'cancelled'
+      AND $processed_count = checkpoint.processed_count
+      AND $skipped_count = checkpoint.skipped_count
+      AND $failed_count = checkpoint.failed_count
+      AND $no_work_count = checkpoint.no_work_count
+      AND coalesce($last_committed_id, -1) = coalesce(checkpoint.last_committed_id, -1)
+      AND coalesce($company_binding_after_contact_id, -1)
+          = coalesce(checkpoint.company_binding_after_contact_id, -1)
+    )
   )
 """
     + _MONOTONIC_ACCOUNTING
 )
 
+
 _CHECKPOINT_SET = """
-SET census.row_count = census.row_count - (coalesce(checkpoint.processed_count, 0) + coalesce(checkpoint.skipped_count, 0)
-      + coalesce(checkpoint.failed_count, 0) + coalesce(checkpoint.no_work_count, 0))
-      + ($processed_count + $skipped_count + $failed_count + $no_work_count),
+SET census.row_count = census.row_count + (
+    ($processed_count + $skipped_count + $failed_count)
+    - (coalesce(checkpoint.processed_count, 0) + coalesce(checkpoint.skipped_count, 0)
+       + coalesce(checkpoint.failed_count, 0))
+  ),
+  attempt.row_count = attempt.row_count + (
+    ($processed_count + $skipped_count + $failed_count)
+    - (coalesce(checkpoint.processed_count, 0) + coalesce(checkpoint.skipped_count, 0)
+       + coalesce(checkpoint.failed_count, 0))
+  ),
   checkpoint.last_committed_id = $last_committed_id,
   checkpoint.company_binding_after_contact_id = $company_binding_after_contact_id,
   checkpoint.processed_count = $processed_count, checkpoint.skipped_count = $skipped_count,
@@ -199,9 +254,9 @@ VALIDATE_CHECKPOINT_UNIT = _FRESHNESS + _CHECKPOINT_GUARD + "RETURN checkpoint.v
 CHECKPOINT_UNIT = (
     _FRESHNESS + _CHECKPOINT_GUARD + _CHECKPOINT_SET + "RETURN checkpoint.version AS version"
 )
-VALIDATE_SETTLE_UNIT = _FRESHNESS + _SETTLE_GUARD + "RETURN checkpoint.version AS version"
+VALIDATE_SETTLE_UNIT = _SETTLEMENT + _SETTLE_GUARD + "RETURN checkpoint.version AS version"
 SETTLE_UNIT = (
-    _FRESHNESS
+    _SETTLEMENT
     + _SETTLE_GUARD
     + _CHECKPOINT_SET
     + """
@@ -223,16 +278,18 @@ MATCH (attempt:StandaloneCrmCensusAttempt {census_id: $census_id, generation: $g
 MATCH (fence:StandaloneCrmUnitFence {census_id: $census_id, unit_kind: $unit_kind,
   generation: $generation, parent_fence_token: $parent_fence_token,
   child_fence_token: $child_fence_token, owner_task_id: $child_task_id, state: 'active'})
-WHERE census.cancel_requested_at IS NULL AND fence.cancel_requested_at IS NULL
-  AND attempt.lease_until >= datetime() AND attempt.deadline_at > datetime()
+WHERE census.cancel_requested_at IS NULL AND census.fatal_reason IS NULL
+  AND fence.cancel_requested_at IS NULL AND attempt.lease_until >= datetime() AND attempt.deadline_at > datetime()
   AND attempt.occurrence_deadline_at > datetime() AND fence.lease_until >= datetime()
-SET fence.lease_until = datetime() + duration({seconds: $lease_seconds}), fence.updated_at = datetime()
+SET fence.lease_until = datetime() + duration({seconds: $lease_seconds}),
+  fence.updated_at = datetime(), attempt.lease_until = datetime() + duration({seconds: $lease_seconds}),
+  attempt.updated_at = datetime()
 RETURN fence.child_fence_token AS child_fence_token
 """
 )
 
 RELEASE_UNIT_FENCE = (
-    _FRESHNESS
+    _SETTLEMENT
     + """
 MATCH (census:StandaloneCrmCensus {census_id: $census_id, authority_digest: $authority_digest,
   source_instance_id: $source_instance_id, control_instance_id: $control_instance_id,
@@ -245,12 +302,18 @@ MATCH (unit:StandaloneCrmCensusUnit {census_id: $census_id, unit_kind: $unit_kin
 MATCH (fence:StandaloneCrmUnitFence {census_id: $census_id, unit_kind: $unit_kind,
   generation: $generation, parent_fence_token: $parent_fence_token,
   child_fence_token: $child_fence_token, owner_task_id: $child_task_id, state: 'active'})
-WHERE fence.lease_until >= datetime() AND attempt.lease_until >= datetime()
-  AND ((census.cancel_requested_at IS NULL AND fence.cancel_requested_at IS NULL
-        AND attempt.deadline_at > datetime() AND attempt.occurrence_deadline_at > datetime())
-       OR (census.cancel_requested_at IS NOT NULL AND fence.cancel_requested_at IS NOT NULL))
+WHERE (
+    census.fatal_reason IS NULL AND census.cancel_requested_at IS NULL
+    AND fence.cancel_requested_at IS NULL AND fence.lease_until >= datetime()
+    AND attempt.lease_until >= datetime() AND attempt.deadline_at > datetime()
+    AND attempt.occurrence_deadline_at > datetime()
+  )
+  OR (census.fatal_reason = 'authority_stale')
+  OR (census.fatal_reason IS NULL AND census.cancel_requested_at IS NOT NULL
+      AND fence.cancel_requested_at IS NOT NULL)
 SET fence.state = 'released', fence.released_at = datetime(), fence.updated_at = datetime(),
-  unit.state = CASE WHEN census.cancel_requested_at IS NOT NULL THEN 'cancelled' ELSE 'paused' END,
+  unit.state = CASE WHEN census.fatal_reason = 'authority_stale' THEN 'failed'
+                    WHEN census.cancel_requested_at IS NOT NULL THEN 'cancelled' ELSE 'paused' END,
   unit.cancel_requested_at = CASE WHEN census.cancel_requested_at IS NOT NULL
       THEN coalesce(unit.cancel_requested_at, datetime()) ELSE unit.cancel_requested_at END,
   unit.updated_at = datetime()

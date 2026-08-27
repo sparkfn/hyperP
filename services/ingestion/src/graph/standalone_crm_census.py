@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 from typing import Literal
 
 from neo4j import ManagedTransaction, Record
@@ -144,10 +145,13 @@ class StandaloneCrmCensusRepository(
         """Atomically redeliver a running parent or advance one paused generation."""
         if not task_id.strip() or lease_seconds < 1:
             raise ValueError("task_id and lease_seconds must be positive")
+        effective_lease_seconds = max(
+            lease_seconds, math.ceil(request.budget.max_runtime_seconds_per_attempt)
+        )
         params = _guard(admission) | {
             "fingerprint": admission.fingerprint,
             "task_id": task_id,
-            "lease_seconds": lease_seconds,
+            "lease_seconds": effective_lease_seconds,
             "attempt_runtime_seconds": request.budget.max_runtime_seconds_per_attempt,
             "max_attempts": request.budget.max_attempts_per_occurrence,
             "max_calls_per_occurrence": request.budget.max_calls_per_occurrence,
@@ -163,6 +167,14 @@ class StandaloneCrmCensusRepository(
             self._fail_if_exhausted(admission, request, "continuation_budget_exhausted")
             raise StandaloneCrmCensusStaleError("continuation rejected")
         return attempt
+
+    def mark_authority_stale(self, admission: StandaloneCrmCensusAdmission) -> None:
+        """Terminally block fresh external work while retaining settlement authority."""
+        self._require_mutation(
+            queries.MARK_CENSUS_AUTHORITY_STALE,
+            _guard(admission) | {"fingerprint": admission.fingerprint},
+            "authority-stale census update rejected",
+        )
 
     def freeze_failed(
         self, admission: StandaloneCrmCensusAdmission, attempt: StandaloneCrmAttempt, *, reason: str

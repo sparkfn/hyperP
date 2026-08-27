@@ -324,3 +324,52 @@ def test_operator_unknown_call_classification_derives_current_authority_from_adm
     assert all(params["fingerprint"] == "fingerprint" for params in transaction.params)
     assert all("generation" not in params for params in transaction.params)
     assert all("parent_fence_token" not in params for params in transaction.params)
+
+
+@dataclass
+class _StaleAuthorityLifecycle:
+    state: str = "publishing"
+    fatal_reason: str | None = None
+    terminal_state: str | None = None
+    scope_owned: bool = True
+    cancelled: bool = False
+    child_settled: bool = False
+
+    def mark_stale(self) -> None:
+        if self.terminal_state is not None:
+            raise RuntimeError("terminal census cannot become stale")
+        self.state = "authority_stale_pending"
+        self.fatal_reason = "authority_stale"
+
+    def cancel(self) -> None:
+        self.cancelled = True
+        if self.fatal_reason == "authority_stale":
+            self.state = "authority_stale_pending"
+
+    def settle_child(self) -> None:
+        if self.fatal_reason != "authority_stale":
+            raise RuntimeError("stale settlement was not fenced")
+        self.child_settled = True
+
+    def reconcile(self) -> str:
+        if not self.child_settled:
+            raise RuntimeError("child remains unsettled")
+        if self.fatal_reason != "authority_stale":
+            raise RuntimeError("fatal reason is missing")
+        self.terminal_state = "failed"
+        self.scope_owned = False
+        return self.terminal_state
+
+
+def test_fake_stale_authority_preserves_settlement_and_fatal_precedence() -> None:
+    lifecycle = _StaleAuthorityLifecycle()
+    lifecycle.mark_stale()
+    assert lifecycle.terminal_state is None
+    assert lifecycle.scope_owned
+    lifecycle.cancel()
+    assert lifecycle.state == "authority_stale_pending"
+    with pytest.raises(RuntimeError, match="unsettled"):
+        lifecycle.reconcile()
+    lifecycle.settle_child()
+    assert lifecycle.reconcile() == "failed"
+    assert not lifecycle.scope_owned

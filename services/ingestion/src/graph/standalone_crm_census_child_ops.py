@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import uuid
 from typing import TYPE_CHECKING, cast
 
 from neo4j import ManagedTransaction, Record
@@ -43,19 +42,25 @@ class StandaloneCrmChildOperations:
         attempt: StandaloneCrmAttempt,
         unit_kind: StandaloneCrmUnitKind,
         sequence: int,
+        publication_id: str | None = None,
         task_id: str,
         task_name: str,
         queue: str,
         payload_json: str,
         payload_digest: str,
     ) -> StandaloneCrmPublication:
+        if publication_id is None:
+            publication_id = f"{admission.census_id}:{attempt.generation}:{unit_kind}:{sequence}"
+        if not publication_id.strip():
+            raise ValueError("publication_id must be non-empty")
+
         def work(tx: ManagedTransaction) -> StandaloneCrmPublication:
             params = _guard(admission) | {
                 "generation": attempt.generation,
                 "parent_fence_token": attempt.parent_fence_token,
                 "unit_kind": unit_kind,
                 "sequence": sequence,
-                "publication_id": uuid.uuid4().hex,
+                "publication_id": publication_id,
                 "task_id": task_id,
                 "task_name": task_name,
                 "queue": queue,
@@ -69,7 +74,8 @@ class StandaloneCrmChildOperations:
                 raise StandaloneCrmCensusConflictError("publication immutable payload conflicts")
             publication = _publication_from_record(record)
             if (
-                publication.task_id != task_id
+                publication.publication_id != publication_id
+                or publication.task_id != task_id
                 or publication.task_name != task_name
                 or publication.queue != queue
                 or publication.payload_json != payload_json
@@ -88,6 +94,17 @@ class StandaloneCrmChildOperations:
     ) -> None:
         self._publication_mutation(
             queries.MARK_PUBLICATION_PUBLISHING, admission, attempt, publication_id
+        )
+
+    def authorize_publication_broker(
+        self,
+        admission: StandaloneCrmCensusAdmission,
+        attempt: StandaloneCrmAttempt,
+        publication_id: str,
+    ) -> None:
+        """Perform the final durable lease/fence CAS immediately before broker I/O."""
+        self._publication_mutation(
+            queries.AUTHORIZE_PUBLICATION_BROKER, admission, attempt, publication_id
         )
 
     def mark_publication_ambiguous(

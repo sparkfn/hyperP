@@ -15,8 +15,15 @@ MATCH (source)-[:OWNS_BITRIX_CONTROL]->(:BitrixExecutionSourceBinding {
 })
 """
 
+_SETTLEMENT = """
+MATCH (ready273:DataMigration {migration_key: 'standalone_crm_census_control_v1'})
+WHERE ready273.completed_at IS NOT NULL
+MATCH (ready272:DataMigration {migration_key: 'bitrix_control_instance_v1'})
+WHERE ready272.completed_at IS NOT NULL
+"""
+
 TERMINALIZE_CENSUS = (
-    _FRESHNESS
+    _SETTLEMENT
     + """
 MATCH (census:StandaloneCrmCensus {census_id: $census_id, authority_digest: $authority_digest,
   source_instance_id: $source_instance_id, control_instance_id: $control_instance_id,
@@ -34,7 +41,8 @@ WITH census, attempt, units, publications, collect(fence) AS fences
 OPTIONAL MATCH (checkpoint:StandaloneCrmCensusCheckpoint {census_id: census.census_id})
 WITH census, attempt, units, publications, fences, collect(checkpoint) AS checkpoints,
   [unit IN units WHERE unit.upper_id IS NULL OR unit.upper_id > 0] AS publication_units
-WHERE (census.source_window_json IS NOT NULL OR coalesce(census.no_source_window, false))
+WHERE (census.source_window_json IS NOT NULL OR coalesce(census.no_source_window, false)
+       OR (census.fatal_reason = 'authority_stale' AND size(units) = 0))
   AND all(unit IN units WHERE unit.state IN ['completed','failed','cancelled','superseded'])
   AND all(publication IN publications WHERE publication.sequence = 1
     AND publication.unit_kind IN [unit IN publication_units | unit.unit_kind]
@@ -91,10 +99,10 @@ WITH census, attempt, units,
   reduce(processed = 0, unit IN units | processed + coalesce(unit.processed_count, 0)) AS processed,
   reduce(skipped = 0, unit IN units | skipped + coalesce(unit.skipped_count, 0)) AS skipped,
   reduce(failed = 0, unit IN units | failed + coalesce(unit.failed_count, 0)) AS failed,
-  reduce(no_work = 0, unit IN units | no_work + coalesce(unit.no_work_count, 0)) AS no_work
-WHERE processed + skipped + failed + no_work = size(units)
+  size([unit IN units WHERE unit.upper_id = 0]) AS no_work
 WITH census, attempt, units, processed, skipped, failed, no_work, size(units) AS expected_units,
-  CASE WHEN census.terminal_state IN ['freeze_failed','failed'] THEN census.terminal_state
+  CASE WHEN census.fatal_reason = 'authority_stale' THEN 'failed'
+       WHEN census.terminal_state IN ['freeze_failed','failed'] THEN census.terminal_state
        WHEN failed > 0 OR any(unit IN units WHERE unit.state = 'failed') THEN 'failed'
        WHEN census.cancel_requested_at IS NOT NULL THEN 'cancelled_with_checkpoint'
        ELSE 'completed' END AS derived_state

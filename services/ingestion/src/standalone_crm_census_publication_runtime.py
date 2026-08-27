@@ -56,6 +56,7 @@ class PublicationRunOutcome:
 
 
 Revalidator = Callable[[StandaloneCrmCensusRequest, SourceSyncAuthoritySnapshot | None], None]
+StaleMarker = Callable[[StandaloneCrmCensusAdmission], None]
 
 
 def unit_is_terminal(status: StandaloneCrmCensusStatus | None, unit_kind: str) -> bool:
@@ -72,30 +73,41 @@ def repair_publication(
     publisher: ChildPublisher,
     publication_id: str,
     revalidate: Revalidator,
+    mark_authority_stale: StaleMarker,
 ) -> None:
     """Confirm observed work or republish the stored immutable outbox record."""
     admission, publication, observed = repository.publication_recovery(publication_id)
-    request_admission, request, authority = repository.load_admitted_request(admission.census_id)
-    if request_admission.freshness != admission.freshness:
-        raise RuntimeError("publication admission changed")
-    revalidate(request, authority)
     status = repository.status(admission.census_id)
     if status is None:
         raise RuntimeError("publication census is missing")
     attempt = _publication_attempt(status, publication)
     if observed != "none":
-        repository.confirm_observed_publication(admission, attempt, publication.publication_id)
+        # A durable child claim/checkpoint is settlement evidence, not new work.
+        # Confirm it before live-authority validation so authority loss cannot wedge
+        # an already-observed child behind an ambiguous outbox record. A prior
+        # publish confirmation is already the desired idempotent terminal outbox state.
+        if publication.status != "published":
+            repository.confirm_observed_publication(admission, attempt, publication.publication_id)
         return
-    census_kind = text_field(status.census, "census_kind")
-    _republish_reserved(
-        repository,
-        publisher,
-        admission,
-        attempt,
-        publication,
-        census_kind,
-        lambda: revalidate(request, authority),
-    )
+    request_admission, request, authority = repository.load_admitted_request(admission.census_id)
+    if request_admission.freshness != admission.freshness:
+        raise RuntimeError("publication admission changed")
+    try:
+        revalidate(request, authority)
+        census_kind = text_field(status.census, "census_kind")
+        _republish_reserved(
+            repository,
+            publisher,
+            admission,
+            attempt,
+            publication,
+            census_kind,
+            lambda: revalidate(request, authority),
+        )
+    except Exception as exc:
+        if _is_authority_failure(exc):
+            mark_authority_stale(admission)
+        raise
 
 
 def run_mapping_only(
@@ -228,6 +240,7 @@ def _publish_one(
         attempt=attempt,
         unit_kind=envelope.unit_kind,
         sequence=1,
+        publication_id=envelope.publication_id,
         task_id=envelope.task_id,
         task_name=task_name,
         queue="ingestion",
@@ -253,6 +266,7 @@ def _publish_reserved(
     repository.mark_publication_publishing(admitted, attempt, publication.publication_id)
     try:
         revalidate()
+        repository.authorize_publication_broker(admitted, attempt, publication.publication_id)
         publisher.publish(
             task_name=publication.task_name,
             task_id=publication.task_id,
@@ -263,3 +277,8 @@ def _publish_reserved(
         repository.mark_publication_ambiguous(admitted, attempt, publication.publication_id)
         raise
     repository.confirm_publication(admitted, attempt, publication.publication_id)
+
+
+def _is_authority_failure(exc: Exception) -> bool:
+    """Avoid importing the runtime exception back into this cohesive helper."""
+    return exc.__class__.__name__ == "StandaloneCrmAuthorityUnavailableError"

@@ -11,7 +11,12 @@ from src.graph.queries.standalone_crm_census_admission import (
     RECOVER_ATTEMPT,
     RESERVE_HTTP_CALL,
 )
+from src.graph.queries.standalone_crm_census_cancellation import (
+    MARK_CENSUS_AUTHORITY_STALE,
+    REQUEST_CANCELLATION,
+)
 from src.graph.queries.standalone_crm_census_publication_terminal import (
+    AUTHORIZE_PUBLICATION_BROKER,
     CONFIRM_OBSERVED_PUBLICATION,
     CONTINUE_ATTEMPT,
     FAIL_EXHAUSTED_CENSUS,
@@ -21,7 +26,6 @@ from src.graph.queries.standalone_crm_census_publication_terminal import (
     MARK_PUBLICATION_PUBLISHED,
     MARK_PUBLICATION_PUBLISHING,
     PAUSE_ATTEMPT,
-    REQUEST_CANCELLATION,
     RESERVE_PUBLICATION,
 )
 from src.graph.queries.standalone_crm_census_schema import (
@@ -63,6 +67,7 @@ __all__ = (
     "MARK_PUBLICATION_AMBIGUOUS",
     "MARK_PUBLICATION_PUBLISHED",
     "GET_PUBLICATION_RECOVERY",
+    "AUTHORIZE_PUBLICATION_BROKER",
     "CONFIRM_OBSERVED_PUBLICATION",
     "CLAIM_UNIT_FENCE",
     "CHECKPOINT_UNIT",
@@ -75,6 +80,7 @@ __all__ = (
     "PAUSE_ATTEMPT",
     "CONTINUE_ATTEMPT",
     "FAIL_EXHAUSTED_CENSUS",
+    "MARK_CENSUS_AUTHORITY_STALE",
     "MARK_CENSUS_FREEZE_FAILED",
     "TERMINALIZE_CENSUS",
     "GET_CENSUS_STATUS",

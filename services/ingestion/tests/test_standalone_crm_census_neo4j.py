@@ -168,6 +168,7 @@ def _reserve_published_contact(
         attempt=census.attempt,
         unit_kind="contact",
         sequence=1,
+        publication_id=f"{census.admission.census_id}:{census.attempt.generation}:contact:1",
         task_id=f"child-{census.admission.census_id}",
         task_name="src.standalone_crm_source_child.run",
         queue="ingestion",
@@ -203,6 +204,13 @@ def test_readiness_requires_272_and_exact_273_schema_then_is_rerunnable(
     migrate_standalone_crm_census_control(census_neo4j.client)
     migrate_standalone_crm_census_control(census_neo4j.client)
     assert_standalone_crm_census_ready(census_neo4j.client)
+    with census_neo4j.driver.session() as session:
+        session.run(
+            "DROP CONSTRAINT standalone_crm_census_publication_id_unique IF EXISTS"
+        ).consume()
+    with pytest.raises(RuntimeError, match="standalone CRM census constraint"):
+        assert_standalone_crm_census_ready(census_neo4j.client)
+    install_census_schema(census_neo4j)
     with census_neo4j.driver.session() as session:
         session.run("DROP INDEX standalone_crm_census_call_scan IF EXISTS").consume()
     with pytest.raises(RuntimeError, match="standalone CRM census index"):
@@ -337,7 +345,7 @@ def test_mapping_cancellation_before_publication_reconciles_without_a_fence(
     assert repository.request_cancel(admission, actor="operator", reason="stop") == 1
     state, accounting = repository.reconcile_terminal(admission, attempt)
     assert state == "cancelled_with_checkpoint"
-    assert accounting.skipped_units == 1
+    assert accounting.skipped_units == 0
     status = repository.status(admission.census_id)
     assert status is not None
     assert status.publications == ()

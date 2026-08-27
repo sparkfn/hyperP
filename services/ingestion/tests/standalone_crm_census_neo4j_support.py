@@ -15,6 +15,7 @@ from src.graph.bitrix_source_instances import BitrixSourceInstanceRepository
 from src.graph.bootstrap import bootstrap_legacy_bitrix_source_instance
 from src.graph.client import Neo4jClient
 from src.graph.ingestion_control_instance_migration import migrate_ingestion_control_instances
+from src.graph.queries.bitrix_source_instances import CREATE_BITRIX_SOURCE_INSTANCE_CONSTRAINTS
 from src.graph.queries.standalone_crm_census import (
     CREATE_STANDALONE_CRM_CENSUS_CONSTRAINTS,
     CREATE_STANDALONE_CRM_CENSUS_INDEXES,
@@ -31,6 +32,7 @@ _CENSUS_CONSTRAINTS = (
     "standalone_crm_census_unit_unique",
     "standalone_crm_census_checkpoint_unique",
     "standalone_crm_census_publication_unique",
+    "standalone_crm_census_publication_id_unique",
     "standalone_crm_census_call_intent_unique",
     "standalone_crm_census_fence_unique",
 )
@@ -39,6 +41,17 @@ _CENSUS_INDEXES = (
     "standalone_crm_census_publication_scan",
     "standalone_crm_census_call_scan",
     "standalone_crm_census_fence_scan",
+)
+
+# The #272 migration normally follows ``apply_schema`` in production. Census
+# tests deliberately install #273 DDL only when a test asks for it, so restore
+# just the #272 migration's required base schema after the control-instance
+# suite drops its test constraints.
+CONTROL_MIGRATION_BASE_CONSTRAINTS: tuple[str, ...] = (
+    """CREATE CONSTRAINT data_migration_key_unique IF NOT EXISTS
+FOR (migration:DataMigration)
+REQUIRE migration.migration_key IS UNIQUE""",
+    *CREATE_BITRIX_SOURCE_INSTANCE_CONSTRAINTS,
 )
 
 
@@ -103,6 +116,8 @@ def install_census_schema(env: CensusNeo4j) -> None:
 def prepare_272(env: CensusNeo4j) -> None:
     """Use #272's real migration and registry operations, not surrogate topology."""
     with env.driver.session() as session:
+        for statement in CONTROL_MIGRATION_BASE_CONSTRAINTS:
+            session.run(statement).consume()
         session.run(
             "MERGE (source:SourceSystem {source_key: 'bitrix_chat'}) SET source.is_active = true"
         ).consume()

@@ -107,6 +107,10 @@ MATCH (old:StandaloneCrmCensusAttempt {census_id: $census_id, generation: $gener
   fence_token: $parent_fence_token, state: 'running'})
 WHERE old.lease_until < datetime() AND census.current_generation = $generation
   AND census.fence_token = $parent_fence_token AND census.cancel_requested_at IS NULL
+  AND NOT EXISTS {
+    MATCH (:StandaloneCrmHttpCallReservation {census_id: $census_id,
+      generation: $generation, outcome: 'reserved'})
+  }
 SET old.state = 'superseded', old.superseded_at = datetime(), old.updated_at = datetime(),
     census.state = 'recovering', census.updated_at = datetime()
 WITH census
@@ -180,17 +184,15 @@ RETURN reservation.intent_id AS intent_id
 )
 
 
-CLASSIFY_CURRENT_RESERVED_HTTP_CALL_UNKNOWN = (
-    _FRESHNESS
-    + """
+CLASSIFY_CURRENT_RESERVED_HTTP_CALL_UNKNOWN = """
+MATCH (ready273:DataMigration {migration_key: 'standalone_crm_census_control_v1'})
+WHERE ready273.completed_at IS NOT NULL
 MATCH (census:StandaloneCrmCensus {census_id: $census_id, fingerprint: $fingerprint,
   authority_digest: $authority_digest, source_instance_id: $source_instance_id,
   control_instance_id: $control_instance_id})
 MATCH (reservation:StandaloneCrmHttpCallReservation {intent_id: $intent_id,
-  census_id: $census_id, generation: census.current_generation,
-  fence_token: census.fence_token, outcome: 'reserved'})
+  census_id: $census_id, outcome: 'reserved'})
 SET reservation.outcome = 'unknown', reservation.unknown_at = datetime(),
   reservation.updated_at = datetime(), census.updated_at = datetime()
 RETURN reservation.intent_id AS intent_id
 """
-)

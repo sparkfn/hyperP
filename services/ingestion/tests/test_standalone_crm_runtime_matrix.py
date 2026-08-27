@@ -135,9 +135,13 @@ class _Repo:
         )
         self.window: object | None = None
         self.failed = False
+        self.stale_marked = 0
+        self.terminal_state: str | None = None
         self.reserved = 0
+        self.publication_params: list[dict[str, object]] = []
         self.no_source = 0
         self.ambiguous = 0
+        self.pre_broker_authorizations = 0
         self.terminalized = 0
         self.paused = 0
         self.status_census: dict[str, object] = {}
@@ -178,11 +182,16 @@ class _Repo:
         assert reason == "freeze_incomplete"
         self.failed = True
 
+    def mark_authority_stale(self, admission: object) -> None:
+        del admission
+        self.stale_marked += 1
+
     def reserve_publication(self, **kwargs: object) -> object:
         self.reserved += 1
+        self.publication_params.append(kwargs)
 
         class P:
-            publication_id = "publication"
+            publication_id = kwargs["publication_id"]
             task_id = "child-task"
             payload_json = kwargs["payload_json"]
             task_name = "child"
@@ -192,6 +201,10 @@ class _Repo:
 
     def mark_publication_publishing(self, *args: object) -> None:
         del args
+
+    def authorize_publication_broker(self, *args: object) -> None:
+        del args
+        self.pre_broker_authorizations += 1
 
     def mark_publication_ambiguous(self, *args: object) -> None:
         del args
@@ -237,6 +250,27 @@ def test_every_nonempty_source_subset_freezes_selected_window(kinds: tuple[str, 
     assert repo.window is not None
     assert repo.reserved == 0
     assert publisher.published == []
+
+
+def test_runtime_envelope_publication_identity_matches_the_durable_reservation() -> None:
+    repo = _Repo()
+    publisher = _Publisher()
+    runtime = StandaloneCrmCensusRuntime(
+        repository=repo,  # type: ignore[arg-type]
+        admission=_Admission(),
+        authority=_Authority(),
+        publisher=publisher,
+        probe_client_factory=lambda _adapter: _Client({"contact": 1, "lead": 0, "company": 0}),
+    )
+
+    runtime.start_or_recover(_source(("contact",)), task_id="parent")
+
+    assert repo.reserved == 1
+    assert repo.pre_broker_authorizations == 1
+    reservation = repo.publication_params[0]
+    payload = json.loads(cast(str, reservation["payload_json"]))
+    assert reservation["publication_id"] == payload["publication_id"]
+    assert reservation["publication_id"] == "census:1:contact:1"
 
 
 def test_partial_probe_failure_freezes_failed_without_publication() -> None:
@@ -403,6 +437,8 @@ def test_stale_authority_after_source_reservation_marks_ambiguous_without_broker
         runtime.start_or_recover(_source(("contact",)), task_id="task")
     assert repo.reserved == 1
     assert repo.ambiguous == 1
+    assert repo.stale_marked == 1
+    assert repo.terminal_state is None
     assert publisher.published == []
 
 
@@ -481,6 +517,8 @@ def test_stale_mapping_authority_after_reservation_marks_ambiguous() -> None:
     assert created is False
     assert repo.reserved == 1
     assert repo.ambiguous == 1
+    assert repo.stale_marked == 1
+    assert repo.terminal_state is None
     assert publisher.published == []
 
 
