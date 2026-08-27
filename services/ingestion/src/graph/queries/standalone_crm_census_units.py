@@ -109,6 +109,7 @@ MERGE (fence:StandaloneCrmUnitFence {census_id: $census_id, generation: $generat
   unit_kind: $unit_kind})
 ON CREATE SET fence.parent_fence_token = $parent_fence_token, fence.child_fence_token = 0,
   fence.state = 'released', fence.created_at = datetime(), fence.updated_at = datetime()
+WITH census, unit, fence
 CALL {
   WITH census, unit, fence
   UNWIND CASE WHEN fence.state = 'active' AND fence.parent_fence_token = $parent_fence_token

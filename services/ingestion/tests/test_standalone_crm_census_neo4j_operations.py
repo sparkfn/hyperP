@@ -96,6 +96,11 @@ def test_publication_reservation_is_idempotent_conflict_safe_and_concurrent(
         reserve('{"changed":true}')
     with pytest.raises(StandaloneCrmCensusConflictError):
         reserve("{}", publication_id="publication-two")
+    assert repository.request_cancel(census.admission, actor="operator", reason="isolate") == 1
+    assert (
+        repository.reconcile_terminal(census.admission, census.attempt)[0]
+        == "cancelled_with_checkpoint"
+    )
 
     census_two = _claim_source(census_neo4j, "publication-concurrent")
     _freeze(repository, census_two, (("contact", 1),))
@@ -876,6 +881,14 @@ def test_expiry_boundaries_reject_new_work_but_allow_exact_cancel_settlement(
             payload_json="{}",
             payload_digest="sha256:expired",
         )
+    assert (
+        repository.request_cancel(reserve_expired.admission, actor="operator", reason="expired")
+        == 1
+    )
+    assert (
+        repository.reconcile_terminal(reserve_expired.admission, reserve_expired.attempt)[0]
+        == "cancelled_with_checkpoint"
+    )
 
     active = _claim_source(census_neo4j, "expiry-settlement")
     _freeze(repository, active, (("contact", 2),))
