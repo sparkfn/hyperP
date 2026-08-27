@@ -84,10 +84,21 @@ _REQUIRED_SPECS: tuple[_ConstraintSpec, ...] = (
         ("control_instance_id", "successor_generation_id"),
     ),
     _ConstraintSpec(
-        "bitrix_source_instance_identity_unique",
-        "BitrixSourceInstance",
-        ("source_key", "source_instance_id"),
+        "stage_history_review_command_control_id_unique",
+        "StageHistoryReviewCommand",
+        ("control_instance_id", "command_id"),
     ),
+    _ConstraintSpec(
+        "bitrix_execution_source_binding_control_unique",
+        "BitrixExecutionSourceBinding",
+        ("source_key", "control_instance_id"),
+    ),
+)
+
+_REGISTRY_CONSTRAINT_SPEC = _ConstraintSpec(
+    "bitrix_source_instance_identity_unique",
+    "BitrixSourceInstance",
+    ("source_key", "source_instance_id"),
 )
 
 _RETIRED_SPECS: tuple[_ConstraintSpec, ...] = (
@@ -137,28 +148,19 @@ _RETIRED_SPECS: tuple[_ConstraintSpec, ...] = (
         "bitrix_dispatch_control_source_unique", "BitrixDispatchControl", ("source_key",)
     ),
     _ConstraintSpec(
+        "stage_history_review_command_id_unique",
+        "StageHistoryReviewCommand",
+        ("command_id",),
+    ),
+    _ConstraintSpec(
         "bitrix_dispatch_outbox_successor_unique",
         "BitrixBackfillDispatchOutbox",
         ("successor_generation_id",),
     ),
 )
 
-_RETIRED_NAMES = frozenset(
-    {
-        "ingest_run_worker_task_id_unique",
-        "ingest_run_source_idempotency_unique",
-        "ingestion_checkpoint_key_unique",
-        "ingestion_checkpoint_identity_unique",
-        "ingestion_logical_run_source_idempotency_unique",
-        "bitrix_ingestion_stream_identity_unique",
-        "bitrix_backfill_generation_id_unique",
-        "bitrix_known_owner_set_id_unique",
-        "bitrix_known_owner_member_unique",
-        "bitrix_backfill_coverage_identity_unique",
-        "bitrix_dispatch_control_source_unique",
-        "bitrix_dispatch_outbox_successor_unique",
-    }
-)
+_RETIRED_NAMES = frozenset(spec.name for spec in _RETIRED_SPECS)
+_ALL_REQUIRED_SPECS = (*_REQUIRED_SPECS, _REGISTRY_CONSTRAINT_SPEC)
 
 SHOW_BITRIX_CONTROL_CONSTRAINTS = (
     "SHOW CONSTRAINTS YIELD name, type, entityType, labelsOrTypes, properties "
@@ -181,14 +183,14 @@ async def assert_bitrix_control_schema_ready(tx: AsyncManagedTransaction) -> Non
         if name in definitions:
             raise BitrixApiAdmissionError("Bitrix control schema is not ready")
     expected_identities = {
-        (spec.label, spec.properties) for spec in (*_RETIRED_SPECS, *_REQUIRED_SPECS)
+        (spec.label, spec.properties) for spec in (*_RETIRED_SPECS, *_ALL_REQUIRED_SPECS)
     }
-    known_names = {spec.name for spec in (*_RETIRED_SPECS, *_REQUIRED_SPECS)}
+    known_names = {spec.name for spec in (*_RETIRED_SPECS, *_ALL_REQUIRED_SPECS)}
     for name, record in definitions.items():
         identity = _node_constraint_identity(record)
         if name not in known_names and identity in expected_identities:
             raise BitrixApiAdmissionError("Bitrix control schema is not ready")
-    for spec in _REQUIRED_SPECS:
+    for spec in _ALL_REQUIRED_SPECS:
         required_record = definitions.get(spec.name)
         if required_record is None or not _matches_spec(required_record, spec):
             raise BitrixApiAdmissionError("Bitrix control schema is not ready")
