@@ -12,7 +12,7 @@ from src.bitrix_ingestion_models import CrmActivityProjection
 from src.graph import queries
 from src.graph.client import Neo4jClient
 from src.models import RecordType, SourceRecordEnvelope, SourceRecordParentRef
-from src.pipeline_crm import ingest_crm_history_record
+from src.pipeline_crm import ingest_call_record, ingest_crm_history_record
 
 
 class _Result:
@@ -51,7 +51,7 @@ class _Tx:
 
 
 class _Session:
-    def __init__(self, tx: _Tx) -> None:
+    def __init__(self, tx: object) -> None:
         self._tx = tx
 
     def __enter__(self) -> _Session:
@@ -65,11 +65,27 @@ class _Session:
 
 
 class _Client:
-    def __init__(self) -> None:
-        self.tx = _Tx()
+    def __init__(self, tx: object | None = None) -> None:
+        self.tx = _Tx() if tx is None else tx
 
     def session(self) -> _Session:
         return _Session(self.tx)
+
+
+class _CreateTx:
+    def __init__(self, create_query: str) -> None:
+        self._create_query = create_query
+        self.calls: list[tuple[str, dict[str, object]]] = []
+
+    def run(self, query: str, **kwargs: object) -> _Result:
+        self.calls.append((query, kwargs))
+        if query == queries.FIND_ANY_SOURCE_RECORD:
+            return _Result(None)
+        if query == self._create_query:
+            return _Result({"source_record_pk": "created-pk", "person_id": "person-1"})
+        if query == queries.LINK_SOURCE_RECORD_TO_RUN:
+            return _Result(None)
+        raise AssertionError("unexpected query")
 
 
 def _activity_envelope() -> SourceRecordEnvelope:
@@ -109,6 +125,7 @@ def test_bitrix_activity_projection_defaults_to_canonical_v2() -> None:
 def test_same_hash_legacy_activity_rematerializes_as_v2(monkeypatch: MonkeyPatch) -> None:
     monkeypatch.setattr("src.pipeline_crm.load_locked_source_state", lambda *_args: None)
     client = _Client()
+    tx = cast(_Tx, client.tx)
 
     result = ingest_crm_history_record(
         cast(Neo4jClient, client),
@@ -118,7 +135,7 @@ def test_same_hash_legacy_activity_rematerializes_as_v2(monkeypatch: MonkeyPatch
 
     assert result.source_record_pk == "history-pk"
     assert result.skipped_duplicate is True
-    assert client.tx.calls[0] == (
+    assert tx.calls[0] == (
         queries.FIND_ANY_SOURCE_RECORD,
         {
             "source_system": "bitrix_chat",
@@ -126,7 +143,7 @@ def test_same_hash_legacy_activity_rematerializes_as_v2(monkeypatch: MonkeyPatch
             "source_record_id": "bitrix-crm-history-900",
         },
     )
-    query, params = client.tx.calls[1]
+    query, params = tx.calls[1]
     assert query == queries.REMATERIALIZE_CRM_HISTORY_PROJECTION
     assert params == {
         "source_record_pk": "history-pk",
@@ -145,3 +162,62 @@ def test_same_hash_legacy_activity_rematerializes_as_v2(monkeypatch: MonkeyPatch
     assert "SET history.record_hash" not in query
     assert "SET history.raw_payload" not in query
     assert "SET history.source_record_id" not in query
+
+
+def _call_envelope() -> SourceRecordEnvelope:
+    return SourceRecordEnvelope(
+        source_system="bitrix_chat",
+        source_record_id="bitrix-call-900",
+        record_type=RecordType.CALL,
+        observed_at="2026-08-07T00:00:00Z",
+        record_hash="sha256:call",
+        raw_payload={"crm_activity_id": "900", "owner_id": "501"},
+        parent_ref=SourceRecordParentRef(
+            parent_source_system="bitrix_chat",
+            parent_source_record_id="bitrix-crm-history-900",
+            parent_record_type=RecordType.CRM_HISTORY,
+        ),
+    )
+
+
+def test_direct_crm_records_link_to_the_requested_control_instance(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("src.pipeline_crm.load_locked_source_state", lambda *_args: None)
+    monkeypatch.setattr("src.pipeline_crm._owner_scope_or_retry", lambda *_args: "in_scope")
+    monkeypatch.setattr("src.pipeline_crm._record_activity_unit", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        "src.pipeline_crm._link_history_to_conversations_in_transaction",
+        lambda *_args: None,
+    )
+
+    legacy_tx = _CreateTx(queries.CREATE_CRM_HISTORY)
+    ingest_crm_history_record(
+        cast(Neo4jClient, _Client(legacy_tx)),
+        _activity_envelope(),
+        ingest_run_id="run-legacy",
+    )
+    nonlegacy_tx = _CreateTx(queries.CREATE_CALL_FROM_HISTORY)
+    ingest_call_record(
+        cast(Neo4jClient, _Client(nonlegacy_tx)),
+        _call_envelope(),
+        ingest_run_id="run-portal",
+        control_instance_id="portal-one",
+    )
+
+    legacy_link = next(
+        params for query, params in legacy_tx.calls if query == queries.LINK_SOURCE_RECORD_TO_RUN
+    )
+    nonlegacy_link = next(
+        params for query, params in nonlegacy_tx.calls if query == queries.LINK_SOURCE_RECORD_TO_RUN
+    )
+    assert legacy_link == {
+        "source_record_pk": "created-pk",
+        "ingest_run_id": "run-legacy",
+        "control_instance_id": "legacy-default",
+    }
+    assert nonlegacy_link == {
+        "source_record_pk": "created-pk",
+        "ingest_run_id": "run-portal",
+        "control_instance_id": "portal-one",
+    }

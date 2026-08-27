@@ -10,6 +10,12 @@ from typing import Protocol, cast
 
 import redis
 
+from src.source_instances import (
+    LEGACY_DEFAULT_CONTROL_INSTANCE_ID,
+    effective_control_instance_id,
+    scope_control_identity,
+)
+
 _STAGE_HISTORY_LOCK_KEY = "profile_unifier:ingestion:source:bitrix_chat:crm_stage_history"
 _RELEASE_SCRIPT = """
 if redis.call('get', KEYS[1]) == ARGV[1] then
@@ -42,6 +48,7 @@ class RedisLockClient(Protocol):
 class StageHistoryTaskLock:
     client: RedisLockClient
     owner: str
+    control_instance_id: str = LEGACY_DEFAULT_CONTROL_INSTANCE_ID
     lease_seconds: int = 3600
     renewal_seconds: int = 300
     _stop: threading.Event = field(init=False, repr=False)
@@ -56,9 +63,14 @@ class StageHistoryTaskLock:
         self._stop = threading.Event()
         self._lost = threading.Event()
 
+    @property
+    def key(self) -> str:
+        """Return the historic key for legacy and a namespace for other controls."""
+        return scope_control_identity(_STAGE_HISTORY_LOCK_KEY, self.control_instance_id)
+
     def acquire(self) -> bool:
         acquired = self.client.set(
-            _STAGE_HISTORY_LOCK_KEY,
+            self.key,
             self.owner,
             nx=True,
             ex=self.lease_seconds,
@@ -77,7 +89,7 @@ class StageHistoryTaskLock:
         self._stop.set()
         if self._thread is not None:
             self._thread.join(timeout=float(self.renewal_seconds) + 1.0)
-        self.client.eval(_RELEASE_SCRIPT, 1, _STAGE_HISTORY_LOCK_KEY, self.owner)
+        self.client.eval(_RELEASE_SCRIPT, 1, self.key, self.owner)
 
     def _renew(self) -> None:
         while not self._stop.wait(self.renewal_seconds):
@@ -88,7 +100,7 @@ class StageHistoryTaskLock:
         renewed = self.client.eval(
             _RENEW_SCRIPT,
             1,
-            _STAGE_HISTORY_LOCK_KEY,
+            self.key,
             self.owner,
             self.lease_seconds,
         )
@@ -103,12 +115,18 @@ def stage_history_task_lock(
     broker_url: str,
     *,
     owner: str,
+    control_instance_id: str = LEGACY_DEFAULT_CONTROL_INSTANCE_ID,
 ) -> Iterator[StageHistoryTaskLock]:
     client = cast(
         RedisLockClient,
         redis.Redis.from_url(broker_url, decode_responses=True),
     )
-    lock = StageHistoryTaskLock(client, owner)
+    control = effective_control_instance_id(control_instance_id)
+    lock = StageHistoryTaskLock(
+        client,
+        scope_control_identity(owner, control),
+        control_instance_id=control,
+    )
     if not lock.acquire():
         raise RuntimeError("crm_stage_history is already running")
     try:

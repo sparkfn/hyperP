@@ -278,11 +278,12 @@ CREATE (sr)-[:LINKED_TO {linked_at: datetime()}]->(p)
 
 CREATE_INGEST_RUN = """
 MATCH (ss:SourceSystem {source_key: $source_key})
-OPTIONAL MATCH (dispatch:BitrixDispatchControl {source_key: $source_key})
+OPTIONAL MATCH (dispatch:BitrixDispatchControl {source_key: $source_key, control_instance_id: $control_instance_id})
 WITH ss, dispatch
 WHERE coalesce(dispatch.blocked, false) = false
 CREATE (ir:IngestRun {
     ingest_run_id: randomUUID(),
+    control_instance_id: $control_instance_id,
     run_type: $run_type,
     mode: $mode,
     status: 'started',
@@ -297,13 +298,14 @@ RETURN ir.ingest_run_id AS ingest_run_id
 
 CREATE_OR_REUSE_WORKER_INGEST_RUN = """
 MATCH (ss:SourceSystem {source_key: $source_key})
-OPTIONAL MATCH (dispatch:BitrixDispatchControl {source_key: $source_key})
+OPTIONAL MATCH (dispatch:BitrixDispatchControl {source_key: $source_key, control_instance_id: $control_instance_id})
 WITH ss, dispatch
 WHERE coalesce(dispatch.blocked, false) = false
-MERGE (ir:IngestRun {worker_task_id: $worker_task_id})
+MERGE (ir:IngestRun {control_instance_id: $control_instance_id, worker_task_id: $worker_task_id})
 ON CREATE SET
     ir.ingest_run_id = randomUUID(),
     ir.source_key = $source_key,
+    ir.control_instance_id = $control_instance_id,
     ir.run_type = $run_type,
     ir.mode = $mode,
     ir.status = 'started',
@@ -324,7 +326,9 @@ RETURN ir.ingest_run_id AS ingest_run_id,
 """
 
 UPDATE_INGEST_RUN = """
-MATCH (ir:IngestRun {ingest_run_id: $ingest_run_id})
+MATCH (ir:IngestRun {
+  ingest_run_id: $ingest_run_id, control_instance_id: $control_instance_id
+})
 SET ir.status = $status,
     ir.finished_at = datetime(),
     ir.record_count = $record_count,
@@ -332,7 +336,9 @@ SET ir.status = $status,
 """
 
 MARK_INGEST_RUN_FAILED = """
-MATCH (ir:IngestRun {ingest_run_id: $ingest_run_id})
+MATCH (ir:IngestRun {
+  ingest_run_id: $ingest_run_id, control_instance_id: $control_instance_id
+})
 SET ir.status = 'failed',
     ir.finished_at = datetime(),
     ir.record_count = $record_count,
@@ -347,12 +353,16 @@ SET ir.status = 'failed',
 """
 
 GET_INGEST_RUN_STATUS = """
-MATCH (ir:IngestRun {ingest_run_id: $ingest_run_id})
+MATCH (ir:IngestRun {
+  ingest_run_id: $ingest_run_id, control_instance_id: $control_instance_id
+})
 RETURN ir.status AS status
 """
 
 LINK_SOURCE_RECORD_TO_RUN = """
 MATCH (sr:SourceRecord {source_record_pk: $source_record_pk})
-MATCH (ir:IngestRun {ingest_run_id: $ingest_run_id})
+MATCH (ir:IngestRun {
+  ingest_run_id: $ingest_run_id, control_instance_id: $control_instance_id
+})
 CREATE (sr)-[:PART_OF_RUN]->(ir)
 """

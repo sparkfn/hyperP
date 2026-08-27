@@ -11,6 +11,7 @@ from neo4j import Record
 from src.bitrix_ingestion_models import BitrixStreamKey, FenceContext
 from src.models import JsonValue
 from src.resumable import LogicalRunStatus
+from src.source_instances import LEGACY_DEFAULT_CONTROL_INSTANCE_ID
 
 
 @dataclass(frozen=True)
@@ -23,6 +24,7 @@ class LogicalRunAttempt:
     generation: int
     logical_status: LogicalRunStatus
     created: bool
+    control_instance_id: str = LEGACY_DEFAULT_CONTROL_INSTANCE_ID
 
 
 @dataclass(frozen=True)
@@ -46,6 +48,7 @@ class LogicalRunState:
     excluded_count: int
     retry_count: int
     checkpointed_at: str | None
+    control_instance_id: str = LEGACY_DEFAULT_CONTROL_INSTANCE_ID
 
 
 BitrixStreamAdmissionOutcome = Literal["admitted", "coalesced", "replaced"]
@@ -67,6 +70,7 @@ def bitrix_stream_admission(record: Record | None) -> BitrixStreamAdmission:
     outcome = _bitrix_stream_admission_outcome(record)
     fence_context = FenceContext(
         logical_run_id=_required_str(record, "logical_run_id"),
+        control_instance_id=_required_str(record, "control_instance_id"),
         ingest_run_id=_required_str(record, "ingest_run_id"),
         source_key=_required_str(record, "source_key"),
         stream_key=_bitrix_stream_key(record),
@@ -86,6 +90,7 @@ def logical_attempt(record: Record | None) -> LogicalRunAttempt:
         raise ValueError("Logical-run creation did not return a record")
     return LogicalRunAttempt(
         logical_run_id=_required_str(record, "logical_run_id"),
+        control_instance_id=_required_str(record, "control_instance_id"),
         ingest_run_id=_required_str(record, "ingest_run_id"),
         worker_task_id=_required_str(record, "worker_task_id"),
         generation=_required_int(record, "generation"),
@@ -98,6 +103,7 @@ def resumed_attempt(record: Record) -> LogicalRunAttempt:
     """Map a newly created resume attempt returned by the generation CAS."""
     return LogicalRunAttempt(
         logical_run_id=_required_str(record, "logical_run_id"),
+        control_instance_id=_required_str(record, "control_instance_id"),
         ingest_run_id=_required_str(record, "ingest_run_id"),
         worker_task_id=_required_str(record, "worker_task_id"),
         generation=_required_int(record, "generation"),
@@ -113,6 +119,7 @@ def logical_state(record: Record) -> LogicalRunState:
         status=_logical_status(record, "status"),
         generation=_required_int(record, "generation"),
         source_key=_required_str(record, "source_key"),
+        control_instance_id=_required_str(record, "control_instance_id"),
         mode=_required_str(record, "mode"),
         dump_path=_optional_str(record, "dump_path"),
         entity_key=_optional_str(record, "entity_key"),

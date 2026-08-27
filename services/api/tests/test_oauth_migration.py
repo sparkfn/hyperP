@@ -16,7 +16,6 @@ async def test_startup_does_not_delete_oauth_clients_or_clear_tokens() -> None:
 
     with (
         patch.object(app, "validate_oauth_runtime_config"),
-        patch.object(app, "_ensure_ingest_run_idempotency", new=AsyncMock()),
         patch.object(app, "_ensure_source_record_identity_lock", new=AsyncMock()),
         patch.object(app, "_ensure_user_constraint", new=AsyncMock()),
         patch.object(app, "_ensure_oauth_client_constraints", new=AsyncMock()),

@@ -43,6 +43,7 @@ from src.connectors.whatsadmin_api.credentials import WHATSADMIN_ENTITIES
 from src.errors import SourceNotConfiguredError
 from src.graph import queries
 from src.graph.bitrix_backfill import BitrixBackfillRepository
+from src.graph.bitrix_source_instances import BitrixSourceInstanceRepository
 from src.graph.client import Neo4jClient
 from src.graph.ingestion_control import BitrixStreamControl, LogicalRunControl
 from src.graph.ingestion_control_models import LogicalRunState
@@ -78,6 +79,12 @@ from src.matching.pair_score import score_person_pair
 from src.pipeline_knows import KnowsMaterializationPhase, materialize_knows_batch
 from src.pipeline_person_pairs import _ENGINE_VERSION, _POLICY_VERSION
 from src.resumable import AttemptStatus, CheckpointDescriptor
+from src.source_instances import (
+    LEGACY_DEFAULT_CONTROL_INSTANCE_ID,
+    effective_control_instance_id,
+    effective_source_instance_id,
+    scope_control_identity,
+)
 
 LegacyBitrixExecutionStream = Literal["crm_deals", "crm_activities", "openlines_conversations"]
 
@@ -307,6 +314,24 @@ def _terminal_checkpoint_counts(state: LogicalRunState) -> tuple[int, int, int, 
     )
 
 
+def _logical_control_for_control(
+    client: Neo4jClient,
+    control_instance_id: str,
+) -> LogicalRunControl:
+    if control_instance_id == LEGACY_DEFAULT_CONTROL_INSTANCE_ID:
+        return LogicalRunControl(client)
+    return LogicalRunControl(client, control_instance_id)
+
+
+def _backfill_repository_for_control(
+    client: Neo4jClient,
+    control_instance_id: str,
+) -> BitrixBackfillRepository:
+    if control_instance_id == LEGACY_DEFAULT_CONTROL_INSTANCE_ID:
+        return BitrixBackfillRepository(client)
+    return BitrixBackfillRepository(client, control_instance_id)
+
+
 def _get_or_materialize_known_owner_set(
     *,
     client: Neo4jClient,
@@ -314,7 +339,7 @@ def _get_or_materialize_known_owner_set(
     membership_set_id: str,
     fence_context: FenceContext,
 ) -> KnownOwnerMembershipSet:
-    repository = BitrixBackfillRepository(client)
+    repository = _backfill_repository_for_control(client, fence_context.control_instance_id)
     existing = repository.find_known_owner_set(
         generation_id=generation_id,
         membership_set_id=membership_set_id,
@@ -342,6 +367,7 @@ def _run_split_bitrix_ingestion(
     max_calls: int | None = None,
     max_rows: int | None = None,
     max_runtime_seconds: int | None = None,
+    control_instance_id: str = LEGACY_DEFAULT_CONTROL_INSTANCE_ID,
 ) -> IngestionSummary:
     """Create, claim, fence, execute, and terminate one canonical split attempt."""
     if stream_key == "crm_stage_history":
@@ -350,7 +376,13 @@ def _run_split_bitrix_ingestion(
     started_at = time.monotonic()
     checkpoint = _split_checkpoint(stream_key, source_window)
     client = Neo4jClient(get_settings())
-    logical = LogicalRunControl(client)
+    logical = _logical_control_for_control(client, control_instance_id)
+    repository = _backfill_repository_for_control(client, control_instance_id)
+    if (
+        generation_context is not None
+        and generation_context.control_instance_id != control_instance_id
+    ):
+        raise ValueError("generation control_instance_id does not match the split task")
     try:
         configuration_fingerprint = _split_configuration_fingerprint(
             source_key=source_key,
@@ -362,6 +394,7 @@ def _run_split_bitrix_ingestion(
         )
         attempt = logical.create_or_reuse(
             source_key=source_key,
+            control_instance_id=control_instance_id,
             mode=mode,
             dump_path=dump_path,
             entity_key=None,
@@ -438,7 +471,7 @@ def _run_split_bitrix_ingestion(
         if resume_known_refresh:
             assert generation_context is not None
             assert membership_set_id is not None
-            membership = BitrixBackfillRepository(client).get_known_owner_set(
+            membership = repository.get_known_owner_set(
                 generation_id=generation_context.generation_id,
                 membership_set_id=membership_set_id,
             )
@@ -457,6 +490,7 @@ def _run_split_bitrix_ingestion(
                 ingest_run_id=attempt.ingest_run_id,
                 attempt_generation=attempt.generation,
                 worker_task_id=worker_task_id,
+                control_instance_id=control_instance_id,
                 replace_active=generation_context is not None,
             )
         except Exception as exc:
@@ -483,7 +517,7 @@ def _run_split_bitrix_ingestion(
             )
         if generation_context is not None:
             try:
-                BitrixBackfillRepository(client).attach_logical_run(
+                repository.attach_logical_run(
                     generation_id=generation_context.generation_id,
                     stream_key=stream_key,
                     logical_run_id=attempt.logical_run_id,
@@ -638,7 +672,10 @@ def _run_split_bitrix_ingestion(
         client.close()
 
 
-def _get_existing_ingest_run_status(ingest_run_id: str) -> str | None:
+def _get_existing_ingest_run_status(
+    ingest_run_id: str,
+    control_instance_id: str = LEGACY_DEFAULT_CONTROL_INSTANCE_ID,
+) -> str | None:
     """Read the current status for a run dispatched by the API."""
     client = Neo4jClient(get_settings())
 
@@ -646,6 +683,7 @@ def _get_existing_ingest_run_status(ingest_run_id: str) -> str | None:
         record = tx.run(
             queries.GET_INGEST_RUN_STATUS,
             ingest_run_id=ingest_run_id,
+            control_instance_id=control_instance_id,
         ).single()
         if record is None:
             return None
@@ -760,11 +798,14 @@ def _source_lock_keys(
     source_key: str,
     mode: str,
     entity_key: str | None,
+    control_instance_id: str = LEGACY_DEFAULT_CONTROL_INSTANCE_ID,
 ) -> tuple[str, ...]:
     """Return source scopes, including legacy mode keys for rolling upgrades."""
-    lock_source_key = "bitrix_chat" if source_key == "bitrix_crm_identity" else source_key
+    control_scope = effective_control_instance_id(control_instance_id)
+    source_lock_family = "bitrix_chat" if source_key == "bitrix_crm_identity" else source_key
+    lock_source_key = scope_control_identity(source_lock_family, control_scope)
     legacy_modes = tuple(sorted({*_LEGACY_SOURCE_LOCK_MODES, mode}))
-    if lock_source_key != "whatsapp_chat":
+    if source_lock_family != "whatsapp_chat":
         return (
             lock_source_key,
             *(f"{lock_source_key}:{legacy_mode}" for legacy_mode in legacy_modes),
@@ -774,8 +815,8 @@ def _source_lock_keys(
         lock_key
         for entity in entities
         for lock_key in (
-            f"{source_key}:{entity}",
-            *(f"{source_key}:{legacy_mode}:{entity}" for legacy_mode in legacy_modes),
+            f"{lock_source_key}:{entity}",
+            *(f"{lock_source_key}:{legacy_mode}:{entity}" for legacy_mode in legacy_modes),
         )
     )
 
@@ -1374,6 +1415,7 @@ def run_ingestion_task(
     bitrix_max_rows: int | None = None,
     bitrix_max_runtime_seconds: int | None = None,
     scheduled_dispatch: bool = False,
+    control_instance_id: str | None = None,
 ) -> IngestionSummary:
     """Run a single ingestion under the cluster-wide concurrency cap."""
     if source_key == "bitrix_crm_identity":
@@ -1437,7 +1479,8 @@ def run_ingestion_task(
             isinstance(value, str) and value.strip() for value in generation_values
         ):
             raise ValueError("corrective split tasks require complete generation identity")
-    source_lock_keys = _source_lock_keys(source_key, mode, entity_key)
+    resolved_control_instance_id = effective_control_instance_id(control_instance_id)
+    source_lock_keys = _source_lock_keys(source_key, mode, entity_key, resolved_control_instance_id)
     try:
         if (
             not split_bitrix
@@ -1458,11 +1501,25 @@ def run_ingestion_task(
         settings = get_settings()
         setup_logging(settings.log_level)
         _initialize_graph_under_lock("source_ingestion")
+        if source_key == "bitrix_chat":
+            admission_client = Neo4jClient(settings)
+            try:
+                configured_source_instance = effective_source_instance_id(
+                    get_ingestion_config().bitrix_openlines.source_instance_id
+                )
+                BitrixSourceInstanceRepository(admission_client).admit(
+                    control_instance_id=resolved_control_instance_id,
+                    source_instance_id=configured_source_instance,
+                )
+            finally:
+                admission_client.close()
         celery_task_id = self.request.id
         source_lock_owner = str(celery_task_id) if celery_task_id is not None else None
         with _acquire_source_locks(source_lock_keys, source_lock_owner) as source_lock_leases:
             if ingest_run_id is not None:
-                status = _get_existing_ingest_run_status(ingest_run_id)
+                status = _get_existing_ingest_run_status(
+                    ingest_run_id, resolved_control_instance_id
+                )
                 if status in _TERMINAL_INGEST_RUN_STATUSES:
                     logger.info(
                         "IngestRun %s is already terminal (%s); skipping",
@@ -1500,6 +1557,7 @@ def run_ingestion_task(
                                 generation_id=bitrix_generation_id,
                                 boundary_digest=bitrix_boundary_digest,
                                 configuration_digest=bitrix_configuration_digest,
+                                control_instance_id=resolved_control_instance_id,
                             )
                             if bitrix_generation_id is not None
                             and bitrix_boundary_digest is not None
@@ -1510,6 +1568,7 @@ def run_ingestion_task(
                         max_calls=bitrix_max_calls,
                         max_rows=bitrix_max_rows,
                         max_runtime_seconds=bitrix_max_runtime_seconds,
+                        control_instance_id=resolved_control_instance_id,
                     )
                 elif celery_task_id is not None:
                     summary = run_ingestion(
@@ -1521,6 +1580,7 @@ def run_ingestion_task(
                         existing_ingest_run_id=ingest_run_id,
                         task_id=str(celery_task_id),
                         incremental=incremental,
+                        control_instance_id=resolved_control_instance_id,
                     )
                 elif ingest_run_id is None:
                     if entity_key is None:
@@ -1530,6 +1590,7 @@ def run_ingestion_task(
                             dump_path,
                             initialize_graph=False,
                             incremental=incremental,
+                            control_instance_id=resolved_control_instance_id,
                         )
                     else:
                         summary = run_ingestion(
@@ -1539,6 +1600,7 @@ def run_ingestion_task(
                             entity_key=entity_key,
                             initialize_graph=False,
                             incremental=incremental,
+                            control_instance_id=resolved_control_instance_id,
                         )
                 else:
                     if entity_key is None:
@@ -1549,6 +1611,7 @@ def run_ingestion_task(
                             initialize_graph=False,
                             existing_ingest_run_id=ingest_run_id,
                             incremental=incremental,
+                            control_instance_id=resolved_control_instance_id,
                         )
                     else:
                         summary = run_ingestion(
@@ -1559,6 +1622,7 @@ def run_ingestion_task(
                             initialize_graph=False,
                             existing_ingest_run_id=ingest_run_id,
                             incremental=incremental,
+                            control_instance_id=resolved_control_instance_id,
                         )
                 if require_clean_completion and summary["status"] != "completed":
                     raise Reject(

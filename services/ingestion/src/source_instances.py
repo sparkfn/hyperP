@@ -9,6 +9,9 @@ _SOURCE_INSTANCE_PATTERN = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?")
 # All pre-source-instance records are deterministically assigned this namespace.
 # It is deliberately a valid public slug rather than an endpoint, URL, or tenant name.
 LEGACY_DEFAULT_SOURCE_INSTANCE_ID = "legacy-default"
+# Control identity is separate from SourceRecord provenance. The compatibility
+# value is identical so old task payloads and lock names remain unchanged.
+LEGACY_DEFAULT_CONTROL_INSTANCE_ID = LEGACY_DEFAULT_SOURCE_INSTANCE_ID
 
 
 def canonical_source_instance_id(
@@ -37,3 +40,20 @@ def effective_source_instance_id(value: str | None) -> str:
     if value is None or value == LEGACY_DEFAULT_SOURCE_INSTANCE_ID:
         return LEGACY_DEFAULT_SOURCE_INSTANCE_ID
     return canonical_source_instance_id(value)
+
+
+def effective_control_instance_id(value: str | None) -> str:
+    """Resolve omitted control identity without changing legacy callers."""
+    if value is None or value == LEGACY_DEFAULT_CONTROL_INSTANCE_ID:
+        return LEGACY_DEFAULT_CONTROL_INSTANCE_ID
+    return canonical_source_instance_id(value, field_name="control_instance_id")
+
+
+def scope_control_identity(base: str, control_instance_id: str) -> str:
+    """Scope future control identifiers while preserving every legacy string."""
+    if not base:
+        raise ValueError("base control identity must be non-empty")
+    canonical = effective_control_instance_id(control_instance_id)
+    if canonical == LEGACY_DEFAULT_CONTROL_INSTANCE_ID:
+        return base
+    return f"ci1:{len(canonical)}:{canonical}:{base}"

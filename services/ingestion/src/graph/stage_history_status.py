@@ -17,6 +17,7 @@ from src.graph.queries.stage_history_ingestion import (
     GET_STAGE_HISTORY_RECONCILIATION,
     GET_STAGE_HISTORY_STATUS,
 )
+from src.source_instances import LEGACY_DEFAULT_CONTROL_INSTANCE_ID, effective_control_instance_id
 from src.stage_history_ingestion_models import (
     StageHistoryAccounting,
     StageHistoryAssociationAccounting,
@@ -77,14 +78,23 @@ class StageHistoryReconciliationReport:
 class StageHistoryStatusRepository:
     """Expose aggregate-only status and hostile reconciliation evidence."""
 
-    def __init__(self, client: Neo4jClient) -> None:
+    def __init__(
+        self,
+        client: Neo4jClient,
+        control_instance_id: str = LEGACY_DEFAULT_CONTROL_INSTANCE_ID,
+    ) -> None:
         self._client = client
+        self._control_instance_id = effective_control_instance_id(control_instance_id)
 
     def status(self, logical_run_id: str) -> StageHistoryRunStatus | None:
         _require_text(logical_run_id, "logical_run_id")
 
         def _read(tx: ManagedTransaction) -> Record | None:
-            return tx.run(GET_STAGE_HISTORY_STATUS, logical_run_id=logical_run_id).single()
+            return tx.run(
+                GET_STAGE_HISTORY_STATUS,
+                logical_run_id=logical_run_id,
+                control_instance_id=self._control_instance_id,
+            ).single()
 
         row = self._client.execute_read(_read)
         if row is None:
@@ -102,6 +112,7 @@ class StageHistoryStatusRepository:
                 return tx.run(
                     GET_STAGE_HISTORY_RECONCILIATION,
                     logical_run_id=logical_run_id,
+                    control_instance_id=self._control_instance_id,
                 ).single()
 
             reconciliation = self._client.execute_read(_reconcile_read)
@@ -160,7 +171,11 @@ class StageHistoryStatusRepository:
         _require_text(logical_run_id, "logical_run_id")
 
         def _read(tx: ManagedTransaction) -> Record | None:
-            return tx.run(GET_STAGE_HISTORY_RECONCILIATION, logical_run_id=logical_run_id).single()
+            return tx.run(
+                GET_STAGE_HISTORY_RECONCILIATION,
+                logical_run_id=logical_run_id,
+                control_instance_id=self._control_instance_id,
+            ).single()
 
         row = self._client.execute_read(_read)
         if row is None:
@@ -219,7 +234,11 @@ class StageHistoryStatusRepository:
         """Rebuild the exact immutable checkpoint snapshot for worker resume."""
 
         def _read(tx: ManagedTransaction) -> Record | None:
-            return tx.run(GET_STAGE_HISTORY_RECONCILIATION, logical_run_id=logical_run_id).single()
+            return tx.run(
+                GET_STAGE_HISTORY_RECONCILIATION,
+                logical_run_id=logical_run_id,
+                control_instance_id=self._control_instance_id,
+            ).single()
 
         row = self._client.execute_read(_read)
         if row is None:

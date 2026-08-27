@@ -14,7 +14,9 @@ from typing import NotRequired, TypedDict
 from neo4j import ManagedTransaction
 
 from src.graph import queries
+from src.graph.bitrix_source_instances import BITRIX_SOURCE_KEY, BitrixSourceInstanceRepository
 from src.graph.client import Neo4jClient
+from src.source_instances import LEGACY_DEFAULT_SOURCE_INSTANCE_ID
 
 logger = logging.getLogger(__name__)
 
@@ -276,7 +278,13 @@ def bootstrap_entities_and_sources(client: Neo4jClient) -> None:
     with client.session() as session:
         session.execute_write(_work)
     logger.info(
-        "Bootstrapped %d entities and %d source systems",
-        len(_ENTITIES),
-        len(_SOURCE_SYSTEMS),
+        "Bootstrapped %d entities and %d source systems", len(_ENTITIES), len(_SOURCE_SYSTEMS)
     )
+
+
+def bootstrap_legacy_bitrix_source_instance(client: Neo4jClient) -> None:
+    """Create only the reserved compatibility registration after control blocking."""
+    BitrixSourceInstanceRepository(client).register(
+        BITRIX_SOURCE_KEY, LEGACY_DEFAULT_SOURCE_INSTANCE_ID
+    )
+    logger.info("Bootstrapped the reserved legacy Bitrix source instance")

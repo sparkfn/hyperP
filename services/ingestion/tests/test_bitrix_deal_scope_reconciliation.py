@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable, Collection
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta, timezone
@@ -18,7 +19,8 @@ from src.bitrix_deal_scope_reconciliation import (
     refresh_known_owner_set,
 )
 from src.bitrix_ingestion_models import DealScopeState, ExecutionContext, FenceContext
-from src.connectors.bitrix_openlines.models import CrmDeal
+from src.connectors.bitrix_openlines.connector import build_crm_deal_envelope
+from src.connectors.bitrix_openlines.models import CrmContact, CrmDeal
 from src.graph.bitrix_deal_scope import CurrentDealScope
 from src.graph.client import Neo4jClient
 from src.models import RecordType, SourceRecordEnvelope
@@ -436,3 +438,84 @@ def test_known_owner_refresh_rechecks_runtime_after_batch_before_writes(
 
     assert client.chunks == [(1,)]
     assert _Pipeline.ingested == []
+
+
+def test_legacy_crm_deal_identity_v2_payload_and_hash_are_fixed() -> None:
+    contact = CrmContact(
+        id="42",
+        full_name="Ada Lovelace",
+        phones=("+65 5555 0101",),
+        emails=("ada@example.com",),
+    )
+    deal = CrmDeal(
+        id="7",
+        title="Renewal",
+        category_id="2",
+        stage_id="C2:NEW",
+        observed_at=datetime(2026, 8, 27, 12, 0, tzinfo=UTC),
+        primary_contact=contact,
+        contacts=(contact,),
+        contact_count=1,
+        has_ambiguous_contacts=False,
+        raw_payload={
+            "ID": "7",
+            "TITLE": "Renewal",
+            "CATEGORY_ID": "2",
+            "STAGE_ID": "C2:NEW",
+        },
+    )
+
+    envelope = build_crm_deal_envelope(deal, "entity-1", source_instance_id=None)
+
+    assert envelope["identity_link_key"] == "bitrix:legacy:deal:7"
+    assert (
+        envelope["record_hash"]
+        == "25a4dcc9f60107ae349fa8944813d01273931be8a285aa5ed19d1e4977c1b6eb"
+    )
+    expected_raw_payload = {
+        "crm_deal_id": "7",
+        "title": "Renewal",
+        "category_id": "2",
+        "stage_id": "C2:NEW",
+        "primary_contact_id": "42",
+        "primary_contact_kind": "contact",
+        "contact_count": 1,
+        "crm_contact_groups": [
+            [
+                {"type": "crm_contact_id", "value": "42", "is_verified": True},
+                {"type": "phone", "value": "+65 5555 0101", "is_verified": False},
+                {"type": "email", "value": "ada@example.com", "is_verified": False},
+            ]
+        ],
+        "crm_contact_raw_groups": [
+            [
+                {"type": "crm_contact_id", "value": "42", "is_verified": True},
+                {"type": "phone", "value": "+65 5555 0101", "is_verified": False},
+                {"type": "email", "value": "ada@example.com", "is_verified": False},
+            ]
+        ],
+        "crm_contact_ids": ["42"],
+        "crm_contact_resolution_required": False,
+        "crm_deal_identity_policy_version": "crm_deal_identity_v2",
+        "crm_contact_identity_metadata": [
+            {
+                "identity_policy_version": "crm_deal_identity_v2",
+                "crm_contact_id": "42",
+                "crm_contact_kind": "contact",
+                "phone_count": 1,
+                "email_count": 1,
+                "max_phone_count": 5,
+                "max_email_count": 5,
+                "channel_hints_suppressed": False,
+                "channel_hint_suppression_reasons": [],
+            }
+        ],
+        "deal": {
+            "ID": "7",
+            "TITLE": "Renewal",
+            "CATEGORY_ID": "2",
+            "STAGE_ID": "C2:NEW",
+        },
+    }
+    assert envelope["raw_payload"] == expected_raw_payload
+    assert "control_instance_id" not in json.dumps(envelope, sort_keys=True)

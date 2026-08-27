@@ -14,6 +14,7 @@ from src.graph.queries.bitrix_backfill import (
     SEAL_KNOWN_OWNER_SET,
     UPSERT_KNOWN_OWNER_MEMBERS,
 )
+from src.graph.queries.ingestion_control_instance_migration import NEW_CONSTRAINT_SPECS
 
 
 def test_stream_checkpoint_schemas_have_fixed_restart_boundaries() -> None:
@@ -64,12 +65,30 @@ def test_known_owner_refresh_binds_the_sealed_membership_set() -> None:
 
 def test_generation_topology_is_unique_and_child_runs_are_explicit() -> None:
     schema = "\n".join(CREATE_BITRIX_BACKFILL_CONSTRAINTS)
+    migrated = {name: (label, properties) for name, label, properties in NEW_CONSTRAINT_SPECS}
 
-    assert "BitrixBackfillGeneration" in schema
-    assert "BitrixKnownOwnerRefreshMember" in schema
-    assert "BitrixBackfillCoverage" in schema
+    assert "BitrixBackfillGeneration" not in schema
+    assert migrated["bitrix_backfill_generation_control_unique"] == (
+        "BitrixBackfillGeneration",
+        ("control_instance_id", "generation_id"),
+    )
+    assert migrated["bitrix_known_owner_member_control_unique"] == (
+        "BitrixKnownOwnerRefreshMember",
+        ("control_instance_id", "generation_id", "membership_set_id", "deal_id"),
+    )
+    assert migrated["bitrix_backfill_coverage_control_identity_unique"] == (
+        "BitrixBackfillCoverage",
+        (
+            "control_instance_id",
+            "generation_id",
+            "stream_key",
+            "source_identity",
+            "source_boundary",
+        ),
+    )
     assert "HAS_LOGICAL_RUN" in ATTACH_BACKFILL_LOGICAL_RUN
     assert "HAS_STREAM" in ATTACH_BACKFILL_LOGICAL_RUN
+    assert ATTACH_BACKFILL_LOGICAL_RUN.count("control_instance_id: $control_instance_id") >= 3
     assert "owner_set.status = 'building'" in PREPARE_KNOWN_OWNER_SET
     assert "UNWIND $members" in UPSERT_KNOWN_OWNER_MEMBERS
     assert "MERGE (owner_set)-[:HAS_MEMBER]->(member)" in UPSERT_KNOWN_OWNER_MEMBERS

@@ -22,6 +22,7 @@ from src.graph.queries.incremental_checkpoints import (
     LOAD_INCREMENTAL_CHECKPOINT,
     UPSERT_INCREMENTAL_CHECKPOINT,
 )
+from src.source_instances import LEGACY_DEFAULT_CONTROL_INSTANCE_ID, effective_control_instance_id
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +50,7 @@ class Neo4jCheckpointRedis:
         legacy: LegacyStateClient | None = None,
         active_ingest_run_id: str | None = None,
         fence_context: FenceContext | None = None,
+        control_instance_id: str = LEGACY_DEFAULT_CONTROL_INSTANCE_ID,
         defer_terminal_updates: bool = True,
     ) -> None:
         self._client = client
@@ -56,6 +58,9 @@ class Neo4jCheckpointRedis:
         self._legacy = legacy
         self._active_ingest_run_id = active_ingest_run_id
         self._fence_context = fence_context
+        self._control_instance_id = effective_control_instance_id(
+            fence_context.control_instance_id if fence_context is not None else control_instance_id
+        )
         self._defer_terminal_updates = defer_terminal_updates
         self._staged: dict[str, _Operation] = {}
 
@@ -68,7 +73,11 @@ class Neo4jCheckpointRedis:
 
     def get(self, name: str) -> str | None:
         def _read(tx: ManagedTransaction) -> str | None:
-            record = tx.run(LOAD_INCREMENTAL_CHECKPOINT, checkpoint_key=name).single()
+            record = tx.run(
+                LOAD_INCREMENTAL_CHECKPOINT,
+                control_instance_id=self._control_instance_id,
+                checkpoint_key=name,
+            ).single()
             if record is None:
                 return None
             value = record["value"]
@@ -161,12 +170,14 @@ class Neo4jCheckpointRedis:
         if operation.value is None:
             tx.run(
                 DELETE_INCREMENTAL_CHECKPOINT,
+                control_instance_id=self._control_instance_id,
                 checkpoint_key=operation.key,
                 ingest_run_id=ingest_run_id,
             )
             return
         tx.run(
             UPSERT_INCREMENTAL_CHECKPOINT,
+            control_instance_id=self._control_instance_id,
             checkpoint_key=operation.key,
             source_key=self._source_key,
             value=operation.value,

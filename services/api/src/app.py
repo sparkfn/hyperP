@@ -23,17 +23,11 @@ from src.oauth2_app import build_oauth2_app
 from src.proclaude.service import close_proclaude_service
 from src.redis_client import close_redis
 from src.repositories.neo4j.bootstrap import (
-    ensure_ingest_run_idempotency_constraint,
     ensure_source_record_identity_lock_constraint,
 )
 from src.route_catalog import ROOT_ROUTERS
 
 logger = logging.getLogger("profile_unifier_api")
-
-
-async def _ensure_ingest_run_idempotency() -> None:
-    """Install the constraint required before idempotent run creation."""
-    await ensure_ingest_run_idempotency_constraint()
 
 
 async def _ensure_source_record_identity_lock() -> None:
@@ -69,7 +63,6 @@ async def _ensure_person_indexes() -> None:
 async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
     """Manage the Neo4j driver lifecycle alongside the FastAPI process."""
     validate_oauth_runtime_config()
-    await _ensure_ingest_run_idempotency()
     await _ensure_source_record_identity_lock()
     await _ensure_user_constraint()
     await _ensure_oauth_client_constraints()

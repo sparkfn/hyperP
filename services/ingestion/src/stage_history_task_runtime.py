@@ -25,12 +25,14 @@ from src.connectors.bitrix_stage_history.connector import (
     StageCaptureLimits,
     stage_capture_limits_digest,
 )
+from src.graph.bitrix_source_instances import admit_configured_bitrix_control
 from src.graph.client import Neo4jClient
 from src.graph.ingestion_control import BitrixStreamControl, LogicalRunControl
 from src.graph.stage_history_ingestion import StageHistoryIngestionRepository
 from src.graph.stage_history_status import StageHistoryStatusRepository
 from src.ingestion_config import StageHistoryIngestionConfig, get_ingestion_config
 from src.resumable import CheckpointDescriptor
+from src.source_instances import LEGACY_DEFAULT_CONTROL_INSTANCE_ID, effective_control_instance_id
 from src.stage_history_parent_lifecycle import Neo4jStageHistoryLifecycleReader
 from src.stage_history_pipeline import (
     initial_failure_checkpoint,
@@ -55,7 +57,9 @@ def execute_artifact_task(
     artifact_id: str,
     authorization_reference: str,
     failed_capture: bool,
+    control_instance_id: str = LEGACY_DEFAULT_CONTROL_INSTANCE_ID,
 ) -> StageHistoryTaskSummary:
+    control_instance_id = effective_control_instance_id(control_instance_id)
     config = get_ingestion_config().stage_history_ingestion
     config.assert_dispatch_enabled(now=datetime.now(UTC))
     _validate_public_arguments(artifact_id, authorization_reference, config)
@@ -63,9 +67,11 @@ def execute_artifact_task(
     if not task_id:
         raise RuntimeError("stage-history task requires a stable Celery task ID")
     settings = get_settings()
+    admit_configured_bitrix_control(settings, control_instance_id)
     with stage_history_task_lock(
         settings.celery_broker_url,
         owner=f"artifact:{task_id}",
+        control_instance_id=control_instance_id,
     ) as lock:
         lock.assert_owned()
         store = stage_history_store_from_settings(settings)
@@ -99,6 +105,7 @@ def execute_artifact_task(
                 config=config,
                 failed_capture=failed_capture,
                 lock=lock,
+                control_instance_id=control_instance_id,
             )
         finally:
             client.close()
@@ -113,6 +120,7 @@ def _run_source_free_replay(
     config: StageHistoryIngestionConfig,
     failed_capture: bool,
     lock: StageHistoryTaskLock,
+    control_instance_id: str = LEGACY_DEFAULT_CONTROL_INSTANCE_ID,
 ) -> StageHistoryTaskSummary:
     initial = (
         initial_failure_checkpoint(artifact)
@@ -120,10 +128,11 @@ def _run_source_free_replay(
         else initial_replay_checkpoint(artifact)
     )
     descriptor = _descriptor(initial)
-    logical = LogicalRunControl(client)
+    logical = LogicalRunControl(client, control_instance_id)
     lock.assert_owned()
     attempt = logical.create_or_reuse(
         source_key="bitrix_chat",
+        control_instance_id=control_instance_id,
         mode=initial.run_type,
         dump_path=None,
         entity_key=None,
@@ -158,7 +167,13 @@ def _run_source_free_replay(
             raise RuntimeError("stage-history run could not resume from durable state")
         attempt = resumed
     if attempt.worker_task_id != worker_task_id:
-        return _existing_summary(client, artifact, attempt.logical_run_id, attempt.logical_status)
+        return _existing_summary(
+            client,
+            artifact,
+            attempt.logical_run_id,
+            attempt.logical_status,
+            control_instance_id,
+        )
     if not logical.claim(
         logical_run_id=attempt.logical_run_id,
         ingest_run_id=attempt.ingest_run_id,
@@ -167,7 +182,13 @@ def _run_source_free_replay(
     ):
         state = logical.get(attempt.logical_run_id)
         status = state.status if state is not None else "already_running"
-        return _existing_summary(client, artifact, attempt.logical_run_id, status)
+        return _existing_summary(
+            client,
+            artifact,
+            attempt.logical_run_id,
+            status,
+            control_instance_id,
+        )
     fence: FenceContext | None = None
     try:
         lock.assert_owned()
@@ -177,10 +198,11 @@ def _run_source_free_replay(
             ingest_run_id=attempt.ingest_run_id,
             attempt_generation=attempt.generation,
             worker_task_id=worker_task_id,
+            control_instance_id=control_instance_id,
             replace_active=attempt.generation > 1,
         )
         fence = admission.fence_context
-        checkpoint = StageHistoryStatusRepository(client).checkpoint(
+        checkpoint = StageHistoryStatusRepository(client, control_instance_id).checkpoint(
             attempt.logical_run_id,
             artifact=artifact,
         )
@@ -375,8 +397,9 @@ def _existing_summary(
     artifact: VerifiedStageIngestionArtifact,
     logical_run_id: str,
     status: str,
+    control_instance_id: str = LEGACY_DEFAULT_CONTROL_INSTANCE_ID,
 ) -> StageHistoryTaskSummary:
-    current = StageHistoryStatusRepository(client).status(logical_run_id)
+    current = StageHistoryStatusRepository(client, control_instance_id).status(logical_run_id)
     return {
         "status": status,
         "logical_run_id": logical_run_id,

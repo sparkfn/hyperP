@@ -3,33 +3,15 @@
 from __future__ import annotations
 
 CREATE_BITRIX_BACKFILL_CONSTRAINTS = (
-    """CREATE CONSTRAINT bitrix_backfill_generation_id_unique IF NOT EXISTS
-FOR (generation:BitrixBackfillGeneration)
-REQUIRE generation.generation_id IS UNIQUE""",
-    """CREATE CONSTRAINT bitrix_known_owner_set_id_unique IF NOT EXISTS
-FOR (owner_set:BitrixKnownOwnerRefreshSet)
-REQUIRE (owner_set.generation_id, owner_set.membership_set_id) IS UNIQUE""",
-    """CREATE CONSTRAINT bitrix_known_owner_member_unique IF NOT EXISTS
-FOR (member:BitrixKnownOwnerRefreshMember)
-REQUIRE (member.generation_id, member.membership_set_id, member.deal_id) IS UNIQUE""",
-    """CREATE CONSTRAINT bitrix_backfill_coverage_identity_unique IF NOT EXISTS
-FOR (coverage:BitrixBackfillCoverage)
-REQUIRE (coverage.generation_id, coverage.stream_key,
-         coverage.source_identity, coverage.source_boundary) IS UNIQUE""",
     """CREATE CONSTRAINT bitrix_backfill_inventory_digest_unique IF NOT EXISTS
 FOR (inventory:BitrixBackfillInventory)
 REQUIRE inventory.inventory_digest IS UNIQUE""",
-    """CREATE CONSTRAINT bitrix_dispatch_control_source_unique IF NOT EXISTS
-FOR (control:BitrixDispatchControl)
-REQUIRE control.source_key IS UNIQUE""",
-    """CREATE CONSTRAINT bitrix_dispatch_outbox_successor_unique IF NOT EXISTS
-FOR (outbox:BitrixBackfillDispatchOutbox)
-REQUIRE outbox.successor_generation_id IS UNIQUE""",
 )
 
 ALLOCATE_BITRIX_BACKFILL_GENERATION = """
-MERGE (generation:BitrixBackfillGeneration {generation_id: $generation_id})
-ON CREATE SET generation.status = 'allocated',
+MERGE (generation:BitrixBackfillGeneration {control_instance_id: $control_instance_id, generation_id: $generation_id})
+ON CREATE SET generation.control_instance_id = $control_instance_id,
+              generation.status = 'allocated',
               generation.repository_sha = $repository_sha,
               generation.image_digest = $image_digest,
               generation.configuration_digest = $configuration_digest,
@@ -54,20 +36,23 @@ RETURN generation.generation_id AS generation_id,
 """
 
 ATTACH_BACKFILL_LOGICAL_RUN = """
-MATCH (generation:BitrixBackfillGeneration {generation_id: $generation_id})
+MATCH (generation:BitrixBackfillGeneration {control_instance_id: $control_instance_id, generation_id: $generation_id})
 WHERE generation.status IN ['allocated', 'backfilling', 'activating', 'active']
   AND (
     generation.boundary_digest = $boundary_digest
     OR generation.generation_kind = 'live_successor'
   )
   AND generation.configuration_digest = $configuration_digest
-MATCH (logical:IngestionLogicalRun {logical_run_id: $logical_run_id})
+MATCH (logical:IngestionLogicalRun {control_instance_id: $control_instance_id, logical_run_id: $logical_run_id})
 MATCH (stream:BitrixIngestionStream {
   source_key: 'bitrix_chat',
+  control_instance_id: $control_instance_id,
   stream_key: $stream_key,
   logical_run_id: $logical_run_id
 })
-OPTIONAL MATCH (other:BitrixBackfillGeneration)-[:HAS_LOGICAL_RUN]->(logical)
+OPTIONAL MATCH (other:BitrixBackfillGeneration {
+  control_instance_id: $control_instance_id
+})-[:HAS_LOGICAL_RUN]->(logical)
 WHERE other.generation_id <> $generation_id
 WITH generation, logical, stream, other
 WHERE other IS NULL
@@ -99,9 +84,10 @@ ORDER BY toInteger(deal.deal_id), deal.deal_id
 """
 
 PREPARE_KNOWN_OWNER_SET = """
-MATCH (generation:BitrixBackfillGeneration {generation_id: $generation_id})
+MATCH (generation:BitrixBackfillGeneration {control_instance_id: $control_instance_id, generation_id: $generation_id})
 WHERE generation.status IN ['allocated', 'backfilling', 'activating', 'active']
 MERGE (owner_set:BitrixKnownOwnerRefreshSet {
+  control_instance_id: $control_instance_id,
   generation_id: $generation_id,
   membership_set_id: $membership_set_id
 })
@@ -118,15 +104,18 @@ RETURN coalesce(owner_set.status, 'sealed') AS status
 """
 
 UPSERT_KNOWN_OWNER_MEMBERS = """
-MATCH (generation:BitrixBackfillGeneration {generation_id: $generation_id})
+MATCH (generation:BitrixBackfillGeneration {control_instance_id: $control_instance_id, generation_id: $generation_id})
       -[:HAS_KNOWN_OWNER_SET]->
       (owner_set:BitrixKnownOwnerRefreshSet {
+        control_instance_id: $control_instance_id,
+        generation_id: $generation_id,
         membership_set_id: $membership_set_id,
         digest: $digest,
         status: 'building'
       })
 UNWIND $members AS item
 MERGE (member:BitrixKnownOwnerRefreshMember {
+  control_instance_id: $control_instance_id,
   generation_id: $generation_id,
   membership_set_id: $membership_set_id,
   deal_id: item.deal_id
@@ -141,15 +130,21 @@ RETURN batch_count
 """
 
 SEAL_KNOWN_OWNER_SET = """
-MATCH (generation:BitrixBackfillGeneration {generation_id: $generation_id})
+MATCH (generation:BitrixBackfillGeneration {control_instance_id: $control_instance_id, generation_id: $generation_id})
       -[:HAS_KNOWN_OWNER_SET]->
       (owner_set:BitrixKnownOwnerRefreshSet {
+        control_instance_id: $control_instance_id,
+        generation_id: $generation_id,
         membership_set_id: $membership_set_id,
         digest: $digest,
         status: 'building'
       })
 CALL (owner_set) {
-  MATCH (owner_set)-[:HAS_MEMBER]->(member:BitrixKnownOwnerRefreshMember)
+  MATCH (owner_set)-[:HAS_MEMBER]->(member:BitrixKnownOwnerRefreshMember {
+    control_instance_id: $control_instance_id,
+    generation_id: $generation_id,
+    membership_set_id: $membership_set_id
+  })
   RETURN count(member) AS stored_count,
          count(DISTINCT member.ordinal) AS ordinal_count
 }
@@ -163,6 +158,7 @@ CALL (owner_set) {
   WHERE deal.current_scope_state IN ['in_scope', 'indeterminate']
     AND NOT EXISTS {
       MATCH (member:BitrixKnownOwnerRefreshMember {
+        control_instance_id: $control_instance_id,
         generation_id: $generation_id,
         membership_set_id: $membership_set_id,
         deal_id: deal.deal_id
@@ -172,7 +168,11 @@ CALL (owner_set) {
   RETURN count(deal) AS missing_member_count
 }
 CALL (owner_set) {
-  MATCH (owner_set)-[:HAS_MEMBER]->(member:BitrixKnownOwnerRefreshMember)
+  MATCH (owner_set)-[:HAS_MEMBER]->(member:BitrixKnownOwnerRefreshMember {
+    control_instance_id: $control_instance_id,
+    generation_id: $generation_id,
+    membership_set_id: $membership_set_id
+  })
   WHERE NOT EXISTS {
     MATCH (deal:CrmLogicalDeal {
       source_key: 'bitrix_chat',
@@ -196,20 +196,30 @@ RETURN owner_set.member_count AS member_count,
 """
 
 GET_KNOWN_OWNER_SET = """
-MATCH (generation:BitrixBackfillGeneration {generation_id: $generation_id})
+MATCH (generation:BitrixBackfillGeneration {control_instance_id: $control_instance_id, generation_id: $generation_id})
       -[:HAS_KNOWN_OWNER_SET]->
-      (owner_set:BitrixKnownOwnerRefreshSet {membership_set_id: $membership_set_id})
+      (owner_set:BitrixKnownOwnerRefreshSet {
+        control_instance_id: $control_instance_id,
+        generation_id: $generation_id,
+        membership_set_id: $membership_set_id
+      })
 RETURN owner_set.digest AS digest,
        owner_set.member_count AS member_count,
        coalesce(owner_set.status, 'sealed') AS status
 """
 
 LIST_KNOWN_OWNER_MEMBERS_PAGE = """
-MATCH (generation:BitrixBackfillGeneration {generation_id: $generation_id})
+MATCH (generation:BitrixBackfillGeneration {control_instance_id: $control_instance_id, generation_id: $generation_id})
       -[:HAS_KNOWN_OWNER_SET]->
       (owner_set:BitrixKnownOwnerRefreshSet {
+        control_instance_id: $control_instance_id,
+        generation_id: $generation_id,
         membership_set_id: $membership_set_id
-      })-[:HAS_MEMBER]->(member:BitrixKnownOwnerRefreshMember)
+      })-[:HAS_MEMBER]->(member:BitrixKnownOwnerRefreshMember {
+        control_instance_id: $control_instance_id,
+        generation_id: $generation_id,
+        membership_set_id: $membership_set_id
+      })
 WHERE coalesce(owner_set.status, 'sealed') = 'sealed'
   AND member.ordinal > $after_ordinal
 RETURN member.ordinal AS ordinal,
@@ -219,13 +229,15 @@ LIMIT $limit
 """
 
 UPSERT_BITRIX_BACKFILL_COVERAGE = """
-MATCH (generation:BitrixBackfillGeneration {generation_id: $generation_id})
+MATCH (generation:BitrixBackfillGeneration {control_instance_id: $control_instance_id, generation_id: $generation_id})
 WHERE generation.status IN ['backfilling', 'reconciling', 'activating', 'active']
 MATCH (generation)-[:HAS_LOGICAL_RUN]->(logical:IngestionLogicalRun {
+  control_instance_id: $control_instance_id,
   logical_run_id: $logical_run_id
 })
 MATCH (generation)-[:HAS_STREAM]->(stream:BitrixIngestionStream {
   source_key: 'bitrix_chat',
+  control_instance_id: $control_instance_id,
   stream_key: $stream_key,
   logical_run_id: $logical_run_id,
   ingest_run_id: $ingest_run_id,
@@ -235,6 +247,7 @@ MATCH (generation)-[:HAS_STREAM]->(stream:BitrixIngestionStream {
   status: 'active'
 })
 MERGE (coverage:BitrixBackfillCoverage {
+  control_instance_id: $control_instance_id,
   generation_id: $generation_id,
   stream_key: $stream_key,
   source_identity: $source_identity,
@@ -264,10 +277,12 @@ RETURN coverage.source_identity AS source_identity
 """
 
 GET_BITRIX_COVERAGE_RECONCILIATION = """
-MATCH (generation:BitrixBackfillGeneration {generation_id: $generation_id})
+MATCH (generation:BitrixBackfillGeneration {control_instance_id: $control_instance_id, generation_id: $generation_id})
 MATCH (generation)-[:HAS_LOGICAL_RUN {stream_key: $stream_key}]->
-      (logical:IngestionLogicalRun)
+      (logical:IngestionLogicalRun {control_instance_id: $control_instance_id})
 MATCH (generation)-[:HAS_COVERAGE]->(coverage:BitrixBackfillCoverage {
+  control_instance_id: $control_instance_id,
+  generation_id: $generation_id,
   stream_key: $stream_key
 })
 WITH generation, logical,
@@ -282,7 +297,7 @@ WITH generation, logical,
        AS quarantine_count,
      count(CASE WHEN coverage.disposition = 'conflict' THEN 1 END) AS conflict_count,
      count(CASE WHEN coverage.disposition = 'failed' THEN 1 END) AS failed_count
-OPTIONAL MATCH (checkpoint:IngestionCheckpoint {logical_run_id: logical.logical_run_id})
+OPTIONAL MATCH (checkpoint:IngestionCheckpoint {control_instance_id: $control_instance_id, logical_run_id: logical.logical_run_id})
 WITH generation, logical, coverage_count, terminal_count, created_count, duplicate_count,
      projection_count, unchanged_count, excluded_count, quarantine_count, conflict_count,
      failed_count, checkpoint
@@ -309,10 +324,11 @@ RETURN generation.status AS generation_status,
 """
 
 EXPORT_FROZEN_OWNER_COVERAGE = """
-MATCH (generation:BitrixBackfillGeneration {generation_id: $generation_id})
+MATCH (generation:BitrixBackfillGeneration {control_instance_id: $control_instance_id, generation_id: $generation_id})
 WHERE generation.status IN ['frozen', 'qualified', 'accepted']
 MATCH (deal:CrmLogicalDeal {source_key: 'bitrix_chat', current_scope_state: 'in_scope'})
 MATCH (coverage:BitrixBackfillCoverage {
+  control_instance_id: $control_instance_id,
   generation_id: $generation_id,
   stream_key: 'crm_deals'
 })
@@ -337,7 +353,7 @@ ORDER BY toInteger(coverage.deal_id), coverage.deal_id
 """
 
 REGISTER_BITRIX_BACKFILL_INVENTORY = """
-MATCH (generation:BitrixBackfillGeneration {generation_id: $generation_id})
+MATCH (generation:BitrixBackfillGeneration {control_instance_id: $control_instance_id, generation_id: $generation_id})
 WHERE generation.status = 'allocated'
 MERGE (inventory:BitrixBackfillInventory {inventory_digest: $inventory_digest})
 ON CREATE SET inventory.manifest_json = $manifest_json,
@@ -357,8 +373,11 @@ RETURN generation.generation_id AS generation_id
 """
 
 GET_BITRIX_BACKFILL_GENERATION = """
-MATCH (generation:BitrixBackfillGeneration {generation_id: $generation_id})
-OPTIONAL MATCH (generation)-[:HAS_COVERAGE]->(coverage:BitrixBackfillCoverage)
+MATCH (generation:BitrixBackfillGeneration {control_instance_id: $control_instance_id, generation_id: $generation_id})
+OPTIONAL MATCH (generation)-[:HAS_COVERAGE]->(coverage:BitrixBackfillCoverage {
+  control_instance_id: $control_instance_id,
+  generation_id: generation.generation_id
+})
 RETURN generation.generation_id AS generation_id,
        generation.status AS status,
        coalesce(generation.generation_kind, 'corrective') AS generation_kind,
@@ -374,9 +393,11 @@ RETURN generation.generation_id AS generation_id,
 """
 
 GET_BITRIX_GENERATION_CATEGORY_MAPPING = """
-MATCH (generation:BitrixBackfillGeneration {generation_id: $generation_id})
+MATCH (generation:BitrixBackfillGeneration {control_instance_id: $control_instance_id, generation_id: $generation_id})
 WHERE generation.status IN ['qualified', 'accepted']
 MATCH (generation)-[:HAS_COVERAGE]->(coverage:BitrixBackfillCoverage {
+  control_instance_id: $control_instance_id,
+  generation_id: $generation_id,
   stream_key: 'crm_deals'
 })
 WHERE coverage.terminal = true
@@ -393,14 +414,14 @@ ORDER BY category_id
 """
 
 GET_BITRIX_BACKFILL_INVENTORY = """
-MATCH (generation:BitrixBackfillGeneration {generation_id: $generation_id})
+MATCH (generation:BitrixBackfillGeneration {control_instance_id: $control_instance_id, generation_id: $generation_id})
       -[:USES_INVENTORY]->(inventory:BitrixBackfillInventory)
 RETURN inventory.manifest_json AS manifest_json,
        inventory.inventory_digest AS inventory_digest
 """
 
 CAS_BITRIX_BACKFILL_GENERATION_STATUS = """
-MATCH (generation:BitrixBackfillGeneration {generation_id: $generation_id})
+MATCH (generation:BitrixBackfillGeneration {control_instance_id: $control_instance_id, generation_id: $generation_id})
 WHERE generation.status IN $expected_statuses
   AND generation.repository_sha = $repository_sha
   AND generation.image_digest = $image_digest
@@ -415,9 +436,10 @@ RETURN generation.generation_id AS generation_id,
 """
 
 GET_MAX_BITRIX_RESUME_WORKER_GENERATION = """
-MATCH (generation:BitrixBackfillGeneration {generation_id: $generation_id})
-OPTIONAL MATCH (generation)-[:HAS_LOGICAL_RUN]->(:IngestionLogicalRun)
-               -[:HAS_ATTEMPT]->(attempt:IngestRun)
+MATCH (generation:BitrixBackfillGeneration {control_instance_id: $control_instance_id, generation_id: $generation_id})
+OPTIONAL MATCH (generation)-[:HAS_LOGICAL_RUN]->(:IngestionLogicalRun {
+  control_instance_id: $control_instance_id
+})-[:HAS_ATTEMPT]->(attempt:IngestRun {control_instance_id: $control_instance_id})
 WITH attempt.worker_task_id AS worker_task_id
 WHERE worker_task_id =~ '.*:resume:[0-9]+'
 RETURN coalesce(
@@ -428,9 +450,12 @@ RETURN coalesce(
 
 
 LIST_BITRIX_GENERATION_LOGICAL_RUNS = """
-MATCH (generation:BitrixBackfillGeneration {generation_id: $generation_id})
-OPTIONAL MATCH (generation)-[relation:HAS_LOGICAL_RUN]->(logical:IngestionLogicalRun)
+MATCH (generation:BitrixBackfillGeneration {control_instance_id: $control_instance_id, generation_id: $generation_id})
+OPTIONAL MATCH (generation)-[relation:HAS_LOGICAL_RUN]->(logical:IngestionLogicalRun {
+  control_instance_id: $control_instance_id
+})
 OPTIONAL MATCH (generation)-[:HAS_STREAM]->(stream:BitrixIngestionStream {
+  control_instance_id: $control_instance_id,
   logical_run_id: logical.logical_run_id
 })
 RETURN relation.stream_key AS stream_key,
@@ -446,11 +471,13 @@ END
 """
 
 GET_OWNER_COVERAGE_FOR_FREEZE = """
-MATCH (generation:BitrixBackfillGeneration {generation_id: $generation_id})
+MATCH (generation:BitrixBackfillGeneration {control_instance_id: $control_instance_id, generation_id: $generation_id})
 WHERE generation.status = 'reconciling'
   AND generation.reconciliation_digest = $reconciliation_digest
 MATCH (deal:CrmLogicalDeal {source_key: 'bitrix_chat', current_scope_state: 'in_scope'})
 MATCH (generation)-[:HAS_COVERAGE]->(coverage:BitrixBackfillCoverage {
+  control_instance_id: $control_instance_id,
+  generation_id: $generation_id,
   stream_key: 'crm_deals'
 })
 WHERE coverage.deal_id = deal.deal_id
@@ -468,17 +495,21 @@ ORDER BY toInteger(coverage.deal_id), coverage.deal_id
 """
 
 FREEZE_BITRIX_BACKFILL_GENERATION = """
-MATCH (generation:BitrixBackfillGeneration {generation_id: $generation_id})
+MATCH (generation:BitrixBackfillGeneration {control_instance_id: $control_instance_id, generation_id: $generation_id})
 WHERE generation.status = 'reconciling'
   AND generation.repository_sha = $repository_sha
   AND generation.image_digest = $image_digest
   AND generation.configuration_digest = $configuration_digest
   AND generation.boundary_digest = $boundary_digest
-MATCH (generation)-[:HAS_LOGICAL_RUN]->(logical:IngestionLogicalRun)
+MATCH (generation)-[:HAS_LOGICAL_RUN]->(logical:IngestionLogicalRun {
+  control_instance_id: $control_instance_id
+})
 WITH generation, collect(logical) AS logicals
 WHERE size(logicals) > 0
   AND all(logical IN logicals WHERE logical.status IN ['completed', 'completed_with_errors'])
-MATCH (generation)-[generation_stream:HAS_STREAM]->(stream:BitrixIngestionStream)
+MATCH (generation)-[generation_stream:HAS_STREAM]->(stream:BitrixIngestionStream {
+  control_instance_id: $control_instance_id
+})
 SET generation_stream.logical_run_id = coalesce(
       generation_stream.logical_run_id, stream.logical_run_id
     ),
@@ -514,11 +545,13 @@ FOREACH (generation_stream IN generation_streams |
 )
 WITH generation, logicals
 UNWIND logicals AS logical
-OPTIONAL MATCH (checkpoint:IngestionCheckpoint {logical_run_id: logical.logical_run_id})
+OPTIONAL MATCH (checkpoint:IngestionCheckpoint {control_instance_id: $control_instance_id, logical_run_id: logical.logical_run_id})
 SET checkpoint.status = 'archived', checkpoint.archived_at = datetime()
 WITH DISTINCT generation
 MATCH (deal:CrmLogicalDeal {source_key: 'bitrix_chat', current_scope_state: 'in_scope'})
 MATCH (generation)-[:HAS_COVERAGE]->(coverage:BitrixBackfillCoverage {
+  control_instance_id: $control_instance_id,
+  generation_id: $generation_id,
   stream_key: 'crm_deals'
 })
 WHERE coverage.deal_id = deal.deal_id
@@ -537,7 +570,7 @@ ORDER BY toInteger(deal_id), deal_id
 """
 
 RECORD_BITRIX_QUALIFICATION = """
-MATCH (generation:BitrixBackfillGeneration {generation_id: $generation_id})
+MATCH (generation:BitrixBackfillGeneration {control_instance_id: $control_instance_id, generation_id: $generation_id})
 WHERE generation.status = 'frozen'
   AND generation.repository_sha = $repository_sha
   AND generation.image_digest = $image_digest
@@ -555,7 +588,7 @@ RETURN generation.generation_id AS generation_id
 """
 
 REJECT_BITRIX_BACKFILL_GENERATION = """
-MATCH (generation:BitrixBackfillGeneration {generation_id: $generation_id})
+MATCH (generation:BitrixBackfillGeneration {control_instance_id: $control_instance_id, generation_id: $generation_id})
 WHERE generation.status IN ['allocated', 'backfilling', 'reconciling', 'frozen', 'qualified']
 SET generation.status = 'rejected',
     generation.rejected_by = $actor,
@@ -563,13 +596,15 @@ SET generation.status = 'rejected',
     generation.rejection_remediation = $remediation,
     generation.rejected_at = datetime(),
     generation.updated_at = datetime()
-MERGE (dispatch:BitrixDispatchControl {source_key: 'bitrix_chat'})
+MERGE (dispatch:BitrixDispatchControl {source_key: 'bitrix_chat', control_instance_id: $control_instance_id})
 SET dispatch.blocked = true,
     dispatch.block_reason = 'rejected_generation',
     dispatch.blocked_generation_id = $generation_id,
     dispatch.updated_at = datetime()
 WITH generation
-OPTIONAL MATCH (generation)-[generation_stream:HAS_STREAM]->(stream:BitrixIngestionStream)
+OPTIONAL MATCH (generation)-[generation_stream:HAS_STREAM]->(stream:BitrixIngestionStream {
+  control_instance_id: $control_instance_id
+})
 SET generation_stream.logical_run_id = coalesce(
       generation_stream.logical_run_id, stream.logical_run_id
     ),
@@ -598,17 +633,20 @@ RETURN DISTINCT generation.generation_id AS generation_id
 """
 
 ALLOCATE_BITRIX_SUCCESSOR_GENERATION = """
-MATCH (corrective:BitrixBackfillGeneration {generation_id: $corrective_generation_id})
+MATCH (corrective:BitrixBackfillGeneration {control_instance_id: $control_instance_id, generation_id: $corrective_generation_id})
 SET corrective.successor_lock_version = coalesce(corrective.successor_lock_version, 0) + 1
 WITH corrective
 WHERE corrective.status = 'accepted'
-OPTIONAL MATCH (corrective)-[:HAS_SUCCESSOR]->(existing:BitrixBackfillGeneration)
+OPTIONAL MATCH (corrective)-[:HAS_SUCCESSOR]->(existing:BitrixBackfillGeneration {
+  control_instance_id: $control_instance_id
+})
 WHERE existing.generation_id <> $successor_generation_id
   AND existing.status IN ['allocated', 'activating', 'active']
 WITH corrective, collect(existing) AS competing_successors
 WHERE size(competing_successors) = 0
-MERGE (successor:BitrixBackfillGeneration {generation_id: $successor_generation_id})
-ON CREATE SET successor.status = 'allocated',
+MERGE (successor:BitrixBackfillGeneration {control_instance_id: $control_instance_id, generation_id: $successor_generation_id})
+ON CREATE SET successor.control_instance_id = $control_instance_id,
+              successor.status = 'allocated',
               successor.generation_kind = 'live_successor',
               successor.corrective_generation_id = $corrective_generation_id,
               successor.repository_sha = corrective.repository_sha,
@@ -635,20 +673,24 @@ RETURN successor.generation_id AS generation_id, created AS created
 """
 
 SUPERSEDE_ZERO_WRITE_BITRIX_SUCCESSOR = """
-MATCH (corrective:BitrixBackfillGeneration {generation_id: $corrective_generation_id})
+MATCH (corrective:BitrixBackfillGeneration {control_instance_id: $control_instance_id, generation_id: $corrective_generation_id})
       -[:HAS_SUCCESSOR]->
-      (successor:BitrixBackfillGeneration {generation_id: $successor_generation_id})
+      (successor:BitrixBackfillGeneration {control_instance_id: $control_instance_id, generation_id: $successor_generation_id})
 WHERE corrective.status = 'accepted'
   AND successor.generation_kind = 'live_successor'
   AND successor.corrective_generation_id = $corrective_generation_id
   AND $successor_generation_id <> $replacement_successor_generation_id
-OPTIONAL MATCH (successor)-[:HAS_LOGICAL_RUN]->(logical:IngestionLogicalRun)
+OPTIONAL MATCH (successor)-[:HAS_LOGICAL_RUN]->(logical:IngestionLogicalRun {
+  control_instance_id: $control_instance_id
+})
 WITH corrective, successor, collect(logical) AS logicals
 WHERE size(logicals) > 0
   AND any(logical IN logicals WHERE logical.status = 'failed')
   AND all(logical IN logicals WHERE logical.status IN ['failed', 'completed',
                                                        'completed_with_errors'])
-OPTIONAL MATCH (successor)-[generation_stream:HAS_STREAM]->(stream:BitrixIngestionStream)
+OPTIONAL MATCH (successor)-[generation_stream:HAS_STREAM]->(stream:BitrixIngestionStream {
+  control_instance_id: $control_instance_id
+})
 WITH corrective, successor, logicals,
      successor.status = 'superseded'
        AND successor.superseded_by_generation_id = $replacement_successor_generation_id
@@ -680,11 +722,15 @@ CALL (bindings, retry) {
 }
 WITH corrective, successor, retry, bindings, locked_binding_count
 WHERE retry OR locked_binding_count = size(bindings)
-OPTIONAL MATCH (successor)-[:HAS_COVERAGE]->(coverage:BitrixBackfillCoverage)
+OPTIONAL MATCH (successor)-[:HAS_COVERAGE]->(coverage:BitrixBackfillCoverage {
+  control_instance_id: $control_instance_id,
+  generation_id: successor.generation_id
+})
 WITH corrective, successor, retry, count(coverage) AS material_write_count
 WHERE material_write_count = 0
   AND (retry OR successor.status IN ['activating', 'active', 'failed'])
 OPTIONAL MATCH (outbox:BitrixBackfillDispatchOutbox {
+  control_instance_id: $control_instance_id,
   successor_generation_id: $successor_generation_id
 })
 WITH corrective, successor, collect(outbox) AS outboxes
@@ -700,7 +746,7 @@ FOREACH (outbox IN outboxes |
   SET outbox.status = 'superseded',
       outbox.superseded_at = datetime()
 )
-MERGE (dispatch:BitrixDispatchControl {source_key: 'bitrix_chat'})
+MERGE (dispatch:BitrixDispatchControl {source_key: 'bitrix_chat', control_instance_id: $control_instance_id})
 SET dispatch.blocked = true,
     dispatch.block_reason = 'zero_write_successor_recovery',
     dispatch.blocked_generation_id = $corrective_generation_id,
@@ -709,12 +755,13 @@ RETURN successor.generation_id AS generation_id
 """
 
 ACTIVATE_BITRIX_SUCCESSOR_GENERATION = """
-MATCH (corrective:BitrixBackfillGeneration {generation_id: $corrective_generation_id})
+MATCH (corrective:BitrixBackfillGeneration {control_instance_id: $control_instance_id, generation_id: $corrective_generation_id})
       -[:HAS_SUCCESSOR]->
-      (successor:BitrixBackfillGeneration {generation_id: $successor_generation_id})
+      (successor:BitrixBackfillGeneration {control_instance_id: $control_instance_id, generation_id: $successor_generation_id})
 WHERE corrective.status = 'accepted'
   AND successor.status IN ['allocated', 'activating']
 MERGE (outbox:BitrixBackfillDispatchOutbox {
+  control_instance_id: $control_instance_id,
   successor_generation_id: $successor_generation_id
 })
 ON CREATE SET outbox.status = 'pending',
@@ -725,7 +772,7 @@ ON CREATE SET outbox.status = 'pending',
 WITH successor, outbox
 WHERE outbox.evidence_digest = $evidence_digest
   AND outbox.occurrence = $occurrence
-OPTIONAL MATCH (dispatch:BitrixDispatchControl {source_key: 'bitrix_chat'})
+OPTIONAL MATCH (dispatch:BitrixDispatchControl {source_key: 'bitrix_chat', control_instance_id: $control_instance_id})
 WITH successor, outbox, dispatch
 WHERE dispatch IS NULL
    OR dispatch.blocked = false
@@ -734,7 +781,7 @@ SET successor.status = 'activating',
     successor.activated_by = $actor,
     successor.activation_evidence_digest = $evidence_digest,
     successor.updated_at = datetime()
-MERGE (pending_dispatch:BitrixDispatchControl {source_key: 'bitrix_chat'})
+MERGE (pending_dispatch:BitrixDispatchControl {source_key: 'bitrix_chat', control_instance_id: $control_instance_id})
 SET pending_dispatch.blocked = true,
     pending_dispatch.block_reason = 'successor_publication_pending',
     pending_dispatch.blocked_generation_id = $corrective_generation_id,
@@ -743,18 +790,25 @@ RETURN successor.generation_id AS generation_id
 """
 
 VERIFY_BITRIX_SUCCESSOR_TAIL = """
-MATCH (corrective:BitrixBackfillGeneration {generation_id: $corrective_generation_id})
+MATCH (corrective:BitrixBackfillGeneration {control_instance_id: $control_instance_id, generation_id: $corrective_generation_id})
       -[:HAS_SUCCESSOR]->
-      (successor:BitrixBackfillGeneration {generation_id: $successor_generation_id})
-OPTIONAL MATCH (corrective)-[old_relation:HAS_STREAM]->(:BitrixIngestionStream)
+      (successor:BitrixBackfillGeneration {control_instance_id: $control_instance_id, generation_id: $successor_generation_id})
+OPTIONAL MATCH (corrective)-[old_relation:HAS_STREAM]->(:BitrixIngestionStream {
+  control_instance_id: $control_instance_id
+})
 WITH corrective, successor, collect(old_relation) AS old_relations
 MATCH (successor)-[:USES_INVENTORY]->(inventory:BitrixBackfillInventory)
-OPTIONAL MATCH (successor)-[relation:HAS_LOGICAL_RUN]->(logical:IngestionLogicalRun)
+OPTIONAL MATCH (successor)-[relation:HAS_LOGICAL_RUN]->(logical:IngestionLogicalRun {
+  control_instance_id: $control_instance_id
+})
 WITH corrective, successor, old_relations, inventory.executed_stream_keys AS expected_streams,
      collect(logical) AS live_runs,
      [key IN collect(relation.stream_key) WHERE key IS NOT NULL | key]
        AS actual_streams
-OPTIONAL MATCH (successor)-[:HAS_COVERAGE]->(coverage:BitrixBackfillCoverage)
+OPTIONAL MATCH (successor)-[:HAS_COVERAGE]->(coverage:BitrixBackfillCoverage {
+  control_instance_id: $control_instance_id,
+  generation_id: successor.generation_id
+})
 WITH corrective, successor, old_relations, expected_streams, live_runs, actual_streams,
      count(coverage) AS successor_coverage_count,
      count(CASE WHEN coverage.terminal = true
@@ -778,7 +832,7 @@ RETURN corrective.status AS corrective_status,
 """
 
 RECORD_BITRIX_BACKFILL_RECONCILIATION = """
-MATCH (generation:BitrixBackfillGeneration {generation_id: $generation_id})
+MATCH (generation:BitrixBackfillGeneration {control_instance_id: $control_instance_id, generation_id: $generation_id})
 WHERE generation.status IN ['backfilling', 'reconciling']
   AND generation.repository_sha = $repository_sha
   AND generation.image_digest = $image_digest
@@ -786,9 +840,11 @@ WHERE generation.status IN ['backfilling', 'reconciling']
   AND generation.boundary_digest = $boundary_digest
 UNWIND $stream_keys AS requested_stream
 MATCH (generation)-[:HAS_LOGICAL_RUN {stream_key: requested_stream}]->
-      (logical:IngestionLogicalRun)
+      (logical:IngestionLogicalRun {control_instance_id: $control_instance_id})
 WHERE logical.status IN ['completed', 'completed_with_errors']
 MATCH (generation)-[:HAS_COVERAGE]->(coverage:BitrixBackfillCoverage {
+  control_instance_id: $control_instance_id,
+  generation_id: $generation_id,
   stream_key: requested_stream
 })
 WITH generation, requested_stream, logical,
@@ -808,7 +864,7 @@ WITH generation, requested_stream, logical,
      count(CASE WHEN coverage.disposition = 'conflict' THEN 1 END) AS conflict_count,
      count(CASE WHEN coverage.disposition = 'failed' THEN 1 END) AS failed_count
 CALL (logical) {
-  OPTIONAL MATCH (checkpoint:IngestionCheckpoint {logical_run_id: logical.logical_run_id})
+  OPTIONAL MATCH (checkpoint:IngestionCheckpoint {control_instance_id: $control_instance_id, logical_run_id: logical.logical_run_id})
   WITH checkpoint ORDER BY checkpoint.updated_at DESC
   RETURN collect(checkpoint)[0] AS checkpoint
 }
@@ -827,7 +883,9 @@ WHERE coverage_count = terminal_count
   AND checkpoint.retry_count = failed_count
 WITH generation, collect(requested_stream) AS verified_streams
 WHERE size(verified_streams) = size($stream_keys)
-MATCH (generation)-[:HAS_STREAM]->(stream:BitrixIngestionStream)
+MATCH (generation)-[:HAS_STREAM]->(stream:BitrixIngestionStream {
+  control_instance_id: $control_instance_id
+})
 WHERE stream.stream_key IN $stream_keys
 SET stream.fence_lock_version = coalesce(stream.fence_lock_version, 0) + 1
 WITH generation, verified_streams, collect(stream) AS streams
@@ -842,7 +900,7 @@ RETURN generation.generation_id AS generation_id,
 """
 
 COMPLETE_BITRIX_BACKFILL_FREEZE = """
-MATCH (generation:BitrixBackfillGeneration {generation_id: $generation_id})
+MATCH (generation:BitrixBackfillGeneration {control_instance_id: $control_instance_id, generation_id: $generation_id})
 WHERE generation.status = 'reconciling'
   AND generation.reconciliation_digest = $reconciliation_digest
 SET generation.status = 'frozen',
@@ -854,16 +912,17 @@ RETURN generation.generation_id AS generation_id
 """
 
 CONFIRM_BITRIX_SUCCESSOR_PUBLICATION = """
-MATCH (corrective:BitrixBackfillGeneration {generation_id: $corrective_generation_id})
+MATCH (corrective:BitrixBackfillGeneration {control_instance_id: $control_instance_id, generation_id: $corrective_generation_id})
       -[:HAS_SUCCESSOR]->
-      (successor:BitrixBackfillGeneration {generation_id: $successor_generation_id})
+      (successor:BitrixBackfillGeneration {control_instance_id: $control_instance_id, generation_id: $successor_generation_id})
 MATCH (outbox:BitrixBackfillDispatchOutbox {
+  control_instance_id: $control_instance_id,
   successor_generation_id: $successor_generation_id,
   evidence_digest: $evidence_digest
 })
 WHERE corrective.status = 'accepted'
   AND successor.status = 'activating'
-OPTIONAL MATCH (dispatch:BitrixDispatchControl {source_key: 'bitrix_chat'})
+OPTIONAL MATCH (dispatch:BitrixDispatchControl {source_key: 'bitrix_chat', control_instance_id: $control_instance_id})
 WITH corrective, successor, outbox, dispatch
 WHERE dispatch IS NULL
    OR dispatch.blocked = false
@@ -875,7 +934,7 @@ SET successor.status = 'active',
     outbox.status = 'published',
     outbox.canvas_id = $canvas_id,
     outbox.published_at = datetime()
-MERGE (active_dispatch:BitrixDispatchControl {source_key: 'bitrix_chat'})
+MERGE (active_dispatch:BitrixDispatchControl {source_key: 'bitrix_chat', control_instance_id: $control_instance_id})
 SET active_dispatch.blocked = false,
     active_dispatch.block_reason = NULL,
     active_dispatch.blocked_generation_id = NULL,
@@ -885,10 +944,11 @@ RETURN successor.generation_id AS generation_id
 """
 
 GET_CONFIRMED_BITRIX_SUCCESSOR_PUBLICATION = """
-MATCH (corrective:BitrixBackfillGeneration {generation_id: $corrective_generation_id})
+MATCH (corrective:BitrixBackfillGeneration {control_instance_id: $control_instance_id, generation_id: $corrective_generation_id})
       -[:HAS_SUCCESSOR]->
-      (successor:BitrixBackfillGeneration {generation_id: $successor_generation_id})
+      (successor:BitrixBackfillGeneration {control_instance_id: $control_instance_id, generation_id: $successor_generation_id})
 MATCH (outbox:BitrixBackfillDispatchOutbox {
+  control_instance_id: $control_instance_id,
   successor_generation_id: $successor_generation_id,
   evidence_digest: $evidence_digest,
   occurrence: $occurrence,
@@ -903,11 +963,13 @@ RETURN outbox.canvas_id AS canvas_id
 
 GET_BITRIX_SUCCESSOR_PUBLICATION_OCCURRENCE = """
 MATCH (successor:BitrixBackfillGeneration {
+  control_instance_id: $control_instance_id,
   generation_id: $successor_generation_id,
   generation_kind: 'live_successor',
   status: 'active'
 })
 MATCH (outbox:BitrixBackfillDispatchOutbox {
+  control_instance_id: $control_instance_id,
   successor_generation_id: $successor_generation_id,
   status: 'published'
 })
@@ -918,11 +980,13 @@ RETURN outbox.occurrence AS occurrence
 
 GET_ACTIVE_BITRIX_SUCCESSOR_SCHEDULE = """
 MATCH (successor:BitrixBackfillGeneration {
+  control_instance_id: $control_instance_id,
   generation_kind: 'live_successor',
   status: 'active',
   scheduling_enabled: true
 })-[:USES_INVENTORY]->(inventory:BitrixBackfillInventory)
 RETURN successor.generation_id AS generation_id,
+       successor.control_instance_id AS control_instance_id,
        successor.configuration_digest AS configuration_digest,
        inventory.manifest_json AS manifest_json
 ORDER BY successor.activated_at DESC
@@ -930,9 +994,10 @@ LIMIT 1
 """
 
 RECORD_BITRIX_ACTIVITY_OWNER_RETRY = """
-MATCH (generation:BitrixBackfillGeneration {generation_id: $generation_id})
+MATCH (generation:BitrixBackfillGeneration {control_instance_id: $control_instance_id, generation_id: $generation_id})
 WHERE generation.status IN ['backfilling', 'reconciling', 'activating', 'active']
 MATCH (generation)-[:HAS_STREAM]->(stream:BitrixIngestionStream {
+  control_instance_id: $control_instance_id,
   stream_key: 'crm_activities',
   logical_run_id: $logical_run_id,
   ingest_run_id: $ingest_run_id,
@@ -943,6 +1008,7 @@ MATCH (generation)-[:HAS_STREAM]->(stream:BitrixIngestionStream {
 })
 OPTIONAL MATCH (generation)-[:HAS_OWNER_RETRY]->(
   reviewed_owner_retry:BitrixActivityOwnerRetry {
+    control_instance_id: $control_instance_id,
     generation_id: $generation_id,
     owner_deal_id: $owner_deal_id,
     status: 'reviewed_excluded'
@@ -955,6 +1021,7 @@ WITH generation,
      stream,
      min(reviewed_owner_retry.review_evidence_digest) AS reviewed_owner_evidence_digest
 MERGE (retry:BitrixActivityOwnerRetry {
+  control_instance_id: $control_instance_id,
   generation_id: $generation_id,
   source_identity: $source_identity,
   source_boundary: $source_boundary
@@ -986,6 +1053,7 @@ RETURN retry.attempt_count AS attempt_count,
 
 RESOLVE_BITRIX_ACTIVITY_OWNER_RETRY = """
 MATCH (retry:BitrixActivityOwnerRetry {
+  control_instance_id: $control_instance_id,
   generation_id: $generation_id,
   source_identity: $source_identity,
   source_boundary: $source_boundary,

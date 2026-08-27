@@ -39,7 +39,7 @@ from src.models import (
     NormalizedAddress as NormalizedAddressModel,
 )
 from src.pipeline_normalization import fanout_cap_for, is_usable
-from src.source_instances import effective_source_instance_id
+from src.source_instances import LEGACY_DEFAULT_CONTROL_INSTANCE_ID, effective_source_instance_id
 from src.source_version_keys import encode_source_version_key
 
 logger = logging.getLogger(__name__)
@@ -260,6 +260,7 @@ def persist_source_record(
     expected_active_source_record_pk: str | None,
     activation_blueprint: dict[str, JsonValue] | None = None,
     link_status: str | None = None,
+    control_instance_id: str = LEGACY_DEFAULT_CONTROL_INSTANCE_ID,
 ) -> str:
     """Step 7 + 7b: persist SourceRecord and link to IngestRun."""
     normalized = build_normalized_source_payload(
@@ -346,7 +347,12 @@ def persist_source_record(
     assert sr_record is not None, "CREATE_SOURCE_RECORD must return a row"
     pk: str = sr_record["source_record_pk"]
     if ingest_run_id is not None:
-        tx.run(queries.LINK_SOURCE_RECORD_TO_RUN, source_record_pk=pk, ingest_run_id=ingest_run_id)
+        tx.run(
+            queries.LINK_SOURCE_RECORD_TO_RUN,
+            source_record_pk=pk,
+            ingest_run_id=ingest_run_id,
+            control_instance_id=control_instance_id,
+        )
     return pk
 
 

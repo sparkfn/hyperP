@@ -136,7 +136,8 @@ def test_occurrences_have_immutable_terminal_dispositions_without_identity_poiso
         "differing_hash_conflict",
     ):
         assert f"'{disposition}'" in UPSERT_STAGE_HISTORY_OCCURRENCE
-    assert "ON CREATE SET occurrence.logical_run_id" in UPSERT_STAGE_HISTORY_OCCURRENCE
+    assert "ON CREATE SET occurrence.control_instance_id" in UPSERT_STAGE_HISTORY_OCCURRENCE
+    assert "occurrence.logical_run_id = $logical_run_id" in UPSERT_STAGE_HISTORY_OCCURRENCE
     assert "SET occurrence.terminal_disposition" not in UPSERT_STAGE_HISTORY_OCCURRENCE
 
     assert "'malformed_excluded'" in UPSERT_STAGE_HISTORY_FAILED_OCCURRENCE
@@ -208,6 +209,8 @@ def test_parent_resolution_fails_closed_and_retry_claims_are_fenced() -> None:
     )
 
     assert "retry.status = 'pending'" in UPSERT_STAGE_HISTORY_RETRY
+    assert "retry.control_instance_id = $control_instance_id" in UPSERT_STAGE_HISTORY_RETRY
+    assert "AND retry.control_instance_id = $control_instance_id" in UPSERT_STAGE_HISTORY_RETRY
     assert "retry.lease_expires_at < datetime()" in CLAIM_STAGE_HISTORY_RETRY
     assert "retry.lease_fencing_token = $fencing_token" in CLAIM_STAGE_HISTORY_RETRY
     assert "coalesce(retry.attempt_count, 0) < retry.max_attempts" in (CLAIM_STAGE_HISTORY_RETRY)
@@ -408,7 +411,8 @@ def test_review_commands_are_durable_fenced_and_lease_owned() -> None:
 
 
 def test_status_reads_the_terminal_attempt_after_active_ownership_is_released() -> None:
-    assert "(logical)-[:HAS_ATTEMPT]->(attempt:IngestRun)" in GET_STAGE_HISTORY_STATUS
+    assert "(logical)-[:HAS_ATTEMPT]->(attempt:IngestRun {" in GET_STAGE_HISTORY_STATUS
+    assert "control_instance_id: $control_instance_id" in GET_STAGE_HISTORY_STATUS
     assert "attempt.generation = logical.active_generation" in GET_STAGE_HISTORY_STATUS
     assert "(logical)-[:ACTIVE_ATTEMPT]->(attempt:IngestRun)" not in (GET_STAGE_HISTORY_STATUS)
 

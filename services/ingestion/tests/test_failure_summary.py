@@ -94,10 +94,15 @@ def test_worker_created_ingest_run_retains_mode() -> None:
 def test_worker_created_ingest_run_reuses_the_stable_celery_task_identity() -> None:
     query = queries.CREATE_OR_REUSE_WORKER_INGEST_RUN
 
-    assert "MERGE (ir:IngestRun {worker_task_id: $worker_task_id})" in query
+    assert (
+        "MERGE (ir:IngestRun {control_instance_id: $control_instance_id, "
+        "worker_task_id: $worker_task_id})" in query
+    )
     assert "coalesce(ir.creation_token = $creation_token, false) AS created" in query
     assert "ir.source_key = $source_key AND ir.mode = $mode" in query
-    assert any("ingest_run_worker_task_id_unique" in item for item in BASE_LIFECYCLE_CONSTRAINTS)
+    assert not any(
+        "ingest_run_worker_task_id_unique" in item for item in BASE_LIFECYCLE_CONSTRAINTS
+    )
 
 
 def test_terminal_worker_run_redelivery_skips_connector_creation(
@@ -115,11 +120,17 @@ def test_terminal_worker_run_redelivery_skips_connector_creation(
     client = GraphClient()
     monkeypatch.setattr(main, "get_settings", lambda: object())
     monkeypatch.setattr(main, "Neo4jClient", lambda _settings: client)
-    monkeypatch.setattr(main, "IngestPipeline", lambda _client: object())
+    pipeline_options: list[dict[str, object]] = []
+
+    def _pipeline(_client: object, **kwargs: object) -> object:
+        pipeline_options.append(kwargs)
+        return object()
+
+    monkeypatch.setattr(main, "IngestPipeline", _pipeline)
     monkeypatch.setattr(
         main,
         "_create_or_reuse_worker_ingest_run",
-        lambda *_args: ("run-1", "completed", False),
+        lambda *_args, **_kwargs: ("run-1", "completed", False),
     )
     monkeypatch.setattr(
         main,
@@ -139,7 +150,45 @@ def test_terminal_worker_run_redelivery_skips_connector_creation(
     assert result["ingest_run_id"] == "run-1"
     assert result["status"] == "completed"
     assert result["skipped"] == 1
+    assert pipeline_options == [{"control_instance_id": "legacy-default"}]
     assert client.closed is True
+
+
+def test_nonlegacy_direct_run_constructs_a_control_scoped_pipeline(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    class GraphClient:
+        def verify_connectivity(self) -> None:
+            return None
+
+        def close(self) -> None:
+            return None
+
+    pipeline_options: list[dict[str, object]] = []
+
+    def _pipeline(_client: object, **kwargs: object) -> object:
+        pipeline_options.append(kwargs)
+        return object()
+
+    monkeypatch.setattr(main, "get_settings", lambda: object())
+    monkeypatch.setattr(main, "Neo4jClient", lambda _settings: GraphClient())
+    monkeypatch.setattr(main, "IngestPipeline", _pipeline)
+    monkeypatch.setattr(
+        main,
+        "_create_or_reuse_worker_ingest_run",
+        lambda *_args, **_kwargs: ("run-1", "completed", False),
+    )
+
+    result = main.run_ingestion(
+        "fundbox",
+        mode="api",
+        initialize_graph=False,
+        task_id="task-123",
+        control_instance_id="portal-one",
+    )
+
+    assert result["status"] == "completed"
+    assert pipeline_options == [{"control_instance_id": "portal-one"}]
 
 
 def test_isolated_durable_failures_can_commit_connector_progress() -> None:

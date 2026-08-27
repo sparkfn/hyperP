@@ -44,7 +44,7 @@ from src.record_lifecycle import (
     plan_incoming_version,
     reject_replaced_pending,
 )
-from src.source_instances import effective_source_instance_id
+from src.source_instances import LEGACY_DEFAULT_CONTROL_INSTANCE_ID, effective_source_instance_id
 from src.source_version_keys import encode_source_version_key
 from src.vehicle_categories import base_source_key, category_is_vehicle
 from src.vehicle_extraction import observations_from_sales_lines
@@ -238,6 +238,7 @@ def _execute(
             queries.LINK_SOURCE_RECORD_TO_RUN,
             source_record_pk=source_record_pk,
             ingest_run_id=ingest_run_id,
+            control_instance_id=LEGACY_DEFAULT_CONTROL_INSTANCE_ID,
         )
     try:
         order, line_items, customer_link = _parse_sales_envelope(envelope.raw_payload)

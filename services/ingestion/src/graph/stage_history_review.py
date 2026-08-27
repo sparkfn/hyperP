@@ -38,7 +38,11 @@ from src.graph.queries.stage_history_ingestion import (
     RESOLVE_STAGE_HISTORY_RETRY_BY_REVIEW,
     RESOLVE_STAGE_HISTORY_REVIEW_PARENT_CANDIDATES,
 )
-from src.source_instances import LEGACY_DEFAULT_SOURCE_INSTANCE_ID
+from src.source_instances import (
+    LEGACY_DEFAULT_CONTROL_INSTANCE_ID,
+    LEGACY_DEFAULT_SOURCE_INSTANCE_ID,
+    effective_control_instance_id,
+)
 from src.stage_history_ingestion_models import (
     StageHistoryAssociationState,
     StageHistoryAuthorityState,
@@ -87,6 +91,7 @@ class StageHistoryReviewResumeContext:
 
 class _FenceParams(TypedDict):
     source_key: str
+    control_instance_id: str
     logical_run_id: str
     ingest_run_id: str
     attempt_generation: int
@@ -145,9 +150,11 @@ class StageHistoryReviewRepository:
         client: Neo4jClient,
         *,
         failure_injector: FailureInjector | None = None,
+        control_instance_id: str = LEGACY_DEFAULT_CONTROL_INSTANCE_ID,
     ) -> None:
         self._client = client
         self._failure_injector = failure_injector
+        self._control_instance_id = effective_control_instance_id(control_instance_id)
 
     def record_command(
         self,
@@ -181,6 +188,7 @@ class StageHistoryReviewRepository:
             return tx.run(
                 GET_STAGE_HISTORY_REVIEW_COMMAND_CONTEXT,
                 command_id=command_id,
+                control_instance_id=self._control_instance_id,
             ).single()
 
         row = self._client.execute_read(_read)
@@ -209,6 +217,7 @@ class StageHistoryReviewRepository:
                 stream_generation=_positive_integer(row, "stream_generation"),
                 fencing_token=_positive_integer(row, "fencing_token"),
                 attempt_generation=_positive_integer(row, "attempt_generation"),
+                control_instance_id=self._control_instance_id,
             ),
         )
 
@@ -219,6 +228,7 @@ class StageHistoryReviewRepository:
             return tx.run(
                 GET_STAGE_HISTORY_REVIEW_RESUME_CONTEXT,
                 command_id=command_id,
+                control_instance_id=self._control_instance_id,
             ).single()
 
         row = self._client.execute_read(_read)
@@ -358,6 +368,7 @@ class StageHistoryReviewRepository:
                     logical_run_id=fence.logical_run_id,
                     ingest_run_id=fence.ingest_run_id,
                     generation=fence.attempt_generation,
+                    control_instance_id=fence.control_instance_id,
                     expected_head_version=head.version,
                     expected_authority_token=head.token,
                     next_authority_token=head.token + 1,
@@ -895,6 +906,7 @@ def _fence(fence: FenceContext, command: StageHistoryReviewCommand) -> _FencePar
         raise ValueError("stage review requires the active crm_stage_history fence")
     return {
         "source_key": fence.source_key,
+        "control_instance_id": fence.control_instance_id,
         "logical_run_id": fence.logical_run_id,
         "ingest_run_id": fence.ingest_run_id,
         "attempt_generation": fence.attempt_generation,

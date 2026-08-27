@@ -66,6 +66,7 @@ ParentIdentity = tuple[str, str]
 
 class _FenceParams(TypedDict):
     source_key: str
+    control_instance_id: str
     logical_run_id: str
     ingest_run_id: str
     attempt_generation: int
@@ -260,6 +261,7 @@ def _fence_params(
 ) -> _FenceParams:
     return {
         "source_key": fence.source_key,
+        "control_instance_id": fence.control_instance_id,
         "logical_run_id": fence.logical_run_id,
         "ingest_run_id": fence.ingest_run_id,
         "attempt_generation": fence.attempt_generation,
@@ -416,6 +418,7 @@ def _persist_variant(
         event_identity=observation.event_identity,
         canonical_hash=observation.canonical_hash,
         hash_version="bitrix-stage-history-v1",
+        source_instance_id=LEGACY_DEFAULT_SOURCE_INSTANCE_ID,
         source_record_pk=_stable_id(
             "stage-source-record", observation.event_identity, observation.canonical_hash
         ),
@@ -626,6 +629,7 @@ def _persist_authority_if_required(
             logical_run_id=fence.logical_run_id,
             ingest_run_id=fence.ingest_run_id,
             generation=fence.attempt_generation,
+            control_instance_id=fence.control_instance_id,
             expected_head_version=head.head_version,
             expected_authority_token=head.authority_token,
             next_authority_token=head.authority_token + 1,
