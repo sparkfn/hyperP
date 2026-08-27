@@ -489,9 +489,13 @@ def _validate_reserved_legacy_registration(client: Neo4jClient) -> None:
             "OPTIONAL MATCH (instance:BitrixSourceInstance {source_key: 'bitrix_chat', "
             "source_instance_id: 'legacy-default', status: 'active'}) "
             "WITH collect(DISTINCT instance) AS instances "
-            "RETURN size(instances) = 1 AND size([(instances[0])-[:INSTANCE_OF]->(:SourceSystem "
-            "{source_key: 'bitrix_chat', is_active: true}) | 1]) = 1 "
-            "AND size([(instances[0])-[:INSTANCE_OF]->(:SourceSystem) | 1]) = 1 AS ready"
+            "OPTIONAL MATCH (:BitrixSourceInstance {source_key: 'bitrix_chat', "
+            "source_instance_id: 'legacy-default', status: 'active'})"
+            "-[relationship:INSTANCE_OF]->(target:SourceSystem) "
+            "WITH instances, count(relationship) AS relationship_count, "
+            "collect(DISTINCT target) AS targets "
+            "RETURN size(instances) = 1 AND relationship_count = 1 AND size(targets) = 1 "
+            "AND targets[0].source_key = 'bitrix_chat' AND targets[0].is_active = true AS ready"
         ).single()
         return record is not None and record["ready"] is True
 

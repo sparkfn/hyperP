@@ -239,3 +239,28 @@ def test_control_instance_validation_uses_the_canonical_slug_boundaries() -> Non
 
     assert re.fullmatch(pattern, "portal-") is None
     assert re.fullmatch(pattern, "a" * 64) is not None
+
+
+class _ReservedRegistrationTransaction:
+    def run(self, query: str, **_params: object) -> _Result:
+        assert "OPTIONAL MATCH (:BitrixSourceInstance" in query
+        assert "count(relationship) AS relationship_count" in query
+        assert "size(instances) = 1 AND relationship_count = 1" in query
+        assert "size(targets) = 1" in query
+        assert "targets[0].source_key = 'bitrix_chat'" in query
+        assert "targets[0].is_active = true" in query
+        assert "[(instances[0])-[:INSTANCE_OF]" not in query
+        return _Result({"ready": True})
+
+
+class _ReservedRegistrationClient:
+    def execute_read(self, work: Callable[[_ReservedRegistrationTransaction], bool]) -> bool:
+        return work(_ReservedRegistrationTransaction())
+
+
+def test_reserved_legacy_registration_uses_valid_cardinality_query() -> None:
+    from src.graph.ingestion_control_instance_migration import (
+        _validate_reserved_legacy_registration,
+    )
+
+    _validate_reserved_legacy_registration(_ReservedRegistrationClient())  # type: ignore[arg-type]
