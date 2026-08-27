@@ -32,13 +32,23 @@ class IndexDefinition:
 def show_indexes(client: Neo4jClient) -> dict[str, IndexDefinition]:
     """Return the runtime index inventory without accepting a similarly named index."""
 
+    expected_names = frozenset(name for name, _label, _properties in CENSUS_INDEX_SPECS)
+
     def read(tx: ManagedTransaction) -> dict[str, IndexDefinition]:
         result = tx.run(
             "SHOW INDEXES YIELD name, type, entityType, labelsOrTypes, properties "
-            "RETURN name, type, entityType, labelsOrTypes, properties"
+            "WHERE name IN $names "
+            "RETURN name, type, entityType, labelsOrTypes, properties",
+            names=sorted(expected_names),
         )
         definitions: dict[str, IndexDefinition] = {}
         for record in result:
+            raw_name = record["name"]
+            # Neo4j returns built-in LOOKUP indexes with null metadata. The query
+            # narrows to #273 names; retain this guard for driver/fake inventories
+            # that still include unrelated index records.
+            if not isinstance(raw_name, str) or raw_name not in expected_names:
+                continue
             definition = _index_definition(record)
             if definition.name in definitions:
                 raise RuntimeError("standalone CRM census index inventory is ambiguous")
