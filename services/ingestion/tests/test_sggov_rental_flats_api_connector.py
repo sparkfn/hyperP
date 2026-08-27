@@ -134,9 +134,7 @@ def test_api_and_dump_modes_produce_identical_envelope_hashes(tmp_path: Path) ->
     api_page = _page(offset=0, next_offset=None)
     api_page["total"] = 1
     http = httpx.Client(
-        transport=httpx.MockTransport(
-            lambda _request: httpx.Response(200, json=api_page)
-        )
+        transport=httpx.MockTransport(lambda _request: httpx.Response(200, json=api_page))
     )
     api_record = list(
         SGGovernmentRentalFlatsApiConnector(
@@ -161,9 +159,7 @@ def test_api_and_dump_modes_preserve_null_town_zone(tmp_path: Path) -> None:
     api_page = _page(offset=0, next_offset=None, town_map_zone=None)
     api_page["total"] = 1
     http = httpx.Client(
-        transport=httpx.MockTransport(
-            lambda _request: httpx.Response(200, json=api_page)
-        )
+        transport=httpx.MockTransport(lambda _request: httpx.Response(200, json=api_page))
     )
     api_record = list(
         SGGovernmentRentalFlatsApiConnector(
@@ -192,9 +188,7 @@ def test_api_and_dump_modes_preserve_legacy_copy_escape_decoding(tmp_path: Path)
     api_page = _page(offset=0, next_offset=None, street_name=street_name)
     api_page["total"] = 1
     http = httpx.Client(
-        transport=httpx.MockTransport(
-            lambda _request: httpx.Response(200, json=api_page)
-        )
+        transport=httpx.MockTransport(lambda _request: httpx.Response(200, json=api_page))
     )
     api_record = list(
         SGGovernmentRentalFlatsApiConnector(
@@ -290,14 +284,15 @@ def test_run_ingestion_does_not_build_connector_when_run_creation_fails(
 
     monkeypatch.setattr("src.main.get_settings", lambda: object())
     monkeypatch.setattr("src.main.Neo4jClient", lambda _settings: GraphClient())
-    monkeypatch.setattr("src.main.IngestPipeline", lambda _client: object())
+    monkeypatch.setattr("src.main.IngestPipeline", lambda _client, **_kwargs: object())
 
     def boom(*_args: object, **_kwargs: object) -> None:
         raise AssertionError("get_connector must not run when IngestRun creation fails")
 
     monkeypatch.setattr("src.main.get_connector", boom)
 
-    def fail_create_run(*_args: object) -> str:
+    def fail_create_run(*_args: object, **kwargs: object) -> str:
+        assert kwargs["control_instance_id"] == "legacy-default"
         raise RuntimeError("run creation failed")
 
     monkeypatch.setattr("src.main._create_ingest_run", fail_create_run)

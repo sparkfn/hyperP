@@ -9,6 +9,15 @@ from src import stage_history_control, stage_history_review_control
 from src.ingestion_config import StageHistoryIngestionConfig
 
 
+@pytest.fixture(autouse=True)
+def _admit_legacy_control(monkeypatch: pytest.MonkeyPatch) -> None:
+    def admit(_settings: object, control_instance_id: str) -> None:
+        assert control_instance_id == "legacy-default"
+
+    monkeypatch.setattr(stage_history_control, "admit_configured_bitrix_control", admit)
+    monkeypatch.setattr(stage_history_review_control, "admit_configured_bitrix_control", admit)
+
+
 def test_collect_smoke_is_rejected_before_source_or_store_access(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -102,14 +111,14 @@ def test_dispatch_smoke_verifies_artifact_kind_before_task_publication(
         )
 
 
-
 def test_verified_artifact_closes_store_before_return(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     events: list[str] = []
     store = SimpleNamespace(
-        verify=lambda _artifact_id: events.append("verify")
-        or SimpleNamespace(artifact_kind="stage-ingestion"),
+        verify=lambda _artifact_id: (
+            events.append("verify") or SimpleNamespace(artifact_kind="stage-ingestion")
+        ),
         close=lambda: events.append("close"),
     )
     monkeypatch.setattr(
@@ -173,6 +182,7 @@ def test_verified_artifact_closes_store_when_verification_fails(
         )
 
     assert events == ["verify", "close"]
+
 
 def test_parser_exposes_only_bounded_manual_commands() -> None:
     parser = stage_history_control.build_parser()
@@ -344,7 +354,14 @@ def test_review_publication_failure_fails_the_claimed_fence(
 
     published: list[tuple[tuple[object, ...], str, str]] = []
 
-    def publish(*, args: tuple[object, ...], task_id: str, queue: str) -> None:
+    def publish(
+        *,
+        args: tuple[object, ...],
+        kwargs: dict[str, str],
+        task_id: str,
+        queue: str,
+    ) -> None:
+        assert kwargs == {}
         published.append((args, task_id, queue))
         events.append("publish")
         raise RuntimeError("broker unavailable")
@@ -359,14 +376,20 @@ def test_review_publication_failure_fails_the_claimed_fence(
         events.append(("fail", fence, task_id, type(error).__name__))
 
     monkeypatch.setattr(stage_history_review_control, "Neo4jClient", lambda _settings: Client())
-    monkeypatch.setattr(stage_history_review_control, "LogicalRunControl", lambda _client: logical)
     monkeypatch.setattr(
-        stage_history_review_control, "BitrixStreamControl", lambda _client: Stream()
+        stage_history_review_control,
+        "LogicalRunControl",
+        lambda _client, control_instance_id="legacy-default": (
+            (control_instance_id == "legacy-default") and logical
+        ),
+    )
+    monkeypatch.setattr(
+        stage_history_review_control, "BitrixStreamControl", lambda _client, **_kwargs: Stream()
     )
     monkeypatch.setattr(
         stage_history_review_control,
         "StageHistoryReviewRepository",
-        lambda _client: Repository(),
+        lambda _client, **_kwargs: Repository(),
     )
     monkeypatch.setattr(
         stage_history_review_control.execute_stage_history_review_task,
@@ -432,8 +455,13 @@ def test_review_admission_failure_releases_the_claimed_logical_attempt(
             pass
 
     class Logical:
-        def __init__(self, _client: object) -> None:
-            pass
+        def __init__(
+            self,
+            _client: object,
+            control_instance_id: str = "legacy-default",
+            **_kwargs: object,
+        ) -> None:
+            assert control_instance_id == "legacy-default"
 
         def create_or_reuse(self, **_kwargs: object) -> object:
             return attempt
@@ -446,8 +474,13 @@ def test_review_admission_failure_releases_the_claimed_logical_attempt(
             return True
 
     class Stream:
-        def __init__(self, _client: object) -> None:
-            pass
+        def __init__(
+            self,
+            _client: object,
+            control_instance_id: str = "legacy-default",
+            **_kwargs: object,
+        ) -> None:
+            assert control_instance_id == "legacy-default"
 
         def admit_or_coalesce(self, **_kwargs: object) -> object:
             raise RuntimeError("stream admission unavailable")
@@ -565,8 +598,13 @@ def test_request_stop_cannot_mutate_a_non_stage_logical_run(
             pass
 
     class Logical:
-        def __init__(self, _client: object) -> None:
-            pass
+        def __init__(
+            self,
+            _client: object,
+            control_instance_id: str = "legacy-default",
+            **_kwargs: object,
+        ) -> None:
+            assert control_instance_id == "legacy-default"
 
         def get(self, _logical_run_id: str) -> object:
             return SimpleNamespace(source_key="fundbox", mode="incremental")
@@ -655,8 +693,13 @@ def test_review_resume_revalidates_the_authorized_actor_before_run_mutation(
             pass
 
     class Repository:
-        def __init__(self, _client: object) -> None:
-            pass
+        def __init__(
+            self,
+            _client: object,
+            control_instance_id: str = "legacy-default",
+            **_kwargs: object,
+        ) -> None:
+            assert control_instance_id == "legacy-default"
 
         def load_resume_context(self, _command_id: str) -> object:
             return context
@@ -669,7 +712,8 @@ def test_review_resume_revalidates_the_authorized_actor_before_run_mutation(
     def lock_context(*_args: object, **_kwargs: object) -> Iterator[Lock]:
         yield Lock()
 
-    def forbidden_logical(_client: object) -> object:
+    def forbidden_logical(_client: object, control_instance_id: str = "legacy-default") -> object:
+        assert control_instance_id == "legacy-default"
         raise AssertionError("changed review actor mutated the logical run")
 
     monkeypatch.setattr(
@@ -737,8 +781,13 @@ def test_review_resume_rejects_changed_retry_configuration_before_mutation(
             pass
 
     class Repository:
-        def __init__(self, _client: object) -> None:
-            pass
+        def __init__(
+            self,
+            _client: object,
+            control_instance_id: str = "legacy-default",
+            **_kwargs: object,
+        ) -> None:
+            assert control_instance_id == "legacy-default"
 
         def load_resume_context(self, _command_id: str) -> object:
             return context
@@ -751,7 +800,8 @@ def test_review_resume_rejects_changed_retry_configuration_before_mutation(
     def lock_context(*_args: object, **_kwargs: object) -> Iterator[Lock]:
         yield Lock()
 
-    def forbidden_logical(_client: object) -> object:
+    def forbidden_logical(_client: object, control_instance_id: str = "legacy-default") -> object:
+        assert control_instance_id == "legacy-default"
         raise AssertionError("changed retry configuration mutated the logical run")
 
     monkeypatch.setattr(

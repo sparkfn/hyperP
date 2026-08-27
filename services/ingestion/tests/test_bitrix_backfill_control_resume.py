@@ -9,6 +9,14 @@ from src.bitrix_backfill_control import BitrixBackfillControl
 from src.bitrix_backfill_models import GenerationChildRun
 
 
+@pytest.fixture(autouse=True)
+def _admit_legacy_control(monkeypatch: MonkeyPatch) -> None:
+    def admit(_settings: object, control_instance_id: str) -> None:
+        assert control_instance_id == "legacy-default"
+
+    monkeypatch.setattr("src.bitrix_backfill_control.admit_configured_bitrix_control", admit)
+
+
 def test_resume_advances_past_historical_worker_generation(
     monkeypatch: MonkeyPatch,
 ) -> None:
@@ -18,6 +26,7 @@ def test_resume_advances_past_historical_worker_generation(
         generation_kind="corrective",
         boundary_digest="sha256:boundary",
         configuration_digest="sha256:configuration",
+        control_instance_id="legacy-default",
     )
     repository.get_max_resume_worker_generation.return_value = 13
     repository.list_child_runs.return_value = [
@@ -71,6 +80,7 @@ def test_resume_materialized_successor_uses_live_identity_and_new_worker_task(
         generation_kind="live_successor",
         boundary_digest="sha256:boundary",
         configuration_digest="sha256:configuration",
+        control_instance_id="legacy-default",
     )
     repository.get_successor_publication_occurrence.return_value = "2026-08-11T13:18:52Z"
     repository.get_max_resume_worker_generation.return_value = 2
@@ -117,6 +127,7 @@ def test_successor_resume_loads_the_original_occurrence_from_activation_evidence
         generation_kind="live_successor",
         boundary_digest="sha256:boundary",
         configuration_digest="sha256:configuration",
+        control_instance_id="legacy-default",
     )
     repository.get_successor_publication_occurrence.return_value = "2026-08-11T13:18:52Z"
     repository.get_max_resume_worker_generation.return_value = 3
@@ -156,6 +167,7 @@ def test_successor_resume_rejects_a_changed_occurrence() -> None:
         generation_kind="live_successor",
         boundary_digest="sha256:boundary",
         configuration_digest="sha256:configuration",
+        control_instance_id="legacy-default",
     )
     repository.get_successor_publication_occurrence.return_value = "2026-08-11T13:18:52Z"
     control = object.__new__(BitrixBackfillControl)
