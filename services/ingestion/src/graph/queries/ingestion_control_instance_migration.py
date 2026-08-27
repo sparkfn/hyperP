@@ -67,6 +67,7 @@ LEGACY_CONSTRAINT_SPECS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
         ("generation_id", "stream_key", "source_identity", "source_boundary"),
     ),
     ("bitrix_dispatch_control_source_unique", "BitrixDispatchControl", ("source_key",)),
+    ("stage_history_review_command_id_unique", "StageHistoryReviewCommand", ("command_id",)),
     (
         "bitrix_dispatch_outbox_successor_unique",
         "BitrixBackfillDispatchOutbox",
@@ -140,6 +141,16 @@ NEW_CONSTRAINT_SPECS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
         "bitrix_dispatch_outbox_control_successor_unique",
         "BitrixBackfillDispatchOutbox",
         ("control_instance_id", "successor_generation_id"),
+    ),
+    (
+        "stage_history_review_command_control_id_unique",
+        "StageHistoryReviewCommand",
+        ("control_instance_id", "command_id"),
+    ),
+    (
+        "bitrix_execution_source_binding_control_unique",
+        "BitrixExecutionSourceBinding",
+        ("source_key", "control_instance_id"),
     ),
 )
 

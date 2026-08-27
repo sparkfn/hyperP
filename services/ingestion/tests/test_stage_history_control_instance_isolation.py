@@ -6,6 +6,7 @@ from src.graph.queries.stage_history_ingestion import (
     CLAIM_STAGE_HISTORY_RETRY,
     CLAIM_STAGE_HISTORY_REVIEW_COMMAND,
     COMMIT_STAGE_HISTORY_UNIT_AND_ADVANCE_CHECKPOINT,
+    CREATE_STAGE_HISTORY_UNIT,
     GET_STAGE_HISTORY_RECONCILIATION,
     GET_STAGE_HISTORY_STATUS,
     PERSIST_STAGE_HISTORY_REVIEW_COMMAND,
@@ -104,4 +105,43 @@ def test_stage_history_publication_admission_is_defined_before_direct_execution_
     source = Path("services/ingestion/src/stage_history_control.py").read_text()
     assert source.index("def _admit_stage_history_publication") < source.index(
         'if __name__ == "__main__":'
+    )
+
+
+def test_stage_history_generated_ids_preserve_legacy_and_scope_nondefault_controls() -> None:
+    from src.stage_history_identities import scope_stage_history_identity
+
+    raw_unit_id = "sha256:" + "b" * 64
+    raw_occurrence_id = "sha256:" + "a" * 64
+
+    assert scope_stage_history_identity(raw_unit_id, "legacy-default") == raw_unit_id
+    assert scope_stage_history_identity(raw_occurrence_id, "legacy-default") == raw_occurrence_id
+    assert scope_stage_history_identity(raw_unit_id, "portal-one") != scope_stage_history_identity(
+        raw_unit_id, "portal-two"
+    )
+    assert scope_stage_history_identity(
+        raw_occurrence_id, "portal-one"
+    ) != scope_stage_history_identity(raw_occurrence_id, "portal-two")
+
+
+def test_stage_history_pipeline_applies_scoped_ids_before_graph_persistence() -> None:
+    from pathlib import Path
+
+    source = Path("services/ingestion/src/stage_history_pipeline.py").read_text()
+    assert "control_instance_id=fence.control_instance_id" in source
+    assert "scope_stage_history_identity(" in source
+    repository_source = Path("services/ingestion/src/graph/stage_history_ingestion.py").read_text()
+    assert "retry_id = scope_stage_history_identity(" in repository_source
+
+
+def test_stage_history_graph_merges_include_control_namespace_for_shared_artifacts() -> None:
+    assert (
+        "unit_id: $unit_id, control_instance_id: $control_instance_id" in CREATE_STAGE_HISTORY_UNIT
+    )
+    assert "occurrence_id: $occurrence_id, control_instance_id: $control_instance_id" in (
+        UPSERT_STAGE_HISTORY_OCCURRENCE
+    )
+    assert (
+        "control_instance_id: $control_instance_id,\n  occurrence_id: $occurrence_id"
+        in UPSERT_STAGE_HISTORY_RETRY
     )

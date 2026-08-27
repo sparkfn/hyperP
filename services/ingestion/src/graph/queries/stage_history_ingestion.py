@@ -29,9 +29,9 @@ REQUIRE occurrence.occurrence_id IS UNIQUE""",
     """CREATE CONSTRAINT stage_history_retry_identity_unique IF NOT EXISTS
 FOR (retry:StageHistoryRetry)
 REQUIRE (retry.occurrence_id, retry.retry_sequence) IS UNIQUE""",
-    """CREATE CONSTRAINT stage_history_review_command_id_unique IF NOT EXISTS
+    """CREATE CONSTRAINT stage_history_review_command_control_id_unique IF NOT EXISTS
 FOR (command:StageHistoryReviewCommand)
-REQUIRE command.command_id IS UNIQUE""",
+REQUIRE (command.control_instance_id, command.command_id) IS UNIQUE""",
     """CREATE CONSTRAINT stage_history_unit_accounting_identity_unique IF NOT EXISTS
 FOR (accounting:StageHistoryUnitAccounting)
 REQUIRE accounting.unit_id IS UNIQUE""",
@@ -199,7 +199,9 @@ WHERE checkpoint.connector_version = $connector_version
   AND coalesce(checkpoint.duplicate_count, 0) = $expected_duplicate_count
   AND coalesce(checkpoint.excluded_count, 0) = $expected_excluded_count
   AND coalesce(checkpoint.retry_count, 0) = $expected_retry_count
-OPTIONAL MATCH (existing:StageHistoryUnit {unit_id: $unit_id})
+OPTIONAL MATCH (existing:StageHistoryUnit {
+  unit_id: $unit_id, control_instance_id: $control_instance_id
+})
 WITH stream, logical, attempt, checkpoint, existing
 WHERE existing IS NULL OR (
   existing.control_instance_id = $control_instance_id
@@ -214,7 +216,9 @@ WHERE existing IS NULL OR (
       coalesce($expected_last_page_sequence, 0)
   AND existing.replay_boundary = $replay_boundary
 )
-MERGE (unit:StageHistoryUnit {unit_id: $unit_id})
+MERGE (unit:StageHistoryUnit {
+  unit_id: $unit_id, control_instance_id: $control_instance_id
+})
 ON CREATE SET unit.control_instance_id = $control_instance_id,
               unit.logical_run_id = $logical_run_id,
               unit.artifact_id = $artifact_id,
@@ -277,7 +281,9 @@ WHERE unit.unit_digest = $unit_digest
         'none', 'pending', 'claimed', 'resolved', 'rejected', 'quarantined'
       ])
   )
-MERGE (occurrence:StageHistoryOccurrence {occurrence_id: $occurrence_id})
+MERGE (occurrence:StageHistoryOccurrence {
+  occurrence_id: $occurrence_id, control_instance_id: $control_instance_id
+})
 ON CREATE SET occurrence.control_instance_id = $control_instance_id,
               occurrence.logical_run_id = $logical_run_id,
               occurrence.unit_id = $unit_id,
@@ -341,7 +347,9 @@ WHERE unit.unit_digest = $unit_digest
     OR ($terminal_disposition = 'capture_rejected_valid'
       AND $parse_scope IN ['in_scope', 'out_of_scope']))
   AND $retry_state = 'none'
-MERGE (occurrence:StageHistoryOccurrence {occurrence_id: $occurrence_id})
+MERGE (occurrence:StageHistoryOccurrence {
+  occurrence_id: $occurrence_id, control_instance_id: $control_instance_id
+})
 ON CREATE SET occurrence.control_instance_id = $control_instance_id,
               occurrence.logical_run_id = $logical_run_id,
               occurrence.unit_id = $unit_id,
@@ -840,6 +848,7 @@ MATCH (occurrence:StageHistoryOccurrence {
 })
 WHERE occurrence.logical_run_id = $logical_run_id
 MERGE (retry:StageHistoryRetry {
+  control_instance_id: $control_instance_id,
   occurrence_id: $occurrence_id,
   retry_sequence: $retry_sequence
 })

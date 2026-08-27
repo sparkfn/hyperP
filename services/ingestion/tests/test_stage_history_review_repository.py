@@ -879,3 +879,53 @@ def _command_payload_digest(command: StageHistoryReviewCommand, occurrence_id: s
             ).encode("utf-8")
         ).hexdigest()
     )
+
+
+def test_review_command_identity_scopes_nondefault_controls_and_preserves_legacy_values() -> None:
+    legacy_tx = _Tx(
+        {
+            LOCK_AND_ASSERT_ACTIVE_BITRIX_FENCE: [_record(fence_lock_version=1)],
+            PERSIST_STAGE_HISTORY_REVIEW_COMMAND: [_record(command_id="command-1")],
+        }
+    )
+    StageHistoryReviewRepository(cast(Neo4jClient, _Client(legacy_tx))).record_command(
+        _command(),
+        occurrence_id="occurrence-1",
+        authorization_reference="authorization-1",
+        fence=_fence(),
+    )
+    legacy_params = legacy_tx.parameters[-1]
+
+    scoped_command_ids: list[str] = []
+    scoped_occurrence_ids: list[str] = []
+    for control_instance_id in ("portal-one", "portal-two"):
+        tx = _Tx(
+            {
+                LOCK_AND_ASSERT_ACTIVE_BITRIX_FENCE: [_record(fence_lock_version=1)],
+                PERSIST_STAGE_HISTORY_REVIEW_COMMAND: [_record(command_id="command-1")],
+                GET_STAGE_HISTORY_REVIEW_COMMAND_CONTEXT: [None],
+                GET_STAGE_HISTORY_REVIEW_RESUME_CONTEXT: [None],
+            }
+        )
+        repository = StageHistoryReviewRepository(
+            cast(Neo4jClient, _Client(tx)), control_instance_id=control_instance_id
+        )
+        fence = replace(_fence(), control_instance_id=control_instance_id)
+        repository.record_command(
+            _command(),
+            occurrence_id="occurrence-1",
+            authorization_reference="authorization-1",
+            fence=fence,
+        )
+        repository.load_execution("command-1")
+        repository.load_resume_context("command-1")
+        persist_params = tx.parameters[1]
+        scoped_command_ids.append(cast(str, persist_params["command_id"]))
+        scoped_occurrence_ids.append(cast(str, persist_params["target_occurrence_id"]))
+        assert tx.parameters[2]["command_id"] == persist_params["command_id"]
+        assert tx.parameters[3]["command_id"] == persist_params["command_id"]
+
+    assert legacy_params["command_id"] == "command-1"
+    assert legacy_params["target_occurrence_id"] == "occurrence-1"
+    assert scoped_command_ids[0] != scoped_command_ids[1]
+    assert scoped_occurrence_ids[0] != scoped_occurrence_ids[1]

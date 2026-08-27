@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Protocol
 
 from src.bitrix_ingestion_models import FenceContext
@@ -12,6 +12,8 @@ from src.connectors.bitrix_stage_history.artifact_connector import (
     StageArtifactReplayRow,
     VerifiedStageIngestionArtifact,
 )
+from src.source_instances import LEGACY_DEFAULT_CONTROL_INSTANCE_ID
+from src.stage_history_identities import scope_stage_history_identity
 from src.stage_history_ingestion_models import (
     SUCCESSFUL_STAGE_HISTORY_RUN_TYPES,
     StageHistoryAccounting,
@@ -153,6 +155,7 @@ def replay_stage_history_artifact(
             page_sequence=page.page_sequence,
             page_digest=page.page_digest,
             occurrences=tuple(occurrences),
+            control_instance_id=fence.control_instance_id,
         )
         result = repository.persist_unit(unit, current, fence)
         current = result.checkpoint_after
@@ -186,6 +189,7 @@ def record_stage_history_capture_failure(
             page_sequence=page.page_sequence,
             page_digest=page.page_digest,
             occurrences=occurrences,
+            control_instance_id=fence.control_instance_id,
         )
         result = repository.persist_unit(unit, current, fence)
         current = result.checkpoint_after
@@ -228,17 +232,40 @@ def _unit(
     page_sequence: int,
     page_digest: str,
     occurrences: tuple[StageHistoryOccurrence, ...],
+    control_instance_id: str = LEGACY_DEFAULT_CONTROL_INSTANCE_ID,
 ) -> StageHistoryReplayUnit:
-    unit_id = _unit_id(run_type, artifact_id, page_sequence, page_digest)
-    accounting = StageHistoryAccounting.from_occurrences(occurrences)
+    unit_id = scope_stage_history_identity(
+        _unit_id(run_type, artifact_id, page_sequence, page_digest), control_instance_id
+    )
+    scoped_occurrences = _scope_occurrences(occurrences, control_instance_id)
+    accounting = StageHistoryAccounting.from_occurrences(scoped_occurrences)
     return StageHistoryReplayUnit(
         run_type=run_type,
         unit_id=unit_id,
         artifact_id=artifact_id,
         page_sequence=page_sequence,
         page_digest=page_digest,
-        occurrences=occurrences,
+        occurrences=scoped_occurrences,
         accounting=accounting,
+    )
+
+
+def _scope_occurrences(
+    occurrences: tuple[StageHistoryOccurrence, ...], control_instance_id: str
+) -> tuple[StageHistoryOccurrence, ...]:
+    if control_instance_id == LEGACY_DEFAULT_CONTROL_INSTANCE_ID:
+        return occurrences
+    return tuple(
+        replace(
+            occurrence,
+            observation=replace(
+                occurrence.observation,
+                occurrence_id=scope_stage_history_identity(
+                    occurrence.observation.occurrence_id, control_instance_id
+                ),
+            ),
+        )
+        for occurrence in occurrences
     )
 
 

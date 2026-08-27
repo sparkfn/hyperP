@@ -43,6 +43,7 @@ from src.source_instances import (
     LEGACY_DEFAULT_SOURCE_INSTANCE_ID,
     effective_control_instance_id,
 )
+from src.stage_history_identities import scope_stage_history_identity
 from src.stage_history_ingestion_models import (
     StageHistoryAssociationState,
     StageHistoryAuthorityState,
@@ -164,7 +165,8 @@ class StageHistoryReviewRepository:
         authorization_reference: str,
         fence: FenceContext,
     ) -> None:
-        command = replace(command)
+        command = self._scoped_command(command)
+        occurrence_id = self._scoped_occurrence_id(occurrence_id)
         if command.status != "pending":
             raise ValueError("new review commands must be pending")
         _require_text(occurrence_id, "occurrence_id")
@@ -183,6 +185,7 @@ class StageHistoryReviewRepository:
 
     def load_execution(self, command_id: str) -> StageHistoryReviewExecution | None:
         _require_text(command_id, "command_id")
+        command_id = self._scoped_command_id(command_id)
 
         def _read(tx: ManagedTransaction) -> Record | None:
             return tx.run(
@@ -223,6 +226,7 @@ class StageHistoryReviewRepository:
 
     def load_resume_context(self, command_id: str) -> StageHistoryReviewResumeContext | None:
         _require_text(command_id, "command_id")
+        command_id = self._scoped_command_id(command_id)
 
         def _read(tx: ManagedTransaction) -> Record | None:
             return tx.run(
@@ -267,7 +271,8 @@ class StageHistoryReviewRepository:
         retry_backoff_seconds: int = 300,
         fence: FenceContext,
     ) -> StageHistoryReviewResult:
-        command = replace(command)
+        command = self._scoped_command(command)
+        occurrence_id = self._scoped_occurrence_id(occurrence_id)
         _require_text(occurrence_id, "occurrence_id")
         _require_text(authorization_reference, "authorization_reference")
         _require_text(lease_owner, "lease_owner")
@@ -499,6 +504,15 @@ class StageHistoryReviewRepository:
             )
 
         return self._client.execute_write(_work)
+
+    def _scoped_command(self, command: StageHistoryReviewCommand) -> StageHistoryReviewCommand:
+        return replace(command, command_id=self._scoped_command_id(command.command_id))
+
+    def _scoped_command_id(self, command_id: str) -> str:
+        return scope_stage_history_identity(command_id, self._control_instance_id)
+
+    def _scoped_occurrence_id(self, occurrence_id: str) -> str:
+        return scope_stage_history_identity(occurrence_id, self._control_instance_id)
 
     def _inject(self, point: str) -> None:
         if self._failure_injector is not None:

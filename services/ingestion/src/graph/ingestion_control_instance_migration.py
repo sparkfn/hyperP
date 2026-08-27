@@ -126,7 +126,16 @@ def assert_ingestion_control_ready(client: Neo4jClient) -> None:
 def _is_fresh_database(client: Neo4jClient) -> bool:
     """Classify an unmarked graph with no retired controls as a fresh install."""
     constraints = _show_constraints(client)
-    if any(spec[0] in constraints for spec in LEGACY_CONSTRAINT_SPECS):
+    legacy_identities = {
+        (label, properties) for _name, label, properties in LEGACY_CONSTRAINT_SPECS
+    }
+    if any(
+        definition.constraint_type == "UNIQUENESS"
+        and definition.entity_type == "NODE"
+        and len(definition.labels_or_types) == 1
+        and (definition.labels_or_types[0], definition.properties) in legacy_identities
+        for definition in constraints.values()
+    ):
         return False
     label_predicate = " OR ".join(f"node:{label}" for label in AFFECTED_LABELS)
 

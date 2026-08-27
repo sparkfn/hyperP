@@ -6,6 +6,7 @@ import re
 from collections.abc import Callable
 from pathlib import Path
 
+import pytest
 from src.graph.queries.ingestion_control_instance_migration import (
     ACQUIRE_MIGRATION_LEASE,
     AFFECTED_LABELS,
@@ -86,6 +87,11 @@ def test_constraint_specs_are_exact_and_do_not_overconstrain_registry() -> None:
         "ingest_run_source_control_idempotency_unique",
         "IngestRun",
         ("source_key", "control_instance_id", "idempotency_key"),
+    ) in NEW_CONSTRAINT_SPECS
+    assert (
+        "bitrix_execution_source_binding_control_unique",
+        "BitrixExecutionSourceBinding",
+        ("source_key", "control_instance_id"),
     ) in NEW_CONSTRAINT_SPECS
     assert all(
         "source_instance_id" not in properties for _name, _label, properties in NEW_CONSTRAINT_SPECS
@@ -264,3 +270,36 @@ def test_reserved_legacy_registration_uses_valid_cardinality_query() -> None:
     )
 
     _validate_reserved_legacy_registration(_ReservedRegistrationClient())  # type: ignore[arg-type]
+
+
+def test_aliased_retired_constraint_selects_upgrade_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from src.graph import ingestion_control_instance_migration as migration
+    from src.graph.ingestion_control_instance_schema import ConstraintDefinition
+
+    aliased = ConstraintDefinition(
+        name="unexpected_legacy_ingest_run_identity",
+        constraint_type="UNIQUENESS",
+        entity_type="NODE",
+        labels_or_types=("IngestRun",),
+        properties=("source_key", "idempotency_key"),
+    )
+    monkeypatch.setattr(migration, "_show_constraints", lambda _client: {aliased.name: aliased})
+
+    assert migration._is_fresh_database(object()) is False  # type: ignore[arg-type]
+
+
+def test_review_command_constraint_migration_replaces_global_identity_with_control_identity() -> (
+    None
+):
+    assert (
+        "stage_history_review_command_id_unique",
+        "StageHistoryReviewCommand",
+        ("command_id",),
+    ) in LEGACY_CONSTRAINT_SPECS
+    assert (
+        "stage_history_review_command_control_id_unique",
+        "StageHistoryReviewCommand",
+        ("control_instance_id", "command_id"),
+    ) in NEW_CONSTRAINT_SPECS

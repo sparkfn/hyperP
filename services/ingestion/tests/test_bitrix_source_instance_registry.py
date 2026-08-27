@@ -23,8 +23,26 @@ from src.source_instances import (
 def test_registry_has_only_composite_source_and_instance_uniqueness() -> None:
     schema = "\n".join(CREATE_BITRIX_SOURCE_INSTANCE_CONSTRAINTS)
     assert "(instance.source_key, instance.source_instance_id)" in schema
+    assert "(binding.source_key, binding.control_instance_id)" in schema
     assert "REQUIRE instance.source_instance_id IS UNIQUE" not in schema
     assert "REQUIRE instance.source_key IS UNIQUE" not in schema
+
+
+def test_control_admission_validates_existing_binding_before_writing() -> None:
+    existing_binding = ADMIT_BITRIX_CONTROL_INSTANCE.index(
+        "OPTIONAL MATCH (existing:BitrixExecutionSourceBinding"
+    )
+    existing_owner = ADMIT_BITRIX_CONTROL_INSTANCE.index(
+        "OPTIONAL MATCH (owner:BitrixSourceInstance)-[:OWNS_BITRIX_CONTROL]->(existing)"
+    )
+    validation = ADMIT_BITRIX_CONTROL_INSTANCE.index("WHERE size(existing_bindings) = 0")
+    merge = ADMIT_BITRIX_CONTROL_INSTANCE.index("MERGE (binding:BitrixExecutionSourceBinding")
+
+    assert existing_binding < existing_owner < validation < merge
+    merge_identity_end = ADMIT_BITRIX_CONTROL_INSTANCE.index("})\nON CREATE", merge)
+    merge_identity = ADMIT_BITRIX_CONTROL_INSTANCE[merge:merge_identity_end]
+    assert "source_instance_id:" not in merge_identity
+    assert "binding.source_instance_id = source.source_instance_id" in ADMIT_BITRIX_CONTROL_INSTANCE
 
 
 def test_registry_queries_keep_identity_immutable_and_do_not_store_secrets() -> None:
@@ -56,6 +74,10 @@ def test_registry_admission_and_disable_cover_control_state() -> None:
     assert "size(sources) = 1" in ADMIT_BITRIX_CONTROL_INSTANCE
     assert "size(dispatches) <= 1" in ADMIT_BITRIX_CONTROL_INSTANCE
     assert "dispatch.active_generation_id IS NOT NULL" in DISABLE_BITRIX_SOURCE_INSTANCE
+    assert "IngestionLogicalRun {source_key: $source_key}" in DISABLE_BITRIX_SOURCE_INSTANCE
+    assert (
+        "IngestRun {control_instance_id: $source_instance_id}" not in DISABLE_BITRIX_SOURCE_INSTANCE
+    )
     assert "dispatch.active_owner IS NOT NULL" in DISABLE_BITRIX_SOURCE_INSTANCE
     assert (
         "generation.status IN ['allocated', 'backfilling', 'activating', 'active']"
@@ -66,9 +88,7 @@ def test_registry_admission_and_disable_cover_control_state() -> None:
 def test_disable_rejects_active_api_or_worker_runs_before_lifecycle_change() -> None:
     from pathlib import Path
 
-    assert "OPTIONAL MATCH (run:IngestRun {control_instance_id: $source_instance_id})" in (
-        DISABLE_BITRIX_SOURCE_INSTANCE
-    )
+    assert "OPTIONAL MATCH (run:IngestRun)" in DISABLE_BITRIX_SOURCE_INSTANCE
     assert (
         "run.status IN ['queued', 'started', 'running', 'stop_requested', 'paused_with_checkpoint']"
         in (DISABLE_BITRIX_SOURCE_INSTANCE)
@@ -169,7 +189,7 @@ def test_admission_checks_exact_schema_before_registry_or_dispatch_read(
             return Result()
 
     class Client:
-        def execute_read(self, work: object) -> object:
+        def execute_write(self, work: object) -> object:
             return work(Transaction())  # type: ignore[operator]
 
     monkeypatch.setattr(
@@ -208,3 +228,16 @@ def test_schema_readiness_failure_prevents_registry_or_dispatch_read(
             control_instance_id="legacy-default",
             source_instance_id="legacy-default",
         )
+
+
+def test_registration_validates_existing_topology_before_any_create_or_relationship_write() -> None:
+    existing_match = REGISTER_BITRIX_SOURCE_INSTANCE.index(
+        "OPTIONAL MATCH (existing:BitrixSourceInstance"
+    )
+    creation = REGISTER_BITRIX_SOURCE_INSTANCE.index("CREATE (instance:BitrixSourceInstance")
+    existing_validation = REGISTER_BITRIX_SOURCE_INSTANCE.index("WHERE instance.status = 'active'")
+
+    assert existing_match < creation
+    assert existing_validation > creation
+    assert "UNION" in REGISTER_BITRIX_SOURCE_INSTANCE
+    assert "MERGE (instance)-[:INSTANCE_OF]" not in REGISTER_BITRIX_SOURCE_INSTANCE

@@ -176,7 +176,7 @@ class BitrixSourceInstanceRepository:
             if record is None:
                 raise BitrixControlAdmissionError("Bitrix control admission is not ready")
 
-        self._client.execute_read(_work)
+        self._client.execute_write(_work)
 
     @staticmethod
     def _validate_source_key(source_key: str) -> None:
