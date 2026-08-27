@@ -66,6 +66,9 @@ def test_backfills_are_bounded_static_label_keysets() -> None:
     assert "LIMIT $batch_size" in query
     assert "migration.lease_until >= datetime()" in query
     assert "control_instance_id = 'legacy-default'" in query
+    assert "OPTIONAL MATCH (node:IngestRun)" in query
+    assert "FOREACH (node IN nodes" in query
+    assert "RETURN nodes" in query
 
 
 def test_constraint_specs_are_exact_and_do_not_overconstrain_registry() -> None:
@@ -155,6 +158,7 @@ class _FreshTransaction:
         if query.startswith("SHOW CONSTRAINTS"):
             return _Result()
         assert "OPTIONAL MATCH (node)" in query
+        assert "WITH markers, count(node) AS affected" in query
         return _Result({"fresh": True})
 
 

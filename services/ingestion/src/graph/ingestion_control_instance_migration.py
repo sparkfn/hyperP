@@ -136,7 +136,8 @@ def _is_fresh_database(client: Neo4jClient) -> bool:
             "WITH count(migration) AS markers "
             "OPTIONAL MATCH (node) "
             f"WHERE {label_predicate} "
-            "RETURN markers = 0 AND count(node) = 0 AS fresh",
+            "WITH markers, count(node) AS affected "
+            "RETURN markers = 0 AND affected = 0 AS fresh",
             migration_key=MIGRATION_KEY,
         ).single()
         return record is not None and record["fresh"] is True
