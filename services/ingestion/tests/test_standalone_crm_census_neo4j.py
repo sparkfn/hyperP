@@ -257,8 +257,8 @@ def test_concurrent_active_scope_admission_has_exactly_one_owner(census_neo4j: C
 @pytest.mark.parametrize(
     ("kinds", "bounds"),
     (
-        (("contact", "lead", "company"), (("contact", 3), ("lead", 2), ("company", 1))),
-        (("contact", "company"), (("contact", 0), ("company", 4))),
+        (("company", "contact", "lead"), (("company", 1), ("contact", 3), ("lead", 2))),
+        (("company", "contact"), (("company", 4), ("contact", 0))),
         (("lead",), (("lead", 0),)),
     ),
 )

@@ -36,6 +36,8 @@ MATCH (unit:StandaloneCrmCensusUnit {census_id: $census_id, unit_kind: $unit_kin
 WHERE census.state IN ['frozen','publishing','running'] AND census.cancel_requested_at IS NULL
   AND census.fatal_reason IS NULL AND attempt.lease_until >= datetime() AND attempt.deadline_at > datetime()
   AND attempt.occurrence_deadline_at > datetime()
+SET census.updated_at = census.updated_at
+WITH census, attempt, unit
 OPTIONAL MATCH (existing:StandaloneCrmChildPublication {census_id: $census_id, generation: $generation,
   unit_kind: $unit_kind, sequence: $sequence})
 WITH census, unit, attempt, collect(existing) AS existing_rows
@@ -46,7 +48,9 @@ WITH census, unit, attempt, existing_rows, id_rows,
   size(id_rows) = 1 AND (size(existing_rows) = 0 OR elementId(id_rows[0]) <> elementId(existing_rows[0])) AS identity_conflict
 CALL {
   WITH census, unit, existing_rows, identity_conflict
-  WHERE identity_conflict = false AND (size(existing_rows) = 1 OR unit.state IN ['pending_publication','paused'])
+  UNWIND CASE WHEN identity_conflict = false
+    AND (size(existing_rows) = 1 OR unit.state IN ['pending_publication','paused'])
+    THEN [1] ELSE [] END AS reserve
   MERGE (publication:StandaloneCrmChildPublication {census_id: census.census_id, generation: $generation,
     unit_kind: $unit_kind, sequence: $sequence})
   ON CREATE SET publication.publication_id = $publication_id, publication.task_id = $task_id,
@@ -56,7 +60,7 @@ CALL {
   RETURN publication, false AS identity_conflict
   UNION
   WITH identity_conflict
-  WHERE identity_conflict = true
+  UNWIND CASE WHEN identity_conflict THEN [1] ELSE [] END AS conflict
   RETURN NULL AS publication, true AS identity_conflict
 }
 WITH census, unit, publication, identity_conflict,
@@ -218,21 +222,25 @@ MATCH (census:StandaloneCrmCensus {census_id: $census_id, fingerprint: $fingerpr
   control_instance_id: $control_instance_id})
 WHERE census.state IN ['paused_with_checkpoint','recovering','running']
   AND census.cancel_requested_at IS NULL
+SET census.updated_at = census.updated_at
+WITH census
 OPTIONAL MATCH (same:StandaloneCrmCensusAttempt {census_id: census.census_id, task_id: $task_id})
 WITH census, collect(same) AS redelivery
 CALL {
   WITH census, redelivery
-  WHERE size(redelivery) = 1 AND census.state = 'running'
+  UNWIND CASE WHEN size(redelivery) = 1 AND census.state = 'running'
     AND redelivery[0].state = 'running' AND redelivery[0].generation = census.current_generation
     AND redelivery[0].fence_token = census.fence_token
     AND redelivery[0].lease_until >= datetime() AND redelivery[0].deadline_at > datetime()
     AND redelivery[0].occurrence_deadline_at > datetime()
-  RETURN redelivery[0] AS attempt
+    THEN [redelivery[0]] ELSE [] END AS attempt
+  RETURN attempt
   UNION
   WITH census, redelivery
-  WHERE size(redelivery) = 0 AND census.state IN ['paused_with_checkpoint','recovering']
+  UNWIND CASE WHEN size(redelivery) = 0 AND census.state IN ['paused_with_checkpoint','recovering']
     AND census.attempt_count < $max_attempts AND census.occurrence_deadline_at > datetime()
     AND census.call_count < $max_calls_per_occurrence AND census.row_count < $max_rows_per_occurrence
+    THEN [1] ELSE [] END AS continue_attempt
   MATCH (old:StandaloneCrmCensusAttempt {census_id: census.census_id,
     generation: census.current_generation, fence_token: census.fence_token})
   WHERE old.state IN ['paused_with_checkpoint','superseded']

@@ -53,7 +53,7 @@ ON CREATE SET checkpoint.upper_id = bound.upper_id, checkpoint.last_committed_id
   checkpoint.generation = $generation, checkpoint.parent_fence_token = $parent_fence_token,
   checkpoint.child_fence_token = 0, checkpoint.created_at = datetime()
 SET unit.updated_at = datetime(), checkpoint.updated_at = datetime()
-RETURN count(unit) AS allocated_units
+RETURN census.census_id AS census_id, count(unit) AS allocated_units
 """
 )
 

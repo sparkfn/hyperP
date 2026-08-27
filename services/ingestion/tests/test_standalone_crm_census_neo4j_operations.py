@@ -518,6 +518,11 @@ def test_terminal_reconciliation_requires_exact_publication_fence_and_balanced_a
     _freeze(repository, missing, (("contact", 1),))
     with pytest.raises(StandaloneCrmCensusStaleError):
         repository.reconcile_terminal(missing.admission, missing.attempt)
+    assert repository.request_cancel(missing.admission, actor="operator", reason="isolate") == 1
+    assert (
+        repository.reconcile_terminal(missing.admission, missing.attempt)[0]
+        == "cancelled_with_checkpoint"
+    )
 
     unpublished = _claim_source(census_neo4j, "terminal-unpublished")
     _freeze(repository, unpublished, (("contact", 1),))
@@ -534,6 +539,11 @@ def test_terminal_reconciliation_requires_exact_publication_fence_and_balanced_a
     )
     with pytest.raises(StandaloneCrmCensusStaleError):
         repository.reconcile_terminal(unpublished.admission, unpublished.attempt)
+    assert repository.request_cancel(unpublished.admission, actor="operator", reason="isolate") == 1
+    assert (
+        repository.reconcile_terminal(unpublished.admission, unpublished.attempt)[0]
+        == "cancelled_with_checkpoint"
+    )
 
     active = _claim_source(census_neo4j, "terminal-active")
     _freeze(repository, active, (("contact", 1),))
@@ -543,6 +553,33 @@ def test_terminal_reconciliation_requires_exact_publication_fence_and_balanced_a
     )
     with pytest.raises(StandaloneCrmCensusStaleError):
         repository.reconcile_terminal(active.admission, active.attempt)
+    assert repository.request_cancel(active.admission, actor="operator", reason="isolate") == 0
+    repository.settle_child(
+        active.admission,
+        StandaloneCrmCheckpoint(
+            active.admission.census_id,
+            "contact",
+            1,
+            None,
+            None,
+            0,
+            0,
+            0,
+            0,
+            active.attempt.generation,
+            active.attempt.parent_fence_token,
+            1,
+            "active-child",
+        ),
+        terminal_state="cancelled",
+        expected_version=1,
+        max_rows_per_attempt=20,
+        max_rows_per_occurrence=20,
+    )
+    assert (
+        repository.reconcile_terminal(active.admission, active.attempt)[0]
+        == "cancelled_with_checkpoint"
+    )
 
     extra = _claim_source(census_neo4j, "terminal-extra")
     _freeze(repository, extra, (("contact", 1),))

@@ -59,24 +59,27 @@ MATCH (census:StandaloneCrmCensus {census_id: $census_id, fingerprint: $fingerpr
   authority_digest: $authority_digest, source_instance_id: $source_instance_id,
   control_instance_id: $control_instance_id})
 WHERE census.state IN ['allocated','freezing','frozen','publishing','running','recovering']
-  AND census.cancel_requested_at IS NULL AND census.attempt_count < $max_attempts
+  AND census.cancel_requested_at IS NULL
   AND (census.occurrence_deadline_at IS NULL OR census.occurrence_deadline_at > datetime())
+SET census.updated_at = census.updated_at
+WITH census
 OPTIONAL MATCH (same:StandaloneCrmCensusAttempt {census_id: census.census_id, task_id: $task_id})
 WITH census, collect(same) AS redelivery
 CALL {
   WITH census, redelivery
-  WITH census, redelivery
-  WHERE size(redelivery) = 1 AND redelivery[0].state = 'running'
+  UNWIND CASE WHEN size(redelivery) = 1 AND redelivery[0].state = 'running'
     AND redelivery[0].generation = census.current_generation
     AND redelivery[0].fence_token = census.fence_token
-  RETURN redelivery[0] AS attempt
+    THEN [redelivery[0]] ELSE [] END AS attempt
+  RETURN attempt
   UNION
   WITH census, redelivery
-  WITH census WHERE size(redelivery) = 0
+  UNWIND CASE WHEN size(redelivery) = 0 THEN [1] ELSE [] END AS create_attempt
   OPTIONAL MATCH (current:StandaloneCrmCensusAttempt {census_id: census.census_id,
     generation: census.current_generation})
   WITH census, current
-  WHERE current IS NULL OR current.state IN ['paused_with_checkpoint','superseded','failed','completed']
+  WHERE census.attempt_count < $max_attempts
+    AND (current IS NULL OR current.state IN ['paused_with_checkpoint','superseded','failed','completed'])
   CREATE (attempt:StandaloneCrmCensusAttempt {
     census_id: census.census_id, generation: coalesce(census.current_generation, 0) + 1,
     task_id: $task_id, state: 'running', fence_token: coalesce(census.fence_token, 0) + 1,
@@ -136,7 +139,9 @@ WHERE census.current_generation = $generation AND census.fence_token = $parent_f
   AND census.census_kind = 'source_sync' AND census.state IN ['freezing','frozen','publishing','running']
   AND census.cancel_requested_at IS NULL AND attempt.lease_until >= datetime()
   AND attempt.deadline_at > datetime() AND attempt.occurrence_deadline_at > datetime()
-  AND attempt.call_count < $max_calls_per_attempt AND census.call_count < $max_calls_per_occurrence
+SET census.updated_at = census.updated_at
+WITH census, attempt
+WHERE attempt.call_count < $max_calls_per_attempt AND census.call_count < $max_calls_per_occurrence
 OPTIONAL MATCH (existing:StandaloneCrmHttpCallReservation {intent_id: $intent_id})
 WITH census, attempt, collect(existing) AS existing_rows
 WHERE size(existing_rows) = 0
