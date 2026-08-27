@@ -844,6 +844,10 @@ def test_disable_ignores_work_bound_to_a_different_registered_portal(neo4j_drive
     repository.admit(control_instance_id="portal-b", source_instance_id="portal-b")
     with neo4j_driver.session() as session:
         session.run(
+            "MATCH (generation:BitrixBackfillGeneration {control_instance_id: 'legacy-default'}) "
+            "SET generation.status = 'completed'"
+        ).consume()
+        session.run(
             "CREATE (:IngestRun {ingest_run_id: 'portal-b-running', "
             "source_key: 'bitrix_chat', control_instance_id: 'portal-b', status: 'running'})"
         ).consume()
