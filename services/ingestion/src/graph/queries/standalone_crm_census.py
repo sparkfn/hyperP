@@ -481,7 +481,6 @@ WITH census, child_records, publication_records, attempt_records,
 WHERE children_settled AND publications_settled AND fences_settled
   AND (census.census_kind <> 'source_sync' OR size(child_records) = size(census.selected_kinds))
   AND ($terminal_state <> 'completed' OR all(child IN child_records WHERE child.state = 'completed'))
-  AND processed_rows + skipped_rows + failed_rows <= census.rows_processed
 WITH census, child_records, publication_records, attempt_records,
      processed_rows, skipped_rows, failed_rows, no_work_units
 OPTIONAL MATCH (terminal_attempt:StandaloneCrmCensusAttempt {
