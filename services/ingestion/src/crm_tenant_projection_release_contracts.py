@@ -213,9 +213,11 @@ def _validate_associations_and_supports(
             raise ValueError("association must use its input exact subject")
         counts[association.input_id] += 1
     for support in release.supports:
-        association = associations.get(support.association_id)
-        input_item = inputs.get(association.input_id) if association is not None else None
-        if association is None or input_item is None:
+        resolved_association = associations.get(support.association_id)
+        input_item = (
+            inputs.get(resolved_association.input_id) if resolved_association is not None else None
+        )
+        if resolved_association is None or input_item is None:
             raise ValueError("support must reference this release association and input")
         if (
             support.membership_observation.snapshot_id
@@ -225,11 +227,11 @@ def _validate_associations_and_supports(
         if support.mapping_target.entry.revision_id != release.mapping_revision_id:
             raise ValueError("support must use this release mapping revision")
         if (support.mapping_target.entity_key, support.mapping_target.relationship_kind) != (
-            association.entity_key,
-            association.relationship_kind,
+            resolved_association.entity_key,
+            resolved_association.relationship_kind,
         ):
             raise ValueError("support mapping target must prove its association")
-        supported[association.association_id] += 1
+        supported[resolved_association.association_id] += 1
     if any(count == 0 for count in supported.values()):
         raise ValueError("every association requires correlated support")
     _validate_decisions(inputs, decisions, counts)
