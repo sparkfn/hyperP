@@ -47,6 +47,7 @@ class StandaloneCrmRuntimeSnapshot:
     cancel_requested: bool
     window_frozen: bool = False
     window_json: str | None = None
+    attempt_deadline: str | None = None
 
 
 @dataclass(frozen=True)

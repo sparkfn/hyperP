@@ -109,6 +109,7 @@ class StandaloneCrmCensusReconciliationRepository(_StandaloneCrmCensusRepository
                 record["cancel_requested"] is True,
                 record["window_json"] is not None,
                 record["window_json"] if isinstance(record["window_json"], str) else None,
+                None if record["attempt_deadline"] is None else str(record["attempt_deadline"]),
             )
 
         return self._client.execute_read(work)

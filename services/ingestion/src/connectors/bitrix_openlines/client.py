@@ -1397,7 +1397,6 @@ class BitrixOpenLinesClient:
                 if elapsed < self._request_delay_seconds:
                     self._sleep_with_deadline(self._request_delay_seconds - elapsed)
                 self._assert_request_budget()
-                request_timeout = self._request_timeout()
                 intent = BitrixHttpCallIntent(
                     uuid.uuid4().hex,
                     method,
@@ -1414,6 +1413,7 @@ class BitrixOpenLinesClient:
                     )
                 self._request_count += 1
                 self._assert_runtime_budget()
+                request_timeout = self._request_timeout()
                 response = self._http.post(
                     f"{self._base_url}/{method}",
                     json=dict(params),
