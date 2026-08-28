@@ -772,6 +772,17 @@ def test_units_fences_checkpoints_and_publication_repair_execute_recovery_paths(
     assert (
         repository.settle_unit(admission.census_id, 1, "contact", second_fence, "completed") is True
     )
+    assert repository.settle_attempt(admission.census_id, 1) is True
+    assert (
+        repository.terminalize(
+            admission.census_id,
+            1,
+            "completed",
+            StandaloneCrmReason("call_failed", "work-path settled before repair scenario"),
+            "digest-a:digest-b",
+        )
+        is True
+    )
 
     repair_admission = repository.admit(_source_request(occurrence="repair-path"))
     repair_request = _source_request(occurrence="repair-path")
