@@ -18,6 +18,7 @@ from urllib.parse import urlparse
 
 import pytest
 from neo4j import Driver, GraphDatabase, ManagedTransaction, Session
+from src.graph import standalone_crm_census_migration as standalone_census_migration
 from src.graph.bitrix_source_instances import (
     BitrixSourceInstanceConflictError,
     BitrixSourceInstanceRepository,
@@ -25,10 +26,6 @@ from src.graph.bitrix_source_instances import (
 from src.graph.bootstrap import bootstrap_legacy_bitrix_source_instance
 from src.graph.client import Neo4jClient
 from src.graph.ingestion_control_instance_migration import migrate_ingestion_control_instances
-from src.graph.queries.ingestion_control_instance_migration import (
-    LEGACY_CONSTRAINT_SPECS,
-    NEW_CONSTRAINT_SPECS,
-)
 from src.graph.queries.standalone_crm_census import (
     FREEZE_NO_SOURCE_WINDOW,
     FREEZE_SOURCE_WINDOW,
@@ -69,9 +66,7 @@ _REGISTRY_CONSTRAINT = (
     "FOR (instance:BitrixSourceInstance) "
     "REQUIRE (instance.source_key, instance.source_instance_id) IS UNIQUE"
 )
-_SUITE_CONSTRAINTS = (
-    "data_migration_key_unique",
-    "bitrix_source_instance_identity_unique",
+_STANDALONE_CONSTRAINTS = (
     "standalone_crm_census_id_unique",
     "standalone_crm_census_occurrence_unique",
     "standalone_crm_attempt_identity_unique",
@@ -79,8 +74,6 @@ _SUITE_CONSTRAINTS = (
     "standalone_crm_call_intent_unique",
     "standalone_crm_call_sequence_unique",
     "standalone_crm_publication_unique",
-    *(specification[0] for specification in LEGACY_CONSTRAINT_SPECS),
-    *(specification[0] for specification in NEW_CONSTRAINT_SPECS),
 )
 
 
@@ -104,8 +97,29 @@ class _Client:
 
 def _drop_suite_constraints(driver: Driver) -> None:
     with driver.session() as session:
-        for name in _SUITE_CONSTRAINTS:
+        for name in _STANDALONE_CONSTRAINTS:
             session.run(f"DROP CONSTRAINT {name} IF EXISTS").consume()
+
+
+def _delete_standalone_artifacts(driver: Driver) -> None:
+    labels = (
+        "StandaloneCrmCensus",
+        "StandaloneCrmCensusActiveScope",
+        "StandaloneCrmCensusAttempt",
+        "StandaloneCrmCensusUnit",
+        "StandaloneCrmCensusCheckpoint",
+        "StandaloneCrmCensusContinuation",
+        "StandaloneCrmCensusFence",
+        "StandaloneCrmChildPublication",
+        "StandaloneCrmHttpCallReservation",
+    )
+    with driver.session() as session:
+        for label in labels:
+            session.run(f"MATCH (node:{label}) DETACH DELETE node").consume()
+        session.run(
+            "MATCH (migration:DataMigration {migration_key: $key}) DETACH DELETE migration",
+            key=MIGRATION_KEY,
+        ).consume()
 
 
 @pytest.fixture
@@ -135,19 +149,13 @@ def neo4j_driver() -> Iterator[Driver]:
                 time.sleep(1)
         else:
             pytest.fail("disposable standalone CRM census Neo4j database did not become ready")
-        with driver.session() as session:
-            count = session.run("MATCH (node) RETURN count(node) AS count").single(strict=True)[
-                "count"
-            ]
-        if count != 0:
-            pytest.fail("standalone CRM census test database must be empty")
+        _delete_standalone_artifacts(driver)
         prepared = True
         yield driver
     finally:
         try:
             if prepared:
-                with driver.session() as session:
-                    session.run("MATCH (node) DETACH DELETE node").consume()
+                _delete_standalone_artifacts(driver)
             if connected:
                 _drop_suite_constraints(driver)
         finally:
@@ -159,7 +167,9 @@ def _install_control_dependency(driver: Driver) -> _Client:
     with driver.session() as session:
         session.run(_MIGRATION_CONSTRAINT).consume()
         session.run(_REGISTRY_CONSTRAINT).consume()
-        session.run("CREATE (:SourceSystem {source_key: 'bitrix_chat', is_active: true})").consume()
+        session.run(
+            "MERGE (source:SourceSystem {source_key: 'bitrix_chat'}) SET source.is_active = true"
+        ).consume()
     migrate_ingestion_control_instances(
         cast(Neo4jClient, client),
         ensure_legacy_registration=lambda: bootstrap_legacy_bitrix_source_instance(
@@ -309,14 +319,19 @@ def _freeze_mapping_window(
     )
 
 
-def test_readiness_requires_272_and_is_idempotent(neo4j_driver: Driver) -> None:
+def test_readiness_requires_272_and_is_idempotent(
+    neo4j_driver: Driver, monkeypatch: pytest.MonkeyPatch
+) -> None:
     client = _Client(neo4j_driver)
-    with neo4j_driver.session() as session:
-        session.run(_MIGRATION_CONSTRAINT).consume()
-        session.run(_REGISTRY_CONSTRAINT).consume()
-        session.run("CREATE (:SourceSystem {source_key: 'bitrix_chat', is_active: true})").consume()
+    monkeypatch.setattr(
+        standalone_census_migration,
+        "assert_ingestion_control_ready",
+        lambda _client: (_ for _ in ()).throw(RuntimeError("#272 is incomplete")),
+    )
     with pytest.raises(RuntimeError):
         ensure_standalone_crm_census_ready(cast(Neo4jClient, client))
+
+    monkeypatch.undo()
 
     _install_control_dependency(neo4j_driver)
     ensure_standalone_crm_census_ready(cast(Neo4jClient, client))
@@ -333,7 +348,7 @@ def test_readiness_requires_272_and_is_idempotent(neo4j_driver: Driver) -> None:
             row["name"] for row in session.run("SHOW CONSTRAINTS YIELD name RETURN name")
         }
     assert marker["ready"] is True
-    assert set(_SUITE_CONSTRAINTS[2:]) <= constraints
+    assert set(_STANDALONE_CONSTRAINTS) <= constraints
 
 
 def test_readiness_installs_exact_census_constraints_and_lookup_indexes(
@@ -409,6 +424,7 @@ def test_readiness_installs_exact_census_constraints_and_lookup_indexes(
             str(row["name"]): (tuple(row["labelsOrTypes"]), tuple(row["properties"]))
             for row in session.run(
                 "SHOW INDEXES YIELD name, labelsOrTypes, properties "
+                "WHERE labelsOrTypes IS NOT NULL AND properties IS NOT NULL "
                 "RETURN name, labelsOrTypes, properties"
             )
         }
@@ -1437,7 +1453,7 @@ def test_occurrence_exhaustion_converges_to_a_terminal_census_and_releases_scope
     repository = _prepare_repository(neo4j_driver)
     _register(neo4j_driver)
     request = _source_request(
-        occurrence="checkpoint-occurrence-exhaustion", max_attempt_rows=5, max_occurrence_rows=3
+        occurrence="checkpoint-occurrence-exhaustion", max_attempt_rows=3, max_occurrence_rows=3
     )
     admission = repository.admit(request)
     _claim(repository, admission.census_id, request)

@@ -126,6 +126,7 @@ def assert_standalone_crm_census_ready(client: Neo4jClient) -> None:
             )
             for record in session.run(
                 "SHOW INDEXES YIELD name, type, entityType, labelsOrTypes, properties "
+                "WHERE labelsOrTypes IS NOT NULL AND properties IS NOT NULL "
                 "RETURN name, type, entityType, labelsOrTypes, properties"
             )
         }
