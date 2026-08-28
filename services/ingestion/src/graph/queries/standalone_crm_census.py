@@ -395,7 +395,7 @@ ON CREATE SET
     checkpoint.rows_processed = 0,
     checkpoint.binding_position = 0,
     checkpoint.checkpoint_version = 1
-WITH attempt, child, checkpoint,
+WITH census, attempt, child, checkpoint,
      checkpoint.last_id AS prior_last,
      checkpoint.rows_processed AS prior_rows,
      checkpoint.binding_position AS prior_binding
@@ -469,7 +469,7 @@ WITH census,
      reduce(total = 0, child IN collect(child) | total + coalesce(child.processed_rows, 0)) AS processed_rows,
      reduce(total = 0, child IN collect(child) | total + coalesce(child.skipped_rows, 0)) AS skipped_rows,
      reduce(total = 0, child IN collect(child) | total + coalesce(child.failed_rows, 0)) AS failed_rows,
-     count(CASE WHEN collect(child)[0] IS NOT NULL AND child.frozen_upper_id = 0 AND child.state = 'completed' THEN 1 END) AS no_work_units,
+     size([child IN children WHERE child.frozen_upper_id = 0 AND child.state = 'completed']) AS no_work_units,
      all(child IN collect(child) WHERE
          child.state IN ['completed', 'failed', 'cancelled', 'superseded'] OR
          ($allow_paused AND child.state = 'paused' AND child.checkpointed = true)) AS children_settled,

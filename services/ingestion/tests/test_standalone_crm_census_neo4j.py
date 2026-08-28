@@ -270,20 +270,20 @@ def test_attempt_claim_reservation_and_atomic_window_are_fenced(
         fingerprint="fingerprint",
         units=[
             {
-                "unit_kind": "contact",
-                "frozen_upper_id": 10,
-                "revision_id": "",
-                "state": "pending_publication",
-                "fence_token": fence_token,
-                "expected_rows": 10,
-            },
-            {
                 "unit_kind": "company",
                 "frozen_upper_id": 3,
                 "revision_id": "",
                 "state": "pending_publication",
                 "fence_token": fence_token,
                 "expected_rows": 3,
+            },
+            {
+                "unit_kind": "contact",
+                "frozen_upper_id": 10,
+                "revision_id": "",
+                "state": "pending_publication",
+                "fence_token": fence_token,
+                "expected_rows": 10,
             },
             {
                 "unit_kind": "lead",
