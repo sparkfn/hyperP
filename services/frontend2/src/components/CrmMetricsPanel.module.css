@@ -1,6 +1,7 @@
 /* Layout */
 
 .panel {
+  position: relative;
   display: grid;
   gap: 0;
   width: 100%;
