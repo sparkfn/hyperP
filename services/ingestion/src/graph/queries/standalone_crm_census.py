@@ -173,7 +173,7 @@ WHERE prior.generation < census.current_generation
   AND prior.state IN ['running', 'paused_with_checkpoint']
 SET prior.state = 'superseded',
     prior.ended_at = datetime()
-SET census.state = 'running',
+SET census.state = CASE WHEN census.window_kind IS NULL THEN 'freezing' ELSE 'running' END,
     census.current_generation = attempt.generation,
     census.attempts_used = census.attempts_used + 1,
     census.updated_at = datetime()
@@ -354,7 +354,7 @@ RETURN publication.task_id AS task_id
 
 CLAIM_CENSUS_CHILD = """
 MATCH (census:StandaloneCrmCensus {census_id: $census_id, fingerprint: $fingerprint})
-WHERE census.state = 'running' AND datetime() < census.occurrence_deadline
+WHERE census.state IN ['running', 'publishing'] AND datetime() < census.occurrence_deadline
   AND census.cancellation_requested_at IS NULL
 MATCH (child:StandaloneCrmCensusStream {census_id: census.census_id, unit_kind: $unit_kind})
 WHERE child.fence_active = true
@@ -362,6 +362,7 @@ WHERE child.fence_active = true
   AND child.fence_token = $fence_token
   AND child.state IN ['queued', 'running', 'paused']
 SET child.state = 'running', child.fence_active = true
+SET census.state = 'running', census.updated_at = datetime()
 RETURN child.frozen_upper_id AS frozen_upper_id, child.revision_id AS revision_id
 """
 

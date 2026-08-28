@@ -373,7 +373,6 @@ class StandaloneCrmCensusRuntime:
         attempt_deadline: datetime,
         selected_kinds: tuple[StandaloneCrmKind, ...],
     ) -> None:
-        self._census.start_freezing(census_id=census_id, fingerprint=fingerprint)
         probe = getattr(self._authority, "probe_upper_id", None)
         if probe is None:
             self._census.finalize(
