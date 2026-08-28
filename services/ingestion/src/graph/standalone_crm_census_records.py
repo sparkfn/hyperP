@@ -117,7 +117,7 @@ def terminal_window_expectations(
                 }
             )
             selected_stream_kinds.append(stream_kind(item[0]))
-        if tuple(sorted(selected_stream_kinds)) != request.selected_kinds:
+        if tuple(selected_stream_kinds) != request.selected_kinds:
             raise StandaloneCrmCensusConflictError("stored source window selection conflicts")
         return values
     revision_id = decoded.get("revision_id")

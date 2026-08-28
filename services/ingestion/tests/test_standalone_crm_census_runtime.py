@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+import pytest
 from src.graph.standalone_crm_census import StandaloneCrmPublicationRepair
 from src.ingestion_config import BitrixOpenLinesConfig
 from src.standalone_crm_census_models import (
@@ -81,6 +82,9 @@ class _Repository:
         assert (census_id, generation) == ("census", 1)
         return True
 
+    def recover_or_take_over_attempt(self, *_: object) -> None:
+        return None
+
     def create_continuation(self, *_: object) -> int | None:
         raise AssertionError("pre-window recovery must not create a second generation")
 
@@ -119,10 +123,78 @@ class _AuthorityFailureRepository(_Repository):
             request, 1 if window_frozen else 0, "running", window_frozen=window_frozen
         )
         self.failed_freezes: list[tuple[str, int, StandaloneCrmReason]] = []
+        self.post_window_failures: list[tuple[str, int, StandaloneCrmReason]] = []
 
     def fail_freeze(self, census_id: str, generation: int, reason: StandaloneCrmReason) -> bool:
         self.failed_freezes.append((census_id, generation, reason))
         return True
+
+    def fail_after_window_authority(
+        self, census_id: str, generation: int, reason: StandaloneCrmReason
+    ) -> bool:
+        self.post_window_failures.append((census_id, generation, reason))
+        return True
+
+
+class _ReconciliationRepository(_Repository):
+    def __init__(self, request: SourceSyncCensusRequest, terminal_results: list[bool]) -> None:
+        super().__init__(request)
+        self.snapshot = _Snapshot(request, 1, "running", window_frozen=True)
+        self._terminal_results = terminal_results
+        self.settled_attempts: list[tuple[str, int]] = []
+        self.terminal_states: list[str] = []
+
+    def classify_unresolved_calls(self, census_id: str) -> int:
+        assert census_id == "census"
+        return 2
+
+    def converge_limit_denial(
+        self, census_id: str, generation: int, request: SourceSyncCensusRequest, reason_code: str
+    ) -> str | None:
+        assert (census_id, generation, request.occurrence_key, reason_code) == (
+            "census",
+            1,
+            "occurrence",
+            "attempts_exhausted",
+        )
+        return None
+
+    def repair_publications(self, census_id: str) -> tuple[StandaloneCrmPublicationRepair, ...]:
+        assert census_id == "census"
+        return ()
+
+    def settle_attempt(self, census_id: str, generation: int) -> bool:
+        self.settled_attempts.append((census_id, generation))
+        return True
+
+    def terminalize(self, *values: object) -> bool:
+        terminal_state = values[2]
+        assert isinstance(terminal_state, str)
+        self.terminal_states.append(terminal_state)
+        return self._terminal_results.pop(0)
+
+
+class _LimitConvergenceRepository(_Repository):
+    def __init__(self, request: SourceSyncCensusRequest, state: str) -> None:
+        super().__init__(request)
+        self.snapshot = _Snapshot(request, 0, "allocated")
+        self.state = state
+        self.claims: list[tuple[str, int, int]] = []
+        self.convergences: list[tuple[str, int, str]] = []
+
+    def claim_attempt(
+        self, census_id: str, generation: int, fence_token: int, request: SourceSyncCensusRequest
+    ) -> bool:
+        assert request.occurrence_key == "occurrence"
+        self.claims.append((census_id, generation, fence_token))
+        return False
+
+    def converge_limit_denial(
+        self, census_id: str, generation: int, request: SourceSyncCensusRequest, reason_code: str
+    ) -> str | None:
+        assert request.occurrence_key == "occurrence"
+        self.convergences.append((census_id, generation, reason_code))
+        return self.state
 
 
 class _Probe:
@@ -333,11 +405,64 @@ def test_stale_authority_after_window_fails_before_cancellation_settlement() -> 
     result = runtime.run_parent("census", request)
 
     assert result.state == "failed"
-    assert repository.terminal is not None
-    assert repository.terminal[2] == "failed"
-    reason = repository.terminal[3]
-    assert isinstance(reason, StandaloneCrmReason)
-    assert reason.code == "authority_stale"
+    assert repository.post_window_failures == [
+        ("census", 1, StandaloneCrmReason("authority_stale", "authority changed after window"))
+    ]
+    assert repository.terminal is None
+
+
+def test_reconcile_settles_the_attempt_then_selects_completed_or_failed_terminal_state() -> None:
+    request = _request(("contact",))
+    completed_repository = _ReconciliationRepository(request, [True])
+    failed_repository = _ReconciliationRepository(request, [False, True])
+    config = BitrixOpenLinesConfig(standalone_crm_identity_enabled=True)
+
+    completed = StandaloneCrmCensusRuntime(completed_repository, _Authority(), config).reconcile(
+        "census"
+    )
+    failed = StandaloneCrmCensusRuntime(failed_repository, _Authority(), config).reconcile("census")
+
+    assert completed.state == "completed"
+    assert completed_repository.settled_attempts == [("census", 1)]
+    assert completed_repository.terminal_states == ["completed"]
+    assert failed.state == "failed"
+    assert failed_repository.settled_attempts == [("census", 1)]
+    assert failed_repository.terminal_states == ["completed", "failed"]
+
+
+@pytest.mark.parametrize(
+    ("deadline", "expected_reason"),
+    [
+        ("2099-01-01T00:00:00Z", "attempts_exhausted"),
+        ("2000-01-01T00:00:00Z", "deadline_exhausted"),
+    ],
+)
+def test_claim_denial_converges_attempt_or_deadline_exhaustion(
+    deadline: str, expected_reason: str
+) -> None:
+    request = _request(("contact",))
+    request = SourceSyncCensusRequest(
+        request.source_key,
+        request.source_instance_id,
+        request.control_instance_id,
+        request.occurrence_key,
+        request.selected_kinds,
+        StandaloneCrmBudget(2, 2, 20, 4, 4, 3, deadline),
+        request.policy_version,
+        request.association_contract_version,
+        request.configuration_digest,
+        request.authority,
+    )
+    repository = _LimitConvergenceRepository(request, "failed")
+    runtime = StandaloneCrmCensusRuntime(
+        repository, _Authority(), BitrixOpenLinesConfig(standalone_crm_identity_enabled=True)
+    )
+
+    result = runtime.run_parent("census", request)
+
+    assert result.state == "failed"
+    assert repository.claims == [("census", 1, 1)]
+    assert repository.convergences == [("census", 0, expected_reason)]
 
 
 def test_runtime_is_disabled_before_claim_or_probe() -> None:

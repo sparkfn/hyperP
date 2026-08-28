@@ -14,6 +14,7 @@ from src.graph.queries.standalone_crm_census import (
     ADMIT_CENSUS,
     CLAIM_ATTEMPT,
     CREATE_CONTINUATION,
+    FAIL_AFTER_WINDOW_AUTHORITY,
     RECORD_CALL_OUTCOME,
     REQUEST_CANCELLATION,
     REQUEST_UNIT_STOPS,
@@ -22,6 +23,7 @@ from src.graph.queries.standalone_crm_census import (
 )
 from src.graph.standalone_crm_census import StandaloneCrmCensusRepository
 from src.graph.standalone_crm_census_records import (
+    StandaloneCrmAttemptTakeover,
     StandaloneCrmRuntimeSnapshot,
     authority_context,
 )
@@ -33,6 +35,7 @@ from src.standalone_crm_census_models import (
     StandaloneCrmCallOutcome,
     StandaloneCrmCensusConflictError,
     StandaloneCrmCheckpoint,
+    StandaloneCrmReason,
     canonical_request_payload,
     census_fingerprint,
 )
@@ -259,6 +262,44 @@ def test_continuation_uses_captured_authority_and_immutable_occurrence_budget() 
     ]
 
 
+def test_expired_attempt_takeover_only_advances_the_current_generation_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _Client([{"generation": 5, "fence_token": 41}])
+    repository = _repository(client)
+    monkeypatch.setattr(repository, "runtime_snapshot", lambda _census_id: _snapshot(generation=4))
+
+    takeover = repository.recover_or_take_over_attempt("census-a", 4, 5, 41)
+
+    assert takeover == StandaloneCrmAttemptTakeover(5, 41)
+    assert client.write_calls == 1
+    assert client.transaction.runs[0].parameters == {
+        "census_id": "census-a",
+        "prior_generation": 4,
+        "next_generation": 5,
+        "fence_token": 41,
+        "attempt_task_id": "standalone-crm-parent:census-a:5",
+        "lease_seconds": 120,
+        "authority_revision": "sha256:" + "b" * 64 + ":sha256:" + "c" * 64,
+        "authority_json": authority_context(_request()),
+        "max_attempts": 7,
+        "occurrence_deadline": "2026-08-29T00:00:00Z",
+        "attempt_runtime_seconds": 4,
+    }
+
+
+def test_expired_attempt_takeover_refuses_a_stale_parent_without_writing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _Client([])
+    repository = _repository(client)
+    monkeypatch.setattr(repository, "runtime_snapshot", lambda _census_id: _snapshot(generation=3))
+
+    assert repository.recover_or_take_over_attempt("census-a", 4, 5, 41) is None
+    assert client.write_calls == 0
+    assert client.transaction.runs == []
+
+
 @pytest.mark.parametrize(
     "record, expected", [({"intent_id": "intent-a", "call_sequence": 1}, True), (None, False)]
 )
@@ -302,6 +343,70 @@ def test_reserve_call_uses_an_atomic_occurrence_wide_sequence_and_structured_aut
         "projection_head_digest": "sha256:" + "c" * 64,
         "projection_head_id": "projection-a",
     }
+
+
+def test_page_and_binding_reservations_use_child_fences_not_the_parent_attempt_fence() -> None:
+    client = _Client(
+        [
+            {"intent_id": "page-intent", "call_sequence": 1},
+            {"intent_id": "binding-intent", "call_sequence": 2},
+        ]
+    )
+    page = StandaloneCrmCallIntent(
+        "census-a",
+        3,
+        "page-intent",
+        1,
+        "page",
+        "contact",
+        0,
+        "2026-08-29T00:00:00Z",
+        17,
+        None,
+        "published-child-task",
+    )
+    binding = StandaloneCrmCallIntent(
+        "census-a",
+        3,
+        "binding-intent",
+        1,
+        "company_binding",
+        "contact",
+        0,
+        "2026-08-29T00:00:00Z",
+        17,
+        42,
+        "published-child-task",
+    )
+
+    assert _repository(client).reserve_call_with_sequence(page, 29, _request()) == 1
+    assert _repository(client).reserve_call_with_sequence(binding, 47, _request()) == 2
+
+    page_parameters, binding_parameters = (run.parameters for run in client.transaction.runs)
+    assert page_parameters["fence_token"] == 29
+    assert binding_parameters["fence_token"] == 47
+    assert page_parameters["task_id"] == binding_parameters["task_id"] == "published-child-task"
+    assert page_parameters["call_kind"] == "page"
+    assert binding_parameters["call_kind"] == "company_binding"
+
+
+def test_post_window_authority_failure_is_one_atomic_repository_transition(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _Client([{"census_id": "census-a"}])
+    repository = _repository(client)
+    monkeypatch.setattr(
+        repository,
+        "runtime_snapshot",
+        lambda _census_id: StandaloneCrmRuntimeSnapshot(_request(), 3, "running", False, True),
+    )
+
+    assert repository.fail_after_window_authority(
+        "census-a", 3, StandaloneCrmReason("authority_stale", "authority changed")
+    )
+    assert client.write_calls == 1
+    assert [run.query for run in client.transaction.runs] == [FAIL_AFTER_WINDOW_AUTHORITY]
+    assert client.transaction.runs[0].parameters["reason_code"] == "authority_stale"
 
 
 def test_stale_generation_refuses_checkpoint_before_any_mutating_transaction(
