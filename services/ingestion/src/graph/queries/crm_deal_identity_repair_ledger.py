@@ -87,130 +87,97 @@ CALL {
     count(requested_ownership) AS requested_ownership_count,
     collect(DISTINCT requested_binding.source_instance_id) AS owned_binding_source_instance_ids
 }
-CALL {
-  OPTIONAL MATCH (dispatch:BitrixDispatchControl {
-    source_key: 'bitrix_chat', control_instance_id: $control_instance_id
-  })
-  RETURN count(DISTINCT dispatch) AS dispatch_count,
-    collect(DISTINCT CASE WHEN dispatch IS NULL THEN NULL ELSE {
-      blocked: dispatch.blocked,
-      block_reason: dispatch.block_reason,
-      blocked_generation_id: dispatch.blocked_generation_id,
-      migration_owned_block: dispatch.migration_owned_block,
-      unblocked_by: dispatch.unblocked_by
-    } END) AS dispatch_evidence
-}
-CALL {
-  OPTIONAL MATCH (node)
-  WHERE node.control_instance_id = $control_instance_id AND (
-    node:IngestRun OR node:IngestionLogicalRun OR node:IngestionCheckpoint
-    OR node:BitrixIngestionStream OR node:BitrixBackfillGeneration
-    OR node:BitrixKnownOwnerRefreshSet OR node:BitrixKnownOwnerRefreshMember
-    OR node:BitrixBackfillCoverage OR node:BitrixActivityOwnerRetry
-    OR node:BitrixBackfillDispatchOutbox OR node:StageHistoryUnit
-    OR node:StageHistoryOccurrence OR node:StageHistoryRetry
-    OR node:StageHistoryReviewCommand OR node:StageHistoryUnitAccounting
-  )
-  RETURN collect(DISTINCT CASE WHEN node IS NULL THEN NULL ELSE {
-    labels: labels(node), source_key: node.source_key, control_instance_id: node.control_instance_id,
-    status: node.status, state: node.state, logical_run_id: node.logical_run_id,
-    ingest_run_id: node.ingest_run_id, checkpoint_key: node.checkpoint_key, phase: node.phase,
-    stream_key: node.stream_key, generation_id: node.generation_id,
-    membership_set_id: node.membership_set_id, deal_id: node.deal_id,
-    source_identity: node.source_identity, source_boundary: node.source_boundary,
-    successor_generation_id: node.successor_generation_id, retry_id: node.retry_id,
-    worker_task_id: node.worker_task_id, attempt_generation: node.attempt_generation,
-    stream_generation: node.stream_generation, fencing_token: node.fencing_token,
-    fence_lock_version: node.fence_lock_version, stop_requested: node.stop_requested
-  } END) AS control_nodes
-}
-CALL {
-  OPTIONAL MATCH (left)-[relationship]->(right)
-  WHERE (left.control_instance_id = $control_instance_id OR right.control_instance_id = $control_instance_id)
-    AND (left:IngestRun OR left:IngestionLogicalRun OR left:IngestionCheckpoint
-      OR left:BitrixIngestionStream OR left:BitrixBackfillGeneration
-      OR left:BitrixKnownOwnerRefreshSet OR left:BitrixKnownOwnerRefreshMember
-      OR left:BitrixBackfillCoverage OR left:BitrixActivityOwnerRetry
-      OR left:BitrixBackfillDispatchOutbox OR left:StageHistoryUnit
-      OR left:StageHistoryOccurrence OR left:StageHistoryRetry
-      OR left:StageHistoryReviewCommand OR left:StageHistoryUnitAccounting
-      OR right:IngestRun OR right:IngestionLogicalRun OR right:IngestionCheckpoint
-      OR right:BitrixIngestionStream OR right:BitrixBackfillGeneration
-      OR right:BitrixKnownOwnerRefreshSet OR right:BitrixKnownOwnerRefreshMember
-      OR right:BitrixBackfillCoverage OR right:BitrixActivityOwnerRetry
-      OR right:BitrixBackfillDispatchOutbox OR right:StageHistoryUnit
-      OR right:StageHistoryOccurrence OR right:StageHistoryRetry
-      OR right:StageHistoryReviewCommand OR right:StageHistoryUnitAccounting)
-  RETURN collect(DISTINCT CASE WHEN relationship IS NULL THEN NULL ELSE {
-    relationship_type: type(relationship), left_labels: labels(left), right_labels: labels(right),
-    left_logical_run_id: left.logical_run_id, left_ingest_run_id: left.ingest_run_id,
-    left_checkpoint_key: left.checkpoint_key, left_stream_key: left.stream_key,
-    left_generation_id: left.generation_id, left_membership_set_id: left.membership_set_id,
-    left_retry_id: left.retry_id, right_logical_run_id: right.logical_run_id,
-    right_ingest_run_id: right.ingest_run_id, right_checkpoint_key: right.checkpoint_key,
-    right_stream_key: right.stream_key, right_generation_id: right.generation_id,
-    right_membership_set_id: right.membership_set_id, right_retry_id: right.retry_id
-  } END) AS control_relationships
-}
 RETURN source_registration_count, source_instance_of_count, source_active_instance_of_count,
   source_statuses, control_registration_count, control_instance_of_count,
   control_active_instance_of_count, control_statuses, binding_count, binding_ownership_count,
   requested_binding_count, requested_ownership_count, binding_source_instance_ids,
-  binding_owner_instance_ids, owned_binding_source_instance_ids,
-  dispatch_count, dispatch_evidence, control_nodes, control_relationships
+  binding_owner_instance_ids, owned_binding_source_instance_ids
+"""
+
+READ_CONTROL_DISPATCH_EVIDENCE = """
+MATCH (dispatch:BitrixDispatchControl {
+  source_key: 'bitrix_chat', control_instance_id: $control_instance_id
+})
+RETURN labels(dispatch) AS labels, properties(dispatch) AS properties
+"""
+
+READ_CONTROL_NODES = """
+MATCH (node)
+WHERE node.control_instance_id = $control_instance_id AND (
+  node:IngestRun OR node:IngestionLogicalRun OR node:IngestionCheckpoint
+  OR node:BitrixIngestionStream OR node:BitrixBackfillGeneration
+  OR node:BitrixKnownOwnerRefreshSet OR node:BitrixKnownOwnerRefreshMember
+  OR node:BitrixBackfillCoverage OR node:BitrixActivityOwnerRetry
+  OR node:BitrixBackfillDispatchOutbox OR node:StageHistoryUnit
+  OR node:StageHistoryOccurrence OR node:StageHistoryRetry
+  OR node:StageHistoryReviewCommand OR node:StageHistoryUnitAccounting
+)
+RETURN labels(node) AS labels, properties(node) AS properties
+"""
+
+READ_CONTROL_RELATIONSHIPS = """
+MATCH (left)-[relationship]->(right)
+WHERE (left.control_instance_id = $control_instance_id OR right.control_instance_id = $control_instance_id)
+  AND (left:IngestRun OR left:IngestionLogicalRun OR left:IngestionCheckpoint
+    OR left:BitrixIngestionStream OR left:BitrixBackfillGeneration
+    OR left:BitrixKnownOwnerRefreshSet OR left:BitrixKnownOwnerRefreshMember
+    OR left:BitrixBackfillCoverage OR left:BitrixActivityOwnerRetry
+    OR left:BitrixBackfillDispatchOutbox OR left:StageHistoryUnit
+    OR left:StageHistoryOccurrence OR left:StageHistoryRetry
+    OR left:StageHistoryReviewCommand OR left:StageHistoryUnitAccounting
+    OR right:IngestRun OR right:IngestionLogicalRun OR right:IngestionCheckpoint
+    OR right:BitrixIngestionStream OR right:BitrixBackfillGeneration
+    OR right:BitrixKnownOwnerRefreshSet OR right:BitrixKnownOwnerRefreshMember
+    OR right:BitrixBackfillCoverage OR right:BitrixActivityOwnerRetry
+    OR right:BitrixBackfillDispatchOutbox OR right:StageHistoryUnit
+    OR right:StageHistoryOccurrence OR right:StageHistoryRetry
+    OR right:StageHistoryReviewCommand OR right:StageHistoryUnitAccounting)
+RETURN labels(left) AS left_labels, properties(left) AS left_properties,
+  type(relationship) AS relationship_type, properties(relationship) AS relationship_properties,
+  labels(right) AS right_labels, properties(right) AS right_properties
 """
 
 READ_STALE_RUN_CONTROL_EVIDENCE = """
 OPTIONAL MATCH (run:IngestRun {ingest_run_id: $stale_run_id})
-OPTIONAL MATCH (run)-[:FROM_SOURCE]->(source:SourceSystem)
-WITH run, collect(DISTINCT source.source_key) AS source_keys
-CALL {
-  WITH run
-  OPTIONAL MATCH (logical:IngestionLogicalRun)-[attempt_relation:HAS_ATTEMPT|ACTIVE_ATTEMPT]->(run)
-  RETURN collect(DISTINCT {
-    logical_run_id: logical.logical_run_id, control_instance_id: logical.control_instance_id,
-    status: logical.status, relationship_type: type(attempt_relation)
-  }) AS logical_associations
-}
-CALL {
-  WITH run
-  OPTIONAL MATCH (logical:IngestionLogicalRun)-[:HAS_ATTEMPT|ACTIVE_ATTEMPT]->(run)
-  OPTIONAL MATCH (checkpoint:IngestionCheckpoint)-[checkpoint_for:CHECKPOINT_FOR]->(logical)
-  RETURN collect(DISTINCT {
-    checkpoint_key: checkpoint.checkpoint_key, logical_run_id: checkpoint.logical_run_id,
-    control_instance_id: checkpoint.control_instance_id, phase: checkpoint.phase,
-    associated_logical_run_id: logical.logical_run_id,
-    associated_control_instance_id: logical.control_instance_id,
-    relationship_type: type(checkpoint_for)
-  }) AS checkpoint_logical_associations
-}
-CALL {
-  WITH run
-  OPTIONAL MATCH (checkpoint:IngestionCheckpoint)-[produced_by:PRODUCED_BY]->(run)
-  RETURN collect(DISTINCT {
-    checkpoint_key: checkpoint.checkpoint_key, logical_run_id: checkpoint.logical_run_id,
-    control_instance_id: checkpoint.control_instance_id, phase: checkpoint.phase,
-    stale_run_id: run.ingest_run_id,
-    stale_run_control_instance_id: run.control_instance_id,
-    relationship_type: type(produced_by)
-  }) AS checkpoint_stale_run_associations
-}
-CALL {
-  WITH run
-  OPTIONAL MATCH (logical:IngestionLogicalRun)-[:HAS_ATTEMPT|ACTIVE_ATTEMPT]->(run)
-  OPTIONAL MATCH (stream:BitrixIngestionStream {
-    logical_run_id: logical.logical_run_id, control_instance_id: logical.control_instance_id
-  })
-  RETURN collect(DISTINCT {
-    stream_key: stream.stream_key, logical_run_id: stream.logical_run_id,
-    ingest_run_id: stream.ingest_run_id, control_instance_id: stream.control_instance_id,
-    status: stream.status, fencing_token: stream.fencing_token
-  }) AS stream_associations
-}
-RETURN count(DISTINCT run) AS stale_run_count, source_keys, logical_associations,
-  checkpoint_logical_associations, checkpoint_stale_run_associations, stream_associations,
-  run.status AS run_status, run.control_instance_id AS run_control_instance_id,
-  run.logical_run_id AS run_logical_run_id, run.worker_task_id AS run_worker_task_id
+OPTIONAL MATCH (run)-[relationship:FROM_SOURCE]->(source:SourceSystem)
+RETURN CASE WHEN run IS NULL THEN 'absent' ELSE 'present' END AS stale_run_state,
+  labels(run) AS left_labels, properties(run) AS left_properties,
+  type(relationship) AS relationship_type, properties(relationship) AS relationship_properties,
+  labels(source) AS right_labels, properties(source) AS right_properties
+"""
+
+READ_STALE_RUN_ASSOCIATIONS = """
+MATCH (run:IngestRun {ingest_run_id: $stale_run_id})
+MATCH (logical:IngestionLogicalRun)-[relationship:HAS_ATTEMPT|ACTIVE_ATTEMPT]->(run)
+RETURN 'logical_attempt' AS association_kind, labels(logical) AS left_labels,
+  properties(logical) AS left_properties, type(relationship) AS relationship_type,
+  properties(relationship) AS relationship_properties, labels(run) AS right_labels,
+  properties(run) AS right_properties
+UNION ALL
+MATCH (run:IngestRun {ingest_run_id: $stale_run_id})
+MATCH (logical:IngestionLogicalRun)-[:HAS_ATTEMPT|ACTIVE_ATTEMPT]->(run)
+MATCH (checkpoint:IngestionCheckpoint)-[relationship:CHECKPOINT_FOR]->(logical)
+RETURN 'checkpoint_for' AS association_kind, labels(checkpoint) AS left_labels,
+  properties(checkpoint) AS left_properties, type(relationship) AS relationship_type,
+  properties(relationship) AS relationship_properties, labels(logical) AS right_labels,
+  properties(logical) AS right_properties
+UNION ALL
+MATCH (run:IngestRun {ingest_run_id: $stale_run_id})
+MATCH (checkpoint:IngestionCheckpoint)-[relationship:PRODUCED_BY]->(run)
+RETURN 'checkpoint_produced_by' AS association_kind, labels(checkpoint) AS left_labels,
+  properties(checkpoint) AS left_properties, type(relationship) AS relationship_type,
+  properties(relationship) AS relationship_properties, labels(run) AS right_labels,
+  properties(run) AS right_properties
+UNION ALL
+MATCH (run:IngestRun {ingest_run_id: $stale_run_id})
+MATCH (logical:IngestionLogicalRun)-[:HAS_ATTEMPT|ACTIVE_ATTEMPT]->(run)
+MATCH (stream:BitrixIngestionStream {
+  logical_run_id: logical.logical_run_id, control_instance_id: logical.control_instance_id
+})
+RETURN 'logical_stream' AS association_kind, labels(logical) AS left_labels,
+  properties(logical) AS left_properties, NULL AS relationship_type,
+  NULL AS relationship_properties, labels(stream) AS right_labels,
+  properties(stream) AS right_properties
 """
 
 QUALIFY_REPAIR_RUN = """

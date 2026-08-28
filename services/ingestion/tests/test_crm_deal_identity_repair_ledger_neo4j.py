@@ -511,6 +511,92 @@ def test_same_count_control_state_transition_is_persisted_boundary_drift(
     assert repository.get_status(manifest.repair_id, observed).admissibility == "drifted"
 
 
+def test_stage_history_stable_ids_and_backfill_provenance_are_control_boundary_evidence(
+    neo4j_driver: Driver,
+) -> None:
+    repository = _repository(neo4j_driver)
+    _persist_evidence(neo4j_driver)
+    with neo4j_driver.session() as session:
+        session.run(
+            "CREATE (:StageHistoryUnit {control_instance_id: $control_instance_id, "
+            "unit_id: 'repair-stage-unit-a', state: 'pending'}) "
+            "CREATE (:StageHistoryUnit {control_instance_id: $control_instance_id, "
+            "unit_id: 'repair-stage-unit-b', state: 'pending'})",
+            control_instance_id=_TEST_CONTROL_INSTANCE_ID,
+        ).consume()
+    stage_snapshot = _snapshot(repository)
+    with neo4j_driver.session() as session:
+        session.run(
+            "MATCH (unit:StageHistoryUnit {control_instance_id: $control_instance_id, "
+            "unit_id: 'repair-stage-unit-b'}) DELETE unit",
+            control_instance_id=_TEST_CONTROL_INSTANCE_ID,
+        ).consume()
+    assert _snapshot(repository).control_digest != stage_snapshot.control_digest
+
+    with neo4j_driver.session() as session:
+        session.run(
+            "CREATE (:BitrixBackfillGeneration {control_instance_id: $control_instance_id, "
+            "generation_id: 'repair-backfill-a', "
+            "repository_sha: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', "
+            "image_digest: 'sha256:image-a', configuration_digest: 'sha256:config-a', "
+            "source_contract_uuid: '12345678-1234-5678-9234-567812345678', "
+            "source_boundary: 'boundary-a'})",
+            control_instance_id=_TEST_CONTROL_INSTANCE_ID,
+        ).consume()
+    backfill_snapshot = _snapshot(repository)
+    with neo4j_driver.session() as session:
+        session.run(
+            "MATCH (generation:BitrixBackfillGeneration "
+            "{control_instance_id: $control_instance_id, generation_id: 'repair-backfill-a'}) "
+            "SET generation.source_boundary = 'boundary-b'",
+            control_instance_id=_TEST_CONTROL_INSTANCE_ID,
+        ).consume()
+    assert _snapshot(repository).control_digest != backfill_snapshot.control_digest
+
+
+def test_control_relationship_multiplicity_and_properties_are_boundary_evidence(
+    neo4j_driver: Driver,
+) -> None:
+    repository = _repository(neo4j_driver)
+    _persist_evidence(neo4j_driver)
+    with neo4j_driver.session() as session:
+        session.run(
+            "CREATE (unit:StageHistoryUnit {control_instance_id: $control_instance_id, "
+            "unit_id: 'repair-relationship-unit'}) "
+            "CREATE (occurrence:StageHistoryOccurrence {control_instance_id: $control_instance_id, "
+            "occurrence_id: 'repair-relationship-occurrence'}) "
+            "CREATE (unit)-[:HAS_OCCURRENCE {attempt: 1}]->(occurrence)",
+            control_instance_id=_TEST_CONTROL_INSTANCE_ID,
+        ).consume()
+    baseline = _snapshot(repository)
+    with neo4j_driver.session() as session:
+        session.run(
+            "MATCH (unit:StageHistoryUnit {unit_id: 'repair-relationship-unit'}) "
+            "MATCH (occurrence:StageHistoryOccurrence "
+            "{occurrence_id: 'repair-relationship-occurrence'}) "
+            "CREATE (unit)-[:HAS_OCCURRENCE {attempt: 1}]->(occurrence)",
+        ).consume()
+    with_duplicate = _snapshot(repository)
+    assert with_duplicate.control_digest != baseline.control_digest
+    with neo4j_driver.session() as session:
+        session.run(
+            "MATCH (:StageHistoryUnit {unit_id: 'repair-relationship-unit'})"
+            "-[relationship:HAS_OCCURRENCE]->(:StageHistoryOccurrence {"
+            "occurrence_id: 'repair-relationship-occurrence'}) "
+            "WITH relationship LIMIT 1 DELETE relationship"
+        ).consume()
+    after_removal = _snapshot(repository)
+    assert after_removal.control_digest != with_duplicate.control_digest
+    with neo4j_driver.session() as session:
+        session.run(
+            "MATCH (unit:StageHistoryUnit {unit_id: 'repair-relationship-unit'}) "
+            "MATCH (occurrence:StageHistoryOccurrence "
+            "{occurrence_id: 'repair-relationship-occurrence'}) "
+            "CREATE (unit)-[:HAS_OCCURRENCE {attempt: 2}]->(occurrence)",
+        ).consume()
+    assert _snapshot(repository).control_digest != after_removal.control_digest
+
+
 def test_stale_run_association_identity_drift_is_persisted_boundary_drift(
     neo4j_driver: Driver,
 ) -> None:
@@ -560,10 +646,53 @@ def test_stale_run_association_identity_drift_is_persisted_boundary_drift(
     with neo4j_driver.session() as session:
         session.run(
             "MATCH (checkpoint:IngestionCheckpoint {control_instance_id: $control_instance_id, "
+            "checkpoint_key: 'repair-test-checkpoint'}), "
+            "(logical:IngestionLogicalRun {control_instance_id: $control_instance_id, "
+            "logical_run_id: 'repair-test-stale-a'}) "
+            "CREATE (checkpoint)-[:CHECKPOINT_FOR]->(logical)",
+            control_instance_id=_TEST_CONTROL_INSTANCE_ID,
+        ).consume()
+    with_duplicate_checkpoint = _snapshot(repository)
+    assert with_duplicate_checkpoint.stale_run_evidence_digest != snapshot.stale_run_evidence_digest
+    with neo4j_driver.session() as session:
+        session.run(
+            "MATCH (:IngestionCheckpoint {control_instance_id: $control_instance_id, "
+            "checkpoint_key: 'repair-test-checkpoint'})-[relation:CHECKPOINT_FOR]->() "
+            "WITH relation LIMIT 1 DELETE relation",
+            control_instance_id=_TEST_CONTROL_INSTANCE_ID,
+        ).consume()
+    after_checkpoint_removal = _snapshot(repository)
+    assert (
+        after_checkpoint_removal.stale_run_evidence_digest
+        != with_duplicate_checkpoint.stale_run_evidence_digest
+    )
+    with neo4j_driver.session() as session:
+        session.run(
+            "MATCH (checkpoint:IngestionCheckpoint {control_instance_id: $control_instance_id, "
             "checkpoint_key: 'repair-test-checkpoint'})-[relation:PRODUCED_BY]->(run:IngestRun {"
             "ingest_run_id: $stale_run_id}) DELETE relation",
             control_instance_id=_TEST_CONTROL_INSTANCE_ID,
             stale_run_id=stale_run_id,
+        ).consume()
+    observed = _snapshot(repository)
+    assert observed.stale_run_evidence_digest != snapshot.stale_run_evidence_digest
+    assert repository.get_status(manifest.repair_id, observed).admissibility == "drifted"
+
+
+def test_absent_stale_run_is_valid_evidence_and_later_appearance_drifts(
+    neo4j_driver: Driver,
+) -> None:
+    repository = _repository(neo4j_driver)
+    _persist_evidence(neo4j_driver)
+    snapshot = _snapshot(repository)
+    manifest = _manifest(snapshot, repair_id="repair-absent-stale", artifact_id="e" * 32)
+    repository.qualify(manifest, snapshot)
+    with neo4j_driver.session() as session:
+        session.run(
+            "CREATE (:IngestRun {ingest_run_id: $stale_run_id, source_key: 'bitrix_chat', "
+            "control_instance_id: $control_instance_id, status: 'failed'})",
+            stale_run_id="e5deb1d6-7333-4660-be4f-c44fcf5af686",
+            control_instance_id=_TEST_CONTROL_INSTANCE_ID,
         ).consume()
     observed = _snapshot(repository)
     assert observed.stale_run_evidence_digest != snapshot.stale_run_evidence_digest

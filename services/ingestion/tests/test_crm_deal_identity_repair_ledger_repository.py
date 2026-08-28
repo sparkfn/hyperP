@@ -6,6 +6,8 @@ from typing import cast
 
 import pytest
 from neo4j import Record
+from neo4j.spatial import WGS84Point
+from neo4j.time import Date, Duration
 from src.connectors.bitrix_stage_history.artifact_manifest import canonical_json_bytes
 from src.crm_deal_identity_repair.digests import object_digest
 from src.crm_deal_identity_repair.execution_models import (
@@ -15,6 +17,7 @@ from src.crm_deal_identity_repair.execution_models import (
     RepairQualificationRun,
     RepairRunStatus,
 )
+from src.graph.crm_deal_identity_repair_boundary_evidence import neo4j_json_value
 from src.graph.crm_deal_identity_repair_ledger import (
     ExpectedRepairBoundaryDriftError,
     _assert_requested_boundary,
@@ -147,8 +150,17 @@ def test_expected_drift_reasons_produce_read_only_status(
 
 
 def test_boundary_queries_are_read_only() -> None:
-    for query in (queries.READ_SOURCE_RECORD_BOUNDARY, queries.READ_INSTANCE_CONTROL_BOUNDARY):
+    for query in (
+        queries.READ_SOURCE_RECORD_BOUNDARY,
+        queries.READ_INSTANCE_CONTROL_BOUNDARY,
+        queries.READ_CONTROL_DISPATCH_EVIDENCE,
+        queries.READ_CONTROL_NODES,
+        queries.READ_CONTROL_RELATIONSHIPS,
+        queries.READ_STALE_RUN_CONTROL_EVIDENCE,
+        queries.READ_STALE_RUN_ASSOCIATIONS,
+    ):
         upper = query.upper()
+        assert "ELEMENTID(" not in upper
         for forbidden in ("CREATE", "MERGE", " SET ", "DELETE", "REMOVE"):
             assert forbidden not in upper
 
@@ -193,6 +205,57 @@ def test_unordered_control_evidence_has_a_deterministic_boundary_digest() -> Non
     assert first_value == second_value
     assert object_digest(b"test-control-boundary\x00", first_value) == object_digest(
         b"test-control-boundary\x00", second_value
+    )
+
+
+def test_boundary_evidence_conversion_is_canonical_and_fails_closed() -> None:
+    assert neo4j_json_value(
+        {"date": Date(2026, 8, 28), "duration": Duration(months=1, seconds=3)}
+    ) == {"date": "2026-08-28", "duration": "P1MT3S"}
+    assert neo4j_json_value(WGS84Point((1.0, 2.0))) == {
+        "coordinates": [1.0, 2.0],
+        "srid": 4326,
+    }
+    with pytest.raises(RuntimeError, match="non-finite"):
+        neo4j_json_value(float("nan"))
+    with pytest.raises(RuntimeError, match="unsupported"):
+        neo4j_json_value(object())
+
+
+def test_canonical_boundary_evidence_orders_rows_without_losing_multiplicity() -> None:
+    evidence: JsonValue = [
+        {"labels": ["StageHistoryUnit"], "properties": {"unit_id": "unit-b"}},
+        {"labels": ["StageHistoryUnit"], "properties": {"unit_id": "unit-a"}},
+        {"labels": ["StageHistoryUnit"], "properties": {"unit_id": "unit-a"}},
+    ]
+    normalized = _canonical_boundary_evidence(evidence)
+    assert normalized == [
+        {"labels": ["StageHistoryUnit"], "properties": {"unit_id": "unit-a"}},
+        {"labels": ["StageHistoryUnit"], "properties": {"unit_id": "unit-a"}},
+        {"labels": ["StageHistoryUnit"], "properties": {"unit_id": "unit-b"}},
+    ]
+
+
+def test_property_list_order_is_boundary_evidence() -> None:
+    first: JsonValue = [
+        {
+            "labels": ["StageHistoryUnit", "Control"],
+            "properties": {"ordered_checkpoints": ["first", "second"]},
+        },
+        {"labels": ["BitrixBackfillGeneration"], "properties": {"generation_id": "a"}},
+    ]
+    second: JsonValue = [
+        {"labels": ["BitrixBackfillGeneration"], "properties": {"generation_id": "a"}},
+        {
+            "labels": ["Control", "StageHistoryUnit"],
+            "properties": {"ordered_checkpoints": ["second", "first"]},
+        },
+    ]
+    normalized_first = _canonical_boundary_evidence(first)
+    normalized_second = _canonical_boundary_evidence(second)
+    assert normalized_first != normalized_second
+    assert object_digest(b"test-property-order\x00", {"rows": normalized_first}) != object_digest(
+        b"test-property-order\x00", {"rows": normalized_second}
     )
 
 

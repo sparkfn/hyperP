@@ -7,9 +7,8 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import TypeVar
 
-from neo4j import ManagedTransaction, Record
+from neo4j import ManagedTransaction
 
-from src.connectors.bitrix_stage_history.artifact_manifest import canonical_json_bytes
 from src.crm_deal_identity_repair.digests import inventory_digest, object_digest
 from src.crm_deal_identity_repair.execution_models import (
     RepairBoundaryDriftReason,
@@ -23,6 +22,15 @@ from src.crm_deal_identity_repair.inventory import (
     collect_repair_inventory,
 )
 from src.graph.client import Neo4jClient
+from src.graph.crm_deal_identity_repair_boundary_evidence import (
+    canonical_boundary_evidence as _canonical_boundary_evidence,
+)
+from src.graph.crm_deal_identity_repair_boundary_evidence import (
+    canonical_evidence_rows as _canonical_evidence_rows,
+)
+from src.graph.crm_deal_identity_repair_boundary_evidence import (
+    record_json_dict as _record_json_dict,
+)
 from src.graph.crm_deal_identity_repair_ledger_records import (
     StoredQualification as _StoredQualification,
 )
@@ -35,8 +43,12 @@ from src.graph.crm_deal_identity_repair_ledger_records import (
 from src.graph.queries.crm_deal_identity_repair_ledger import (
     GET_REPAIR_RUN,
     QUALIFY_REPAIR_RUN,
+    READ_CONTROL_DISPATCH_EVIDENCE,
+    READ_CONTROL_NODES,
+    READ_CONTROL_RELATIONSHIPS,
     READ_INSTANCE_CONTROL_BOUNDARY,
     READ_SOURCE_RECORD_BOUNDARY,
+    READ_STALE_RUN_ASSOCIATIONS,
     READ_STALE_RUN_CONTROL_EVIDENCE,
 )
 from src.models import JsonValue
@@ -193,12 +205,20 @@ def _current_inventory_boundary(
     if source_record_pks != expected_source_record_pks:
         raise ExpectedRepairBoundaryDriftError("persisted_boundary_change")
     negative_control_count = sum(item.partition == "negative_control" for item in inventory.items)
-    stale_record = tx.run(
-        READ_STALE_RUN_CONTROL_EVIDENCE,
-        stale_run_id=inventory.stale_run_evidence["stale_run_id"],
-    ).single()
-    if stale_record is None:
+    stale_run_rows = _canonical_evidence_rows(
+        tx.run(
+            READ_STALE_RUN_CONTROL_EVIDENCE,
+            stale_run_id=inventory.stale_run_evidence["stale_run_id"],
+        )
+    )
+    if not stale_run_rows:
         raise RuntimeError("repair stale-run control evidence readback is missing")
+    stale_associations = _canonical_evidence_rows(
+        tx.run(
+            READ_STALE_RUN_ASSOCIATIONS,
+            stale_run_id=inventory.stale_run_evidence["stale_run_id"],
+        )
+    )
     return _CurrentInventoryBoundary(
         source_record_pks,
         inventory_digest(inventory.items),
@@ -207,7 +227,8 @@ def _current_inventory_boundary(
         negative_control_count,
         {
             "inventory_evidence": _canonical_boundary_evidence(inventory.stale_run_evidence),
-            "persisted_associations": _canonical_boundary_evidence(_record_json_dict(stale_record)),
+            "persisted_run": stale_run_rows,
+            "persisted_associations": stale_associations,
         },
     )
 
@@ -238,11 +259,32 @@ def _control_row(
     ).single()
     if record is None:
         raise ExpectedRepairBoundaryDriftError("missing_control_evidence")
-    control = _canonical_boundary_evidence(_record_json_dict(record))
-    if not isinstance(control, dict):
+    control = _record_json_dict(record)
+    dispatch_evidence = _canonical_evidence_rows(
+        tx.run(
+            READ_CONTROL_DISPATCH_EVIDENCE,
+            control_instance_id=control_instance_id,
+        )
+    )
+    control["dispatch_count"] = len(dispatch_evidence)
+    control["dispatch_evidence"] = dispatch_evidence
+    control["control_nodes"] = _canonical_evidence_rows(
+        tx.run(
+            READ_CONTROL_NODES,
+            control_instance_id=control_instance_id,
+        )
+    )
+    control["control_relationships"] = _canonical_evidence_rows(
+        tx.run(
+            READ_CONTROL_RELATIONSHIPS,
+            control_instance_id=control_instance_id,
+        )
+    )
+    normalized_control = _canonical_boundary_evidence(control)
+    if not isinstance(normalized_control, dict):
         raise RuntimeError("repair control boundary must be a JSON object")
-    _validate_control_boundary(control, source_instance_id, control_instance_id)
-    return control
+    _validate_control_boundary(normalized_control, source_instance_id, control_instance_id)
+    return normalized_control
 
 
 def _validate_control_boundary(
@@ -403,20 +445,3 @@ def _qualification_parameters(
         negative_control_count=manifest.negative_control_count,
         execution_allowed=manifest.execution_allowed,
     )
-
-
-def _record_json_dict(record: Record) -> dict[str, JsonValue]:
-    return {key: record[key] for key in record.keys()}
-
-
-def _canonical_boundary_evidence(value: JsonValue) -> JsonValue:
-    """Normalize unordered read-only graph evidence before it is digested."""
-    if isinstance(value, dict):
-        return {key: _canonical_boundary_evidence(value[key]) for key in sorted(value)}
-    if isinstance(value, list):
-        normalized = [_canonical_boundary_evidence(item) for item in value]
-        return sorted(
-            normalized,
-            key=lambda item: canonical_json_bytes({"value": item}),
-        )
-    return value
