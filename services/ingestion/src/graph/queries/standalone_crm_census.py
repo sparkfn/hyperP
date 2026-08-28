@@ -480,6 +480,8 @@ CALL (census) {
            sum(CASE WHEN publication.state IN ['confirmed', 'failed']
                     THEN 1 ELSE 0 END) AS settled_publications
 }
+WITH census, child_count, settled_children, completed_children, active_fences, no_work_units,
+     processed_rows, skipped_rows, failed_rows, publication_count, settled_publications
 WHERE settled_children = child_count
   AND settled_publications = publication_count
   AND active_fences = 0
