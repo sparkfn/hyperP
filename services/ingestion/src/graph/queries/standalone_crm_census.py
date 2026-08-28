@@ -457,37 +457,40 @@ RETURN census.census_id AS census_id, census.attempt_runtime_seconds AS attempt_
 FINALIZE_CENSUS = """
 MATCH (census:StandaloneCrmCensus {census_id: $census_id, fingerprint: $fingerprint})
 WHERE census.state IN ['running', 'publishing', 'cancel_requested', 'paused_with_checkpoint']
-OPTIONAL MATCH (child:StandaloneCrmCensusStream {census_id: census.census_id})
-OPTIONAL MATCH (publication:StandaloneCrmChildPublication {census_id: census.census_id})
-OPTIONAL MATCH (attempt:StandaloneCrmCensusAttempt {
-    census_id: census.census_id,
-    generation: census.current_generation
-})
-WITH census,
-     collect(child) AS child_records,
-     collect(publication) AS publication_records,
-     collect(DISTINCT attempt) AS attempt_records
-WITH census, child_records, publication_records, attempt_records,
-     reduce(total = 0, child IN child_records | total + coalesce(child.processed_rows, 0)) AS processed_rows,
-     reduce(total = 0, child IN child_records | total + coalesce(child.skipped_rows, 0)) AS skipped_rows,
-     reduce(total = 0, child IN child_records | total + coalesce(child.failed_rows, 0)) AS failed_rows,
-     size([child IN child_records WHERE child.frozen_upper_id = 0 AND child.state = 'completed']) AS no_work_units,
-     all(child IN child_records WHERE
-         child.state IN ['completed', 'failed', 'cancelled', 'superseded'] OR
-         ($allow_paused AND child.state = 'paused' AND child.checkpointed = true)) AS children_settled,
-     all(publication IN publication_records WHERE
-         publication.state IN ['confirmed', 'failed']) AS publications_settled,
-     none(child IN child_records WHERE child.fence_active = true) AS fences_settled
-WHERE children_settled AND publications_settled AND fences_settled
-  AND (census.census_kind <> 'source_sync' OR size(child_records) = size(census.selected_kinds))
-  AND ($terminal_state <> 'completed' OR all(child IN child_records WHERE child.state = 'completed'))
-WITH census, child_records, publication_records, attempt_records,
-     processed_rows, skipped_rows, failed_rows, no_work_units
+CALL (census) {
+    OPTIONAL MATCH (child:StandaloneCrmCensusStream {census_id: census.census_id})
+    RETURN count(child) AS child_count,
+           sum(CASE WHEN child.state IN ['completed', 'failed', 'cancelled', 'superseded']
+                    OR ($allow_paused AND child.state = 'paused' AND child.checkpointed = true)
+                    THEN 1 ELSE 0 END) AS settled_children,
+           sum(CASE WHEN child.state = 'completed' THEN 1 ELSE 0 END) AS completed_children,
+           sum(CASE WHEN child.fence_active = true THEN 1 ELSE 0 END) AS active_fences,
+           sum(CASE WHEN child.frozen_upper_id = 0 AND child.state = 'completed'
+                    THEN 1 ELSE 0 END) AS no_work_units,
+           sum(CASE WHEN child IS NOT NULL THEN coalesce(child.processed_rows, 0)
+                    ELSE 0 END) AS processed_rows,
+           sum(CASE WHEN child IS NOT NULL THEN coalesce(child.skipped_rows, 0)
+                    ELSE 0 END) AS skipped_rows,
+           sum(CASE WHEN child IS NOT NULL THEN coalesce(child.failed_rows, 0)
+                    ELSE 0 END) AS failed_rows
+}
+CALL (census) {
+    OPTIONAL MATCH (publication:StandaloneCrmChildPublication {census_id: census.census_id})
+    RETURN count(publication) AS publication_count,
+           sum(CASE WHEN publication.state IN ['confirmed', 'failed']
+                    THEN 1 ELSE 0 END) AS settled_publications
+}
+WHERE settled_children = child_count
+  AND settled_publications = publication_count
+  AND active_fences = 0
+  AND (census.census_kind <> 'source_sync' OR child_count = size(census.selected_kinds))
+  AND ($terminal_state <> 'completed' OR completed_children = child_count)
+WITH census, processed_rows, skipped_rows, failed_rows, no_work_units
 OPTIONAL MATCH (terminal_attempt:StandaloneCrmCensusAttempt {
     census_id: census.census_id,
     generation: census.current_generation
 })
-WITH census, child_records, publication_records, terminal_attempt,
+WITH census, terminal_attempt,
      processed_rows, skipped_rows, failed_rows, no_work_units
 SET census.state = $terminal_state,
     census.terminal_reason = $reason,
