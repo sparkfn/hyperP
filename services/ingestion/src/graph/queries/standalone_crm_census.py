@@ -308,7 +308,7 @@ CONVERGE_LIMIT_DENIAL = (
     "SET attempt.status = 'failed', attempt.failure_reason = $reason_code, attempt.updated_at = datetime()) "
     "WITH census, units OPTIONAL MATCH (checkpoint:StandaloneCrmCensusCheckpoint {census_id: $census_id}) "
     "WITH census, units, collect(checkpoint) AS checkpoints "
-    "SET census.status = CASE WHEN census.window_json IS NULL THEN 'freeze_failed' ELSE 'failed' END, "
+    "SET census.status = 'failed', "
     "census.terminal_reason = $reason_code, census.expected_units = size(units), "
     "census.completed_units = size([unit IN units WHERE unit.state = 'completed']), "
     "census.failed_units = size([unit IN units WHERE unit.state = 'failed']), "
