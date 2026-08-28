@@ -1175,11 +1175,9 @@ def test_reservation_guards_reject_stale_control_state_without_partial_mutation(
         is False
     )
     assert_empty_reservation_state(binding_admission.census_id)
-    with neo4j_driver.session() as session:
-        session.run(
-            "CREATE (:BitrixExecutionSourceBinding {source_key: 'bitrix_chat', "
-            "source_instance_id: 'portal-a', control_instance_id: 'portal-a'})"
-        ).consume()
+    BitrixSourceInstanceRepository(cast(Neo4jClient, _Client(neo4j_driver))).admit(
+        control_instance_id="portal-a", source_instance_id="portal-a"
+    )
     assert (
         repository.fail_freeze(
             binding_admission.census_id, 1, StandaloneCrmReason("authority_stale", "binding")
