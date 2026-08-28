@@ -1200,6 +1200,11 @@ def test_reservation_guards_reject_stale_control_state_without_partial_mutation(
         is False
     )
     assert_empty_reservation_state(source_admission.census_id)
+    with neo4j_driver.session() as session:
+        session.run(
+            "MATCH (instance:BitrixSourceInstance {source_key: 'bitrix_chat', "
+            "source_instance_id: 'portal-a'}) SET instance.status = 'active'"
+        ).consume()
 
 
 def test_call_sequence_is_occurrence_wide_across_concurrent_reservations_and_continuation(
