@@ -165,6 +165,31 @@ def test_boundary_queries_are_read_only() -> None:
             assert forbidden not in upper
 
 
+def test_control_relationship_query_is_limited_to_272_topology() -> None:
+    upper = queries.READ_CONTROL_RELATIONSHIPS.upper()
+    for relationship_type in (
+        "HAS_ATTEMPT",
+        "ACTIVE_ATTEMPT",
+        "CHECKPOINT_FOR",
+        "PRODUCED_BY",
+        "HAS_LOGICAL_RUN",
+        "HAS_STREAM",
+        "HAS_KNOWN_OWNER_SET",
+        "HAS_COVERAGE",
+        "HAS_OWNER_RETRY",
+        "HAS_MEMBER",
+        "HAS_SUCCESSOR",
+        "HAS_STAGE_HISTORY_UNIT",
+        "HAS_STAGE_HISTORY_REVIEW_COMMAND",
+        "CONTAINS_STAGE_HISTORY_OCCURRENCE",
+        "HAS_STAGE_HISTORY_ACCOUNTING",
+        "HAS_STAGE_HISTORY_RETRY",
+    ):
+        assert relationship_type in upper
+    assert "PART_OF_RUN" not in upper
+    assert "SOURCERECORD" not in upper
+
+
 def test_unordered_control_evidence_has_a_deterministic_boundary_digest() -> None:
     first: dict[str, JsonValue] = {
         "binding_count": 1,

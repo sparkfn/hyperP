@@ -116,22 +116,37 @@ RETURN labels(node) AS labels, properties(node) AS properties
 """
 
 READ_CONTROL_RELATIONSHIPS = """
-MATCH (left)-[relationship]->(right)
-WHERE (left.control_instance_id = $control_instance_id OR right.control_instance_id = $control_instance_id)
-  AND (left:IngestRun OR left:IngestionLogicalRun OR left:IngestionCheckpoint
-    OR left:BitrixIngestionStream OR left:BitrixBackfillGeneration
-    OR left:BitrixKnownOwnerRefreshSet OR left:BitrixKnownOwnerRefreshMember
-    OR left:BitrixBackfillCoverage OR left:BitrixActivityOwnerRetry
-    OR left:BitrixBackfillDispatchOutbox OR left:StageHistoryUnit
-    OR left:StageHistoryOccurrence OR left:StageHistoryRetry
-    OR left:StageHistoryReviewCommand OR left:StageHistoryUnitAccounting
-    OR right:IngestRun OR right:IngestionLogicalRun OR right:IngestionCheckpoint
-    OR right:BitrixIngestionStream OR right:BitrixBackfillGeneration
-    OR right:BitrixKnownOwnerRefreshSet OR right:BitrixKnownOwnerRefreshMember
-    OR right:BitrixBackfillCoverage OR right:BitrixActivityOwnerRetry
-    OR right:BitrixBackfillDispatchOutbox OR right:StageHistoryUnit
-    OR right:StageHistoryOccurrence OR right:StageHistoryRetry
-    OR right:StageHistoryReviewCommand OR right:StageHistoryUnitAccounting)
+MATCH (left {control_instance_id: $control_instance_id})-[relationship]->(
+  right {control_instance_id: $control_instance_id}
+)
+WHERE (left:IngestionLogicalRun AND relationship:HAS_ATTEMPT AND right:IngestRun)
+  OR (left:IngestionLogicalRun AND relationship:ACTIVE_ATTEMPT AND right:IngestRun)
+  OR (left:IngestionCheckpoint AND relationship:CHECKPOINT_FOR AND right:IngestionLogicalRun)
+  OR (left:IngestionCheckpoint AND relationship:PRODUCED_BY AND right:IngestRun)
+  OR (left:BitrixBackfillGeneration AND relationship:HAS_LOGICAL_RUN
+      AND right:IngestionLogicalRun)
+  OR (left:BitrixBackfillGeneration AND relationship:HAS_STREAM
+      AND right:BitrixIngestionStream)
+  OR (left:BitrixBackfillGeneration AND relationship:HAS_KNOWN_OWNER_SET
+      AND right:BitrixKnownOwnerRefreshSet)
+  OR (left:BitrixBackfillGeneration AND relationship:HAS_COVERAGE
+      AND right:BitrixBackfillCoverage)
+  OR (left:BitrixBackfillGeneration AND relationship:HAS_OWNER_RETRY
+      AND right:BitrixActivityOwnerRetry)
+  OR (left:BitrixKnownOwnerRefreshSet AND relationship:HAS_MEMBER
+      AND right:BitrixKnownOwnerRefreshMember)
+  OR (left:BitrixBackfillGeneration AND relationship:HAS_SUCCESSOR
+      AND right:BitrixBackfillGeneration)
+  OR (left:IngestionLogicalRun AND relationship:HAS_STAGE_HISTORY_UNIT
+      AND right:StageHistoryUnit)
+  OR (left:IngestionLogicalRun AND relationship:HAS_STAGE_HISTORY_REVIEW_COMMAND
+      AND right:StageHistoryReviewCommand)
+  OR (left:StageHistoryUnit AND relationship:CONTAINS_STAGE_HISTORY_OCCURRENCE
+      AND right:StageHistoryOccurrence)
+  OR (left:StageHistoryUnit AND relationship:HAS_STAGE_HISTORY_ACCOUNTING
+      AND right:StageHistoryUnitAccounting)
+  OR (left:StageHistoryOccurrence AND relationship:HAS_STAGE_HISTORY_RETRY
+      AND right:StageHistoryRetry)
 RETURN labels(left) AS left_labels, properties(left) AS left_properties,
   type(relationship) AS relationship_type, properties(relationship) AS relationship_properties,
   labels(right) AS right_labels, properties(right) AS right_properties
