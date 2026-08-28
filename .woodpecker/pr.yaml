@@ -30,6 +30,11 @@ steps:
   # uv workspace venv (dev group includes ruff, mypy, pytest). One install, sequential.
   - name: python-checks
     image: ghcr.io/astral-sh/uv:python3.12-bookworm
+    depends_on: []
+    environment:
+      UV_PROJECT_ENVIRONMENT: .venv-python-checks
+      PYTEST_ADDOPTS: "-o cache_dir=.pytest_cache-python-checks"
+      PYTHONDONTWRITEBYTECODE: "1"
     commands:
       - uv sync --frozen
       - uv run --package profile-unifier-api ruff check services/api/src
@@ -53,7 +58,11 @@ steps:
   # network; it does not require a Docker socket, host volume, or repository secret.
   - name: neo4j-query-checks
     image: ghcr.io/astral-sh/uv:python3.12-bookworm
+    depends_on: []
     environment:
+      UV_PROJECT_ENVIRONMENT: .venv-neo4j-query-checks
+      PYTEST_ADDOPTS: "-o cache_dir=.pytest_cache-neo4j-query-checks"
+      PYTHONDONTWRITEBYTECODE: "1"
       HYPERP_NEO4J_PERSON_IDENTIFIERS_TEST_URI: bolt://neo4j:7687
       HYPERP_NEO4J_PERSON_IDENTIFIERS_TEST_USER: neo4j
       HYPERP_NEO4J_PERSON_IDENTIFIERS_TEST_PASSWORD: ci-person-identifiers
@@ -106,6 +115,7 @@ steps:
   # `npm run lint` budget is a separate, known follow-up (see CLAUDE.md).
   - name: frontend-checks
     image: node:22-bookworm
+    depends_on: []
     commands:
       - cd services/frontend2
       - npm install --legacy-peer-deps
