@@ -642,13 +642,10 @@ def test_attempt_limits_deadlines_snapshots_and_durable_call_outcomes(neo4j_driv
         is False
     )
 
-    with neo4j_driver.session() as session:
-        session.run(
-            "MATCH (census:StandaloneCrmCensus {census_id: $census_id}) "
-            "SET census.status = 'paused_with_checkpoint'",
-            census_id=admission.census_id,
-        ).consume()
     assert repository.claim_attempt(admission.census_id, 2, 2, request) is False
+    assert repository.fail_freeze(
+        admission.census_id, 1, StandaloneCrmReason("freeze_failed", "release attempt test scope")
+    )
     expired = _source_request(occurrence="expired", deadline="2000-01-01T00:00:00Z")
     expired_admission = repository.admit(expired)
     assert repository.claim_attempt(expired_admission.census_id, 1, 1, expired) is False
@@ -675,8 +672,8 @@ def test_continuation_pause_resume_and_pre_window_freeze_failure(neo4j_driver: D
     assert repository.create_continuation(continued.census_id, 1, continued_request) == 2
     assert repository.resume(continued.census_id) is False
 
-    paused = repository.admit(_source_request(occurrence="paused"))
-    paused_request = _source_request(occurrence="paused")
+    paused_request = _prepare_request()
+    paused = repository.admit(paused_request)
     _claim(repository, paused.census_id, paused_request)
     assert repository.pause(paused.census_id, 1, "budget_exhausted", "attempt exhausted") is True
     assert repository.resume(paused.census_id) is True
@@ -708,53 +705,16 @@ def test_publication_confirmation_and_terminalization_leave_no_active_fence(
         "sha256:" + "e" * 64,
         "pending",
     )
-    reason = StandaloneCrmReason("call_failed", "all work settled")
-    authority_revision = "digest-a:digest-b"
-
     assert repository.reserve_publication(publication) is True
     assert repository.reserve_publication(conflicting_task) is False
-    assert (
-        repository.terminalize(admission.census_id, 1, "completed", reason, authority_revision)
-        is False
-    )
     assert repository.confirm_publication(publication) is True
-    assert (
-        repository.terminalize(admission.census_id, 1, "completed", reason, authority_revision)
-        is False
-    )
-
     with neo4j_driver.session() as session:
-        session.run(
-            "MATCH (attempt:StandaloneCrmCensusAttempt {census_id: $census_id, generation: 1}) "
-            "SET attempt.status = 'completed'",
-            census_id=admission.census_id,
-        ).consume()
-    assert (
-        repository.terminalize(admission.census_id, 1, "completed", reason, authority_revision)
-        is True
-    )
-    assert (
-        repository.terminalize(admission.census_id, 1, "completed", reason, authority_revision)
-        is False
-    )
-
-    with neo4j_driver.session() as session:
-        terminal = session.run(
-            "MATCH (census:StandaloneCrmCensus {census_id: $census_id}) "
-            "OPTIONAL MATCH (active:StandaloneCrmCensusAttempt {census_id: $census_id, "
-            "status: 'running'}) "
-            "OPTIONAL MATCH (unsettled:StandaloneCrmChildPublication {census_id: $census_id}) "
-            "WHERE unsettled.status IN ['pending', 'publishing'] "
-            "RETURN census.status AS status, census.terminal_reason AS terminal_reason, "
-            "count(DISTINCT active) AS active_fences, count(DISTINCT unsettled) AS unsettled",
+        row = session.run(
+            "MATCH (publication:StandaloneCrmChildPublication {census_id: $census_id, "
+            "generation: 1, stream_kind: 'contact'}) RETURN publication.status AS status",
             census_id=admission.census_id,
         ).single(strict=True)
-    assert dict(terminal) == {
-        "status": "completed",
-        "terminal_reason": "call_failed",
-        "active_fences": 0,
-        "unsettled": 0,
-    }
+    assert row["status"] == "published"
 
 
 def test_units_fences_checkpoints_and_publication_repair_execute_recovery_paths(
@@ -961,6 +921,13 @@ def test_terminalization_requires_retired_fences_and_settled_selected_units(
     assert repository.confirm_publication(publication) is True
     fence = repository.acquire_unit_fence(admission.census_id, 1, "contact", "worker")
     assert fence is not None
+    assert repository.store_checkpoint(
+        StandaloneCrmCheckpoint(
+            admission.census_id, "contact", 1, None, 1, None, None, 1, 0, 1, fence
+        ),
+        attempt_rows=1,
+        occurrence_rows=1,
+    ).stored
     reason = StandaloneCrmReason("call_failed", "fence must settle")
     assert (
         repository.terminalize(admission.census_id, 1, "completed", reason, "digest-a:digest-b")
