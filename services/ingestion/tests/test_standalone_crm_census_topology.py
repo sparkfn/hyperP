@@ -11,7 +11,12 @@ import pytest
 from src import main, tasks
 from src.celery_app import INGESTION_QUEUE, celery_app
 from src.connectors.bitrix_openlines.client import BitrixHttpCallIntent, BitrixOpenLinesClient
+from src.graph.queries.ingestion_control_instance_migration import (
+    MIGRATION_KEY as CONTROL_MIGRATION_KEY,
+)
 from src.graph.standalone_crm_census import StandaloneCrmCensusRepository
+from src.graph.standalone_crm_census_migration import MIGRATION_KEY as CENSUS_MIGRATION_KEY
+from src.graph.standalone_crm_lane_a_migration import MIGRATION_KEY as LANE_A_MIGRATION_KEY
 from src.ingestion_config import (
     BitrixOpenLinesConfig,
     bitrix_configuration_digest,
@@ -124,6 +129,51 @@ def test_no_api_mcp_or_domain_writer_is_exposed_for_census_control() -> None:
     assert ".apply_async(" not in control_source
 
 
+def test_lane_a_contracts_add_no_task_route_schedule_source_call_or_concrete_writer() -> None:
+    contract_paths = (
+        "standalone_crm_child_contracts.py",
+        "standalone_crm_unit_repository.py",
+        "crm_company_contract_primitives.py",
+        "crm_company_contracts.py",
+        "crm_tenant_mapping_contracts.py",
+        "crm_tenant_projection_contracts.py",
+        "crm_tenant_projection_records.py",
+        "crm_tenant_projection_release_contracts.py",
+    )
+    contract_source = "\\n".join(
+        (_REPOSITORY_ROOT / "services" / "ingestion" / "src" / path).read_text(encoding="utf-8")
+        for path in contract_paths
+    )
+    task_names = set(celery_app.tasks)
+    task_routes = set(celery_app.conf.task_routes)
+
+    assert not any("standalone_crm_source" in name for name in task_names)
+    assert not any("standalone_crm_source" in route for route in task_routes)
+    assert "BitrixOpenLinesClient" not in contract_source
+    assert ".delay(" not in contract_source
+    assert ".apply_async(" not in contract_source
+    assert "Neo4jClient" not in contract_source
+    assert "execute_write" not in contract_source
+    assert "head swap" not in contract_source.lower()
+
+
+def test_272_273_identities_and_direct_path_gates_remain_distinct_from_lane_a() -> None:
+    main_source = (_REPOSITORY_ROOT / "services" / "ingestion" / "src" / "main.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert CONTROL_MIGRATION_KEY == "bitrix_control_instance_v1"
+    assert CENSUS_MIGRATION_KEY == "standalone_crm_census_control_v1"
+    assert LANE_A_MIGRATION_KEY == "standalone_crm_lane_a_contracts_v1"
+    assert len({CONTROL_MIGRATION_KEY, CENSUS_MIGRATION_KEY, LANE_A_MIGRATION_KEY}) == 3
+    assert main_source.index("assert_ingestion_control_ready(client)") < main_source.index(
+        "ensure_standalone_crm_census_ready(client)"
+    )
+    assert main_source.index("ensure_standalone_crm_census_ready(client)") < main_source.index(
+        "ensure_standalone_crm_lane_a_ready(client)"
+    )
+
+
 def test_legacy_bitrix_stream_literals_digests_and_task_shape_are_unchanged() -> None:
     categories = ("2", "7", "8")
     legacy_config = BitrixOpenLinesConfig()
@@ -187,9 +237,12 @@ def test_optional_http_reservation_hook_is_backward_compatible_when_absent() -> 
         client.close()
 
 
-def test_both_woodpecker_workflows_must_run_the_standalone_census_neo4j_suite() -> None:
-    expected_suite = "services/ingestion/tests/test_standalone_crm_census_neo4j.py"
+def test_both_woodpecker_workflows_must_run_the_standalone_crm_neo4j_suites() -> None:
+    expected_suites = (
+        "services/ingestion/tests/test_standalone_crm_census_neo4j.py",
+        "services/ingestion/tests/test_standalone_crm_lane_a_schema_neo4j.py",
+    )
 
     for workflow_name in ("pr.yaml", "main.yaml"):
         workflow = (_REPOSITORY_ROOT / ".woodpecker" / workflow_name).read_text(encoding="utf-8")
-        assert expected_suite in workflow
+        assert all(expected_suite in workflow for expected_suite in expected_suites)
