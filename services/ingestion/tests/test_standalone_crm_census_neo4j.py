@@ -518,13 +518,9 @@ def test_source_and_no_source_windows_are_one_shot_and_preserve_full_boundaries(
     source = repository.admit(source_request)
     _claim(repository, source.census_id, source_request)
     source_window = SourceWindow((("contact", 7), ("lead", 9)))
-    with neo4j_driver.session() as session:
-        session.run(
-            "MATCH (census:StandaloneCrmCensus {census_id: $census_id}) "
-            "SET census.status = 'freezing'",
-            census_id=source.census_id,
-        ).consume()
-    assert repository.freeze_source_window(source.census_id, 1, source_window) is True
+    _freeze_source_window(
+        repository, source.census_id, source_request, source_window.selected_bounds
+    )
     assert repository.freeze_source_window(source.census_id, 1, source_window) is False
     status = repository.status(source.census_id)
     assert status is not None
@@ -541,12 +537,6 @@ def test_source_and_no_source_windows_are_one_shot_and_preserve_full_boundaries(
     mapping_request = _prepare_request()
     mapping = repository.admit(mapping_request)
     _claim(repository, mapping.census_id, mapping_request)
-    with neo4j_driver.session() as session:
-        session.run(
-            "MATCH (census:StandaloneCrmCensus {census_id: $census_id}) "
-            "SET census.status = 'freezing'",
-            census_id=mapping.census_id,
-        ).consume()
     no_source_window = NoSourceWindow("prepared-a", "digest-a")
     assert repository.freeze_no_source_window(mapping.census_id, 1, no_source_window) is True
     assert repository.freeze_no_source_window(mapping.census_id, 1, no_source_window) is False
@@ -681,24 +671,13 @@ def test_continuation_pause_resume_and_pre_window_freeze_failure(neo4j_driver: D
     continued = repository.admit(_source_request(occurrence="continued"))
     continued_request = _source_request(occurrence="continued")
     _claim(repository, continued.census_id, continued_request)
-    with neo4j_driver.session() as session:
-        session.run(
-            "MATCH (census:StandaloneCrmCensus {census_id: $census_id}) "
-            "SET census.status = 'paused_with_checkpoint'",
-            census_id=continued.census_id,
-        ).consume()
+    assert repository.pause(continued.census_id, 1, "attempt_budget", "continue") is True
     assert repository.create_continuation(continued.census_id, 1, continued_request) == 2
     assert repository.resume(continued.census_id) is False
 
     paused = repository.admit(_source_request(occurrence="paused"))
     paused_request = _source_request(occurrence="paused")
     _claim(repository, paused.census_id, paused_request)
-    with neo4j_driver.session() as session:
-        session.run(
-            "MATCH (census:StandaloneCrmCensus {census_id: $census_id}) "
-            "SET census.status = 'running'",
-            census_id=paused.census_id,
-        ).consume()
     assert repository.pause(paused.census_id, 1, "budget_exhausted", "attempt exhausted") is True
     assert repository.resume(paused.census_id) is True
 
@@ -711,18 +690,7 @@ def test_publication_confirmation_and_terminalization_leave_no_active_fence(
     request = _source_request()
     admission = repository.admit(request)
     _claim(repository, admission.census_id, request)
-    with neo4j_driver.session() as session:
-        session.run(
-            "MATCH (census:StandaloneCrmCensus {census_id: $census_id}) "
-            "SET census.status = 'freezing'",
-            census_id=admission.census_id,
-        ).consume()
-    assert (
-        repository.freeze_source_window(
-            admission.census_id, 1, SourceWindow((("contact", 3), ("lead", 5)))
-        )
-        is True
-    )
+    _freeze_source_window(repository, admission.census_id, request, (("contact", 3), ("lead", 5)))
 
     publication = StandaloneCrmPublication(
         admission.census_id,
@@ -797,22 +765,20 @@ def test_units_fences_checkpoints_and_publication_repair_execute_recovery_paths(
     request = _source_request(occurrence="work-path")
     admission = repository.admit(request)
     _claim(repository, admission.census_id, request)
-    assert (
-        repository.freeze_source_window(admission.census_id, 1, SourceWindow((("contact", 5),)))
-        is True
+    _freeze_source_window(repository, admission.census_id, request, (("contact", 5), ("lead", 0)))
+    units = (
+        StandaloneCrmCensusUnit(admission.census_id, 1, "contact", "pending_publication", 5, None),
+        StandaloneCrmCensusUnit(admission.census_id, 1, "lead", "no_work", 0, None),
     )
-    unit = StandaloneCrmCensusUnit(
-        admission.census_id, 1, "contact", "pending_publication", 5, None
+    assert repository.allocate_units(admission.census_id, 1, units) == 2
+    envelope = StandaloneCrmChildEnvelope(
+        admission.census_id, 1, "contact", 5, None, "child.task", "work-path-task", "ingestion"
     )
-    assert repository.allocate_units(admission.census_id, 1, (unit,)) == 1
-
-    with neo4j_driver.session() as session:
-        session.run(
-            "MATCH (census:StandaloneCrmCensus {census_id: $census_id}) "
-            "MATCH (unit:StandaloneCrmCensusUnit {census_id: $census_id, stream_kind: 'contact'}) "
-            "SET census.status = 'running', unit.state = 'queued'",
-            census_id=admission.census_id,
-        ).consume()
+    assert repository.reserve_child_envelope(envelope) is True
+    publication = StandaloneCrmPublication(
+        admission.census_id, 1, "contact", "work-path-task", envelope.payload_digest(), "pending"
+    )
+    assert repository.confirm_publication(publication) is True
     first_fence = repository.acquire_unit_fence(admission.census_id, 1, "contact", "worker-a")
     assert first_fence is not None
     assert (
@@ -850,11 +816,8 @@ def test_units_fences_checkpoints_and_publication_repair_execute_recovery_paths(
     repair_admission = repository.admit(_source_request(occurrence="repair-path"))
     repair_request = _source_request(occurrence="repair-path")
     _claim(repository, repair_admission.census_id, repair_request)
-    assert (
-        repository.freeze_source_window(
-            repair_admission.census_id, 1, SourceWindow((("contact", 1),))
-        )
-        is True
+    _freeze_source_window(
+        repository, repair_admission.census_id, repair_request, (("contact", 1), ("lead", 0))
     )
     envelope = StandaloneCrmChildEnvelope(
         repair_admission.census_id, 1, "contact", 1, None, "child.task", "repair-task", "ingestion"
@@ -977,22 +940,25 @@ def test_terminalization_requires_retired_fences_and_settled_selected_units(
     request = _source_request(occurrence="terminal-fence")
     admission = repository.admit(request)
     _claim(repository, admission.census_id, request)
-    assert (
-        repository.freeze_source_window(admission.census_id, 1, SourceWindow((("contact", 1),)))
-        is True
+    _freeze_source_window(repository, admission.census_id, request, (("contact", 1), ("lead", 0)))
+    units = (
+        StandaloneCrmCensusUnit(admission.census_id, 1, "contact", "pending_publication", 1, None),
+        StandaloneCrmCensusUnit(admission.census_id, 1, "lead", "no_work", 0, None),
     )
-    unit = StandaloneCrmCensusUnit(
-        admission.census_id, 1, "contact", "pending_publication", 1, None
+    assert repository.allocate_units(admission.census_id, 1, units) == 2
+    envelope = StandaloneCrmChildEnvelope(
+        admission.census_id, 1, "contact", 1, None, "child.task", "terminal-fence-task", "ingestion"
     )
-    assert repository.allocate_units(admission.census_id, 1, (unit,)) == 1
-    with neo4j_driver.session() as session:
-        session.run(
-            "MATCH (census:StandaloneCrmCensus {census_id: $census_id}) "
-            "MATCH (unit:StandaloneCrmCensusUnit {census_id: $census_id, stream_kind: 'contact'}) "
-            "MATCH (attempt:StandaloneCrmCensusAttempt {census_id: $census_id, generation: 1}) "
-            "SET census.status = 'running', unit.state = 'queued', attempt.status = 'completed'",
-            census_id=admission.census_id,
-        ).consume()
+    assert repository.reserve_child_envelope(envelope) is True
+    publication = StandaloneCrmPublication(
+        admission.census_id,
+        1,
+        "contact",
+        "terminal-fence-task",
+        envelope.payload_digest(),
+        "pending",
+    )
+    assert repository.confirm_publication(publication) is True
     fence = repository.acquire_unit_fence(admission.census_id, 1, "contact", "worker")
     assert fence is not None
     reason = StandaloneCrmReason("call_failed", "fence must settle")
@@ -1001,6 +967,7 @@ def test_terminalization_requires_retired_fences_and_settled_selected_units(
         is False
     )
     assert repository.settle_unit(admission.census_id, 1, "contact", fence, "completed") is True
+    assert repository.settle_attempt(admission.census_id, 1) is True
     assert (
         repository.terminalize(admission.census_id, 1, "completed", reason, "digest-a:digest-b")
         is True
@@ -1015,7 +982,7 @@ def test_terminalization_requires_retired_fences_and_settled_selected_units(
             "count(fence) AS active_fences",
             census_id=admission.census_id,
         ).single(strict=True)
-    assert dict(row) == {"expected_units": 1, "completed_units": 1, "active_fences": 0}
+    assert dict(row) == {"expected_units": 2, "completed_units": 1, "active_fences": 0}
 
 
 def test_all_zero_selected_window_settles_attempt_without_child_publication(
@@ -1023,22 +990,10 @@ def test_all_zero_selected_window_settles_attempt_without_child_publication(
 ) -> None:
     repository = _prepare_repository(neo4j_driver)
     _register(neo4j_driver)
-    request = _source_request(occurrence="all-zero", calls=1)
+    request = _source_request(occurrence="all-zero", calls=2)
     admission = repository.admit(request)
     _claim(repository, admission.census_id, request)
-    assert repository.reserve_call(_intent(admission.census_id, "zero-probe"), 1, request) is True
-    assert (
-        repository.record_call_outcome(
-            StandaloneCrmCallOutcome("zero-probe", "probe", "succeeded", "2099-01-01T00:00:00Z", 0)
-        )
-        is True
-    )
-    assert (
-        repository.freeze_source_window(
-            admission.census_id, 1, SourceWindow((("contact", 0), ("lead", 0)))
-        )
-        is True
-    )
+    _freeze_source_window(repository, admission.census_id, request, (("contact", 0), ("lead", 0)))
     zero_units = (
         StandaloneCrmCensusUnit(admission.census_id, 1, "contact", "no_work", 0, None),
         StandaloneCrmCensusUnit(admission.census_id, 1, "lead", "no_work", 0, None),
@@ -1085,9 +1040,8 @@ def test_cancellation_retires_publications_requests_stops_and_settles_fences(
     settled = repository.admit(_source_request(occurrence="settle-cancel"))
     settled_request = _source_request(occurrence="settle-cancel")
     _claim(repository, settled.census_id, settled_request)
-    assert (
-        repository.freeze_source_window(settled.census_id, 1, SourceWindow((("contact", 2),)))
-        is True
+    _freeze_source_window(
+        repository, settled.census_id, settled_request, (("contact", 2), ("lead", 0))
     )
     assert (
         repository.reserve_child_envelope(
@@ -1233,7 +1187,8 @@ def test_reservation_guards_reject_stale_control_state_without_partial_mutation(
     with neo4j_driver.session() as session:
         session.run(
             "MATCH (binding:BitrixExecutionSourceBinding {source_key: 'bitrix_chat', "
-            "source_instance_id: 'portal-a', control_instance_id: 'portal-a'}) DELETE binding"
+            "source_instance_id: 'portal-a', control_instance_id: 'portal-a'}) "
+            "DETACH DELETE binding"
         ).consume()
     assert (
         repository.reserve_call(
@@ -1399,20 +1354,12 @@ def test_checkpoint_boundaries_pause_attempts_without_advancing_durable_state(
     )
     admission = repository.admit(request)
     _claim(repository, admission.census_id, request)
-    with neo4j_driver.session() as session:
-        session.run(
-            "MATCH (census:StandaloneCrmCensus {census_id: $census_id}) "
-            "SET census.status = 'frozen'",
-            census_id=admission.census_id,
-        ).consume()
-    unit = StandaloneCrmCensusUnit(admission.census_id, 1, "contact", "queued", 5, None)
-    assert repository.allocate_units(admission.census_id, 1, (unit,)) == 1
-    with neo4j_driver.session() as session:
-        session.run(
-            "MATCH (census:StandaloneCrmCensus {census_id: $census_id}) "
-            "SET census.status = 'running'",
-            census_id=admission.census_id,
-        ).consume()
+    _freeze_source_window(repository, admission.census_id, request, (("contact", 5), ("lead", 0)))
+    units = (
+        StandaloneCrmCensusUnit(admission.census_id, 1, "contact", "queued", 5, None),
+        StandaloneCrmCensusUnit(admission.census_id, 1, "lead", "no_work", 0, None),
+    )
+    assert repository.allocate_units(admission.census_id, 1, units) == 2
     fence = repository.acquire_unit_fence(admission.census_id, 1, "contact", "worker")
     assert fence is not None
     stored = StandaloneCrmCheckpoint(
@@ -1460,20 +1407,12 @@ def test_occurrence_exhaustion_converges_to_a_terminal_census_and_releases_scope
     )
     admission = repository.admit(request)
     _claim(repository, admission.census_id, request)
-    with neo4j_driver.session() as session:
-        session.run(
-            "MATCH (census:StandaloneCrmCensus {census_id: $census_id}) "
-            "SET census.status = 'frozen'",
-            census_id=admission.census_id,
-        ).consume()
-    unit = StandaloneCrmCensusUnit(admission.census_id, 1, "contact", "queued", 5, None)
-    assert repository.allocate_units(admission.census_id, 1, (unit,)) == 1
-    with neo4j_driver.session() as session:
-        session.run(
-            "MATCH (census:StandaloneCrmCensus {census_id: $census_id}) "
-            "SET census.status = 'running'",
-            census_id=admission.census_id,
-        ).consume()
+    _freeze_source_window(repository, admission.census_id, request, (("contact", 5), ("lead", 0)))
+    units = (
+        StandaloneCrmCensusUnit(admission.census_id, 1, "contact", "queued", 5, None),
+        StandaloneCrmCensusUnit(admission.census_id, 1, "lead", "no_work", 0, None),
+    )
+    assert repository.allocate_units(admission.census_id, 1, units) == 2
     fence = repository.acquire_unit_fence(admission.census_id, 1, "contact", "worker")
     assert fence is not None
     assert (
@@ -1499,7 +1438,8 @@ def test_occurrence_exhaustion_converges_to_a_terminal_census_and_releases_scope
     with neo4j_driver.session() as session:
         row = session.run(
             "MATCH (census:StandaloneCrmCensus {census_id: $census_id}) "
-            "OPTIONAL MATCH (:StandaloneCrmCensusActiveScope)-[active:HAS_ACTIVE_CENSUS]->(census) "
+            "OPTIONAL MATCH (:StandaloneCrmCensusActiveScope)"
+            "-[active:HAS_ACTIVE_CENSUS]->(census) "
             "RETURN census.status AS status, census.terminal_reason AS terminal_reason, "
             "count(active) AS active_scopes",
             census_id=admission.census_id,
@@ -1509,3 +1449,359 @@ def test_occurrence_exhaustion_converges_to_a_terminal_census_and_releases_scope
         "terminal_reason": "occurrence_budget_exhausted",
         "active_scopes": 0,
     }
+
+
+def test_unit_reconciliation_settles_current_attempt_and_failed_unit_fails_parent(
+    neo4j_driver: Driver,
+) -> None:
+    """A mixed unit outcome is durably accounted before the parent is failed."""
+    repository = _prepare_repository(neo4j_driver)
+    _register(neo4j_driver)
+    request = _source_request(occurrence="reconcile-failed-unit")
+    admission = repository.admit(request)
+    _claim(repository, admission.census_id, request)
+    _freeze_source_window(repository, admission.census_id, request, (("contact", 3), ("lead", 2)))
+    units = (
+        StandaloneCrmCensusUnit(admission.census_id, 1, "contact", "queued", 3, None),
+        StandaloneCrmCensusUnit(admission.census_id, 1, "lead", "queued", 2, None),
+    )
+    assert repository.allocate_units(admission.census_id, 1, units) == 2
+    contact_fence = repository.acquire_unit_fence(
+        admission.census_id, 1, "contact", "contact-worker"
+    )
+    lead_fence = repository.acquire_unit_fence(admission.census_id, 1, "lead", "lead-worker")
+    assert contact_fence is not None
+    assert lead_fence is not None
+    assert repository.store_checkpoint(
+        StandaloneCrmCheckpoint(
+            admission.census_id, "contact", 3, None, 3, None, None, 3, 0, 1, contact_fence
+        ),
+        attempt_rows=3,
+        occurrence_rows=3,
+    ).stored
+    assert (
+        repository.settle_unit(admission.census_id, 1, "contact", contact_fence, "completed")
+        is True
+    )
+    assert repository.settle_unit(admission.census_id, 1, "lead", lead_fence, "failed") is True
+    assert repository.settle_attempt(admission.census_id, 1) is True
+    assert (
+        repository.terminalize(
+            admission.census_id,
+            1,
+            "failed",
+            StandaloneCrmReason("call_failed", "lead unit failed after reconciliation"),
+            "digest-a:digest-b",
+        )
+        is True
+    )
+
+    with neo4j_driver.session() as session:
+        row = session.run(
+            "MATCH (census:StandaloneCrmCensus {census_id: $census_id}) "
+            "MATCH (attempt:StandaloneCrmCensusAttempt {census_id: $census_id, generation: 1}) "
+            "OPTIONAL MATCH (unit:StandaloneCrmCensusUnit {census_id: $census_id}) "
+            "OPTIONAL MATCH (:StandaloneCrmCensusActiveScope)"
+            "-[active:HAS_ACTIVE_CENSUS]->(census) "
+            "RETURN census.status AS parent, attempt.status AS attempt, "
+            "census.failed_units AS failed_units, "
+            "count(active) AS active_scopes, collect(unit.state) AS unit_states",
+            census_id=admission.census_id,
+        ).single(strict=True)
+    assert row["parent"] == "failed"
+    assert row["attempt"] == "completed"
+    assert row["failed_units"] == 1
+    assert row["active_scopes"] == 0
+    assert sorted(row["unit_states"]) == ["completed", "failed"]
+
+
+@pytest.mark.parametrize(
+    ("occurrence", "census_request", "generation", "fence_token"),
+    (
+        (
+            "attempt-denial-converges",
+            _source_request(occurrence="attempt-denial-converges", attempts=1),
+            2,
+            2,
+        ),
+        (
+            "deadline-denial-converges",
+            _source_request(
+                occurrence="deadline-denial-converges", deadline="2000-01-01T00:00:00Z"
+            ),
+            1,
+            1,
+        ),
+    ),
+)
+def test_attempt_or_deadline_admission_denial_terminalizes_and_releases_scope(
+    neo4j_driver: Driver,
+    occurrence: str,
+    census_request: SourceSyncCensusRequest,
+    generation: int,
+    fence_token: int,
+) -> None:
+    """Denied work must not strand an active occurrence scope."""
+    repository = _prepare_repository(neo4j_driver)
+    _register(neo4j_driver)
+    admission = repository.admit(census_request)
+    if occurrence == "attempt-denial-converges":
+        _claim(repository, admission.census_id, census_request)
+        assert (
+            repository.pause(admission.census_id, 1, "attempt_budget", "attempt consumed") is True
+        )
+    assert (
+        repository.claim_attempt(admission.census_id, generation, fence_token, census_request)
+        is False
+    )
+
+    with neo4j_driver.session() as session:
+        row = session.run(
+            "MATCH (census:StandaloneCrmCensus {census_id: $census_id}) "
+            "OPTIONAL MATCH (:StandaloneCrmCensusActiveScope)"
+            "-[active:HAS_ACTIVE_CENSUS]->(census) "
+            "RETURN census.status AS status, census.terminal_reason AS terminal_reason, "
+            "count(active) AS active_scopes",
+            census_id=admission.census_id,
+        ).single(strict=True)
+    assert row["status"] == "failed"
+    assert row["terminal_reason"] in {"attempts_exhausted", "deadline_exhausted"}
+    assert row["active_scopes"] == 0
+
+
+def test_expired_takeover_rejects_frozen_generation_without_mutating_artifacts(
+    neo4j_driver: Driver,
+) -> None:
+    """A superseded worker cannot retain a live child fence or publication."""
+    repository = _prepare_repository(neo4j_driver)
+    _register(neo4j_driver)
+    request = _source_request(occurrence="takeover-old-artifacts")
+    admission = repository.admit(request)
+    _claim(repository, admission.census_id, request)
+    _freeze_source_window(repository, admission.census_id, request, (("contact", 4), ("lead", 0)))
+    assert (
+        repository.allocate_units(
+            admission.census_id,
+            1,
+            (
+                StandaloneCrmCensusUnit(
+                    admission.census_id, 1, "contact", "pending_publication", 4, None
+                ),
+                StandaloneCrmCensusUnit(admission.census_id, 1, "lead", "no_work", 0, None),
+            ),
+        )
+        == 2
+    )
+    envelope = StandaloneCrmChildEnvelope(
+        admission.census_id, 1, "contact", 4, None, "child.task", "old-task", "ingestion"
+    )
+    assert repository.reserve_child_envelope(envelope) is True
+    publication = StandaloneCrmPublication(
+        admission.census_id, 1, "contact", "old-task", envelope.payload_digest(), "pending"
+    )
+    assert repository.confirm_publication(publication) is True
+    old_unit_fence = repository.acquire_unit_fence(admission.census_id, 1, "contact", "old-worker")
+    assert old_unit_fence is not None
+    with neo4j_driver.session() as session:
+        session.run(
+            "MATCH (attempt:StandaloneCrmCensusAttempt {census_id: $census_id, generation: 1}) "
+            "SET attempt.lease_until = datetime() - duration({seconds: 1})",
+            census_id=admission.census_id,
+        ).consume()
+    assert repository.recover_or_take_over_attempt(admission.census_id, 1, 2, 20) is None
+
+    with neo4j_driver.session() as session:
+        row = session.run(
+            "MATCH (census:StandaloneCrmCensus {census_id: $census_id}) "
+            "MATCH (attempt:StandaloneCrmCensusAttempt {census_id: $census_id, generation: 1}) "
+            "MATCH (publication:StandaloneCrmChildPublication "
+            "{census_id: $census_id, generation: 1}) "
+            "OPTIONAL MATCH (fence:StandaloneCrmCensusFence "
+            "{census_id: $census_id, generation: 1, status: 'active'}) "
+            "OPTIONAL MATCH (next:StandaloneCrmCensusAttempt "
+            "{census_id: $census_id, generation: 2}) "
+            "RETURN census.generation AS generation, attempt.status AS attempt, "
+            "publication.status AS publication, count(fence) AS active_fences, "
+            "count(next) AS next_attempts",
+            census_id=admission.census_id,
+        ).single(strict=True)
+    assert dict(row) == {
+        "generation": 1,
+        "attempt": "running",
+        "publication": "published",
+        "active_fences": 1,
+        "next_attempts": 0,
+    }
+
+
+def test_mixed_selected_window_terminalizes_only_after_full_canonical_stream_accounting(
+    neo4j_driver: Driver,
+) -> None:
+    repository = _prepare_repository(neo4j_driver)
+    _register(neo4j_driver)
+    request = _source_request(occurrence="mixed-full-window")
+    admission = repository.admit(request)
+    _claim(repository, admission.census_id, request)
+    _freeze_source_window(repository, admission.census_id, request, (("contact", 4), ("lead", 0)))
+    assert (
+        repository.allocate_units(
+            admission.census_id,
+            1,
+            (
+                StandaloneCrmCensusUnit(admission.census_id, 1, "contact", "queued", 4, None),
+                StandaloneCrmCensusUnit(admission.census_id, 1, "lead", "no_work", 0, None),
+            ),
+        )
+        == 2
+    )
+    fence = repository.acquire_unit_fence(admission.census_id, 1, "contact", "worker")
+    assert fence is not None
+    assert repository.store_checkpoint(
+        StandaloneCrmCheckpoint(
+            admission.census_id, "contact", 4, None, 4, None, None, 4, 0, 1, fence
+        ),
+        attempt_rows=4,
+        occurrence_rows=4,
+    ).stored
+    assert repository.settle_unit(admission.census_id, 1, "contact", fence, "completed") is True
+    assert repository.settle_attempt(admission.census_id, 1) is True
+    assert (
+        repository.terminalize(
+            admission.census_id,
+            1,
+            "completed",
+            StandaloneCrmReason("call_failed", "mixed window"),
+            "digest-a:digest-b",
+        )
+        is True
+    )
+    with neo4j_driver.session() as session:
+        row = session.run(
+            "MATCH (census:StandaloneCrmCensus {census_id: $census_id}) "
+            "MATCH (unit:StandaloneCrmCensusUnit {census_id: $census_id}) "
+            "RETURN census.status AS status, census.expected_units AS expected_units, "
+            "census.completed_units AS completed_units, census.no_work_units AS no_work_units, "
+            "collect([unit.stream_kind, unit.state]) AS units",
+            census_id=admission.census_id,
+        ).single(strict=True)
+    assert row["status"] == "completed"
+    assert (row["expected_units"], row["completed_units"], row["no_work_units"]) == (2, 1, 1)
+    assert sorted(row["units"]) == [["contact", "completed"], ["lead", "no_work"]]
+
+
+def test_binding_checkpoint_cannot_clear_or_regress_without_mutating_durable_checkpoint(
+    neo4j_driver: Driver,
+) -> None:
+    repository = _prepare_repository(neo4j_driver)
+    _register(neo4j_driver)
+    request = _source_request(occurrence="binding-checkpoint-monotonic")
+    admission = repository.admit(request)
+    _claim(repository, admission.census_id, request)
+    _freeze_source_window(repository, admission.census_id, request, (("contact", 5), ("lead", 0)))
+    assert (
+        repository.allocate_units(
+            admission.census_id,
+            1,
+            (
+                StandaloneCrmCensusUnit(admission.census_id, 1, "contact", "queued", 5, None),
+                StandaloneCrmCensusUnit(admission.census_id, 1, "lead", "no_work", 0, None),
+            ),
+        )
+        == 2
+    )
+    fence = repository.acquire_unit_fence(admission.census_id, 1, "contact", "worker")
+    assert fence is not None
+    baseline = StandaloneCrmCheckpoint(
+        admission.census_id, "contact", 5, None, 3, 101, 7, 3, 0, 1, fence
+    )
+    assert repository.store_checkpoint(baseline, attempt_rows=3, occurrence_rows=3).stored
+    cleared = StandaloneCrmCheckpoint(
+        admission.census_id, "contact", 5, None, 4, None, None, 4, 0, 1, fence
+    )
+    regressed = StandaloneCrmCheckpoint(
+        admission.census_id, "contact", 5, None, 4, 100, 9, 4, 0, 1, fence
+    )
+    assert (
+        repository.store_checkpoint(cleared, attempt_rows=4, occurrence_rows=4).decision
+        == "stale_or_conflict"
+    )
+    assert (
+        repository.store_checkpoint(regressed, attempt_rows=4, occurrence_rows=4).decision
+        == "stale_or_conflict"
+    )
+    with neo4j_driver.session() as session:
+        row = session.run(
+            "MATCH (census:StandaloneCrmCensus {census_id: $census_id}) "
+            "MATCH (checkpoint:StandaloneCrmCensusCheckpoint "
+            "{census_id: $census_id, stream_kind: 'contact'}) "
+            "MATCH (attempt:StandaloneCrmCensusAttempt {census_id: $census_id, generation: 1}) "
+            "RETURN checkpoint.last_committed_id AS committed, "
+            "checkpoint.binding_subject_id AS subject, "
+            "checkpoint.binding_offset AS offset, checkpoint.processed_rows AS rows, "
+            "census.occurrence_rows AS occurrence_rows, attempt.row_count AS attempt_rows",
+            census_id=admission.census_id,
+        ).single(strict=True)
+    assert dict(row) == {
+        "committed": 3,
+        "subject": 101,
+        "offset": 7,
+        "rows": 3,
+        "occurrence_rows": 3,
+        "attempt_rows": 3,
+    }
+
+
+def test_post_window_authority_failure_has_terminal_accounting_and_no_detached_scope(
+    neo4j_driver: Driver,
+) -> None:
+    repository = _prepare_repository(neo4j_driver)
+    _register(neo4j_driver)
+    request = _source_request(occurrence="authority-failure-accounting")
+    admission = repository.admit(request)
+    _claim(repository, admission.census_id, request)
+    _freeze_source_window(repository, admission.census_id, request, (("contact", 2), ("lead", 0)))
+    assert (
+        repository.allocate_units(
+            admission.census_id,
+            1,
+            (
+                StandaloneCrmCensusUnit(admission.census_id, 1, "contact", "queued", 2, None),
+                StandaloneCrmCensusUnit(admission.census_id, 1, "lead", "no_work", 0, None),
+            ),
+        )
+        == 2
+    )
+    fence = repository.acquire_unit_fence(admission.census_id, 1, "contact", "worker")
+    assert fence is not None
+    assert (
+        repository.fail_after_window_authority(
+            admission.census_id,
+            1,
+            StandaloneCrmReason("authority_stale", "authority revoked after freeze"),
+        )
+        is True
+    )
+    with neo4j_driver.session() as session:
+        row = session.run(
+            "MATCH (census:StandaloneCrmCensus {census_id: $census_id}) "
+            "OPTIONAL MATCH (unit:StandaloneCrmCensusUnit {census_id: $census_id}) "
+            "OPTIONAL MATCH (attempt:StandaloneCrmCensusAttempt "
+            "{census_id: $census_id, generation: 1}) "
+            "OPTIONAL MATCH (fence:StandaloneCrmCensusFence "
+            "{census_id: $census_id, status: 'active'}) "
+            "OPTIONAL MATCH (:StandaloneCrmCensusActiveScope)"
+            "-[active:HAS_ACTIVE_CENSUS]->(census) "
+            "RETURN census.status AS status, census.terminal_reason AS terminal_reason, "
+            "census.expected_units AS expected_units, census.failed_units AS failed_units, "
+            "count(DISTINCT active) AS active_scopes, count(DISTINCT fence) AS active_fences, "
+            "collect(DISTINCT unit.state) AS unit_states, "
+            "collect(DISTINCT attempt.status) AS attempt_states",
+            census_id=admission.census_id,
+        ).single(strict=True)
+    assert row["status"] == "failed"
+    assert row["terminal_reason"] == "authority_stale"
+    assert (row["expected_units"], row["failed_units"]) == (2, 1)
+    assert row["active_scopes"] == 0
+    assert row["active_fences"] == 0
+    assert sorted(row["unit_states"]) == ["failed", "no_work"]
+    assert row["attempt_states"] == ["failed"]

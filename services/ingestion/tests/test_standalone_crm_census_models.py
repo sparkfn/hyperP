@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import json
 from dataclasses import FrozenInstanceError
 
 import pytest
+from src.graph.standalone_crm_census_records import terminal_window_expectations
 from src.standalone_crm_census_models import (
     MappingPrepareAuthority,
     MappingPrepareCensusRequest,
@@ -16,6 +18,7 @@ from src.standalone_crm_census_models import (
     StandaloneCrmCallIntent,
     StandaloneCrmCallOutcome,
     StandaloneCrmCensus,
+    StandaloneCrmCensusConflictError,
     StandaloneCrmCensusUnit,
     StandaloneCrmCheckpoint,
     StandaloneCrmChildEnvelope,
@@ -278,6 +281,49 @@ def test_full_stream_selection_uses_canonical_probe_order_and_fingerprint() -> N
     assert first.selected_kinds == ("contact", "lead", "company")
     assert second.selected_kinds == ("contact", "lead", "company")
     assert census_fingerprint(first) == census_fingerprint(second)
+
+
+def test_terminal_expectations_require_the_complete_canonical_source_selection() -> None:
+    request = _source_request(("company", "lead", "contact"))
+    window_json = json.dumps(
+        {
+            "selected_bounds": [["contact", 3], ["lead", 8], ["company", 11]],
+            "window_version": "standalone-crm-source-window-v1",
+        }
+    )
+
+    assert terminal_window_expectations(request, window_json) == [
+        {"stream_kind": "contact", "frozen_upper_id": 3, "revision_id": None},
+        {"stream_kind": "lead", "frozen_upper_id": 8, "revision_id": None},
+        {"stream_kind": "company", "frozen_upper_id": 11, "revision_id": None},
+    ]
+
+    missing_selected_stream = json.dumps({"selected_bounds": [["contact", 3], ["lead", 8]]})
+    out_of_order_selection = json.dumps(
+        {"selected_bounds": [["company", 11], ["contact", 3], ["lead", 8]]}
+    )
+    for malformed_window in (missing_selected_stream, out_of_order_selection):
+        with pytest.raises(
+            StandaloneCrmCensusConflictError, match="stored source window selection conflicts"
+        ):
+            terminal_window_expectations(request, malformed_window)
+
+
+def test_checkpoint_binding_cannot_be_cleared_or_regressed_after_progress() -> None:
+    checkpoint = StandaloneCrmCheckpoint("census-a", "contact", 10, None, 5, 42, 3, 5, 1, 1, 7)
+    cleared = StandaloneCrmCheckpoint("census-a", "contact", 10, None, 6, None, None, 6, 1, 1, 7)
+    regressed_subject = StandaloneCrmCheckpoint(
+        "census-a", "contact", 10, None, 6, 41, 9, 6, 1, 1, 7
+    )
+    regressed_offset = StandaloneCrmCheckpoint(
+        "census-a", "contact", 10, None, 6, 42, 2, 6, 1, 1, 7
+    )
+    advanced = StandaloneCrmCheckpoint("census-a", "contact", 10, None, 6, 42, 4, 6, 1, 1, 7)
+
+    assert not checkpoint.can_advance_to(cleared)
+    assert not checkpoint.can_advance_to(regressed_subject)
+    assert not checkpoint.can_advance_to(regressed_offset)
+    assert checkpoint.can_advance_to(advanced)
 
 
 def test_unit_publication_and_terminal_accounting_constraints() -> None:

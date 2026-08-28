@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Protocol, runtime_checkable
 
 from src.graph.standalone_crm_census import StandaloneCrmCensusRepository
@@ -105,6 +106,9 @@ class StandaloneCrmCensusRuntime:
         fence_token = generation
         self._revalidate(request)
         if not self._repository.claim_attempt(census_id, generation, fence_token, request):
+            exhausted = self._converge_limit_denial(census_id, snapshot, request)
+            if exhausted is not None:
+                return exhausted
             return StandaloneCrmRuntimeResult(
                 census_id, snapshot.state, snapshot.generation, "claim denied"
             )
@@ -121,9 +125,34 @@ class StandaloneCrmCensusRuntime:
             self._revalidate(snapshot.request)
         except StandaloneCrmCensusAuthorityError:
             return self._converge_authority_failure(census_id, snapshot)
+        takeover = self._repository.recover_or_take_over_attempt(
+            census_id,
+            snapshot.generation,
+            snapshot.generation + 1,
+            snapshot.generation + 1,
+        )
+        if takeover is not None:
+            if snapshot.window_frozen:
+                units = self._repository.resumable_units(census_id, takeover.generation)
+                if units:
+                    return self._allocate_and_publish(
+                        census_id, snapshot.request, takeover.generation, units
+                    )
+                return self.repair_publications(census_id)
+            if isinstance(snapshot.request, SourceSyncCensusRequest):
+                return self._freeze_source(
+                    census_id,
+                    snapshot.request,
+                    takeover.generation,
+                    takeover.fence_token,
+                )
+            return self._freeze_mapping(census_id, snapshot.request, takeover.generation)
         classified = self._repository.classify_unresolved_calls(census_id)
         if snapshot.cancel_requested:
             return self.settle_cancellation(census_id, snapshot.request)
+        exhausted = self._converge_limit_denial(census_id, snapshot, snapshot.request)
+        if exhausted is not None:
+            return exhausted
         repaired = self.repair_publications(census_id)
         if repaired.state == "paused_with_checkpoint":
             return repaired
@@ -135,15 +164,26 @@ class StandaloneCrmCensusRuntime:
         if current.state == "paused_with_checkpoint":
             return self.continue_after_pause(census_id)
         if current.window_frozen:
-            terminal = self._terminalize(
-                census_id,
-                current.generation,
-                current.request,
-                "completed",
-                f"reconciled classified={classified}",
-            )
-            if terminal.state == "completed":
-                return terminal
+            settled = self._repository.settle_attempt(census_id, current.generation)
+            if settled:
+                terminal = self._terminalize(
+                    census_id,
+                    current.generation,
+                    current.request,
+                    "completed",
+                    f"reconciled classified={classified}",
+                )
+                if terminal.state == "completed":
+                    return terminal
+                failed = self._terminalize(
+                    census_id,
+                    current.generation,
+                    current.request,
+                    "failed",
+                    "reconciled terminal child failure",
+                )
+                if failed.state == "failed":
+                    return failed
         return StandaloneCrmRuntimeResult(
             census_id,
             current.state,
@@ -231,6 +271,9 @@ class StandaloneCrmCensusRuntime:
         self._revalidate(snapshot.request)
         if not snapshot.window_frozen:
             if not self._repository.resume(census_id):
+                exhausted = self._converge_limit_denial(census_id, snapshot, snapshot.request)
+                if exhausted is not None:
+                    return exhausted
                 return StandaloneCrmRuntimeResult(
                     census_id, snapshot.state, snapshot.generation, "pre-window resume rejected"
                 )
@@ -246,6 +289,9 @@ class StandaloneCrmCensusRuntime:
             census_id, snapshot.generation, snapshot.request
         )
         if generation is None:
+            exhausted = self._converge_limit_denial(census_id, snapshot, snapshot.request)
+            if exhausted is not None:
+                return exhausted
             return StandaloneCrmRuntimeResult(
                 census_id, snapshot.state, snapshot.generation, "continuation rejected"
             )
@@ -500,19 +546,12 @@ class StandaloneCrmCensusRuntime:
         persisted = self._repository.fail_after_window_authority(
             census_id, snapshot.generation, reason
         )
-        terminalized = self._repository.terminalize(
-            census_id,
-            snapshot.generation,
-            "failed",
-            reason,
-            self._authority_revision(snapshot.request),
-        )
         return StandaloneCrmRuntimeResult(
             census_id,
             "failed" if persisted else "recovery_required",
             snapshot.generation,
             "authority changed after window"
-            if terminalized
+            if persisted
             else "authority failure retained for reconciliation",
         )
 
@@ -531,6 +570,30 @@ class StandaloneCrmCensusRuntime:
             "paused_with_checkpoint" if persisted else "recovery_required",
             generation,
             detail,
+        )
+
+    def _converge_limit_denial(
+        self,
+        census_id: str,
+        snapshot: StandaloneCrmRuntimeSnapshot,
+        request: StandaloneCrmCensusRequest,
+    ) -> StandaloneCrmRuntimeResult | None:
+        reason_code = (
+            "deadline_exhausted"
+            if datetime.now(UTC)
+            >= datetime.fromisoformat(request.budget.occurrence_deadline.replace("Z", "+00:00"))
+            else "attempts_exhausted"
+        )
+        state = self._repository.converge_limit_denial(
+            census_id, snapshot.generation, request, reason_code
+        )
+        if state is None:
+            return None
+        return StandaloneCrmRuntimeResult(
+            census_id,
+            state,
+            snapshot.generation,
+            "standalone census occurrence limit exhausted",
         )
 
     def _require_enabled(self) -> None:

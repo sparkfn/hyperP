@@ -8,6 +8,7 @@ from neo4j import ManagedTransaction
 
 from src.graph.queries.standalone_crm_census import (
     CLASSIFY_UNRESOLVED_CALLS,
+    CONVERGE_LIMIT_DENIAL,
     CREATE_CONTINUATION,
     FAIL_AFTER_WINDOW_AUTHORITY,
     FAIL_FREEZE,
@@ -238,6 +239,27 @@ class StandaloneCrmCensusReconciliationRepository(_StandaloneCrmCensusRepository
                 is not None
             )
         )
+
+    def converge_limit_denial(
+        self, census_id: str, generation: int, request: StandaloneCrmCensusRequest, reason_code: str
+    ) -> str | None:
+        if reason_code not in {"attempts_exhausted", "deadline_exhausted"}:
+            raise ValueError("invalid standalone census limit-denial reason")
+
+        def work(tx: ManagedTransaction) -> str | None:
+            record = tx.run(
+                CONVERGE_LIMIT_DENIAL,
+                census_id=census_id,
+                generation=generation,
+                reason_code=reason_code,
+                max_attempts=request.budget.max_attempts_per_occurrence,
+                occurrence_deadline=request.budget.occurrence_deadline,
+                authority_revision=authority_revision_for_request(request),
+                authority_json=authority_context(request),
+            ).single()
+            return None if record is None else str(record["status"])
+
+        return self._client.execute_write(work)
 
     def settle_cancellation(self, census_id: str, generation: int) -> bool:
         snapshot = self.runtime_snapshot(census_id)
