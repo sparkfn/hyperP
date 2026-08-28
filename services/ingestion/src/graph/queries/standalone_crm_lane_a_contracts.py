@@ -1,0 +1,36 @@
+"""Additive Neo4j schema declarations shared by standalone CRM Lane A contracts."""
+
+from __future__ import annotations
+
+CREATE_STANDALONE_CRM_LANE_A_CONSTRAINTS: tuple[str, ...] = (
+    "CREATE CONSTRAINT crm_company_reference_scope_unique IF NOT EXISTS FOR (n:CrmCompanyReference) REQUIRE (n.source_instance_id, n.company_id) IS UNIQUE",
+    "CREATE CONSTRAINT crm_company_description_observation_id_unique IF NOT EXISTS FOR (n:CrmCompanyDescriptionObservation) REQUIRE n.observation_id IS UNIQUE",
+    "CREATE CONSTRAINT crm_company_description_observation_digest_unique IF NOT EXISTS FOR (n:CrmCompanyDescriptionObservation) REQUIRE n.observation_digest IS UNIQUE",
+    "CREATE CONSTRAINT crm_company_description_head_scope_unique IF NOT EXISTS FOR (n:CrmCompanyDescriptionHead) REQUIRE (n.source_instance_id, n.company_id) IS UNIQUE",
+    "CREATE CONSTRAINT crm_company_membership_snapshot_id_unique IF NOT EXISTS FOR (n:CrmCompanyMembershipSnapshot) REQUIRE n.snapshot_id IS UNIQUE",
+    "CREATE CONSTRAINT crm_company_membership_snapshot_scope_digest_unique IF NOT EXISTS FOR (n:CrmCompanyMembershipSnapshot) REQUIRE (n.source_instance_id, n.subject_kind, n.subject_id, n.snapshot_digest) IS UNIQUE",
+    "CREATE CONSTRAINT crm_company_membership_observation_unique IF NOT EXISTS FOR (n:CrmCompanyMembershipObservation) REQUIRE (n.snapshot_id, n.company_id) IS UNIQUE",
+    "CREATE CONSTRAINT crm_company_membership_head_scope_unique IF NOT EXISTS FOR (n:CrmCompanyMembershipHead) REQUIRE (n.source_instance_id, n.subject_kind, n.subject_id) IS UNIQUE",
+    "CREATE CONSTRAINT crm_tenant_mapping_scope_counter_unique IF NOT EXISTS FOR (n:CrmTenantMappingScopeCounter) REQUIRE (n.source_key, n.source_instance_id, n.control_instance_id) IS UNIQUE",
+    "CREATE CONSTRAINT crm_tenant_mapping_revision_id_unique IF NOT EXISTS FOR (n:CrmTenantMappingRevision) REQUIRE n.revision_id IS UNIQUE",
+    "CREATE CONSTRAINT crm_tenant_mapping_revision_number_unique IF NOT EXISTS FOR (n:CrmTenantMappingRevision) REQUIRE (n.source_key, n.source_instance_id, n.control_instance_id, n.revision_number) IS UNIQUE",
+    "CREATE CONSTRAINT crm_tenant_mapping_preparation_request_unique IF NOT EXISTS FOR (n:CrmTenantMappingRevision) REQUIRE (n.source_key, n.source_instance_id, n.control_instance_id, n.preparation_request_id) IS UNIQUE",
+    "CREATE CONSTRAINT crm_tenant_mapping_entry_unique IF NOT EXISTS FOR (n:CrmTenantMappingEntry) REQUIRE (n.revision_id, n.company_id) IS UNIQUE",
+    "CREATE CONSTRAINT crm_tenant_mapping_target_unique IF NOT EXISTS FOR (n:CrmTenantMappingTarget) REQUIRE (n.entry_id, n.entity_key, n.relationship_kind) IS UNIQUE",
+    "CREATE CONSTRAINT crm_tenant_mapping_active_head_scope_unique IF NOT EXISTS FOR (n:CrmTenantMappingActiveHead) REQUIRE (n.source_key, n.source_instance_id, n.control_instance_id) IS UNIQUE",
+    "CREATE CONSTRAINT crm_tenant_projection_scope_counter_unique IF NOT EXISTS FOR (n:CrmTenantProjectionScopeCounter) REQUIRE (n.source_key, n.source_instance_id, n.control_instance_id) IS UNIQUE",
+    "CREATE CONSTRAINT crm_tenant_projection_release_id_unique IF NOT EXISTS FOR (n:CrmTenantProjectionRelease) REQUIRE n.release_id IS UNIQUE",
+    "CREATE CONSTRAINT crm_tenant_projection_release_number_unique IF NOT EXISTS FOR (n:CrmTenantProjectionRelease) REQUIRE (n.source_key, n.source_instance_id, n.control_instance_id, n.release_number) IS UNIQUE",
+    "CREATE CONSTRAINT crm_tenant_projection_request_fingerprint_unique IF NOT EXISTS FOR (n:CrmTenantProjectionRelease) REQUIRE (n.source_key, n.source_instance_id, n.control_instance_id, n.request_id, n.release_fingerprint) IS UNIQUE",
+    "CREATE CONSTRAINT crm_tenant_projection_input_unique IF NOT EXISTS FOR (n:CrmTenantProjectionInput) REQUIRE (n.release_id, n.subject_kind, n.subject_id) IS UNIQUE",
+    "CREATE CONSTRAINT crm_tenant_projection_decision_unique IF NOT EXISTS FOR (n:CrmTenantProjectionDecision) REQUIRE (n.release_id, n.input_id) IS UNIQUE",
+    "CREATE CONSTRAINT crm_tenant_projection_association_unique IF NOT EXISTS FOR (n:CrmTenantProjectionAssociation) REQUIRE (n.release_id, n.subject_kind, n.subject_id, n.entity_key, n.relationship_kind) IS UNIQUE",
+    "CREATE CONSTRAINT crm_tenant_projection_support_unique IF NOT EXISTS FOR (n:CrmTenantProjectionSupport) REQUIRE (n.association_id, n.membership_observation_id, n.mapping_target_id) IS UNIQUE",
+    "CREATE CONSTRAINT crm_tenant_projection_active_head_scope_unique IF NOT EXISTS FOR (n:CrmTenantProjectionActiveHead) REQUIRE (n.source_key, n.source_instance_id, n.control_instance_id) IS UNIQUE",
+    "CREATE INDEX crm_company_description_observation_order IF NOT EXISTS FOR (n:CrmCompanyDescriptionObservation) ON (n.source_instance_id, n.company_id, n.available_at, n.source_record_version, n.source_record_pk)",
+    "CREATE INDEX crm_company_description_head_order IF NOT EXISTS FOR (n:CrmCompanyDescriptionHead) ON (n.source_instance_id, n.company_id, n.available_at, n.source_record_version, n.source_record_pk)",
+    "CREATE INDEX crm_company_membership_head_order IF NOT EXISTS FOR (n:CrmCompanyMembershipHead) ON (n.source_instance_id, n.subject_kind, n.subject_id, n.available_at, n.source_record_version, n.source_record_pk)",
+    "CREATE INDEX crm_tenant_mapping_revision_state IF NOT EXISTS FOR (n:CrmTenantMappingRevision) ON (n.source_key, n.source_instance_id, n.control_instance_id, n.state, n.revision_number)",
+    "CREATE INDEX crm_tenant_projection_release_state IF NOT EXISTS FOR (n:CrmTenantProjectionRelease) ON (n.source_key, n.source_instance_id, n.control_instance_id, n.state, n.release_number)",
+    "CREATE INDEX crm_tenant_projection_association_release IF NOT EXISTS FOR (n:CrmTenantProjectionAssociation) ON (n.release_id, n.subject_kind, n.subject_id)",
+)

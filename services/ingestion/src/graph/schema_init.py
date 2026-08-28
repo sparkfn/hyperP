@@ -25,6 +25,9 @@ from src.graph.queries.stage_history_ingestion import (
 from src.graph.queries.standalone_crm_census import (
     CREATE_STANDALONE_CRM_CENSUS_CONSTRAINTS,
 )
+from src.graph.queries.standalone_crm_lane_a_contracts import (
+    CREATE_STANDALONE_CRM_LANE_A_CONSTRAINTS,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +56,7 @@ ON (sr.source_version_key)""",
     *CREATE_CRM_STAGE_BACKFILL_CONSTRAINTS,
     *CREATE_STAGE_HISTORY_INGESTION_CONSTRAINTS,
     *CREATE_STANDALONE_CRM_CENSUS_CONSTRAINTS,
+    *CREATE_STANDALONE_CRM_LANE_A_CONSTRAINTS,
     *CREATE_IDENTITY_LINK_SCHEMA,
 )
 

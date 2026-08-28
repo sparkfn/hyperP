@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import cast
 
 import pytest
@@ -27,6 +28,9 @@ class _Client:
 
     def close(self) -> None:
         pass
+
+
+type _MigrationOptions = dict[str, str | list[str] | dict[str, str]]
 
 
 def test_version_key_constraint_is_deferred_from_base_schema() -> None:
@@ -115,7 +119,7 @@ def test_data_migrations_precede_source_version_uniqueness(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls: list[str] = []
-    migration_options: list[dict[str, object]] = []
+    migration_options: list[_MigrationOptions] = []
     client = _Client()
 
     monkeypatch.setattr(main, "get_settings", lambda: cast(Settings, object()))
@@ -141,7 +145,11 @@ def test_data_migrations_precede_source_version_uniqueness(
         lambda _client: calls.append("legacy_registry"),
     )
 
-    def _migrate(_client: object, *, ensure_legacy_registration: object) -> None:
+    def _migrate(
+        _client: _Client,
+        *,
+        ensure_legacy_registration: Callable[[], None],
+    ) -> None:
         calls.append("control_instance_migration")
         ensure_legacy_registration()
 
@@ -155,6 +163,11 @@ def test_data_migrations_precede_source_version_uniqueness(
         main,
         "ensure_standalone_crm_census_ready",
         lambda _client: calls.append("standalone_crm_census_ready"),
+    )
+    monkeypatch.setattr(
+        main,
+        "ensure_standalone_crm_lane_a_ready",
+        lambda _client: calls.append("standalone_crm_lane_a_ready"),
     )
     monkeypatch.setattr(
         main,
@@ -186,6 +199,7 @@ def test_data_migrations_precede_source_version_uniqueness(
         "legacy_registry",
         "control_instance_ready",
         "standalone_crm_census_ready",
+        "standalone_crm_lane_a_ready",
         "data_migrations",
         "source_version_constraint",
         "identifier_scope_constraint",
@@ -229,7 +243,7 @@ def test_data_migrations_exclude_recurring_lifecycle_reconciliation(
         lambda _client, _entities, _category_ids: calls.append("migrate_bitrix_crm_entities"),
     )
 
-    def _unexpected_reconciliation(_client: object) -> int:
+    def _unexpected_reconciliation(_client: _Client) -> int:
         pytest.fail("recurring lifecycle reconciliation ran during graph initialization")
 
     monkeypatch.setattr(
@@ -281,7 +295,11 @@ def test_legacy_registry_bootstrap_is_owned_by_migration_callback_after_dispatch
         main, "bootstrap_legacy_bitrix_source_instance", lambda _client: calls.append("registry")
     )
 
-    def _migration(_client: object, *, ensure_legacy_registration: object) -> None:
+    def _migration(
+        _client: _Client,
+        *,
+        ensure_legacy_registration: Callable[[], None],
+    ) -> None:
         calls.append("dispatch_blocked")
         ensure_legacy_registration()
         calls.append("migration_complete")
@@ -294,6 +312,11 @@ def test_legacy_registry_bootstrap_is_owned_by_migration_callback_after_dispatch
         main,
         "ensure_standalone_crm_census_ready",
         lambda _client: calls.append("standalone_crm_census_ready"),
+    )
+    monkeypatch.setattr(
+        main,
+        "ensure_standalone_crm_lane_a_ready",
+        lambda _client: calls.append("standalone_crm_lane_a_ready"),
     )
     monkeypatch.setattr(main, "apply_data_migrations", lambda _client, **_kwargs: None)
     monkeypatch.setattr(main, "apply_deferred_source_record_constraints", lambda _client: 0)
@@ -309,4 +332,5 @@ def test_legacy_registry_bootstrap_is_owned_by_migration_callback_after_dispatch
         "migration_complete",
         "ready",
         "standalone_crm_census_ready",
+        "standalone_crm_lane_a_ready",
     ]

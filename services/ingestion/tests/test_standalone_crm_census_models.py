@@ -6,6 +6,7 @@ from dataclasses import FrozenInstanceError
 import pytest
 from src.graph.standalone_crm_census_records import terminal_window_expectations
 from src.standalone_crm_census_models import (
+    ContactSourceChildEnvelope,
     MappingPrepareAuthority,
     MappingPrepareCensusRequest,
     MappingRollbackAuthority,
@@ -31,6 +32,12 @@ from src.standalone_crm_census_models import (
     census_fingerprint,
     is_terminal_state,
     parse_census_request,
+)
+from src.standalone_crm_child_contracts import (
+    StandaloneCrmSourceAvailability,
+    StandaloneCrmSourceChildBudgetAuthorization,
+    StandaloneCrmSourceChildScope,
+    StandaloneCrmSourceChildUnitAuthority,
 )
 
 
@@ -226,6 +233,46 @@ def test_budget_window_checkpoint_and_continuation_constraints() -> None:
     assert envelope.payload_digest() == (
         "sha256:750b84d0cabcb1139eb412691251e50cda93e97474ac76a2a313276fc6b1e470"
     )
+
+
+def test_v1_child_envelope_remains_separate_from_source_child_execution_authority() -> None:
+    v1 = StandaloneCrmChildEnvelope("census-a", 1, "contact", 0, None, "task", "id", "ingestion")
+    assert v1.payload_version == "standalone-crm-child-v1"
+    assert v1.payload_digest() == (
+        "sha256:750b84d0cabcb1139eb412691251e50cda93e97474ac76a2a313276fc6b1e470"
+    )
+    scope = StandaloneCrmSourceChildScope("bitrix_chat", "portal-a", "control-a")
+    unit = StandaloneCrmSourceChildUnitAuthority(
+        "census-a", "contact", 1, 2, "owner-a", "task", "id", "sha256:" + "a" * 64
+    )
+    authorization = StandaloneCrmSourceChildBudgetAuthorization(
+        "authorization-a",
+        "sha256:" + "b" * 64,
+        "census-a",
+        "contact",
+        1,
+        2,
+        "owner-a",
+        "task",
+        "id",
+        "sha256:" + "a" * 64,
+        2,
+        3,
+        4,
+        5,
+        "2026-08-28T01:00:00Z",
+        "2026-08-29T00:00:00Z",
+    )
+    source = ContactSourceChildEnvelope(
+        scope,
+        unit,
+        0,
+        0,
+        StandaloneCrmSourceAvailability("2026-08-28T00:00:00Z"),
+        authorization,
+    )
+    assert source.unit.task_id == v1.task_id
+    assert not isinstance(v1, ContactSourceChildEnvelope)
 
 
 def test_call_intent_and_outcome_cross_field_rules() -> None:
