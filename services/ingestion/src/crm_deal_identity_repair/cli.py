@@ -12,9 +12,11 @@ def parse_arguments(argv: Sequence[str] | None = None) -> argparse.Namespace:
         prog="python -m src.crm_deal_identity_repair_control",
         description="Seal staging-only graph discovery for historical Bitrix CRM-deal repair.",
     )
-    parser.add_argument("inventory", nargs="?", choices=("inventory",), default="inventory")
+    parser.add_argument(
+        "command", nargs="?", choices=("inventory", "qualify", "status"), default="inventory"
+    )
     parser.add_argument("--repair-id", required=True)
-    parser.add_argument("--source-contract-uuid", required=True)
+    parser.add_argument("--source-contract-uuid")
     parser.add_argument("--source-system", default="bitrix_chat")
     parser.add_argument(
         "--representative-replay-limit",
@@ -24,9 +26,42 @@ def parse_arguments(argv: Sequence[str] | None = None) -> argparse.Namespace:
         default=100,
     )
     parser.add_argument("--retention-days", type=int, default=30)
+    parser.add_argument("--artifact-id")
+    parser.add_argument("--source-instance-id", default="legacy-default")
+    parser.add_argument("--control-instance-id", default="legacy-default")
+    parser.add_argument("--approval-reference")
+    parser.add_argument("--unit-ceiling", type=int)
+    parser.add_argument("--stop-condition", action="append", default=[])
+    parser.add_argument("--rollback-authority-reference")
+    parser.add_argument("--rollback-authority-policy")
     arguments = parser.parse_args(argv)
+    _validate_arguments(parser, arguments)
+    return arguments
+
+
+def _validate_arguments(parser: argparse.ArgumentParser, arguments: argparse.Namespace) -> None:
     if arguments.retention_days < 1:
         parser.error("--retention-days must be positive")
     if arguments.representative_replay_limit < 1:
         parser.error("--representative-replay-limit must be positive")
-    return arguments
+    if arguments.command == "inventory" and not arguments.source_contract_uuid:
+        parser.error("--source-contract-uuid is required for inventory")
+    if arguments.command == "qualify":
+        required = (
+            "source_contract_uuid",
+            "artifact_id",
+            "approval_reference",
+            "unit_ceiling",
+            "rollback_authority_reference",
+            "rollback_authority_policy",
+        )
+        if (
+            any(getattr(arguments, name) in (None, "") for name in required)
+            or not arguments.stop_condition
+        ):
+            parser.error(
+                "qualify requires artifact, boundary, approval, stop-condition, "
+                "and rollback arguments"
+            )
+        if arguments.unit_ceiling < 1:
+            parser.error("--unit-ceiling must be positive")

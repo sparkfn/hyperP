@@ -161,6 +161,11 @@ def test_data_migrations_precede_source_version_uniqueness(
     )
     monkeypatch.setattr(
         main,
+        "ensure_crm_deal_repair_ledger_ready",
+        lambda _client: calls.append("crm_deal_repair_ledger_ready"),
+    )
+    monkeypatch.setattr(
+        main,
         "ensure_standalone_crm_census_ready",
         lambda _client: calls.append("standalone_crm_census_ready"),
     )
@@ -198,6 +203,7 @@ def test_data_migrations_precede_source_version_uniqueness(
         "control_instance_migration",
         "legacy_registry",
         "control_instance_ready",
+        "crm_deal_repair_ledger_ready",
         "standalone_crm_census_ready",
         "standalone_crm_lane_a_ready",
         "data_migrations",
@@ -310,6 +316,11 @@ def test_legacy_registry_bootstrap_is_owned_by_migration_callback_after_dispatch
     )
     monkeypatch.setattr(
         main,
+        "ensure_crm_deal_repair_ledger_ready",
+        lambda _client: calls.append("repair_ledger_ready"),
+    )
+    monkeypatch.setattr(
+        main,
         "ensure_standalone_crm_census_ready",
         lambda _client: calls.append("standalone_crm_census_ready"),
     )
@@ -331,6 +342,7 @@ def test_legacy_registry_bootstrap_is_owned_by_migration_callback_after_dispatch
         "registry",
         "migration_complete",
         "ready",
+        "repair_ledger_ready",
         "standalone_crm_census_ready",
         "standalone_crm_lane_a_ready",
     ]
