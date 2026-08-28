@@ -115,6 +115,19 @@ SET census.state = 'freezing', census.updated_at = datetime()
 RETURN census.census_id AS census_id
 """
 
+GET_STANDALONE_CRM_CENSUS_BY_OCCURRENCE = """
+MATCH (census:StandaloneCrmCensus {
+    source_key: $source_key,
+    source_instance_id: $source_instance_id,
+    control_instance_id: $control_instance_id,
+    census_kind: $census_kind,
+    occurrence_key: $occurrence_key
+})
+RETURN census.census_id AS census_id,
+       census.fingerprint AS fingerprint,
+       census.state AS state
+"""
+
 GET_CENSUS_STATUS = """
 MATCH (census:StandaloneCrmCensus {census_id: $census_id})
 OPTIONAL MATCH (census)-[:HAS_ATTEMPT]->(attempt:StandaloneCrmCensusAttempt)
@@ -154,6 +167,7 @@ CREATE (attempt:StandaloneCrmCensusAttempt {
     rows_processed: 0
 })
 MERGE (census)-[:HAS_ATTEMPT]->(attempt)
+WITH census, attempt
 OPTIONAL MATCH (census)-[:HAS_ATTEMPT]->(prior:StandaloneCrmCensusAttempt)
 WHERE prior.generation < census.current_generation
   AND prior.state IN ['running', 'paused_with_checkpoint']

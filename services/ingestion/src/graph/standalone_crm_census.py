@@ -22,6 +22,7 @@ from src.graph.queries.standalone_crm_census import (
     CREATE_STANDALONE_CRM_CENSUS_SCHEMA,
     FINALIZE_CENSUS,
     GET_CENSUS_STATUS,
+    GET_STANDALONE_CRM_CENSUS_BY_OCCURRENCE,
     LIST_UNRESOLVED_PUBLICATIONS,
     MARK_CHILD_TERMINAL,
     RECORD_CENSUS_HTTP_OUTCOME,
@@ -133,6 +134,20 @@ class StandaloneCrmCensusRepository:
         max_attempts: int,
     ) -> tuple[str, bool]:
         census_id = occurrence_key[:32] + datetime.now(UTC).strftime("%Y%m%d%H%M%S%f")
+
+        def _existing(tx: ManagedTransaction) -> Record | None:
+            return tx.run(
+                GET_STANDALONE_CRM_CENSUS_BY_OCCURRENCE,
+                source_key=source_key,
+                source_instance_id=source_instance_id,
+                control_instance_id=control_instance_id,
+                census_kind=census_kind.value,
+                occurrence_key=occurrence_key,
+            ).single()
+
+        existing = self._client.execute_read(_existing)
+        if existing is not None and _text(existing, "fingerprint") != fingerprint:
+            raise CensusConflictError("census occurrence key has a different fingerprint")
 
         def _work(tx: ManagedTransaction) -> Record:
             record = tx.run(
