@@ -29,6 +29,16 @@ from src.standalone_crm_census_models import (
 
 T = TypeVar("T")
 
+_MIGRATION_CONSTRAINT = (
+    "CREATE CONSTRAINT data_migration_key_unique IF NOT EXISTS "
+    "FOR (n:DataMigration) REQUIRE n.migration_key IS UNIQUE"
+)
+_REGISTRY_CONSTRAINT = (
+    "CREATE CONSTRAINT bitrix_source_instance_identity_unique IF NOT EXISTS "
+    "FOR (instance:BitrixSourceInstance) "
+    "REQUIRE (instance.source_key, instance.source_instance_id) IS UNIQUE"
+)
+
 
 class _Client:
     def __init__(self, driver: Driver) -> None:
@@ -79,6 +89,8 @@ def census_client() -> Iterator[tuple[Driver, Neo4jClient]]:
             pytest.fail("disposable standalone CRM census Neo4j database did not become ready")
         with driver.session() as session:
             session.run("MATCH (n) DETACH DELETE n").consume()
+            session.run(_MIGRATION_CONSTRAINT).consume()
+            session.run(_REGISTRY_CONSTRAINT).consume()
             session.run(
                 "CREATE (:SourceSystem {source_key: 'bitrix_chat', is_active: true})"
             ).consume()
@@ -105,6 +117,10 @@ def census_client() -> Iterator[tuple[Driver, Neo4jClient]]:
                         if not statement.startswith("CREATE INDEX"):
                             name = statement.split("CREATE CONSTRAINT ", 1)[1].split(" ", 1)[0]
                             session.run(f"DROP CONSTRAINT {name} IF EXISTS").consume()
+                    session.run("DROP CONSTRAINT data_migration_key_unique IF EXISTS").consume()
+                    session.run(
+                        "DROP CONSTRAINT bitrix_source_instance_identity_unique IF EXISTS"
+                    ).consume()
         finally:
             driver.close()
 
