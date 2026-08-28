@@ -141,7 +141,7 @@ def _admit(client: Neo4jClient, *, fingerprint: str = "fingerprint") -> str:
         occurrence_calls=100,
         occurrence_rows=100,
         attempt_calls=10,
-        attempt_rows=10,
+        attempt_rows=100,
         attempt_runtime_seconds=60.0,
         max_attempts=3,
     )
@@ -166,7 +166,7 @@ def test_census_admission_is_idempotent_and_fingerprint_conflict_fail_closed(
         occurrence_calls=100,
         occurrence_rows=100,
         attempt_calls=10,
-        attempt_rows=10,
+        attempt_rows=100,
         attempt_runtime_seconds=60.0,
         max_attempts=3,
     )
@@ -183,7 +183,7 @@ def test_census_admission_is_idempotent_and_fingerprint_conflict_fail_closed(
         occurrence_calls=100,
         occurrence_rows=100,
         attempt_calls=10,
-        attempt_rows=10,
+        attempt_rows=100,
         attempt_runtime_seconds=60.0,
         max_attempts=3,
     )
@@ -205,7 +205,7 @@ def test_census_admission_is_idempotent_and_fingerprint_conflict_fail_closed(
             occurrence_calls=100,
             occurrence_rows=100,
             attempt_calls=10,
-            attempt_rows=10,
+            attempt_rows=100,
             attempt_runtime_seconds=60.0,
             max_attempts=3,
         )
@@ -420,7 +420,7 @@ def test_mapping_only_zero_call_window_and_cancellation(
         occurrence_calls=100,
         occurrence_rows=100,
         attempt_calls=10,
-        attempt_rows=10,
+        attempt_rows=100,
         attempt_runtime_seconds=60.0,
         max_attempts=3,
     )
