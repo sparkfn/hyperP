@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime
 
 from neo4j import ManagedTransaction
 
@@ -10,6 +11,7 @@ from src.graph.bitrix_source_instances import BitrixSourceInstanceRepository
 from src.graph.queries.standalone_crm_census import (
     ADMIT_CENSUS,
     CLAIM_ATTEMPT,
+    CONVERGE_LIMIT_DENIAL,
     RECORD_CALL_OUTCOME,
     RESERVE_CALL,
     TAKE_OVER_EXPIRED_ATTEMPT,
@@ -85,8 +87,15 @@ class StandaloneCrmCensusAdmissionRepository(_StandaloneCrmCensusRepositoryBase)
     def claim_attempt(
         self, census_id: str, generation: int, fence_token: int, request: StandaloneCrmCensusRequest
     ) -> bool:
+        reason_code = (
+            "deadline_exhausted"
+            if datetime.now(UTC)
+            >= datetime.fromisoformat(request.budget.occurrence_deadline.replace("Z", "+00:00"))
+            else "attempts_exhausted"
+        )
+
         def work(tx: ManagedTransaction) -> bool:
-            return (
+            claimed = (
                 tx.run(
                     CLAIM_ATTEMPT,
                     census_id=census_id,
@@ -102,6 +111,19 @@ class StandaloneCrmCensusAdmissionRepository(_StandaloneCrmCensusRepositoryBase)
                 ).single()
                 is not None
             )
+            if claimed:
+                return True
+            tx.run(
+                CONVERGE_LIMIT_DENIAL,
+                census_id=census_id,
+                generation=generation,
+                reason_code=reason_code,
+                max_attempts=request.budget.max_attempts_per_occurrence,
+                occurrence_deadline=request.budget.occurrence_deadline,
+                authority_revision=authority_revision(request),
+                authority_json=authority_context(request),
+            ).consume()
+            return False
 
         return self._client.execute_write(work)
 

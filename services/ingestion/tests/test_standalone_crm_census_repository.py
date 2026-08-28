@@ -13,6 +13,7 @@ from src.graph.client import Neo4jClient
 from src.graph.queries.standalone_crm_census import (
     ADMIT_CENSUS,
     CLAIM_ATTEMPT,
+    CONVERGE_LIMIT_DENIAL,
     CREATE_CONTINUATION,
     FAIL_AFTER_WINDOW_AUTHORITY,
     RECORD_CALL_OUTCOME,
@@ -217,10 +218,10 @@ def test_admit_rejects_ambiguous_or_conflicting_occurrences(
 def test_claim_attempt_carries_generation_fence_and_lease(
     record: dict[str, object] | None, expected: bool
 ) -> None:
-    client = _Client([record])
+    client = _Client([record] if record is not None else [None, None])
 
     assert _repository(client).claim_attempt("census-a", 4, 19, _request()) is expected
-    assert client.transaction.runs == [
+    expected_runs = [
         _Run(
             CLAIM_ATTEMPT,
             {
@@ -237,6 +238,22 @@ def test_claim_attempt_carries_generation_fence_and_lease(
             },
         )
     ]
+    if record is None:
+        expected_runs.append(
+            _Run(
+                CONVERGE_LIMIT_DENIAL,
+                {
+                    "census_id": "census-a",
+                    "generation": 4,
+                    "reason_code": "attempts_exhausted",
+                    "max_attempts": 7,
+                    "occurrence_deadline": "2026-08-29T00:00:00Z",
+                    "authority_revision": "sha256:" + "b" * 64 + ":sha256:" + "c" * 64,
+                    "authority_json": authority_context(_request()),
+                },
+            )
+        )
+    assert client.transaction.runs == expected_runs
 
 
 def test_continuation_uses_captured_authority_and_immutable_occurrence_budget() -> None:
