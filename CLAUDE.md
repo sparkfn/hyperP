@@ -346,7 +346,9 @@ Before reporting work complete, perform a hostile review of the changed code: co
 **Local dev commands vs. CI:** do not run ruff/mypy/pytest/`npm run typecheck|lint|build` on the host to verify changes — that duplicates the Woodpecker PR/MAIN pipelines and leaves project venvs/build artifacts on the host. Push to a PR branch and read the verdict via `wpci home`. See *Agent rules (PR + MAIN)* below for the full policy. Exception: a one-shot deterministic run to *generate* a fix the verdict cannot show (e.g. `ruff check --fix` for an I001 import sort) is generating, not verifying — still push and let the pipeline verify.
 
 ### Commit discipline
-**Never commit without explicit user confirmation.** After completing code changes, stop — do not stage or commit anything. Wait for the user to say "commit" or similar before proceeding. This rule applies even when executing a plan that includes commit steps: treat plan commit steps as reminders, not instructions. Always ask before committing.
+Agents may stage and commit completed changes without asking first. They may also create or switch branches, push non-protected branches, open or update PRs, and perform routine GitHub issue and review operations as part of the requested workflow. Preserve unrelated changes and use focused, descriptive commits.
+
+Two operations remain explicit user gates: **merging any PR**, and **pushing to `main` or `staging`**. Opening, updating, reviewing, or preparing a PR does not authorize its merge, and general approval to implement, commit, push, or manage a PR does not authorize a push to either protected branch. Never force-push `main` or `staging`.
 
 ### Worktrees
 **Hard rule:** when creating a worktree — manually (`git worktree add`), via the `EnterWorktree` tool, or via any skill/agent — always branch it from the **current branch/HEAD**, never from `origin/main` (or `main`). This preserves in-progress branch context and avoids basing new work on a stale production branch. Do not pass a base ref that resolves to `main`/`origin/main`; if a tool or skill defaults to `main`, override it to the current branch. If a worktree was already created from `main` by mistake, recreate it from the current branch before doing any work in it.
@@ -385,9 +387,10 @@ Woodpecker workflows must declare explicit `when:` targeting. PR is `event: pull
 ### Agent rules (PR + MAIN)
 - New PRs default to the branch their PR branch was based on; do not assume `development` is the target branch.
 - **Do not run project package/test/build/migration/app-server commands on the host** — no `uv run pytest`, `npm run build`, `npm test`, `venv`, migrations, or long-lived processes. Validate by pushing to a PR branch and reading the Woodpecker result via `wpci home`.
-- Agents may inspect/edit files, run Git commands, and run safe structural checks (`git diff --check`, `git status -sb`).
+- Agents may inspect/edit files, run Git commands, stage and commit changes, push non-protected branches, open or update PRs, manage routine GitHub issue/review metadata, and run safe structural checks (`git diff --check`, `git status -sb`) without asking first.
+- **Merging any PR requires explicit user instruction. Pushing to `main` or `staging` also requires explicit user instruction.** General implementation or PR-management instructions do not satisfy either gate; never force-push those protected branches.
 - **Do not report PR work complete without PR pipeline evidence**: repo, branch/PR, commit SHA, pipeline number, status, and step names (from `wpci home pipeline show sparkfn/hyperP <n>`).
-- **Do not report merged work complete without `main`-branch pipeline evidence.** MAIN validation runs after an authorized PR merge into `main`; agents must still never push directly to `main`. Until the post-merge pipeline finishes, report the merge with MAIN validation pending.
+- **Do not report merged work complete without `main`-branch pipeline evidence.** MAIN validation runs after an explicitly authorized PR merge into `main`. A direct push to `main` is allowed only when the user explicitly instructs it. Until the post-merge pipeline finishes, report the merge with MAIN validation pending.
 - Missing, skipped, removed, or failing PR/MAIN checks are blockers unless the user explicitly accepts partial/blocked adoption with a follow-up issue.
 - Do not recreate git-runner / GitHub runner / host-local dependency/test workflows. The existing GitHub Actions staging deploy stays as-is.
 

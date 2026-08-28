@@ -54,7 +54,7 @@ docker compose ps
 Local checks provide fast feedback, but Woodpecker remains the required verifier
 for pushed PR and post-merge `main` work.
 
-Validate through Woodpecker after an authorized push to a PR branch:
+Validate through Woodpecker after pushing to a PR branch:
 
 ```powershell
 wpci home doctor --json
@@ -82,9 +82,14 @@ accepts a partial result with a tracked follow-up.
 
 ## Git and CI discipline
 
-- Never commit, stage, push, merge, or open a PR without explicit user approval.
-- Never push directly to `main`. Do not push to `development` without explicit
-  authorization.
+- Agents may perform routine Git and GitHub operations without asking first. This
+  includes staging, committing, creating or switching branches, pushing non-protected
+  branches, opening or updating PRs, and managing issues or review metadata.
+- Merging any PR requires explicit user instruction. Opening, updating, reviewing,
+  or preparing a PR does not authorize its merge.
+- Pushing to `main` or `staging` requires explicit user instruction. General approval
+  to implement, commit, push, or manage a PR does not authorize a push to either
+  protected branch. Never force-push either protected branch.
 - `development` is the integration branch. New PRs default to the branch their
   PR branch was based on; do not assume `development` is the target branch.
   `staging` triggers the existing GitHub Actions deployment and must not be
