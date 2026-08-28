@@ -570,11 +570,11 @@ Create the installable package, PostgreSQL/Alembic foundation, typed process
 entry points, configuration, schemas, and default-off controls. Add PostgreSQL
 16 validation as a separate step/service in synchronized PR and main workflows.
 
-Before this Compose-changing PR, establish the repository's tracked staging
-Compose contract. The path required by repository policy,
-`.docker/staging/docker-compose.yml`, does not currently exist; do not modify
-root Compose until that policy mismatch is corrected. Once established, root
-and staging Compose changes must remain equivalent in the same commit.
+Before this Compose-changing PR, issue #299 must establish the repository's
+tracked staging Compose contract at `.docker/staging/docker-compose.yml` and its
+exact tested exception registry. Do not modify root Compose until that contract
+is merged. Afterward, root and staging Compose changes must remain semantically
+equivalent except for the documented, test-enforced staging differences.
 
 Exit: migrations and health/readiness checks run against PostgreSQL 16 while all
 Bitrix writers remain disabled.

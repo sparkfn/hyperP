@@ -1,5 +1,23 @@
 # Profile Unifier Ingestion Operations
 
+## Tracked staging Compose contract
+
+`.docker/staging/docker-compose.yml` is the tracked, authoritative Compose
+contract for the `stg-hyperp` deployment. Operators must not substitute an
+untracked host Compose file.
+
+`services/api/tests/test_compose_contract.py` parses the root and staging files,
+then permits only its finite exact exception registry: project metadata; root-only
+deployment and CRM-repair settings; repository-relative build and mount rebases;
+staging web memory, host-port removal, and Traefik attachment; the external
+Traefik network; the ingestion worker's base target and Issue 147 evidence
+inputs; and staging beat resource limits. Any other topology, image, command,
+queue, environment, mount, network, or resource drift fails the contract test.
+
+When an owning change modifies root `docker-compose.yml`, update the tracked
+staging file in the same change. Review this exact registry and update it only
+when an approved root/staging exception is added, removed, or changed.
+
 ## Lifecycle worker pause and resume
 
 The lifecycle worker consumes reconciliation and deferred KNOWS materialization.
