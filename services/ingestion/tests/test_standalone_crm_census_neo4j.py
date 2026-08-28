@@ -103,6 +103,7 @@ def census_client() -> Iterator[tuple[Driver, Neo4jClient]]:
             ),
         )
         client = cast(Neo4jClient, _Client(driver))
+        BitrixSourceInstanceRepository(client).register("bitrix_chat", "bitrix-primary")
         BitrixSourceInstanceRepository(client).admit(
             control_instance_id="legacy-default", source_instance_id="bitrix-primary"
         )
