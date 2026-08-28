@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, replace
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from typing import Literal, Protocol
 
 from src.config import Settings
@@ -161,9 +161,14 @@ class StandaloneCrmCensusBitrixProbeFactory:
         fence_token: int,
         child_task_id: str | None = None,
     ) -> StandaloneCrmCensusBitrixProbe:
-        effective_deadline = _effective_deadline(
-            request.budget.occurrence_deadline, request.budget.max_runtime_seconds_per_attempt
-        )
+        snapshot = repository.runtime_snapshot(census_id)
+        if (
+            snapshot is None
+            or snapshot.generation != generation
+            or snapshot.attempt_deadline is None
+        ):
+            raise RuntimeError("standalone CRM probe requires a persisted current attempt deadline")
+        effective_deadline = snapshot.attempt_deadline
         deadline = _deadline_monotonic(effective_deadline)
         hook = StandaloneCrmCensusHttpReservationHook(
             repository,
@@ -229,9 +234,3 @@ def _deadline_monotonic(deadline: str) -> float:
     if remaining <= 0:
         raise ValueError("standalone census deadline is already exhausted")
     return time.monotonic() + remaining
-
-
-def _effective_deadline(occurrence_deadline: str, attempt_runtime_seconds: int) -> str:
-    occurrence = datetime.fromisoformat(occurrence_deadline.replace("Z", "+00:00")).astimezone(UTC)
-    attempt = datetime.now(UTC) + timedelta(seconds=attempt_runtime_seconds)
-    return min(occurrence, attempt).isoformat().replace("+00:00", "Z")
