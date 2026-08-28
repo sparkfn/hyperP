@@ -6,9 +6,7 @@ from collections.abc import Callable
 from typing import TypeVar, cast
 
 from neo4j import ManagedTransaction
-
-from src.crm_deal_identity_repair.inventory import collect_repair_inventory
-from src.graph.client import Neo4jClient
+from src.crm_deal_identity_repair.inventory import RepairInventory, collect_repair_inventory
 from src.graph.queries.crm_deal_identity_repair import (
     INVENTORY_ACTIVE_CRM_DEALS,
     INVENTORY_CRM_DEAL_PROJECTIONS,
@@ -112,8 +110,8 @@ def _link(person_id: str, *, active: bool = True) -> dict[str, object]:
     }
 
 
-def _inventory(*rows: dict[str, object]):
-    return collect_repair_inventory(cast(Neo4jClient, _Client(tuple(rows))))
+def _inventory(*rows: dict[str, object]) -> RepairInventory:
+    return collect_repair_inventory(_Client(tuple(rows)))
 
 
 def test_inventory_query_is_read_only_and_captures_closure_families() -> None:

@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Protocol, cast, runtime_checkable
+from typing import Protocol, TypeVar, cast, runtime_checkable
 
 from neo4j import ManagedTransaction, Record
 
@@ -14,13 +15,18 @@ from src.crm_deal_identity_repair.classifier import (
 )
 from src.crm_deal_identity_repair.digests import object_digest
 from src.crm_deal_identity_repair.models import RepairInventoryItem, RepairPartition
-from src.graph.client import Neo4jClient
 from src.graph.queries.crm_deal_identity_repair import (
     INVENTORY_ACTIVE_CRM_DEALS,
     INVENTORY_CRM_DEAL_PROJECTIONS,
     INVENTORY_STALE_RUN_CONTROL_PLANE,
 )
 from src.models import JsonValue
+
+T = TypeVar("T")
+
+
+class RepairInventoryReadClient(Protocol):
+    def execute_read(self, work: Callable[[ManagedTransaction], T]) -> T: ...
 
 
 @dataclass(frozen=True)
@@ -75,7 +81,7 @@ class RepairInventory:
 
 
 def collect_repair_inventory(
-    client: Neo4jClient,
+    client: RepairInventoryReadClient,
     *,
     source_system: str = "bitrix_chat",
 ) -> RepairInventory:

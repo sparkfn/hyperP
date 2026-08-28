@@ -70,3 +70,13 @@ def test_inventory_command_requires_staging_and_explicit_enablement() -> None:
                 crm_deal_identity_repair_enabled=False,
             )
         )
+
+
+def test_status_gate_remains_read_only_when_repair_flag_is_disabled() -> None:
+    _validate_runtime_gate(
+        SimpleNamespace(
+            deployment_environment="staging",
+            crm_deal_identity_repair_enabled=False,
+        ),
+        require_enabled=False,
+    )

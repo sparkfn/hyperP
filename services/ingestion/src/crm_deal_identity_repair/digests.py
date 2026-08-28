@@ -38,6 +38,16 @@ def inventory_digest(items: tuple[RepairInventoryItem, ...]) -> str:
     return "sha256:" + digest.hexdigest()
 
 
+def inventory_digest_from_bytes(content: bytes) -> str:
+    """Digest the exact immutable #254 inventory bytes without reserializing them."""
+    if not content or not content.endswith(b"\n"):
+        raise ValueError("repair inventory bytes must be non-empty canonical JSONL")
+    digest = hashlib.sha256()
+    digest.update(INVENTORY_DIGEST_DOMAIN)
+    digest.update(content)
+    return "sha256:" + digest.hexdigest()
+
+
 def inventory_jsonl(items: tuple[RepairInventoryItem, ...]) -> bytes:
     """Return the exact ordering and bytes that inventory digest authenticates."""
     ordered = tuple(sorted(items, key=lambda item: item.inventory_key))

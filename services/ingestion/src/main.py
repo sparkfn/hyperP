@@ -82,6 +82,9 @@ from src.graph.bootstrap import (
     bootstrap_legacy_bitrix_source_instance,
 )
 from src.graph.client import Neo4jClient
+from src.graph.crm_deal_identity_repair_ledger_migration import (
+    ensure_crm_deal_repair_ledger_ready,
+)
 from src.graph.incremental_checkpoints import Neo4jCheckpointRedis
 from src.graph.ingestion_control_instance_migration import (
     assert_ingestion_control_ready,
@@ -1062,6 +1065,7 @@ def initialize_ingestion_graph() -> None:
             ensure_legacy_registration=lambda: bootstrap_legacy_bitrix_source_instance(client),
         )
         assert_ingestion_control_ready(client)
+        ensure_crm_deal_repair_ledger_ready(client)
         ensure_standalone_crm_census_ready(client)
         ensure_standalone_crm_lane_a_ready(client)
         apply_data_migrations(

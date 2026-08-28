@@ -345,3 +345,61 @@ CREATE INDEX crm_company_membership_head_order IF NOT EXISTS FOR (n:CrmCompanyMe
 CREATE INDEX crm_tenant_mapping_revision_state IF NOT EXISTS FOR (n:CrmTenantMappingRevision) ON (n.source_key, n.source_instance_id, n.control_instance_id, n.state, n.revision_number);
 CREATE INDEX crm_tenant_projection_release_state IF NOT EXISTS FOR (n:CrmTenantProjectionRelease) ON (n.source_key, n.source_instance_id, n.control_instance_id, n.state, n.release_number);
 CREATE INDEX crm_tenant_projection_association_release IF NOT EXISTS FOR (n:CrmTenantProjectionAssociation) ON (n.release_id, n.subject_kind, n.subject_id);
+
+// CRM deal identity repair ledger schema (#300). Keep exactly aligned with
+// services/ingestion/src/graph/queries/crm_deal_identity_repair_ledger.py.
+CREATE CONSTRAINT crm_deal_repair_boundary_manifest_unique IF NOT EXISTS
+FOR (boundary:RepairExecutionBoundary) REQUIRE boundary.manifest_digest IS UNIQUE;
+CREATE CONSTRAINT crm_deal_repair_boundary_artifact_unique IF NOT EXISTS
+FOR (boundary:RepairExecutionBoundary) REQUIRE boundary.artifact_id IS UNIQUE;
+CREATE CONSTRAINT crm_deal_repair_run_id_unique IF NOT EXISTS
+FOR (run:CrmDealRepairRun) REQUIRE run.run_id IS UNIQUE;
+CREATE CONSTRAINT crm_deal_repair_run_repair_id_unique IF NOT EXISTS
+FOR (run:CrmDealRepairRun) REQUIRE run.repair_id IS UNIQUE;
+CREATE CONSTRAINT crm_deal_repair_run_identity_unique IF NOT EXISTS
+FOR (run:CrmDealRepairRun) REQUIRE run.qualification_identity IS UNIQUE;
+CREATE INDEX crm_deal_repair_run_status IF NOT EXISTS
+FOR (run:CrmDealRepairRun) ON (run.status, run.source_instance_id, run.control_instance_id);
+CREATE CONSTRAINT crm_deal_repair_quiescence_unique IF NOT EXISTS
+FOR (quiescence:CrmDealRepairQuiescence)
+REQUIRE (quiescence.run_id, quiescence.quiescence_id) IS UNIQUE;
+CREATE CONSTRAINT crm_deal_repair_unit_unique IF NOT EXISTS
+FOR (unit:CrmDealRepairUnit) REQUIRE (unit.run_id, unit.unit_id) IS UNIQUE;
+CREATE CONSTRAINT crm_deal_repair_checkpoint_unique IF NOT EXISTS
+FOR (checkpoint:CrmDealRepairCheckpoint) REQUIRE (checkpoint.run_id, checkpoint.checkpoint_id) IS UNIQUE;
+CREATE CONSTRAINT crm_deal_repair_fence_unique IF NOT EXISTS
+FOR (fence:CrmDealRepairFence) REQUIRE (fence.run_id, fence.fence_id) IS UNIQUE;
+CREATE CONSTRAINT crm_deal_repair_mutation_unique IF NOT EXISTS
+FOR (result:CrmDealRepairMutationResult) REQUIRE (result.run_id, result.mutation_id) IS UNIQUE;
+CREATE CONSTRAINT crm_deal_repair_rollback_unique IF NOT EXISTS
+FOR (image:CrmDealRepairRollbackImage) REQUIRE (image.run_id, image.rollback_image_id) IS UNIQUE;
+CREATE CONSTRAINT crm_deal_repair_secondary_unique IF NOT EXISTS
+FOR (disposition:CrmDealRepairSecondaryDisposition) REQUIRE (disposition.run_id, disposition.disposition_id) IS UNIQUE;
+CREATE CONSTRAINT crm_deal_repair_verification_unique IF NOT EXISTS
+FOR (verification:CrmDealRepairVerification) REQUIRE (verification.run_id, verification.verification_id) IS UNIQUE;
+CREATE CONSTRAINT crm_deal_repair_outbox_unique IF NOT EXISTS
+FOR (outbox:CrmDealRepairOutbox) REQUIRE (outbox.run_id, outbox.event_id) IS UNIQUE;
+CREATE INDEX crm_deal_repair_unit_state IF NOT EXISTS
+FOR (unit:CrmDealRepairUnit) ON (unit.run_id, unit.state, unit.generation);
+CREATE INDEX crm_deal_repair_quiescence_state IF NOT EXISTS
+FOR (quiescence:CrmDealRepairQuiescence)
+ON (quiescence.run_id, quiescence.state, quiescence.generation, quiescence.sequence);
+CREATE INDEX crm_deal_repair_fence_state IF NOT EXISTS
+FOR (fence:CrmDealRepairFence) ON (fence.run_id, fence.state, fence.generation);
+CREATE INDEX crm_deal_repair_checkpoint_sequence IF NOT EXISTS
+FOR (checkpoint:CrmDealRepairCheckpoint)
+ON (checkpoint.run_id, checkpoint.unit_id, checkpoint.generation, checkpoint.sequence, checkpoint.attempt);
+CREATE INDEX crm_deal_repair_mutation_sequence IF NOT EXISTS
+FOR (result:CrmDealRepairMutationResult)
+ON (result.run_id, result.unit_id, result.generation, result.sequence, result.attempt);
+CREATE INDEX crm_deal_repair_rollback_state IF NOT EXISTS
+FOR (image:CrmDealRepairRollbackImage)
+ON (image.run_id, image.unit_id, image.generation, image.state);
+CREATE INDEX crm_deal_repair_secondary_outcome IF NOT EXISTS
+FOR (disposition:CrmDealRepairSecondaryDisposition)
+ON (disposition.run_id, disposition.unit_id, disposition.generation, disposition.outcome);
+CREATE INDEX crm_deal_repair_verification_outcome IF NOT EXISTS
+FOR (verification:CrmDealRepairVerification)
+ON (verification.run_id, verification.unit_id, verification.generation, verification.outcome);
+CREATE INDEX crm_deal_repair_outbox_state IF NOT EXISTS
+FOR (outbox:CrmDealRepairOutbox) ON (outbox.run_id, outbox.state, outbox.sequence);
