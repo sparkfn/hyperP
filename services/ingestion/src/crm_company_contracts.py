@@ -165,7 +165,12 @@ class CrmCompanyDescriptionHeadCompareAndSet:
         self, current_head: CrmCompanyDescriptionHead | None
     ) -> CrmSourceHeadCasDecision:
         if current_head == self.proposed_head:
-            return "idempotent"
+            if (
+                self.expected_head is None
+                or self.proposed_head.order_key > self.expected_head.order_key
+            ):
+                return "idempotent"
+            return "stale_or_conflict"
         if current_head != self.expected_head:
             return "stale_or_conflict"
         if current_head is None or self.proposed_head.order_key > current_head.order_key:
