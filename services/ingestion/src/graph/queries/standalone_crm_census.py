@@ -377,7 +377,7 @@ FREEZE_WINDOW = (
     "AND all(item IN $selected_bounds WHERE EXISTS { MATCH (call:StandaloneCrmHttpCallReservation {census_id: $census_id}) "
     "WHERE call.generation = $generation AND call.call_kind = 'probe' AND call.stream_kind = item.stream_kind "
     "AND call.status = 'succeeded' AND call.upper_id = item.upper_id WITH count(call) AS matches WHERE matches = 1 })) "
-    "OR ($window_kind = 'mapping' AND size($selected_bounds) = 0))) "
+    "OR ($window_kind = 'mapping' AND size($selected_bounds) = 0)) "
     "SET census.window_json = $window_json, census.status = 'frozen', census.updated_at = datetime() "
     "RETURN census.census_id AS census_id"
 )
