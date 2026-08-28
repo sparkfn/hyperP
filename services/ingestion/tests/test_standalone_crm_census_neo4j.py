@@ -822,11 +822,14 @@ def test_units_fences_checkpoints_and_publication_repair_execute_recovery_paths(
     checkpoint = StandaloneCrmCheckpoint(
         admission.census_id, "contact", 5, None, 3, None, None, 3, 0, 1, first_fence
     )
-    assert repository.store_checkpoint(checkpoint, attempt_rows=3, occurrence_rows=3) is True
+    assert repository.store_checkpoint(checkpoint, attempt_rows=3, occurrence_rows=3).stored
     regressing = StandaloneCrmCheckpoint(
         admission.census_id, "contact", 5, None, 2, None, None, 2, 0, 1, first_fence
     )
-    assert repository.store_checkpoint(regressing, attempt_rows=2, occurrence_rows=2) is False
+    assert (
+        repository.store_checkpoint(regressing, attempt_rows=2, occurrence_rows=2).decision
+        == "stale_or_conflict"
+    )
 
     with neo4j_driver.session() as session:
         session.run(
@@ -1171,7 +1174,7 @@ def test_reservation_guards_reject_stale_control_state_without_partial_mutation(
     assert_empty_reservation_state(authority_admission.census_id)
     assert (
         repository.fail_freeze(
-            authority_admission.census_id, 1, StandaloneCrmReason("guarded", "authority")
+            authority_admission.census_id, 1, StandaloneCrmReason("authority_stale", "authority")
         )
         is True
     )
@@ -1199,7 +1202,7 @@ def test_reservation_guards_reject_stale_control_state_without_partial_mutation(
     assert_empty_reservation_state(deadline_admission.census_id)
     assert (
         repository.fail_freeze(
-            deadline_admission.census_id, 1, StandaloneCrmReason("guarded", "deadline")
+            deadline_admission.census_id, 1, StandaloneCrmReason("deadline_elapsed", "deadline")
         )
         is True
     )
@@ -1246,7 +1249,7 @@ def test_reservation_guards_reject_stale_control_state_without_partial_mutation(
         ).consume()
     assert (
         repository.fail_freeze(
-            binding_admission.census_id, 1, StandaloneCrmReason("guarded", "binding")
+            binding_admission.census_id, 1, StandaloneCrmReason("authority_stale", "binding")
         )
         is True
     )
@@ -1322,7 +1325,7 @@ def test_terminalization_accounts_for_orphan_publications_in_all_generations(
             "stream_kind: 'company', status: 'pending'})",
             census_id=admission.census_id,
         ).consume()
-    reason = StandaloneCrmReason("accounting", "orphan publication")
+    reason = StandaloneCrmReason("publication_unsettled", "orphan publication")
     assert (
         repository.terminalize(admission.census_id, 1, "completed", reason, "digest-a:digest-b")
         is False
