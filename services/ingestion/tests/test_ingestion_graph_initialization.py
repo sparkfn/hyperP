@@ -153,6 +153,11 @@ def test_data_migrations_precede_source_version_uniqueness(
     )
     monkeypatch.setattr(
         main,
+        "ensure_standalone_crm_census_ready",
+        lambda _client: calls.append("standalone_crm_census_ready"),
+    )
+    monkeypatch.setattr(
+        main,
         "apply_data_migrations",
         lambda _client, **kwargs: (
             calls.append("data_migrations"),
@@ -180,6 +185,7 @@ def test_data_migrations_precede_source_version_uniqueness(
         "control_instance_migration",
         "legacy_registry",
         "control_instance_ready",
+        "standalone_crm_census_ready",
         "data_migrations",
         "source_version_constraint",
         "identifier_scope_constraint",
@@ -284,10 +290,23 @@ def test_legacy_registry_bootstrap_is_owned_by_migration_callback_after_dispatch
     monkeypatch.setattr(
         main, "assert_ingestion_control_ready", lambda _client: calls.append("ready")
     )
+    monkeypatch.setattr(
+        main,
+        "ensure_standalone_crm_census_ready",
+        lambda _client: calls.append("standalone_crm_census_ready"),
+    )
     monkeypatch.setattr(main, "apply_data_migrations", lambda _client, **_kwargs: None)
     monkeypatch.setattr(main, "apply_deferred_source_record_constraints", lambda _client: 0)
     monkeypatch.setattr(main, "apply_deferred_identifier_scope_constraints", lambda _client: 0)
 
     main.initialize_ingestion_graph()
 
-    assert calls[:5] == ["schema", "sources", "dispatch_blocked", "registry", "migration_complete"]
+    assert calls == [
+        "schema",
+        "sources",
+        "dispatch_blocked",
+        "registry",
+        "migration_complete",
+        "ready",
+        "standalone_crm_census_ready",
+    ]
