@@ -5,9 +5,11 @@ from __future__ import annotations
 import logging
 import math
 import time
+import uuid
 from collections.abc import Collection, Iterator, Mapping
+from dataclasses import dataclass
 from datetime import datetime
-from typing import cast
+from typing import Literal, Protocol, cast, runtime_checkable
 from urllib.parse import urlencode
 
 import httpx
@@ -65,6 +67,48 @@ from src.models import JsonValue
 
 logger = logging.getLogger(__name__)
 
+type BitrixHttpCallKind = Literal["probe", "page", "company_binding"]
+type BitrixHttpOutcomeState = Literal["succeeded", "failed", "unknown"]
+
+
+@dataclass(frozen=True)
+class BitrixHttpCallMetadata:
+    call_kind: BitrixHttpCallKind
+    stream_kind: Literal["contact", "lead", "company"] | None = None
+    cursor: int | None = None
+    subject_id: int | None = None
+
+
+@dataclass(frozen=True)
+class BitrixHttpCallIntent:
+    intent_id: str
+    method: str
+    retry_ordinal: int
+    metadata: BitrixHttpCallMetadata | None = None
+
+
+class BitrixHttpCallReservationHook(Protocol):
+    def reserve(self, intent: BitrixHttpCallIntent) -> bool: ...
+
+    def record_outcome(
+        self,
+        intent: BitrixHttpCallIntent,
+        state: BitrixHttpOutcomeState,
+        error_code: str | None = None,
+    ) -> None: ...
+
+
+class _BitrixReservationDeniedError(RuntimeError):
+    """The durable census guard refused an HTTP attempt before source I/O."""
+
+
+@runtime_checkable
+class BitrixHttpProbeBoundHook(Protocol):
+    """Optional durable enrichment for a parsed, usable probe result."""
+
+    def record_probe_upper_bound(self, intent: BitrixHttpCallIntent, upper_id: int) -> None: ...
+
+
 _MISSING_CONTACT_ERRORS = frozenset({"ERROR_NOT_FOUND", "CRM_CONTACT_NOT_FOUND"})
 _MISSING_LEAD_ERRORS = frozenset({"ERROR_NOT_FOUND", "CRM_LEAD_NOT_FOUND"})
 _MISSING_DEAL_ERRORS = frozenset({"ERROR_NOT_FOUND", "CRM_DEAL_NOT_FOUND"})
@@ -96,6 +140,7 @@ class BitrixOpenLinesClient:
         max_request_count: int | None = None,
         deadline_monotonic: float | None = None,
         http: httpx.Client | None = None,
+        reservation_hook: BitrixHttpCallReservationHook | None = None,
     ) -> None:
         if not base_url.strip():
             raise ValueError("Bitrix Open Lines API base URL is required")
@@ -123,6 +168,8 @@ class BitrixOpenLinesClient:
         self._request_count = 0
         self._activities_scanned = 0
         self._http = http or httpx.Client(timeout=timeout_seconds)
+        self._reservation_hook = reservation_hook
+        self._last_probe_intent: BitrixHttpCallIntent | None = None
 
     @property
     def request_count(self) -> int:
@@ -924,15 +971,15 @@ class BitrixOpenLinesClient:
 
     def probe_crm_contact_upper_id(self) -> int:
         """Return the current maximum contact ID without traversing the source."""
-        return self._probe_crm_identity_upper_id("crm.contact.list")
+        return self._probe_crm_identity_upper_id("crm.contact.list", "contact")
 
     def probe_crm_lead_upper_id(self) -> int:
         """Return the current maximum lead ID without traversing the source."""
-        return self._probe_crm_identity_upper_id("crm.lead.list")
+        return self._probe_crm_identity_upper_id("crm.lead.list", "lead")
 
     def probe_crm_company_upper_id(self) -> int:
         """Return the current maximum company ID without traversing the source."""
-        return self._probe_crm_identity_upper_id("crm.company.list")
+        return self._probe_crm_identity_upper_id("crm.company.list", "company")
 
     def list_crm_contacts_keyset(
         self, *, greater_than_id: int | None, less_than_or_equal_to_id: int
@@ -979,7 +1026,16 @@ class BitrixOpenLinesClient:
         canonical_contact_id = _positive_numeric_id_string(contact_id)
         if canonical_contact_id is None:
             raise ValueError("contact_id must be a positive numeric ID")
-        result = self._call("crm.contact.company.items.get", {"id": int(canonical_contact_id)})
+        result = self._call(
+            "crm.contact.company.items.get",
+            {"id": int(canonical_contact_id)},
+            reservation_metadata=BitrixHttpCallMetadata(
+                "company_binding",
+                "contact",
+                cursor=int(canonical_contact_id),
+                subject_id=int(canonical_contact_id),
+            ),
+        )
         if not isinstance(result, list):
             raise RuntimeError("Bitrix contact company bindings returned an invalid result")
         bindings: list[CrmCompanyBindingPayload] = []
@@ -998,7 +1054,12 @@ class BitrixOpenLinesClient:
             )
         return tuple(bindings)
 
-    def _probe_crm_identity_upper_id(self, method: str) -> int:
+    def _probe_crm_identity_upper_id(
+        self,
+        method: str,
+        stream_kind: Literal["contact", "lead", "company"],
+    ) -> int:
+        self._last_probe_intent = None
         payload = self._request(
             method,
             {
@@ -1006,25 +1067,34 @@ class BitrixOpenLinesClient:
                 "order": {"ID": "DESC"},
                 "start": -1,
             },
+            reservation_metadata=BitrixHttpCallMetadata("probe", stream_kind),
         )
         result = payload.get("result")
-        if not isinstance(result, list):
-            raise RuntimeError("Bitrix CRM identity upper-bound probe returned an invalid result")
-        if not result:
-            return 0
-        first = result[0]
-        if not isinstance(first, dict):
-            raise RuntimeError("Bitrix CRM identity upper-bound probe contained an invalid item")
-        raw_id = _positive_numeric_id_string(first.get("ID"))
-        if raw_id is None:
-            raise RuntimeError("Bitrix CRM identity upper-bound probe omitted a numeric ID")
-        return int(raw_id)
+        try:
+            upper_id = _probe_upper_id(result)
+        except ValueError as exc:
+            self._record_probe_protocol_failure()
+            raise RuntimeError(str(exc)) from None
+        self._record_probe_upper_bound(upper_id)
+        return upper_id
+
+    def _record_probe_upper_bound(self, upper_id: int) -> None:
+        if self._last_probe_intent is not None and isinstance(
+            self._reservation_hook, BitrixHttpProbeBoundHook
+        ):
+            self._reservation_hook.record_probe_upper_bound(self._last_probe_intent, upper_id)
+
+    def _record_probe_protocol_failure(self) -> None:
+        if self._last_probe_intent is not None:
+            self._record_reservation_outcome(
+                self._last_probe_intent, "failed", "invalid_probe_result"
+            )
 
     def _list_crm_identity_keyset(
         self,
         *,
         method: str,
-        kind: str,
+        kind: Literal["contact", "lead", "company"],
         greater_than_id: int | None,
         less_than_or_equal_to_id: int,
     ) -> list[CrmContact | CrmCompany]:
@@ -1047,6 +1117,7 @@ class BitrixOpenLinesClient:
         payload = self._request(
             method,
             {"filter": filters, "select": select, "order": {"ID": "ASC"}, "start": -1},
+            reservation_metadata=BitrixHttpCallMetadata("page", kind, cursor=greater_than_id or 0),
         )
         raw_items = payload.get("result")
         if not isinstance(raw_items, list):
@@ -1251,8 +1322,14 @@ class BitrixOpenLinesClient:
     def close(self) -> None:
         self._http.close()
 
-    def _call(self, method: str, params: Mapping[str, JsonValue]) -> JsonValue:
-        return self._request(method, params)["result"]
+    def _call(
+        self,
+        method: str,
+        params: Mapping[str, JsonValue],
+        *,
+        reservation_metadata: BitrixHttpCallMetadata | None = None,
+    ) -> JsonValue:
+        return self._request(method, params, reservation_metadata=reservation_metadata)["result"]
 
     def _sleep_with_deadline(self, delay_seconds: float) -> None:
         if delay_seconds <= 0:
@@ -1281,14 +1358,39 @@ class BitrixOpenLinesClient:
             raise RuntimeError("Bitrix request runtime ceiling reached before the next request")
         return min(self._timeout_seconds, remaining)
 
+    def _record_reservation_outcome(
+        self,
+        intent: BitrixHttpCallIntent,
+        state: BitrixHttpOutcomeState,
+        error_code: str | None = None,
+    ) -> None:
+        if self._reservation_hook is None:
+            return
+        self._reservation_hook.record_outcome(intent, state, error_code)
+
     def _request(
         self,
         method: str,
         params: Mapping[str, JsonValue],
         *,
         allowed_errors: frozenset[str] = frozenset(),
+        reservation_metadata: BitrixHttpCallMetadata | None = None,
     ) -> dict[str, JsonValue]:
         for attempt in range(1, self._max_attempts + 1):
+            intent: BitrixHttpCallIntent | None = None
+            outcome_recorded = [False]
+
+            def record_outcome(
+                current_intent: BitrixHttpCallIntent | None,
+                state: BitrixHttpOutcomeState,
+                error_code: str | None = None,
+                *,
+                recorded: list[bool] = outcome_recorded,
+            ) -> None:
+                if current_intent is not None and not recorded[0]:
+                    self._record_reservation_outcome(current_intent, state, error_code)
+                    recorded[0] = True
+
             try:
                 self._assert_request_budget()
                 elapsed = time.monotonic() - self._last_request_at
@@ -1296,7 +1398,22 @@ class BitrixOpenLinesClient:
                     self._sleep_with_deadline(self._request_delay_seconds - elapsed)
                 self._assert_request_budget()
                 request_timeout = self._request_timeout()
+                intent = BitrixHttpCallIntent(
+                    uuid.uuid4().hex,
+                    method,
+                    attempt - 1,
+                    reservation_metadata,
+                )
+                if reservation_metadata is not None and reservation_metadata.call_kind == "probe":
+                    self._last_probe_intent = intent
+                if self._reservation_hook is not None and not self._reservation_hook.reserve(
+                    intent
+                ):
+                    raise _BitrixReservationDeniedError(
+                        "Bitrix request was not reserved before I/O"
+                    )
                 self._request_count += 1
+                self._assert_runtime_budget()
                 response = self._http.post(
                     f"{self._base_url}/{method}",
                     json=dict(params),
@@ -1307,20 +1424,32 @@ class BitrixOpenLinesClient:
                 response.raise_for_status()
                 payload = cast(object, response.json())
                 if not isinstance(payload, dict):
+                    record_outcome(intent, "failed", "invalid_envelope")
                     raise RuntimeError(f"Bitrix method {method} returned an invalid envelope")
                 typed_payload = cast(dict[str, JsonValue], payload)
                 error = typed_payload.get("error")
                 if isinstance(error, str):
                     if error in allowed_errors:
+                        if (
+                            reservation_metadata is None
+                            or reservation_metadata.call_kind != "probe"
+                        ):
+                            record_outcome(intent, "succeeded")
                         return typed_payload
                     if error not in RETRYABLE_ERRORS:
+                        record_outcome(intent, "failed", error)
                         raise RuntimeError(f"Bitrix method {method} failed with {error}")
                     if attempt == self._max_attempts:
+                        record_outcome(intent, "failed", error)
                         raise RuntimeError(f"Bitrix method {method} failed with {error}")
+                    record_outcome(intent, "failed", error)
                     self._sleep_with_deadline(envelope_retry_delay(typed_payload, attempt))
                     continue
                 if "result" not in typed_payload:
+                    record_outcome(intent, "failed", "invalid_envelope")
                     raise RuntimeError(f"Bitrix method {method} returned an invalid envelope")
+                if reservation_metadata is None or reservation_metadata.call_kind != "probe":
+                    record_outcome(intent, "succeeded")
                 return typed_payload
             except httpx.HTTPStatusError as exc:
                 self._assert_runtime_budget()
@@ -1332,7 +1461,14 @@ class BitrixOpenLinesClient:
                 if isinstance(error_payload, dict):
                     typed_error_payload = cast(dict[str, JsonValue], error_payload)
                     if _is_allowed_error_payload(typed_error_payload, allowed_errors):
+                        if (
+                            reservation_metadata is None
+                            or reservation_metadata.call_kind != "probe"
+                        ):
+                            record_outcome(intent, "succeeded")
                         return typed_error_payload
+                if intent is not None:
+                    record_outcome(intent, "failed", "http_status")
                 if exc.response.status_code != 429 and exc.response.status_code < 500:
                     raise RuntimeError(
                         f"Bitrix method {method} failed with HTTP {exc.response.status_code}"
@@ -1342,10 +1478,20 @@ class BitrixOpenLinesClient:
                 delay = retry_delay(exc.response, attempt)
                 self._sleep_with_deadline(delay)
             except httpx.TransportError:
+                if intent is not None:
+                    record_outcome(intent, "failed", "transport_error")
                 self._assert_runtime_budget()
                 if attempt == self._max_attempts:
                     raise RuntimeError(f"Bitrix method {method} request failed") from None
                 self._sleep_with_deadline(min(2 ** (attempt - 1), 8))
+            except ValueError:
+                record_outcome(intent, "failed", "invalid_json")
+                raise RuntimeError(f"Bitrix method {method} returned invalid JSON") from None
+            except _BitrixReservationDeniedError:
+                raise
+            except RuntimeError:
+                record_outcome(intent, "failed", "protocol_error")
+                raise
         raise AssertionError("unreachable")
 
 
@@ -1402,6 +1548,20 @@ def _positive_numeric_id_string(value: object) -> str | None:
         return None
     numeric = int(parsed)
     return str(numeric) if numeric > 0 else None
+
+
+def _probe_upper_id(result: JsonValue | object) -> int:
+    if not isinstance(result, list):
+        raise ValueError("Bitrix CRM identity upper-bound probe returned an invalid result")
+    if not result:
+        return 0
+    first = result[0]
+    if not isinstance(first, dict):
+        raise ValueError("Bitrix CRM identity upper-bound probe contained an invalid item")
+    raw_id = _positive_numeric_id_string(first.get("ID"))
+    if raw_id is None:
+        raise ValueError("Bitrix CRM identity upper-bound probe omitted a numeric ID")
+    return int(raw_id)
 
 
 def _first_datetime(payload: Mapping[str, JsonValue], *keys: str) -> datetime | None:

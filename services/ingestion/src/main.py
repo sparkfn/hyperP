@@ -93,6 +93,7 @@ from src.graph.schema_init import (
     apply_deferred_source_record_constraints,
     apply_schema,
 )
+from src.graph.standalone_crm_census_migration import ensure_standalone_crm_census_ready
 from src.ingestion_config import get_ingestion_config
 from src.llm import validate_ingestion_llm_readiness
 from src.models import IngestResult, JsonValue, RecordType, SourceRecordEnvelope
@@ -1060,6 +1061,7 @@ def initialize_ingestion_graph() -> None:
             ensure_legacy_registration=lambda: bootstrap_legacy_bitrix_source_instance(client),
         )
         assert_ingestion_control_ready(client)
+        ensure_standalone_crm_census_ready(client)
         apply_data_migrations(
             client,
             bitrix_source_instance_id=ingestion_config.bitrix_openlines.source_instance_id,

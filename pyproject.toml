@@ -120,6 +120,7 @@ module = [
     "src.config",
     "src.celery_app",
     "src.tasks",
+    "src.standalone_crm_census_tasks",
     "src.stage_history_tasks",
     "src.ingestion_orchestration_tasks",
     "src.external.whatsapp_api",

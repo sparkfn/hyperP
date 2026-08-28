@@ -151,8 +151,14 @@ WHERE generation.status IN ['allocated', 'backfilling', 'activating', 'active']
   )
 WITH instance, active_logical, active_runs, active_streams, pending_outboxes, active_dispatches,
      count(generation) AS pending_generations
+OPTIONAL MATCH (census:StandaloneCrmCensus {source_key: $source_key})
+WHERE census.source_instance_id = instance.source_instance_id
+  AND census.status IN ['allocated', 'freezing', 'frozen', 'publishing', 'running',
+                        'paused_with_checkpoint', 'cancel_requested', 'recovering']
+WITH instance, active_logical, active_runs, active_streams, pending_outboxes, active_dispatches,
+     pending_generations, count(census) AS active_standalone_censuses
 WHERE active_logical = 0 AND active_runs = 0 AND active_streams = 0 AND pending_outboxes = 0
-  AND active_dispatches = 0 AND pending_generations = 0
+  AND active_dispatches = 0 AND pending_generations = 0 AND active_standalone_censuses = 0
 SET instance.status = 'disabled', instance.disabled_at = datetime(),
     instance.disabled_by = $actor, instance.disable_reason = $reason, instance.updated_at = datetime()
 RETURN instance.source_instance_id AS source_instance_id
