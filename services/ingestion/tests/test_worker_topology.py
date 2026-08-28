@@ -18,6 +18,7 @@ def test_worker_concurrency_and_task_routes_are_fixed_in_code() -> None:
         "src.ingestion_orchestration_tasks.*": {"queue": "ingestion"},
         "src.scheduled_ingestion_tasks.*": {"queue": "ingestion"},
         "src.stage_history_tasks.*": {"queue": "ingestion"},
+        "src.standalone_crm_census_tasks.*": {"queue": "ingestion"},
         "src.tasks.reconcile_lifecycle_task": {"queue": "lifecycle"},
         "src.tasks.materialize_knows_task": {"queue": "lifecycle"},
         "src.tasks.send_birthday_messages_task": {"queue": "miscellaneous"},
@@ -42,3 +43,7 @@ def test_compose_workers_are_exclusive_and_use_code_concurrency() -> None:
     assert "MAX_CONCURRENT_INGESTIONS" not in compose
     assert "stop_grace_period: 5m" in ingestion_worker
     assert "stop_grace_period: 5m" in lifecycle_worker
+
+
+def test_standalone_crm_census_tasks_have_no_beat_schedule() -> None:
+    assert not any("standalone_crm_census" in key for key in celery_app.conf.beat_schedule)

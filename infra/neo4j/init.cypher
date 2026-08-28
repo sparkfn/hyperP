@@ -1,5 +1,5 @@
-// Profile Unifier — Neo4j Constraints and Indexes
-// Idempotent — safe to run multiple times.
+// Profile Unifier â€” Neo4j Constraints and Indexes
+// Idempotent â€” safe to run multiple times.
 
 // Uniqueness constraints
 CREATE CONSTRAINT person_id_unique IF NOT EXISTS
@@ -164,7 +164,7 @@ CREATE INDEX idx_vehicle_serial IF NOT EXISTS
 
 // Composite Vehicle lookup for the chat resolve path (queries/vehicle.py
 // RESOLVE_EXISTING_VEHICLE_FOR_CHAT). Both identifier columns are scanned
-// together — an LTA-tag + serial pair is the unique vehicle identity within
+// together â€” an LTA-tag + serial pair is the unique vehicle identity within
 // a source system.
 CREATE INDEX idx_vehicle_lta_serial IF NOT EXISTS
   FOR (v:Vehicle) ON (v.normalized_lta_tag, v.normalized_serial_number);
@@ -247,7 +247,7 @@ CREATE INDEX idx_bankruptcy_case_number IF NOT EXISTS
 CREATE INDEX idx_bankruptcy_event_date IF NOT EXISTS
   FOR (bc:BankruptcyCase) ON (bc.event_date);
 
-// Full-text search — name, NRIC, email, phone
+// Full-text search â€” name, NRIC, email, phone
 CREATE FULLTEXT INDEX person_name_search IF NOT EXISTS
   FOR (p:Person) ON EACH [p.preferred_full_name, p.preferred_nric, p.preferred_email, p.preferred_phone];
 
@@ -283,3 +283,43 @@ CREATE INDEX identity_link_revision_link_global_revision IF NOT EXISTS
 FOR (revision:IdentityLinkRevision) ON (revision.link_key, revision.global_revision);
 CREATE INDEX identity_link_head_link_key IF NOT EXISTS
 FOR (head:IdentityLinkHead) ON (head.link_key);
+
+// Standalone Bitrix CRM census control plane (#273)
+CREATE CONSTRAINT standalone_crm_census_id_unique IF NOT EXISTS
+  FOR (census:StandaloneCrmCensus) REQUIRE census.census_id IS UNIQUE;
+CREATE CONSTRAINT standalone_crm_census_occurrence_unique IF NOT EXISTS
+  FOR (census:StandaloneCrmCensus)
+  REQUIRE (census.source_key, census.source_instance_id, census.control_instance_id,
+           census.census_kind, census.occurrence_key) IS UNIQUE;
+CREATE CONSTRAINT standalone_crm_census_attempt_unique IF NOT EXISTS
+  FOR (attempt:StandaloneCrmCensusAttempt)
+  REQUIRE (attempt.census_id, attempt.generation) IS UNIQUE;
+CREATE CONSTRAINT standalone_crm_census_unit_unique IF NOT EXISTS
+  FOR (unit:StandaloneCrmCensusStream)
+  REQUIRE (unit.census_id, unit.unit_kind) IS UNIQUE;
+CREATE CONSTRAINT standalone_crm_census_checkpoint_unique IF NOT EXISTS
+  FOR (checkpoint:StandaloneCrmCensusCheckpoint)
+  REQUIRE (checkpoint.census_id, checkpoint.unit_kind) IS UNIQUE;
+CREATE CONSTRAINT standalone_crm_census_publication_unique IF NOT EXISTS
+  FOR (publication:StandaloneCrmChildPublication)
+  REQUIRE (publication.census_id, publication.generation, publication.unit_kind,
+           publication.publication_sequence) IS UNIQUE;
+CREATE CONSTRAINT standalone_crm_census_call_intent_unique IF NOT EXISTS
+  FOR (reservation:StandaloneCrmHttpCallReservation)
+  REQUIRE (reservation.census_id, reservation.intent_id) IS UNIQUE;
+CREATE INDEX standalone_crm_census_active_lookup IF NOT EXISTS
+  FOR (census:StandaloneCrmCensus)
+  ON (census.source_key, census.source_instance_id, census.control_instance_id,
+      census.census_kind, census.state);
+CREATE INDEX standalone_crm_census_paused_lookup IF NOT EXISTS
+  FOR (census:StandaloneCrmCensus)
+  ON (census.state, census.next_action_after);
+CREATE INDEX standalone_crm_attempt_lease_lookup IF NOT EXISTS
+  FOR (attempt:StandaloneCrmCensusAttempt)
+  ON (attempt.state, attempt.lease_until);
+CREATE INDEX standalone_crm_publication_recovery_lookup IF NOT EXISTS
+  FOR (publication:StandaloneCrmChildPublication)
+  ON (publication.state, publication.census_id);
+CREATE INDEX standalone_crm_reservation_census_lookup IF NOT EXISTS
+  FOR (reservation:StandaloneCrmHttpCallReservation)
+  ON (reservation.census_id, reservation.state);

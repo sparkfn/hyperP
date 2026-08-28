@@ -7,7 +7,10 @@ from typing import cast
 
 import httpx
 import pytest
-from src.connectors.bitrix_openlines.client import BitrixOpenLinesClient
+from src.connectors.bitrix_openlines.client import (
+    BitrixHttpCallReserver,
+    BitrixOpenLinesClient,
+)
 
 
 def test_client_lists_active_open_channel_configurations() -> None:
@@ -1886,3 +1889,75 @@ def test_client_reads_company_as_non_person_reference() -> None:
     )
 
     assert client.get_company("42").title == "Analytical Engines"
+
+
+def test_client_reserves_and_records_identity_probes() -> None:
+    reservations: list[dict[str, object]] = []
+
+    class _Reserver:
+        def reserve_call(
+            self,
+            *,
+            method: str,
+            unit_kind: str | None,
+            cursor: int | None,
+            frozen_upper_id: int | None,
+            retry_ordinal: int,
+        ) -> str:
+            reservations.append(
+                {
+                    "method": method,
+                    "unit_kind": unit_kind,
+                    "cursor": cursor,
+                    "frozen_upper_id": frozen_upper_id,
+                    "retry_ordinal": retry_ordinal,
+                }
+            )
+            return f"intent-{len(reservations)}"
+
+        def record_call_outcome(self, *, intent_id: str, outcome: str, detail: str) -> None:
+            reservations.append({"intent_id": intent_id, "outcome": outcome, "detail": detail})
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path.endswith("/crm.contact.list")
+        return httpx.Response(200, json={"result": [{"ID": "42"}]})
+
+    client = BitrixOpenLinesClient(
+        base_url="https://bitrix.test/rest/hook",
+        timeout_seconds=5,
+        max_attempts=1,
+        http=httpx.Client(transport=httpx.MockTransport(handler)),
+        call_reserver=cast(BitrixHttpCallReserver, _Reserver()),
+    )
+
+    assert client.probe_crm_contact_upper_id() == 42
+    assert reservations[0]["unit_kind"] == "contact"
+    assert reservations[1]["outcome"] == "succeeded"
+
+
+def test_client_reservation_failure_makes_no_source_call() -> None:
+    calls: list[str] = []
+
+    class _FailingReserver:
+        def reserve_call(self, **_kwargs: object) -> str:
+            raise RuntimeError("reservation rejected")
+
+        def record_call_outcome(self, **_kwargs: object) -> None:
+            raise AssertionError("no reservation to record")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url.path)
+        return httpx.Response(200, json={"result": []})
+
+    client = BitrixOpenLinesClient(
+        base_url="https://bitrix.test/rest/hook",
+        timeout_seconds=5,
+        max_attempts=1,
+        http=httpx.Client(transport=httpx.MockTransport(handler)),
+        call_reserver=cast(BitrixHttpCallReserver, _FailingReserver()),
+    )
+
+    with pytest.raises(RuntimeError, match="reservation rejected"):
+        client.probe_crm_contact_upper_id()
+
+    assert calls == []

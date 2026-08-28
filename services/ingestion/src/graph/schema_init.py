@@ -22,6 +22,7 @@ from src.graph.queries.identity_link_revisions import CREATE_IDENTITY_LINK_SCHEM
 from src.graph.queries.stage_history_ingestion import (
     CREATE_STAGE_HISTORY_INGESTION_CONSTRAINTS,
 )
+from src.graph.queries.standalone_crm_census import CREATE_STANDALONE_CRM_CENSUS_SCHEMA
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +50,7 @@ ON (sr.source_version_key)""",
     *CREATE_CRM_HISTORY_AUTHORITY_CONSTRAINTS,
     *CREATE_CRM_STAGE_BACKFILL_CONSTRAINTS,
     *CREATE_STAGE_HISTORY_INGESTION_CONSTRAINTS,
+    *CREATE_STANDALONE_CRM_CENSUS_SCHEMA,
     *CREATE_IDENTITY_LINK_SCHEMA,
 )
 
