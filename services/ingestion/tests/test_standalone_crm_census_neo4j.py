@@ -79,6 +79,9 @@ def census_client() -> Iterator[tuple[Driver, Neo4jClient]]:
             pytest.fail("disposable standalone CRM census Neo4j database did not become ready")
         with driver.session() as session:
             session.run("MATCH (n) DETACH DELETE n").consume()
+            session.run(
+                "CREATE (:SourceSystem {source_key: 'bitrix_chat', is_active: true})"
+            ).consume()
             for statement in CREATE_STANDALONE_CRM_CENSUS_SCHEMA:
                 session.run(statement).consume()
         migrate_ingestion_control_instances(
