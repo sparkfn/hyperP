@@ -18,6 +18,67 @@ When an owning change modifies root `docker-compose.yml`, update the tracked
 staging file in the same change. Review this exact registry and update it only
 when an approved root/staging exception is added, removed, or changed.
 
+### One-time ignored-to-tracked staging-host handoff
+
+Before the **first** staging promotion that contains the tracked Compose file,
+an operator must perform this fail-closed handoff in the persistent staging
+checkout. The existing host file is ignored/untracked, while the incoming Git
+commit tracks the same path; without this handoff, `git merge --ff-only` can
+refuse to overwrite the untracked file. This is an operational prerequisite for
+that first promotion, not a deployment workflow change.
+
+Run the following from the staging repository before the fast-forward. It does
+not invoke Docker Compose or start, stop, recreate, or otherwise alter services:
+
+```bash
+set -euo pipefail
+
+COMPOSE_PATH=.docker/staging/docker-compose.yml
+CANONICAL_SHA256=35883848CAED13BE206E9630CC0B939C541ADB00F7B8C25C26A5BB3BCE2489C3
+
+if git ls-files --error-unmatch -- "$COMPOSE_PATH" >/dev/null 2>&1; then
+  echo "Abort: $COMPOSE_PATH is already tracked; do not perform the one-time handoff." >&2
+  exit 1
+fi
+if ! git check-ignore -q -- "$COMPOSE_PATH"; then
+  echo "Abort: expected $COMPOSE_PATH to be ignored and untracked." >&2
+  exit 1
+fi
+if [ ! -f "$COMPOSE_PATH" ]; then
+  echo "Abort: expected ignored Compose file is missing or is not a regular file." >&2
+  exit 1
+fi
+
+ACTUAL_SHA256="$(sha256sum "$COMPOSE_PATH" | awk '{print toupper($1)}')"
+if [ "$ACTUAL_SHA256" != "$CANONICAL_SHA256" ]; then
+  echo "Abort: preserving non-canonical $COMPOSE_PATH; hash is $ACTUAL_SHA256." >&2
+  exit 1
+fi
+
+BACKUP_PATH="${COMPOSE_PATH}.pretracked-$(date -u +%Y%m%dT%H%M%SZ)"
+if [ -e "$BACKUP_PATH" ]; then
+  echo "Abort: backup path already exists: $BACKUP_PATH" >&2
+  exit 1
+fi
+mv -- "$COMPOSE_PATH" "$BACKUP_PATH"
+```
+
+Only the verified canonical ignored file is moved aside; any missing, tracked,
+unignored, or hash-mismatched path aborts without changing it. The normal fetch
+and `git merge --ff-only FETCH_HEAD` may then check out the tracked path. After
+the fast-forward, verify that Git owns the file and its bytes remain canonical:
+
+```bash
+set -euo pipefail
+
+COMPOSE_PATH=.docker/staging/docker-compose.yml
+CANONICAL_SHA256=35883848CAED13BE206E9630CC0B939C541ADB00F7B8C25C26A5BB3BCE2489C3
+
+git ls-files --error-unmatch -- "$COMPOSE_PATH" >/dev/null
+ACTUAL_SHA256="$(sha256sum "$COMPOSE_PATH" | awk '{print toupper($1)}')"
+test "$ACTUAL_SHA256" = "$CANONICAL_SHA256"
+```
+
 ## Lifecycle worker pause and resume
 
 The lifecycle worker consumes reconciliation and deferred KNOWS materialization.
