@@ -131,6 +131,7 @@ class RepairBoundarySnapshot:
     negative_control_count: int
     source_records_digest: str
     source_instance_digest: str
+    stale_run_evidence_digest: str
     control_digest: str
     boundary_digest: str = field(init=False)
 
@@ -142,6 +143,7 @@ class RepairBoundarySnapshot:
         for value, label in (
             (self.source_records_digest, "source records digest"),
             (self.source_instance_digest, "source instance digest"),
+            (self.stale_run_evidence_digest, "stale-run evidence digest"),
             (self.control_digest, "control digest"),
         ):
             _validate_digest(value, label)
@@ -158,6 +160,7 @@ class RepairBoundarySnapshot:
             "negative_control_count": self.negative_control_count,
             "source_records_digest": self.source_records_digest,
             "source_instance_digest": self.source_instance_digest,
+            "stale_run_evidence_digest": self.stale_run_evidence_digest,
             "control_digest": self.control_digest,
         }
 

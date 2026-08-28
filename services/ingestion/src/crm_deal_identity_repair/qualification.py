@@ -31,6 +31,12 @@ _EXPECTED_FILES = frozenset(
     }
 )
 _ARTIFACT_KIND = "crm-deal-identity-repair-graph-discovery"
+_RESTRICTED_BOUNDARY = {
+    "artifact_scope": "graph_discovery_only",
+    "execution_allowed": False,
+    "inventory_mode": "graph_only_read_only",
+    "source_system": "bitrix_chat",
+}
 
 
 @dataclass(frozen=True)
@@ -125,6 +131,12 @@ def _validate_authenticated_manifest(
     )
     if actual != expected:
         raise RuntimeError("repair artifact provenance does not match qualification boundary")
+    restricted_boundaries = canonical_json_object(
+        provenance.restricted_boundaries_json.encode("utf-8"),
+        "repair artifact restricted-boundaries provenance",
+    )
+    if restricted_boundaries != _RESTRICTED_BOUNDARY:
+        raise RuntimeError("repair artifact restricted-boundaries provenance is invalid")
 
 
 def _verified_artifact_documents(primary_root: Path, backup_root: Path) -> dict[str, bytes]:

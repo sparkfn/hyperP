@@ -8,6 +8,7 @@ only its repair metadata.
 
 from __future__ import annotations
 
+import json
 import os
 import time
 from collections.abc import Callable, Iterator
@@ -123,8 +124,17 @@ def _clear_repair_metadata(driver: Driver) -> None:
         ).consume()
         session.run(
             "MATCH (instance:BitrixSourceInstance {source_key: 'bitrix_chat'}) "
-            "WHERE instance.source_instance_id IN $instance_ids DETACH DELETE instance",
+            "WHERE instance.source_instance_id STARTS WITH 'repair-test-' "
+            "OR instance.source_instance_id IN $instance_ids DETACH DELETE instance",
             instance_ids=[_TEST_SOURCE_INSTANCE_ID, _TEST_CONTROL_INSTANCE_ID],
+        ).consume()
+        session.run(
+            "MATCH (node) WHERE node.control_instance_id = $control_instance_id DETACH DELETE node",
+            control_instance_id=_TEST_CONTROL_INSTANCE_ID,
+        ).consume()
+        session.run(
+            "MATCH (run:IngestRun {ingest_run_id: $stale_run_id}) DETACH DELETE run",
+            stale_run_id="e5deb1d6-7333-4660-be4f-c44fcf5af686",
         ).consume()
 
 
@@ -276,7 +286,7 @@ def _manifest(
 
 def _domain_state(
     driver: Driver, *, source_instance_id: str, control_instance_id: str
-) -> dict[str, object]:
+) -> dict[str, tuple[str, ...]]:
     with driver.session() as session:
         nodes = session.run(
             "MATCH (node) WHERE (node:SourceRecord AND node.source_record_pk = $source_record_pk) "
@@ -286,8 +296,7 @@ def _domain_state(
             "AND node.control_instance_id = $control_instance_id) "
             "OR (node:BitrixDispatchControl AND node.source_key = 'bitrix_chat' "
             "AND node.control_instance_id = $control_instance_id) "
-            "RETURN labels(node) AS labels, properties(node) AS properties "
-            "ORDER BY labels, toString(properties)",
+            "RETURN labels(node) AS labels, properties(node) AS properties",
             source_record_pk=_TEST_SOURCE_RECORD_PK,
             instance_ids=[source_instance_id, control_instance_id],
             control_instance_id=control_instance_id,
@@ -303,13 +312,20 @@ def _domain_state(
             "RETURN labels(left) AS left_labels, properties(left) AS left_properties, "
             "type(relationship) AS relationship_type, "
             "properties(relationship) AS relationship_properties, "
-            "labels(right) AS right_labels, properties(right) AS right_properties "
-            "ORDER BY left_labels, toString(left_properties), relationship_type, "
-            "right_labels, toString(right_properties)",
+            "labels(right) AS right_labels, properties(right) AS right_properties",
             source_record_pk=_TEST_SOURCE_RECORD_PK,
             control_instance_id=control_instance_id,
         ).data()
-    return {"nodes": nodes, "relationships": relationships}
+    return {
+        "nodes": _canonical_domain_rows(nodes),
+        "relationships": _canonical_domain_rows(relationships),
+    }
+
+
+def _canonical_domain_rows(rows: list[dict[str, object]]) -> tuple[str, ...]:
+    return tuple(
+        sorted(json.dumps(row, default=str, separators=(",", ":"), sort_keys=True) for row in rows)
+    )
 
 
 def _repair_metadata_counts(driver: Driver) -> dict[str, int]:
@@ -469,6 +485,91 @@ def test_persisted_source_drift_is_read_only_status(neo4j_driver: Driver) -> Non
     }
 
 
+def test_same_count_control_state_transition_is_persisted_boundary_drift(
+    neo4j_driver: Driver,
+) -> None:
+    repository = _repository(neo4j_driver)
+    _persist_evidence(neo4j_driver)
+    with neo4j_driver.session() as session:
+        session.run(
+            "CREATE (:IngestionLogicalRun {source_key: 'bitrix_chat', "
+            "control_instance_id: $control_instance_id, logical_run_id: 'repair-test-logical', "
+            "status: 'queued'})",
+            control_instance_id=_TEST_CONTROL_INSTANCE_ID,
+        ).consume()
+    snapshot = _snapshot(repository)
+    manifest = _manifest(snapshot, repair_id="repair-control-state", artifact_id="c" * 32)
+    repository.qualify(manifest, snapshot)
+    with neo4j_driver.session() as session:
+        session.run(
+            "MATCH (logical:IngestionLogicalRun {control_instance_id: $control_instance_id, "
+            "logical_run_id: 'repair-test-logical'}) SET logical.status = 'running'",
+            control_instance_id=_TEST_CONTROL_INSTANCE_ID,
+        ).consume()
+    observed = _snapshot(repository)
+    assert observed.control_digest != snapshot.control_digest
+    assert repository.get_status(manifest.repair_id, observed).admissibility == "drifted"
+
+
+def test_stale_run_association_identity_drift_is_persisted_boundary_drift(
+    neo4j_driver: Driver,
+) -> None:
+    repository = _repository(neo4j_driver)
+    _persist_evidence(neo4j_driver)
+    stale_run_id = "e5deb1d6-7333-4660-be4f-c44fcf5af686"
+    with neo4j_driver.session() as session:
+        session.run(
+            "MATCH (source:SourceSystem {source_key: 'bitrix_chat'}) "
+            "CREATE (run:IngestRun {ingest_run_id: $stale_run_id, source_key: 'bitrix_chat', "
+            "control_instance_id: $control_instance_id, status: 'failed'})"
+            "-[:FROM_SOURCE]->(source) "
+            "CREATE (logical:IngestionLogicalRun {source_key: 'bitrix_chat', "
+            "control_instance_id: $control_instance_id, logical_run_id: 'repair-test-stale-a', "
+            "status: 'failed'})-[:HAS_ATTEMPT]->(run) "
+            "CREATE (checkpoint:IngestionCheckpoint {source_key: 'bitrix_chat', "
+            "control_instance_id: $control_instance_id, checkpoint_key: 'repair-test-checkpoint', "
+            "logical_run_id: 'repair-test-stale-a', phase: 'repair'})"
+            "-[:CHECKPOINT_FOR]->(logical) "
+            "CREATE (checkpoint)-[:PRODUCED_BY]->(run)",
+            stale_run_id=stale_run_id,
+            control_instance_id=_TEST_CONTROL_INSTANCE_ID,
+        ).consume()
+    snapshot = _snapshot(repository)
+    manifest = _manifest(snapshot, repair_id="repair-stale-association", artifact_id="d" * 32)
+    repository.qualify(manifest, snapshot)
+    with neo4j_driver.session() as session:
+        session.run(
+            "MATCH (checkpoint:IngestionCheckpoint {control_instance_id: $control_instance_id, "
+            "checkpoint_key: 'repair-test-checkpoint'})-[relation:CHECKPOINT_FOR]->() "
+            "DELETE relation",
+            control_instance_id=_TEST_CONTROL_INSTANCE_ID,
+        ).consume()
+    observed = _snapshot(repository)
+    assert observed.stale_run_evidence_digest != snapshot.stale_run_evidence_digest
+    assert repository.get_status(manifest.repair_id, observed).admissibility == "drifted"
+    with neo4j_driver.session() as session:
+        session.run(
+            "MATCH (checkpoint:IngestionCheckpoint {control_instance_id: $control_instance_id, "
+            "checkpoint_key: 'repair-test-checkpoint'}), "
+            "(logical:IngestionLogicalRun {control_instance_id: $control_instance_id, "
+            "logical_run_id: 'repair-test-stale-a'}) "
+            "CREATE (checkpoint)-[:CHECKPOINT_FOR]->(logical)",
+            control_instance_id=_TEST_CONTROL_INSTANCE_ID,
+        ).consume()
+    assert _snapshot(repository) == snapshot
+    with neo4j_driver.session() as session:
+        session.run(
+            "MATCH (checkpoint:IngestionCheckpoint {control_instance_id: $control_instance_id, "
+            "checkpoint_key: 'repair-test-checkpoint'})-[relation:PRODUCED_BY]->(run:IngestRun {"
+            "ingest_run_id: $stale_run_id}) DELETE relation",
+            control_instance_id=_TEST_CONTROL_INSTANCE_ID,
+            stale_run_id=stale_run_id,
+        ).consume()
+    observed = _snapshot(repository)
+    assert observed.stale_run_evidence_digest != snapshot.stale_run_evidence_digest
+    assert repository.get_status(manifest.repair_id, observed).admissibility == "drifted"
+
+
 def test_qualification_revalidates_full_inventory_before_admission(neo4j_driver: Driver) -> None:
     repository = _repository(neo4j_driver)
     _persist_evidence(neo4j_driver)
@@ -600,3 +701,72 @@ def test_missing_binding_and_control_evidence_are_typed_read_only_drift(
         "missing_control_evidence",
         False,
     )
+
+
+def test_distinct_control_registration_and_ownership_are_exact(neo4j_driver: Driver) -> None:
+    repository = _repository(neo4j_driver)
+    _persist_evidence(neo4j_driver)
+    with neo4j_driver.session() as session:
+        session.run(
+            "MATCH (control:BitrixSourceInstance {source_key: 'bitrix_chat', "
+            "source_instance_id: $control_instance_id}) SET control.status = 'disabled'",
+            control_instance_id=_TEST_CONTROL_INSTANCE_ID,
+        ).consume()
+    with pytest.raises(ExpectedRepairBoundaryDriftError) as disabled:
+        _snapshot(repository)
+    assert disabled.value.reason == "source_instance_disabled"
+
+    with neo4j_driver.session() as session:
+        session.run(
+            "MATCH (control:BitrixSourceInstance {source_key: 'bitrix_chat', "
+            "source_instance_id: $control_instance_id}) SET control.status = 'active'",
+            control_instance_id=_TEST_CONTROL_INSTANCE_ID,
+        ).consume()
+        session.run(
+            "MATCH (owner:BitrixSourceInstance {source_key: 'bitrix_chat', "
+            "source_instance_id: $source_instance_id}), "
+            "(binding:BitrixExecutionSourceBinding {source_key: 'bitrix_chat', "
+            "control_instance_id: $control_instance_id}) "
+            "CREATE (owner)-[:OWNS_BITRIX_CONTROL]->(binding)",
+            source_instance_id=_TEST_SOURCE_INSTANCE_ID,
+            control_instance_id=_TEST_CONTROL_INSTANCE_ID,
+        ).consume()
+    with pytest.raises(ExpectedRepairBoundaryDriftError) as duplicate_owner:
+        _snapshot(repository)
+    assert duplicate_owner.value.reason == "binding_mismatch"
+
+    with neo4j_driver.session() as session:
+        session.run(
+            "MATCH (owner:BitrixSourceInstance {source_key: 'bitrix_chat', "
+            "source_instance_id: $source_instance_id})-[ownership:OWNS_BITRIX_CONTROL]->"
+            "(binding:BitrixExecutionSourceBinding {source_key: 'bitrix_chat', "
+            "control_instance_id: $control_instance_id}) DELETE ownership",
+            source_instance_id=_TEST_SOURCE_INSTANCE_ID,
+            control_instance_id=_TEST_CONTROL_INSTANCE_ID,
+        ).consume()
+        session.run(
+            "MATCH (source:SourceSystem {source_key: 'bitrix_chat'}), "
+            "(binding:BitrixExecutionSourceBinding {source_key: 'bitrix_chat', "
+            "control_instance_id: $control_instance_id}) "
+            "CREATE (other:BitrixSourceInstance {source_key: 'bitrix_chat', "
+            "source_instance_id: 'repair-test-other', status: 'active'})-[:INSTANCE_OF]->(source) "
+            "CREATE (other)-[:OWNS_BITRIX_CONTROL]->(binding)",
+            control_instance_id=_TEST_CONTROL_INSTANCE_ID,
+        ).consume()
+    with pytest.raises(ExpectedRepairBoundaryDriftError) as redirected:
+        _snapshot(repository)
+    assert redirected.value.reason == "binding_mismatch"
+
+
+def test_deleted_distinct_control_registration_is_read_only_drift(neo4j_driver: Driver) -> None:
+    repository = _repository(neo4j_driver)
+    _persist_evidence(neo4j_driver)
+    with neo4j_driver.session() as session:
+        session.run(
+            "MATCH (control:BitrixSourceInstance {source_key: 'bitrix_chat', "
+            "source_instance_id: $control_instance_id}) DETACH DELETE control",
+            control_instance_id=_TEST_CONTROL_INSTANCE_ID,
+        ).consume()
+    with pytest.raises(ExpectedRepairBoundaryDriftError) as deleted:
+        _snapshot(repository)
+    assert deleted.value.reason == "source_instance_disabled"

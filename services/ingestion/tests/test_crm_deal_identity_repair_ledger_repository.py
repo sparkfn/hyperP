@@ -7,6 +7,7 @@ from typing import cast
 import pytest
 from neo4j import Record
 from src.connectors.bitrix_stage_history.artifact_manifest import canonical_json_bytes
+from src.crm_deal_identity_repair.digests import object_digest
 from src.crm_deal_identity_repair.execution_models import (
     RepairBoundaryDriftReason,
     RepairBoundarySnapshot,
@@ -17,9 +18,12 @@ from src.crm_deal_identity_repair.execution_models import (
 from src.graph.crm_deal_identity_repair_ledger import (
     ExpectedRepairBoundaryDriftError,
     _assert_requested_boundary,
+    _canonical_boundary_evidence,
+    _control_digest_value,
     _stored_qualification_from_record,
 )
 from src.graph.queries import crm_deal_identity_repair_ledger as queries
+from src.models import JsonValue
 
 
 def _manifest() -> RepairExecutionBoundaryManifest:
@@ -115,6 +119,7 @@ def test_stored_qualification_rejects_noncanonical_or_mismatched_boundary() -> N
         "missing_source_record",
         "source_instance_mismatch",
         "source_instance_disabled",
+        "missing_binding",
         "missing_control_evidence",
         "binding_mismatch",
         "persisted_boundary_change",
@@ -146,6 +151,49 @@ def test_boundary_queries_are_read_only() -> None:
         upper = query.upper()
         for forbidden in ("CREATE", "MERGE", " SET ", "DELETE", "REMOVE"):
             assert forbidden not in upper
+
+
+def test_unordered_control_evidence_has_a_deterministic_boundary_digest() -> None:
+    first: dict[str, JsonValue] = {
+        "binding_count": 1,
+        "binding_ownership_count": 1,
+        "requested_binding_count": 1,
+        "requested_ownership_count": 1,
+        "binding_source_instance_ids": ["source-a", "source-b"],
+        "binding_owner_instance_ids": ["source-b", "source-a"],
+        "owned_binding_source_instance_ids": ["source-a"],
+        "dispatch_count": 1,
+        "dispatch_evidence": [
+            {"blocked": False, "blocked_generation_id": "two"},
+            {"blocked": False, "blocked_generation_id": "one"},
+        ],
+        "control_nodes": [
+            {"labels": ["IngestRun", "Control"], "ingest_run_id": "two"},
+            {"labels": ["Control", "IngestRun"], "ingest_run_id": "one"},
+        ],
+        "control_relationships": [
+            {"left_labels": ["IngestRun", "Control"], "relationship_type": "FROM_SOURCE"},
+            {"left_labels": ["Control", "IngestRun"], "relationship_type": "HAS_ATTEMPT"},
+        ],
+    }
+    second: dict[str, JsonValue] = {
+        **first,
+        "binding_source_instance_ids": ["source-b", "source-a"],
+        "binding_owner_instance_ids": ["source-a", "source-b"],
+        "dispatch_evidence": list(reversed(first["dispatch_evidence"])),
+        "control_nodes": list(reversed(first["control_nodes"])),
+        "control_relationships": list(reversed(first["control_relationships"])),
+    }
+    normalized_first = _canonical_boundary_evidence(first)
+    normalized_second = _canonical_boundary_evidence(second)
+    assert isinstance(normalized_first, dict)
+    assert isinstance(normalized_second, dict)
+    first_value = _control_digest_value(normalized_first)
+    second_value = _control_digest_value(normalized_second)
+    assert first_value == second_value
+    assert object_digest(b"test-control-boundary\x00", first_value) == object_digest(
+        b"test-control-boundary\x00", second_value
+    )
 
 
 def test_qualification_query_writes_only_repair_control_labels() -> None:
@@ -180,6 +228,7 @@ def test_admission_boundary_rejects_current_inventory_digest_or_count_drift() ->
         "sha256:" + "1" * 64,
         "sha256:" + "2" * 64,
         "sha256:" + "3" * 64,
+        "sha256:" + "4" * 64,
     )
     manifest = replace(
         _manifest(),
