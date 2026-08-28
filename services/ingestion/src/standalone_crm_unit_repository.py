@@ -109,7 +109,7 @@ def _validate_checkpoint_position(
     if expected.last_committed_id != envelope.last_committed_id:
         raise ValueError("expected checkpoint cursor must equal the source child envelope")
     if isinstance(envelope, ContactSourceChildEnvelope):
-        _validate_contact_checkpoint_position(envelope, expected)
+        _validate_contact_checkpoint_position(envelope, expected, proposed)
         return
     if expected.binding_subject_id is not None or expected.binding_offset is not None:
         raise ValueError("lead and company checkpoints cannot carry contact binding position")
@@ -120,6 +120,7 @@ def _validate_checkpoint_position(
 def _validate_contact_checkpoint_position(
     envelope: ContactSourceChildEnvelope,
     expected: StandaloneCrmCheckpoint,
+    proposed: StandaloneCrmCheckpoint,
 ) -> None:
     position = envelope.binding_subposition
     if position is None:
@@ -133,3 +134,8 @@ def _validate_contact_checkpoint_position(
         or expected.binding_offset != position.binding_offset
     ):
         raise ValueError("contact checkpoint binding position must equal the source child envelope")
+    if (
+        proposed.binding_subject_id is not None
+        and proposed.binding_subject_id > envelope.frozen_upper_id
+    ):
+        raise ValueError("proposed contact binding subject cannot exceed frozen upper bound")

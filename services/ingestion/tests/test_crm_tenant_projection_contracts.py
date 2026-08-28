@@ -69,6 +69,42 @@ def test_expected_head_requires_a_monotonic_canonical_identity() -> None:
         CrmTenantProjectionExpectedHead("head-a", "release-a", 1, "not-a-digest")
 
 
+def test_active_head_requires_the_release_exact_expected_prior_head() -> None:
+    expected = CrmTenantProjectionExpectedHead(
+        "projection-head-prior",
+        "projection-release-prior",
+        1,
+        _DIGEST,
+    )
+    release = replace(projection_release(), release_number=2, expected_prior_head=expected)
+    matching_head = replace(
+        active_projection_head(),
+        active_release=release,
+        expected_head=expected,
+    )
+
+    assert matching_head.expected_head == release.expected_prior_head
+    with pytest.raises(ValueError, match="expected prior head"):
+        replace(active_projection_head(), active_release=release)
+    with pytest.raises(ValueError, match="expected prior head"):
+        replace(active_projection_head(), expected_head=expected)
+    with pytest.raises(ValueError, match="expected prior head"):
+        replace(
+            active_projection_head(),
+            active_release=release,
+            expected_head=replace(expected, head_id="projection-head-other"),
+        )
+    with pytest.raises(ValueError, match="expected prior head"):
+        replace(
+            active_projection_head(),
+            active_release=release,
+            expected_head=replace(
+                expected,
+                active_release_fingerprint="sha256:" + "b" * 64,
+            ),
+        )
+
+
 def test_release_carries_frozen_inputs_decisions_correlated_support_and_published_head() -> None:
     release = projection_release()
     head = active_projection_head()

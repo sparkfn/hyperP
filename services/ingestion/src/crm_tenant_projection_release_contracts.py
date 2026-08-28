@@ -117,6 +117,8 @@ class CrmTenantProjectionActiveHead:
             raise ValueError("expected_head must be a projection head identity")
         if self.active_release.scope != self.scope or self.active_release.state != "published":
             raise ValueError("active projection head requires its exact published release")
+        if self.expected_head != self.active_release.expected_prior_head:
+            raise ValueError("active head expected prior head must exactly match release")
         if self.expected_head is not None and (
             self.active_release.release_number <= self.expected_head.active_release_number
         ):

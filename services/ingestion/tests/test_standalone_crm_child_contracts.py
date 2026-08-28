@@ -171,6 +171,30 @@ def test_atomic_unit_commit_binds_v1_checkpoint_and_component_mutation() -> None
         )
 
 
+def test_atomic_unit_commit_bounds_proposed_contact_binding_resume() -> None:
+    envelope = _contact_envelope()
+    expected = StandaloneCrmCheckpoint("census-a", "contact", 10, None, 5, 6, 1, 5, 1, 2, 3)
+    resumed = StandaloneCrmCheckpoint("census-a", "contact", 10, None, 6, 7, 0, 6, 1, 2, 3)
+
+    request = StandaloneCrmAtomicUnitCommit(
+        envelope,
+        _Mutation("record-a"),
+        expected,
+        resumed,
+        StandaloneCrmUnitAccountingDelta(1, 0, 0),
+    )
+
+    assert request.proposed_checkpoint.binding_subject_id == 7
+    with pytest.raises(ValueError, match="cannot exceed frozen upper bound"):
+        StandaloneCrmAtomicUnitCommit(
+            envelope,
+            _Mutation("record-a"),
+            expected,
+            replace(resumed, binding_subject_id=11),
+            StandaloneCrmUnitAccountingDelta(1, 0, 0),
+        )
+
+
 def test_atomic_unit_commit_rejects_checkpoint_cursor_or_binding_mismatch() -> None:
     envelope = _contact_envelope()
     proposed = StandaloneCrmCheckpoint("census-a", "contact", 10, None, 6, 6, 2, 6, 0, 2, 3)
