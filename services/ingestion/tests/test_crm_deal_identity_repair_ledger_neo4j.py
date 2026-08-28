@@ -565,7 +565,7 @@ def test_control_relationship_multiplicity_and_properties_are_boundary_evidence(
             "unit_id: 'repair-relationship-unit'}) "
             "CREATE (occurrence:StageHistoryOccurrence {control_instance_id: $control_instance_id, "
             "occurrence_id: 'repair-relationship-occurrence'}) "
-            "CREATE (unit)-[:HAS_OCCURRENCE {attempt: 1}]->(occurrence)",
+            "CREATE (unit)-[:CONTAINS_STAGE_HISTORY_OCCURRENCE {attempt: 1}]->(occurrence)",
             control_instance_id=_TEST_CONTROL_INSTANCE_ID,
         ).consume()
     baseline = _snapshot(repository)
@@ -574,14 +574,14 @@ def test_control_relationship_multiplicity_and_properties_are_boundary_evidence(
             "MATCH (unit:StageHistoryUnit {unit_id: 'repair-relationship-unit'}) "
             "MATCH (occurrence:StageHistoryOccurrence "
             "{occurrence_id: 'repair-relationship-occurrence'}) "
-            "CREATE (unit)-[:HAS_OCCURRENCE {attempt: 1}]->(occurrence)",
+            "CREATE (unit)-[:CONTAINS_STAGE_HISTORY_OCCURRENCE {attempt: 1}]->(occurrence)",
         ).consume()
     with_duplicate = _snapshot(repository)
     assert with_duplicate.control_digest != baseline.control_digest
     with neo4j_driver.session() as session:
         session.run(
             "MATCH (:StageHistoryUnit {unit_id: 'repair-relationship-unit'})"
-            "-[relationship:HAS_OCCURRENCE]->(:StageHistoryOccurrence {"
+            "-[relationship:CONTAINS_STAGE_HISTORY_OCCURRENCE]->(:StageHistoryOccurrence {"
             "occurrence_id: 'repair-relationship-occurrence'}) "
             "WITH relationship LIMIT 1 DELETE relationship"
         ).consume()
@@ -592,9 +592,52 @@ def test_control_relationship_multiplicity_and_properties_are_boundary_evidence(
             "MATCH (unit:StageHistoryUnit {unit_id: 'repair-relationship-unit'}) "
             "MATCH (occurrence:StageHistoryOccurrence "
             "{occurrence_id: 'repair-relationship-occurrence'}) "
-            "CREATE (unit)-[:HAS_OCCURRENCE {attempt: 2}]->(occurrence)",
+            "CREATE (unit)-[:CONTAINS_STAGE_HISTORY_OCCURRENCE {attempt: 2}]->(occurrence)",
         ).consume()
     assert _snapshot(repository).control_digest != after_removal.control_digest
+
+
+def test_unrelated_part_of_run_source_record_is_not_control_boundary_evidence(
+    neo4j_driver: Driver,
+) -> None:
+    repository = _repository(neo4j_driver)
+    _persist_evidence(neo4j_driver)
+    with neo4j_driver.session() as session:
+        session.run(
+            "CREATE (run:IngestRun {control_instance_id: $control_instance_id, "
+            "ingest_run_id: 'repair-topology-run', status: 'queued'}) "
+            "CREATE (logical:IngestionLogicalRun {control_instance_id: $control_instance_id, "
+            "logical_run_id: 'repair-topology-logical'})"
+            "-[:HAS_ATTEMPT]->(run) "
+            "CREATE (unit:StageHistoryUnit {control_instance_id: $control_instance_id, "
+            "unit_id: 'repair-topology-unit'}) "
+            "CREATE (logical)-[:HAS_STAGE_HISTORY_UNIT {generation: 1}]->(unit)",
+            control_instance_id=_TEST_CONTROL_INSTANCE_ID,
+        ).consume()
+    baseline = _snapshot(repository)
+    with neo4j_driver.session() as session:
+        session.run(
+            "MATCH (run:IngestRun {ingest_run_id: 'repair-topology-run'}) "
+            "CREATE (record:SourceRecord {source_record_pk: 'repair-test-unrelated-record', "
+            "raw_payload: 'sensitive-domain-payload', normalized_payload: 'domain-value'})"
+            "-[:PART_OF_RUN]->(run)"
+        ).consume()
+    with_unrelated_record = _snapshot(repository)
+    assert with_unrelated_record.control_digest == baseline.control_digest
+    with neo4j_driver.session() as session:
+        session.run(
+            "MATCH (record:SourceRecord {source_record_pk: 'repair-test-unrelated-record'}) "
+            "SET record.raw_payload = 'changed-sensitive-domain-payload'"
+        ).consume()
+    assert _snapshot(repository).control_digest == baseline.control_digest
+    with neo4j_driver.session() as session:
+        session.run(
+            "MATCH (logical:IngestionLogicalRun {logical_run_id: 'repair-topology-logical'})"
+            "-[relationship:HAS_STAGE_HISTORY_UNIT]->"
+            "(:StageHistoryUnit {unit_id: 'repair-topology-unit'}) "
+            "SET relationship.generation = 2"
+        ).consume()
+    assert _snapshot(repository).control_digest != baseline.control_digest
 
 
 def test_stale_run_association_identity_drift_is_persisted_boundary_drift(
