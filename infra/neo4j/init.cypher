@@ -283,3 +283,32 @@ CREATE INDEX identity_link_revision_link_global_revision IF NOT EXISTS
 FOR (revision:IdentityLinkRevision) ON (revision.link_key, revision.global_revision);
 CREATE INDEX identity_link_head_link_key IF NOT EXISTS
 FOR (head:IdentityLinkHead) ON (head.link_key);
+
+CREATE CONSTRAINT standalone_crm_census_id_unique IF NOT EXISTS
+FOR (census:StandaloneCrmCensus) REQUIRE census.census_id IS UNIQUE;
+CREATE CONSTRAINT standalone_crm_census_occurrence_unique IF NOT EXISTS
+FOR (census:StandaloneCrmCensus) REQUIRE (census.source_key, census.source_instance_id, census.control_instance_id, census.census_kind, census.occurrence_key) IS UNIQUE;
+CREATE CONSTRAINT standalone_crm_attempt_identity_unique IF NOT EXISTS
+FOR (attempt:StandaloneCrmCensusAttempt) REQUIRE (attempt.census_id, attempt.generation) IS UNIQUE;
+CREATE CONSTRAINT standalone_crm_unit_identity_unique IF NOT EXISTS
+FOR (unit:StandaloneCrmCensusUnit) REQUIRE (unit.census_id, unit.stream_kind) IS UNIQUE;
+CREATE CONSTRAINT standalone_crm_call_intent_unique IF NOT EXISTS
+FOR (call:StandaloneCrmHttpCallReservation) REQUIRE call.intent_id IS UNIQUE;
+CREATE CONSTRAINT standalone_crm_call_sequence_unique IF NOT EXISTS
+FOR (call:StandaloneCrmHttpCallReservation) REQUIRE (call.census_id, call.call_sequence) IS UNIQUE;
+CREATE CONSTRAINT standalone_crm_publication_unique IF NOT EXISTS
+FOR (publication:StandaloneCrmChildPublication) REQUIRE (publication.census_id, publication.generation, publication.stream_kind) IS UNIQUE;
+CREATE CONSTRAINT standalone_crm_checkpoint_unique IF NOT EXISTS
+FOR (checkpoint:StandaloneCrmCensusCheckpoint) REQUIRE (checkpoint.census_id, checkpoint.stream_kind) IS UNIQUE;
+CREATE CONSTRAINT standalone_crm_fence_unique IF NOT EXISTS
+FOR (fence:StandaloneCrmCensusFence) REQUIRE (fence.census_id, fence.generation, fence.stream_kind) IS UNIQUE;
+CREATE CONSTRAINT standalone_crm_active_scope_unique IF NOT EXISTS
+FOR (scope:StandaloneCrmCensusActiveScope) REQUIRE scope.scope_key IS UNIQUE;
+CREATE INDEX standalone_crm_census_active_scope IF NOT EXISTS
+FOR (census:StandaloneCrmCensus) ON (census.source_key, census.source_instance_id, census.control_instance_id, census.status);
+CREATE INDEX standalone_crm_attempt_lease IF NOT EXISTS
+FOR (attempt:StandaloneCrmCensusAttempt) ON (attempt.census_id, attempt.status, attempt.lease_until);
+CREATE INDEX standalone_crm_unit_status IF NOT EXISTS
+FOR (unit:StandaloneCrmCensusUnit) ON (unit.census_id, unit.generation, unit.state);
+CREATE INDEX standalone_crm_publication_status IF NOT EXISTS
+FOR (publication:StandaloneCrmChildPublication) ON (publication.census_id, publication.generation, publication.status);

@@ -1,0 +1,103 @@
+"""Compatibility facade for strict standalone CRM census domain contracts.
+
+Definitions are grouped in request, lifecycle, I/O, and shared-type modules.
+This facade deliberately preserves the established public import surface.
+"""
+
+from src.standalone_crm_census_io import (
+    StandaloneCrmCallIntent,
+    StandaloneCrmCallOutcome,
+    StandaloneCrmChildEnvelope,
+    StandaloneCrmPublication,
+)
+from src.standalone_crm_census_lifecycle import (
+    NoSourceWindow,
+    SourceWindow,
+    StandaloneCrmAttempt,
+    StandaloneCrmCensus,
+    StandaloneCrmCensusUnit,
+    StandaloneCrmCheckpoint,
+    StandaloneCrmCheckpointResult,
+    StandaloneCrmContinuation,
+    StandaloneCrmTerminalAccounting,
+)
+from src.standalone_crm_census_request_parser import (
+    parse_census_request,
+    parse_stored_census_request,
+)
+from src.standalone_crm_census_requests import (
+    MappingPrepareAuthority,
+    MappingPrepareCensusRequest,
+    MappingRollbackAuthority,
+    MappingRollbackCensusRequest,
+    SourceSyncAuthority,
+    SourceSyncCensusRequest,
+    StandaloneCrmBudget,
+    StandaloneCrmCensusRequest,
+    canonical_request_payload,
+    census_fingerprint,
+)
+from src.standalone_crm_census_types import (
+    StandaloneCrmAttemptState,
+    StandaloneCrmCallKind,
+    StandaloneCrmCallOutcomeState,
+    StandaloneCrmCensusAuthorityError,
+    StandaloneCrmCensusConflictError,
+    StandaloneCrmCensusError,
+    StandaloneCrmCensusKind,
+    StandaloneCrmCensusReservationError,
+    StandaloneCrmCheckpointDecision,
+    StandaloneCrmParentState,
+    StandaloneCrmPublicationState,
+    StandaloneCrmReason,
+    StandaloneCrmReasonCode,
+    StandaloneCrmStreamKind,
+    StandaloneCrmTerminalState,
+    StandaloneCrmUnitState,
+    is_terminal_state,
+)
+
+__all__ = [
+    "MappingPrepareAuthority",
+    "MappingPrepareCensusRequest",
+    "MappingRollbackAuthority",
+    "MappingRollbackCensusRequest",
+    "NoSourceWindow",
+    "SourceSyncAuthority",
+    "SourceSyncCensusRequest",
+    "SourceWindow",
+    "StandaloneCrmAttempt",
+    "StandaloneCrmAttemptState",
+    "StandaloneCrmBudget",
+    "StandaloneCrmCallIntent",
+    "StandaloneCrmCallKind",
+    "StandaloneCrmCallOutcome",
+    "StandaloneCrmCallOutcomeState",
+    "StandaloneCrmCensus",
+    "StandaloneCrmCensusAuthorityError",
+    "StandaloneCrmCensusConflictError",
+    "StandaloneCrmCensusError",
+    "StandaloneCrmCensusKind",
+    "StandaloneCrmCensusRequest",
+    "StandaloneCrmCensusReservationError",
+    "StandaloneCrmCensusUnit",
+    "StandaloneCrmCheckpoint",
+    "StandaloneCrmCheckpointDecision",
+    "StandaloneCrmCheckpointResult",
+    "StandaloneCrmChildEnvelope",
+    "StandaloneCrmContinuation",
+    "StandaloneCrmParentState",
+    "StandaloneCrmPublication",
+    "StandaloneCrmPublicationState",
+    "StandaloneCrmReason",
+    "StandaloneCrmReasonCode",
+    "StandaloneCrmStreamKind",
+    "StandaloneCrmTerminalAccounting",
+    "StandaloneCrmTerminalState",
+    "StandaloneCrmUnitState",
+    "canonical_request_payload",
+    "census_fingerprint",
+    "is_terminal_state",
+    "parse_census_request",
+    "parse_stored_census_request",
+]
