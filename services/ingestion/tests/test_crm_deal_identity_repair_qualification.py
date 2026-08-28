@@ -160,7 +160,14 @@ def _manifest(
         repository_sha="a" * 40,
         image_digest="sha256:" + "b" * 64,
         configuration_digest="sha256:" + "c" * 64,
-        restricted_boundaries_json='{"scope":"graph"}\n',
+        restricted_boundaries_json=canonical_json_bytes(
+            {
+                "artifact_scope": "graph_discovery_only",
+                "execution_allowed": False,
+                "inventory_mode": "graph_only_read_only",
+                "source_system": "bitrix_chat",
+            }
+        ).decode(),
         counts_json=canonical_json_bytes({"inventory_rows": 2, **_POPULATION_COUNTS}).decode(),
         total_bytes=sum(len(content) for content in documents.values()),
     )
@@ -294,6 +301,35 @@ def test_qualification_rejects_authenticated_execution_and_inventory_mismatch(
         _verify(_with_metadata(manifest, execution_allowed=True))
     with pytest.raises(RuntimeError):
         _verify(_with_metadata(manifest, inventory_digest="sha256:" + "0" * 64))
+
+
+@pytest.mark.parametrize(
+    "restricted_boundaries_json",
+    (
+        b'{"artifact_scope":"graph_discovery_only"}\n',
+        b'{"artifact_scope":"graph_discovery_only","execution_allowed":true,'
+        b'"inventory_mode":"graph_only_read_only","source_system":"bitrix_chat"}\n',
+        b'{"artifact_scope":"graph_discovery_only","execution_allowed":false,'
+        b'"inventory_mode":"graph_only_read_only","source_system":"other"}\n',
+        b'{"artifact_scope":"graph_discovery_only","execution_allowed":false,'
+        b'"inventory_mode":"graph_only_read_only","source_system":"bitrix_chat","extra":1}\n',
+        b'{"source_system": "bitrix_chat", "inventory_mode": "graph_only_read_only", '
+        b'"artifact_scope": "graph_discovery_only", "execution_allowed": false}\n',
+    ),
+)
+def test_qualification_rejects_invalid_restricted_boundaries_provenance(
+    tmp_path: Path, restricted_boundaries_json: bytes
+) -> None:
+    manifest = _manifest(tmp_path)
+    invalid = replace(
+        manifest,
+        provenance=replace(
+            manifest.provenance,
+            restricted_boundaries_json=restricted_boundaries_json.decode("utf-8"),
+        ),
+    )
+    with pytest.raises(RuntimeError):
+        _verify(invalid)
 
 
 def test_qualification_rejects_signed_internal_count_and_document_mismatch(tmp_path: Path) -> None:

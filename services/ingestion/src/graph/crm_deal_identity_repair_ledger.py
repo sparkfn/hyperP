@@ -9,6 +9,7 @@ from typing import TypeVar
 
 from neo4j import ManagedTransaction, Record
 
+from src.connectors.bitrix_stage_history.artifact_manifest import canonical_json_bytes
 from src.crm_deal_identity_repair.digests import inventory_digest, object_digest
 from src.crm_deal_identity_repair.execution_models import (
     RepairBoundaryDriftReason,
@@ -36,11 +37,13 @@ from src.graph.queries.crm_deal_identity_repair_ledger import (
     QUALIFY_REPAIR_RUN,
     READ_INSTANCE_CONTROL_BOUNDARY,
     READ_SOURCE_RECORD_BOUNDARY,
+    READ_STALE_RUN_CONTROL_EVIDENCE,
 )
 from src.models import JsonValue
 
 _SOURCE_ROWS_DOMAIN = b"crm-deal-identity-repair-source-record-boundary-v1\x00"
 _INSTANCE_DOMAIN = b"crm-deal-identity-repair-source-instance-boundary-v1\x00"
+_STALE_RUN_DOMAIN = b"crm-deal-identity-repair-stale-run-boundary-v1\x00"
 _CONTROL_DOMAIN = b"crm-deal-identity-repair-control-boundary-v1\x00"
 T = TypeVar("T")
 
@@ -80,6 +83,7 @@ class _CurrentInventoryBoundary:
     inventory_row_count: int
     eligible_unit_count: int
     negative_control_count: int
+    stale_run_evidence: dict[str, JsonValue]
 
 
 class _TransactionInventoryReader(RepairInventoryReadClient):
@@ -176,6 +180,7 @@ def _snapshot_from_transaction(
         negative_control_count=inventory.negative_control_count,
         source_records_digest=object_digest(_SOURCE_ROWS_DOMAIN, {"rows": rows}),
         source_instance_digest=object_digest(_INSTANCE_DOMAIN, _instance_digest_value(control)),
+        stale_run_evidence_digest=object_digest(_STALE_RUN_DOMAIN, inventory.stale_run_evidence),
         control_digest=object_digest(_CONTROL_DOMAIN, _control_digest_value(control)),
     )
 
@@ -188,12 +193,22 @@ def _current_inventory_boundary(
     if source_record_pks != expected_source_record_pks:
         raise ExpectedRepairBoundaryDriftError("persisted_boundary_change")
     negative_control_count = sum(item.partition == "negative_control" for item in inventory.items)
+    stale_record = tx.run(
+        READ_STALE_RUN_CONTROL_EVIDENCE,
+        stale_run_id=inventory.stale_run_evidence["stale_run_id"],
+    ).single()
+    if stale_record is None:
+        raise RuntimeError("repair stale-run control evidence readback is missing")
     return _CurrentInventoryBoundary(
         source_record_pks,
         inventory_digest(inventory.items),
         len(inventory.items),
         len(inventory.items) - negative_control_count,
         negative_control_count,
+        {
+            "inventory_evidence": _canonical_boundary_evidence(inventory.stale_run_evidence),
+            "persisted_associations": _canonical_boundary_evidence(_record_json_dict(stale_record)),
+        },
     )
 
 
@@ -223,39 +238,72 @@ def _control_row(
     ).single()
     if record is None:
         raise ExpectedRepairBoundaryDriftError("missing_control_evidence")
-    control = _record_json_dict(record)
-    _validate_control_boundary(control, source_instance_id)
+    control = _canonical_boundary_evidence(_record_json_dict(record))
+    if not isinstance(control, dict):
+        raise RuntimeError("repair control boundary must be a JSON object")
+    _validate_control_boundary(control, source_instance_id, control_instance_id)
     return control
 
 
-def _validate_control_boundary(control: Mapping[str, JsonValue], source_instance_id: str) -> None:
-    if (
-        control["instance_status"] != "active"
-        or control["source_key"] != "bitrix_chat"
-        or control["source_active"] is not True
-    ):
+def _validate_control_boundary(
+    control: Mapping[str, JsonValue], source_instance_id: str, control_instance_id: str
+) -> None:
+    source_active = _is_active_registration(control, "source")
+    control_active = _is_active_registration(control, "control")
+    if not source_active or not control_active:
         raise ExpectedRepairBoundaryDriftError("source_instance_disabled")
-    if control["bound_source_instance_id"] is None:
+    if control["binding_count"] == 0:
         raise ExpectedRepairBoundaryDriftError("missing_binding")
-    if control["dispatch_blocked"] is None:
+    if control["dispatch_count"] != 1:
         raise ExpectedRepairBoundaryDriftError("missing_control_evidence")
-    if control["bound_source_instance_id"] != source_instance_id:
+    if (
+        control["binding_count"] != 1
+        or control["binding_ownership_count"] != 1
+        or control["requested_binding_count"] != 1
+        or control["requested_ownership_count"] != 1
+        or control["binding_source_instance_ids"] != [source_instance_id]
+        or control["binding_owner_instance_ids"] != [source_instance_id]
+        or control["owned_binding_source_instance_ids"] != [source_instance_id]
+        or control_instance_id == ""
+    ):
         raise ExpectedRepairBoundaryDriftError("binding_mismatch")
+
+
+def _is_active_registration(control: Mapping[str, JsonValue], prefix: str) -> bool:
+    return (
+        control[f"{prefix}_registration_count"] == 1
+        and control[f"{prefix}_instance_of_count"] == 1
+        and control[f"{prefix}_active_instance_of_count"] == 1
+        and control[f"{prefix}_statuses"] == ["active"]
+    )
 
 
 def _instance_digest_value(control: Mapping[str, JsonValue]) -> dict[str, JsonValue]:
     return {
-        "instance_status": control["instance_status"],
-        "source_key": control["source_key"],
-        "source_active": control["source_active"],
+        "source_registration_count": control["source_registration_count"],
+        "source_instance_of_count": control["source_instance_of_count"],
+        "source_active_instance_of_count": control["source_active_instance_of_count"],
+        "source_statuses": control["source_statuses"],
+        "control_registration_count": control["control_registration_count"],
+        "control_instance_of_count": control["control_instance_of_count"],
+        "control_active_instance_of_count": control["control_active_instance_of_count"],
+        "control_statuses": control["control_statuses"],
     }
 
 
 def _control_digest_value(control: Mapping[str, JsonValue]) -> dict[str, JsonValue]:
     return {
-        "bound_source_instance_id": control["bound_source_instance_id"],
-        "dispatch_blocked": control["dispatch_blocked"],
-        "active_logical_runs": control["active_logical_runs"],
+        "binding_count": control["binding_count"],
+        "binding_ownership_count": control["binding_ownership_count"],
+        "requested_binding_count": control["requested_binding_count"],
+        "requested_ownership_count": control["requested_ownership_count"],
+        "binding_source_instance_ids": control["binding_source_instance_ids"],
+        "binding_owner_instance_ids": control["binding_owner_instance_ids"],
+        "owned_binding_source_instance_ids": control["owned_binding_source_instance_ids"],
+        "dispatch_count": control["dispatch_count"],
+        "dispatch_evidence": control["dispatch_evidence"],
+        "control_nodes": control["control_nodes"],
+        "control_relationships": control["control_relationships"],
     }
 
 
@@ -359,3 +407,16 @@ def _qualification_parameters(
 
 def _record_json_dict(record: Record) -> dict[str, JsonValue]:
     return {key: record[key] for key in record.keys()}
+
+
+def _canonical_boundary_evidence(value: JsonValue) -> JsonValue:
+    """Normalize unordered read-only graph evidence before it is digested."""
+    if isinstance(value, dict):
+        return {key: _canonical_boundary_evidence(value[key]) for key in sorted(value)}
+    if isinstance(value, list):
+        normalized = [_canonical_boundary_evidence(item) for item in value]
+        return sorted(
+            normalized,
+            key=lambda item: canonical_json_bytes({"value": item}),
+        )
+    return value

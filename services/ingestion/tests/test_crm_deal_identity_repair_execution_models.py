@@ -77,4 +77,5 @@ def test_boundary_snapshot_rejects_noncanonical_source_record_keys() -> None:
             "sha256:" + "1" * 64,
             "sha256:" + "2" * 64,
             "sha256:" + "3" * 64,
+            "sha256:" + "4" * 64,
         )
