@@ -14,7 +14,7 @@ from src.standalone_crm_census_types import _integer, _text, _utc
 
 CRM_TENANT_MAPPING_MANIFEST_VERSION = "crm-tenant-mapping-manifest-v1"
 CRM_TENANT_MAPPING_OMISSION_POLICY = "omitted_company_maps_to_empty_v1"
-CRM_TENANT_MAPPING_RELATIONSHIP_KIND = "tenant_member"
+CRM_TENANT_MAPPING_RELATIONSHIP_KIND: Literal["tenant_member"] = "tenant_member"
 
 type CrmTenantRelationshipKind = Literal["tenant_member"]
 type CrmTenantMappingRevisionState = Literal[
