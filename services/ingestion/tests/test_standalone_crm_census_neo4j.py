@@ -262,7 +262,7 @@ def test_attempt_claim_reservation_and_atomic_window_are_fenced(
     repository.commit_source_window(
         census_id=census_id,
         fingerprint="fingerprint",
-        selected_kinds=["contact", "lead", "company"],
+        selected_kinds=["company", "contact", "lead"],
         bounds_json='{"company": 3, "contact": 10, "lead": 0}',
     )
     units = repository.allocate_source_units(
@@ -316,7 +316,7 @@ def test_publication_checkpoint_and_terminal_accounting_settle(
         census_id=census_id,
         fingerprint="fingerprint",
         bounds_json='{"company": 3, "contact": 10, "lead": 0}',
-        selected_kinds=["contact", "company", "lead"],
+        selected_kinds=["company", "contact", "lead"],
     )
     repository.allocate_source_units(
         census_id=census_id,
