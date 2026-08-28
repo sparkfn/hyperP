@@ -352,7 +352,14 @@ Before reporting work complete, perform a hostile review of the changed code: co
 **Hard rule:** when creating a worktree — manually (`git worktree add`), via the `EnterWorktree` tool, or via any skill/agent — always branch it from the **current branch/HEAD**, never from `origin/main` (or `main`). This preserves in-progress branch context and avoids basing new work on a stale production branch. Do not pass a base ref that resolves to `main`/`origin/main`; if a tool or skill defaults to `main`, override it to the current branch. If a worktree was already created from `main` by mistake, recreate it from the current branch before doing any work in it.
 
 ### docker-compose.yml sync rule
-Any commit modifying the root `docker-compose.yml` **must** apply the equivalent change to every counterpart in `.docker/[environment]/docker-compose.yml` (currently `.docker/staging/`) in the same commit. The environment files differ only in build context paths (`../../`), project `name:`, and volume paths — service definitions, image versions, and env vars must stay in sync.
+`.docker/staging/docker-compose.yml` is the tracked, authoritative staging
+Compose contract. Any root `docker-compose.yml` change must include the
+corresponding staging change in the same commit. Review the finite exact
+exception registry in `services/api/tests/test_compose_contract.py` and update
+it only when an approved root/staging exception is added, removed, or changed.
+The registry defines every permitted root/staging difference; all other service
+definitions, images, commands, queues, environment values, mounts, networks,
+and resources must remain semantically equivalent.
 
 When editing or adding documentation:
 - Follow the existing `profile-unifier-*.md` naming convention.

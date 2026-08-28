@@ -33,9 +33,9 @@ jobs:
             $COMPOSE stop lifecycle-worker
           fi
 
-          # The staging Compose file is intentionally host-managed and untracked
-          # (see commit 547572b). Validate the runtime contract's key names, but
-          # allow values to remain empty until the source is provisioned.
+          # The tracked staging Compose contract defines the runtime key names.
+          # Validate those names, while allowing values to remain empty until the
+          # source is provisioned.
           for key in \
             FUNDBOX_API_BASE_URL \
             FUNDBOX_API_USERNAME \
@@ -75,8 +75,8 @@ jobs:
           fi
 
           # Keep staging on the incident-tested WhatsAdmin request profile.
-          # These non-secret values override stale defaults in the host-managed
-          # Compose file while retaining the same environment-variable contract.
+          # These non-secret values override stale defaults in the tracked
+          # Compose contract while retaining the same environment-variable contract.
           export WHATSADMIN_API_PAGE_SIZE=25
           export WHATSADMIN_API_TIMEOUT_SECONDS=120
           export WHATSADMIN_API_MAX_ATTEMPTS=5
