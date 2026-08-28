@@ -33,7 +33,7 @@ ADMIT_CENSUS = (
     "census.generation = 0, census.attempt_count = 0, census.occurrence_calls = 0, census.occurrence_rows = 0, "
     "census.created_at = datetime(), census.updated_at = datetime() "
     "WITH scope, census, replay WHERE census.fingerprint = $fingerprint "
-    "FOREACH (_ IN CASE WHEN census.status NOT IN ['completed', 'failed', 'cancelled_with_checkpoint', 'freeze_failed'] "
+    "FOREACH (_ IN CASE WHEN NOT census.status IN ['completed', 'failed', 'cancelled_with_checkpoint', 'freeze_failed'] "
     "THEN [1] ELSE [] END | MERGE (scope)-[:HAS_ACTIVE_CENSUS]->(census)) "
     "WITH census, replay "
     "WITH census, replay IS NOT NULL AS replayed "
