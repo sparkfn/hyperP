@@ -233,6 +233,10 @@ def test_description_head_cas_is_ordered_forward_only_and_idempotent() -> None:
     assert CrmCompanyDescriptionHeadCompareAndSet(older, newer).decision_for(older) == "advance"
     assert CrmCompanyDescriptionHeadCompareAndSet(None, older).decision_for(older) == "idempotent"
     assert (
+        CrmCompanyDescriptionHeadCompareAndSet(newer, older).decision_for(older)
+        == "stale_or_conflict"
+    )
+    assert (
         CrmCompanyDescriptionHeadCompareAndSet(older, conflicting).decision_for(older)
         == "stale_or_conflict"
     )
