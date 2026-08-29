@@ -28,9 +28,11 @@ from src.standalone_crm_census_requests import (
 )
 from src.standalone_crm_source_fact_mapper import map_source_fact_page
 from src.standalone_crm_source_fact_models import (
+    StandaloneCrmSourceFactMutation,
     StandaloneCrmSourceFactPage,
     build_source_fact_commit,
 )
+from src.standalone_crm_unit_repository import StandaloneCrmAtomicUnitCommit
 from tests._standalone_crm_lane_a_fakes import lead_envelope
 
 
@@ -126,8 +128,10 @@ def _parameters() -> dict[str, object]:
     }
 
 
-def _seed(driver: Driver) -> None:
+def _seed(driver: Driver, *, available_at: str | None = None) -> None:
     p = _parameters()
+    if available_at is not None:
+        p["available_at"] = available_at
     with driver.session() as session:
         session.run(
             """
@@ -232,7 +236,7 @@ class _SentinelAdapter:
         return IngestResult(source_record_id=pk, source_record_pk=pk)
 
 
-def _repository_request() -> object:
+def _repository_request() -> StandaloneCrmAtomicUnitCommit[StandaloneCrmSourceFactMutation]:
     envelope = lead_envelope()
     budget = replace(
         envelope.budget_authorization,
@@ -267,13 +271,26 @@ def _repository_request_json() -> str:
     return canonical_request_payload(request)
 
 
-def _seed_repository_case(driver: Driver) -> None:
-    _seed(driver)
+def _seed_repository_case(
+    driver: Driver,
+) -> StandaloneCrmAtomicUnitCommit[StandaloneCrmSourceFactMutation]:
+    request = _repository_request()
+    _seed(driver, available_at=request.envelope.availability.available_at)
     with driver.session() as session:
         session.run(
             "MATCH (c:StandaloneCrmCensus {census_id: 'census-a'}) SET c.request_json = $request_json",
             request_json=_repository_request_json(),
         ).consume()
+    with driver.session() as session:
+        clock_matches = session.run(
+            """
+            MATCH (census:StandaloneCrmCensus {census_id: 'census-a'})
+            RETURN census.created_at = datetime($available_at) AS clock_matches
+            """,
+            available_at=request.envelope.availability.available_at,
+        ).single(strict=True)["clock_matches"]
+    assert clock_matches is True
+    return request
 
 
 def _counts(driver: Driver) -> dict[str, int]:
@@ -291,13 +308,11 @@ def _counts(driver: Driver) -> dict[str, int]:
 
 
 def _assert_repository_success_replay_conflict(driver: Driver) -> None:
-    _seed_repository_case(driver)
+    request = _seed_repository_case(driver)
     adapter = _SentinelAdapter()
     repository = StandaloneCrmSourceFactRepository(
         cast(Neo4jClient, _DriverClient(driver)), adapter=adapter
     )
-    request = _repository_request()
-
     assert repository.commit_unit(request).decision == "committed"
     assert _counts(driver) == {"records": 1, "receipts": 1, "cursor": 6, "processed": 1}
     assert repository.commit_unit(request).decision == "replayed"
@@ -319,7 +334,7 @@ def _assert_repository_success_replay_conflict(driver: Driver) -> None:
 
 
 def _assert_repository_failpoint_rollback(driver: Driver) -> None:
-    _seed_repository_case(driver)
+    request = _seed_repository_case(driver)
     adapter = _SentinelAdapter()
 
     def fail(name: str) -> None:
@@ -330,7 +345,7 @@ def _assert_repository_failpoint_rollback(driver: Driver) -> None:
         cast(Neo4jClient, _DriverClient(driver)), adapter=adapter, failpoint=fail
     )
     with pytest.raises(RuntimeError, match="rollback"):
-        repository.commit_unit(_repository_request())
+        repository.commit_unit(request)
     assert _counts(driver) == {"records": 0, "receipts": 0, "cursor": 5, "processed": 0}
 
 
