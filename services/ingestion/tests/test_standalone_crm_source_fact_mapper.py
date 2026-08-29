@@ -81,7 +81,7 @@ def test_contact_and_lead_match_the_existing_policy_and_suppress_oversized_chann
     )
     assert [item.type for item in contact_mapped.identifiers] == ["crm_contact_id"]
 
-    lead = CrmContact("6", "Ada", (), ("a@example.test",), "lead", _OBSERVED_AT)
+    lead = CrmContact("6", "Ada", (), ("a@example.test",), "lead", _OBSERVED_AT, "303")
     checkpoint = StandaloneCrmCheckpoint("census-a", "lead", 10, None, 5, None, None, 0, 0, 1, 2)
     lead_mapped = (
         map_source_fact_page(
@@ -97,6 +97,7 @@ def test_contact_and_lead_match_the_existing_policy_and_suppress_oversized_chann
     ] == list(lead_policy.identifiers)
     assert lead_mapped.identity_policy_version == lead_policy.metadata["identity_policy_version"]
     assert lead_mapped.source_record_id == "bitrix-crm-lead-6"
+    assert "company_id" not in lead_mapped.raw_payload
 
 
 def test_hash_is_stable_across_operational_authority_but_isolates_source_instances() -> None:

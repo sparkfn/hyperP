@@ -13,10 +13,14 @@ from src.graph.client import Neo4jClient
 from src.graph.queries.standalone_crm_census import (
     ADMIT_CENSUS,
     CLAIM_ATTEMPT,
+    CLAIM_PUBLISHED_CHILD,
+    CLOSE_CONTACT_BINDING_POSITION,
     CONVERGE_LIMIT_DENIAL,
     CREATE_CONTINUATION,
     FAIL_AFTER_WINDOW_AUTHORITY,
+    LEASE_HELD_PUBLISHED_CHILD,
     RECORD_CALL_OUTCOME,
+    REFRESH_PUBLISHED_CHILD,
     REQUEST_CANCELLATION,
     REQUEST_UNIT_STOPS,
     RESERVE_CALL,
@@ -27,6 +31,7 @@ from src.graph.standalone_crm_census_records import (
     StandaloneCrmAttemptTakeover,
     StandaloneCrmRuntimeSnapshot,
     authority_context,
+    authority_revision,
 )
 from src.standalone_crm_census_models import (
     SourceSyncAuthority,
@@ -36,6 +41,7 @@ from src.standalone_crm_census_models import (
     StandaloneCrmCallOutcome,
     StandaloneCrmCensusConflictError,
     StandaloneCrmCheckpoint,
+    StandaloneCrmChildEnvelope,
     StandaloneCrmReason,
     canonical_request_payload,
     census_fingerprint,
@@ -73,9 +79,14 @@ class _Client:
     def __init__(self, records: list[dict[str, object] | None]) -> None:
         self.transaction = _Transaction(records)
         self.write_calls = 0
+        self.read_calls = 0
 
     def execute_write(self, work: Callable[[_Transaction], object]) -> object:
         self.write_calls += 1
+        return work(self.transaction)
+
+    def execute_read(self, work: Callable[[_Transaction], object]) -> object:
+        self.read_calls += 1
         return work(self.transaction)
 
 
@@ -130,6 +141,110 @@ def _snapshot(
     *, generation: int = 3, cancel_requested: bool = False
 ) -> StandaloneCrmRuntimeSnapshot:
     return StandaloneCrmRuntimeSnapshot(_request(), generation, "running", cancel_requested)
+
+
+def _source_envelope() -> StandaloneCrmChildEnvelope:
+    return StandaloneCrmChildEnvelope(
+        "census-a",
+        3,
+        "contact",
+        19,
+        None,
+        "src.standalone_crm_census_tasks.run_standalone_crm_census_unit",
+        "task-a",
+        "ingestion",
+    )
+
+
+def test_refresh_published_child_reasserts_exact_active_task_fence_and_payload(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _Client(
+        [
+            {
+                "fence_token": 12,
+                "fence_owner_id": "task-a",
+                "last_committed_id": 7,
+                "binding_subject_id": None,
+                "binding_offset": None,
+                "processed_rows": 7,
+                "skipped_rows": 0,
+                "attempt_deadline": "2099-01-02T00:00:00Z",
+                "available_at": "2026-08-29T00:00:00Z",
+                "request_json": canonical_request_payload(_request()),
+            }
+        ]
+    )
+    repository = _repository(client)
+    envelope = _source_envelope()
+    monkeypatch.setattr(repository, "runtime_snapshot", lambda _census_id: _snapshot())
+
+    refreshed = repository.refresh_published_child(
+        envelope,
+        owner_id="task-a",
+        fence_token=12,
+        payload_json='{"frozen":true}',
+    )
+
+    assert refreshed is not None
+    assert client.write_calls == 0
+    assert client.read_calls == 1
+    run = client.transaction.runs[0]
+    assert run.query == REFRESH_PUBLISHED_CHILD
+    assert run.parameters["task_name"] == envelope.task_name
+    assert run.parameters["task_id"] == envelope.task_id
+    assert run.parameters["payload_digest"] == envelope.payload_digest()
+    assert run.parameters["payload_json"] == '{"frozen":true}'
+    assert run.parameters["fence_token"] == 12
+    assert run.parameters["owner_id"] == "task-a"
+    assert run.parameters["frozen_upper_id"] == 19
+
+
+def test_lease_held_classification_reasserts_current_admission_authority(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _Client([{"owner_id": "other-worker"}])
+    repository = _repository(client)
+    envelope = _source_envelope()
+    monkeypatch.setattr(repository, "runtime_snapshot", lambda _census_id: _snapshot())
+
+    assert repository.published_child_lease_held(
+        envelope, owner_id="task-a", payload_json='{"frozen":true}'
+    )
+
+    assert client.write_calls == 0
+    assert client.read_calls == 1
+    run = client.transaction.runs[0]
+    assert run.query == LEASE_HELD_PUBLISHED_CHILD
+    assert run.parameters["request_json"] == canonical_request_payload(_request())
+    assert run.parameters["authority_revision"] == authority_revision(_request())
+    assert run.parameters["authority_json"] == authority_context(_request())
+    for term in (
+        "attempt_deadline",
+        "occurrence_call_limit",
+        "attempt_call_limit",
+        "unit.state IN ['queued', 'running', 'paused']",
+        "BitrixSourceInstance",
+        "BitrixExecutionSourceBinding",
+    ):
+        assert term in LEASE_HELD_PUBLISHED_CHILD
+    assert "fence.owner_id <> $owner_id" not in LEASE_HELD_PUBLISHED_CHILD
+
+
+def test_child_claim_rebinds_only_a_compatible_checkpoint_fence_token() -> None:
+    assert "checkpoint.generation = $generation" in CLAIM_PUBLISHED_CHILD
+    assert "checkpoint.frozen_upper_id = $frozen_upper_id" in CLAIM_PUBLISHED_CHILD
+    assert "checkpoint.revision_id IS NULL" in CLAIM_PUBLISHED_CHILD
+    rebind = CLAIM_PUBLISHED_CHILD.split("FOREACH (_ IN CASE WHEN checkpoint IS NULL", 1)[1]
+    assert "SET checkpoint.fence_token = fence.token" in rebind
+    for preserved in (
+        "checkpoint.last_committed_id",
+        "checkpoint.processed_rows",
+        "checkpoint.skipped_rows",
+        "checkpoint.binding_subject_id",
+        "checkpoint.binding_offset",
+    ):
+        assert f"SET {preserved}" not in rebind
 
 
 @pytest.fixture
@@ -532,3 +647,17 @@ def test_record_call_outcome_persists_one_final_success_or_failure(
             },
         )
     ]
+
+
+def test_contact_binding_position_queries_are_fenced_and_do_not_account_rows() -> None:
+    query = CLOSE_CONTACT_BINDING_POSITION
+    assert "owner_id: $owner_id" in query
+    assert "token: $fence_token" in query
+    assert "task_id: $task_id" in query
+    assert "task_name: $task_name" in query
+    assert "payload_digest: $payload_digest" in query
+    assert "coalesce(census.cancel_requested, false) = false" in query
+    assert "occurrence_rows" not in query
+    assert "attempt.row_count" not in query
+    assert "binding_offset: $binding_count" in CLOSE_CONTACT_BINDING_POSITION
+    assert "stored.last_committed_id = $contact_id" in CLOSE_CONTACT_BINDING_POSITION

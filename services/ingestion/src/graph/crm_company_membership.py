@@ -7,8 +7,11 @@ from typing import TypedDict
 
 from neo4j import ManagedTransaction, Record
 
+from src.connectors.bitrix_openlines.models import CrmCompanyBindingPayload
 from src.crm_company_contracts import (
+    CrmCompanyDescriptionHead,
     CrmCompanyDescriptionObservation,
+    CrmCompanyMembershipHead,
     CrmCompanyMembershipObservation,
     CrmCompanyMembershipSnapshotRecord,
     CrmCompanyReference,
@@ -19,11 +22,17 @@ from src.crm_company_membership_writer import (
     CrmCompanyMembershipMutation,
     CrmCompanyMembershipUnitMutation,
 )
+from src.crm_identity_associations import (
+    CrmIdentitySubjectType,
+    normalize_company_membership_snapshot,
+)
 from src.graph.client import Neo4jClient
 from src.graph.queries.crm_company_membership import (
     CLAIM_DESCRIPTION_TRANSITION,
     CLAIM_MEMBERSHIP_TRANSITION,
     READ_CENSUS_REQUEST,
+    READ_CURRENT_DESCRIPTION_HEAD,
+    READ_CURRENT_MEMBERSHIP_HEAD,
     UPSERT_COMPANY_REFERENCE,
     UPSERT_DESCRIPTION_OBSERVATION,
     UPSERT_MEMBERSHIP_OBSERVATION,
@@ -40,7 +49,9 @@ from src.standalone_crm_child_contracts import (
     CompanySourceChildEnvelope,
     ContactSourceChildEnvelope,
     LeadSourceChildEnvelope,
+    StandaloneCrmSourceAvailability,
     StandaloneCrmSourceChildEnvelope,
+    StandaloneCrmSourceChildScope,
 )
 from src.standalone_crm_unit_repository import (
     StandaloneCrmAtomicUnitCommit,
@@ -159,6 +170,50 @@ class CrmCompanyMembershipRepository(
 
     def __init__(self, client: Neo4jClient) -> None:
         self._client = client
+
+    def current_description_head(
+        self, scope: StandaloneCrmSourceChildScope, company_id: str
+    ) -> CrmCompanyDescriptionHead | None:
+        """Read one exact scoped description head for a subsequent-occurrence CAS."""
+
+        def work(tx: ManagedTransaction) -> CrmCompanyDescriptionHead | None:
+            record = tx.run(
+                READ_CURRENT_DESCRIPTION_HEAD,
+                source_key=scope.source_key,
+                source_instance_id=scope.source_instance_id,
+                control_instance_id=scope.control_instance_id,
+                company_id=company_id,
+            ).single()
+            return None if record is None else _description_head(scope, company_id, record)
+
+        return self._client.execute_read(work)
+
+    def current_membership_head(
+        self,
+        scope: StandaloneCrmSourceChildScope,
+        subject_kind: str,
+        subject_id: str,
+    ) -> CrmCompanyMembershipHead | None:
+        """Read one exact scoped complete membership head for CAS and recovery."""
+        if subject_kind not in {"contact", "lead"}:
+            raise ValueError("membership head requires contact or lead subject")
+
+        def work(tx: ManagedTransaction) -> CrmCompanyMembershipHead | None:
+            record = tx.run(
+                READ_CURRENT_MEMBERSHIP_HEAD,
+                source_key=scope.source_key,
+                source_instance_id=scope.source_instance_id,
+                control_instance_id=scope.control_instance_id,
+                subject_kind=subject_kind,
+                subject_id=subject_id,
+            ).single()
+            return (
+                None
+                if record is None
+                else _membership_head(scope, subject_kind, subject_id, record)
+            )
+
+        return self._client.execute_read(work)
 
     def commit_unit(
         self,
@@ -481,3 +536,102 @@ def _claim_decision(record: Record | None) -> CrmCompanyMembershipCommitResult:
 def _require_row(record: Record | None, label: str) -> None:
     if record is None:
         raise RuntimeError(f"immutable {label} conflicts with persisted data")
+
+
+def _description_head(
+    scope: StandaloneCrmSourceChildScope,
+    company_id: str,
+    record: Record,
+) -> CrmCompanyDescriptionHead:
+    source_record_id = _required_text(record, "source_record_id")
+    observation = CrmCompanyDescriptionObservation(
+        CrmCompanyReference(scope, company_id, source_record_id),
+        _required_text(record, "source_record_pk"),
+        _required_positive_int(record, "source_record_version"),
+        _required_text(record, "source_record_hash"),
+        _optional_text(record, "description"),
+        _optional_text(record, "observed_at"),
+        StandaloneCrmSourceAvailability(_required_text(record, "available_at")),
+        _required_text(record, "contract_version"),
+    )
+    return CrmCompanyDescriptionHead(observation.company_reference, observation)
+
+
+def _membership_head(
+    scope: StandaloneCrmSourceChildScope,
+    subject_kind: str,
+    subject_id: str,
+    record: Record,
+) -> CrmCompanyMembershipHead:
+    bindings = record["bindings"]
+    if not isinstance(bindings, list):
+        raise RuntimeError("current membership head bindings are malformed")
+    payloads = tuple(_binding_payload(item) for item in bindings if item is not None)
+    subject_type: CrmIdentitySubjectType
+    if subject_kind == "contact":
+        subject_type = "contact"
+    elif subject_kind == "lead":
+        subject_type = "lead"
+    else:
+        raise RuntimeError("current membership head has malformed subject kind")
+    snapshot = normalize_company_membership_snapshot(
+        subject_type=subject_type,
+        subject_id=subject_id,
+        payloads=payloads,
+    )
+    membership = CrmCompanyMembershipSnapshotRecord(
+        scope,
+        snapshot,
+        _required_text(record, "source_record_id"),
+        _required_text(record, "source_record_pk"),
+        _required_positive_int(record, "source_record_version"),
+        _required_text(record, "source_record_hash"),
+        _optional_text(record, "observed_at"),
+        StandaloneCrmSourceAvailability(_required_text(record, "available_at")),
+        _required_non_negative_int(record, "binding_count"),
+        _required_text(record, "contract_version"),
+    )
+    return CrmCompanyMembershipHead(
+        scope, membership.subject_kind, membership.subject_id, membership
+    )
+
+
+def _binding_payload(value: object) -> CrmCompanyBindingPayload:
+    if not isinstance(value, dict):
+        raise RuntimeError("current membership head binding is malformed")
+    return CrmCompanyBindingPayload(
+        value.get("company_id"),
+        value.get("sort"),
+        value.get("role_id"),
+        value.get("is_primary"),
+    )
+
+
+def _required_text(record: Record, key: str) -> str:
+    value = record[key]
+    if not isinstance(value, str) or not value:
+        raise RuntimeError(f"current company head has malformed {key}")
+    return value
+
+
+def _optional_text(record: Record, key: str) -> str | None:
+    value = record[key]
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise RuntimeError(f"current company head has malformed {key}")
+    return value
+
+
+def _required_positive_int(record: Record, key: str) -> int:
+    value = record[key]
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise RuntimeError(f"current company head has malformed {key}")
+    return int(value)
+
+
+def _required_non_negative_int(record: Record, key: str) -> int:
+    value = record[key]
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise RuntimeError(f"current company head has malformed {key}")
+    return int(value)

@@ -43,6 +43,7 @@ class StandaloneCrmCensusHttpReservationHook:
         self._child_task_id = child_task_id
         self._effective_deadline = effective_deadline
         self._reserved: dict[str, StandaloneCrmCallIntent] = {}
+        self._completed: dict[tuple[StandaloneCrmCallKind, int | None, int | None], str] = {}
 
     def reserve(self, intent: BitrixHttpCallIntent) -> bool:
         metadata = intent.metadata
@@ -96,6 +97,20 @@ class StandaloneCrmCensusHttpReservationHook:
         )
         if not self._repository.record_call_outcome(outcome):
             raise RuntimeError("durable Bitrix call outcome was rejected")
+        if state == "succeeded":
+            self._completed[_receipt_key(call_intent)] = intent.intent_id
+
+    def completed_intent_id(
+        self,
+        call_kind: StandaloneCrmCallKind,
+        cursor: int | None,
+        subject_id: int | None,
+    ) -> str:
+        """Return the exact successfully persisted reservation for one source effect."""
+        intent_id = self._completed.get((call_kind, cursor, subject_id))
+        if intent_id is None:
+            raise RuntimeError("source call has no durable successful reservation receipt")
+        return intent_id
 
     def record_probe_upper_bound(self, intent: BitrixHttpCallIntent, upper_id: int) -> None:
         call_intent = self._reserved_intent(intent)
@@ -224,6 +239,12 @@ def _required_error_code(
     if state == "succeeded":
         return None
     return error_code if error_code is not None else "unspecified_failure"
+
+
+def _receipt_key(
+    intent: StandaloneCrmCallIntent,
+) -> tuple[StandaloneCrmCallKind, int | None, int | None]:
+    return intent.call_kind, intent.cursor, intent.subject_id
 
 
 def _deadline_monotonic(deadline: str) -> float:

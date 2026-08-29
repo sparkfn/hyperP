@@ -158,7 +158,11 @@ class StandaloneCrmCheckpoint:
         ):
             return False
         if self.binding_subject_id is None:
-            return successor.binding_subject_id is None
+            return successor.binding_subject_id is None or (
+                successor.binding_offset == 0
+                and successor.binding_subject_id is not None
+                and successor.binding_subject_id > self.last_committed_id
+            )
         if successor.binding_subject_id is None or successor.binding_offset is None:
             return False
         return (successor.binding_subject_id, successor.binding_offset) >= (

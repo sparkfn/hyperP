@@ -39,7 +39,61 @@ RETURN CASE
     AND receipt.expected_cursor = $expected_cursor
     AND receipt.proposed_cursor = $proposed_cursor THEN 'replayed'
   ELSE 'conflict'
-END AS decision
+END AS decision,
+  receipt.source_receipts_json AS source_receipts_json,
+  receipt.processed_rows AS processed_rows,
+  receipt.skipped_rows AS skipped_rows,
+  receipt.failed_rows AS failed_rows
+"""
+
+READ_SOURCE_RECORD_RECEIPT = """
+MATCH (record:SourceRecord {source_record_pk: $source_record_pk})
+RETURN record.source_record_pk AS source_record_pk,
+  record.source_record_version AS source_record_version,
+  record.record_hash AS record_hash
+"""
+
+READ_PENDING_CONTACT_RECEIPT = """
+MATCH (receipt:StandaloneCrmSourceFactPageReceipt {
+  census_id: $census_id, generation: $generation, stream_kind: 'contact',
+  source_key: $source_key, source_instance_id: $source_instance_id,
+  control_instance_id: $control_instance_id,
+  task_name: $task_name, task_id: $task_id, payload_digest: $payload_digest,
+  frozen_upper_id: $frozen_upper_id, pending_binding_subject_id: $binding_subject_id,
+  status: 'committed'
+})
+MATCH (checkpoint:StandaloneCrmCensusCheckpoint {census_id: $census_id, stream_kind: 'contact',
+  generation: $generation, fence_token: $fence_token, frozen_upper_id: $frozen_upper_id,
+  binding_subject_id: $binding_subject_id})
+MATCH (:StandaloneCrmCensusFence {census_id: $census_id, generation: $generation, stream_kind: 'contact',
+  token: $fence_token, owner_id: $fence_owner_id, status: 'active'})
+MATCH (:StandaloneCrmChildPublication {census_id: $census_id, generation: $generation,
+  stream_kind: 'contact', task_name: $task_name, task_id: $task_id,
+  payload_digest: $payload_digest, status: 'published'})
+WITH collect(receipt) AS receipts
+RETURN CASE WHEN size(receipts) = 1 THEN receipts[0].source_receipts_json ELSE null END AS source_receipts_json,
+  size(receipts) AS receipt_count
+"""
+
+READ_PENDING_LEAD_RECEIPT = """
+MATCH (receipt:StandaloneCrmSourceFactPageReceipt {
+  census_id: $census_id, generation: $generation, stream_kind: 'lead',
+  source_key: $source_key, source_instance_id: $source_instance_id,
+  control_instance_id: $control_instance_id, task_name: $task_name,
+  task_id: $task_id, payload_digest: $payload_digest, frozen_upper_id: $frozen_upper_id,
+  proposed_cursor: $last_committed_id, status: 'committed'
+})
+MATCH (checkpoint:StandaloneCrmCensusCheckpoint {census_id: $census_id, stream_kind: 'lead',
+  generation: $generation, fence_token: $fence_token, frozen_upper_id: $frozen_upper_id,
+  last_committed_id: $last_committed_id})
+MATCH (:StandaloneCrmCensusFence {census_id: $census_id, generation: $generation, stream_kind: 'lead',
+  token: $fence_token, owner_id: $fence_owner_id, status: 'active'})
+MATCH (:StandaloneCrmChildPublication {census_id: $census_id, generation: $generation,
+  stream_kind: 'lead', task_name: $task_name, task_id: $task_id,
+  payload_digest: $payload_digest, status: 'published'})
+WITH collect(receipt) AS receipts
+RETURN CASE WHEN size(receipts) = 1 THEN receipts[0].source_receipts_json ELSE null END AS source_receipts_json,
+  size(receipts) AS receipt_count
 """
 
 CLAIM_PAGE = """
@@ -93,8 +147,13 @@ WHERE census.status IN ['running', 'publishing', 'recovering']
   AND datetime() < datetime($occurrence_deadline)
   AND coalesce(attempt.call_count, 0) <= $attempt_call_limit
   AND coalesce(census.occurrence_calls, 0) <= $occurrence_call_limit
-  AND $expected_cursor < $proposed_cursor
-  AND $proposed_cursor <= $frozen_upper_id
+  AND (($stream_kind = 'lead' AND $expected_cursor < $proposed_cursor
+      AND $proposed_cursor <= $frozen_upper_id
+      AND $proposed_binding_subject IS NULL AND $proposed_binding_offset IS NULL)
+    OR ($stream_kind = 'contact' AND $expected_cursor = $proposed_cursor
+      AND $proposed_binding_subject > $expected_cursor
+      AND $proposed_binding_subject <= $frozen_upper_id
+      AND $proposed_binding_offset = 0))
 WITH census, attempt, checkpoint, receipt,
   CASE WHEN checkpoint IS NULL THEN $checkpoint_absent ELSE
     checkpoint.last_committed_id = $expected_cursor
@@ -150,6 +209,11 @@ FOREACH (_ IN CASE WHEN decision = 'apply' THEN [1] ELSE [] END |
     frozen_upper_id: $frozen_upper_id, content_digest: $content_digest,
     expected_cursor: $expected_cursor, proposed_cursor: $proposed_cursor, created_at: datetime()
   })
+)
+FOREACH (_ IN CASE WHEN decision = 'occurrence_exhausted' THEN [1] ELSE [] END |
+  SET attempt.status = 'failed', attempt.failure_reason = 'occurrence_budget_exhausted',
+      attempt.updated_at = datetime(), census.status = 'failed',
+      census.terminal_reason = 'occurrence_budget_exhausted', census.updated_at = datetime()
 )
 RETURN decision AS decision
 """
@@ -216,8 +280,13 @@ WHERE census.status IN ['running', 'publishing', 'recovering']
   AND datetime() < datetime($occurrence_deadline)
   AND coalesce(attempt.call_count, 0) <= $attempt_call_limit
   AND coalesce(census.occurrence_calls, 0) <= $occurrence_call_limit
-  AND $expected_cursor < $proposed_cursor
-  AND $proposed_cursor <= $frozen_upper_id
+  AND (($stream_kind = 'lead' AND $expected_cursor < $proposed_cursor
+      AND $proposed_cursor <= $frozen_upper_id
+      AND $proposed_binding_subject IS NULL AND $proposed_binding_offset IS NULL)
+    OR ($stream_kind = 'contact' AND $expected_cursor = $proposed_cursor
+      AND $proposed_binding_subject > $expected_cursor
+      AND $proposed_binding_subject <= $frozen_upper_id
+      AND $proposed_binding_offset = 0))
   AND ((checkpoint IS NULL AND $checkpoint_absent) OR (
     checkpoint.last_committed_id = $expected_cursor
     AND checkpoint.processed_rows = $expected_processed
@@ -234,8 +303,8 @@ MERGE (stored:StandaloneCrmCensusCheckpoint {census_id: $census_id, stream_kind:
 SET stored.last_committed_id = $proposed_cursor,
   stored.processed_rows = $proposed_processed,
   stored.skipped_rows = $proposed_skipped,
-  stored.binding_subject_id = null,
-  stored.binding_offset = null,
+  stored.binding_subject_id = $proposed_binding_subject,
+  stored.binding_offset = $proposed_binding_offset,
   stored.generation = $generation,
   stored.fence_token = $fence_token,
   stored.frozen_upper_id = $frozen_upper_id,
@@ -245,6 +314,8 @@ SET stored.last_committed_id = $proposed_cursor,
   receipt.processed_rows = $processed_delta,
   receipt.skipped_rows = $skipped_delta,
   receipt.failed_rows = $failed_delta,
+  receipt.source_receipts_json = $source_receipts_json,
+  receipt.pending_binding_subject_id = $proposed_binding_subject,
   receipt.committed_at = datetime(),
   census.occurrence_rows = coalesce(census.occurrence_rows, 0) + $processed_delta,
   census.standalone_crm_source_fact_failed_rows =

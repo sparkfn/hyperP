@@ -10,11 +10,15 @@ from neo4j import ManagedTransaction
 from src.graph.queries.standalone_crm_census import (
     ACQUIRE_UNIT_FENCE,
     ALLOCATE_UNITS,
+    CLAIM_PUBLISHED_CHILD,
+    CLOSE_CONTACT_BINDING_POSITION,
     CONFIRM_PUBLICATION,
     CONVERGE_OCCURRENCE_EXHAUSTION,
     FREEZE_WINDOW,
     GET_RESUMABLE_UNITS,
+    LEASE_HELD_PUBLISHED_CHILD,
     MARK_PUBLICATION_PUBLISHING,
+    REFRESH_PUBLISHED_CHILD,
     RENEW_UNIT_FENCE,
     REPAIR_PUBLICATIONS,
     RESERVE_PUBLICATION,
@@ -38,6 +42,7 @@ from src.standalone_crm_census_models import (
     StandaloneCrmCheckpointResult,
     StandaloneCrmChildEnvelope,
     StandaloneCrmPublication,
+    canonical_request_payload,
 )
 
 
@@ -189,6 +194,186 @@ class StandaloneCrmCensusWorkRepository(_StandaloneCrmCensusRepositoryBase):
 
         return self._client.execute_write(work)
 
+    def claim_published_child(
+        self,
+        envelope: StandaloneCrmChildEnvelope,
+        *,
+        owner_id: str,
+        payload_json: str,
+        lease_seconds: int = 120,
+    ) -> dict[str, object] | None:
+        """Atomically validate and fence an exact durable child publication."""
+        snapshot = self.runtime_snapshot(envelope.census_id)
+        if (
+            snapshot is None
+            or snapshot.generation != envelope.generation
+            or not isinstance(snapshot.request, SourceSyncCensusRequest)
+        ):
+            return None
+
+        def work(tx: ManagedTransaction) -> dict[str, object] | None:
+            record = tx.run(
+                CLAIM_PUBLISHED_CHILD,
+                census_id=envelope.census_id,
+                generation=envelope.generation,
+                stream_kind=envelope.stream_kind,
+                frozen_upper_id=envelope.frozen_upper_id,
+                task_name=envelope.task_name,
+                task_id=envelope.task_id,
+                payload_digest=envelope.payload_digest(),
+                payload_json=payload_json,
+                payload_version=envelope.payload_version,
+                queue=envelope.queue,
+                source_key=snapshot.request.source_key,
+                source_instance_id=snapshot.request.source_instance_id,
+                control_instance_id=snapshot.request.control_instance_id,
+                request_json=canonical_request_payload(snapshot.request),
+                authority_revision=authority_revision(snapshot.request),
+                authority_json=authority_context(snapshot.request),
+                occurrence_deadline=snapshot.request.budget.occurrence_deadline,
+                occurrence_call_limit=snapshot.request.budget.max_calls_per_occurrence,
+                occurrence_row_limit=snapshot.request.budget.max_rows_per_occurrence,
+                attempt_call_limit=snapshot.request.budget.max_calls_per_attempt,
+                attempt_row_limit=snapshot.request.budget.max_rows_per_attempt,
+                owner_id=owner_id,
+                lease_seconds=lease_seconds,
+            ).single()
+            return None if record is None else dict(record)
+
+        return self._client.execute_write(work)
+
+    def published_child_lease_held(
+        self,
+        envelope: StandaloneCrmChildEnvelope,
+        *,
+        owner_id: str,
+        payload_json: str,
+    ) -> bool:
+        """Classify only an exact active publication lease as retryable."""
+        snapshot = self.runtime_snapshot(envelope.census_id)
+        if (
+            snapshot is None
+            or snapshot.generation != envelope.generation
+            or not isinstance(snapshot.request, SourceSyncCensusRequest)
+        ):
+            return False
+
+        def work(tx: ManagedTransaction) -> bool:
+            return (
+                tx.run(
+                    LEASE_HELD_PUBLISHED_CHILD,
+                    census_id=envelope.census_id,
+                    generation=envelope.generation,
+                    stream_kind=envelope.stream_kind,
+                    frozen_upper_id=envelope.frozen_upper_id,
+                    task_name=envelope.task_name,
+                    task_id=envelope.task_id,
+                    payload_digest=envelope.payload_digest(),
+                    payload_json=payload_json,
+                    payload_version=envelope.payload_version,
+                    queue=envelope.queue,
+                    source_key=snapshot.request.source_key,
+                    source_instance_id=snapshot.request.source_instance_id,
+                    control_instance_id=snapshot.request.control_instance_id,
+                    request_json=canonical_request_payload(snapshot.request),
+                    authority_revision=authority_revision(snapshot.request),
+                    authority_json=authority_context(snapshot.request),
+                    occurrence_deadline=snapshot.request.budget.occurrence_deadline,
+                    occurrence_call_limit=snapshot.request.budget.max_calls_per_occurrence,
+                    occurrence_row_limit=snapshot.request.budget.max_rows_per_occurrence,
+                    attempt_call_limit=snapshot.request.budget.max_calls_per_attempt,
+                    attempt_row_limit=snapshot.request.budget.max_rows_per_attempt,
+                    owner_id=owner_id,
+                ).single()
+                is not None
+            )
+
+        return self._client.execute_read(work)
+
+    def refresh_published_child(
+        self,
+        envelope: StandaloneCrmChildEnvelope,
+        *,
+        owner_id: str,
+        fence_token: int,
+        payload_json: str,
+    ) -> dict[str, object] | None:
+        """Read the exact current checkpoint held by one already-claimed child."""
+        snapshot = self.runtime_snapshot(envelope.census_id)
+        if (
+            snapshot is None
+            or snapshot.generation != envelope.generation
+            or not isinstance(snapshot.request, SourceSyncCensusRequest)
+        ):
+            return None
+
+        def work(tx: ManagedTransaction) -> dict[str, object] | None:
+            record = tx.run(
+                REFRESH_PUBLISHED_CHILD,
+                census_id=envelope.census_id,
+                generation=envelope.generation,
+                stream_kind=envelope.stream_kind,
+                frozen_upper_id=envelope.frozen_upper_id,
+                task_name=envelope.task_name,
+                task_id=envelope.task_id,
+                payload_digest=envelope.payload_digest(),
+                payload_json=payload_json,
+                payload_version=envelope.payload_version,
+                queue=envelope.queue,
+                source_key=snapshot.request.source_key,
+                source_instance_id=snapshot.request.source_instance_id,
+                control_instance_id=snapshot.request.control_instance_id,
+                request_json=canonical_request_payload(snapshot.request),
+                authority_revision=authority_revision(snapshot.request),
+                authority_json=authority_context(snapshot.request),
+                occurrence_deadline=snapshot.request.budget.occurrence_deadline,
+                owner_id=owner_id,
+                fence_token=fence_token,
+            ).single()
+            return None if record is None else dict(record)
+
+        return self._client.execute_read(work)
+
+    def close_contact_binding_position(
+        self,
+        census_id: str,
+        generation: int,
+        fence_token: int,
+        owner_id: str,
+        task_name: str,
+        task_id: str,
+        payload_digest: str,
+        frozen_upper_id: int,
+        last_committed_id: int,
+        contact_id: int,
+        binding_count: int,
+    ) -> bool:
+        snapshot = self.runtime_snapshot(census_id)
+        if snapshot is None or snapshot.generation != generation or binding_count < 0:
+            return False
+        return self._client.execute_write(
+            lambda tx: (
+                tx.run(
+                    CLOSE_CONTACT_BINDING_POSITION,
+                    census_id=census_id,
+                    generation=generation,
+                    fence_token=fence_token,
+                    owner_id=owner_id,
+                    task_name=task_name,
+                    task_id=task_id,
+                    payload_digest=payload_digest,
+                    frozen_upper_id=frozen_upper_id,
+                    last_committed_id=last_committed_id,
+                    contact_id=contact_id,
+                    binding_count=binding_count,
+                    authority_revision=authority_revision(snapshot.request),
+                    authority_json=authority_context(snapshot.request),
+                    occurrence_deadline=snapshot.request.budget.occurrence_deadline,
+                ).single()
+                is not None
+            )
+        )
+
     def renew_unit_fence(
         self, census_id: str, generation: int, stream_kind: str, fence_token: int, owner_id: str
     ) -> bool:
@@ -240,6 +425,24 @@ class StandaloneCrmCensusWorkRepository(_StandaloneCrmCensusRepositoryBase):
                     authority_revision=authority_revision(snapshot.request),
                     authority_json=authority_context(snapshot.request),
                     allow_cancel_settlement=state == "cancelled",
+                ).single()
+                is not None
+            )
+        )
+
+    def converge_occurrence_exhaustion(self, census_id: str, generation: int) -> bool:
+        """Retire all units after an atomic writer has persisted occurrence exhaustion."""
+        snapshot = self.runtime_snapshot(census_id)
+        if snapshot is None or snapshot.generation != generation:
+            return False
+        return self._client.execute_write(
+            lambda tx: (
+                tx.run(
+                    CONVERGE_OCCURRENCE_EXHAUSTION,
+                    census_id=census_id,
+                    generation=generation,
+                    authority_revision=authority_revision(snapshot.request),
+                    authority_json=authority_context(snapshot.request),
                 ).single()
                 is not None
             )

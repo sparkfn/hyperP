@@ -10,6 +10,25 @@ from src.connectors import bitrix_crm
 from src.ingestion_config import BitrixOpenLinesConfig, IngestionConfig
 
 
+@pytest.mark.parametrize("mode", ("api", "batch", "backfill"))
+@pytest.mark.parametrize("incremental", (True, False))
+def test_identity_connector_rejects_every_legacy_mode_before_optional_arguments(
+    mode: str,
+    incremental: bool,
+) -> None:
+    """No direct caller can turn the retired source key into a child authority."""
+    with pytest.raises(main.StandaloneCrmCensusContextRequiredError, match="frozen census child"):
+        main.get_connector(
+            "bitrix_crm_identity",
+            mode=mode,
+            incremental=incremental,
+            bitrix_execution_stream=cast(main.BitrixExecutionStream, "legacy"),
+            bitrix_source_window={"upper_contact_id": 1},
+            bitrix_checkpoint_cursor={"last_id": 0},
+            bitrix_max_calls=1,
+        )
+
+
 def test_operator_dispatched_identity_ingestion_is_fail_closed_by_default(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -90,3 +109,42 @@ def test_raw_task_fails_before_locks_graph_or_client_initialization(
 
     with pytest.raises(main.StandaloneCrmCensusContextRequiredError):
         tasks.run_ingestion_task.run("bitrix_crm_identity", "api")
+
+
+@pytest.mark.parametrize("mode", ("api", "batch", "backfill"))
+def test_direct_runs_and_tasks_reject_raw_underspecified_identity_requests(
+    monkeypatch: pytest.MonkeyPatch,
+    mode: str,
+) -> None:
+    """Raw task kwargs and incremental=False never bypass the first identity gate."""
+    from src import tasks
+
+    monkeypatch.setattr(
+        main,
+        "initialize_ingestion_graph",
+        lambda: pytest.fail("direct identity runs must stop before graph initialization"),
+    )
+    monkeypatch.setattr(
+        tasks,
+        "_initialize_graph_under_lock",
+        lambda source: pytest.fail(f"task must stop before graph initialization: {source}"),
+    )
+
+    with pytest.raises(main.StandaloneCrmCensusContextRequiredError, match="frozen census child"):
+        main.run_ingestion(
+            "bitrix_crm_identity",
+            mode=mode,
+            incremental=False,
+            bitrix_execution_stream=cast(main.BitrixExecutionStream, "legacy"),
+        )
+    with pytest.raises(main.StandaloneCrmCensusContextRequiredError, match="frozen census child"):
+        tasks.run_ingestion_task.run(
+            "bitrix_crm_identity",
+            mode,
+            incremental=False,
+            bitrix_execution_stream="legacy",
+            bitrix_source_window={"upper_contact_id": 1},
+            bitrix_max_calls=1,
+            bitrix_max_rows=1,
+            bitrix_max_runtime_seconds=1,
+        )
