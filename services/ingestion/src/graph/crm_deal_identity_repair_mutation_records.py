@@ -8,6 +8,7 @@ from typing import cast
 
 from neo4j import Record
 
+from src.crm_deal_identity_repair.digests import repaired_state_digest, rollback_image_digest
 from src.crm_deal_identity_repair.execution_models import (
     RepairCheckpoint,
     RepairMutationOutcome,
@@ -28,14 +29,53 @@ def atomic_result_from_record(record: Record, *, replayed: bool) -> RepairAtomic
     payload = canonical_payload(_string(image_values, "payload_json"))
     if _canonical_json(payload) != _string(image_values, "payload_json"):
         raise RuntimeError("repair rollback payload is not canonical JSON")
+    image = rollback_image_from_properties(image_values)
+    checkpoint = checkpoint_from_properties(_properties(record, "checkpoint"))
+    outbox = outbox_event_from_properties(_properties(record, "outbox"))
+    _validate_bundle(result, image, checkpoint, outbox, payload)
     return RepairAtomicMutationResult(
         decision="replayed" if replayed else "committed",
         mutation=result,
-        rollback_image=rollback_image_from_properties(image_values),
-        checkpoint=checkpoint_from_properties(_properties(record, "checkpoint")),
-        outbox_event=outbox_event_from_properties(_properties(record, "outbox")),
+        rollback_image=image,
+        checkpoint=checkpoint,
+        outbox_event=outbox,
         repaired_state_digest=_string(_properties(record, "result"), "repaired_state_digest"),
     )
+
+
+def _validate_bundle(
+    result: RepairMutationResult,
+    image: RepairRollbackImage,
+    checkpoint: RepairCheckpoint,
+    outbox: RepairOutboxEvent,
+    payload: Mapping[str, JsonValue],
+) -> None:
+    if (result.run_id, result.unit_id) != (image.run_id, image.unit_id):
+        raise RuntimeError("repair bundle rollback scope differs")
+    if (result.run_id, result.unit_id) != (checkpoint.run_id, checkpoint.unit_id):
+        raise RuntimeError("repair bundle checkpoint scope differs")
+    if (result.run_id, result.unit_id) != (outbox.run_id, outbox.unit_id):
+        raise RuntimeError("repair bundle outbox scope differs")
+    if (
+        result.rollback_image_digest != image.image_digest
+        or result.payload_digest != image.payload_digest
+    ):
+        raise RuntimeError("repair bundle rollback digest differs")
+    if (
+        result.evidence_digest != image.evidence_digest
+        or result.evidence_digest != checkpoint.evidence_digest
+    ):
+        raise RuntimeError("repair bundle evidence digest differs")
+    if image.image_digest != rollback_image_digest(dict(payload)):
+        raise RuntimeError("repair rollback image digest is invalid")
+    expected_state = payload.get("expected_repaired_state")
+    if not isinstance(expected_state, dict):
+        raise RuntimeError("repair rollback expected state is invalid")
+    expected = {key: _json_value(value) for key, value in expected_state.items()}
+    if image.expected_repaired_digest != repaired_state_digest(expected):
+        raise RuntimeError("repair rollback expected-state digest is invalid")
+    if _string(payload, "contract_version") != "crm_deal_identity_repair_mutation_v1":
+        raise RuntimeError("repair rollback contract is invalid")
 
 
 def mutation_result_from_properties(values: Mapping[str, JsonValue]) -> RepairMutationResult:

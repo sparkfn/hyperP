@@ -69,12 +69,13 @@ def parse_repair_inventory(
         raise ValueError("repair inventory record hash is invalid")
     version = _positive_version(payload["source_record_version"])
     raw_payload = _decoded_json_object(payload["raw_payload"], "raw_payload")
-    _decoded_json_object(payload["normalized_payload"], "normalized_payload")
+    normalized_payload = _decoded_json_object(payload["normalized_payload"], "normalized_payload")
     owners = _active_owner_ids(payload["linked_people"])
     descendants = _descendant_source_record_pks(payload["descendants"], item.source_record_pk)
     envelope = _rebuild_v2_envelope(
         item,
         raw_payload,
+        normalized_payload,
         payload["observed_at"],
         source_instance_id,
         entity_key,
@@ -165,6 +166,7 @@ def build_repair_plan(
 def _rebuild_v2_envelope(
     item: RepairInventoryItem,
     raw_payload: Mapping[str, JsonValue],
+    normalized_payload: Mapping[str, JsonValue],
     observed_at: object,
     source_instance_id: str,
     entity_key: str,
@@ -182,7 +184,7 @@ def _rebuild_v2_envelope(
         or not isinstance(raw_deal_value, dict)
     ):
         return None
-    contacts = _contacts_from_raw_groups(contact_rows)
+    contacts = _contacts_from_raw_groups(contact_rows, normalized_payload)
     primary_contact_id = _optional_string(raw_payload.get("primary_contact_id"))
     primary = next((contact for contact in contacts if contact.id == primary_contact_id), None)
     rebuilt = build_crm_deal_envelope(
@@ -212,6 +214,7 @@ def _rebuild_v2_envelope(
         or envelope.observed_at != expected_observed
         or envelope.identity_policy_version != "crm_deal_identity_v2"
         or envelope.identity_link_key != f"bitrix:{source_instance_id}:deal:{item.deal_id}"
+        or envelope.record_hash != _required_string(item.payload, "record_hash")
         or not _is_sha256_digest(envelope.record_hash)
         or any(
             identifier.type == "crm_contact_id"
@@ -220,10 +223,16 @@ def _rebuild_v2_envelope(
         )
     ):
         return None
+    if not _normalized_payload_matches(envelope, normalized_payload):
+        return None
     return envelope
 
 
-def _contacts_from_raw_groups(value: list[JsonValue]) -> tuple[CrmContact, ...]:
+def _contacts_from_raw_groups(
+    value: list[JsonValue],
+    normalized_payload: Mapping[str, JsonValue],
+) -> tuple[CrmContact, ...]:
+    full_name = _frozen_full_name(normalized_payload)
     contacts: list[CrmContact] = []
     for group in value:
         if not isinstance(group, list):
@@ -246,12 +255,39 @@ def _contacts_from_raw_groups(value: list[JsonValue]) -> tuple[CrmContact, ...]:
         contacts.append(
             CrmContact(
                 id=values["crm_contact_id"][0],
-                full_name=None,
+                full_name=full_name if len(contacts) == 0 else None,
                 phones=tuple(sorted(set(values["phone"]))),
                 emails=tuple(sorted(set(values["email"]))),
             )
         )
     return tuple(contacts)
+
+
+def _frozen_full_name(normalized_payload: Mapping[str, JsonValue]) -> str | None:
+    """Return a primary-contact name only when frozen normalized evidence retained it."""
+    attributes = normalized_payload.get("attributes")
+    if not isinstance(attributes, dict):
+        return None
+    value = attributes.get("full_name")
+    return value if isinstance(value, str) and value else None
+
+
+def _normalized_payload_matches(
+    envelope: SourceRecordEnvelope,
+    frozen: Mapping[str, JsonValue],
+) -> bool:
+    """Fail closed when a deterministic rebuild would lose normalized v2 evidence."""
+    if not frozen:
+        return True
+    attributes = frozen.get("attributes")
+    if attributes is not None and attributes != envelope.attributes:
+        return False
+    identifiers = frozen.get("identifiers")
+    if identifiers is not None:
+        rebuilt = [item.model_dump(mode="json") for item in envelope.identifiers]
+        if identifiers != rebuilt:
+            return False
+    return True
 
 
 def _aware_datetime(value: object) -> datetime | None:

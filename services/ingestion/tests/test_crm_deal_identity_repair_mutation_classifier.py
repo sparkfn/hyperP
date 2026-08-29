@@ -128,12 +128,10 @@ def test_reconstruction_uses_locked_scope_entity_and_frozen_time_exactly() -> No
     assert {item.source_instance_id for item in scoped} == {"portal-a"}
 
 
-def test_reconstruction_changes_only_scope_bound_identity_for_another_portal() -> None:
+def test_reconstruction_rejects_a_changed_source_instance_hash_scope() -> None:
     parsed = parse_repair_inventory(_inventory(), "portal-b", "tenant-a")
-    assert parsed.envelope is not None
-    assert parsed.envelope.identity_link_key == "bitrix:portal-b:deal:1"
-    scoped = [item for item in parsed.envelope.identifiers if item.type == "crm_contact_id"]
-    assert {item.source_instance_id for item in scoped} == {"portal-b"}
+    assert parsed.envelope is None
+    assert build_repair_plan(parsed, _match(), ()).disposition == "review_required"
 
 
 def test_missing_or_naive_frozen_time_fails_closed_to_review() -> None:
