@@ -33,9 +33,17 @@ def verify_approval_overlay(
 ) -> VerifiedApprovalOverlay:
     """Validate caller-supplied overlay metadata without creating an approval."""
     required = {
-        "approval_reference", "artifact_id", "artifact_manifest_hmac", "inventory_digest",
-        "manifest_digest", "repository_sha", "image_digest", "configuration_digest",
-        "source_contract_uuid", "unit_ceiling", "rows",
+        "approval_reference",
+        "artifact_id",
+        "artifact_manifest_hmac",
+        "inventory_digest",
+        "manifest_digest",
+        "repository_sha",
+        "image_digest",
+        "configuration_digest",
+        "source_contract_uuid",
+        "unit_ceiling",
+        "rows",
     }
     if set(payload) != required:
         raise ValueError("repair approval overlay schema is invalid")
@@ -54,7 +62,11 @@ def verify_approval_overlay(
         if payload.get(key) != expected:
             raise ValueError(f"repair approval overlay {key} does not bind the qualified run")
     reference = payload["approval_reference"]
-    if reference != manifest.approval_reference or not isinstance(reference, str) or not reference:
+    if (
+        reference != manifest.approval_reference
+        or not isinstance(reference, str)
+        or not reference
+    ):
         raise ValueError("repair approval overlay reference is invalid")
     raw_rows = payload["rows"]
     if not isinstance(raw_rows, list):
@@ -73,7 +85,11 @@ def verify_approval_overlay(
         raise ValueError("repair approval overlay does not cover the qualified inventory")
     if any(row.inventory_key != row.source_record_pk for row in rows):
         raise ValueError("repair approval overlay inventory keys must equal qualified identities")
-    return VerifiedApprovalOverlay(reference, object_digest(_OVERLAY_DOMAIN, dict(payload)), rows)
+    return VerifiedApprovalOverlay(
+        reference,
+        object_digest(_OVERLAY_DOMAIN, dict(payload)),
+        rows,
+    )
 
 
 def allocate_units(
@@ -114,8 +130,11 @@ def allocation_digest(overlay: VerifiedApprovalOverlay, units: tuple[RepairUnit,
     payload: dict[str, JsonValue] = {
         "overlay_digest": overlay.overlay_digest,
         "units": [
-            {"unit_id": unit.unit_id, "sequence": unit.sequence,
-             "inventory_fingerprint": unit.inventory_fingerprint}
+            {
+                "unit_id": unit.unit_id,
+                "sequence": unit.sequence,
+                "inventory_fingerprint": unit.inventory_fingerprint,
+            }
             for unit in units
         ],
     }

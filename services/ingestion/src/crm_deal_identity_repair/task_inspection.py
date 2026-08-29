@@ -91,7 +91,12 @@ class RepairTaskInspection:
         timeout_seconds: float,
     ) -> bool:
         """Require every worker reply and explicit no-delivery proof across all states."""
-        if not expected_workers or timeout_seconds <= 0 or self.inspection_failed or self.timed_out:
+        if (
+            not expected_workers
+            or timeout_seconds <= 0
+            or self.inspection_failed
+            or self.timed_out
+        ):
             return False
         if self.reply_errors or self.unknown_task_ids:
             return False

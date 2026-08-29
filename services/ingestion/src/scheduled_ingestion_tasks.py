@@ -239,9 +239,7 @@ def _dispatch_active_bitrix_successor(occurrence: str) -> str | None:
 
 
 def _legacy_reservation_identity(marker_key: str) -> tuple[str, str]:
-    routing_digest = "sha256:" + hashlib.sha256(
-        f"legacy-bitrix:{marker_key}".encode()
-    ).hexdigest()
+    routing_digest = "sha256:" + hashlib.sha256(f"legacy-bitrix:{marker_key}".encode()).hexdigest()
     return routing_digest, f"legacy:{marker_key}"
 
 
@@ -297,9 +295,10 @@ def _reconcile_legacy_marker(
 def _begin_legacy_bitrix_publication(reservation: RepairPublicationReservation) -> None:
     graph = Neo4jClient(get_settings())
     try:
-        CrmDealRepairPublicationRepository(graph, reservation.control_instance_id).begin_publishing(
-            reservation
-        )
+        CrmDealRepairPublicationRepository(
+            graph,
+            reservation.control_instance_id,
+        ).begin_publishing(reservation)
     finally:
         graph.close()
 
@@ -309,9 +308,10 @@ def _publish_legacy_bitrix_publication(
 ) -> None:
     graph = Neo4jClient(get_settings())
     try:
-        CrmDealRepairPublicationRepository(graph, reservation.control_instance_id).mark_published(
-            reservation, workflow_task_id
-        )
+        CrmDealRepairPublicationRepository(
+            graph,
+            reservation.control_instance_id,
+        ).mark_published(reservation, workflow_task_id)
     finally:
         graph.close()
 

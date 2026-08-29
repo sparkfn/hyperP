@@ -16,7 +16,10 @@ REQUIRED_CONSTRAINTS = {
     "crm_deal_repair_boundary_artifact_unique": ("RepairExecutionBoundary", ("artifact_id",)),
     "crm_deal_repair_run_id_unique": ("CrmDealRepairRun", ("run_id",)),
     "crm_deal_repair_run_repair_id_unique": ("CrmDealRepairRun", ("repair_id",)),
-    "crm_deal_repair_run_identity_unique": ("CrmDealRepairRun", ("qualification_identity",)),
+    "crm_deal_repair_run_identity_unique": (
+        "CrmDealRepairRun",
+        ("qualification_identity",),
+    ),
     "crm_deal_repair_quiescence_unique": (
         "CrmDealRepairQuiescence",
         ("run_id", "quiescence_id"),
@@ -52,14 +55,20 @@ REQUIRED_CONSTRAINTS = {
         "CrmDealRepairQualifiedInventoryRow", ("run_id", "inventory_key")
     ),
     "crm_deal_repair_authorization_proof_unique": (
-        "CrmDealRepairAuthorizationProof", ("run_id", "operation", "revision")
+        "CrmDealRepairAuthorizationProof",
+        ("run_id", "operation", "revision"),
     ),
     "crm_deal_repair_publication_reservation_unique": (
         "BitrixRepairPublicationReservation",
-        ("control_instance_id", "routing_identity_digest", "occurrence_generation_identity"),
+        (
+            "control_instance_id",
+            "routing_identity_digest",
+            "occurrence_generation_identity",
+        ),
     ),
     "crm_deal_repair_publication_token_unique": (
-        "BitrixRepairPublicationReservation", ("reservation_token",)
+        "BitrixRepairPublicationReservation",
+        ("reservation_token",),
     ),
 }
 REQUIRED_INDEXES = {
@@ -93,7 +102,10 @@ REQUIRED_INDEXES = {
         "CrmDealRepairVerification",
         ("run_id", "unit_id", "generation", "outcome"),
     ),
-    "crm_deal_repair_outbox_state": ("CrmDealRepairOutbox", ("run_id", "state", "sequence")),
+    "crm_deal_repair_outbox_state": (
+        "CrmDealRepairOutbox",
+        ("run_id", "state", "sequence"),
+    ),
     "crm_deal_repair_control_state": ("CrmDealRepairControl", ("state", "revision")),
     "crm_deal_repair_publication_reservation_state": (
         "BitrixRepairPublicationReservation", ("control_instance_id", "status")
@@ -164,5 +176,8 @@ def _assert_definitions(
         row = rows.get(name)
         if row is None or row["type"] != expected_type or row["entityType"] != "NODE":
             raise RuntimeError(f"CRM repair ledger {label} is missing or malformed: {name}")
-        if tuple(row["labelsOrTypes"]) != (node_label,) or tuple(row["properties"]) != properties:
+        if (
+            tuple(row["labelsOrTypes"]) != (node_label,)
+            or tuple(row["properties"]) != properties
+        ):
             raise RuntimeError(f"CRM repair ledger {label} is missing or malformed: {name}")

@@ -326,8 +326,11 @@ def _status(arguments: Namespace) -> int:
     }
     if control is not None:
         payload["control"] = {
-            "state": control.state, "owner_id": control.owner_id, "revision": control.revision,
-            "boundary_digest": control.boundary_digest, "prior_state": control.prior_state,
+            "state": control.state,
+            "owner_id": control.owner_id,
+            "revision": control.revision,
+            "boundary_digest": control.boundary_digest,
+            "prior_state": control.prior_state,
             "dispatch_blocked": control.dispatch_blocked,
             "dispatch_owner_id": control.dispatch_owner_id,
             "task_proof_state": control.task_proof_state,
@@ -342,6 +345,7 @@ def _status(arguments: Namespace) -> int:
         }
     print(json.dumps(payload, sort_keys=True))
     return 0
+
 
 def _control_boundary_proof_admissible(
     stored: tuple[RepairBoundaryComponentProof, str, str] | None,
@@ -457,8 +461,17 @@ def _recorded_task_proof(
         raise RuntimeError("task proof must be a JSON object")
     payload: dict[str, object] = {key: value for key, value in decoded.items()}
     allowed_fields = {
-        "expected_workers", "responders", "tasks", "active", "reserved", "scheduled",
-        "queued", "unknown_task_ids", "inspection_failed", "timed_out", "reply_errors",
+        "expected_workers",
+        "responders",
+        "tasks",
+        "active",
+        "reserved",
+        "scheduled",
+        "queued",
+        "unknown_task_ids",
+        "inspection_failed",
+        "timed_out",
+        "reply_errors",
         "broker_queued",
     }
     if set(payload) - allowed_fields:
@@ -606,21 +619,33 @@ def _control_command(arguments: Namespace) -> int:
         if arguments.command == "quiesce":
             if existing is None:
                 lease = RepairControlLease(
-                    run.run_id, arguments.owner_id, arguments.control_token, 1, "quiescing",
+                    run.run_id,
+                    arguments.owner_id,
+                    arguments.control_token,
+                    1,
+                    "quiescing",
                     run.boundary_digest,
                 )
                 expected_revision = 0
             else:
                 lease = RepairControlLease(
-                    run.run_id, arguments.owner_id, arguments.control_token,
-                    arguments.expected_revision + 1, "quiescing", run.boundary_digest,
+                    run.run_id,
+                    arguments.owner_id,
+                    arguments.control_token,
+                    arguments.expected_revision + 1,
+                    "quiescing",
+                    run.boundary_digest,
                 )
                 expected_revision = arguments.expected_revision
             result = service.quiesce(
                 RepairQuiescenceRequest(
-                    repair_id=arguments.repair_id, lease=lease, expected_revision=expected_revision,
-                    expected_workers=expected_workers, tasks=tasks,
-                    timeout_seconds=timeout_seconds, stale_run_id=arguments.stale_run_id,
+                    repair_id=arguments.repair_id,
+                    lease=lease,
+                    expected_revision=expected_revision,
+                    expected_workers=expected_workers,
+                    tasks=tasks,
+                    timeout_seconds=timeout_seconds,
+                    stale_run_id=arguments.stale_run_id,
                 )
             )
         elif existing is None:
@@ -637,7 +662,11 @@ def _control_command(arguments: Namespace) -> int:
             result = service.pause(arguments.repair_id, existing, arguments.expected_revision)
         elif arguments.command == "resume":
             result = service.resume(
-                arguments.repair_id, existing, arguments.expected_revision, expected_workers, tasks,
+                arguments.repair_id,
+                existing,
+                arguments.expected_revision,
+                expected_workers,
+                tasks,
                 timeout_seconds,
             )
         elif arguments.command == "allocate":
@@ -654,8 +683,10 @@ def _control_command(arguments: Namespace) -> int:
             )
             units = allocate_units(overlay, run_id=run.run_id, manifest=manifest, generation=1)
             completion = RepairAllocationCompletion(
-                run_id=run.run_id, allocation_digest=allocation_digest(overlay, units),
-                executable_count=len(units), unit_count=len(units),
+                run_id=run.run_id,
+                allocation_digest=allocation_digest(overlay, units),
+                executable_count=len(units),
+                unit_count=len(units),
             )
             repository.allocate(
                 existing,
@@ -674,8 +705,15 @@ def _control_command(arguments: Namespace) -> int:
             raise RuntimeError("unsupported repair control command")
     finally:
         client.close()
-    print(json.dumps({
-        "repair_id": arguments.repair_id, "state": result.state, "revision": result.revision,
-        "execution_allowed": False,
-    }, sort_keys=True))
+    print(
+        json.dumps(
+            {
+                "repair_id": arguments.repair_id,
+                "state": result.state,
+                "revision": result.revision,
+                "execution_allowed": False,
+            },
+            sort_keys=True,
+        )
+    )
     return 0

@@ -27,14 +27,15 @@ class RepairControlRepository(Protocol):
 
     def claim(self, lease: RepairControlLease, expected_revision: int) -> RepairControlLease: ...
 
-    def transition(
-        self, lease: RepairControlLease, expected_revision: int
-    ) -> RepairControlLease: ...
+    def transition(self, lease: RepairControlLease, expected_revision: int) -> RepairControlLease: ...
 
     def inventory_topology(self, lease: RepairControlLease) -> RepairTopologyCapture: ...
 
     def supersede_topology(
-        self, lease: RepairControlLease, expected_revision: int, topology: RepairTopologyCapture
+        self,
+        lease: RepairControlLease,
+        expected_revision: int,
+        topology: RepairTopologyCapture,
     ) -> RepairControlLease: ...
 
     def verify_quiesced_topology(
@@ -46,13 +47,19 @@ class RepairControlRepository(Protocol):
     ) -> RepairStaleRunProof: ...
 
     def terminalize_stale_run(
-        self, lease: RepairControlLease, expected_revision: int, proof: RepairStaleRunProof
+        self,
+        lease: RepairControlLease,
+        expected_revision: int,
+        proof: RepairStaleRunProof,
     ) -> None: ...
 
     def read(self, run_id: str) -> RepairControlLease | None: ...
 
     def record_task_proof(
-        self, lease: RepairControlLease, proof_state: str, stop_reason: str | None
+        self,
+        lease: RepairControlLease,
+        proof_state: str,
+        stop_reason: str | None,
     ) -> None: ...
 
     def read_boundary_component_proof(
@@ -159,8 +166,13 @@ class RepairQuiescenceService:
         if lease.state not in {"quiesced", "allocated"}:
             raise ValueError("only quiesced or allocated repair control can pause")
         paused = RepairControlLease(
-            lease.run_id, lease.owner_id, lease.token, expected_revision + 1, "paused",
-            lease.boundary_digest, prior_state=lease.state,
+            lease.run_id,
+            lease.owner_id,
+            lease.token,
+            expected_revision + 1,
+            "paused",
+            lease.boundary_digest,
+            prior_state=lease.state,
         )
         return self._repository.transition(paused, expected_revision)
 
@@ -181,7 +193,9 @@ class RepairQuiescenceService:
             raise ValueError("only a paused repair control can resume")
         inspection = self._inspector.inspect(expected_workers, tasks, timeout_seconds)
         if not inspection.proves_absence(
-            expected_workers=expected_workers, broker=self._broker, tasks=tasks,
+            expected_workers=expected_workers,
+            broker=self._broker,
+            tasks=tasks,
             timeout_seconds=timeout_seconds,
         ):
             self._repository.record_task_proof(lease, "failed", "resume_task_absence_not_proven")
@@ -192,7 +206,11 @@ class RepairQuiescenceService:
         if lease.prior_state is None:
             raise RuntimeError("paused repair control has no resumable state")
         resumed = RepairControlLease(
-            lease.run_id, lease.owner_id, lease.token, expected_revision + 1, lease.prior_state,
+            lease.run_id,
+            lease.owner_id,
+            lease.token,
+            expected_revision + 1,
+            lease.prior_state,
             lease.boundary_digest,
         )
         return self._repository.transition(resumed, expected_revision)
@@ -260,7 +278,11 @@ class RepairQuiescenceService:
         # transition() seals the authorized lost post-state in the same Neo4j transaction.
         return self._repository.transition(
             RepairControlLease(
-                lease.run_id, lease.owner_id, lease.token, lease.revision + 1, "lost",
+                lease.run_id,
+                lease.owner_id,
+                lease.token,
+                lease.revision + 1,
+                "lost",
                 lease.boundary_digest,
             ),
             lease.revision,

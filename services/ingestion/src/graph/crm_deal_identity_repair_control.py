@@ -170,6 +170,7 @@ WHERE persisted_units = $units
 RETURN completion.run_id AS run_id
 """
 
+
 class CrmDealRepairControlRepository:
     """CAS-controls only repair metadata and the exact Bitrix dispatch block."""
 
@@ -296,7 +297,10 @@ class CrmDealRepairControlRepository:
         post_proof = RepairBoundaryComponentProof.from_snapshot(post_snapshot)
         capture_digest = object_digest(
             b"crm-deal-identity-repair-operation-capture-v1\x00",
-            {"requested": _json_mapping(capture), "readback": _json_mapping(operation_capture)},
+            {
+                "requested": _json_mapping(capture),
+                "readback": _json_mapping(operation_capture),
+            },
         )
         authorization_digest = object_digest(
             b"crm-deal-identity-repair-transaction-authorization-v2\x00",
@@ -514,15 +518,22 @@ RETURN control.run_id AS run_id, control.owner_id AS owner_id, control.token AS 
                     "repair topology changed, fence is stale, or control ownership was lost"
                 )
             return RepairControlLease(
-                lease.run_id, lease.owner_id, lease.token, int(record["revision"]),
-                "quiesced", lease.boundary_digest,
+                lease.run_id,
+                lease.owner_id,
+                lease.token,
+                int(record["revision"]),
+                "quiesced",
+                lease.boundary_digest,
             )
 
         def _validate(tx: ManagedTransaction, result: RepairControlLease) -> Mapping[str, object]:
             verification = tx.run(
                 VERIFY_QUIESCED_REPAIR_TOPOLOGY,
-                run_id=result.run_id, owner_id=result.owner_id, token=result.token,
-                expected_revision=result.revision, boundary_digest=result.boundary_digest,
+                run_id=result.run_id,
+                owner_id=result.owner_id,
+                token=result.token,
+                expected_revision=result.revision,
+                boundary_digest=result.boundary_digest,
                 **parameters,
             ).single()
             if verification is None or verification["verified"] is not True:
@@ -534,8 +545,12 @@ RETURN control.run_id AS run_id, control.owner_id AS owner_id, control.token AS 
 
         return self._execute_proven_write(
             lease_after=RepairControlLease(
-                lease.run_id, lease.owner_id, lease.token, expected_revision + 1,
-                "quiesced", lease.boundary_digest,
+                lease.run_id,
+                lease.owner_id,
+                lease.token,
+                expected_revision + 1,
+                "quiesced",
+                lease.boundary_digest,
             ),
             operation="supersede_topology",
             capture=parameters,
@@ -556,7 +571,9 @@ RETURN control.run_id AS run_id, control.owner_id AS owner_id, control.token AS 
         def _work(tx: ManagedTransaction) -> bool:
             record = tx.run(
                 VERIFY_QUIESCED_REPAIR_TOPOLOGY,
-                run_id=lease.run_id, owner_id=lease.owner_id, token=lease.token,
+                run_id=lease.run_id,
+                owner_id=lease.owner_id,
+                token=lease.token,
                 expected_revision=lease.revision,
                 boundary_digest=lease.boundary_digest,
                 **parameters,
@@ -632,8 +649,11 @@ RETURN control.run_id AS run_id, control.owner_id AS owner_id, control.token AS 
         def _validate(tx: ManagedTransaction, _result: None) -> Mapping[str, object]:
             record = tx.run(
                 _VERIFY_TERMINALIZED_STALE_RUN,
-                run_id=lease.run_id, owner_id=lease.owner_id, token=lease.token,
-                expected_revision=lease.revision, boundary_digest=lease.boundary_digest,
+                run_id=lease.run_id,
+                owner_id=lease.owner_id,
+                token=lease.token,
+                expected_revision=lease.revision,
+                boundary_digest=lease.boundary_digest,
                 **parameters,
             ).single()
             if record is None:
@@ -711,7 +731,10 @@ RETURN control.run_id AS run_id, control.owner_id AS owner_id, control.token AS 
 
         def _validate(tx: ManagedTransaction, _result: None) -> Mapping[str, object]:
             return self._verify_control_post_state(
-                tx, lease, task_proof_state=proof_state, stop_reason=stop_reason
+                tx,
+                lease,
+                task_proof_state=proof_state,
+                stop_reason=stop_reason,
             )
 
         self._execute_proven_write(
@@ -836,8 +859,12 @@ RETURN control.run_id AS run_id, control.owner_id AS owner_id, control.token AS 
             lease
             if lease.state == "allocated"
             else RepairControlLease(
-                lease.run_id, lease.owner_id, lease.token, expected_revision + 1,
-                "allocated", lease.boundary_digest,
+                lease.run_id,
+                lease.owner_id,
+                lease.token,
+                expected_revision + 1,
+                "allocated",
+                lease.boundary_digest,
             )
         )
 
@@ -846,11 +873,15 @@ RETURN control.run_id AS run_id, control.owner_id AS owner_id, control.token AS 
         ) -> Mapping[str, object]:
             record = tx.run(
                 _VERIFY_REPAIR_ALLOCATION,
-                run_id=lease.run_id, owner_id=lease.owner_id, token=lease.token,
-                revision=allocated_lease.revision, boundary_digest=lease.boundary_digest,
+                run_id=lease.run_id,
+                owner_id=lease.owner_id,
+                token=lease.token,
+                revision=allocated_lease.revision,
+                boundary_digest=lease.boundary_digest,
                 allocation_digest=completion.allocation_digest,
                 overlay_digest=overlay.overlay_digest,
-                approval_reference=overlay.approval_reference, units=unit_parameters,
+                approval_reference=overlay.approval_reference,
+                units=unit_parameters,
             ).single()
             if record is None:
                 raise RuntimeError("repair allocation post-state differs from sealed allocation")
@@ -912,6 +943,7 @@ def _component_payload(proof: RepairBoundaryComponentProof) -> dict[str, JsonVal
         "control_digest": proof.control_digest,
         "stale_run_evidence_digest": proof.stale_run_evidence_digest,
     }
+
 
 def _validate_allocation_inputs(
     units: tuple[RepairUnit, ...],

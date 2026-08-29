@@ -182,9 +182,7 @@ def dispatch_generation_canvas(
     # Stage-history work is a separate artifact-replay cadence. It is neither
     # admitted nor fenced by #310, so a mixed caller contributes only repair-owned
     # entries to this generation canvas.
-    canvas_entries = tuple(
-        entry for entry in entries if entry.stream_key != "crm_stage_history"
-    )
+    canvas_entries = tuple(entry for entry in entries if entry.stream_key != "crm_stage_history")
     canvas = build_generation_canvas(
         generation_id=generation_id,
         boundary_digest=boundary_digest,
@@ -227,7 +225,12 @@ def reserve_generation_publication(
     if not scope:
         return None
     routing_digest = _generation_routing_digest(
-        generation_id, configuration_digest, task_kind, occurrence, resume_generation, scope
+        generation_id,
+        configuration_digest,
+        task_kind,
+        occurrence,
+        resume_generation,
+        scope,
     )
     identity = f"{generation_id}:{occurrence or 'corrective'}:{resume_generation or 0}"
     from src.config import get_settings
@@ -294,7 +297,12 @@ def _assert_generation_reservation(
         raise RuntimeError("repair-owned generation publication is missing a reservation")
     identity = f"{generation_id}:{occurrence or 'corrective'}:{resume_generation or 0}"
     expected = _generation_routing_digest(
-        generation_id, configuration_digest, task_kind, occurrence, resume_generation, scope
+        generation_id,
+        configuration_digest,
+        task_kind,
+        occurrence,
+        resume_generation,
+        scope,
     )
     if (
         reservation.control_instance_id != control_instance_id
