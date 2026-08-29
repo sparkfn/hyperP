@@ -201,7 +201,10 @@ class CrmDealIdentityRepairMutationRepository:
         }
         if any(result.get(key) != value for key, value in expected_ids.items()):
             raise RepairMutationDriftError("repair committed bundle identity differs")
-        replay = atomic_result_from_record(row, replayed=True)
+        try:
+            replay = atomic_result_from_record(row, replayed=True)
+        except RuntimeError as exc:
+            raise RepairMutationDriftError("repair committed bundle payload differs") from exc
         assert replay.mutation is not None
         if replay.mutation.outcome == "applied":
             owner_row = tx.run(
