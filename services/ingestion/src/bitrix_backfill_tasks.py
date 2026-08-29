@@ -182,9 +182,7 @@ def dispatch_generation_canvas(
     # Stage-history work is a separate artifact-replay cadence. It is neither
     # admitted nor fenced by #310, so a mixed caller contributes only repair-owned
     # entries to this generation canvas.
-    canvas_entries = tuple(
-        entry for entry in entries if entry.stream_key != "crm_stage_history"
-    )
+    canvas_entries = tuple(entry for entry in entries if entry.stream_key != "crm_stage_history")
     canvas = build_generation_canvas(
         generation_id=generation_id,
         boundary_digest=boundary_digest,
@@ -275,9 +273,12 @@ def _generation_routing_digest(
         "resume_generation": resume_generation,
         "stream_scope": stream_scope,
     }
-    return "sha256:" + hashlib.sha256(
-        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    ).hexdigest()
+    return (
+        "sha256:"
+        + hashlib.sha256(
+            json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+    )
 
 
 def _assert_generation_reservation(
@@ -336,9 +337,9 @@ def _mark_generation_published(
 
     client = Neo4jClient(get_settings())
     try:
-        CrmDealRepairPublicationRepository(
-            client, reservation.control_instance_id
-        ).mark_published(reservation, publication_id)
+        CrmDealRepairPublicationRepository(client, reservation.control_instance_id).mark_published(
+            reservation, publication_id
+        )
     finally:
         client.close()
 
@@ -386,10 +387,13 @@ def _assert_repair_dispatch_unblocked(control_instance_id: str) -> None:
     client = Neo4jClient(get_settings())
     try:
         def _read(tx: ManagedTransaction) -> bool:
-            return tx.run(
-                GET_REPAIR_DISPATCH_BLOCK,
-                control_instance_id=control_instance_id,
-            ).single() is not None
+            return (
+                tx.run(
+                    GET_REPAIR_DISPATCH_BLOCK,
+                    control_instance_id=control_instance_id,
+                ).single()
+                is not None
+            )
 
         if client.execute_read(_read):
             raise RuntimeError("Bitrix generation publication is blocked by CRM repair quiescence")

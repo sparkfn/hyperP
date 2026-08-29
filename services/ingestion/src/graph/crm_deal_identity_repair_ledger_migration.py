@@ -55,10 +55,12 @@ REQUIRED_CONSTRAINTS = {
     "crm_deal_repair_outbox_unique": ("CrmDealRepairOutbox", ("run_id", "event_id")),
     "crm_deal_repair_control_run_unique": ("CrmDealRepairControl", ("run_id",)),
     "crm_deal_repair_allocation_completion_unique": (
-        "CrmDealRepairAllocationCompletion", ("run_id",)
+        "CrmDealRepairAllocationCompletion",
+        ("run_id",),
     ),
     "crm_deal_repair_qualified_row_unique": (
-        "CrmDealRepairQualifiedInventoryRow", ("run_id", "inventory_key")
+        "CrmDealRepairQualifiedInventoryRow",
+        ("run_id", "inventory_key"),
     ),
     "crm_deal_repair_authorization_proof_unique": (
         "CrmDealRepairAuthorizationProof",
@@ -120,7 +122,8 @@ REQUIRED_INDEXES = {
     ),
     "crm_deal_repair_control_state": ("CrmDealRepairControl", ("state", "revision")),
     "crm_deal_repair_publication_reservation_state": (
-        "BitrixRepairPublicationReservation", ("control_instance_id", "status")
+        "BitrixRepairPublicationReservation",
+        ("control_instance_id", "status"),
     ),
 }
 
@@ -188,8 +191,5 @@ def _assert_definitions(
         row = rows.get(name)
         if row is None or row["type"] != expected_type or row["entityType"] != "NODE":
             raise RuntimeError(f"CRM repair ledger {label} is missing or malformed: {name}")
-        if (
-            tuple(row["labelsOrTypes"]) != (node_label,)
-            or tuple(row["properties"]) != properties
-        ):
+        if tuple(row["labelsOrTypes"]) != (node_label,) or tuple(row["properties"]) != properties:
             raise RuntimeError(f"CRM repair ledger {label} is missing or malformed: {name}")

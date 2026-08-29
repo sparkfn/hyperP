@@ -178,15 +178,11 @@ class CrmDealRepairControlRepository:
         self._client = client
         self._control_instance_id = control_instance_id
 
-    def claim(
-        self, lease: RepairControlLease, expected_revision: int
-    ) -> RepairControlLease:
+    def claim(self, lease: RepairControlLease, expected_revision: int) -> RepairControlLease:
         """Create or renew only the same owner/token; competing ownership fails closed."""
         return self._write(lease, expected_revision, creating=True)
 
-    def transition(
-        self, lease: RepairControlLease, expected_revision: int
-    ) -> RepairControlLease:
+    def transition(self, lease: RepairControlLease, expected_revision: int) -> RepairControlLease:
         """Advance only a same-owner/token control revision; never clear the block."""
         return self._write(lease, expected_revision, creating=False)
 
@@ -219,18 +215,13 @@ class CrmDealRepairControlRepository:
                 raise RuntimeError("repair control ownership or revision was rejected")
             prior = record["prior_state"]
             return RepairControlLease(
-                run_id=str(record["run_id"]),
-                owner_id=str(record["owner_id"]),
-                token=str(record["token"]),
-                revision=int(record["revision"]),
-                state=str(record["state"]),
-                boundary_digest=str(record["boundary_digest"]),
+                run_id=str(record["run_id"]), owner_id=str(record["owner_id"]),
+                token=str(record["token"]), revision=int(record["revision"]),
+                state=str(record["state"]), boundary_digest=str(record["boundary_digest"]),
                 prior_state=None if prior is None else str(prior),
             )
 
-        def _validate(
-            tx: ManagedTransaction, result: RepairControlLease
-        ) -> Mapping[str, object]:
+        def _validate(tx: ManagedTransaction, result: RepairControlLease) -> Mapping[str, object]:
             return self._verify_control_post_state(tx, result)
 
         return self._execute_proven_write(
@@ -534,9 +525,7 @@ RETURN control.run_id AS run_id, control.owner_id AS owner_id, control.token AS 
                 lease.boundary_digest,
             )
 
-        def _validate(
-            tx: ManagedTransaction, result: RepairControlLease
-        ) -> Mapping[str, object]:
+        def _validate(tx: ManagedTransaction, result: RepairControlLease) -> Mapping[str, object]:
             verification = tx.run(
                 VERIFY_QUIESCED_REPAIR_TOPOLOGY,
                 run_id=result.run_id,
@@ -786,9 +775,7 @@ RETURN control.run_id AS run_id, control.owner_id AS owner_id, control.token AS 
                 allocation_unit_count=int(record["allocation_unit_count"]),
                 completion_unit_count=None if completion_count is None else int(completion_count),
                 dispatch_blocked=(
-                    None
-                    if record["dispatch_blocked"] is None
-                    else bool(record["dispatch_blocked"])
+                    None if record["dispatch_blocked"] is None else bool(record["dispatch_blocked"])
                 ),
                 dispatch_owner_id=_optional_text(record["dispatch_owner_id"]),
                 topology_active_count=int(record["topology_active_count"]),
@@ -1060,9 +1047,7 @@ def _captured_maps(value: object) -> tuple[Mapping[str, object], ...]:
     return tuple(captures)
 
 
-def _boundary_parameters(
-    prefix: str, proof: RepairBoundaryComponentProof
-) -> dict[str, object]:
+def _boundary_parameters(prefix: str, proof: RepairBoundaryComponentProof) -> dict[str, object]:
     """Encode only canonical #300 component evidence for the #310-derived proof record."""
     return {
         f"{prefix}_source_instance_id": proof.source_instance_id,
@@ -1086,9 +1071,7 @@ def _required_text_value(value: object, label: str) -> str:
 
 def _required_text_list(value: object, label: str) -> tuple[str, ...]:
     """Read a unique list of proof identities without coercing graph values."""
-    if not isinstance(value, list) or any(
-        not isinstance(item, str) or not item for item in value
-    ):
+    if not isinstance(value, list) or any(not isinstance(item, str) or not item for item in value):
         raise RuntimeError(f"repair stale-run {label} proof is invalid")
     result = tuple(value)
     if len(set(result)) != len(result):

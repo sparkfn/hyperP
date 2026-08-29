@@ -62,11 +62,7 @@ def verify_approval_overlay(
         if payload.get(key) != expected:
             raise ValueError(f"repair approval overlay {key} does not bind the qualified run")
     reference = payload["approval_reference"]
-    if (
-        reference != manifest.approval_reference
-        or not isinstance(reference, str)
-        or not reference
-    ):
+    if reference != manifest.approval_reference or not isinstance(reference, str) or not reference:
         raise ValueError("repair approval overlay reference is invalid")
     raw_rows = payload["rows"]
     if not isinstance(raw_rows, list):

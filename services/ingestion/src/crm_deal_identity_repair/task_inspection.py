@@ -43,9 +43,7 @@ class RepairObservedTask:
     def identity_is_unknown(self) -> bool:
         """Partial records without a task ID cannot safely be classified as unrelated."""
         return self.task_id is None and not (
-            self.task_name is not None
-            and self.queue is not None
-            and self.kwargs_digest is not None
+            self.task_name is not None and self.queue is not None and self.kwargs_digest is not None
         )
 
 
@@ -91,28 +89,20 @@ class RepairTaskInspection:
         timeout_seconds: float,
     ) -> bool:
         """Require every worker reply and explicit no-delivery proof across all states."""
-        if (
-            not expected_workers
-            or timeout_seconds <= 0
-            or self.inspection_failed
-            or self.timed_out
-        ):
+        if not expected_workers or timeout_seconds <= 0 or self.inspection_failed or self.timed_out:
             return False
         if self.reply_errors or self.unknown_task_ids:
             return False
         if len(set(expected_workers)) != len(expected_workers):
             return False
-        if (
-            set(self.responders) != set(expected_workers)
-            or len(set(self.responders)) != len(self.responders)
+        if set(self.responders) != set(expected_workers) or len(set(self.responders)) != len(
+            self.responders
         ):
             return False
         observations = self.active + self.reserved + self.scheduled + self.queued
         if any(observed.identity_is_unknown for observed in observations):
             return False
-        if any(
-            observed.matches(expected) for observed in observations for expected in tasks
-        ):
+        if any(observed.matches(expected) for observed in observations for expected in tasks):
             return False
         queued = broker.has_queued_delivery(tasks, timeout_seconds)
         return queued is False

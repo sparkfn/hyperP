@@ -76,9 +76,7 @@ def _non_reader(
     query_names: tuple[str, ...],
     rationale: str,
 ) -> tuple[NonReaderRelationshipQuery, ...]:
-    return tuple(
-        NonReaderRelationshipQuery(module_path, name, rationale) for name in query_names
-    )
+    return tuple(NonReaderRelationshipQuery(module_path, name, rationale) for name in query_names)
 
 
 CURRENT_AUTHORITY_READERS: tuple[ReaderClassification, ...] = (
@@ -503,6 +501,5 @@ REPAIR_RETIRABLE_RELATIONSHIP_TYPES: frozenset[str] = frozenset(
     }
 )
 RELEVANT_READER_MODULES: frozenset[str] = frozenset(
-    item.module_path
-    for item in (*READER_CLASSIFICATIONS, *NON_READER_RELATIONSHIP_QUERIES)
+    item.module_path for item in (*READER_CLASSIFICATIONS, *NON_READER_RELATIONSHIP_QUERIES)
 )
