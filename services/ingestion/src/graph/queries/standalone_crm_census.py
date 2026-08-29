@@ -29,19 +29,20 @@ CLAIM_PUBLISHED_CHILD = (
     "AND EXISTS { MATCH (binding:BitrixExecutionSourceBinding) WHERE binding.source_key = census.source_key "
     "AND binding.source_instance_id = census.source_instance_id "
     "AND binding.control_instance_id = census.control_instance_id } "
+    "OPTIONAL MATCH (checkpoint:StandaloneCrmCensusCheckpoint {census_id: $census_id, "
+    "stream_kind: $stream_kind}) "
+    "WITH census, attempt, unit, publication, checkpoint WHERE checkpoint IS NULL OR "
+    "(checkpoint.frozen_upper_id = $frozen_upper_id AND checkpoint.revision_id IS NULL AND "
+    "(checkpoint.generation = $generation OR EXISTS { MATCH (:StandaloneCrmCensusContinuation {"
+    "census_id: $census_id, prior_generation: checkpoint.generation, next_generation: $generation}) })) "
     "MERGE (fence:StandaloneCrmCensusFence {census_id: $census_id, generation: $generation, "
     "stream_kind: $stream_kind}) ON CREATE SET fence.token = 0, fence.status = 'retired' "
-    "WITH census, attempt, unit, fence WHERE fence.status = 'retired' OR fence.lease_until < datetime() "
+    "WITH census, attempt, unit, checkpoint, fence WHERE fence.status = 'retired' OR fence.lease_until < datetime() "
     "SET fence.token = fence.token + 1, fence.status = 'active', fence.owner_id = $owner_id, "
     "fence.lease_until = datetime() + duration({seconds: $lease_seconds}), fence.updated_at = datetime(), "
     "unit.state = 'running', unit.updated_at = datetime() "
-    "OPTIONAL MATCH (checkpoint:StandaloneCrmCensusCheckpoint {census_id: $census_id, "
-    "stream_kind: $stream_kind}) "
-    "WITH census, attempt, unit, fence, checkpoint WHERE checkpoint IS NULL OR "
-    "(checkpoint.generation = $generation AND checkpoint.frozen_upper_id = $frozen_upper_id "
-    "AND checkpoint.revision_id IS NULL) "
     "FOREACH (_ IN CASE WHEN checkpoint IS NULL THEN [] ELSE [1] END | "
-    "SET checkpoint.fence_token = fence.token, checkpoint.updated_at = datetime()) "
+    "SET checkpoint.generation = $generation, checkpoint.fence_token = fence.token, checkpoint.updated_at = datetime()) "
     "RETURN fence.token AS fence_token, fence.owner_id AS fence_owner_id, "
     "coalesce(checkpoint.last_committed_id, 0) AS last_committed_id, "
     "checkpoint.binding_subject_id AS binding_subject_id, checkpoint.binding_offset AS binding_offset, "
@@ -81,6 +82,31 @@ LEASE_HELD_PUBLISHED_CHILD = (
     "AND binding.control_instance_id = census.control_instance_id } "
     "AND fence.lease_until >= datetime() "
     "RETURN fence.owner_id AS owner_id"
+)
+
+# A broker can deliver after the parent marks an exact publication `publishing`
+# but before its post-publish confirmation reaches Neo4j.  This probe is
+# deliberately read-only and never permits source client construction.
+PRECONFIRM_PUBLISHED_CHILD = (
+    "MATCH (census:StandaloneCrmCensus {census_id: $census_id, generation: $generation, "
+    "census_kind: 'source_sync', source_key: $source_key, source_instance_id: $source_instance_id, "
+    "control_instance_id: $control_instance_id, request_json: $request_json, "
+    "authority_revision: $authority_revision, authority_json: $authority_json}) "
+    "MATCH (attempt:StandaloneCrmCensusAttempt {census_id: $census_id, generation: $generation, status: 'running'}) "
+    "MATCH (unit:StandaloneCrmCensusUnit {census_id: $census_id, generation: $generation, stream_kind: $stream_kind, "
+    "frozen_upper_id: $frozen_upper_id}) "
+    "MATCH (:StandaloneCrmChildPublication {census_id: $census_id, generation: $generation, stream_kind: $stream_kind, "
+    "task_name: $task_name, task_id: $task_id, payload_digest: $payload_digest, payload_json: $payload_json, "
+    "payload_version: $payload_version, queue: $queue, status: 'publishing'}) "
+    "WHERE coalesce(census.cancel_requested, false) = false AND census.status IN ['publishing', 'running', 'recovering'] "
+    "AND datetime() < datetime($occurrence_deadline) AND datetime() < attempt.attempt_deadline "
+    "AND unit.state IN ['pending_publication', 'publishing', 'queued', 'running', 'paused'] "
+    "AND EXISTS { MATCH (instance:BitrixSourceInstance {status: 'active'})-[:INSTANCE_OF]->(source:SourceSystem {is_active: true}) "
+    "WHERE instance.source_key = census.source_key AND instance.source_instance_id = census.source_instance_id "
+    "AND source.source_key = census.source_key } "
+    "AND EXISTS { MATCH (binding:BitrixExecutionSourceBinding) WHERE binding.source_key = census.source_key "
+    "AND binding.source_instance_id = census.source_instance_id AND binding.control_instance_id = census.control_instance_id } "
+    "RETURN 1 AS pending"
 )
 
 # A claimed worker may process more than one bounded row under the same durable
@@ -356,6 +382,45 @@ PAUSE_CENSUS = (
     "FOREACH (_ IN CASE WHEN attempt IS NULL THEN [] ELSE [1] END | "
     "SET attempt.status = 'paused_with_checkpoint', attempt.updated_at = datetime()) "
     "RETURN census.census_id AS census_id"
+)
+
+# A child can fail after its exact fence claim but before its first #302/#303
+# mutation.  Persist the claimed checkpoint (including the all-zero initial
+# checkpoint) and pause its unit in the same authority-checked transaction so
+# continuation has a real durable handoff to inherit.
+PAUSE_CLAIMED_UNIT = (
+    "MATCH (census:StandaloneCrmCensus {census_id: $census_id, generation: $generation}) "
+    "MATCH (attempt:StandaloneCrmCensusAttempt {census_id: $census_id, generation: $generation, status: 'running'}) "
+    "MATCH (unit:StandaloneCrmCensusUnit {census_id: $census_id, generation: $generation, stream_kind: $stream_kind, state: 'running', frozen_upper_id: $frozen_upper_id}) "
+    "MATCH (fence:StandaloneCrmCensusFence {census_id: $census_id, generation: $generation, stream_kind: $stream_kind, "
+    "token: $fence_token, owner_id: $owner_id, status: 'active'}) "
+    "MATCH (:StandaloneCrmChildPublication {census_id: $census_id, generation: $generation, stream_kind: $stream_kind, "
+    "task_name: $task_name, task_id: $task_id, payload_digest: $payload_digest, status: 'published'}) "
+    "OPTIONAL MATCH (checkpoint:StandaloneCrmCensusCheckpoint {census_id: $census_id, stream_kind: $stream_kind}) "
+    "WITH census, attempt, unit, fence, checkpoint WHERE census.status IN ['running', 'publishing', 'recovering'] "
+    "AND coalesce(census.cancel_requested, false) = false AND census.authority_revision = $authority_revision "
+    "AND census.authority_json = $authority_json AND fence.lease_until >= datetime() "
+    "AND datetime() < datetime($occurrence_deadline) AND datetime() < attempt.attempt_deadline "
+    "AND EXISTS { MATCH (instance:BitrixSourceInstance {status: 'active'})-[:INSTANCE_OF]->(source:SourceSystem {is_active: true}) "
+    "WHERE instance.source_key = census.source_key AND instance.source_instance_id = census.source_instance_id AND source.source_key = census.source_key } "
+    "AND EXISTS { MATCH (binding:BitrixExecutionSourceBinding) WHERE binding.source_key = census.source_key "
+    "AND binding.source_instance_id = census.source_instance_id AND binding.control_instance_id = census.control_instance_id } "
+    "AND (checkpoint IS NULL OR (checkpoint.generation = $generation AND checkpoint.fence_token = $fence_token "
+    "AND checkpoint.frozen_upper_id = $frozen_upper_id AND checkpoint.revision_id IS NULL "
+    "AND checkpoint.last_committed_id = $last_committed_id AND checkpoint.processed_rows = $processed_rows "
+    "AND checkpoint.skipped_rows = $skipped_rows AND checkpoint.binding_subject_id = $binding_subject_id "
+    "AND checkpoint.binding_offset = $binding_offset)) "
+    "AND (checkpoint IS NOT NULL OR ($last_committed_id = 0 AND $processed_rows = 0 AND $skipped_rows = 0 "
+    "AND $binding_subject_id IS NULL AND $binding_offset IS NULL)) "
+    "MERGE (stored:StandaloneCrmCensusCheckpoint {census_id: $census_id, stream_kind: $stream_kind}) "
+    "SET stored.last_committed_id = $last_committed_id, stored.processed_rows = $processed_rows, "
+    "stored.skipped_rows = $skipped_rows, stored.binding_subject_id = $binding_subject_id, "
+    "stored.binding_offset = $binding_offset, stored.generation = $generation, stored.fence_token = $fence_token, "
+    "stored.frozen_upper_id = $frozen_upper_id, stored.revision_id = null, stored.updated_at = datetime(), "
+    "census.status = 'paused_with_checkpoint', census.pause_reason = $reason_code, census.pause_detail = $detail, "
+    "census.updated_at = datetime(), attempt.status = 'paused_with_checkpoint', attempt.updated_at = datetime(), "
+    "unit.state = 'paused', unit.updated_at = datetime() "
+    "RETURN stored.last_committed_id AS last_committed_id"
 )
 
 SETTLE_ATTEMPT = (

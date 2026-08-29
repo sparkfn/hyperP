@@ -176,6 +176,22 @@ def _stored_request(*, rows: int = 10) -> str:
     return canonical_request_payload(request)
 
 
+def _stored_contact_request() -> str:
+    request = SourceSyncCensusRequest(
+        "bitrix_chat",
+        "portal-a",
+        "control-a",
+        "occurrence-a",
+        ("contact",),
+        StandaloneCrmBudget(2, 10, 3600, 4, 20, 2, "2026-08-29T00:00:00Z"),
+        "policy-a",
+        "association-a",
+        "configuration-a",
+        SourceSyncAuthority("mapping", "mapping-digest", "projection", "projection-digest"),
+    )
+    return canonical_request_payload(request)
+
+
 def _request(rows: tuple[CrmContact, ...] | None = None) -> object:
     rows = rows or (_lead("6"),)
     checkpoint = StandaloneCrmCheckpoint("census-a", "lead", 10, None, 5, None, None, 0, 0, 1, 2)
@@ -421,6 +437,33 @@ def test_malformed_authorized_row_counts_failed_and_never_persists() -> None:
     assert adapter.events == []
     final = next(parameters for query, parameters in tx.calls if query == FINALIZE_PAGE)
     assert final["failed_delta"] == 1
+
+
+def test_malformed_deferred_contact_uses_the_non_handoff_checkpoint_transition() -> None:
+    tx = _Tx(_stored_contact_request())
+    adapter = _Adapter([])
+    repository, _client = _repository(tx, adapter)
+    base = contact_envelope()
+    envelope = replace(base, binding_subposition=None)
+    checkpoint = StandaloneCrmCheckpoint("census-a", "contact", 10, None, 5, None, None, 0, 0, 1, 2)
+    page = StandaloneCrmSourceFactPage(
+        envelope,
+        "contact-call-a",
+        5,
+        checkpoint,
+        (CrmContact("6", "", kind="contact", observed_at=datetime(2020, 1, 1, tzinfo=UTC)),),
+        True,
+    )
+
+    result = repository.commit_unit(
+        build_source_fact_commit(map_source_fact_page(page), skipped_rows=0)
+    )
+
+    assert (result.processed_rows, result.failed_rows, result.receipts) == (1, 1, ())
+    final = next(parameters for query, parameters in tx.calls if query == FINALIZE_PAGE)
+    assert final["proposed_cursor"] == 6
+    assert final["proposed_binding_subject"] is None
+    assert final["proposed_binding_offset"] is None
 
 
 def test_queries_have_single_source_binding_match_and_full_replay_fence() -> None:

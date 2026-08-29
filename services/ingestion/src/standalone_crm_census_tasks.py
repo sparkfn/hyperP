@@ -220,7 +220,11 @@ def run_standalone_crm_census_unit(self: Task, raw_payload: Mapping[str, object]
     runtime, client = _source_child_runtime()
     try:
         result = runtime.run(raw_payload, worker_id=task_id)
-        if result == "lease_held_retryable":
+        if result in {
+            "lease_held_retryable",
+            "publication_pending_retryable",
+            "convergence_retryable",
+        }:
             raise self.retry(
                 countdown=_LEASE_HELD_RETRY_COUNTDOWN_SECONDS,
                 max_retries=_LEASE_HELD_MAX_RETRIES,

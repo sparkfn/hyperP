@@ -80,6 +80,7 @@ class _Repository:
     pauses: list[tuple[str, int, str, str]] = field(default_factory=list)
     converged_occurrences: list[tuple[str, int]] = field(default_factory=list)
     lease_held: bool = False
+    preconfirm_pending: bool = False
 
     def claim_published_child(self, *_: object, **__: object) -> Mapping[str, object] | None:
         self.claimed += 1
@@ -87,6 +88,9 @@ class _Repository:
 
     def published_child_lease_held(self, *_: object, **__: object) -> bool:
         return self.lease_held
+
+    def published_child_preconfirm_pending(self, *_: object, **__: object) -> bool:
+        return self.preconfirm_pending
 
     def refresh_published_child(
         self,
@@ -124,6 +128,24 @@ class _Repository:
         return True
 
     def pause(self, census_id: str, generation: int, code: str, detail: str) -> bool:
+        self.pauses.append((census_id, generation, code, detail))
+        return True
+
+    def pause_claimed_unit(
+        self,
+        census_id: str,
+        generation: int,
+        _: str,
+        __: int,
+        ___: str,
+        ____: str,
+        _____: str,
+        ______: str,
+        _______: int,
+        ________: object,
+        code: str,
+        detail: str,
+    ) -> bool:
         self.pauses.append((census_id, generation, code, detail))
         return True
 
@@ -252,6 +274,15 @@ def test_exact_active_lease_is_retryable_without_constructing_a_source_client() 
     runtime, factory = _runtime(repository, _Handler(["no_contact_row"]))
 
     assert runtime.run(_payload(), worker_id="task-a") == "lease_held_retryable"
+    assert repository.claimed == 1
+    assert factory.created == []
+
+
+def test_exact_broker_delivery_before_parent_confirmation_is_retryable_without_source_io() -> None:
+    repository = _Repository(None, preconfirm_pending=True)
+    runtime, factory = _runtime(repository, _Handler(["no_contact_row"]))
+
+    assert runtime.run(_payload(), worker_id="task-a") == "publication_pending_retryable"
     assert repository.claimed == 1
     assert factory.created == []
 

@@ -25,10 +25,21 @@ __all__ = [
     "StandaloneCrmSourceChildHandler",
     "StandaloneCrmSourceChildRegistry",
     "StandaloneCrmSourceChildRuntime",
+    "StandaloneCrmSourceChildRuntimeOutcome",
 ]
 
 type StandaloneCrmSourceChildClaimDecision = Literal[
-    "claimed", "lease_held_retryable", "terminal_denied"
+    "claimed", "lease_held_retryable", "publication_pending_retryable", "terminal_denied"
+]
+type StandaloneCrmSourceChildRuntimeOutcome = Literal[
+    "lease_held_retryable",
+    "publication_pending_retryable",
+    "terminal_denied",
+    "unit_completed",
+    "unit_no_work",
+    "paused_with_checkpoint",
+    "occurrence_exhausted",
+    "convergence_retryable",
 ]
 
 
@@ -90,7 +101,9 @@ class StandaloneCrmSourceChildRuntime:
         self._registry = registry
         self._client_factory = client_factory
 
-    def run(self, raw_payload: Mapping[str, object], *, worker_id: str) -> str:
+    def run(
+        self, raw_payload: Mapping[str, object], *, worker_id: str
+    ) -> StandaloneCrmSourceChildRuntimeOutcome:
         payload_json, published = parse_publication_payload(raw_payload)
         if published.task_id != worker_id:
             raise RuntimeError(
@@ -126,6 +139,10 @@ class StandaloneCrmSourceChildRuntime:
                 published, owner_id=worker_id, payload_json=payload_json
             ):
                 return StandaloneCrmSourceChildClaimOutcome("lease_held_retryable")
+            if self._repository.published_child_preconfirm_pending(
+                published, payload_json=payload_json
+            ):
+                return StandaloneCrmSourceChildClaimOutcome("publication_pending_retryable")
             return StandaloneCrmSourceChildClaimOutcome("terminal_denied")
         return StandaloneCrmSourceChildClaimOutcome("claimed", build_claim(published, claimed))
 
@@ -136,7 +153,7 @@ class StandaloneCrmSourceChildRuntime:
         claim: StandaloneCrmSourceChildClaim,
         client: StandaloneCrmSourceChildClient,
         worker_id: str,
-    ) -> str:
+    ) -> StandaloneCrmSourceChildRuntimeOutcome:
         handler = self._registry.handler_for(published.stream_kind)
         current = claim
         while True:
@@ -149,7 +166,7 @@ class StandaloneCrmSourceChildRuntime:
                     published, payload_json, current, worker_id
                 )
                 if refreshed is None:
-                    return "stale_or_conflict"
+                    return "convergence_retryable"
                 current = refreshed
                 continue
             if result in _NO_ROW_RESULTS:
@@ -162,8 +179,10 @@ class StandaloneCrmSourceChildRuntime:
                     current.envelope.unit.generation,
                 ):
                     return "occurrence_exhausted"
-                return "stale_or_conflict"
-            return result
+                return "convergence_retryable"
+            if result == "authority_rejected":
+                return "terminal_denied"
+            return "convergence_retryable"
 
     def _refresh_after_progress(
         self,
@@ -189,7 +208,9 @@ class StandaloneCrmSourceChildRuntime:
         )
         return None if refreshed is None else build_claim(published, refreshed)
 
-    def _settle_no_row(self, claim: StandaloneCrmSourceChildClaim) -> str:
+    def _settle_no_row(
+        self, claim: StandaloneCrmSourceChildClaim
+    ) -> StandaloneCrmSourceChildRuntimeOutcome:
         checkpoint = claim.checkpoint
         no_work = checkpoint.processed_rows == 0 and checkpoint.skipped_rows == 0
         state = "no_work" if no_work else "completed"
@@ -201,18 +222,29 @@ class StandaloneCrmSourceChildRuntime:
             state,
             no_work=no_work,
         ):
-            return "settlement_rejected"
+            return "convergence_retryable"
         return "unit_no_work" if no_work else "unit_completed"
 
-    def _pause(self, claim: StandaloneCrmSourceChildClaim, detail: str) -> str:
-        if self._repository.pause(
-            claim.envelope.unit.census_id,
-            claim.envelope.unit.generation,
+    def _pause(
+        self, claim: StandaloneCrmSourceChildClaim, detail: str
+    ) -> StandaloneCrmSourceChildRuntimeOutcome:
+        envelope = claim.envelope
+        if self._repository.pause_claimed_unit(
+            envelope.unit.census_id,
+            envelope.unit.generation,
+            envelope.unit.stream_kind,
+            envelope.unit.fence_token,
+            envelope.unit.fence_owner_id,
+            envelope.unit.task_name,
+            envelope.unit.task_id,
+            envelope.unit.payload_digest,
+            envelope.frozen_upper_id,
+            claim.checkpoint,
             detail,
             "source child stopped at a durable checkpoint",
         ):
             return "paused_with_checkpoint"
-        return "stale_or_conflict"
+        return "convergence_retryable"
 
 
 _COMPLETED_ROW_RESULTS = frozenset({"contact_completed", "lead_completed", "company_completed"})

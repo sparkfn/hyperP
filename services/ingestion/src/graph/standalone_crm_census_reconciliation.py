@@ -15,6 +15,7 @@ from src.graph.queries.standalone_crm_census import (
     GET_CENSUS_REQUEST,
     GET_CENSUS_STATUS,
     PAUSE_CENSUS,
+    PAUSE_CLAIMED_UNIT,
     REQUEST_CANCELLATION,
     REQUEST_UNIT_STOPS,
     RESUME_CENSUS,
@@ -32,6 +33,7 @@ from src.graph.standalone_crm_census_records import (
 from src.graph.standalone_crm_census_records import (
     authority_revision as authority_revision_for_request,
 )
+from src.standalone_crm_census_lifecycle import StandaloneCrmCheckpoint
 from src.standalone_crm_census_models import (
     StandaloneCrmCensusConflictError,
     StandaloneCrmCensusRequest,
@@ -198,6 +200,53 @@ class StandaloneCrmCensusReconciliationRepository(_StandaloneCrmCensusRepository
                     detail=detail,
                     authority_revision=authority_revision_for_request(snapshot.request),
                     authority_json=authority_context(snapshot.request),
+                ).single()
+                is not None
+            )
+        )
+
+    def pause_claimed_unit(
+        self,
+        census_id: str,
+        generation: int,
+        stream_kind: str,
+        fence_token: int,
+        owner_id: str,
+        task_name: str,
+        task_id: str,
+        payload_digest: str,
+        frozen_upper_id: int,
+        checkpoint: StandaloneCrmCheckpoint,
+        reason_code: str,
+        detail: str,
+    ) -> bool:
+        """Durably pause one claimed child, creating its initial checkpoint if needed."""
+        snapshot = self.runtime_snapshot(census_id)
+        if snapshot is None or snapshot.generation != generation:
+            return False
+        return self._client.execute_write(
+            lambda tx: (
+                tx.run(
+                    PAUSE_CLAIMED_UNIT,
+                    census_id=census_id,
+                    generation=generation,
+                    stream_kind=stream_kind,
+                    fence_token=fence_token,
+                    owner_id=owner_id,
+                    task_name=task_name,
+                    task_id=task_id,
+                    payload_digest=payload_digest,
+                    frozen_upper_id=frozen_upper_id,
+                    last_committed_id=checkpoint.last_committed_id,
+                    processed_rows=checkpoint.processed_rows,
+                    skipped_rows=checkpoint.skipped_rows,
+                    binding_subject_id=checkpoint.binding_subject_id,
+                    binding_offset=checkpoint.binding_offset,
+                    reason_code=reason_code,
+                    detail=detail,
+                    authority_revision=authority_revision_for_request(snapshot.request),
+                    authority_json=authority_context(snapshot.request),
+                    occurrence_deadline=snapshot.request.budget.occurrence_deadline,
                 ).single()
                 is not None
             )

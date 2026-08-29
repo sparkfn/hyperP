@@ -55,13 +55,21 @@ RETURN record.source_record_pk AS source_record_pk,
 
 READ_PENDING_CONTACT_RECEIPT = """
 MATCH (receipt:StandaloneCrmSourceFactPageReceipt {
-  census_id: $census_id, generation: $generation, stream_kind: 'contact',
+  census_id: $census_id, stream_kind: 'contact',
   source_key: $source_key, source_instance_id: $source_instance_id,
   control_instance_id: $control_instance_id,
-  task_name: $task_name, task_id: $task_id, payload_digest: $payload_digest,
   frozen_upper_id: $frozen_upper_id, pending_binding_subject_id: $binding_subject_id,
   status: 'committed'
 })
+WHERE receipt.source_receipts_json <> '[]'
+  AND (receipt.generation = $generation OR (receipt.generation < $generation
+    AND all(prior_generation IN range(receipt.generation, $generation - 1) WHERE EXISTS {
+      MATCH (:StandaloneCrmCensusContinuation {census_id: $census_id,
+        prior_generation: prior_generation, next_generation: prior_generation + 1})
+    })))
+MATCH (:StandaloneCrmChildPublication {census_id: $census_id, generation: receipt.generation,
+  stream_kind: 'contact', task_name: receipt.task_name, task_id: receipt.task_id,
+  payload_digest: receipt.payload_digest})
 MATCH (checkpoint:StandaloneCrmCensusCheckpoint {census_id: $census_id, stream_kind: 'contact',
   generation: $generation, fence_token: $fence_token, frozen_upper_id: $frozen_upper_id,
   binding_subject_id: $binding_subject_id})
@@ -77,12 +85,20 @@ RETURN CASE WHEN size(receipts) = 1 THEN receipts[0].source_receipts_json ELSE n
 
 READ_PENDING_LEAD_RECEIPT = """
 MATCH (receipt:StandaloneCrmSourceFactPageReceipt {
-  census_id: $census_id, generation: $generation, stream_kind: 'lead',
+  census_id: $census_id, stream_kind: 'lead',
   source_key: $source_key, source_instance_id: $source_instance_id,
-  control_instance_id: $control_instance_id, task_name: $task_name,
-  task_id: $task_id, payload_digest: $payload_digest, frozen_upper_id: $frozen_upper_id,
+  control_instance_id: $control_instance_id, frozen_upper_id: $frozen_upper_id,
   proposed_cursor: $last_committed_id, status: 'committed'
 })
+WHERE receipt.source_receipts_json <> '[]'
+  AND (receipt.generation = $generation OR (receipt.generation < $generation
+    AND all(prior_generation IN range(receipt.generation, $generation - 1) WHERE EXISTS {
+      MATCH (:StandaloneCrmCensusContinuation {census_id: $census_id,
+        prior_generation: prior_generation, next_generation: prior_generation + 1})
+    })))
+MATCH (:StandaloneCrmChildPublication {census_id: $census_id, generation: receipt.generation,
+  stream_kind: 'lead', task_name: receipt.task_name, task_id: receipt.task_id,
+  payload_digest: receipt.payload_digest})
 MATCH (checkpoint:StandaloneCrmCensusCheckpoint {census_id: $census_id, stream_kind: 'lead',
   generation: $generation, fence_token: $fence_token, frozen_upper_id: $frozen_upper_id,
   last_committed_id: $last_committed_id})
@@ -153,7 +169,10 @@ WHERE census.status IN ['running', 'publishing', 'recovering']
     OR ($stream_kind = 'contact' AND $expected_cursor = $proposed_cursor
       AND $proposed_binding_subject > $expected_cursor
       AND $proposed_binding_subject <= $frozen_upper_id
-      AND $proposed_binding_offset = 0))
+      AND $proposed_binding_offset = 0)
+    OR ($stream_kind = 'contact' AND $expected_cursor < $proposed_cursor
+      AND $proposed_cursor <= $frozen_upper_id
+      AND $proposed_binding_subject IS NULL AND $proposed_binding_offset IS NULL))
 WITH census, attempt, checkpoint, receipt,
   CASE WHEN checkpoint IS NULL THEN $checkpoint_absent ELSE
     checkpoint.last_committed_id = $expected_cursor
@@ -286,7 +305,10 @@ WHERE census.status IN ['running', 'publishing', 'recovering']
     OR ($stream_kind = 'contact' AND $expected_cursor = $proposed_cursor
       AND $proposed_binding_subject > $expected_cursor
       AND $proposed_binding_subject <= $frozen_upper_id
-      AND $proposed_binding_offset = 0))
+      AND $proposed_binding_offset = 0)
+    OR ($stream_kind = 'contact' AND $expected_cursor < $proposed_cursor
+      AND $proposed_cursor <= $frozen_upper_id
+      AND $proposed_binding_subject IS NULL AND $proposed_binding_offset IS NULL))
   AND ((checkpoint IS NULL AND $checkpoint_absent) OR (
     checkpoint.last_committed_id = $expected_cursor
     AND checkpoint.processed_rows = $expected_processed

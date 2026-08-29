@@ -10,13 +10,18 @@ from src.connectors.bitrix_openlines.models import CrmCompanyBindingPayload, Crm
 from src.crm_company_contracts import CrmCompanyMembershipHead
 from src.crm_company_membership_writer import CrmCompanyMembershipCommitResult
 from src.standalone_crm_census_lifecycle import StandaloneCrmCheckpoint
+from src.standalone_crm_census_models import StandaloneCrmChildEnvelope
 from src.standalone_crm_census_requests import (
     SourceSyncAuthority,
     SourceSyncCensusRequest,
     StandaloneCrmBudget,
 )
 from src.standalone_crm_contact_child import StandaloneCrmContactSourceHandler
-from src.standalone_crm_source_child_runtime import StandaloneCrmSourceChildClaim
+from src.standalone_crm_source_child_runtime import (
+    StandaloneCrmSourceChildClaim,
+    StandaloneCrmSourceChildRegistry,
+    StandaloneCrmSourceChildRuntime,
+)
 from src.standalone_crm_source_fact_models import (
     StandaloneCrmSourceFactCommitResult,
     StandaloneCrmSourceFactPage,
@@ -223,6 +228,21 @@ def test_contact_handler_commits_an_empty_complete_membership_before_close() -> 
     assert closer.calls[0][-1] == 0
 
 
+def test_malformed_contact_singleton_is_accounted_without_an_unrecoverable_binding_handoff() -> (
+    None
+):
+    source_facts = _SourceFacts(StandaloneCrmSourceFactCommitResult("committed", 1, 0, 1, ()))
+    memberships = _Memberships()
+    closer = _Closer()
+    client = _ContactIo((_contact(),))
+
+    assert _handler(source_facts, memberships, closer).run(_claim(), client) == "contact_completed"
+    assert len(source_facts.pages) == 1
+    assert memberships.commits == []
+    assert client.binding_calls == []
+    assert closer.calls == []
+
+
 def test_pending_contact_recovery_skips_source_page_and_resumes_membership_then_close() -> None:
     source_facts = _SourceFacts(_source_result())
     memberships = _Memberships()
@@ -382,6 +402,57 @@ def test_close_cas_failure_is_reported_after_the_durable_membership_commit() -> 
     assert len(closer.calls) == 1
 
 
+def test_close_rejection_retries_then_pending_recovery_closes_without_domain_replay() -> None:
+    """The task retry path can converge a committed membership without repeating #302/#303."""
+    first_facts = _SourceFacts(_source_result())
+    first_memberships = _Memberships()
+    first_handler = _handler(first_facts, first_memberships, _Closer(False))
+    registry = StandaloneCrmSourceChildRegistry(
+        {"contact": first_handler, "lead": first_handler, "company": first_handler}
+    )
+    runtime = StandaloneCrmSourceChildRuntime(
+        _ClaimedRuntimeRepository(), registry, _UnusedFactory()
+    )
+    publication = StandaloneCrmChildEnvelope(
+        "census-a",
+        1,
+        "contact",
+        10,
+        None,
+        "source.child",
+        "contact-task",
+        "ingestion",
+    )
+
+    assert (
+        runtime._run_claimed_unit(
+            publication,
+            "{}",
+            _claim(),
+            _ContactIo((_contact(),), (CrmCompanyBindingPayload("303", 0, "7", True),)),
+            "contact-task",
+        )
+        == "convergence_retryable"
+    )
+    committed_head = first_memberships.commits[0].mutation.compare_and_set.proposed_head
+    recovered_facts = _SourceFacts(_source_result())
+    recovered_memberships = _Memberships(current_head=committed_head)
+    recovered_closer = _Closer()
+
+    assert (
+        _handler(recovered_facts, recovered_memberships, recovered_closer).run(
+            _claim(pending=True, binding_offset=1),
+            _ContactIo((), binding_intent=None),
+        )
+        == "contact_completed"
+    )
+    assert len(first_facts.pages) == 1
+    assert len(first_memberships.commits) == 1
+    assert recovered_facts.pages == []
+    assert recovered_memberships.commits == []
+    assert recovered_closer.calls[0][-3:] == (5, 6, 1)
+
+
 def test_contact_handler_rejects_a_non_singleton_source_page() -> None:
     source_facts = _SourceFacts(_source_result())
 
@@ -391,3 +462,12 @@ def test_contact_handler_rejects_a_non_singleton_source_page() -> None:
             _ContactIo((_contact(), _contact())),
         )
     assert source_facts.pages == []
+
+
+class _ClaimedRuntimeRepository:
+    """Only the handler result is exercised before runtime returns retryable convergence."""
+
+
+class _UnusedFactory:
+    def create(self, _: object) -> object:
+        raise AssertionError("private claimed-unit execution must not create another client")

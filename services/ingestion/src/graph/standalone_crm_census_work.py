@@ -18,6 +18,7 @@ from src.graph.queries.standalone_crm_census import (
     GET_RESUMABLE_UNITS,
     LEASE_HELD_PUBLISHED_CHILD,
     MARK_PUBLICATION_PUBLISHING,
+    PRECONFIRM_PUBLISHED_CHILD,
     REFRESH_PUBLISHED_CHILD,
     RENEW_UNIT_FENCE,
     REPAIR_PUBLICATIONS,
@@ -284,6 +285,48 @@ class StandaloneCrmCensusWorkRepository(_StandaloneCrmCensusRepositoryBase):
                     attempt_call_limit=snapshot.request.budget.max_calls_per_attempt,
                     attempt_row_limit=snapshot.request.budget.max_rows_per_attempt,
                     owner_id=owner_id,
+                ).single()
+                is not None
+            )
+
+        return self._client.execute_read(work)
+
+    def published_child_preconfirm_pending(
+        self,
+        envelope: StandaloneCrmChildEnvelope,
+        *,
+        payload_json: str,
+    ) -> bool:
+        """Classify one exact broker delivery before the durable publish confirmation."""
+        snapshot = self.runtime_snapshot(envelope.census_id)
+        if (
+            snapshot is None
+            or snapshot.generation != envelope.generation
+            or not isinstance(snapshot.request, SourceSyncCensusRequest)
+        ):
+            return False
+
+        def work(tx: ManagedTransaction) -> bool:
+            return (
+                tx.run(
+                    PRECONFIRM_PUBLISHED_CHILD,
+                    census_id=envelope.census_id,
+                    generation=envelope.generation,
+                    stream_kind=envelope.stream_kind,
+                    frozen_upper_id=envelope.frozen_upper_id,
+                    task_name=envelope.task_name,
+                    task_id=envelope.task_id,
+                    payload_digest=envelope.payload_digest(),
+                    payload_json=payload_json,
+                    payload_version=envelope.payload_version,
+                    queue=envelope.queue,
+                    source_key=snapshot.request.source_key,
+                    source_instance_id=snapshot.request.source_instance_id,
+                    control_instance_id=snapshot.request.control_instance_id,
+                    request_json=canonical_request_payload(snapshot.request),
+                    authority_revision=authority_revision(snapshot.request),
+                    authority_json=authority_context(snapshot.request),
+                    occurrence_deadline=snapshot.request.budget.occurrence_deadline,
                 ).single()
                 is not None
             )
