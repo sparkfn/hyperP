@@ -123,6 +123,7 @@ def test_mapping_write_queries_are_parameterized_and_cannot_mutate_entities_or_h
         queries.CREATE_ENTRIES,
         queries.CREATE_TARGETS,
         queries.LOCK_REVISION_FOR_REJECTION,
+        queries.UNLOCK_REVISION_FOR_REJECTION,
         queries.REJECT_REVISION,
     )
     entity_or_person_write = re.compile(r"(?:CREATE|MERGE)\s*\([^)]*:(?:ENTITY|PERSON)\b")
@@ -163,6 +164,7 @@ def test_active_reader_uses_only_the_exact_head_and_never_a_latest_revision_fall
                 queries.CREATE_ENTRIES,
                 queries.CREATE_TARGETS,
                 queries.LOCK_REVISION_FOR_REJECTION,
+                queries.UNLOCK_REVISION_FOR_REJECTION,
                 queries.REJECT_REVISION,
             )
         ).upper()
@@ -207,6 +209,20 @@ def test_freshness_validators_prevalidate_then_linearize_in_a_fresh_read() -> No
     rollback = queries.VALIDATE_MAPPING_ROLLBACK_AT_LINEARIZATION.upper()
     assert "HISTORICAL.STATE IN ['ACTIVE', 'SUPERSEDED']" in rollback
     assert "ROLLBACK_OF_REVISION_ID = $ROLLBACK_OF_REVISION_ID" in rollback
+
+
+def test_rejection_lock_uses_only_a_transient_token_property() -> None:
+    lock = queries.LOCK_REVISION_FOR_REJECTION.upper()
+    unlock = queries.UNLOCK_REVISION_FOR_REJECTION.upper()
+
+    assert "SET REVISION.REJECTION_LOCK_TOKEN = $REJECTION_LOCK_TOKEN" in lock
+    assert "SET REVISION.STATE = REVISION.STATE" not in lock
+    assert "CRMTENANTMAPPINGSCOPECOUNTER" not in lock
+    assert "CRMTENANTMAPPINGACTIVEHEAD" not in lock
+    assert "ENTITY" not in lock
+    assert "PERSON" not in lock
+    assert "REMOVE REVISION.REJECTION_LOCK_TOKEN" in unlock
+    assert "$REJECTION_LOCK_TOKEN" in unlock
 
 
 def test_persisted_revision_properties_are_immutable_prepared_metadata() -> None:

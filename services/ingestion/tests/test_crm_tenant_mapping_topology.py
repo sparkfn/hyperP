@@ -38,6 +38,7 @@ def test_mapping_write_queries_leave_active_heads_and_people_untouched() -> None
             queries.CREATE_ENTRIES,
             queries.CREATE_TARGETS,
             queries.LOCK_REVISION_FOR_REJECTION,
+            queries.UNLOCK_REVISION_FOR_REJECTION,
             queries.REJECT_REVISION,
         )
     ).upper()

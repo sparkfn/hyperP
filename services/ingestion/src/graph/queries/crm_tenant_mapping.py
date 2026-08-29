@@ -175,7 +175,16 @@ LOCK_REVISION_FOR_REJECTION = """
 MATCH (revision:CrmTenantMappingRevision {source_key: $source_key,
     source_instance_id: $source_instance_id, control_instance_id: $control_instance_id,
     revision_id: $revision_id, manifest_digest: $manifest_digest})
-SET revision.state = revision.state
+SET revision.rejection_lock_token = $rejection_lock_token
+RETURN revision.revision_id AS revision_id
+"""
+
+UNLOCK_REVISION_FOR_REJECTION = """
+MATCH (revision:CrmTenantMappingRevision {source_key: $source_key,
+    source_instance_id: $source_instance_id, control_instance_id: $control_instance_id,
+    revision_id: $revision_id, manifest_digest: $manifest_digest,
+    rejection_lock_token: $rejection_lock_token})
+REMOVE revision.rejection_lock_token
 RETURN revision.revision_id AS revision_id
 """
 

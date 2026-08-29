@@ -195,8 +195,10 @@ def test_source_sync_final_statement_rejects_interleaved_head_swap(
     repository = _repository(neo4j_driver, monkeypatch)
     with neo4j_driver.session() as session:
         session.run("CREATE (:Entity {entity_key: 'issue-304-entity-a'})").consume()
+        session.run("CREATE (:Entity {entity_key: 'issue-304-entity-b'})").consume()
     current = repository.prepare(_command("atomic-source-current", "issue-304-entity-a"))
-    replacement = repository.prepare(_command("atomic-source-replacement", "issue-304-entity-a"))
+    replacement = repository.prepare(_command("atomic-source-replacement", "issue-304-entity-b"))
+    assert replacement.revision.manifest_digest != current.revision.manifest_digest
     _mark_active(neo4j_driver, current)
     _mark_active(neo4j_driver, replacement)
     _set_active_head(neo4j_driver, current)

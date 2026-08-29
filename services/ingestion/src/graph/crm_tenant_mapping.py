@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from uuid import uuid4
+
 from neo4j import ManagedTransaction
 
 from src.crm_tenant_mapping_contracts import (
@@ -56,6 +58,7 @@ from src.graph.queries.crm_tenant_mapping import (
     LOCK_REVISION_FOR_REJECTION,
     LOCK_SCOPE,
     REJECT_REVISION,
+    UNLOCK_REVISION_FOR_REJECTION,
 )
 from src.graph.standalone_crm_lane_a_migration import assert_standalone_crm_lane_a_ready
 from src.standalone_crm_census_requests import (
@@ -193,11 +196,13 @@ class Neo4jCrmTenantMappingRepository:
         assert_standalone_crm_lane_a_ready(self._client)
 
         def work(tx: ManagedTransaction) -> CrmTenantMappingRevisionSnapshot:
+            rejection_lock_token = uuid4().hex
             lock = tx.run(
                 LOCK_REVISION_FOR_REJECTION,
                 **_scope_parameters(command.scope),
                 revision_id=command.revision_id,
                 manifest_digest=command.manifest_digest,
+                rejection_lock_token=rejection_lock_token,
             ).single()
             if lock is None:
                 raise CrmTenantMappingConflictError("mapping revision is missing")
@@ -208,7 +213,7 @@ class Neo4jCrmTenantMappingRepository:
                 raise CrmTenantMappingConflictError("mapping revision is missing")
             if current.revision.state == "rejected":
                 if current.rejection_request_fingerprint == command.request_fingerprint:
-                    return current
+                    return _release_rejection_lock(tx, command, rejection_lock_token, current)
                 raise CrmTenantMappingConflictError("mapping rejection metadata conflicts")
             if current.revision.state != "prepared":
                 raise CrmTenantMappingConflictError(
@@ -236,7 +241,7 @@ class Neo4jCrmTenantMappingRepository:
                 )
                 if replay is not None and replay.revision.state == "rejected":
                     if replay.rejection_request_fingerprint == command.request_fingerprint:
-                        return replay
+                        return _release_rejection_lock(tx, command, rejection_lock_token, replay)
                     raise CrmTenantMappingConflictError("mapping rejection metadata conflicts")
                 raise CrmTenantMappingConflictError("mapping rejection conflicts")
             result = _read_snapshot(tx, command.scope, command.revision_id, command.manifest_digest)
@@ -246,7 +251,7 @@ class Neo4jCrmTenantMappingRepository:
                 or result.rejection_request_fingerprint != command.request_fingerprint
             ):
                 raise CrmTenantMappingIntegrityError("mapping rejection readback is malformed")
-            return result
+            return _release_rejection_lock(tx, command, rejection_lock_token, result)
 
         return self._client.execute_write(work)
 
@@ -350,3 +355,21 @@ def _lock_and_recheck(
         return existing
     _assert_expected_head(tx, command.scope, command.expected_head_boundary)
     return None
+
+
+def _release_rejection_lock(
+    tx: ManagedTransaction,
+    command: CrmTenantMappingRejectCommand,
+    rejection_lock_token: str,
+    result: CrmTenantMappingRevisionSnapshot,
+) -> CrmTenantMappingRevisionSnapshot:
+    released = tx.run(
+        UNLOCK_REVISION_FOR_REJECTION,
+        **_scope_parameters(command.scope),
+        revision_id=command.revision_id,
+        manifest_digest=command.manifest_digest,
+        rejection_lock_token=rejection_lock_token,
+    ).single()
+    if _required_str(_record_values(released), "revision_id") != command.revision_id:
+        raise CrmTenantMappingIntegrityError("mapping rejection lock release is malformed")
+    return result

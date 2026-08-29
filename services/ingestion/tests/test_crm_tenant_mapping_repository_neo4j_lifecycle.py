@@ -40,6 +40,17 @@ def neo4j_driver() -> Iterator[Driver]:
     yield from _neo4j_driver()
 
 
+def _assert_no_rejection_lock(driver: Driver, revision_id: str) -> None:
+    with driver.session() as session:
+        lock_count = session.run(
+            "MATCH (revision:CrmTenantMappingRevision {revision_id: $revision_id}) "
+            "WHERE revision.rejection_lock_token IS NOT NULL "
+            "RETURN count(revision) AS count",
+            revision_id=revision_id,
+        ).single(strict=True)["count"]
+    assert lock_count == 0
+
+
 def test_empty_omission_rejection_and_active_invisibility_are_strict(
     neo4j_driver: Driver, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -183,6 +194,7 @@ def test_concurrent_rejection_replays_exactly_and_rejects_conflicting_input(
     assert first.revision.state == "rejected"
     assert second.revision.revision_id == first.revision.revision_id
     assert second.rejection_request_fingerprint == exact.request_fingerprint
+    _assert_no_rejection_lock(neo4j_driver, prepared.revision.revision_id)
 
     conflicting = repository.prepare(
         _command_for_manifest("reject-conflict", CrmTenantMappingManifest(_scope(), ()))
@@ -219,3 +231,27 @@ def test_concurrent_rejection_replays_exactly_and_rejects_conflicting_input(
     assert successful.manifest == conflicting.manifest
     assert _counts(neo4j_driver) == before
     assert repository.get_active_head(_scope()) == head_before
+    _assert_no_rejection_lock(neo4j_driver, conflicting.revision.revision_id)
+
+    malformed = repository.prepare(
+        _command_for_manifest("reject-integrity", CrmTenantMappingManifest(_scope(), ()))
+    )
+    with neo4j_driver.session() as session:
+        session.run(
+            "MATCH (revision:CrmTenantMappingRevision {revision_id: $revision_id}) "
+            "SET revision.request_fingerprint = $request_fingerprint",
+            revision_id=malformed.revision.revision_id,
+            request_fingerprint="sha256:" + "b" * 64,
+        ).consume()
+    with pytest.raises(CrmTenantMappingIntegrityError):
+        repository.reject(
+            CrmTenantMappingRejectCommand(
+                _scope(),
+                malformed.revision.revision_id,
+                malformed.revision.manifest_digest,
+                exact.rejection,
+                exact.authorization,
+                exact.operation_time,
+            )
+        )
+    _assert_no_rejection_lock(neo4j_driver, malformed.revision.revision_id)
