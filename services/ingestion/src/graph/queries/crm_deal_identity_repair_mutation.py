@@ -345,30 +345,39 @@ OPTIONAL MATCH (conflict:SourceRecord {source_version_key: $source_version_key})
 WITH source, old, entity, conflict
 WHERE conflict IS NULL OR conflict.source_record_pk = $new_source_record_pk
 MERGE (new:SourceRecord {source_record_pk: $new_source_record_pk})
-ON CREATE SET new = properties(old),
-  new.source_record_pk = $new_source_record_pk,
-  new.source_record_id = $source_record_id,
-  new.source_instance_id = $source_instance_id,
-  new.source_record_version = $source_record_version,
-  new.source_version_key = $source_version_key, new.entity_key = $entity_key,
-  new.expected_active_source_record_pk = $old_source_record_pk,
-  new.lifecycle_status = 'pending_review', new.is_latest = false,
-  new.link_status = $link_status,
-  new.record_type = 'crm_deal', new.observed_at = datetime($observed_at),
-  new.ingested_at = datetime(), new.record_hash = $record_hash,
-  new.raw_payload = $raw_payload, new.normalized_payload = $normalized_payload,
-  new.source_entity_type = 'deal', new.source_entity_id = $deal_id,
-  new.identity_policy_version = 'crm_deal_identity_v2',
-  new.identity_link_key = $identity_link_key, new.repair_mutation_id = $mutation_id,
-  new.retention_expires_at = old.retention_expires_at,
-  new.crm_deal_stage_id = coalesce(old.crm_deal_stage_id, old.stage_id),
-  new.extraction_confidence = old.extraction_confidence,
-  new.extraction_method = old.extraction_method,
-  new.conversation_ref = old.conversation_ref,
-  new.parent_source_system = old.parent_source_system,
-  new.parent_source_instance_id = old.parent_source_instance_id,
-  new.parent_source_record_id = old.parent_source_record_id,
-  new.parent_record_type = old.parent_record_type
+ON CREATE SET new = old {
+  .*,
+  source_record_pk: $new_source_record_pk,
+  source_record_id: $source_record_id,
+  source_instance_id: $source_instance_id,
+  source_record_version: $source_record_version,
+  source_version_key: $source_version_key,
+  entity_key: $entity_key,
+  expected_active_source_record_pk: $old_source_record_pk,
+  lifecycle_status: 'pending_review',
+  is_latest: false,
+  link_status: $link_status,
+  record_type: 'crm_deal',
+  observed_at: datetime($observed_at),
+  ingested_at: datetime(),
+  record_hash: $record_hash,
+  raw_payload: $raw_payload,
+  normalized_payload: $normalized_payload,
+  source_entity_type: 'deal',
+  source_entity_id: $deal_id,
+  identity_policy_version: 'crm_deal_identity_v2',
+  identity_link_key: $identity_link_key,
+  repair_mutation_id: $mutation_id,
+  retention_expires_at: old.retention_expires_at,
+  crm_deal_stage_id: coalesce(old.crm_deal_stage_id, old.stage_id),
+  extraction_confidence: old.extraction_confidence,
+  extraction_method: old.extraction_method,
+  conversation_ref: old.conversation_ref,
+  parent_source_system: old.parent_source_system,
+  parent_source_instance_id: old.parent_source_instance_id,
+  parent_source_record_id: old.parent_source_record_id,
+  parent_record_type: old.parent_record_type
+}
 MERGE (new)-[from_source:FROM_SOURCE]->(source)
 ON CREATE SET from_source.repair_mutation_id = $mutation_id
 MERGE (old)-[previous:PREVIOUS_VERSION_OF]->(new)
@@ -386,15 +395,27 @@ MATCH (old:SourceRecord {source_record_pk: $old_source_record_pk})-[:FROM_SOURCE
 WHERE old.lifecycle_status = 'active' OR (old.lifecycle_status IS NULL AND old.is_latest = true)
 OPTIONAL MATCH (old)-[:OWNED_BY]->(entity:Entity)
 MERGE (new:SourceRecord {source_record_pk: $new_source_record_pk})
-ON CREATE SET new = properties(old),
-  new.source_record_pk = $new_source_record_pk,
-  new.source_record_id = old.source_record_id, new.source_instance_id = old.source_instance_id,
-  new.source_record_version = $source_record_version, new.source_version_key = $source_version_key,
-  new.entity_key = old.entity_key, new.expected_active_source_record_pk = old.source_record_pk,
-  new.lifecycle_status = 'pending_review', new.is_latest = false, new.link_status = 'pending_review',
-  new.record_type = old.record_type, new.observed_at = old.observed_at, new.ingested_at = datetime(),
-  new.record_hash = old.record_hash, new.raw_payload = old.raw_payload, new.normalized_payload = old.normalized_payload,
-  new.repair_mutation_id = $mutation_id, new.repair_reconstruction_status = 'unreconstructable_review_only'
+ON CREATE SET new = old {
+  .*,
+  source_record_pk: $new_source_record_pk,
+  source_record_id: old.source_record_id,
+  source_instance_id: old.source_instance_id,
+  source_record_version: $source_record_version,
+  source_version_key: $source_version_key,
+  entity_key: old.entity_key,
+  expected_active_source_record_pk: old.source_record_pk,
+  lifecycle_status: 'pending_review',
+  is_latest: false,
+  link_status: 'pending_review',
+  record_type: old.record_type,
+  observed_at: old.observed_at,
+  ingested_at: datetime(),
+  record_hash: old.record_hash,
+  raw_payload: old.raw_payload,
+  normalized_payload: old.normalized_payload,
+  repair_mutation_id: $mutation_id,
+  repair_reconstruction_status: 'unreconstructable_review_only'
+}
 MERGE (old)-[previous:PREVIOUS_VERSION_OF]->(new)
 ON CREATE SET previous.repair_mutation_id = $mutation_id
 MERGE (new)-[from_source:FROM_SOURCE]->(source)

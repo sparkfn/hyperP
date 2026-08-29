@@ -124,8 +124,13 @@ def _reset(driver: Driver) -> None:
         ).consume()
 
 
-def _deal_payload(deal_id: str, contact_id: str) -> dict[str, object]:
-    contact = CrmContact(contact_id, None, phones=("+6591234567",), kind="contact")
+def _deal_payload(
+    deal_id: str,
+    contact_id: str,
+    *,
+    full_name: str | None = None,
+) -> dict[str, object]:
+    contact = CrmContact(contact_id, full_name, phones=("+6591234567",), kind="contact")
     return cast(
         dict[str, object],
         build_crm_deal_envelope(
@@ -206,6 +211,19 @@ def _seed_domain(driver: Driver, *, independent_support: bool) -> None:
                 **params,
                 support_digest=_DIGEST,
             ).consume()
+
+
+def _deactivate_child_contamination(driver: Driver) -> None:
+    """Remove seeded self-support only when an automatic-authority test needs it."""
+    with driver.session() as session:
+        session.run(
+            "MATCH (:SourceRecord {source_record_pk: 'child-pk'})-[link:LINKED_TO]->() "
+            "SET link.is_active = false"
+        ).consume()
+        session.run(
+            "MATCH (:Person)-[fact:HAS_FACT {source_record_pk: 'child-pk'}]->() "
+            "SET fact.is_active = false"
+        ).consume()
 
 
 def _inventory(driver: Driver) -> tuple[RepairInventoryItem, RepairInventoryItem]:
@@ -320,6 +338,7 @@ def test_deterministic_commit_exact_replay_and_negative_control_precision(
     neo4j_driver: Driver,
 ) -> None:
     _seed_domain(neo4j_driver, independent_support=True)
+    _deactivate_child_contamination(neo4j_driver)
     item, negative = _inventory(neo4j_driver)
     command = _seed_authority(neo4j_driver, item)
     negative_before = _negative_state(neo4j_driver)
@@ -327,6 +346,7 @@ def test_deterministic_commit_exact_replay_and_negative_control_precision(
     committed = repository.commit_atomic_mutation(command)
     replay = repository.commit_atomic_mutation(command)
     assert committed.decision == "committed"
+    assert committed.mutation is not None and committed.mutation.outcome == "applied"
     assert replay.decision == "replayed"
     assert replay.mutation == committed.mutation
     assert replay.rollback_image == committed.rollback_image
@@ -363,10 +383,12 @@ def test_exact_replay_rejects_repaired_desired_state_drift(
     neo4j_driver: Driver,
 ) -> None:
     _seed_domain(neo4j_driver, independent_support=True)
+    _deactivate_child_contamination(neo4j_driver)
     item, _ = _inventory(neo4j_driver)
     command = _seed_authority(neo4j_driver, item)
     repository = _repository(neo4j_driver)
-    repository.commit_atomic_mutation(command)
+    committed = repository.commit_atomic_mutation(command)
+    assert committed.mutation is not None and committed.mutation.outcome == "applied"
     with neo4j_driver.session() as session:
         session.run(
             "MATCH (:SourceRecord {repair_mutation_id: $mutation_id})"
@@ -381,12 +403,16 @@ def test_concurrent_exact_attempts_produce_one_bundle_and_one_replay(
     neo4j_driver: Driver,
 ) -> None:
     _seed_domain(neo4j_driver, independent_support=True)
+    _deactivate_child_contamination(neo4j_driver)
     item, _ = _inventory(neo4j_driver)
     command = _seed_authority(neo4j_driver, item)
     repository = _repository(neo4j_driver)
     with ThreadPoolExecutor(max_workers=2) as pool:
         results = list(pool.map(lambda _: repository.commit_atomic_mutation(command), range(2)))
     assert sorted(result.decision for result in results) == ["committed", "replayed"]
+    assert all(
+        result.mutation is not None and result.mutation.outcome == "applied" for result in results
+    )
     with neo4j_driver.session() as session:
         row = session.run(
             """
@@ -431,27 +457,329 @@ def test_review_required_has_no_active_evidence_and_one_explicit_provisional_lin
     }
 
 
+def test_malformed_qualified_payload_stages_safe_review_without_v2_fabrication(
+    neo4j_driver: Driver,
+) -> None:
+    _seed_domain(neo4j_driver, independent_support=True)
+    with neo4j_driver.session() as session:
+        session.run(
+            "MATCH (deal:SourceRecord {source_record_pk: 'deal-pk'}) "
+            "SET deal.raw_payload = '{malformed'"
+        ).consume()
+    item, _ = _inventory(neo4j_driver)
+    command = _seed_authority(neo4j_driver, item)
+    result = _repository(neo4j_driver).commit_atomic_mutation(command)
+    assert result.mutation is not None
+    assert result.mutation.outcome == "review_required"
+    with neo4j_driver.session() as session:
+        row = session.run(
+            """
+            MATCH (new:SourceRecord {repair_mutation_id: $mutation_id})
+            OPTIONAL MATCH (new)-[link:LINKED_TO]->(:Person)
+            OPTIONAL MATCH (:Person)-[evidence:IDENTIFIED_BY|LIVES_AT|HAS_FACT]->()
+            WHERE evidence.source_record_pk = new.source_record_pk
+              AND coalesce(evidence.is_active, true)
+            RETURN new.raw_payload AS raw_payload,
+              new.repair_reconstruction_status AS reconstruction_status,
+              count(CASE WHEN link IS NOT NULL AND coalesce(link.is_active, true) THEN 1 END)
+                AS active_links,
+              count(evidence) AS active_evidence
+            """,
+            mutation_id=command.mutation_id,
+        ).single(strict=True)
+    assert dict(row) == {
+        "raw_payload": "{malformed",
+        "reconstruction_status": "unreconstructable_review_only",
+        "active_links": 0,
+        "active_evidence": 0,
+    }
+
+
+def test_review_required_with_no_current_candidate_has_no_provisional_link(
+    neo4j_driver: Driver,
+) -> None:
+    _seed_domain(neo4j_driver, independent_support=False)
+    with neo4j_driver.session() as session:
+        session.run(
+            "MATCH (:SourceRecord {source_record_pk: 'deal-pk'})-[link:LINKED_TO]->() DELETE link"
+        ).consume()
+    item, _ = _inventory(neo4j_driver)
+    command = _seed_authority(neo4j_driver, item)
+    result = _repository(neo4j_driver).commit_atomic_mutation(command)
+    assert result.mutation is not None
+    assert result.mutation.outcome == "review_required"
+    with neo4j_driver.session() as session:
+        row = session.run(
+            """
+            MATCH (new:SourceRecord {repair_mutation_id: $mutation_id})
+            OPTIONAL MATCH (new)-[link:LINKED_TO]->(:Person)
+            RETURN count(CASE WHEN link IS NOT NULL AND coalesce(link.is_active, true) THEN 1 END)
+                AS active_links,
+              count(CASE WHEN link IS NOT NULL AND link.is_active = false
+                AND link.provisional = true THEN 1 END) AS provisional_links
+            """,
+            mutation_id=command.mutation_id,
+        ).single(strict=True)
+    assert dict(row) == {"active_links": 0, "provisional_links": 0}
+
+
+def test_lane_a_lineage_mismatch_forces_review_and_post_commit_drift_is_rejected(
+    neo4j_driver: Driver,
+) -> None:
+    _seed_domain(neo4j_driver, independent_support=True)
+    with neo4j_driver.session() as session:
+        session.run(
+            "MATCH (support:SourceRecord {source_record_pk: 'contact-support-pk'}) "
+            "SET support.standalone_crm_task_id = 'mismatched-task'"
+        ).consume()
+    item, _ = _inventory(neo4j_driver)
+    command = _seed_authority(neo4j_driver, item)
+    rejected = _repository(neo4j_driver).commit_atomic_mutation(command)
+    assert rejected.mutation is not None
+    assert rejected.mutation.outcome == "review_required"
+
+    _reset(neo4j_driver)
+    _seed_domain(neo4j_driver, independent_support=True)
+    _deactivate_child_contamination(neo4j_driver)
+    item, _ = _inventory(neo4j_driver)
+    command = _seed_authority(neo4j_driver, item)
+    repository = _repository(neo4j_driver)
+    committed = repository.commit_atomic_mutation(command)
+    assert committed.mutation is not None
+    assert committed.mutation.outcome == "applied"
+    with neo4j_driver.session() as session:
+        session.run(
+            "MATCH (support:SourceRecord {source_record_pk: 'contact-support-pk'}) "
+            "SET support.standalone_crm_authorization_digest = $digest",
+            digest="sha256:" + "b" * 64,
+        ).consume()
+    with pytest.raises(RepairMutationDriftError, match="authority changed"):
+        repository.commit_atomic_mutation(command)
+
+
+def test_rollback_image_readback_tracks_identifier_preexistence_and_source_schema(
+    neo4j_driver: Driver,
+) -> None:
+    _seed_domain(neo4j_driver, independent_support=True)
+    _deactivate_child_contamination(neo4j_driver)
+    with neo4j_driver.session() as session:
+        session.run(
+            "MATCH (deal:SourceRecord {source_record_pk: 'deal-pk'}), "
+            "(entity:Entity {entity_key: 'tenant-a'}) "
+            "SET deal.link_status = 'linked' CREATE (deal)-[:OWNED_BY]->(entity)"
+        ).consume()
+    item, _ = _inventory(neo4j_driver)
+    command = _seed_authority(neo4j_driver, item)
+    result = _repository(neo4j_driver).commit_atomic_mutation(command)
+    assert result.rollback_image is not None
+    assert result.mutation is not None
+    assert result.mutation.outcome == "applied"
+    with neo4j_driver.session() as session:
+        row = session.run(
+            """
+            MATCH (result:CrmDealRepairMutationResult {mutation_id: $mutation_id})
+            MATCH (image:CrmDealRepairRollbackImage {rollback_image_id: result.rollback_image_id})
+            MATCH (new:SourceRecord {source_record_pk: result.new_source_record_pk})
+            OPTIONAL MATCH (new)-[:OWNED_BY]->(entity:Entity {entity_key: 'tenant-a'})
+            RETURN image.payload_json AS payload_json, new.link_status AS link_status,
+              toString(new.observed_at) AS observed_at, count(entity) AS owned_by_count
+            """,
+            mutation_id=command.mutation_id,
+        ).single(strict=True)
+    payload = canonical_payload(row["payload_json"])
+    payload_body = payload["payload"]
+    assert isinstance(payload_body, dict)
+    pre_state = payload_body["pre_state"]
+    rollback_operations = payload_body["rollback_operations"]
+    assert isinstance(pre_state, dict)
+    assert isinstance(rollback_operations, list)
+    candidates = pre_state["created_identifier_candidates"]
+    assert isinstance(candidates, list)
+    assert all(
+        isinstance(candidate, dict) and "preexisting" in candidate for candidate in candidates
+    )
+    assert json.dumps(payload, sort_keys=True, separators=(",", ":")) == row["payload_json"]
+    delete_specifications = [
+        operation
+        for operation in rollback_operations
+        if isinstance(operation, dict)
+        and operation.get("operation") == "delete_created_nodes_and_identifiers"
+        and operation.get("delete_identifier_only_when_preexisting_is_false") is True
+    ]
+    assert len(delete_specifications) == 1
+    assert delete_specifications[0]["identifier_candidates"] == candidates
+    assert row["link_status"] == "linked"
+    assert row["observed_at"].startswith("2026-08-01T12:00:00")
+    assert row["owned_by_count"] == 1
+
+
+def test_replay_rejects_tampered_immutable_rollback_bundle(
+    neo4j_driver: Driver,
+) -> None:
+    _seed_domain(neo4j_driver, independent_support=True)
+    _deactivate_child_contamination(neo4j_driver)
+    item, _ = _inventory(neo4j_driver)
+    command = _seed_authority(neo4j_driver, item)
+    repository = _repository(neo4j_driver)
+    committed = repository.commit_atomic_mutation(command)
+    assert committed.mutation is not None and committed.mutation.outcome == "applied"
+    with neo4j_driver.session() as session:
+        session.run(
+            "MATCH (image:CrmDealRepairRollbackImage {rollback_image_id: $image_id}) "
+            "SET image.payload_json = '{}'",
+            image_id=command.rollback_image_id,
+        ).consume()
+    with pytest.raises(RepairMutationDriftError, match="bundle payload differs"):
+        repository.commit_atomic_mutation(command)
+
+
+def test_replay_rejects_committed_bundle_cardinality_drift(neo4j_driver: Driver) -> None:
+    _seed_domain(neo4j_driver, independent_support=True)
+    _deactivate_child_contamination(neo4j_driver)
+    item, _ = _inventory(neo4j_driver)
+    command = _seed_authority(neo4j_driver, item)
+    repository = _repository(neo4j_driver)
+    committed = repository.commit_atomic_mutation(command)
+    assert committed.mutation is not None and committed.mutation.outcome == "applied"
+    with neo4j_driver.session() as session:
+        session.run(
+            "CREATE (:SourceRecord {source_record_pk: 'duplicate-replay-source-pk', "
+            "repair_mutation_id: $mutation_id})",
+            mutation_id=command.mutation_id,
+        ).consume()
+    with pytest.raises(RepairMutationDriftError, match="bundle cardinality differs"):
+        repository.commit_atomic_mutation(command)
+
+
+def test_exact_reconstruction_preserves_non_null_primary_contact_full_name(
+    neo4j_driver: Driver,
+) -> None:
+    _seed_domain(neo4j_driver, independent_support=True)
+    _deactivate_child_contamination(neo4j_driver)
+    named = _deal_payload("1", "contact-1", full_name="Ada Lovelace")
+    raw_payload = named["raw_payload"]
+    attributes = named["attributes"]
+    identifiers = named["identifiers"]
+    record_hash = named["record_hash"]
+    assert isinstance(raw_payload, dict)
+    assert isinstance(attributes, dict)
+    assert isinstance(identifiers, list)
+    assert isinstance(record_hash, str)
+    normalized_payload = json.dumps(
+        {"attributes": attributes, "identifiers": identifiers},
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    with neo4j_driver.session() as session:
+        session.run(
+            "MATCH (deal:SourceRecord {source_record_pk: 'deal-pk'}) "
+            "SET deal.raw_payload = $raw_payload, deal.normalized_payload = $normalized_payload, "
+            "deal.record_hash = $record_hash",
+            raw_payload=json.dumps(raw_payload, sort_keys=True, separators=(",", ":")),
+            normalized_payload=normalized_payload,
+            record_hash=record_hash,
+        ).consume()
+    item, _ = _inventory(neo4j_driver)
+    command = _seed_authority(neo4j_driver, item)
+    result = _repository(neo4j_driver).commit_atomic_mutation(command)
+    assert result.mutation is not None
+    assert result.mutation.outcome == "applied"
+    with neo4j_driver.session() as session:
+        row = session.run(
+            """
+            MATCH (new:SourceRecord {repair_mutation_id: $mutation_id})
+            OPTIONAL MATCH (:Person)-[fact:HAS_FACT {
+              source_record_pk: new.source_record_pk, attribute_name: 'full_name',
+              attribute_value: 'Ada Lovelace', is_active: true
+            }]->(new)
+            RETURN new.normalized_payload AS normalized_payload, count(fact) AS full_name_facts
+            """,
+            mutation_id=command.mutation_id,
+        ).single(strict=True)
+    normalized_payload = json.loads(row["normalized_payload"])
+    assert normalized_payload["attributes"] == {"full_name": "Ada Lovelace"}
+    assert row["full_name_facts"] == 1
+
+
+def test_retirement_uses_frozen_inventory_descendants_and_preserves_unrelated_records(
+    neo4j_driver: Driver,
+) -> None:
+    _seed_domain(neo4j_driver, independent_support=False)
+    with neo4j_driver.session() as session:
+        session.run(
+            """
+            MATCH (source:SourceSystem {source_key: 'bitrix_chat'}),
+              (child:SourceRecord {source_record_pk: 'child-pk'}),
+              (person:Person {person_id: 'person-a'})
+            CREATE (depth_two:SourceRecord {source_record_pk: 'depth-two-pk',
+              source_record_id: 'history-2', source_record_version: '1',
+              source_version_key: 'depth-two-v1', source_instance_id: $source_instance_id,
+              record_type: 'crm_history', lifecycle_status: 'active', is_latest: true,
+              record_hash: $record_hash, raw_payload: '{}', normalized_payload: '{}'})
+              -[:FROM_SOURCE]->(source)
+            CREATE (depth_two)-[:CHILD_OF]->(child)
+            CREATE (depth_two)-[:LINKED_TO {is_active: true, source_record_pk: 'depth-two-pk'}]->(person)
+            CREATE (unrelated:SourceRecord {source_record_pk: 'unrelated-pk',
+              source_record_id: 'unrelated-history', source_record_version: '1',
+              source_version_key: 'unrelated-v1', source_instance_id: $source_instance_id,
+              record_type: 'crm_history', lifecycle_status: 'active', is_latest: true,
+              record_hash: $record_hash, raw_payload: '{}', normalized_payload: '{}'})
+              -[:FROM_SOURCE]->(source)
+            CREATE (unrelated)-[:LINKED_TO {is_active: true, source_record_pk: 'unrelated-pk'}]->(person)
+            """,
+            source_instance_id=_SOURCE,
+            record_hash="e" * 64,
+        ).consume()
+    item, _ = _inventory(neo4j_driver)
+    descendants = item.payload["descendants"]
+    assert isinstance(descendants, list)
+    inventoried_pks = {
+        row["source_record_pk"]
+        for row in descendants
+        if isinstance(row, dict) and isinstance(row.get("source_record_pk"), str)
+    }
+    assert inventoried_pks == {"child-pk", "depth-two-pk"}
+    command = _seed_authority(neo4j_driver, item)
+    _repository(neo4j_driver).commit_atomic_mutation(command)
+    with neo4j_driver.session() as session:
+        row = session.run(
+            """
+            MATCH (:SourceRecord {source_record_pk: 'child-pk'})-[child:LINKED_TO]->()
+            MATCH (:SourceRecord {source_record_pk: 'depth-two-pk'})-[depth_two:LINKED_TO]->()
+            MATCH (:SourceRecord {source_record_pk: 'unrelated-pk'})-[unrelated:LINKED_TO]->()
+            RETURN child.is_active AS child_active, depth_two.is_active AS depth_two_active,
+              unrelated.is_active AS unrelated_active
+            """
+        ).single(strict=True)
+    assert dict(row) == {
+        "child_active": False,
+        "depth_two_active": False,
+        "unrelated_active": True,
+    }
+
+
 def test_drift_stale_fence_and_unblocked_dispatch_leave_no_mutation(
     neo4j_driver: Driver,
 ) -> None:
     _seed_domain(neo4j_driver, independent_support=True)
     item, _ = _inventory(neo4j_driver)
     command = _seed_authority(neo4j_driver, item)
-    drifted = RepairInventoryItem(
-        source_system=item.source_system,
-        source_record_id=item.source_record_id,
-        source_record_pk=item.source_record_pk,
-        deal_id=item.deal_id,
-        partition=item.partition,
-        repair_conditions=item.repair_conditions,
-        graph_fingerprint="sha256:" + "b" * 64,
-        stored_payload_fingerprint=item.stored_payload_fingerprint,
-        payload=item.payload,
-    )
+    original_hash = item.payload["record_hash"]
+    assert isinstance(original_hash, str)
+    with neo4j_driver.session() as session:
+        session.run(
+            "MATCH (deal:SourceRecord {source_record_pk: 'deal-pk'}) "
+            "SET deal.record_hash = $record_hash",
+            record_hash="f" * 64,
+        ).consume()
     with pytest.raises(RepairMutationDriftError):
-        _repository(neo4j_driver).commit_atomic_mutation(
-            RepairMutationCommand(command.unit, command.fence, drifted, _SOURCE, _CONTROL)
-        )
+        _repository(neo4j_driver).commit_atomic_mutation(command)
+    with neo4j_driver.session() as session:
+        session.run(
+            "MATCH (deal:SourceRecord {source_record_pk: 'deal-pk'}) "
+            "SET deal.record_hash = $record_hash",
+            record_hash=original_hash,
+        ).consume()
     with neo4j_driver.session() as session:
         session.run(
             "MATCH (dispatch:BitrixDispatchControl {control_instance_id: $control}) "

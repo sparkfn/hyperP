@@ -68,18 +68,23 @@ def parse_repair_inventory(
     if not _is_sha256_digest(_required_string(payload, "record_hash")):
         raise ValueError("repair inventory record hash is invalid")
     version = _positive_version(payload["source_record_version"])
-    raw_payload = _decoded_json_object(payload["raw_payload"], "raw_payload")
-    normalized_payload = _decoded_json_object(payload["normalized_payload"], "normalized_payload")
     owners = _active_owner_ids(payload["linked_people"])
     descendants = _descendant_source_record_pks(payload["descendants"], item.source_record_pk)
-    envelope = _rebuild_v2_envelope(
-        item,
-        raw_payload,
-        normalized_payload,
-        payload["observed_at"],
-        source_instance_id,
-        entity_key,
-    )
+    try:
+        raw_payload = _decoded_json_object(payload["raw_payload"], "raw_payload")
+        normalized_payload = _decoded_json_object(
+            payload["normalized_payload"], "normalized_payload"
+        )
+        envelope = _rebuild_v2_envelope(
+            item,
+            raw_payload,
+            normalized_payload,
+            payload["observed_at"],
+            source_instance_id,
+            entity_key,
+        )
+    except ValueError:
+        envelope = None
     if envelope is not None:
         envelope = envelope.model_copy(update={"source_record_version": str(version + 1)})
     return ParsedRepairInventory(
