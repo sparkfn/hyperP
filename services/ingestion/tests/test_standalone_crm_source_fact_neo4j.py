@@ -13,11 +13,13 @@ from typing import cast
 from urllib.parse import urlparse
 
 import pytest
-from neo4j import Driver, GraphDatabase
+from neo4j import Driver, GraphDatabase, ManagedTransaction
 from neo4j.exceptions import ServiceUnavailable
 from src.graph.client import Neo4jClient
 from src.graph.standalone_crm_source_fact_repository import StandaloneCrmSourceFactRepository
-from src.standalone_crm_source_fact_models import build_source_fact_commit
+from src.models import IngestResult
+from src.record_lifecycle import PlannedVersion
+from src.standalone_crm_source_fact_models import MappedSourceFactRow, build_source_fact_commit
 from tests.standalone_crm_source_fact_neo4j_support import (
     DriverClient,
     SentinelAdapter,
@@ -29,6 +31,29 @@ from tests.standalone_crm_source_fact_neo4j_support import (
     seed_repository_case,
     source_fact_counts,
 )
+
+
+class _MalformedVersionSentinelAdapter(SentinelAdapter):
+    """Create a malformed stored lifecycle version inside the owned transaction."""
+
+    def persist(
+        self,
+        tx: ManagedTransaction,
+        row: MappedSourceFactRow,
+        plan: PlannedVersion,
+    ) -> IngestResult:
+        result = super().persist(tx, row, plan)
+        source_record_pk = result.source_record_pk
+        if source_record_pk is None:
+            raise RuntimeError("sentinel did not persist its source record")
+        tx.run(
+            """
+            MATCH (record:SourceRecord {source_record_pk: $source_record_pk})
+            SET record.source_record_version = 'malformed'
+            """,
+            source_record_pk=source_record_pk,
+        ).consume()
+        return result
 
 
 @pytest.fixture
@@ -116,11 +141,29 @@ def assert_production_adapter_persists_real_lifecycle_graph(driver: Driver) -> N
               source_record_version: '1'
             })-[:FROM_SOURCE]->(:SourceSystem {source_key: 'bitrix_chat'})
             OPTIONAL MATCH (:Person)-[fact:HAS_FACT {source_record_pk: record.source_record_pk}]->(record)
-            RETURN count(DISTINCT record) AS records, count(DISTINCT fact) AS facts
+            MATCH (receipt:StandaloneCrmSourceFactPageReceipt {census_id: 'census-a'})
+            RETURN count(DISTINCT record) AS records, count(DISTINCT fact) AS facts,
+              record.source_record_version AS source_record_version,
+              receipt.source_receipts_json AS source_receipts_json
             """
         ).single(strict=True)
-    assert dict(row) == {"records": 1, "facts": 1}
+    values = dict(row)
+    assert {"records": values["records"], "facts": values["facts"]} == {"records": 1, "facts": 1}
+    assert values["source_record_version"] == "1"
+    assert '"source_record_version":1' in values["source_receipts_json"]
     assert source_fact_counts(driver) == {"records": 1, "receipts": 1, "cursor": 6, "processed": 1}
+
+
+def assert_source_receipt_rejects_malformed_lifecycle_version(driver: Driver) -> None:
+    request = seed_repository_case(driver)
+    repository = StandaloneCrmSourceFactRepository(
+        cast(Neo4jClient, DriverClient(driver)), adapter=_MalformedVersionSentinelAdapter()
+    )
+
+    with pytest.raises(RuntimeError, match="source record is malformed"):
+        repository.commit_unit(request)
+
+    assert source_fact_counts(driver) == {"records": 0, "receipts": 0, "cursor": 5, "processed": 0}
 
 
 def assert_independent_receipt_duplicate_skips_real_domain_writes(driver: Driver) -> None:
@@ -268,6 +311,7 @@ _SCENARIOS: tuple[Scenario, ...] = (
     assert_raw_authority_conflict,
     assert_repository_success_replay_conflict,
     assert_production_adapter_persists_real_lifecycle_graph,
+    assert_source_receipt_rejects_malformed_lifecycle_version,
     assert_independent_receipt_duplicate_skips_real_domain_writes,
     assert_overlapping_crm_ids_remain_source_instance_isolated,
     assert_concurrent_page_cas_commits_once_and_replays_once,

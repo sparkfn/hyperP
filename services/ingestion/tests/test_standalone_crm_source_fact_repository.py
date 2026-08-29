@@ -84,6 +84,7 @@ class _Tx:
         self.final = final
         self.pending_record: _Record | None = None
         self.pending_lead_record: _Record | None = None
+        self.source_record_receipt: _Record | None = None
         self.calls: list[tuple[str, dict[str, object]]] = []
 
     def run(self, query: str, **parameters: object) -> _Result:
@@ -109,6 +110,8 @@ class _Tx:
         if query == STAMP_SOURCE_FACT_LINEAGE:
             return _Result(_Record({"source_record_pk": parameters["source_record_pk"]}))
         if query == READ_SOURCE_RECORD_RECEIPT:
+            if self.source_record_receipt is not None:
+                return _Result(self.source_record_receipt)
             pk = parameters["source_record_pk"]
             return _Result(
                 _Record(
@@ -388,6 +391,25 @@ def test_final_cas_denial_raises_after_domain_writes_so_driver_rolls_back() -> N
     assert adapter.events == ["plan", "persist"]
 
 
+def test_source_record_receipt_rejects_a_null_normalized_lifecycle_version() -> None:
+    tx = _Tx(_stored_request())
+    tx.source_record_receipt = _Record(
+        {
+            "source_record_pk": "pk-2",
+            "source_record_version": None,
+            "record_hash": "hash-pk-2",
+        }
+    )
+    adapter = _Adapter([_planned()])
+    repository, _client = _repository(tx, adapter)
+
+    with pytest.raises(RuntimeError, match="source record is malformed"):
+        repository.commit_unit(_request())
+
+    assert adapter.events == ["plan", "persist"]
+    assert all(query != FINALIZE_PAGE for query, _ in tx.calls)
+
+
 @pytest.mark.parametrize("bad", ("not-json", "[]", 9))
 def test_malformed_persisted_request_fails_closed_before_claim(bad: object) -> None:
     tx = _Tx(bad)
@@ -493,6 +515,9 @@ def test_queries_have_single_source_binding_match_and_full_replay_fence() -> Non
         "call_intent_id",
     ):
         assert term in RESOLVE_COMMITTED_RECEIPT
+    assert "toInteger(record.source_record_version) AS source_record_version" in (
+        READ_SOURCE_RECORD_RECEIPT
+    )
 
 
 def _pending_contact_receipt_json(*, row_id: int = 6) -> str:

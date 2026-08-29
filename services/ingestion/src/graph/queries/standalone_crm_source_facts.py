@@ -49,7 +49,7 @@ END AS decision,
 READ_SOURCE_RECORD_RECEIPT = """
 MATCH (record:SourceRecord {source_record_pk: $source_record_pk})
 RETURN record.source_record_pk AS source_record_pk,
-  record.source_record_version AS source_record_version,
+  toInteger(record.source_record_version) AS source_record_version,
   record.record_hash AS record_hash
 """
 
