@@ -19,6 +19,8 @@ from src.graph.queries.standalone_crm_census import (
     CREATE_CONTINUATION,
     FAIL_AFTER_WINDOW_AUTHORITY,
     LEASE_HELD_PUBLISHED_CHILD,
+    PAUSE_CLAIMED_UNIT,
+    PRECONFIRM_PUBLISHED_CHILD,
     RECORD_CALL_OUTCOME,
     REFRESH_PUBLISHED_CHILD,
     REQUEST_CANCELLATION,
@@ -231,12 +233,37 @@ def test_lease_held_classification_reasserts_current_admission_authority(
     assert "fence.owner_id <> $owner_id" not in LEASE_HELD_PUBLISHED_CHILD
 
 
+def test_preconfirmation_delivery_is_read_only_retryable_for_the_exact_publishing_publication(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _Client([{"pending": 1}])
+    repository = _repository(client)
+    envelope = _source_envelope()
+    monkeypatch.setattr(repository, "runtime_snapshot", lambda _census_id: _snapshot())
+
+    assert repository.published_child_preconfirm_pending(envelope, payload_json='{"frozen":true}')
+
+    assert client.write_calls == 0
+    assert client.read_calls == 1
+    run = client.transaction.runs[0]
+    assert run.query == PRECONFIRM_PUBLISHED_CHILD
+    assert run.parameters["task_id"] == envelope.task_id
+    assert run.parameters["payload_digest"] == envelope.payload_digest()
+    assert "status: 'publishing'" in PRECONFIRM_PUBLISHED_CHILD
+    assert "RETURN 1 AS pending" in PRECONFIRM_PUBLISHED_CHILD
+
+
 def test_child_claim_rebinds_only_a_compatible_checkpoint_fence_token() -> None:
     assert "checkpoint.generation = $generation" in CLAIM_PUBLISHED_CHILD
     assert "checkpoint.frozen_upper_id = $frozen_upper_id" in CLAIM_PUBLISHED_CHILD
     assert "checkpoint.revision_id IS NULL" in CLAIM_PUBLISHED_CHILD
+    assert "StandaloneCrmCensusContinuation" in CLAIM_PUBLISHED_CHILD
+    assert "SET checkpoint.generation = $generation" in CLAIM_PUBLISHED_CHILD
+    assert CLAIM_PUBLISHED_CHILD.index("OPTIONAL MATCH (checkpoint") < CLAIM_PUBLISHED_CHILD.index(
+        "MERGE (fence"
+    )
     rebind = CLAIM_PUBLISHED_CHILD.split("FOREACH (_ IN CASE WHEN checkpoint IS NULL", 1)[1]
-    assert "SET checkpoint.fence_token = fence.token" in rebind
+    assert "checkpoint.fence_token = fence.token" in rebind
     for preserved in (
         "checkpoint.last_committed_id",
         "checkpoint.processed_rows",
@@ -245,6 +272,21 @@ def test_child_claim_rebinds_only_a_compatible_checkpoint_fence_token() -> None:
         "checkpoint.binding_offset",
     ):
         assert f"SET {preserved}" not in rebind
+
+
+def test_durable_claimed_pause_creates_or_preserves_exact_checkpoint_before_resumable_status() -> (
+    None
+):
+    for term in (
+        "MERGE (stored:StandaloneCrmCensusCheckpoint",
+        "unit.state = 'paused'",
+        "attempt.status = 'paused_with_checkpoint'",
+        "census.status = 'paused_with_checkpoint'",
+        "fence_token = $fence_token",
+        "task_name: $task_name",
+        "payload_digest: $payload_digest",
+    ):
+        assert term in PAUSE_CLAIMED_UNIT
 
 
 @pytest.fixture

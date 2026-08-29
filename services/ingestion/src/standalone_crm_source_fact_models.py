@@ -177,7 +177,12 @@ def build_source_fact_commit(
         skipped_rows,
         mutation.failed_rows,
     )
-    deferred_contact = page.defer_contact_cursor
+    # A malformed singleton has no durable source receipt.  It therefore cannot
+    # enter the contact-only #302 -> #303 handoff state: account and advance it
+    # as a terminal source-fact skip instead.
+    deferred_contact = (
+        page.defer_contact_cursor and len(mutation.mapped_rows) == 1 and not mutation.malformed_rows
+    )
     proposed = StandaloneCrmCheckpoint(
         expected.census_id,
         expected.stream_kind,

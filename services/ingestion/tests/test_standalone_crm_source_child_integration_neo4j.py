@@ -36,6 +36,7 @@ from src.graph.crm_company_membership import CrmCompanyMembershipRepository
 from src.graph.queries.standalone_crm_census import (
     CLAIM_PUBLISHED_CHILD,
     CLOSE_CONTACT_BINDING_POSITION,
+    PRECONFIRM_PUBLISHED_CHILD,
 )
 from src.graph.queries.standalone_crm_source_facts import (
     CLAIM_PAGE,
@@ -43,9 +44,10 @@ from src.graph.queries.standalone_crm_source_facts import (
     READ_PENDING_CONTACT_RECEIPT,
     READ_PENDING_LEAD_RECEIPT,
 )
+from src.graph.standalone_crm_census import StandaloneCrmCensusRepository
 from src.graph.standalone_crm_census_records import authority_context, authority_revision
 from src.standalone_crm_census_lifecycle import StandaloneCrmCheckpoint
-from src.standalone_crm_census_models import StandaloneCrmChildEnvelope
+from src.standalone_crm_census_models import StandaloneCrmChildEnvelope, StandaloneCrmPublication
 from src.standalone_crm_census_requests import (
     SourceSyncAuthority,
     SourceSyncCensusRequest,
@@ -473,6 +475,166 @@ def test_deferred_contact_receipt_replays_then_closes_without_person_topology(
         "offset": None,
         "persons": 0,
         "matching_edges": 0,
+    }
+
+
+def test_broker_delivery_before_parent_publication_confirmation_is_retryable_without_claiming(
+    neo4j_driver: Driver,
+) -> None:
+    parameters = _parameters()
+    _prepare_claimable_publication(parameters)
+    _seed_contact(neo4j_driver, parameters)
+    with neo4j_driver.session() as session:
+        session.run(
+            "MATCH (publication:StandaloneCrmChildPublication {census_id: $census_id, "
+            "generation: $generation, stream_kind: $stream_kind}) SET publication.status = 'publishing'",
+            **parameters,
+        ).consume()
+        pending = session.run(
+            PRECONFIRM_PUBLISHED_CHILD, **_claim_parameters(parameters, owner_id="ignored")
+        ).single(strict=True)
+        state = session.run(
+            "MATCH (fence:StandaloneCrmCensusFence {census_id: $census_id, generation: $generation, "
+            "stream_kind: $stream_kind}) RETURN fence.token AS token, fence.owner_id AS owner",
+            **parameters,
+        ).single(strict=True)
+    assert pending["pending"] == 1
+    assert dict(state) == {"token": 2, "owner": "contact-task"}
+
+
+def test_first_effect_pause_continues_through_real_lifecycle_and_rebinds_zero_checkpoint(
+    neo4j_driver: Driver,
+) -> None:
+    """A first-effect failure creates a real continuation-ready zero checkpoint."""
+    parameters = _parameters()
+    _prepare_claimable_publication(parameters)
+    _seed_contact(neo4j_driver, parameters)
+    repository = StandaloneCrmCensusRepository(cast(Neo4jClient, DriverClient(neo4j_driver)))
+    current = StandaloneCrmChildEnvelope(
+        "source-child-contact",
+        1,
+        "contact",
+        10,
+        None,
+        "src.standalone_crm_census_tasks.run_standalone_crm_census_unit",
+        "contact-task",
+        "ingestion",
+    )
+    with neo4j_driver.session() as session:
+        session.run(
+            "MATCH (checkpoint:StandaloneCrmCensusCheckpoint {census_id: $census_id, "
+            "stream_kind: $stream_kind}) DELETE checkpoint",
+            **parameters,
+        ).consume()
+        session.run(
+            "MATCH (fence:StandaloneCrmCensusFence {census_id: $census_id, generation: $generation, "
+            "stream_kind: $stream_kind}) SET fence.status = 'retired'",
+            **parameters,
+        ).consume()
+    claimed = repository.claim_published_child(
+        current,
+        owner_id="first-effect-worker",
+        payload_json=str(parameters["payload_json"]),
+    )
+    assert claimed is not None
+    token = claimed["fence_token"]
+    assert isinstance(token, int)
+    zero = StandaloneCrmCheckpoint(
+        "source-child-contact", "contact", 10, None, 0, None, None, 0, 0, 1, token
+    )
+    assert repository.pause_claimed_unit(
+        "source-child-contact",
+        1,
+        "contact",
+        token,
+        "first-effect-worker",
+        current.task_name,
+        current.task_id,
+        current.payload_digest(),
+        10,
+        zero,
+        "source_effect_failed",
+        "test first effect failed before source-fact commit",
+    )
+    with neo4j_driver.session() as session:
+        paused = session.run(
+            "MATCH (census:StandaloneCrmCensus {census_id: $census_id}) "
+            "MATCH (attempt:StandaloneCrmCensusAttempt {census_id: $census_id, generation: 1}) "
+            "MATCH (unit:StandaloneCrmCensusUnit {census_id: $census_id, stream_kind: $stream_kind}) "
+            "MATCH (checkpoint:StandaloneCrmCensusCheckpoint {census_id: $census_id, stream_kind: $stream_kind}) "
+            "RETURN census.status AS census, attempt.status AS attempt, unit.state AS unit, "
+            "checkpoint.last_committed_id AS cursor, checkpoint.processed_rows AS processed, "
+            "checkpoint.binding_subject_id AS subject, checkpoint.binding_offset AS offset",
+            **parameters,
+        ).single(strict=True)
+    assert dict(paused) == {
+        "census": "paused_with_checkpoint",
+        "attempt": "paused_with_checkpoint",
+        "unit": "paused",
+        "cursor": 0,
+        "processed": 0,
+        "subject": None,
+        "offset": None,
+    }
+    assert (
+        repository.create_continuation("source-child-contact", 1, _source_request("contact")) == 2
+    )
+    assert repository.resumable_units("source-child-contact", 2)[0].stream_kind == "contact"
+    publication = StandaloneCrmChildEnvelope(
+        "source-child-contact",
+        2,
+        "contact",
+        10,
+        None,
+        "src.standalone_crm_census_tasks.run_standalone_crm_census_unit",
+        "contact-task-v2",
+        "ingestion",
+    )
+    assert repository.reserve_child_envelope(publication)
+    assert repository.confirm_publication(
+        StandaloneCrmPublication(
+            publication.census_id,
+            publication.generation,
+            publication.stream_kind,
+            publication.task_id,
+            publication.payload_digest(),
+            "pending",
+        )
+    )
+    resumed_payload = json.dumps(
+        {
+            "census_id": publication.census_id,
+            "generation": publication.generation,
+            "stream_kind": publication.stream_kind,
+            "frozen_upper_id": publication.frozen_upper_id,
+            "revision_id": publication.revision_id,
+            "task_name": publication.task_name,
+            "task_id": publication.task_id,
+            "queue": publication.queue,
+            "payload_version": publication.payload_version,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    resumed_claim = repository.claim_published_child(
+        publication,
+        owner_id="resume-worker",
+        payload_json=resumed_payload,
+    )
+    assert resumed_claim is not None
+    with neo4j_driver.session() as session:
+        checkpoint = session.run(
+            "MATCH (checkpoint:StandaloneCrmCensusCheckpoint {census_id: $census_id, stream_kind: $stream_kind}) "
+            "RETURN checkpoint.generation AS generation, checkpoint.fence_token AS token, "
+            "checkpoint.last_committed_id AS cursor, checkpoint.processed_rows AS processed",
+            **parameters,
+        ).single(strict=True)
+    assert resumed_claim["fence_owner_id"] == "resume-worker"
+    assert dict(checkpoint) == {
+        "generation": 2,
+        "token": resumed_claim["fence_token"],
+        "cursor": 0,
+        "processed": 0,
     }
 
 

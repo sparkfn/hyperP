@@ -110,6 +110,27 @@ def test_source_child_task_retries_only_an_exact_active_lease(
     assert graph.closed is True
 
 
+@pytest.mark.parametrize("result", ["publication_pending_retryable", "convergence_retryable"])
+def test_source_child_task_retries_preconfirmation_and_post_claim_convergence(
+    monkeypatch: pytest.MonkeyPatch, result: str
+) -> None:
+    runtime = _Runtime(result=result)
+    graph = _GraphClient()
+    task = _RetryingBoundTask(SimpleNamespace(id="published-task"))
+    monkeypatch.setattr(task_module, "_source_child_runtime", lambda: (runtime, graph))
+
+    with pytest.raises(_RetryRequestedError):
+        task_module.run_standalone_crm_census_unit.run.__func__(task, {"publication": "exact"})
+
+    assert task.retries == [
+        (
+            task_module._LEASE_HELD_RETRY_COUNTDOWN_SECONDS,  # noqa: SLF001
+            task_module._LEASE_HELD_MAX_RETRIES,  # noqa: SLF001
+        )
+    ]
+    assert graph.closed is True
+
+
 def test_source_child_task_does_not_retry_terminal_claim_denial(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

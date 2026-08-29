@@ -114,6 +114,8 @@ class StandaloneCrmLeadSourceHandler:
         source_result = self._source_facts.write(page)
         if source_result.decision not in {"committed", "replayed"}:
             return source_result.decision
+        if _is_malformed_singleton_completion(source_result):
+            return "lead_completed"
         receipt = _exact_receipt(source_result, row.id)
         checkpoint = _source_fact_checkpoint(checkpoint, receipt, source_result)
         membership_envelope = replace(envelope, last_committed_id=receipt.row_id)
@@ -237,4 +239,14 @@ def _head_matches_receipt(
         and record.source_record_hash == receipt.record_hash
         and record.observed_at == receipt.observed_at
         and record.availability.available_at == available_at
+    )
+
+
+def _is_malformed_singleton_completion(result: StandaloneCrmSourceFactCommitResult) -> bool:
+    """Malformed singleton rows are durably accounted without a #303 handoff."""
+    return (
+        result.decision in {"committed", "replayed"}
+        and result.processed_rows == 1
+        and result.failed_rows == 1
+        and result.receipts == ()
     )

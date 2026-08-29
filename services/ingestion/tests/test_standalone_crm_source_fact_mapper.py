@@ -10,6 +10,7 @@ from src.standalone_crm_source_fact_mapper import map_source_fact_page
 from src.standalone_crm_source_fact_models import (
     MAX_STANDALONE_CRM_SOURCE_FACT_PAGE_ROWS,
     StandaloneCrmSourceFactPage,
+    build_source_fact_commit,
 )
 from tests._standalone_crm_lane_a_fakes import contact_envelope
 
@@ -51,6 +52,20 @@ def test_authorized_invalid_content_is_failed_but_bad_order_rejects_page() -> No
         _page((CrmContact("6", None, kind="contact", company_id="9", observed_at=_OBSERVED_AT),))
     )
     assert association.failed_rows == 1
+
+
+def test_malformed_deferred_contact_advances_without_creating_a_pending_binding_position() -> None:
+    page = replace(
+        _page((CrmContact("6", "", kind="contact", observed_at=_OBSERVED_AT),)),
+        defer_contact_cursor=True,
+    )
+    mutation = map_source_fact_page(page)
+
+    commit = build_source_fact_commit(mutation, skipped_rows=0)
+
+    assert commit.proposed_checkpoint.last_committed_id == 6
+    assert commit.proposed_checkpoint.binding_subject_id is None
+    assert commit.proposed_checkpoint.binding_offset is None
 
 
 def test_contact_and_lead_match_the_existing_policy_and_suppress_oversized_channels() -> None:

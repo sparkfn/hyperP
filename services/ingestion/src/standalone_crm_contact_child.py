@@ -121,6 +121,8 @@ class StandaloneCrmContactSourceHandler:
                 True,
             )
             result = self._source_facts.write(page)
+            if _is_malformed_singleton_completion(result):
+                return "contact_completed"
             if result.decision not in {"committed", "replayed"} or len(result.receipts) != 1:
                 return result.decision
             receipt = result.receipts[0]
@@ -279,3 +281,13 @@ def _receipt_head_binding_count(
     ):
         return None
     return record.binding_count
+
+
+def _is_malformed_singleton_completion(result: StandaloneCrmSourceFactCommitResult) -> bool:
+    """A malformed row is accounted by #302 and deliberately has no #303 handoff."""
+    return (
+        result.decision in {"committed", "replayed"}
+        and result.processed_rows == 1
+        and result.failed_rows == 1
+        and result.receipts == ()
+    )

@@ -73,6 +73,8 @@ def _parameters() -> dict[str, object]:
         "proposed_cursor": 6,
         "proposed_processed": 1,
         "proposed_skipped": 0,
+        "proposed_binding_subject": None,
+        "proposed_binding_offset": None,
         "processed_delta": 1,
         "skipped_delta": 0,
         "failed_delta": 0,
@@ -171,6 +173,10 @@ class DriverClient:
     def execute_write(self, work: Callable[[ManagedTransaction], object]) -> object:
         with self._driver.session() as session:
             return session.execute_write(work)
+
+    def execute_read(self, work: Callable[[ManagedTransaction], object]) -> object:
+        with self._driver.session() as session:
+            return session.execute_read(work)
 
 
 class SentinelAdapter:

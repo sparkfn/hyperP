@@ -213,6 +213,17 @@ def test_replayed_source_fact_and_idempotent_membership_converge_without_double_
     assert commit.proposed_checkpoint.processed_rows == 1
 
 
+def test_malformed_lead_singleton_is_accounted_without_a_receipt_dependent_membership() -> None:
+    source_facts = _SourceFacts(StandaloneCrmSourceFactCommitResult("committed", 1, 0, 1, ()))
+    memberships = _Memberships()
+
+    assert (
+        _handler(source_facts, memberships).run(_claim(), _LeadIo((_lead(),))) == "lead_completed"
+    )
+    assert len(source_facts.pages) == 1
+    assert memberships.commits == []
+
+
 def test_lead_pending_receipt_recovers_membership_before_any_later_source_fetch() -> None:
     receipt = StandaloneCrmSourceFactReceipt(
         _RECEIPT.row_id,
