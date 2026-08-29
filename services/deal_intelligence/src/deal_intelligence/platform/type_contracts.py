@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
+from datetime import timedelta
+from uuid import UUID
 
 from sqlalchemy.orm import Session
 
@@ -62,3 +64,20 @@ def protocol_contracts(
     provider: ComponentRegistryProvider = _ComponentRegistryProviderFake()
     participant: TransactionalParticipant = _TransactionalParticipantFake()
     return boundary.transaction(), platform_store, plugin, provider, participant
+
+
+def lease_duration_contract(
+    store: SqlAlchemyPlatformStore, session: Session, owner_run_id: UUID
+) -> None:
+    """Keep the public lease duration contract checked against the concrete store."""
+    platform_store: PlatformStore = store
+    duration = timedelta(seconds=1)
+    lease = platform_store.acquire_lease(session, "contract.resource", owner_run_id, duration)
+    if lease is not None:
+        platform_store.renew_lease(
+            session,
+            lease.resource_key,
+            owner_run_id,
+            lease.fence_token,
+            duration,
+        )

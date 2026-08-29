@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
-from sqlalchemy import and_, func, select
-from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy import and_, bindparam, func, select
+from sqlalchemy.dialects.postgresql import INTERVAL, insert
 from sqlalchemy.orm import Session
 
 from deal_intelligence.platform.schema import (
@@ -90,6 +90,15 @@ class SqlAlchemyPlatformStore:
         return RunRecord(identifier, descriptor, RunStatus.PENDING, now, None, None, None)
 
     def add_unit(self, session: Session, descriptor: UnitDescriptor) -> None:
+        status = session.execute(
+            select(process_runs.c.status)
+            .where(process_runs.c.id == descriptor.run_id)
+            .with_for_update()
+        ).scalar_one_or_none()
+        if status is None:
+            raise ValueError("Process unit requires an existing run")
+        if status in _TERMINAL_RUN_STATUSES:
+            raise ValueError("Cannot add a process unit to a terminal run")
         statement = (
             insert(process_units)
             .values(
@@ -109,39 +118,37 @@ class SqlAlchemyPlatformStore:
         """Create only at expected zero, or advance the exact existing checkpoint version."""
         if change.expected_version < 0:
             raise ValueError("Checkpoint expected_version must be nonnegative")
-        if change.expected_version != 0:
-            existing = session.execute(
-                select(checkpoints.c.version).where(
+        now = _utc_now()
+        if change.expected_version == 0:
+            row = session.execute(
+                insert(checkpoints)
+                .values(
+                    run_id=run_id,
+                    checkpoint_key=checkpoint_key,
+                    version=1,
+                    payload=change.payload,
+                    updated_at=now,
+                )
+                .on_conflict_do_nothing(constraint="checkpoints_primary_key")
+                .returning(checkpoints.c.version, checkpoints.c.payload, checkpoints.c.updated_at)
+            ).one_or_none()
+        else:
+            row = session.execute(
+                checkpoints.update()
+                .where(
                     and_(
                         checkpoints.c.run_id == run_id,
                         checkpoints.c.checkpoint_key == checkpoint_key,
+                        checkpoints.c.version == change.expected_version,
                     )
                 )
-            ).scalar_one_or_none()
-            if existing is None:
-                return CompareAndSetResult(False, None)
-        now = _utc_now()
-        statement = (
-            insert(checkpoints)
-            .values(
-                run_id=run_id,
-                checkpoint_key=checkpoint_key,
-                version=0,
-                payload=change.payload,
-                updated_at=now,
-            )
-            .on_conflict_do_update(
-                constraint="checkpoints_primary_key",
-                set_={
-                    "version": checkpoints.c.version + 1,
-                    "payload": change.payload,
-                    "updated_at": now,
-                },
-                where=checkpoints.c.version == change.expected_version,
-            )
-            .returning(checkpoints.c.version, checkpoints.c.payload, checkpoints.c.updated_at)
-        )
-        row = session.execute(statement).one_or_none()
+                .values(
+                    version=checkpoints.c.version + 1,
+                    payload=change.payload,
+                    updated_at=now,
+                )
+                .returning(checkpoints.c.version, checkpoints.c.payload, checkpoints.c.updated_at)
+            ).one_or_none()
         if row is not None:
             return CompareAndSetResult(
                 True, Checkpoint(run_id, checkpoint_key, row[0], row[1], row[2])
@@ -158,37 +165,37 @@ class SqlAlchemyPlatformStore:
         )
 
     def acquire_lease(
-        self, session: Session, resource_key: str, owner_run_id: UUID, expires_at: datetime
+        self, session: Session, resource_key: str, owner_run_id: UUID, duration: timedelta
     ) -> Lease | None:
         """Acquire an expired lease while retaining its row and monotonic fence token."""
-        now = _utc_now()
-        if expires_at <= now:
-            raise ValueError("Lease expiry must be in the future")
+        _validate_lease_duration(duration)
+        database_time = func.current_timestamp()
+        expiry = database_time + bindparam("lease_duration", duration, type_=INTERVAL())
         statement = (
             insert(leases)
             .values(
                 resource_key=resource_key,
                 owner_run_id=owner_run_id,
                 fence_token=1,
-                acquired_at=now,
-                expires_at=expires_at,
+                acquired_at=database_time,
+                expires_at=expiry,
             )
             .on_conflict_do_update(
                 index_elements=(leases.c.resource_key,),
                 set_={
                     "owner_run_id": owner_run_id,
                     "fence_token": leases.c.fence_token + 1,
-                    "acquired_at": now,
-                    "expires_at": expires_at,
+                    "acquired_at": database_time,
+                    "expires_at": expiry,
                 },
-                where=leases.c.expires_at <= now,
+                where=leases.c.expires_at <= database_time,
             )
-            .returning(leases.c.fence_token)
+            .returning(leases.c.fence_token, leases.c.expires_at)
         )
         row = session.execute(statement).one_or_none()
         if row is None:
             return None
-        return Lease(resource_key, owner_run_id, row[0], expires_at)
+        return Lease(resource_key, owner_run_id, row[0], row[1])
 
     def renew_lease(
         self,
@@ -196,11 +203,11 @@ class SqlAlchemyPlatformStore:
         resource_key: str,
         owner_run_id: UUID,
         fence_token: int,
-        expires_at: datetime,
+        duration: timedelta,
     ) -> Lease | None:
-        now = _utc_now()
-        if expires_at <= now:
-            raise ValueError("Lease expiry must be in the future")
+        _validate_lease_duration(duration)
+        database_time = func.current_timestamp()
+        expiry = database_time + bindparam("lease_duration", duration, type_=INTERVAL())
         statement = (
             leases.update()
             .where(
@@ -208,16 +215,16 @@ class SqlAlchemyPlatformStore:
                     leases.c.resource_key == resource_key,
                     leases.c.owner_run_id == owner_run_id,
                     leases.c.fence_token == fence_token,
-                    leases.c.expires_at > now,
+                    leases.c.expires_at > database_time,
                 )
             )
-            .values(expires_at=expires_at)
-            .returning(leases.c.fence_token)
+            .values(expires_at=expiry)
+            .returning(leases.c.fence_token, leases.c.expires_at)
         )
         row = session.execute(statement).one_or_none()
         if row is None:
             return None
-        return Lease(resource_key, owner_run_id, row[0], expires_at)
+        return Lease(resource_key, owner_run_id, row[0], row[1])
 
     def record_readiness_heartbeat(
         self, session: Session, component: str, details: JsonValue | None = None
@@ -281,11 +288,11 @@ class SqlAlchemyPlatformStore:
         ):
             raise ValueError("Terminal accounting totals must balance")
         run = session.execute(
-            select(process_runs.c.status, process_runs.c.terminal_disposition).where(
-                process_runs.c.id == accounting.run_id
-            )
+            select(process_runs.c.status, process_runs.c.terminal_disposition)
+            .where(process_runs.c.id == accounting.run_id)
+            .with_for_update()
         ).one_or_none()
-        if run is None or run[0] not in {"succeeded", "failed", "cancelled"}:
+        if run is None or run[0] not in _TERMINAL_RUN_STATUSES:
             raise ValueError("Terminal accounting requires a terminal run")
         if run[1] != accounting.terminal_disposition:
             raise ValueError("Terminal accounting disposition must match the run")
@@ -317,3 +324,13 @@ class SqlAlchemyPlatformStore:
 
 def _utc_now() -> datetime:
     return datetime.now(UTC)
+
+
+_TERMINAL_RUN_STATUSES: frozenset[str] = frozenset(
+    {RunStatus.SUCCEEDED.value, RunStatus.FAILED.value, RunStatus.CANCELLED.value}
+)
+
+
+def _validate_lease_duration(duration: timedelta) -> None:
+    if duration <= timedelta():
+        raise ValueError("Lease duration must be strictly positive")

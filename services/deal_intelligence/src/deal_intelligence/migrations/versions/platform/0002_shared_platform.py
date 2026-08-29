@@ -263,36 +263,11 @@ def upgrade() -> None:
         ),
         schema=_SCHEMA,
     )
-    op.create_table(
-        "migration_bookkeeping",
-        sa.Column("component_name", sa.String(length=80), nullable=False),
-        sa.Column("revision", sa.String(length=100), nullable=False),
-        sa.Column(
-            "applied_at",
-            sa.DateTime(timezone=True),
-            nullable=False,
-            server_default=sa.text("now()"),
-        ),
-        sa.Column(
-            "details", postgresql.JSONB(), nullable=False, server_default=sa.text("'{}'::jsonb")
-        ),
-        sa.PrimaryKeyConstraint(
-            "component_name", "revision", name="migration_bookkeeping_primary_key"
-        ),
-        sa.CheckConstraint(
-            "char_length(component_name) > 0", name="migration_bookkeeping_component_nonempty"
-        ),
-        sa.CheckConstraint(
-            "char_length(revision) > 0", name="migration_bookkeeping_revision_nonempty"
-        ),
-        schema=_SCHEMA,
-    )
 
 
 def downgrade() -> None:
     """Drop only explicitly created Deal Intelligence objects, preserving external state."""
     for table_name in (
-        "migration_bookkeeping",
         "process_heartbeats",
         "schema_readiness",
         "terminal_accounting",
@@ -303,4 +278,3 @@ def downgrade() -> None:
         "source_instances",
     ):
         op.drop_table(table_name, schema=_SCHEMA)
-    op.execute("DROP SCHEMA IF EXISTS deal_intelligence")

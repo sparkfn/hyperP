@@ -18,6 +18,7 @@ from deal_intelligence.migrations.cli import (
 from deal_intelligence.migrations.conventions import MIGRATION_LANES, lane_for_branch_label
 from deal_intelligence.platform.schema import (
     EXCLUDED_DOMAIN_TABLE_NAMES,
+    fresh_schema_inventory,
     metadata,
     schema_inventory,
 )
@@ -40,6 +41,7 @@ def test_schema_inventory_contains_only_shared_platform_tables() -> None:
     }
     assert inventory.isdisjoint(EXCLUDED_DOMAIN_TABLE_NAMES)
     assert all(table.schema == "deal_intelligence" for table in metadata.sorted_tables)
+    assert fresh_schema_inventory() == inventory
 
 
 def test_shared_platform_schema_has_constraints_and_indexes() -> None:

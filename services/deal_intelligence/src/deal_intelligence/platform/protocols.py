@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from contextlib import AbstractContextManager
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Protocol
 from uuid import UUID
 
@@ -40,7 +40,7 @@ class PlatformStore(Protocol):
         self, session: Session, run_id: UUID, checkpoint_key: str, change: CompareAndSet
     ) -> CompareAndSetResult: ...
     def acquire_lease(
-        self, session: Session, resource_key: str, owner_run_id: UUID, expires_at: datetime
+        self, session: Session, resource_key: str, owner_run_id: UUID, duration: timedelta
     ) -> Lease | None: ...
     def renew_lease(
         self,
@@ -48,7 +48,7 @@ class PlatformStore(Protocol):
         resource_key: str,
         owner_run_id: UUID,
         fence_token: int,
-        expires_at: datetime,
+        duration: timedelta,
     ) -> Lease | None: ...
     def record_readiness_heartbeat(
         self, session: Session, component: str, details: JsonValue | None = None

@@ -302,6 +302,11 @@ def test_staging_compose_critical_invariants() -> None:
         "timeout": "5s",
         "retries": 10,
     }
+    assert deal_intelligence_postgres["environment"] == {
+        "POSTGRES_DB": "${DEAL_INTELLIGENCE_POSTGRES_DB:-deal_intelligence}",
+        "POSTGRES_USER": "${DEAL_INTELLIGENCE_POSTGRES_USER:-deal_intelligence}",
+        "POSTGRES_PASSWORD": "${DEAL_INTELLIGENCE_POSTGRES_PASSWORD:-}",
+    }
     assert deal_intelligence_migrate["build"] == {
         "context": "../..",
         "dockerfile": "services/deal_intelligence/Dockerfile",
@@ -321,6 +326,15 @@ def test_staging_compose_critical_invariants() -> None:
     assert deal_intelligence_migrate["depends_on"] == {
         "deal-intelligence-postgres": {"condition": "service_healthy"}
     }
+    expected_deal_intelligence_environment = {
+        "DEAL_INTELLIGENCE_DATABASE_URL": "${DEAL_INTELLIGENCE_DATABASE_URL:-}",
+        "DEAL_INTELLIGENCE_DATABASE_HOST": "deal-intelligence-postgres",
+        "DEAL_INTELLIGENCE_DATABASE_PORT": "5432",
+        "DEAL_INTELLIGENCE_DATABASE_NAME": "${DEAL_INTELLIGENCE_POSTGRES_DB:-deal_intelligence}",
+        "DEAL_INTELLIGENCE_DATABASE_USER": "${DEAL_INTELLIGENCE_POSTGRES_USER:-deal_intelligence}",
+        "DEAL_INTELLIGENCE_DATABASE_PASSWORD": "${DEAL_INTELLIGENCE_POSTGRES_PASSWORD:-}",
+    }
+    assert deal_intelligence_migrate["environment"] == expected_deal_intelligence_environment
     for service, component in (
         (deal_intelligence_api, "api"),
         (deal_intelligence_worker, "worker"),
@@ -333,6 +347,7 @@ def test_staging_compose_critical_invariants() -> None:
         assert service["depends_on"] == {
             "deal-intelligence-migrate": {"condition": "service_completed_successfully"}
         }
+        assert service["environment"] == expected_deal_intelligence_environment
     assert deal_intelligence_api["command"] == [
         "deal-intelligence-api",
         "--host",

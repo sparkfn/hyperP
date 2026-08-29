@@ -49,7 +49,7 @@ class DatabaseReadiness:
         expected = expected_heads()
         if observed is None or tables is None:
             return ReadinessReport(status="not_ready", component=component)
-        schema_ok = observed == expected and tables == schema_inventory()
+        schema_ok = observed == expected and schema_inventory().issubset(tables)
         heartbeat_ok = False
         if schema_ok:
             try:

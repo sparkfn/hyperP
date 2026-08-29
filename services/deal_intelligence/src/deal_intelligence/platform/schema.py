@@ -228,6 +228,19 @@ migration_bookkeeping = Table(
 )
 
 PLATFORM_TABLE_NAMES: frozenset[str] = frozenset(table.name for table in metadata.sorted_tables)
+REQUIRED_FOUNDATION_TABLE_NAMES: frozenset[str] = frozenset(
+    {
+        "source_instances",
+        "process_runs",
+        "process_units",
+        "checkpoints",
+        "leases",
+        "terminal_accounting",
+        "schema_readiness",
+        "process_heartbeats",
+        "migration_bookkeeping",
+    }
+)
 EXCLUDED_DOMAIN_TABLE_NAMES: frozenset[str] = frozenset(
     {
         "identity",
@@ -245,4 +258,10 @@ EXCLUDED_DOMAIN_TABLE_NAMES: frozenset[str] = frozenset(
 
 
 def schema_inventory() -> frozenset[str]:
+    """Return the tables required before a disabled component can report ready."""
+    return REQUIRED_FOUNDATION_TABLE_NAMES
+
+
+def fresh_schema_inventory() -> frozenset[str]:
+    """Return the exact package-owned table inventory expected on a fresh schema."""
     return PLATFORM_TABLE_NAMES - EXCLUDED_DOMAIN_TABLE_NAMES
