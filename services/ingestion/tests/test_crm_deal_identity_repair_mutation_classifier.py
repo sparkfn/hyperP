@@ -67,8 +67,12 @@ def _match() -> MatchResult:
     )
 
 
-def _inventory_payload(*, observed_at: str | None = "2026-08-01T12:00:00+00:00") -> dict:
-    contact = CrmContact("contact-1", None, phones=("+6591234567",), kind="contact")
+def _inventory_payload(
+    *,
+    observed_at: str | None = "2026-08-01T12:00:00+00:00",
+    full_name: str | None = None,
+) -> dict:
+    contact = CrmContact("contact-1", full_name, phones=("+6591234567",), kind="contact")
     built = build_crm_deal_envelope(
         CrmDeal(
             id="1",
@@ -92,7 +96,10 @@ def _inventory_payload(*, observed_at: str | None = "2026-08-01T12:00:00+00:00")
         "record_hash": built["record_hash"],
         "observed_at": observed_at,
         "raw_payload": built["raw_payload"],
-        "normalized_payload": {},
+        "normalized_payload": {
+            "attributes": built["attributes"],
+            "identifiers": built["identifiers"],
+        },
         "linked_people": [{"person_id": "person-a", "is_active": True}],
         "projections": [],
         "logical_version_evidence": {},
@@ -103,7 +110,11 @@ def _inventory_payload(*, observed_at: str | None = "2026-08-01T12:00:00+00:00")
     }
 
 
-def _inventory(*, observed_at: str | None = "2026-08-01T12:00:00+00:00") -> RepairInventoryItem:
+def _inventory(
+    *,
+    observed_at: str | None = "2026-08-01T12:00:00+00:00",
+    full_name: str | None = None,
+) -> RepairInventoryItem:
     return RepairInventoryItem(
         source_system="bitrix_chat",
         source_record_id="bitrix-crm-deal-1",
@@ -112,7 +123,7 @@ def _inventory(*, observed_at: str | None = "2026-08-01T12:00:00+00:00") -> Repa
         partition="projection_cleanup",
         graph_fingerprint=DIGEST,
         stored_payload_fingerprint=DIGEST,
-        payload=_inventory_payload(observed_at=observed_at),
+        payload=_inventory_payload(observed_at=observed_at, full_name=full_name),
     )
 
 
@@ -126,6 +137,12 @@ def test_reconstruction_uses_locked_scope_entity_and_frozen_time_exactly() -> No
     assert parsed.envelope.record_hash == _inventory_payload()["record_hash"]
     scoped = [item for item in parsed.envelope.identifiers if item.type == "crm_contact_id"]
     assert {item.source_instance_id for item in scoped} == {"portal-a"}
+
+
+def test_reconstruction_preserves_exact_frozen_non_null_full_name() -> None:
+    parsed = parse_repair_inventory(_inventory(full_name="Ada Lovelace"), "portal-a", "tenant-a")
+    assert parsed.envelope is not None
+    assert parsed.envelope.attributes == {"full_name": "Ada Lovelace"}
 
 
 def test_reconstruction_rejects_a_changed_source_instance_hash_scope() -> None:

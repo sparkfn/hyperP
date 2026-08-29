@@ -289,7 +289,7 @@ def _normalized_payload_matches(
         return False
     identifiers = frozen.get("identifiers")
     if identifiers is not None:
-        rebuilt = [item.model_dump(mode="json") for item in envelope.identifiers]
+        rebuilt = [item.model_dump(mode="json", exclude_none=True) for item in envelope.identifiers]
         if identifiers != rebuilt:
             return False
     return True
