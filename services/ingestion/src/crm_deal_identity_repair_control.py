@@ -10,21 +10,22 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
 from src.crm_deal_identity_repair.cli import parse_arguments
+from src.crm_deal_identity_repair.control_models import RepairBoundaryComponentProof
 from src.crm_deal_identity_repair.execution_models import (
     RepairBoundaryDriftReason,
     RepairBoundarySnapshot,
     RepairExecutionBoundaryManifest,
     RepairQualificationRun,
 )
+from src.crm_deal_identity_repair.execution_protocols import (
+    RepairBoundaryReader,
+    RepairQualificationRepository,
+)
 from src.crm_deal_identity_repair.task_inspection import (
     RepairBrokerInspector,
     RepairTaskIdentity,
     RepairTaskInspection,
     RepairTaskInspector,
-)
-from src.crm_deal_identity_repair.execution_protocols import (
-    RepairBoundaryReader,
-    RepairQualificationRepository,
 )
 from src.models import JsonValue
 
@@ -67,7 +68,9 @@ class _RepairRuntimeSettings(Protocol):
     def crm_deal_identity_repair_artifact_signing_key_secret(self) -> _RepairSigningSecret: ...
 
     @property
-    def crm_deal_identity_repair_approval_overlay_verification_secret(self) -> _RepairSigningSecret: ...
+    def crm_deal_identity_repair_approval_overlay_verification_secret(
+        self,
+    ) -> _RepairSigningSecret: ...
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -276,7 +279,6 @@ def _status(arguments: Namespace) -> int:
     from src.config import get_settings
     from src.graph.client import Neo4jClient
     from src.graph.crm_deal_identity_repair_control import CrmDealRepairControlRepository
-    from src.crm_deal_identity_repair.control_models import RepairBoundaryComponentProof
     from src.graph.crm_deal_identity_repair_ledger import CrmDealRepairLedgerRepository
     from src.graph.crm_deal_identity_repair_ledger_migration import (
         assert_crm_deal_repair_ledger_ready,
@@ -546,7 +548,8 @@ def _required_task_text(value: object, field: str) -> str:
 
 def _repair_overlay_signing_secret(settings: _RepairRuntimeSettings) -> bytes:
     """Read the restricted overlay HMAC key without logging or serializing it."""
-    value = settings.crm_deal_identity_repair_approval_overlay_verification_secret.get_secret_value()
+    secret = settings.crm_deal_identity_repair_approval_overlay_verification_secret
+    value = secret.get_secret_value()
     if not value:
         raise RuntimeError("repair allocation requires a configured overlay verification secret")
     return value.encode("utf-8")
@@ -555,12 +558,6 @@ def _repair_overlay_signing_secret(settings: _RepairRuntimeSettings) -> bytes:
 def _control_command(arguments: Namespace) -> int:
     """Run gated control-plane proof transitions only; it never dispatches or mutates CRM data."""
     from src.config import get_settings
-    from src.graph.client import Neo4jClient
-    from src.graph.crm_deal_identity_repair_control import CrmDealRepairControlRepository
-    from src.graph.crm_deal_identity_repair_ledger import CrmDealRepairLedgerRepository
-    from src.graph.crm_deal_identity_repair_ledger_migration import (
-        assert_crm_deal_repair_ledger_ready,
-    )
     from src.crm_deal_identity_repair.approval_overlay import (
         allocation_digest,
         allocate_units,
@@ -573,6 +570,12 @@ def _control_command(arguments: Namespace) -> int:
     from src.crm_deal_identity_repair.quiescence import (
         RepairQuiescenceRequest,
         RepairQuiescenceService,
+    )
+    from src.graph.client import Neo4jClient
+    from src.graph.crm_deal_identity_repair_control import CrmDealRepairControlRepository
+    from src.graph.crm_deal_identity_repair_ledger import CrmDealRepairLedgerRepository
+    from src.graph.crm_deal_identity_repair_ledger_migration import (
+        assert_crm_deal_repair_ledger_ready,
     )
 
     settings = get_settings()

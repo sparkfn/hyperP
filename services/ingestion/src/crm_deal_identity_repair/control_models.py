@@ -301,7 +301,7 @@ class RepairBoundaryComponentProof:
         _nonnegative(self.negative_control_count, "boundary proof negative-control count")
 
     @classmethod
-    def from_snapshot(cls, snapshot: RepairBoundarySnapshot) -> "RepairBoundaryComponentProof":
+    def from_snapshot(cls, snapshot: RepairBoundarySnapshot) -> RepairBoundaryComponentProof:
         """Copy only validated component evidence from a #300 snapshot."""
         return cls(
             source_instance_id=snapshot.source_instance_id,
@@ -316,7 +316,7 @@ class RepairBoundaryComponentProof:
             stale_run_evidence_digest=snapshot.stale_run_evidence_digest,
         )
 
-    def immutable_matches(self, other: "RepairBoundaryComponentProof") -> bool:
+    def immutable_matches(self, other: RepairBoundaryComponentProof) -> bool:
         """Control and stale evidence evolve only through separately persisted #310 proof."""
         return (
             self.source_instance_id == other.source_instance_id

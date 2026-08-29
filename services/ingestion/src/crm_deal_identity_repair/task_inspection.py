@@ -57,7 +57,7 @@ class RepairTaskInspector(Protocol):
         expected_workers: tuple[str, ...],
         tasks: tuple[RepairTaskIdentity, ...],
         timeout_seconds: float,
-    ) -> "RepairTaskInspection": ...
+    ) -> RepairTaskInspection: ...
 
 
 class RepairBrokerInspector(Protocol):

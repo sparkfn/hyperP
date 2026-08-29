@@ -257,7 +257,9 @@ class CrmDealRepairControlRepository:
             pre_proof = RepairBoundaryComponentProof.from_snapshot(pre)
             post_proof = RepairBoundaryComponentProof.from_snapshot(post)
             if not pre_proof.immutable_matches(post_proof):
-                raise RuntimeError("immutable boundary drift occurred inside repair control transaction")
+                raise RuntimeError(
+                    "immutable boundary drift occurred inside repair control transaction"
+                )
             self._persist_transaction_proof(
                 tx=tx,
                 lease=lease_after,
@@ -636,7 +638,10 @@ RETURN control.run_id AS run_id, control.owner_id AS owner_id, control.token AS 
             ).single()
             if record is None:
                 raise RuntimeError("terminalized stale-run evidence differs from the exact proof")
-            return {"stale_run": dict(parameters), "control": self._verify_control_post_state(tx, lease)}
+            return {
+                "stale_run": dict(parameters),
+                "control": self._verify_control_post_state(tx, lease),
+            }
 
         self._execute_proven_write(
             lease_after=lease,
@@ -843,7 +848,8 @@ RETURN control.run_id AS run_id, control.owner_id AS owner_id, control.token AS 
                 _VERIFY_REPAIR_ALLOCATION,
                 run_id=lease.run_id, owner_id=lease.owner_id, token=lease.token,
                 revision=allocated_lease.revision, boundary_digest=lease.boundary_digest,
-                allocation_digest=completion.allocation_digest, overlay_digest=overlay.overlay_digest,
+                allocation_digest=completion.allocation_digest,
+                overlay_digest=overlay.overlay_digest,
                 approval_reference=overlay.approval_reference, units=unit_parameters,
             ).single()
             if record is None:

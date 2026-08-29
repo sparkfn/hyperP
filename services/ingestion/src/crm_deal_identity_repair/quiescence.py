@@ -162,8 +162,7 @@ class RepairQuiescenceService:
             lease.run_id, lease.owner_id, lease.token, expected_revision + 1, "paused",
             lease.boundary_digest, prior_state=lease.state,
         )
-        result = self._repository.transition(paused, expected_revision)
-        return result
+        return self._repository.transition(paused, expected_revision)
 
     def resume(
         self,
@@ -196,8 +195,7 @@ class RepairQuiescenceService:
             lease.run_id, lease.owner_id, lease.token, expected_revision + 1, lease.prior_state,
             lease.boundary_digest,
         )
-        result = self._repository.transition(resumed, expected_revision)
-        return result
+        return self._repository.transition(resumed, expected_revision)
 
     def _initial_boundary(
         self, repair_id: str, lease: RepairControlLease
@@ -259,15 +257,14 @@ class RepairQuiescenceService:
         reason: str,
     ) -> RepairControlLease:
         self._repository.record_task_proof(lease, "lost", reason)
-        result = self._repository.transition(
+        # transition() seals the authorized lost post-state in the same Neo4j transaction.
+        return self._repository.transition(
             RepairControlLease(
                 lease.run_id, lease.owner_id, lease.token, lease.revision + 1, "lost",
                 lease.boundary_digest,
             ),
             lease.revision,
         )
-        # transition() seals the authorized lost post-state in the same Neo4j transaction.
-        return result
 
     @staticmethod
     def _same_owner(left: RepairControlLease, right: RepairControlLease) -> bool:

@@ -223,7 +223,7 @@ def _dispatch_active_bitrix_successor(occurrence: str) -> str | None:
         {"occurrence": occurrence, "windows": windows},
         sort_keys=True,
         separators=(",", ":"),
-    ).encode("utf-8")
+    ).encode()
     boundary_digest = "sha256:" + hashlib.sha256(encoded).hexdigest()
     return dispatch_generation_canvas(
         generation_id=generation_id,
@@ -240,7 +240,7 @@ def _dispatch_active_bitrix_successor(occurrence: str) -> str | None:
 
 def _legacy_reservation_identity(marker_key: str) -> tuple[str, str]:
     routing_digest = "sha256:" + hashlib.sha256(
-        f"legacy-bitrix:{marker_key}".encode("utf-8")
+        f"legacy-bitrix:{marker_key}".encode()
     ).hexdigest()
     return routing_digest, f"legacy:{marker_key}"
 

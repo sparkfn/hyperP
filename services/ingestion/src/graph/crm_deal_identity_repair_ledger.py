@@ -462,7 +462,9 @@ def _qualify_transaction(
         rows=rows,
     ).single()
     if row_record is None or int(row_record["row_count"]) != len(rows):
-        raise RuntimeError("repair qualified inventory evidence conflicts with immutable ledger state")
+        raise RuntimeError(
+            "repair qualified inventory evidence conflicts with immutable ledger state"
+        )
     readback = tx.run(GET_REPAIR_RUN, repair_id=manifest.repair_id).single()
     if readback is None:
         raise RuntimeError("repair qualification readback is missing")
