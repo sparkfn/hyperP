@@ -323,7 +323,16 @@ class CrmDealRepairControlRepository:
             token=lease.token,
             expected_revision=lease.revision,
             boundary_digest=lease.boundary_digest,
-            **_boundary_parameters("baseline", pre_proof),
+            baseline_source_instance_id=pre_proof.source_instance_id,
+            baseline_control_instance_id=pre_proof.control_instance_id,
+            baseline_inventory_digest=pre_proof.inventory_digest,
+            baseline_inventory_row_count=pre_proof.inventory_row_count,
+            baseline_eligible_unit_count=pre_proof.eligible_unit_count,
+            baseline_negative_control_count=pre_proof.negative_control_count,
+            baseline_source_records_digest=pre_proof.source_records_digest,
+            baseline_source_instance_digest=pre_proof.source_instance_digest,
+            baseline_control_digest=pre_proof.control_digest,
+            baseline_stale_run_evidence_digest=pre_proof.stale_run_evidence_digest,
             authorized_control_digest=post_snapshot.control_digest,
             authorized_stale_run_evidence_digest=post_snapshot.stale_run_evidence_digest,
         ).single()
@@ -520,7 +529,12 @@ RETURN control.run_id AS run_id, control.owner_id AS owner_id, control.token AS 
                 expected_revision=expected_revision,
                 next_revision=expected_revision + 1,
                 boundary_digest=lease.boundary_digest,
-                **parameters,
+                logical_run_ids=parameters["logical_run_ids"],
+                ingest_run_ids=parameters["ingest_run_ids"],
+                checkpoint_ids=parameters["checkpoint_ids"],
+                stream_ids=parameters["stream_ids"],
+                generation_ids=parameters["generation_ids"],
+                publication_ids=parameters["publication_ids"],
             ).single()
             if record is None:
                 raise RuntimeError(
@@ -543,7 +557,12 @@ RETURN control.run_id AS run_id, control.owner_id AS owner_id, control.token AS 
                 token=result.token,
                 expected_revision=result.revision,
                 boundary_digest=result.boundary_digest,
-                **parameters,
+                logical_run_ids=parameters["logical_run_ids"],
+                ingest_run_ids=parameters["ingest_run_ids"],
+                checkpoint_ids=parameters["checkpoint_ids"],
+                stream_ids=parameters["stream_ids"],
+                generation_ids=parameters["generation_ids"],
+                publication_ids=parameters["publication_ids"],
             ).single()
             if verification is None or verification["verified"] is not True:
                 raise RuntimeError("captured repair topology post-state is not exact")
@@ -585,7 +604,12 @@ RETURN control.run_id AS run_id, control.owner_id AS owner_id, control.token AS 
                 token=lease.token,
                 expected_revision=lease.revision,
                 boundary_digest=lease.boundary_digest,
-                **parameters,
+                logical_run_ids=parameters["logical_run_ids"],
+                ingest_run_ids=parameters["ingest_run_ids"],
+                checkpoint_ids=parameters["checkpoint_ids"],
+                stream_ids=parameters["stream_ids"],
+                generation_ids=parameters["generation_ids"],
+                publication_ids=parameters["publication_ids"],
             ).single()
             return record is not None and record["verified"] is True
 
@@ -652,7 +676,13 @@ RETURN control.run_id AS run_id, control.owner_id AS owner_id, control.token AS 
                 token=lease.token,
                 expected_revision=expected_revision,
                 boundary_digest=lease.boundary_digest,
-                **parameters,
+                stale_run_id=parameters["stale_run_id"],
+                stale_control_instance_id=parameters["stale_control_instance_id"],
+                stale_source_key=parameters["stale_source_key"],
+                stale_status=parameters["stale_status"],
+                logical_run_ids=parameters["logical_run_ids"],
+                checkpoint_ids=parameters["checkpoint_ids"],
+                stream_keys=parameters["stream_keys"],
             ).single()
             if record is None:
                 raise RuntimeError("stale-run ownership is ambiguous, stale, or changed")
@@ -665,7 +695,13 @@ RETURN control.run_id AS run_id, control.owner_id AS owner_id, control.token AS 
                 token=lease.token,
                 expected_revision=lease.revision,
                 boundary_digest=lease.boundary_digest,
-                **parameters,
+                stale_run_id=parameters["stale_run_id"],
+                stale_control_instance_id=parameters["stale_control_instance_id"],
+                stale_source_key=parameters["stale_source_key"],
+                stale_status=parameters["stale_status"],
+                logical_run_ids=parameters["logical_run_ids"],
+                checkpoint_ids=parameters["checkpoint_ids"],
+                stream_keys=parameters["stream_keys"],
             ).single()
             if record is None:
                 raise RuntimeError("terminalized stale-run evidence differs from the exact proof")
