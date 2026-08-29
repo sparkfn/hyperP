@@ -825,6 +825,7 @@ def test_contact_receipt_and_pending_checkpoint_recover_after_fence_rollover(
     assert token == 3 and owner == "recovery-task"
     parameters["fence_token"] = token
     parameters["fence_owner_id"] = owner
+    parameters["owner_id"] = owner
     parameters["binding_subject_id"] = 6
     with neo4j_driver.session() as session:
         checkpoint = session.run(
