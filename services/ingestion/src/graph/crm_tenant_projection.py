@@ -73,7 +73,7 @@ class Neo4jCrmTenantProjectionRepository(CrmTenantProjectionRepository):
             if existing is not None:
                 return _replay_existing(tx, existing)
             boundary = _validate_source_census(tx, command)
-            revision_number = _validate_mapping_boundary(tx, command)
+            mapping_proof = _validate_mapping_boundary(tx, command)
             release_number = _required_int(counter, "next_release_number")
             release_id = projection_release_id(command.scope, release_number)
             collision = tx.run(CHECK_RELEASE_ID, release_id=release_id).single()
@@ -134,7 +134,7 @@ class Neo4jCrmTenantProjectionRepository(CrmTenantProjectionRepository):
                 properties=_release_properties(
                     command,
                     boundary,
-                    revision_number,
+                    mapping_proof,
                     release_id,
                     release_number,
                 ),

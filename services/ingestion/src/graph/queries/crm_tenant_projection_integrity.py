@@ -1,4 +1,4 @@
-"""Strict completion and completed-reader Cypher for CRM tenant projections."""
+"""Terminal transition and strict completed-reader Cypher for CRM projections."""
 
 from __future__ import annotations
 
@@ -44,41 +44,31 @@ WHERE contact.generation = release.contact_unit_generation
   AND lead.frozen_upper_id = release.lead_frozen_upper_id
   AND ((contact.state = 'completed'
       AND release.contact_checkpoint_present = true
-      AND NOT EXISTS {
-        MATCH (other_contact_checkpoint:StandaloneCrmCensusCheckpoint {
-          census_id: census.census_id, stream_kind: 'contact'
-        }) WHERE id(other_contact_checkpoint) <> id(contact_checkpoint)
-      }
+      AND NOT EXISTS { MATCH (other:StandaloneCrmCensusCheckpoint {
+        census_id: census.census_id, stream_kind: 'contact'
+      }) WHERE id(other) <> id(contact_checkpoint) }
       AND contact_checkpoint.generation = release.contact_checkpoint_generation
       AND contact_checkpoint.frozen_upper_id = release.contact_frozen_upper_id
       AND contact_checkpoint.last_committed_id = release.contact_frozen_upper_id
       AND contact_checkpoint.processed_rows = release.contact_processed_rows
       AND contact_checkpoint.skipped_rows = release.contact_skipped_rows)
-    OR (contact.state = 'no_work'
-      AND release.contact_checkpoint_present = false
-      AND release.contact_unit_generation > 0
-      AND release.contact_frozen_upper_id = 0
-      AND release.contact_processed_rows = 0
-      AND release.contact_skipped_rows = 0
+    OR (contact.state = 'no_work' AND release.contact_checkpoint_present = false
+      AND release.contact_unit_generation > 0 AND release.contact_frozen_upper_id = 0
+      AND release.contact_processed_rows = 0 AND release.contact_skipped_rows = 0
       AND contact_checkpoint IS NULL))
   AND ((lead.state = 'completed'
       AND release.lead_checkpoint_present = true
-      AND NOT EXISTS {
-        MATCH (other_lead_checkpoint:StandaloneCrmCensusCheckpoint {
-          census_id: census.census_id, stream_kind: 'lead'
-        }) WHERE id(other_lead_checkpoint) <> id(lead_checkpoint)
-      }
+      AND NOT EXISTS { MATCH (other:StandaloneCrmCensusCheckpoint {
+        census_id: census.census_id, stream_kind: 'lead'
+      }) WHERE id(other) <> id(lead_checkpoint) }
       AND lead_checkpoint.generation = release.lead_checkpoint_generation
       AND lead_checkpoint.frozen_upper_id = release.lead_frozen_upper_id
       AND lead_checkpoint.last_committed_id = release.lead_frozen_upper_id
       AND lead_checkpoint.processed_rows = release.lead_processed_rows
       AND lead_checkpoint.skipped_rows = release.lead_skipped_rows)
-    OR (lead.state = 'no_work'
-      AND release.lead_checkpoint_present = false
-      AND release.lead_unit_generation > 0
-      AND release.lead_frozen_upper_id = 0
-      AND release.lead_processed_rows = 0
-      AND release.lead_skipped_rows = 0
+    OR (lead.state = 'no_work' AND release.lead_checkpoint_present = false
+      AND release.lead_unit_generation > 0 AND release.lead_frozen_upper_id = 0
+      AND release.lead_processed_rows = 0 AND release.lead_skipped_rows = 0
       AND lead_checkpoint IS NULL))
   AND ((release.expected_mapping_head_present = false
       AND revision.expected_active_revision_id IS NULL
@@ -102,7 +92,6 @@ WHERE contact.generation = release.contact_unit_generation
 SET release.state = 'completed', release.completed_at = datetime(), release.updated_at = datetime()
 RETURN properties(release) AS release
 """
-
 
 CANCEL_RELEASE = """
 MATCH (release:CrmTenantProjectionRelease {
@@ -129,76 +118,4 @@ MATCH (release:CrmTenantProjectionRelease {
   capture_complete: true, projection_complete: true
 })
 RETURN properties(release) AS release
-"""
-
-READ_RELEASE_TOPOLOGY = """
-MATCH (release:CrmTenantProjectionRelease {release_id: $release_id})
-CALL {
-  WITH release
-  OPTIONAL MATCH (input:CrmTenantProjectionInput {release_id: release.release_id})
-  WITH input ORDER BY input.input_id
-  RETURN collect(CASE WHEN input IS NULL THEN NULL ELSE {
-    node: properties(input),
-    release_owner_ids: [(owner:CrmTenantProjectionRelease)-[:HAS_PROJECTION_INPUT]->(input) |
-      owner.release_id],
-    snapshots: [(input)-[:SELECTS_MEMBERSHIP_SNAPSHOT]->(snapshot) | properties(snapshot)],
-    decisions: [(input)-[:HAS_PROJECTION_DECISION]->(decision) | properties(decision)],
-    associations: [(input)-[:HAS_PROJECTION_ASSOCIATION]->(association) |
-      properties(association)]
-  } END) AS inputs
-}
-CALL {
-  WITH release
-  OPTIONAL MATCH (decision:CrmTenantProjectionDecision {release_id: release.release_id})
-  WITH decision ORDER BY decision.input_id
-  RETURN collect(CASE WHEN decision IS NULL THEN NULL ELSE {
-    node: properties(decision),
-    input_owner_ids: [(input:CrmTenantProjectionInput)-[:HAS_PROJECTION_DECISION]->(decision) |
-      input.input_id]
-  } END) AS decisions
-}
-CALL {
-  WITH release
-  OPTIONAL MATCH (association:CrmTenantProjectionAssociation {release_id: release.release_id})
-  WITH association ORDER BY association.association_id
-  RETURN collect(CASE WHEN association IS NULL THEN NULL ELSE {
-    node: properties(association),
-    input_owner_ids: [(input:CrmTenantProjectionInput)-[:HAS_PROJECTION_ASSOCIATION]->(association) |
-      input.input_id],
-    entities: [(association)-[:TARGETS_ENTITY]->(entity:Entity) | properties(entity)],
-    supports: [(association)-[:HAS_PROJECTION_SUPPORT]->(support) | properties(support)]
-  } END) AS associations
-}
-CALL {
-  WITH release
-  OPTIONAL MATCH (support:CrmTenantProjectionSupport {release_id: release.release_id})
-  WITH support ORDER BY support.support_id
-  RETURN collect(CASE WHEN support IS NULL THEN NULL ELSE {
-    node: properties(support),
-    association_owner_ids: [(association:CrmTenantProjectionAssociation)
-      -[:HAS_PROJECTION_SUPPORT]->(support) | association.association_id],
-    observations: [(support)-[:SUPPORTED_BY_MEMBERSHIP]->(observation) | {
-      node: properties(observation),
-      snapshots: [(snapshot:CrmCompanyMembershipSnapshot)-[:HAS_MEMBERSHIP_OBSERVATION]
-        ->(observation) | properties(snapshot)]
-    }],
-    targets: [(support)-[:SUPPORTED_BY_MAPPING_TARGET]->(target) | {
-      node: properties(target),
-      entries: [(entry:CrmTenantMappingEntry)-[:HAS_MAPPING_TARGET]->(target) | {
-        node: properties(entry),
-        revisions: [(revision:CrmTenantMappingRevision)-[:HAS_MAPPING_ENTRY]->(entry) |
-          properties(revision)]
-      }],
-      entities: [(target)-[:TARGETS_ENTITY]->(entity:Entity) | properties(entity)]
-    }]
-  } END) AS supports
-}
-RETURN properties(release) AS release,
-  [(release)-[:MATERIALIZES_SOURCE_CENSUS]->(census) | census.census_id] AS source_census_ids,
-  [(release)-[:MATERIALIZES_MAPPING_REVISION]->(revision) | revision.revision_id]
-    AS mapping_revision_ids,
-  [item IN inputs WHERE item IS NOT NULL] AS inputs,
-  [item IN decisions WHERE item IS NOT NULL] AS decisions,
-  [item IN associations WHERE item IS NOT NULL] AS associations,
-  [item IN supports WHERE item IS NOT NULL] AS supports
 """

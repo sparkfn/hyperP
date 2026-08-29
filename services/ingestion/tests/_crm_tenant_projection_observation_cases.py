@@ -6,6 +6,9 @@ from collections.abc import Iterator
 
 import pytest
 from _standalone_crm_lane_a_fakes import prepared_mapping_revision, projection_scope
+from src.connectors.bitrix_openlines.models import CrmCompanyBindingPayload
+from src.crm_company_contracts import CrmCompanyMembershipSnapshotRecord
+from src.crm_identity_associations import CrmCompanyBinding, normalize_company_membership_snapshot
 from src.crm_tenant_mapping_identity import mapping_head_id
 from src.crm_tenant_mapping_models import CrmTenantMappingExpectedHeadBoundary
 from src.crm_tenant_projection_models import (
@@ -14,10 +17,38 @@ from src.crm_tenant_projection_models import (
     CrmTenantProjectionReleaseSummary,
 )
 from src.crm_tenant_projection_records import _digest as projection_digest
+from src.graph import crm_tenant_projection_snapshot_validation as snapshot_validation
 from src.graph import crm_tenant_projection_write as projection_write
 from src.graph.queries import crm_tenant_projection_projection as projection_queries
+from src.graph.queries.crm_tenant_projection_release_pages import READ_SNAPSHOT_OBSERVATION_PAGE
+from src.standalone_crm_child_contracts import (
+    StandaloneCrmSourceAvailability,
+    StandaloneCrmSourceChildScope,
+)
 
 _DIGEST = "sha256:" + "a" * 64
+
+
+def _snapshot_record() -> CrmCompanyMembershipSnapshotRecord:
+    scope = projection_scope()
+    snapshot = normalize_company_membership_snapshot(
+        subject_type="contact",
+        subject_id="101",
+        payloads=(CrmCompanyBindingPayload("303", None, None, True),),
+    )
+    return CrmCompanyMembershipSnapshotRecord(
+        StandaloneCrmSourceChildScope(
+            scope.source_key, scope.source_instance_id, scope.control_instance_id
+        ),
+        snapshot,
+        "source-record-a",
+        "101",
+        1,
+        _DIGEST,
+        None,
+        StandaloneCrmSourceAvailability("2026-01-01T00:00:00Z"),
+        1,
+    )
 
 
 class _ProjectionRowsResult:
@@ -86,15 +117,24 @@ def _projection_release() -> CrmTenantProjectionReleaseSummary:
 
 
 def _unmapped_observation_row(**overrides: object) -> dict[str, object]:
+    record = _snapshot_record()
     observation_id = projection_digest(
         "crm-company-membership-observation-v1",
-        ["snapshot-a", "303", None, None, True],
+        [record.snapshot_id, "303", None, None, True],
     )
     row: dict[str, object] = {
         "binding_count": 1,
         "observation_id": observation_id,
         "observation_node_id": "node-a",
-        "observation_snapshot_id": "snapshot-a",
+        "snapshot_digest": record.snapshot_digest,
+        "snapshot_source_record_id": record.source_record_id,
+        "snapshot_source_record_pk": record.source_record_pk,
+        "snapshot_source_record_version": record.source_record_version,
+        "snapshot_source_record_hash": record.source_record_hash,
+        "snapshot_observed_at": record.observed_at,
+        "snapshot_available_at": record.availability.available_at,
+        "snapshot_contract_version": record.contract_version,
+        "observation_snapshot_id": record.snapshot_id,
         "observation_subject_kind": "contact",
         "observation_subject_id": "101",
         "company_id": "303",
@@ -116,13 +156,113 @@ def _unmapped_observation_row(**overrides: object) -> dict[str, object]:
     return row
 
 
+def _replacement_observation_row() -> dict[str, object]:
+    record = _snapshot_record()
+    return _unmapped_observation_row(
+        observation_id=projection_digest(
+            "crm-company-membership-observation-v1",
+            [record.snapshot_id, "404", None, None, True],
+        ),
+        observation_node_id="node-b",
+        company_id="404",
+        reference_company_id="404",
+    )
+
+
+def _terminal_snapshot_row(
+    company_id: str = "303", is_primary: bool = True, **overrides: object
+) -> dict[str, object]:
+    record = _snapshot_record()
+    observation_id = projection_digest(
+        "crm-company-membership-observation-v1",
+        [record.snapshot_id, company_id, None, None, is_primary],
+    )
+    row = _unmapped_observation_row(
+        observation_id=observation_id,
+        company_id=company_id,
+        reference_company_id=company_id,
+        observation_is_primary=is_primary,
+    )
+    row.update(
+        {
+            "input": {
+                "input_id": "input-a",
+                "snapshot_id": record.snapshot_id,
+            },
+            "snapshot": {
+                "snapshot_id": record.snapshot_id,
+                "subject_kind": "contact",
+                "subject_id": "101",
+                "source_instance_id": projection_scope().source_instance_id,
+                "control_instance_id": projection_scope().control_instance_id,
+            },
+            "input_owner_links": 1,
+            "input_owner_count": 1,
+            "snapshot_links": 1,
+        }
+    )
+    row.update(overrides)
+    return row
+
+
+class _SnapshotValidationRows:
+    def __init__(self, rows: list[dict[str, object]]) -> None:
+        self._rows = rows
+
+    def __iter__(self) -> Iterator[dict[str, object]]:
+        return iter(self._rows)
+
+
+class _SnapshotValidationTx:
+    def __init__(self, pages: list[list[dict[str, object]]]) -> None:
+        self._pages = pages
+        self.calls: list[dict[str, object]] = []
+
+    def run(self, query: str, **parameters: object) -> _SnapshotValidationRows:
+        assert query == READ_SNAPSHOT_OBSERVATION_PAGE
+        self.calls.append(parameters)
+        return _SnapshotValidationRows(self._pages.pop(0))
+
+
+def _validate_terminal_snapshot(tx: _SnapshotValidationTx, snapshot_id: str | None = None) -> None:
+    snapshot_validation._validate_input_snapshot_contents(
+        tx,
+        _projection_release(),
+        "input-a",
+        _snapshot_record().snapshot_id if snapshot_id is None else snapshot_id,
+        "contact",
+        "101",
+    )
+
+
 def test_unmapped_observation_is_validated_before_zero_target_decision() -> None:
     tx = _ProjectionTx([_unmapped_observation_row()])
 
     assert projection_write._project_one_input(
-        tx, _projection_release(), "input-a", "contact", "101", "snapshot-a"
+        tx, _projection_release(), "input-a", "contact", "101", _snapshot_record().snapshot_id
     ) == (0, 0)
     assert tx.calls == [projection_queries.READ_INPUT_SUPPORTS, projection_queries.WRITE_DECISION]
+
+
+@pytest.mark.parametrize(
+    "rows",
+    (
+        (_replacement_observation_row(),),
+        (_unmapped_observation_row(), _replacement_observation_row()),
+        (_unmapped_observation_row(binding_count=2),),
+    ),
+)
+def test_snapshot_content_corruption_fails_before_decision(
+    rows: tuple[dict[str, object], ...],
+) -> None:
+    tx = _ProjectionTx(list(rows))
+
+    with pytest.raises(CrmTenantProjectionIntegrityError, match="membership snapshot"):
+        projection_write._project_one_input(
+            tx, _projection_release(), "input-a", "contact", "101", _snapshot_record().snapshot_id
+        )
+
+    assert tx.calls == [projection_queries.READ_INPUT_SUPPORTS]
 
 
 @pytest.mark.parametrize(
@@ -145,7 +285,94 @@ def test_unmapped_observation_topology_fails_closed_before_decision(
 
     with pytest.raises(CrmTenantProjectionIntegrityError, match="membership"):
         projection_write._project_one_input(
-            tx, _projection_release(), "input-a", "contact", "101", "snapshot-a"
+            tx, _projection_release(), "input-a", "contact", "101", _snapshot_record().snapshot_id
         )
 
     assert tx.calls == [projection_queries.READ_INPUT_SUPPORTS]
+
+
+def test_snapshot_contents_uses_canonical_multibinding_order_for_digest_and_identity() -> None:
+    scope = projection_scope()
+    snapshot = normalize_company_membership_snapshot(
+        subject_type="contact",
+        subject_id="101",
+        payloads=(
+            CrmCompanyBindingPayload("100", 0, None, False),
+            CrmCompanyBindingPayload("900", None, None, True),
+        ),
+    )
+    record = CrmCompanyMembershipSnapshotRecord(
+        StandaloneCrmSourceChildScope(
+            scope.source_key, scope.source_instance_id, scope.control_instance_id
+        ),
+        snapshot,
+        "source-record-a",
+        "101",
+        1,
+        _DIGEST,
+        None,
+        StandaloneCrmSourceAvailability("2026-01-01T00:00:00Z"),
+        2,
+    )
+    bindings = (
+        CrmCompanyBinding("100", 0, None, False),
+        CrmCompanyBinding("900", None, None, True),
+    )
+    assert tuple(sorted(bindings)) != snapshot.bindings
+    rows = [
+        {
+            "binding_count": 2,
+            "observation_id": projection_digest(
+                "crm-company-membership-observation-v1",
+                [
+                    record.snapshot_id,
+                    binding.company_id,
+                    binding.sort,
+                    binding.role_id,
+                    binding.is_primary,
+                ],
+            ),
+            "company_id": binding.company_id,
+            "observation_sort": binding.sort,
+            "observation_role_id": binding.role_id,
+            "observation_is_primary": binding.is_primary,
+            "snapshot_digest": record.snapshot_digest,
+            "snapshot_source_record_id": record.source_record_id,
+            "snapshot_source_record_pk": record.source_record_pk,
+            "snapshot_source_record_version": record.source_record_version,
+            "snapshot_source_record_hash": record.source_record_hash,
+            "snapshot_observed_at": record.observed_at,
+            "snapshot_available_at": record.availability.available_at,
+            "snapshot_contract_version": record.contract_version,
+        }
+        for binding in reversed(bindings)
+    ]
+
+    projection_write._validate_snapshot_contents(
+        rows,
+        record.snapshot_id,
+        "contact",
+        "101",
+        scope.source_key,
+        scope.source_instance_id,
+        scope.control_instance_id,
+        {str(row["observation_id"]) for row in rows},
+    )
+
+    assert record.snapshot_digest == snapshot.digest
+    assert (
+        record.snapshot_id
+        == CrmCompanyMembershipSnapshotRecord(
+            StandaloneCrmSourceChildScope(
+                scope.source_key, scope.source_instance_id, scope.control_instance_id
+            ),
+            snapshot,
+            "source-record-a",
+            "101",
+            1,
+            _DIGEST,
+            None,
+            StandaloneCrmSourceAvailability("2026-01-01T00:00:00Z"),
+            2,
+        ).snapshot_id
+    )

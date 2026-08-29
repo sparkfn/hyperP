@@ -9,11 +9,14 @@ from threading import Event
 import pytest
 from _crm_tenant_projection_neo4j_helpers import (
     _DIGEST,
-    _add_membership_observation,
     _command,
     _drive_to_projection_complete,
-    _mapping_manifest,
     _repository,
+)
+from _crm_tenant_projection_neo4j_seed import (
+    _add_membership_observation,
+    _contact_snapshot_id,
+    _mapping_manifest,
     _scope,
     _seed,
 )
@@ -246,7 +249,7 @@ def test_real_neo4j_deduplicates_company_paths_and_retains_each_support(
     with neo4j_driver.session() as session:
         _add_membership_observation(
             session,
-            "issue-305-contact-snapshot",
+            _contact_snapshot_id(),
             "contact",
             "101",
             "404",
@@ -273,7 +276,7 @@ def test_real_neo4j_acknowledgement_loss_replay_converges_without_duplicate_supp
     with neo4j_driver.session() as session:
         _add_membership_observation(
             session,
-            "issue-305-contact-snapshot",
+            _contact_snapshot_id(),
             "contact",
             "101",
             "404",

@@ -3,24 +3,42 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
 from _crm_tenant_projection_census_cases import (
     test_source_census_admission_rejects_terminal_company_and_control_drift,
     test_source_census_admission_requires_contact_lead_and_exact_completed_bounds,
 )
+from _crm_tenant_projection_mapping_guard_cases import (
+    test_mapping_proof_guard_rejects_bad_target_entity_topology,
+    test_mapping_proof_scan_classifies_malformed_canonical_values_as_integrity,
+    test_mapping_target_proof_scan_accepts_canonical_target_identity,
+)
 from _crm_tenant_projection_neo4j_helpers import (
     _mapping_active_head_drift_parameters,
 )
-from _crm_tenant_projection_neo4j_helpers import (
+from _crm_tenant_projection_neo4j_seed import (
+    _mapping_manifest,
+    _mapping_properties,
+    _mapping_revision_id,
+)
+from _crm_tenant_projection_neo4j_seed import (
     _scope as neo4j_projection_scope,
 )
 from _crm_tenant_projection_observation_cases import (
+    test_snapshot_contents_uses_canonical_multibinding_order_for_digest_and_identity,
     test_unmapped_observation_is_validated_before_zero_target_decision,
     test_unmapped_observation_topology_fails_closed_before_decision,
 )
+from _crm_tenant_projection_terminal_snapshot_cases import (
+    test_terminal_snapshot_validation_accepts_empty_snapshot_null_row,
+    test_terminal_snapshot_validation_rejects_malformed_observation_topology,
+    test_terminal_snapshot_validation_uses_exclusive_200_row_pages,
+)
 from _standalone_crm_lane_a_fakes import prepared_mapping_revision, projection_scope
-from src.crm_tenant_mapping_identity import mapping_head_id
+from src.crm_tenant_mapping_contracts import CrmTenantMappingCompanyEntry, CrmTenantMappingTarget
+from src.crm_tenant_mapping_identity import mapping_head_id, mapping_revision_id
 from src.crm_tenant_mapping_models import CrmTenantMappingExpectedHeadBoundary
 from src.crm_tenant_projection_identity import (
     empty_capture_boundary_digest,
@@ -33,10 +51,12 @@ from src.crm_tenant_projection_models import (
     CrmTenantProjectionReleaseSummary,
 )
 from src.graph import crm_tenant_projection as projection_graph
+from src.graph import crm_tenant_projection_mapping_guard as mapping_guard
 from src.graph import crm_tenant_projection_write as projection_write
 from src.graph.crm_tenant_projection_values import _materialized_fingerprint_from_values
 from src.graph.queries import crm_tenant_projection as queries
 from src.graph.queries import crm_tenant_projection_integrity as integrity_queries
+from src.graph.queries import crm_tenant_projection_mapping_guard as mapping_guard_queries
 from src.graph.queries import crm_tenant_projection_projection as projection_queries
 
 _DIGEST = "sha256:" + "a" * 64
@@ -44,6 +64,13 @@ _DIGEST = "sha256:" + "a" * 64
 __all__ = (
     "test_source_census_admission_rejects_terminal_company_and_control_drift",
     "test_source_census_admission_requires_contact_lead_and_exact_completed_bounds",
+    "test_mapping_proof_guard_rejects_bad_target_entity_topology",
+    "test_mapping_proof_scan_classifies_malformed_canonical_values_as_integrity",
+    "test_mapping_target_proof_scan_accepts_canonical_target_identity",
+    "test_snapshot_contents_uses_canonical_multibinding_order_for_digest_and_identity",
+    "test_terminal_snapshot_validation_accepts_empty_snapshot_null_row",
+    "test_terminal_snapshot_validation_rejects_malformed_observation_topology",
+    "test_terminal_snapshot_validation_uses_exclusive_200_row_pages",
     "test_unmapped_observation_is_validated_before_zero_target_decision",
     "test_unmapped_observation_topology_fails_closed_before_decision",
 )
@@ -122,6 +149,26 @@ def test_mapping_active_head_drift_setup_uses_command_property_without_neo4j() -
     assert parameters.head_id == mapping_head_id(neo4j_projection_scope().mapping_scope)
     assert parameters.active_revision_id == "other"
     assert parameters.active_revision_number == 1
+
+
+def test_neo4j_mapping_fixture_uses_canonical_revision_and_distinct_targets() -> None:
+    manifest = _mapping_manifest(
+        (
+            CrmTenantMappingCompanyEntry("303", (CrmTenantMappingTarget("issue-305-entity"),)),
+            CrmTenantMappingCompanyEntry("404", (CrmTenantMappingTarget("issue-305-entity"),)),
+        )
+    )
+
+    properties, entries, targets = _mapping_properties(manifest)
+
+    assert _mapping_revision_id() == mapping_revision_id(
+        neo4j_projection_scope().mapping_scope,
+        1,
+    )
+    assert properties["revision_id"] == _mapping_revision_id()
+    assert {entry["entry_id"] for entry in entries} == {target["entry_id"] for target in targets}
+    assert len({entry["entry_id"] for entry in entries}) == 2
+    assert len({target["target_id"] for target in targets}) == 2
 
 
 def test_allocation_rechecks_request_after_scope_lock_before_any_boundary_read(
@@ -279,3 +326,67 @@ def test_failure_code_is_rejected_before_any_graph_write() -> None:
     with pytest.raises(ValueError, match="unsupported projection failure code"):
         projection_write._fail_release(tx, "release", _DIGEST, "x" * 129)
     assert tx.calls == []
+
+
+def test_mapping_proof_guard_uses_complete_parameters_and_bounded_empty_pages() -> None:
+    class _Rows:
+        def __init__(self, rows: list[dict[str, object]]) -> None:
+            self._rows = rows
+
+        def __iter__(self) -> object:
+            return iter(self._rows)
+
+        def single(self) -> dict[str, object] | None:
+            return self._rows[0] if self._rows else None
+
+    class _Tx:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, dict[str, object]]] = []
+
+        def run(self, query: str, **parameters: object) -> _Rows:
+            self.calls.append((query, parameters))
+            if query in {
+                mapping_guard_queries.READ_MAPPING_ENTRY_PROOF_PAGE,
+                mapping_guard_queries.READ_MAPPING_TARGET_PROOF_PAGE,
+            }:
+                assert parameters["page_limit"] == 200
+                return _Rows([])
+            return _Rows(
+                [
+                    {
+                        "stored_entry_count": 0,
+                        "stored_target_count": 0,
+                        "stored_topology_fingerprint": (
+                            mapping_guard._empty_mapping_topology_fingerprint()
+                        ),
+                        "bad_revision_links": 0,
+                        "bad_entry_links": 0,
+                        "bad_target_links": 0,
+                        "orphan_entries": 0,
+                        "orphan_targets": 0,
+                        "bad_entry_owners": 0,
+                        "bad_target_owners": 0,
+                        "bad_target_entities": 0,
+                        "entry_count": 0,
+                        "target_count": 0,
+                    }
+                ]
+            )
+
+    tx = _Tx()
+    mapping_guard._validate_mapping_topology_fingerprint(tx, "release", _DIGEST)
+    guard_parameters = next(
+        parameters
+        for query, parameters in tx.calls
+        if query == mapping_guard_queries.VALIDATE_MAPPING_PROOF_GUARD
+    )
+    assert guard_parameters["mapping_entry_link"] == "HAS_MAPPING_ENTRY"
+    assert guard_parameters["mapping_target_link"] == "HAS_MAPPING_TARGET"
+    assert guard_parameters["targets_entity_link"] == "TARGETS_ENTITY"
+
+
+def test_projection_graph_modules_do_not_import_connector_runtime() -> None:
+    observations = __import__("src.graph.crm_tenant_projection_observations", fromlist=["__name__"])
+    assert observations.__file__ is not None
+    source = Path(observations.__file__).read_text(encoding="utf-8")
+    assert "src.connectors." not in source

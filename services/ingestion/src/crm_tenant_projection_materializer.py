@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+from src.crm_tenant_mapping_models import (
+    CrmTenantMappingConflictError,
+    CrmTenantMappingIntegrityError,
+)
 from src.crm_tenant_mapping_repository import CrmTenantMappingMaterializationReader
 from src.crm_tenant_projection_models import (
     CrmTenantProjectionCancelledError,
@@ -59,6 +63,12 @@ class CrmTenantProjectionMaterializer:
                     return release
             return self._repository.complete(release.release_id, release.release_fingerprint)
         except CrmTenantProjectionCancelledError:
+            raise
+        except CrmTenantMappingConflictError:
+            _record_failure(self._repository, release, "boundary_conflict")
+            raise
+        except CrmTenantMappingIntegrityError:
+            _record_failure(self._repository, release, "integrity_error")
             raise
         except CrmTenantProjectionConflictError:
             _record_failure(self._repository, release, "boundary_conflict")

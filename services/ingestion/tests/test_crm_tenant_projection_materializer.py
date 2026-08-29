@@ -7,7 +7,11 @@ from dataclasses import replace
 import pytest
 from _standalone_crm_lane_a_fakes import prepared_mapping_revision, projection_scope
 from src.crm_tenant_mapping_identity import mapping_head_id
-from src.crm_tenant_mapping_models import CrmTenantMappingExpectedHeadBoundary
+from src.crm_tenant_mapping_models import (
+    CrmTenantMappingConflictError,
+    CrmTenantMappingExpectedHeadBoundary,
+    CrmTenantMappingIntegrityError,
+)
 from src.crm_tenant_projection_materializer import CrmTenantProjectionMaterializer
 from src.crm_tenant_projection_models import (
     CrmTenantProjectionCancelledError,
@@ -186,5 +190,26 @@ def test_materializer_preserves_expected_failure_classification(
     repository = _BrokenRepository(_release())
     with pytest.raises(type(error)):
         CrmTenantProjectionMaterializer(repository, _MappingReader()).materialize(_command())
+
+    assert repository.failure_codes == [failure_code]
+
+
+@pytest.mark.parametrize(
+    ("error", "failure_code"),
+    (
+        (CrmTenantMappingConflictError("mapping boundary"), "boundary_conflict"),
+        (CrmTenantMappingIntegrityError("mapping integrity"), "integrity_error"),
+    ),
+)
+def test_materializer_classifies_mapping_reader_failure(
+    error: Exception, failure_code: str
+) -> None:
+    class _BrokenMappingReader(_MappingReader):
+        def require_prepared_for_materialization(self, *args: object) -> object:
+            raise error
+
+    repository = _Repository(_release())
+    with pytest.raises(type(error)):
+        CrmTenantProjectionMaterializer(repository, _BrokenMappingReader()).materialize(_command())
 
     assert repository.failure_codes == [failure_code]

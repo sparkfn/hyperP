@@ -51,7 +51,16 @@ OPTIONAL MATCH (revision)-[:HAS_MAPPING_ENTRY]->(entry:CrmTenantMappingEntry {
   revision_id: $mapping_revision_id, company_id: observation.company_id
 })-[:HAS_MAPPING_TARGET]->(target:CrmTenantMappingTarget)
   -[:TARGETS_ENTITY]->(entity:Entity)
-RETURN snapshot.binding_count AS binding_count, observation.observation_id AS observation_id,
+RETURN snapshot.binding_count AS binding_count, snapshot.snapshot_digest AS snapshot_digest,
+  snapshot.source_record_id AS snapshot_source_record_id,
+  snapshot.source_record_pk AS snapshot_source_record_pk,
+  snapshot.source_record_version AS snapshot_source_record_version,
+  snapshot.source_record_hash AS snapshot_source_record_hash,
+  CASE WHEN snapshot.observed_at IS NULL THEN NULL ELSE toString(snapshot.observed_at) END
+    AS snapshot_observed_at,
+  toString(snapshot.available_at) AS snapshot_available_at,
+  snapshot.contract_version AS snapshot_contract_version,
+  observation.observation_id AS observation_id,
   elementId(observation) AS observation_node_id, observation.snapshot_id AS observation_snapshot_id,
   observation.subject_kind AS observation_subject_kind,
   observation.subject_id AS observation_subject_id, observation.company_id AS company_id,

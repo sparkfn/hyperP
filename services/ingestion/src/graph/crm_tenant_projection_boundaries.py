@@ -20,6 +20,11 @@ from src.graph.crm_tenant_projection_census import (
     _CensusUnitBoundary,
     _read_source_census_boundary,
 )
+from src.graph.crm_tenant_projection_mapping_guard import (
+    _mapping_proof,
+    _MappingProof,
+    _validate_mapping_proof_guard,
+)
 from src.graph.crm_tenant_projection_values import (
     _mapping_string,
     _materialized_fingerprint_from_values,
@@ -35,7 +40,7 @@ from src.graph.queries.crm_tenant_projection_boundaries import VALIDATE_RELEASE_
 def _validate_mapping_boundary(
     tx: ManagedTransaction,
     command: CrmTenantProjectionMaterializationCommand,
-) -> int:
+) -> _MappingProof:
     expected = command.expected_mapping_head_boundary.expected_head
     record = tx.run(
         READ_MAPPING_BOUNDARY,
@@ -69,7 +74,7 @@ def _validate_mapping_boundary(
         raise CrmTenantProjectionConflictError("prepared mapping snapshot conflicts")
     if snapshot.expected_head_boundary != command.expected_mapping_head_boundary:
         raise CrmTenantProjectionConflictError("prepared mapping expected head conflicts")
-    return snapshot.revision.revision_number
+    return _mapping_proof(snapshot)
 
 
 def _validate_release_boundary(
@@ -103,17 +108,7 @@ def _validate_release_boundary(
         and _unit_matches_release(release_values, census_boundary.lead, "lead")
     ):
         raise CrmTenantProjectionConflictError("projection source census boundary became stale")
-    try:
-        snapshot = _read_snapshot(
-            tx,
-            summary.scope.mapping_scope,
-            summary.mapping_revision_id,
-            summary.mapping_manifest_digest,
-        )
-    except RuntimeError as exc:
-        raise CrmTenantProjectionIntegrityError("projection mapping topology is malformed") from exc
-    if snapshot is None or snapshot.revision.state != "prepared":
-        raise CrmTenantProjectionConflictError("projection prepared mapping became stale")
+    _validate_mapping_proof_guard(tx, release_id, release_fingerprint)
     return summary
 
 
@@ -140,7 +135,7 @@ def _unit_matches_release(
 def _release_properties(
     command: CrmTenantProjectionMaterializationCommand,
     boundary: _CensusBoundary,
-    mapping_revision_number: int,
+    mapping_proof: _MappingProof,
     release_id: str,
     release_number: int,
 ) -> dict[str, object]:
@@ -174,7 +169,10 @@ def _release_properties(
         "lead_expected_input_count": boundary.lead.processed_rows - boundary.lead.skipped_rows,
         "lead_frozen_upper_id": boundary.lead.frozen_upper_id,
         "mapping_revision_id": command.mapping_revision_id,
-        "mapping_revision_number": mapping_revision_number,
+        "mapping_revision_number": mapping_proof.revision_number,
+        "mapping_entry_count": mapping_proof.entry_count,
+        "mapping_target_count": mapping_proof.target_count,
+        "mapping_topology_fingerprint": mapping_proof.topology_fingerprint,
         "mapping_manifest_digest": command.mapping_manifest_digest,
         "projection_head_id": command.projection_head_id,
         "expected_mapping_head_id": command.expected_mapping_head_id,

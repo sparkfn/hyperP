@@ -35,6 +35,12 @@ from _crm_tenant_projection_neo4j_integrity_cases import (
     test_real_neo4j_membership_selection_corruption_fails_closed,
     test_real_neo4j_support_digest_and_authority_edge_corruption_are_rejected,
 )
+from _crm_tenant_projection_neo4j_terminal_snapshot_cases import (
+    test_real_neo4j_completed_reader_rejects_snapshot_content_corruption,
+    test_real_neo4j_foreign_mapping_entry_link_rejects_completion,
+    test_real_neo4j_mapping_target_entity_topology_rejects_completion,
+    test_real_neo4j_terminal_snapshot_content_corruption_rejects_completion,
+)
 
 __all__ = (
     "neo4j_driver",
@@ -45,6 +51,7 @@ __all__ = (
     "test_real_neo4j_capture_digest_and_terminal_fingerprint_corruption_are_rejected",
     "test_real_neo4j_capture_projection_zero_target_and_exact_replay",
     "test_real_neo4j_completion_and_reader_reject_orphan_release_children",
+    "test_real_neo4j_completed_reader_rejects_snapshot_content_corruption",
     "test_real_neo4j_conflicting_request_and_cancellation_are_invisible",
     "test_real_neo4j_concurrent_conflicting_request_reuse_allocates_one_release",
     "test_real_neo4j_concurrent_duplicate_allocation_replays_one_release",
@@ -52,9 +59,11 @@ __all__ = (
     "test_real_neo4j_deduplicates_company_paths_and_retains_each_support",
     "test_real_neo4j_deterministic_release_collision_is_rejected",
     "test_real_neo4j_direct_completed_replay_rejects_corrupted_topology",
+    "test_real_neo4j_foreign_mapping_entry_link_rejects_completion",
     "test_real_neo4j_duplicate_checkpoint_after_allocation_fails_closed",
     "test_real_neo4j_mapping_state_digest_and_head_drift_fail_before_capture",
     "test_real_neo4j_mapping_topology_drift_is_rejected",
+    "test_real_neo4j_mapping_target_entity_topology_rejects_completion",
     "test_real_neo4j_membership_selection_corruption_fails_closed",
     "test_real_neo4j_out_of_bound_heads_fail_closed",
     "test_real_neo4j_page_replay_and_stale_projection_head_are_safe",
@@ -63,6 +72,7 @@ __all__ = (
     "test_real_neo4j_support_digest_and_authority_edge_corruption_are_rejected",
     "test_real_neo4j_unresolved_source_census_control_is_rejected",
     "test_real_neo4j_terminal_failed_or_cancelled_replay_is_stable_after_drift",
+    "test_real_neo4j_terminal_snapshot_content_corruption_rejects_completion",
     "test_real_neo4j_unmapped_company_reference_topology_fails_closed",
     "test_real_neo4j_unmapped_or_empty_entry_observation_topology_fails_closed",
     "test_real_neo4j_valid_omitted_and_explicit_empty_mapping_are_no_mapped_targets",

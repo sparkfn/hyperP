@@ -8,6 +8,11 @@ import pytest
 from _crm_tenant_projection_neo4j_helpers import (
     _command,
     _repository,
+)
+from _crm_tenant_projection_neo4j_seed import (
+    _contact_snapshot_id,
+    _mapping_revision_id,
+    _observation_id,
     _scope,
     _seed,
 )
@@ -86,19 +91,19 @@ def test_real_neo4j_unmapped_or_empty_entry_observation_topology_fails_closed(
     with neo4j_driver.session() as session:
         if mutation == "cross_subject":
             session.run(
-                "MATCH (observation:CrmCompanyMembershipObservation {snapshot_id: "
+                "MATCH (observation:CrmCompanyMembershipObservation {fixture_snapshot_id: "
                 "'issue-305-contact-snapshot'}) SET observation.subject_id = '999'"
             ).consume()
         elif mutation == "duplicate_snapshot_reference":
             session.run(
-                "MATCH (snapshot:CrmCompanyMembershipSnapshot {snapshot_id: "
+                "MATCH (snapshot:CrmCompanyMembershipSnapshot {fixture_snapshot_id: "
                 "'issue-305-contact-snapshot'})-[:HAS_MEMBERSHIP_OBSERVATION]->(observation) "
                 "CREATE (snapshot)-[:HAS_MEMBERSHIP_OBSERVATION]->(observation)"
             ).consume()
         else:
             session.run(
                 "MATCH (observation:CrmCompanyMembershipObservation {"
-                "snapshot_id: 'issue-305-contact-snapshot'}) CREATE "
+                "fixture_snapshot_id: 'issue-305-contact-snapshot'}) CREATE "
                 "(:CrmCompanyMembershipSnapshot {snapshot_id: 'other-owner'})"
                 "-[:HAS_MEMBERSHIP_OBSERVATION]->(observation)"
             ).consume()
@@ -108,6 +113,65 @@ def test_real_neo4j_unmapped_or_empty_entry_observation_topology_fails_closed(
         release = repository.capture_page(release.release_id, release.release_fingerprint, 1)
 
     with pytest.raises(CrmTenantProjectionIntegrityError, match="membership observation"):
+        repository.project_page(release.release_id, release.release_fingerprint, 1)
+
+
+@pytest.mark.parametrize("mutation", ("replacement", "addition", "removal"))
+def test_real_neo4j_snapshot_content_corruption_fails_closed(
+    neo4j_driver: Driver,
+    monkeypatch: pytest.MonkeyPatch,
+    mutation: str,
+) -> None:
+    _seed(neo4j_driver, CrmTenantMappingManifest(_scope().mapping_scope, ()))
+    snapshot_id = _contact_snapshot_id()
+    with neo4j_driver.session() as session:
+        if mutation == "replacement":
+            session.run(
+                "MATCH (observation:CrmCompanyMembershipObservation "
+                "{fixture_snapshot_id: $fixture_snapshot_id}) "
+                "MATCH (observation)-[:REFERENCES_COMPANY]->(reference) "
+                "SET observation.company_id = $company_id, "
+                "observation.observation_id = $observation_id, reference.company_id = $company_id",
+                fixture_snapshot_id="issue-305-contact-snapshot",
+                company_id="404",
+                observation_id=_observation_id(snapshot_id, "404", None, None, True),
+            ).consume()
+        elif mutation == "addition":
+            session.run(
+                "MATCH (snapshot:CrmCompanyMembershipSnapshot "
+                "{fixture_snapshot_id: $fixture_snapshot_id}) "
+                "CREATE (reference:CrmCompanyReference {source_key: $source_key, "
+                "source_instance_id: $source_instance_id, "
+                "control_instance_id: $control_instance_id, company_id: $company_id}) "
+                "CREATE (observation:CrmCompanyMembershipObservation {snapshot_id: $snapshot_id, "
+                "company_id: $company_id, observation_id: $observation_id, "
+                "subject_kind: $subject_kind, "
+                "subject_id: $subject_id, is_primary: false}) "
+                "CREATE (snapshot)-[:HAS_MEMBERSHIP_OBSERVATION]->(observation) "
+                "CREATE (observation)-[:REFERENCES_COMPANY]->(reference)",
+                fixture_snapshot_id="issue-305-contact-snapshot",
+                source_key=_scope().source_key,
+                source_instance_id=_scope().source_instance_id,
+                control_instance_id=_scope().control_instance_id,
+                snapshot_id=snapshot_id,
+                company_id="404",
+                observation_id=_observation_id(snapshot_id, "404", None, None, False),
+                subject_kind="contact",
+                subject_id="101",
+            ).consume()
+        else:
+            session.run(
+                "MATCH (snapshot:CrmCompanyMembershipSnapshot "
+                "{fixture_snapshot_id: $fixture_snapshot_id})"
+                "-[edge:HAS_MEMBERSHIP_OBSERVATION]->() "
+                "DELETE edge",
+                fixture_snapshot_id="issue-305-contact-snapshot",
+            ).consume()
+    repository = _repository(neo4j_driver, monkeypatch)
+    release = repository.allocate_or_replay(_command())
+    while release.phase == "capture":
+        release = repository.capture_page(release.release_id, release.release_fingerprint, 1)
+    with pytest.raises(CrmTenantProjectionIntegrityError, match="membership snapshot"):
         repository.project_page(release.release_id, release.release_fingerprint, 1)
 
 
@@ -131,12 +195,12 @@ def test_real_neo4j_unmapped_company_reference_topology_fails_closed(
     with neo4j_driver.session() as session:
         if mutation == "missing":
             session.run(
-                "MATCH (:CrmCompanyMembershipObservation {snapshot_id: "
+                "MATCH (:CrmCompanyMembershipObservation {fixture_snapshot_id: "
                 "'issue-305-contact-snapshot'})-[edge:REFERENCES_COMPANY]->() DELETE edge"
             ).consume()
         elif mutation == "duplicate":
             session.run(
-                "MATCH (observation:CrmCompanyMembershipObservation {snapshot_id: "
+                "MATCH (observation:CrmCompanyMembershipObservation {fixture_snapshot_id: "
                 "'issue-305-contact-snapshot'})-[:REFERENCES_COMPANY]->(reference) "
                 "CREATE (observation)-[:REFERENCES_COMPANY]->(reference)"
             ).consume()
@@ -147,7 +211,7 @@ def test_real_neo4j_unmapped_company_reference_topology_fails_closed(
                 "other-portal" if mutation == "wrong_scope" else scope.source_instance_id
             )
             session.run(
-                "MATCH (observation:CrmCompanyMembershipObservation {snapshot_id: "
+                "MATCH (observation:CrmCompanyMembershipObservation {fixture_snapshot_id: "
                 "'issue-305-contact-snapshot'})-[edge:REFERENCES_COMPANY]->() DELETE edge "
                 "CREATE (reference:CrmCompanyReference {source_key: $source_key, "
                 "source_instance_id: $source_instance_id, "
@@ -177,13 +241,15 @@ def test_real_neo4j_mapping_topology_drift_is_rejected(
     with neo4j_driver.session() as session:
         if edge == "entry":
             session.run(
-                "MATCH (:CrmTenantMappingRevision {revision_id: 'issue-305-mapping'})"
-                "-[link:HAS_MAPPING_ENTRY]->() DELETE link"
+                "MATCH (:CrmTenantMappingRevision {revision_id: $revision_id})"
+                "-[link:HAS_MAPPING_ENTRY]->() DELETE link",
+                revision_id=_mapping_revision_id(),
             ).consume()
         else:
             session.run(
-                "MATCH (:CrmTenantMappingEntry {revision_id: 'issue-305-mapping'})"
-                "-[link:HAS_MAPPING_TARGET]->() DELETE link"
+                "MATCH (:CrmTenantMappingEntry {revision_id: $revision_id})"
+                "-[link:HAS_MAPPING_TARGET]->() DELETE link",
+                revision_id=_mapping_revision_id(),
             ).consume()
     with pytest.raises(CrmTenantProjectionIntegrityError, match="prepared mapping topology"):
         _repository(neo4j_driver, monkeypatch).allocate_or_replay(_command())

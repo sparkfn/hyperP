@@ -9,9 +9,8 @@ from _crm_tenant_projection_neo4j_helpers import (
     _drive_to_projection_complete,
     _mapping_active_head_drift_parameters,
     _repository,
-    _scope,
-    _seed,
 )
+from _crm_tenant_projection_neo4j_seed import _scope, _seed
 from neo4j import Driver
 from src.crm_tenant_projection_identity import projection_release_id
 from src.crm_tenant_projection_models import (
@@ -84,7 +83,7 @@ def test_real_neo4j_mapping_state_digest_and_head_drift_fail_before_capture(
                 "source_instance_id: $source_instance_id, "
                 "control_instance_id: $control_instance_id, "
                 "head_id: $head_id, active_revision_id: 'other', active_revision_number: 1, "
-                "active_manifest_digest: $digest})",
+                "active_manifest_digest: $active_manifest_digest})",
                 source_key=parameters.source_key,
                 source_instance_id=parameters.source_instance_id,
                 control_instance_id=parameters.control_instance_id,

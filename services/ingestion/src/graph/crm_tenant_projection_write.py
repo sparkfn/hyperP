@@ -22,7 +22,10 @@ from src.crm_tenant_projection_models import (
 from src.crm_tenant_projection_records import CRM_TENANT_PROJECTION_CONTRACT_VERSION, _digest
 from src.graph.crm_tenant_projection_boundaries import _validate_release_boundary
 from src.graph.crm_tenant_projection_integrity import _validate_release_topology
-from src.graph.crm_tenant_projection_observations import _validated_observation_id
+from src.graph.crm_tenant_projection_observations import (
+    _validate_snapshot_contents,
+    _validated_observation_id,
+)
 from src.graph.crm_tenant_projection_values import (
     _optional_string,
     _read_release,
@@ -255,6 +258,16 @@ def _project_one_input(
         }
     if len(observation_ids) != binding_count:
         raise CrmTenantProjectionIntegrityError("membership snapshot binding topology is malformed")
+    _validate_snapshot_contents(
+        rows,
+        snapshot_id,
+        subject_kind,
+        subject_id,
+        release.scope.source_key,
+        release.scope.source_instance_id,
+        release.scope.control_instance_id,
+        observation_ids,
+    )
     supports = list(supports_by_id.values())
     if supports:
         result = tx.run(
