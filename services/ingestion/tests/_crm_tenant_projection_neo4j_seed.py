@@ -182,7 +182,7 @@ def _seed(
             CREATE (entry:CrmTenantMappingEntry {revision_id: revision.revision_id,
               entry_id: item.entry_id, company_id: item.company_id})
             CREATE (revision)-[:HAS_MAPPING_ENTRY]->(entry)
-            WITH entity UNWIND $targets AS item
+            WITH DISTINCT entity UNWIND $targets AS item
             MATCH (entry:CrmTenantMappingEntry {entry_id: item.entry_id})
             CREATE (target:CrmTenantMappingTarget {entry_id: item.entry_id,
               target_id: item.target_id, entity_key: item.entity_key,
@@ -263,6 +263,7 @@ def _seed_snapshot(
         CREATE (snapshot)-[:HAS_MEMBERSHIP_OBSERVATION]->(observation)
         CREATE (observation)-[:REFERENCES_COMPANY]->(reference)
         """,
+        source_key=scope.source_key,
         source_instance_id=scope.source_instance_id,
         control_instance_id=scope.control_instance_id,
         subject_kind=subject_kind,
