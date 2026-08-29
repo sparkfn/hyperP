@@ -31,7 +31,7 @@ training = [
 package = false
 
 [tool.uv.workspace]
-members = ["services/api", "services/ingestion"]
+members = ["services/api", "services/ingestion", "services/deal_intelligence"]
 
 # --- Shared tool config ----------------------------------------------------
 # Both services inherit these settings; per-service overrides go in the
@@ -178,5 +178,5 @@ disallow_untyped_calls = false
 warn_return_any = false
 
 [tool.pytest.ini_options]
-testpaths = ["services/api/tests", "services/ingestion/tests"]
+testpaths = ["services/api/tests", "services/ingestion/tests", "services/deal_intelligence/tests"]
 pythonpath = ["services/api/src"]

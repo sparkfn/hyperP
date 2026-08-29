@@ -2,9 +2,13 @@
 
 ## Status and scope
 
-This document is the implementation contract for issue #250. It defines the
-bounded extraction of CRM operational and analytical history from HyperP's
-Neo4j graph into a new `services/deal_intelligence` PostgreSQL service.
+This document describes the broader staged Deal Intelligence architecture. Issue
+#315 is limited to the disabled PostgreSQL 16 platform foundation: shared
+source-instance/readiness/run/unit/checkpoint/lease-fence/terminal-accounting/
+migration tables only. It does not implement or claim ownership of the later
+identity, deal/stage, activity, historical-import, artifact, projection/outbox,
+ownership-transfer, credential, ingress, deployment, or live-execution work
+otherwise described as future architecture below.
 
 Where this reviewed contract differs from the initial issue proposal, this
 contract supersedes it. In particular, Deal Intelligence stores CRM identity
@@ -269,37 +273,41 @@ cases, and cannot export a resolved link.
 ## Service foundation
 
 `services/deal_intelligence` is an installable Python 3.12 package in the root
-`uv` workspace. Its initial runtime stack is PostgreSQL 16, SQLAlchemy 2,
-psycopg 3, and Alembic, with independently runnable API, worker, scheduler, and
-migration commands.
+`uv` workspace. Its foundation runtime is PostgreSQL 16, SQLAlchemy 2, psycopg 3,
+and Alembic, with separately runnable API, worker, scheduler, migration, and
+health commands.
 
-The disabled foundation includes typed configuration, health/readiness checks,
-source instances, ownership epochs, synchronization runs, checkpoints, leases,
-fence tokens, terminal accounting, identity-link projections, projection
-outbox/dead-letter records, and schema-revision readiness. Bitrix synchronization
-is default-off, and no source writer activates merely because the service starts.
+The disabled foundation contains only typed configuration and default-off controls;
+source-instance registry records; schema-revision readiness; synchronization runs/
+units, checkpoints, and terminal accounting; and generic leases with monotonically
+increasing fence tokens. Default registries are empty. A process start does not
+register a source, start a writer or schedule, call a CRM, or write later-domain
+data.
 
-Expected bounded schema groups include:
+This foundation does not own identity-link projections, CRM deal/activity/stage
+schemas, historical imports, artifacts or analytics, projection outbox/dead-letter
+state, or ownership-transfer workflows/tasks. Those existing architectural sections
+remain proposals for later, separately scoped work; they are not #315 delivery
+requirements.
 
-- immutable deal observations/versions plus one current pointer;
-- activities, participants, assignments, and approved call/communication
-  metadata;
-- Bitrix user/source-assignee references and immutable assignment history,
-  without treating staff records as customer identity;
-- stage occurrences, immutable conflict variants, append-only authority
-  decisions, correction/release lineage, and one CAS authority head;
-- source watermarks, synchronization units, checkpoints, retries, quarantine,
-  leases, and ownership epochs;
-- HyperP identity-link current state and applied revision ledger;
-- dataset, feature, evaluation, training, model, and prediction metadata; and
-- transactional CRM projection outbox, tombstone, retry, and dead-letter state.
-
-High-volume tables are partitioned only after measured volume and query evidence
-justify it. Raw comments, message bodies, and conversation text are excluded by
-default; any later inclusion requires an explicit classification and retention
-decision.
+Migrations are additive reviewed Alembic revisions. Future component lanes branch
+independently from the platform lane by default; a real additional dependency belongs
+to that future revision, not sibling serialization. Independent branches converge
+through a reviewed merge revision before release. API, worker, scheduler, and health
+startup never applies migrations; an operator must run the migration command
+explicitly. Readiness fails closed when required revisions are absent or ambiguous.
 
 ## API and process topology
+
+Deal Intelligence has no nginx route, browser/BFF path, public ingress, or MCP
+surface. Its health/readiness interfaces are container-internal only: no host port
+or external health route is part of this foundation. The
+`deal-intelligence-health` command accepts `--component api|worker|scheduler`
+and returns a secret-safe structured disabled readiness result only after schema
+validation and a fresh component heartbeat. API, worker, and scheduler probes must
+not activate a writer or schedule.
+Worker and scheduler commands are long-lived, signal-aware disabled heartbeat loops;
+their one-cycle seams exist only for source tests.
 
 Deal Intelligence is not a new public browser ingress. Browser calls continue
 through frontend2 BFF handlers to HyperP's authenticated `/app/v2` contract.
@@ -564,20 +572,19 @@ exclusion. No raw identifiers or candidate topology leave HyperP.
 Exit: activation, rejection, supersession, merge, unmerge, and retirement
 produce convergent higher revisions.
 
-### PR 250.5 - Disabled Deal Intelligence foundation
+### Issue #315 - Disabled Deal Intelligence foundation
 
-Create the installable package, PostgreSQL/Alembic foundation, typed process
-entry points, configuration, schemas, and default-off controls. Add PostgreSQL
-16 validation as a separate step/service in synchronized PR and main workflows.
+Create the installable package, PostgreSQL/Alembic shared-control-plane foundation,
+typed process entry points, configuration, and default-off controls. Add PostgreSQL
+16 validation as a separate step/service in synchronized PR and MAIN workflows.
 
-Before this Compose-changing PR, issue #299 must establish the repository's
-tracked staging Compose contract at `.docker/staging/docker-compose.yml` and its
-exact tested exception registry. Do not modify root Compose until that contract
-is merged. Afterward, root and staging Compose changes must remain semantically
-equivalent except for the documented, test-enforced staging differences.
+This issue adds the disabled Compose topology and shared Deal Intelligence app
+image for the foundation. It does not change nginx or deployment workflows and
+owns no writers, schedules, source credentials, or live data movement.
 
-Exit: migrations and health/readiness checks run against PostgreSQL 16 while all
-Bitrix writers remain disabled.
+Exit: package-owned opt-in PostgreSQL tests exercise fresh and base-to-head
+migrations, schema inventory, and internal structured disabled readiness while all
+writers and schedules remain disabled.
 
 ### PR 250.6 - Deal and complete-stage synchronization
 

@@ -69,6 +69,36 @@ _STAGING_LIFECYCLE_VOLUMES = _volumes(
     "../../config:/app/config:ro",
 )
 
+_DEAL_INTELLIGENCE_HEALTHCHECKS: dict[str, ComposeValue] = {
+    "api": cast(
+        ComposeValue,
+        {
+            "test": ["CMD", "deal-intelligence-health", "--component", "api"],
+            "interval": "10s",
+            "timeout": "5s",
+            "retries": 10,
+        },
+    ),
+    "worker": cast(
+        ComposeValue,
+        {
+            "test": ["CMD", "deal-intelligence-health", "--component", "worker"],
+            "interval": "10s",
+            "timeout": "5s",
+            "retries": 10,
+        },
+    ),
+    "scheduler": cast(
+        ComposeValue,
+        {
+            "test": ["CMD", "deal-intelligence-health", "--component", "scheduler"],
+            "interval": "10s",
+            "timeout": "5s",
+            "retries": 10,
+        },
+    ),
+}
+
 _ROOT_ONLY_ENVIRONMENT: tuple[tuple[str, str], ...] = (
     ("DEPLOYMENT_ENVIRONMENT", "${DEPLOYMENT_ENVIRONMENT:-development}"),
     ("CRM_DEAL_IDENTITY_REPAIR_ENABLED", "${CRM_DEAL_IDENTITY_REPAIR_ENABLED:-false}"),
@@ -100,7 +130,14 @@ EXCEPTIONS: tuple[ComposeTransformation, ...] = (
     ),
     *(
         ComposeTransformation(("services", name, "build", "context"), ".", "../..")
-        for name in ("api", "frontend2", "ingestion-worker", "lifecycle-worker", "beat")
+        for name in (
+            "api",
+            "frontend2",
+            "ingestion-worker",
+            "lifecycle-worker",
+            "beat",
+            "deal-intelligence-migrate",
+        )
     ),
     ComposeTransformation(
         ("services", "api", "volumes"),
@@ -206,6 +243,11 @@ def test_staging_compose_critical_invariants() -> None:
     services = staging["services"]
     assert isinstance(services, dict)
     assert set(services) == {
+        "deal-intelligence-postgres",
+        "deal-intelligence-migrate",
+        "deal-intelligence-api",
+        "deal-intelligence-worker",
+        "deal-intelligence-scheduler",
         "neo4j",
         "redis",
         "api",
@@ -218,9 +260,19 @@ def test_staging_compose_critical_invariants() -> None:
     web = services["web"]
     ingestion_worker = services["ingestion-worker"]
     beat = services["beat"]
+    deal_intelligence_postgres = services["deal-intelligence-postgres"]
+    deal_intelligence_migrate = services["deal-intelligence-migrate"]
+    deal_intelligence_api = services["deal-intelligence-api"]
+    deal_intelligence_worker = services["deal-intelligence-worker"]
+    deal_intelligence_scheduler = services["deal-intelligence-scheduler"]
     assert isinstance(web, dict)
     assert isinstance(ingestion_worker, dict)
     assert isinstance(beat, dict)
+    assert isinstance(deal_intelligence_postgres, dict)
+    assert isinstance(deal_intelligence_migrate, dict)
+    assert isinstance(deal_intelligence_api, dict)
+    assert isinstance(deal_intelligence_worker, dict)
+    assert isinstance(deal_intelligence_scheduler, dict)
     assert "ports" not in web
     assert web["networks"] == ["default", "traefik"]
     assert ingestion_worker["build"] == {
@@ -233,6 +285,66 @@ def test_staging_compose_critical_invariants() -> None:
     ]
     assert beat["cpus"] == 0.25
     assert beat["mem_limit"] == "256M"
+    assert deal_intelligence_postgres["image"] == "postgres:16-alpine"
+    assert deal_intelligence_postgres["profiles"] == [
+        "deal-intelligence",
+        "deal-intelligence-writer",
+        "deal-intelligence-scheduler",
+    ]
+    assert "ports" not in deal_intelligence_postgres
+    assert deal_intelligence_postgres["volumes"] == [
+        "${DEAL_INTELLIGENCE_POSTGRES_DATA_ROOT:-./data/deal-intelligence-postgres}:"
+        "/var/lib/postgresql/data"
+    ]
+    assert deal_intelligence_postgres["healthcheck"] == {
+        "test": ["CMD-SHELL", 'pg_isready -U "$$POSTGRES_USER" -d "$$POSTGRES_DB"'],
+        "interval": "10s",
+        "timeout": "5s",
+        "retries": 10,
+    }
+    assert deal_intelligence_migrate["build"] == {
+        "context": "../..",
+        "dockerfile": "services/deal_intelligence/Dockerfile",
+    }
+    assert deal_intelligence_migrate["command"] == [
+        "deal-intelligence-migrate",
+        "upgrade",
+        "heads",
+    ]
+    assert deal_intelligence_migrate["profiles"] == [
+        "deal-intelligence",
+        "deal-intelligence-writer",
+        "deal-intelligence-scheduler",
+    ]
+    assert "healthcheck" not in deal_intelligence_migrate
+    assert "ports" not in deal_intelligence_migrate
+    assert deal_intelligence_migrate["depends_on"] == {
+        "deal-intelligence-postgres": {"condition": "service_healthy"}
+    }
+    for service, component in (
+        (deal_intelligence_api, "api"),
+        (deal_intelligence_worker, "worker"),
+        (deal_intelligence_scheduler, "scheduler"),
+    ):
+        assert service["image"] == "hyperp-deal-intelligence:local"
+        assert "build" not in service
+        assert "ports" not in service
+        assert service["healthcheck"] == _DEAL_INTELLIGENCE_HEALTHCHECKS[component]
+        assert service["depends_on"] == {
+            "deal-intelligence-migrate": {"condition": "service_completed_successfully"}
+        }
+    assert deal_intelligence_api["command"] == [
+        "deal-intelligence-api",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "8080",
+    ]
+    assert deal_intelligence_worker["command"] == ["deal-intelligence-worker"]
+    assert deal_intelligence_scheduler["command"] == ["deal-intelligence-scheduler"]
+    assert deal_intelligence_api["profiles"] == ["deal-intelligence"]
+    assert deal_intelligence_worker["profiles"] == ["deal-intelligence-writer"]
+    assert deal_intelligence_scheduler["profiles"] == ["deal-intelligence-scheduler"]
     assert staging["networks"] == {"traefik": {"external": True, "name": "traefik"}}
 
 

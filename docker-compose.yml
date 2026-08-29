@@ -120,6 +120,77 @@ x-ingestion-env: &ingestion-env
   TZ: ${TZ:-UTC}
 
 services:
+  deal-intelligence-postgres:
+    profiles: ["deal-intelligence", "deal-intelligence-writer", "deal-intelligence-scheduler"]
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${DEAL_INTELLIGENCE_POSTGRES_DB:-deal_intelligence}
+      POSTGRES_USER: ${DEAL_INTELLIGENCE_POSTGRES_USER:-deal_intelligence}
+      POSTGRES_PASSWORD: ${DEAL_INTELLIGENCE_POSTGRES_PASSWORD:?set DEAL_INTELLIGENCE_POSTGRES_PASSWORD}
+    volumes:
+      - ${DEAL_INTELLIGENCE_POSTGRES_DATA_ROOT:-./data/deal-intelligence-postgres}:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  deal-intelligence-migrate:
+    profiles: ["deal-intelligence", "deal-intelligence-writer", "deal-intelligence-scheduler"]
+    image: hyperp-deal-intelligence:local
+    build:
+      context: .
+      dockerfile: services/deal_intelligence/Dockerfile
+    environment: &deal-intelligence-env
+      DEAL_INTELLIGENCE_DATABASE_URL: postgresql+psycopg://${DEAL_INTELLIGENCE_POSTGRES_USER:-deal_intelligence}:${DEAL_INTELLIGENCE_POSTGRES_PASSWORD:?set DEAL_INTELLIGENCE_POSTGRES_PASSWORD}@deal-intelligence-postgres:5432/${DEAL_INTELLIGENCE_POSTGRES_DB:-deal_intelligence}
+    depends_on:
+      deal-intelligence-postgres:
+        condition: service_healthy
+    command: ["deal-intelligence-migrate", "upgrade", "heads"]
+    restart: "no"
+
+  deal-intelligence-api:
+    profiles: ["deal-intelligence"]
+    image: hyperp-deal-intelligence:local
+    environment: *deal-intelligence-env
+    depends_on:
+      deal-intelligence-migrate:
+        condition: service_completed_successfully
+    command: ["deal-intelligence-api", "--host", "0.0.0.0", "--port", "8080"]
+    healthcheck:
+      test: ["CMD", "deal-intelligence-health", "--component", "api"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  deal-intelligence-worker:
+    profiles: ["deal-intelligence-writer"]
+    image: hyperp-deal-intelligence:local
+    environment: *deal-intelligence-env
+    depends_on:
+      deal-intelligence-migrate:
+        condition: service_completed_successfully
+    command: ["deal-intelligence-worker"]
+    healthcheck:
+      test: ["CMD", "deal-intelligence-health", "--component", "worker"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  deal-intelligence-scheduler:
+    profiles: ["deal-intelligence-scheduler"]
+    image: hyperp-deal-intelligence:local
+    environment: *deal-intelligence-env
+    depends_on:
+      deal-intelligence-migrate:
+        condition: service_completed_successfully
+    command: ["deal-intelligence-scheduler"]
+    healthcheck:
+      test: ["CMD", "deal-intelligence-health", "--component", "scheduler"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
   neo4j:
     image: neo4j:5.26-community
     cpus: 2.0

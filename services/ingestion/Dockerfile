@@ -16,6 +16,7 @@ WORKDIR /app
 COPY pyproject.toml uv.lock ./
 COPY services/api/pyproject.toml services/api/pyproject.toml
 COPY services/ingestion/pyproject.toml services/ingestion/pyproject.toml
+COPY services/deal_intelligence/pyproject.toml services/deal_intelligence/pyproject.toml
 
 # Install only the ingestion member and its transitive deps. Members are
 # virtual (package = false), so this only materialises third-party deps.

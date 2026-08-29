@@ -32,6 +32,14 @@ services:
       NEO4J_server_memory_heap_initial__size: 256m
       NEO4J_server_memory_heap_max__size: 512m
       NEO4J_server_memory_pagecache_size: 256m
+  # Disposable PostgreSQL service for the disabled Deal Intelligence platform
+  # foundation. It is CI-only data on the untrusted workflow network.
+  - name: deal-intelligence-postgres
+    image: postgres:16-bookworm
+    environment:
+      POSTGRES_DB: deal_intelligence_test
+      POSTGRES_USER: deal_intelligence_ci
+      POSTGRES_PASSWORD: deal-intelligence-ci
 
 steps:
   # Re-run the PR python suite on the merged main commit to catch merge breakage,
@@ -122,6 +130,27 @@ steps:
       - uv run --package profile-unifier-ingestion pytest services/ingestion/tests/test_crm_tenant_mapping_repository_neo4j_preparation.py services/ingestion/tests/test_crm_tenant_mapping_repository_neo4j_lifecycle.py services/ingestion/tests/test_crm_tenant_mapping_repository_neo4j_freshness_integrity.py services/ingestion/tests/test_crm_tenant_mapping_repository_neo4j_strictness.py -q
       - uv run --package profile-unifier-ingestion pytest services/ingestion/tests/test_crm_deal_identity_repair_ledger_neo4j.py -q
 
+
+  # Keep the disabled Deal Intelligence PostgreSQL 16 gate aligned with PR. The
+  # package-owned suite handles PostgreSQL readiness, unique test-owned state,
+  # migrations, schema, component heartbeats, and structured disabled readiness.
+  - name: deal-intelligence-checks
+    image: ghcr.io/astral-sh/uv:python3.12-bookworm
+    depends_on: []
+    environment:
+      UV_PROJECT_ENVIRONMENT: .venv-deal-intelligence-checks
+      PYTEST_ADDOPTS: "-o cache_dir=.pytest_cache-deal-intelligence-checks"
+      PYTHONDONTWRITEBYTECODE: "1"
+      HYPERP_DEAL_INTELLIGENCE_TEST_DATABASE_URL: postgresql+psycopg://deal_intelligence_ci:deal-intelligence-ci@deal-intelligence-postgres:5432/deal_intelligence_test
+    commands:
+      - uv sync --frozen
+      - uv run --package profile-unifier-deal-intelligence ruff check services/deal_intelligence/src services/deal_intelligence/tests
+      - uv run --package profile-unifier-deal-intelligence ruff format --check services/deal_intelligence/src services/deal_intelligence/tests
+      - uv run --package profile-unifier-deal-intelligence mypy --strict services/deal_intelligence/src
+      - uv run --package profile-unifier-deal-intelligence pytest services/deal_intelligence/tests -q
+
+      # Match the API/ingestion main-only production-install check for the DI package.
+      - uv sync --frozen --no-dev --package profile-unifier-deal-intelligence
   # Real Next.js production build. `next build` runs TypeScript type-checking itself,
   # so this is strictly stronger than the PR `npm run typecheck` step.
   - name: frontend-build

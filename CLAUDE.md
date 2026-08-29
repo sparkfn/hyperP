@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-HyperP is a customer profile unification and relationship intelligence platform. It resolves the same person across systems (POS, Bitrix CRM, third-party apps) for use cases like contact tracing and sales. Code lives in `services/api/` and `services/ingestion/`; design docs live in `docs/`.
+HyperP is a customer profile unification and relationship intelligence platform. It resolves the same person across systems (POS, Bitrix CRM, third-party apps) for use cases like contact tracing and sales. Active application code lives in `services/api/` and `services/ingestion/`; `services/deal_intelligence/` is an installable, disabled PostgreSQL control-plane foundation. Design docs live in `docs/`.
 
 ## Development Commands
 
@@ -36,6 +36,11 @@ uv run --package profile-unifier-api mypy --strict services/api/src
 uv run --package profile-unifier-ingestion ruff check services/ingestion/src
 uv run --package profile-unifier-ingestion ruff format services/ingestion/src
 uv run --package profile-unifier-ingestion mypy --strict services/ingestion/src
+
+# Disabled Deal Intelligence foundation
+uv run --package profile-unifier-deal-intelligence ruff check services/deal_intelligence/src services/deal_intelligence/tests
+uv run --package profile-unifier-deal-intelligence ruff format --check services/deal_intelligence/src services/deal_intelligence/tests
+uv run --package profile-unifier-deal-intelligence mypy --strict services/deal_intelligence/src
 ```
 
 ### Python — tests
@@ -46,6 +51,8 @@ its runtime + dev deps.
 ```bash
 uv run --package profile-unifier-api pytest services/api/tests        # API tests
 uv run --package profile-unifier-ingestion pytest services/ingestion/tests  # ingestion tests
+# PostgreSQL integration tests opt in only through a disposable test URL.
+HYPERP_DEAL_INTELLIGENCE_TEST_DATABASE_URL=<disposable-test-url> uv run --package profile-unifier-deal-intelligence pytest services/deal_intelligence/tests -q
 uv run --package profile-unifier-api pytest services/api/tests/test_foo.py  # single file
 ```
 Test paths are configured in the root `pyproject.toml` (`testpaths` lists both
@@ -70,7 +77,11 @@ Both frontend Dockerfiles use `npm install --legacy-peer-deps` because `@mui/x-d
 
 ## Service Topology
 
-Eight Docker containers defined in `docker-compose.yml`:
+Thirteen Docker services are defined in `docker-compose.yml`, including five
+Deal Intelligence services: PostgreSQL, migration, API, worker, and scheduler.
+The Deal Intelligence topology is internal-only and profile-gated; its services,
+writers, and schedules remain default-off unless a future approved scope enables
+them.
 
 | Service | Image / Build | Internal address | Notes |
 |---|---|---|---|
@@ -82,6 +93,7 @@ Eight Docker containers defined in `docker-compose.yml`:
 | `ingestion-worker` | `services/ingestion/Dockerfile` | — | Celery worker restricted to the `ingestion` queue; concurrency fixed at 2 in code |
 | `lifecycle-worker` | `services/ingestion/Dockerfile` | — | Celery worker for `lifecycle` and `miscellaneous`; concurrency fixed at 2 in code |
 | `beat` | `services/ingestion/Dockerfile` | — | Celery beat scheduler; fixed weekly ingestion groups run at 01:00 UTC |
+| `deal-intelligence-{postgres,migrate,api,worker,scheduler}` | PostgreSQL 16 + `services/deal_intelligence/Dockerfile` | container-internal only; no nginx route or host port | Disabled PostgreSQL control-plane topology. It is profile-gated with empty default registries; API/worker/scheduler have separate entry points, no automatic migrations, and no live writers or schedules. Worker/scheduler are signal-aware disabled heartbeat loops; structured health validates schema plus a fresh named-component heartbeat. |
 
 **FastAPI mounts & root surface:** the root app (`src/app.py`) registers only cross-cutting and unauthenticated routes — `GET /api/health`, the machine OAuth2 token flow (`/api/v1/oauth/{token,jwks}`), and the public share-link pages (`/api/v1/public/...`). Every **authenticated business route is mount-only** — the root app no longer serves `/api/v1/persons`, `/api/v1/entities`, etc. Two sub-apps built from the same `src/routes/*` routers carry the authenticated contract: `/app/v2` (the active frontend2 UI contract, `/v1` stripped — `frontend_app.py`) and `/oauth2/v1` (machine OAuth2 — token/jwks + read-only persons list/detail, client-credentials only, `/v1/oauth` → `/oauth2/v1/{token,jwks}` — `oauth2_app.py`). The legacy `/app/v1` frontend contract has been retired along with the v1 frontend. `src/router_copy.py` centralizes the route-copying (strip-`/v1` by default, with optional path filter/transform). To add or remove an endpoint from a mount, change the router membership in the relevant builder, not `app.py`.
 
