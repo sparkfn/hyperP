@@ -20,6 +20,7 @@ from src.graph.queries.standalone_crm_lane_a_contracts import (
     CREATE_STANDALONE_CRM_LANE_A_CONSTRAINTS,
 )
 from src.graph.standalone_crm_census_migration import ensure_standalone_crm_census_ready
+from tests.test_standalone_crm_source_fact_neo4j import run_source_fact_neo4j_cases
 
 T = TypeVar("T")
 
@@ -307,3 +308,8 @@ def test_malformed_same_name_schema_fails_closed_without_marker(
         lane_a_migration.ensure_standalone_crm_lane_a_ready(cast(Neo4jClient, client))
 
     assert _marker_is_complete(neo4j_driver) is False
+
+
+def test_source_fact_page_cas_hook_executes_owned_cases(neo4j_driver: Driver) -> None:
+    """Keep #302 executable when CI invokes the established Lane A suite only."""
+    run_source_fact_neo4j_cases(neo4j_driver)
