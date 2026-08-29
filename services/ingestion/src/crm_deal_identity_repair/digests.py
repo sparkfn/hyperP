@@ -8,6 +8,13 @@ from src.connectors.bitrix_stage_history.artifact_manifest import canonical_json
 from src.crm_deal_identity_repair.models import RepairInventoryItem
 from src.models import JsonValue
 
+MUTATION_REQUEST_DIGEST_DOMAIN = b"crm-deal-identity-repair-mutation-request-v1\x00"
+MUTATION_AUTHORITY_DIGEST_DOMAIN = b"crm-deal-identity-repair-authority-v1\x00"
+MUTATION_ROLLBACK_DIGEST_DOMAIN = b"crm-deal-identity-repair-rollback-v1\x00"
+MUTATION_REPAIRED_STATE_DIGEST_DOMAIN = b"crm-deal-identity-repair-repaired-state-v1\x00"
+MUTATION_RESULT_DIGEST_DOMAIN = b"crm-deal-identity-repair-result-v1\x00"
+MUTATION_OUTBOX_DIGEST_DOMAIN = b"crm-deal-identity-repair-outbox-v1\x00"
+
 INVENTORY_DIGEST_DOMAIN = b"crm-deal-identity-repair-inventory-v1\x00"
 
 
@@ -55,3 +62,33 @@ def inventory_jsonl(items: tuple[RepairInventoryItem, ...]) -> bytes:
     if len(keys) != len(set(keys)):
         raise ValueError("repair inventory rows must have unique source-version identities")
     return canonical_jsonl(tuple(item.to_dict() for item in ordered))
+
+
+def mutation_request_digest(value: dict[str, JsonValue]) -> str:
+    """Digest the full immutable command identity before graph work begins."""
+    return object_digest(MUTATION_REQUEST_DIGEST_DOMAIN, value)
+
+
+def authority_evidence_digest(value: dict[str, JsonValue]) -> str:
+    """Digest current independently locked authority evidence."""
+    return object_digest(MUTATION_AUTHORITY_DIGEST_DOMAIN, value)
+
+
+def rollback_image_digest(value: dict[str, JsonValue]) -> str:
+    """Digest the executable, pre-write rollback image."""
+    return object_digest(MUTATION_ROLLBACK_DIGEST_DOMAIN, value)
+
+
+def repaired_state_digest(value: dict[str, JsonValue]) -> str:
+    """Digest the transaction-local expected repaired state."""
+    return object_digest(MUTATION_REPAIRED_STATE_DIGEST_DOMAIN, value)
+
+
+def mutation_result_digest(value: dict[str, JsonValue]) -> str:
+    """Digest the immutable result returned for a committed mutation."""
+    return object_digest(MUTATION_RESULT_DIGEST_DOMAIN, value)
+
+
+def outbox_event_digest(value: dict[str, JsonValue]) -> str:
+    """Digest the bounded, non-sensitive pending outbox stub."""
+    return object_digest(MUTATION_OUTBOX_DIGEST_DOMAIN, value)
