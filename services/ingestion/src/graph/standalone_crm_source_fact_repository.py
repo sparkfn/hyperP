@@ -14,6 +14,7 @@ from src.graph.queries.standalone_crm_source_facts import (
     CLAIM_PAGE,
     FINALIZE_PAGE,
     READ_CENSUS_REQUEST,
+    RESOLVE_COMMITTED_RECEIPT,
     STAMP_SOURCE_FACT_LINEAGE,
 )
 from src.models import IngestResult
@@ -172,6 +173,11 @@ class StandaloneCrmSourceFactRepository(
         )
 
         def work(tx: ManagedTransaction) -> StandaloneCrmSourceFactCommitResult:
+            receipt = _receipt_decision(
+                tx.run(RESOLVE_COMMITTED_RECEIPT, **_parameters(request, "")).single()
+            )
+            if receipt != "absent":
+                return _result(receipt)
             request_json = _read_and_validate_request(tx, request)
             if request_json is None:
                 return StandaloneCrmSourceFactCommitResult("authority_rejected")
@@ -361,6 +367,15 @@ def _is_absent(checkpoint: StandaloneCrmCheckpoint) -> bool:
         and checkpoint.binding_subject_id is None
         and checkpoint.binding_offset is None
     )
+
+
+def _receipt_decision(record: Record | None) -> str:
+    if record is None:
+        raise RuntimeError("source-fact receipt lookup returned no decision")
+    decision = record["decision"]
+    if decision in {"absent", "replayed", "conflict"}:
+        return cast(str, decision)
+    raise RuntimeError("source-fact receipt lookup returned an unknown decision")
 
 
 def _decision(record: Record | None) -> str:

@@ -7,7 +7,10 @@ import pytest
 from src.connectors.bitrix_openlines.models import CrmContact
 from src.standalone_crm_census_lifecycle import StandaloneCrmCheckpoint
 from src.standalone_crm_source_fact_mapper import map_source_fact_page
-from src.standalone_crm_source_fact_models import StandaloneCrmSourceFactPage
+from src.standalone_crm_source_fact_models import (
+    MAX_STANDALONE_CRM_SOURCE_FACT_PAGE_ROWS,
+    StandaloneCrmSourceFactPage,
+)
 from tests._standalone_crm_lane_a_fakes import contact_envelope
 
 
@@ -123,3 +126,31 @@ def test_hash_is_stable_across_operational_authority_but_isolates_source_instanc
         map_source_fact_page(_page((row,))).mapped_rows[0].envelope.record_hash
         != map_source_fact_page(isolated_page).mapped_rows[0].envelope.record_hash
     )
+
+
+def test_timestampless_rows_use_parent_availability_without_wall_clock_or_hash_churn() -> None:
+    row = CrmContact("6", "Ada", kind="contact")
+    first = map_source_fact_page(_page((row,))).mapped_rows[0].envelope
+    second = map_source_fact_page(_page((row,))).mapped_rows[0].envelope
+
+    assert first.observed_at == "2026-08-28T00:00:00Z"
+    assert first.raw_payload["observed_at"] is None
+    assert first.raw_payload["effective_observed_at"] == "2026-08-28T00:00:00Z"
+    assert first.record_hash == second.record_hash
+
+
+def test_page_boundary_accepts_fifty_rows_and_rejects_fifty_one_before_mapping() -> None:
+    accepted = tuple(
+        CrmContact(str(identifier), "Ada", kind="contact")
+        for identifier in range(6, 6 + MAX_STANDALONE_CRM_SOURCE_FACT_PAGE_ROWS)
+    )
+    envelope = replace(
+        _page((CrmContact("6", "Ada", kind="contact"),)).envelope, frozen_upper_id=100
+    )
+    checkpoint = StandaloneCrmCheckpoint(
+        "census-a", "contact", 100, None, 5, None, None, 0, 0, 1, 2
+    )
+    assert len(StandaloneCrmSourceFactPage(envelope, "call-a", 5, checkpoint, accepted).rows) == 50
+    rejected = accepted + (CrmContact("56", "Ada", kind="contact"),)
+    with pytest.raises(ValueError, match="50-row"):
+        StandaloneCrmSourceFactPage(envelope, "call-a", 5, checkpoint, rejected)

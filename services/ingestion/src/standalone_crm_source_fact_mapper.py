@@ -48,14 +48,16 @@ def map_source_fact_row(page: StandaloneCrmSourceFactPage, row: CrmContact) -> S
         )
     else:
         raise ValueError("source-fact row kind must be contact or lead")
-    observed_at = _iso(row)
+    upstream_observed_at = _iso(row)
+    observed_at = upstream_observed_at or page.envelope.availability.available_at
     kind = row.kind
     source_record_id = f"bitrix-crm-{kind}-{row.id}"
     raw_payload: dict[str, JsonValue] = {
         "source_entity_type": kind,
         "source_entity_id": row.id,
         "source_instance_id": page.envelope.scope.source_instance_id,
-        "observed_at": observed_at,
+        "observed_at": upstream_observed_at,
+        "effective_observed_at": observed_at,
         "full_name": row.full_name,
         "identity_metadata": evidence.metadata,
         "standalone_crm_source_fact": {
@@ -87,7 +89,8 @@ def map_source_fact_row(page: StandaloneCrmSourceFactPage, row: CrmContact) -> S
         record_hash=_hash(
             {
                 "source_record_id": source_record_id,
-                "observed_at": observed_at,
+                "source_instance_id": page.envelope.scope.source_instance_id,
+                "observed_at": upstream_observed_at,
                 "identifiers": evidence.identifiers,
                 "attributes": attributes,
                 "identity_metadata": evidence.metadata,

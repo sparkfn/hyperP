@@ -17,6 +17,8 @@ from src.standalone_crm_unit_repository import (
 )
 
 type SourceFactEnvelope = ContactSourceChildEnvelope | LeadSourceChildEnvelope
+
+MAX_STANDALONE_CRM_SOURCE_FACT_PAGE_ROWS = 50
 type SourceFactCommitDecision = Literal[
     "committed",
     "replayed",
@@ -57,6 +59,8 @@ class StandaloneCrmSourceFactPage:
             raise ValueError("source-fact pages cannot carry contact binding position")
         if not self.rows:
             raise ValueError("source-fact page must contain at least one row")
+        if len(self.rows) > MAX_STANDALONE_CRM_SOURCE_FACT_PAGE_ROWS:
+            raise ValueError("source-fact page cannot exceed the fixed 50-row Bitrix page limit")
         previous = self.cursor
         for row in self.rows:
             row_id = _strict_row_id(row.id)

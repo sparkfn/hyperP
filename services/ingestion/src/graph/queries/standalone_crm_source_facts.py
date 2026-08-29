@@ -10,6 +10,38 @@ RETURN census.request_json AS request_json
 # A receipt is intentionally serialized through the existing locked census transaction.
 # authorization_id/digest are parent-issued trust inputs: #301 does not persist them as
 # independently reconstructable authority, so they are immutable receipt/CAS identity.
+RESOLVE_COMMITTED_RECEIPT = """
+OPTIONAL MATCH (stored:StandaloneCrmSourceFactPageReceipt {receipt_key: $receipt_key})
+WITH collect(stored) AS receipts
+WITH receipts, receipts[0] AS receipt
+RETURN CASE
+  WHEN size(receipts) = 0 THEN 'absent'
+  WHEN size(receipts) <> 1 THEN 'conflict'
+  WHEN receipt.status = 'committed'
+    AND receipt.census_id = $census_id
+    AND receipt.generation = $generation
+    AND receipt.stream_kind = $stream_kind
+    AND receipt.fence_token = $fence_token
+    AND receipt.fence_owner_id = $fence_owner_id
+    AND receipt.source_key = $source_key
+    AND receipt.source_instance_id = $source_instance_id
+    AND receipt.control_instance_id = $control_instance_id
+    AND receipt.task_name = $task_name
+    AND receipt.task_id = $task_id
+    AND receipt.payload_digest = $payload_digest
+    AND receipt.call_intent_id = $call_intent_id
+    AND receipt.authorization_id = $authorization_id
+    AND receipt.authorization_digest = $authorization_digest
+    AND receipt.available_at = datetime($available_at)
+    AND receipt.availability_contract_version = $availability_contract_version
+    AND receipt.frozen_upper_id = $frozen_upper_id
+    AND receipt.content_digest = $content_digest
+    AND receipt.expected_cursor = $expected_cursor
+    AND receipt.proposed_cursor = $proposed_cursor THEN 'replayed'
+  ELSE 'conflict'
+END AS decision
+"""
+
 CLAIM_PAGE = """
 MATCH (census:StandaloneCrmCensus {
   census_id: $census_id, generation: $generation, source_key: $source_key,

@@ -14,6 +14,7 @@ from src.graph.queries.standalone_crm_source_facts import (
     CLAIM_PAGE,
     FINALIZE_PAGE,
     READ_CENSUS_REQUEST,
+    RESOLVE_COMMITTED_RECEIPT,
     STAMP_SOURCE_FACT_LINEAGE,
 )
 from src.graph.standalone_crm_source_fact_repository import (
@@ -55,15 +56,23 @@ class _Result:
 
 class _Tx:
     def __init__(
-        self, request_json: object, claim: str | None = "apply", *, final: bool = True
+        self,
+        request_json: object,
+        claim: str | None = "apply",
+        *,
+        receipt: str = "absent",
+        final: bool = True,
     ) -> None:
         self.request_json = request_json
         self.claim = claim
+        self.receipt = receipt
         self.final = final
         self.calls: list[tuple[str, dict[str, object]]] = []
 
     def run(self, query: str, **parameters: object) -> _Result:
         self.calls.append((query, parameters))
+        if query == RESOLVE_COMMITTED_RECEIPT:
+            return _Result(_Record({"decision": self.receipt}))
         if query == READ_CENSUS_REQUEST:
             return _Result(_Record({"request_json": self.request_json}))
         if query == CLAIM_PAGE:
@@ -182,7 +191,7 @@ def test_duplicate_page_row_skips_domain_persist_but_advances_atomic_accounting(
 
 
 def test_exact_replay_is_a_typed_noop_without_adapter_calls() -> None:
-    tx = _Tx(_stored_request(), "replayed")
+    tx = _Tx(_stored_request(), receipt="replayed")
     adapter = _Adapter([_planned()])
     repository, _client = _repository(tx, adapter)
 
@@ -190,7 +199,17 @@ def test_exact_replay_is_a_typed_noop_without_adapter_calls() -> None:
 
     assert result.decision == "replayed"
     assert adapter.events == []
-    assert [query for query, _ in tx.calls] == [READ_CENSUS_REQUEST, CLAIM_PAGE]
+    assert [query for query, _ in tx.calls] == [RESOLVE_COMMITTED_RECEIPT]
+
+
+def test_receipt_conflict_precedes_mutable_request_authority() -> None:
+    tx = _Tx("malformed", receipt="conflict")
+    adapter = _Adapter([_planned()])
+    repository, _client = _repository(tx, adapter)
+
+    assert repository.commit_unit(_request()).decision == "conflict"
+    assert adapter.events == []
+    assert [query for query, _ in tx.calls] == [RESOLVE_COMMITTED_RECEIPT]
 
 
 @pytest.mark.parametrize(
@@ -265,7 +284,7 @@ def test_request_budget_mismatch_rejects_before_claim() -> None:
     repository, _client = _repository(tx, adapter)
 
     assert repository.commit_unit(_request()).decision == "authority_rejected"
-    assert [query for query, _ in tx.calls] == [READ_CENSUS_REQUEST]
+    assert [query for query, _ in tx.calls] == [RESOLVE_COMMITTED_RECEIPT, READ_CENSUS_REQUEST]
 
 
 def test_malformed_authorized_row_counts_failed_and_never_persists() -> None:
@@ -283,7 +302,11 @@ def test_malformed_authorized_row_counts_failed_and_never_persists() -> None:
 
 
 def test_queries_have_single_source_binding_match_and_full_replay_fence() -> None:
-    from src.graph.queries.standalone_crm_source_facts import CLAIM_PAGE, FINALIZE_PAGE
+    from src.graph.queries.standalone_crm_source_facts import (
+        CLAIM_PAGE,
+        FINALIZE_PAGE,
+        RESOLVE_COMMITTED_RECEIPT,
+    )
 
     assert CLAIM_PAGE.count("MATCH (:BitrixSourceInstance") == 1
     assert CLAIM_PAGE.count("MATCH (:BitrixExecutionSourceBinding") == 1
@@ -297,3 +320,11 @@ def test_queries_have_single_source_binding_match_and_full_replay_fence() -> Non
         "census.occurrence_calls",
     ):
         assert term in CLAIM_PAGE and term in FINALIZE_PAGE
+    for term in (
+        "authorization_digest",
+        "fence_owner_id",
+        "payload_digest",
+        "availability_contract_version",
+        "call_intent_id",
+    ):
+        assert term in RESOLVE_COMMITTED_RECEIPT
