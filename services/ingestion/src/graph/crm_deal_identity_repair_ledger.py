@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import uuid
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -42,6 +43,7 @@ from src.graph.crm_deal_identity_repair_ledger_records import (
 )
 from src.graph.queries.crm_deal_identity_repair_ledger import (
     GET_REPAIR_RUN,
+    PERSIST_QUALIFIED_INVENTORY_ROWS,
     QUALIFY_REPAIR_RUN,
     READ_CONTROL_DISPATCH_EVIDENCE,
     READ_CONTROL_NODES,
@@ -171,6 +173,34 @@ class CrmDealRepairLedgerRepository:
             lambda tx: tx.run(GET_REPAIR_RUN, repair_id=repair_id).single()
         )
         return None if record is None else _stored_qualification_from_record(repair_id, record)
+
+
+def repair_boundary_snapshot_for_run_transaction(
+    tx: ManagedTransaction,
+    run_id: str,
+) -> RepairBoundarySnapshot:
+    """Build the unchanged #300 canonical component snapshot inside a caller transaction."""
+    record = tx.run(
+        "MATCH (run:CrmDealRepairRun {run_id: $run_id, status: 'qualified', "
+        "execution_allowed: false}) RETURN run.source_instance_id AS source_instance_id, "
+        "run.control_instance_id AS control_instance_id, "
+        "run.source_record_pks_json AS source_record_pks_json",
+        run_id=run_id,
+    ).single()
+    if record is None:
+        raise RuntimeError("qualified repair run is missing for boundary proof")
+    raw_pks = json.loads(str(record["source_record_pks_json"]))
+    if not isinstance(raw_pks, dict) or not isinstance(raw_pks.get("source_record_pks"), list):
+        raise RuntimeError("qualified repair source-record boundary is malformed")
+    source_record_pks = tuple(raw_pks["source_record_pks"])
+    if any(not isinstance(value, str) for value in source_record_pks):
+        raise RuntimeError("qualified repair source-record boundary is malformed")
+    return _snapshot_from_transaction(
+        tx,
+        str(record["source_instance_id"]),
+        str(record["control_instance_id"]),
+        source_record_pks,
+    )
 
 
 def _snapshot_from_transaction(
@@ -388,6 +418,23 @@ def _qualify_transaction(
         raise ExpectedRepairBoundaryDriftError("persisted_boundary_change")
     _assert_requested_boundary(manifest, admission_snapshot)
     parameters = _qualification_parameters(manifest, admission_snapshot)
+    admission_inventory = collect_repair_inventory(_TransactionInventoryReader(tx))
+    admission_items = admission_inventory.items
+    if (
+        tuple(sorted(item.source_record_pk for item in admission_items))
+        != admission_snapshot.inventory_source_record_pks
+        or inventory_digest(admission_items) != admission_snapshot.inventory_digest
+        or len(admission_items) != admission_snapshot.inventory_row_count
+    ):
+        raise ExpectedRepairBoundaryDriftError("persisted_boundary_change")
+    rows = [
+        {
+            "inventory_key": item.source_record_pk,
+            "source_record_pk": item.source_record_pk,
+            "inventory_fingerprint": item.graph_fingerprint,
+        }
+        for item in admission_items
+    ]
     record = tx.run(
         QUALIFY_REPAIR_RUN,
         repair_id=parameters.repair_id,
@@ -409,6 +456,13 @@ def _qualify_transaction(
     ).single()
     if record is None or record["status"] != "qualified":
         raise RuntimeError("repair qualification conflicts with immutable ledger state")
+    row_record = tx.run(
+        PERSIST_QUALIFIED_INVENTORY_ROWS,
+        run_id=parameters.run_id,
+        rows=rows,
+    ).single()
+    if row_record is None or int(row_record["row_count"]) != len(rows):
+        raise RuntimeError("repair qualified inventory evidence conflicts with immutable ledger state")
     readback = tx.run(GET_REPAIR_RUN, repair_id=manifest.repair_id).single()
     if readback is None:
         raise RuntimeError("repair qualification readback is missing")

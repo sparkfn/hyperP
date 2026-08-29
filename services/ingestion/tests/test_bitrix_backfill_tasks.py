@@ -174,6 +174,22 @@ def test_legacy_canvas_payload_does_not_add_control_instance_id() -> None:
     assert "control_instance_id" not in canvas.tasks[0].kwargs
 
 
+def _reservation() -> object:
+    from src.graph.crm_deal_identity_repair_publication import RepairPublicationReservation
+
+    return RepairPublicationReservation(
+        "legacy-default",
+        "crm_deals",
+        "sha256:" + "a" * 64,
+        "test",
+        "token-test",
+        "pending",
+        None,
+        False,
+    )
+
+
+
 def test_generation_publication_admission_precedes_canvas_apply(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -182,11 +198,25 @@ def test_generation_publication_admission_precedes_canvas_apply(
             raise AssertionError("canvas must not publish after rejected admission")
 
     admission = Mock(side_effect=RuntimeError("blocked"))
+    gate = Mock()
     monkeypatch.setattr(
         "src.graph.bitrix_source_instances.admit_configured_bitrix_control",
         admission,
     )
+    monkeypatch.setattr(
+        "src.bitrix_backfill_tasks._assert_repair_dispatch_unblocked",
+        gate,
+    )
     monkeypatch.setattr("src.config.get_settings", lambda: object())
+    monkeypatch.setattr(
+        "src.bitrix_backfill_tasks.reserve_generation_publication",
+        lambda **_kwargs: _reservation(),
+    )
+    monkeypatch.setattr(
+        "src.bitrix_backfill_tasks._begin_generation_publication",
+        lambda _reservation: None,
+    )
+    monkeypatch.setattr("src.bitrix_backfill_tasks._mark_generation_published", lambda *_args: None)
     monkeypatch.setattr(
         "src.bitrix_backfill_tasks.build_generation_canvas", lambda **_kwargs: _Canvas()
     )
@@ -199,4 +229,139 @@ def test_generation_publication_admission_precedes_canvas_apply(
             entries=(_entry("crm_deals"),),
         )
 
+    gate.assert_called_once_with("legacy-default")
     admission.assert_called_once()
+
+
+def test_generation_repair_block_precedes_canvas_construction(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    blocked = Mock(side_effect=RuntimeError("repair blocked"))
+    monkeypatch.setattr(
+        "src.bitrix_backfill_tasks._assert_repair_dispatch_unblocked",
+        blocked,
+    )
+    monkeypatch.setattr(
+        "src.bitrix_backfill_tasks.reserve_generation_publication",
+        lambda **_kwargs: _reservation(),
+    )
+    monkeypatch.setattr(
+        "src.bitrix_backfill_tasks.build_generation_canvas",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("canvas must not be built")),
+    )
+
+    with pytest.raises(RuntimeError, match="repair blocked"):
+        dispatch_generation_canvas(
+            generation_id="corrective-1",
+            boundary_digest="sha256:boundary",
+            configuration_digest="sha256:config",
+            entries=(_entry("crm_deals"),),
+        )
+
+    blocked.assert_called_once_with("legacy-default")
+
+
+def _capture_canvas_entries(captured: dict[str, object], entries: object) -> object:
+    captured["entries"] = entries
+    result_type = type("Result", (), {"id": "repair-publication"})
+    canvas_type = type("Canvas", (), {"apply_async": lambda self: result_type()})
+    return canvas_type()
+
+
+def _stage_entry() -> BackfillInventoryEntry:
+    return BackfillInventoryEntry(
+        gap_id="gap-stage-history",
+        stream_key="crm_stage_history",
+        bounded_population=10,
+        current_count=0,
+        source_basis="standalone stage artifact",
+        expected_repair="not repair-owned",
+        replay_mode="strict_keyset",
+        source_window={"artifact_id": "stage-artifact"},
+        completion_equation="stage artifact accounting",
+        max_calls=100,
+        max_rows=100,
+        max_runtime_seconds=100,
+        max_storage_bytes=1000,
+        max_lock_seconds=10,
+        max_lag_seconds=60,
+        rollback_path="preserve evidence",
+    )
+
+
+def test_stage_history_only_dispatch_bypasses_repair_gate_and_reservation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _Canvas:
+        def apply_async(self) -> object:
+            return type("Result", (), {"id": "stage-publication"})()
+
+    gate = Mock(side_effect=AssertionError("stage-only publication must bypass repair gate"))
+    reserve = Mock(side_effect=AssertionError("stage-only publication must not reserve"))
+    monkeypatch.setattr("src.bitrix_backfill_tasks._assert_repair_dispatch_unblocked", gate)
+    monkeypatch.setattr("src.bitrix_backfill_tasks.reserve_generation_publication", reserve)
+    monkeypatch.setattr(
+        "src.bitrix_backfill_tasks.build_generation_canvas",
+        lambda **_kwargs: _Canvas(),
+    )
+    monkeypatch.setattr("src.config.get_settings", lambda: object())
+    monkeypatch.setattr(
+        "src.graph.bitrix_source_instances.admit_configured_bitrix_control",
+        lambda *_args: None,
+    )
+
+    publication_id = dispatch_generation_canvas(
+        generation_id="stage-only",
+        boundary_digest="sha256:boundary",
+        configuration_digest="sha256:config",
+        entries=(_stage_entry(),),
+    )
+
+    assert publication_id == "stage-publication"
+    gate.assert_not_called()
+    reserve.assert_not_called()
+
+
+def test_mixed_generation_reserves_only_repair_streams_and_filters_stage_history(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _Canvas:
+        def apply_async(self) -> object:
+            return type("Result", (), {"id": "repair-publication"})()
+
+    captured: dict[str, object] = {}
+    reservation = _reservation()
+    monkeypatch.setattr(
+        "src.bitrix_backfill_tasks._assert_repair_dispatch_unblocked",
+        lambda *_args: None,
+    )
+    monkeypatch.setattr(
+        "src.bitrix_backfill_tasks.reserve_generation_publication",
+        lambda **_kwargs: reservation,
+    )
+    monkeypatch.setattr(
+        "src.bitrix_backfill_tasks._begin_generation_publication",
+        lambda *_args: None,
+    )
+    monkeypatch.setattr("src.bitrix_backfill_tasks._mark_generation_published", lambda *_args: None)
+    monkeypatch.setattr("src.config.get_settings", lambda: object())
+    monkeypatch.setattr(
+        "src.graph.bitrix_source_instances.admit_configured_bitrix_control",
+        lambda *_args: None,
+    )
+    monkeypatch.setattr(
+        "src.bitrix_backfill_tasks.build_generation_canvas",
+        lambda **kwargs: _capture_canvas_entries(captured, kwargs["entries"]),
+    )
+
+    publication_id = dispatch_generation_canvas(
+        generation_id="mixed",
+        boundary_digest="sha256:boundary",
+        configuration_digest="sha256:config",
+        entries=(_entry("crm_deals"), _stage_entry()),
+    )
+
+    assert publication_id == "repair-publication"
+    canvas_entries = captured["entries"]
+    assert isinstance(canvas_entries, tuple)
+    assert [entry.stream_key for entry in canvas_entries] == ["crm_deals"]

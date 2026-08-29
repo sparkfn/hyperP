@@ -13,7 +13,10 @@ def parse_arguments(argv: Sequence[str] | None = None) -> argparse.Namespace:
         description="Seal staging-only graph discovery for historical Bitrix CRM-deal repair.",
     )
     parser.add_argument(
-        "command", nargs="?", choices=("inventory", "qualify", "status"), default="inventory"
+        "command",
+        nargs="?",
+        choices=("inventory", "qualify", "quiesce", "allocate", "status", "pause", "resume"),
+        default="inventory",
     )
     parser.add_argument("--repair-id", required=True)
     parser.add_argument("--source-contract-uuid")
@@ -34,6 +37,13 @@ def parse_arguments(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--stop-condition", action="append", default=[])
     parser.add_argument("--rollback-authority-reference")
     parser.add_argument("--rollback-authority-policy")
+    parser.add_argument("--owner-id")
+    parser.add_argument("--control-token")
+    parser.add_argument("--expected-revision", type=int)
+    parser.add_argument("--approval-overlay")
+    parser.add_argument("--task-proof-file")
+    parser.add_argument("--task-timeout-seconds", type=float, default=5.0)
+    parser.add_argument("--stale-run-id")
     arguments = parser.parse_args(argv)
     _validate_arguments(parser, arguments)
     return arguments
@@ -46,6 +56,21 @@ def _validate_arguments(parser: argparse.ArgumentParser, arguments: argparse.Nam
         parser.error("--representative-replay-limit must be positive")
     if arguments.command == "inventory" and not arguments.source_contract_uuid:
         parser.error("--source-contract-uuid is required for inventory")
+    if arguments.command in {"quiesce", "allocate", "pause", "resume"}:
+        required_control = ("owner_id", "control_token", "expected_revision")
+        if any(getattr(arguments, name) in (None, "") for name in required_control):
+            parser.error("repair control commands require owner, token, and expected revision")
+        if arguments.expected_revision < 0:
+            parser.error("--expected-revision must be non-negative")
+        if arguments.command == "allocate" and not arguments.approval_overlay:
+            parser.error("allocate requires --approval-overlay")
+        if arguments.command in {"quiesce", "resume"}:
+            if not arguments.task_proof_file:
+                parser.error(
+                    "quiesce and resume require --task-proof-file; live inspection is disabled"
+                )
+            if arguments.task_timeout_seconds <= 0:
+                parser.error("--task-timeout-seconds must be positive")
     if arguments.command == "qualify":
         required = (
             "source_contract_uuid",

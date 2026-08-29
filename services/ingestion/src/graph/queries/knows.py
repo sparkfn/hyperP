@@ -59,9 +59,11 @@ RETURN rel.knows_id AS knows_id
 #: materializer to walk pending links once both sides have a Person.
 RESOLVE_KNOWS_ENDPOINTS = """
 MATCH (declarer_sr:SourceRecord {source_record_pk: $declarer_source_record_pk})
-      -[:LINKED_TO]->(declarer:Person {status: 'active'})
-MATCH (contact_sr:SourceRecord  {source_record_pk: $contact_source_record_pk})
-      -[:LINKED_TO]->(contact:Person  {status: 'active'})
+      -[declarer_link:LINKED_TO]->(declarer:Person {status: 'active'})
+WHERE coalesce(declarer_link.is_active, true) = true
+MATCH (contact_sr:SourceRecord {source_record_pk: $contact_source_record_pk})
+      -[contact_link:LINKED_TO]->(contact:Person {status: 'active'})
+WHERE coalesce(contact_link.is_active, true) = true
 RETURN declarer.person_id AS declarer_person_id,
        contact.person_id  AS contact_person_id
 """
@@ -99,7 +101,7 @@ WHERE sr.source_record_pk > $cursor
   AND NOT EXISTS {
     MATCH ()-[existing:KNOWS]->()
     WHERE existing.source_record_pk = sr.source_record_pk
-      AND coalesce(existing.is_active, true)
+      AND coalesce(existing.is_active, true) = true
   }
 RETURN sr.source_record_pk AS source_record_pk,
        ss.source_key       AS source_system_key,
@@ -147,7 +149,7 @@ WHERE sr.source_record_pk > $cursor
   AND NOT EXISTS {
     MATCH ()-[existing:KNOWS]->()
     WHERE existing.source_record_pk = sr.source_record_pk
-      AND coalesce(existing.is_active, true)
+      AND coalesce(existing.is_active, true) = true
   }
 RETURN sr.source_record_pk AS source_record_pk,
        ss.source_key       AS source_system_key,

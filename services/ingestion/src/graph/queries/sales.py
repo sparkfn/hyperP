@@ -225,7 +225,8 @@ WHERE identity_sr.lifecycle_status = 'active'
 WITH collect(DISTINCT identity_sr) AS identity_records
 WHERE size(identity_records) = 1
 UNWIND identity_records AS identity_sr
-MATCH (identity_sr)-[:LINKED_TO]->(p:Person {status: 'active'})
+MATCH (identity_sr)-[link:LINKED_TO]->(p:Person {status: 'active'})
+WHERE coalesce(link.is_active, true) = true
 WITH collect(DISTINCT p) AS persons
 WHERE size(persons) = 1
 UNWIND persons AS p
@@ -485,16 +486,19 @@ MATCH (v:Vehicle)
 WHERE v.normalized_serial_number IN $normalized_serial_numbers
    OR v.normalized_lta_tag IN $normalized_lta_tags
 MATCH (v)<-[rel:BOUGHT_VEHICLE|OWNS_VEHICLE]-(p:Person {status: 'active'})
-WHERE NOT EXISTS {
+WHERE coalesce(rel.is_active, true) = true
+  AND NOT EXISTS {
     MATCH (md:MatchDecision)-[:ABOUT_LEFT {entity_type: 'source_record'}]->(sr)
     MATCH (md)-[:ABOUT_RIGHT {entity_type: 'person'}]->(p)
 }
-MATCH (p)-[:IDENTIFIED_BY]->(pi:Identifier)
-WHERE (pi.value IN $customer_emails AND pi.kind IN ['email'])
-   OR (pi.value IN $customer_phones AND pi.kind IN ['mobile','phone'])
+MATCH (p)-[identifier:IDENTIFIED_BY]->(pi:Identifier)
+WHERE coalesce(identifier.is_active, true) = true
+  AND ((pi.value IN $customer_emails AND pi.kind IN ['email'])
+   OR (pi.value IN $customer_phones AND pi.kind IN ['mobile','phone']))
 WITH sr, v, p, rel, collect(DISTINCT pi.kind) AS contact_channels, $customer_nric AS customer_nric
-OPTIONAL MATCH (p)-[:IDENTIFIED_BY]->(ni:Identifier)
-WHERE ni.kind IN ['nric','nric_hash'] AND customer_nric IS NOT NULL AND customer_nric <> '' AND ni.value <> customer_nric
+OPTIONAL MATCH (p)-[nric_identifier:IDENTIFIED_BY]->(ni:Identifier)
+WHERE coalesce(nric_identifier.is_active, true) = true
+  AND ni.kind IN ['nric','nric_hash'] AND customer_nric IS NOT NULL AND customer_nric <> '' AND ni.value <> customer_nric
 WITH sr, v, p, rel, contact_channels, collect(DISTINCT ni.value) AS mismatched_nrics
 RETURN p.person_id AS person_id,
        v.vehicle_id AS vehicle_id,

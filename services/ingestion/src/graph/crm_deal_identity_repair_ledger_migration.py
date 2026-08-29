@@ -44,6 +44,23 @@ REQUIRED_CONSTRAINTS = {
         ("run_id", "verification_id"),
     ),
     "crm_deal_repair_outbox_unique": ("CrmDealRepairOutbox", ("run_id", "event_id")),
+    "crm_deal_repair_control_run_unique": ("CrmDealRepairControl", ("run_id",)),
+    "crm_deal_repair_allocation_completion_unique": (
+        "CrmDealRepairAllocationCompletion", ("run_id",)
+    ),
+    "crm_deal_repair_qualified_row_unique": (
+        "CrmDealRepairQualifiedInventoryRow", ("run_id", "inventory_key")
+    ),
+    "crm_deal_repair_authorization_proof_unique": (
+        "CrmDealRepairAuthorizationProof", ("run_id", "operation", "revision")
+    ),
+    "crm_deal_repair_publication_reservation_unique": (
+        "BitrixRepairPublicationReservation",
+        ("control_instance_id", "routing_identity_digest", "occurrence_generation_identity"),
+    ),
+    "crm_deal_repair_publication_token_unique": (
+        "BitrixRepairPublicationReservation", ("reservation_token",)
+    ),
 }
 REQUIRED_INDEXES = {
     "crm_deal_repair_run_status": (
@@ -77,6 +94,10 @@ REQUIRED_INDEXES = {
         ("run_id", "unit_id", "generation", "outcome"),
     ),
     "crm_deal_repair_outbox_state": ("CrmDealRepairOutbox", ("run_id", "state", "sequence")),
+    "crm_deal_repair_control_state": ("CrmDealRepairControl", ("state", "revision")),
+    "crm_deal_repair_publication_reservation_state": (
+        "BitrixRepairPublicationReservation", ("control_instance_id", "status")
+    ),
 }
 
 

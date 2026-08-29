@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 from _test_helpers import NullContext, TaskSettings
 from celery.exceptions import Reject
@@ -282,7 +284,21 @@ def test_active_bitrix_successor_replaces_legacy_weekly_dispatch(
         "get_ingestion_config",
         lambda: IngestionConfig(scheduled_ingestion=ScheduledIngestionConfig(enabled=True)),
     )
+    monkeypatch.setattr(tasks, "_read_dispatch_marker", lambda _marker: None)
     monkeypatch.setattr(tasks, "_claim_dispatch", lambda *_args: (True, None))
+    monkeypatch.setattr(
+        tasks,
+        "_reserve_legacy_bitrix_publication",
+        lambda **_kwargs: SimpleNamespace(
+            control_instance_id="legacy-default",
+            reservation_token="token",
+            status="pending",
+            publication_id=None,
+            is_exact_replay=False,
+        ),
+    )
+    monkeypatch.setattr(tasks, "_begin_legacy_bitrix_publication", lambda _reservation: None)
+    monkeypatch.setattr(tasks, "_publish_legacy_bitrix_publication", lambda *_args: None)
     monkeypatch.setattr(tasks, "_utc_occurrence_date", lambda: "2026-08-08")
     monkeypatch.setattr(
         tasks,
@@ -303,3 +319,317 @@ def test_active_bitrix_successor_replaces_legacy_weekly_dispatch(
 
     assert result["workflow_task_id"] == "split-workflow"
     assert result["status"] == "queued"
+
+
+def test_repair_block_precedes_legacy_bitrix_marker_and_publication(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    from src import scheduled_ingestion_tasks as tasks
+
+    monkeypatch.setattr(
+        tasks,
+        "get_ingestion_config",
+        lambda: IngestionConfig(scheduled_ingestion=ScheduledIngestionConfig(enabled=True)),
+    )
+    monkeypatch.setattr(tasks, "_repair_dispatch_blocked", lambda _control: True)
+    monkeypatch.setattr(
+        tasks,
+        "_claim_dispatch",
+        lambda *_args: pytest.fail("blocked repair must not claim a marker"),
+    )
+    monkeypatch.setattr(
+        tasks,
+        "_dispatch_active_bitrix_successor",
+        lambda _occurrence: pytest.fail("blocked repair must not publish successor work"),
+    )
+
+    result = tasks.dispatch_ingestion_group_task.run("bitrix_chat", incremental=True)
+
+    assert result == {
+        "status": "repair_blocked",
+        "group_key": "bitrix_chat",
+        "incremental": True,
+        "workflow_task_id": "",
+    }
+
+
+def test_repair_gate_does_not_block_unrelated_scheduled_ingestion(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    from src import scheduled_ingestion_tasks as tasks
+
+    monkeypatch.setattr(
+        tasks,
+        "get_ingestion_config",
+        lambda: IngestionConfig(scheduled_ingestion=ScheduledIngestionConfig(enabled=True)),
+    )
+    monkeypatch.setattr(
+        tasks,
+        "_repair_dispatch_blocked",
+        lambda _control: pytest.fail("repair gate must not inspect unrelated groups"),
+    )
+    monkeypatch.setattr(tasks, "_claim_dispatch", lambda *_args: (False, "existing"))
+
+    result = tasks.dispatch_ingestion_group_task.run("fundbox", incremental=False)
+
+    assert result["status"] == "already_queued"
+
+
+def test_successor_repair_block_precedes_source_window_freezing(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    from src import scheduled_ingestion_tasks as tasks
+
+    monkeypatch.setattr(tasks, "_repair_dispatch_blocked", lambda _control: True)
+    monkeypatch.setattr(
+        tasks,
+        "admit_configured_bitrix_control",
+        lambda *_args: pytest.fail("blocked successor must not admit a control"),
+    )
+
+    class _Graph:
+        def execute_read(self, work: object) -> tuple[str, str, str, str]:
+            del work
+            return ("generation", "sha256:config", "{}", "control-310")
+
+        def close(self) -> None:
+            return None
+
+    monkeypatch.setattr(tasks, "Neo4jClient", lambda _settings: _Graph())
+    monkeypatch.setattr(tasks, "get_settings", lambda: object())
+
+    with pytest.raises(RuntimeError, match="blocked"):
+        tasks._dispatch_active_bitrix_successor("2026-08-29")
+
+
+def _legacy_reservation(
+    *,
+    status: str = "pending",
+    publication_id: str | None = None,
+    replay: bool = False,
+) -> SimpleNamespace:
+    return SimpleNamespace(
+        control_instance_id="legacy-default",
+        reservation_token="reservation-310",
+        status=status,
+        publication_id=publication_id,
+        is_exact_replay=replay,
+    )
+
+
+def test_legacy_reservation_is_created_before_marker_claim(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    from src import scheduled_ingestion_tasks as tasks
+
+    events: list[str] = []
+    monkeypatch.setattr(
+        tasks,
+        "get_ingestion_config",
+        lambda: IngestionConfig(scheduled_ingestion=ScheduledIngestionConfig(enabled=True)),
+    )
+    monkeypatch.setattr(tasks, "_repair_dispatch_blocked", lambda _control: False)
+    monkeypatch.setattr(
+        tasks,
+        "_read_dispatch_marker",
+        lambda _marker: events.append("read") or None,
+    )
+    monkeypatch.setattr(
+        tasks,
+        "_reserve_legacy_bitrix_publication",
+        lambda **_kwargs: events.append("reserve") or _legacy_reservation(),
+    )
+    monkeypatch.setattr(
+        tasks,
+        "_claim_dispatch",
+        lambda *_args: events.append("claim") or (True, None),
+    )
+    monkeypatch.setattr(
+        tasks,
+        "_dispatch_active_bitrix_successor",
+        lambda _day: events.append("successor") or "workflow-310",
+    )
+    monkeypatch.setattr(
+        tasks,
+        "_begin_legacy_bitrix_publication",
+        lambda _reservation: events.append("begin"),
+    )
+    monkeypatch.setattr(
+        tasks,
+        "_publish_legacy_bitrix_publication",
+        lambda *_args: events.append("published"),
+    )
+    monkeypatch.setattr(tasks, "_record_dispatch_marker", lambda *_args: events.append("marker"))
+
+    result = tasks.dispatch_ingestion_group_task.run("bitrix_chat", incremental=True)
+
+    assert result["workflow_task_id"] == "workflow-310"
+    assert events.index("reserve") < events.index("claim")
+    assert events == ["read", "reserve", "claim", "successor", "begin", "published", "marker"]
+
+
+def test_legacy_published_marker_exact_replay_never_claims_or_creates(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    from src import scheduled_ingestion_tasks as tasks
+
+    monkeypatch.setattr(
+        tasks,
+        "get_ingestion_config",
+        lambda: IngestionConfig(scheduled_ingestion=ScheduledIngestionConfig(enabled=True)),
+    )
+    monkeypatch.setattr(tasks, "_repair_dispatch_blocked", lambda _control: False)
+    monkeypatch.setattr(tasks, "_read_dispatch_marker", lambda _marker: "workflow-310")
+    monkeypatch.setattr(
+        tasks,
+        "_read_legacy_bitrix_publication",
+        lambda **_kwargs: _legacy_reservation(
+            status="published",
+            publication_id="workflow-310",
+            replay=True,
+        ),
+    )
+    monkeypatch.setattr(
+        tasks,
+        "_reserve_legacy_bitrix_publication",
+        lambda **_kwargs: pytest.fail("duplicate marker must not reserve"),
+    )
+    monkeypatch.setattr(
+        tasks,
+        "_claim_dispatch",
+        lambda *_args: pytest.fail("duplicate marker must not claim"),
+    )
+
+    result = tasks.dispatch_ingestion_group_task.run("bitrix_chat", incremental=True)
+
+    assert result["status"] == "already_queued"
+    assert result["workflow_task_id"] == "workflow-310"
+
+
+def test_legacy_pending_placeholder_replay_remains_fail_closed_without_republish(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    from src import scheduled_ingestion_tasks as tasks
+
+    monkeypatch.setattr(
+        tasks,
+        "get_ingestion_config",
+        lambda: IngestionConfig(scheduled_ingestion=ScheduledIngestionConfig(enabled=True)),
+    )
+    monkeypatch.setattr(tasks, "_repair_dispatch_blocked", lambda _control: False)
+    monkeypatch.setattr(tasks, "_read_dispatch_marker", lambda _marker: "in-flight-task-310")
+    monkeypatch.setattr(
+        tasks,
+        "_read_legacy_bitrix_publication",
+        lambda **_kwargs: _legacy_reservation(status="pending", replay=True),
+    )
+    monkeypatch.setattr(
+        tasks,
+        "_reserve_legacy_bitrix_publication",
+        lambda **_kwargs: pytest.fail("placeholder must not reserve"),
+    )
+    monkeypatch.setattr(
+        tasks,
+        "_claim_dispatch",
+        lambda *_args: pytest.fail("placeholder must not claim"),
+    )
+    monkeypatch.setattr(
+        tasks,
+        "_dispatch_active_bitrix_successor",
+        lambda _day: pytest.fail("placeholder must not republish"),
+    )
+
+    result = tasks.dispatch_ingestion_group_task.run("bitrix_chat", incremental=True)
+
+    assert result["status"] == "already_queued"
+    assert result["workflow_task_id"] == "in-flight-task-310"
+
+
+def test_legacy_claim_race_reconciles_exact_replay_without_broker_publication(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    from src import scheduled_ingestion_tasks as tasks
+
+    monkeypatch.setattr(
+        tasks,
+        "get_ingestion_config",
+        lambda: IngestionConfig(scheduled_ingestion=ScheduledIngestionConfig(enabled=True)),
+    )
+    monkeypatch.setattr(tasks, "_repair_dispatch_blocked", lambda _control: False)
+    monkeypatch.setattr(tasks, "_read_dispatch_marker", lambda _marker: None)
+    monkeypatch.setattr(
+        tasks,
+        "_reserve_legacy_bitrix_publication",
+        lambda **_kwargs: _legacy_reservation(replay=True),
+    )
+    monkeypatch.setattr(tasks, "_claim_dispatch", lambda *_args: (False, "in-flight-task-310"))
+    monkeypatch.setattr(
+        tasks,
+        "_dispatch_active_bitrix_successor",
+        lambda _day: pytest.fail("claim race must not republish"),
+    )
+
+    result = tasks.dispatch_ingestion_group_task.run("bitrix_chat", incremental=True)
+
+    assert result["status"] == "already_queued"
+    assert result["workflow_task_id"] == "in-flight-task-310"
+
+
+def test_legacy_marker_without_reservation_never_creates_an_uncertain_row(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    from src import scheduled_ingestion_tasks as tasks
+
+    monkeypatch.setattr(
+        tasks,
+        "get_ingestion_config",
+        lambda: IngestionConfig(scheduled_ingestion=ScheduledIngestionConfig(enabled=True)),
+    )
+    monkeypatch.setattr(tasks, "_repair_dispatch_blocked", lambda _control: False)
+    monkeypatch.setattr(tasks, "_read_dispatch_marker", lambda _marker: "pre-rollout-workflow")
+    monkeypatch.setattr(tasks, "_read_legacy_bitrix_publication", lambda **_kwargs: None)
+    monkeypatch.setattr(
+        tasks,
+        "_reserve_legacy_bitrix_publication",
+        lambda **_kwargs: pytest.fail("existing marker must not create a pending reservation"),
+    )
+    monkeypatch.setattr(
+        tasks,
+        "_claim_dispatch",
+        lambda *_args: pytest.fail("existing marker must not be claimed"),
+    )
+
+    result = tasks.dispatch_ingestion_group_task.run("bitrix_chat", incremental=True)
+
+    assert result == {
+        "status": "already_queued",
+        "group_key": "bitrix_chat",
+        "incremental": True,
+        "workflow_task_id": "pre-rollout-workflow",
+    }
+
+
+def test_legacy_published_marker_mismatch_fails_closed(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    from src import scheduled_ingestion_tasks as tasks
+
+    monkeypatch.setattr(
+        tasks,
+        "get_ingestion_config",
+        lambda: IngestionConfig(scheduled_ingestion=ScheduledIngestionConfig(enabled=True)),
+    )
+    monkeypatch.setattr(tasks, "_repair_dispatch_blocked", lambda _control: False)
+    monkeypatch.setattr(tasks, "_read_dispatch_marker", lambda _marker: "marker-workflow")
+    monkeypatch.setattr(
+        tasks,
+        "_read_legacy_bitrix_publication",
+        lambda **_kwargs: _legacy_reservation(
+            status="published",
+            publication_id="different-workflow",
+            replay=True,
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="disagrees"):
+        tasks.dispatch_ingestion_group_task.run("bitrix_chat", incremental=True)

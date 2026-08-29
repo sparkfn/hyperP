@@ -112,8 +112,12 @@ OPTIONAL MATCH (md)-[:ABOUT_LEFT]->(l)
 OPTIONAL MATCH (md)-[:ABOUT_RIGHT]->(r)
 WITH collect(DISTINCT l) + collect(DISTINCT r) AS sides
 UNWIND sides AS node
-OPTIONAL MATCH (node)<-[:LINKED_TO]-(sr:SourceRecord)
-OPTIONAL MATCH (node)-[:LINKED_TO]->(p:Person)<-[:LINKED_TO]-(sr2:SourceRecord)
+OPTIONAL MATCH (node)<-[source_link:LINKED_TO]-(sr:SourceRecord)
+WHERE coalesce(source_link.is_active, true) = true
+OPTIONAL MATCH (node)-[person_link:LINKED_TO]->(p:Person)
+               <-[person_source_link:LINKED_TO]-(sr2:SourceRecord)
+WHERE coalesce(person_link.is_active, true) = true
+  AND coalesce(person_source_link.is_active, true) = true
 WITH collect(DISTINCT sr) + collect(DISTINCT sr2) AS srs
 UNWIND srs AS sr
 OPTIONAL MATCH (sr)-[:FROM_SOURCE]->(ss:SourceSystem)

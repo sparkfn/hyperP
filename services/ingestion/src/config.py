@@ -165,12 +165,16 @@ class Settings(BaseSettings):
     # explicitly enables it in a staging runtime.
     deployment_environment: Literal["development", "staging", "production"] = "development"
     crm_deal_identity_repair_enabled: bool = False
+    crm_deal_identity_repair_expected_workers: tuple[str, ...] = ()
+    crm_deal_identity_repair_worker_timeout_seconds: int = Field(default=10, ge=1, le=120)
     crm_deal_identity_repair_artifact_primary_root: str = "/app/restricted/crm-deal-identity-repair"
     crm_deal_identity_repair_artifact_backup_root: str = (
         "/app/restricted/crm-deal-identity-repair-backup"
     )
     crm_deal_identity_repair_artifact_signing_key_id: str = ""
     crm_deal_identity_repair_artifact_signing_key_secret: SecretStr = SecretStr("")
+    # Separate approver authority: an artifact-sealing key cannot authorize allocation rows.
+    crm_deal_identity_repair_approval_overlay_verification_secret: SecretStr = SecretStr("")
     crm_deal_identity_repair_repository_sha: str = ""
     crm_deal_identity_repair_image_digest: str = ""
 

@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import re
+
+import re
+
 import pytest
 from src.crm_deal_identity_repair import execution_protocols
 from src.crm_deal_identity_repair.execution_models import (
@@ -236,3 +240,43 @@ def test_protocols_are_granular_and_schema_matches_record_identities() -> None:
     dynamic_names = {statement.split()[2] for statement in CREATE_CRM_DEAL_REPAIR_LEDGER_SCHEMA}
     canonical_schema = "\n".join(_split_statements(_find_init_cypher().read_text(encoding="utf-8")))
     assert all(name in canonical_schema for name in dynamic_names)
+
+
+def test_runtime_readiness_and_fresh_init_schema_are_exactly_parity_checked() -> None:
+    runtime = _repair_schema_definitions(CREATE_CRM_DEAL_REPAIR_LEDGER_SCHEMA)
+    init_statements = _split_statements(_find_init_cypher().read_text(encoding="utf-8"))
+    fresh = _repair_schema_definitions(init_statements)
+    assert fresh == runtime
+
+    expected_constraints = {
+        name: ("constraint", label, properties)
+        for name, (label, properties) in REQUIRED_CONSTRAINTS.items()
+    }
+    expected_indexes = {
+        name: ("index", label, properties)
+        for name, (label, properties) in REQUIRED_INDEXES.items()
+    }
+    assert runtime == expected_constraints | expected_indexes
+
+
+def _repair_schema_definitions(
+    statements: tuple[str, ...] | list[str],
+) -> dict[str, tuple[str, str, tuple[str, ...]]]:
+    """Parse only the repair-ledger node schema grammar shared by runtime and init."""
+    definitions: dict[str, tuple[str, str, tuple[str, ...]]] = {}
+    pattern = re.compile(
+        r"^CREATE (CONSTRAINT|INDEX) (?P<name>crm_deal_repair_[a-z0-9_]+) IF NOT EXISTS "
+        r"FOR \([^:]+:(?P<label>[A-Za-z0-9_]+)\) "
+        r"(?:(?:REQUIRE (?P<constraint>.+) IS UNIQUE)|(?:ON \((?P<index>.+)\)))$"
+    )
+    for statement in statements:
+        normalized = " ".join(statement.rstrip(";").split())
+        match = pattern.match(normalized)
+        if match is None:
+            continue
+        properties_text = match.group("constraint") or match.group("index")
+        assert properties_text is not None
+        properties = tuple(re.findall(r"\.([A-Za-z0-9_]+)", properties_text))
+        kind = "constraint" if match.group(1) == "CONSTRAINT" else "index"
+        definitions[match.group("name")] = (kind, match.group("label"), properties)
+    return definitions

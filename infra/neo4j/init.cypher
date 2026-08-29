@@ -402,3 +402,12 @@ FOR (verification:CrmDealRepairVerification)
 ON (verification.run_id, verification.unit_id, verification.generation, verification.outcome);
 CREATE INDEX crm_deal_repair_outbox_state IF NOT EXISTS
 FOR (outbox:CrmDealRepairOutbox) ON (outbox.run_id, outbox.state, outbox.sequence);
+
+CREATE CONSTRAINT crm_deal_repair_control_run_unique IF NOT EXISTS FOR (n:CrmDealRepairControl) REQUIRE n.run_id IS UNIQUE;
+CREATE CONSTRAINT crm_deal_repair_allocation_completion_unique IF NOT EXISTS FOR (n:CrmDealRepairAllocationCompletion) REQUIRE n.run_id IS UNIQUE;
+CREATE CONSTRAINT crm_deal_repair_qualified_row_unique IF NOT EXISTS FOR (n:CrmDealRepairQualifiedInventoryRow) REQUIRE (n.run_id, n.inventory_key) IS UNIQUE;
+CREATE CONSTRAINT crm_deal_repair_authorization_proof_unique IF NOT EXISTS FOR (n:CrmDealRepairAuthorizationProof) REQUIRE (n.run_id, n.operation, n.revision) IS UNIQUE;
+CREATE CONSTRAINT crm_deal_repair_publication_reservation_unique IF NOT EXISTS FOR (n:BitrixRepairPublicationReservation) REQUIRE (n.control_instance_id, n.routing_identity_digest, n.occurrence_generation_identity) IS UNIQUE;
+CREATE CONSTRAINT crm_deal_repair_publication_token_unique IF NOT EXISTS FOR (n:BitrixRepairPublicationReservation) REQUIRE n.reservation_token IS UNIQUE;
+CREATE INDEX crm_deal_repair_publication_reservation_state IF NOT EXISTS FOR (n:BitrixRepairPublicationReservation) ON (n.control_instance_id, n.status);
+CREATE INDEX crm_deal_repair_control_state IF NOT EXISTS FOR (n:CrmDealRepairControl) ON (n.state, n.revision);

@@ -31,16 +31,18 @@ WITH person, input_revision, now,
      coalesce(person.analysis_claim_until > now, false) AS live_claim
 CALL (person) {
   WITH person
-  OPTIONAL MATCH (person)-[:CURRENT_PROFILE_ANALYSIS {analysis_type: 'sales'}]
+  OPTIONAL MATCH (person)-[sales_current:CURRENT_PROFILE_ANALYSIS {analysis_type: 'sales'}]
                  ->(sales:ProfileAnalysis)
+  WHERE coalesce(sales_current.is_active, true) = true
   RETURN collect(sales """
     + _SAFE_CURRENT_PROJECTION
     + """) AS sales_currents
 }
 CALL (person) {
   WITH person
-  OPTIONAL MATCH (person)-[:CURRENT_PROFILE_ANALYSIS {analysis_type: 'contact_tracing'}]
+  OPTIONAL MATCH (person)-[contact_current:CURRENT_PROFILE_ANALYSIS {analysis_type: 'contact_tracing'}]
                  ->(contact:ProfileAnalysis)
+  WHERE coalesce(contact_current.is_active, true) = true
   RETURN collect(contact """
     + _SAFE_CURRENT_PROJECTION
     + """) AS contact_currents
@@ -203,8 +205,9 @@ WITH person, datetime.realtime() AS now
 // the rolling force-refresh budget for this Person/type.
 SET person.profile_analysis_request_updated_at = now
 WITH person, now, coalesce(person.analysis_input_revision, 0) AS input_revision
-OPTIONAL MATCH (person)-[:CURRENT_PROFILE_ANALYSIS {analysis_type: $analysis_type}]
+OPTIONAL MATCH (person)-[current_link:CURRENT_PROFILE_ANALYSIS {analysis_type: $analysis_type}]
                ->(current:ProfileAnalysis)
+WHERE coalesce(current_link.is_active, true) = true
 WITH person, now, input_revision, head(collect(current)) AS current
 CALL (person) {
   WITH person
@@ -287,8 +290,9 @@ SET person.profile_analysis_request_updated_at = now
 WITH person, now, coalesce(person.analysis_input_revision, 0) AS input_revision
 CALL (person, input_revision) {
   WITH person, input_revision
-  OPTIONAL MATCH (person)-[:CURRENT_PROFILE_ANALYSIS {analysis_type: $analysis_type}]
+  OPTIONAL MATCH (person)-[current_link:CURRENT_PROFILE_ANALYSIS {analysis_type: $analysis_type}]
                  ->(current:ProfileAnalysis)
+  WHERE coalesce(current_link.is_active, true) = true
   WITH person, input_revision, head(collect(current)) AS current
   OPTIONAL MATCH (person)-[:HAS_PROFILE_ANALYSIS]->(failure:ProfileAnalysis {
     analysis_type: $analysis_type,

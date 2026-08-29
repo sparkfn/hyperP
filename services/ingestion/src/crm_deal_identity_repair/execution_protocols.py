@@ -4,6 +4,11 @@ from __future__ import annotations
 
 from typing import Protocol
 
+from src.crm_deal_identity_repair.approval_overlay import VerifiedApprovalOverlay
+from src.crm_deal_identity_repair.control_models import (
+    RepairAllocationCompletion,
+    RepairControlLease,
+)
 from src.crm_deal_identity_repair.execution_models import (
     RepairBoundaryDriftReason,
     RepairBoundarySnapshot,
@@ -61,7 +66,7 @@ class RepairStatusReader(Protocol):
 
 
 class RepairQuiescenceRepository(Protocol):
-    """Future #309 quiescence ownership; it does not dispatch work."""
+    """#310 quiescence ownership; it does not dispatch work."""
 
     def claim_quiescence(self, request: RepairQuiescence) -> RepairQuiescence: ...
 
@@ -167,3 +172,24 @@ class RepairAcceptanceStatusReader(Protocol):
     def read_acceptance_status(self, repair_id: str) -> RepairRunStatus: ...
 
     def read_release_status(self, repair_id: str) -> RepairRunStatus: ...
+
+
+class RepairControlRepository(Protocol):
+    """#310 CAS control-plane owner; it never mutates repair-domain evidence."""
+
+    def claim(self, lease: RepairControlLease, expected_revision: int) -> RepairControlLease: ...
+
+    def transition(
+        self, lease: RepairControlLease, expected_revision: int
+    ) -> RepairControlLease: ...
+
+    def allocate(
+        self,
+        lease: RepairControlLease,
+        expected_revision: int,
+        units: tuple[RepairUnit, ...],
+        completion: RepairAllocationCompletion,
+        overlay: VerifiedApprovalOverlay,
+        manifest: RepairExecutionBoundaryManifest,
+        qualified_source_record_pks: tuple[str, ...],
+    ) -> RepairAllocationCompletion: ...

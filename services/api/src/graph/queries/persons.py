@@ -82,7 +82,8 @@ CALL {
 }
 CALL {
   WITH person
-  OPTIONAL MATCH (person)-[:PURCHASED]->(o:Order)
+  OPTIONAL MATCH (person)-[purchase:PURCHASED]->(o:Order)
+  WHERE coalesce(purchase.is_active, true) = true
   RETURN sum(o.total_amount) AS lifetime_value
 }
 RETURN person {
@@ -124,6 +125,7 @@ MATCH (p:Person {person_id: $person_id})
 OPTIONAL MATCH (p)-[:MERGED_INTO]->(canonical:Person)
 WITH coalesce(canonical, p) AS person
 OPTIONAL MATCH (person)-[rel:OWNS_VEHICLE|BOUGHT_VEHICLE]->(v:Vehicle)
+WHERE coalesce(rel.is_active, true) = true
 RETURN person.person_id AS person_id,
        collect(CASE WHEN v IS NULL THEN NULL ELSE {
          vehicle_id: v.vehicle_id,

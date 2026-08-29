@@ -37,7 +37,7 @@ MATCH (id:Identifier {
     identifier_type: identifier_input.identifier_type,
     normalized_value: identifier_input.normalized_value
 })<-[rel:IDENTIFIED_BY]-(owner:Person {status: 'active'})
-WHERE rel.is_active = true
+WHERE coalesce(rel.is_active, true) = true
   AND owner.person_id <> candidate.person_id
 MATCH (owner)-[lock:NO_MATCH_LOCK]-(candidate)
 WHERE lock.expires_at IS NULL OR lock.expires_at > datetime()
@@ -53,7 +53,7 @@ MATCH (p:Person {person_id: $person_id})
           identifier_type: $identifier_type,
           normalized_value: $normalized_value
       })
-WHERE rel.is_active = true
+WHERE coalesce(rel.is_active, true) = true
 RETURN p.person_id AS person_id
 LIMIT 1
 """
@@ -68,7 +68,7 @@ MATCH (p:Person {person_id: $person_id})
           identifier_type: 'nric',
           normalized_value: $normalized_value
       })
-WHERE rel.is_active = true
+WHERE coalesce(rel.is_active, true) = true
   AND rel.quality_flag = 'valid'
 RETURN p.person_id AS person_id
 LIMIT 1
@@ -79,7 +79,7 @@ MATCH (p:Person {person_id: $person_id})
       -[rel:IDENTIFIED_BY]->(id:Identifier {
           identifier_type: 'nric'
       })
-WHERE rel.is_active = true
+WHERE coalesce(rel.is_active, true) = true
   AND rel.quality_flag = 'valid'
   AND id.normalized_value <> $normalized_value
 RETURN id.normalized_value AS conflicting_value

@@ -28,6 +28,13 @@ from src.crm_deal_identity_repair.execution_records import (
     RepairVerificationOutcome,
     RepairVerificationResult,
 )
+from src.crm_deal_identity_repair.control_models import (
+    RepairAllocationCompletion,
+    RepairControlLease,
+    RepairControlState,
+    RepairOverlayDisposition,
+    RepairOverlayRow,
+)
 from src.crm_deal_identity_repair.execution_status_models import (
     RepairQualificationRun,
     RepairQualificationState,
@@ -36,7 +43,12 @@ from src.crm_deal_identity_repair.execution_status_models import (
 )
 
 __all__ = (
+    "RepairAllocationCompletion",
     "RepairBoundarySnapshot",
+    "RepairControlLease",
+    "RepairControlState",
+    "RepairOverlayDisposition",
+    "RepairOverlayRow",
     "RepairBoundaryDriftReason",
     "RepairCheckpoint",
     "RepairCheckpointState",
