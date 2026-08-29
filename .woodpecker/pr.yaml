@@ -40,7 +40,7 @@ steps:
       - uv run --package profile-unifier-api ruff check services/api/src
       - uv run --package profile-unifier-api ruff format --check services/api/src
       - uv run --package profile-unifier-ingestion ruff check services/ingestion/src
-      - uv run --package profile-unifier-ingestion ruff format --diff services/ingestion/src
+      - uv run --package profile-unifier-ingestion ruff format --check services/ingestion/src
       - uv run --package profile-unifier-api mypy --strict services/api/src
       - uv run --package profile-unifier-ingestion mypy --strict services/ingestion/src
       # pytest per-package: each service's venv carries its own runtime deps

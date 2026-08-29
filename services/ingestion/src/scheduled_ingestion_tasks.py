@@ -121,6 +121,7 @@ def _repair_dispatch_blocked(control_instance_id: str) -> bool:
     """Fail closed before source-window freezing or canvas publication."""
     graph = Neo4jClient(get_settings())
     try:
+
         def _read(tx: ManagedTransaction) -> bool:
             return (
                 tx.run(
@@ -148,6 +149,7 @@ def _dispatch_active_bitrix_successor(occurrence: str) -> str | None:
 
     graph = Neo4jClient(get_settings())
     try:
+
         def _read(tx: ManagedTransaction) -> tuple[str, str, str, str] | None:
             record = tx.run(
                 GET_ACTIVE_BITRIX_SUCCESSOR_SCHEDULE,

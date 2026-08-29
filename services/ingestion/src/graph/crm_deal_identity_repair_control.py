@@ -215,9 +215,12 @@ class CrmDealRepairControlRepository:
                 raise RuntimeError("repair control ownership or revision was rejected")
             prior = record["prior_state"]
             return RepairControlLease(
-                run_id=str(record["run_id"]), owner_id=str(record["owner_id"]),
-                token=str(record["token"]), revision=int(record["revision"]),
-                state=str(record["state"]), boundary_digest=str(record["boundary_digest"]),
+                run_id=str(record["run_id"]),
+                owner_id=str(record["owner_id"]),
+                token=str(record["token"]),
+                revision=int(record["revision"]),
+                state=str(record["state"]),
+                boundary_digest=str(record["boundary_digest"]),
                 prior_state=None if prior is None else str(prior),
             )
 
@@ -247,6 +250,7 @@ class CrmDealRepairControlRepository:
         validate: Callable[[ManagedTransaction, T], Mapping[str, object]],
     ) -> T:
         """Capture, mutate, validate exact post-state, and seal one #310 write atomically."""
+
         def _work(tx: ManagedTransaction) -> T:
             pre = repair_boundary_snapshot_for_run_transaction(tx, lease_after.run_id)
             result = mutate(tx)
@@ -389,6 +393,7 @@ class CrmDealRepairControlRepository:
 
     def read(self, run_id: str) -> RepairControlLease | None:
         """Read control status without granting a write capability."""
+
         def _work(tx: ManagedTransaction) -> RepairControlLease | None:
             record = tx.run(
                 """
@@ -403,9 +408,12 @@ RETURN control.run_id AS run_id, control.owner_id AS owner_id, control.token AS 
                 return None
             prior = record["prior_state"]
             return RepairControlLease(
-                run_id=str(record["run_id"]), owner_id=str(record["owner_id"]),
-                token=str(record["token"]), revision=int(record["revision"]),
-                state=str(record["state"]), boundary_digest=str(record["boundary_digest"]),
+                run_id=str(record["run_id"]),
+                owner_id=str(record["owner_id"]),
+                token=str(record["token"]),
+                revision=int(record["revision"]),
+                state=str(record["state"]),
+                boundary_digest=str(record["boundary_digest"]),
                 prior_state=None if prior is None else str(prior),
             )
 

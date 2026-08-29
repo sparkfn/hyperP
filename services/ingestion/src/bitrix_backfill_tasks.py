@@ -386,6 +386,7 @@ def _assert_repair_dispatch_unblocked(control_instance_id: str) -> None:
 
     client = Neo4jClient(get_settings())
     try:
+
         def _read(tx: ManagedTransaction) -> bool:
             return (
                 tx.run(
