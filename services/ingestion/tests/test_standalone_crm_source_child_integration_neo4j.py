@@ -165,6 +165,7 @@ def _parameters() -> dict[str, object]:
         "authority_revision": "source-sync:authority",
         "authority_json": '{"authority":"source-sync"}',
         "binding_count": 0,
+        "binding_subject_id": 6,
         "owner_id": "contact-task",
         "contact_id": 6,
         "last_committed_id": 5,
@@ -366,7 +367,11 @@ def _commit_empty_contact_membership(
     source = json.loads(receipt)
     assert isinstance(source, list) and len(source) == 1 and isinstance(source[0], dict)
     item = source[0]
-    snapshot = normalize_company_membership_snapshot("contact", "6", ())
+    snapshot = normalize_company_membership_snapshot(
+        subject_type="contact",
+        subject_id="6",
+        payloads=(),
+    )
     record = CrmCompanyMembershipSnapshotRecord(
         envelope.scope,
         snapshot,
@@ -400,7 +405,11 @@ def _commit_empty_contact_membership(
 
 def _legacy_membership_head(parameters: dict[str, object]) -> CrmCompanyMembershipHead:
     envelope = _contact_envelope(parameters)
-    snapshot = normalize_company_membership_snapshot("contact", "6", ())
+    snapshot = normalize_company_membership_snapshot(
+        subject_type="contact",
+        subject_id="6",
+        payloads=(),
+    )
     record = CrmCompanyMembershipSnapshotRecord(
         envelope.scope,
         snapshot,
@@ -816,6 +825,7 @@ def test_contact_receipt_and_pending_checkpoint_recover_after_fence_rollover(
     assert token == 3 and owner == "recovery-task"
     parameters["fence_token"] = token
     parameters["fence_owner_id"] = owner
+    parameters["binding_subject_id"] = 6
     with neo4j_driver.session() as session:
         checkpoint = session.run(
             "MATCH (checkpoint:StandaloneCrmCensusCheckpoint {census_id: $census_id, "
@@ -877,6 +887,7 @@ def test_lead_receipt_and_checkpoint_recover_after_fence_rollover(
     assert token == 3 and owner == "recovery-task"
     parameters["fence_token"] = token
     parameters["fence_owner_id"] = owner
+    parameters["last_committed_id"] = 6
     with neo4j_driver.session() as session:
         checkpoint = session.run(
             "MATCH (checkpoint:StandaloneCrmCensusCheckpoint {census_id: $census_id, "

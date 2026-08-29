@@ -26,6 +26,7 @@ from src.graph.queries.standalone_crm_census import (
     REQUEST_CANCELLATION,
     REQUEST_UNIT_STOPS,
     RESERVE_CALL,
+    RESERVE_PUBLICATION,
     STORE_CHECKPOINT,
 )
 from src.graph.standalone_crm_census import StandaloneCrmCensusRepository
@@ -703,3 +704,19 @@ def test_contact_binding_position_queries_are_fenced_and_do_not_account_rows() -
     assert "attempt.row_count" not in query
     assert "binding_offset: $binding_count" in CLOSE_CONTACT_BINDING_POSITION
     assert "stored.last_committed_id = $contact_id" in CLOSE_CONTACT_BINDING_POSITION
+
+
+def test_reserve_publication_admits_only_exact_recovering_continuations() -> None:
+    assert "census.status IN ['frozen', 'publishing', 'recovering']" in RESERVE_PUBLICATION
+    for rejected_state in ("paused_with_checkpoint", "running", "cancel_requested"):
+        assert f"'{rejected_state}'" not in RESERVE_PUBLICATION
+    for authority_check in (
+        "generation: $generation",
+        "coalesce(census.cancel_requested, false) = false",
+        "census.authority_revision = $authority_revision",
+        "census.authority_json = $authority_json",
+        "datetime() < datetime($occurrence_deadline)",
+        "BitrixSourceInstance {status: 'active'}",
+        "BitrixExecutionSourceBinding",
+    ):
+        assert authority_check in RESERVE_PUBLICATION
