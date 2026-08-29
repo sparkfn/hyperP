@@ -638,6 +638,169 @@ def test_first_effect_pause_continues_through_real_lifecycle_and_rebinds_zero_ch
     }
 
 
+def test_existing_unpositioned_lead_checkpoint_pauses_and_continues_without_null_cas_loss(
+    neo4j_driver: Driver,
+) -> None:
+    """Null-safe pause equality preserves an already progressed lead checkpoint."""
+    parameters = _parameters()
+    parameters.update(
+        census_id="pause-existing-lead",
+        stream_kind="lead",
+        task_id="pause-lead-task",
+        fence_owner_id="pause-lead-task",
+        parent_task_id="parent-pause-lead-task",
+        call_intent_id="pause-lead-page-intent",
+        receipt_key="pause-existing-lead:1:lead:pause-lead-page-intent",
+        expected_cursor=6,
+        expected_processed=1,
+        proposed_cursor=7,
+        proposed_processed=2,
+        proposed_binding_subject=None,
+        proposed_binding_offset=None,
+    )
+    _prepare_claimable_publication(parameters)
+    _seed_contact(neo4j_driver, parameters)
+    repository = StandaloneCrmCensusRepository(cast(Neo4jClient, DriverClient(neo4j_driver)))
+    current = StandaloneCrmChildEnvelope(
+        "pause-existing-lead",
+        1,
+        "lead",
+        10,
+        None,
+        "src.standalone_crm_census_tasks.run_standalone_crm_census_unit",
+        "pause-lead-task",
+        "ingestion",
+    )
+    with neo4j_driver.session() as session:
+        session.run(
+            "MATCH (fence:StandaloneCrmCensusFence {census_id: $census_id, generation: $generation, "
+            "stream_kind: $stream_kind}) SET fence.status = 'retired'",
+            **parameters,
+        ).consume()
+    claimed = repository.claim_published_child(
+        current,
+        owner_id="pause-existing-lead-worker",
+        payload_json=str(parameters["payload_json"]),
+    )
+    assert claimed is not None
+    token = claimed["fence_token"]
+    assert isinstance(token, int)
+    expected = StandaloneCrmCheckpoint(
+        "pause-existing-lead", "lead", 10, None, 6, None, None, 1, 0, 1, token
+    )
+    unexpected_position = StandaloneCrmCheckpoint(
+        "pause-existing-lead", "lead", 10, None, 6, 7, 0, 1, 0, 1, token
+    )
+    assert not repository.pause_claimed_unit(
+        "pause-existing-lead",
+        1,
+        "lead",
+        token,
+        "pause-existing-lead-worker",
+        current.task_name,
+        current.task_id,
+        current.payload_digest(),
+        10,
+        unexpected_position,
+        "source_effect_failed",
+        "unexpected binding position must not match an unpositioned checkpoint",
+    )
+    with neo4j_driver.session() as session:
+        rejected_state = session.run(
+            "MATCH (census:StandaloneCrmCensus {census_id: $census_id}) "
+            "MATCH (attempt:StandaloneCrmCensusAttempt {census_id: $census_id, generation: 1}) "
+            "MATCH (unit:StandaloneCrmCensusUnit {census_id: $census_id, stream_kind: $stream_kind}) "
+            "MATCH (checkpoint:StandaloneCrmCensusCheckpoint {census_id: $census_id, "
+            "stream_kind: $stream_kind}) RETURN census.status AS census, attempt.status AS attempt, "
+            "unit.state AS unit, checkpoint.binding_subject_id AS subject, "
+            "checkpoint.binding_offset AS offset",
+            **parameters,
+        ).single(strict=True)
+    assert dict(rejected_state) == {
+        "census": "running",
+        "attempt": "running",
+        "unit": "running",
+        "subject": None,
+        "offset": None,
+    }
+    assert repository.pause_claimed_unit(
+        "pause-existing-lead",
+        1,
+        "lead",
+        token,
+        "pause-existing-lead-worker",
+        current.task_name,
+        current.task_id,
+        current.payload_digest(),
+        10,
+        expected,
+        "source_effect_failed",
+        "lead effect failed after one durable source-fact checkpoint",
+    )
+    assert repository.create_continuation("pause-existing-lead", 1, _source_request("lead")) == 2
+    assert repository.resumable_units("pause-existing-lead", 2)[0].stream_kind == "lead"
+    resumed = StandaloneCrmChildEnvelope(
+        "pause-existing-lead",
+        2,
+        "lead",
+        10,
+        None,
+        "src.standalone_crm_census_tasks.run_standalone_crm_census_unit",
+        "pause-lead-task-v2",
+        "ingestion",
+    )
+    assert repository.reserve_child_envelope(resumed)
+    assert repository.confirm_publication(
+        StandaloneCrmPublication(
+            resumed.census_id,
+            resumed.generation,
+            resumed.stream_kind,
+            resumed.task_id,
+            resumed.payload_digest(),
+            "pending",
+        )
+    )
+    resumed_payload = json.dumps(
+        {
+            "census_id": resumed.census_id,
+            "generation": resumed.generation,
+            "stream_kind": resumed.stream_kind,
+            "frozen_upper_id": resumed.frozen_upper_id,
+            "revision_id": resumed.revision_id,
+            "task_name": resumed.task_name,
+            "task_id": resumed.task_id,
+            "queue": resumed.queue,
+            "payload_version": resumed.payload_version,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    resumed_claim = repository.claim_published_child(
+        resumed,
+        owner_id="pause-existing-lead-resume-worker",
+        payload_json=resumed_payload,
+    )
+    assert resumed_claim is not None
+    with neo4j_driver.session() as session:
+        checkpoint = session.run(
+            "MATCH (checkpoint:StandaloneCrmCensusCheckpoint {census_id: $census_id, "
+            "stream_kind: $stream_kind}) RETURN checkpoint.generation AS generation, "
+            "checkpoint.fence_token AS token, checkpoint.last_committed_id AS cursor, "
+            "checkpoint.processed_rows AS processed, checkpoint.skipped_rows AS skipped, "
+            "checkpoint.binding_subject_id AS subject, checkpoint.binding_offset AS offset",
+            **parameters,
+        ).single(strict=True)
+    assert dict(checkpoint) == {
+        "generation": 2,
+        "token": resumed_claim["fence_token"],
+        "cursor": 6,
+        "processed": 1,
+        "skipped": 0,
+        "subject": None,
+        "offset": None,
+    }
+
+
 def test_contact_receipt_and_pending_checkpoint_recover_after_fence_rollover(
     neo4j_driver: Driver,
 ) -> None:

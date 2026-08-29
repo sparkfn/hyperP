@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
 from dataclasses import replace
 from datetime import UTC, datetime
@@ -78,6 +79,20 @@ def _parameters() -> dict[str, object]:
         "processed_delta": 1,
         "skipped_delta": 0,
         "failed_delta": 0,
+        "source_receipts_json": json.dumps(
+            [
+                {
+                    "lead_company_id": None,
+                    "observed_at": "2020-01-01T00:00:00Z",
+                    "record_hash": "sha256:" + "d" * 64,
+                    "row_id": 6,
+                    "source_record_pk": "source-record-6",
+                    "source_record_version": 1,
+                }
+            ],
+            sort_keys=True,
+            separators=(",", ":"),
+        ),
         "attempt_call_limit": 2,
         "occurrence_call_limit": 4,
         "attempt_row_limit": 10,
@@ -133,7 +148,8 @@ def assert_raw_claim_finalize_replay(driver: Driver) -> None:
             MATCH (k:StandaloneCrmCensusCheckpoint {census_id: $census_id, stream_kind: $stream_kind})
             MATCH (r:StandaloneCrmSourceFactPageReceipt {receipt_key: $receipt_key})
             RETURN c.occurrence_rows AS census_rows, a.row_count AS attempt_rows, k.last_committed_id AS cursor,
-              k.processed_rows AS processed, r.status AS receipt_status
+              k.processed_rows AS processed, r.status AS receipt_status,
+              r.source_receipts_json AS source_receipts_json
         """,
             **p,
         ).single(strict=True)
@@ -144,6 +160,7 @@ def assert_raw_claim_finalize_replay(driver: Driver) -> None:
         "cursor": 6,
         "processed": 1,
         "receipt_status": "committed",
+        "source_receipts_json": p["source_receipts_json"],
     }
 
 
