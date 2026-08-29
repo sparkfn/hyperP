@@ -193,11 +193,12 @@ def _seed_domain(driver: Driver, *, independent_support: bool) -> None:
                 MATCH (source:SourceSystem {source_key: 'bitrix_chat'}),
                       (person:Person {person_id: 'person-a'}),
                       (contact:Identifier {identifier_type: 'crm_contact_id', normalized_value: 'contact-1'})
-                CREATE (support:SourceRecord {source_record_pk: 'contact-support-pk', source_record_id: 'bitrix-crm-contact-contact-1', source_record_version: '1', source_version_key: 'contact-support-v1', source_instance_id: $source_instance_id, record_type: 'identity', source_entity_type: 'contact', source_entity_id: 'contact-1', identity_policy_version: 'crm_contact_identity_v1', lifecycle_status: 'active', is_latest: true, observed_at: datetime($observed_at), record_hash: 'dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd', raw_payload: '{}', normalized_payload: '{}'})-[:FROM_SOURCE]->(source)
+                CREATE (support:SourceRecord {source_record_pk: 'contact-support-pk', source_record_id: 'bitrix-crm-contact-contact-1', source_record_version: '1', source_version_key: 'contact-support-v1', source_instance_id: $source_instance_id, record_type: 'identity', source_entity_type: 'contact', source_entity_id: 'contact-1', identity_policy_version: 'crm_contact_identity_v1', lifecycle_status: 'active', is_latest: true, observed_at: datetime($observed_at), record_hash: 'dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd', raw_payload: '{}', normalized_payload: '{}', standalone_crm_census_id: 'census-a', standalone_crm_generation: 1, standalone_crm_fence_token: 'source-fence', standalone_crm_fence_owner_id: 'source-worker', standalone_crm_task_name: 'source-task', standalone_crm_task_id: 'source-task-id', standalone_crm_payload_digest: $support_digest, standalone_crm_call_intent_id: 'call-intent', standalone_crm_authorization_id: 'authorization', standalone_crm_authorization_digest: $support_digest, standalone_crm_availability_contract_version: 'v1', standalone_crm_frozen_upper_id: 10})-[:FROM_SOURCE]->(source)
                 CREATE (support)-[:LINKED_TO {is_active: true, source_record_pk: 'contact-support-pk'}]->(person)
                 CREATE (person)-[:IDENTIFIED_BY {is_active: true, source_record_pk: 'contact-support-pk'}]->(contact)
                 """,
                 **params,
+                support_digest=_DIGEST,
             ).consume()
 
 
@@ -212,11 +213,12 @@ def _seed_authority(driver: Driver, item: RepairInventoryItem) -> RepairMutation
     fence = RepairFence(
         "run-a", "unit-a", "fence-a", 1, 0, 1, "worker-a", "token-a", _DIGEST, _DIGEST, "claimed"
     )
+    command = RepairMutationCommand(unit, fence, item, _SOURCE, _CONTROL)
     with driver.session() as session:
         session.run(
             """
             CREATE (:CrmDealRepairRun {run_id: $run_id, boundary_digest: $boundary_digest, source_instance_id: $source_instance_id, control_instance_id: $control_instance_id, status: 'qualified', execution_allowed: false})
-            CREATE (:CrmDealRepairUnit {run_id: $run_id, unit_id: $unit_id, generation: 1, sequence: 0, attempt: 1, boundary_digest: $boundary_digest, inventory_fingerprint: $unit_fingerprint, state: 'allocated'})
+            CREATE (:CrmDealRepairUnit {run_id: $run_id, unit_id: $unit_id, generation: 1, sequence: 0, attempt: 1, boundary_digest: $boundary_digest, inventory_fingerprint: $unit_fingerprint, inventory_key: $inventory_key, source_record_pk: $source_record_pk, inventory_graph_fingerprint: $inventory_graph_fingerprint, inventory_stored_payload_fingerprint: $inventory_stored_payload_fingerprint, inventory_binding_digest: $inventory_binding_digest, state: 'allocated'})
             CREATE (:CrmDealRepairFence {run_id: $run_id, unit_id: $unit_id, fence_id: 'fence-a', generation: 1, sequence: 0, attempt: 1, owner_id: 'worker-a', token: 'token-a', boundary_digest: $boundary_digest, state: 'claimed'})
             """,
             run_id=unit.run_id,
@@ -225,8 +227,13 @@ def _seed_authority(driver: Driver, item: RepairInventoryItem) -> RepairMutation
             unit_fingerprint=item.graph_fingerprint,
             source_instance_id=_SOURCE,
             control_instance_id=_CONTROL,
+            inventory_key=item.inventory_key,
+            source_record_pk=item.source_record_pk,
+            inventory_graph_fingerprint=item.graph_fingerprint,
+            inventory_stored_payload_fingerprint=item.stored_payload_fingerprint,
+            inventory_binding_digest=command.inventory_binding_digest,
         ).consume()
-    return RepairMutationCommand(unit, fence, item, _SOURCE, _CONTROL)
+    return command
 
 
 def _repository(
@@ -329,6 +336,24 @@ def test_deterministic_commit_exact_replay_and_negative_control_precision(
     pre_state = payload["payload"]
     assert isinstance(pre_state, dict)
     assert pre_state["contract_version"] == "crm_deal_identity_repair_mutation_v1"
+
+
+def test_exact_replay_rejects_repaired_desired_state_drift(
+    neo4j_driver: Driver,
+) -> None:
+    _seed_domain(neo4j_driver, independent_support=True)
+    item, _ = _inventory(neo4j_driver)
+    command = _seed_authority(neo4j_driver, item)
+    repository = _repository(neo4j_driver)
+    repository.commit_atomic_mutation(command)
+    with neo4j_driver.session() as session:
+        session.run(
+            "MATCH (:SourceRecord {repair_mutation_id: $mutation_id})"
+            "-[link:LINKED_TO]->(:Person) SET link.is_active = false",
+            mutation_id=command.mutation_id,
+        ).consume()
+    with pytest.raises(RepairMutationDriftError, match="desired state changed"):
+        repository.commit_atomic_mutation(command)
 
 
 def test_concurrent_exact_attempts_produce_one_bundle_and_one_replay(

@@ -10,6 +10,7 @@ from src.crm_deal_identity_repair.digests import (
     authority_evidence_digest,
     mutation_request_digest,
     mutation_result_digest,
+    object_digest,
     outbox_event_digest,
     repaired_state_digest,
     rollback_image_digest,
@@ -137,6 +138,19 @@ class RepairMutationCommand:
     def request_digest(self) -> str:
         return mutation_request_digest(self.to_dict())
 
+    @property
+    def inventory_binding_digest(self) -> str:
+        """Bind this allocated unit to exactly one immutable inventory row."""
+        return object_digest(
+            b"crm-deal-identity-repair-unit-row-v1\x00",
+            {
+                "inventory_key": self.inventory.inventory_key,
+                "source_record_pk": self.inventory.source_record_pk,
+                "graph_fingerprint": self.inventory.graph_fingerprint,
+                "stored_payload_fingerprint": self.inventory.stored_payload_fingerprint,
+            },
+        )
+
     def to_dict(self) -> dict[str, JsonValue]:
         return {
             "run_id": self.unit.run_id,
@@ -151,6 +165,7 @@ class RepairMutationCommand:
             "unit_fingerprint": self.unit.inventory_fingerprint,
             "inventory_key": self.inventory.inventory_key,
             "inventory_fingerprint": self.inventory.graph_fingerprint,
+            "inventory_binding_digest": self.inventory_binding_digest,
             "stored_payload_fingerprint": self.inventory.stored_payload_fingerprint,
             "source_instance_id": self.source_instance_id,
             "control_instance_id": self.control_instance_id,
