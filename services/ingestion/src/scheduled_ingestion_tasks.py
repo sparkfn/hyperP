@@ -62,7 +62,10 @@ def _marker_key(group_key: str, incremental: bool, task_id: str) -> str:
 def _read_dispatch_marker(marker_key: str) -> str | None:
     """Read a Redis idempotency marker without making publication authoritative."""
     with redis.Redis.from_url(get_settings().celery_broker_url, decode_responses=True) as client:
-        return client.get(marker_key)
+        value = client.get(marker_key)
+    if value is None or isinstance(value, str):
+        return value
+    raise RuntimeError("scheduled dispatch marker is not decoded text")
 
 
 def _claim_dispatch(marker_key: str, task_id: str) -> tuple[bool, str | None]:

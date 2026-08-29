@@ -6,7 +6,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 
 from src.connectors.bitrix_stage_history.artifact_manifest import canonical_json_bytes
-from src.crm_deal_identity_repair.control_models import RepairOverlayRow
+from src.crm_deal_identity_repair.control_models import RepairOverlayDisposition, RepairOverlayRow
 from src.crm_deal_identity_repair.digests import object_digest
 from src.crm_deal_identity_repair.execution_models import (
     RepairExecutionBoundaryManifest,
@@ -161,10 +161,14 @@ def _string(value: JsonValue) -> str:
     return value
 
 
-def _disposition(value: JsonValue) -> str:
-    if value not in {"executable", "blocked", "investigate"}:
-        raise ValueError("repair approval overlay disposition is invalid")
-    return str(value)
+def _disposition(value: JsonValue) -> RepairOverlayDisposition:
+    if value == "executable":
+        return "executable"
+    if value == "blocked":
+        return "blocked"
+    if value == "investigate":
+        return "investigate"
+    raise ValueError("repair approval overlay disposition is invalid")
 
 
 def verify_sealed_approval_overlay(

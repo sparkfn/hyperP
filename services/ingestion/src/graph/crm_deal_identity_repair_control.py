@@ -13,6 +13,8 @@ from src.crm_deal_identity_repair.control_models import (
     RepairBoundaryComponentProof,
     RepairCheckpointCapture,
     RepairControlLease,
+    RepairControlPriorState,
+    RepairControlState,
     RepairControlStatus,
     RepairGenerationCapture,
     RepairIngestRunCapture,
@@ -219,9 +221,9 @@ class CrmDealRepairControlRepository:
                 owner_id=str(record["owner_id"]),
                 token=str(record["token"]),
                 revision=int(record["revision"]),
-                state=str(record["state"]),
+                state=_control_state(record["state"]),
                 boundary_digest=str(record["boundary_digest"]),
-                prior_state=None if prior is None else str(prior),
+                prior_state=_control_prior_state(prior),
             )
 
         def _validate(tx: ManagedTransaction, result: RepairControlLease) -> Mapping[str, object]:
@@ -412,9 +414,9 @@ RETURN control.run_id AS run_id, control.owner_id AS owner_id, control.token AS 
                 owner_id=str(record["owner_id"]),
                 token=str(record["token"]),
                 revision=int(record["revision"]),
-                state=str(record["state"]),
+                state=_control_state(record["state"]),
                 boundary_digest=str(record["boundary_digest"]),
-                prior_state=None if prior is None else str(prior),
+                prior_state=_control_prior_state(prior),
             )
 
         return self._client.execute_read(_work)
@@ -777,8 +779,8 @@ RETURN control.run_id AS run_id, control.owner_id AS owner_id, control.token AS 
                 boundary_digest=str(record["boundary_digest"]),
                 owner_id=_optional_text(record["owner_id"]),
                 revision=None if revision_value is None else int(revision_value),
-                state=None if state_value is None else str(state_value),
-                prior_state=None if prior_value is None else str(prior_value),
+                state=None if state_value is None else _control_state(state_value),
+                prior_state=_control_prior_state(prior_value),
                 allocation_digest=_optional_text(record["allocation_digest"]),
                 allocation_unit_count=int(record["allocation_unit_count"]),
                 completion_unit_count=None if completion_count is None else int(completion_count),
@@ -1055,7 +1057,7 @@ def _captured_maps(value: object) -> tuple[Mapping[str, object], ...]:
     return tuple(captures)
 
 
-def _boundary_parameters(prefix: str, proof: RepairBoundaryComponentProof) -> dict[str, object]:
+def _boundary_parameters(prefix: str, proof: RepairBoundaryComponentProof) -> Mapping[str, object]:
     """Encode only canonical #300 component evidence for the #310-derived proof record."""
     return {
         f"{prefix}_source_instance_id": proof.source_instance_id,
@@ -1069,6 +1071,34 @@ def _boundary_parameters(prefix: str, proof: RepairBoundaryComponentProof) -> di
         f"{prefix}_control_digest": proof.control_digest,
         f"{prefix}_stale_run_evidence_digest": proof.stale_run_evidence_digest,
     }
+
+
+def _control_state(value: object) -> RepairControlState:
+    """Validate a graph state before it crosses into the typed control protocol."""
+    if value == "qualified":
+        return "qualified"
+    if value == "quiescing":
+        return "quiescing"
+    if value == "quiesced":
+        return "quiesced"
+    if value == "allocated":
+        return "allocated"
+    if value == "paused":
+        return "paused"
+    if value == "lost":
+        return "lost"
+    raise RuntimeError("repair control state is invalid")
+
+
+def _control_prior_state(value: object) -> RepairControlPriorState | None:
+    """Validate the only resumable persisted prior states without coercion."""
+    if value is None:
+        return None
+    if value == "quiesced":
+        return "quiesced"
+    if value == "allocated":
+        return "allocated"
+    raise RuntimeError("repair control prior state is invalid")
 
 
 def _required_text_value(value: object, label: str) -> str:

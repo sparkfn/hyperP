@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Literal
 
@@ -11,7 +12,15 @@ from src.crm_deal_identity_repair.execution_boundary_models import (
     _validate_digest,
 )
 
-RepairControlState = Literal["qualified", "quiescing", "quiesced", "allocated", "paused", "lost"]
+RepairControlState = Literal[
+    "qualified",
+    "quiescing",
+    "quiesced",
+    "allocated",
+    "paused",
+    "lost",
+]
+RepairControlPriorState = Literal["quiesced", "allocated"]
 RepairOverlayDisposition = Literal["executable", "blocked", "investigate"]
 
 
@@ -25,7 +34,7 @@ class RepairControlLease:
     revision: int
     state: RepairControlState
     boundary_digest: str
-    prior_state: Literal["quiesced", "allocated"] | None = None
+    prior_state: RepairControlPriorState | None = None
 
     def __post_init__(self) -> None:
         _nonempty(self.run_id, "repair control run ID")
@@ -144,9 +153,9 @@ class RepairTopologyCapture:
     generation_ids: tuple[RepairGenerationCapture, ...]
     publication_ids: tuple[RepairPublicationCapture, ...]
 
-    def as_parameters(self) -> dict[str, list[dict[str, str | int]]]:
+    def as_parameters(self) -> Mapping[str, object]:
         """Return exact serializable identities without recomputing the snapshot."""
-        return {
+        parameters: dict[str, object] = {
             "logical_run_ids": [
                 {"logical_run_id": item.logical_run_id, "status": item.status}
                 for item in self.logical_run_ids
@@ -194,6 +203,7 @@ class RepairTopologyCapture:
                 for item in self.publication_ids
             ],
         }
+        return parameters
 
 
 @dataclass(frozen=True)
@@ -258,7 +268,7 @@ class RepairStaleRunProof:
     def is_orphan(self) -> bool:
         return not self.logical_run_ids and not self.checkpoint_ids and not self.stream_keys
 
-    def as_parameters(self) -> dict[str, object]:
+    def as_parameters(self) -> Mapping[str, object]:
         return {
             "stale_run_id": self.ingest_run_id,
             "stale_control_instance_id": self.control_instance_id,
@@ -339,7 +349,7 @@ class RepairControlStatus:
     owner_id: str | None
     revision: int | None
     state: RepairControlState | None
-    prior_state: Literal["quiesced", "allocated"] | None
+    prior_state: RepairControlPriorState | None
     allocation_digest: str | None
     allocation_unit_count: int
     completion_unit_count: int | None

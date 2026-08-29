@@ -8,6 +8,7 @@ from typing import Protocol
 from src.crm_deal_identity_repair.control_models import (
     RepairBoundaryComponentProof,
     RepairControlLease,
+    RepairControlPriorState,
     RepairStaleRunProof,
     RepairTopologyCapture,
 )
@@ -165,7 +166,11 @@ class RepairQuiescenceService:
         self._assert_authorized_boundary(repair_id, lease)
         if lease.state == "paused":
             return lease
-        if lease.state not in {"quiesced", "allocated"}:
+        if lease.state == "quiesced":
+            prior_state: RepairControlPriorState = "quiesced"
+        elif lease.state == "allocated":
+            prior_state = "allocated"
+        else:
             raise ValueError("only quiesced or allocated repair control can pause")
         paused = RepairControlLease(
             lease.run_id,
@@ -174,7 +179,7 @@ class RepairQuiescenceService:
             expected_revision + 1,
             "paused",
             lease.boundary_digest,
-            prior_state=lease.state,
+            prior_state=prior_state,
         )
         return self._repository.transition(paused, expected_revision)
 

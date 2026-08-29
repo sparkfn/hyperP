@@ -293,18 +293,19 @@ def _status(arguments: Namespace) -> int:
         run = repository.get_qualification(arguments.repair_id)
         snapshot, drift_reason = _status_snapshot(repository, run)
         status = repository.get_status(arguments.repair_id, snapshot, drift_reason)
-        control_repository = (
-            None if run is None else CrmDealRepairControlRepository(client, run.control_instance_id)
-        )
-        control = None if control_repository is None else control_repository.read_status(run.run_id)
-        boundary_proof_admissible = (
-            False
-            if control_repository is None or snapshot is None
-            else _control_boundary_proof_admissible(
-                control_repository.read_boundary_component_proof(run.run_id),
-                RepairBoundaryComponentProof.from_snapshot(snapshot),
+        if run is None:
+            control = None
+            boundary_proof_admissible = False
+        else:
+            control_repository = CrmDealRepairControlRepository(client, run.control_instance_id)
+            control = control_repository.read_status(run.run_id)
+            boundary_proof_admissible = (
+                snapshot is not None
+                and _control_boundary_proof_admissible(
+                    control_repository.read_boundary_component_proof(run.run_id),
+                    RepairBoundaryComponentProof.from_snapshot(snapshot),
+                )
             )
-        )
     finally:
         client.close()
     payload: dict[str, JsonValue] = {
