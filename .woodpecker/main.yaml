@@ -1,4 +1,4 @@
-# MAIN post-merge validation for sparkfn/hyperP Ã¢â‚¬â€ push to `main` only.
+# MAIN post-merge validation for sparkfn/hyperP ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â push to `main` only.
 # Triggers: push events on the `main` branch only. No deploy, no production secrets,
 # no host volumes, no Docker socket, no image push.
 # Materially stronger than PR: re-validates python checks on the merged main commit, plus a
@@ -15,7 +15,7 @@
 # stronger signals but require a Docker socket mount / trusted repo, which this
 # unprivileged PR/MAIN validation boundary forbids. They are tracked separately.
 #
-# Executor: local Woodpecker (docker backend, untrusted repo Ã¢â‚¬â€ no host volumes/socket).
+# Executor: local Woodpecker (docker backend, untrusted repo ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â no host volumes/socket).
 # A disposable Neo4j 5.26 service supplies the same real-query gate as PR CI.
 when:
   event:
@@ -48,7 +48,7 @@ steps:
       - uv run --package profile-unifier-api ruff check services/api/src
       - uv run --package profile-unifier-api ruff format --check services/api/src
       - uv run --package profile-unifier-ingestion ruff check services/ingestion/src
-      - uv run --package profile-unifier-ingestion ruff format --check services/ingestion/src
+      - uv run --package profile-unifier-ingestion ruff format --diff services/ingestion/src
       - uv run --package profile-unifier-api mypy --strict services/api/src
       - uv run --package profile-unifier-ingestion mypy --strict services/ingestion/src
       # pytest per-package (each venv has its runtime + dev deps); the root venv
@@ -57,7 +57,7 @@ steps:
       - uv run --package profile-unifier-api pytest services/api/tests
       - uv sync --frozen --group training
       - uv run --package profile-unifier-ingestion pytest services/ingestion/tests
-      # Production runtime install (no dev group) Ã¢â‚¬â€ verifies the lockfile resolves for
+      # Production runtime install (no dev group) ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â verifies the lockfile resolves for
       # the exact install the api/ingestion Dockerfiles run.
       - uv sync --frozen --no-dev --package profile-unifier-api
       - uv sync --frozen --no-dev --package profile-unifier-ingestion
