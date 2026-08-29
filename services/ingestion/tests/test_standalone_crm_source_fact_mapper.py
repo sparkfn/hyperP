@@ -13,6 +13,8 @@ from src.standalone_crm_source_fact_models import (
 )
 from tests._standalone_crm_lane_a_fakes import contact_envelope
 
+_OBSERVED_AT = datetime(2020, 1, 1, tzinfo=UTC)
+
 
 def _page(rows: tuple[CrmContact, ...]) -> StandaloneCrmSourceFactPage:
     envelope = replace(contact_envelope(), binding_subposition=None)
@@ -21,7 +23,7 @@ def _page(rows: tuple[CrmContact, ...]) -> StandaloneCrmSourceFactPage:
 
 
 def test_mapper_uses_parent_clock_not_retry_clock_and_excludes_associations() -> None:
-    row = CrmContact("6", "Ada", ("+6512345678",), (), "contact", datetime(2020, 1, 1, tzinfo=UTC))
+    row = CrmContact("6", "Ada", ("+6512345678",), (), "contact", _OBSERVED_AT)
     first = map_source_fact_page(_page((row,))).mapped_rows[0].envelope
     second = map_source_fact_page(_page((row,))).mapped_rows[0].envelope
     assert first.record_hash == second.record_hash
@@ -32,16 +34,21 @@ def test_mapper_uses_parent_clock_not_retry_clock_and_excludes_associations() ->
 
 
 def test_authorized_invalid_content_is_failed_but_bad_order_rejects_page() -> None:
-    malformed = CrmContact("6", "", (), (), "contact")
+    malformed = CrmContact("6", "", (), (), "contact", _OBSERVED_AT)
     mutation = map_source_fact_page(_page((malformed,)))
     assert mutation.mapped_rows == ()
     assert mutation.failed_rows == 1
     with pytest.raises(ValueError, match="strictly increasing"):
-        _page((CrmContact("6", None, kind="contact"), CrmContact("6", None, kind="contact")))
+        _page(
+            (
+                CrmContact("6", None, kind="contact", observed_at=_OBSERVED_AT),
+                CrmContact("6", None, kind="contact", observed_at=_OBSERVED_AT),
+            )
+        )
     with pytest.raises(ValueError, match="frozen"):
-        _page((CrmContact("11", None, kind="contact"),))
+        _page((CrmContact("11", None, kind="contact", observed_at=_OBSERVED_AT),))
     association = map_source_fact_page(
-        _page((CrmContact("6", None, kind="contact", company_id="9"),))
+        _page((CrmContact("6", None, kind="contact", company_id="9", observed_at=_OBSERVED_AT),))
     )
     assert association.failed_rows == 1
 
@@ -54,7 +61,12 @@ def test_contact_and_lead_match_the_existing_policy_and_suppress_oversized_chann
     from tests._standalone_crm_lane_a_fakes import lead_envelope
 
     contact = CrmContact(
-        "6", "Ada", tuple(f"+6500{i}" for i in range(6)), ("a@example.test",), "contact"
+        "6",
+        "Ada",
+        tuple(f"+6500{i}" for i in range(6)),
+        ("a@example.test",),
+        "contact",
+        _OBSERVED_AT,
     )
     contact_mapped = map_source_fact_page(_page((contact,))).mapped_rows[0].envelope
     contact_policy = crm_standalone_contact_identity_evidence(
@@ -69,7 +81,7 @@ def test_contact_and_lead_match_the_existing_policy_and_suppress_oversized_chann
     )
     assert [item.type for item in contact_mapped.identifiers] == ["crm_contact_id"]
 
-    lead = CrmContact("6", "Ada", (), ("a@example.test",), "lead")
+    lead = CrmContact("6", "Ada", (), ("a@example.test",), "lead", _OBSERVED_AT)
     checkpoint = StandaloneCrmCheckpoint("census-a", "lead", 10, None, 5, None, None, 0, 0, 1, 2)
     lead_mapped = (
         map_source_fact_page(
@@ -90,7 +102,7 @@ def test_contact_and_lead_match_the_existing_policy_and_suppress_oversized_chann
 def test_hash_is_stable_across_operational_authority_but_isolates_source_instances() -> None:
     from src.standalone_crm_child_contracts import StandaloneCrmSourceChildScope
 
-    row = CrmContact("6", "Ada", kind="contact")
+    row = CrmContact("6", "Ada", kind="contact", observed_at=_OBSERVED_AT)
     base = _page((row,)).envelope
     changed_authority = replace(
         base,
@@ -128,29 +140,27 @@ def test_hash_is_stable_across_operational_authority_but_isolates_source_instanc
     )
 
 
-def test_timestampless_rows_use_parent_availability_without_wall_clock_or_hash_churn() -> None:
-    row = CrmContact("6", "Ada", kind="contact")
-    first = map_source_fact_page(_page((row,))).mapped_rows[0].envelope
-    second = map_source_fact_page(_page((row,))).mapped_rows[0].envelope
+def test_timestampless_authorized_row_is_malformed_without_an_envelope() -> None:
+    mutation = map_source_fact_page(_page((CrmContact("6", "Ada", kind="contact"),)))
 
-    assert first.observed_at == "2026-08-28T00:00:00Z"
-    assert first.raw_payload["observed_at"] is None
-    assert first.raw_payload["effective_observed_at"] == "2026-08-28T00:00:00Z"
-    assert first.record_hash == second.record_hash
+    assert mutation.mapped_rows == ()
+    assert mutation.failed_rows == 1
+    assert mutation.malformed_rows[0].reason == "observed_at is required for source-fact rows"
 
 
 def test_page_boundary_accepts_fifty_rows_and_rejects_fifty_one_before_mapping() -> None:
     accepted = tuple(
-        CrmContact(str(identifier), "Ada", kind="contact")
+        CrmContact(str(identifier), "Ada", kind="contact", observed_at=_OBSERVED_AT)
         for identifier in range(6, 6 + MAX_STANDALONE_CRM_SOURCE_FACT_PAGE_ROWS)
     )
     envelope = replace(
-        _page((CrmContact("6", "Ada", kind="contact"),)).envelope, frozen_upper_id=100
+        _page((CrmContact("6", "Ada", kind="contact", observed_at=_OBSERVED_AT),)).envelope,
+        frozen_upper_id=100,
     )
     checkpoint = StandaloneCrmCheckpoint(
         "census-a", "contact", 100, None, 5, None, None, 0, 0, 1, 2
     )
     assert len(StandaloneCrmSourceFactPage(envelope, "call-a", 5, checkpoint, accepted).rows) == 50
-    rejected = accepted + (CrmContact("56", "Ada", kind="contact"),)
+    rejected = accepted + (CrmContact("56", "Ada", kind="contact", observed_at=_OBSERVED_AT),)
     with pytest.raises(ValueError, match="50-row"):
         StandaloneCrmSourceFactPage(envelope, "call-a", 5, checkpoint, rejected)

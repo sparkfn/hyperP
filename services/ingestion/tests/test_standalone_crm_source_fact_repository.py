@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import cast
 
 import pytest
@@ -36,6 +37,12 @@ from src.standalone_crm_source_fact_models import (
     build_source_fact_commit,
 )
 from tests._standalone_crm_lane_a_fakes import lead_envelope
+
+_OBSERVED_AT = datetime(2020, 1, 1, tzinfo=UTC)
+
+
+def _lead(identifier: str, full_name: str | None = "Ada") -> CrmContact:
+    return CrmContact(identifier, full_name, kind="lead", observed_at=_OBSERVED_AT)
 
 
 @dataclass(frozen=True)
@@ -130,7 +137,7 @@ def _stored_request(*, rows: int = 10) -> str:
 
 
 def _request(rows: tuple[CrmContact, ...] | None = None) -> object:
-    rows = rows or (CrmContact("6", "Ada", kind="lead"),)
+    rows = rows or (_lead("6"),)
     checkpoint = StandaloneCrmCheckpoint("census-a", "lead", 10, None, 5, None, None, 0, 0, 1, 2)
     page = StandaloneCrmSourceFactPage(lead_envelope(), "call-a", 5, checkpoint, rows)
     return build_source_fact_commit(map_source_fact_page(page), skipped_rows=0)
@@ -162,9 +169,7 @@ def test_success_plans_every_row_before_first_persist_and_commits_exact_delta() 
         adapter,
     )
 
-    result = repository.commit_unit(
-        _request((CrmContact("6", "Ada", kind="lead"), CrmContact("7", "Bea", kind="lead")))
-    )
+    result = repository.commit_unit(_request((_lead("6"), _lead("7", "Bea"))))
 
     assert result.decision == "committed"
     assert (result.processed_rows, result.skipped_rows, result.failed_rows) == (2, 0, 0)
@@ -180,9 +185,7 @@ def test_duplicate_page_row_skips_domain_persist_but_advances_atomic_accounting(
     adapter = _Adapter([DuplicateVersion("existing"), _planned()])
     repository, _client = _repository(tx, adapter)
 
-    result = repository.commit_unit(
-        _request((CrmContact("6", "Ada", kind="lead"), CrmContact("7", "Bea", kind="lead")))
-    )
+    result = repository.commit_unit(_request((_lead("6"), _lead("7", "Bea"))))
 
     assert (result.processed_rows, result.skipped_rows, result.failed_rows) == (2, 1, 0)
     assert adapter.events == ["plan", "plan", "persist"]
@@ -236,9 +239,7 @@ def test_late_plan_conflict_prevents_all_persists() -> None:
     repository, _client = _repository(tx, adapter)
 
     with pytest.raises(RuntimeError, match="late planning"):
-        repository.commit_unit(
-            _request((CrmContact("6", "Ada", kind="lead"), CrmContact("7", "Bea", kind="lead")))
-        )
+        repository.commit_unit(_request((_lead("6"), _lead("7", "Bea"))))
     assert adapter.events == ["plan"]
     assert all(query != STAMP_SOURCE_FACT_LINEAGE for query, _ in tx.calls)
 
@@ -287,11 +288,28 @@ def test_request_budget_mismatch_rejects_before_claim() -> None:
     assert [query for query, _ in tx.calls] == [RESOLVE_COMMITTED_RECEIPT, READ_CENSUS_REQUEST]
 
 
+def test_timestampless_authorized_row_advances_failed_checkpoint_without_adapter_work() -> None:
+    tx = _Tx(_stored_request())
+    adapter = _Adapter([])
+    repository, _client = _repository(tx, adapter)
+    request = _request((CrmContact("6", "Ada", kind="lead"),))
+
+    result = repository.commit_unit(request)
+
+    assert (result.processed_rows, result.skipped_rows, result.failed_rows) == (1, 0, 1)
+    assert adapter.events == []
+    assert all(query != STAMP_SOURCE_FACT_LINEAGE for query, _ in tx.calls)
+    final = next(parameters for query, parameters in tx.calls if query == FINALIZE_PAGE)
+    assert final["failed_delta"] == 1
+    assert final["proposed_cursor"] == 6
+    assert final["proposed_processed"] == 1
+
+
 def test_malformed_authorized_row_counts_failed_and_never_persists() -> None:
     tx = _Tx(_stored_request())
     adapter = _Adapter([])
     repository, _client = _repository(tx, adapter)
-    request = _request((CrmContact("6", "", kind="lead"),))
+    request = _request((_lead("6", ""),))
 
     result = repository.commit_unit(request)
 

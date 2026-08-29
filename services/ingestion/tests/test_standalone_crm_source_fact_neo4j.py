@@ -157,13 +157,17 @@ def assert_overlapping_crm_ids_remain_source_instance_isolated(driver: Driver) -
             """
             MATCH (record:SourceRecord {source_record_id: 'bitrix-crm-lead-6'})
             WHERE record.source_instance_id IN ['portal-a', 'portal-b']
-            OPTIONAL MATCH (person:Person)-[fact:HAS_FACT {source_record_pk: record.source_record_pk}]->(record)
+            MATCH (person:Person)-[fact:HAS_FACT {source_record_pk: record.source_record_pk}]->(record)
+            MATCH (person)-[:IDENTIFIED_BY {source_record_pk: record.source_record_pk}]->
+              (identifier:Identifier {identifier_type: 'crm_lead_id', normalized_value: '6'})
             RETURN count(DISTINCT record) AS source_records,
               count(DISTINCT record.source_instance_id) AS source_instances,
               count(DISTINCT record.source_version_key) AS lifecycle_keys,
-              count(DISTINCT record.source_record_id) AS shared_crm_ids,
+              count(DISTINCT person) AS persons,
               count(DISTINCT fact) AS matching_fact_relationships,
-              count(DISTINCT person) AS linked_persons
+              count(DISTINCT identifier.identifier_id) AS identifier_identities,
+              collect(DISTINCT identifier.identifier_scope) AS identifier_scopes,
+              collect(DISTINCT identifier.source_instance_id) AS identifier_source_instances
             """
         ).single(strict=True)
     values = dict(row)
@@ -171,15 +175,19 @@ def assert_overlapping_crm_ids_remain_source_instance_isolated(driver: Driver) -
         "source_records": values["source_records"],
         "source_instances": values["source_instances"],
         "lifecycle_keys": values["lifecycle_keys"],
-        "shared_crm_ids": values["shared_crm_ids"],
+        "persons": values["persons"],
+        "matching_fact_relationships": values["matching_fact_relationships"],
+        "identifier_identities": values["identifier_identities"],
     } == {
         "source_records": 2,
         "source_instances": 2,
         "lifecycle_keys": 2,
-        "shared_crm_ids": 1,
+        "persons": 2,
+        "matching_fact_relationships": 2,
+        "identifier_identities": 2,
     }
-    assert values["matching_fact_relationships"] == 2
-    assert values["linked_persons"] in {1, 2}
+    assert set(values["identifier_scopes"]) == {"portal-a", "portal-b"}
+    assert set(values["identifier_source_instances"]) == {"portal-a", "portal-b"}
 
 
 def assert_concurrent_page_cas_commits_once_and_replays_once(driver: Driver) -> None:

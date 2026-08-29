@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import replace
+from datetime import UTC, datetime
 
 from neo4j import Driver, ManagedTransaction
 from src.connectors.bitrix_openlines.models import CrmContact
@@ -219,7 +220,7 @@ def repository_request(
         call_intent_id,
         5,
         checkpoint,
-        (CrmContact("6", "Ada", kind="lead"),),
+        (CrmContact("6", "Ada", kind="lead", observed_at=datetime(2020, 1, 1, tzinfo=UTC)),),
     )
     return build_source_fact_commit(map_source_fact_page(page), skipped_rows=0)
 

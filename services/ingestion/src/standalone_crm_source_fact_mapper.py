@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from datetime import UTC
+from datetime import UTC, datetime
 
 from src.connectors.bitrix_openlines.crm_identity_policy import (
     crm_standalone_contact_identity_evidence,
@@ -36,6 +36,8 @@ def map_source_fact_page(page: StandaloneCrmSourceFactPage) -> StandaloneCrmSour
 
 def map_source_fact_row(page: StandaloneCrmSourceFactPage, row: CrmContact) -> SourceRecordEnvelope:
     """Create one canonical, source-instance-scoped identity envelope."""
+    if row.observed_at is None:
+        raise ValueError("observed_at is required for source-fact rows")
     if row.company_id is not None:
         raise ValueError("company association is not authorized in source-fact rows")
     if row.kind == "contact":
@@ -48,16 +50,14 @@ def map_source_fact_row(page: StandaloneCrmSourceFactPage, row: CrmContact) -> S
         )
     else:
         raise ValueError("source-fact row kind must be contact or lead")
-    upstream_observed_at = _iso(row)
-    observed_at = upstream_observed_at or page.envelope.availability.available_at
+    observed_at = _iso(row.observed_at)
     kind = row.kind
     source_record_id = f"bitrix-crm-{kind}-{row.id}"
     raw_payload: dict[str, JsonValue] = {
         "source_entity_type": kind,
         "source_entity_id": row.id,
         "source_instance_id": page.envelope.scope.source_instance_id,
-        "observed_at": upstream_observed_at,
-        "effective_observed_at": observed_at,
+        "observed_at": observed_at,
         "full_name": row.full_name,
         "identity_metadata": evidence.metadata,
         "standalone_crm_source_fact": {
@@ -90,7 +90,7 @@ def map_source_fact_row(page: StandaloneCrmSourceFactPage, row: CrmContact) -> S
             {
                 "source_record_id": source_record_id,
                 "source_instance_id": page.envelope.scope.source_instance_id,
-                "observed_at": upstream_observed_at,
+                "observed_at": observed_at,
                 "identifiers": evidence.identifiers,
                 "attributes": attributes,
                 "identity_metadata": evidence.metadata,
@@ -106,12 +106,10 @@ def map_source_fact_row(page: StandaloneCrmSourceFactPage, row: CrmContact) -> S
     )
 
 
-def _iso(row: CrmContact) -> str | None:
-    if row.observed_at is None:
-        return None
-    if row.observed_at.tzinfo is None:
+def _iso(observed_at: datetime) -> str:
+    if observed_at.tzinfo is None:
         raise ValueError("observed_at must be timezone-aware")
-    return row.observed_at.astimezone(UTC).isoformat().replace("+00:00", "Z")
+    return observed_at.astimezone(UTC).isoformat().replace("+00:00", "Z")
 
 
 def _hash(value: object) -> str:
