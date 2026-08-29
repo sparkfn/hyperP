@@ -87,6 +87,47 @@ SET lock.locked_at = datetime(), lock.repair_mutation_id = $mutation_id
 RETURN properties(record) AS source, record.entity_key AS entity_key
 """
 
+LOCK_AND_ASSERT_REPAIR_MUTATION_FINAL_GUARD = """
+MATCH (run:CrmDealRepairRun {
+  run_id: $run_id, boundary_digest: $boundary_digest,
+  source_instance_id: $source_instance_id, control_instance_id: $control_instance_id,
+  status: 'qualified', execution_allowed: false
+})
+WHERE run.source_record_pks_json CONTAINS $quoted_source_record_pk
+MATCH (unit:CrmDealRepairUnit {
+  run_id: $run_id, unit_id: $unit_id, generation: $generation, sequence: $sequence,
+  attempt: $attempt, boundary_digest: $boundary_digest,
+  inventory_fingerprint: $unit_fingerprint, mutation_lock_id: $mutation_id,
+  inventory_key: $inventory_key, source_record_pk: $source_record_pk,
+  inventory_graph_fingerprint: $inventory_graph_fingerprint,
+  inventory_stored_payload_fingerprint: $inventory_stored_payload_fingerprint,
+  inventory_binding_digest: $inventory_binding_digest
+})
+WHERE unit.state IN ['allocated', 'quiesced']
+MATCH (:CrmDealRepairFence {
+  run_id: $run_id, unit_id: $unit_id, fence_id: $fence_id,
+  generation: $generation, sequence: $sequence, attempt: $attempt,
+  owner_id: $owner_id, token: $fence_token, boundary_digest: $boundary_digest, state: 'claimed'
+})
+MATCH (:BitrixDispatchControl {
+  source_key: 'bitrix_chat', control_instance_id: $control_instance_id, blocked: true
+})
+MATCH (source_instance:BitrixSourceInstance {
+  source_key: 'bitrix_chat', source_instance_id: $source_instance_id, status: 'active'
+})-[:OWNS_BITRIX_CONTROL]->(:BitrixExecutionSourceBinding {
+  source_key: 'bitrix_chat', source_instance_id: $source_instance_id,
+  control_instance_id: $control_instance_id
+})
+MATCH (:BitrixSourceInstance {
+  source_key: 'bitrix_chat', source_instance_id: $control_instance_id, status: 'active'
+})
+MATCH (old:SourceRecord {source_record_pk: $source_record_pk, source_record_id: $source_record_id,
+  source_instance_id: $source_instance_id, lifecycle_status: 'superseded', is_latest: false})
+MATCH (new:SourceRecord {source_record_pk: $new_source_record_pk, repair_mutation_id: $mutation_id,
+  lifecycle_status: $new_lifecycle_status, is_latest: true})
+RETURN old.source_record_pk AS old_source_record_pk, new.source_record_pk AS new_source_record_pk
+"""
+
 
 READ_REPAIR_IDENTIFIER_PREEXISTENCE = """
 UNWIND $identifiers AS item
@@ -156,12 +197,21 @@ RETURN collect(person.person_id) AS owner_ids
 
 READ_LOCKED_REPAIR_AUTHORITY = """
 MATCH (deal:SourceRecord {source_record_pk: $source_record_pk})
-MATCH (deal)-[current:LINKED_TO]->(person:Person)
-WHERE coalesce(current.is_active, true) = true
+MATCH (source_instance:BitrixSourceInstance {
+  source_key: 'bitrix_chat', source_instance_id: $source_instance_id, status: 'active'
+})-[:OWNS_BITRIX_CONTROL]->(binding:BitrixExecutionSourceBinding {
+  source_key: 'bitrix_chat', source_instance_id: $source_instance_id,
+  control_instance_id: $control_instance_id
+})
+MATCH (:BitrixSourceInstance {
+  source_key: 'bitrix_chat', source_instance_id: $control_instance_id, status: 'active'
+})
+MATCH (person:Person)
+WHERE person.person_id IN $owner_ids
 SET deal.source_record_pk = deal.source_record_pk, person.person_id = person.person_id
-WITH deal, person
+WITH deal, person, binding
 CALL {
-  WITH deal, person
+  WITH deal, person, binding
   OPTIONAL MATCH (support:SourceRecord)-[support_link:LINKED_TO]->(person)
   WHERE coalesce(support_link.is_active, true) = true
     AND support.source_record_pk <> deal.source_record_pk
@@ -185,6 +235,7 @@ CALL {
     AND support.standalone_crm_authorization_digest IS NOT NULL
     AND support.standalone_crm_availability_contract_version IS NOT NULL
     AND support.standalone_crm_frozen_upper_id IS NOT NULL
+    AND support.standalone_crm_control_instance_id = $control_instance_id
   MATCH (:StandaloneCrmCensus {
     census_id: support.standalone_crm_census_id,
     generation: support.standalone_crm_generation,
@@ -220,6 +271,7 @@ CALL {
     fence_token: support.standalone_crm_fence_token,
     fence_owner_id: support.standalone_crm_fence_owner_id,
     source_key: 'bitrix_chat', source_instance_id: support.source_instance_id,
+    control_instance_id: $control_instance_id,
     task_name: support.standalone_crm_task_name, task_id: support.standalone_crm_task_id,
     payload_digest: support.standalone_crm_payload_digest,
     call_intent_id: support.standalone_crm_call_intent_id,
@@ -267,6 +319,7 @@ CALL {
     standalone_crm_availability_contract_version:
       support.standalone_crm_availability_contract_version,
     standalone_crm_frozen_upper_id: support.standalone_crm_frozen_upper_id
+    ,control_instance_id: binding.control_instance_id
   } END) AS independent_rows
 }
 CALL {

@@ -203,8 +203,8 @@ def _seed_domain(driver: Driver, *, independent_support: bool) -> None:
                 CREATE (:StandaloneCrmCensusFence {census_id: 'census-a', generation: 1, stream_kind: 'contacts', token: 'source-fence', owner_id: 'source-worker'})
                 CREATE (:StandaloneCrmChildPublication {census_id: 'census-a', generation: 1, stream_kind: 'contacts', task_name: 'source-task', task_id: 'source-task-id', payload_digest: $support_digest, status: 'published'})
                 CREATE (:StandaloneCrmHttpCallReservation {intent_id: 'call-intent', census_id: 'census-a', generation: 1, stream_kind: 'contacts', fence_token: 'source-fence', task_id: 'source-task-id', status: 'succeeded'})
-                CREATE (:StandaloneCrmSourceFactPageReceipt {receipt_key: 'support-receipt', status: 'committed', census_id: 'census-a', generation: 1, stream_kind: 'contacts', fence_token: 'source-fence', fence_owner_id: 'source-worker', source_key: 'bitrix_chat', source_instance_id: $source_instance_id, task_name: 'source-task', task_id: 'source-task-id', payload_digest: $support_digest, call_intent_id: 'call-intent', authorization_id: 'authorization', authorization_digest: $support_digest, available_at: datetime($observed_at), availability_contract_version: 'v1', frozen_upper_id: 10})
-                CREATE (support:SourceRecord {source_record_pk: 'contact-support-pk', source_record_id: 'bitrix-crm-contact-contact-1', source_record_version: '1', source_version_key: 'contact-support-v1', source_instance_id: $source_instance_id, record_type: 'identity', source_entity_type: 'contact', source_entity_id: 'contact-1', identity_policy_version: 'crm_contact_identity_v1', lifecycle_status: 'active', is_latest: true, observed_at: datetime($observed_at), record_hash: 'dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd', raw_payload: '{}', normalized_payload: '{}', standalone_crm_available_at: datetime($observed_at), standalone_crm_census_id: 'census-a', standalone_crm_stream_kind: 'contacts', standalone_crm_generation: 1, standalone_crm_fence_token: 'source-fence', standalone_crm_fence_owner_id: 'source-worker', standalone_crm_task_name: 'source-task', standalone_crm_task_id: 'source-task-id', standalone_crm_payload_digest: $support_digest, standalone_crm_call_intent_id: 'call-intent', standalone_crm_authorization_id: 'authorization', standalone_crm_authorization_digest: $support_digest, standalone_crm_availability_contract_version: 'v1', standalone_crm_frozen_upper_id: 10})-[:FROM_SOURCE]->(source)
+                CREATE (:StandaloneCrmSourceFactPageReceipt {receipt_key: 'support-receipt', status: 'committed', census_id: 'census-a', generation: 1, stream_kind: 'contacts', fence_token: 'source-fence', fence_owner_id: 'source-worker', source_key: 'bitrix_chat', source_instance_id: $source_instance_id, control_instance_id: $control_instance_id, task_name: 'source-task', task_id: 'source-task-id', payload_digest: $support_digest, call_intent_id: 'call-intent', authorization_id: 'authorization', authorization_digest: $support_digest, available_at: datetime($observed_at), availability_contract_version: 'v1', frozen_upper_id: 10})
+                CREATE (support:SourceRecord {source_record_pk: 'contact-support-pk', source_record_id: 'bitrix-crm-contact-contact-1', source_record_version: '1', source_version_key: 'contact-support-v1', source_instance_id: $source_instance_id, record_type: 'identity', source_entity_type: 'contact', source_entity_id: 'contact-1', identity_policy_version: 'crm_contact_identity_v1', lifecycle_status: 'active', is_latest: true, observed_at: datetime($observed_at), record_hash: 'dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd', raw_payload: '{}', normalized_payload: '{}', standalone_crm_available_at: datetime($observed_at), standalone_crm_census_id: 'census-a', standalone_crm_stream_kind: 'contacts', standalone_crm_generation: 1, standalone_crm_fence_token: 'source-fence', standalone_crm_fence_owner_id: 'source-worker', standalone_crm_task_name: 'source-task', standalone_crm_task_id: 'source-task-id', standalone_crm_payload_digest: $support_digest, standalone_crm_call_intent_id: 'call-intent', standalone_crm_authorization_id: 'authorization', standalone_crm_authorization_digest: $support_digest, standalone_crm_availability_contract_version: 'v1', standalone_crm_frozen_upper_id: 10, standalone_crm_control_instance_id: $control_instance_id})-[:FROM_SOURCE]->(source)
                 CREATE (support)-[:LINKED_TO {is_active: true, source_record_pk: 'contact-support-pk'}]->(person)
                 CREATE (person)-[:IDENTIFIED_BY {is_active: true, source_record_pk: 'contact-support-pk'}]->(contact)
                 """,
@@ -313,6 +313,20 @@ def _negative_state(driver: Driver) -> tuple[str, ...]:
     return tuple(
         sorted(json.dumps(row, default=str, sort_keys=True, separators=(",", ":")) for row in rows)
     )
+
+
+def _rollback_dynamic(value: object, key: str | None = None) -> object:
+    if key is not None and key.endswith("_at") and key != "observed_at":
+        return {"dynamic": "transaction_datetime"}
+    if isinstance(value, dict):
+        return {item_key: _rollback_dynamic(item, item_key) for item_key, item in value.items()}
+    if isinstance(value, list):
+        return [_rollback_dynamic(item) for item in value]
+    if hasattr(value, "iso_format"):
+        formatted = value.iso_format()
+        if isinstance(formatted, str):
+            return formatted
+    return value
 
 
 @pytest.mark.parametrize("stage", _FAILURE_STAGES)
@@ -523,6 +537,45 @@ def test_review_required_with_no_current_candidate_has_no_provisional_link(
     assert dict(row) == {"active_links": 0, "provisional_links": 0}
 
 
+def test_control_lineage_mismatch_falls_to_review_while_complete_lineage_applies(
+    neo4j_driver: Driver,
+) -> None:
+    _seed_domain(neo4j_driver, independent_support=True)
+    _deactivate_child_contamination(neo4j_driver)
+    with neo4j_driver.session() as session:
+        session.run(
+            "MATCH (support:SourceRecord {source_record_pk: 'contact-support-pk'}) "
+            "SET support.standalone_crm_control_instance_id = 'wrong-control'"
+        ).consume()
+    item, _ = _inventory(neo4j_driver)
+    result = _repository(neo4j_driver).commit_atomic_mutation(_seed_authority(neo4j_driver, item))
+    assert result.mutation is not None and result.mutation.outcome == "review_required"
+
+    _reset(neo4j_driver)
+    _seed_domain(neo4j_driver, independent_support=True)
+    _deactivate_child_contamination(neo4j_driver)
+    item, _ = _inventory(neo4j_driver)
+    result = _repository(neo4j_driver).commit_atomic_mutation(_seed_authority(neo4j_driver, item))
+    assert result.mutation is not None and result.mutation.outcome == "applied"
+
+
+def test_review_required_replay_rejects_authority_drift(neo4j_driver: Driver) -> None:
+    _seed_domain(neo4j_driver, independent_support=True)
+    item, _ = _inventory(neo4j_driver)
+    command = _seed_authority(neo4j_driver, item)
+    repository = _repository(neo4j_driver)
+    committed = repository.commit_atomic_mutation(command)
+    assert committed.mutation is not None and committed.mutation.outcome == "review_required"
+    with neo4j_driver.session() as session:
+        session.run(
+            "MATCH (support:SourceRecord {source_record_pk: 'contact-support-pk'}) "
+            "SET support.standalone_crm_authorization_digest = $digest",
+            digest="sha256:" + "c" * 64,
+        ).consume()
+    with pytest.raises(RepairMutationDriftError, match="authority changed"):
+        repository.commit_atomic_mutation(command)
+
+
 def test_lane_a_lineage_mismatch_forces_review_and_post_commit_drift_is_rejected(
     neo4j_driver: Driver,
 ) -> None:
@@ -608,6 +661,51 @@ def test_rollback_image_readback_tracks_identifier_preexistence_and_source_schem
     ]
     assert len(delete_specifications) == 1
     assert delete_specifications[0]["identifier_candidates"] == candidates
+    specifications = payload_body["created_object_specifications"]
+    assert isinstance(specifications, list)
+    with neo4j_driver.session() as session:
+        actual = session.run(
+            """
+            MATCH (new:SourceRecord {repair_mutation_id: $mutation_id})
+            CALL {
+              WITH new
+              MATCH (person)-[link:IDENTIFIED_BY {repair_mutation_id: $mutation_id}]->(identifier)
+              RETURN collect({object_kind: 'IDENTIFIED_BY', direction: 'Person_to_Identifier',
+                left_endpoint: {person_id: person.person_id}, right_endpoint: {
+                  identifier_type: identifier.identifier_type, identifier_scope: identifier.identifier_scope,
+                  normalized_value: identifier.normalized_value}, properties: properties(link)}) AS links
+            }
+            CALL {
+              WITH new
+              MATCH (person)-[fact:HAS_FACT {repair_mutation_id: $mutation_id}]->(new)
+              RETURN collect({object_kind: 'HAS_FACT', direction: 'Person_to_SourceRecord',
+                left_endpoint: {person_id: person.person_id}, right_endpoint: {
+                  source_record_pk: new.source_record_pk}, properties: properties(fact)}) AS facts
+            }
+            RETURN links + facts AS objects
+            """,
+            mutation_id=command.mutation_id,
+        ).single(strict=True)["objects"]
+    expected_relationships = [
+        item
+        for item in specifications
+        if isinstance(item, dict) and item.get("object_kind") != "Identifier"
+    ]
+    assert sorted(
+        json.dumps(_rollback_dynamic(item), sort_keys=True, separators=(",", ":"))
+        for item in actual
+    ) == sorted(
+        json.dumps(
+            {
+                key: value
+                for key, value in item.items()
+                if key not in {"preexisting", "write_mode", "multiplicity_ordinal"}
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        for item in expected_relationships
+    )
     assert row["link_status"] == "linked"
     assert row["observed_at"].startswith("2026-08-01T12:00:00")
     assert row["owned_by_count"] == 1
@@ -648,6 +746,44 @@ def test_replay_rejects_committed_bundle_cardinality_drift(neo4j_driver: Driver)
             mutation_id=command.mutation_id,
         ).consume()
     with pytest.raises(RepairMutationDriftError, match="bundle cardinality differs"):
+        repository.commit_atomic_mutation(command)
+
+
+@pytest.mark.parametrize(
+    ("label", "cypher"),
+    [
+        (
+            "result_digest",
+            "MATCH (result:CrmDealRepairMutationResult {mutation_id: $mutation_id}) "
+            "SET result.result_digest = 'sha256:' + '0'",
+        ),
+        (
+            "checkpoint_scope",
+            "MATCH (checkpoint:CrmDealRepairCheckpoint {run_id: 'run-a', unit_id: 'unit-a'}) "
+            "SET checkpoint.generation = 99",
+        ),
+        (
+            "outbox_fence",
+            "MATCH (outbox:CrmDealRepairOutbox {run_id: 'run-a', unit_id: 'unit-a'}) "
+            "SET outbox.delivery_token = 'tampered-token'",
+        ),
+    ],
+)
+def test_replay_rejects_root_and_child_scope_digest_tamper(
+    neo4j_driver: Driver,
+    label: str,
+    cypher: str,
+) -> None:
+    _seed_domain(neo4j_driver, independent_support=True)
+    _deactivate_child_contamination(neo4j_driver)
+    item, _ = _inventory(neo4j_driver)
+    command = _seed_authority(neo4j_driver, item)
+    repository = _repository(neo4j_driver)
+    committed = repository.commit_atomic_mutation(command)
+    assert committed.mutation is not None and committed.mutation.outcome == "applied"
+    with neo4j_driver.session() as session:
+        session.run(cypher, mutation_id=command.mutation_id).consume()
+    with pytest.raises(RepairMutationDriftError, match="(digest|scope|fence)"):
         repository.commit_atomic_mutation(command)
 
 

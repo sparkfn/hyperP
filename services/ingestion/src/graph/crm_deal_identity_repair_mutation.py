@@ -9,6 +9,8 @@ from neo4j import ManagedTransaction, Record
 
 from src.crm_deal_identity_repair.digests import (
     authority_evidence_digest,
+    mutation_request_digest,
+    mutation_result_digest,
     object_digest,
     repaired_state_digest,
 )
@@ -51,17 +53,20 @@ from src.graph.crm_deal_identity_repair_mutation_payloads import (
     _snapshot,
     _source_values,
 )
-from src.graph.crm_deal_identity_repair_mutation_records import atomic_result_from_record
+from src.graph.crm_deal_identity_repair_mutation_records import (
+    atomic_result_from_record,
+    canonical_payload,
+)
 from src.graph.queries.crm_deal_identity_repair_mutation import (
     ACTIVATE_REPAIRED_SOURCE_RECORD,
     CREATE_REPAIR_DECISION,
     CREATE_REPAIRED_SOURCE_RECORD,
     CREATE_UNRECONSTRUCTABLE_REVIEW_SOURCE_RECORD,
     FIND_COMMITTED_REPAIR_MUTATION,
+    LOCK_AND_ASSERT_REPAIR_MUTATION_FINAL_GUARD,
     LOCK_AND_ASSERT_REPAIR_MUTATION_GUARD,
     LOCK_REPAIR_MUTATION_UNIT,
     PERSIST_REPAIR_MUTATION_LEDGER,
-    READ_REPAIRED_OWNER_IDS,
     RETIRE_EXACT_CONTAMINATION,
     STAGE_REVIEW_SOURCE_RECORD,
 )
@@ -133,7 +138,7 @@ class CrmDealIdentityRepairMutationRepository:
         observed_state = _postcondition_state(tx, plan.source_record_pk)
         if observed_state != expected_state:
             raise RuntimeError("repair transaction-local postcondition digest differs")
-        self._guard(tx, request)
+        self._final_guard(tx, request, plan)
         result_digest = build_result_digest(request, plan, rollback)
         outbox_digest = build_outbox_digest(request, result_digest)
         persisted = tx.run(
@@ -206,32 +211,83 @@ class CrmDealIdentityRepairMutationRepository:
         except RuntimeError as exc:
             raise RepairMutationDriftError("repair committed bundle payload differs") from exc
         assert replay.mutation is not None
-        if replay.mutation.outcome == "applied":
-            owner_row = tx.run(
-                READ_REPAIRED_OWNER_IDS,
-                source_record_pk=committed_source_record_pk,
-            ).single()
-            if owner_row is None or not isinstance(owner_row["owner_ids"], list):
-                raise RepairMutationDriftError("repair authority readback is malformed")
-            owner_ids = tuple(
-                sorted(value for value in owner_row["owner_ids"] if isinstance(value, str))
-            )
-            current_evidence = _authority_evidence(
-                tx,
-                request,
-                owner_ids,
-                source_record_pk=committed_source_record_pk,
-            )
-            current_evidence_digest = authority_evidence_digest(
-                {
-                    "current_owner_ids": list(owner_ids),
-                    "evidence": [item.to_dict() for item in current_evidence],
-                }
-            )
-            if current_evidence_digest != replay.mutation.evidence_digest:
-                raise RepairMutationDriftError("repair authority changed after commit")
+        assert replay.rollback_image is not None
         assert replay.checkpoint is not None
         assert replay.outbox_event is not None
+        image_values = _record_object(row, "image")
+        payload_json = image_values.get("payload_json")
+        if not isinstance(payload_json, str) or not payload_json:
+            raise RepairMutationDriftError("repair committed rollback image is malformed")
+        payload = canonical_payload(payload_json)
+        payload_body = payload.get("payload")
+        if not isinstance(payload_body, dict):
+            raise RepairMutationDriftError("repair committed rollback payload is malformed")
+        request_body = payload_body.get("request")
+        authority_context = payload_body.get("authority_context")
+        desired_state = payload_body.get("desired_state")
+        if not isinstance(request_body, dict) or not isinstance(authority_context, dict):
+            raise RepairMutationDriftError("repair committed replay context is malformed")
+        committed_request_digest = result.get("request_digest")
+        if not isinstance(committed_request_digest, str):
+            raise RepairMutationDriftError("repair request digest is malformed")
+        if mutation_request_digest(request_body) != committed_request_digest:
+            raise RepairMutationDriftError("repair request digest differs")
+        owner_values = authority_context.get("current_owner_ids")
+        if not isinstance(owner_values, list) or not all(
+            isinstance(value, str) for value in owner_values
+        ):
+            raise RepairMutationDriftError("repair authority owner context is malformed")
+        owner_ids = tuple(sorted(value for value in owner_values if isinstance(value, str)))
+        current_evidence = _authority_evidence(tx, request, owner_ids)
+        current_evidence_digest = authority_evidence_digest(
+            {
+                "current_owner_ids": list(owner_ids),
+                "evidence": [item.to_dict() for item in current_evidence],
+            }
+        )
+        if current_evidence_digest != replay.mutation.evidence_digest:
+            raise RepairMutationDriftError("repair authority changed after commit")
+        if not isinstance(desired_state, dict):
+            raise RepairMutationDriftError("repair desired-state context is malformed")
+        recomputed_result_digest = mutation_result_digest(
+            {
+                "request_digest": committed_request_digest,
+                "authority_digest": replay.mutation.evidence_digest,
+                "rollback_image_digest": replay.rollback_image.image_digest,
+                "expected_repaired_digest": replay.rollback_image.expected_repaired_digest,
+                "desired_state": desired_state,
+            }
+        )
+        if recomputed_result_digest != replay.mutation.result_digest:
+            raise RepairMutationDriftError("repair result digest differs")
+        if (
+            replay.rollback_image.rollback_image_id != request.rollback_image_id
+            or replay.checkpoint.checkpoint_id != request.checkpoint_id
+            or replay.outbox_event.event_id != request.outbox_event_id
+        ):
+            raise RepairMutationDriftError("repair child ledger identity differs")
+        for artifact in (
+            replay.mutation,
+            replay.rollback_image,
+            replay.checkpoint,
+            replay.outbox_event,
+        ):
+            if (
+                artifact.generation != request.unit.generation
+                or artifact.sequence != request.unit.sequence
+                or artifact.attempt != request.unit.attempt
+                or artifact.owner_id != request.fence.owner_id
+                or artifact.boundary_digest != request.unit.boundary_digest
+            ):
+                raise RepairMutationDriftError("repair committed ledger scope differs")
+        if (
+            replay.mutation.fence_token != request.fence.token
+            or replay.rollback_image.fence_token != request.fence.token
+            or replay.checkpoint.fence_token != request.fence.token
+            or replay.outbox_event.delivery_token != request.fence.token
+            or replay.mutation.unit_fingerprint != request.unit.inventory_fingerprint
+        ):
+            raise RepairMutationDriftError("repair committed ledger fence differs")
         checkpoint_digest = object_digest(
             b"crm-deal-identity-repair-checkpoint-v1\x00",
             {"result_digest": replay.mutation.result_digest},
@@ -257,6 +313,21 @@ class CrmDealIdentityRepairMutationRepository:
                 "repair run/unit/fence/control/source guard rejected"
             )
         return row
+
+    def _final_guard(
+        self,
+        tx: ManagedTransaction,
+        request: RepairMutationCommand,
+        plan: RepairMutationPlan,
+    ) -> None:
+        params = _guard_parameters(request)
+        params["new_source_record_pk"] = plan.source_record_pk
+        params["new_lifecycle_status"] = (
+            "active" if plan.disposition == "applied" else "pending_review"
+        )
+        row = tx.run(LOCK_AND_ASSERT_REPAIR_MUTATION_FINAL_GUARD, **params).single()
+        if row is None:
+            raise RepairMutationAuthorityError("repair final fence/control/source guard rejected")
 
     def _create_source(
         self,
