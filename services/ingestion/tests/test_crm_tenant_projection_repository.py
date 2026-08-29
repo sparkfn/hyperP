@@ -1,0 +1,281 @@
+"""Focused repository-boundary checks for immutable CRM tenant projection persistence."""
+
+from __future__ import annotations
+
+from dataclasses import replace
+
+import pytest
+from _crm_tenant_projection_census_cases import (
+    test_source_census_admission_rejects_terminal_company_and_control_drift,
+    test_source_census_admission_requires_contact_lead_and_exact_completed_bounds,
+)
+from _crm_tenant_projection_neo4j_helpers import (
+    _mapping_active_head_drift_parameters,
+)
+from _crm_tenant_projection_neo4j_helpers import (
+    _scope as neo4j_projection_scope,
+)
+from _crm_tenant_projection_observation_cases import (
+    test_unmapped_observation_is_validated_before_zero_target_decision,
+    test_unmapped_observation_topology_fails_closed_before_decision,
+)
+from _standalone_crm_lane_a_fakes import prepared_mapping_revision, projection_scope
+from src.crm_tenant_mapping_identity import mapping_head_id
+from src.crm_tenant_mapping_models import CrmTenantMappingExpectedHeadBoundary
+from src.crm_tenant_projection_identity import (
+    empty_capture_boundary_digest,
+    extend_capture_boundary_digest,
+    projection_release_id,
+)
+from src.crm_tenant_projection_models import (
+    CrmTenantProjectionIntegrityError,
+    CrmTenantProjectionMaterializationCommand,
+    CrmTenantProjectionReleaseSummary,
+)
+from src.graph import crm_tenant_projection as projection_graph
+from src.graph import crm_tenant_projection_write as projection_write
+from src.graph.crm_tenant_projection_values import _materialized_fingerprint_from_values
+from src.graph.queries import crm_tenant_projection as queries
+from src.graph.queries import crm_tenant_projection_integrity as integrity_queries
+from src.graph.queries import crm_tenant_projection_projection as projection_queries
+
+_DIGEST = "sha256:" + "a" * 64
+
+__all__ = (
+    "test_source_census_admission_rejects_terminal_company_and_control_drift",
+    "test_source_census_admission_requires_contact_lead_and_exact_completed_bounds",
+    "test_unmapped_observation_is_validated_before_zero_target_decision",
+    "test_unmapped_observation_topology_fails_closed_before_decision",
+)
+
+
+class _Result:
+    def __init__(self, record: dict[str, object]) -> None:
+        self._record = record
+
+    def single(self) -> dict[str, object]:
+        return self._record
+
+
+class _AllocationTx:
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def run(self, query: str, **_parameters: object) -> _Result:
+        self.calls.append(query)
+        assert query == queries.LOCK_SCOPE
+        return _Result({"next_release_number": 1})
+
+
+class _AllocationClient:
+    def __init__(self, tx: _AllocationTx) -> None:
+        self._tx = tx
+
+    def execute_write(self, work: object) -> object:
+        assert callable(work)
+        return work(self._tx)
+
+
+def _command() -> CrmTenantProjectionMaterializationCommand:
+    scope = projection_scope()
+    prepared = prepared_mapping_revision()
+    return CrmTenantProjectionMaterializationCommand(
+        scope,
+        "projection-request",
+        "census-a",
+        _DIGEST,
+        prepared.revision_id,
+        prepared.manifest_digest,
+        CrmTenantMappingExpectedHeadBoundary(
+            scope.mapping_scope, mapping_head_id(scope.mapping_scope), None
+        ),
+        None,
+        2,
+    )
+
+
+def _projection_release() -> CrmTenantProjectionReleaseSummary:
+    command = _command()
+    return CrmTenantProjectionReleaseSummary(
+        command.scope,
+        "release-a",
+        1,
+        command.request_id,
+        command.release_fingerprint,
+        command.source_census_id,
+        command.mapping_revision_id,
+        command.mapping_manifest_digest,
+        "building",
+        "projection",
+        None,
+        None,
+        1,
+        0,
+        0,
+        0,
+    )
+
+
+def test_mapping_active_head_drift_setup_uses_command_property_without_neo4j() -> None:
+    parameters = _mapping_active_head_drift_parameters()
+
+    assert parameters.head_id == mapping_head_id(neo4j_projection_scope().mapping_scope)
+    assert parameters.active_revision_id == "other"
+    assert parameters.active_revision_number == 1
+
+
+def test_allocation_rechecks_request_after_scope_lock_before_any_boundary_read(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    terminal = replace(_projection_release(), state="failed", failure_code="boundary_conflict")
+    found = iter((None, terminal))
+    tx = _AllocationTx()
+    monkeypatch.setattr(
+        projection_graph, "assert_standalone_crm_lane_a_ready", lambda _client: None
+    )
+    monkeypatch.setattr(projection_graph, "_find_by_request", lambda _tx, _command: next(found))
+    monkeypatch.setattr(
+        projection_graph,
+        "_validate_source_census",
+        lambda _tx, _command: pytest.fail("source census read before locked replay check"),
+    )
+    repository = projection_graph.Neo4jCrmTenantProjectionRepository(_AllocationClient(tx))
+
+    assert repository.allocate_or_replay(_command()) == terminal
+    assert tx.calls == [queries.LOCK_SCOPE]
+
+
+def test_release_summary_rejects_deterministic_identity_corruption() -> None:
+    scope = projection_scope()
+    record = {
+        "release": {
+            "source_key": scope.source_key,
+            "source_instance_id": scope.source_instance_id,
+            "control_instance_id": scope.control_instance_id,
+            "release_id": "not-the-deterministic-id",
+            "release_number": 1,
+            "request_id": "projection-request",
+            "request_fingerprint": _DIGEST,
+            "release_fingerprint": _DIGEST,
+            "source_census_id": "census-a",
+            "source_census_fingerprint": _DIGEST,
+            "contact_unit_state": "completed",
+            "contact_unit_generation": 1,
+            "contact_checkpoint_present": True,
+            "contact_checkpoint_generation": 1,
+            "contact_processed_rows": 0,
+            "contact_skipped_rows": 0,
+            "contact_expected_input_count": 0,
+            "contact_frozen_upper_id": 0,
+            "lead_unit_state": "no_work",
+            "lead_unit_generation": 1,
+            "lead_checkpoint_present": False,
+            "lead_checkpoint_generation": None,
+            "lead_processed_rows": 0,
+            "lead_skipped_rows": 0,
+            "lead_expected_input_count": 0,
+            "lead_frozen_upper_id": 0,
+            "mapping_revision_id": prepared_mapping_revision().revision_id,
+            "mapping_revision_number": 1,
+            "mapping_manifest_digest": prepared_mapping_revision().manifest_digest,
+            "projection_head_id": _DIGEST,
+            "expected_mapping_head_id": _DIGEST,
+            "expected_mapping_head_digest": "absent",
+            "expected_mapping_head_present": False,
+            "expected_mapping_active_revision_id": None,
+            "expected_mapping_active_revision_number": None,
+            "expected_prior_head_present": False,
+            "expected_prior_head_id": None,
+            "expected_prior_release_id": None,
+            "expected_prior_release_number": None,
+            "expected_prior_release_fingerprint": None,
+            "contract_version": "crm-tenant-projection-v1",
+            "state": "building",
+            "phase": "capture",
+            "capture_cursor_kind": None,
+            "capture_cursor_subject_id": None,
+            "projection_cursor_kind": None,
+            "projection_cursor_subject_id": None,
+            "input_count": 0,
+            "decision_count": 0,
+            "association_count": 0,
+            "support_count": 0,
+            "capture_boundary_digest": empty_capture_boundary_digest(),
+            "failure_code": None,
+        }
+    }
+
+    with pytest.raises(CrmTenantProjectionIntegrityError, match="deterministic identity"):
+        projection_graph._summary_from_record(record)
+
+    release = record["release"]
+    assert isinstance(release, dict)
+    release["release_id"] = projection_release_id(scope, 1)
+    release["projection_head_id"] = _command().projection_head_id
+    release["expected_mapping_head_id"] = mapping_head_id(scope.mapping_scope)
+    release["release_fingerprint"] = _materialized_fingerprint_from_values(release)
+    assert projection_graph._summary_from_record(record).release_number == 1
+    release["contact_processed_rows"] = 1
+    with pytest.raises(CrmTenantProjectionIntegrityError, match="release fingerprint"):
+        projection_graph._summary_from_record(record)
+
+
+def test_capture_digest_is_stable_for_zero_and_ordered_input_boundaries() -> None:
+    empty = empty_capture_boundary_digest()
+    contact_then_lead = extend_capture_boundary_digest(
+        extend_capture_boundary_digest(empty, "contact-input", _DIGEST),
+        "lead-input",
+        "sha256:" + "b" * 64,
+    )
+    lead_then_contact = extend_capture_boundary_digest(
+        extend_capture_boundary_digest(empty, "lead-input", "sha256:" + "b" * 64),
+        "contact-input",
+        _DIGEST,
+    )
+
+    assert empty.startswith("sha256:")
+    assert contact_then_lead != lead_then_contact
+
+
+def test_projection_queries_do_not_write_active_heads_or_source_membership_state() -> None:
+    write_queries = (
+        queries.CREATE_RELEASE,
+        queries.WRITE_INPUTS,
+        queries.ADVANCE_CAPTURE,
+        projection_queries.WRITE_ASSOCIATIONS,
+        projection_queries.WRITE_DECISION,
+        projection_queries.ADVANCE_PROJECTION,
+        integrity_queries.COMPLETE_RELEASE,
+        integrity_queries.CANCEL_RELEASE,
+        integrity_queries.FAIL_RELEASE,
+    )
+    forbidden_writes = (
+        "CREATE (head:CrmTenantProjectionActiveHead",
+        "CREATE (head:CrmTenantMappingActiveHead",
+        "SET head.",
+        "CREATE (head:CrmCompanyMembershipHead",
+        "CREATE (snapshot:CrmCompanyMembershipSnapshot",
+        "CREATE (observation:CrmCompanyMembershipObservation",
+        "CREATE (entity:Entity",
+        "CREATE (person:Person",
+    )
+
+    for query in write_queries:
+        assert all(token not in query for token in forbidden_writes)
+    assert "MATERIALIZES_MAPPING_REVISION" in queries.CREATE_RELEASE
+    assert "MATERIALIZES_SOURCE_CENSUS" in queries.CREATE_RELEASE
+
+
+def test_failure_code_is_rejected_before_any_graph_write() -> None:
+    class _Tx:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, dict[str, object]]] = []
+
+        def run(self, query: str, **parameters: object) -> _Result:
+            self.calls.append((query, parameters))
+            return _Result({})
+
+    tx = _Tx()
+    with pytest.raises(ValueError, match="unsupported projection failure code"):
+        projection_write._fail_release(tx, "release", _DIGEST, "x" * 129)
+    assert tx.calls == []
