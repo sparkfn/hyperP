@@ -35,6 +35,74 @@ MATCH (head:CrmTenantMappingActiveHead {source_key: $source_key,
 RETURN properties(head) AS head
 """
 
+VALIDATE_SOURCE_SYNC_AT_LINEARIZATION = """
+MATCH (head:CrmTenantMappingActiveHead {source_key: $source_key,
+    source_instance_id: $source_instance_id, control_instance_id: $control_instance_id,
+    head_id: $head_id, active_manifest_digest: $mapping_head_digest})
+MATCH (revision:CrmTenantMappingRevision {source_key: $source_key,
+    source_instance_id: $source_instance_id, control_instance_id: $control_instance_id,
+    revision_id: head.active_revision_id, manifest_digest: head.active_manifest_digest})
+WHERE revision.state = 'active' AND revision.revision_number = head.active_revision_number
+RETURN revision.revision_id AS revision_id
+"""
+
+VALIDATE_MAPPING_PREPARE_AT_LINEARIZATION = """
+MATCH (revision:CrmTenantMappingRevision {source_key: $source_key,
+    source_instance_id: $source_instance_id, control_instance_id: $control_instance_id,
+    revision_id: $revision_id, manifest_digest: $manifest_digest})
+WHERE revision.state = 'prepared'
+  AND revision.expected_head_id = $expected_head_id
+  AND revision.expected_head_present = $expected_head_present
+  AND (
+      ($expected_head_present = false
+       AND revision.expected_active_revision_id IS NULL
+       AND revision.expected_active_revision_number IS NULL
+       AND revision.expected_active_manifest_digest IS NULL)
+      OR
+      ($expected_head_present = true
+       AND revision.expected_active_revision_id = $expected_active_revision_id
+       AND revision.expected_active_revision_number = $expected_active_revision_number
+       AND revision.expected_active_manifest_digest = $expected_active_manifest_digest)
+  )
+OPTIONAL MATCH (head:CrmTenantMappingActiveHead {source_key: $source_key,
+    source_instance_id: $source_instance_id, control_instance_id: $control_instance_id,
+    head_id: $expected_head_id})
+WITH revision, head
+WHERE ($expected_head_present = false AND head IS NULL)
+   OR ($expected_head_present = true
+       AND head.active_revision_id = $expected_active_revision_id
+       AND head.active_revision_number = $expected_active_revision_number
+       AND head.active_manifest_digest = $expected_active_manifest_digest)
+RETURN revision.revision_id AS revision_id
+"""
+
+VALIDATE_MAPPING_ROLLBACK_AT_LINEARIZATION = """
+MATCH (revision:CrmTenantMappingRevision {source_key: $source_key,
+    source_instance_id: $source_instance_id, control_instance_id: $control_instance_id,
+    revision_id: $revision_id, manifest_digest: $manifest_digest})
+MATCH (historical:CrmTenantMappingRevision {source_key: $source_key,
+    source_instance_id: $source_instance_id, control_instance_id: $control_instance_id,
+    revision_id: $rollback_of_revision_id, manifest_digest: $rollback_of_manifest_digest})
+WHERE revision.state = 'prepared'
+  AND revision.rollback_of_revision_id = $rollback_of_revision_id
+  AND revision.rollback_of_revision_number = $rollback_of_revision_number
+  AND revision.rollback_of_manifest_digest = $rollback_of_manifest_digest
+  AND historical.state IN ['active', 'superseded']
+  AND historical.revision_number = $rollback_of_revision_number
+  AND revision.expected_head_id = $expected_head_id
+  AND revision.expected_head_present = true
+  AND revision.expected_active_revision_id = $expected_active_revision_id
+  AND revision.expected_active_revision_number = $expected_active_revision_number
+  AND revision.expected_active_manifest_digest = $expected_active_manifest_digest
+  AND historical.revision_number < $expected_active_revision_number
+MATCH (head:CrmTenantMappingActiveHead {source_key: $source_key,
+    source_instance_id: $source_instance_id, control_instance_id: $control_instance_id,
+    head_id: $expected_head_id, active_revision_id: $expected_active_revision_id,
+    active_revision_number: $expected_active_revision_number,
+    active_manifest_digest: $expected_active_manifest_digest})
+RETURN revision.revision_id AS revision_id
+"""
+
 VALIDATE_ENTITIES = """
 UNWIND $entity_keys AS entity_key
 OPTIONAL MATCH (entity:Entity {entity_key: entity_key})
@@ -157,5 +225,29 @@ CALL {
         ELSE NULL
     END) AS orphan_targets
 }
-RETURN bad_revision_links, bad_entry_links, bad_target_links, orphan_entries, orphan_targets
+CALL {
+    WITH revision
+    OPTIONAL MATCH (entry:CrmTenantMappingEntry {revision_id: revision.revision_id})
+    OPTIONAL MATCH (owner)-[link:HAS_MAPPING_ENTRY]->(entry)
+    WITH revision, entry, collect(owner) AS owners, count(link) AS owner_count
+    RETURN count(CASE
+        WHEN entry IS NULL THEN NULL
+        WHEN owner_count = 1 AND single(owner IN owners WHERE owner = revision) THEN NULL
+        ELSE entry
+    END) AS bad_entry_owners
+}
+CALL {
+    WITH revision
+    OPTIONAL MATCH (entry:CrmTenantMappingEntry {revision_id: revision.revision_id})
+    OPTIONAL MATCH (target:CrmTenantMappingTarget {entry_id: entry.entry_id})
+    OPTIONAL MATCH (owner)-[link:HAS_MAPPING_TARGET]->(target)
+    WITH entry, target, collect(owner) AS owners, count(link) AS owner_count
+    RETURN count(CASE
+        WHEN target IS NULL THEN NULL
+        WHEN owner_count = 1 AND single(owner IN owners WHERE owner = entry) THEN NULL
+        ELSE target
+    END) AS bad_target_owners
+}
+RETURN bad_revision_links, bad_entry_links, bad_target_links, orphan_entries, orphan_targets,
+       bad_entry_owners, bad_target_owners
 """

@@ -106,7 +106,7 @@ class CrmTenantMappingService:
             return existing
         operation = replace(command, operation_time=self._clock())
         _require_current(operation.authorization, operation.operation_time)
-        self._authorizer.authorize(authorization_request_for_rejection(operation))
+        self._authorizer.authorize(authorization_request_for_rejection(operation, existing))
         return self._repository.reject(operation)
 
 

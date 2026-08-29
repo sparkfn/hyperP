@@ -26,6 +26,7 @@ from src.crm_tenant_mapping_models import (
     mapping_revision_id,
 )
 from src.graph import crm_tenant_mapping as mapping_graph
+from src.graph import crm_tenant_mapping_freshness as mapping_freshness
 from src.graph.crm_tenant_mapping_read import _components_from_rows
 from src.graph.crm_tenant_mapping_write import _revision_properties
 from src.graph.queries import crm_tenant_mapping as queries
@@ -164,6 +165,40 @@ def test_active_reader_uses_only_the_exact_head_and_never_a_latest_revision_fall
             )
         ).upper()
     )
+
+
+def test_freshness_validators_use_one_read_transaction_and_strict_helpers() -> None:
+    freshness_source = inspect.getsource(mapping_freshness)
+
+    for name in (
+        "validate_source_sync",
+        "validate_mapping_prepare",
+        "validate_mapping_rollback",
+    ):
+        method = inspect.getsource(getattr(mapping_graph.Neo4jCrmTenantMappingRepository, name))
+        assert method.count("execute_read(") == 1
+        assert "self.get_active_head" not in method
+        assert "self.get_active_revision" not in method
+        assert "self.get_revision" not in method
+    assert "_read_snapshot(tx" in freshness_source
+    assert "VALIDATE_SOURCE_SYNC_AT_LINEARIZATION" in freshness_source
+    assert "VALIDATE_MAPPING_PREPARE_AT_LINEARIZATION" in freshness_source
+    assert "VALIDATE_MAPPING_ROLLBACK_AT_LINEARIZATION" in freshness_source
+    for query in (
+        queries.VALIDATE_SOURCE_SYNC_AT_LINEARIZATION,
+        queries.VALIDATE_MAPPING_PREPARE_AT_LINEARIZATION,
+        queries.VALIDATE_MAPPING_ROLLBACK_AT_LINEARIZATION,
+    ):
+        normalized = query.upper()
+        assert "$" in normalized
+        assert "RETURN REVISION.REVISION_ID AS REVISION_ID" in normalized
+    assert "REVISION.STATE = 'ACTIVE'" in queries.VALIDATE_SOURCE_SYNC_AT_LINEARIZATION.upper()
+    assert (
+        "REVISION.STATE = 'PREPARED'" in queries.VALIDATE_MAPPING_PREPARE_AT_LINEARIZATION.upper()
+    )
+    rollback = queries.VALIDATE_MAPPING_ROLLBACK_AT_LINEARIZATION.upper()
+    assert "HISTORICAL.STATE IN ['ACTIVE', 'SUPERSEDED']" in rollback
+    assert "ROLLBACK_OF_REVISION_ID = $ROLLBACK_OF_REVISION_ID" in rollback
 
 
 def test_persisted_revision_properties_are_immutable_prepared_metadata() -> None:

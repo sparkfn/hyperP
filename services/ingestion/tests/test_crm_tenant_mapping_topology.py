@@ -19,6 +19,13 @@ def test_strict_revision_reader_starts_from_exact_revision_and_checks_topology()
     assert "BAD_TARGET_LINKS" in topology
     assert "ORPHAN_ENTRIES" in topology
     assert "ORPHAN_TARGETS" in topology
+    assert "BAD_ENTRY_OWNERS" in topology
+    assert "BAD_TARGET_OWNERS" in topology
+    assert "OWNER = REVISION" in topology
+    assert "OWNER = ENTRY" in topology
+    assert topology.count("OPTIONAL MATCH (ENTRY:CRMTENANTMAPPINGENTRY") >= 2
+    assert "WHEN ENTRY IS NULL THEN NULL" in topology
+    assert "WHEN TARGET IS NULL THEN NULL" in topology
 
 
 def test_mapping_write_queries_leave_active_heads_and_people_untouched() -> None:

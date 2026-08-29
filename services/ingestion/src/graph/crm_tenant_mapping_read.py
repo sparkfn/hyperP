@@ -36,6 +36,7 @@ from src.graph.crm_tenant_mapping_graph_values import (
     _revision_state,
     _scope_parameters,
 )
+from src.graph.crm_tenant_mapping_read_fingerprints import _assert_persisted_fingerprints
 from src.graph.queries.crm_tenant_mapping import (
     READ_BY_ID,
     READ_BY_REQUEST,
@@ -97,6 +98,8 @@ def _read_snapshot(
             "bad_target_links",
             "orphan_entries",
             "orphan_targets",
+            "bad_entry_owners",
+            "bad_target_owners",
         )
     ):
         raise CrmTenantMappingIntegrityError("mapping revision has unexpected topology")
@@ -119,6 +122,19 @@ def _read_snapshot(
     rejection, rejected_at, rejection_authorization, rejection_fingerprint = _rejection_from_values(
         revision_values, revision.state
     )
+    created_at = _required_str(revision_values, "created_at")
+    request_fingerprint = _required_str(revision_values, "request_fingerprint")
+    _assert_persisted_fingerprints(
+        revision,
+        manifest,
+        boundary,
+        created_at,
+        request_fingerprint,
+        rejection,
+        rejected_at,
+        rejection_authorization,
+        rejection_fingerprint,
+    )
     try:
         return CrmTenantMappingRevisionSnapshot(
             revision,
@@ -126,8 +142,8 @@ def _read_snapshot(
             boundary,
             entries,
             targets,
-            _required_str(revision_values, "created_at"),
-            _required_str(revision_values, "request_fingerprint"),
+            created_at,
+            request_fingerprint,
             rejection,
             rejected_at,
             rejection_authorization,

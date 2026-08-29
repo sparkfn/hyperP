@@ -35,6 +35,7 @@ from src.graph.queries.standalone_crm_lane_a_contracts import (
 
 T = TypeVar("T")
 _DIGEST = "sha256:" + "a" * 64
+_TEST_ENTITY_PREFIX = "issue-304-"
 _LABELS = [
     "CrmTenantMappingScopeCounter",
     "CrmTenantMappingRevision",
@@ -85,8 +86,10 @@ def _neo4j_driver() -> Iterator[Driver]:
         _cleanup(driver)
         yield driver
     finally:
-        _cleanup(driver)
-        driver.close()
+        try:
+            _cleanup(driver)
+        finally:
+            driver.close()
 
 
 def _cleanup(driver: Driver) -> None:
@@ -103,7 +106,10 @@ def _cleanup(driver: Driver) -> None:
             labels=_LABELS,
         ).consume()
         session.run(
-            "MATCH (entity:Entity {entity_key STARTS WITH 'issue-304-'}) DETACH DELETE entity"
+            "MATCH (entity:Entity) "
+            "WHERE entity.entity_key STARTS WITH $entity_key_prefix "
+            "DETACH DELETE entity",
+            entity_key_prefix=_TEST_ENTITY_PREFIX,
         ).consume()
 
 

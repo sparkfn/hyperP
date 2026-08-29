@@ -268,6 +268,7 @@ class CrmTenantMappingAuthorizationRequest:
     action: CrmTenantMappingActionKind
     scope: CrmTenantMappingScope
     preparation_request_id: str | None
+    revision_id: str | None
     manifest_digest: str
     target_entity_keys: tuple[str, ...]
     expected_head_boundary: CrmTenantMappingExpectedHeadBoundary | None
@@ -287,6 +288,10 @@ class CrmTenantMappingAuthorizationRequest:
                 "preparation_request_id",
                 _text(self.preparation_request_id, "preparation_request_id"),
             )
+        if self.revision_id is not None:
+            object.__setattr__(self, "revision_id", _text(self.revision_id, "revision_id"))
+        if (self.action == "reject") != (self.revision_id is not None):
+            raise ValueError("only rejection authorization requires an exact revision_id")
         _require_sha256(self.manifest_digest, "manifest_digest")
         if (
             not isinstance(self.target_entity_keys, tuple)
@@ -313,6 +318,7 @@ def authorization_request_for_prepare(
         "prepare",
         command.scope,
         command.preparation_request_id,
+        None,
         command.manifest.digest,
         _target_keys(command.manifest),
         command.expected_head_boundary,
@@ -330,6 +336,7 @@ def authorization_request_for_rollback(
         "rollback",
         command.scope,
         command.preparation_request_id,
+        None,
         manifest.digest,
         _target_keys(manifest),
         command.expected_head_boundary,
@@ -341,13 +348,21 @@ def authorization_request_for_rollback(
 
 def authorization_request_for_rejection(
     command: CrmTenantMappingRejectCommand,
+    snapshot: CrmTenantMappingRevisionSnapshot,
 ) -> CrmTenantMappingAuthorizationRequest:
+    if (
+        snapshot.revision.scope != command.scope
+        or snapshot.revision.revision_id != command.revision_id
+        or snapshot.revision.manifest_digest != command.manifest_digest
+    ):
+        raise ValueError("rejection authorization requires the exact strict mapping revision")
     return CrmTenantMappingAuthorizationRequest(
         "reject",
         command.scope,
         None,
-        command.manifest_digest,
-        (),
+        snapshot.revision.revision_id,
+        snapshot.revision.manifest_digest,
+        _target_keys(snapshot.manifest),
         None,
         command.authorization,
         command.operation_time,

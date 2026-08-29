@@ -26,6 +26,7 @@ from src.crm_tenant_mapping_models import (
     CrmTenantMappingRejection,
     CrmTenantMappingRevisionSnapshot,
     CrmTenantMappingRollbackCommand,
+    authorization_request_for_rejection,
     mapping_head_id,
     mapping_revision_id,
 )
@@ -264,3 +265,25 @@ def test_rollback_requires_effective_lower_revision_and_rejection_is_exact_idemp
     )
     with pytest.raises(CrmTenantMappingConflictError):
         service.reject(conflicting_rejection)
+
+
+def test_rejection_authorization_binds_exact_snapshot_identity_and_targets() -> None:
+    command = CrmTenantMappingRejectCommand(
+        _scope(),
+        mapping_revision_id(_scope(), 1),
+        _manifest().digest,
+        CrmTenantMappingRejection("reviewer", "case", "bad"),
+        _authorization(),
+        "2026-08-29T01:00:00Z",
+    )
+    first = _snapshot(_prepare("same-digest-a"), 1, "prepared")
+    second = _snapshot(_prepare("same-digest-b"), 2, "prepared")
+    first_request = authorization_request_for_rejection(command, first)
+    second_command = replace(command, revision_id=second.revision.revision_id)
+    second_request = authorization_request_for_rejection(second_command, second)
+
+    assert first_request.revision_id == first.revision.revision_id
+    assert second_request.revision_id == second.revision.revision_id
+    assert first_request.revision_id != second_request.revision_id
+    assert first_request.manifest_digest == second_request.manifest_digest
+    assert first_request.target_entity_keys == ("entity-a",)

@@ -21,17 +21,18 @@ from src.crm_tenant_mapping_models import (
     CrmTenantMappingRollbackCommand,
 )
 from src.graph.client import Neo4jClient
+from src.graph.crm_tenant_mapping_freshness import (
+    validate_mapping_prepare,
+    validate_mapping_rollback,
+    validate_source_sync,
+)
 from src.graph.crm_tenant_mapping_graph_values import (
     _record_values,
     _required_int,
     _required_str,
     _scope_parameters,
 )
-from src.graph.crm_tenant_mapping_read import (
-    _find_by_request,
-    _read_by_id,
-    _read_snapshot,
-)
+from src.graph.crm_tenant_mapping_read import _find_by_request, _read_snapshot
 from src.graph.crm_tenant_mapping_read_boundaries import (
     _assert_expected_head,
     _read_active_head,
@@ -256,83 +257,20 @@ class Neo4jCrmTenantMappingRepository:
     def validate_source_sync(
         self, scope: CrmTenantMappingScope, authority: SourceSyncAuthority
     ) -> None:
-        head = self.get_active_head(scope)
-        if head is None or (head.head_id, head.active_manifest_digest) != (
-            authority.mapping_head_id,
-            authority.mapping_head_digest,
-        ):
-            raise CrmTenantMappingConflictError("source-sync mapping authority is stale")
-        active = self.get_active_revision(scope)
-        if active is None:
-            raise CrmTenantMappingIntegrityError("active mapping head has no active revision")
+        assert_standalone_crm_lane_a_ready(self._client)
+        self._client.execute_read(lambda tx: validate_source_sync(tx, scope, authority))
 
     def validate_mapping_prepare(
         self, scope: CrmTenantMappingScope, authority: MappingPrepareAuthority
     ) -> None:
-        snapshot = self._prepared_by_id(
-            scope, authority.prepared_revision_id, authority.prepared_revision_digest
-        )
-        if snapshot.expected_head_boundary.head_id != authority.expected_current_head_id:
-            raise CrmTenantMappingConflictError("mapping prepare authority head ID conflicts")
-        self._assert_current_boundary(scope, snapshot.expected_head_boundary)
+        assert_standalone_crm_lane_a_ready(self._client)
+        self._client.execute_read(lambda tx: validate_mapping_prepare(tx, scope, authority))
 
     def validate_mapping_rollback(
         self, scope: CrmTenantMappingScope, authority: MappingRollbackAuthority
     ) -> None:
-        snapshot = self._prepared_by_id(scope, authority.rollback_head_id, None)
-        provenance = snapshot.revision.rollback_provenance
-        if provenance is None or (
-            provenance.rollback_of_revision_id,
-            provenance.rollback_of_manifest_digest,
-        ) != (authority.target_revision_id, authority.target_revision_digest):
-            raise CrmTenantMappingConflictError("mapping rollback provenance conflicts")
-        if snapshot.expected_head_boundary.head_id != authority.expected_current_head_id:
-            raise CrmTenantMappingConflictError("mapping rollback authority head ID conflicts")
-        expected = snapshot.expected_head_boundary.expected_head
-        if expected is None:
-            raise CrmTenantMappingIntegrityError(
-                "rollback prepared revision lacks current-head boundary"
-            )
-        historical = self.get_revision(
-            scope,
-            provenance.rollback_of_revision_id,
-            provenance.rollback_of_manifest_digest,
-        )
-        if historical is None or historical.revision.state not in {"active", "superseded"}:
-            raise CrmTenantMappingConflictError(
-                "mapping rollback target is not prior effective history"
-            )
-        if (
-            historical.revision.revision_number != provenance.rollback_of_revision_number
-            or historical.revision.revision_number >= expected.active_revision_number
-        ):
-            raise CrmTenantMappingConflictError("mapping rollback provenance revision is malformed")
-        self._assert_current_boundary(scope, snapshot.expected_head_boundary)
-
-    def _prepared_by_id(
-        self, scope: CrmTenantMappingScope, revision_id: str, digest: str | None
-    ) -> CrmTenantMappingRevisionSnapshot:
         assert_standalone_crm_lane_a_ready(self._client)
-
-        def work(tx: ManagedTransaction) -> CrmTenantMappingRevisionSnapshot:
-            result = _read_by_id(tx, scope, revision_id)
-            if (
-                result is None
-                or result.revision.state != "prepared"
-                or (digest is not None and result.revision.manifest_digest != digest)
-            ):
-                raise CrmTenantMappingConflictError(
-                    "exact prepared mapping revision is unavailable"
-                )
-            return result
-
-        return self._client.execute_read(work)
-
-    def _assert_current_boundary(
-        self, scope: CrmTenantMappingScope, boundary: CrmTenantMappingExpectedHeadBoundary
-    ) -> None:
-        assert_standalone_crm_lane_a_ready(self._client)
-        self._client.execute_read(lambda tx: _assert_expected_head(tx, scope, boundary))
+        self._client.execute_read(lambda tx: validate_mapping_rollback(tx, scope, authority))
 
 
 def _persist_prepared(
