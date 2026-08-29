@@ -71,7 +71,9 @@ class RepairAuthorityEvidence:
             "blocked_or_conflicting",
         }:
             raise ValueError("repair authority provenance class is invalid")
-        if not self.source_record_pks or any(not value for value in self.source_record_pks):
+        if self.provenance_class != "blocked_or_conflicting" and (
+            not self.source_record_pks or any(not value for value in self.source_record_pks)
+        ):
             raise ValueError("repair authority evidence requires source record identities")
 
     def to_dict(self) -> dict[str, JsonValue]:
@@ -242,16 +244,14 @@ class RepairMutationPlan:
     @property
     def external_authority_digest(self) -> str:
         """Digest authority that remains meaningful after self-contamination retirement."""
-        external = tuple(
-            item
-            for item in self.authority_evidence
-            if item.provenance_class not in {"historical_deal_only", "self_supporting"}
-        )
-        return authority_evidence_digest(
-            {
-                "current_owner_ids": list(self.current_owner_ids),
-                "evidence": [item.to_dict() for item in external],
-            }
+        return external_authority_evidence_digest(
+            self.current_owner_ids,
+            self.authority_evidence,
+            mutation_id=None,
+            excluded_source_record_pks=(
+                *self.retired_source_record_pks,
+                self.source_record_pk,
+            ),
         )
 
     def desired_state(self) -> dict[str, JsonValue]:
@@ -264,6 +264,111 @@ class RepairMutationPlan:
             "retired_source_record_pks": list(self.retired_source_record_pks),
             "reason_codes": list(self.reason_codes),
         }
+
+
+def external_authority_evidence_digest(
+    current_owner_ids: tuple[str, ...],
+    evidence: tuple[RepairAuthorityEvidence, ...],
+    *,
+    mutation_id: str | None,
+    excluded_source_record_pks: tuple[str, ...],
+) -> str:
+    """Digest authority external to both repair source versions and their artifacts."""
+    excluded = frozenset(excluded_source_record_pks)
+    external = tuple(
+        item
+        for item in (_external_authority_item(item, mutation_id, excluded) for item in evidence)
+        if item is not None
+    )
+    return authority_evidence_digest(
+        {
+            "current_owner_ids": list(current_owner_ids),
+            "evidence": [item.to_dict() for item in external],
+        }
+    )
+
+
+def _external_authority_item(
+    item: RepairAuthorityEvidence,
+    mutation_id: str | None,
+    excluded_source_record_pks: frozenset[str],
+) -> RepairAuthorityEvidence | None:
+    if item.provenance_class in {"historical_deal_only", "self_supporting"}:
+        return None
+    if item.provenance_class == "blocked_or_conflicting":
+        blocker_rows = tuple(_stable_blocker_row(row) for row in item.evidence_rows)
+        if not blocker_rows:
+            return None
+        return RepairAuthorityEvidence(
+            item.person_id,
+            item.provenance_class,
+            (),
+            blocker_rows,
+        )
+    rows = tuple(
+        row
+        for row in item.evidence_rows
+        if not _mutation_owned_authority_row(row, mutation_id, excluded_source_record_pks)
+    )
+    if not rows:
+        return None
+    source_record_pks = tuple(
+        sorted(
+            {
+                source_record_pk
+                for row in rows
+                if isinstance(source_record_pk := row.get("source_record_pk"), str)
+                and source_record_pk
+            }
+        )
+    )
+    if not source_record_pks:
+        return None
+    return RepairAuthorityEvidence(
+        item.person_id,
+        item.provenance_class,
+        source_record_pks,
+        rows,
+    )
+
+
+def _mutation_owned_authority_row(
+    row: dict[str, JsonValue],
+    mutation_id: str | None,
+    excluded_source_record_pks: frozenset[str],
+) -> bool:
+    source_record_pk = row.get("source_record_pk")
+    if isinstance(source_record_pk, str) and source_record_pk in excluded_source_record_pks:
+        return True
+    if mutation_id is None:
+        return False
+    return any(
+        row.get(key) == mutation_id
+        for key in (
+            "source_repair_mutation_id",
+            "decision_repair_mutation_id",
+            "review_repair_mutation_id",
+        )
+    )
+
+
+def _stable_blocker_row(row: dict[str, JsonValue]) -> dict[str, JsonValue]:
+    """Keep only blocker facts that are invariant to repair-owned evidence churn."""
+    lock_count = row.get("active_no_match_lock_count")
+    owner_count = row.get("current_owner_count")
+    if (
+        isinstance(lock_count, int)
+        and not isinstance(lock_count, bool)
+        and lock_count >= 0
+        and isinstance(owner_count, int)
+        and not isinstance(owner_count, bool)
+        and owner_count >= 0
+    ):
+        return {
+            "active_no_match_lock_count": lock_count,
+            "current_owner_count": owner_count,
+        }
+    raise ValueError("repair blocker evidence lacks stable lock and owner facts")
 
 
 @dataclass(frozen=True)

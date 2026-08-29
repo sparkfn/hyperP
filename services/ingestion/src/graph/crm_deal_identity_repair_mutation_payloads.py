@@ -294,11 +294,15 @@ def _created_object_specifications(
                     "identity": identifier,
                     "preexisting": preexisting,
                     "write_mode": "preserved" if preexisting else "created",
-                    "on_create_properties": {
-                        "source_instance_id": source_instance_id,
-                        "created_at": transaction_datetime,
-                        "repair_mutation_id": request.mutation_id,
-                    },
+                    "on_create_properties": (
+                        {}
+                        if preexisting
+                        else {
+                            "source_instance_id": source_instance_id,
+                            "created_at": transaction_datetime,
+                            "repair_mutation_id": request.mutation_id,
+                        }
+                    ),
                     "multiplicity_ordinal": ordinal,
                 },
                 {

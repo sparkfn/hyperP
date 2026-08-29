@@ -31,6 +31,7 @@ from src.graph.crm_deal_identity_repair_mutation import (
     RepairMutationAuthorityError,
     RepairMutationDriftError,
 )
+from src.graph.crm_deal_identity_repair_mutation_authority import _authority_evidence
 from src.graph.crm_deal_identity_repair_mutation_records import canonical_payload
 from src.graph.queries.crm_deal_identity_repair_ledger import (
     CREATE_CRM_DEAL_REPAIR_LEDGER_SCHEMA,
@@ -329,6 +330,45 @@ def _rollback_dynamic(value: object, key: str | None = None) -> object:
     return value
 
 
+def _rollback_specification_key(item: dict[str, object]) -> str:
+    object_kind = item.get("object_kind")
+    if not isinstance(object_kind, str):
+        raise AssertionError("rollback object kind is absent")
+    if object_kind == "Identifier":
+        identity = item.get("identity")
+        return "Identifier:" + json.dumps(identity, sort_keys=True, separators=(",", ":"))
+    if object_kind == "IDENTIFIED_BY":
+        endpoint = item.get("right_endpoint")
+        return "IDENTIFIED_BY:" + json.dumps(endpoint, sort_keys=True, separators=(",", ":"))
+    if object_kind == "HAS_FACT":
+        properties = item.get("properties")
+        if not isinstance(properties, dict):
+            raise AssertionError("rollback fact properties are absent")
+        identity = {
+            "left_endpoint": item.get("left_endpoint"),
+            "right_endpoint": item.get("right_endpoint"),
+            "attribute_name": properties.get("attribute_name"),
+            "attribute_value": properties.get("attribute_value"),
+        }
+        return "HAS_FACT:" + json.dumps(identity, sort_keys=True, separators=(",", ":"))
+    raise AssertionError("unexpected rollback object kind")
+
+
+def _with_rollback_specification_metadata(
+    actual: dict[str, object], expected_by_key: dict[str, list[dict[str, object]]]
+) -> dict[str, object]:
+    matching = expected_by_key.get(_rollback_specification_key(actual))
+    if not matching:
+        raise AssertionError("actual mutation object has no rollback specification")
+    expected = matching.pop(0)
+    return {
+        **actual,
+        "preexisting": expected["preexisting"],
+        "write_mode": expected["write_mode"],
+        "multiplicity_ordinal": expected["multiplicity_ordinal"],
+    }
+
+
 @pytest.mark.parametrize("stage", _FAILURE_STAGES)
 def test_every_injected_stage_failure_rolls_back_domain_and_ledger(
     neo4j_driver: Driver,
@@ -559,6 +599,18 @@ def test_control_lineage_mismatch_falls_to_review_while_complete_lineage_applies
     assert result.mutation is not None and result.mutation.outcome == "applied"
 
 
+def test_deactivated_descendant_link_is_not_self_supporting_authority(
+    neo4j_driver: Driver,
+) -> None:
+    _seed_domain(neo4j_driver, independent_support=True)
+    _deactivate_child_contamination(neo4j_driver)
+    item, _ = _inventory(neo4j_driver)
+    command = _seed_authority(neo4j_driver, item)
+    with neo4j_driver.session() as session:
+        evidence = session.execute_read(lambda tx: _authority_evidence(tx, command, ("person-a",)))
+    assert {item.provenance_class for item in evidence} == {"independent_trusted"}
+
+
 def test_review_required_replay_rejects_authority_drift(neo4j_driver: Driver) -> None:
     _seed_domain(neo4j_driver, independent_support=True)
     item, _ = _inventory(neo4j_driver)
@@ -566,11 +618,80 @@ def test_review_required_replay_rejects_authority_drift(neo4j_driver: Driver) ->
     repository = _repository(neo4j_driver)
     committed = repository.commit_atomic_mutation(command)
     assert committed.mutation is not None and committed.mutation.outcome == "review_required"
+    replayed = repository.commit_atomic_mutation(command)
+    assert replayed.decision == "replayed"
     with neo4j_driver.session() as session:
         session.run(
             "MATCH (support:SourceRecord {source_record_pk: 'contact-support-pk'}) "
             "SET support.standalone_crm_authorization_digest = $digest",
             digest="sha256:" + "c" * 64,
+        ).consume()
+    with pytest.raises(RepairMutationDriftError, match="authority changed"):
+        repository.commit_atomic_mutation(command)
+
+
+def test_external_reviewed_v2_authority_applies_replays_and_detects_drift(
+    neo4j_driver: Driver,
+) -> None:
+    _seed_domain(neo4j_driver, independent_support=False)
+    _deactivate_child_contamination(neo4j_driver)
+    with neo4j_driver.session() as session:
+        session.run(
+            """
+            MATCH (source:SourceSystem {source_key: 'bitrix_chat'}),
+                  (person:Person {person_id: 'person-a'})
+            CREATE (reviewed:SourceRecord {
+              source_record_pk: 'reviewed-v2-pk', source_record_id: 'reviewed-v2',
+              source_record_version: '1', source_version_key: 'reviewed-v2-key',
+              source_instance_id: $source_instance_id, record_type: 'crm_deal',
+              lifecycle_status: 'active', is_latest: true, record_hash: $record_hash,
+              raw_payload: '{}', normalized_payload: '{}'
+            })-[:FROM_SOURCE]->(source)
+            CREATE (decision:MatchDecision {
+              match_decision_id: 'reviewed-v2-decision', engine_type: 'deterministic',
+              decision: 'merge', policy_version: 'crm_deal_identity_v2'
+            })-[:ABOUT_LEFT {entity_type: 'source_record'}]->(reviewed)
+            CREATE (decision)-[:ABOUT_RIGHT {entity_type: 'person'}]->(person)
+            CREATE (review:ReviewCase {
+              review_case_id: 'reviewed-v2-case', resolution: 'approved'
+            })-[:FOR_DECISION]->(decision)
+            """,
+            source_instance_id=_SOURCE,
+            record_hash="e" * 64,
+        ).consume()
+    item, _ = _inventory(neo4j_driver)
+    command = _seed_authority(neo4j_driver, item)
+    repository = _repository(neo4j_driver)
+    committed = repository.commit_atomic_mutation(command)
+    assert committed.mutation is not None and committed.mutation.outcome == "applied"
+    assert repository.commit_atomic_mutation(command).decision == "replayed"
+    with neo4j_driver.session() as session:
+        session.run(
+            "MATCH (review:ReviewCase {review_case_id: 'reviewed-v2-case'}) "
+            "SET review.resolution = 'rejected'"
+        ).consume()
+    with pytest.raises(RepairMutationDriftError, match="authority changed"):
+        repository.commit_atomic_mutation(command)
+
+
+def test_active_no_match_lock_forces_review_required(neo4j_driver: Driver) -> None:
+    _seed_domain(neo4j_driver, independent_support=True)
+    _deactivate_child_contamination(neo4j_driver)
+    with neo4j_driver.session() as session:
+        session.run(
+            "MATCH (person:Person {person_id: 'person-a'}), "
+            "(other:Person {person_id: 'person-negative'}) "
+            "CREATE (person)-[:NO_MATCH_LOCK {lock_id: 'active-lock'}]->(other)"
+        ).consume()
+    item, _ = _inventory(neo4j_driver)
+    command = _seed_authority(neo4j_driver, item)
+    repository = _repository(neo4j_driver)
+    result = repository.commit_atomic_mutation(command)
+    assert result.mutation is not None and result.mutation.outcome == "review_required"
+    assert repository.commit_atomic_mutation(command).decision == "replayed"
+    with neo4j_driver.session() as session:
+        session.run(
+            "MATCH ()-[lock:NO_MATCH_LOCK {lock_id: 'active-lock'}]->() DELETE lock"
         ).consume()
     with pytest.raises(RepairMutationDriftError, match="authority changed"):
         repository.commit_atomic_mutation(command)
@@ -677,35 +798,42 @@ def test_rollback_image_readback_tracks_identifier_preexistence_and_source_schem
             }
             CALL {
               WITH new
+              MATCH (person)-[:IDENTIFIED_BY {repair_mutation_id: $mutation_id}]->(identifier)
+              RETURN collect({object_kind: 'Identifier', identity: {
+                identifier_type: identifier.identifier_type, identifier_scope: identifier.identifier_scope,
+                normalized_value: identifier.normalized_value}, on_create_properties: CASE
+                  WHEN identifier.repair_mutation_id = $mutation_id THEN {
+                    source_instance_id: identifier.source_instance_id,
+                    created_at: identifier.created_at,
+                    repair_mutation_id: identifier.repair_mutation_id
+                  }
+                  ELSE {} END}) AS identifiers
+            }
+            CALL {
+              WITH new
               MATCH (person)-[fact:HAS_FACT {repair_mutation_id: $mutation_id}]->(new)
               RETURN collect({object_kind: 'HAS_FACT', direction: 'Person_to_SourceRecord',
                 left_endpoint: {person_id: person.person_id}, right_endpoint: {
                   source_record_pk: new.source_record_pk}, properties: properties(fact)}) AS facts
             }
-            RETURN links + facts AS objects
+            RETURN identifiers + links + facts AS objects
             """,
             mutation_id=command.mutation_id,
         ).single(strict=True)["objects"]
-    expected_relationships = [
-        item
-        for item in specifications
-        if isinstance(item, dict) and item.get("object_kind") != "Identifier"
+    expected_by_key: dict[str, list[dict[str, object]]] = {}
+    for item in specifications:
+        if isinstance(item, dict):
+            expected_by_key.setdefault(_rollback_specification_key(item), []).append(item)
+    actual_with_specification_metadata = [
+        _with_rollback_specification_metadata(item, expected_by_key)
+        for item in actual
+        if isinstance(item, dict)
     ]
+    assert all(not remaining for remaining in expected_by_key.values())
     assert sorted(
         json.dumps(_rollback_dynamic(item), sort_keys=True, separators=(",", ":"))
-        for item in actual
-    ) == sorted(
-        json.dumps(
-            {
-                key: value
-                for key, value in item.items()
-                if key not in {"preexisting", "write_mode", "multiplicity_ordinal"}
-            },
-            sort_keys=True,
-            separators=(",", ":"),
-        )
-        for item in expected_relationships
-    )
+        for item in actual_with_specification_metadata
+    ) == sorted(json.dumps(item, sort_keys=True, separators=(",", ":")) for item in specifications)
     assert row["link_status"] == "linked"
     assert row["observed_at"].startswith("2026-08-01T12:00:00")
     assert row["owned_by_count"] == 1

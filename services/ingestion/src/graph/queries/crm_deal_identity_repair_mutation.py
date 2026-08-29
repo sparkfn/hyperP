@@ -333,8 +333,11 @@ CALL {
     AND review.resolution IN ['approved', 'merge', 'matched']
   RETURN collect(CASE WHEN reviewed IS NULL THEN NULL ELSE {
     source_record_pk: reviewed.source_record_pk,
+    source_repair_mutation_id: reviewed.repair_mutation_id,
     match_decision_id: decision.match_decision_id,
+    decision_repair_mutation_id: decision.repair_mutation_id,
     review_case_id: review.review_case_id,
+    review_repair_mutation_id: review.repair_mutation_id,
     resolution: review.resolution
   } END) AS reviewed_rows
 }
@@ -354,7 +357,9 @@ CALL {
   OPTIONAL MATCH (self_support:SourceRecord)-[:CHILD_OF*1..2]->(deal)
   OPTIONAL MATCH (self_support)-[self_link:LINKED_TO]->(person)
   WHERE coalesce(self_link.is_active, true) = true
-  RETURN collect(CASE WHEN self_support IS NULL THEN NULL ELSE {
+  // The descendant can remain bound when its link is inactive.  Only an
+  // actually matched active link is self-supporting authority.
+  RETURN collect(CASE WHEN self_link IS NULL THEN NULL ELSE {
     source_record_pk: self_support.source_record_pk
   } END) AS self_rows
 }

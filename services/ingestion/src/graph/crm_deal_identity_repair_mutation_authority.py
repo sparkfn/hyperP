@@ -170,13 +170,19 @@ def _authority_evidence(
         for provenance, rows in classified:
             if rows:
                 evidence.append(_evidence_item(person_id, provenance, rows, request))
-        if _record_int(row, "active_no_match_locks") > 0 or len(current_owner_ids) > 1:
+        active_no_match_locks = _record_int(row, "active_no_match_locks")
+        if active_no_match_locks > 0 or len(current_owner_ids) > 1:
             evidence.append(
-                _evidence_item(
+                RepairAuthorityEvidence(
                     person_id,
                     "blocked_or_conflicting",
-                    [*independent, *reviewed, *historical, *self_rows],
-                    request,
+                    (),
+                    (
+                        {
+                            "active_no_match_lock_count": active_no_match_locks,
+                            "current_owner_count": len(current_owner_ids),
+                        },
+                    ),
                 )
             )
     return tuple(evidence)
