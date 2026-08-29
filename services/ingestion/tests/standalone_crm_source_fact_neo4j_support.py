@@ -23,6 +23,7 @@ from src.standalone_crm_census_requests import (
 from src.standalone_crm_child_contracts import StandaloneCrmSourceChildScope
 from src.standalone_crm_source_fact_mapper import map_source_fact_page
 from src.standalone_crm_source_fact_models import (
+    MappedSourceFactRow,
     StandaloneCrmSourceFactMutation,
     StandaloneCrmSourceFactPage,
     build_source_fact_commit,
@@ -201,16 +202,32 @@ class SentinelAdapter:
         self.plan_calls = 0
         self.persist_calls = 0
 
-    def plan(self, tx: ManagedTransaction, row: object) -> PlannedVersion:
+    def plan(self, tx: ManagedTransaction, row: MappedSourceFactRow) -> PlannedVersion:
         del tx, row
         self.plan_calls += 1
         return PlannedVersion(1, None, (), None)
 
-    def persist(self, tx: ManagedTransaction, row: object, plan: PlannedVersion) -> IngestResult:
-        del row, plan
+    def persist(
+        self,
+        tx: ManagedTransaction,
+        row: MappedSourceFactRow,
+        plan: PlannedVersion,
+    ) -> IngestResult:
+        """Persist the exact receipt fields read before FINALIZE_PAGE commits."""
         self.persist_calls += 1
         pk = f"sentinel-{self.persist_calls}"
-        tx.run("CREATE (:SourceRecord {source_record_pk: $pk})", pk=pk).consume()
+        tx.run(
+            """
+            CREATE (:SourceRecord {
+              source_record_pk: $pk,
+              source_record_version: $source_record_version,
+              record_hash: $record_hash
+            })
+            """,
+            pk=pk,
+            source_record_version=plan.version,
+            record_hash=row.envelope.record_hash,
+        ).consume()
         return IngestResult(source_record_id=pk, source_record_pk=pk)
 
 

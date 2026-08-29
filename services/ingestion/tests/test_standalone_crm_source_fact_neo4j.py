@@ -67,6 +67,21 @@ def assert_repository_success_replay_conflict(driver: Driver) -> None:
     )
     assert repository.commit_unit(request).decision == "committed"
     assert source_fact_counts(driver) == {"records": 1, "receipts": 1, "cursor": 6, "processed": 1}
+    expected = request.mutation.mapped_rows[0].envelope
+    with driver.session() as session:
+        persisted = session.run(
+            """
+            MATCH (record:SourceRecord {source_record_pk: 'sentinel-1'})
+            MATCH (receipt:StandaloneCrmSourceFactPageReceipt {census_id: 'census-a'})
+            RETURN record.source_record_version AS source_record_version,
+              record.record_hash AS record_hash,
+              receipt.source_receipts_json AS source_receipts_json
+            """
+        ).single(strict=True)
+    assert persisted["source_record_version"] == 1
+    assert persisted["record_hash"] == expected.record_hash
+    assert f'"record_hash":"{expected.record_hash}"' in persisted["source_receipts_json"]
+    assert '"source_record_version":1' in persisted["source_receipts_json"]
     retire_current_authority(driver)
     before_replay = source_fact_counts(driver)
     assert repository.commit_unit(request).decision == "replayed"
