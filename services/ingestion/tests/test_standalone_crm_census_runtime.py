@@ -261,7 +261,7 @@ def _request(kinds: tuple[str, ...] = ("contact", "lead")) -> SourceSyncCensusRe
         "control",
         "occurrence",
         kinds,
-        StandaloneCrmBudget(2, 2, 20, 4, 4, 3, "2026-08-29T00:00:00Z"),
+        StandaloneCrmBudget(2, 2, 20, 4, 4, 3, "2099-01-02T00:00:00Z"),
         "policy",
         "association",
         "sha256:" + "a" * 64,
