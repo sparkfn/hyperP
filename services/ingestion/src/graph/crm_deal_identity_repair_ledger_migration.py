@@ -12,8 +12,14 @@ from src.graph.queries.crm_deal_identity_repair_ledger import CREATE_CRM_DEAL_RE
 
 MIGRATION_KEY = "crm_deal_identity_repair_ledger_v1"
 REQUIRED_CONSTRAINTS = {
-    "crm_deal_repair_boundary_manifest_unique": ("RepairExecutionBoundary", ("manifest_digest",)),
-    "crm_deal_repair_boundary_artifact_unique": ("RepairExecutionBoundary", ("artifact_id",)),
+    "crm_deal_repair_boundary_manifest_unique": (
+        "RepairExecutionBoundary",
+        ("manifest_digest",),
+    ),
+    "crm_deal_repair_boundary_artifact_unique": (
+        "RepairExecutionBoundary",
+        ("artifact_id",),
+    ),
     "crm_deal_repair_run_id_unique": ("CrmDealRepairRun", ("run_id",)),
     "crm_deal_repair_run_repair_id_unique": ("CrmDealRepairRun", ("repair_id",)),
     "crm_deal_repair_run_identity_unique": (
@@ -76,12 +82,18 @@ REQUIRED_INDEXES = {
         "CrmDealRepairRun",
         ("status", "source_instance_id", "control_instance_id"),
     ),
-    "crm_deal_repair_unit_state": ("CrmDealRepairUnit", ("run_id", "state", "generation")),
+    "crm_deal_repair_unit_state": (
+        "CrmDealRepairUnit",
+        ("run_id", "state", "generation"),
+    ),
     "crm_deal_repair_quiescence_state": (
         "CrmDealRepairQuiescence",
         ("run_id", "state", "generation", "sequence"),
     ),
-    "crm_deal_repair_fence_state": ("CrmDealRepairFence", ("run_id", "state", "generation")),
+    "crm_deal_repair_fence_state": (
+        "CrmDealRepairFence",
+        ("run_id", "state", "generation"),
+    ),
     "crm_deal_repair_checkpoint_sequence": (
         "CrmDealRepairCheckpoint",
         ("run_id", "unit_id", "generation", "sequence", "attempt"),

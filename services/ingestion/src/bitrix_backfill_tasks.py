@@ -182,7 +182,9 @@ def dispatch_generation_canvas(
     # Stage-history work is a separate artifact-replay cadence. It is neither
     # admitted nor fenced by #310, so a mixed caller contributes only repair-owned
     # entries to this generation canvas.
-    canvas_entries = tuple(entry for entry in entries if entry.stream_key != "crm_stage_history")
+    canvas_entries = tuple(
+        entry for entry in entries if entry.stream_key != "crm_stage_history"
+    )
     canvas = build_generation_canvas(
         generation_id=generation_id,
         boundary_digest=boundary_digest,

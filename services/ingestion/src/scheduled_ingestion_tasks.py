@@ -61,13 +61,17 @@ def _marker_key(group_key: str, incremental: bool, task_id: str) -> str:
 
 def _read_dispatch_marker(marker_key: str) -> str | None:
     """Read a Redis idempotency marker without making publication authoritative."""
-    with redis.Redis.from_url(get_settings().celery_broker_url, decode_responses=True) as client:
+    with redis.Redis.from_url(
+        get_settings().celery_broker_url, decode_responses=True
+    ) as client:
         return client.get(marker_key)
 
 
 def _claim_dispatch(marker_key: str, task_id: str) -> tuple[bool, str | None]:
     """Claim a dispatch key; an existing placeholder is never republished."""
-    with redis.Redis.from_url(get_settings().celery_broker_url, decode_responses=True) as client:
+    with redis.Redis.from_url(
+        get_settings().celery_broker_url, decode_responses=True
+    ) as client:
         while True:
             if client.set(marker_key, task_id, nx=True, ex=_MARKER_TTL_SECONDS):
                 return True, None
@@ -78,7 +82,9 @@ def _claim_dispatch(marker_key: str, task_id: str) -> tuple[bool, str | None]:
 
 def _record_dispatch_marker(marker_key: str, workflow_task_id: str) -> None:
     """Record an already-authorized workflow ID while retaining the marker TTL."""
-    with redis.Redis.from_url(get_settings().celery_broker_url, decode_responses=True) as client:
+    with redis.Redis.from_url(
+        get_settings().celery_broker_url, decode_responses=True
+    ) as client:
         client.set(marker_key, workflow_task_id, xx=True, ex=_MARKER_TTL_SECONDS)
 
 
@@ -90,7 +96,9 @@ if redis.call('get', KEYS[1]) == ARGV[1] then
 end
 return 0
 """
-    with redis.Redis.from_url(get_settings().celery_broker_url, decode_responses=True) as client:
+    with redis.Redis.from_url(
+        get_settings().celery_broker_url, decode_responses=True
+    ) as client:
         client.eval(script, 1, marker_key, task_id)
 
 
@@ -145,7 +153,6 @@ def _dispatch_active_bitrix_successor(occurrence: str) -> str | None:
 
     graph = Neo4jClient(get_settings())
     try:
-
         def _read(tx: ManagedTransaction) -> tuple[str, str, str, str] | None:
             record = tx.run(
                 GET_ACTIVE_BITRIX_SUCCESSOR_SCHEDULE,
@@ -239,7 +246,9 @@ def _dispatch_active_bitrix_successor(occurrence: str) -> str | None:
 
 
 def _legacy_reservation_identity(marker_key: str) -> tuple[str, str]:
-    routing_digest = "sha256:" + hashlib.sha256(f"legacy-bitrix:{marker_key}".encode()).hexdigest()
+    routing_digest = "sha256:" + hashlib.sha256(
+        f"legacy-bitrix:{marker_key}".encode()
+    ).hexdigest()
     return routing_digest, f"legacy:{marker_key}"
 
 
@@ -340,7 +349,9 @@ def dispatch_ingestion_group_task(
             "workflow_task_id": "",
         }
     group = scheduled_ingestion_group(group_key)
-    if group.key == "bitrix_chat" and _repair_dispatch_blocked(LEGACY_DEFAULT_CONTROL_INSTANCE_ID):
+    if group.key == "bitrix_chat" and _repair_dispatch_blocked(
+        LEGACY_DEFAULT_CONTROL_INSTANCE_ID
+    ):
         logger.warning("Skipped Bitrix scheduled publication because repair dispatch is blocked")
         return {
             "status": "repair_blocked",

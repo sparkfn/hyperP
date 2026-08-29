@@ -111,8 +111,10 @@ def allocate_units(
     return tuple(
         RepairUnit(
             run_id=run_id,
-            unit_id="unit-" + object_digest(
-                _UNIT_DOMAIN, {"run_id": run_id, "inventory_key": row.inventory_key}
+            unit_id="unit-"
+            + object_digest(
+                _UNIT_DOMAIN,
+                {"run_id": run_id, "inventory_key": row.inventory_key},
             ).removeprefix("sha256:")[:32],
             generation=generation,
             sequence=index,
@@ -143,7 +145,10 @@ def allocation_digest(overlay: VerifiedApprovalOverlay, units: tuple[RepairUnit,
 
 def _overlay_row(value: JsonValue) -> RepairOverlayRow:
     if not isinstance(value, dict) or set(value) != {
-        "inventory_key", "source_record_pk", "inventory_fingerprint", "disposition"
+        "inventory_key",
+        "source_record_pk",
+        "inventory_fingerprint",
+        "disposition",
     }:
         raise ValueError("repair approval overlay row schema is invalid")
     return RepairOverlayRow(

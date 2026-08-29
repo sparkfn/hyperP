@@ -178,11 +178,15 @@ class CrmDealRepairControlRepository:
         self._client = client
         self._control_instance_id = control_instance_id
 
-    def claim(self, lease: RepairControlLease, expected_revision: int) -> RepairControlLease:
+    def claim(
+        self, lease: RepairControlLease, expected_revision: int
+    ) -> RepairControlLease:
         """Create or renew only the same owner/token; competing ownership fails closed."""
         return self._write(lease, expected_revision, creating=True)
 
-    def transition(self, lease: RepairControlLease, expected_revision: int) -> RepairControlLease:
+    def transition(
+        self, lease: RepairControlLease, expected_revision: int
+    ) -> RepairControlLease:
         """Advance only a same-owner/token control revision; never clear the block."""
         return self._write(lease, expected_revision, creating=False)
 
@@ -224,7 +228,9 @@ class CrmDealRepairControlRepository:
                 prior_state=None if prior is None else str(prior),
             )
 
-        def _validate(tx: ManagedTransaction, result: RepairControlLease) -> Mapping[str, object]:
+        def _validate(
+            tx: ManagedTransaction, result: RepairControlLease
+        ) -> Mapping[str, object]:
             return self._verify_control_post_state(tx, result)
 
         return self._execute_proven_write(
@@ -416,7 +422,9 @@ RETURN control.run_id AS run_id, control.owner_id AS owner_id, control.token AS 
 
     def inventory_topology(self, lease: RepairControlLease) -> RepairTopologyCapture:
         """Freeze exact affected control identities and their state/fence evidence."""
-        from src.graph.queries.crm_deal_identity_repair_ledger import INVENTORY_REPAIR_TOPOLOGY
+        from src.graph.queries.crm_deal_identity_repair_ledger import (
+            INVENTORY_REPAIR_TOPOLOGY,
+        )
 
         def _work(tx: ManagedTransaction) -> RepairTopologyCapture:
             record = tx.run(
@@ -526,7 +534,9 @@ RETURN control.run_id AS run_id, control.owner_id AS owner_id, control.token AS 
                 lease.boundary_digest,
             )
 
-        def _validate(tx: ManagedTransaction, result: RepairControlLease) -> Mapping[str, object]:
+        def _validate(
+            tx: ManagedTransaction, result: RepairControlLease
+        ) -> Mapping[str, object]:
             verification = tx.run(
                 VERIFY_QUIESCED_REPAIR_TOPOLOGY,
                 run_id=result.run_id,
@@ -627,7 +637,9 @@ RETURN control.run_id AS run_id, control.owner_id AS owner_id, control.token AS 
         proof: RepairStaleRunProof,
     ) -> None:
         """Fail only the exact captured stale run; all owner/orphan evidence is rechecked."""
-        from src.graph.queries.crm_deal_identity_repair_ledger import TERMINALIZE_STALE_REPAIR_RUN
+        from src.graph.queries.crm_deal_identity_repair_ledger import (
+            TERMINALIZE_STALE_REPAIR_RUN,
+        )
 
         if expected_revision != lease.revision:
             raise ValueError("stale-run terminalization revision must match the captured lease")
@@ -679,7 +691,9 @@ RETURN control.run_id AS run_id, control.owner_id AS owner_id, control.token AS 
             READ_REPAIR_BOUNDARY_COMPONENT_PROOF,
         )
 
-        def _work(tx: ManagedTransaction) -> tuple[RepairBoundaryComponentProof, str, str] | None:
+        def _work(
+            tx: ManagedTransaction,
+        ) -> tuple[RepairBoundaryComponentProof, str, str] | None:
             record = tx.run(READ_REPAIR_BOUNDARY_COMPONENT_PROOF, run_id=run_id).single()
             if record is None:
                 return None
@@ -710,7 +724,9 @@ RETURN control.run_id AS run_id, control.owner_id AS owner_id, control.token AS 
         stop_reason: str | None,
     ) -> None:
         """Persist only fail-closed task-proof metadata under the current owned CAS lease."""
-        from src.graph.queries.crm_deal_identity_repair_ledger import RECORD_REPAIR_TASK_PROOF
+        from src.graph.queries.crm_deal_identity_repair_ledger import (
+            RECORD_REPAIR_TASK_PROOF,
+        )
 
         if proof_state not in {"absent", "failed", "lost"}:
             raise ValueError("repair task proof state is invalid")
@@ -747,7 +763,9 @@ RETURN control.run_id AS run_id, control.owner_id AS owner_id, control.token AS 
 
     def read_status(self, run_id: str) -> RepairControlStatus:
         """Read combined control/allocation/topology evidence without issuing a capability."""
-        from src.graph.queries.crm_deal_identity_repair_ledger import READ_REPAIR_CONTROL_STATUS
+        from src.graph.queries.crm_deal_identity_repair_ledger import (
+            READ_REPAIR_CONTROL_STATUS,
+        )
 
         def _work(tx: ManagedTransaction) -> RepairControlStatus:
             record = tx.run(READ_REPAIR_CONTROL_STATUS, run_id=run_id).single()
@@ -795,7 +813,9 @@ RETURN control.run_id AS run_id, control.owner_id AS owner_id, control.token AS 
         """Persist one exact approved allocation or return its exact sealed replay."""
         import json
 
-        from src.graph.queries.crm_deal_identity_repair_ledger import ALLOCATE_REPAIR_UNITS
+        from src.graph.queries.crm_deal_identity_repair_ledger import (
+            ALLOCATE_REPAIR_UNITS,
+        )
 
         if lease.revision != expected_revision:
             raise ValueError("repair allocation revision must match its captured lease")
@@ -911,7 +931,6 @@ RETURN control.run_id AS run_id, control.owner_id AS owner_id, control.token AS 
         )
 
 
-
 def _json_mapping(value: Mapping[str, object]) -> dict[str, JsonValue]:
     """Validate operation captures before they enter canonical authorization evidence."""
     return {key: _json_value(item) for key, item in value.items()}
@@ -926,7 +945,6 @@ def _json_value(value: object) -> JsonValue:
     if isinstance(value, (list, tuple)):
         return [_json_value(item) for item in value]
     raise RuntimeError("repair operation capture contains a non-JSON value")
-
 
 
 def _component_payload(proof: RepairBoundaryComponentProof) -> dict[str, JsonValue]:
@@ -1042,7 +1060,9 @@ def _captured_maps(value: object) -> tuple[Mapping[str, object], ...]:
     return tuple(captures)
 
 
-def _boundary_parameters(prefix: str, proof: RepairBoundaryComponentProof) -> dict[str, object]:
+def _boundary_parameters(
+    prefix: str, proof: RepairBoundaryComponentProof
+) -> dict[str, object]:
     """Encode only canonical #300 component evidence for the #310-derived proof record."""
     return {
         f"{prefix}_source_instance_id": proof.source_instance_id,
@@ -1066,7 +1086,9 @@ def _required_text_value(value: object, label: str) -> str:
 
 def _required_text_list(value: object, label: str) -> tuple[str, ...]:
     """Read a unique list of proof identities without coercing graph values."""
-    if not isinstance(value, list) or any(not isinstance(item, str) or not item for item in value):
+    if not isinstance(value, list) or any(
+        not isinstance(item, str) or not item for item in value
+    ):
         raise RuntimeError(f"repair stale-run {label} proof is invalid")
     result = tuple(value)
     if len(set(result)) != len(result):

@@ -42,7 +42,13 @@ def _current(
     rationale: str,
 ) -> tuple[ReaderClassification, ...]:
     return tuple(
-        ReaderClassification(module_path, name, "current_authority", relationship_types, rationale)
+        ReaderClassification(
+            module_path,
+            name,
+            "current_authority",
+            relationship_types,
+            rationale,
+        )
         for name in query_names
     )
 
@@ -189,7 +195,10 @@ CURRENT_AUTHORITY_READERS: tuple[ReaderClassification, ...] = (
     ),
     *_current(
         "services/api/src/profile_analysis_runtime_queries.py",
-        ("FETCH_PROFILE_ANALYSIS_SNAPSHOT_ROWS", "FETCH_PROFILE_ANALYSIS_SENSITIVE_VALUES"),
+        (
+            "FETCH_PROFILE_ANALYSIS_SNAPSHOT_ROWS",
+            "FETCH_PROFILE_ANALYSIS_SENSITIVE_VALUES",
+        ),
         (
             "LINKED_TO",
             "IDENTIFIED_BY",
@@ -238,7 +247,10 @@ CURRENT_AUTHORITY_READERS: tuple[ReaderClassification, ...] = (
     ),
     *_current(
         "services/ingestion/src/graph/queries/profile_analysis_dirty.py",
-        ("MARK_PROFILE_ANALYSIS_DIRTY", "FIND_PROFILE_ANALYSIS_MERGE_AFFECTED_PERSON_IDS"),
+        (
+            "MARK_PROFILE_ANALYSIS_DIRTY",
+            "FIND_PROFILE_ANALYSIS_MERGE_AFFECTED_PERSON_IDS",
+        ),
         (
             "LINKED_TO",
             "IDENTIFIED_BY",
@@ -271,7 +283,10 @@ CURRENT_AUTHORITY_READERS: tuple[ReaderClassification, ...] = (
     ),
     *_current(
         "services/ingestion/src/graph/queries/person_pairs.py",
-        ("FIND_PERSONS_SHARING_IDENTIFIER", "FIND_PERSONS_SHARING_IDENTIFIERS_BATCH"),
+        (
+            "FIND_PERSONS_SHARING_IDENTIFIER",
+            "FIND_PERSONS_SHARING_IDENTIFIERS_BATCH",
+        ),
         ("IDENTIFIED_BY",),
         "Pair-audit discovery is operational candidate generation, not historical review output.",
     ),
@@ -301,7 +316,10 @@ CURRENT_AUTHORITY_READERS: tuple[ReaderClassification, ...] = (
     ),
     *_current(
         "services/ingestion/src/graph/queries/sales.py",
-        ("RESOLVE_SALES_CUSTOMER", "FIND_VEHICLE_CANDIDATES_FOR_SALES"),
+        (
+            "RESOLVE_SALES_CUSTOMER",
+            "FIND_VEHICLE_CANDIDATES_FOR_SALES",
+        ),
         ("LINKED_TO", "OWNS_VEHICLE", "BOUGHT_VEHICLE"),
         "Sales identity resolution and vehicle discovery use active customer authority.",
     ),
@@ -439,7 +457,11 @@ NON_READER_RELATIONSHIP_QUERIES: tuple[NonReaderRelationshipQuery, ...] = (
     ),
     *_non_reader(
         "services/ingestion/src/graph/queries/persons.py",
-        ("LINK_PERSON_TO_IDENTIFIER", "LINK_PERSON_TO_ADDRESS", "CREATE_ATTRIBUTE_FACT"),
+        (
+            "LINK_PERSON_TO_IDENTIFIER",
+            "LINK_PERSON_TO_ADDRESS",
+            "CREATE_ATTRIBUTE_FACT",
+        ),
         "projection mutation",
     ),
     *_non_reader(
@@ -481,5 +503,6 @@ REPAIR_RETIRABLE_RELATIONSHIP_TYPES: frozenset[str] = frozenset(
     }
 )
 RELEVANT_READER_MODULES: frozenset[str] = frozenset(
-    item.module_path for item in (*READER_CLASSIFICATIONS, *NON_READER_RELATIONSHIP_QUERIES)
+    item.module_path
+    for item in (*READER_CLASSIFICATIONS, *NON_READER_RELATIONSHIP_QUERIES)
 )

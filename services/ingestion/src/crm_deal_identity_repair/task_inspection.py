@@ -110,7 +110,9 @@ class RepairTaskInspection:
         observations = self.active + self.reserved + self.scheduled + self.queued
         if any(observed.identity_is_unknown for observed in observations):
             return False
-        if any(observed.matches(expected) for observed in observations for expected in tasks):
+        if any(
+            observed.matches(expected) for observed in observations for expected in tasks
+        ):
             return False
         queued = broker.has_queued_delivery(tasks, timeout_seconds)
         return queued is False
