@@ -197,8 +197,9 @@ def _rollback_payload(
     plan: RepairMutationPlan,
     snapshot: dict[str, JsonValue],
     expected_state: dict[str, JsonValue],
+    envelope: SourceRecordEnvelope | None,
 ) -> RepairRollbackPayload:
-    created_specs = _created_object_specifications(request, plan, snapshot)
+    created_specs = _created_object_specifications(request, plan, snapshot, envelope)
     return RepairRollbackPayload(
         payload={
             "contract_version": request.mutation_contract_version,
@@ -206,6 +207,7 @@ def _rollback_payload(
             "authority_context": {
                 "current_owner_ids": list(plan.current_owner_ids),
                 "authority_digest": plan.authority_digest,
+                "external_authority_digest": plan.external_authority_digest,
             },
             "desired_state": plan.desired_state(),
             "pre_state": snapshot,
@@ -251,9 +253,10 @@ def _created_object_specifications(
     request: RepairMutationCommand,
     plan: RepairMutationPlan,
     snapshot: dict[str, JsonValue],
+    envelope: SourceRecordEnvelope | None,
 ) -> list[JsonValue]:
     """Describe every prospective Identifier and evidence edge before graph mutation."""
-    if plan.disposition != "applied" or plan.source_record_payload is None:
+    if plan.disposition != "applied" or envelope is None:
         return []
     candidates = snapshot.get("created_identifier_candidates")
     if not isinstance(candidates, list) or plan.selected_person_id is None:
@@ -275,12 +278,10 @@ def _created_object_specifications(
             "identifier_scope": identifier_scope,
             "normalized_value": normalized_value,
         }
-        identifier_input = _identifier_input(
-            plan.source_record_payload, identifier_type, normalized_value
-        )
-        source_instance_id = identifier_input.get("source_instance_id")
-        is_verified = identifier_input.get("is_verified", False)
-        quality_flag = identifier_input.get("quality_flag", "valid")
+        identifier_input = _staging_identifier_input(envelope, identifier_type, normalized_value)
+        source_instance_id = identifier_input["source_instance_id"]
+        is_verified = identifier_input["is_verified"]
+        quality_flag = identifier_input["quality_flag"]
         if source_instance_id is not None and not isinstance(source_instance_id, str):
             raise RepairMutationDriftError("repair identifier source instance is malformed")
         if not isinstance(is_verified, bool) or not isinstance(quality_flag, str):
@@ -323,12 +324,10 @@ def _created_object_specifications(
                 },
             ]
         )
-    attributes = plan.source_record_payload.get("attributes")
-    if not isinstance(attributes, dict):
-        raise RepairMutationDriftError("repair fact payload is malformed")
-    for ordinal, (name, value) in enumerate(sorted(attributes.items())):
-        if not isinstance(name, str) or not isinstance(value, str):
-            raise RepairMutationDriftError("repair fact payload is malformed")
+    _, facts = _staging_projection(envelope)
+    for ordinal, fact in enumerate(facts):
+        name = fact["attribute_name"]
+        value = fact["attribute_value"]
         specifications.append(
             {
                 "object_kind": "HAS_FACT",
@@ -343,10 +342,10 @@ def _created_object_specifications(
                     "source_record_pk": plan.source_record_pk,
                     "source_trust_tier": 2,
                     "confidence": 1.0,
-                    "quality_flag": "valid",
+                    "quality_flag": fact["quality_flag"],
                     "is_active": True,
                     "is_current_hint": False,
-                    "observed_at": _payload_string(plan.source_record_payload, "observed_at"),
+                    "observed_at": envelope.observed_at,
                     "created_at": {"dynamic": "transaction_datetime"},
                     "repair_mutation_id": request.mutation_id,
                 },
@@ -356,22 +355,45 @@ def _created_object_specifications(
     return specifications
 
 
-def _identifier_input(
-    payload: dict[str, JsonValue], identifier_type: str, normalized_value: str
+def _staging_identifier_input(
+    envelope: SourceRecordEnvelope, identifier_type: str, normalized_value: str
 ) -> dict[str, JsonValue]:
-    raw_identifiers = payload.get("identifiers")
-    if not isinstance(raw_identifiers, list):
-        raise RepairMutationDriftError("repair identifier payload is malformed")
+    identifiers, _ = _staging_projection(envelope)
     candidates = [
         item
-        for item in raw_identifiers
-        if isinstance(item, dict)
-        and item.get("type") == identifier_type
-        and item.get("value") == normalized_value
+        for item in identifiers
+        if item["identifier_type"] == identifier_type
+        and item["normalized_value"] == normalized_value
     ]
     if len(candidates) != 1:
         raise RepairMutationDriftError("repair identifier payload does not match staged identity")
     return candidates[0]
+
+
+def _staging_projection(
+    envelope: SourceRecordEnvelope,
+) -> tuple[list[dict[str, JsonValue]], list[dict[str, JsonValue]]]:
+    identifiers: list[dict[str, JsonValue]] = [
+        {
+            "identifier_type": item.identifier_type,
+            "normalized_value": item.normalized_value,
+            "source_instance_id": item.source_instance_id,
+            "is_verified": item.is_verified,
+            "quality_flag": item.quality_flag.value,
+        }
+        for item in projected_identifiers(envelope, normalize_envelope_identifiers(envelope))
+        if item.quality_flag.value != "invalid_format"
+    ]
+    facts: list[dict[str, JsonValue]] = [
+        {
+            "attribute_name": item.attribute_name,
+            "attribute_value": item.attribute_value,
+            "quality_flag": item.quality_flag.value,
+        }
+        for item in normalize_envelope_attributes(envelope)
+        if item.quality_flag.value != "invalid_format"
+    ]
+    return identifiers, facts
 
 
 def _expected_state(

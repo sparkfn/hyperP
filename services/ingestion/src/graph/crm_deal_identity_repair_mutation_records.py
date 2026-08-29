@@ -74,7 +74,10 @@ def _validate_bundle(
     expected = {key: _json_value(value) for key, value in expected_state.items()}
     if image.expected_repaired_digest != repaired_state_digest(expected):
         raise RuntimeError("repair rollback expected-state digest is invalid")
-    if _string(payload, "contract_version") != "crm_deal_identity_repair_mutation_v1":
+    payload_body = payload.get("payload")
+    if not isinstance(payload_body, dict):
+        raise RuntimeError("repair rollback payload body is invalid")
+    if _string(payload_body, "contract_version") != "crm_deal_identity_repair_mutation_v1":
         raise RuntimeError("repair rollback contract is invalid")
 
 
