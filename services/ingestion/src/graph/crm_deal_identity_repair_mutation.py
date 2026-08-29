@@ -8,7 +8,6 @@ from typing import TypeVar
 from neo4j import ManagedTransaction, Record
 
 from src.crm_deal_identity_repair.digests import (
-    authority_evidence_digest,
     mutation_request_digest,
     mutation_result_digest,
     object_digest,
@@ -25,6 +24,7 @@ from src.crm_deal_identity_repair.mutation_models import (
     RepairMutationPlan,
     build_outbox_digest,
     build_result_digest,
+    external_authority_evidence_digest,
 )
 from src.graph.client import Neo4jClient
 from src.graph.crm_deal_identity_repair_mutation_authority import (
@@ -227,6 +227,8 @@ class CrmDealIdentityRepairMutationRepository:
         desired_state = payload_body.get("desired_state")
         if not isinstance(request_body, dict) or not isinstance(authority_context, dict):
             raise RepairMutationDriftError("repair committed replay context is malformed")
+        if not isinstance(desired_state, dict):
+            raise RepairMutationDriftError("repair desired-state context is malformed")
         committed_request_digest = result.get("request_digest")
         if not isinstance(committed_request_digest, str):
             raise RepairMutationDriftError("repair request digest is malformed")
@@ -238,25 +240,40 @@ class CrmDealIdentityRepairMutationRepository:
         ):
             raise RepairMutationDriftError("repair authority owner context is malformed")
         owner_ids = tuple(sorted(value for value in owner_values if isinstance(value, str)))
-        current_evidence = _authority_evidence(tx, request, owner_ids)
-        external_evidence = tuple(
-            item
-            for item in current_evidence
-            if item.provenance_class not in {"historical_deal_only", "self_supporting"}
+        retired_values = desired_state.get("retired_source_record_pks")
+        if not isinstance(retired_values, list) or not all(
+            isinstance(value, str) and value for value in retired_values
+        ):
+            raise RepairMutationDriftError("repair retired-source context is malformed")
+        retired_source_record_pks = tuple(
+            sorted({value for value in retired_values if isinstance(value, str)})
         )
-        external_evidence_digest = authority_evidence_digest(
-            {
-                "current_owner_ids": list(owner_ids),
-                "evidence": [item.to_dict() for item in external_evidence],
-            }
+        # Read external authority against the committed replacement, not the
+        # retired source.  The mutation intentionally changes the retired
+        # source's lifecycle, links, and descendant contamination; those
+        # mutation-owned changes must not turn an otherwise exact retry into
+        # authority drift.  The replacement retains the source/control scope
+        # that the authority query locks and verifies.
+        current_evidence = _authority_evidence(
+            tx,
+            request,
+            owner_ids,
+            source_record_pk=committed_source_record_pk,
+        )
+        external_evidence_digest = external_authority_evidence_digest(
+            owner_ids,
+            current_evidence,
+            mutation_id=request.mutation_id,
+            excluded_source_record_pks=(
+                *retired_source_record_pks,
+                committed_source_record_pk,
+            ),
         )
         committed_external_digest = authority_context.get("external_authority_digest")
         if not isinstance(committed_external_digest, str):
             raise RepairMutationDriftError("repair external authority digest is malformed")
         if external_evidence_digest != committed_external_digest:
             raise RepairMutationDriftError("repair authority changed after commit")
-        if not isinstance(desired_state, dict):
-            raise RepairMutationDriftError("repair desired-state context is malformed")
         recomputed_result_digest = mutation_result_digest(
             {
                 "request_digest": committed_request_digest,

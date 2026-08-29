@@ -6,8 +6,10 @@ import pytest
 from src.crm_deal_identity_repair.execution_models import RepairFence, RepairUnit
 from src.crm_deal_identity_repair.models import RepairInventoryItem, RepairPartition
 from src.crm_deal_identity_repair.mutation_models import (
+    RepairAuthorityEvidence,
     RepairMutationCommand,
     build_inventory_binding_digest,
+    external_authority_evidence_digest,
 )
 
 DIGEST = "sha256:" + "a" * 64
@@ -80,3 +82,99 @@ def test_negative_controls_and_lost_fences_are_rejected_before_transaction_work(
             "source-instance",
             "control-instance",
         )
+
+
+def test_external_authority_digest_excludes_repair_owned_review_rows_only() -> None:
+    external = RepairAuthorityEvidence(
+        "person-a",
+        "reviewed_v2",
+        ("external-reviewed",),
+        (
+            {
+                "source_record_pk": "external-reviewed",
+                "match_decision_id": "external-decision",
+                "review_case_id": "external-review",
+            },
+        ),
+    )
+    repair_owned = RepairAuthorityEvidence(
+        "person-a",
+        "reviewed_v2",
+        ("deal-pk",),
+        (
+            {
+                "source_record_pk": "deal-pk",
+                "decision_repair_mutation_id": "mutation-a",
+            },
+        ),
+    )
+    baseline = external_authority_evidence_digest(
+        ("person-a",),
+        (external,),
+        mutation_id="mutation-a",
+        excluded_source_record_pks=("deal-pk", "replacement-pk"),
+    )
+    assert (
+        external_authority_evidence_digest(
+            ("person-a",),
+            (external, repair_owned),
+            mutation_id="mutation-a",
+            excluded_source_record_pks=("deal-pk", "replacement-pk"),
+        )
+        == baseline
+    )
+
+
+def test_external_authority_digest_keeps_lock_only_blockers_stable_and_sensitive() -> None:
+    baseline = external_authority_evidence_digest(
+        ("person-a",),
+        (
+            RepairAuthorityEvidence(
+                "person-a",
+                "blocked_or_conflicting",
+                (),
+                (
+                    {
+                        "active_no_match_lock_count": 1,
+                        "current_owner_count": 1,
+                        "source_record_pk": "deal-pk",
+                    },
+                ),
+            ),
+        ),
+        mutation_id="mutation-a",
+        excluded_source_record_pks=("deal-pk", "replacement-pk"),
+    )
+    assert baseline == external_authority_evidence_digest(
+        ("person-a",),
+        (
+            RepairAuthorityEvidence(
+                "person-a",
+                "blocked_or_conflicting",
+                (),
+                (
+                    {
+                        "active_no_match_lock_count": 1,
+                        "current_owner_count": 1,
+                        "source_record_pk": "replacement-pk",
+                        "decision_repair_mutation_id": "mutation-a",
+                    },
+                ),
+            ),
+        ),
+        mutation_id="mutation-a",
+        excluded_source_record_pks=("deal-pk", "replacement-pk"),
+    )
+    assert baseline != external_authority_evidence_digest(
+        ("person-a",),
+        (
+            RepairAuthorityEvidence(
+                "person-a",
+                "blocked_or_conflicting",
+                (),
+                ({"active_no_match_lock_count": 0, "current_owner_count": 1},),
+            ),
+        ),
+        mutation_id="mutation-a",
+        excluded_source_record_pks=("deal-pk", "replacement-pk"),
+    )
