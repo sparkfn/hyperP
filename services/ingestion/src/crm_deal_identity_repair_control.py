@@ -559,8 +559,8 @@ def _control_command(arguments: Namespace) -> int:
     """Run gated control-plane proof transitions only; it never dispatches or mutates CRM data."""
     from src.config import get_settings
     from src.crm_deal_identity_repair.approval_overlay import (
-        allocation_digest,
         allocate_units,
+        allocation_digest,
         verify_sealed_approval_overlay,
     )
     from src.crm_deal_identity_repair.control_models import (
