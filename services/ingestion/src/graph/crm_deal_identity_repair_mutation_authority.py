@@ -153,6 +153,8 @@ def _authority_evidence(
         READ_LOCKED_REPAIR_AUTHORITY,
         source_record_pk=source_record_pk or request.inventory.source_record_pk,
         source_instance_id=request.source_instance_id,
+        control_instance_id=request.control_instance_id,
+        owner_ids=list(current_owner_ids),
     ):
         person_id = _required_record_string(row, "person_id")
         independent = _object_rows(row["independent_rows"])

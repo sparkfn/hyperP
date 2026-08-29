@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from typing import TypedDict, cast
+from typing import NotRequired, TypedDict, cast
 
 from neo4j import ManagedTransaction, Record
 
@@ -50,6 +50,8 @@ class _GuardParameters(TypedDict):
     inventory_binding_digest: str
     mutation_id: str
     quoted_source_record_pk: str
+    new_source_record_pk: NotRequired[str]
+    new_lifecycle_status: NotRequired[str]
 
 
 class _SourceParameters(TypedDict):
@@ -196,11 +198,18 @@ def _rollback_payload(
     snapshot: dict[str, JsonValue],
     expected_state: dict[str, JsonValue],
 ) -> RepairRollbackPayload:
+    created_specs = _created_object_specifications(request, plan, snapshot)
     return RepairRollbackPayload(
         payload={
             "contract_version": request.mutation_contract_version,
             "request": request.to_dict(),
+            "authority_context": {
+                "current_owner_ids": list(plan.current_owner_ids),
+                "authority_digest": plan.authority_digest,
+            },
+            "desired_state": plan.desired_state(),
             "pre_state": snapshot,
+            "created_object_specifications": created_specs,
             "rollback_operations": [
                 {
                     "operation": "delete_created_relationships_by_repair_mutation_id",
@@ -224,6 +233,7 @@ def _rollback_payload(
                     "review_case_id": request.mutation_id + ":review",
                     "identifier_repair_mutation_id": request.mutation_id,
                     "identifier_candidates": snapshot.get("created_identifier_candidates", []),
+                    "created_object_specifications": created_specs,
                     "delete_identifier_only_when_preexisting_is_false": True,
                 },
                 {
@@ -235,6 +245,133 @@ def _rollback_payload(
         },
         expected_repaired_state=expected_state,
     )
+
+
+def _created_object_specifications(
+    request: RepairMutationCommand,
+    plan: RepairMutationPlan,
+    snapshot: dict[str, JsonValue],
+) -> list[JsonValue]:
+    """Describe every prospective Identifier and evidence edge before graph mutation."""
+    if plan.disposition != "applied" or plan.source_record_payload is None:
+        return []
+    candidates = snapshot.get("created_identifier_candidates")
+    if not isinstance(candidates, list) or plan.selected_person_id is None:
+        raise RepairMutationDriftError("repair identifier pre-state is malformed")
+    specifications: list[JsonValue] = []
+    for ordinal, candidate in enumerate(candidates):
+        if not isinstance(candidate, dict):
+            raise RepairMutationDriftError("repair identifier candidate is malformed")
+        identifier_type = candidate.get("identifier_type")
+        identifier_scope = candidate.get("identifier_scope")
+        normalized_value = candidate.get("normalized_value")
+        preexisting = candidate.get("preexisting")
+        if not isinstance(identifier_type, str) or not isinstance(identifier_scope, str):
+            raise RepairMutationDriftError("repair identifier candidate identity is malformed")
+        if not isinstance(normalized_value, str) or not isinstance(preexisting, bool):
+            raise RepairMutationDriftError("repair identifier candidate state is malformed")
+        identifier: dict[str, JsonValue] = {
+            "identifier_type": identifier_type,
+            "identifier_scope": identifier_scope,
+            "normalized_value": normalized_value,
+        }
+        identifier_input = _identifier_input(
+            plan.source_record_payload, identifier_type, normalized_value
+        )
+        source_instance_id = identifier_input.get("source_instance_id")
+        is_verified = identifier_input.get("is_verified", False)
+        quality_flag = identifier_input.get("quality_flag", "valid")
+        if source_instance_id is not None and not isinstance(source_instance_id, str):
+            raise RepairMutationDriftError("repair identifier source instance is malformed")
+        if not isinstance(is_verified, bool) or not isinstance(quality_flag, str):
+            raise RepairMutationDriftError("repair identifier staging properties are malformed")
+        transaction_datetime: dict[str, JsonValue] = {"dynamic": "transaction_datetime"}
+        specifications.extend(
+            [
+                {
+                    "object_kind": "Identifier",
+                    "identity": identifier,
+                    "preexisting": preexisting,
+                    "write_mode": "preserved" if preexisting else "created",
+                    "on_create_properties": {
+                        "source_instance_id": source_instance_id,
+                        "created_at": transaction_datetime,
+                        "repair_mutation_id": request.mutation_id,
+                    },
+                    "multiplicity_ordinal": ordinal,
+                },
+                {
+                    "object_kind": "IDENTIFIED_BY",
+                    "preexisting": False,
+                    "write_mode": "created",
+                    "direction": "Person_to_Identifier",
+                    "left_endpoint": {"person_id": plan.selected_person_id},
+                    "right_endpoint": identifier,
+                    "properties": {
+                        "source_system_key": "bitrix_chat",
+                        "source_record_pk": plan.source_record_pk,
+                        "is_verified": is_verified,
+                        "verification_method": None,
+                        "is_active": True,
+                        "quality_flag": quality_flag,
+                        "first_seen_at": transaction_datetime,
+                        "last_seen_at": transaction_datetime,
+                        "last_confirmed_at": transaction_datetime,
+                        "repair_mutation_id": request.mutation_id,
+                    },
+                    "multiplicity_ordinal": ordinal,
+                },
+            ]
+        )
+    attributes = plan.source_record_payload.get("attributes")
+    if not isinstance(attributes, dict):
+        raise RepairMutationDriftError("repair fact payload is malformed")
+    for ordinal, (name, value) in enumerate(sorted(attributes.items())):
+        if not isinstance(name, str) or not isinstance(value, str):
+            raise RepairMutationDriftError("repair fact payload is malformed")
+        specifications.append(
+            {
+                "object_kind": "HAS_FACT",
+                "preexisting": False,
+                "write_mode": "created",
+                "direction": "Person_to_SourceRecord",
+                "left_endpoint": {"person_id": plan.selected_person_id},
+                "right_endpoint": {"source_record_pk": plan.source_record_pk},
+                "properties": {
+                    "attribute_name": name,
+                    "attribute_value": value,
+                    "source_record_pk": plan.source_record_pk,
+                    "source_trust_tier": 2,
+                    "confidence": 1.0,
+                    "quality_flag": "valid",
+                    "is_active": True,
+                    "is_current_hint": False,
+                    "observed_at": _payload_string(plan.source_record_payload, "observed_at"),
+                    "created_at": {"dynamic": "transaction_datetime"},
+                    "repair_mutation_id": request.mutation_id,
+                },
+                "multiplicity_ordinal": ordinal,
+            }
+        )
+    return specifications
+
+
+def _identifier_input(
+    payload: dict[str, JsonValue], identifier_type: str, normalized_value: str
+) -> dict[str, JsonValue]:
+    raw_identifiers = payload.get("identifiers")
+    if not isinstance(raw_identifiers, list):
+        raise RepairMutationDriftError("repair identifier payload is malformed")
+    candidates = [
+        item
+        for item in raw_identifiers
+        if isinstance(item, dict)
+        and item.get("type") == identifier_type
+        and item.get("value") == normalized_value
+    ]
+    if len(candidates) != 1:
+        raise RepairMutationDriftError("repair identifier payload does not match staged identity")
+    return candidates[0]
 
 
 def _expected_state(

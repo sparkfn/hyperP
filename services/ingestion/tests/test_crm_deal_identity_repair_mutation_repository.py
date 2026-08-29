@@ -42,3 +42,11 @@ def test_review_and_ledger_queries_encode_required_cardinality_and_bundle() -> N
     assert "rollback_image_id: $rollback_image_id" in queries.PERSIST_REPAIR_MUTATION_LEDGER
     assert "checkpoint_id: $checkpoint_id" in queries.PERSIST_REPAIR_MUTATION_LEDGER
     assert "outbox_event_id: $outbox_event_id" in queries.PERSIST_REPAIR_MUTATION_LEDGER
+
+
+def test_final_guard_and_authority_queries_bind_control_and_post_staging_lifecycle() -> None:
+    assert "lifecycle_status: 'superseded', is_latest: false" in (
+        queries.LOCK_AND_ASSERT_REPAIR_MUTATION_FINAL_GUARD
+    )
+    assert "new_lifecycle_status" in queries.LOCK_AND_ASSERT_REPAIR_MUTATION_FINAL_GUARD
+    assert "control_instance_id: $control_instance_id" in queries.READ_LOCKED_REPAIR_AUTHORITY
