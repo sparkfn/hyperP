@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from threading import Event
 
 import pytest
+from deal_intelligence.migrations.cli import alembic_config
 from deal_intelligence.scheduler import run as run_scheduler
 from deal_intelligence.scheduler import run_idle_loop as run_scheduler_idle_loop
 from deal_intelligence.scheduler import run_one_cycle as run_scheduler_one_cycle
@@ -23,6 +24,8 @@ from deal_intelligence.worker import run as run_worker
 from deal_intelligence.worker import run_idle_loop as run_worker_idle_loop
 from deal_intelligence.worker import run_one_cycle as run_worker_one_cycle
 from pydantic import SecretStr
+from sqlalchemy import create_engine
+from sqlalchemy.engine import URL, make_url
 
 
 @dataclass(slots=True)
@@ -56,6 +59,27 @@ def test_runtime_database_url_normalizes_a_bare_postgresql_url_without_rendering
 
     assert settings.sqlalchemy_database_url().startswith("postgresql+psycopg://")
     assert "top-secret" not in repr(settings)
+    config = alembic_config(make_url(settings.sqlalchemy_database_url()))
+    assert config.get_main_option("sqlalchemy.url") == settings.sqlalchemy_database_url()
+
+
+def test_alembic_config_recovers_percent_encoded_postgresql_url_without_connecting() -> None:
+    password = "disposable:/?@% password"
+    intended_url = URL.create(
+        drivername="postgresql+psycopg",
+        username="test_user",
+        password=password,
+        host="postgres.example.test",
+        port=5432,
+        database="deal_intelligence_test",
+    ).render_as_string(hide_password=False)
+
+    config = alembic_config(make_url(intended_url))
+    recovered_url = config.get_main_option("sqlalchemy.url")
+
+    assert recovered_url == intended_url
+    engine = create_engine(recovered_url)
+    engine.dispose()
 
 
 def test_worker_and_scheduler_one_cycle_are_disabled_and_write_only_heartbeats() -> None:

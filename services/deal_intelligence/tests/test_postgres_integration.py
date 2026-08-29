@@ -257,7 +257,8 @@ def test_platform_store_cas_fences_heartbeats_and_terminal_invariants(
         session.execute(
             text(
                 f"UPDATE {PLATFORM_SCHEMA}.leases "
-                "SET expires_at = CURRENT_TIMESTAMP - INTERVAL '1 second' WHERE resource_key = :key"
+                "SET acquired_at = CURRENT_TIMESTAMP - INTERVAL '2 seconds', "
+                "expires_at = CURRENT_TIMESTAMP - INTERVAL '1 second' WHERE resource_key = :key"
             ),
             {"key": resource_key},
         )
@@ -400,7 +401,8 @@ def test_multi_session_checkpoint_and_lease_contention(target: IntegrationTarget
         connection.execute(
             text(
                 f"UPDATE {PLATFORM_SCHEMA}.leases "
-                "SET expires_at = CURRENT_TIMESTAMP - INTERVAL '1 second' WHERE resource_key = :key"
+                "SET acquired_at = CURRENT_TIMESTAMP - INTERVAL '2 seconds', "
+                "expires_at = CURRENT_TIMESTAMP - INTERVAL '1 second' WHERE resource_key = :key"
             ),
             {"key": resource_key},
         )
@@ -474,6 +476,64 @@ def test_terminal_accounting_blocks_add_unit_until_terminal_commit(
 
     with pytest.raises(ValueError, match="terminal run"):
         _collect_thread_results((competing,), results)
+
+
+def test_terminal_accounting_rejects_pending_unit_added_before_finalization(
+    target: IntegrationTarget,
+) -> None:
+    """Finalization waits for an in-flight unit addition, then rejects the pending unit."""
+    command.upgrade(target.config, "heads")
+    store = SqlAlchemyPlatformStore()
+    with Session(target.engine) as session:
+        run = store.create_run(session, RunDescriptor("test.component", "test.run", None, None))
+        store.add_unit(session, UnitDescriptor(run.id, "complete"))
+        session.execute(
+            text(
+                f"UPDATE {PLATFORM_SCHEMA}.process_units "
+                "SET status = 'succeeded', finished_at = CURRENT_TIMESTAMP WHERE run_id = :run_id"
+            ),
+            {"run_id": run.id},
+        )
+        session.commit()
+
+    finalization_started = Event()
+    finalization_completed = Event()
+    results: Queue[_ThreadOutcome[None]] = Queue()
+    with Session(target.engine) as adding_session:
+        store.add_unit(adding_session, UnitDescriptor(run.id, "late-pending"))
+
+        def finalize_and_account() -> None:
+            try:
+                with Session(target.engine) as finalizing_session:
+                    finalization_started.set()
+                    finalizing_session.execute(
+                        text(
+                            f"UPDATE {PLATFORM_SCHEMA}.process_runs SET status = 'succeeded', "
+                            "terminal_disposition = 'test.completed', "
+                            "finished_at = CURRENT_TIMESTAMP "
+                            "WHERE id = :run_id"
+                        ),
+                        {"run_id": run.id},
+                    )
+                    store.record_terminal_accounting(
+                        finalizing_session,
+                        TerminalAccounting(run.id, "test.completed", 1, 0, 0, 1, datetime.now(UTC)),
+                    )
+                    finalizing_session.commit()
+                results.put(_ThreadSuccess(None))
+            except BaseException as error:
+                results.put(_ThreadFailure(error))
+            finally:
+                finalization_completed.set()
+
+        finalizing = Thread(target=finalize_and_account, daemon=True)
+        finalizing.start()
+        assert finalization_started.wait(timeout=_THREAD_TIMEOUT_SECONDS)
+        assert not finalization_completed.wait(timeout=_CONTENTION_OBSERVATION_SECONDS)
+        adding_session.commit()
+
+    with pytest.raises(ValueError, match="pending or running process units"):
+        _collect_thread_results((finalizing,), results)
 
 
 def _concurrent_checkpoint_changes(

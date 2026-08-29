@@ -298,12 +298,18 @@ class SqlAlchemyPlatformStore:
             raise ValueError("Terminal accounting disposition must match the run")
         counts = session.execute(
             select(
+                func.count(),
                 func.count().filter(process_units.c.status == "succeeded"),
                 func.count().filter(process_units.c.status == "failed"),
                 func.count().filter(process_units.c.status == "skipped"),
+                func.count().filter(process_units.c.status.in_(("pending", "running"))),
             ).where(process_units.c.run_id == accounting.run_id)
         ).one()
-        if (counts[0], counts[1], counts[2]) != (
+        if counts[4] != 0:
+            raise ValueError("Terminal accounting cannot include pending or running process units")
+        if counts[0] != accounting.total_count:
+            raise ValueError("Terminal accounting total must match all process units")
+        if (counts[1], counts[2], counts[3]) != (
             accounting.succeeded_count,
             accounting.failed_count,
             accounting.skipped_count,

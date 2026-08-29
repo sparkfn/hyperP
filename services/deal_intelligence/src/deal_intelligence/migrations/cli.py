@@ -29,7 +29,8 @@ def alembic_config(database_url: URL | None = None) -> Config:
     )
     config.set_main_option("path_separator", "os")
     url = database_url or make_url(get_settings().sqlalchemy_database_url())
-    config.set_main_option("sqlalchemy.url", url.render_as_string(hide_password=False))
+    rendered_url = url.render_as_string(hide_password=False)
+    config.set_main_option("sqlalchemy.url", rendered_url.replace("%", "%%"))
     config.set_main_option("version_table", ALEMBIC_VERSION_TABLE)
     return config
 
