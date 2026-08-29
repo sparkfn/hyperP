@@ -145,11 +145,13 @@ def _authority_evidence(
     tx: ManagedTransaction,
     request: RepairMutationCommand,
     current_owner_ids: tuple[str, ...],
+    *,
+    source_record_pk: str | None = None,
 ) -> tuple[RepairAuthorityEvidence, ...]:
     evidence: list[RepairAuthorityEvidence] = []
     for row in tx.run(
         READ_LOCKED_REPAIR_AUTHORITY,
-        source_record_pk=request.inventory.source_record_pk,
+        source_record_pk=source_record_pk or request.inventory.source_record_pk,
         source_instance_id=request.source_instance_id,
     ):
         person_id = _required_record_string(row, "person_id")

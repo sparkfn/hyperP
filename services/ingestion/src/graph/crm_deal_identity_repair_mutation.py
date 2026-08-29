@@ -7,7 +7,11 @@ from typing import TypeVar
 
 from neo4j import ManagedTransaction, Record
 
-from src.crm_deal_identity_repair.digests import repaired_state_digest
+from src.crm_deal_identity_repair.digests import (
+    authority_evidence_digest,
+    object_digest,
+    repaired_state_digest,
+)
 from src.crm_deal_identity_repair.mutation_classifier import (
     build_repair_plan,
     parse_repair_inventory,
@@ -40,6 +44,7 @@ from src.graph.crm_deal_identity_repair_mutation_payloads import (
     _guard_parameters,
     _ledger_parameters,
     _postcondition_state,
+    _record_int,
     _record_object,
     _required_record_string,
     _rollback_payload,
@@ -56,6 +61,7 @@ from src.graph.queries.crm_deal_identity_repair_mutation import (
     LOCK_AND_ASSERT_REPAIR_MUTATION_GUARD,
     LOCK_REPAIR_MUTATION_UNIT,
     PERSIST_REPAIR_MUTATION_LEDGER,
+    READ_REPAIRED_OWNER_IDS,
     RETIRE_EXACT_CONTAMINATION,
     STAGE_REVIEW_SOURCE_RECORD,
 )
@@ -108,7 +114,7 @@ class CrmDealIdentityRepairMutationRepository:
         plan = build_repair_plan(parsed, _match_result(parsed.current_owner_ids), evidence)
         self._fail("after_classification")
         expected_state = _expected_state(parsed.envelope, plan)
-        snapshot = _snapshot(tx, request, plan.retired_source_record_pks)
+        snapshot = _snapshot(tx, request, plan.retired_source_record_pks, parsed.envelope)
         rollback = _rollback_payload(request, plan, snapshot, expected_state)
         self._fail("after_rollback_image")
         self._create_source(tx, request, plan)
@@ -175,6 +181,11 @@ class CrmDealIdentityRepairMutationRepository:
         if row is None:
             return None
         result = _record_object(row, "result")
+        if any(
+            _record_int(row, key) != 1
+            for key in ("image_count", "checkpoint_count", "outbox_count", "source_count")
+        ):
+            raise RepairMutationDriftError("repair committed bundle cardinality differs")
         if (
             result.get("mutation_id") != request.mutation_id
             or result.get("request_digest") != request.request_digest
@@ -183,7 +194,51 @@ class CrmDealIdentityRepairMutationRepository:
         committed_source_record_pk = _required_record_string(row, "committed_source_record_pk")
         if result.get("new_source_record_pk") != committed_source_record_pk:
             raise RepairMutationDriftError("repair committed source identity differs")
+        expected_ids = {
+            "rollback_image_id": request.rollback_image_id,
+            "checkpoint_id": request.checkpoint_id,
+            "outbox_event_id": request.outbox_event_id,
+        }
+        if any(result.get(key) != value for key, value in expected_ids.items()):
+            raise RepairMutationDriftError("repair committed bundle identity differs")
         replay = atomic_result_from_record(row, replayed=True)
+        assert replay.mutation is not None
+        if replay.mutation.outcome == "applied":
+            owner_row = tx.run(
+                READ_REPAIRED_OWNER_IDS,
+                source_record_pk=committed_source_record_pk,
+            ).single()
+            if owner_row is None or not isinstance(owner_row["owner_ids"], list):
+                raise RepairMutationDriftError("repair authority readback is malformed")
+            owner_ids = tuple(
+                sorted(value for value in owner_row["owner_ids"] if isinstance(value, str))
+            )
+            current_evidence = _authority_evidence(
+                tx,
+                request,
+                owner_ids,
+                source_record_pk=committed_source_record_pk,
+            )
+            current_evidence_digest = authority_evidence_digest(
+                {
+                    "current_owner_ids": list(owner_ids),
+                    "evidence": [item.to_dict() for item in current_evidence],
+                }
+            )
+            if current_evidence_digest != replay.mutation.evidence_digest:
+                raise RepairMutationDriftError("repair authority changed after commit")
+        assert replay.checkpoint is not None
+        assert replay.outbox_event is not None
+        checkpoint_digest = object_digest(
+            b"crm-deal-identity-repair-checkpoint-v1\x00",
+            {"result_digest": replay.mutation.result_digest},
+        )
+        if replay.checkpoint.checkpoint_digest != checkpoint_digest:
+            raise RepairMutationDriftError("repair checkpoint digest differs")
+        if replay.outbox_event.payload_digest != build_outbox_digest(
+            request, replay.mutation.result_digest
+        ):
+            raise RepairMutationDriftError("repair outbox digest differs")
         observed_state = _postcondition_state(tx, committed_source_record_pk)
         if repaired_state_digest(observed_state) != replay.repaired_state_digest:
             raise RepairMutationDriftError("repair desired state changed after commit")

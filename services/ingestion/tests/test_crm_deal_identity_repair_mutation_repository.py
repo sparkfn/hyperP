@@ -30,8 +30,14 @@ def test_review_and_ledger_queries_encode_required_cardinality_and_bundle() -> N
     assert "is_active: false, provisional: true, authoritative: false" in (
         queries.STAGE_PROVISIONAL_REPAIR_LINK
     )
-    assert "ABOUT_LEFT {entity_type: 'source_record'}" in queries.CREATE_REPAIR_DECISION
-    assert "ABOUT_RIGHT {entity_type: 'person'}" in queries.STAGE_ACTIVE_REPAIR_LINK
+    assert (
+        "ABOUT_LEFT {entity_type: 'source_record', repair_mutation_id: $mutation_id}"
+        in queries.CREATE_REPAIR_DECISION
+    )
+    assert (
+        "ABOUT_RIGHT {entity_type: 'person', repair_mutation_id: $mutation_id}"
+        in queries.STAGE_ACTIVE_REPAIR_LINK
+    )
     assert "active_person_evidence" in queries.VERIFY_REPAIRED_MUTATION_POSTCONDITIONS
     assert "rollback_image_id: $rollback_image_id" in queries.PERSIST_REPAIR_MUTATION_LEDGER
     assert "checkpoint_id: $checkpoint_id" in queries.PERSIST_REPAIR_MUTATION_LEDGER

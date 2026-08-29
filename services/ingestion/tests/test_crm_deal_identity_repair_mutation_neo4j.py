@@ -23,6 +23,7 @@ from src.crm_deal_identity_repair.models import RepairInventoryItem
 from src.crm_deal_identity_repair.mutation_models import (
     MutationFailureStage,
     RepairMutationCommand,
+    build_inventory_binding_digest,
 )
 from src.graph.client import Neo4jClient
 from src.graph.crm_deal_identity_repair_mutation import (
@@ -193,7 +194,12 @@ def _seed_domain(driver: Driver, *, independent_support: bool) -> None:
                 MATCH (source:SourceSystem {source_key: 'bitrix_chat'}),
                       (person:Person {person_id: 'person-a'}),
                       (contact:Identifier {identifier_type: 'crm_contact_id', normalized_value: 'contact-1'})
-                CREATE (support:SourceRecord {source_record_pk: 'contact-support-pk', source_record_id: 'bitrix-crm-contact-contact-1', source_record_version: '1', source_version_key: 'contact-support-v1', source_instance_id: $source_instance_id, record_type: 'identity', source_entity_type: 'contact', source_entity_id: 'contact-1', identity_policy_version: 'crm_contact_identity_v1', lifecycle_status: 'active', is_latest: true, observed_at: datetime($observed_at), record_hash: 'dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd', raw_payload: '{}', normalized_payload: '{}', standalone_crm_census_id: 'census-a', standalone_crm_generation: 1, standalone_crm_fence_token: 'source-fence', standalone_crm_fence_owner_id: 'source-worker', standalone_crm_task_name: 'source-task', standalone_crm_task_id: 'source-task-id', standalone_crm_payload_digest: $support_digest, standalone_crm_call_intent_id: 'call-intent', standalone_crm_authorization_id: 'authorization', standalone_crm_authorization_digest: $support_digest, standalone_crm_availability_contract_version: 'v1', standalone_crm_frozen_upper_id: 10})-[:FROM_SOURCE]->(source)
+                CREATE (:StandaloneCrmCensus {census_id: 'census-a', generation: 1, source_key: 'bitrix_chat', source_instance_id: $source_instance_id})
+                CREATE (:StandaloneCrmCensusFence {census_id: 'census-a', generation: 1, stream_kind: 'contacts', token: 'source-fence', owner_id: 'source-worker'})
+                CREATE (:StandaloneCrmChildPublication {census_id: 'census-a', generation: 1, stream_kind: 'contacts', task_name: 'source-task', task_id: 'source-task-id', payload_digest: $support_digest, status: 'published'})
+                CREATE (:StandaloneCrmHttpCallReservation {intent_id: 'call-intent', census_id: 'census-a', generation: 1, stream_kind: 'contacts', fence_token: 'source-fence', task_id: 'source-task-id', status: 'succeeded'})
+                CREATE (:StandaloneCrmSourceFactPageReceipt {receipt_key: 'support-receipt', status: 'committed', census_id: 'census-a', generation: 1, stream_kind: 'contacts', fence_token: 'source-fence', fence_owner_id: 'source-worker', source_key: 'bitrix_chat', source_instance_id: $source_instance_id, task_name: 'source-task', task_id: 'source-task-id', payload_digest: $support_digest, call_intent_id: 'call-intent', authorization_id: 'authorization', authorization_digest: $support_digest, available_at: datetime($observed_at), availability_contract_version: 'v1', frozen_upper_id: 10})
+                CREATE (support:SourceRecord {source_record_pk: 'contact-support-pk', source_record_id: 'bitrix-crm-contact-contact-1', source_record_version: '1', source_version_key: 'contact-support-v1', source_instance_id: $source_instance_id, record_type: 'identity', source_entity_type: 'contact', source_entity_id: 'contact-1', identity_policy_version: 'crm_contact_identity_v1', lifecycle_status: 'active', is_latest: true, observed_at: datetime($observed_at), record_hash: 'dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd', raw_payload: '{}', normalized_payload: '{}', standalone_crm_available_at: datetime($observed_at), standalone_crm_census_id: 'census-a', standalone_crm_stream_kind: 'contacts', standalone_crm_generation: 1, standalone_crm_fence_token: 'source-fence', standalone_crm_fence_owner_id: 'source-worker', standalone_crm_task_name: 'source-task', standalone_crm_task_id: 'source-task-id', standalone_crm_payload_digest: $support_digest, standalone_crm_call_intent_id: 'call-intent', standalone_crm_authorization_id: 'authorization', standalone_crm_authorization_digest: $support_digest, standalone_crm_availability_contract_version: 'v1', standalone_crm_frozen_upper_id: 10})-[:FROM_SOURCE]->(source)
                 CREATE (support)-[:LINKED_TO {is_active: true, source_record_pk: 'contact-support-pk'}]->(person)
                 CREATE (person)-[:IDENTIFIED_BY {is_active: true, source_record_pk: 'contact-support-pk'}]->(contact)
                 """,
@@ -209,7 +215,21 @@ def _inventory(driver: Driver) -> tuple[RepairInventoryItem, RepairInventoryItem
 
 
 def _seed_authority(driver: Driver, item: RepairInventoryItem) -> RepairMutationCommand:
-    unit = RepairUnit("run-a", "unit-a", 1, 0, 1, _DIGEST, item.graph_fingerprint, "allocated")
+    unit = RepairUnit(
+        "run-a",
+        "unit-a",
+        1,
+        0,
+        1,
+        _DIGEST,
+        item.graph_fingerprint,
+        "allocated",
+        item.inventory_key,
+        item.source_record_pk,
+        item.graph_fingerprint,
+        item.stored_payload_fingerprint,
+        build_inventory_binding_digest(item),
+    )
     fence = RepairFence(
         "run-a", "unit-a", "fence-a", 1, 0, 1, "worker-a", "token-a", _DIGEST, _DIGEST, "claimed"
     )
@@ -217,7 +237,7 @@ def _seed_authority(driver: Driver, item: RepairInventoryItem) -> RepairMutation
     with driver.session() as session:
         session.run(
             """
-            CREATE (:CrmDealRepairRun {run_id: $run_id, boundary_digest: $boundary_digest, source_instance_id: $source_instance_id, control_instance_id: $control_instance_id, status: 'qualified', execution_allowed: false})
+            CREATE (:CrmDealRepairRun {run_id: $run_id, boundary_digest: $boundary_digest, source_instance_id: $source_instance_id, control_instance_id: $control_instance_id, status: 'qualified', execution_allowed: false, source_record_pks_json: $source_record_pks_json})
             CREATE (:CrmDealRepairUnit {run_id: $run_id, unit_id: $unit_id, generation: 1, sequence: 0, attempt: 1, boundary_digest: $boundary_digest, inventory_fingerprint: $unit_fingerprint, inventory_key: $inventory_key, source_record_pk: $source_record_pk, inventory_graph_fingerprint: $inventory_graph_fingerprint, inventory_stored_payload_fingerprint: $inventory_stored_payload_fingerprint, inventory_binding_digest: $inventory_binding_digest, state: 'allocated'})
             CREATE (:CrmDealRepairFence {run_id: $run_id, unit_id: $unit_id, fence_id: 'fence-a', generation: 1, sequence: 0, attempt: 1, owner_id: 'worker-a', token: 'token-a', boundary_digest: $boundary_digest, state: 'claimed'})
             """,
@@ -227,6 +247,7 @@ def _seed_authority(driver: Driver, item: RepairInventoryItem) -> RepairMutation
             unit_fingerprint=item.graph_fingerprint,
             source_instance_id=_SOURCE,
             control_instance_id=_CONTROL,
+            source_record_pks_json=json.dumps([item.source_record_pk], separators=(",", ":")),
             inventory_key=item.inventory_key,
             source_record_pk=item.source_record_pk,
             inventory_graph_fingerprint=item.graph_fingerprint,

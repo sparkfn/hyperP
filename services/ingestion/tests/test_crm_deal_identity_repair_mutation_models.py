@@ -5,7 +5,10 @@ from __future__ import annotations
 import pytest
 from src.crm_deal_identity_repair.execution_models import RepairFence, RepairUnit
 from src.crm_deal_identity_repair.models import RepairInventoryItem, RepairPartition
-from src.crm_deal_identity_repair.mutation_models import RepairMutationCommand
+from src.crm_deal_identity_repair.mutation_models import (
+    RepairMutationCommand,
+    build_inventory_binding_digest,
+)
 
 DIGEST = "sha256:" + "a" * 64
 
@@ -23,11 +26,30 @@ def _inventory(partition: RepairPartition = "ownership_repair") -> RepairInvento
     )
 
 
+def _unit(inventory: RepairInventoryItem) -> RepairUnit:
+    return RepairUnit(
+        "run",
+        "unit",
+        1,
+        0,
+        1,
+        DIGEST,
+        inventory.graph_fingerprint,
+        "allocated",
+        inventory.inventory_key,
+        inventory.source_record_pk,
+        inventory.graph_fingerprint,
+        inventory.stored_payload_fingerprint,
+        build_inventory_binding_digest(inventory),
+    )
+
+
 def _command() -> RepairMutationCommand:
+    inventory = _inventory()
     return RepairMutationCommand(
-        RepairUnit("run", "unit", 1, 0, 1, DIGEST, DIGEST, "allocated"),
+        _unit(inventory),
         RepairFence("run", "unit", "fence", 1, 0, 1, "owner", "token", DIGEST, DIGEST, "claimed"),
-        _inventory(),
+        inventory,
         "source-instance",
         "control-instance",
     )
@@ -43,10 +65,11 @@ def test_mutation_command_derives_stable_ledger_identities_from_all_bound_eviden
 
 
 def test_negative_controls_and_lost_fences_are_rejected_before_transaction_work() -> None:
-    unit = RepairUnit("run", "unit", 1, 0, 1, DIGEST, DIGEST, "allocated")
+    inventory = _inventory()
+    unit = _unit(inventory)
     fence = RepairFence("run", "unit", "fence", 1, 0, 1, "owner", "token", DIGEST, DIGEST, "lost")
     with pytest.raises(ValueError, match="claimed fence"):
-        RepairMutationCommand(unit, fence, _inventory(), "source-instance", "control-instance")
+        RepairMutationCommand(unit, fence, inventory, "source-instance", "control-instance")
     with pytest.raises(ValueError, match="negative-control"):
         RepairMutationCommand(
             unit,

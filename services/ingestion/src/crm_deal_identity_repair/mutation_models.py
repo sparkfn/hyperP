@@ -83,6 +83,19 @@ class RepairAuthorityEvidence:
         }
 
 
+def build_inventory_binding_digest(inventory: RepairInventoryItem) -> str:
+    """Digest the exact immutable inventory row allocated to one repair unit."""
+    return object_digest(
+        b"crm-deal-identity-repair-unit-row-v1\x00",
+        {
+            "inventory_key": inventory.inventory_key,
+            "source_record_pk": inventory.source_record_pk,
+            "graph_fingerprint": inventory.graph_fingerprint,
+            "stored_payload_fingerprint": inventory.stored_payload_fingerprint,
+        },
+    )
+
+
 @dataclass(frozen=True)
 class RepairMutationCommand:
     """All authority and frozen evidence bound to one single-unit transaction."""
@@ -117,6 +130,22 @@ class RepairMutationCommand:
             raise ValueError("repair mutation source/control identity must be non-empty")
         if self.mutation_contract_version != "crm_deal_identity_repair_mutation_v1":
             raise ValueError("repair mutation contract version is invalid")
+        expected_binding = (
+            self.inventory.inventory_key,
+            self.inventory.source_record_pk,
+            self.inventory.graph_fingerprint,
+            self.inventory.stored_payload_fingerprint,
+            self.inventory_binding_digest,
+        )
+        actual_binding = (
+            self.unit.inventory_key,
+            self.unit.source_record_pk,
+            self.unit.inventory_graph_fingerprint,
+            self.unit.inventory_stored_payload_fingerprint,
+            self.unit.inventory_binding_digest,
+        )
+        if actual_binding != expected_binding:
+            raise ValueError("repair unit is not bound to the exact inventory row")
 
     @property
     def mutation_id(self) -> str:
@@ -141,15 +170,7 @@ class RepairMutationCommand:
     @property
     def inventory_binding_digest(self) -> str:
         """Bind this allocated unit to exactly one immutable inventory row."""
-        return object_digest(
-            b"crm-deal-identity-repair-unit-row-v1\x00",
-            {
-                "inventory_key": self.inventory.inventory_key,
-                "source_record_pk": self.inventory.source_record_pk,
-                "graph_fingerprint": self.inventory.graph_fingerprint,
-                "stored_payload_fingerprint": self.inventory.stored_payload_fingerprint,
-            },
-        )
+        return build_inventory_binding_digest(self.inventory)
 
     def to_dict(self) -> dict[str, JsonValue]:
         return {

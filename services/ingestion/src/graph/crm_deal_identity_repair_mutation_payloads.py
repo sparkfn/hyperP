@@ -19,8 +19,10 @@ from src.graph.crm_deal_identity_repair_mutation_errors import (
 )
 from src.graph.queries.crm_deal_identity_repair_mutation import (
     READ_MUTATION_GRAPH_SNAPSHOT,
+    READ_REPAIR_IDENTIFIER_PREEXISTENCE,
     VERIFY_REPAIRED_MUTATION_POSTCONDITIONS,
 )
+from src.identifier_scopes import identifier_scope
 from src.models import JsonValue, SourceRecordEnvelope
 from src.pipeline_crm_identity import projected_identifiers
 from src.pipeline_normalization import normalize_envelope_attributes, normalize_envelope_identifiers
@@ -47,6 +49,7 @@ class _GuardParameters(TypedDict):
     inventory_stored_payload_fingerprint: str
     inventory_binding_digest: str
     mutation_id: str
+    quoted_source_record_pk: str
 
 
 class _SourceParameters(TypedDict):
@@ -103,6 +106,7 @@ def _snapshot(
     tx: ManagedTransaction,
     request: RepairMutationCommand,
     retired_source_record_pks: tuple[str, ...],
+    envelope: SourceRecordEnvelope | None,
 ) -> dict[str, JsonValue]:
     row = tx.run(
         READ_MUTATION_GRAPH_SNAPSHOT,
@@ -115,12 +119,33 @@ def _snapshot(
     relationships = snapshot.get("relationships")
     if isinstance(relationships, list):
         snapshot["relationships"] = _ordinal_relationships(relationships)
+    snapshot["created_identifier_candidates"] = _identifier_preexistence(tx, envelope)
     return snapshot
 
 
+def _identifier_preexistence(
+    tx: ManagedTransaction, envelope: SourceRecordEnvelope | None
+) -> list[JsonValue]:
+    if envelope is None:
+        return []
+    identifiers = projected_identifiers(envelope, normalize_envelope_identifiers(envelope))
+    rows = [
+        {
+            "identifier_type": item.identifier_type,
+            "identifier_scope": identifier_scope(item.identifier_type, item.source_instance_id),
+            "normalized_value": item.normalized_value,
+        }
+        for item in identifiers
+        if item.quality_flag.value != "invalid_format"
+    ]
+    return [
+        {key: _json_value(row[key]) for key in row.keys()}
+        for row in tx.run(READ_REPAIR_IDENTIFIER_PREEXISTENCE, identifiers=rows)
+    ]
+
+
 def _ordinal_relationships(rows: list[JsonValue]) -> list[JsonValue]:
-    result: list[JsonValue] = []
-    counts: dict[str, int] = {}
+    canonical_rows: list[tuple[str, dict[str, JsonValue]]] = []
     for value in rows:
         if not isinstance(value, dict):
             raise RuntimeError("rollback relationship snapshot is malformed")
@@ -131,7 +156,11 @@ def _ordinal_relationships(rows: list[JsonValue]) -> list[JsonValue]:
         row["right_identity"] = _endpoint_identity(
             row.get("right_labels"), row.get("right_properties")
         )
-        key = _canonical_json(row)
+        canonical_rows.append((_canonical_json(row), row))
+    canonical_rows.sort(key=lambda item: item[0])
+    result: list[JsonValue] = []
+    counts: dict[str, int] = {}
+    for key, row in canonical_rows:
         ordinal = counts.get(key, 0)
         counts[key] = ordinal + 1
         row["multiplicity_ordinal"] = ordinal
@@ -183,6 +212,9 @@ def _rollback_payload(
                         "FOR_DECISION",
                         "IDENTIFIED_BY",
                         "HAS_FACT",
+                        "FROM_SOURCE",
+                        "PREVIOUS_VERSION_OF",
+                        "OWNED_BY",
                     ],
                 },
                 {
@@ -191,6 +223,8 @@ def _rollback_payload(
                     "match_decision_id": request.mutation_id + ":decision",
                     "review_case_id": request.mutation_id + ":review",
                     "identifier_repair_mutation_id": request.mutation_id,
+                    "identifier_candidates": snapshot.get("created_identifier_candidates", []),
+                    "delete_identifier_only_when_preexisting_is_false": True,
                 },
                 {
                     "operation": "restore_source_and_relationship_properties",
@@ -342,11 +376,14 @@ def _guard_parameters(request: RepairMutationCommand) -> _GuardParameters:
         "control_instance_id": request.control_instance_id,
         "source_record_pk": request.inventory.source_record_pk,
         "source_record_id": request.inventory.source_record_id,
-        "inventory_key": request.inventory.inventory_key,
-        "inventory_graph_fingerprint": request.inventory.graph_fingerprint,
-        "inventory_stored_payload_fingerprint": request.inventory.stored_payload_fingerprint,
-        "inventory_binding_digest": request.inventory_binding_digest,
+        "inventory_key": request.unit.inventory_key or "",
+        "inventory_graph_fingerprint": request.unit.inventory_graph_fingerprint or "",
+        "inventory_stored_payload_fingerprint": (
+            request.unit.inventory_stored_payload_fingerprint or ""
+        ),
+        "inventory_binding_digest": request.unit.inventory_binding_digest or "",
         "mutation_id": request.mutation_id,
+        "quoted_source_record_pk": json.dumps(request.inventory.source_record_pk),
     }
 
 
