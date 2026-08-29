@@ -8,7 +8,6 @@ CREATE_STANDALONE_CRM_LANE_A_CONSTRAINTS: tuple[str, ...] = (
     "CREATE CONSTRAINT crm_company_description_observation_digest_unique IF NOT EXISTS FOR (n:CrmCompanyDescriptionObservation) REQUIRE n.observation_digest IS UNIQUE",
     "CREATE CONSTRAINT crm_company_description_head_scope_unique IF NOT EXISTS FOR (n:CrmCompanyDescriptionHead) REQUIRE (n.source_instance_id, n.company_id) IS UNIQUE",
     "CREATE CONSTRAINT crm_company_membership_snapshot_id_unique IF NOT EXISTS FOR (n:CrmCompanyMembershipSnapshot) REQUIRE n.snapshot_id IS UNIQUE",
-    "CREATE CONSTRAINT crm_company_membership_snapshot_scope_digest_unique IF NOT EXISTS FOR (n:CrmCompanyMembershipSnapshot) REQUIRE (n.source_instance_id, n.subject_kind, n.subject_id, n.snapshot_digest) IS UNIQUE",
     "CREATE CONSTRAINT crm_company_membership_observation_unique IF NOT EXISTS FOR (n:CrmCompanyMembershipObservation) REQUIRE (n.snapshot_id, n.company_id) IS UNIQUE",
     "CREATE CONSTRAINT crm_company_membership_head_scope_unique IF NOT EXISTS FOR (n:CrmCompanyMembershipHead) REQUIRE (n.source_instance_id, n.subject_kind, n.subject_id) IS UNIQUE",
     "CREATE CONSTRAINT crm_tenant_mapping_scope_counter_unique IF NOT EXISTS FOR (n:CrmTenantMappingScopeCounter) REQUIRE (n.source_key, n.source_instance_id, n.control_instance_id) IS UNIQUE",

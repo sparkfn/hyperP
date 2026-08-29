@@ -12,12 +12,22 @@ from src.graph.standalone_crm_census_migration import assert_standalone_crm_cens
 
 MIGRATION_KEY = "standalone_crm_lane_a_contracts_v1"
 SchemaDefinition = tuple[str, str, tuple[str, ...], tuple[str, ...]]
+LEGACY_MEMBERSHIP_SNAPSHOT_SCOPE_DIGEST_CONSTRAINT = (
+    "crm_company_membership_snapshot_scope_digest_unique"
+)
+_LEGACY_MEMBERSHIP_SNAPSHOT_SCOPE_DIGEST_DEFINITION: SchemaDefinition = (
+    "UNIQUENESS",
+    "NODE",
+    ("CrmCompanyMembershipSnapshot",),
+    ("source_instance_id", "subject_kind", "subject_id", "snapshot_digest"),
+)
 
 
 def ensure_standalone_crm_lane_a_ready(client: Neo4jClient) -> None:
     """Install additive Lane A DDL and complete its marker after exact validation."""
     assert_standalone_crm_census_ready(client)
     with client.session() as session:
+        _drop_legacy_membership_snapshot_scope_digest_constraint(session)
         for statement in CREATE_STANDALONE_CRM_LANE_A_CONSTRAINTS:
             session.run(statement).consume()
     assert_standalone_crm_lane_a_schema(client)
@@ -59,10 +69,28 @@ def assert_standalone_crm_lane_a_schema(client: Neo4jClient) -> None:
     with client.session() as session:
         constraints = _schema_rows(session, "SHOW CONSTRAINTS")
         indexes = _schema_rows(session, "SHOW INDEXES")
+    if LEGACY_MEMBERSHIP_SNAPSHOT_SCOPE_DIGEST_CONSTRAINT in constraints:
+        raise RuntimeError(
+            "standalone CRM Lane A schema retains the legacy membership snapshot constraint"
+        )
     for name, definition in expected.items():
         actual = constraints if definition[0] == "UNIQUENESS" else indexes
         if actual.get(name) != definition:
             raise RuntimeError(f"standalone CRM Lane A schema is malformed: {name}")
+
+
+def _drop_legacy_membership_snapshot_scope_digest_constraint(session: Session) -> None:
+    constraints = _schema_rows(session, "SHOW CONSTRAINTS")
+    actual = constraints.get(LEGACY_MEMBERSHIP_SNAPSHOT_SCOPE_DIGEST_CONSTRAINT)
+    if actual is None:
+        return
+    if actual != _LEGACY_MEMBERSHIP_SNAPSHOT_SCOPE_DIGEST_DEFINITION:
+        raise RuntimeError(
+            "standalone CRM Lane A legacy membership snapshot constraint is malformed"
+        )
+    session.run(
+        "DROP CONSTRAINT " + LEGACY_MEMBERSHIP_SNAPSHOT_SCOPE_DIGEST_CONSTRAINT + " IF EXISTS"
+    ).consume()
 
 
 def _schema_rows(
