@@ -100,6 +100,11 @@ def _clear_repair_metadata(driver: Driver) -> None:
         "CrmDealRepairSecondaryDisposition",
         "CrmDealRepairVerification",
         "CrmDealRepairOutbox",
+        "CrmDealRepairControl",
+        "CrmDealRepairAllocationCompletion",
+        "CrmDealRepairQualifiedInventoryRow",
+        "CrmDealRepairAuthorizationProof",
+        "BitrixRepairPublicationReservation",
     )
     with driver.session() as session:
         for label in labels:
@@ -332,17 +337,34 @@ def _repair_metadata_counts(driver: Driver) -> dict[str, int]:
     with driver.session() as session:
         row = session.run(
             "MATCH (run:CrmDealRepairRun) "
-            "OPTIONAL MATCH (run)-[link:QUALIFIED_WITH]->(boundary:RepairExecutionBoundary) "
-            "WITH count(DISTINCT run) AS runs, count(DISTINCT boundary) AS boundaries, "
-            "count(link) AS links "
+            "OPTIONAL MATCH (run)-[link:QUALIFIED_WITH]->(:RepairExecutionBoundary) "
+            "WITH count(DISTINCT run) AS runs, count(link) AS links "
+            "CALL { MATCH (boundary:RepairExecutionBoundary) "
+            "RETURN count(boundary) AS boundaries } "
+            "CALL { MATCH (boundary:RepairExecutionBoundary) "
+            "WHERE NOT EXISTS { "
+            "MATCH (:CrmDealRepairRun)-[:QUALIFIED_WITH]->(boundary) "
+            "} RETURN count(boundary) AS orphan_boundaries } "
+            "CALL { MATCH (qualified:CrmDealRepairQualifiedInventoryRow) "
+            "RETURN count(qualified) AS qualified_rows } "
+            "CALL { MATCH (qualified:CrmDealRepairQualifiedInventoryRow) "
+            "WHERE NOT EXISTS { "
+            "MATCH (:CrmDealRepairRun {run_id: qualified.run_id}) "
+            "} RETURN count(qualified) AS orphan_qualified_rows } "
             "CALL { MATCH (node) WHERE any(label IN labels(node) "
-            "WHERE label STARTS WITH 'CrmDealRepair') RETURN count(node) AS extra } "
-            "RETURN runs, boundaries, links, extra"
+            "WHERE label STARTS WITH 'CrmDealRepair') "
+            "AND NOT (node:CrmDealRepairRun OR node:CrmDealRepairQualifiedInventoryRow) "
+            "RETURN count(node) AS extra } "
+            "RETURN runs, boundaries, links, orphan_boundaries, qualified_rows, "
+            "orphan_qualified_rows, extra"
         ).single(strict=True)
     return {
         "runs": row["runs"],
         "boundaries": row["boundaries"],
         "links": row["links"],
+        "orphan_boundaries": row["orphan_boundaries"],
+        "qualified_rows": row["qualified_rows"],
+        "orphan_qualified_rows": row["orphan_qualified_rows"],
         "extra": row["extra"],
     }
 
@@ -420,7 +442,10 @@ def test_exact_and_concurrent_replay_use_persisted_evidence_without_domain_mutat
         "runs": 1,
         "boundaries": 1,
         "links": 1,
-        "extra": 1,
+        "orphan_boundaries": 0,
+        "qualified_rows": 1,
+        "orphan_qualified_rows": 0,
+        "extra": 0,
     }
     assert (
         _domain_state(
@@ -455,7 +480,10 @@ def test_concurrent_conflicting_rebind_leaves_no_orphan_repair_metadata(
         "runs": 1,
         "boundaries": 1,
         "links": 1,
-        "extra": 1,
+        "orphan_boundaries": 0,
+        "qualified_rows": 1,
+        "orphan_qualified_rows": 0,
+        "extra": 0,
     }
 
 
@@ -481,7 +509,10 @@ def test_persisted_source_drift_is_read_only_status(neo4j_driver: Driver) -> Non
         "runs": 1,
         "boundaries": 1,
         "links": 1,
-        "extra": 1,
+        "orphan_boundaries": 0,
+        "qualified_rows": 1,
+        "orphan_qualified_rows": 0,
+        "extra": 0,
     }
 
 
@@ -761,6 +792,9 @@ def test_qualification_revalidates_full_inventory_before_admission(neo4j_driver:
         "runs": 0,
         "boundaries": 0,
         "links": 0,
+        "orphan_boundaries": 0,
+        "qualified_rows": 0,
+        "orphan_qualified_rows": 0,
         "extra": 0,
     }
 

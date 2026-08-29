@@ -104,8 +104,10 @@ def _seed(driver: Driver) -> None:
                                            normalized_value: '+15550000001',
                                            reader_safety_test: $marker})
             CREATE (active_order:Order {order_id: 'reader-safety-active-order',
+                                        source_order_id: 'reader-safety-active-order',
                                         reader_safety_test: $marker})
             CREATE (retired_order:Order {order_id: 'reader-safety-retired-order',
+                                         source_order_id: 'reader-safety-retired-order',
                                          reader_safety_test: $marker})
             CREATE (active_entity:Entity {entity_key: 'reader-safety-active-entity',
                                           reader_safety_test: $marker})
@@ -199,7 +201,7 @@ def test_current_readers_exclude_retired_links_while_audit_inventory_retains_the
 
     def api_sales(tx: ManagedTransaction) -> list[str]:
         return [
-            str(record["order_id"])
+            str(record["source_order_id"])
             for record in tx.run(
                 _api_query_constant(
                     "services/api/src/graph/queries/sales.py",

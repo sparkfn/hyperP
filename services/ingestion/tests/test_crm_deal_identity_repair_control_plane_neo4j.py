@@ -462,6 +462,14 @@ def _seed_allocation(driver: Driver, *, state: str = "quiesced", owner: str = _O
             "marker: 'before'})",
             **seed_parameters,
         ).consume()
+        session.run(
+            "UNWIND $approved_rows AS row "
+            "CREATE (:CrmDealRepairQualifiedInventoryRow {run_id: $run_id, "
+            "inventory_key: row.inventory_key, source_record_pk: row.source_record_pk, "
+            "inventory_fingerprint: row.inventory_fingerprint, execution_allowed: false})",
+            run_id=parameters["run_id"],
+            approved_rows=parameters["approved_rows"],
+        ).consume()
 
 
 def _execute_allocation(driver: Driver, parameters: dict[str, object]) -> dict[str, object] | None:
