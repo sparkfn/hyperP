@@ -20,6 +20,10 @@ from src.crm_deal_identity_repair.execution_models import (
     RepairUnit,
     RepairVerificationResult,
 )
+from src.crm_deal_identity_repair.mutation_models import (
+    RepairAtomicMutationResult,
+    RepairMutationCommand,
+)
 
 
 class RepairQualificationRepository(Protocol):
@@ -99,6 +103,12 @@ class RepairMutationRepository(Protocol):
     """Future #311 append-only mutation evidence and rollback images."""
 
     def store_rollback_image(self, image: RepairRollbackImage) -> RepairRollbackImage: ...
+
+    def commit_atomic_mutation(
+        self,
+        request: RepairMutationCommand,
+    ) -> RepairAtomicMutationResult:
+        """Commit one fenced domain mutation and all ledger effects, or none."""
 
     def append_mutation_result(self, result: RepairMutationResult) -> RepairMutationResult: ...
 
