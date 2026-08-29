@@ -177,7 +177,7 @@ def test_concurrent_rejection_replays_exactly_and_rejects_conflicting_input(
         ),
         "2026-08-29T12:00:00Z",
     )
-    first, second = _concurrent_reject(repository, (exact, exact), monkeypatch)
+    first, second = _concurrent_reject(repository, (exact, exact))
     assert isinstance(first, CrmTenantMappingRevisionSnapshot)
     assert isinstance(second, CrmTenantMappingRevisionSnapshot)
     assert first.revision.state == "rejected"
@@ -209,7 +209,7 @@ def test_concurrent_rejection_replays_exactly_and_rejects_conflicting_input(
     )
     before = _counts(neo4j_driver)
     head_before = repository.get_active_head(_scope())
-    first, second = _concurrent_reject(repository, (first_command, second_command), monkeypatch)
+    first, second = _concurrent_reject(repository, (first_command, second_command))
     outcomes = (first, second)
     successful = next(
         outcome for outcome in outcomes if isinstance(outcome, CrmTenantMappingRevisionSnapshot)

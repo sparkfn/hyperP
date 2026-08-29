@@ -241,7 +241,7 @@ def _revision_from_values(
     values: Mapping[str, object], scope: CrmTenantMappingScope
 ) -> CrmTenantMappingRevision:
     _assert_scope_values(values, scope)
-    provenance = _provenance_from_values(values)
+    provenance = _provenance_from_values(values, scope)
     try:
         revision = CrmTenantMappingRevision(
             scope,
@@ -301,7 +301,7 @@ def _boundary_from_values(
 
 
 def _provenance_from_values(
-    values: Mapping[str, object],
+    values: Mapping[str, object], scope: CrmTenantMappingScope
 ) -> CrmTenantMappingRollbackProvenance | None:
     revision_id = values.get("rollback_of_revision_id")
     number = values.get("rollback_of_revision_number")
@@ -309,11 +309,18 @@ def _provenance_from_values(
     if revision_id is None and number is None and digest is None:
         return None
     try:
-        return CrmTenantMappingRollbackProvenance(
+        provenance = CrmTenantMappingRollbackProvenance(
             _required_str(values, "rollback_of_revision_id"),
             _required_int(values, "rollback_of_revision_number"),
             _required_str(values, "rollback_of_manifest_digest"),
         )
+        if provenance.rollback_of_revision_id != mapping_revision_id(
+            scope, provenance.rollback_of_revision_number
+        ):
+            raise CrmTenantMappingIntegrityError(
+                "mapping rollback provenance revision ID is not deterministic"
+            )
+        return provenance
     except ValueError as exc:
         raise CrmTenantMappingIntegrityError("mapping rollback provenance is malformed") from exc
 

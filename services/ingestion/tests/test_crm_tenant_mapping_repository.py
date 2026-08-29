@@ -122,6 +122,7 @@ def test_mapping_write_queries_are_parameterized_and_cannot_mutate_entities_or_h
         queries.CREATE_REVISION,
         queries.CREATE_ENTRIES,
         queries.CREATE_TARGETS,
+        queries.LOCK_REVISION_FOR_REJECTION,
         queries.REJECT_REVISION,
     )
     entity_or_person_write = re.compile(r"(?:CREATE|MERGE)\s*\([^)]*:(?:ENTITY|PERSON)\b")
@@ -161,13 +162,14 @@ def test_active_reader_uses_only_the_exact_head_and_never_a_latest_revision_fall
                 queries.CREATE_REVISION,
                 queries.CREATE_ENTRIES,
                 queries.CREATE_TARGETS,
+                queries.LOCK_REVISION_FOR_REJECTION,
                 queries.REJECT_REVISION,
             )
         ).upper()
     )
 
 
-def test_freshness_validators_use_one_read_transaction_and_strict_helpers() -> None:
+def test_freshness_validators_prevalidate_then_linearize_in_a_fresh_read() -> None:
     freshness_source = inspect.getsource(mapping_freshness)
 
     for name in (
@@ -176,11 +178,17 @@ def test_freshness_validators_use_one_read_transaction_and_strict_helpers() -> N
         "validate_mapping_rollback",
     ):
         method = inspect.getsource(getattr(mapping_graph.Neo4jCrmTenantMappingRepository, name))
-        assert method.count("execute_read(") == 1
+        assert method.count("execute_read(") == 2
         assert "self.get_active_head" not in method
         assert "self.get_active_revision" not in method
         assert "self.get_revision" not in method
     assert "_read_snapshot(tx" in freshness_source
+    assert "def prevalidate_source_sync" in freshness_source
+    assert "def prevalidate_mapping_prepare" in freshness_source
+    assert "def prevalidate_mapping_rollback" in freshness_source
+    assert "def validate_source_sync_at_linearization" in freshness_source
+    assert "def validate_mapping_prepare_at_linearization" in freshness_source
+    assert "def validate_mapping_rollback_at_linearization" in freshness_source
     assert "VALIDATE_SOURCE_SYNC_AT_LINEARIZATION" in freshness_source
     assert "VALIDATE_MAPPING_PREPARE_AT_LINEARIZATION" in freshness_source
     assert "VALIDATE_MAPPING_ROLLBACK_AT_LINEARIZATION" in freshness_source

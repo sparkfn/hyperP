@@ -228,7 +228,7 @@ def test_rollback_freshness_rejects_corrupt_provenance_and_stale_current_head(
             "SET revision.rollback_of_revision_id = 'dangling-revision-id'",
             revision_id=rollback.revision.revision_id,
         ).consume()
-    with pytest.raises(CrmTenantMappingConflictError):
+    with pytest.raises(CrmTenantMappingIntegrityError):
         repository.validate_mapping_rollback(_scope(), authority)
     with neo4j_driver.session() as session:
         session.run(
@@ -243,7 +243,7 @@ def test_rollback_freshness_rejects_corrupt_provenance_and_stale_current_head(
             revision_id=rollback.revision.revision_id,
             manifest_digest="sha256:" + "b" * 64,
         ).consume()
-    with pytest.raises(CrmTenantMappingConflictError):
+    with pytest.raises(CrmTenantMappingIntegrityError):
         repository.validate_mapping_rollback(_scope(), authority)
     with neo4j_driver.session() as session:
         session.run(
@@ -270,7 +270,7 @@ def test_rollback_freshness_rejects_corrupt_provenance_and_stale_current_head(
             "SET revision.rollback_of_revision_number = 99",
             revision_id=rollback.revision.revision_id,
         ).consume()
-    with pytest.raises(CrmTenantMappingConflictError):
+    with pytest.raises(CrmTenantMappingIntegrityError):
         repository.validate_mapping_rollback(_scope(), authority)
     with neo4j_driver.session() as session:
         session.run(
@@ -283,7 +283,7 @@ def test_rollback_freshness_rejects_corrupt_provenance_and_stale_current_head(
             current_number=current.revision.revision_number,
             current_digest=current.revision.manifest_digest,
         ).consume()
-    with pytest.raises(CrmTenantMappingConflictError):
+    with pytest.raises(CrmTenantMappingIntegrityError):
         repository.validate_mapping_rollback(_scope(), authority)
     with neo4j_driver.session() as session:
         session.run(

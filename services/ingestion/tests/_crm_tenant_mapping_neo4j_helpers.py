@@ -246,31 +246,15 @@ def _concurrent_prepare(
 def _concurrent_reject(
     repository: mapping_graph.Neo4jCrmTenantMappingRepository,
     commands: tuple[CrmTenantMappingRejectCommand, CrmTenantMappingRejectCommand],
-    monkeypatch: pytest.MonkeyPatch,
 ) -> tuple[object, object]:
-    original = mapping_graph._read_snapshot
     barrier = threading.Barrier(2)
-    counter_lock = threading.Lock()
-    calls = 0
 
-    def synchronized_read(
-        tx: ManagedTransaction,
-        scope: CrmTenantMappingScope,
-        revision_id: str,
-        manifest_digest: str,
-    ) -> CrmTenantMappingRevisionSnapshot | None:
-        nonlocal calls
-        result = original(tx, scope, revision_id, manifest_digest)
-        with counter_lock:
-            calls += 1
-            should_wait = calls <= 2
-        if should_wait:
-            barrier.wait(timeout=10)
-        return result
+    def reject(command: CrmTenantMappingRejectCommand) -> CrmTenantMappingRevisionSnapshot:
+        barrier.wait(timeout=10)
+        return repository.reject(command)
 
-    monkeypatch.setattr(mapping_graph, "_read_snapshot", synchronized_read)
     with ThreadPoolExecutor(max_workers=2) as executor:
-        futures = tuple(executor.submit(repository.reject, command) for command in commands)
+        futures = tuple(executor.submit(reject, command) for command in commands)
         results: list[object] = []
         for future in futures:
             try:

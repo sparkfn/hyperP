@@ -42,7 +42,7 @@ def _read_active_head_and_revision(
     return head, snapshot
 
 
-def validate_source_sync(
+def prevalidate_source_sync(
     tx: ManagedTransaction, scope: CrmTenantMappingScope, authority: SourceSyncAuthority
 ) -> None:
     head, active = _read_active_head_and_revision(tx, scope)
@@ -53,10 +53,9 @@ def validate_source_sync(
         raise CrmTenantMappingConflictError("source-sync mapping authority is stale")
     if active is None:
         raise CrmTenantMappingIntegrityError("active mapping head has no active revision")
-    _validate_source_sync_at_linearization(tx, scope, authority)
 
 
-def _validate_source_sync_at_linearization(
+def validate_source_sync_at_linearization(
     tx: ManagedTransaction, scope: CrmTenantMappingScope, authority: SourceSyncAuthority
 ) -> None:
     records = list(
@@ -70,20 +69,20 @@ def _validate_source_sync_at_linearization(
     _require_one_match(records, "source-sync mapping authority is stale")
 
 
-def validate_mapping_prepare(
+def prevalidate_mapping_prepare(
     tx: ManagedTransaction, scope: CrmTenantMappingScope, authority: MappingPrepareAuthority
-) -> None:
+) -> CrmTenantMappingRevisionSnapshot:
     snapshot = _require_prepared(
         tx, scope, authority.prepared_revision_id, authority.prepared_revision_digest
     )
     if snapshot.expected_head_boundary.head_id != authority.expected_current_head_id:
         raise CrmTenantMappingConflictError("mapping prepare authority head ID conflicts")
-    _validate_prepare_at_linearization(tx, snapshot)
+    return snapshot
 
 
-def validate_mapping_rollback(
+def prevalidate_mapping_rollback(
     tx: ManagedTransaction, scope: CrmTenantMappingScope, authority: MappingRollbackAuthority
-) -> None:
+) -> CrmTenantMappingRevisionSnapshot:
     snapshot = _require_prepared(tx, scope, authority.rollback_head_id, None)
     provenance = snapshot.revision.rollback_provenance
     if provenance is None or (
@@ -113,7 +112,7 @@ def validate_mapping_rollback(
         or historical.revision.revision_number >= expected.active_revision_number
     ):
         raise CrmTenantMappingConflictError("mapping rollback provenance revision is malformed")
-    _validate_rollback_at_linearization(tx, snapshot)
+    return snapshot
 
 
 def _require_prepared(
@@ -132,7 +131,7 @@ def _require_prepared(
     return result
 
 
-def _validate_prepare_at_linearization(
+def validate_mapping_prepare_at_linearization(
     tx: ManagedTransaction, snapshot: CrmTenantMappingRevisionSnapshot
 ) -> None:
     boundary = snapshot.expected_head_boundary
@@ -157,7 +156,7 @@ def _validate_prepare_at_linearization(
     _require_one_match(records, "mapping prepare authority is stale")
 
 
-def _validate_rollback_at_linearization(
+def validate_mapping_rollback_at_linearization(
     tx: ManagedTransaction, snapshot: CrmTenantMappingRevisionSnapshot
 ) -> None:
     provenance = snapshot.revision.rollback_provenance

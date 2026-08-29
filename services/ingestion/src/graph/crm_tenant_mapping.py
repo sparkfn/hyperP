@@ -22,9 +22,12 @@ from src.crm_tenant_mapping_models import (
 )
 from src.graph.client import Neo4jClient
 from src.graph.crm_tenant_mapping_freshness import (
-    validate_mapping_prepare,
-    validate_mapping_rollback,
-    validate_source_sync,
+    prevalidate_mapping_prepare,
+    prevalidate_mapping_rollback,
+    prevalidate_source_sync,
+    validate_mapping_prepare_at_linearization,
+    validate_mapping_rollback_at_linearization,
+    validate_source_sync_at_linearization,
 )
 from src.graph.crm_tenant_mapping_graph_values import (
     _record_values,
@@ -50,6 +53,7 @@ from src.graph.queries.crm_tenant_mapping import (
     CREATE_ENTRIES,
     CREATE_REVISION,
     CREATE_TARGETS,
+    LOCK_REVISION_FOR_REJECTION,
     LOCK_SCOPE,
     REJECT_REVISION,
 )
@@ -189,6 +193,14 @@ class Neo4jCrmTenantMappingRepository:
         assert_standalone_crm_lane_a_ready(self._client)
 
         def work(tx: ManagedTransaction) -> CrmTenantMappingRevisionSnapshot:
+            lock = tx.run(
+                LOCK_REVISION_FOR_REJECTION,
+                **_scope_parameters(command.scope),
+                revision_id=command.revision_id,
+                manifest_digest=command.manifest_digest,
+            ).single()
+            if lock is None:
+                raise CrmTenantMappingConflictError("mapping revision is missing")
             current = _read_snapshot(
                 tx, command.scope, command.revision_id, command.manifest_digest
             )
@@ -258,19 +270,32 @@ class Neo4jCrmTenantMappingRepository:
         self, scope: CrmTenantMappingScope, authority: SourceSyncAuthority
     ) -> None:
         assert_standalone_crm_lane_a_ready(self._client)
-        self._client.execute_read(lambda tx: validate_source_sync(tx, scope, authority))
+        self._client.execute_read(lambda tx: prevalidate_source_sync(tx, scope, authority))
+        self._client.execute_read(
+            lambda tx: validate_source_sync_at_linearization(tx, scope, authority)
+        )
 
     def validate_mapping_prepare(
         self, scope: CrmTenantMappingScope, authority: MappingPrepareAuthority
     ) -> None:
         assert_standalone_crm_lane_a_ready(self._client)
-        self._client.execute_read(lambda tx: validate_mapping_prepare(tx, scope, authority))
+        snapshot = self._client.execute_read(
+            lambda tx: prevalidate_mapping_prepare(tx, scope, authority)
+        )
+        self._client.execute_read(
+            lambda tx: validate_mapping_prepare_at_linearization(tx, snapshot)
+        )
 
     def validate_mapping_rollback(
         self, scope: CrmTenantMappingScope, authority: MappingRollbackAuthority
     ) -> None:
         assert_standalone_crm_lane_a_ready(self._client)
-        self._client.execute_read(lambda tx: validate_mapping_rollback(tx, scope, authority))
+        snapshot = self._client.execute_read(
+            lambda tx: prevalidate_mapping_rollback(tx, scope, authority)
+        )
+        self._client.execute_read(
+            lambda tx: validate_mapping_rollback_at_linearization(tx, snapshot)
+        )
 
 
 def _persist_prepared(

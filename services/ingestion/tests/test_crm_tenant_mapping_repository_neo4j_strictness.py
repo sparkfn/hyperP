@@ -19,19 +19,21 @@ from _crm_tenant_mapping_neo4j_helpers import (
     _set_active_head,
 )
 from neo4j import Driver, ManagedTransaction
-from src.crm_tenant_mapping_contracts import CrmTenantMappingAuthorization, CrmTenantMappingScope
+from src.crm_tenant_mapping_contracts import CrmTenantMappingAuthorization
 from src.crm_tenant_mapping_models import (
     CrmTenantMappingConflictError,
     CrmTenantMappingIntegrityError,
     CrmTenantMappingRejectCommand,
     CrmTenantMappingRejection,
-    CrmTenantMappingRevisionSnapshot,
     CrmTenantMappingRollbackCommand,
 )
 from src.graph import crm_tenant_mapping as mapping_graph
-from src.graph import crm_tenant_mapping_freshness as mapping_freshness
 from src.graph.client import Neo4jClient
-from src.standalone_crm_census_requests import MappingPrepareAuthority, SourceSyncAuthority
+from src.standalone_crm_census_requests import (
+    MappingPrepareAuthority,
+    MappingRollbackAuthority,
+    SourceSyncAuthority,
+)
 
 T = TypeVar("T")
 
@@ -117,6 +119,42 @@ def test_strict_reads_recompute_prepare_rollback_and_rejection_fingerprints(
         )
 
 
+def test_strict_reads_reject_rollback_provenance_number_identity_corruption(
+    neo4j_driver: Driver, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repository = _repository(neo4j_driver, monkeypatch)
+    with neo4j_driver.session() as session:
+        session.run("CREATE (:Entity {entity_key: 'issue-304-entity-a'})").consume()
+    historical = repository.prepare(_command("provenance-history", "issue-304-entity-a"))
+    current = repository.prepare(_command("provenance-current", "issue-304-entity-a"))
+    _mark_active(neo4j_driver, historical)
+    _mark_active(neo4j_driver, current)
+    _set_active_head(neo4j_driver, current)
+    rollback_command = CrmTenantMappingRollbackCommand(
+        _scope(),
+        "provenance-rollback",
+        historical.revision.revision_id,
+        historical.revision.manifest_digest,
+        _head_boundary(current),
+        _authorization(),
+        "2026-08-29T12:00:00Z",
+    )
+    rollback = repository.rollback(rollback_command)
+    with neo4j_driver.session() as session:
+        session.run(
+            "MATCH (revision:CrmTenantMappingRevision {revision_id: $revision_id}) "
+            "SET revision.rollback_of_revision_number = $revision_number",
+            revision_id=rollback.revision.revision_id,
+            revision_number=historical.revision.revision_number + 1,
+        ).consume()
+    with pytest.raises(CrmTenantMappingIntegrityError, match="provenance revision ID"):
+        repository.get_revision(
+            _scope(), rollback.revision.revision_id, rollback.revision.manifest_digest
+        )
+    with pytest.raises(CrmTenantMappingIntegrityError, match="provenance revision ID"):
+        repository.rollback(rollback_command)
+
+
 def test_foreign_entry_and_target_owners_fail_closed(
     neo4j_driver: Driver, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -162,18 +200,12 @@ def test_source_sync_final_statement_rejects_interleaved_head_swap(
     _mark_active(neo4j_driver, current)
     _mark_active(neo4j_driver, replacement)
     _set_active_head(neo4j_driver, current)
-    client = _CountingClient(neo4j_driver)
+    client = _CountingClient(
+        neo4j_driver,
+        after_first_read=lambda: _set_active_head(neo4j_driver, replacement),
+    )
     atomic_repository = mapping_graph.Neo4jCrmTenantMappingRepository(cast(Neo4jClient, client))
     monkeypatch.setattr(mapping_graph, "assert_standalone_crm_lane_a_ready", lambda _client: None)
-    original = mapping_freshness._validate_source_sync_at_linearization
-
-    def interleave(
-        tx: ManagedTransaction, scope: CrmTenantMappingScope, authority: SourceSyncAuthority
-    ) -> None:
-        _set_active_head(neo4j_driver, replacement)
-        original(tx, scope, authority)
-
-    monkeypatch.setattr(mapping_freshness, "_validate_source_sync_at_linearization", interleave)
     with pytest.raises(CrmTenantMappingConflictError):
         atomic_repository.validate_source_sync(
             _scope(),
@@ -184,7 +216,7 @@ def test_source_sync_final_statement_rejects_interleaved_head_swap(
                 "projection-digest",
             ),
         )
-    assert client.read_calls == 1
+    assert client.read_calls == 2
 
 
 def test_prepare_final_statement_rejects_interleaved_prepared_state_transition(
@@ -199,24 +231,18 @@ def test_prepare_final_statement_rejects_interleaved_prepared_state_transition(
     prepared = repository.prepare(
         _command_for_manifest("atomic-prepared", current.manifest, _head_boundary(current))
     )
-    client = _CountingClient(neo4j_driver)
-    atomic_repository = mapping_graph.Neo4jCrmTenantMappingRepository(cast(Neo4jClient, client))
-    monkeypatch.setattr(mapping_graph, "assert_standalone_crm_lane_a_ready", lambda _client: None)
-    original = mapping_freshness._validate_prepare_at_linearization
 
-    def interleave(
-        tx: ManagedTransaction,
-        snapshot: CrmTenantMappingRevisionSnapshot,
-    ) -> None:
+    def transition_prepared() -> None:
         with neo4j_driver.session() as session:
             session.run(
                 "MATCH (revision:CrmTenantMappingRevision {revision_id: $revision_id}) "
                 "SET revision.state = 'activation_failed'",
-                revision_id=snapshot.revision.revision_id,
+                revision_id=prepared.revision.revision_id,
             ).consume()
-        original(tx, snapshot)
 
-    monkeypatch.setattr(mapping_freshness, "_validate_prepare_at_linearization", interleave)
+    client = _CountingClient(neo4j_driver, after_first_read=transition_prepared)
+    atomic_repository = mapping_graph.Neo4jCrmTenantMappingRepository(cast(Neo4jClient, client))
+    monkeypatch.setattr(mapping_graph, "assert_standalone_crm_lane_a_ready", lambda _client: None)
     with pytest.raises(CrmTenantMappingConflictError):
         atomic_repository.validate_mapping_prepare(
             _scope(),
@@ -226,14 +252,70 @@ def test_prepare_final_statement_rejects_interleaved_prepared_state_transition(
                 _head_boundary(current).head_id,
             ),
         )
-    assert client.read_calls == 1
+    assert client.read_calls == 2
+
+
+def test_rollback_final_statement_rejects_interleaved_candidate_history_and_head_changes(
+    neo4j_driver: Driver, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repository = _repository(neo4j_driver, monkeypatch)
+    with neo4j_driver.session() as session:
+        session.run("CREATE (:Entity {entity_key: 'issue-304-entity-a'})").consume()
+    historical = repository.prepare(_command("atomic-rollback-history", "issue-304-entity-a"))
+    current = repository.prepare(_command("atomic-rollback-current", "issue-304-entity-a"))
+    replacement = repository.prepare(_command("atomic-rollback-replacement", "issue-304-entity-a"))
+    _mark_active(neo4j_driver, historical)
+    _mark_active(neo4j_driver, current)
+    _mark_active(neo4j_driver, replacement)
+    _set_active_head(neo4j_driver, current)
+    rollback = repository.rollback(
+        CrmTenantMappingRollbackCommand(
+            _scope(),
+            "atomic-rollback-candidate",
+            historical.revision.revision_id,
+            historical.revision.manifest_digest,
+            _head_boundary(current),
+            _authorization(),
+            "2026-08-29T12:00:00Z",
+        )
+    )
+
+    def transition_rollback_inputs() -> None:
+        with neo4j_driver.session() as session:
+            session.run(
+                "MATCH (candidate:CrmTenantMappingRevision {revision_id: $candidate_id}) "
+                "MATCH (historical:CrmTenantMappingRevision {revision_id: $historical_id}) "
+                "SET candidate.state = 'activation_failed', historical.state = 'activation_failed'",
+                candidate_id=rollback.revision.revision_id,
+                historical_id=historical.revision.revision_id,
+            ).consume()
+        _set_active_head(neo4j_driver, replacement)
+
+    client = _CountingClient(neo4j_driver, after_first_read=transition_rollback_inputs)
+    atomic_repository = mapping_graph.Neo4jCrmTenantMappingRepository(cast(Neo4jClient, client))
+    monkeypatch.setattr(mapping_graph, "assert_standalone_crm_lane_a_ready", lambda _client: None)
+    with pytest.raises(CrmTenantMappingConflictError):
+        atomic_repository.validate_mapping_rollback(
+            _scope(),
+            MappingRollbackAuthority(
+                historical.revision.revision_id,
+                historical.revision.manifest_digest,
+                _head_boundary(current).head_id,
+                rollback.revision.revision_id,
+            ),
+        )
+    assert client.read_calls == 2
 
 
 class _CountingClient:
-    def __init__(self, driver: Driver) -> None:
+    def __init__(self, driver: Driver, after_first_read: Callable[[], None] | None = None) -> None:
         self._delegate = _Client(driver)
         self.read_calls = 0
+        self._after_first_read = after_first_read
 
     def execute_read(self, work: Callable[[ManagedTransaction], T]) -> T:
         self.read_calls += 1
-        return self._delegate.execute_read(work)
+        result = self._delegate.execute_read(work)
+        if self.read_calls == 1 and self._after_first_read is not None:
+            self._after_first_read()
+        return result
