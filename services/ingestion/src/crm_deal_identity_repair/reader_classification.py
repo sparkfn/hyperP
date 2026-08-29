@@ -502,6 +502,4 @@ REPAIR_RETIRABLE_RELATIONSHIP_TYPES: frozenset[str] = frozenset(
 )
 RELEVANT_READER_MODULES: frozenset[str] = frozenset(
     item.module_path for item in READER_CLASSIFICATIONS
-) | frozenset(
-    item.module_path for item in NON_READER_RELATIONSHIP_QUERIES
-)
+) | frozenset(item.module_path for item in NON_READER_RELATIONSHIP_QUERIES)

@@ -299,12 +299,9 @@ def _status(arguments: Namespace) -> int:
         else:
             control_repository = CrmDealRepairControlRepository(client, run.control_instance_id)
             control = control_repository.read_status(run.run_id)
-            boundary_proof_admissible = (
-                snapshot is not None
-                and _control_boundary_proof_admissible(
-                    control_repository.read_boundary_component_proof(run.run_id),
-                    RepairBoundaryComponentProof.from_snapshot(snapshot),
-                )
+            boundary_proof_admissible = snapshot is not None and _control_boundary_proof_admissible(
+                control_repository.read_boundary_component_proof(run.run_id),
+                RepairBoundaryComponentProof.from_snapshot(snapshot),
             )
     finally:
         client.close()
